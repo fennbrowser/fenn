@@ -2,6 +2,7 @@
 #include <functional>
 #include <winrt/Microsoft.UI.Input.h>
 #include "JsonValidation.h"
+#include "TabGroupsButton.h"
 
 // Strip-only experiment: TabView owns presentation, Firefox owns all mutations.
 // No content pages, template internals, drag reordering or tear-out are used.
@@ -14,21 +15,17 @@ struct NativeTabStrip {
     std::map<uint32_t, Controls::TabViewItem> rows;
     struct Presentation { hstring detail; uint32_t flags{}; hstring status; };
     std::map<uint32_t, Presentation> presentation;
-    Controls::DropDownButton groupsButton{nullptr};
+    TabGroupsButton groupsButton;
     uint32_t presentationRevision{};
-    hstring presentationFingerprint, groupFingerprint, pendingGroup;
+    hstring presentationFingerprint;
     bool syncing{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
     NativeTabStrip(NativeTabMenu& model) : menu(model) {
         root = Markup::XamlReader::Load(LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"><TabView TabWidthMode="Equal" CanDragTabs="False" CanReorderTabs="False" AllowDrop="False" VerticalAlignment="Top" AutomationProperties.AutomationId="FirefoxWinUITabStrip" AutomationProperties.Name="Tabs in this window" /></Grid>)").as<Controls::Grid>();
         view = root.Children().GetAt(0).as<Controls::TabView>();
-        groupsButton = Controls::DropDownButton();
-        groupsButton.Visibility(Visibility::Collapsed);
-        groupsButton.Margin({4, 0, 4, 0});
-        groupsButton.VerticalAlignment(VerticalAlignment::Center);
-        Automation::AutomationProperties::SetAutomationId(groupsButton, L"FirefoxWinUITabGroups");
-        view.TabStripHeader(groupsButton);
+        view.TabStripHeader(groupsButton.button);
+        groupsButton.currentRevision = [this] { return presentationRevision; };
         auto alive = std::weak_ptr<int>(lifetime);
         view.SelectionChanged([this, alive](auto const&, auto const&) {
             if (alive.expired() || syncing || !view.SelectedItem()) return;
@@ -47,8 +44,6 @@ struct NativeTabStrip {
 
     // Parse a complete bounded copy before changing XAML or accepting any IDs.
     void Publish(NativeTabMenu::Object const& data) {
-        using Object = NativeTabMenu::Object;
-        using Value = NativeTabMenu::Value;
         if (data.GetNamedNumber(L"version") != 1) throw hresult_invalid_argument();
         auto revision = NativeJson::RequireId(data, L"revision");
         auto fingerprint = data.Stringify();
@@ -79,43 +74,11 @@ struct NativeTabStrip {
             if (!ids.insert(id).second || name.empty() || name.size() > NativeJson::kMaxShortLabel ||
                 text.empty() || text.size() > NativeJson::kMaxDetailText) throw hresult_invalid_argument();
         }
-        // Group-only changes replace the flyout, never mutate a closing presenter.
-        // Other state changes preserve the flyout but revoke any queued action.
-        const auto groupState = groups.Stringify();
-        if (groupState != groupFingerprint) {
-            Controls::MenuFlyout flyout;
-            for (auto value : groups) {
-                auto group = value.GetObject();
-                const auto id = NativeJson::RequireId(group, L"id");
-                const bool collapsed = group.GetNamedBoolean(L"collapsed");
-                Controls::ToggleMenuFlyoutItem item;
-                item.Text(group.GetNamedString(L"name"));
-                item.IsChecked(!collapsed);
-                Automation::AutomationProperties::SetName(item, group.GetNamedString(L"label"));
-                Automation::AutomationProperties::SetAutomationId(item, L"FirefoxWinUIGroup-" + to_hstring(id));
-                item.Click([this, alive = std::weak_ptr<int>(lifetime), id, collapsed, groupState](auto const& sender, auto const&) {
-                    if (alive.expired() || groupState != groupFingerprint) return;
-                    sender.template as<Controls::ToggleMenuFlyoutItem>().IsChecked(!collapsed);
-                    Object action;
-                    action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-group"));
-                    action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));
-                    action.SetNamedValue(L"group", Value::CreateNumberValue(id));
-                    action.SetNamedValue(L"collapsed", Value::CreateBooleanValue(!collapsed));
-                    pendingGroup = action.Stringify();
-                });
-                flyout.Items().Append(item);
-            }
-            if (auto old = groupsButton.Flyout()) old.Hide();
-            groupsButton.Flyout(flyout);
-            groupFingerprint = groupState;
-        }
-        groupsButton.Content(box_value(label));
-        groupsButton.Visibility(groups.Size() ? Visibility::Visible : Visibility::Collapsed);
+        groupsButton.Apply(label, groups);
         root.FlowDirection(rtl ? FlowDirection::RightToLeft : FlowDirection::LeftToRight);
         presentation.swap(next);
         presentationRevision = revision;
         presentationFingerprint = fingerprint;
-        pendingGroup = L"";
     }
 
     void UpdateHeader(Controls::TabViewItem const& row, uint32_t id, hstring const& title) {

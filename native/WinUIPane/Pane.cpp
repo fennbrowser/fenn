@@ -563,13 +563,13 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input, wchar_t* output, uin
         bool selectionResult = !snapshot.GetNamedBoolean(L"publishOnly", false) &&
             !pane.pendingSelectionSet.empty();
         bool groupResult = !selectionResult && !snapshot.GetNamedBoolean(L"publishOnly", false) &&
-            pane.strip && !pane.strip->pendingGroup.empty();
+            pane.strip && !pane.strip->groupsButton.pending.empty();
         if (selectionResult) result = pane.pendingSelectionSet;
-        else if (groupResult) result = pane.strip->pendingGroup;
+        else if (groupResult) result = pane.strip->groupsButton.pending;
         if (result.size() >= capacity) return E_INVALIDARG;
         wcscpy_s(output, capacity, result.c_str());
         if (selectionResult) pane.pendingSelectionSet = L"";
-        else if (groupResult) pane.strip->pendingGroup = L"";
+        else if (groupResult) pane.strip->groupsButton.pending = L"";
         else if (!result.empty()) pane.tabMenu.events.pop_front();
         return S_OK;
     } catch (...) { return to_hresult(); }
