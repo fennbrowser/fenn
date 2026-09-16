@@ -29,17 +29,21 @@ struct SuggestionList {
         list.SelectionMode(ListViewSelectionMode::Single);
     }
 
-    void Clear() { ids.clear(); visuals.clear(); list.Items().Clear(); }
+    void Clear() {
+        ids.clear();
+        visuals.clear();
+        list.Items().Clear();
+    }
 
     void RefreshLabels() {
         using namespace Microsoft::UI::Xaml::Controls;
         for (uint32_t i = 0; i < ids.size(); ++i) {
             auto container = list.Items().GetAt(i).as<ListViewItem>();
             auto title = titles[i];
-            if (int(i) == list.SelectedIndex() && !actionLabels[i].empty())
-                title = title + L" · " + actionLabels[i];
+            if (int(i) == list.SelectedIndex() && !actionLabels[i].empty()) title = title + L" · " + actionLabels[i];
             visuals[i].title.Text(title);
-            Automation::AutomationProperties::SetName(container, visuals[i].section.Text().empty() ? title : visuals[i].section.Text() + L". " + title);
+            Automation::AutomationProperties::SetName(
+                container, visuals[i].section.Text().empty() ? title : visuals[i].section.Text() + L". " + title);
         }
     }
 
@@ -54,8 +58,13 @@ struct SuggestionList {
         bool sameIds = rows.Size() == ids.size();
         for (uint32_t i = 0; sameIds && i < rows.Size(); ++i)
             sameIds = rows.GetAt(i).GetObject().GetNamedString(L"id") == ids[i];
-        if (!sameIds) { ids.clear(); visuals.clear(); list.Items().Clear(); }
-        titles.clear(); actionLabels.clear();
+        if (!sameIds) {
+            ids.clear();
+            visuals.clear();
+            list.Items().Clear();
+        }
+        titles.clear();
+        actionLabels.clear();
         for (auto item : rows) {
             auto row = item.GetObject();
             auto id = row.GetNamedString(L"id");
@@ -66,25 +75,38 @@ struct SuggestionList {
                 ids.push_back(id);
                 ListViewItem container;
                 RowVisual visual;
-                visual.title.Text(title); visual.title.TextTrimming(TextTrimming::CharacterEllipsis);
+                visual.title.Text(title);
+                visual.title.TextTrimming(TextTrimming::CharacterEllipsis);
                 visual.title.VerticalAlignment(VerticalAlignment::Center);
                 visual.section.TextWrapping(TextWrapping::Wrap);
-                Automation::AutomationProperties::SetHeadingLevel(visual.section, Automation::Peers::AutomationHeadingLevel::Level2);
-                StackPanel content; content.Spacing(4);
-                Grid line; line.ColumnSpacing(8);
-                ColumnDefinition iconColumn; iconColumn.Width(GridLengthHelper::Auto());
-                ColumnDefinition titleColumn; titleColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
-                line.ColumnDefinitions().Append(iconColumn); line.ColumnDefinitions().Append(titleColumn);
+                Automation::AutomationProperties::SetHeadingLevel(visual.section,
+                                                                  Automation::Peers::AutomationHeadingLevel::Level2);
+                StackPanel content;
+                content.Spacing(4);
+                Grid line;
+                line.ColumnSpacing(8);
+                ColumnDefinition iconColumn;
+                iconColumn.Width(GridLengthHelper::Auto());
+                ColumnDefinition titleColumn;
+                titleColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+                line.ColumnDefinitions().Append(iconColumn);
+                line.ColumnDefinitions().Append(titleColumn);
                 Grid::SetColumn(visual.title, 1);
                 Grid icon;
-                icon.Children().Append(visual.symbol); icon.Children().Append(visual.image);
+                icon.Children().Append(visual.symbol);
+                icon.Children().Append(visual.image);
                 visual.image.Stretch(Media::Stretch::Uniform);
-                Automation::AutomationProperties::SetAccessibilityView(visual.image, Automation::Peers::AccessibilityView::Raw);
-                Automation::AutomationProperties::SetAccessibilityView(visual.symbol, Automation::Peers::AccessibilityView::Raw);
-                line.Children().Append(icon); line.Children().Append(visual.title);
-                content.Children().Append(visual.section); content.Children().Append(line);
+                Automation::AutomationProperties::SetAccessibilityView(visual.image,
+                                                                       Automation::Peers::AccessibilityView::Raw);
+                Automation::AutomationProperties::SetAccessibilityView(visual.symbol,
+                                                                       Automation::Peers::AccessibilityView::Raw);
+                line.Children().Append(icon);
+                line.Children().Append(visual.title);
+                content.Children().Append(visual.section);
+                content.Children().Append(line);
                 container.HorizontalContentAlignment(HorizontalAlignment::Stretch);
-                container.Content(content); container.Tag(winrt::box_value(id));
+                container.Content(content);
+                container.Tag(winrt::box_value(id));
                 visuals.push_back(visual);
                 list.Items().Append(container);
             }
@@ -97,20 +119,30 @@ struct SuggestionList {
             visual.section.Text(section);
             visual.section.Visibility(section.empty() ? Visibility::Collapsed : Visibility::Visible);
             const auto size = row.GetNamedNumber(L"imageSize", 16);
-            visual.image.Width(size); visual.image.Height(size);
-            visual.symbol.Width(size); visual.symbol.Height(size);
+            visual.image.Width(size);
+            visual.image.Height(size);
+            visual.symbol.Width(size);
+            visual.symbol.Height(size);
             const auto symbol = row.GetNamedString(L"symbol", L"page");
-            visual.symbol.Symbol(symbol == L"search" ? Symbol::Find : symbol == L"history" ? Symbol::Clock : Symbol::Document);
-            const bool hasImage = row.HasKey(L"image") && row.GetNamedValue(L"image").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null;
+            visual.symbol.Symbol(symbol == L"search"    ? Symbol::Find
+                                 : symbol == L"history" ? Symbol::Clock
+                                                        : Symbol::Document);
+            const bool hasImage = row.HasKey(L"image") && row.GetNamedValue(L"image").ValueType() !=
+                                                              winrt::Windows::Data::Json::JsonValueType::Null;
             if (hasImage) {
                 auto data = row.GetNamedObject(L"image");
                 auto pixels = data.GetNamedString(L"pixels");
                 const int width = int(data.GetNamedNumber(L"width")), height = int(data.GetNamedNumber(L"height"));
                 if (visual.pixels != pixels || visual.pixelWidth != width || visual.pixelHeight != height) {
-                    visual.image.Source(NativeJson::DecodeImage(data)); visual.pixels = pixels;
-                    visual.pixelWidth = width; visual.pixelHeight = height;
+                    visual.image.Source(NativeJson::DecodeImage(data));
+                    visual.pixels = pixels;
+                    visual.pixelWidth = width;
+                    visual.pixelHeight = height;
                 }
-            } else { visual.image.Source(nullptr); visual.pixels = L""; }
+            } else {
+                visual.image.Source(nullptr);
+                visual.pixels = L"";
+            }
             visual.image.Visibility(hasImage ? Visibility::Visible : Visibility::Collapsed);
             visual.symbol.Visibility(hasImage ? Visibility::Collapsed : Visibility::Visible);
         }
@@ -126,7 +158,7 @@ struct SuggestionList {
         for (uint32_t i = 0; i < ids.size(); ++i) {
             auto row = list.ContainerFromIndex(i).try_as<FrameworkElement>();
             if (!row || row.ActualHeight() <= 0) continue;
-            auto origin = row.TransformToVisual(list).TransformPoint({0,0});
+            auto origin = row.TransformToVisual(list).TransformPoint({0, 0});
             if (origin.Y < list.ActualHeight() && origin.Y + row.ActualHeight() > 0)
                 visible.Append(winrt::Windows::Data::Json::JsonValue::CreateStringValue(ids[i]));
         }

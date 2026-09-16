@@ -18,7 +18,7 @@ struct NativeTabMenu {
     uint32_t stateRevision{};
     winrt::hstring stateFingerprint;
     std::vector<std::vector<Entry>> models;
-    std::map<uint32_t, uint32_t> tabModels; // Only the current Firefox snapshot.
+    std::map<uint32_t, uint32_t> tabModels;  // Only the current Firefox snapshot.
     std::deque<winrt::hstring> events;
     std::set<uint32_t> selectedTabs;
     bool hasSelection{};
@@ -27,12 +27,13 @@ struct NativeTabMenu {
 
     static Microsoft::UI::Xaml::Controls::MenuFlyoutItem Placeholder() {
         Microsoft::UI::Xaml::Controls::MenuFlyoutItem item;
-        item.Text(L"\u2026"); item.IsEnabled(false);
+        item.Text(L"\u2026");
+        item.IsEnabled(false);
         return item;
     }
 
-    static std::vector<Entry> Parse(Array const& entries, std::set<winrt::hstring>& ids,
-                                    uint32_t& count, uint32_t depth = 0) {
+    static std::vector<Entry> Parse(Array const& entries, std::set<winrt::hstring>& ids, uint32_t& count,
+                                    uint32_t depth = 0) {
         if (depth > 4 || entries.Size() > 128) throw winrt::hresult_invalid_argument();
         std::vector<Entry> result;
         for (auto value : entries) {
@@ -53,7 +54,8 @@ struct NativeTabMenu {
                 } else if (e.kind == L"submenu") {
                     e.children = Parse(o.GetNamedArray(L"items"), ids, count, depth + 1);
                     if (e.children.empty()) throw winrt::hresult_invalid_argument();
-                } else throw winrt::hresult_invalid_argument();
+                } else
+                    throw winrt::hresult_invalid_argument();
             }
             result.push_back(std::move(e));
         }
@@ -81,7 +83,11 @@ struct NativeTabMenu {
     }
     bool HasTab(uint32_t id) const { return tabModels.count(id) != 0; }
     void Close() {
-        Dismiss(); tabModels.clear(); models.clear(); events.clear(); lifetime.reset();
+        Dismiss();
+        tabModels.clear();
+        models.clear();
+        events.clear();
+        lifetime.reset();
     }
 
     void FocusFirst() {
@@ -94,30 +100,40 @@ struct NativeTabMenu {
         }
     }
 
-    template<typename Vector>
+    template <typename Vector>
     void Render(Vector const& target, std::vector<Entry> const& entries,
                 Microsoft::UI::Xaml::Controls::MenuFlyout const& ownerMenu, uint32_t modelRevision,
                 std::set<winrt::hstring>& modelIds, bool parentEnabled = true) {
         using namespace Microsoft::UI::Xaml::Controls;
         for (auto const& e : entries) {
-            if (e.kind == L"separator") { target.Append(MenuFlyoutSeparator()); continue; }
+            if (e.kind == L"separator") {
+                target.Append(MenuFlyoutSeparator());
+                continue;
+            }
             if (e.kind == L"submenu") {
                 MenuFlyoutSubItem item;
-                item.Text(e.label); item.AccessKey(e.accessKey); item.IsEnabled(e.enabled);
+                item.Text(e.label);
+                item.AccessKey(e.accessKey);
+                item.IsEnabled(e.enabled);
                 Render(item.Items(), e.children, ownerMenu, modelRevision, modelIds, parentEnabled && e.enabled);
                 target.Append(item);
                 continue;
             }
             MenuFlyoutItem item;
-            item.Text(e.label); item.AccessKey(e.accessKey); item.IsEnabled(e.enabled);
+            item.Text(e.label);
+            item.AccessKey(e.accessKey);
+            item.IsEnabled(e.enabled);
             if (parentEnabled && e.enabled) modelIds.insert(e.id);
             auto expected = modelRevision;
             auto owner = winrt::make_weak(ownerMenu);
-            item.Click([this, alive = std::weak_ptr<int>(lifetime), owner, expected, id = e.id](auto const&, auto const&) {
-                if (alive.expired() || !session || active != owner.get() || revision != expected || !enabledIds.count(id)) return;
-                Queue(L"activate", id);
-                enabledIds.clear(); // A menu session can activate only once.
-            });
+            item.Click(
+                [this, alive = std::weak_ptr<int>(lifetime), owner, expected, id = e.id](auto const&, auto const&) {
+                    if (alive.expired() || !session || active != owner.get() || revision != expected ||
+                        !enabledIds.count(id))
+                        return;
+                    Queue(L"activate", id);
+                    enabledIds.clear();  // A menu session can activate only once.
+                });
             target.Append(item);
         }
     }
@@ -131,11 +147,16 @@ struct NativeTabMenu {
     void Open(Microsoft::UI::Xaml::Controls::MenuFlyout const& menu, uint32_t id) {
         Dismiss();
         if (!id || nextSession == UINT32_MAX) return;
-        active = menu; tab = id; session = ++nextSession;
+        active = menu;
+        tab = id;
+        session = ++nextSession;
         // Firefox published this state before the row became interactive.
         // Keep the initial collection nonempty while replacing the placeholder.
         auto found = tabModels.find(id);
-        if (found == tabModels.end()) { Dismiss(true); return; }
+        if (found == tabModels.end()) {
+            Dismiss(true);
+            return;
+        }
         revision = stateRevision;
         Populate(models[found->second - 1]);
         Queue(L"open");
@@ -176,8 +197,7 @@ struct NativeTabMenu {
                     throw winrt::hresult_invalid_argument();
             }
             auto fingerprint = state.Stringify();
-            if (incoming == stateRevision && fingerprint != stateFingerprint)
-                throw winrt::hresult_invalid_argument();
+            if (incoming == stateRevision && fingerprint != stateFingerprint) throw winrt::hresult_invalid_argument();
             // Validate everything before mutation; never let a late state replace
             // the current window snapshot or alter an already displayed command.
             if (incoming > stateRevision) {
@@ -193,6 +213,6 @@ struct NativeTabMenu {
         if (revoke && revoke == session) Dismiss(true);
         // Publishing before syncTabs must not accelerate action delivery.
         if (publishOnly || events.empty()) return L"";
-        return events.front(); // Caller consumes only after copying into its buffer.
+        return events.front();  // Caller consumes only after copying into its buffer.
     }
 };

@@ -18,7 +18,13 @@ struct NativeTabStrip {
     // tabs per snapshot than address rows, so the per-snapshot total is its
     // own budget rather than reusing kIconImageLimits or NativeAddress's.
     static constexpr NativeJson::ImageLimits kTabImageLimits{32, 262144};
-    struct Presentation { hstring detail; uint32_t flags{}; hstring status; hstring imagePixels; uint32_t imageWidth{}, imageHeight{}; };
+    struct Presentation {
+        hstring detail;
+        uint32_t flags{};
+        hstring status;
+        hstring imagePixels;
+        uint32_t imageWidth{}, imageHeight{};
+    };
     std::map<uint32_t, Presentation> presentation;
     TabGroupsButton groupsButton;
     uint32_t presentationRevision{};
@@ -27,7 +33,10 @@ struct NativeTabStrip {
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
     NativeTabStrip(NativeTabMenu& model) : menu(model) {
-        root = Markup::XamlReader::Load(LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"><TabView TabWidthMode="Equal" CanDragTabs="False" CanReorderTabs="False" AllowDrop="False" VerticalAlignment="Top" AutomationProperties.AutomationId="FirefoxWinUITabStrip" AutomationProperties.Name="Tabs in this window" /></Grid>)").as<Controls::Grid>();
+        root =
+            Markup::XamlReader::Load(
+                LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"><TabView TabWidthMode="Equal" CanDragTabs="False" CanReorderTabs="False" AllowDrop="False" VerticalAlignment="Top" AutomationProperties.AutomationId="FirefoxWinUITabStrip" AutomationProperties.Name="Tabs in this window" /></Grid>)")
+                .as<Controls::Grid>();
         view = root.Children().GetAt(0).as<Controls::TabView>();
         view.TabStripHeader(groupsButton.button);
         groupsButton.currentRevision = [this] { return presentationRevision; };
@@ -43,7 +52,9 @@ struct NativeTabStrip {
         view.TabCloseRequested([this, alive](auto const&, Controls::TabViewTabCloseRequestedEventArgs const& args) {
             if (!alive.expired() && !syncing) close(unbox_value<uint32_t>(args.Tab().Tag()));
         });
-        view.AddTabButtonClick([this, alive](auto const&, auto const&) { if (!alive.expired() && !syncing) add(); });
+        view.AddTabButtonClick([this, alive](auto const&, auto const&) {
+            if (!alive.expired() && !syncing) add();
+        });
     }
     ~NativeTabStrip() { lifetime.reset(); }
 
@@ -52,13 +63,16 @@ struct NativeTabStrip {
         if (data.GetNamedNumber(L"version") != 1) throw hresult_invalid_argument();
         auto revision = NativeJson::RequireId(data, L"revision");
         auto fingerprint = data.Stringify();
-        if (revision < presentationRevision || (revision == presentationRevision && fingerprint != presentationFingerprint)) throw hresult_invalid_argument();
+        if (revision < presentationRevision ||
+            (revision == presentationRevision && fingerprint != presentationFingerprint))
+            throw hresult_invalid_argument();
         if (revision == presentationRevision) return;
         auto label = data.GetNamedString(L"groupsLabel");
         const bool rtl = data.GetNamedBoolean(L"rtl");
         auto entries = data.GetNamedArray(L"rows"), groups = data.GetNamedArray(L"groups");
-        if (label.empty() || label.size() > NativeJson::kMaxShortLabel ||
-            entries.Size() > NativeJson::kMaxTabs || groups.Size() > NativeJson::kMaxTabs) throw hresult_invalid_argument();
+        if (label.empty() || label.size() > NativeJson::kMaxShortLabel || entries.Size() > NativeJson::kMaxTabs ||
+            groups.Size() > NativeJson::kMaxTabs)
+            throw hresult_invalid_argument();
         std::map<uint32_t, Presentation> next;
         size_t totalImagePixels = 0;
         for (auto value : entries) {
@@ -68,16 +82,20 @@ struct NativeTabStrip {
             auto detail = entry.GetNamedString(L"detail");
             auto status = entry.GetNamedString(L"status", L"");
             if (!std::isfinite(flags) || flags < 0 || flags > 15 || std::floor(flags) != flags ||
-                detail.size() > NativeJson::kMaxDetailText || status.size() > NativeJson::kMaxDetailText) throw hresult_invalid_argument();
+                detail.size() > NativeJson::kMaxDetailText || status.size() > NativeJson::kMaxDetailText)
+                throw hresult_invalid_argument();
             NativeJson::ValidateImage(entry, totalImagePixels, kTabImageLimits);
-            hstring imagePixels; uint32_t imageWidth{}, imageHeight{};
-            if (entry.HasKey(L"image") && entry.GetNamedValue(L"image").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null) {
+            hstring imagePixels;
+            uint32_t imageWidth{}, imageHeight{};
+            if (entry.HasKey(L"image") &&
+                entry.GetNamedValue(L"image").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null) {
                 auto image = entry.GetNamedObject(L"image");
                 imagePixels = image.GetNamedString(L"pixels");
                 imageWidth = uint32_t(image.GetNamedNumber(L"width"));
                 imageHeight = uint32_t(image.GetNamedNumber(L"height"));
             }
-            if (!next.emplace(id, Presentation{detail, uint32_t(flags), status, imagePixels, imageWidth, imageHeight}).second)
+            if (!next.emplace(id, Presentation{detail, uint32_t(flags), status, imagePixels, imageWidth, imageHeight})
+                     .second)
                 throw hresult_invalid_argument();
         }
         std::set<uint32_t> ids;
@@ -86,8 +104,9 @@ struct NativeTabStrip {
             auto id = NativeJson::RequireId(group, L"id");
             auto name = group.GetNamedString(L"name"), text = group.GetNamedString(L"label");
             group.GetNamedBoolean(L"collapsed");
-            if (!ids.insert(id).second || name.empty() || name.size() > NativeJson::kMaxShortLabel ||
-                text.empty() || text.size() > NativeJson::kMaxDetailText) throw hresult_invalid_argument();
+            if (!ids.insert(id).second || name.empty() || name.size() > NativeJson::kMaxShortLabel || text.empty() ||
+                text.size() > NativeJson::kMaxDetailText)
+                throw hresult_invalid_argument();
         }
         groupsButton.Apply(label, groups);
         root.FlowDirection(rtl ? FlowDirection::RightToLeft : FlowDirection::LeftToRight);
@@ -142,7 +161,8 @@ struct NativeTabStrip {
         audio.Symbol(meta.flags & 4 ? Controls::Symbol::Mute : Controls::Symbol::Volume);
         audioBox.Visibility(meta.flags & 12 ? Visibility::Visible : Visibility::Collapsed);
         Controls::ToolTipService::SetToolTip(row, box_value(meta.detail.empty() ? title : title + L"\n" + meta.detail));
-        Automation::AutomationProperties::SetHelpText(row, meta.detail + (meta.detail.empty() || meta.status.empty() ? L"" : L" · ") + meta.status);
+        Automation::AutomationProperties::SetHelpText(
+            row, meta.detail + (meta.detail.empty() || meta.status.empty() ? L"" : L" · ") + meta.status);
     }
 
     void AttachMenu(Controls::TabViewItem const& row, uint32_t id) {
@@ -158,7 +178,8 @@ struct NativeTabStrip {
         flyout.Closed([this, alive, id, weak = make_weak(flyout), target = make_weak(row)](auto const&, auto const&) {
             if (alive.expired()) return;
             if (weak.get() == menu.active) menu.Dismiss();
-            if (auto row = target.get(); row && rows.count(id) && row.ContextFlyout() == weak.get()) AttachMenu(row, id);
+            if (auto row = target.get(); row && rows.count(id) && row.ContextFlyout() == weak.get())
+                AttachMenu(row, id);
         });
         row.ContextFlyout(flyout);
     }
@@ -175,29 +196,38 @@ struct NativeTabStrip {
                     row.Tag(box_value(id));
                     row.IsClosable(true);
                     row.HorizontalContentAlignment(HorizontalAlignment::Stretch);
-                    row.Header(Markup::XamlReader::Load(LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid Width="16" Height="16"><Image Stretch="Uniform" AutomationProperties.AccessibilityView="Raw"/><ProgressRing Width="16" Height="16" IsActive="False" AutomationProperties.AccessibilityView="Raw"/></Grid><Viewbox Grid.Column="1" Width="16" Height="16"><SymbolIcon Symbol="Pin"/></Viewbox><StackPanel Grid.Column="2" MaxWidth="220" VerticalAlignment="Center"><TextBlock TextTrimming="CharacterEllipsis"/><TextBlock FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/></StackPanel><Viewbox Grid.Column="3" Width="16" Height="16"><SymbolIcon Symbol="Volume"/></Viewbox></Grid>)"));
+                    row.Header(Markup::XamlReader::Load(
+                        LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid Width="16" Height="16"><Image Stretch="Uniform" AutomationProperties.AccessibilityView="Raw"/><ProgressRing Width="16" Height="16" IsActive="False" AutomationProperties.AccessibilityView="Raw"/></Grid><Viewbox Grid.Column="1" Width="16" Height="16"><SymbolIcon Symbol="Pin"/></Viewbox><StackPanel Grid.Column="2" MaxWidth="220" VerticalAlignment="Center"><TextBlock TextTrimming="CharacterEllipsis"/><TextBlock FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/></StackPanel><Viewbox Grid.Column="3" Width="16" Height="16"><SymbolIcon Symbol="Volume"/></Viewbox></Grid>)"));
                     Automation::AutomationProperties::SetAutomationId(row, L"FirefoxWinUITab-" + to_hstring(id));
                     auto alive = std::weak_ptr<int>(lifetime);
-                    row.AddHandler(UIElement::PointerPressedEvent(), box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                        [this, alive, id](auto const&, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
-                            if (alive.expired() || syncing || !rows.count(id) || !args.GetCurrentPoint(nullptr).Properties().IsLeftButtonPressed()) return;
-                            if (!(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000)) return;
-                            // Ignore the stock close button; retain its normal input.
-                            auto node = args.OriginalSource().try_as<DependencyObject>();
-                            while (node && node != rows.at(id)) {
-                                if (node.try_as<Controls::Primitives::ButtonBase>()) return;
-                                node = Media::VisualTreeHelper::GetParent(node);
+                    row.AddHandler(
+                        UIElement::PointerPressedEvent(),
+                        box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                            [this, alive, id](auto const&,
+                                              Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
+                                if (alive.expired() || syncing || !rows.count(id) ||
+                                    !args.GetCurrentPoint(nullptr).Properties().IsLeftButtonPressed())
+                                    return;
+                                if (!(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000)) return;
+                                // Ignore the stock close button; retain its normal input.
+                                auto node = args.OriginalSource().try_as<DependencyObject>();
+                                while (node && node != rows.at(id)) {
+                                    if (node.try_as<Controls::Primitives::ButtonBase>()) return;
+                                    node = Media::VisualTreeHelper::GetParent(node);
+                                }
+                                select(id);
+                            })),
+                        true);
+                    row.PreviewKeyDown(
+                        [this, alive, id](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
+                            if (alive.expired() || syncing || !rows.count(id)) return;
+                            if (args.Key() == Windows::System::VirtualKey::Space ||
+                                args.Key() == Windows::System::VirtualKey::Enter) {
+                                if (args.OriginalSource() != rows.at(id)) return;
+                                select(id);
+                                args.Handled(true);
                             }
-                            select(id);
-                        })), true);
-                    row.PreviewKeyDown([this, alive, id](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
-                        if (alive.expired() || syncing || !rows.count(id)) return;
-                        if (args.Key() == Windows::System::VirtualKey::Space || args.Key() == Windows::System::VirtualKey::Enter) {
-                            if (args.OriginalSource() != rows.at(id)) return;
-                            select(id);
-                            args.Handled(true);
-                        }
-                    });
+                        });
                     rows.emplace(id, row);
                     AttachMenu(row, id);
                 }
@@ -208,7 +238,9 @@ struct NativeTabStrip {
                 // remains solely the Firefox active tab.
                 bool selected = menu.selectedTabs.count(id) != 0;
                 row.FontWeight(Windows::UI::Text::FontWeight{uint16_t(selected ? 600 : 400)});
-                Automation::AutomationProperties::SetItemStatus(row, id == active ? L"Active tab" : selected ? L"Selected tab" : L"");
+                Automation::AutomationProperties::SetItemStatus(row, id == active ? L"Active tab"
+                                                                     : selected   ? L"Selected tab"
+                                                                                  : L"");
                 uint32_t old;
                 if (!view.TabItems().IndexOf(row, old) || old != i) {
                     if (view.TabItems().IndexOf(row, old)) view.TabItems().RemoveAt(old);
@@ -217,10 +249,16 @@ struct NativeTabStrip {
             }
             while (view.TabItems().Size() > count) view.TabItems().RemoveAtEnd();
             for (auto it = rows.begin(); it != rows.end();) {
-                if (!current.count(it->first)) it = rows.erase(it); else ++it;
+                if (!current.count(it->first))
+                    it = rows.erase(it);
+                else
+                    ++it;
             }
             view.SelectedItem(rows.count(active) ? rows.at(active) : nullptr);
-        } catch (...) { syncing = false; throw; }
+        } catch (...) {
+            syncing = false;
+            throw;
+        }
         syncing = false;
     }
 };

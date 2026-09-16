@@ -32,7 +32,10 @@ struct NativeSearchMode {
     std::function<JObject(wchar_t const*)> message;
     std::function<bool()> busy;
 
-    ~NativeSearchMode() { lifetime.reset(); if (flyout.IsOpen()) flyout.Hide(); }
+    ~NativeSearchMode() {
+        lifetime.reset();
+        if (flyout.IsOpen()) flyout.Hide();
+    }
 
     static void ValidateImage(JObject const& item, size_t& total) {
         NativeJson::ValidateImage(item, total, NativeJson::kIconImageLimits);
@@ -58,9 +61,9 @@ struct NativeSearchMode {
         value.SetNamedValue(L"generation", JValue::CreateNumberValue(generation));
         value.SetNamedValue(L"id", JValue::CreateStringValue(id));
         JObject intent;
-        intent.SetNamedValue(L"ctrlKey", JValue::CreateBooleanValue((GetKeyState(VK_CONTROL)&0x8000)!=0));
-        intent.SetNamedValue(L"altKey", JValue::CreateBooleanValue((GetKeyState(VK_MENU)&0x8000)!=0));
-        intent.SetNamedValue(L"shiftKey", JValue::CreateBooleanValue((GetKeyState(VK_SHIFT)&0x8000)!=0));
+        intent.SetNamedValue(L"ctrlKey", JValue::CreateBooleanValue((GetKeyState(VK_CONTROL) & 0x8000) != 0));
+        intent.SetNamedValue(L"altKey", JValue::CreateBooleanValue((GetKeyState(VK_MENU) & 0x8000) != 0));
+        intent.SetNamedValue(L"shiftKey", JValue::CreateBooleanValue((GetKeyState(VK_SHIFT) & 0x8000) != 0));
         intent.SetNamedValue(L"metaKey", JValue::CreateBooleanValue(false));
         value.SetNamedValue(L"intent", intent);
         pending = value.Stringify();
@@ -72,8 +75,10 @@ struct NativeSearchMode {
         if (flyout.IsOpen()) flyout.Hide();
         flyout = Controls::MenuFlyout();
         button.Flyout(flyout);
-        flyout.Opening([this, alive=std::weak_ptr<int>(lifetime)](auto const&, auto const&) { if (!alive.expired()) Queue(L"mode-open"); });
-        flyout.Opened([this, alive=std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+        flyout.Opening([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) Queue(L"mode-open");
+        });
+        flyout.Opened([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (!alive.expired() && !items.empty()) items.front().Focus(FocusState::Programmatic);
         });
     }
@@ -89,23 +94,30 @@ struct NativeSearchMode {
     // mode selection is valid for a new one.
     void Reset() {
         Disable();
-        generation = -1; applied = 0; reveal = 0; revealPending = false;
+        generation = -1;
+        applied = 0;
+        reveal = 0;
+        revealPending = false;
     }
 
     void Sync(JObject const& snapshot) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
-        const bool visible=snapshot.GetNamedBoolean(L"modeButtonVisible",true);
+        const bool visible = snapshot.GetNamedBoolean(L"modeButtonVisible", true);
         if (!visible) {
             if (flyout.IsOpen()) flyout.Hide();
-            if (button.FocusState()!=FocusState::Unfocused || exit.FocusState()!=FocusState::Unfocused)
+            if (button.FocusState() != FocusState::Unfocused || exit.FocusState() != FocusState::Unfocused)
                 focusField();
         }
         button.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
-        if (!visible) revealPending=false;
-        const auto nextReveal=snapshot.GetNamedNumber(L"modeReveal",0);
-        if (nextReveal!=reveal) {reveal=nextReveal; revealPending=visible;}
-        if (!snapshot.HasKey(L"modes") || snapshot.GetNamedValue(L"modes").ValueType() == winrt::Windows::Data::Json::JsonValueType::Null) {
+        if (!visible) revealPending = false;
+        const auto nextReveal = snapshot.GetNamedNumber(L"modeReveal", 0);
+        if (nextReveal != reveal) {
+            reveal = nextReveal;
+            revealPending = visible;
+        }
+        if (!snapshot.HasKey(L"modes") ||
+            snapshot.GetNamedValue(L"modes").ValueType() == winrt::Windows::Data::Json::JsonValueType::Null) {
             button.IsEnabled(false);
             exit.Visibility(Visibility::Collapsed);
             if (flyout.IsOpen()) flyout.Hide();
@@ -116,36 +128,54 @@ struct NativeSearchMode {
         auto nextGeneration = modes.GetNamedNumber(L"generation");
         if (generation != nextGeneration) {
             NewFlyout();
-            items.clear(); ids.clear(); pixels.clear();
+            items.clear();
+            ids.clear();
+            pixels.clear();
             generation = nextGeneration;
             bool local = false, offered = false;
             for (auto value : entries) {
                 auto entry = value.GetObject();
-                auto symbolName=entry.GetNamedString(L"symbol",L"");
-                if ((!local && entry.GetNamedBoolean(L"local", false)) || (symbolName==L"add" && !offered) || (symbolName==L"settings" && !offered)) {
-                    flyout.Items().Append(MenuFlyoutSeparator()); local = true;
+                auto symbolName = entry.GetNamedString(L"symbol", L"");
+                if ((!local && entry.GetNamedBoolean(L"local", false)) || (symbolName == L"add" && !offered) ||
+                    (symbolName == L"settings" && !offered)) {
+                    flyout.Items().Append(MenuFlyoutSeparator());
+                    local = true;
                 }
-                offered = offered || symbolName==L"add";
-                MenuFlyoutItem item; item.Text(entry.GetNamedString(L"label"));
+                offered = offered || symbolName == L"add";
+                MenuFlyoutItem item;
+                item.Text(entry.GetNamedString(L"label"));
                 auto id = entry.GetNamedString(L"id");
-                item.Click([this, alive=std::weak_ptr<int>(lifetime), id, nextGeneration](auto const&, auto const&) {
+                item.Click([this, alive = std::weak_ptr<int>(lifetime), id, nextGeneration](auto const&, auto const&) {
                     if (!alive.expired() && generation == nextGeneration) Queue(L"mode-pick", id);
                 });
                 Automation::AutomationProperties::SetAutomationId(item, id);
-                flyout.Items().Append(item); items.push_back(item); ids.push_back(id); pixels.push_back(L"");
+                flyout.Items().Append(item);
+                items.push_back(item);
+                ids.push_back(id);
+                pixels.push_back(L"");
             }
         }
-        for (uint32_t i=0; i<entries.Size(); ++i) {
+        for (uint32_t i = 0; i < entries.Size(); ++i) {
             auto entry = entries.GetAt(i).GetObject();
             auto encoded = entry.GetNamedValue(L"image", JValue::CreateNullValue()).Stringify();
             if (pixels[i] != encoded) {
-                if (encoded != L"null") { ImageIcon icon; icon.Source(DecodeImage(entry)); items[i].Icon(icon); }
-                else { SymbolIcon icon; icon.Symbol(IconFor(entry.GetNamedString(L"symbol", L"search"))); items[i].Icon(icon); }
+                if (encoded != L"null") {
+                    ImageIcon icon;
+                    icon.Source(DecodeImage(entry));
+                    items[i].Icon(icon);
+                } else {
+                    SymbolIcon icon;
+                    icon.Symbol(IconFor(entry.GetNamedString(L"symbol", L"search")));
+                    items[i].Icon(icon);
+                }
                 pixels[i] = encoded;
             }
         }
         auto encoded = modes.GetNamedValue(L"image", JValue::CreateNullValue()).Stringify();
-        if (buttonPixels != encoded) { image.Source(encoded == L"null" ? nullptr : DecodeImage(modes)); buttonPixels = encoded; }
+        if (buttonPixels != encoded) {
+            image.Source(encoded == L"null" ? nullptr : DecodeImage(modes));
+            buttonPixels = encoded;
+        }
         image.Visibility(encoded == L"null" ? Visibility::Collapsed : Visibility::Visible);
         symbol.Visibility(encoded == L"null" ? Visibility::Visible : Visibility::Collapsed);
         symbol.Symbol(IconFor(modes.GetNamedString(L"symbol", L"search")));
@@ -153,38 +183,57 @@ struct NativeSearchMode {
         Automation::AutomationProperties::SetName(button, modes.GetNamedString(L"buttonLabel", modesLabel));
         Automation::AutomationProperties::SetName(exit, modes.GetNamedString(L"exitLabel", L"Exit search mode"));
         label.Text(modes.GetNamedBoolean(L"active") ? modesLabel : L"");
-        label.MaxWidth(80); label.TextTrimming(TextTrimming::CharacterEllipsis);
-        exit.Visibility(visible && snapshot.GetNamedBoolean(L"modeExitVisible",modes.GetNamedBoolean(L"active")) ? Visibility::Visible : Visibility::Collapsed);
+        label.MaxWidth(80);
+        label.TextTrimming(TextTrimming::CharacterEllipsis);
+        exit.Visibility(visible && snapshot.GetNamedBoolean(L"modeExitVisible", modes.GetNamedBoolean(L"active"))
+                            ? Visibility::Visible
+                            : Visibility::Collapsed);
         button.IsEnabled(true);
         const double nextApplied = modes.GetNamedNumber(L"applied", 0);
-        if (applied != nextApplied) { applied = nextApplied; focusField(); }
+        if (applied != nextApplied) {
+            applied = nextApplied;
+            focusField();
+        }
     }
 
     // Shows the flyout if Sync() left a reveal request pending. Called
     // unconditionally after Sync() so the check stays internal to this
     // struct rather than duplicated at each of NativeAddress's callers.
     void ShowPendingReveal() {
-        if (revealPending && button.IsEnabled() && button.Visibility()==Microsoft::UI::Xaml::Visibility::Visible) {
-            revealPending=false; flyout.ShowAt(button);
+        if (revealPending && button.IsEnabled() && button.Visibility() == Microsoft::UI::Xaml::Visibility::Visible) {
+            revealPending = false;
+            flyout.ShowAt(button);
         }
     }
 
     NativeSearchMode() {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
-        NewFlyout(); button.IsEnabled(false); button.Padding({4,0,4,0});
+        NewFlyout();
+        button.IsEnabled(false);
+        button.Padding({4, 0, 4, 0});
         Automation::AutomationProperties::SetAutomationId(button, L"FirefoxWinUISearchMode");
-        StackPanel buttonContent; buttonContent.Orientation(Orientation::Horizontal); buttonContent.Spacing(4);
+        StackPanel buttonContent;
+        buttonContent.Orientation(Orientation::Horizontal);
+        buttonContent.Spacing(4);
         Automation::AutomationProperties::SetAccessibilityView(image, Automation::Peers::AccessibilityView::Raw);
         Automation::AutomationProperties::SetAccessibilityView(symbol, Automation::Peers::AccessibilityView::Raw);
-        image.Width(16); image.Height(16); image.Stretch(Media::Stretch::Uniform);
+        image.Width(16);
+        image.Height(16);
+        image.Stretch(Media::Stretch::Uniform);
         symbol.Symbol(Symbol::Find);
-        buttonContent.Children().Append(image); buttonContent.Children().Append(symbol); buttonContent.Children().Append(label);
+        buttonContent.Children().Append(image);
+        buttonContent.Children().Append(symbol);
+        buttonContent.Children().Append(label);
         button.Content(buttonContent);
-        exit.Content(winrt::box_value(L"×")); exit.Padding({4,0,4,0}); exit.MinWidth(24);
+        exit.Content(winrt::box_value(L"×"));
+        exit.Padding({4, 0, 4, 0});
+        exit.MinWidth(24);
         Automation::AutomationProperties::SetName(exit, L"Exit search mode");
         Automation::AutomationProperties::SetAutomationId(exit, L"FirefoxWinUIExitSearchMode");
         exit.Visibility(Visibility::Collapsed);
-        exit.Click([this, alive=std::weak_ptr<int>(lifetime)](auto const&, auto const&) { if (!alive.expired()) Queue(L"mode-exit"); });
+        exit.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) Queue(L"mode-exit");
+        });
     }
 };

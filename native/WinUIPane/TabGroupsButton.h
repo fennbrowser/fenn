@@ -46,7 +46,8 @@ struct TabGroupsButton {
                 item.IsChecked(!collapsed);
                 Automation::AutomationProperties::SetName(item, group.GetNamedString(L"label"));
                 Automation::AutomationProperties::SetAutomationId(item, L"FirefoxWinUIGroup-" + to_hstring(id));
-                item.Click([this, alive = std::weak_ptr<int>(lifetime), id, collapsed, groupState](auto const& sender, auto const&) {
+                item.Click([this, alive = std::weak_ptr<int>(lifetime), id, collapsed, groupState](auto const& sender,
+                                                                                                   auto const&) {
                     if (alive.expired() || groupState != fingerprint) return;
                     sender.template as<Controls::ToggleMenuFlyoutItem>().IsChecked(!collapsed);
                     JObject action;
