@@ -5,6 +5,7 @@
 #include "JsonValidation.h"
 #include "SearchMode.h"
 #include "GlobalActions.h"
+#include "SuggestionList.h"
 
 struct NativeAddress {
     using JObject = winrt::Windows::Data::Json::JsonObject;
@@ -16,16 +17,7 @@ struct NativeAddress {
     Microsoft::UI::Xaml::Controls::StackPanel root;
     Microsoft::UI::Xaml::Controls::TextBox field;
     NativeSearchMode mode;
-    Microsoft::UI::Xaml::Controls::ListView list;
-    std::vector<winrt::hstring> ids, titles, actionLabels;
-    struct RowVisual {
-        Microsoft::UI::Xaml::Controls::TextBlock title, section;
-        Microsoft::UI::Xaml::Controls::Image image;
-        Microsoft::UI::Xaml::Controls::SymbolIcon symbol;
-        winrt::hstring pixels;
-        int pixelWidth{}, pixelHeight{};
-    };
-    std::vector<RowVisual> visuals;
+    SuggestionList suggestions;
     GlobalActionsPanel actions;
     winrt::hstring session, pending, visibility, observedText, submitIntent;
     double revision{}, sequence{-1}, editId{}, selectionId{}, acknowledgedEditId{};
@@ -87,7 +79,7 @@ struct NativeAddress {
             }
             // An edit can already have left the queue while Firefox is still
             // querying or has not acknowledged it in a native snapshot yet.
-            if (acknowledgedEditId != editId || (!queryComplete && ids.empty())) { enterPending = true; return; }
+            if (acknowledgedEditId != editId || (!queryComplete && suggestions.ids.empty())) { enterPending = true; return; }
         }
         if (!pending.empty()) {
             auto kindPending = JObject::Parse(pending).GetNamedString(L"kind");
@@ -105,20 +97,9 @@ struct NativeAddress {
             value.SetNamedValue(L"intent", JObject::Parse(submitIntent));
             submitIntent = L"";
         }
-        int index = list.SelectedIndex();
-        if (index >= 0 && size_t(index) < ids.size()) value.SetNamedValue(L"id", JValue::CreateStringValue(ids[index]));
+        int index = suggestions.list.SelectedIndex();
+        if (index >= 0 && size_t(index) < suggestions.ids.size()) value.SetNamedValue(L"id", JValue::CreateStringValue(suggestions.ids[index]));
         pending = value.Stringify();
-    }
-    void RefreshLabels() {
-        using namespace Microsoft::UI::Xaml::Controls;
-        for (uint32_t i = 0; i < ids.size(); ++i) {
-            auto container = list.Items().GetAt(i).as<ListViewItem>();
-            auto title = titles[i];
-            if (int(i) == list.SelectedIndex() && !actionLabels[i].empty())
-                title = title + L" \u00b7 " + actionLabels[i];
-            visuals[i].title.Text(title);
-            Automation::AutomationProperties::SetName(container, visuals[i].section.Text().empty() ? title : visuals[i].section.Text() + L". " + title);
-        }
     }
     void ObserveFocus(bool islandHasFocus) {
         if (mode.flyout.IsOpen()) return;
@@ -148,10 +129,6 @@ struct NativeAddress {
         field.MaxLength(int32_t(NativeJson::kMaxFieldText));
         Automation::AutomationProperties::SetName(field, L"Native address prototype");
         Automation::AutomationProperties::SetAutomationId(field, L"FirefoxWinUIAddress");
-        Automation::AutomationProperties::SetName(list, L"Address suggestions");
-        Automation::AutomationProperties::SetAutomationId(list, L"FirefoxWinUISuggestions");
-        list.MaxHeight(160);
-        list.SelectionMode(ListViewSelectionMode::Single);
         field.TextChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) { if (alive.expired()) return; Edit(); });
         field.SelectionChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired() || syncing || composing || session.empty()) return;
@@ -187,18 +164,20 @@ struct NativeAddress {
             using winrt::Windows::System::VirtualKey;
             if (e.Key() == VirtualKey::Enter) { Action(L"activate"); e.Handled(true); }
             if (e.Key() == VirtualKey::Escape) { Action(L"dismiss"); e.Handled(true); }
-            if (e.Key() == VirtualKey::Down && !ids.empty() && !(GetKeyState(VK_MENU)&0x8000)) {
+            if (e.Key() == VirtualKey::Down && !suggestions.ids.empty() && !(GetKeyState(VK_MENU)&0x8000)) {
+                auto& list = suggestions.list;
                 int next = list.SelectedIndex() + 1;
-                while (next < int(ids.size()) && !list.Items().GetAt(next).as<ListViewItem>().IsEnabled()) ++next;
-                if (next >= int(ids.size())) { e.Handled(true); return; }
+                while (next < int(suggestions.ids.size()) && !list.Items().GetAt(next).as<ListViewItem>().IsEnabled()) ++next;
+                if (next >= int(suggestions.ids.size())) { e.Handled(true); return; }
                 syncing = true; list.Focus(FocusState::Keyboard); list.SelectedIndex(next); syncing = false;
-                RefreshLabels(); Action(L"select"); e.Handled(true);
+                suggestions.RefreshLabels(); Action(L"select"); e.Handled(true);
             }
         });
-        list.SelectionChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) { if (alive.expired()) return; if (!syncing) RefreshLabels(); Action(L"select"); });
-        list.IsItemClickEnabled(true);
-        list.ItemClick([this, alive = std::weak_ptr<int>(lifetime)](auto const&, ItemClickEventArgs const& e) {
+        suggestions.list.SelectionChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) { if (alive.expired()) return; if (!syncing) suggestions.RefreshLabels(); Action(L"select"); });
+        suggestions.list.IsItemClickEnabled(true);
+        suggestions.list.ItemClick([this, alive = std::weak_ptr<int>(lifetime)](auto const&, ItemClickEventArgs const& e) {
             if (alive.expired()) return;
+            auto& list = suggestions.list;
             uint32_t index{};
             auto clicked = e.ClickedItem();
             bool found = list.Items().IndexOf(clicked, index);
@@ -215,7 +194,7 @@ struct NativeAddress {
                 Action(L"activate");
             }
         });
-        list.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
+        suggestions.list.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
             if (alive.expired()) return;
             using winrt::Windows::System::VirtualKey;
             if (e.Key() == VirtualKey::Enter) { Action(L"activate"); e.Handled(true); }
@@ -251,7 +230,7 @@ struct NativeAddress {
                 actions.visuals.front().button.Focus(FocusState::Keyboard); e.Handled(true);
             }
         });
-        root.Children().Append(header); root.Children().Append(list); root.Children().Append(actions.panel); root.Children().Append(fallback);
+        root.Children().Append(header); root.Children().Append(suggestions.list); root.Children().Append(actions.panel); root.Children().Append(fallback);
     }
     winrt::hstring Sync(JObject const& snapshot) {
         using namespace Microsoft::UI::Xaml;
@@ -260,8 +239,8 @@ struct NativeAddress {
         if (!snapshot.GetNamedBoolean(L"enabled", false)) {
             mode.Disable();
             actions.Clear();
-            syncing = true; root.Visibility(Visibility::Collapsed); list.Items().Clear();
-            ids.clear(); visuals.clear(); pending = L""; session = L""; enterPending = false; submitIntent = L""; queryComplete = false; acknowledgedEditId = 0; syncing = false; return L"";
+            syncing = true; root.Visibility(Visibility::Collapsed); suggestions.Clear();
+            pending = L""; session = L""; enterPending = false; submitIntent = L""; queryComplete = false; acknowledgedEditId = 0; syncing = false; return L"";
         }
         auto nextSession = snapshot.GetNamedString(L"session");
         NativeJson::RequireRevision(snapshot, L"revision");
@@ -334,94 +313,23 @@ struct NativeAddress {
             auto nextSequence = snapshot.GetNamedNumber(L"sequence", 0);
             if (sequence != nextSequence || previousRevision != revision) {
                 sequence = nextSequence;
-                auto rows = snapshot.GetNamedArray(L"rows");
-                if (rows.Size() > NativeJson::kMaxListEntries) winrt::throw_hresult(E_INVALIDARG);
-                bool sameIds = rows.Size() == ids.size();
-                for (uint32_t i = 0; sameIds && i < rows.Size(); ++i)
-                    sameIds = rows.GetAt(i).GetObject().GetNamedString(L"id") == ids[i];
-                if (!sameIds) { ids.clear(); visuals.clear(); list.Items().Clear(); }
-                titles.clear(); actionLabels.clear(); visibility = L"";
-                for (auto item : rows) {
-                    auto row = item.GetObject();
-                    auto id = row.GetNamedString(L"id");
-                    auto title = row.GetNamedString(L"title");
-                    titles.push_back(title);
-                    actionLabels.push_back(row.GetNamedString(L"actionLabel", L""));
-                    if (!sameIds) {
-                        ids.push_back(id);
-                        ListViewItem container;
-                        RowVisual visual;
-                        visual.title.Text(title); visual.title.TextTrimming(TextTrimming::CharacterEllipsis);
-                        visual.title.VerticalAlignment(VerticalAlignment::Center);
-                        visual.section.TextWrapping(TextWrapping::Wrap);
-                        Automation::AutomationProperties::SetHeadingLevel(visual.section, Automation::Peers::AutomationHeadingLevel::Level2);
-                        StackPanel content; content.Spacing(4);
-                        Grid line; line.ColumnSpacing(8);
-                        ColumnDefinition iconColumn; iconColumn.Width(GridLengthHelper::Auto());
-                        ColumnDefinition titleColumn; titleColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
-                        line.ColumnDefinitions().Append(iconColumn); line.ColumnDefinitions().Append(titleColumn);
-                        Grid::SetColumn(visual.title, 1);
-                        Grid icon;
-                        icon.Children().Append(visual.symbol); icon.Children().Append(visual.image);
-                        visual.image.Stretch(Media::Stretch::Uniform);
-                        Automation::AutomationProperties::SetAccessibilityView(visual.image, Automation::Peers::AccessibilityView::Raw);
-                        Automation::AutomationProperties::SetAccessibilityView(visual.symbol, Automation::Peers::AccessibilityView::Raw);
-                        line.Children().Append(icon); line.Children().Append(visual.title);
-                        content.Children().Append(visual.section); content.Children().Append(line);
-                        container.HorizontalContentAlignment(HorizontalAlignment::Stretch);
-                        container.Content(content); container.Tag(winrt::box_value(id));
-                        visuals.push_back(visual);
-                        list.Items().Append(container);
-                    }
-                }
-                for (uint32_t i = 0; i < rows.Size(); ++i) {
-                    auto row = rows.GetAt(i).GetObject();
-                    list.Items().GetAt(i).as<ListViewItem>().IsEnabled(row.GetNamedBoolean(L"enabled", true));
-                    auto& visual = visuals[i];
-                    const auto section = row.GetNamedString(L"sectionLabel", L"");
-                    visual.section.Text(section);
-                    visual.section.Visibility(section.empty() ? Visibility::Collapsed : Visibility::Visible);
-                    const auto size = row.GetNamedNumber(L"imageSize", 16);
-                    visual.image.Width(size); visual.image.Height(size);
-                    visual.symbol.Width(size); visual.symbol.Height(size);
-                    const auto symbol = row.GetNamedString(L"symbol", L"page");
-                    visual.symbol.Symbol(symbol == L"search" ? Symbol::Find : symbol == L"history" ? Symbol::Clock : Symbol::Document);
-                    const bool hasImage = row.HasKey(L"image") && row.GetNamedValue(L"image").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null;
-                    if (hasImage) {
-                        auto data = row.GetNamedObject(L"image");
-                        auto pixels = data.GetNamedString(L"pixels");
-                        const int width = int(data.GetNamedNumber(L"width")), height = int(data.GetNamedNumber(L"height"));
-                        if (visual.pixels != pixels || visual.pixelWidth != width || visual.pixelHeight != height) {
-                            visual.image.Source(NativeJson::DecodeImage(data)); visual.pixels = pixels;
-                            visual.pixelWidth = width; visual.pixelHeight = height;
-                        }
-                    } else { visual.image.Source(nullptr); visual.pixels = L""; }
-                    visual.image.Visibility(hasImage ? Visibility::Visible : Visibility::Collapsed);
-                    visual.symbol.Visibility(hasImage ? Visibility::Collapsed : Visibility::Visible);
-                }
+                suggestions.SyncRows(snapshot.GetNamedArray(L"rows"));
+                visibility = L"";
             }
-            auto selected = snapshot.GetNamedString(L"selectedId", L"");
-            auto selectedIt = std::find(ids.begin(), ids.end(), selected);
-            list.SelectedIndex(selectedIt == ids.end() ? -1 : int(selectedIt - ids.begin()));
-            RefreshLabels();
+            suggestions.SyncSelection(snapshot.GetNamedString(L"selectedId", L""));
+            suggestions.RefreshLabels();
             mode.Sync(snapshot);
             actions.Sync(snapshot);
         } catch (...) { syncing = false; throw; }
         syncing = false;
         mode.ShowPendingReveal();
-        if (enterPending && (queryComplete || !ids.empty()) && acknowledgedEditId == editId) {
+        if (enterPending && (queryComplete || !suggestions.ids.empty()) && acknowledgedEditId == editId) {
             enterPending = false;
             Action(L"activate");
             auto action = pending; pending = L""; return action;
         }
         winrt::Windows::Data::Json::JsonArray visible;
-        for (uint32_t i = 0; i < ids.size(); ++i) {
-            auto row = list.ContainerFromIndex(i).try_as<FrameworkElement>();
-            if (!row || row.ActualHeight() <= 0) continue;
-            auto origin = row.TransformToVisual(list).TransformPoint({0,0});
-            if (origin.Y < list.ActualHeight() && origin.Y + row.ActualHeight() > 0)
-                visible.Append(JValue::CreateStringValue(ids[i]));
-        }
+        suggestions.CollectVisibleIds(visible);
         std::set<winrt::hstring> visibleActions;
         for (auto const& visual:actions.visuals) {
             if (!root.XamlRoot() || visual.button.ActualHeight()<=0) continue;
