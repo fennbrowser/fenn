@@ -1,0 +1,26 @@
+{
+  "recordedOn": "2026-09-13",
+  "windows": { "displayVersion": "25H2", "build": "26200.9445", "architecture": "x64" },
+  "firefox": {
+    "repository": "https://github.com/mozilla-firefox/firefox.git",
+    "commit": "0304f5a3e392699f440f0e15f9ea0bc2790309c6",
+    "version": "158.0a1",
+    "cloneDepth": 1,
+    "buildJobs": 8,
+    "debugSymbols": false
+  },
+  "mozillaBuild": "4.2.1",
+  "python": "3.12.10",
+  "visualStudio": "18.10.12201.205",
+  "msvc": "14.51.36231",
+  "firefoxClang": "22.1.8",
+  "firefoxWindowsSDK": "10.0.28000.0",
+  "winuiWindowsSDK": "10.0.26100.0",
+  "rust": "1.98.1",
+  "nodeFromMozillaBootstrap": "22.16.0",
+  "windowsAppSDK": "2.4.0",
+  "cppWinRT": "3.0.260818.1",
+  "searchfoxCLI": "0.20.4",
+  "treeherderCLI": "0.2.17",
+  "nativePackageLock": "prototypes/WinUIBaseline/packages.config"
+}

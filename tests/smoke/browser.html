@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Firefox baseline smoke check</title>
+<style>
+  body { margin: 48px; font: 20px system-ui; color: #152e3c; background: #eef4f8; }
+  main { max-width: 760px; padding: 32px; border: 2px solid #447a95; border-radius: 16px; background: white; }
+  .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .checks p { padding: 18px; background: #e0f2e8; border-radius: 8px; }
+</style>
+<main>
+  <h1>Firefox baseline</h1>
+  <p>Local page rendered using an isolated development profile.</p>
+  <div class="checks"><p>HTML and CSS loaded</p><p id="js">JavaScript did not run</p></div>
+</main>
+<script>document.getElementById('js').textContent = 'JavaScript executed';</script>
+</html>

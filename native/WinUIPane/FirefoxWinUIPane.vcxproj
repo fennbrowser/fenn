@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Globals">
+    <CppWinRTOptimized>true</CppWinRTOptimized>
+    <CppWinRTRootNamespaceAutoMerge>true</CppWinRTRootNamespaceAutoMerge>
+    <MinimalCoreWin>true</MinimalCoreWin>
+    <ProjectGuid>{B7634349-4DF5-4DA4-8D0D-1587E2706B44}</ProjectGuid>
+    <ProjectName>FirefoxWinUIPane</ProjectName>
+    <RootNamespace>FirefoxWinUIPane</RootNamespace>
+    <!--
+      $(TargetName) should be same as $(RootNamespace) so that the produced binaries (.exe/.pri/etc.)
+      have a name that matches the .winmd
+    -->
+    <TargetName>$(RootNamespace)</TargetName>
+    <TargetName Condition="'$(WinUIPaneTesting)'=='true'">FirefoxWinUIPaneTest</TargetName>
+    <DefaultLanguage>en-US</DefaultLanguage>
+    <MinimumVisualStudioVersion>16.0</MinimumVisualStudioVersion>
+    <AppContainerApplication>false</AppContainerApplication>
+    <AppxPackage>false</AppxPackage>
+    <WindowsPackageType>None</WindowsPackageType>
+    <ApplicationType>Windows Store</ApplicationType>
+    <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformMinVersion>10.0.17763.0</WindowsTargetPlatformMinVersion>
+    <UseWinUI>true</UseWinUI>
+    <WindowsAppSdkBootstrapInitialize>false</WindowsAppSdkBootstrapInitialize>
+    <WindowsAppSdkDeploymentManagerInitialize>false</WindowsAppSdkDeploymentManagerInitialize>
+    <WindowsAppSdkUndockedRegFreeWinRTInitialize>false</WindowsAppSdkUndockedRegFreeWinRTInitialize>
+    <WindowsAppSdkCompatibilityInitialize>false</WindowsAppSdkCompatibilityInitialize>
+    <WinUISDKReferences>false</WinUISDKReferences>
+    <EnableMsixTooling>false</EnableMsixTooling>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|ARM64">
+      <Configuration>Debug</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|ARM64">
+      <Configuration>Release</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &gt;= '18.0'">v145</PlatformToolset>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &lt; '18.0'">v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <DesktopCompatible>true</DesktopCompatible>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.CppWinRT.3.0.260818.1\build\native\Microsoft.Windows.CppWinRT.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.2.2.0\build\native\Microsoft.WindowsAppSDK.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.DWrite.2.1.0\build\Microsoft.WindowsAppSDK.DWrite.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Foundation.2.1.0\build\native\Microsoft.WindowsAppSDK.Foundation.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.InteractiveExperiences.2.0.15\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Runtime.2.2.0\build\native\Microsoft.WindowsAppSDK.Runtime.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.WinUI.2.2.1\build\native\Microsoft.WindowsAppSDK.WinUI.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros">
+    <OutDir>$(MSBuildThisFileDirectory)..\..\build\winui-pane\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(MSBuildThisFileDirectory)..\..\build\winui-pane\obj\$(Platform)\$(Configuration)\</IntDir>
+    <IntDir Condition="'$(WinUIPaneTesting)'=='true'">$(MSBuildThisFileDirectory)..\..\build\winui-pane\obj-test\$(Platform)\$(Configuration)\</IntDir>
+    <AppxPackageDir>$(MSBuildThisFileDirectory)..\..\artifacts\winui-packages\</AppxPackageDir>
+    <AppxPackageSigningEnabled>false</AppxPackageSigningEnabled>
+    <!-- Collect a runtime payload for the external Firefox host. Its adapter
+         owns activation; this DLL must not initialize WinUI under loader lock. -->
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <WindowsAppSDKSelfContainedAudit>false</WindowsAppSDKSelfContainedAudit>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <Link><AdditionalDependencies>gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <ClCompile>
+      <PreprocessorDefinitions Condition="'$(WinUIPaneTesting)'=='true'">WINUI_PANE_TESTING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PreprocessorDefinitions>DISABLE_XAML_GENERATED_MAIN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderOutputFile>$(IntDir)pch.pch</PrecompiledHeaderOutputFile>
+      <WarningLevel>Level4</WarningLevel>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard Condition="'$(VisualStudioVersion)' &gt;= '18.0'">stdcpp20</LanguageStandard>
+      <LanguageStandard Condition="'$(VisualStudioVersion)' &lt; '18.0'">stdcpp17</LanguageStandard>
+      <AdditionalOptions>%(AdditionalOptions) /bigobj /utf-8</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="pch.h" />
+    <ClCompile Include="pch.cpp">
+      <PrecompiledHeader>Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="Pane.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Web.WebView2.1.0.3719.77\build\native\Microsoft.Web.WebView2.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.CppWinRT.3.0.260818.1\build\native\Microsoft.Windows.CppWinRT.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.ImplementationLibrary.1.0.260126.7\build\native\Microsoft.Windows.ImplementationLibrary.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.2.2.0\build\native\Microsoft.WindowsAppSDK.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.DWrite.2.1.0\build\Microsoft.WindowsAppSDK.DWrite.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Foundation.2.1.0\build\native\Microsoft.WindowsAppSDK.Foundation.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.InteractiveExperiences.2.0.15\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Runtime.2.2.0\build\native\Microsoft.WindowsAppSDK.Runtime.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.WinUI.2.2.1\build\native\Microsoft.WindowsAppSDK.WinUI.targets" />
+  </ImportGroup>
+</Project>
+
+

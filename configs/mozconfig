@@ -1,0 +1,8 @@
+# Full native developer build; eight jobs leave memory headroom on the 32 GB host.
+mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/../../build/firefox
+mk_add_options MOZ_MAKE_FLAGS=-j8
+ac_add_options --enable-application=browser
+ac_add_options --enable-optimize
+# Keep this initial baseline small enough for the 100 GB Dev Drive.
+# Re-enable full debug symbols for native debugging when storage permits.
+ac_add_options --disable-debug-symbols

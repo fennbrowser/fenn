@@ -1,0 +1,14 @@
+/.cache/
+/artifacts/
+/upstream/
+/build/
+/.vs/
+**/bin/
+**/obj/
+**/Generated Files/
+**/__pycache__/
+*.user
+*.pfx
+*.p12
+/prototypes/WinUIBaseline/*_h.h
+/prototypes/Win32IslandHarness/*_h.h

@@ -1,0 +1,218 @@
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index b97e9940ea..0f32a4f45c 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3776,6 +3776,11 @@ pref("widget.support-xdg-config", true, locked);
+ // A preference that enables Content Sharing
+ pref("browser.contentsharing.enabled", false);
+ 
++#ifdef XP_WIN
++// Development-only inert native bridge. Restart with an isolated profile.
++pref("widget.windows.winui-prototype.enabled", false);
++#endif
++
+ // Preferences for the Firefox Referral program #2051647).
+ pref("browser.referrals.enabled", false);
+ // Set on first run after the referral code has been submitted via the
+diff --git a/widget/windows/moz.build b/widget/windows/moz.build
+index 035e7732dd..408cf51fbf 100644
+--- a/widget/windows/moz.build
++++ b/widget/windows/moz.build
+@@ -139,6 +139,7 @@ SOURCES += [
+     "WinCompositorWidget.cpp",
+     "WindowsSMTCProvider.cpp",
+     "WindowsUIUtils.cpp",
++    "WinUIPrototype.cpp",
+ ]
+ 
+ # Needs INITGUID and we don't allow INITGUID in unified sources since bug 970429.
+diff --git a/widget/windows/nsAppShell.cpp b/widget/windows/nsAppShell.cpp
+index f5d293a068..d4aff8c47e 100644
+--- a/widget/windows/nsAppShell.cpp
++++ b/widget/windows/nsAppShell.cpp
+@@ -3,6 +3,7 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include "nsAppShell.h"
++#include "WinUIPrototype.h"
+ 
+ #include <winternl.h>
+ 
+@@ -297,6 +298,7 @@ static Atomic<size_t, ReleaseAcquire> sOutstandingNativeEventCallbacks;
+ }
+ 
+ nsAppShell::~nsAppShell() {
++  mozilla::widget::TraceWinUIPrototype("app-shell-destroy");
+   hal::Shutdown();
+ 
+   if (mEventWnd) {
+@@ -313,6 +315,9 @@ nsAppShell::~nsAppShell() {
+ NS_IMETHODIMP
+ nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
+                     const char16_t* aData) {
++  if (!strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) {
++    mozilla::widget::TraceWinUIPrototype("app-shell-xpcom-shutdown");
++  }
+   if (XRE_IsParentProcess()) {
+     nsCOMPtr<nsIObserverService> obsServ(
+         mozilla::services::GetObserverService());
+diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
+index e05c38352b..3f3b5b9200 100644
+--- a/widget/windows/nsWindow.cpp
++++ b/widget/windows/nsWindow.cpp
+@@ -53,6 +53,7 @@
+  **************************************************************/
+ 
+ #include "nsWindow.h"
++#include "WinUIPrototype.h"
+ 
+ #include <appmodel.h>
+ #include <commctrl.h>
+@@ -1259,6 +1260,9 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+ 
+   RecreateDirectManipulationIfNeeded();
+ 
++  if (mWindowType == WindowType::TopLevel) {
++    mozilla::widget::ProbeWinUIPrototype(mWnd);
++  }
+   return NS_OK;
+ }
+ 
+@@ -6918,6 +6922,9 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+ 
+ // WM_DESTROY event handler
+ void nsWindow::OnDestroy() {
++  if (mWindowType == WindowType::TopLevel) {
++    mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
++  }
+   mOnDestroyCalled = true;
+ 
+   // If this is a toplevel window, notify the taskbar concealer to clean up any
+diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
+new file mode 100644
+index 0000000000..c6e02a8696
+--- /dev/null
++++ b/widget/windows/WinUIPrototype.cpp
+@@ -0,0 +1,72 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#include "WinUIPrototype.h"
++#include "WinUIBridgeApi.h"
++#include <objbase.h>
++#include <iterator>
++#include "mozilla/Logging.h"
++#include "mozilla/Preferences.h"
++#include "nsThreadUtils.h"
++#include "nsXULAppAPI.h"
++
++namespace mozilla::widget {
++static LazyLogModule sWinUIPrototypeLog("WinUIPrototype");
++static bool sTraceEnabled = false;  // Main-thread only; inert after enablement.
++
++void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
++  if (!XRE_IsParentProcess() || !NS_IsMainThread() || !sTraceEnabled) return;
++  APTTYPE apartment = APTTYPE_CURRENT;
++  APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
++  const HRESULT hr = CoGetApartmentType(&apartment, &qualifier);
++  DWORD ownerProcess = 0;
++  DWORD ownerThread = aWindow ? GetWindowThreadProcessId(aWindow, &ownerProcess) : 0;
++  MOZ_LOG(sWinUIPrototypeLog, LogLevel::Info,
++          ("phase=%s pid=%lu tid=%lu hwnd=%p ownerPid=%lu ownerTid=%lu "
++           "apartmentHr=0x%08lx apartment=%d qualifier=%d "
++           "windowing=%p frameworkUdk=%p xaml=%p", aPhase,
++           GetCurrentProcessId(), GetCurrentThreadId(), aWindow, ownerProcess,
++           ownerThread, static_cast<unsigned long>(hr), static_cast<int>(apartment),
++           static_cast<int>(qualifier), GetModuleHandleW(L"Microsoft.UI.Windowing.dll"),
++           GetModuleHandleW(L"Microsoft.Internal.FrameworkUdk.dll"),
++           GetModuleHandleW(L"Microsoft.UI.Xaml.dll")));
++}
++
++void ProbeWinUIPrototype(HWND aWindow) {
++  if (!XRE_IsParentProcess() || !NS_IsMainThread() ||
++      !Preferences::GetBool("widget.windows.winui-prototype.enabled", false)) return;
++  sTraceEnabled = true;
++  TraceWinUIPrototype("window-created", aWindow);
++  // Fixed executable-relative location. Never use cwd, PATH, or a preference
++  // supplied DLL path. The bridge has only system dependencies and a static CRT.
++  wchar_t path[32768];
++  const DWORD length = GetModuleFileNameW(nullptr, path, std::size(path));
++  if (!length || length >= std::size(path)) return;
++  wchar_t* separator = wcsrchr(path, L'\\');
++  constexpr wchar_t suffix[] = L"native\\FirefoxWinUIBridge.dll";
++  if (!separator || size_t(separator + 1 - path) + std::size(suffix) > std::size(path)) return;
++  wcscpy(separator + 1, suffix);
++  HMODULE module = LoadLibraryExW(path, nullptr,
++      LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
++  if (!module) {
++    MOZ_LOG(sWinUIPrototypeLog, LogLevel::Warning,
++            ("bridge=unavailable win32Error=%lu; ordinary Firefox continues", GetLastError()));
++    return;
++  }
++  const auto probe = reinterpret_cast<WinUIBridgeProbeFn>(
++      GetProcAddress(module, "WinUIBridgeProbe"));
++  WinUIBridgeInfo info{};
++  HRESULT hr = probe ? probe(aWindow, WINUI_BRIDGE_ABI_VERSION, sizeof(info), &info) : E_NOINTERFACE;
++  const bool valid = SUCCEEDED(hr) && info.size == sizeof(info) &&
++      info.abiVersion == WINUI_BRIDGE_ABI_VERSION &&
++      info.processId == GetCurrentProcessId() && info.threadId == GetCurrentThreadId();
++  MOZ_LOG(sWinUIPrototypeLog, valid ? LogLevel::Info : LogLevel::Warning,
++          ("bridge=%s hr=0x%08lx abi=%u pid=%u tid=%u apartment=%d qualifier=%d",
++           valid ? "ok" : "incompatible", static_cast<unsigned long>(hr),
++           info.abiVersion, info.processId, info.threadId, info.apartmentType,
++           info.apartmentQualifier));
++  // ABI v1 retains nothing and starts no work, so immediate unloading is safe.
++  FreeLibrary(module);
++  TraceWinUIPrototype("probe-complete", aWindow);
++}
++}  // namespace mozilla::widget
+diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
+new file mode 100644
+index 0000000000..418c5d791d
+--- /dev/null
++++ b/widget/windows/WinUIPrototype.h
+@@ -0,0 +1,11 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#ifndef widget_windows_WinUIPrototype_h
++#define widget_windows_WinUIPrototype_h
++#include <windows.h>
++namespace mozilla::widget {
++void ProbeWinUIPrototype(HWND aWindow);
++void TraceWinUIPrototype(const char* aPhase, HWND aWindow = nullptr);
++}  // namespace mozilla::widget
++#endif
+diff --git a/widget/windows/WinUIBridgeApi.h b/widget/windows/WinUIBridgeApi.h
+new file mode 100644
+index 0000000000..27535c6cff
+--- /dev/null
++++ b/widget/windows/WinUIBridgeApi.h
+@@ -0,0 +1,27 @@
++#pragma once
++#include <windows.h>
++#include <stdint.h>
++
++// ABI v1: caller supplies a live HWND on its owning thread in this process.
++// No ownership transfer, allocation, callback, retained HWND or XAML activation.
++#define WINUI_BRIDGE_ABI_VERSION 1u
++typedef struct WinUIBridgeInfo {
++  uint32_t size;
++  uint32_t abiVersion;
++  uint32_t processId;
++  uint32_t threadId;
++  int32_t apartmentType;
++  int32_t apartmentQualifier;
++} WinUIBridgeInfo;
++
++typedef HRESULT(WINAPI* WinUIBridgeProbeFn)(HWND, uint32_t, uint32_t,
++                                         WinUIBridgeInfo*);
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++HRESULT WINAPI WinUIBridgeProbe(HWND window, uint32_t requestedVersion,
++                               uint32_t infoSize, WinUIBridgeInfo* info);
++#ifdef __cplusplus
++}
++#endif
