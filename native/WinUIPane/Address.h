@@ -4,6 +4,7 @@
 #include <winrt/Windows.Storage.Streams.h>
 #include "JsonValidation.h"
 #include "SearchMode.h"
+#include "GlobalActions.h"
 
 struct NativeAddress {
     using JObject = winrt::Windows::Data::Json::JsonObject;
@@ -25,15 +26,7 @@ struct NativeAddress {
         int pixelWidth{}, pixelHeight{};
     };
     std::vector<RowVisual> visuals;
-    Microsoft::UI::Xaml::Controls::StackPanel globalPanel;
-    struct GlobalVisual {
-        Microsoft::UI::Xaml::Controls::Button button;
-        Microsoft::UI::Xaml::Controls::Image image;
-        Microsoft::UI::Xaml::Controls::SymbolIcon symbol;
-        Microsoft::UI::Xaml::Controls::TextBlock text, hint;
-        winrt::hstring id, resultId, pixels;
-    };
-    std::vector<GlobalVisual> globalVisuals;
+    GlobalActionsPanel actions;
     winrt::hstring session, pending, visibility, observedText, submitIntent;
     double revision{}, sequence{-1}, editId{}, selectionId{}, acknowledgedEditId{};
     bool syncing{}, composing{}, enterPending{}, observedComposing{}, queryComplete{}, focusWithin{};
@@ -43,67 +36,21 @@ struct NativeAddress {
     static void ValidateModeImage(JObject const& item, size_t& total) {
         NativeJson::ValidateImage(item, total, NativeJson::kIconImageLimits);
     }
-    static Microsoft::UI::Xaml::Media::ImageSource ModeImage(JObject const& item) {
-        return NativeJson::DecodeImage(item.GetNamedObject(L"image"));
-    }
-    void SyncGlobal(JObject const& snapshot) {
-        using namespace Microsoft::UI::Xaml;
-        using namespace Microsoft::UI::Xaml::Controls;
-        auto actions=snapshot.GetNamedArray(L"globalActions", winrt::Windows::Data::Json::JsonArray());
-        bool same=actions.Size()==globalVisuals.size();
-        for (uint32_t i=0; same && i<actions.Size(); ++i) same=actions.GetAt(i).GetObject().GetNamedString(L"id")==globalVisuals[i].id;
-        if (!same) {globalVisuals.clear(); globalPanel.Children().Clear();}
-        for (uint32_t i=0; i<actions.Size(); ++i) {
-            auto item=actions.GetAt(i).GetObject();
-            if (!same) {
-                GlobalVisual visual; visual.id=item.GetNamedString(L"id"); visual.resultId=item.GetNamedString(L"resultId");
-                StackPanel group; group.Spacing(2);
-                StackPanel content; content.Orientation(Orientation::Horizontal); content.Spacing(6);
-                Grid icon; icon.Children().Append(visual.symbol); icon.Children().Append(visual.image);
-                visual.image.Width(16); visual.image.Height(16); visual.image.Stretch(Media::Stretch::Uniform);
-                visual.symbol.Symbol(Symbol::Find); visual.symbol.Width(16); visual.symbol.Height(16);
-                Automation::AutomationProperties::SetAccessibilityView(visual.image, Automation::Peers::AccessibilityView::Raw);
-                Automation::AutomationProperties::SetAccessibilityView(visual.symbol, Automation::Peers::AccessibilityView::Raw);
-                visual.text.TextWrapping(TextWrapping::Wrap); visual.text.MaxWidth(180);
-                content.Children().Append(icon); content.Children().Append(visual.text);
-                visual.button.Content(content); visual.button.HorizontalAlignment(HorizontalAlignment::Left);
-                Automation::AutomationProperties::SetAutomationId(visual.button, visual.id);
-                auto id=visual.id, resultId=visual.resultId;
-                visual.button.Click([this, alive=std::weak_ptr<int>(lifetime), id, resultId](auto const&, auto const&) {
-                    if (alive.expired() || syncing || composing) return;
-                    Edit();
-                    if (acknowledgedEditId!=editId || (!pending.empty() && JObject::Parse(pending).GetNamedString(L"kind")!=L"text-selection")) return;
-                    auto value=Message(L"global-action"); value.SetNamedValue(L"id",JValue::CreateStringValue(resultId));
-                    value.SetNamedValue(L"actionId",JValue::CreateStringValue(id));
-                    JObject intent;
-                    intent.SetNamedValue(L"ctrlKey",JValue::CreateBooleanValue((GetKeyState(VK_CONTROL)&0x8000)!=0));
-                    intent.SetNamedValue(L"shiftKey",JValue::CreateBooleanValue((GetKeyState(VK_SHIFT)&0x8000)!=0));
-                    intent.SetNamedValue(L"altKey",JValue::CreateBooleanValue((GetKeyState(VK_MENU)&0x8000)!=0));
-                    value.SetNamedValue(L"intent",intent); pending=value.Stringify(); enterPending=false;
-                });
-                visual.button.PreviewKeyDown([this, alive=std::weak_ptr<int>(lifetime)](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
-                    if (alive.expired()) return;
-                    using winrt::Windows::System::VirtualKey;
-                    if (e.Key()==VirtualKey::Escape) {Action(L"dismiss"); field.Focus(FocusState::Keyboard); e.Handled(true);}
-                    if (e.Key()==VirtualKey::Tab && (GetKeyState(VK_SHIFT)&0x8000) &&
-                        Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(root.XamlRoot()) == globalVisuals.front().button) {
-                        field.Focus(FocusState::Keyboard); e.Handled(true);
-                    }
-                });
-                group.Children().Append(visual.hint); group.Children().Append(visual.button);
-                globalPanel.Children().Append(group); globalVisuals.push_back(visual);
-            }
-            auto& visual=globalVisuals[i];
-            visual.text.Text(item.GetNamedString(L"title"));
-            Automation::AutomationProperties::SetName(visual.button,visual.text.Text());
-            auto hint=item.GetNamedString(L"hint",L""); visual.hint.Text(hint);
-            visual.hint.Visibility(hint.empty()?Visibility::Collapsed:Visibility::Visible);
-            auto pixels=item.GetNamedValue(L"image",JValue::CreateNullValue()).Stringify();
-            if (pixels!=visual.pixels) {visual.image.Source(pixels==L"null"?nullptr:ModeImage(item)); visual.pixels=pixels;}
-            visual.image.Visibility(pixels==L"null"?Visibility::Collapsed:Visibility::Visible);
-            visual.symbol.Visibility(pixels==L"null"?Visibility::Visible:Visibility::Collapsed);
-        }
-        globalPanel.Visibility(actions.Size()?Visibility::Visible:Visibility::Collapsed);
+    // Activating a global action shares the same pending-action bus as an
+    // ordinary edit/select, so it must observe the same edit/session
+    // coordination as Action() does -- kept here rather than in
+    // GlobalActionsPanel, which has no access to that state.
+    void TryGlobalAction(winrt::hstring const& id, winrt::hstring const& resultId) {
+        if (syncing || composing) return;
+        Edit();
+        if (acknowledgedEditId!=editId || (!pending.empty() && JObject::Parse(pending).GetNamedString(L"kind")!=L"text-selection")) return;
+        auto value=Message(L"global-action"); value.SetNamedValue(L"id",JValue::CreateStringValue(resultId));
+        value.SetNamedValue(L"actionId",JValue::CreateStringValue(id));
+        JObject intent;
+        intent.SetNamedValue(L"ctrlKey",JValue::CreateBooleanValue((GetKeyState(VK_CONTROL)&0x8000)!=0));
+        intent.SetNamedValue(L"shiftKey",JValue::CreateBooleanValue((GetKeyState(VK_SHIFT)&0x8000)!=0));
+        intent.SetNamedValue(L"altKey",JValue::CreateBooleanValue((GetKeyState(VK_MENU)&0x8000)!=0));
+        value.SetNamedValue(L"intent",intent); pending=value.Stringify(); enterPending=false;
     }
     JObject Message(wchar_t const* kind) {
         JObject value;
@@ -295,15 +242,16 @@ struct NativeAddress {
             }
         });
         header.Children().Append(mode.button); header.Children().Append(field); header.Children().Append(mode.exit);
-        globalPanel.Spacing(4); globalPanel.Visibility(Visibility::Collapsed);
-        Automation::AutomationProperties::SetName(globalPanel,L"Search actions");
+        actions.activate = [this](winrt::hstring const& id, winrt::hstring const& resultId) { TryGlobalAction(id, resultId); };
+        actions.dismiss = [this] { Action(L"dismiss"); field.Focus(FocusState::Keyboard); };
+        actions.focusField = [this] { field.Focus(FocusState::Keyboard); };
         field.PreviewKeyDown([this, alive=std::weak_ptr<int>(lifetime)](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
             if (!alive.expired() && !composing && e.Key()==winrt::Windows::System::VirtualKey::Tab &&
-                !(GetKeyState(VK_SHIFT)&0x8000) && !globalVisuals.empty()) {
-                globalVisuals.front().button.Focus(FocusState::Keyboard); e.Handled(true);
+                !(GetKeyState(VK_SHIFT)&0x8000) && !actions.visuals.empty()) {
+                actions.visuals.front().button.Focus(FocusState::Keyboard); e.Handled(true);
             }
         });
-        root.Children().Append(header); root.Children().Append(list); root.Children().Append(globalPanel); root.Children().Append(fallback);
+        root.Children().Append(header); root.Children().Append(list); root.Children().Append(actions.panel); root.Children().Append(fallback);
     }
     winrt::hstring Sync(JObject const& snapshot) {
         using namespace Microsoft::UI::Xaml;
@@ -311,7 +259,7 @@ struct NativeAddress {
         if (snapshot.GetNamedNumber(L"version") != 1) winrt::throw_hresult(E_INVALIDARG);
         if (!snapshot.GetNamedBoolean(L"enabled", false)) {
             mode.Disable();
-            globalVisuals.clear(); globalPanel.Children().Clear();
+            actions.Clear();
             syncing = true; root.Visibility(Visibility::Collapsed); list.Items().Clear();
             ids.clear(); visuals.clear(); pending = L""; session = L""; enterPending = false; submitIntent = L""; queryComplete = false; acknowledgedEditId = 0; syncing = false; return L"";
         }
@@ -457,7 +405,7 @@ struct NativeAddress {
             list.SelectedIndex(selectedIt == ids.end() ? -1 : int(selectedIt - ids.begin()));
             RefreshLabels();
             mode.Sync(snapshot);
-            SyncGlobal(snapshot);
+            actions.Sync(snapshot);
         } catch (...) { syncing = false; throw; }
         syncing = false;
         mode.ShowPendingReveal();
@@ -475,7 +423,7 @@ struct NativeAddress {
                 visible.Append(JValue::CreateStringValue(ids[i]));
         }
         std::set<winrt::hstring> visibleActions;
-        for (auto const& visual:globalVisuals) {
+        for (auto const& visual:actions.visuals) {
             if (!root.XamlRoot() || visual.button.ActualHeight()<=0) continue;
             auto origin=visual.button.TransformToVisual(nullptr).TransformPoint({0,0}); auto size=root.XamlRoot().Size();
             if (origin.Y<size.Height && origin.Y+visual.button.ActualHeight()>0 && origin.X<size.Width &&
