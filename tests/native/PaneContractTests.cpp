@@ -581,14 +581,42 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         "tabs stop shrinking at WinUI's 100-unit minimum");
     sync(); settleWidths();
     Require(std::abs(first.ActualWidth() - spaciousWidth) < 1, "tabs grow after other tabs close");
-    auto richer = LR"({"version":2,"publishOnly":true,"strip":{"version":1,"revision":1,"rtl":false,"groupsLabel":"Tab groups","groups":[{"id":7,"name":"Work","label":"Work — Expanded","collapsed":false}],"rows":[{"id":11,"detail":"Work · Split 1 left","flags":1},{"id":22,"detail":"Work · Split 1 right","flags":6}]}})";
+    auto richer = LR"({"version":2,"publishOnly":true,"strip":{"version":1,"revision":1,"rtl":false,"groupsLabel":"Tab groups","groups":[{"id":7,"name":"Work","label":"Work — Expanded","collapsed":false}],"rows":[{"id":11,"detail":"Work · Split 1 left","flags":1,"image":{"width":2,"height":2,"pixels":"0000ffff0000ffff0000ffff0000ffff"}},{"id":22,"detail":"Work · Split 1 right","flags":6,"image":null}]}})";
     MenuExchange(api, host, richer);
     sync();
     auto header = second.Header().as<Controls::Grid>();
-    Require(header.Children().GetAt(1).as<Controls::ProgressRing>().IsActive(), "Firefox loading state drives native progress");
-    Require(header.Children().GetAt(3).as<Controls::SymbolIcon>().Symbol() == Controls::Symbol::Mute, "Firefox mute state drives native icon");
-    Require(first.Header().as<Controls::Grid>().Children().GetAt(0).Visibility() == Visibility::Visible, "pinned indicator visible");
+    Require(header.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(1).as<Controls::ProgressRing>().IsActive(), "Firefox loading state drives native progress");
+    Require(header.Children().GetAt(3).as<Controls::Viewbox>().Child().as<Controls::SymbolIcon>().Symbol() == Controls::Symbol::Mute, "Firefox mute state drives native icon");
+    Require(first.Header().as<Controls::Grid>().Children().GetAt(1).Visibility() == Visibility::Visible, "pinned indicator visible");
     Require(header.Children().GetAt(2).as<Controls::StackPanel>().Children().GetAt(1).as<Controls::TextBlock>().Text() == L"Work · Split 1 right", "linked group/split detail supplied by Firefox");
+    auto firstFavicon = first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>();
+    Require(firstFavicon.Visibility() == Visibility::Visible &&
+        firstFavicon.Children().GetAt(0).as<Controls::Image>().Visibility() == Visibility::Visible &&
+        bool(firstFavicon.Children().GetAt(0).as<Controls::Image>().Source()),
+        "decoded favicon is shown when not busy");
+    // id 22 is busy (flags 6) with no favicon: the spinner shares the
+    // favicon's slot, so the slot stays visible for the spinner even though
+    // there is no icon to show yet.
+    auto secondFavicon = header.Children().GetAt(0).as<Controls::Grid>();
+    Require(secondFavicon.Visibility() == Visibility::Visible &&
+        secondFavicon.Children().GetAt(0).as<Controls::Image>().Visibility() == Visibility::Collapsed &&
+        !secondFavicon.Children().GetAt(0).as<Controls::Image>().Source(),
+        "a busy tab with no favicon shows the spinner in the favicon's slot");
+    auto notBusyNoIcon = winrt::Windows::Data::Json::JsonObject::Parse(richer);
+    auto notBusyNoIconModel = notBusyNoIcon.GetNamedObject(L"strip");
+    notBusyNoIconModel.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(2));
+    notBusyNoIconModel.GetNamedArray(L"rows").GetObjectAt(1).SetNamedValue(L"flags", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(4));
+    MenuExchange(api, host, notBusyNoIcon.Stringify().c_str());
+    sync();
+    Require(secondFavicon.Visibility() == Visibility::Collapsed, "once loading ends, a tab with no favicon shows no icon at all");
+    auto oversizedImage = winrt::Windows::Data::Json::JsonObject::Parse(richer);
+    auto oversizedModel = oversizedImage.GetNamedObject(L"strip");
+    oversizedModel.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(3));
+    oversizedModel.GetNamedArray(L"rows").GetObjectAt(0).GetNamedObject(L"image")
+        .SetNamedValue(L"width", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(1000));
+    std::vector<wchar_t> imageRejectOutput(262144);
+    Require(FAILED(api.syncTabMenu(host, oversizedImage.Stringify().c_str(), imageRejectOutput.data(), uint32_t(imageRejectOutput.size()))),
+        "oversized favicon dimensions are rejected before native mutation");
     auto groups = view.TabStripHeader().as<Controls::DropDownButton>();
     Require(groups.Visibility() == Visibility::Visible, "group controls expose collapsed groups independently of tabs");
     auto groupMenu = groups.Flyout().as<Controls::MenuFlyout>();
@@ -608,7 +636,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     for (int i = 0; i < 50; ++i) { Pump(); Sleep(10); }
     auto bad = winrt::Windows::Data::Json::JsonObject::Parse(richer);
     auto model = bad.GetNamedObject(L"strip");
-    model.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(2));
+    model.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(3));
     model.GetNamedArray(L"rows").Append(model.GetNamedArray(L"rows").GetAt(0));
     std::vector<wchar_t> invalidOutput(262144);
     Require(FAILED(api.syncTabMenu(host, bad.Stringify().c_str(), invalidOutput.data(), uint32_t(invalidOutput.size()))), "duplicate presentation IDs rejected before native mutation");

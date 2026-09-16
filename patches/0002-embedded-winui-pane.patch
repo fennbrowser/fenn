@@ -3219,10 +3219,10 @@ index 0000000000..a07d26b2f5
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..7ece29a796
+index 0000000000..a9fc6c5e09
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,600 @@
+@@ -0,0 +1,686 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3236,6 +3236,14 @@ index 0000000000..7ece29a796
 +  tabIds: new WeakMap(),
 +  processingAction: false,
 +  nextTabId: 1,
++  // Decoded favicons for the native tab strip, keyed by icon URL so tabs
++  // sharing a site (or an unchanged favicon) skip re-decoding. Gecko owns
++  // all image loading/decoding; native code only ever receives raw pixels.
++  faviconCache: new Map(),
++  faviconLoads: new Set(),
++  // Last successfully decoded icon per tab, kept across a favicon URL change
++  // so the strip doesn't flash to no-icon while the new URL decodes.
++  faviconLastKnownByTab: new WeakMap(),
 +  tabEvents: [
 +    "TabOpen",
 +    "TabClose",
@@ -3555,9 +3563,66 @@ index 0000000000..7ece29a796
 +    if (snapshot) window.windowUtils.syncWinUITabMenu(JSON.stringify(snapshot));
 +  },
 +
++  // Bounds distinct favicon URLs retained across a browsing session; oldest
++  // entries are evicted first, matching this project's other bounded caches.
++  kMaxFaviconCache: 1000,
++  // Fire-and-forget decode, matching WinUIUrlbarSession's loadNativeImage:
++  // Gecko decodes/resamples, native code only ever sees bounded raw pixels.
++  // Failures are cached too so a broken icon isn't retried every frame.
++  loadTabFavicon(url) {
++    if (this.faviconCache.has(url) || this.faviconLoads.has(url)) return;
++    this.faviconLoads.add(url);
++    const image = new window.Image();
++    (async () => {
++      try {
++        image.src = url;
++        await image.decode();
++        if (!image.naturalWidth || !image.naturalHeight) {
++          this.faviconCache.set(url, null);
++          return;
++        }
++        // Decode at 2x the 16px on-screen size, matching WinUIUrlbarSession's
++        // retina headroom convention, so HiDPI scaling upsamples a real
++        // source instead of blowing up a native-resolution 16x16 bitmap.
++        const size = 32;
++        const scale = Math.min(size / image.naturalWidth, size / image.naturalHeight, 1);
++        const width = Math.max(1, Math.round(image.naturalWidth * scale));
++        const height = Math.max(1, Math.round(image.naturalHeight * scale));
++        const canvas = document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
++        canvas.width = width;
++        canvas.height = height;
++        const ctx = canvas.getContext("2d");
++        ctx.imageSmoothingQuality = "high";
++        ctx.drawImage(image, 0, 0, width, height);
++        const rgba = ctx.getImageData(0, 0, width, height).data;
++        let pixels = "";
++        for (let i = 0; i < rgba.length; i += 4) {
++          const a = rgba[i + 3];
++          for (const value of [Math.round(rgba[i + 2] * a / 255),
++            Math.round(rgba[i + 1] * a / 255), Math.round(rgba[i] * a / 255), a])
++            pixels += value.toString(16).padStart(2, "0");
++        }
++        this.faviconCache.set(url, { width, height, pixels });
++      } catch (_) {
++        this.faviconCache.set(url, null);
++      } finally {
++        this.faviconLoads.delete(url);
++        image.src = "";
++        while (this.faviconCache.size > this.kMaxFaviconCache)
++          this.faviconCache.delete(this.faviconCache.keys().next().value);
++      }
++    })();
++  },
++
 +  describeStrip() {
 +    const l10n = this.tabMenuL10n;
 +    const label = (id, args) => l10n.formatValueSync(id, args);
++    // Bounds the raw-pixel bytes one strip snapshot can spend; beyond this,
++    // remaining rows fall back to the native placeholder glyph rather than
++    // risking WinUITabStripSession's snapshot-size cap, whose failure mode
++    // tears down the whole pane (see browser-winui-pane.js update()).
++    let imagePixels = 0;
++    const maxImagePixels = 262144;
 +    const groups = gBrowser.tabGroups.filter(group => group.isConnected).map(target => {
 +      const name = target.label || label("tab-group-name-default");
 +      return { target, name: name.slice(0, 1024), collapsed: target.collapsed,
@@ -3579,7 +3644,28 @@ index 0000000000..7ece29a796
 +        (flags & 2) && label("winui-tab-strip-loading"),
 +        tab.muted ? label("winui-tab-strip-muted") : (flags & 8) && label("winui-tab-strip-playing")]
 +        .filter(Boolean).join(" · ");
-+      return { id: this.tabIds.get(tab), detail:detail.slice(0, 2048), status:status.slice(0, 2048), flags };
++      const iconUrl = gBrowser.getIcon(tab) || "";
++      let image = null;
++      if (iconUrl) {
++        if (this.faviconCache.has(iconUrl)) {
++          image = this.faviconCache.get(iconUrl);
++        } else {
++          // A URL not yet decoded (including a favicon that keeps changing
++          // URL to animate) keeps showing this tab's last decoded icon
++          // instead of momentarily showing none -- that transient gap is
++          // what made the title column reflow/jitter next to it.
++          this.loadTabFavicon(iconUrl);
++          image = this.faviconLastKnownByTab.get(tab) || null;
++        }
++        if (image) this.faviconLastKnownByTab.set(tab, image);
++      } else {
++        this.faviconLastKnownByTab.delete(tab);
++      }
++      if (image) {
++        if (imagePixels + image.width * image.height > maxImagePixels) image = null;
++        else imagePixels += image.width * image.height;
++      }
++      return { id: this.tabIds.get(tab), detail:detail.slice(0, 2048), status:status.slice(0, 2048), flags, image };
 +    });
 +    return { rtl: document.documentElement.matches(":dir(rtl)"),
 +      groupsLabel:label("tab-groups-list-title"), groups, rows };

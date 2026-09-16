@@ -85,16 +85,22 @@ namespace NativeJson {
             throw winrt::hresult_invalid_argument();
     }
 
-    // Decodes a "width"/"height"/"pixels" object already checked by ValidateImage.
-    inline Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap DecodeImage(JsonObject const& data) {
-        Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap bitmap(
-            int(data.GetNamedNumber(L"width")), int(data.GetNamedNumber(L"height")));
+    // Decodes dimensions/hex-pixels already checked by ValidateImage. Split out
+    // from the JsonObject overload below so callers that cache the decoded
+    // fields across snapshots (rather than the original JSON) can decode
+    // without reconstructing a throwaway JsonObject.
+    inline Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap DecodeImage(int width, int height, winrt::hstring const& pixels) {
+        Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap bitmap(width, height);
         auto bytes = bitmap.PixelBuffer().data();
-        auto pixels = data.GetNamedString(L"pixels");
         auto nibble = [](wchar_t c) { return c <= L'9' ? c - L'0' : c - L'a' + 10; };
         for (uint32_t j = 0; j < pixels.size() / 2; ++j)
             bytes[j] = uint8_t(nibble(pixels[j * 2]) * 16 + nibble(pixels[j * 2 + 1]));
         bitmap.Invalidate();
         return bitmap;
+    }
+
+    // Decodes a "width"/"height"/"pixels" object already checked by ValidateImage.
+    inline Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap DecodeImage(JsonObject const& data) {
+        return DecodeImage(int(data.GetNamedNumber(L"width")), int(data.GetNamedNumber(L"height")), data.GetNamedString(L"pixels"));
     }
 }

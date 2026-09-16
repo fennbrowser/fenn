@@ -13,7 +13,12 @@ struct NativeTabStrip {
     std::function<void(uint32_t)> select, close;
     std::function<void()> add;
     std::map<uint32_t, Controls::TabViewItem> rows;
-    struct Presentation { hstring detail; uint32_t flags{}; hstring status; };
+    // Favicons are the small end of what NativeAddress's row images (104,
+    // 65536) allow: one glyph-sized icon per tab, but potentially many more
+    // tabs per snapshot than address rows, so the per-snapshot total is its
+    // own budget rather than reusing kIconImageLimits or NativeAddress's.
+    static constexpr NativeJson::ImageLimits kTabImageLimits{32, 262144};
+    struct Presentation { hstring detail; uint32_t flags{}; hstring status; hstring imagePixels; uint32_t imageWidth{}, imageHeight{}; };
     std::map<uint32_t, Presentation> presentation;
     TabGroupsButton groupsButton;
     uint32_t presentationRevision{};
@@ -55,6 +60,7 @@ struct NativeTabStrip {
         if (label.empty() || label.size() > NativeJson::kMaxShortLabel ||
             entries.Size() > NativeJson::kMaxTabs || groups.Size() > NativeJson::kMaxTabs) throw hresult_invalid_argument();
         std::map<uint32_t, Presentation> next;
+        size_t totalImagePixels = 0;
         for (auto value : entries) {
             auto entry = value.GetObject();
             auto id = NativeJson::RequireId(entry, L"id");
@@ -62,8 +68,17 @@ struct NativeTabStrip {
             auto detail = entry.GetNamedString(L"detail");
             auto status = entry.GetNamedString(L"status", L"");
             if (!std::isfinite(flags) || flags < 0 || flags > 15 || std::floor(flags) != flags ||
-                detail.size() > NativeJson::kMaxDetailText || status.size() > NativeJson::kMaxDetailText ||
-                !next.emplace(id, Presentation{detail, uint32_t(flags), status}).second) throw hresult_invalid_argument();
+                detail.size() > NativeJson::kMaxDetailText || status.size() > NativeJson::kMaxDetailText) throw hresult_invalid_argument();
+            NativeJson::ValidateImage(entry, totalImagePixels, kTabImageLimits);
+            hstring imagePixels; uint32_t imageWidth{}, imageHeight{};
+            if (entry.HasKey(L"image") && entry.GetNamedValue(L"image").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null) {
+                auto image = entry.GetNamedObject(L"image");
+                imagePixels = image.GetNamedString(L"pixels");
+                imageWidth = uint32_t(image.GetNamedNumber(L"width"));
+                imageHeight = uint32_t(image.GetNamedNumber(L"height"));
+            }
+            if (!next.emplace(id, Presentation{detail, uint32_t(flags), status, imagePixels, imageWidth, imageHeight}).second)
+                throw hresult_invalid_argument();
         }
         std::set<uint32_t> ids;
         for (auto value : groups) {
@@ -83,21 +98,49 @@ struct NativeTabStrip {
 
     void UpdateHeader(Controls::TabViewItem const& row, uint32_t id, hstring const& title) {
         auto header = row.Header().as<Controls::Grid>();
-        auto pin = header.Children().GetAt(0).as<Controls::SymbolIcon>();
-        auto busy = header.Children().GetAt(1).as<Controls::ProgressRing>();
+        // The loading spinner shares the favicon's slot -- Firefox's own tabs
+        // work the same way -- rather than reserving its own column: while
+        // busy, the spinner replaces the favicon in place; once loading ends,
+        // the favicon (if any) reclaims that spot.
+        auto favicon = header.Children().GetAt(0).as<Controls::Grid>();
+        auto faviconImage = favicon.Children().GetAt(0).as<Controls::Image>();
+        auto busy = favicon.Children().GetAt(1).as<Controls::ProgressRing>();
+        // Pin/audio are SymbolIcon glyphs at a fixed intrinsic size that
+        // Width/Height alone would only clip, not scale; a Viewbox scales
+        // the glyph down to fit the 16x16 box instead.
+        auto pinBox = header.Children().GetAt(1).as<Controls::Viewbox>();
+        auto pin = pinBox.Child().as<Controls::SymbolIcon>();
         auto text = header.Children().GetAt(2).as<Controls::StackPanel>();
         auto name = text.Children().GetAt(0).as<Controls::TextBlock>();
         auto detail = text.Children().GetAt(1).as<Controls::TextBlock>();
-        auto audio = header.Children().GetAt(3).as<Controls::SymbolIcon>();
+        auto audioBox = header.Children().GetAt(3).as<Controls::Viewbox>();
+        auto audio = audioBox.Child().as<Controls::SymbolIcon>();
         auto meta = presentation.count(id) ? presentation.at(id) : Presentation{};
+        // Compare against the value last applied to this Image, not against
+        // any prior Presentation -- the map is replaced wholesale on every
+        // Publish(), so it cannot itself remember what is currently shown.
+        // No favicon (not yet resolved, or the page genuinely has none) shows
+        // no icon at all -- there is no placeholder glyph to fall back to.
+        const bool hasImage = !meta.imagePixels.empty();
+        const bool isBusy = (meta.flags & 2) != 0;
+        auto shown = winrt::unbox_value_or<hstring>(faviconImage.Tag(), L"");
+        if (hasImage && shown != meta.imagePixels) {
+            faviconImage.Source(NativeJson::DecodeImage(int(meta.imageWidth), int(meta.imageHeight), meta.imagePixels));
+            faviconImage.Tag(box_value(meta.imagePixels));
+        } else if (!hasImage && !shown.empty()) {
+            faviconImage.Source(nullptr);
+            faviconImage.Tag(box_value(hstring{}));
+        }
+        faviconImage.Visibility(!isBusy && hasImage ? Visibility::Visible : Visibility::Collapsed);
+        busy.Visibility(isBusy ? Visibility::Visible : Visibility::Collapsed);
+        busy.IsActive(isBusy);
+        favicon.Visibility(isBusy || hasImage ? Visibility::Visible : Visibility::Collapsed);
         if (name.Text() != title) name.Text(title);
         if (detail.Text() != meta.detail) detail.Text(meta.detail);
         detail.Visibility(meta.detail.empty() ? Visibility::Collapsed : Visibility::Visible);
-        pin.Visibility(meta.flags & 1 ? Visibility::Visible : Visibility::Collapsed);
-        busy.Visibility(meta.flags & 2 ? Visibility::Visible : Visibility::Collapsed);
-        busy.IsActive((meta.flags & 2) != 0);
+        pinBox.Visibility(meta.flags & 1 ? Visibility::Visible : Visibility::Collapsed);
         audio.Symbol(meta.flags & 4 ? Controls::Symbol::Mute : Controls::Symbol::Volume);
-        audio.Visibility(meta.flags & 12 ? Visibility::Visible : Visibility::Collapsed);
+        audioBox.Visibility(meta.flags & 12 ? Visibility::Visible : Visibility::Collapsed);
         Controls::ToolTipService::SetToolTip(row, box_value(meta.detail.empty() ? title : title + L"\n" + meta.detail));
         Automation::AutomationProperties::SetHelpText(row, meta.detail + (meta.detail.empty() || meta.status.empty() ? L"" : L" · ") + meta.status);
     }
@@ -132,7 +175,7 @@ struct NativeTabStrip {
                     row.Tag(box_value(id));
                     row.IsClosable(true);
                     row.HorizontalContentAlignment(HorizontalAlignment::Stretch);
-                    row.Header(Markup::XamlReader::Load(LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><SymbolIcon Symbol="Pin" Width="16"/><ProgressRing Grid.Column="1" Width="16" Height="16" IsActive="False"/><StackPanel Grid.Column="2" MaxWidth="220" VerticalAlignment="Center"><TextBlock TextTrimming="CharacterEllipsis"/><TextBlock FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/></StackPanel><SymbolIcon Grid.Column="3" Symbol="Volume" Width="16"/></Grid>)"));
+                    row.Header(Markup::XamlReader::Load(LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid Width="16" Height="16"><Image Stretch="Uniform" AutomationProperties.AccessibilityView="Raw"/><ProgressRing Width="16" Height="16" IsActive="False" AutomationProperties.AccessibilityView="Raw"/></Grid><Viewbox Grid.Column="1" Width="16" Height="16"><SymbolIcon Symbol="Pin"/></Viewbox><StackPanel Grid.Column="2" MaxWidth="220" VerticalAlignment="Center"><TextBlock TextTrimming="CharacterEllipsis"/><TextBlock FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/></StackPanel><Viewbox Grid.Column="3" Width="16" Height="16"><SymbolIcon Symbol="Volume"/></Viewbox></Grid>)"));
                     Automation::AutomationProperties::SetAutomationId(row, L"FirefoxWinUITab-" + to_hstring(id));
                     auto alive = std::weak_ptr<int>(lifetime);
                     row.AddHandler(UIElement::PointerPressedEvent(), box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
