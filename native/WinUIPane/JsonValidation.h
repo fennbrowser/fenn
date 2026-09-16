@@ -66,6 +66,11 @@ namespace NativeJson {
     // so a snapshot cannot spend an unbounded byte budget across many images.
     struct ImageLimits { double maxDimension; size_t maxTotalPixels; };
 
+    // Icon-sized images shared by the search-mode switcher and address global
+    // actions. Address row favicons use their own larger budget instead
+    // (declared alongside the rows they bound, in Address.h).
+    constexpr ImageLimits kIconImageLimits{32, 8192};
+
     inline void ValidateImage(JsonObject const& item, size_t& totalPixels, ImageLimits const& limits) {
         if (!item.HasKey(L"image") ||
             item.GetNamedValue(L"image").ValueType() == winrt::Windows::Data::Json::JsonValueType::Null) return;

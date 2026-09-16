@@ -3,29 +3,18 @@
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include "JsonValidation.h"
+#include "SearchMode.h"
 
 struct NativeAddress {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using JValue = winrt::Windows::Data::Json::JsonValue;
-    // Icon-sized images (mode button, mode menu entries, global actions) vs.
-    // the larger favicons address rows can carry. Two distinct budgets, not
-    // one duplicated by coincidence: keep them named instead of re-deriving
-    // the same four literals at every call site.
-    static constexpr NativeJson::ImageLimits kIconImageLimits{32, 8192};
+    // The larger favicons address rows can carry, vs. the icon-sized images
+    // NativeJson::kIconImageLimits bounds for the mode switcher and global
+    // actions below.
     static constexpr NativeJson::ImageLimits kRowImageLimits{104, 65536};
     Microsoft::UI::Xaml::Controls::StackPanel root;
     Microsoft::UI::Xaml::Controls::TextBox field;
-    Microsoft::UI::Xaml::Controls::DropDownButton modeButton;
-    Microsoft::UI::Xaml::Controls::MenuFlyout modeFlyout;
-    Microsoft::UI::Xaml::Controls::Button exitMode;
-    Microsoft::UI::Xaml::Controls::Image modeImage;
-    Microsoft::UI::Xaml::Controls::SymbolIcon modeSymbol;
-    Microsoft::UI::Xaml::Controls::TextBlock modeLabel;
-    std::vector<Microsoft::UI::Xaml::Controls::MenuFlyoutItem> modeItems;
-    std::vector<winrt::hstring> modeIds, modePixels;
-    winrt::hstring modePending, buttonPixels;
-    double modeGeneration{-1}, modeApplied{}, modeReveal{};
-    bool revealModePending{};
+    NativeSearchMode mode;
     Microsoft::UI::Xaml::Controls::ListView list;
     std::vector<winrt::hstring> ids, titles, actionLabels;
     struct RowVisual {
@@ -49,115 +38,13 @@ struct NativeAddress {
     double revision{}, sequence{-1}, editId{}, selectionId{}, acknowledgedEditId{};
     bool syncing{}, composing{}, enterPending{}, observedComposing{}, queryComplete{}, focusWithin{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
-    ~NativeAddress() { lifetime.reset(); if (modeFlyout.IsOpen()) modeFlyout.Hide(); }
+    ~NativeAddress() { lifetime.reset(); }
 
     static void ValidateModeImage(JObject const& item, size_t& total) {
-        NativeJson::ValidateImage(item, total, kIconImageLimits);
+        NativeJson::ValidateImage(item, total, NativeJson::kIconImageLimits);
     }
     static Microsoft::UI::Xaml::Media::ImageSource ModeImage(JObject const& item) {
         return NativeJson::DecodeImage(item.GetNamedObject(L"image"));
-    }
-    static Microsoft::UI::Xaml::Controls::Symbol ModeSymbol(winrt::hstring const& symbol) {
-        using Microsoft::UI::Xaml::Controls::Symbol;
-        if (symbol == L"bookmarks") return Symbol::Favorite;
-        if (symbol == L"tabs") return Symbol::BrowsePhotos;
-        if (symbol == L"history") return Symbol::Clock;
-        if (symbol == L"actions") return Symbol::AllApps;
-        if (symbol == L"settings") return Symbol::Setting;
-        if (symbol == L"add") return Symbol::Add;
-        return Symbol::Find;
-    }
-    void QueueMode(wchar_t const* kind, winrt::hstring const& id = L"") {
-        if (syncing || composing || session.empty()) return;
-        Edit();
-        auto value = Message(kind);
-        value.SetNamedValue(L"generation", JValue::CreateNumberValue(modeGeneration));
-        value.SetNamedValue(L"id", JValue::CreateStringValue(id));
-        JObject intent;
-        intent.SetNamedValue(L"ctrlKey", JValue::CreateBooleanValue((GetKeyState(VK_CONTROL)&0x8000)!=0));
-        intent.SetNamedValue(L"altKey", JValue::CreateBooleanValue((GetKeyState(VK_MENU)&0x8000)!=0));
-        intent.SetNamedValue(L"shiftKey", JValue::CreateBooleanValue((GetKeyState(VK_SHIFT)&0x8000)!=0));
-        intent.SetNamedValue(L"metaKey", JValue::CreateBooleanValue(false));
-        value.SetNamedValue(L"intent", intent);
-        modePending = value.Stringify();
-        enterPending = false; submitIntent = L"";
-    }
-    void NewModeFlyout() {
-        using namespace Microsoft::UI::Xaml;
-        if (modeFlyout.IsOpen()) modeFlyout.Hide();
-        modeFlyout = Controls::MenuFlyout();
-        modeButton.Flyout(modeFlyout);
-        modeFlyout.Opening([this, alive=std::weak_ptr<int>(lifetime)](auto const&, auto const&) { if (!alive.expired()) QueueMode(L"mode-open"); });
-        modeFlyout.Opened([this, alive=std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-            if (!alive.expired() && !modeItems.empty()) modeItems.front().Focus(FocusState::Programmatic);
-        });
-    }
-    void SyncModes(JObject const& snapshot) {
-        using namespace Microsoft::UI::Xaml;
-        using namespace Microsoft::UI::Xaml::Controls;
-        const bool visible=snapshot.GetNamedBoolean(L"modeButtonVisible",true);
-        if (!visible) {
-            if (modeFlyout.IsOpen()) modeFlyout.Hide();
-            if (modeButton.FocusState()!=FocusState::Unfocused || exitMode.FocusState()!=FocusState::Unfocused)
-                field.Focus(FocusState::Programmatic);
-        }
-        modeButton.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
-        if (!visible) revealModePending=false;
-        const auto reveal=snapshot.GetNamedNumber(L"modeReveal",0);
-        if (reveal!=modeReveal) {modeReveal=reveal; revealModePending=visible;}
-        if (!snapshot.HasKey(L"modes") || snapshot.GetNamedValue(L"modes").ValueType() == winrt::Windows::Data::Json::JsonValueType::Null) {
-            modeButton.IsEnabled(false);
-            exitMode.Visibility(Visibility::Collapsed);
-            if (modeFlyout.IsOpen()) modeFlyout.Hide();
-            return;
-        }
-        auto modes = snapshot.GetNamedObject(L"modes");
-        auto entries = modes.GetNamedArray(L"entries");
-        auto generation = modes.GetNamedNumber(L"generation");
-        if (modeGeneration != generation) {
-            NewModeFlyout();
-            modeItems.clear(); modeIds.clear(); modePixels.clear();
-            modeGeneration = generation;
-            bool local = false, offered = false;
-            for (auto value : entries) {
-                auto entry = value.GetObject();
-                auto symbol=entry.GetNamedString(L"symbol",L"");
-                if ((!local && entry.GetNamedBoolean(L"local", false)) || (symbol==L"add" && !offered) || (symbol==L"settings" && !offered)) {
-                    modeFlyout.Items().Append(MenuFlyoutSeparator()); local = true;
-                }
-                offered = offered || symbol==L"add";
-                MenuFlyoutItem item; item.Text(entry.GetNamedString(L"label"));
-                auto id = entry.GetNamedString(L"id");
-                item.Click([this, alive=std::weak_ptr<int>(lifetime), id, generation](auto const&, auto const&) {
-                    if (!alive.expired() && modeGeneration == generation) QueueMode(L"mode-pick", id);
-                });
-                Automation::AutomationProperties::SetAutomationId(item, id);
-                modeFlyout.Items().Append(item); modeItems.push_back(item); modeIds.push_back(id); modePixels.push_back(L"");
-            }
-        }
-        for (uint32_t i=0; i<entries.Size(); ++i) {
-            auto entry = entries.GetAt(i).GetObject();
-            auto encoded = entry.GetNamedValue(L"image", JValue::CreateNullValue()).Stringify();
-            if (modePixels[i] != encoded) {
-                if (encoded != L"null") { ImageIcon icon; icon.Source(ModeImage(entry)); modeItems[i].Icon(icon); }
-                else { SymbolIcon icon; icon.Symbol(ModeSymbol(entry.GetNamedString(L"symbol", L"search"))); modeItems[i].Icon(icon); }
-                modePixels[i] = encoded;
-            }
-        }
-        auto encoded = modes.GetNamedValue(L"image", JValue::CreateNullValue()).Stringify();
-        if (buttonPixels != encoded) { modeImage.Source(encoded == L"null" ? nullptr : ModeImage(modes)); buttonPixels = encoded; }
-        modeImage.Visibility(encoded == L"null" ? Visibility::Collapsed : Visibility::Visible);
-        modeSymbol.Visibility(encoded == L"null" ? Visibility::Visible : Visibility::Collapsed);
-        modeSymbol.Symbol(ModeSymbol(modes.GetNamedString(L"symbol", L"search")));
-        auto label = modes.GetNamedString(L"label");
-        Automation::AutomationProperties::SetName(modeButton, modes.GetNamedString(L"buttonLabel", label));
-        Automation::AutomationProperties::SetName(exitMode, modes.GetNamedString(L"exitLabel", L"Exit search mode"));
-        modeLabel.Text(modes.GetNamedBoolean(L"active") ? label : L"");
-        modeLabel.MaxWidth(80); modeLabel.TextTrimming(TextTrimming::CharacterEllipsis);
-        exitMode.Visibility(visible && snapshot.GetNamedBoolean(L"modeExitVisible",modes.GetNamedBoolean(L"active")) ? Visibility::Visible : Visibility::Collapsed);
-        modeButton.IsEnabled(true);
-        const double applied = modes.GetNamedNumber(L"applied", 0);
-        if (modeApplied != applied) { modeApplied = applied; field.Focus(FocusState::Programmatic); }
     }
     void SyncGlobal(JObject const& snapshot) {
         using namespace Microsoft::UI::Xaml;
@@ -240,7 +127,7 @@ struct NativeAddress {
         pending = value.Stringify();
     }
     void Action(wchar_t const* kind) {
-        if (syncing || composing || session.empty() || !modePending.empty()) return;
+        if (syncing || composing || session.empty() || !mode.pending.empty()) return;
         if (wcscmp(kind, L"activate") == 0) {
             Edit();
             if (submitIntent.empty()) {
@@ -287,7 +174,7 @@ struct NativeAddress {
         }
     }
     void ObserveFocus(bool islandHasFocus) {
-        if (modeFlyout.IsOpen()) return;
+        if (mode.flyout.IsOpen()) return;
         bool inside = false;
         if (root.XamlRoot() && islandHasFocus) {
             auto focused = Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(root.XamlRoot()).try_as<DependencyObject>();
@@ -395,28 +282,19 @@ struct NativeAddress {
         ColumnDefinition fieldColumn; fieldColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
         ColumnDefinition exitColumn; exitColumn.Width(GridLengthHelper::Auto());
         header.ColumnDefinitions().Append(buttonColumn); header.ColumnDefinitions().Append(fieldColumn); header.ColumnDefinitions().Append(exitColumn);
-        Grid::SetColumn(field, 1); Grid::SetColumn(exitMode, 2);
-        NewModeFlyout(); modeButton.IsEnabled(false); modeButton.Padding({4,0,4,0});
-        Automation::AutomationProperties::SetAutomationId(modeButton, L"FirefoxWinUISearchMode");
-        StackPanel buttonContent; buttonContent.Orientation(Orientation::Horizontal); buttonContent.Spacing(4);
-        Automation::AutomationProperties::SetAccessibilityView(modeImage, Automation::Peers::AccessibilityView::Raw);
-        Automation::AutomationProperties::SetAccessibilityView(modeSymbol, Automation::Peers::AccessibilityView::Raw);
-        modeImage.Width(16); modeImage.Height(16); modeImage.Stretch(Media::Stretch::Uniform);
-        modeSymbol.Symbol(Symbol::Find);
-        buttonContent.Children().Append(modeImage); buttonContent.Children().Append(modeSymbol); buttonContent.Children().Append(modeLabel);
-        modeButton.Content(buttonContent);
-        exitMode.Content(winrt::box_value(L"×")); exitMode.Padding({4,0,4,0}); exitMode.MinWidth(24);
-        Automation::AutomationProperties::SetName(exitMode, L"Exit search mode");
-        Automation::AutomationProperties::SetAutomationId(exitMode, L"FirefoxWinUIExitSearchMode");
-        exitMode.Visibility(Visibility::Collapsed);
-        exitMode.Click([this, alive=std::weak_ptr<int>(lifetime)](auto const&, auto const&) { if (!alive.expired()) QueueMode(L"mode-exit"); });
+        Grid::SetColumn(field, 1); Grid::SetColumn(mode.exit, 2);
+        mode.edit = [this] { Edit(); };
+        mode.message = [this](wchar_t const* kind) { return Message(kind); };
+        mode.clearIntent = [this] { enterPending = false; submitIntent = L""; };
+        mode.focusField = [this] { field.Focus(FocusState::Programmatic); };
+        mode.busy = [this] { return syncing || composing || session.empty(); };
         field.PreviewKeyDown([this, alive=std::weak_ptr<int>(lifetime)](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
             if (!alive.expired() && (GetKeyState(VK_MENU)&0x8000) &&
                 (e.Key()==winrt::Windows::System::VirtualKey::Down || e.Key()==winrt::Windows::System::VirtualKey::Up)) {
-                QueueMode(L"mode-reveal"); e.Handled(true);
+                mode.Queue(L"mode-reveal"); e.Handled(true);
             }
         });
-        header.Children().Append(modeButton); header.Children().Append(field); header.Children().Append(exitMode);
+        header.Children().Append(mode.button); header.Children().Append(field); header.Children().Append(mode.exit);
         globalPanel.Spacing(4); globalPanel.Visibility(Visibility::Collapsed);
         Automation::AutomationProperties::SetName(globalPanel,L"Search actions");
         field.PreviewKeyDown([this, alive=std::weak_ptr<int>(lifetime)](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
@@ -432,7 +310,7 @@ struct NativeAddress {
         using namespace Microsoft::UI::Xaml::Controls;
         if (snapshot.GetNamedNumber(L"version") != 1) winrt::throw_hresult(E_INVALIDARG);
         if (!snapshot.GetNamedBoolean(L"enabled", false)) {
-            if (modeFlyout.IsOpen()) modeFlyout.Hide(); modePending = L"";
+            mode.Disable();
             globalVisuals.clear(); globalPanel.Children().Clear();
             syncing = true; root.Visibility(Visibility::Collapsed); list.Items().Clear();
             ids.clear(); visuals.clear(); pending = L""; session = L""; enterPending = false; submitIntent = L""; queryComplete = false; acknowledgedEditId = 0; syncing = false; return L"";
@@ -474,10 +352,10 @@ struct NativeAddress {
                 modes.GetNamedString(L"buttonLabel", L"").size()>NativeJson::kMaxShortLabel ||
                 modes.GetNamedString(L"exitLabel", L"").size()>NativeJson::kMaxShortLabel) winrt::throw_hresult(E_INVALIDARG);
             NativeJson::RequireRevision(modes, L"generation");
-            if (nextSession == session && modes.GetNamedNumber(L"generation") == modeGeneration) {
-                if (entries.Size() != modeIds.size()) winrt::throw_hresult(E_INVALIDARG);
+            if (nextSession == session && modes.GetNamedNumber(L"generation") == mode.generation) {
+                if (entries.Size() != mode.ids.size()) winrt::throw_hresult(E_INVALIDARG);
                 for (uint32_t i=0; i<entries.Size(); ++i)
-                    if (entries.GetAt(i).GetObject().GetNamedString(L"id") != modeIds[i]) winrt::throw_hresult(E_INVALIDARG);
+                    if (entries.GetAt(i).GetObject().GetNamedString(L"id") != mode.ids[i]) winrt::throw_hresult(E_INVALIDARG);
             }
             size_t pixels=0; ValidateModeImage(modes, pixels); std::set<winrt::hstring> unique;
             for (auto item : entries) { auto entry=item.GetObject(); auto id=entry.GetNamedString(L"id");
@@ -487,15 +365,14 @@ struct NativeAddress {
             }
         }
         if (nextSession != session) {
-            if (modeFlyout.IsOpen()) modeFlyout.Hide();
-            modePending=L""; modeGeneration=-1; modeApplied=0; modeReveal=0; revealModePending=false;
+            mode.Reset();
             pending = L""; enterPending = false; submitIntent = L""; queryComplete = false; acknowledgedEditId = 0; session = nextSession; sequence = -1; visibility = L""; editId = 0; selectionId = 0;
             observedText = field.Text(); observedComposing = composing;
         }
         root.Visibility(Visibility::Visible);
         Edit(); // Observe text synchronously before an older snapshot can replace it.
         if (!pending.empty()) { auto action = pending; pending = L""; return action; }
-        if (!modePending.empty()) { auto action=modePending; modePending=L""; return action; }
+        if (!mode.pending.empty()) { auto action=mode.pending; mode.pending=L""; return action; }
         syncing = true;
         try {
             field.PlaceholderText(snapshot.GetNamedString(L"placeholder", L"Search or enter address"));
@@ -579,13 +456,11 @@ struct NativeAddress {
             auto selectedIt = std::find(ids.begin(), ids.end(), selected);
             list.SelectedIndex(selectedIt == ids.end() ? -1 : int(selectedIt - ids.begin()));
             RefreshLabels();
-            SyncModes(snapshot);
+            mode.Sync(snapshot);
             SyncGlobal(snapshot);
         } catch (...) { syncing = false; throw; }
         syncing = false;
-        if (revealModePending && modeButton.IsEnabled() && modeButton.Visibility()==Visibility::Visible) {
-            revealModePending=false; modeFlyout.ShowAt(modeButton);
-        }
+        mode.ShowPendingReveal();
         if (enterPending && (queryComplete || !ids.empty()) && acknowledgedEditId == editId) {
             enterPending = false;
             Action(L"activate");
