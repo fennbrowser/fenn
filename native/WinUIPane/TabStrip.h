@@ -57,6 +57,11 @@ struct NativeTabStrip {
     // group/split), same as the rest of this strip's optimistic actions.
     bool dragging{};
     hstring pendingReorder;
+    // Coalesces the mid-drag active-tab highlight below: at most one apply is
+    // ever queued on the dispatcher at a time, and a Sync() landing before it
+    // runs just updates the target id rather than queuing a second one.
+    bool highlightQueued{};
+    uint32_t queuedActive{};
     enum class DragPhase { None, Armed, Dragging };
     struct DragState {
         DragPhase phase{};
@@ -499,11 +504,30 @@ struct NativeTabStrip {
         // pre-drag tab until some unrelated Sync() happened to run once the
         // gesture ends, which a same-spot drop (no real reorder) may never
         // trigger.
+        //
+        // Applying it inline, though, means TabView's own selection-changed
+        // visual-state/focus work (real layout, not just a transform) runs
+        // synchronously on this same call stack -- which on a fast drag can
+        // land in the middle of PointerMoved's own high-frequency
+        // RenderTransform updates and stutter that frame. Queue it on the
+        // dispatcher instead, so it lands on a later tick once the current
+        // input processing is done rather than competing with it.
         if (dragging) {
             if (rows.count(active)) {
-                syncing = true;
-                view.SelectedItem(rows.at(active));
-                syncing = false;
+                queuedActive = active;
+                if (!highlightQueued) {
+                    highlightQueued = true;
+                    auto alive = std::weak_ptr<int>(lifetime);
+                    Dispatching::DispatcherQueue::GetForCurrentThread().TryEnqueue([this, alive] {
+                        if (alive.expired()) return;
+                        highlightQueued = false;
+                        if (rows.count(queuedActive)) {
+                            syncing = true;
+                            view.SelectedItem(rows.at(queuedActive));
+                            syncing = false;
+                        }
+                    });
+                }
             }
             return;
         }
