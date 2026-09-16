@@ -490,7 +490,23 @@ struct NativeTabStrip {
         // from under the gesture's own bookkeeping (e.g. tabWidth captured
         // at drag-start). The next Sync() once the gesture ends catches up
         // in full and clears the drag's leftover visual offsets below.
-        if (dragging) return;
+        //
+        // The active-tab highlight is the one exception: mousedown already
+        // asked Firefox to switch tabs before the drag armed, and that
+        // confirmation can land mid-gesture on a fast drag. Applying it here
+        // doesn't touch TabItems() order or row content, so it's safe to let
+        // through -- without it, the highlight would silently stay on the
+        // pre-drag tab until some unrelated Sync() happened to run once the
+        // gesture ends, which a same-spot drop (no real reorder) may never
+        // trigger.
+        if (dragging) {
+            if (rows.count(active)) {
+                syncing = true;
+                view.SelectedItem(rows.at(active));
+                syncing = false;
+            }
+            return;
+        }
         syncing = true;
         try {
             if (!drag.affectedRowIds.empty()) {
