@@ -25,6 +25,13 @@ struct NativeTabStrip {
     NativeTabMenu& menu;
     std::function<void(uint32_t)> select, close;
     std::function<void()> add;
+    // Set by Pane.cpp, which alone can see every open window's pane: given a
+    // release point already outside this strip's own bounds, resolves and
+    // commits a cross-window drop directly onto whichever other strip (if
+    // any) occupies that screen point, entirely in-process. Returns whether
+    // a match was found and the request was queued there -- false falls
+    // back to this window's own detach-to-new-window path.
+    std::function<bool(uint32_t, POINT)> tryAdoptElsewhere;
     std::map<uint32_t, Controls::TabViewItem> rows;
     // Favicons are the small end of what NativeAddress's row images (104,
     // 65536) allow: one glyph-sized icon per tab, but potentially many more
@@ -88,6 +95,11 @@ struct NativeTabStrip {
         bool awaitingConfirm{};
         uint32_t confirmTabId{};
         uint32_t confirmBeforeId{};
+        // Set once the pointer clears the strip's own bounds by a real
+        // margin -- past that point this is a tear-off, not a reorder:
+        // siblings stop making room and release commits a detach request
+        // instead of a reorder one.
+        bool detaching{};
     };
     DragState drag;
     struct RowAnimation {
@@ -191,6 +203,59 @@ struct NativeTabStrip {
         pendingReorder = action.Stringify();
     }
 
+    // Queues one validated detach request naming `tab` and the release
+    // point in screen coordinates, on the same transport as
+    // CompleteReorderAt above (just a different request `kind`) -- Firefox
+    // opens the new window at that point via gBrowser.replaceTabWithWindow's
+    // own left/top options, so there is nothing to compute here beyond the
+    // cursor's current screen position.
+    void CompleteDetach(Controls::TabViewItem const& tab) {
+        POINT screenPoint{};
+        GetCursorPos(&screenPoint);
+        Windows::Data::Json::JsonObject action;
+        action.SetNamedValue(L"kind", Windows::Data::Json::JsonValue::CreateStringValue(L"strip-detach"));
+        action.SetNamedValue(L"revision", Windows::Data::Json::JsonValue::CreateNumberValue(presentationRevision));
+        action.SetNamedValue(L"id", Windows::Data::Json::JsonValue::CreateNumberValue(unbox_value<uint32_t>(tab.Tag())));
+        action.SetNamedValue(L"screenX", Windows::Data::Json::JsonValue::CreateNumberValue(double(screenPoint.x)));
+        action.SetNamedValue(L"screenY", Windows::Data::Json::JsonValue::CreateNumberValue(double(screenPoint.y)));
+        pendingReorder = action.Stringify();
+    }
+
+    // For a cross-window drop landing at `localX` (already converted to
+    // this strip's own local coordinate space by the caller, which alone
+    // has the HWND that conversion needs). This strip's own TabItems() are
+    // never touched by another window's drag, so this is a plain hit-test
+    // against each row's real current position -- unlike ProjectDropIndex,
+    // there is no dragged row of its own to skip or snapshot to hit-test
+    // against instead of a live (but here, unmoving) layout.
+    uint32_t ProjectExternalDropIndex(double localX) const {
+        uint32_t index = 0;
+        for (uint32_t i = 0; i < view.TabItems().Size(); ++i) {
+            auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
+            auto left = row.TransformToVisual(view).TransformPoint({0, 0}).X;
+            if (left + row.ActualWidth() / 2 < localX) index = i + 1;
+        }
+        return index;
+    }
+
+    // Queues a validated adopt request on this strip's own transport, on
+    // behalf of a tab dropped here from a different window's drag -- same
+    // shape as CompleteReorderAt/CompleteDetach above, just naming the
+    // source window instead of a beforeId, since the tab doesn't exist in
+    // this window's own rows yet for Sync()'s usual confirm-tracking to
+    // watch (Firefox adopting it in will simply appear as an ordinary new
+    // row on this window's next Sync(), same as any other opened tab).
+    void QueueIncomingAdopt(HWND sourceHwnd, uint32_t tabId, uint32_t index) {
+        Windows::Data::Json::JsonObject action;
+        action.SetNamedValue(L"kind", Windows::Data::Json::JsonValue::CreateStringValue(L"strip-adopt"));
+        action.SetNamedValue(L"revision", Windows::Data::Json::JsonValue::CreateNumberValue(presentationRevision));
+        action.SetNamedValue(L"sourceHwnd", Windows::Data::Json::JsonValue::CreateNumberValue(
+                                                 double(reinterpret_cast<uintptr_t>(sourceHwnd))));
+        action.SetNamedValue(L"id", Windows::Data::Json::JsonValue::CreateNumberValue(tabId));
+        action.SetNamedValue(L"index", Windows::Data::Json::JsonValue::CreateNumberValue(index));
+        pendingReorder = action.Stringify();
+    }
+
     static Media::TranslateTransform RowTransform(Controls::TabViewItem const& row) {
         return row.RenderTransform().as<Media::TranslateTransform>();
     }
@@ -278,6 +343,9 @@ struct NativeTabStrip {
             rowAnimations.erase(it);
         }
         RowTransform(row).X(0);
+        // Y only ever moves for a tear-off gesture (UpdateDragVisual below);
+        // resetting it unconditionally is a no-op for every other row.
+        RowTransform(row).Y(0);
     }
 
     // Applies (or clears) the one-tab-width visual offset that opens a gap
@@ -299,13 +367,34 @@ struct NativeTabStrip {
     // Moves the dragged row to follow the cursor (clamped to the strip's own
     // width) and re-projects the drop position against the stable snapshot
     // taken when the drag began -- never against live (already-shifted)
-    // sibling positions, which would feed back into the hit-test.
-    void UpdateDragVisual(double rawDeltaX) {
+    // sibling positions, which would feed back into the hit-test. `point` is
+    // the pointer's current position relative to `view`, used both for the
+    // horizontal reorder math (as before) and to notice the gesture has
+    // cleared the strip's own vertical bounds and become a tear-off.
+    void UpdateDragVisual(Windows::Foundation::Point const& point) {
         auto row = rows.at(drag.tabId);
         double origin = drag.originalLeftEdge[drag.originalIndex];
         double minX = -origin, maxX = view.ActualWidth() - drag.tabWidth - origin;
+        double rawDeltaX = point.X - drag.startPoint.X;
         double clampedX = std::clamp(rawDeltaX, std::min(minX, maxX), std::max(minX, maxX));
         RowTransform(row).X(clampedX);
+        // A real margin past the strip's own top/bottom, not just a small
+        // wobble while reordering within it -- matches the "drag it clearly
+        // off the strip" feel of a real browser's tear-off.
+        double stripHeight = view.ActualHeight();
+        bool wasDetaching = drag.detaching;
+        drag.detaching = stripHeight > 0 && (point.Y < -stripHeight || point.Y > stripHeight * 2);
+        RowTransform(row).Y(drag.detaching ? point.Y - drag.startPoint.Y : 0);
+        if (drag.detaching) {
+            // Just left the strip with a reorder gap still open -- close it,
+            // since nothing should be making room for a tab that's leaving.
+            if (!wasDetaching && drag.projectedIndex != drag.originalIndex) {
+                drag.projectedIndex = drag.originalIndex;
+                for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i)
+                    if (i != drag.originalIndex) ShiftSibling(i);
+            }
+            return;
+        }
         auto projected = ProjectDropIndex(origin + drag.tabWidth / 2 + clampedX);
         if (projected == drag.projectedIndex) return;
         drag.projectedIndex = projected;
@@ -323,23 +412,52 @@ struct NativeTabStrip {
     void FinishDrag(uint32_t id) {
         if (drag.tabId != id || drag.phase == DragPhase::None) return;
         bool wasDragging = drag.phase == DragPhase::Dragging;
+        bool detaching = drag.detaching;
         auto targetIndex = drag.projectedIndex;
         drag.phase = DragPhase::None;
         dragging = false;
         if (wasDragging && rows.count(id)) {
             auto row = rows.at(id);
-            auto beforeRow = targetIndex < view.TabItems().Size()
-                                  ? view.TabItems().GetAt(targetIndex).as<Controls::TabViewItem>()
-                                  : nullptr;
             // ShiftSibling only ever tracks the OTHER rows nudged to open a
             // gap; the dragged row's own offset needs the same eventual
             // reset once Sync() sees the real reorder land, or it would sit
-            // at its dropped position forever.
+            // at its dropped position forever. Same for a detach: the row
+            // sits at its dropped position until Sync() notices the tab is
+            // gone -- the existing "tab no longer present" branch below
+            // already treats that as landed, so no separate bookkeeping is
+            // needed for the detach case.
             drag.affectedRowIds.push_back(id);
             drag.awaitingConfirm = true;
             drag.confirmTabId = id;
-            drag.confirmBeforeId = beforeRow && beforeRow != row ? unbox_value<uint32_t>(beforeRow.Tag()) : 0;
-            CompleteReorderAt(row, beforeRow);
+            drag.confirmBeforeId = 0;
+            // Tried unconditionally, not just once `detaching` (leaving this
+            // strip's own VERTICAL bounds) -- two windows sitting side by
+            // side at the same height never trip that, since the cursor
+            // never leaves this strip's own vertical band on the way
+            // sideways into the other one. The hit-test itself (against the
+            // other window's real screen rect) is what actually decides
+            // this, cheaply, so there is nothing to gain by narrowing when
+            // it runs.
+            bool adopted = false;
+            if (tryAdoptElsewhere) {
+                POINT screenPoint{};
+                GetCursorPos(&screenPoint);
+                adopted = tryAdoptElsewhere(id, screenPoint);
+            }
+            if (adopted) {
+                // The destination window's own pane already queued the
+                // adopt request on its own transport; this window just
+                // waits for Firefox to remove the tab, same as any other
+                // close landing mid-drag.
+            } else if (detaching) {
+                CompleteDetach(row);
+            } else {
+                auto beforeRow = targetIndex < view.TabItems().Size()
+                                      ? view.TabItems().GetAt(targetIndex).as<Controls::TabViewItem>()
+                                      : nullptr;
+                drag.confirmBeforeId = beforeRow && beforeRow != row ? unbox_value<uint32_t>(beforeRow.Tag()) : 0;
+                CompleteReorderAt(row, beforeRow);
+            }
         }
     }
 
@@ -356,6 +474,7 @@ struct NativeTabStrip {
             }
         }
         drag.phase = DragPhase::None;
+        drag.detaching = false;
         drag.affectedRowIds.clear();
         dragging = false;
     }
@@ -677,12 +796,20 @@ struct NativeTabStrip {
                                 if (alive.expired() || syncing || drag.tabId != id || drag.phase == DragPhase::None)
                                     return;
                                 auto point = args.GetCurrentPoint(view).Position();
-                                double deltaX = point.X - drag.startPoint.X;
                                 if (drag.phase == DragPhase::Armed) {
                                     constexpr double kDragThreshold = 4.0;
-                                    if (std::abs(deltaX) < kDragThreshold || !rows.count(id)) return;
+                                    // Either axis can arm the drag -- a
+                                    // tear-off gesture often starts as a
+                                    // mostly-vertical pull, which a
+                                    // horizontal-only threshold would never
+                                    // observe crossing.
+                                    if (std::max(std::abs(point.X - drag.startPoint.X),
+                                                  std::abs(point.Y - drag.startPoint.Y)) < kDragThreshold ||
+                                        !rows.count(id))
+                                        return;
                                     auto& row = rows.at(id);
                                     drag.phase = DragPhase::Dragging;
+                                    drag.detaching = false;
                                     // Any row still easing from a prior
                                     // settle or sibling-shift (this row's
                                     // own drop settle if it's grabbed again
@@ -714,7 +841,7 @@ struct NativeTabStrip {
                                     }
                                     dragging = true;
                                 }
-                                UpdateDragVisual(deltaX);
+                                UpdateDragVisual(point);
                             })),
                         true);
                     row.AddHandler(

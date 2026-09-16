@@ -7,17 +7,19 @@ function fixture() {
   const state = { rtl:false, groupsLabel:"Tab groups",
     rows:[{id:11, detail:"Work", flags:0, image:null}, {id:22, detail:"", flags:0, image:null}],
     groups:[{target, name:"Work", label:"Work — Expanded", collapsed:false}] };
-  const calls = [], reorderCalls = [];
+  const calls = [], reorderCalls = [], detachCalls = [], adoptCalls = [];
   const session = new WinUITabStripSession({read: () => structured(state),
     collapse: (group, value) => calls.push([group, value]),
-    reorder: (id, beforeId) => reorderCalls.push([id, beforeId])});
+    reorder: (id, beforeId) => reorderCalls.push([id, beforeId]),
+    detach: (id, point) => detachCalls.push([id, point]),
+    adopt: (sourceHwnd, id, index) => adoptCalls.push([sourceHwnd, id, index])});
   function structured(value) {
     return {...value, rows:value.rows.map(r => ({...r})), groups:value.groups.map(g => ({...g}))};
   }
   const snapshot = session.update();
   const action = {kind:"strip-group", revision:snapshot.strip.revision,
     group:snapshot.strip.groups[0].id, collapsed:true};
-  return {target, state, calls, reorderCalls, session, snapshot, action};
+  return {target, state, calls, reorderCalls, detachCalls, adoptCalls, session, snapshot, action};
 }
 
 test("group objects stay in Firefox; stable opaque IDs survive label/state changes", () => {
@@ -126,4 +128,56 @@ test("a row set that changed since publication revokes a queued reorder", () => 
   f.state.rows[0].detail = "Different split";
   assert.equal(f.session.receive(action), false);
   assert.equal(f.reorderCalls.length, 0);
+});
+
+test("a completed detach is consumed once and calls detach with the screen point", () => {
+  const f = fixture();
+  const action = {kind:"strip-detach", revision:f.snapshot.strip.revision, id:22, screenX:100, screenY:-40};
+  assert.equal(f.session.receive(action), true);
+  assert.deepEqual(f.detachCalls, [[22, {screenX:100, screenY:-40}]]);
+  assert.equal(f.session.receive(action), false);
+  assert.equal(f.session.update().strip.revision, 2);
+});
+
+test("detach requests naming unknown rows, stale revisions or malformed fields are rejected", () => {
+  const base = f => ({kind:"strip-detach", revision:f.snapshot.strip.revision, id:11, screenX:100, screenY:200});
+  for (const override of [{id:999}, {id:1.5}, {id:"11"}, {revision:0},
+    {screenX:"100"}, {screenY:NaN}, {screenX:undefined}]) {
+    const f = fixture();
+    assert.equal(f.session.receive({...base(f), ...override}), false);
+    assert.equal(f.detachCalls.length, 0);
+  }
+});
+
+test("a row set that changed since publication revokes a queued detach", () => {
+  const f = fixture();
+  const action = {kind:"strip-detach", revision:f.snapshot.strip.revision, id:22, screenX:100, screenY:200};
+  f.state.rows[0].detail = "Different split";
+  assert.equal(f.session.receive(action), false);
+  assert.equal(f.detachCalls.length, 0);
+});
+
+test("a completed cross-window adopt is consumed once and names the source window and index", () => {
+  const f = fixture();
+  // id/index here name a row in the SOURCE window's own session, not this
+  // one's -- unlike every other kind, there is no local row to look up.
+  const action = {kind:"strip-adopt", revision:f.snapshot.strip.revision, sourceHwnd:0x1a2b, id:77, index:1};
+  assert.equal(f.session.receive(action), true);
+  assert.deepEqual(f.adoptCalls, [[0x1a2b, 77, 1]]);
+  // Nothing in this fixture's own state actually changed (adopt affects the
+  // SOURCE window, not this session), so update() has nothing new to
+  // report -- the revision bump itself, not a fresh snapshot, is what
+  // rejects a repeat delivery of the same action below.
+  assert.equal(f.session.revision, 2);
+  assert.equal(f.session.receive(action), false);
+});
+
+test("adopt requests with stale revisions or malformed fields are rejected", () => {
+  const base = f => ({kind:"strip-adopt", revision:f.snapshot.strip.revision, sourceHwnd:0x1a2b, id:77, index:0});
+  for (const override of [{sourceHwnd:1.5}, {sourceHwnd:"0x1a2b"}, {id:1.5}, {index:-1},
+    {index:1.5}, {revision:0}]) {
+    const f = fixture();
+    assert.equal(f.session.receive({...base(f), ...override}), false);
+    assert.equal(f.adoptCalls.length, 0);
+  }
 });

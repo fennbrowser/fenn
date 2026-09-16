@@ -82,6 +82,24 @@ struct Pane {
         source.Close();
         source = nullptr;
     }
+    // This strip's own on-screen rectangle, for another window's drag to
+    // hit-test a drop point against. TransformToVisual(nullptr) gives the
+    // TabView's position relative to this pane's own hosted root (matching
+    // the technique already used for hit-testing screen points elsewhere in
+    // this codebase, e.g. the native drag test's own tab-to-screen-point
+    // resolution); ClientToScreen anchors that to this pane's owning HWND.
+    RECT StripScreenBounds() const {
+        RECT bounds{};
+        if (!strip) return bounds;
+        auto topLeft = strip->view.TransformToVisual(nullptr).TransformPoint({0, 0});
+        POINT origin{LONG(topLeft.X), LONG(topLeft.Y)};
+        ClientToScreen(parent, &origin);
+        bounds.left = origin.x;
+        bounds.top = origin.y;
+        bounds.right = origin.x + LONG(strip->view.ActualWidth());
+        bounds.bottom = origin.y + LONG(strip->view.ActualHeight());
+        return bounds;
+    }
     void UpdateRow(Controls::Primitives::SelectorItem const& row) {
         auto index = tabs.IndexFromContainer(row);
         if (index < 0 || size_t(index) >= tabIds.size()) return;
@@ -279,6 +297,11 @@ struct Pane {
                 if (pendingNewTabs < 10000) ++pendingNewTabs;
                 pendingSelectionSet = L"";
             };
+            // tryAdoptElsewhere (native cross-window drop hit-testing) is
+            // wired up by the caller once this pane is registered in
+            // state().panes -- State isn't a complete type yet at this
+            // point in the file (it's defined after Pane, since its own
+            // std::unique_ptr<Pane> map needs Pane complete first).
             takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(parent); });
             source.Content(strip->root);
             return;
@@ -512,6 +535,25 @@ HRESULT UpdateImpl(HWND hwnd, const RECT* rect, BOOL visible, bool strip) noexce
                 auto error = to_hresult();
                 pane->Close();
                 return error;
+            }
+            if (pane->strip) {
+                // Every open window's pane lives in this same process/DLL
+                // (state().panes), so resolving which OTHER window a drop
+                // landed on needs no IPC -- just a screen-point hit-test
+                // against each other pane's own StripScreenBounds().
+                auto self = pane.get();
+                pane->strip->tryAdoptElsewhere = [self](uint32_t tabId, POINT screenPoint) {
+                    for (auto const& entry : state().panes) {
+                        auto& other = *entry.second;
+                        if (&other == self || !other.strip) continue;
+                        RECT bounds = other.StripScreenBounds();
+                        if (!PtInRect(&bounds, screenPoint)) continue;
+                        other.strip->QueueIncomingAdopt(self->parent, tabId,
+                            other.strip->ProjectExternalDropIndex(double(screenPoint.x - bounds.left)));
+                        return true;
+                    }
+                    return false;
+                };
             }
             found = s.panes.emplace(hwnd, std::move(pane)).first;
         }

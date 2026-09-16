@@ -2097,10 +2097,10 @@ index 1e2660589b..cb7467612c 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..d7bb038780
+index 0000000000..237dae9f71
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,99 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2108,8 +2108,8 @@ index 0000000000..d7bb038780
 +// A separate, versioned presentation inside the existing tab-menu transport.
 +// Group objects never cross the boundary. A fresh read revalidates every action.
 +export class WinUITabStripSession {
-+  constructor({ read, collapse, reorder }) {
-+    Object.assign(this, { read, collapse, reorder });
++  constructor({ read, collapse, reorder, detach, adopt }) {
++    Object.assign(this, { read, collapse, reorder, detach, adopt });
 +    this.ids = new WeakMap();
 +    this.nextId = 1;
 +    this.revision = 0;
@@ -2170,6 +2170,31 @@ index 0000000000..d7bb038780
 +      } else if (index === current.rows.length - 1) return false;
 +      this.fingerprint = null;
 +      this.reorder(event.id, event.beforeId);
++      return true;
++    }
++    if (event.kind === "strip-detach") {
++      if (!Number.isSafeInteger(event.id) || !Number.isFinite(event.screenX) || !Number.isFinite(event.screenY))
++        return false;
++      const current = this.describe();
++      if (JSON.stringify(current) !== this.fingerprint) return false;
++      if (!current.rows.some(r => r.id === event.id)) return false;
++      // Consume before Firefox mutates state or enters any nested browser work.
++      this.fingerprint = null;
++      this.detach(event.id, { screenX: event.screenX, screenY: event.screenY });
++      return true;
++    }
++    if (event.kind === "strip-adopt") {
++      // Unlike the other kinds, `id` names a row in the SOURCE window's own
++      // session, not this one's -- there is no local snapshot to revalidate
++      // it against. Bump the revision directly instead of invalidating a
++      // fingerprint, so a repeat delivery of the same action is rejected by
++      // the top-level revision check above, same as every other kind.
++      if (!Number.isSafeInteger(event.sourceHwnd) || !Number.isSafeInteger(event.id) ||
++          !Number.isSafeInteger(event.index) || event.index < 0)
++        return false;
++      if (this.revision === 0xffffffff) throw new Error("Native strip revision exhausted");
++      this.revision++;
++      this.adopt(event.sourceHwnd, event.id, event.index);
 +      return true;
 +    }
 +    return false;
@@ -3239,10 +3264,10 @@ index 0000000000..a07d26b2f5
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..757fec5a6c
+index 0000000000..86d135d34c
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,706 @@
+@@ -0,0 +1,736 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3567,7 +3592,8 @@ index 0000000000..757fec5a6c
 +    );
 +    if (event) {
 +      const action = JSON.parse(event);
-+      if (action.kind === "strip-group" || action.kind === "strip-reorder") {
++      if (action.kind === "strip-group" || action.kind === "strip-reorder" ||
++          action.kind === "strip-detach" || action.kind === "strip-adopt") {
 +        if (!gDialogBox.isOpen && !window.fullScreen && !document.fullscreenElement)
 +          this.stripSession?.receive(action);
 +      } else this.tabMenuSession.receive(action);
@@ -3596,6 +3622,35 @@ index 0000000000..757fec5a6c
 +          }
 +          const neighbor = this.resolveStripTab(beforeId);
 +          if (neighbor) gBrowser.moveTabBefore(tab, neighbor);
++        },
++        // screenX/screenY are physical pixels (native's GetCursorPos); the
++        // window-feature left/top Firefox expects are CSS pixels, so this
++        // can land slightly off the actual cursor on a scaled display.
++        detach: (id, { screenX, screenY }) => {
++          const tab = this.resolveStripTab(id);
++          if (!tab) return;
++          gBrowser.replaceTabWithWindow(tab, { left: screenX, top: screenY });
++        },
++        // sourceHwnd names another open window's own native HWND (as this
++        // process's Pane.cpp sees it) -- nsIBaseWindow.nativeHandle is the
++        // standard way Windows shell-integration code already resolves a
++        // chrome window's HWND, formatted "0x%p" on the C++ side
++        // (xpfe/appshell/AppWindow.cpp), hence the hex parse below.
++        adopt: (sourceHwnd, id, index) => {
++          const sourceWindow = Array.from(
++            Services.wm.getEnumerator("navigator:browser")
++          ).find(win => {
++            try {
++              const handle = win.docShell.treeOwner
++                .QueryInterface(Ci.nsIBaseWindow).nativeHandle;
++              return parseInt(handle, 16) === sourceHwnd;
++            } catch {
++              return false;
++            }
++          });
++          const tab = sourceWindow?.gWinUIPane?.resolveStripTab(id);
++          if (!tab) return;
++          gBrowser.adoptTab(tab, { elementIndex: index, selectTab: true });
 +        },
 +      });
 +    }

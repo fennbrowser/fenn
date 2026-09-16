@@ -1060,6 +1060,91 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(event.GetNamedString(L"kind", L"") == L"strip-reorder" && event.GetNamedNumber(L"id") == 11 &&
                 event.GetNamedNumber(L"beforeId") == 0,
             "a real pointer drag past the last tab queues a validated move-to-end request");
+
+    // Detach: drag the second tab down past the strip's own bottom edge and
+    // release outside it. Neither drag above actually reordered TabItems()
+    // (MenuExchange only drains the queued request; nothing ever applies it
+    // in this test), so the second tab is still at index 1.
+    auto second = view.TabItems().GetAt(1).as<Controls::TabViewItem>();
+    auto secondTopLeft = second.TransformToVisual(nullptr).TransformPoint({0, 0});
+    POINT secondClient{LONG(secondTopLeft.X + second.ActualWidth() / 2),
+                        LONG(secondTopLeft.Y + second.ActualHeight() / 2)};
+    Require(ClientToScreen(host, &secondClient) != 0, "resolve second tab screen position");
+    Require(SetCursorPos(secondClient.x, secondClient.y) != 0, "position cursor over second tab");
+    settle();
+    send(MOUSEEVENTF_LEFTDOWN);
+    settle();
+    // Comfortably exceeds the strip's own height (48) twice over, matching
+    // the "clearly off the strip" margin UpdateDragVisual requires.
+    for (int step = 1; step <= 15; ++step) {
+        moveTo(secondClient.x, secondClient.y + step * 20);
+        settle(5);
+    }
+    send(MOUSEEVENTF_LEFTUP);
+    settle();
+    puts("Detach gesture completed without crashing");
+    auto detachEvent = MenuExchange(api, host);
+    Require(detachEvent.GetNamedString(L"kind", L"") == L"strip-detach" && detachEvent.GetNamedNumber(L"id") == 22,
+            "dragging a tab off the strip queues a validated detach request");
+    Require(detachEvent.GetNamedNumber(L"screenY") > double(secondClient.y),
+            "the detach request carries a screen point below where the drag started");
+
+    // Cross-window adopt: a second, independent pane/strip -- Pane.cpp's
+    // tryAdoptElsewhere hit-tests every OTHER open pane's own
+    // StripScreenBounds() in-process, so this needs a real second HWND with
+    // its own real strip, not just a second in-memory struct.
+    HWND host2 = CreateWindowExW(0, L"STATIC", L"Cross-window drop target", WS_OVERLAPPEDWINDOW, 800, 0, 400, 200,
+                                  nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Require(host2 != nullptr, "second host for cross-window adopt test");
+    RECT rect2{0, 0, 400, 48};
+    Require(SUCCEEDED(api.updateTabStrip(host2, &rect2, TRUE)), "create strip presentation on second host");
+    ShowWindow(host2, SW_SHOW);
+    WinUITab tabs2[]{{99, L"Other window's tab"}};
+    uint32_t selected2{}, close2{}, create2{}, context2{}, command2{};
+    Require(SUCCEEDED(api.syncTabs(host2, tabs2, 1, 99, &selected2, &close2, &create2, &context2, &command2)),
+            "sync strip snapshot for second host");
+    UIElement content2{nullptr};
+    Require(SUCCEEDED(inspect(host2, put_abi(content2))), "inspect second host's strip");
+    auto view2 = content2.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
+    auto secondHostTab = view2.TabItems().GetAt(0).as<Controls::TabViewItem>();
+    for (int i = 0; i < 300 && (!secondHostTab.IsLoaded() || secondHostTab.ActualWidth() == 0); ++i) {
+        Pump();
+        Sleep(10);
+    }
+    Require(secondHostTab.IsLoaded() && secondHostTab.ActualWidth() > 0, "second host's tab realized before drop");
+    settle(30);
+    // Re-resolve the (still two-tab) first strip's own first row fresh --
+    // neither drag above actually reordered TabItems() in this test, but
+    // recomputing avoids depending on any residual state from those.
+    auto dragTarget = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
+    auto dragTopLeft = dragTarget.TransformToVisual(nullptr).TransformPoint({0, 0});
+    POINT dragClient{LONG(dragTopLeft.X + dragTarget.ActualWidth() / 2), LONG(dragTopLeft.Y + dragTarget.ActualHeight() / 2)};
+    Require(ClientToScreen(host, &dragClient) != 0, "resolve first host's tab screen position for adopt test");
+    auto destTopLeft = view2.TransformToVisual(nullptr).TransformPoint({0, 0});
+    POINT destPoint{LONG(destTopLeft.X + secondHostTab.ActualWidth() / 2), LONG(destTopLeft.Y + 10)};
+    Require(ClientToScreen(host2, &destPoint) != 0, "resolve second host's strip screen position");
+    SetForegroundWindow(host);
+    settle();
+    Require(SetCursorPos(dragClient.x, dragClient.y) != 0, "position cursor over first host's tab for adopt test");
+    settle();
+    send(MOUSEEVENTF_LEFTDOWN);
+    settle();
+    // A handful of intermediate steps toward the second window's strip, the
+    // same physical gesture a user dragging a tab into another window makes.
+    for (int step = 1; step <= 10; ++step) {
+        moveTo(dragClient.x + LONG(double(step) / 10 * (destPoint.x - dragClient.x)),
+               dragClient.y + LONG(double(step) / 10 * (destPoint.y - dragClient.y)));
+        settle(5);
+    }
+    send(MOUSEEVENTF_LEFTUP);
+    settle();
+    puts("Cross-window adopt gesture completed without crashing");
+    auto adoptEvent = MenuExchange(api, host2);
+    Require(adoptEvent.GetNamedString(L"kind", L"") == L"strip-adopt" && adoptEvent.GetNamedNumber(L"id") == 11 &&
+                adoptEvent.GetNamedNumber(L"sourceHwnd") == double(reinterpret_cast<uintptr_t>(host)),
+            "dropping a tab onto another window's strip queues a validated adopt request there");
+    Require(SUCCEEDED(api.destroy(host2)), "destroy second host's pane");
+    DestroyWindow(host2);
 }
 
 int wmain(int argc, wchar_t** argv) {
