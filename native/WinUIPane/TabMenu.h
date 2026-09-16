@@ -44,7 +44,7 @@ struct NativeTabMenu {
                 e.label = o.GetNamedString(L"label");
                 e.accessKey = o.GetNamedString(L"accessKey", L"");
                 e.enabled = o.GetNamedBoolean(L"enabled");
-                if (e.label.empty() || e.label.size() > 1024 || e.accessKey.size() > 16)
+                if (e.label.empty() || e.label.size() > NativeJson::kMaxShortLabel || e.accessKey.size() > 16)
                     throw winrt::hresult_invalid_argument();
                 if (e.kind == L"command") {
                     e.id = o.GetNamedString(L"id");
@@ -149,7 +149,7 @@ struct NativeTabMenu {
             auto incoming = NativeJson::RequireId(state, L"revision");
             auto descriptions = state.GetNamedArray(L"models");
             auto bindings = state.GetNamedArray(L"tabs");
-            if (descriptions.Size() > 128 || bindings.Size() > 10000)
+            if (descriptions.Size() > NativeJson::kMaxMenuModels || bindings.Size() > NativeJson::kMaxTabs)
                 throw winrt::hresult_invalid_argument();
             std::vector<std::vector<Entry>> nextModels;
             uint32_t total = 0;

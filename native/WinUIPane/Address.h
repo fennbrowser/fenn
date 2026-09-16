@@ -311,7 +311,7 @@ struct NativeAddress {
         root.Spacing(4);
         root.Margin({0,0,0,12});
         field.PlaceholderText(L"Search or enter address");
-        field.MaxLength(32768);
+        field.MaxLength(int32_t(NativeJson::kMaxFieldText));
         Automation::AutomationProperties::SetName(field, L"Native address prototype");
         Automation::AutomationProperties::SetAutomationId(field, L"FirefoxWinUIAddress");
         Automation::AutomationProperties::SetName(list, L"Address suggestions");
@@ -443,17 +443,19 @@ struct NativeAddress {
         auto checkedText = snapshot.GetNamedString(L"text", L"");
         auto checkedRows = snapshot.GetNamedArray(L"rows");
         if (nextSession.empty() || nextSession.size() > 256 ||
-            checkedText.size() > 32768 || checkedRows.Size() > 100)
+            checkedText.size() > NativeJson::kMaxFieldText || checkedRows.Size() > NativeJson::kMaxListEntries)
             winrt::throw_hresult(E_INVALIDARG);
         std::set<winrt::hstring> checkedIds;
         size_t imagePixels = 0;
         for (auto value : checkedRows) {
             auto row = value.GetObject();
             auto id = row.GetNamedString(L"id");
-            if (id.empty() || id.size() > 256 || !checkedIds.insert(id).second || row.GetNamedString(L"title").size() > 4096 || row.GetNamedString(L"actionLabel", L"").size() > 1024)
+            if (id.empty() || id.size() > NativeJson::kMaxOpaqueId || !checkedIds.insert(id).second ||
+                row.GetNamedString(L"title").size() > 4096 ||
+                row.GetNamedString(L"actionLabel", L"").size() > NativeJson::kMaxShortLabel)
                 winrt::throw_hresult(E_INVALIDARG);
             const auto size = row.GetNamedNumber(L"imageSize", 16);
-            if (size < 16 || size > 52 || row.GetNamedString(L"sectionLabel", L"").size() > 1024)
+            if (size < 16 || size > 52 || row.GetNamedString(L"sectionLabel", L"").size() > NativeJson::kMaxShortLabel)
                 winrt::throw_hresult(E_INVALIDARG);
             NativeJson::ValidateImage(row, imagePixels, kRowImageLimits);
         }
@@ -462,13 +464,15 @@ struct NativeAddress {
         std::set<winrt::hstring> actionIds;
         for (auto value:globalActions) {
             auto item=value.GetObject(); auto id=item.GetNamedString(L"id"); auto resultId=item.GetNamedString(L"resultId");
-            if (id.empty() || id.size()>256 || !actionIds.insert(id).second || resultId.empty() || resultId.size()>256 ||
-                item.GetNamedString(L"title").size()>1024 || item.GetNamedString(L"hint",L"").size()>1024) winrt::throw_hresult(E_INVALIDARG);
+            if (id.empty() || id.size()>NativeJson::kMaxOpaqueId || !actionIds.insert(id).second || resultId.empty() || resultId.size()>NativeJson::kMaxOpaqueId ||
+                item.GetNamedString(L"title").size()>NativeJson::kMaxShortLabel || item.GetNamedString(L"hint",L"").size()>NativeJson::kMaxShortLabel) winrt::throw_hresult(E_INVALIDARG);
             size_t pixels=0; ValidateModeImage(item,pixels);
         }
         if (snapshot.HasKey(L"modes") && snapshot.GetNamedValue(L"modes").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null) {
             auto modes = snapshot.GetNamedObject(L"modes"); auto entries = modes.GetNamedArray(L"entries");
-            if (entries.Size() > 100 || modes.GetNamedString(L"label").size() > 1024 || modes.GetNamedString(L"buttonLabel", L"").size()>1024 || modes.GetNamedString(L"exitLabel", L"").size()>1024) winrt::throw_hresult(E_INVALIDARG);
+            if (entries.Size() > NativeJson::kMaxListEntries || modes.GetNamedString(L"label").size() > NativeJson::kMaxShortLabel ||
+                modes.GetNamedString(L"buttonLabel", L"").size()>NativeJson::kMaxShortLabel ||
+                modes.GetNamedString(L"exitLabel", L"").size()>NativeJson::kMaxShortLabel) winrt::throw_hresult(E_INVALIDARG);
             NativeJson::RequireRevision(modes, L"generation");
             if (nextSession == session && modes.GetNamedNumber(L"generation") == modeGeneration) {
                 if (entries.Size() != modeIds.size()) winrt::throw_hresult(E_INVALIDARG);
@@ -477,7 +481,8 @@ struct NativeAddress {
             }
             size_t pixels=0; ValidateModeImage(modes, pixels); std::set<winrt::hstring> unique;
             for (auto item : entries) { auto entry=item.GetObject(); auto id=entry.GetNamedString(L"id");
-                if (id.empty() || id.size()>256 || !unique.insert(id).second || entry.GetNamedString(L"label").size()>1024) winrt::throw_hresult(E_INVALIDARG);
+                if (id.empty() || id.size()>NativeJson::kMaxOpaqueId || !unique.insert(id).second ||
+                    entry.GetNamedString(L"label").size()>NativeJson::kMaxShortLabel) winrt::throw_hresult(E_INVALIDARG);
                 ValidateModeImage(entry, pixels);
             }
         }
@@ -499,13 +504,13 @@ struct NativeAddress {
             acknowledgedEditId = snapshot.GetNamedNumber(L"editId", 0);
             queryComplete = snapshot.GetNamedBoolean(L"complete", false);
             auto text = snapshot.GetNamedString(L"text", L"");
-            if (text.size() > 32768) winrt::throw_hresult(E_INVALIDARG);
+            if (text.size() > NativeJson::kMaxFieldText) winrt::throw_hresult(E_INVALIDARG);
             if (field.Text() != text) { observedText = text; observedComposing = composing; field.Text(text); field.Select(int(text.size()), 0); }
             auto nextSequence = snapshot.GetNamedNumber(L"sequence", 0);
             if (sequence != nextSequence || previousRevision != revision) {
                 sequence = nextSequence;
                 auto rows = snapshot.GetNamedArray(L"rows");
-                if (rows.Size() > 100) winrt::throw_hresult(E_INVALIDARG);
+                if (rows.Size() > NativeJson::kMaxListEntries) winrt::throw_hresult(E_INVALIDARG);
                 bool sameIds = rows.Size() == ids.size();
                 for (uint32_t i = 0; sameIds && i < rows.Size(); ++i)
                     sameIds = rows.GetAt(i).GetObject().GetNamedString(L"id") == ids[i];

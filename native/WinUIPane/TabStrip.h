@@ -57,7 +57,8 @@ struct NativeTabStrip {
         auto label = data.GetNamedString(L"groupsLabel");
         const bool rtl = data.GetNamedBoolean(L"rtl");
         auto entries = data.GetNamedArray(L"rows"), groups = data.GetNamedArray(L"groups");
-        if (label.empty() || label.size() > 1024 || entries.Size() > 10000 || groups.Size() > 10000) throw hresult_invalid_argument();
+        if (label.empty() || label.size() > NativeJson::kMaxShortLabel ||
+            entries.Size() > NativeJson::kMaxTabs || groups.Size() > NativeJson::kMaxTabs) throw hresult_invalid_argument();
         std::map<uint32_t, Presentation> next;
         for (auto value : entries) {
             auto entry = value.GetObject();
@@ -65,7 +66,9 @@ struct NativeTabStrip {
             auto flags = entry.GetNamedNumber(L"flags");
             auto detail = entry.GetNamedString(L"detail");
             auto status = entry.GetNamedString(L"status", L"");
-            if (!std::isfinite(flags) || flags < 0 || flags > 15 || std::floor(flags) != flags || detail.size() > 2048 || status.size() > 2048 || !next.emplace(id, Presentation{detail, uint32_t(flags), status}).second) throw hresult_invalid_argument();
+            if (!std::isfinite(flags) || flags < 0 || flags > 15 || std::floor(flags) != flags ||
+                detail.size() > NativeJson::kMaxDetailText || status.size() > NativeJson::kMaxDetailText ||
+                !next.emplace(id, Presentation{detail, uint32_t(flags), status}).second) throw hresult_invalid_argument();
         }
         std::set<uint32_t> ids;
         for (auto value : groups) {
@@ -73,7 +76,8 @@ struct NativeTabStrip {
             auto id = NativeJson::RequireId(group, L"id");
             auto name = group.GetNamedString(L"name"), text = group.GetNamedString(L"label");
             group.GetNamedBoolean(L"collapsed");
-            if (!ids.insert(id).second || name.empty() || name.size() > 1024 || text.empty() || text.size() > 2048) throw hresult_invalid_argument();
+            if (!ids.insert(id).second || name.empty() || name.size() > NativeJson::kMaxShortLabel ||
+                text.empty() || text.size() > NativeJson::kMaxDetailText) throw hresult_invalid_argument();
         }
         // Group-only changes replace the flyout, never mutate a closing presenter.
         // Other state changes preserve the flyout but revoke any queued action.

@@ -21,6 +21,26 @@ namespace NativeJson {
     // and these values are never used as array sizes or loop bounds.
     constexpr double kMaxSafeInteger = 9007199254740991.0;
 
+    // Limits Firefox's *.sys.mjs session code enforces on the same fields
+    // before sending them, so a mismatch here would reject valid input:
+    // - kMaxTabs: WinUITabStripSession rows/groups, WinUITabMenuSession targets/event.tabs
+    // - kMaxListEntries: WinUIUrlbarSession mode entries and result ids
+    // - kMaxFieldText: WinUIUrlbarSession address text
+    // - kMaxMenuModels: WinUITabMenuSession distinct menu shapes
+    constexpr size_t kMaxTabs = 10000;
+    constexpr size_t kMaxListEntries = 100;
+    constexpr size_t kMaxFieldText = 32768;
+    constexpr size_t kMaxMenuModels = 128;
+
+    // Native-only defense-in-depth caps: Firefox's JS does not independently
+    // bound these individual field lengths, only aggregate array sizes and
+    // total serialized bytes. Grouped by observed role, not by JSON key name
+    // -- some fields share a key name ("label", "title") across surfaces but
+    // carry different limits, and are intentionally not merged here.
+    constexpr size_t kMaxShortLabel = 1024;  // menu/mode/group captions, hints
+    constexpr size_t kMaxDetailText = 2048;  // per-tab detail/status, group description
+    constexpr size_t kMaxOpaqueId = 256;     // address row/action/mode-entry ids
+
     // A nonzero window-local identity or count (tab id, model index, version).
     inline uint32_t RequireId(JsonObject const& object, wchar_t const* key) {
         auto n = object.GetNamedNumber(key);
