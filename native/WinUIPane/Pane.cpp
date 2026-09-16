@@ -630,16 +630,22 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input, wchar_t* output, uin
         bool selectionResult = !snapshot.GetNamedBoolean(L"publishOnly", false) && !pane.pendingSelectionSet.empty();
         bool groupResult = !selectionResult && !snapshot.GetNamedBoolean(L"publishOnly", false) && pane.strip &&
                            !pane.strip->groupsButton.pending.empty();
+        bool reorderResult = !selectionResult && !groupResult && !snapshot.GetNamedBoolean(L"publishOnly", false) &&
+                              pane.strip && !pane.strip->pendingReorder.empty();
         if (selectionResult)
             result = pane.pendingSelectionSet;
         else if (groupResult)
             result = pane.strip->groupsButton.pending;
+        else if (reorderResult)
+            result = pane.strip->pendingReorder;
         if (result.size() >= capacity) return E_INVALIDARG;
         wcscpy_s(output, capacity, result.c_str());
         if (selectionResult)
             pane.pendingSelectionSet = L"";
         else if (groupResult)
             pane.strip->groupsButton.pending = L"";
+        else if (reorderResult)
+            pane.strip->pendingReorder = L"";
         else if (!result.empty())
             pane.tabMenu.events.pop_front();
         return S_OK;
@@ -813,6 +819,58 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetContent(HWND hwn
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end()) return E_INVALIDARG;
         *output = detach_abi(found->second->source.Content());
+        return S_OK;
+    } catch (...) {
+        return to_hresult();
+    }
+}
+// Test-only: drive the strip's TabItems()-order-derived reorder logic
+// directly, as if a completed drag had already left TabItems() in the given
+// state. Kept for the case a caller wants "the neighbor IS TabItems()'s
+// current order" semantics without a real pointer gesture.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestCompleteReorder(HWND hwnd, uint32_t tabId) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
+        auto& strip = *found->second->strip;
+        auto row = strip.rows.find(tabId);
+        if (row == strip.rows.end()) return E_INVALIDARG;
+        strip.CompleteReorder(row->second);
+        return S_OK;
+    } catch (...) {
+        return to_hresult();
+    }
+}
+// Test-only: drive the explicit-target-index overload the hand-rolled
+// pointer-driven drag actually uses (TabStrip.h), where TabItems()'s real
+// order never changes during the gesture and the neighbor is resolved from
+// an explicit index instead. A real OS drag gesture can't be triggered from
+// outside actual pointer input, so this is the fastest way to exercise it.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestCompleteReorderAt(HWND hwnd, uint32_t tabId,
+                                                                               uint32_t targetIndex) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
+        auto& strip = *found->second->strip;
+        auto row = strip.rows.find(tabId);
+        if (row == strip.rows.end()) return E_INVALIDARG;
+        strip.CompleteReorder(row->second, targetIndex);
+        return S_OK;
+    } catch (...) {
+        return to_hresult();
+    }
+}
+// Test-only: force the same drag-in-progress state a real gesture sets, for
+// the same reason as above -- confirms Sync() ignores Firefox snapshots that
+// land mid-gesture without needing a real drag to hold one open.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSetDragging(HWND hwnd, BOOL value) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
+        found->second->strip->dragging = bool(value);
         return S_OK;
     } catch (...) {
         return to_hresult();

@@ -2097,10 +2097,10 @@ index 1e2660589b..cb7467612c 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..1938686ae6
+index 0000000000..d7bb038780
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,74 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2108,8 +2108,8 @@ index 0000000000..1938686ae6
 +// A separate, versioned presentation inside the existing tab-menu transport.
 +// Group objects never cross the boundary. A fresh read revalidates every action.
 +export class WinUITabStripSession {
-+  constructor({ read, collapse }) {
-+    Object.assign(this, { read, collapse });
++  constructor({ read, collapse, reorder }) {
++    Object.assign(this, { read, collapse, reorder });
 +    this.ids = new WeakMap();
 +    this.nextId = 1;
 +    this.revision = 0;
@@ -2142,17 +2142,37 @@ index 0000000000..1938686ae6
 +  }
 +
 +  receive(event) {
-+    if (event?.kind !== "strip-group" || event.revision !== this.revision ||
-+        !Number.isSafeInteger(event.group) || typeof event.collapsed !== "boolean") return false;
-+    const current = this.describe();
-+    if (JSON.stringify(current) !== this.fingerprint) return false;
-+    const group = current.groups.find(g => g.id === event.group);
-+    if (!group || group.collapsed === event.collapsed) return false;
-+    const target = this.targets.get(event.group);
-+    // Consume before Firefox mutates state or enters any nested browser work.
-+    this.fingerprint = null;
-+    this.collapse(target, event.collapsed);
-+    return true;
++    if (event?.revision !== this.revision) return false;
++    if (event.kind === "strip-group") {
++      if (!Number.isSafeInteger(event.group) || typeof event.collapsed !== "boolean") return false;
++      const current = this.describe();
++      if (JSON.stringify(current) !== this.fingerprint) return false;
++      const group = current.groups.find(g => g.id === event.group);
++      if (!group || group.collapsed === event.collapsed) return false;
++      const target = this.targets.get(event.group);
++      // Consume before Firefox mutates state or enters any nested browser work.
++      this.fingerprint = null;
++      this.collapse(target, event.collapsed);
++      return true;
++    }
++    if (event.kind === "strip-reorder") {
++      // beforeId 0 means "move to the end"; any other value must still name
++      // a row in the fresh snapshot, same as the group id check above.
++      if (!Number.isSafeInteger(event.id) || !Number.isSafeInteger(event.beforeId) || event.beforeId < 0)
++        return false;
++      const current = this.describe();
++      if (JSON.stringify(current) !== this.fingerprint) return false;
++      const index = current.rows.findIndex(r => r.id === event.id);
++      if (index < 0) return false;
++      if (event.beforeId) {
++        if (!current.rows.some(r => r.id === event.beforeId)) return false;
++        if (current.rows[index + 1]?.id === event.beforeId) return false;
++      } else if (index === current.rows.length - 1) return false;
++      this.fingerprint = null;
++      this.reorder(event.id, event.beforeId);
++      return true;
++    }
++    return false;
 +  }
 +}
 diff --git a/browser/base/content/WinUITabMenuSession.sys.mjs b/browser/base/content/WinUITabMenuSession.sys.mjs
@@ -3219,10 +3239,10 @@ index 0000000000..a07d26b2f5
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..a9fc6c5e09
+index 0000000000..757fec5a6c
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,686 @@
+@@ -0,0 +1,706 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3477,6 +3497,15 @@ index 0000000000..a9fc6c5e09
 +    });
 +  },
 +
++  // Shared by the tab-menu resolver and native strip actions (reorder):
++  // an opaque row/tab id is only ever valid while it still names a live,
++  // currently-published tab.
++  resolveStripTab(id) {
++    return Array.from(gBrowser.tabs).find(tab =>
++      this.tabIds.get(tab) === id && tab.isConnected && !tab.closing && !tab.hidden &&
++      (!this.tabStrip || tab.visible));
++  },
++
 +  publishTabMenus(tabs, ids) {
 +    if (!this.tabMenuSession) {
 +      const { WinUITabMenuSession } = ChromeUtils.importESModule(
@@ -3484,9 +3513,7 @@ index 0000000000..a9fc6c5e09
 +      );
 +      this.tabMenuL10n = new Localization(["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl"], true);
 +      this.tabMenuSession = new WinUITabMenuSession({
-+        resolveTab: id => Array.from(gBrowser.tabs).find(tab =>
-+          this.tabIds.get(tab) === id && tab.isConnected && !tab.closing && !tab.hidden &&
-+          (!this.tabStrip || tab.visible)),
++        resolveTab: id => this.resolveStripTab(id),
 +        describe: tab => this.describeTabMenu(tab),
 +        context: () => ({ selected: this.tabIds.get(gBrowser.selectedTab) || 0,
 +          selection: Array.from(gBrowser.selectedTabs, t => this.tabIds.get(t) || 0) }),
@@ -3540,7 +3567,7 @@ index 0000000000..a9fc6c5e09
 +    );
 +    if (event) {
 +      const action = JSON.parse(event);
-+      if (action.kind === "strip-group") {
++      if (action.kind === "strip-group" || action.kind === "strip-reorder") {
 +        if (!gDialogBox.isOpen && !window.fullScreen && !document.fullscreenElement)
 +          this.stripSession?.receive(action);
 +      } else this.tabMenuSession.receive(action);
@@ -3556,6 +3583,19 @@ index 0000000000..a9fc6c5e09
 +        collapse: (group, collapsed) => {
 +          if (!group.isConnected || !gBrowser.tabGroups.includes(group)) return;
 +          group.setCollapsedFromUser(collapsed);
++        },
++        // beforeId is 0 (native's "no neighbor") for "move to the end";
++        // moveTabTo's own pinned/unpinned clamping makes an oversized
++        // elementIndex land at the real end regardless of exact count.
++        reorder: (id, beforeId) => {
++          const tab = this.resolveStripTab(id);
++          if (!tab) return;
++          if (!beforeId) {
++            gBrowser.moveTabTo(tab, { elementIndex: gBrowser.tabs.length });
++            return;
++          }
++          const neighbor = this.resolveStripTab(beforeId);
++          if (neighbor) gBrowser.moveTabBefore(tab, neighbor);
 +        },
 +      });
 +    }

@@ -774,6 +774,64 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     sync();
     settleWidths();
     Require(std::abs(first.ActualWidth() - spaciousWidth) < 1, "tabs grow after other tabs close");
+    // Drag-to-reorder: a real OS drag gesture can't be scripted here (WinUI's
+    // gesture recognizer can't be triggered from outside actual pointer
+    // input), so simulate what a live drag already leaves behind -- WinUI's
+    // own optimistic move of TabItems() -- and drive the same completion
+    // logic TabDragCompleted invokes via a test-only hook.
+    auto completeReorder =
+        reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t)>(GetProcAddress(module, "WinUIPaneTestCompleteReorder"));
+    Require(completeReorder != nullptr, "completed-drag test hook exists");
+    uint32_t secondIndex{};
+    Require(view.TabItems().IndexOf(second, secondIndex), "locate second tab for reorder simulation");
+    view.TabItems().RemoveAt(secondIndex);
+    view.TabItems().InsertAt(0, second);
+    Require(view.TabItems().GetAt(0) == second && view.TabItems().GetAt(1) == first,
+            "simulate WinUI's own live drag having already reordered TabItems()");
+    Require(SUCCEEDED(completeReorder(host, 22)), "drive completed-drag logic for the tab now leading");
+    auto reorderToFront = MenuExchange(api, host);
+    Require(reorderToFront.GetNamedString(L"kind") == L"strip-reorder" &&
+                reorderToFront.GetNamedNumber(L"id") == 22 && reorderToFront.GetNamedNumber(L"beforeId") == 11,
+            "completed drag queues a validated request naming the real neighbor");
+    Require(SUCCEEDED(completeReorder(host, 11)), "drive completed-drag logic for the tab now trailing");
+    auto reorderToEnd = MenuExchange(api, host);
+    Require(reorderToEnd.GetNamedString(L"kind") == L"strip-reorder" && reorderToEnd.GetNamedNumber(L"id") == 11 &&
+                reorderToEnd.GetNamedNumber(L"beforeId") == 0,
+            "a tab with no following row requests beforeId 0 (move to end)");
+    Require(SUCCEEDED(completeReorder(host, 22)), "queue a reorder request for the drain-priority check");
+    view.SelectedItem(second);
+    auto priorityFirst = MenuExchange(api, host);
+    Require(priorityFirst.GetNamedString(L"kind") == L"selection" && priorityFirst.GetNamedNumber(L"tab") == 22,
+            "selection drains before a queued reorder");
+    auto priorityReorder = MenuExchange(api, host);
+    Require(priorityReorder.GetNamedString(L"kind") == L"strip-reorder",
+            "queued reorder drains once the selection ahead of it is consumed");
+    sync();
+    settleWidths();
+    Require(view.TabItems().GetAt(0) == first && view.TabItems().GetAt(1) == second,
+            "Firefox's next snapshot reconciles the simulated drag back to its own order");
+    auto setDragging = reinterpret_cast<HRESULT(WINAPI*)(HWND, BOOL)>(GetProcAddress(module, "WinUIPaneTestSetDragging"));
+    Require(setDragging != nullptr, "dragging test hook exists");
+    auto firstName = [&] {
+        return first.Header()
+            .as<Controls::Grid>()
+            .Children()
+            .GetAt(2)
+            .as<Controls::StackPanel>()
+            .Children()
+            .GetAt(0)
+            .as<Controls::TextBlock>()
+            .Text();
+    };
+    Require(SUCCEEDED(setDragging(host, TRUE)), "simulate a drag in progress");
+    tabs[0].title = L"Ignored while dragging";
+    sync();
+    Require(firstName() == L"Same title", "Sync() ignores a Firefox snapshot that lands mid-drag");
+    Require(SUCCEEDED(setDragging(host, FALSE)), "end the simulated drag");
+    sync();
+    Require(firstName() == L"Ignored while dragging", "Sync() resumes once the drag ends");
+    tabs[0].title = L"Same title";
+    sync();
     auto richer =
         LR"({"version":2,"publishOnly":true,"strip":{"version":1,"revision":1,"rtl":false,"groupsLabel":"Tab groups","groups":[{"id":7,"name":"Work","label":"Work — Expanded","collapsed":false}],"rows":[{"id":11,"detail":"Work · Split 1 left","flags":1,"image":{"width":2,"height":2,"pixels":"0000ffff0000ffff0000ffff0000ffff"}},{"id":22,"detail":"Work · Split 1 right","flags":6,"image":null}]}})";
     MenuExchange(api, host, richer);
@@ -908,6 +966,102 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(groupOpened, "group popup open before island teardown");
 }
 
+// A real OS drag gesture, via SendInput, against the same island-hosted
+// TabView every other strip check uses. Originally added to reproduce the
+// WinUI native-drag crash in isolation (see the tab strip layout notes)
+// -- now that reordering is hand-rolled (plain pointer capture, never
+// WinUI's native CanDragTabs/CanReorderTabs path), this doubles as the one
+// real end-to-end exercise of the actual gesture, which no other test can
+// drive (the WinUIPaneTestCompleteReorder*/WinUIPaneTestSetDragging hooks
+// only drive the logic directly, never a real pointer sequence). Kept as its
+// own entry point, not folded into CheckTabStrip, so a regression here can
+// never take the rest of the suite down with it.
+static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host) {
+    using namespace winrt;
+    using namespace winrt::Microsoft::UI::Xaml;
+    RECT rect{0, 0, 600, 48};
+    Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation for drag test");
+    ShowWindow(host, SW_SHOW);
+    WinUITab tabs[]{{11, L"First tab"}, {22, L"Second tab"}};
+    uint32_t selected{}, close{}, create{}, context{}, command{};
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, &selected, &close, &create, &context, &command)),
+            "sync strip snapshot for drag test");
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
+    UIElement content{nullptr};
+    Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect strip for drag test");
+    auto root = content.as<Controls::Grid>();
+    auto view = root.Children().GetAt(0).as<Controls::TabView>();
+    auto first = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
+    for (int i = 0; i < 300 && (!first.IsLoaded() || first.ActualWidth() == 0); ++i) {
+        Pump();
+        Sleep(10);
+    }
+    Require(first.IsLoaded() && first.ActualWidth() > 0, "tab realized before drag");
+    SetForegroundWindow(host);
+    for (int i = 0; i < 30; ++i) {
+        Pump();
+        root.UpdateLayout();
+        Sleep(10);
+    }
+    auto topLeft = first.TransformToVisual(nullptr).TransformPoint({0, 0});
+    POINT client{LONG(topLeft.X + first.ActualWidth() / 2), LONG(topLeft.Y + first.ActualHeight() / 2)};
+    Require(ClientToScreen(host, &client) != 0, "resolve tab screen position");
+    fprintf(stderr, "Drag test: dragging first tab from screen point (%ld,%ld)\n", client.x, client.y);
+    // A single Pump()+Sleep() pair can race SendInput's delivery -- the
+    // injected message may not have reached this thread's queue yet at the
+    // moment Pump() drains it. Polling repeatedly (matching the pattern
+    // already used elsewhere in this file for physical/UIA interactions,
+    // e.g. waiting for a flyout to open) gives it many chances instead of
+    // exactly one.
+    auto settle = [&](int iterations = 30) {
+        for (int i = 0; i < iterations; ++i) {
+            Pump();
+            Sleep(10);
+        }
+    };
+    Require(SetCursorPos(client.x, client.y) != 0, "position cursor over first tab");
+    settle();
+    auto send = [](DWORD flags) {
+        INPUT input{};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = flags;
+        SendInput(1, &input, sizeof(INPUT));
+    };
+    send(MOUSEEVENTF_LEFTDOWN);
+    settle();
+    // SetCursorPos teleports the cursor and generates a plain WM_MOUSEMOVE,
+    // but WinUI's pointer pipeline (PointerRoutedEventArgs) is driven by
+    // WM_POINTER* messages from the actual input-injection stack -- moving
+    // the cursor via SetCursorPos alone never produced a single PointerMoved
+    // once captured. SendInput with MOUSEEVENTF_ABSOLUTE gives the same
+    // pixel-deterministic positioning (avoiding relative-mickey/sensitivity
+    // ambiguity) while still going through real pointer input.
+    auto moveTo = [&](LONG x, LONG y) {
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        INPUT input{};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        input.mi.dx = LONG((double(x - vx) * 65535) / vw);
+        input.mi.dy = LONG((double(y - vy) * 65535) / vh);
+        SendInput(1, &input, sizeof(INPUT));
+    };
+    // Comfortably exceeds any tab width TabWidthMode="Equal" could produce
+    // for two tabs in a 600-unit strip, so the cursor reliably ends up past
+    // the second tab's midpoint regardless of the exact computed width.
+    for (int step = 1; step <= 25; ++step) {
+        moveTo(client.x + step * 20, client.y);
+        settle(5);
+    }
+    send(MOUSEEVENTF_LEFTUP);
+    settle();
+    puts("Drag gesture completed without crashing");
+    auto event = MenuExchange(api, host);
+    Require(event.GetNamedString(L"kind", L"") == L"strip-reorder" && event.GetNamedNumber(L"id") == 11 &&
+                event.GetNamedNumber(L"beforeId") == 0,
+            "a real pointer drag past the last tab queues a validated move-to-end request");
+}
+
 int wmain(int argc, wchar_t** argv) {
     Require(AddVectoredExceptionHandler(
                 1,
@@ -936,7 +1090,8 @@ int wmain(int argc, wchar_t** argv) {
                 }) != nullptr,
             "install teardown exception guard");
     Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 ||
-                                        wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--strip") == 0)),
+                                        wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--strip") == 0 ||
+                                        wcscmp(argv[2], L"--drag") == 0)),
             "DLL path and optional --inspect required");
     Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "STA initialization");
     HMODULE module = LoadLibraryExW(
@@ -977,6 +1132,16 @@ int wmain(int argc, wchar_t** argv) {
         Require(SUCCEEDED(api.shutdown()), "strip clean shutdown");
         CoUninitialize();
         puts("CHECKS PASSED: TabView layout, stable IDs, selection, menus, theme, hide/show, teardown");
+        return 0;
+    }
+    if (argc == 3 && wcscmp(argv[2], L"--drag") == 0) {
+        CheckTabStripDrag(module, api, first);
+        Require(SUCCEEDED(api.destroy(first)), "destroy drag test island");
+        DestroyWindow(first);
+        winrt::clear_factory_cache();
+        Require(SUCCEEDED(api.shutdown()), "drag test clean shutdown");
+        CoUninitialize();
+        puts("CHECKS PASSED: drag gesture");
         return 0;
     }
     if (argc == 3 && wcscmp(argv[2], L"--menu") == 0) {

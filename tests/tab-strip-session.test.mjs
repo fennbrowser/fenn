@@ -4,18 +4,20 @@ import { WinUITabStripSession } from "../upstream/firefox/browser/base/content/W
 
 function fixture() {
   const target = {};
-  const state = { rtl:false, groupsLabel:"Tab groups", rows:[{id:11, detail:"Work", flags:0, image:null}],
+  const state = { rtl:false, groupsLabel:"Tab groups",
+    rows:[{id:11, detail:"Work", flags:0, image:null}, {id:22, detail:"", flags:0, image:null}],
     groups:[{target, name:"Work", label:"Work — Expanded", collapsed:false}] };
-  const calls = [];
+  const calls = [], reorderCalls = [];
   const session = new WinUITabStripSession({read: () => structured(state),
-    collapse: (group, value) => calls.push([group, value])});
+    collapse: (group, value) => calls.push([group, value]),
+    reorder: (id, beforeId) => reorderCalls.push([id, beforeId])});
   function structured(value) {
     return {...value, rows:value.rows.map(r => ({...r})), groups:value.groups.map(g => ({...g}))};
   }
   const snapshot = session.update();
   const action = {kind:"strip-group", revision:snapshot.strip.revision,
     group:snapshot.strip.groups[0].id, collapsed:true};
-  return {target, state, calls, session, snapshot, action};
+  return {target, state, calls, reorderCalls, session, snapshot, action};
 }
 
 test("group objects stay in Firefox; stable opaque IDs survive label/state changes", () => {
@@ -80,4 +82,48 @@ test("a large favicon payload alone can trip the snapshot size cap", () => {
   // dropping images rather than reaching this session-level throw.
   f.state.rows[0].image = {width:1, height:300000, pixels:"0000ffff".repeat(300000)};
   assert.throws(() => f.session.update(), /too large/);
+});
+
+test("a completed drag is consumed once and calls reorder with the real row ids", () => {
+  const f = fixture();
+  const action = {kind:"strip-reorder", revision:f.snapshot.strip.revision, id:22, beforeId:11};
+  assert.equal(f.session.receive(action), true);
+  assert.deepEqual(f.reorderCalls, [[22, 11]]);
+  assert.equal(f.session.receive(action), false);
+  assert.equal(f.session.update().strip.revision, 2);
+});
+
+test("moving a row to the end is expressed as beforeId 0", () => {
+  const f = fixture();
+  const action = {kind:"strip-reorder", revision:f.snapshot.strip.revision, id:11, beforeId:0};
+  assert.equal(f.session.receive(action), true);
+  assert.deepEqual(f.reorderCalls, [[11, 0]]);
+});
+
+test("a reorder that is already the current order is rejected as a no-op", () => {
+  const f = fixture();
+  // Row 11 is already immediately before row 22; row 22 is already last.
+  for (const action of [{kind:"strip-reorder", revision:f.snapshot.strip.revision, id:11, beforeId:22},
+    {kind:"strip-reorder", revision:f.snapshot.strip.revision, id:22, beforeId:0}]) {
+    assert.equal(f.session.receive(action), false);
+  }
+  assert.equal(f.reorderCalls.length, 0);
+});
+
+test("reorder requests naming unknown rows, stale revisions or malformed ids are rejected", () => {
+  const base = f => ({kind:"strip-reorder", revision:f.snapshot.strip.revision, id:11, beforeId:22});
+  for (const override of [{id:999}, {beforeId:999}, {id:1.5}, {beforeId:-1},
+    {revision:0}, {id:"11"}]) {
+    const f = fixture();
+    assert.equal(f.session.receive({...base(f), ...override}), false);
+    assert.equal(f.reorderCalls.length, 0);
+  }
+});
+
+test("a row set that changed since publication revokes a queued reorder", () => {
+  const f = fixture();
+  const action = {kind:"strip-reorder", revision:f.snapshot.strip.revision, id:22, beforeId:11};
+  f.state.rows[0].detail = "Different split";
+  assert.equal(f.session.receive(action), false);
+  assert.equal(f.reorderCalls.length, 0);
 });
