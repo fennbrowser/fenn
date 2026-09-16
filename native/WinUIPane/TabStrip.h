@@ -604,6 +604,16 @@ struct NativeTabStrip {
                                 if (GetKeyState(VK_CONTROL) & 0x8000 || GetKeyState(VK_SHIFT) & 0x8000) return;
                                 auto& row = rows.at(id);
                                 if (OriginatesOnButton(args.OriginalSource(), row)) return;
+                                // Browsers activate a tab the instant the
+                                // mouse goes down on it, even if a drag
+                                // follows -- not on release, which is where
+                                // TabView's own stock SelectionChanged (this
+                                // constructor, above) would otherwise leave
+                                // it. SelectionChanged still fires normally
+                                // once the stock control catches up on
+                                // release; re-selecting the same id there is
+                                // a no-op.
+                                select(id);
                                 // Capture immediately, before knowing this is
                                 // a real drag: without capture, PointerMoved
                                 // only fires while the cursor is physically
