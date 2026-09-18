@@ -7,6 +7,7 @@
 #include "JsonValidation.h"
 #include "TabGroupsButton.h"
 #include "TabDragDrop.h"
+#include "TabDragImage.h"
 
 // Strip-only experiment: TabView owns presentation, Firefox owns all mutations.
 // No content pages or template internals are used. CanDragTabs/CanReorderTabs
@@ -434,16 +435,40 @@ struct NativeTabStrip {
     }
 
     // Hands an already-armed, already-snapshotted drag (drag.* populated by
-    // PointerMoved's threshold-crossing branch below) to the OS. Blocks
-    // until the whole gesture resolves -- DoDragDrop pumps its own nested
-    // message loop, and DragEnter/DragOver/Drop on this pane's own
+    // PointerMoved's threshold-crossing branch below) to the OS. A
+    // coroutine, not a plain call: rendering the shell drag image
+    // (TabDragImage::AttachDragImageAsync) is itself async, and has to
+    // finish before DoDragDrop starts for the image to be attached to the
+    // right drag at all. PointerMoved calls this and moves on immediately
+    // -- everything from here on runs on a later tick, not nested in that
+    // same call stack, which matches the exact context (a DispatcherQueue
+    // continuation, not raw XAML input dispatch) this design's earlier
+    // verification already confirmed DoDragDrop is safe to run from. Once
+    // DoDragDrop itself starts, it still blocks this thread for the whole
+    // gesture as before -- DragEnter/DragOver/Drop on this pane's own
     // registered IDropTarget (Pane.cpp's StripDropTarget) call back into
-    // OleDragOver/OleDragLeave/AcceptOleDrop below for the rest of this
-    // call's duration. See the tab drag redesign.
-    void BeginOleDrag(uint32_t id) {
-        if (beginOleDragRegistration) beginOleDragRegistration();
+    // OleDragOver/OleDragLeave/AcceptOleDrop for the rest of that call's
+    // duration. See the tab drag redesign.
+    winrt::fire_and_forget BeginOleDrag(uint32_t id) {
         auto dataObject = winrt::make_self<TabDragDrop::DataObject>(TabDragDrop::Payload{ownerHwnd, id});
         auto dropSource = winrt::make_self<TabDragDrop::DropSource>();
+        if (rows.count(id)) {
+            // The strip (and this row) could in principle be torn down
+            // during this await -- nothing else runs on this thread while
+            // DoDragDrop itself blocks it, but this one gap, before that
+            // call even starts, is real. A failure here (render error, no
+            // IDragSourceHelper) is deliberately never fatal to the drag
+            // itself: it only means the shell falls back to its own
+            // default cursor, and the existing RenderTransform-follows-
+            // cursor visual already covers on-strip feedback regardless.
+            std::weak_ptr<int> alive(lifetime);
+            try {
+                co_await TabDragImage::AttachDragImageAsync(rows.at(id), dataObject.get());
+            } catch (...) {
+            }
+            if (alive.expired()) co_return;
+        }
+        if (beginOleDragRegistration) beginOleDragRegistration();
         DWORD effect = DROPEFFECT_NONE;
         HRESULT hr = DoDragDrop(dataObject.get(), dropSource.get(), DROPEFFECT_MOVE, &effect);
         if (endOleDragRegistration) endOleDragRegistration();
@@ -465,6 +490,10 @@ struct NativeTabStrip {
             // safest default is to abandon with no request, same as today.
             CancelDrag();
         }
+        // Set here, not by the caller: PointerMoved returns as soon as this
+        // coroutine hits its first suspension point, long before the
+        // gesture this guard spans has actually ended.
+        drag.handingOffToOle = false;
     }
 
     // Called by this pane's registered IDropTarget while hovering this same
@@ -995,12 +1024,15 @@ struct NativeTabStrip {
                                 // handingOffToOle must be set before
                                 // releasing capture, since releasing it
                                 // synchronously raises PointerCaptureLost on
-                                // this same row.
+                                // this same row. BeginOleDrag resets it
+                                // itself once the whole gesture actually
+                                // ends, not this call -- it's a coroutine
+                                // that returns as soon as it suspends for
+                                // the first time, long before that.
                                 drag.handingOffToOle = true;
                                 row.ReleasePointerCapture(args.Pointer());
                                 dragging = true;
                                 BeginOleDrag(id);
-                                drag.handingOffToOle = false;
                             })),
                         true);
                     row.AddHandler(
