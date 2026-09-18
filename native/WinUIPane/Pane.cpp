@@ -42,16 +42,21 @@ struct PaneApplication : ApplicationT<PaneApplication, Markup::IXamlMetadataProv
     com_array<Markup::XmlnsDefinition> GetXmlnsDefinitions() { return provider.GetXmlnsDefinitions(); }
 };
 
-// Forwards OLE drag-drop callbacks on `parent` (Firefox's real top-level
-// window) to its NativeTabStrip (TabStrip.h's OleDragOver/OleDragLeave/
-// AcceptOleDrop). A separate COM object rather than NativeTabStrip itself
-// implementing IDropTarget directly, since NativeTabStrip has plain
-// unique_ptr lifetime, not COM ref-counting -- RegisterDragDrop keeps its
-// own reference to whatever is passed in. Registered and revoked around one
-// drag's own duration (BeginOleDrag brackets one DoDragDrop call with
-// Pane's beginOleDragRegistration/endOleDragRegistration), never outliving
-// it, so the raw pointer back to the strip needs no separate lifetime
-// guard.
+// Forwards OLE drag-drop callbacks on one pane's `parent` (Firefox's real
+// top-level window) to its NativeTabStrip (TabStrip.h's OleDragOver/
+// OleDragLeave/AcceptOleDrop/AcceptForeignOleDrop). A separate COM object
+// rather than NativeTabStrip itself implementing IDropTarget directly,
+// since NativeTabStrip has plain unique_ptr lifetime, not COM ref-counting
+// -- RegisterDragDrop keeps its own reference to whatever is passed in.
+// Every open pane's target, not just the one whose gesture it is, is
+// registered and revoked together around one drag's own duration
+// (BeginAllOleDragRegistrations/EndAllOleDragRegistrations below bracket
+// one DoDragDrop call with these, wired as strip->beginOleDragRegistration/
+// endOleDragRegistration in Create()) -- a cross-window drop's destination
+// needs its own target already registered before the drag ever reaches it,
+// since OLE resolves a drag's target window once per top-level-window
+// transition, not reactively on demand. Never outliving that one drag, so
+// the raw pointer back to each strip needs no separate lifetime guard.
 //
 // Registered on `parent` specifically, not the strip's own hosted child --
 // two things forced this, both found empirically (see
@@ -69,15 +74,17 @@ struct PaneApplication : ApplicationT<PaneApplication, Markup::IXamlMetadataProv
 //   empirically that the island's only such ancestor is `parent` itself.
 //   Any sibling window, however positioned, is never found this way.
 //
-// This leaves a real, unresolved risk: Firefox's own top-level window
-// almost certainly already has its own IDropTarget registered (Gecko's
-// nsIDragService, on Windows, is itself OLE-based, for the browser's
-// existing file/link/tab drag support). Registering a second, competing
-// target there for the duration of each drag -- as done here -- either
-// fails outright or, since RevokeDragDrop/RegisterDragDrop don't provide a
-// way to save and restore a prior registration, could silently evict
-// Firefox's own for the gesture's duration. Not yet checked against a real
-// Firefox process.
+// Firefox's own top-level window was a real conflict risk here -- Gecko's
+// nsIDragService is itself OLE-based on Windows, for the browser's existing
+// file/link/tab drag support, and RevokeDragDrop/RegisterDragDrop give no
+// way to save and restore a prior registration, so registering a second
+// target on the same window for a drag's duration could have evicted
+// Firefox's own. Checked directly against a live, patched Firefox process:
+// RegisterDragDrop on its real top-level window succeeds cleanly with
+// nothing already registered there at pane-creation time. Not proven for
+// every possible timing (Gecko could register lazily later in a session
+// this didn't happen to exercise), but nsIDragService's usual eager
+// registration pattern makes that unlikely.
 struct StripDropTarget : winrt::implements<StripDropTarget, IDropTarget> {
     NativeTabStrip* strip;
     HWND hwnd;
@@ -88,6 +95,16 @@ struct StripDropTarget : winrt::implements<StripDropTarget, IDropTarget> {
     // coordinates, off by however far the strip sits from parent's own
     // client origin.
     POINT islandOffset;
+    // Set by DragEnter for a drag that's genuinely foreign to this strip (a
+    // different pane's own in-flight gesture, identified via the OLE
+    // payload) -- cleared on DragLeave/Drop. This strip's own drag needs no
+    // such tracking: DoDragDrop never calls DragEnter for the window a
+    // gesture starts and stays within (confirmed against Microsoft's own
+    // docs and empirically), so OwnDragActive() below reads
+    // NativeTabStrip::drag directly instead, for that case only.
+    bool foreignAccepted{};
+    HWND foreignSourceHwnd{};
+    uint32_t foreignTabId{};
     StripDropTarget(NativeTabStrip* s, HWND h, POINT offset) : strip(s), hwnd(h), islandOffset(offset) {}
 
     Windows::Foundation::Point ToLocal(POINTL pt) const {
@@ -96,37 +113,53 @@ struct StripDropTarget : winrt::implements<StripDropTarget, IDropTarget> {
         return {float(client.x - islandOffset.x), float(client.y - islandOffset.y)};
     }
 
-    // DoDragDrop only calls DragEnter on an actual window-boundary crossing
-    // -- not for the window the gesture started over, which for a same-
-    // window reorder is this one, for its entire duration. So acceptance is
-    // read from the strip's own drag state directly (this target is always
-    // paired 1:1 with the strip whose gesture it would be), not from a
-    // payload DragEnter/DragOver were never actually handed for this case.
-    // Cross-window adopt (step 2) will use the IDataObject payload
-    // (TabDragDrop::Extract) that Drop already receives, to tell a foreign
-    // drag apart from this strip's own; nothing here needs that yet.
     bool OwnDragActive() const { return strip->drag.phase == NativeTabStrip::DragPhase::Dragging; }
+    bool Active() const { return OwnDragActive() || foreignAccepted; }
 
-    HRESULT DragEnter(IDataObject*, DWORD, POINTL pt, DWORD* effect) {
+    HRESULT DragEnter(IDataObject* data, DWORD, POINTL pt, DWORD* effect) {
+        if (!OwnDragActive()) {
+            auto payload = TabDragDrop::Extract(data);
+            foreignAccepted = payload && payload->sourceHwnd != strip->ownerHwnd;
+            if (foreignAccepted) {
+                foreignSourceHwnd = payload->sourceHwnd;
+                foreignTabId = payload->tabId;
+            }
+        }
+        // No live make-room preview for a foreign hover (this strip's own
+        // TabItems() would need real hit-testing math this strip never
+        // snapshotted for a drag it isn't driving) -- matches the previous
+        // hand-rolled mechanic's own documented limitation here, not a new
+        // regression. Self-drag visual feedback is unaffected.
         if (OwnDragActive()) strip->OleDragOver(ToLocal(pt));
-        *effect = OwnDragActive() ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
+        *effect = Active() ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
         return S_OK;
     }
     HRESULT DragOver(DWORD, POINTL pt, DWORD* effect) {
         if (OwnDragActive()) strip->OleDragOver(ToLocal(pt));
-        *effect = OwnDragActive() ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
+        *effect = Active() ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
         return S_OK;
     }
     HRESULT DragLeave() {
         if (OwnDragActive()) strip->OleDragLeave();
+        foreignAccepted = false;
         return S_OK;
     }
     HRESULT Drop(IDataObject*, DWORD, POINTL pt, DWORD* effect) {
-        *effect = OwnDragActive() && strip->AcceptOleDrop(strip->drag.tabId, ToLocal(pt)) ? DROPEFFECT_MOVE
-                                                                                           : DROPEFFECT_NONE;
+        bool accepted = OwnDragActive() ? strip->AcceptOleDrop(strip->drag.tabId, ToLocal(pt))
+                        : foreignAccepted ? strip->AcceptForeignOleDrop(foreignSourceHwnd, foreignTabId, ToLocal(pt))
+                                          : false;
+        foreignAccepted = false;
+        *effect = accepted ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
         return S_OK;
     }
 };
+
+// Defined after State (below) is a complete type; registers/revokes every
+// open pane's own OLE drop target together -- see StripDropTarget's own
+// comment for why a cross-window drop needs this rather than just the
+// dragging pane's own target.
+void BeginAllOleDragRegistrations();
+void EndAllOleDragRegistrations();
 
 struct Pane {
     HWND parent{};
@@ -139,13 +172,30 @@ struct Pane {
     std::map<uint32_t, uint32_t> tabCommands;
     NativeTabMenu tabMenu;
     std::unique_ptr<NativeTabStrip> strip;
-    // Only non-null for the duration of an active drag: this pane's own
-    // registered OLE drop target, on `parent` (see StripDropTarget and
-    // strip->beginOleDragRegistration below for why it has to be `parent`
-    // specifically). Registered in beginOleDragRegistration, revoked in
-    // endOleDragRegistration -- TabStrip.h's BeginOleDrag brackets one
-    // DoDragDrop call with those.
+    // Only non-null for the duration of an active drag (this pane's own, or
+    // any other open pane's -- see BeginAllOleDragRegistrations): this
+    // pane's own registered OLE drop target, on `parent` (see
+    // StripDropTarget's own comment for why it has to be `parent`
+    // specifically). Registered by RegisterOleDropTarget, revoked by
+    // RevokeOleDropTarget below.
     winrt::com_ptr<StripDropTarget> dropTarget;
+
+    // Only meaningful when strip is set. Island offset is recomputed fresh
+    // each call rather than cached, since the pane's geometry can change
+    // between drags (a resize/move via updateTabStrip).
+    void RegisterOleDropTarget() {
+        HWND island = GetWindowFromWindowId(source.SiteBridge().WindowId());
+        RECT islandRect{};
+        GetWindowRect(island, &islandRect);
+        POINT islandOffset{islandRect.left, islandRect.top};
+        ScreenToClient(parent, &islandOffset);
+        dropTarget = winrt::make_self<StripDropTarget>(strip.get(), parent, islandOffset);
+        RegisterDragDrop(parent, dropTarget.get());
+    }
+    void RevokeOleDropTarget() {
+        RevokeDragDrop(parent);
+        dropTarget = nullptr;
+    }
     event_token selection{}, takeFocus{}, containers{};
     uint32_t pendingSelection{};
     hstring pendingSelectionSet;
@@ -164,10 +214,7 @@ struct Pane {
         // and DoDragDrop blocks this same (single) STA thread for the
         // gesture's whole duration, so Close() can't run concurrently with
         // an active drag. Cleaned up defensively anyway.
-        if (dropTarget) {
-            RevokeDragDrop(parent);
-            dropTarget = nullptr;
-        }
+        if (dropTarget) RevokeOleDropTarget();
         tabMenu.Close();
         lifetime.reset();
         if (tabs) {
@@ -385,22 +432,8 @@ struct Pane {
             };
             takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(parent); });
             source.Content(strip->root);
-            strip->beginOleDragRegistration = [this] {
-                // See StripDropTarget's own comment for why this has to be
-                // `parent`, not the strip's own hosted child or a dedicated
-                // overlay.
-                HWND island = GetWindowFromWindowId(source.SiteBridge().WindowId());
-                RECT islandRect{};
-                GetWindowRect(island, &islandRect);
-                POINT islandOffset{islandRect.left, islandRect.top};
-                ScreenToClient(parent, &islandOffset);
-                dropTarget = winrt::make_self<StripDropTarget>(strip.get(), parent, islandOffset);
-                RegisterDragDrop(parent, dropTarget.get());
-            };
-            strip->endOleDragRegistration = [this] {
-                RevokeDragDrop(parent);
-                dropTarget = nullptr;
-            };
+            strip->beginOleDragRegistration = BeginAllOleDragRegistrations;
+            strip->endOleDragRegistration = EndAllOleDragRegistrations;
             return;
         }
         auto panel = Markup::XamlReader::Load(
@@ -547,6 +580,15 @@ struct State {
 State& state() {
     static auto value = new State;
     return *value;
+}
+
+void BeginAllOleDragRegistrations() {
+    for (auto& entry : state().panes)
+        if (entry.second->strip) entry.second->RegisterOleDropTarget();
+}
+void EndAllOleDragRegistrations() {
+    for (auto& entry : state().panes)
+        if (entry.second->dropTarget) entry.second->RevokeOleDropTarget();
 }
 
 HRESULT Check(HWND hwnd = nullptr) {

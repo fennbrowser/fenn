@@ -1118,6 +1118,130 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host) {
             "a real pointer drag past the last tab queues a validated move-to-end request");
 }
 
+// Cross-window adopt -- sequencing step 2 (the tab drag
+// redesign). A second, independent pane/strip in a real second HWND:
+// BeginAllOleDragRegistrations registers every open pane's own OLE drop
+// target before a drag starts, precisely so a drop landing on a DIFFERENT
+// window's strip resolves there. Same real-pointer-gesture technique as
+// CheckTabStripDrag above (SendInput to arm and cross the drag threshold,
+// then SetCursorPos+PostMessageW for the rest, since DoDragDrop hit-tests
+// the real cursor position and only needs a posted message to wake its loop
+// into re-checking it).
+static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWND host) {
+    using namespace winrt;
+    using namespace winrt::Microsoft::UI::Xaml;
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
+    auto settle = [](int iterations = 30) {
+        for (int i = 0; i < iterations; ++i) {
+            Pump();
+            Sleep(10);
+        }
+    };
+    auto send = [](DWORD flags) {
+        INPUT input{};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = flags;
+        SendInput(1, &input, sizeof(INPUT));
+    };
+    auto moveTo = [](LONG x, LONG y) {
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        INPUT input{};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        input.mi.dx = LONG((double(x - vx) * 65535) / vw);
+        input.mi.dy = LONG((double(y - vy) * 65535) / vh);
+        SendInput(1, &input, sizeof(INPUT));
+    };
+
+    RECT rect{0, 0, 600, 48};
+    Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation for adopt test");
+    ShowWindow(host, SW_SHOW);
+    WinUITab tabs[]{{33, L"Source tab"}};
+    uint32_t selected{}, close{}, create{}, context{}, command{};
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 1, 33, &selected, &close, &create, &context, &command)),
+            "sync first host's strip snapshot for adopt test");
+    UIElement content{nullptr};
+    Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect first host's strip for adopt test");
+    auto view = content.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
+    auto sourceTab = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
+    for (int i = 0; i < 300 && (!sourceTab.IsLoaded() || sourceTab.ActualWidth() == 0); ++i) {
+        Pump();
+        Sleep(10);
+    }
+    Require(sourceTab.IsLoaded() && sourceTab.ActualWidth() > 0, "source tab realized before adopt drag");
+
+    HWND host2 = CreateWindowExW(0, L"STATIC", L"Cross-window drop target", WS_OVERLAPPEDWINDOW, 800, 0, 400, 200,
+                                  nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Require(host2 != nullptr, "second host for cross-window adopt test");
+    RECT rect2{0, 0, 400, 48};
+    Require(SUCCEEDED(api.updateTabStrip(host2, &rect2, TRUE)), "create strip presentation on second host");
+    ShowWindow(host2, SW_SHOW);
+    WinUITab tabs2[]{{44, L"Other window's tab"}};
+    uint32_t selected2{}, close2{}, create2{}, context2{}, command2{};
+    Require(SUCCEEDED(api.syncTabs(host2, tabs2, 1, 44, &selected2, &close2, &create2, &context2, &command2)),
+            "sync second host's strip snapshot for adopt test");
+    UIElement content2{nullptr};
+    Require(SUCCEEDED(inspect(host2, put_abi(content2))), "inspect second host's strip");
+    auto view2 = content2.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
+    auto destTab = view2.TabItems().GetAt(0).as<Controls::TabViewItem>();
+    for (int i = 0; i < 300 && (!destTab.IsLoaded() || destTab.ActualWidth() == 0); ++i) {
+        Pump();
+        Sleep(10);
+    }
+    Require(destTab.IsLoaded() && destTab.ActualWidth() > 0, "destination tab realized before adopt drag");
+    settle(30);
+
+    auto sourceTopLeft = sourceTab.TransformToVisual(nullptr).TransformPoint({0, 0});
+    POINT sourceClient{LONG(sourceTopLeft.X + sourceTab.ActualWidth() / 2),
+                        LONG(sourceTopLeft.Y + sourceTab.ActualHeight() / 2)};
+    Require(ClientToScreen(host, &sourceClient) != 0, "resolve source tab screen position");
+    auto destTopLeft = destTab.TransformToVisual(nullptr).TransformPoint({0, 0});
+    POINT destPoint{LONG(destTopLeft.X + destTab.ActualWidth() / 2), LONG(destTopLeft.Y + destTab.ActualHeight() / 2)};
+    Require(ClientToScreen(host2, &destPoint) != 0, "resolve second host's strip screen position");
+    fprintf(stderr, "Adopt test: dragging from (%ld,%ld) toward (%ld,%ld)\n", sourceClient.x, sourceClient.y,
+            destPoint.x, destPoint.y);
+
+    SetForegroundWindow(host);
+    settle();
+    Require(SetCursorPos(sourceClient.x, sourceClient.y) != 0, "position cursor over source tab");
+    settle();
+    send(MOUSEEVENTF_LEFTDOWN);
+    settle();
+    // Same reasoning as CheckTabStripDrag's own inputThread: the move that
+    // crosses the drag threshold blocks this thread inside DoDragDrop for
+    // the whole gesture, so the rest of the path toward host2 has to come
+    // from a separate thread.
+    std::thread inputThread([&] {
+        for (int step = 1; step <= 10; ++step) {
+            LONG screenX = sourceClient.x + LONG(double(step) / 10 * (destPoint.x - sourceClient.x));
+            LONG screenY = sourceClient.y + LONG(double(step) / 10 * (destPoint.y - sourceClient.y));
+            SetCursorPos(screenX, screenY);
+            POINT p{screenX, screenY};
+            ScreenToClient(host, &p);
+            PostMessageW(host, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(p.x, p.y));
+            Sleep(15);
+        }
+        SetCursorPos(destPoint.x, destPoint.y);
+        POINT up{destPoint.x, destPoint.y};
+        ScreenToClient(host, &up);
+        PostMessageW(host, WM_LBUTTONUP, 0, MAKELPARAM(up.x, up.y));
+    });
+    LONG firstStepX = sourceClient.x + LONG(1.0 / 10 * (destPoint.x - sourceClient.x));
+    LONG firstStepY = sourceClient.y + LONG(1.0 / 10 * (destPoint.y - sourceClient.y));
+    moveTo(firstStepX, firstStepY);
+    settle(200);
+    inputThread.join();
+    settle();
+    puts("Cross-window adopt gesture completed without crashing");
+    auto adoptEvent = MenuExchange(api, host2);
+    Require(adoptEvent.GetNamedString(L"kind", L"") == L"strip-adopt" && adoptEvent.GetNamedNumber(L"id") == 33 &&
+                adoptEvent.GetNamedNumber(L"sourceHwnd") == double(reinterpret_cast<uintptr_t>(host)),
+            "dropping a tab onto another window's strip queues a validated adopt request there");
+    Require(SUCCEEDED(api.destroy(host2)), "destroy second host's pane");
+    DestroyWindow(host2);
+}
+
 int wmain(int argc, wchar_t** argv) {
     Require(AddVectoredExceptionHandler(
                 1,
@@ -1192,6 +1316,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (argc == 3 && wcscmp(argv[2], L"--drag") == 0) {
         CheckTabStripDrag(module, api, first);
+        CheckTabStripCrossWindowAdopt(module, api, first);
         Require(SUCCEEDED(api.destroy(first)), "destroy drag test island");
         DestroyWindow(first);
         winrt::clear_factory_cache();

@@ -30,14 +30,16 @@ struct NativeTabStrip {
     // the OLE drag payload (TabDragDrop::Payload) so a drop target can tell
     // a self-drop from a foreign one.
     HWND ownerHwnd{};
-    // Set by Pane.cpp: create/register, then revoke/destroy, the drag-
-    // duration overlay window (Pane.cpp's EnsureOverlayWindowClass /
-    // StripDropTarget) that BeginOleDrag below brackets one DoDragDrop call
-    // with. Neither the strip's own hosted child (DirectComposition-backed;
-    // doesn't support classic OLE's window-property-based target lookup)
-    // nor Firefox's own top-level window (likely already registered for its
-    // own drag-and-drop) can be used directly -- see
-    // the tab drag redesign for how this was found.
+    // Set by Pane.cpp to Begin/EndAllOleDragRegistrations: register, then
+    // revoke, every open pane's own OLE drop target (Pane.cpp's
+    // StripDropTarget, on each pane's own `parent`) for the duration of one
+    // DoDragDrop call (BeginOleDrag below brackets it with these). Every
+    // pane, not just this one, because the destination of a cross-window
+    // drop needs its own target already registered before the drag ever
+    // reaches it -- there is no later opportunity to register reactively,
+    // since OLE resolves a drag's target window once per top-level-window
+    // transition, not on demand. See the tab drag redesign
+    // for why `parent` specifically, not the strip's own hosted child.
     std::function<void()> beginOleDragRegistration, endOleDragRegistration;
     std::map<uint32_t, Controls::TabViewItem> rows;
     // Favicons are the small end of what NativeAddress's row images (104,
@@ -478,11 +480,8 @@ struct NativeTabStrip {
             if (i != drag.originalIndex) ShiftSibling(i);
     }
 
-    // Called by this pane's registered IDropTarget on Drop. Only this exact
-    // tab's own in-flight gesture is ever accepted here -- true for every
-    // case reachable today, since a foreign payload (a different source
-    // window) is rejected by StripDropTarget before this is ever called;
-    // cross-window adopt is sequencing step 2.
+    // Called by this pane's registered IDropTarget on Drop, for this exact
+    // tab's own in-flight gesture (self-drop, same window).
     bool AcceptOleDrop(uint32_t tabId, Windows::Foundation::Point const& point) {
         if (drag.tabId != tabId || drag.phase != DragPhase::Dragging || !rows.count(tabId)) return false;
         UpdateDragVisual(point);
@@ -496,6 +495,21 @@ struct NativeTabStrip {
                               : nullptr;
         drag.confirmBeforeId = beforeRow && beforeRow != row ? unbox_value<uint32_t>(beforeRow.Tag()) : 0;
         CompleteReorderAt(row, beforeRow);
+        return true;
+    }
+
+    // Called by this pane's registered IDropTarget on Drop, for a tab
+    // dropped here from a DIFFERENT pane's own in-flight gesture (the OLE
+    // payload names that pane's HWND and its tab id -- StripDropTarget
+    // establishes this is genuinely foreign, not this strip's own drag,
+    // before ever calling here). `point` is already translated to this
+    // strip's own local coordinate space. Always succeeds -- there is no
+    // local drag state to validate against here, unlike AcceptOleDrop;
+    // Firefox's own adopt handler and the JS session's snapshot-based
+    // validation are the real authority, same as every other queued
+    // request this strip sends.
+    bool AcceptForeignOleDrop(HWND sourceHwnd, uint32_t tabId, Windows::Foundation::Point const& point) {
+        QueueIncomingAdopt(sourceHwnd, tabId, ProjectExternalDropIndex(double(point.X)));
         return true;
     }
 
