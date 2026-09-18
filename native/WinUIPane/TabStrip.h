@@ -194,8 +194,24 @@ struct NativeTabStrip {
                     auto point = args.GetCurrentPoint(root);
                     if (!point.Properties().IsLeftButtonPressed()) return;
                     if (OriginatesOnInteractive(args.OriginalSource())) return;
+                    // Mark it handled before handing off, not after: WinUI's
+                    // own default PointerPressed post-processing (acquiring
+                    // implicit capture for whatever's under the pointer)
+                    // would otherwise still run once this handler returns,
+                    // racing SendMessageW's own nested move-tracking loop
+                    // for the same physical gesture -- since Win32 capture
+                    // is exclusive, whichever one grabs it after the other
+                    // starves the other of the mouse-move messages it needs.
+                    args.Handled(true);
                     ::ReleaseCapture();
-                    ::SendMessageW(ownerHwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+                    // WM_NCLBUTTONDOWN's own lParam must be the cursor
+                    // position in *screen* coordinates -- Gecko's own
+                    // WM_EXITSIZEMOVE bookkeeping (nsWindow.cpp) and
+                    // DefWindowProc's own move-tracking both key off it, not
+                    // off a fresh GetCursorPos() of their own.
+                    POINT cursor{};
+                    ::GetCursorPos(&cursor);
+                    ::SendMessageW(ownerHwnd, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(cursor.x, cursor.y));
                 })),
             true);
         // TabView's internal ListView plays its default add/remove theme
