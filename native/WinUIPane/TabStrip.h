@@ -387,48 +387,28 @@ struct NativeTabStrip {
             drag.affectedRowIds.push_back(id);
     }
 
-    // Restores whatever TryPromote/UpdateDragVisual suppressed on the
-    // dragged row for the gesture's duration -- called from every place a
-    // gesture actually ends (CancelDrag/FinishDrag/CommitReorder/
-    // CommitDetach). A no-op if the row is already gone.
-    void RestoreRowInteractivity(uint32_t id) {
-        if (!rows.count(id)) return;
-        auto row = rows.at(id);
-        row.IsHitTestVisible(true);
-        row.Opacity(1);
-    }
-
     // Moves the dragged row to follow the cursor (clamped to the strip's own
     // width) and re-projects the drop position against the stable snapshot
     // taken when the drag began -- never against live (already-shifted)
     // sibling positions, which would feed back into the hit-test. `point` is
     // the pointer's current position relative to `view`, used both for the
-    // horizontal reorder math and to notice the gesture has cleared the
-    // strip's own vertical bounds and become a tear-off. Once torn off,
-    // this row's own transform freezes at its normal (untransformed) spot
-    // and the row itself is hidden (Opacity 0) rather than following the
-    // cursor -- Pane.cpp's own floating tear-off visual (TickDragSession/
-    // TabDragImage.h) represents the dragged tab from that point on
-    // instead, and showing both at once (found from actually dragging a
-    // tab out and back into the same strip without releasing, not from
-    // planning) looked like two copies of the same tab, one static in the
-    // strip and one under the cursor.
+    // horizontal reorder math (as before) and to notice the gesture has
+    // cleared the strip's own vertical bounds and become a tear-off.
     void UpdateDragVisual(Windows::Foundation::Point const& point) {
         auto row = rows.at(drag.tabId);
         double origin = drag.originalLeftEdge[drag.originalIndex];
         double minX = -origin, maxX = view.ActualWidth() - drag.tabWidth - origin;
         double rawDeltaX = point.X - drag.startPoint.X;
         double clampedX = std::clamp(rawDeltaX, std::min(minX, maxX), std::max(minX, maxX));
+        RowTransform(row).X(clampedX);
         // A real margin past the strip's own top/bottom, not just a small
         // wobble while reordering within it -- matches the "drag it clearly
         // off the strip" feel of a real browser's tear-off.
         double stripHeight = view.ActualHeight();
         bool wasDetaching = drag.detaching;
         drag.detaching = stripHeight > 0 && (point.Y < -stripHeight || point.Y > stripHeight * 2);
+        RowTransform(row).Y(drag.detaching ? point.Y - drag.startPoint.Y : 0);
         if (drag.detaching) {
-            RowTransform(row).X(0);
-            RowTransform(row).Y(0);
-            row.Opacity(0);
             // Just left the strip with a reorder gap still open -- close it,
             // since nothing should be making room for a tab that's leaving.
             if (!wasDetaching && drag.projectedIndex != drag.originalIndex) {
@@ -438,9 +418,6 @@ struct NativeTabStrip {
             }
             return;
         }
-        row.Opacity(1);
-        RowTransform(row).X(clampedX);
-        RowTransform(row).Y(0);
         auto projected = ProjectDropIndex(origin + drag.tabWidth / 2 + clampedX);
         if (projected == drag.projectedIndex) return;
         drag.projectedIndex = projected;
@@ -459,7 +436,6 @@ struct NativeTabStrip {
     // accepted the drop, to reset this strip's own phase/dragging flag.
     void FinishDrag(uint32_t id) {
         if (drag.tabId != id) return;
-        RestoreRowInteractivity(id);
         drag.phase = DragPhase::None;
         dragging = false;
     }
@@ -509,28 +485,6 @@ struct NativeTabStrip {
             drag.originalLeftEdge.push_back(item.TransformToVisual(view).TransformPoint({0, 0}).X);
         }
         dragging = true;
-        // Release WinUI's own row-level capture and stop this row from
-        // taking part in normal hit-testing at all for the rest of the
-        // gesture, now that raw ::SetCapture (arm time, PointerPressed
-        // below) is the only thing this gesture's own correctness depends
-        // on. TabViewItem's default template reacts to pointer state on
-        // this row independent of CanDragTabs/this strip's own DragState --
-        // both while it holds capture (an elevated "torn" look, rounded
-        // corners and a drop shadow) and, found only from actually
-        // dragging a tab back and forth without releasing, from ordinary
-        // uncaptured hit-testing too: with the physical button still down,
-        // the cursor merely passing back over the row's own bounds was
-        // enough to re-trigger the same look, capture or not. Releasing
-        // capture alone wasn't the fix; IsHitTestVisible(false) is, since
-        // it stops WinUI's own pointer routing from ever reaching this row
-        // again regardless of which mechanism it would have used. This
-        // costs PointerMoved's own accelerant role for the rest of the
-        // gesture (it needs this row to receive events, captured or not) --
-        // a latency trade, not a correctness one, since Pane.cpp's
-        // TickDragSession already drives everything from here regardless.
-        // RestoreRowInteractivity below undoes both once the gesture ends.
-        for (auto pointer : row.PointerCaptures()) row.ReleasePointerCapture(pointer);
-        row.IsHitTestVisible(false);
         UpdateDragVisual(point);
         return true;
     }
@@ -563,7 +517,13 @@ struct NativeTabStrip {
                               : nullptr;
         drag.confirmBeforeId = beforeRow && beforeRow != row ? unbox_value<uint32_t>(beforeRow.Tag()) : 0;
         CompleteReorderAt(row, beforeRow);
-        RestoreRowInteractivity(tabId);
+        // Unlike every other exit path (FinishDrag/CancelDrag), this never
+        // reset drag.phase back to None on success -- harmless in practice
+        // (the next PointerPressed unconditionally overwrites it to Armed
+        // regardless), except that a stale Dragging phase left on this same
+        // tab could make a later, unrelated Escape keypress on it (while
+        // merely focused, nothing to do with dragging) incorrectly invoke
+        // CancelDrag via its own `drag.phase != DragPhase::None` guard.
         drag.phase = DragPhase::None;
         dragging = false;
         return true;
@@ -588,7 +548,8 @@ struct NativeTabStrip {
         drag.confirmTabId = id;
         drag.confirmBeforeId = 0;
         CompleteDetach(rows.at(id));
-        RestoreRowInteractivity(id);
+        // See CommitReorder's own comment: this never reset drag.phase back
+        // to None on success either.
         drag.phase = DragPhase::None;
         dragging = false;
     }
@@ -678,7 +639,6 @@ struct NativeTabStrip {
         if (drag.phase == DragPhase::Dragging && rows.count(drag.tabId)) {
             auto row = rows.at(drag.tabId);
             for (auto pointer : row.PointerCaptures()) row.ReleasePointerCapture(pointer);
-            RestoreRowInteractivity(drag.tabId);
             for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i) {
                 auto sibling = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
                 ResetRowOffset(sibling, unbox_value<uint32_t>(sibling.Tag()));
@@ -1015,20 +975,15 @@ struct NativeTabStrip {
                                 // promotion Pane.cpp's TickDragSession polls
                                 // for independently -- whichever notices
                                 // first wins (TryPromote is idempotent).
-                                // Dragging: this was meant as a pure
-                                // accelerant, feeding the same tick Pane.cpp's
-                                // own Translate() hook already drives, just
+                                // Dragging: this is purely an accelerant,
+                                // feeding the same tick Pane.cpp's own
+                                // Translate() hook already drives, just
                                 // sooner when WinUI's capture on this row
-                                // happened to still be alive. In practice it
-                                // never fires here anymore -- TryPromote
-                                // itself makes this row IsHitTestVisible
-                                // false the moment it promotes, so WinUI has
-                                // nothing left to route this event to, on
-                                // top of already having released capture.
-                                // Left in place as a harmless fallback (never
-                                // required for correctness either way) rather
-                                // than removed, in case that stops being true
-                                // for some input path this doesn't cover.
+                                // happens to still be alive. Neither path is
+                                // required for correctness; losing this
+                                // event entirely (WinUI capture stolen out
+                                // from under it) costs latency, not the
+                                // gesture itself.
                                 if (alive.expired() || syncing || drag.tabId != id || drag.phase == DragPhase::None)
                                     return;
                                 if (drag.phase == DragPhase::Armed) {
