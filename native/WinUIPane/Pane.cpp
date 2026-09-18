@@ -712,13 +712,24 @@ void TickDragSession() {
         // there (UpdateDragVisual's RenderTransform, just applied above),
         // so no floating visual is needed on top of it.
         DestroyTearoffWindow(session);
+    } else if (hitPane) {
+        // Hovering a DIFFERENT pane's own strip -- snap the floating
+        // visual into that strip's own row band (vertically centered on
+        // it, same as a real row) rather than centering it on the raw
+        // cursor point, so it reads as "now part of this strip" the same
+        // way the real row does when the cursor re-enters the source
+        // strip, not a ghost hovering independently of it. Horizontally it
+        // still tracks the cursor (clamped to the strip's own width) --
+        // the same direct cursor-following UpdateDragVisual itself uses,
+        // not a grid-slot snap.
+        RECT bounds = hitPane->StripScreenBounds();
+        POINT anchor{screenPoint.x, bounds.top + (bounds.bottom - bounds.top) / 2};
+        int halfWidth = session.tearoffWidth / 2;
+        anchor.x = std::clamp(anchor.x, bounds.left + halfWidth, std::max(bounds.left + halfWidth, bounds.right - halfWidth));
+        ShowOrMoveTearoff(session, anchor);
     } else {
-        // Foreign hover or true tear-off -- the on-strip cursor-follow
-        // visual only ever gets fed a point while over the SOURCE strip,
-        // so it has nothing to show here. Without a stand-in, the gap
-        // ForeignDragOver opens below (or empty space, mid-tear-off) would
-        // just sit blank until release. Show the floating visual instead,
-        // same bitmap either way.
+        // True tear-off -- no strip to snap into, so the visual just
+        // follows the cursor directly.
         ShowOrMoveTearoff(session, screenPoint);
     }
     if (hitPane) {
