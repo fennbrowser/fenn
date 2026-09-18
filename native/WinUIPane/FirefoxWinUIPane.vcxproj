@@ -101,7 +101,7 @@
     <WindowsAppSDKSelfContainedAudit>false</WindowsAppSDKSelfContainedAudit>
   </PropertyGroup>
   <ItemDefinitionGroup>
-    <Link><AdditionalDependencies>gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <Link><AdditionalDependencies>gdi32.lib;Ole32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
     <ClCompile>
       <PreprocessorDefinitions Condition="'$(WinUIPaneTesting)'=='true'">WINUI_PANE_TESTING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeader>Use</PrecompiledHeader>

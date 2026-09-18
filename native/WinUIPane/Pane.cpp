@@ -25,6 +25,7 @@ using namespace Microsoft::UI::Xaml::Hosting;
 #include "Address.h"
 #include "TabMenu.h"
 #include "TabStrip.h"
+#include "TabDragDrop.h"
 
 namespace {
 bool DiagnosticsEnabled() {
@@ -41,6 +42,92 @@ struct PaneApplication : ApplicationT<PaneApplication, Markup::IXamlMetadataProv
     com_array<Markup::XmlnsDefinition> GetXmlnsDefinitions() { return provider.GetXmlnsDefinitions(); }
 };
 
+// Forwards OLE drag-drop callbacks on `parent` (Firefox's real top-level
+// window) to its NativeTabStrip (TabStrip.h's OleDragOver/OleDragLeave/
+// AcceptOleDrop). A separate COM object rather than NativeTabStrip itself
+// implementing IDropTarget directly, since NativeTabStrip has plain
+// unique_ptr lifetime, not COM ref-counting -- RegisterDragDrop keeps its
+// own reference to whatever is passed in. Registered and revoked around one
+// drag's own duration (BeginOleDrag brackets one DoDragDrop call with
+// Pane's beginOleDragRegistration/endOleDragRegistration), never outliving
+// it, so the raw pointer back to the strip needs no separate lifetime
+// guard.
+//
+// Registered on `parent` specifically, not the strip's own hosted child --
+// two things forced this, both found empirically (see
+// the tab drag redesign):
+//
+// - The strip's own hosted child (a DesktopChildSiteBridge, backed by
+//   DirectComposition, not a plain HWND) never gets DragEnter/DragOver/Drop
+//   even when correctly registered and genuinely under the cursor.
+// - A dedicated overlay window positioned over the strip does not work
+//   either, regardless of Z-order: classic OLE's target resolution does not
+//   do a fresh geometric hit-test on every move. It resolves one anchor
+//   window from wherever the gesture-starting message actually landed (the
+//   island) and walks that window's REAL Win32 parent chain
+//   (GetParent/GetAncestor) looking for a registered target -- confirmed
+//   empirically that the island's only such ancestor is `parent` itself.
+//   Any sibling window, however positioned, is never found this way.
+//
+// This leaves a real, unresolved risk: Firefox's own top-level window
+// almost certainly already has its own IDropTarget registered (Gecko's
+// nsIDragService, on Windows, is itself OLE-based, for the browser's
+// existing file/link/tab drag support). Registering a second, competing
+// target there for the duration of each drag -- as done here -- either
+// fails outright or, since RevokeDragDrop/RegisterDragDrop don't provide a
+// way to save and restore a prior registration, could silently evict
+// Firefox's own for the gesture's duration. Not yet checked against a real
+// Firefox process.
+struct StripDropTarget : winrt::implements<StripDropTarget, IDropTarget> {
+    NativeTabStrip* strip;
+    HWND hwnd;
+    // The island's own top-left, in `hwnd`-client-relative coordinates --
+    // needed because `hwnd` (`parent`) is not the strip's own root the way
+    // the (unusable) island hwnd would have been; a plain
+    // ScreenToClient(hwnd, ...) alone would give parent-relative
+    // coordinates, off by however far the strip sits from parent's own
+    // client origin.
+    POINT islandOffset;
+    StripDropTarget(NativeTabStrip* s, HWND h, POINT offset) : strip(s), hwnd(h), islandOffset(offset) {}
+
+    Windows::Foundation::Point ToLocal(POINTL pt) const {
+        POINT client{pt.x, pt.y};
+        ScreenToClient(hwnd, &client);
+        return {float(client.x - islandOffset.x), float(client.y - islandOffset.y)};
+    }
+
+    // DoDragDrop only calls DragEnter on an actual window-boundary crossing
+    // -- not for the window the gesture started over, which for a same-
+    // window reorder is this one, for its entire duration. So acceptance is
+    // read from the strip's own drag state directly (this target is always
+    // paired 1:1 with the strip whose gesture it would be), not from a
+    // payload DragEnter/DragOver were never actually handed for this case.
+    // Cross-window adopt (step 2) will use the IDataObject payload
+    // (TabDragDrop::Extract) that Drop already receives, to tell a foreign
+    // drag apart from this strip's own; nothing here needs that yet.
+    bool OwnDragActive() const { return strip->drag.phase == NativeTabStrip::DragPhase::Dragging; }
+
+    HRESULT DragEnter(IDataObject*, DWORD, POINTL pt, DWORD* effect) {
+        if (OwnDragActive()) strip->OleDragOver(ToLocal(pt));
+        *effect = OwnDragActive() ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
+        return S_OK;
+    }
+    HRESULT DragOver(DWORD, POINTL pt, DWORD* effect) {
+        if (OwnDragActive()) strip->OleDragOver(ToLocal(pt));
+        *effect = OwnDragActive() ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
+        return S_OK;
+    }
+    HRESULT DragLeave() {
+        if (OwnDragActive()) strip->OleDragLeave();
+        return S_OK;
+    }
+    HRESULT Drop(IDataObject*, DWORD, POINTL pt, DWORD* effect) {
+        *effect = OwnDragActive() && strip->AcceptOleDrop(strip->drag.tabId, ToLocal(pt)) ? DROPEFFECT_MOVE
+                                                                                           : DROPEFFECT_NONE;
+        return S_OK;
+    }
+};
+
 struct Pane {
     HWND parent{};
     std::unique_ptr<NativeAddress> address;
@@ -52,6 +139,13 @@ struct Pane {
     std::map<uint32_t, uint32_t> tabCommands;
     NativeTabMenu tabMenu;
     std::unique_ptr<NativeTabStrip> strip;
+    // Only non-null for the duration of an active drag: this pane's own
+    // registered OLE drop target, on `parent` (see StripDropTarget and
+    // strip->beginOleDragRegistration below for why it has to be `parent`
+    // specifically). Registered in beginOleDragRegistration, revoked in
+    // endOleDragRegistration -- TabStrip.h's BeginOleDrag brackets one
+    // DoDragDrop call with those.
+    winrt::com_ptr<StripDropTarget> dropTarget;
     event_token selection{}, takeFocus{}, containers{};
     uint32_t pendingSelection{};
     hstring pendingSelectionSet;
@@ -65,6 +159,15 @@ struct Pane {
 
     void Close() {
         if (!source) return;
+        // Can't actually be non-null here in practice -- BeginOleDrag
+        // (TabStrip.h) always tears this down before DoDragDrop returns,
+        // and DoDragDrop blocks this same (single) STA thread for the
+        // gesture's whole duration, so Close() can't run concurrently with
+        // an active drag. Cleaned up defensively anyway.
+        if (dropTarget) {
+            RevokeDragDrop(parent);
+            dropTarget = nullptr;
+        }
         tabMenu.Close();
         lifetime.reset();
         if (tabs) {
@@ -81,24 +184,6 @@ struct Pane {
         tabTitles.clear();
         source.Close();
         source = nullptr;
-    }
-    // This strip's own on-screen rectangle, for another window's drag to
-    // hit-test a drop point against. TransformToVisual(nullptr) gives the
-    // TabView's position relative to this pane's own hosted root (matching
-    // the technique already used for hit-testing screen points elsewhere in
-    // this codebase, e.g. the native drag test's own tab-to-screen-point
-    // resolution); ClientToScreen anchors that to this pane's owning HWND.
-    RECT StripScreenBounds() const {
-        RECT bounds{};
-        if (!strip) return bounds;
-        auto topLeft = strip->view.TransformToVisual(nullptr).TransformPoint({0, 0});
-        POINT origin{LONG(topLeft.X), LONG(topLeft.Y)};
-        ClientToScreen(parent, &origin);
-        bounds.left = origin.x;
-        bounds.top = origin.y;
-        bounds.right = origin.x + LONG(strip->view.ActualWidth());
-        bounds.bottom = origin.y + LONG(strip->view.ActualHeight());
-        return bounds;
     }
     void UpdateRow(Controls::Primitives::SelectorItem const& row) {
         auto index = tabs.IndexFromContainer(row);
@@ -286,6 +371,7 @@ struct Pane {
         source.Initialize(GetWindowIdFromWindow(hwnd));
         if (tabStrip) {
             strip = std::make_unique<NativeTabStrip>(tabMenu);
+            strip->ownerHwnd = hwnd;
             strip->select = [this](uint32_t id) { QueueStripSelection(id); };
             strip->close = [this](uint32_t id) {
                 if (id != inFlightClose &&
@@ -297,13 +383,24 @@ struct Pane {
                 if (pendingNewTabs < 10000) ++pendingNewTabs;
                 pendingSelectionSet = L"";
             };
-            // tryAdoptElsewhere (native cross-window drop hit-testing) is
-            // wired up by the caller once this pane is registered in
-            // state().panes -- State isn't a complete type yet at this
-            // point in the file (it's defined after Pane, since its own
-            // std::unique_ptr<Pane> map needs Pane complete first).
             takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(parent); });
             source.Content(strip->root);
+            strip->beginOleDragRegistration = [this] {
+                // See StripDropTarget's own comment for why this has to be
+                // `parent`, not the strip's own hosted child or a dedicated
+                // overlay.
+                HWND island = GetWindowFromWindowId(source.SiteBridge().WindowId());
+                RECT islandRect{};
+                GetWindowRect(island, &islandRect);
+                POINT islandOffset{islandRect.left, islandRect.top};
+                ScreenToClient(parent, &islandOffset);
+                dropTarget = winrt::make_self<StripDropTarget>(strip.get(), parent, islandOffset);
+                RegisterDragDrop(parent, dropTarget.get());
+            };
+            strip->endOleDragRegistration = [this] {
+                RevokeDragDrop(parent);
+                dropTarget = nullptr;
+            };
             return;
         }
         auto panel = Markup::XamlReader::Load(
@@ -444,6 +541,7 @@ struct State {
     Dispatching::DispatcherQueueController dispatcher{nullptr};
     Application app{nullptr};
     WindowsXamlManager manager{nullptr};
+    bool oleInitialized{};
     std::map<HWND, std::unique_ptr<Pane>> panes;
 };
 State& state() {
@@ -478,6 +576,12 @@ void Initialize() {
         APTTYPEQUALIFIER qualifier;
         check_hresult(CoGetApartmentType(&apartment, &qualifier));
         check_bool(apartment == APTTYPE_STA || apartment == APTTYPE_MAINSTA);
+        // Required before RegisterDragDrop/DoDragDrop (TabDragDrop.h) will
+        // succeed. Returns S_FALSE, not S_OK, when COM was already
+        // CoInitialize'd on this thread (as it is here) -- not a failure.
+        phase = "ole";
+        check_hresult(OleInitialize(nullptr));
+        s.oleInitialized = true;
         phase = "activation-context";
         HMODULE module{};
         check_bool(
@@ -535,25 +639,6 @@ HRESULT UpdateImpl(HWND hwnd, const RECT* rect, BOOL visible, bool strip) noexce
                 auto error = to_hresult();
                 pane->Close();
                 return error;
-            }
-            if (pane->strip) {
-                // Every open window's pane lives in this same process/DLL
-                // (state().panes), so resolving which OTHER window a drop
-                // landed on needs no IPC -- just a screen-point hit-test
-                // against each other pane's own StripScreenBounds().
-                auto self = pane.get();
-                pane->strip->tryAdoptElsewhere = [self](uint32_t tabId, POINT screenPoint) {
-                    for (auto const& entry : state().panes) {
-                        auto& other = *entry.second;
-                        if (&other == self || !other.strip) continue;
-                        RECT bounds = other.StripScreenBounds();
-                        if (!PtInRect(&bounds, screenPoint)) continue;
-                        other.strip->QueueIncomingAdopt(self->parent, tabId,
-                            other.strip->ProjectExternalDropIndex(double(screenPoint.x - bounds.left)));
-                        return true;
-                    }
-                    return false;
-                };
             }
             found = s.panes.emplace(hwnd, std::move(pane)).first;
         }
@@ -817,6 +902,10 @@ HRESULT WINAPI Shutdown() noexcept {
         }
         s.app = nullptr;
         clear_factory_cache();
+        if (s.oleInitialized) {
+            OleUninitialize();
+            s.oleInitialized = false;
+        }
         if (s.activationCookie) {
             check_bool(DeactivateActCtx(0, s.activationCookie));
             s.activationCookie = 0;
