@@ -707,16 +707,25 @@ void TickDragSession() {
     if (session.hoverStrip != newHover && session.hoverStrip && session.hoverStrip != session.sourceStrip)
         session.hoverStrip->EndForeignDragOver();
     session.hoverStrip = newHover;
-    if (hitPane) {
+    if (newHover == session.sourceStrip) {
+        // Still over the source's own strip -- the row itself is visibly
+        // there (UpdateDragVisual's RenderTransform, just applied above),
+        // so no floating visual is needed on top of it.
         DestroyTearoffWindow(session);
+    } else {
+        // Foreign hover or true tear-off -- the on-strip cursor-follow
+        // visual only ever gets fed a point while over the SOURCE strip,
+        // so it has nothing to show here. Without a stand-in, the gap
+        // ForeignDragOver opens below (or empty space, mid-tear-off) would
+        // just sit blank until release. Show the floating visual instead,
+        // same bitmap either way.
+        ShowOrMoveTearoff(session, screenPoint);
+    }
+    if (hitPane) {
         session.sourceStrip->CloseDragGap();
         RECT bounds = hitPane->StripScreenBounds();
         Windows::Foundation::Point local{float(screenPoint.x - bounds.left), float(screenPoint.y - bounds.top)};
         hitPane->strip->ForeignDragOver(local);
-    } else if (newHover) {
-        DestroyTearoffWindow(session);
-    } else {
-        ShowOrMoveTearoff(session, screenPoint);
     }
     if (!buttonDown) ResolveDragDrop(sourcePane, hitPane, screenPoint);
 }
