@@ -18,6 +18,7 @@
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
+#include <winrt/Microsoft.UI.Dispatching.h>
 #include <UIAutomation.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
@@ -1196,8 +1197,13 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     POINT sourceClient{LONG(sourceTopLeft.X + sourceTab.ActualWidth() / 2),
                         LONG(sourceTopLeft.Y + sourceTab.ActualHeight() / 2)};
     Require(ClientToScreen(host, &sourceClient) != 0, "resolve source tab screen position");
+    // Aimed at the destination tab's own left portion, not its center: with
+    // only one tab in host2, approaching from the left keeps the cursor
+    // before that tab's own midpoint (and so projects to index 0, including
+    // that one row in the "make room" shift) for most of the approach,
+    // which the preview-offset check below depends on landing on.
     auto destTopLeft = destTab.TransformToVisual(nullptr).TransformPoint({0, 0});
-    POINT destPoint{LONG(destTopLeft.X + destTab.ActualWidth() / 2), LONG(destTopLeft.Y + destTab.ActualHeight() / 2)};
+    POINT destPoint{LONG(destTopLeft.X + 5), LONG(destTopLeft.Y + destTab.ActualHeight() / 2)};
     Require(ClientToScreen(host2, &destPoint) != 0, "resolve second host's strip screen position");
     fprintf(stderr, "Adopt test: dragging from (%ld,%ld) toward (%ld,%ld)\n", sourceClient.x, sourceClient.y,
             destPoint.x, destPoint.y);
@@ -1212,6 +1218,25 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     // crosses the drag threshold blocks this thread inside DoDragDrop for
     // the whole gesture, so the rest of the path toward host2 has to come
     // from a separate thread.
+    //
+    // After reaching destPoint, this hovers briefly before releasing --
+    // both to give the make-room Storyboard (135ms) time to actually reach
+    // its target, and to verify the live preview
+    // (NativeTabStrip::ForeignDragOver) actually ran on host2's own target,
+    // not just that the final drop resolved correctly. Reading destTab's
+    // RenderTransform requires the UI thread (this thread is a plain
+    // worker thread, not the STA that owns the XAML objects), so the read
+    // itself is marshaled onto it via the DispatcherQueue captured before
+    // this thread started; DoDragDrop's own nested loop still services
+    // that queue while blocked, the same way it services the drag messages
+    // this test posts. The interpolated steps below stay within host's own
+    // screen region until very near the end (host2 starts at screen x=800,
+    // and the straight-line path from source to dest only crosses into it
+    // in roughly the last tenth), so the hover -- not the interpolation
+    // steps -- is what actually gets read.
+    std::atomic<double> previewOffset{0};
+    winrt::Microsoft::UI::Dispatching::DispatcherQueue dispatcher =
+        winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread();
     std::thread inputThread([&] {
         for (int step = 1; step <= 10; ++step) {
             LONG screenX = sourceClient.x + LONG(double(step) / 10 * (destPoint.x - sourceClient.x));
@@ -1222,6 +1247,16 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
             PostMessageW(host, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(p.x, p.y));
             Sleep(15);
         }
+        SetCursorPos(destPoint.x, destPoint.y);
+        POINT hover{destPoint.x, destPoint.y};
+        ScreenToClient(host, &hover);
+        PostMessageW(host, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(hover.x, hover.y));
+        Sleep(250);
+        dispatcher.TryEnqueue([&] {
+            auto transform = destTab.RenderTransform().as<Media::TranslateTransform>();
+            previewOffset = transform.X();
+        });
+        Sleep(100);
         SetCursorPos(destPoint.x, destPoint.y);
         POINT up{destPoint.x, destPoint.y};
         ScreenToClient(host, &up);
@@ -1234,6 +1269,8 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     inputThread.join();
     settle();
     puts("Cross-window adopt gesture completed without crashing");
+    Require(previewOffset.load() > 0.0,
+            "hovering the dragged tab over the destination strip opens a live make-room preview gap there");
     auto adoptEvent = MenuExchange(api, host2);
     Require(adoptEvent.GetNamedString(L"kind", L"") == L"strip-adopt" && adoptEvent.GetNamedNumber(L"id") == 33 &&
                 adoptEvent.GetNamedNumber(L"sourceHwnd") == double(reinterpret_cast<uintptr_t>(host)),

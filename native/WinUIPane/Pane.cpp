@@ -125,22 +125,20 @@ struct StripDropTarget : winrt::implements<StripDropTarget, IDropTarget> {
                 foreignTabId = payload->tabId;
             }
         }
-        // No live make-room preview for a foreign hover (this strip's own
-        // TabItems() would need real hit-testing math this strip never
-        // snapshotted for a drag it isn't driving) -- matches the previous
-        // hand-rolled mechanic's own documented limitation here, not a new
-        // regression. Self-drag visual feedback is unaffected.
         if (OwnDragActive()) strip->OleDragOver(ToLocal(pt));
+        else if (foreignAccepted) strip->ForeignDragOver(ToLocal(pt));
         *effect = Active() ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
         return S_OK;
     }
     HRESULT DragOver(DWORD, POINTL pt, DWORD* effect) {
         if (OwnDragActive()) strip->OleDragOver(ToLocal(pt));
+        else if (foreignAccepted) strip->ForeignDragOver(ToLocal(pt));
         *effect = Active() ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
         return S_OK;
     }
     HRESULT DragLeave() {
         if (OwnDragActive()) strip->OleDragLeave();
+        else strip->EndForeignDragOver();
         foreignAccepted = false;
         return S_OK;
     }

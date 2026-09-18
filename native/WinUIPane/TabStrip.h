@@ -498,6 +498,63 @@ struct NativeTabStrip {
         return true;
     }
 
+    // Live "make room" preview shown in this strip while a DIFFERENT pane's
+    // own drag hovers over it. Mirrors UpdateDragVisual/ShiftSibling's
+    // sibling-shift half for the self-drag case, but simpler: there's no
+    // dragged row of this strip's own to skip, so every row at or past the
+    // projected insertion index shifts uniformly by one tab width to open a
+    // single gap. Original (untransformed) positions are snapshotted once,
+    // like DragState::originalLeftEdge, so repeated projection hit-tests
+    // against a stable layout rather than feeding an already-shifted one
+    // back into itself.
+    struct ForeignDragState {
+        bool active{};
+        uint32_t projectedIndex{};
+        double tabWidth{};
+        std::vector<double> originalLeftEdge;
+    };
+    ForeignDragState foreignDrag;
+
+    void ForeignDragOver(Windows::Foundation::Point const& point) {
+        if (!foreignDrag.active) {
+            foreignDrag.active = true;
+            foreignDrag.projectedIndex = ~0u;
+            foreignDrag.tabWidth =
+                view.TabItems().Size() ? view.TabItems().GetAt(0).as<Controls::TabViewItem>().ActualWidth() : 0;
+            foreignDrag.originalLeftEdge.clear();
+            for (uint32_t i = 0; i < view.TabItems().Size(); ++i) {
+                auto item = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
+                foreignDrag.originalLeftEdge.push_back(item.TransformToVisual(view).TransformPoint({0, 0}).X);
+            }
+        }
+        uint32_t projected = 0;
+        for (uint32_t i = 0; i < foreignDrag.originalLeftEdge.size(); ++i)
+            if (foreignDrag.originalLeftEdge[i] + foreignDrag.tabWidth / 2 < point.X) projected = i + 1;
+        if (projected == foreignDrag.projectedIndex) return;
+        foreignDrag.projectedIndex = projected;
+        for (uint32_t i = 0; i < foreignDrag.originalLeftEdge.size(); ++i) {
+            auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
+            AnimateRowOffset(row, unbox_value<uint32_t>(row.Tag()), i >= projected ? foreignDrag.tabWidth : 0);
+        }
+    }
+
+    // Closes the preview gap immediately -- called on DragLeave (the drag
+    // left without dropping here) and once a drop here is resolved (the
+    // real new row, once Firefox's adopt actually lands on some later
+    // Sync(), arrives through the ordinary insert path with no gap of its
+    // own to settle into; holding this preview open across that round trip
+    // would need the same awaitingConfirm-style bookkeeping DragState uses
+    // for a reordered EXISTING row, which a brand-new row has no matching
+    // "before" state to justify).
+    void EndForeignDragOver() {
+        if (!foreignDrag.active) return;
+        foreignDrag.active = false;
+        for (uint32_t i = 0; i < foreignDrag.originalLeftEdge.size(); ++i) {
+            auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
+            ResetRowOffset(row, unbox_value<uint32_t>(row.Tag()));
+        }
+    }
+
     // Called by this pane's registered IDropTarget on Drop, for a tab
     // dropped here from a DIFFERENT pane's own in-flight gesture (the OLE
     // payload names that pane's HWND and its tab id -- StripDropTarget
@@ -509,7 +566,13 @@ struct NativeTabStrip {
     // validation are the real authority, same as every other queued
     // request this strip sends.
     bool AcceptForeignOleDrop(HWND sourceHwnd, uint32_t tabId, Windows::Foundation::Point const& point) {
-        QueueIncomingAdopt(sourceHwnd, tabId, ProjectExternalDropIndex(double(point.X)));
+        // Use the index the preview actually showed, not a fresh
+        // recomputation -- the two agree in practice (nothing else moves
+        // TabItems() mid-hover), but committing to what was visually
+        // promised is the more defensible source of truth.
+        uint32_t index = foreignDrag.active ? foreignDrag.projectedIndex : ProjectExternalDropIndex(double(point.X));
+        EndForeignDragOver();
+        QueueIncomingAdopt(sourceHwnd, tabId, index);
         return true;
     }
 
