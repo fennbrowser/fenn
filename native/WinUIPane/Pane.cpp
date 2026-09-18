@@ -719,17 +719,13 @@ void TickDragSession() {
         // cursor point, so it reads as "now part of this strip" the same
         // way the real row does when the cursor re-enters the source
         // strip, not a ghost hovering independently of it. Horizontally it
-        // still tracks the cursor, clamped to that strip's own tab
-        // content -- not StripScreenBounds()'s own width, which is the
-        // hosting island's, often much wider than the tabs actually fill
-        // (see NativeTabStrip::ContentWidth's own comment) -- matching the
-        // same direct cursor-following UpdateDragVisual itself uses, not a
-        // grid-slot snap.
+        // still tracks the cursor (clamped to the strip's own width) --
+        // the same direct cursor-following UpdateDragVisual itself uses,
+        // not a grid-slot snap.
         RECT bounds = hitPane->StripScreenBounds();
         POINT anchor{screenPoint.x, bounds.top + (bounds.bottom - bounds.top) / 2};
         int halfWidth = session.tearoffWidth / 2;
-        LONG contentRight = bounds.left + LONG(hitPane->strip->ContentWidth());
-        anchor.x = std::clamp(anchor.x, bounds.left + halfWidth, std::max(bounds.left + halfWidth, contentRight - halfWidth));
+        anchor.x = std::clamp(anchor.x, bounds.left + halfWidth, std::max(bounds.left + halfWidth, bounds.right - halfWidth));
         ShowOrMoveTearoff(session, anchor);
     } else {
         // True tear-off -- no strip to snap into, so the visual just
