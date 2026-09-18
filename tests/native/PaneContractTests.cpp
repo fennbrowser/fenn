@@ -1119,6 +1119,107 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host) {
             "a real pointer drag past the last tab queues a validated move-to-end request");
 }
 
+// Detach-to-new-window -- sequencing step 3 (the tab drag
+// redesign). Releasing well outside `host`'s own window bounds entirely
+// (not just outside the strip's visual area within it -- the registered OLE
+// target is `parent`, the whole top-level window, so anywhere inside it
+// still resolves there) means DoDragDrop resolves as a real drop with
+// nothing accepting it anywhere: BeginOleDrag reads that as detach and
+// queues strip-detach at the real release point, same as the hand-rolled
+// mechanic's own tear-off gesture did.
+static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host) {
+    using namespace winrt;
+    using namespace winrt::Microsoft::UI::Xaml;
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
+    auto settle = [](int iterations = 30) {
+        for (int i = 0; i < iterations; ++i) {
+            Pump();
+            Sleep(10);
+        }
+    };
+    auto send = [](DWORD flags) {
+        INPUT input{};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = flags;
+        SendInput(1, &input, sizeof(INPUT));
+    };
+    auto moveTo = [](LONG x, LONG y) {
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        INPUT input{};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        input.mi.dx = LONG((double(x - vx) * 65535) / vw);
+        input.mi.dy = LONG((double(y - vy) * 65535) / vh);
+        SendInput(1, &input, sizeof(INPUT));
+    };
+
+    RECT rect{0, 0, 600, 48};
+    Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation for detach test");
+    ShowWindow(host, SW_SHOW);
+    WinUITab tabs[]{{55, L"Detach tab"}};
+    uint32_t selected{}, close{}, create{}, context{}, command{};
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 1, 55, &selected, &close, &create, &context, &command)),
+            "sync strip snapshot for detach test");
+    UIElement content{nullptr};
+    Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect strip for detach test");
+    auto view = content.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
+    auto tab = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
+    for (int i = 0; i < 300 && (!tab.IsLoaded() || tab.ActualWidth() == 0); ++i) {
+        Pump();
+        Sleep(10);
+    }
+    Require(tab.IsLoaded() && tab.ActualWidth() > 0, "detach tab realized before drag");
+    SetForegroundWindow(host);
+    settle();
+
+    auto topLeft = tab.TransformToVisual(nullptr).TransformPoint({0, 0});
+    POINT client{LONG(topLeft.X + tab.ActualWidth() / 2), LONG(topLeft.Y + tab.ActualHeight() / 2)};
+    Require(ClientToScreen(host, &client) != 0, "resolve detach tab screen position");
+    RECT hostRect{};
+    Require(GetWindowRect(host, &hostRect) != 0, "resolve host window rect for detach test");
+    // Comfortably below host's own window entirely, not just below the
+    // strip's own visual area within it -- registration is on the whole
+    // top-level window, so only actually leaving that window's bounds
+    // reaches "no target accepted it anywhere."
+    POINT detachPoint{hostRect.left + 50, hostRect.bottom + 200};
+    fprintf(stderr, "Detach test: dragging from (%ld,%ld) to (%ld,%ld), outside host rect (%ld,%ld,%ld,%ld)\n",
+            client.x, client.y, detachPoint.x, detachPoint.y, hostRect.left, hostRect.top, hostRect.right,
+            hostRect.bottom);
+
+    Require(SetCursorPos(client.x, client.y) != 0, "position cursor over detach tab");
+    settle();
+    send(MOUSEEVENTF_LEFTDOWN);
+    settle();
+    std::thread inputThread([&] {
+        for (int step = 1; step <= 10; ++step) {
+            LONG screenX = client.x + LONG(double(step) / 10 * (detachPoint.x - client.x));
+            LONG screenY = client.y + LONG(double(step) / 10 * (detachPoint.y - client.y));
+            SetCursorPos(screenX, screenY);
+            POINT p{screenX, screenY};
+            ScreenToClient(host, &p);
+            PostMessageW(host, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(p.x, p.y));
+            Sleep(15);
+        }
+        SetCursorPos(detachPoint.x, detachPoint.y);
+        POINT up{detachPoint.x, detachPoint.y};
+        ScreenToClient(host, &up);
+        PostMessageW(host, WM_LBUTTONUP, 0, MAKELPARAM(up.x, up.y));
+    });
+    LONG firstStepX = client.x + LONG(1.0 / 10 * (detachPoint.x - client.x));
+    LONG firstStepY = client.y + LONG(1.0 / 10 * (detachPoint.y - client.y));
+    moveTo(firstStepX, firstStepY);
+    settle(200);
+    inputThread.join();
+    settle();
+    puts("Detach gesture completed without crashing");
+    auto detachEvent = MenuExchange(api, host);
+    Require(detachEvent.GetNamedString(L"kind", L"") == L"strip-detach" && detachEvent.GetNamedNumber(L"id") == 55,
+            "dragging a tab outside every open window's bounds queues a validated detach request");
+    Require(detachEvent.GetNamedNumber(L"screenY") > double(hostRect.bottom),
+            "the detach request carries a screen point below the host window it left");
+}
+
 // Cross-window adopt -- sequencing step 2 (the tab drag
 // redesign). A second, independent pane/strip in a real second HWND:
 // BeginAllOleDragRegistrations registers every open pane's own OLE drop
@@ -1353,6 +1454,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (argc == 3 && wcscmp(argv[2], L"--drag") == 0) {
         CheckTabStripDrag(module, api, first);
+        CheckTabStripDetach(module, api, first);
         CheckTabStripCrossWindowAdopt(module, api, first);
         Require(SUCCEEDED(api.destroy(first)), "destroy drag test island");
         DestroyWindow(first);

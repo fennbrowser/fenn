@@ -445,19 +445,25 @@ struct NativeTabStrip {
         auto dataObject = winrt::make_self<TabDragDrop::DataObject>(TabDragDrop::Payload{ownerHwnd, id});
         auto dropSource = winrt::make_self<TabDragDrop::DropSource>();
         DWORD effect = DROPEFFECT_NONE;
-        DoDragDrop(dataObject.get(), dropSource.get(), DROPEFFECT_MOVE, &effect);
+        HRESULT hr = DoDragDrop(dataObject.get(), dropSource.get(), DROPEFFECT_MOVE, &effect);
         if (endOleDragRegistration) endOleDragRegistration();
         dragging = false;
-        if (effect == DROPEFFECT_NONE) {
-            // Cancelled (Escape) or released where nothing accepted it --
-            // detach-to-new-window is sequencing step 3, not yet wired up,
-            // so this falls back to a plain reset rather than losing the
-            // tab.
-            CancelDrag();
-        } else {
-            // Accepted: the target's own Drop() (AcceptOleDrop below, for
-            // now always this same strip) already queued the real request.
+        if (effect != DROPEFFECT_NONE) {
+            // Accepted: the target's own Drop() (AcceptOleDrop/
+            // AcceptForeignOleDrop) already queued the real request.
             drag.phase = DragPhase::None;
+        } else if (hr == DRAGDROP_S_DROP) {
+            // A real drop, but nothing accepted it anywhere -- no
+            // registered target (no open pane's own window) was under the
+            // cursor at release. Matches the hand-rolled mechanic's own
+            // tear-off gesture: treat it as detach-to-new-window rather
+            // than losing the tab.
+            CompleteDetachFromOle(id);
+            drag.phase = DragPhase::None;
+        } else {
+            // DRAGDROP_S_CANCEL (Escape), or any other unexpected outcome --
+            // safest default is to abandon with no request, same as today.
+            CancelDrag();
         }
     }
 
@@ -496,6 +502,28 @@ struct NativeTabStrip {
         drag.confirmBeforeId = beforeRow && beforeRow != row ? unbox_value<uint32_t>(beforeRow.Tag()) : 0;
         CompleteReorderAt(row, beforeRow);
         return true;
+    }
+
+    // Called from BeginOleDrag when DoDragDrop resolves as a genuine drop
+    // (not Escape) but nothing accepted it anywhere -- release happened
+    // outside every open pane's own window. `confirmBeforeId` of 0 with
+    // `awaitingConfirm` set means the same thing it does for a plain
+    // move-to-end reorder (CompleteReorderAt), but here it's actually
+    // "landed" the moment Sync() no longer sees this tab at all: it will
+    // have moved to the new window Firefox opens for it, not stayed at the
+    // strip's own end. Any siblings this gesture shifted to open a gap
+    // before detaching (UpdateDragVisual, prior to whatever leg of the
+    // gesture actually left every registered window -- OleDragLeave
+    // already closes that gap on exit, but affectedRowIds isn't cleared by
+    // that, so this keeps the same eventual reset Sync() already does for
+    // every other outcome) still get cleaned up the same way.
+    void CompleteDetachFromOle(uint32_t id) {
+        if (!rows.count(id)) return;
+        drag.affectedRowIds.push_back(id);
+        drag.awaitingConfirm = true;
+        drag.confirmTabId = id;
+        drag.confirmBeforeId = 0;
+        CompleteDetach(rows.at(id));
     }
 
     // Live "make room" preview shown in this strip while a DIFFERENT pane's
