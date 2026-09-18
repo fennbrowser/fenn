@@ -167,6 +167,37 @@ struct NativeTabStrip {
         view.AddTabButtonClick([this, alive](auto const&, auto const&) {
             if (!alive.expired() && !syncing) add();
         });
+        // A native top bar should move the window when dragged by its own
+        // empty space, the same as any ordinary title bar -- but the JS
+        // side deliberately sets -moz-window-dragging:no-drag on this
+        // pane's own hosting element (browser-winui-pane.js), since the
+        // XAML Island sitting on top of that DOM region would otherwise
+        // fight Gecko's own CSS-driven drag detection for the same input.
+        // That leaves nothing to move the window at all once the island
+        // takes over that whole area, so this replaces it: press on empty
+        // strip background (not a tab, not a button) forwards the click to
+        // the real top-level window as WM_NCLBUTTONDOWN/HTCAPTION, the
+        // same message an actual title bar generates -- DefWindowProc's
+        // own modal move loop (and its built-in double-click-to-maximize
+        // detection, which tracks consecutive HTCAPTION clicks itself)
+        // takes over from there, no different from any other window. Uses
+        // AddHandler(handledEventsToo=true) like the row handlers below,
+        // for the same reason theirs do: TabView's own internal ListView
+        // marks PointerPressed handled for its own purposes even over
+        // empty background, and a plainly-registered handler on `root`
+        // would never see an already-handled event bubble up to it.
+        root.AddHandler(
+            UIElement::PointerPressedEvent(),
+            box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                [this, alive](auto const&, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
+                    if (alive.expired() || syncing) return;
+                    auto point = args.GetCurrentPoint(root);
+                    if (!point.Properties().IsLeftButtonPressed()) return;
+                    if (OriginatesOnInteractive(args.OriginalSource())) return;
+                    ::ReleaseCapture();
+                    ::SendMessageW(ownerHwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+                })),
+            true);
         // TabView's internal ListView plays its default add/remove theme
         // transitions (fade out then remove, fade in on insert) whenever a
         // row's position in TabItems() changes via the RemoveAt+InsertAt
@@ -290,6 +321,20 @@ struct NativeTabStrip {
         auto node = source.try_as<DependencyObject>();
         while (node && node != row) {
             if (node.try_as<Controls::Primitives::ButtonBase>()) return true;
+            node = Media::VisualTreeHelper::GetParent(node);
+        }
+        return false;
+    }
+
+    // True if `source` is (or is inside) a tab row or a button anywhere up
+    // to `root` -- the window-move handler above only wants to catch a
+    // press on genuinely empty strip background, not one that happens to
+    // land on (or bubble from) an actual tab, its close button, the add-tab
+    // button, or the groups button.
+    bool OriginatesOnInteractive(winrt::Windows::Foundation::IInspectable const& source) const {
+        auto node = source.try_as<DependencyObject>();
+        while (node && node != root) {
+            if (node.try_as<Controls::TabViewItem>() || node.try_as<Controls::Primitives::ButtonBase>()) return true;
             node = Media::VisualTreeHelper::GetParent(node);
         }
         return false;
