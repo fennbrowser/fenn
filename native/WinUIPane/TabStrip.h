@@ -485,6 +485,26 @@ struct NativeTabStrip {
             drag.originalLeftEdge.push_back(item.TransformToVisual(view).TransformPoint({0, 0}).X);
         }
         dragging = true;
+        // Release WinUI's own row-level capture now that raw ::SetCapture
+        // (arm time, PointerPressed below) is the only thing this
+        // gesture's correctness depends on. TabViewItem's default template
+        // ties its built-in "torn"/elevated look (rounded corners, drop
+        // shadow) to whether the row currently has pointer capture --
+        // entirely independent of CanDragTabs/this strip's own DragState --
+        // so holding it here made the row flicker between elevated and
+        // flush depending on whether WinUI's own capture happened to
+        // survive, exactly the inconsistency this design otherwise doesn't
+        // depend on (reported after live testing: a tab still snapped into
+        // a strip, by this code's own bookkeeping, sometimes rendered as
+        // if it had been pulled out of it). Releasing it here keeps the
+        // row -- and the tear-off bitmap rendered from it, TabDragImage.h,
+        // since that render always happens later than this point --
+        // consistently flush for the rest of the gesture. PointerMoved's
+        // own accelerant role mostly survives this anyway: hit-testing
+        // still follows the row's own rendered (post-RenderTransform)
+        // bounds, and UpdateDragVisual keeps those chasing the cursor for
+        // as long as the gesture stays on this strip.
+        for (auto pointer : row.PointerCaptures()) row.ReleasePointerCapture(pointer);
         UpdateDragVisual(point);
         return true;
     }
