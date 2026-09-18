@@ -392,23 +392,34 @@ struct NativeTabStrip {
     // taken when the drag began -- never against live (already-shifted)
     // sibling positions, which would feed back into the hit-test. `point` is
     // the pointer's current position relative to `view`, used both for the
-    // horizontal reorder math (as before) and to notice the gesture has
-    // cleared the strip's own vertical bounds and become a tear-off.
+    // horizontal reorder math and to notice the gesture has cleared the
+    // strip's own vertical bounds and become a tear-off. Once torn off,
+    // this row's own transform freezes at its normal (untransformed) spot
+    // rather than following the cursor -- Pane.cpp's own floating tear-off
+    // visual (TickDragSession/TabDragImage.h) represents the dragged tab
+    // from that point on instead. Found from actually dragging a tab out
+    // and back into the same strip without releasing, not from planning: a
+    // row whose rendered bounds visibly leave its container is also what
+    // triggers TabViewItem's own built-in "torn"/elevated look, independent
+    // of pointer capture (see TryPromote's own comment on the capture half
+    // of that same problem) -- and animating both this row's own transform
+    // and the floating popup every tick, redundantly, at what can be large
+    // offsets, was itself real, visible per-tick cost.
     void UpdateDragVisual(Windows::Foundation::Point const& point) {
         auto row = rows.at(drag.tabId);
         double origin = drag.originalLeftEdge[drag.originalIndex];
         double minX = -origin, maxX = view.ActualWidth() - drag.tabWidth - origin;
         double rawDeltaX = point.X - drag.startPoint.X;
         double clampedX = std::clamp(rawDeltaX, std::min(minX, maxX), std::max(minX, maxX));
-        RowTransform(row).X(clampedX);
         // A real margin past the strip's own top/bottom, not just a small
         // wobble while reordering within it -- matches the "drag it clearly
         // off the strip" feel of a real browser's tear-off.
         double stripHeight = view.ActualHeight();
         bool wasDetaching = drag.detaching;
         drag.detaching = stripHeight > 0 && (point.Y < -stripHeight || point.Y > stripHeight * 2);
-        RowTransform(row).Y(drag.detaching ? point.Y - drag.startPoint.Y : 0);
         if (drag.detaching) {
+            RowTransform(row).X(0);
+            RowTransform(row).Y(0);
             // Just left the strip with a reorder gap still open -- close it,
             // since nothing should be making room for a tab that's leaving.
             if (!wasDetaching && drag.projectedIndex != drag.originalIndex) {
@@ -418,6 +429,8 @@ struct NativeTabStrip {
             }
             return;
         }
+        RowTransform(row).X(clampedX);
+        RowTransform(row).Y(0);
         auto projected = ProjectDropIndex(origin + drag.tabWidth / 2 + clampedX);
         if (projected == drag.projectedIndex) return;
         drag.projectedIndex = projected;
