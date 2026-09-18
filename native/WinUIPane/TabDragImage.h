@@ -2,14 +2,13 @@
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <winrt/Windows.Storage.Streams.h>
 
-// A cursor-following visual for the tear-off/detach region of a drag -- the
-// one place the on-strip RenderTransform-follows-cursor visual
-// (TabStrip.h's UpdateDragVisual) has nothing to drive it, since that's
-// only ever fed a point while the drag is still over some strip. This is a
-// plain window this codebase fully owns (created/positioned/destroyed by
-// Pane.cpp's TabDragSession) -- no OLE, no shell drag-image API, matching
-// the tab drag redesign's move away from anything with its
-// own hidden WinUI-owned behavior.
+// The sole visual for a dragged tab, for the whole gesture -- not just the
+// tear-off/detach region. TabStrip.h's UpdateDragVisual only ever recomputes
+// reorder/detaching state now; it never moves or shows the dragged row's
+// own RenderTransform. This is a plain window this codebase fully owns
+// (created/positioned/destroyed by Pane.cpp's TabDragSession) -- no OLE, no
+// shell drag-image API, in keeping with the drag redesign's move away from
+// anything with its own hidden WinUI-owned behavior.
 namespace TabDragImage {
 
 // A coroutine, not a blocking call: RenderTargetBitmap::RenderAsync/

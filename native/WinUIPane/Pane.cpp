@@ -548,12 +548,16 @@ void EnsureTearoffClassRegistered() {
     (void)atom;
 }
 
-// Renders `row`'s current appearance into the session's tear-off bitmap,
-// once, the first time a tear-off actually needs one -- a coroutine, not a
-// blocking call, for the same reason TabDragImage::RenderElementToBitmapAsync
-// itself is one (see that file). Guards against the session having moved on
-// (a new gesture, or this same one having re-entered a strip and left again,
-// replacing the popup) by the time it resumes.
+// Renders `row`'s current appearance into the session's tear-off bitmap --
+// once, the first tick of Dragging, since the popup now represents the
+// dragged tab for the whole gesture (TickDragSession), not just once it
+// leaves a strip. A coroutine, not a blocking call, for the same reason
+// TabDragImage::RenderElementToBitmapAsync itself is one (see that file).
+// Guards against the session having moved on (a new gesture) by the time it
+// resumes. Hides `row` itself only once this actually completes, not before
+// -- rendering it first is what makes the bitmap show the tab at all rather
+// than a blank/transparent image, since RenderTargetBitmap captures what
+// would actually be composited, including opacity.
 winrt::fire_and_forget RenderTearoffAsync(Controls::TabViewItem row, HWND popup, std::weak_ptr<int> alive) {
     int width{}, height{};
     uint64_t bitmap{};
@@ -570,16 +574,19 @@ winrt::fire_and_forget RenderTearoffAsync(Controls::TabViewItem row, HWND popup,
     session.tearoffBitmap = HBITMAP(bitmap);
     session.tearoffWidth = width;
     session.tearoffHeight = height;
+    row.Opacity(0);
 }
 
-// Creates (lazily, on first need) and repositions the tear-off popup at the
-// current cursor position. A plain WS_POPUP this code fully owns -- no OLE
-// registration, so none of the ancestor-chain/z-order problems that made an
-// overlay window unusable for OLE's own purposes apply here: this window
-// only ever needs to be visually on top, never hit-testable by anything
-// (WS_EX_TRANSPARENT), so it can never interfere with the geometric
-// hit-testing TickDragSession does against every pane's own
-// StripScreenBounds().
+// Creates (lazily, on the first tick of Dragging) and repositions the
+// tear-off popup -- the sole visual for the dragged tab for the whole
+// gesture now (TickDragSession), so this fires immediately once promoted,
+// not just once a tear-off actually happens. A plain WS_POPUP this code
+// fully owns -- no OLE registration, so none of the ancestor-chain/z-order
+// problems that made an overlay window unusable for OLE's own purposes
+// apply here: this window only ever needs to be visually on top, never
+// hit-testable by anything (WS_EX_TRANSPARENT), so it can never interfere
+// with the geometric hit-testing TickDragSession does against every pane's
+// own StripScreenBounds().
 void ShowOrMoveTearoff(TabDragSession& session, POINT screenPoint) {
     if (!session.tearoffWindow) {
         EnsureTearoffClassRegistered();
@@ -694,11 +701,13 @@ void TickDragSession() {
     if (!hitPane) {
         // Not over any other pane -- on-strip vs. tear-off is decided by
         // the source strip's own existing vertical-margin heuristic
-        // (UpdateDragVisual's drag.detaching, unchanged), which already
-        // tolerates horizontal excess past the strip's own left/right edge
-        // (e.g. dragging past the last tab) as still "on this strip," not a
+        // (UpdateDragVisual's drag.detaching), which already tolerates
+        // horizontal excess past the strip's own left/right edge (e.g.
+        // dragging past the last tab) as still "on this strip," not a
         // tear-off -- exactly the move-to-end gesture this is meant to
-        // support.
+        // support. UpdateDragVisual no longer touches the dragged row's own
+        // visual at all (see its own comment) -- only the floating popup,
+        // positioned below, ever represents the dragged tab now.
         RECT bounds = sourcePane.StripScreenBounds();
         Windows::Foundation::Point local{float(screenPoint.x - bounds.left), float(screenPoint.y - bounds.top)};
         session.sourceStrip->UpdateDragVisual(local);
@@ -707,22 +716,28 @@ void TickDragSession() {
     if (session.hoverStrip != newHover && session.hoverStrip && session.hoverStrip != session.sourceStrip)
         session.hoverStrip->EndForeignDragOver();
     session.hoverStrip = newHover;
-    if (newHover == session.sourceStrip) {
-        // Still over the source's own strip -- the row itself is visibly
-        // there (UpdateDragVisual's RenderTransform, just applied above),
-        // so no floating visual is needed on top of it.
-        DestroyTearoffWindow(session);
-    } else if (hitPane) {
-        // Hovering a DIFFERENT pane's own strip -- snap the floating
-        // visual into that strip's own row band (vertically centered on
-        // it, same as a real row) rather than centering it on the raw
-        // cursor point, so it reads as "now part of this strip" the same
-        // way the real row does when the cursor re-enters the source
-        // strip, not a ghost hovering independently of it. Horizontally it
-        // still tracks the cursor (clamped to the strip's own width) --
-        // the same direct cursor-following UpdateDragVisual itself uses,
-        // not a grid-slot snap.
-        RECT bounds = hitPane->StripScreenBounds();
+    // The floating popup is the sole visual for the dragged tab for the
+    // whole gesture now, not just once it leaves a strip -- TabStrip.h's
+    // TryPromote/UpdateDragVisual never move or show the real row anymore
+    // (RenderTearoffAsync hides it once the popup's own snapshot is
+    // actually ready). Keeping one mechanism instead of switching between
+    // "real row" and "floating bitmap" at each hover transition is what
+    // actually fixed the class of bugs that switch kept producing (a
+    // duplicate visual, an inconsistent flush/elevated look depending on
+    // which one currently owned the row, two independently-tuned clamps
+    // disagreeing with each other) -- there's no transition left to get
+    // wrong. `snapPane` is whichever pane's own strip the popup should
+    // visually snap into right now (source or foreign); null means a true
+    // tear-off, where it just follows the cursor directly instead.
+    Pane* snapPane = hitPane ? hitPane : (newHover ? &sourcePane : nullptr);
+    if (snapPane) {
+        // Snap into that strip's own row band (vertically centered on it,
+        // same as a real row) rather than centering on the raw cursor
+        // point, so it reads as "part of this strip" the same way a real
+        // row would. Horizontally it still tracks the cursor (clamped to
+        // the strip's own width) -- the same direct cursor-following
+        // UpdateDragVisual's own clamp math uses, not a grid-slot snap.
+        RECT bounds = snapPane->StripScreenBounds();
         POINT anchor{screenPoint.x, bounds.top + (bounds.bottom - bounds.top) / 2};
         int halfWidth = session.tearoffWidth / 2;
         anchor.x = std::clamp(anchor.x, bounds.left + halfWidth, std::max(bounds.left + halfWidth, bounds.right - halfWidth));

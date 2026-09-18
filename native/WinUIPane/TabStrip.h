@@ -17,8 +17,8 @@
 // (microsoft/microsoft-ui-xaml#7007, #8450) show this is a long-standing
 // WinUI bug, not something fixable on our side by configuration. Reordering
 // is instead hand-rolled below (DragState/PointerPressed and friends): plain
-// pointer capture and a manual RenderTransform never touch WinUI's native
-// OLE drag-drop path, so the crash can never trigger. Real OS-level
+// pointer capture and manual sibling-shift animations never touch WinUI's
+// native OLE drag-drop path, so the crash can never trigger. Real OS-level
 // DoDragDrop was tried too and hit
 // the exact same fail-fast from a different, WinUI-internal entry point
 // (SystemDropOperationTargetAdapter, automatically bridging any real OLE
@@ -387,27 +387,34 @@ struct NativeTabStrip {
             drag.affectedRowIds.push_back(id);
     }
 
-    // Moves the dragged row to follow the cursor (clamped to the strip's own
-    // width) and re-projects the drop position against the stable snapshot
-    // taken when the drag began -- never against live (already-shifted)
-    // sibling positions, which would feed back into the hit-test. `point` is
-    // the pointer's current position relative to `view`, used both for the
-    // horizontal reorder math (as before) and to notice the gesture has
-    // cleared the strip's own vertical bounds and become a tear-off.
+    // Re-derives the reorder/tear-off state from the cursor's current
+    // position, clamped the same way a row confined to this strip's own
+    // width would be -- but doesn't touch the dragged row's own visual at
+    // all anymore. Pane.cpp's floating popup (TabDragImage.h) is the sole
+    // visual for the dragged tab for the whole gesture now, not just once
+    // it leaves a strip; the dragged row itself just sits hidden
+    // (TryPromote hides it once that popup's own snapshot is ready, and
+    // every commit/cancel path below restores it). Keeping one mechanism
+    // instead of switching between "real row" and "floating bitmap" at
+    // each hover transition is what actually fixed the class of bugs that
+    // switch kept producing (a duplicate visual, an inconsistent flush/
+    // elevated look depending on which one currently owned the row, two
+    // independently-tuned clamps disagreeing with each other) -- there's
+    // no transition left to get wrong. `point` is the pointer's current
+    // position relative to `view`, used both for the horizontal reorder
+    // math and to notice the gesture has cleared the strip's own vertical
+    // bounds and become a tear-off.
     void UpdateDragVisual(Windows::Foundation::Point const& point) {
-        auto row = rows.at(drag.tabId);
         double origin = drag.originalLeftEdge[drag.originalIndex];
         double minX = -origin, maxX = view.ActualWidth() - drag.tabWidth - origin;
         double rawDeltaX = point.X - drag.startPoint.X;
         double clampedX = std::clamp(rawDeltaX, std::min(minX, maxX), std::max(minX, maxX));
-        RowTransform(row).X(clampedX);
         // A real margin past the strip's own top/bottom, not just a small
         // wobble while reordering within it -- matches the "drag it clearly
         // off the strip" feel of a real browser's tear-off.
         double stripHeight = view.ActualHeight();
         bool wasDetaching = drag.detaching;
         drag.detaching = stripHeight > 0 && (point.Y < -stripHeight || point.Y > stripHeight * 2);
-        RowTransform(row).Y(drag.detaching ? point.Y - drag.startPoint.Y : 0);
         if (drag.detaching) {
             // Just left the strip with a reorder gap still open -- close it,
             // since nothing should be making room for a tab that's leaving.
@@ -426,6 +433,15 @@ struct NativeTabStrip {
         }
     }
 
+    // Undoes whatever TryPromote's render-completion callback hid (see its
+    // own comment) once a gesture actually ends. A no-op if the row is
+    // already gone, or was never actually hidden (a gesture that ends
+    // before the popup's own snapshot finished rendering never got this
+    // far in the first place).
+    void RestoreRowVisibility(uint32_t id) {
+        if (rows.count(id)) rows.at(id).Opacity(1);
+    }
+
     // Ends an armed-but-never-promoted gesture: a plain click (selection
     // already happened normally on press, nothing to commit) or capture
     // lost while still Armed (nothing has moved yet, so there's nothing to
@@ -436,6 +452,7 @@ struct NativeTabStrip {
     // accepted the drop, to reset this strip's own phase/dragging flag.
     void FinishDrag(uint32_t id) {
         if (drag.tabId != id) return;
+        RestoreRowVisibility(id);
         drag.phase = DragPhase::None;
         dragging = false;
     }
@@ -517,6 +534,7 @@ struct NativeTabStrip {
                               : nullptr;
         drag.confirmBeforeId = beforeRow && beforeRow != row ? unbox_value<uint32_t>(beforeRow.Tag()) : 0;
         CompleteReorderAt(row, beforeRow);
+        RestoreRowVisibility(tabId);
         // Unlike every other exit path (FinishDrag/CancelDrag), this never
         // reset drag.phase back to None on success -- harmless in practice
         // (the next PointerPressed unconditionally overwrites it to Armed
@@ -548,6 +566,7 @@ struct NativeTabStrip {
         drag.confirmTabId = id;
         drag.confirmBeforeId = 0;
         CompleteDetach(rows.at(id));
+        RestoreRowVisibility(id);
         // See CommitReorder's own comment: this never reset drag.phase back
         // to None on success either.
         drag.phase = DragPhase::None;
@@ -639,6 +658,7 @@ struct NativeTabStrip {
         if (drag.phase == DragPhase::Dragging && rows.count(drag.tabId)) {
             auto row = rows.at(drag.tabId);
             for (auto pointer : row.PointerCaptures()) row.ReleasePointerCapture(pointer);
+            RestoreRowVisibility(drag.tabId);
             for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i) {
                 auto sibling = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
                 ResetRowOffset(sibling, unbox_value<uint32_t>(sibling.Tag()));
