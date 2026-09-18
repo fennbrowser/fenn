@@ -25,7 +25,6 @@ using namespace Microsoft::UI::Xaml::Hosting;
 #include "Address.h"
 #include "TabMenu.h"
 #include "TabStrip.h"
-#include "TabDragDrop.h"
 
 namespace {
 bool DiagnosticsEnabled() {
@@ -42,122 +41,42 @@ struct PaneApplication : ApplicationT<PaneApplication, Markup::IXamlMetadataProv
     com_array<Markup::XmlnsDefinition> GetXmlnsDefinitions() { return provider.GetXmlnsDefinitions(); }
 };
 
-// Forwards OLE drag-drop callbacks on one pane's `parent` (Firefox's real
-// top-level window) to its NativeTabStrip (TabStrip.h's OleDragOver/
-// OleDragLeave/AcceptOleDrop/AcceptForeignOleDrop). A separate COM object
-// rather than NativeTabStrip itself implementing IDropTarget directly,
-// since NativeTabStrip has plain unique_ptr lifetime, not COM ref-counting
-// -- RegisterDragDrop keeps its own reference to whatever is passed in.
-// Every open pane's target, not just the one whose gesture it is, is
-// registered and revoked together around one drag's own duration
-// (BeginAllOleDragRegistrations/EndAllOleDragRegistrations below bracket
-// one DoDragDrop call with these, wired as strip->beginOleDragRegistration/
-// endOleDragRegistration in Create()) -- a cross-window drop's destination
-// needs its own target already registered before the drag ever reaches it,
-// since OLE resolves a drag's target window once per top-level-window
-// transition, not reactively on demand. Never outliving that one drag, so
-// the raw pointer back to each strip needs no separate lifetime guard.
-//
-// Registered on `parent` specifically, not the strip's own hosted child --
-// two things forced this, both found empirically (see
-// the tab drag redesign):
-//
-// - The strip's own hosted child (a DesktopChildSiteBridge, backed by
-//   DirectComposition, not a plain HWND) never gets DragEnter/DragOver/Drop
-//   even when correctly registered and genuinely under the cursor.
-// - A dedicated overlay window positioned over the strip does not work
-//   either, regardless of Z-order: classic OLE's target resolution does not
-//   do a fresh geometric hit-test on every move. It resolves one anchor
-//   window from wherever the gesture-starting message actually landed (the
-//   island) and walks that window's REAL Win32 parent chain
-//   (GetParent/GetAncestor) looking for a registered target -- confirmed
-//   empirically that the island's only such ancestor is `parent` itself.
-//   Any sibling window, however positioned, is never found this way.
-//
-// Firefox's own top-level window was a real conflict risk here -- Gecko's
-// nsIDragService is itself OLE-based on Windows, for the browser's existing
-// file/link/tab drag support, and RevokeDragDrop/RegisterDragDrop give no
-// way to save and restore a prior registration, so registering a second
-// target on the same window for a drag's duration could have evicted
-// Firefox's own. Checked directly against a live, patched Firefox process:
-// RegisterDragDrop on its real top-level window succeeds cleanly with
-// nothing already registered there at pane-creation time. Not proven for
-// every possible timing (Gecko could register lazily later in a session
-// this didn't happen to exercise), but nsIDragService's usual eager
-// registration pattern makes that unlikely.
-struct StripDropTarget : winrt::implements<StripDropTarget, IDropTarget> {
-    NativeTabStrip* strip;
-    HWND hwnd;
-    // The island's own top-left, in `hwnd`-client-relative coordinates --
-    // needed because `hwnd` (`parent`) is not the strip's own root the way
-    // the (unusable) island hwnd would have been; a plain
-    // ScreenToClient(hwnd, ...) alone would give parent-relative
-    // coordinates, off by however far the strip sits from parent's own
-    // client origin.
-    POINT islandOffset;
-    // Set by DragEnter for a drag that's genuinely foreign to this strip (a
-    // different pane's own in-flight gesture, identified via the OLE
-    // payload) -- cleared on DragLeave/Drop. This strip's own drag needs no
-    // such tracking: DoDragDrop never calls DragEnter for the window a
-    // gesture starts and stays within (confirmed against Microsoft's own
-    // docs and empirically), so OwnDragActive() below reads
-    // NativeTabStrip::drag directly instead, for that case only.
-    bool foreignAccepted{};
-    HWND foreignSourceHwnd{};
-    uint32_t foreignTabId{};
-    StripDropTarget(NativeTabStrip* s, HWND h, POINT offset) : strip(s), hwnd(h), islandOffset(offset) {}
-
-    Windows::Foundation::Point ToLocal(POINTL pt) const {
-        POINT client{pt.x, pt.y};
-        ScreenToClient(hwnd, &client);
-        return {float(client.x - islandOffset.x), float(client.y - islandOffset.y)};
-    }
-
-    bool OwnDragActive() const { return strip->drag.phase == NativeTabStrip::DragPhase::Dragging; }
-    bool Active() const { return OwnDragActive() || foreignAccepted; }
-
-    HRESULT DragEnter(IDataObject* data, DWORD, POINTL pt, DWORD* effect) {
-        if (!OwnDragActive()) {
-            auto payload = TabDragDrop::Extract(data);
-            foreignAccepted = payload && payload->sourceHwnd != strip->ownerHwnd;
-            if (foreignAccepted) {
-                foreignSourceHwnd = payload->sourceHwnd;
-                foreignTabId = payload->tabId;
-            }
-        }
-        if (OwnDragActive()) strip->OleDragOver(ToLocal(pt));
-        else if (foreignAccepted) strip->ForeignDragOver(ToLocal(pt));
-        *effect = Active() ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
-        return S_OK;
-    }
-    HRESULT DragOver(DWORD, POINTL pt, DWORD* effect) {
-        if (OwnDragActive()) strip->OleDragOver(ToLocal(pt));
-        else if (foreignAccepted) strip->ForeignDragOver(ToLocal(pt));
-        *effect = Active() ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
-        return S_OK;
-    }
-    HRESULT DragLeave() {
-        if (OwnDragActive()) strip->OleDragLeave();
-        else strip->EndForeignDragOver();
-        foreignAccepted = false;
-        return S_OK;
-    }
-    HRESULT Drop(IDataObject*, DWORD, POINTL pt, DWORD* effect) {
-        bool accepted = OwnDragActive() ? strip->AcceptOleDrop(strip->drag.tabId, ToLocal(pt))
-                        : foreignAccepted ? strip->AcceptForeignOleDrop(foreignSourceHwnd, foreignTabId, ToLocal(pt))
-                                          : false;
-        foreignAccepted = false;
-        *effect = accepted ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
-        return S_OK;
-    }
+// Process-wide: exactly one drag gesture can be active at a time, mirroring
+// how DoDragDrop (the design this replaces) only ever let one run too.
+// sourceHwnd doubles as the "is a gesture active at all" flag. Armed vs.
+// Dragging is not duplicated here -- it's read directly off
+// sourceStrip->drag.phase wherever it matters, so there is exactly one
+// place a gesture's phase can ever disagree with itself. Defined before
+// struct Pane (unlike the functions below) because Pane::Close() reads its
+// fields directly, which needs it to be a complete type.
+struct TabDragSession {
+    HWND sourceHwnd{};
+    NativeTabStrip* sourceStrip{};
+    uint32_t tabId{};
+    // Whichever pane's own strip is currently showing a live "make room"
+    // preview: sourceStrip itself while still hovering the strip the
+    // gesture started on, a different pane's own strip while hovering it
+    // (ForeignDragOver), or null during a true tear-off (neither).
+    NativeTabStrip* hoverStrip{};
+    // The tear-off visual (TabDragImage.h) -- only created once the cursor
+    // first clears every open pane's own StripScreenBounds(), and destroyed
+    // again as soon as it re-enters one; see ShowOrMoveTearoff/
+    // DestroyTearoffWindow below.
+    HWND tearoffWindow{};
+    HBITMAP tearoffBitmap{};
+    int tearoffWidth{}, tearoffHeight{};
 };
 
-// Defined after State (below) is a complete type; registers/revokes every
-// open pane's own OLE drop target together -- see StripDropTarget's own
-// comment for why a cross-window drop needs this rather than just the
-// dragging pane's own target.
-void BeginAllOleDragRegistrations();
-void EndAllOleDragRegistrations();
+// Forward declarations: Pane::Create wires strip->armDragSession/
+// tickDragSession to these, and Pane::Close aborts an in-progress session
+// referencing this pane -- both need to be visible before struct Pane, and
+// (aside from dragSession/TabDragSession, already complete above) are only
+// fully defined once Pane itself is a complete type.
+struct Pane;
+TabDragSession& dragSession();
+void ArmDragSession(Pane& pane, uint32_t id);
+void AbortDragSession();
+void TickDragSession();
 
 struct Pane {
     HWND parent{};
@@ -170,30 +89,6 @@ struct Pane {
     std::map<uint32_t, uint32_t> tabCommands;
     NativeTabMenu tabMenu;
     std::unique_ptr<NativeTabStrip> strip;
-    // Only non-null for the duration of an active drag (this pane's own, or
-    // any other open pane's -- see BeginAllOleDragRegistrations): this
-    // pane's own registered OLE drop target, on `parent` (see
-    // StripDropTarget's own comment for why it has to be `parent`
-    // specifically). Registered by RegisterOleDropTarget, revoked by
-    // RevokeOleDropTarget below.
-    winrt::com_ptr<StripDropTarget> dropTarget;
-
-    // Only meaningful when strip is set. Island offset is recomputed fresh
-    // each call rather than cached, since the pane's geometry can change
-    // between drags (a resize/move via updateTabStrip).
-    void RegisterOleDropTarget() {
-        HWND island = GetWindowFromWindowId(source.SiteBridge().WindowId());
-        RECT islandRect{};
-        GetWindowRect(island, &islandRect);
-        POINT islandOffset{islandRect.left, islandRect.top};
-        ScreenToClient(parent, &islandOffset);
-        dropTarget = winrt::make_self<StripDropTarget>(strip.get(), parent, islandOffset);
-        RegisterDragDrop(parent, dropTarget.get());
-    }
-    void RevokeOleDropTarget() {
-        RevokeDragDrop(parent);
-        dropTarget = nullptr;
-    }
     event_token selection{}, takeFocus{}, containers{};
     uint32_t pendingSelection{};
     hstring pendingSelectionSet;
@@ -205,14 +100,35 @@ struct Pane {
     bool syncing{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
+    // This strip's own on-screen rectangle, for another window's drag to
+    // hit-test a drop point against (Pane.cpp's TickDragSession, checked
+    // against every open pane in state().panes). TransformToVisual(nullptr)
+    // gives the TabView's position relative to this pane's own hosted root
+    // (matching the technique already used for hit-testing screen points
+    // elsewhere in this codebase, e.g. the native drag test's own
+    // tab-to-screen-point resolution); ClientToScreen anchors that to this
+    // pane's owning HWND.
+    RECT StripScreenBounds() const {
+        RECT bounds{};
+        if (!strip) return bounds;
+        auto topLeft = strip->view.TransformToVisual(nullptr).TransformPoint({0, 0});
+        POINT origin{LONG(topLeft.X), LONG(topLeft.Y)};
+        ClientToScreen(parent, &origin);
+        bounds.left = origin.x;
+        bounds.top = origin.y;
+        bounds.right = origin.x + LONG(strip->view.ActualWidth());
+        bounds.bottom = origin.y + LONG(strip->view.ActualHeight());
+        return bounds;
+    }
+
     void Close() {
         if (!source) return;
-        // Can't actually be non-null here in practice -- BeginOleDrag
-        // (TabStrip.h) always tears this down before DoDragDrop returns,
-        // and DoDragDrop blocks this same (single) STA thread for the
-        // gesture's whole duration, so Close() can't run concurrently with
-        // an active drag. Cleaned up defensively anyway.
-        if (dropTarget) RevokeOleDropTarget();
+        // The tick-based session (unlike the old thread-blocking DoDragDrop
+        // it replaced) can genuinely still be in progress when a window
+        // closes -- abort it rather than leave a dangling sourceStrip/
+        // hoverStrip pointer for the next tick to dereference.
+        if (strip && (strip.get() == dragSession().sourceStrip || strip.get() == dragSession().hoverStrip))
+            AbortDragSession();
         tabMenu.Close();
         lifetime.reset();
         if (tabs) {
@@ -430,8 +346,8 @@ struct Pane {
             };
             takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(parent); });
             source.Content(strip->root);
-            strip->beginOleDragRegistration = BeginAllOleDragRegistrations;
-            strip->endOleDragRegistration = EndAllOleDragRegistrations;
+            strip->armDragSession = [this](uint32_t id) { ArmDragSession(*this, id); };
+            strip->tickDragSession = TickDragSession;
             return;
         }
         auto panel = Markup::XamlReader::Load(
@@ -561,6 +477,11 @@ struct Pane {
     }
 };
 
+TabDragSession& dragSession() {
+    static TabDragSession session;
+    return session;
+}
+
 // Intentionally process-lifetime storage: no WinRT destruction under DLL detach.
 struct State {
     DWORD thread{};
@@ -572,7 +493,6 @@ struct State {
     Dispatching::DispatcherQueueController dispatcher{nullptr};
     Application app{nullptr};
     WindowsXamlManager manager{nullptr};
-    bool oleInitialized{};
     std::map<HWND, std::unique_ptr<Pane>> panes;
 };
 State& state() {
@@ -580,13 +500,225 @@ State& state() {
     return *value;
 }
 
-void BeginAllOleDragRegistrations() {
-    for (auto& entry : state().panes)
-        if (entry.second->strip) entry.second->RegisterOleDropTarget();
+void ArmDragSession(Pane& pane, uint32_t id) {
+    auto& session = dragSession();
+    session.sourceHwnd = pane.parent;
+    session.sourceStrip = pane.strip.get();
+    session.tabId = id;
+    session.hoverStrip = pane.strip.get();
+    session.tearoffWindow = nullptr;
+    session.tearoffBitmap = nullptr;
+    session.tearoffWidth = session.tearoffHeight = 0;
 }
-void EndAllOleDragRegistrations() {
-    for (auto& entry : state().panes)
-        if (entry.second->dropTarget) entry.second->RevokeOleDropTarget();
+
+void DestroyTearoffWindow(TabDragSession& session) {
+    if (session.tearoffBitmap) {
+        DeleteObject(session.tearoffBitmap);
+        session.tearoffBitmap = nullptr;
+    }
+    if (session.tearoffWindow) {
+        DestroyWindow(session.tearoffWindow);
+        session.tearoffWindow = nullptr;
+    }
+    session.tearoffWidth = session.tearoffHeight = 0;
+}
+
+// Tears the session down regardless of outcome -- release, cancel, a
+// foreign pane accepting the drop, or (defensively) the source pane itself
+// having been closed mid-gesture, which this tick-based design allows in a
+// way the old, thread-blocking DoDragDrop call structurally couldn't.
+void AbortDragSession() {
+    auto& session = dragSession();
+    if (session.hoverStrip && session.hoverStrip != session.sourceStrip) session.hoverStrip->EndForeignDragOver();
+    DestroyTearoffWindow(session);
+    if (session.sourceHwnd && GetCapture() == session.sourceHwnd) ReleaseCapture();
+    session = TabDragSession{};
+}
+
+constexpr wchar_t kTearoffClassName[] = L"FirefoxWinUITabTearoff";
+
+void EnsureTearoffClassRegistered() {
+    static const ATOM atom = [] {
+        WNDCLASSEXW wc{sizeof(wc)};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = kTearoffClassName;
+        return RegisterClassExW(&wc);
+    }();
+    (void)atom;
+}
+
+// Renders `row`'s current appearance into the session's tear-off bitmap,
+// once, the first time a tear-off actually needs one -- a coroutine, not a
+// blocking call, for the same reason TabDragImage::RenderElementToBitmapAsync
+// itself is one (see that file). Guards against the session having moved on
+// (a new gesture, or this same one having re-entered a strip and left again,
+// replacing the popup) by the time it resumes.
+winrt::fire_and_forget RenderTearoffAsync(Controls::TabViewItem row, HWND popup, std::weak_ptr<int> alive) {
+    int width{}, height{};
+    uint64_t bitmap{};
+    try {
+        bitmap = co_await TabDragImage::RenderElementToBitmapAsync(row, &width, &height);
+    } catch (...) {
+        co_return;
+    }
+    auto& session = dragSession();
+    if (alive.expired() || !bitmap || session.tearoffWindow != popup) {
+        if (bitmap) DeleteObject(HBITMAP(bitmap));
+        co_return;
+    }
+    session.tearoffBitmap = HBITMAP(bitmap);
+    session.tearoffWidth = width;
+    session.tearoffHeight = height;
+}
+
+// Creates (lazily, on first need) and repositions the tear-off popup at the
+// current cursor position. A plain WS_POPUP this code fully owns -- no OLE
+// registration, so none of the ancestor-chain/z-order problems that made an
+// overlay window unusable for OLE's own purposes apply here: this window
+// only ever needs to be visually on top, never hit-testable by anything
+// (WS_EX_TRANSPARENT), so it can never interfere with the geometric
+// hit-testing TickDragSession does against every pane's own
+// StripScreenBounds().
+void ShowOrMoveTearoff(TabDragSession& session, POINT screenPoint) {
+    if (!session.tearoffWindow) {
+        EnsureTearoffClassRegistered();
+        session.tearoffWindow =
+            CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, kTearoffClassName,
+                             L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (!session.tearoffWindow) return;
+        ShowWindow(session.tearoffWindow, SW_SHOWNOACTIVATE);
+        SetWindowPos(session.tearoffWindow, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        if (session.sourceStrip && session.sourceStrip->rows.count(session.tabId))
+            RenderTearoffAsync(session.sourceStrip->rows.at(session.tabId), session.tearoffWindow,
+                                std::weak_ptr<int>(session.sourceStrip->lifetime));
+    }
+    if (!session.tearoffBitmap) return;
+    POINT topLeft{screenPoint.x - session.tearoffWidth / 2, screenPoint.y - session.tearoffHeight / 2};
+    TabDragImage::PaintDragVisual(session.tearoffWindow, session.tearoffBitmap, session.tearoffWidth,
+                                   session.tearoffHeight, topLeft);
+}
+
+// Resolves an ended gesture (button no longer physically down) against
+// wherever the cursor actually is right now: a different pane's own strip
+// (AcceptForeignDrop), still this strip's own (CommitReorder), or neither
+// (CommitDetach) -- the same three outcomes DoDragDrop's own return value
+// used to distinguish, now decided by this code's own geometry instead of
+// asking OLE to resolve a target window. `hitPane`, like TickDragSession's
+// own search, only ever names a DIFFERENT pane -- whether release still
+// counts as "on the source strip" is `drag.detaching`, which TickDragSession
+// only just updated (via UpdateDragVisual) for this exact point when
+// `hitPane` is null.
+void ResolveDragDrop(Pane& sourcePane, Pane* hitPane, POINT screenPoint) {
+    auto& session = dragSession();
+    auto* strip = session.sourceStrip;
+    if (hitPane && hitPane->strip) {
+        RECT bounds = hitPane->StripScreenBounds();
+        Windows::Foundation::Point local{float(screenPoint.x - bounds.left), float(screenPoint.y - bounds.top)};
+        hitPane->strip->AcceptForeignDrop(sourcePane.parent, session.tabId, local);
+        strip->FinishDrag(session.tabId);
+    } else if (strip->drag.detaching) {
+        strip->CommitDetach(session.tabId);
+    } else {
+        RECT bounds = sourcePane.StripScreenBounds();
+        Windows::Foundation::Point local{float(screenPoint.x - bounds.left), float(screenPoint.y - bounds.top)};
+        strip->CommitReorder(session.tabId, local);
+    }
+    AbortDragSession();
+}
+
+// Pane.cpp's own Translate() hook calls this unconditionally on every
+// message it pretranslates, and TabStrip.h's PointerMoved calls it directly
+// too while already Dragging, as a lower-latency accelerant -- both routes
+// converge here. Ground truth is GetCursorPos()/GetAsyncKeyState(), never
+// the triggering message's own content, so it doesn't matter which one (or
+// neither) actually drove a given call: the gesture keeps advancing as long
+// as this keeps getting ticked at all, which raw ::SetCapture (TabStrip.h's
+// PointerPressed) exists specifically to guarantee regardless of where the
+// cursor physically is.
+void TickDragSession() {
+    auto& session = dragSession();
+    if (!session.sourceHwnd) return;
+    auto& panes = state().panes;
+    auto srcIt = panes.find(session.sourceHwnd);
+    if (srcIt == panes.end() || srcIt->second->strip.get() != session.sourceStrip) {
+        // The source pane was closed mid-gesture -- nothing left to resolve into.
+        AbortDragSession();
+        return;
+    }
+    Pane& sourcePane = *srcIt->second;
+    if (session.sourceStrip->drag.phase == NativeTabStrip::DragPhase::None) {
+        // Ended some other way already (Escape via WinUI's own
+        // PreviewKeyDown, if it happened to still fire) -- just clean up
+        // the session-level state that hasn't caught up yet.
+        AbortDragSession();
+        return;
+    }
+    bool buttonDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    if (session.sourceStrip->drag.phase == NativeTabStrip::DragPhase::Armed) {
+        RECT bounds = sourcePane.StripScreenBounds();
+        POINT screenPoint{};
+        GetCursorPos(&screenPoint);
+        Windows::Foundation::Point local{float(screenPoint.x - bounds.left), float(screenPoint.y - bounds.top)};
+        if (session.sourceStrip->TryPromote(session.tabId, local)) return;  // Dragging now; next tick tracks it.
+        if (!buttonDown) {
+            session.sourceStrip->FinishDrag(session.tabId);
+            AbortDragSession();
+        }
+        return;
+    }
+    // Dragging.
+    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
+        session.sourceStrip->CancelDrag();
+        AbortDragSession();
+        return;
+    }
+    POINT screenPoint{};
+    GetCursorPos(&screenPoint);
+    // A DIFFERENT pane's own strip claiming this point always wins,
+    // regardless of the source strip's own vertical margin below --
+    // otherwise two windows sitting side by side at the same screen height
+    // would never resolve as a foreign hover at all (local Y relative to
+    // the source alone can't tell "moved to a horizontally different
+    // window" from "still over my own strip").
+    Pane* hitPane = nullptr;
+    for (auto& entry : panes) {
+        if (!entry.second->strip || entry.second.get() == &sourcePane) continue;
+        RECT bounds = entry.second->StripScreenBounds();
+        if (PtInRect(&bounds, screenPoint)) {
+            hitPane = entry.second.get();
+            break;
+        }
+    }
+    NativeTabStrip* newHover = hitPane ? hitPane->strip.get() : nullptr;
+    if (!hitPane) {
+        // Not over any other pane -- on-strip vs. tear-off is decided by
+        // the source strip's own existing vertical-margin heuristic
+        // (UpdateDragVisual's drag.detaching, unchanged), which already
+        // tolerates horizontal excess past the strip's own left/right edge
+        // (e.g. dragging past the last tab) as still "on this strip," not a
+        // tear-off -- exactly the move-to-end gesture this is meant to
+        // support.
+        RECT bounds = sourcePane.StripScreenBounds();
+        Windows::Foundation::Point local{float(screenPoint.x - bounds.left), float(screenPoint.y - bounds.top)};
+        session.sourceStrip->UpdateDragVisual(local);
+        if (!session.sourceStrip->drag.detaching) newHover = session.sourceStrip;
+    }
+    if (session.hoverStrip != newHover && session.hoverStrip && session.hoverStrip != session.sourceStrip)
+        session.hoverStrip->EndForeignDragOver();
+    session.hoverStrip = newHover;
+    if (hitPane) {
+        DestroyTearoffWindow(session);
+        session.sourceStrip->CloseDragGap();
+        RECT bounds = hitPane->StripScreenBounds();
+        Windows::Foundation::Point local{float(screenPoint.x - bounds.left), float(screenPoint.y - bounds.top)};
+        hitPane->strip->ForeignDragOver(local);
+    } else if (newHover) {
+        DestroyTearoffWindow(session);
+    } else {
+        ShowOrMoveTearoff(session, screenPoint);
+    }
+    if (!buttonDown) ResolveDragDrop(sourcePane, hitPane, screenPoint);
 }
 
 HRESULT Check(HWND hwnd = nullptr) {
@@ -616,12 +748,6 @@ void Initialize() {
         APTTYPEQUALIFIER qualifier;
         check_hresult(CoGetApartmentType(&apartment, &qualifier));
         check_bool(apartment == APTTYPE_STA || apartment == APTTYPE_MAINSTA);
-        // Required before RegisterDragDrop/DoDragDrop (TabDragDrop.h) will
-        // succeed. Returns S_FALSE, not S_OK, when COM was already
-        // CoInitialize'd on this thread (as it is here) -- not a failure.
-        phase = "ole";
-        check_hresult(OleInitialize(nullptr));
-        s.oleInitialized = true;
         phase = "activation-context";
         HMODULE module{};
         check_bool(
@@ -894,6 +1020,11 @@ HRESULT WINAPI Destroy(HWND hwnd) noexcept {
 BOOL WINAPI Translate(MSG* message) noexcept {
     try {
         if (!message || FAILED(Check())) return FALSE;
+        // Message-agnostic: this is the ground-truth tick a process-wide
+        // drag session's correctness depends on (Pane.cpp's TabDragSession/
+        // TickDragSession), driven by every message this hook sees rather
+        // than by parsing any one of them.
+        TickDragSession();
         for (auto const& entry : state().panes) {
             auto& pane = *entry.second;
             HWND child = GetWindowFromWindowId(pane.source.SiteBridge().WindowId());
@@ -942,10 +1073,6 @@ HRESULT WINAPI Shutdown() noexcept {
         }
         s.app = nullptr;
         clear_factory_cache();
-        if (s.oleInitialized) {
-            OleUninitialize();
-            s.oleInitialized = false;
-        }
         if (s.activationCookie) {
             check_bool(DeactivateActCtx(0, s.activationCookie));
             s.activationCookie = 0;

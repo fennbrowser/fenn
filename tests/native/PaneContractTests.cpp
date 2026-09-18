@@ -970,20 +970,13 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
 // A real OS drag gesture, via SendInput, against the same island-hosted
 // TabView every other strip check uses. Originally added to reproduce the
 // WinUI native-drag crash in isolation (see the tab strip layout notes)
-// -- now that reordering is hand-rolled (plain pointer capture up to the
-// drag threshold, then a real OS OLE drag via DoDragDrop; see
-// the tab drag redesign), this doubles as the one real
-// end-to-end exercise of the actual gesture, which no other test can drive
-// (the WinUIPaneTestCompleteReorder*/WinUIPaneTestSetDragging hooks only
-// drive the logic directly, never a real pointer sequence). Kept as its own
-// entry point, not folded into CheckTabStrip, so a regression here can never
-// take the rest of the suite down with it.
-//
-// Only same-window reorder is covered here -- the redesign's sequencing
-// step 1 (the tab drag redesign). Detach-to-new-window and
-// cross-window adopt aren't wired up to the new OLE-driven gesture yet
-// (steps 2/3); their own coverage, removed along with the hand-rolled
-// pointer-capture mechanism that drove them, returns once those steps land.
+// -- now that reordering is driven by Pane.cpp's own process-wide
+// TabDragSession (the tab drag redesign), this doubles as
+// the one real end-to-end exercise of the actual gesture, which no other
+// test can drive (the WinUIPaneTestCompleteReorder*/WinUIPaneTestSetDragging
+// hooks only drive the logic directly, never a real pointer sequence). Kept
+// as its own entry point, not folded into CheckTabStrip, so a regression
+// here can never take the rest of the suite down with it.
 static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
@@ -1054,64 +1047,23 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host) {
         input.mi.dy = LONG((double(y - vy) * 65535) / vh);
         SendInput(1, &input, sizeof(INPUT));
     };
-    // The move that crosses the 4 DIP drag threshold calls DoDragDrop
-    // synchronously from inside that dispatch -- a real, blocking OS call
-    // that doesn't return until the gesture ends. That call happens on this
-    // thread, inside whichever settle() iteration's Pump() delivers the
-    // threshold-crossing move, so the rest of this gesture's input (the
-    // remaining moves and the final button-up) must come from a SEPARATE
-    // thread: this thread has no way to run any more of its own code --
-    // including the code that would send that input -- until the blocked
-    // call returns, which is exactly what that input is needed to end.
-    //
-    // That remaining input is posted directly (PostMessageW WM_MOUSEMOVE/
-    // WM_LBUTTONUP) rather than via SendInput. Crossing the threshold itself
-    // still needs a real SendInput move -- WinUI's pointer pipeline
-    // (PointerRoutedEventArgs) is driven by WM_POINTER* messages from actual
-    // input injection, never by a directly posted WM_MOUSEMOVE -- but
-    // DoDragDrop's own internal loop watches for legacy WM_MOUSEMOVE/button
-    // messages specifically, and in this environment SendInput's
-    // synthesized movement reliably updates the real cursor and drives
-    // WM_POINTER* delivery but does not reliably deliver the corresponding
-    // legacy mouse messages DoDragDrop needs -- the same environment quirk
-    // this codebase's own live-browser verification work already found and
-    // worked around the same way. PostMessageW's coordinates are
-    // interpreted relative to whatever window it's posted to; DoDragDrop
-    // converts to screen space and re-hit-tests from there, so posting to
-    // `host` with host-relative coordinates still correctly resolves
-    // whichever real window (e.g. the strip's own hosted child) actually
-    // occupies that screen point.
-    std::thread inputThread([&] {
-        // Comfortably exceeds any tab width TabWidthMode="Equal" could
-        // produce for two tabs in a 600-unit strip, so the cursor reliably
-        // ends up past the second tab's midpoint regardless of the exact
-        // computed width.
-        for (int step = 2; step <= 25; ++step) {
-            LONG screenX = client.x + step * 20, screenY = client.y;
-            // DoDragDrop hit-tests against the REAL cursor position
-            // (GetCursorPos), not a posted message's own lParam -- SetCursorPos
-            // moves it there, and the posted message's only job is to wake
-            // DoDragDrop's loop into re-checking that position (matching this
-            // codebase's own established live-browser drag verification
-            // technique: SetCursorPos for positioning, a posted message to
-            // wake a blocked loop, since SendInput's movement doesn't reach
-            // that loop reliably in this environment, per the comment above).
-            SetCursorPos(screenX, screenY);
-            POINT p{screenX, screenY};
-            ScreenToClient(host, &p);
-            PostMessageW(host, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(p.x, p.y));
-            Sleep(15);
-        }
-        LONG upX = client.x + 25 * 20, upY = client.y;
-        SetCursorPos(upX, upY);
-        POINT up{upX, upY};
-        ScreenToClient(host, &up);
-        PostMessageW(host, WM_LBUTTONUP, 0, MAKELPARAM(up.x, up.y));
-    });
-    moveTo(client.x + 1 * 20, client.y);
+    // Nothing blocks this thread anymore -- Pane.cpp's TabDragSession
+    // advances by polling GetCursorPos()/GetAsyncKeyState() on every Pump()
+    // (Translate()'s own pretranslate hook ticks it unconditionally), not by
+    // waiting for a message to reach some nested loop. Plain SendInput moves
+    // the real cursor and updates that ground truth directly, so this drives
+    // the whole gesture from a single thread with no SetCursorPos/
+    // PostMessageW split and no second thread -- matching how the very
+    // first, pre-OLE version of this test drove a real gesture. Comfortably
+    // exceeds any tab width TabWidthMode="Equal" could produce for two tabs
+    // in a 600-unit strip, so the cursor reliably ends up past the second
+    // tab's midpoint regardless of the exact computed width.
+    for (int step = 1; step <= 25; ++step) {
+        moveTo(client.x + step * 20, client.y);
+        settle(5);
+    }
+    send(MOUSEEVENTF_LEFTUP);
     settle(200);
-    inputThread.join();
-    settle();
     puts("Drag gesture completed without crashing");
     auto event = MenuExchange(api, host);
     Require(event.GetNamedString(L"kind", L"") == L"strip-reorder" && event.GetNamedNumber(L"id") == 11 &&
@@ -1119,14 +1071,12 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host) {
             "a real pointer drag past the last tab queues a validated move-to-end request");
 }
 
-// Detach-to-new-window -- sequencing step 3 (the tab drag
-// redesign). Releasing well outside `host`'s own window bounds entirely
-// (not just outside the strip's visual area within it -- the registered OLE
-// target is `parent`, the whole top-level window, so anywhere inside it
-// still resolves there) means DoDragDrop resolves as a real drop with
-// nothing accepting it anywhere: BeginOleDrag reads that as detach and
-// queues strip-detach at the real release point, same as the hand-rolled
-// mechanic's own tear-off gesture did.
+// Detach-to-new-window. Releasing well outside every open pane's own strip
+// bounds entirely (Pane.cpp's TickDragSession hit-tests screen points
+// against each pane's own StripScreenBounds(), the tab drag
+// redesign) means release resolves as "no pane's strip is under the
+// cursor" -- CommitDetach queues strip-detach at the real release point,
+// same as before.
 static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
@@ -1191,27 +1141,16 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host) {
     settle();
     send(MOUSEEVENTF_LEFTDOWN);
     settle();
-    std::thread inputThread([&] {
-        for (int step = 1; step <= 10; ++step) {
-            LONG screenX = client.x + LONG(double(step) / 10 * (detachPoint.x - client.x));
-            LONG screenY = client.y + LONG(double(step) / 10 * (detachPoint.y - client.y));
-            SetCursorPos(screenX, screenY);
-            POINT p{screenX, screenY};
-            ScreenToClient(host, &p);
-            PostMessageW(host, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(p.x, p.y));
-            Sleep(15);
-        }
-        SetCursorPos(detachPoint.x, detachPoint.y);
-        POINT up{detachPoint.x, detachPoint.y};
-        ScreenToClient(host, &up);
-        PostMessageW(host, WM_LBUTTONUP, 0, MAKELPARAM(up.x, up.y));
-    });
-    LONG firstStepX = client.x + LONG(1.0 / 10 * (detachPoint.x - client.x));
-    LONG firstStepY = client.y + LONG(1.0 / 10 * (detachPoint.y - client.y));
-    moveTo(firstStepX, firstStepY);
+    // A single thread throughout -- see CheckTabStripDrag's own comment on
+    // why nothing here needs to block.
+    for (int step = 1; step <= 10; ++step) {
+        LONG screenX = client.x + LONG(double(step) / 10 * (detachPoint.x - client.x));
+        LONG screenY = client.y + LONG(double(step) / 10 * (detachPoint.y - client.y));
+        moveTo(screenX, screenY);
+        settle(5);
+    }
+    send(MOUSEEVENTF_LEFTUP);
     settle(200);
-    inputThread.join();
-    settle();
     puts("Detach gesture completed without crashing");
     auto detachEvent = MenuExchange(api, host);
     Require(detachEvent.GetNamedString(L"kind", L"") == L"strip-detach" && detachEvent.GetNamedNumber(L"id") == 55,
@@ -1220,15 +1159,12 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host) {
             "the detach request carries a screen point below the host window it left");
 }
 
-// Cross-window adopt -- sequencing step 2 (the tab drag
-// redesign). A second, independent pane/strip in a real second HWND:
-// BeginAllOleDragRegistrations registers every open pane's own OLE drop
-// target before a drag starts, precisely so a drop landing on a DIFFERENT
-// window's strip resolves there. Same real-pointer-gesture technique as
-// CheckTabStripDrag above (SendInput to arm and cross the drag threshold,
-// then SetCursorPos+PostMessageW for the rest, since DoDragDrop hit-tests
-// the real cursor position and only needs a posted message to wake its loop
-// into re-checking it).
+// Cross-window adopt. A second, independent pane/strip in a real second
+// HWND: Pane.cpp's TickDragSession hit-tests the real cursor position
+// against every open pane's own StripScreenBounds() (the tab drag
+// redesign), precisely so a drop landing on a DIFFERENT window's
+// strip resolves there. Same real-pointer-gesture technique as
+// CheckTabStripDrag above.
 static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWND host) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
@@ -1315,62 +1251,28 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     settle();
     send(MOUSEEVENTF_LEFTDOWN);
     settle();
-    // Same reasoning as CheckTabStripDrag's own inputThread: the move that
-    // crosses the drag threshold blocks this thread inside DoDragDrop for
-    // the whole gesture, so the rest of the path toward host2 has to come
-    // from a separate thread.
-    //
-    // After reaching destPoint, this hovers briefly before releasing --
-    // both to give the make-room Storyboard (135ms) time to actually reach
-    // its target, and to verify the live preview
-    // (NativeTabStrip::ForeignDragOver) actually ran on host2's own target,
-    // not just that the final drop resolved correctly. Reading destTab's
-    // RenderTransform requires the UI thread (this thread is a plain
-    // worker thread, not the STA that owns the XAML objects), so the read
-    // itself is marshaled onto it via the DispatcherQueue captured before
-    // this thread started; DoDragDrop's own nested loop still services
-    // that queue while blocked, the same way it services the drag messages
-    // this test posts. The interpolated steps below stay within host's own
-    // screen region until very near the end (host2 starts at screen x=800,
-    // and the straight-line path from source to dest only crosses into it
-    // in roughly the last tenth), so the hover -- not the interpolation
-    // steps -- is what actually gets read.
-    std::atomic<double> previewOffset{0};
-    winrt::Microsoft::UI::Dispatching::DispatcherQueue dispatcher =
-        winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread();
-    std::thread inputThread([&] {
-        for (int step = 1; step <= 10; ++step) {
-            LONG screenX = sourceClient.x + LONG(double(step) / 10 * (destPoint.x - sourceClient.x));
-            LONG screenY = sourceClient.y + LONG(double(step) / 10 * (destPoint.y - sourceClient.y));
-            SetCursorPos(screenX, screenY);
-            POINT p{screenX, screenY};
-            ScreenToClient(host, &p);
-            PostMessageW(host, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(p.x, p.y));
-            Sleep(15);
-        }
-        SetCursorPos(destPoint.x, destPoint.y);
-        POINT hover{destPoint.x, destPoint.y};
-        ScreenToClient(host, &hover);
-        PostMessageW(host, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(hover.x, hover.y));
-        Sleep(250);
-        dispatcher.TryEnqueue([&] {
-            auto transform = destTab.RenderTransform().as<Media::TranslateTransform>();
-            previewOffset = transform.X();
-        });
-        Sleep(100);
-        SetCursorPos(destPoint.x, destPoint.y);
-        POINT up{destPoint.x, destPoint.y};
-        ScreenToClient(host, &up);
-        PostMessageW(host, WM_LBUTTONUP, 0, MAKELPARAM(up.x, up.y));
-    });
-    LONG firstStepX = sourceClient.x + LONG(1.0 / 10 * (destPoint.x - sourceClient.x));
-    LONG firstStepY = sourceClient.y + LONG(1.0 / 10 * (destPoint.y - sourceClient.y));
-    moveTo(firstStepX, firstStepY);
+    // A single thread throughout -- see CheckTabStripDrag's own comment on
+    // why nothing here needs to block. This thread IS the STA that owns the
+    // XAML objects (nothing else ever blocked it to begin with), so
+    // destTab's own RenderTransform can be read directly below with no
+    // DispatcherQueue marshaling needed anymore.
+    for (int step = 1; step <= 10; ++step) {
+        LONG screenX = sourceClient.x + LONG(double(step) / 10 * (destPoint.x - sourceClient.x));
+        LONG screenY = sourceClient.y + LONG(double(step) / 10 * (destPoint.y - sourceClient.y));
+        moveTo(screenX, screenY);
+        settle(5);
+    }
+    // Hover briefly before releasing -- both to give the make-room
+    // Storyboard (135ms) time to actually reach its target, and to verify
+    // the live preview (NativeTabStrip::ForeignDragOver) actually ran on
+    // host2's own target, not just that the final drop resolved correctly.
+    moveTo(destPoint.x, destPoint.y);
+    settle(30);
+    double previewOffset = destTab.RenderTransform().as<Media::TranslateTransform>().X();
+    send(MOUSEEVENTF_LEFTUP);
     settle(200);
-    inputThread.join();
-    settle();
     puts("Cross-window adopt gesture completed without crashing");
-    Require(previewOffset.load() > 0.0,
+    Require(previewOffset > 0.0,
             "hovering the dragged tab over the destination strip opens a live make-room preview gap there");
     auto adoptEvent = MenuExchange(api, host2);
     Require(adoptEvent.GetNamedString(L"kind", L"") == L"strip-adopt" && adoptEvent.GetNamedNumber(L"id") == 33 &&

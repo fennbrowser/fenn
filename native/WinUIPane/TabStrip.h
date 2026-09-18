@@ -6,7 +6,6 @@
 #include <winrt/Microsoft.UI.Input.h>
 #include "JsonValidation.h"
 #include "TabGroupsButton.h"
-#include "TabDragDrop.h"
 #include "TabDragImage.h"
 
 // Strip-only experiment: TabView owns presentation, Firefox owns all mutations.
@@ -14,34 +13,44 @@
 // are OFF permanently: enabling them reliably fail-fasts inside
 // Microsoft.UI.Xaml.dll's own native drag-drop implementation the moment a
 // drag starts in the full embedded browser, though not in a minimal
-// island-only test host -- see the tab strip layout notes'
-// drag-to-reorder section for the crash-dump analysis and upstream reports
-// (microsoft/microsoft-ui-xaml#7007, #8450) showing this is a long-standing
+// island-only test host. Crash-dump analysis and upstream reports
+// (microsoft/microsoft-ui-xaml#7007, #8450) show this is a long-standing
 // WinUI bug, not something fixable on our side by configuration. Reordering
 // is instead hand-rolled below (DragState/PointerPressed and friends): plain
 // pointer capture and a manual RenderTransform never touch WinUI's native
-// OLE drag-drop path, so the crash can never trigger.
+// OLE drag-drop path, so the crash can never trigger. Real OS-level
+// DoDragDrop was tried too and hit
+// the exact same fail-fast from a different, WinUI-internal entry point
+// (SystemDropOperationTargetAdapter, automatically bridging any real OLE
+// drag over any XAML Island) -- so this strip now drives the whole gesture
+// itself, never touching OLE at all. See Pane.cpp's TabDragSession/
+// TickDragSession for the process-wide, capture-independent tracking this
+// depends on.
 struct NativeTabStrip {
     Controls::Grid root{nullptr};
     Controls::TabView view{nullptr};
     NativeTabMenu& menu;
     std::function<void(uint32_t)> select, close;
     std::function<void()> add;
-    // This window's own HWND, set by Pane.cpp at construction -- embedded in
-    // the OLE drag payload (TabDragDrop::Payload) so a drop target can tell
-    // a self-drop from a foreign one.
+    // This window's own real top-level HWND, set by Pane.cpp at
+    // construction -- identifies "this window" in cross-window adopt
+    // requests (QueueIncomingAdopt/AcceptForeignDrop below) and is the
+    // target of the raw ::SetCapture a drag-arm takes (Sync()'s
+    // PointerPressed handler), so mouse input keeps routing to this
+    // process for the gesture's duration regardless of where the cursor
+    // ends up on screen.
     HWND ownerHwnd{};
-    // Set by Pane.cpp to Begin/EndAllOleDragRegistrations: register, then
-    // revoke, every open pane's own OLE drop target (Pane.cpp's
-    // StripDropTarget, on each pane's own `parent`) for the duration of one
-    // DoDragDrop call (BeginOleDrag below brackets it with these). Every
-    // pane, not just this one, because the destination of a cross-window
-    // drop needs its own target already registered before the drag ever
-    // reaches it -- there is no later opportunity to register reactively,
-    // since OLE resolves a drag's target window once per top-level-window
-    // transition, not on demand. See the tab drag redesign
-    // for why `parent` specifically, not the strip's own hosted child.
-    std::function<void()> beginOleDragRegistration, endOleDragRegistration;
+    // Set by Pane.cpp at construction: armDragSession is called once, at
+    // PointerPressed, to create the process-wide TabDragSession
+    // (Pane.cpp) that tracks this gesture from here on independent of any
+    // one WinUI event actually firing. tickDragSession is Pane.cpp's own
+    // TickDragSession function, called directly by PointerMoved while
+    // already Dragging as a low-latency accelerant on top of the same
+    // polling Pane.cpp's Translate() hook already drives -- both routes
+    // converge on that one function, so which one fires first never
+    // matters for correctness.
+    std::function<void(uint32_t)> armDragSession;
+    std::function<void()> tickDragSession;
     std::map<uint32_t, Controls::TabViewItem> rows;
     // Favicons are the small end of what NativeAddress's row images (104,
     // 65536) allow: one glyph-sized icon per tab, but potentially many more
@@ -107,17 +116,13 @@ struct NativeTabStrip {
         uint32_t confirmBeforeId{};
         // Set once the pointer clears the strip's own bounds by a real
         // margin -- past that point this is a tear-off, not a reorder:
-        // siblings stop making room and release commits a detach request
-        // instead of a reorder one. Computed by UpdateDragVisual below but,
-        // for now, not acted on by the OLE-driven gesture (see
-        // AcceptOleDrop) -- detach-to-new-window is sequencing step 3 of
-        // the tab drag redesign.
+        // siblings stop making room (CloseDragGap below). Whether it's a
+        // genuine detach (CommitDetach) or a drop into a different pane's
+        // own strip (AcceptForeignDrop) is resolved geometrically by
+        // Pane.cpp's TickDragSession against every open pane's own
+        // StripScreenBounds(), not by this flag -- this flag only ever
+        // decides the visual on THIS strip (make room vs. don't).
         bool detaching{};
-        // Set for the entire duration of BeginOleDrag below: DoDragDrop owns
-        // the gesture from here, so the explicit ReleasePointerCapture that
-        // hands off to it must not itself be mistaken for capture lost mid-
-        // drag by PointerCaptureLostEvent's handler.
-        bool handingOffToOle{};
     };
     DragState drag;
     struct RowAnimation {
@@ -424,100 +429,82 @@ struct NativeTabStrip {
     // Ends an armed-but-never-promoted gesture: a plain click (selection
     // already happened normally on press, nothing to commit) or capture
     // lost while still Armed (nothing has moved yet, so there's nothing to
-    // recover). Once a gesture is promoted to Dragging, BeginOleDrag owns
-    // resolving it end to end -- by the time control could return here, OLE
-    // has already reset the phase itself (see BeginOleDrag), so this never
-    // observes DragPhase::Dragging in practice anymore.
+    // recover). Once a gesture is promoted to Dragging, Pane.cpp's
+    // TabDragSession owns resolving it end to end (CommitReorder/
+    // AcceptForeignDrop/CommitDetach/CancelDrag below) -- this is also
+    // reused there, for the outcome where a foreign pane's own strip
+    // accepted the drop, to reset this strip's own phase/dragging flag.
     void FinishDrag(uint32_t id) {
         if (drag.tabId != id) return;
         drag.phase = DragPhase::None;
         dragging = false;
     }
 
-    // Hands an already-armed, already-snapshotted drag (drag.* populated by
-    // PointerMoved's threshold-crossing branch below) to the OS. A
-    // coroutine, not a plain call: rendering the shell drag image
-    // (TabDragImage::AttachDragImageAsync) is itself async, and has to
-    // finish before DoDragDrop starts for the image to be attached to the
-    // right drag at all. PointerMoved calls this and moves on immediately
-    // -- everything from here on runs on a later tick, not nested in that
-    // same call stack, which matches the exact context (a DispatcherQueue
-    // continuation, not raw XAML input dispatch) this design's earlier
-    // verification already confirmed DoDragDrop is safe to run from. Once
-    // DoDragDrop itself starts, it still blocks this thread for the whole
-    // gesture as before -- DragEnter/DragOver/Drop on this pane's own
-    // registered IDropTarget (Pane.cpp's StripDropTarget) call back into
-    // OleDragOver/OleDragLeave/AcceptOleDrop for the rest of that call's
-    // duration. See the tab drag redesign.
-    winrt::fire_and_forget BeginOleDrag(uint32_t id) {
-        auto dataObject = winrt::make_self<TabDragDrop::DataObject>(TabDragDrop::Payload{ownerHwnd, id});
-        auto dropSource = winrt::make_self<TabDragDrop::DropSource>();
-        if (rows.count(id)) {
-            // The strip (and this row) could in principle be torn down
-            // during this await -- nothing else runs on this thread while
-            // DoDragDrop itself blocks it, but this one gap, before that
-            // call even starts, is real. A failure here (render error, no
-            // IDragSourceHelper) is deliberately never fatal to the drag
-            // itself: it only means the shell falls back to its own
-            // default cursor, and the existing RenderTransform-follows-
-            // cursor visual already covers on-strip feedback regardless.
-            std::weak_ptr<int> alive(lifetime);
-            try {
-                co_await TabDragImage::AttachDragImageAsync(rows.at(id), dataObject.get());
-            } catch (...) {
-            }
-            if (alive.expired()) co_return;
+    // Promotes Armed -> Dragging using `point` (view-local DIPs, same space
+    // PointerMoved's own GetCurrentPoint(view) uses) as the drag's live
+    // position. Two independent callers can each observe the same 4 DIP
+    // threshold crossing and call this: PointerMoved below (the low-latency
+    // path, for as long as WinUI's own capture on this row happens to
+    // survive) and Pane.cpp's TickDragSession (the GetCursorPos/
+    // GetAsyncKeyState-driven poll that doesn't depend on it at all, see
+    // the tab drag redesign). Idempotent once already
+    // Dragging (or once `id` no longer matches), so calling it from both is
+    // safe -- whichever notices first wins.
+    bool TryPromote(uint32_t id, Windows::Foundation::Point const& point) {
+        if (drag.tabId != id || drag.phase != DragPhase::Armed || !rows.count(id)) return false;
+        constexpr double kDragThreshold = 4.0;
+        // Either axis can arm the drag -- a tear-off gesture often starts as
+        // a mostly-vertical pull, which a horizontal-only threshold would
+        // never observe crossing.
+        if (std::max(std::abs(point.X - drag.startPoint.X), std::abs(point.Y - drag.startPoint.Y)) < kDragThreshold)
+            return false;
+        auto& row = rows.at(id);
+        drag.phase = DragPhase::Dragging;
+        drag.detaching = false;
+        // Any row still easing from a prior settle or sibling-shift (this
+        // row's own drop settle if it's grabbed again quickly, or a sibling
+        // shift that hadn't finished) must be stopped before the snapshot
+        // below, or this drag's grid math would be built on stale,
+        // mid-animation coordinates -- and for this row specifically,
+        // leaving its own leftover settle running would let it later force
+        // the transform back to 0 once it completes, fighting this drag's
+        // own direct manipulation.
+        {
+            std::vector<uint32_t> activeIds;
+            for (auto& [animId, anim] : rowAnimations) activeIds.push_back(animId);
+            for (auto animId : activeIds)
+                if (rows.count(animId)) StopRowAnimation(rows.at(animId), animId);
         }
-        if (beginOleDragRegistration) beginOleDragRegistration();
-        DWORD effect = DROPEFFECT_NONE;
-        HRESULT hr = DoDragDrop(dataObject.get(), dropSource.get(), DROPEFFECT_MOVE, &effect);
-        if (endOleDragRegistration) endOleDragRegistration();
-        dragging = false;
-        if (effect != DROPEFFECT_NONE) {
-            // Accepted: the target's own Drop() (AcceptOleDrop/
-            // AcceptForeignOleDrop) already queued the real request.
-            drag.phase = DragPhase::None;
-        } else if (hr == DRAGDROP_S_DROP) {
-            // A real drop, but nothing accepted it anywhere -- no
-            // registered target (no open pane's own window) was under the
-            // cursor at release. Matches the hand-rolled mechanic's own
-            // tear-off gesture: treat it as detach-to-new-window rather
-            // than losing the tab.
-            CompleteDetachFromOle(id);
-            drag.phase = DragPhase::None;
-        } else {
-            // DRAGDROP_S_CANCEL (Escape), or any other unexpected outcome --
-            // safest default is to abandon with no request, same as today.
-            CancelDrag();
+        drag.originalIndex = 0;
+        view.TabItems().IndexOf(row, drag.originalIndex);
+        drag.projectedIndex = drag.originalIndex;
+        drag.tabWidth = row.ActualWidth();
+        drag.originalLeftEdge.clear();
+        for (uint32_t i = 0; i < view.TabItems().Size(); ++i) {
+            auto item = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
+            drag.originalLeftEdge.push_back(item.TransformToVisual(view).TransformPoint({0, 0}).X);
         }
-        // Set here, not by the caller: PointerMoved returns as soon as this
-        // coroutine hits its first suspension point, long before the
-        // gesture this guard spans has actually ended.
-        drag.handingOffToOle = false;
+        dragging = true;
+        UpdateDragVisual(point);
+        return true;
     }
 
-    // Called by this pane's registered IDropTarget while hovering this same
-    // strip. `point` is already translated to this strip's own local
-    // coordinate space (Pane.cpp's StripDropTarget owns that conversion,
-    // since it alone knows the hosting HWND).
-    void OleDragOver(Windows::Foundation::Point const& point) {
-        if (drag.phase == DragPhase::Dragging) UpdateDragVisual(point);
-    }
-
-    // Called when the drag leaves this strip's own registered window
-    // without dropping here -- closes any open reorder gap, mirroring
-    // UpdateDragVisual's own detach-branch logic, since nothing should keep
+    // Closes any open reorder gap -- called once the cursor leaves this
+    // strip's own bounds (Pane.cpp's TickDragSession, geometrically, via
+    // StripScreenBounds) without having dropped here, mirroring
+    // UpdateDragVisual's own detach-branch logic: nothing should keep
     // making room for a tab that's no longer hovering.
-    void OleDragLeave() {
+    void CloseDragGap() {
         if (drag.phase != DragPhase::Dragging || drag.projectedIndex == drag.originalIndex) return;
         drag.projectedIndex = drag.originalIndex;
         for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i)
             if (i != drag.originalIndex) ShiftSibling(i);
     }
 
-    // Called by this pane's registered IDropTarget on Drop, for this exact
-    // tab's own in-flight gesture (self-drop, same window).
-    bool AcceptOleDrop(uint32_t tabId, Windows::Foundation::Point const& point) {
+    // Commits this exact tab's own in-flight gesture as a self-reorder --
+    // called by Pane.cpp's TickDragSession once release resolves as still
+    // hovering this same strip.
+    bool CommitReorder(uint32_t tabId, Windows::Foundation::Point const& point) {
         if (drag.tabId != tabId || drag.phase != DragPhase::Dragging || !rows.count(tabId)) return false;
         UpdateDragVisual(point);
         auto row = rows.at(tabId);
@@ -530,29 +517,30 @@ struct NativeTabStrip {
                               : nullptr;
         drag.confirmBeforeId = beforeRow && beforeRow != row ? unbox_value<uint32_t>(beforeRow.Tag()) : 0;
         CompleteReorderAt(row, beforeRow);
+        dragging = false;
         return true;
     }
 
-    // Called from BeginOleDrag when DoDragDrop resolves as a genuine drop
-    // (not Escape) but nothing accepted it anywhere -- release happened
-    // outside every open pane's own window. `confirmBeforeId` of 0 with
+    // Commits this exact tab's own in-flight gesture as a detach-to-new-
+    // window -- called by Pane.cpp's TickDragSession once release resolves
+    // as hovering no pane's own strip at all. `confirmBeforeId` of 0 with
     // `awaitingConfirm` set means the same thing it does for a plain
     // move-to-end reorder (CompleteReorderAt), but here it's actually
     // "landed" the moment Sync() no longer sees this tab at all: it will
     // have moved to the new window Firefox opens for it, not stayed at the
     // strip's own end. Any siblings this gesture shifted to open a gap
-    // before detaching (UpdateDragVisual, prior to whatever leg of the
-    // gesture actually left every registered window -- OleDragLeave
-    // already closes that gap on exit, but affectedRowIds isn't cleared by
-    // that, so this keeps the same eventual reset Sync() already does for
-    // every other outcome) still get cleaned up the same way.
-    void CompleteDetachFromOle(uint32_t id) {
+    // before detaching still get cleaned up the same way (CloseDragGap
+    // already closes that gap as soon as the cursor left this strip, but
+    // doesn't clear affectedRowIds -- this keeps the same eventual reset
+    // Sync() already does for every other outcome).
+    void CommitDetach(uint32_t id) {
         if (!rows.count(id)) return;
         drag.affectedRowIds.push_back(id);
         drag.awaitingConfirm = true;
         drag.confirmTabId = id;
         drag.confirmBeforeId = 0;
         CompleteDetach(rows.at(id));
+        dragging = false;
     }
 
     // Live "make room" preview shown in this strip while a DIFFERENT pane's
@@ -595,14 +583,14 @@ struct NativeTabStrip {
         }
     }
 
-    // Closes the preview gap immediately -- called on DragLeave (the drag
-    // left without dropping here) and once a drop here is resolved (the
-    // real new row, once Firefox's adopt actually lands on some later
-    // Sync(), arrives through the ordinary insert path with no gap of its
-    // own to settle into; holding this preview open across that round trip
-    // would need the same awaitingConfirm-style bookkeeping DragState uses
-    // for a reordered EXISTING row, which a brand-new row has no matching
-    // "before" state to justify).
+    // Closes the preview gap immediately -- called once the drag leaves
+    // this strip's own bounds without dropping here, and once a drop here
+    // is resolved (the real new row, once Firefox's adopt actually lands on
+    // some later Sync(), arrives through the ordinary insert path with no
+    // gap of its own to settle into; holding this preview open across that
+    // round trip would need the same awaitingConfirm-style bookkeeping
+    // DragState uses for a reordered EXISTING row, which a brand-new row has
+    // no matching "before" state to justify).
     void EndForeignDragOver() {
         if (!foreignDrag.active) return;
         foreignDrag.active = false;
@@ -612,17 +600,17 @@ struct NativeTabStrip {
         }
     }
 
-    // Called by this pane's registered IDropTarget on Drop, for a tab
-    // dropped here from a DIFFERENT pane's own in-flight gesture (the OLE
-    // payload names that pane's HWND and its tab id -- StripDropTarget
-    // establishes this is genuinely foreign, not this strip's own drag,
-    // before ever calling here). `point` is already translated to this
-    // strip's own local coordinate space. Always succeeds -- there is no
-    // local drag state to validate against here, unlike AcceptOleDrop;
-    // Firefox's own adopt handler and the JS session's snapshot-based
-    // validation are the real authority, same as every other queued
-    // request this strip sends.
-    bool AcceptForeignOleDrop(HWND sourceHwnd, uint32_t tabId, Windows::Foundation::Point const& point) {
+    // Commits a tab dropped here from a DIFFERENT pane's own in-flight
+    // gesture -- called by Pane.cpp's TickDragSession once release resolves
+    // as hovering this strip while some other pane owns the gesture.
+    // `point` is already translated to this strip's own local coordinate
+    // space (Pane.cpp's StripScreenBounds owns that conversion, since it
+    // alone knows the hosting HWND). Always succeeds -- there is no local
+    // drag state to validate against here, unlike CommitReorder; Firefox's
+    // own adopt handler and the JS session's snapshot-based validation are
+    // the real authority, same as every other queued request this strip
+    // sends.
+    bool AcceptForeignDrop(HWND sourceHwnd, uint32_t tabId, Windows::Foundation::Point const& point) {
         // Use the index the preview actually showed, not a fresh
         // recomputation -- the two agree in practice (nothing else moves
         // TabItems() mid-hover), but committing to what was visually
@@ -953,11 +941,18 @@ struct NativeTabStrip {
                                 // into one that jumps straight past them)
                                 // this row would simply stop seeing the
                                 // gesture, and the threshold below could
-                                // never be observed crossing.
+                                // never be observed crossing. Raw
+                                // ::SetCapture on ownerHwnd, alongside this,
+                                // is the actual ground truth this drag's
+                                // correctness depends on from here on:
+                                // row.CapturePointer only ever feeds the
+                                // low-latency accelerant path.
                                 if (!row.CapturePointer(args.Pointer())) return;
+                                ::SetCapture(ownerHwnd);
                                 drag.phase = DragPhase::Armed;
                                 drag.tabId = id;
                                 drag.startPoint = point.Position();
+                                if (armDragSession) armDragSession(id);
                             })),
                         true);
                     row.AddHandler(
@@ -965,74 +960,26 @@ struct NativeTabStrip {
                         box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
                             [this, alive, id](auto const&,
                                               Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
-                                // Only the Armed->Dragging promotion happens
-                                // here now: once promoted, BeginOleDrag
-                                // blocks for the rest of the gesture, so
-                                // this handler is never invoked again for
-                                // it (the OS, not WinUI pointer routing,
-                                // dispatches everything from here on).
-                                if (alive.expired() || syncing || drag.tabId != id || drag.phase != DragPhase::Armed)
+                                // Armed: try the same threshold-crossing
+                                // promotion Pane.cpp's TickDragSession polls
+                                // for independently -- whichever notices
+                                // first wins (TryPromote is idempotent).
+                                // Dragging: this is purely an accelerant,
+                                // feeding the same tick Pane.cpp's own
+                                // Translate() hook already drives, just
+                                // sooner when WinUI's capture on this row
+                                // happens to still be alive. Neither path is
+                                // required for correctness; losing this
+                                // event entirely (WinUI capture stolen out
+                                // from under it) costs latency, not the
+                                // gesture itself.
+                                if (alive.expired() || syncing || drag.tabId != id || drag.phase == DragPhase::None)
                                     return;
-                                auto point = args.GetCurrentPoint(view).Position();
-                                constexpr double kDragThreshold = 4.0;
-                                // Either axis can arm the drag -- a tear-off
-                                // gesture often starts as a mostly-vertical
-                                // pull, which a horizontal-only threshold
-                                // would never observe crossing.
-                                if (std::max(std::abs(point.X - drag.startPoint.X),
-                                              std::abs(point.Y - drag.startPoint.Y)) < kDragThreshold ||
-                                    !rows.count(id))
+                                if (drag.phase == DragPhase::Armed) {
+                                    TryPromote(id, args.GetCurrentPoint(view).Position());
                                     return;
-                                auto& row = rows.at(id);
-                                drag.phase = DragPhase::Dragging;
-                                drag.detaching = false;
-                                // Any row still easing from a prior settle
-                                // or sibling-shift (this row's own drop
-                                // settle if it's grabbed again quickly, or a
-                                // sibling shift that hadn't finished) must
-                                // be stopped before the snapshot below, or
-                                // this drag's grid math would be built on
-                                // stale, mid-animation coordinates -- and
-                                // for this row specifically, leaving its own
-                                // leftover settle running would let it later
-                                // force the transform back to 0 once it
-                                // completes, fighting this drag's own direct
-                                // manipulation.
-                                {
-                                    std::vector<uint32_t> activeIds;
-                                    for (auto& [animId, anim] : rowAnimations) activeIds.push_back(animId);
-                                    for (auto animId : activeIds)
-                                        if (rows.count(animId)) StopRowAnimation(rows.at(animId), animId);
                                 }
-                                drag.originalIndex = 0;
-                                view.TabItems().IndexOf(row, drag.originalIndex);
-                                drag.projectedIndex = drag.originalIndex;
-                                drag.tabWidth = row.ActualWidth();
-                                drag.originalLeftEdge.clear();
-                                for (uint32_t i = 0; i < view.TabItems().Size(); ++i) {
-                                    auto item = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
-                                    drag.originalLeftEdge.push_back(
-                                        item.TransformToVisual(view).TransformPoint({0, 0}).X);
-                                }
-                                UpdateDragVisual(point);
-                                // Hand the gesture fully to the OS from
-                                // here: release capture first, since
-                                // DoDragDrop owns mouse tracking for the
-                                // rest of the gesture and stale WinUI-level
-                                // capture has no role left to play (see
-                                // the tab drag redesign).
-                                // handingOffToOle must be set before
-                                // releasing capture, since releasing it
-                                // synchronously raises PointerCaptureLost on
-                                // this same row. BeginOleDrag resets it
-                                // itself once the whole gesture actually
-                                // ends, not this call -- it's a coroutine
-                                // that returns as soon as it suspends for
-                                // the first time, long before that.
-                                drag.handingOffToOle = true;
-                                row.ReleasePointerCapture(args.Pointer());
-                                dragging = true;
-                                BeginOleDrag(id);
+                                if (tickDragSession) tickDragSession();
                             })),
                         true);
                     row.AddHandler(
@@ -1040,7 +987,18 @@ struct NativeTabStrip {
                         box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
                             [this, alive, id](auto const&,
                                               Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
-                                if (alive.expired() || drag.tabId != id || drag.phase == DragPhase::None) return;
+                                // Only the still-Armed case is handled here.
+                                // Once Dragging, Pane.cpp's TickDragSession
+                                // (raw GetAsyncKeyState polling, not this
+                                // event) is the sole authority on when the
+                                // gesture ends -- see FinishDrag's own
+                                // comment. In practice this guard is
+                                // usually moot by the time this handler
+                                // runs at all: TickDragSession sees the same
+                                // WM_LBUTTONUP first, via Pane.cpp's
+                                // Translate() pretranslate hook, and will
+                                // already have reset drag.phase to None.
+                                if (alive.expired() || drag.tabId != id || drag.phase != DragPhase::Armed) return;
                                 if (rows.count(id)) rows.at(id).ReleasePointerCapture(args.Pointer());
                                 FinishDrag(id);
                             })),
@@ -1049,13 +1007,14 @@ struct NativeTabStrip {
                         UIElement::PointerCaptureLostEvent(),
                         box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
                             [this, alive, id](auto const&, auto const&) {
-                                // The explicit ReleasePointerCapture that
-                                // hands a promoted drag off to BeginOleDrag
-                                // (above) raises this same event -- ignore
-                                // it while handingOffToOle, since that
-                                // capture loss is intentional, not a real
-                                // WinUI-internal steal to recover from.
-                                if (!alive.expired() && !drag.handingOffToOle) FinishDrag(id);
+                                // Only meaningful while still Armed -- once
+                                // Dragging, nothing treats this event as
+                                // authoritative anymore (raw ::SetCapture,
+                                // not this row's own WinUI-level capture, is
+                                // what the gesture's correctness depends on
+                                // from that point on).
+                                if (!alive.expired() && drag.tabId == id && drag.phase == DragPhase::Armed)
+                                    FinishDrag(id);
                             })),
                         true);
                     row.PreviewKeyDown(

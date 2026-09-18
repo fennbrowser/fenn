@@ -1,16 +1,15 @@
 #pragma once
-#include <shlobj.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <winrt/Windows.Storage.Streams.h>
 
-// Shell drag image for the region a drag covers that no registered OLE
-// drop target ever sees DragOver for -- off any open pane's own window
-// entirely, i.e. exactly the tear-off/detach region (see
-// the tab drag redesign's "Drag visual" section: the
-// existing RenderTransform-follows-cursor visual, driven from DragOver,
-// already covers everywhere a target exists; this covers where none does).
-// Verified to integrate cleanly (this exact render-then-InitializeFromBitmap
-// shape, with S_OK throughout) before being wired into the real drag path.
+// A cursor-following visual for the tear-off/detach region of a drag -- the
+// one place the on-strip RenderTransform-follows-cursor visual
+// (TabStrip.h's UpdateDragVisual) has nothing to drive it, since that's
+// only ever fed a point while the drag is still over some strip. This is a
+// plain window this codebase fully owns (created/positioned/destroyed by
+// Pane.cpp's TabDragSession) -- no OLE, no shell drag-image API, matching
+// the tab drag redesign's move away from anything with its
+// own hidden WinUI-owned behavior.
 namespace TabDragImage {
 
 // A coroutine, not a blocking call: RenderTargetBitmap::RenderAsync/
@@ -19,7 +18,10 @@ namespace TabDragImage {
 // completion needs that same thread's dispatcher to pump, which a
 // blocking wait prevents. Encodes the resulting HBITMAP as a uint64_t
 // since raw handles aren't directly usable as an IAsyncOperation's result
-// type; the caller casts it back.
+// type; the caller casts it back. Pixels come out top-down BGRA8 with
+// premultiplied alpha (RenderTargetBitmap's own convention, same as this
+// codebase's existing favicon decoding elsewhere), which is exactly what
+// PaintDragVisual's UpdateLayeredWindow call below expects.
 inline winrt::Windows::Foundation::IAsyncOperation<uint64_t> RenderElementToBitmapAsync(
     winrt::Microsoft::UI::Xaml::UIElement element, int* outWidth, int* outHeight) {
     using namespace winrt::Microsoft::UI::Xaml::Media::Imaging;
@@ -43,30 +45,26 @@ inline winrt::Windows::Foundation::IAsyncOperation<uint64_t> RenderElementToBitm
     co_return uint64_t(bitmap);
 }
 
-// Renders `element` and attaches it to `dataObject` as the OS's own
-// shell-drawn drag image via IDragSourceHelper, so DRAGDROP_S_USEDEFAULTCURSORS
-// (TabDragDrop::DropSource::GiveFeedback) has an actual image to draw
-// instead of a bare cursor. Best-effort only, by design: any failure along
-// the way (render error, no drag-drop helper available) just means the
-// shell falls back to its own default cursor -- the caller doesn't need to
-// treat that as fatal to the drag itself.
-inline winrt::Windows::Foundation::IAsyncAction AttachDragImageAsync(
-    winrt::Microsoft::UI::Xaml::UIElement element, IDataObject* dataObject) {
-    int width{}, height{};
-    uint64_t bitmapValue = co_await RenderElementToBitmapAsync(element, &width, &height);
-    HBITMAP bitmap = reinterpret_cast<HBITMAP>(bitmapValue);
-    if (!bitmap) co_return;
-    winrt::com_ptr<IDragSourceHelper> helper;
-    if (FAILED(CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(helper.put())))) {
-        DeleteObject(bitmap);
-        co_return;
-    }
-    SHDRAGIMAGE image{};
-    image.sizeDragImage = {width, height};
-    image.ptOffset = {width / 2, height / 2};
-    image.hbmpDragImage = bitmap;  // ownership transfers to the helper on success
-    image.crColorKey = CLR_NONE;
-    if (FAILED(helper->InitializeFromBitmap(&image, dataObject))) DeleteObject(bitmap);
+// Paints `bitmap` (top-down 32bpp premultiplied BGRA, as RenderElementToBitmapAsync
+// produces) into `hwnd` via UpdateLayeredWindow -- real per-pixel alpha, the
+// same mechanism Explorer's own file-drag thumbnails use, and simpler than a
+// WM_PAINT handler: it pushes pixels directly, no repaint message needed.
+// `hwnd` must already have WS_EX_LAYERED (set once at creation; confirmed in
+// this session's own earlier investigation to work for a plain WS_POPUP --
+// creation only failed for WS_EX_LAYERED combined with WS_CHILD). `topLeft`
+// is in screen coordinates.
+inline void PaintDragVisual(HWND hwnd, HBITMAP bitmap, int width, int height, POINT topLeft) {
+    if (!bitmap) return;
+    HDC screenDc = GetDC(nullptr);
+    HDC memDc = CreateCompatibleDC(screenDc);
+    HBITMAP oldBitmap = static_cast<HBITMAP>(SelectObject(memDc, bitmap));
+    SIZE size{width, height};
+    POINT srcPoint{0, 0};
+    BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    UpdateLayeredWindow(hwnd, screenDc, &topLeft, &size, memDc, &srcPoint, 0, &blend, ULW_ALPHA);
+    SelectObject(memDc, oldBitmap);
+    DeleteDC(memDc);
+    ReleaseDC(nullptr, screenDc);
 }
 
 }  // namespace TabDragImage
