@@ -387,17 +387,50 @@ struct NativeTabStrip {
             drag.affectedRowIds.push_back(id);
     }
 
+    // This strip's own tabs, laid edge to edge -- TabWidthMode="Equal"
+    // means every visible tab shares the same width, so this is just
+    // count * that width. Deliberately not view.ActualWidth(): the
+    // hosting island stretches to fill whatever width the JS side gives it
+    // (browser-winui-pane.js's own CSS sets no width on the strip's host
+    // element), which in the real browser is the window's own toolbar row,
+    // not "however wide the tabs happen to fill" -- confirmed live (a drag
+    // past the last tab could travel most of the window's own width, not
+    // stop flush with that tab), a long-standing characteristic of that
+    // hosting layout rather than anything this redesign changed.
+    double ContentWidth() const {
+        if (view.TabItems().Size() == 0) return 0;
+        return double(view.TabItems().Size()) * view.TabItems().GetAt(0).as<Controls::TabViewItem>().ActualWidth();
+    }
+
     // Moves the dragged row to follow the cursor (clamped to the strip's own
-    // width) and re-projects the drop position against the stable snapshot
-    // taken when the drag began -- never against live (already-shifted)
-    // sibling positions, which would feed back into the hit-test. `point` is
-    // the pointer's current position relative to `view`, used both for the
-    // horizontal reorder math (as before) and to notice the gesture has
-    // cleared the strip's own vertical bounds and become a tear-off.
+    // tab content, via ContentWidth() above, not the hosting island's own
+    // possibly much wider ActualWidth()) and re-projects the drop position
+    // against the stable snapshot taken when the drag began -- never
+    // against live (already-shifted) sibling positions, which would feed
+    // back into the hit-test. `point` is the pointer's current position
+    // relative to `view`, used both for the horizontal reorder math (as
+    // before) and to notice the gesture has cleared the strip's own
+    // vertical bounds and become a tear-off.
     void UpdateDragVisual(Windows::Foundation::Point const& point) {
         auto row = rows.at(drag.tabId);
         double origin = drag.originalLeftEdge[drag.originalIndex];
-        double minX = -origin, maxX = view.ActualWidth() - drag.tabWidth - origin;
+        // The stable ContentWidth() snapshot from promotion time (mirrors
+        // originalLeftEdge/tabWidth, both also captured then), not a fresh
+        // query here: siblings shifting to open a make-room gap don't
+        // change how many tabs there are or how wide each one is, so this
+        // never needs to move mid-gesture, and querying it fresh would risk
+        // reading a mid-animation width if a Storyboard were ever running
+        // on the last tab specifically.
+        double contentWidth = drag.originalLeftEdge.empty() ? drag.tabWidth : drag.originalLeftEdge.back() + drag.tabWidth;
+        // Not contentWidth - drag.tabWidth (flush with the last tab's own
+        // right edge): at that exact position the dragged row's own center
+        // lands exactly ON the last tab's center, and ProjectDropIndex's
+        // strict "<" doesn't count a tie as past it -- a real drag-to-the-
+        // end gesture landed there and resolved as "insert before the last
+        // tab" (effectively a no-op) instead. Leaving a full tabWidth of
+        // margin here means the clamped-max center lands a full tab width
+        // past the last tab's own center, unambiguously.
+        double minX = -origin, maxX = contentWidth - origin;
         double rawDeltaX = point.X - drag.startPoint.X;
         double clampedX = std::clamp(rawDeltaX, std::min(minX, maxX), std::max(minX, maxX));
         RowTransform(row).X(clampedX);
