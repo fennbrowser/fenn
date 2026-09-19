@@ -125,6 +125,23 @@ struct NativeTabStrip {
         bool detaching{};
     };
     DragState drag;
+    // Self-driven window-move state for empty-strip-space dragging -- see
+    // the PointerPressed handler's own comment (constructor, below) for why
+    // this doesn't just hand off to Windows' own WM_NCLBUTTONDOWN/HTCAPTION
+    // mechanism. Fully independent of DragState above: a tab drag arms on a
+    // row's own PointerPressed, this arms on `root`'s, and OriginatesOnInteractive
+    // keeps the two from ever both claiming the same physical press.
+    struct WindowMoveState {
+        bool active{};
+        POINT startCursor{};
+        RECT startWindowRect{};
+        // Own double-click-to-maximize/restore detection, since owning this
+        // gesture end to end means DefWindowProc's own NC-caption handling
+        // (which tracks consecutive HTCAPTION clicks itself) never runs.
+        DWORD lastClickTime{};
+        POINT lastClickCursor{};
+    };
+    WindowMoveState windowMove;
     struct RowAnimation {
         Media::Animation::Storyboard storyboard{nullptr};
         double target{};
@@ -174,18 +191,34 @@ struct NativeTabStrip {
         // XAML Island sitting on top of that DOM region would otherwise
         // fight Gecko's own CSS-driven drag detection for the same input.
         // That leaves nothing to move the window at all once the island
-        // takes over that whole area, so this replaces it: press on empty
-        // strip background (not a tab, not a button) forwards the click to
-        // the real top-level window as WM_NCLBUTTONDOWN/HTCAPTION, the
-        // same message an actual title bar generates -- DefWindowProc's
-        // own modal move loop (and its built-in double-click-to-maximize
-        // detection, which tracks consecutive HTCAPTION clicks itself)
-        // takes over from there, no different from any other window. Uses
-        // AddHandler(handledEventsToo=true) like the row handlers below,
-        // for the same reason theirs do: TabView's own internal ListView
-        // marks PointerPressed handled for its own purposes even over
-        // empty background, and a plainly-registered handler on `root`
-        // would never see an already-handled event bubble up to it.
+        // takes over that whole area, so this replaces it.
+        //
+        // The first attempt forwarded the press to the real top-level
+        // window as WM_NCLBUTTONDOWN/HTCAPTION (the message a real title
+        // bar generates, letting DefWindowProc's own modal move loop take
+        // over). That doesn't work reliably here: reentering
+        // DefWindowProc's own move-tracking loop from inside WinUI's own
+        // PointerPressed dispatch means it's racing WinUI's own,
+        // independent pointer-tracking for the exact same physical
+        // gesture. Confirmed live: nothing moved while the button was
+        // actually held, then sometime after release the window snapped to
+        // the cursor and kept tracking it, unbounded, until the next click
+        // -- consistent with DefWindowProc's loop never actually seeing the
+        // real button-up (WinUI's own tracking still had it), only later
+        // picking up on some unrelated stray mouse-move that happened to
+        // reach the top-level window instead of the Island, then having no
+        // real terminating condition left to end on.
+        //
+        // Uses the same fix the tab-drag session itself needed for the
+        // equivalent problem: don't depend on any one event-delivery path
+        // WinUI/Gecko might contest -- track the physical gesture with raw
+        // Win32 state instead (TickWindowMove, ticked from Pane.cpp's
+        // Translate() hook the same way TickDragSession is), so which
+        // event-delivery mechanism does or doesn't fire never matters for
+        // correctness. Since this drives the whole gesture itself, it also
+        // has to detect its own double-click-to-maximize/restore --
+        // DefWindowProc's own HTCAPTION handling would have covered that
+        // for free.
         root.AddHandler(
             UIElement::PointerPressedEvent(),
             box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
@@ -194,24 +227,28 @@ struct NativeTabStrip {
                     auto point = args.GetCurrentPoint(root);
                     if (!point.Properties().IsLeftButtonPressed()) return;
                     if (OriginatesOnInteractive(args.OriginalSource())) return;
-                    // Mark it handled before handing off, not after: WinUI's
-                    // own default PointerPressed post-processing (acquiring
-                    // implicit capture for whatever's under the pointer)
-                    // would otherwise still run once this handler returns,
-                    // racing SendMessageW's own nested move-tracking loop
-                    // for the same physical gesture -- since Win32 capture
-                    // is exclusive, whichever one grabs it after the other
-                    // starves the other of the mouse-move messages it needs.
                     args.Handled(true);
-                    ::ReleaseCapture();
-                    // WM_NCLBUTTONDOWN's own lParam must be the cursor
-                    // position in *screen* coordinates -- Gecko's own
-                    // WM_EXITSIZEMOVE bookkeeping (nsWindow.cpp) and
-                    // DefWindowProc's own move-tracking both key off it, not
-                    // off a fresh GetCursorPos() of their own.
                     POINT cursor{};
                     ::GetCursorPos(&cursor);
-                    ::SendMessageW(ownerHwnd, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(cursor.x, cursor.y));
+                    DWORD now = ::GetTickCount();
+                    bool doubleClick =
+                        windowMove.lastClickTime && now - windowMove.lastClickTime <= ::GetDoubleClickTime() &&
+                        std::abs(cursor.x - windowMove.lastClickCursor.x) <= ::GetSystemMetrics(SM_CXDOUBLECLK) &&
+                        std::abs(cursor.y - windowMove.lastClickCursor.y) <= ::GetSystemMetrics(SM_CYDOUBLECLK);
+                    windowMove.lastClickTime = now;
+                    windowMove.lastClickCursor = cursor;
+                    if (doubleClick) {
+                        windowMove.lastClickTime = 0;  // don't chain into a triple-click toggling back
+                        WINDOWPLACEMENT placement{sizeof(placement)};
+                        ::GetWindowPlacement(ownerHwnd, &placement);
+                        ::ShowWindow(ownerHwnd,
+                                     placement.showCmd == SW_SHOWMAXIMIZED ? SW_RESTORE : SW_SHOWMAXIMIZED);
+                        return;
+                    }
+                    ::SetCapture(ownerHwnd);
+                    windowMove.active = true;
+                    windowMove.startCursor = cursor;
+                    ::GetWindowRect(ownerHwnd, &windowMove.startWindowRect);
                 })),
             true);
         // TabView's internal ListView plays its default add/remove theme
@@ -501,6 +538,28 @@ struct NativeTabStrip {
     // far in the first place).
     void RestoreRowVisibility(uint32_t id) {
         if (rows.count(id)) rows.at(id).Opacity(1);
+    }
+
+    // Moves this pane's own top-level window to follow the cursor, for as
+    // long as the button the PointerPressed handler above armed on stays
+    // physically down. Called on every message Pane.cpp's Translate() hook
+    // sees, the same way TabDragSession's own TickDragSession is -- ground
+    // truth is GetCursorPos()/GetAsyncKeyState(), never dependent on any
+    // one WinUI/Gecko event actually firing, for the same reason that
+    // matters for tab dragging (see the constructor's own comment on why
+    // handing this off to WM_NCLBUTTONDOWN didn't work reliably).
+    void TickWindowMove() {
+        if (!windowMove.active) return;
+        if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+            windowMove.active = false;
+            if (GetCapture() == ownerHwnd) ReleaseCapture();
+            return;
+        }
+        POINT cursor{};
+        GetCursorPos(&cursor);
+        int dx = cursor.x - windowMove.startCursor.x, dy = cursor.y - windowMove.startCursor.y;
+        SetWindowPos(ownerHwnd, nullptr, windowMove.startWindowRect.left + dx, windowMove.startWindowRect.top + dy, 0,
+                     0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
     // Ends an armed-but-never-promoted gesture: a plain click (selection

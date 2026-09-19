@@ -1060,6 +1060,11 @@ BOOL WINAPI Translate(MSG* message) noexcept {
         // TickDragSession), driven by every message this hook sees rather
         // than by parsing any one of them.
         TickDragSession();
+        // Same reasoning, for the empty-strip-space window-move gesture
+        // (TabStrip.h's own WindowMoveState/TickWindowMove) -- per-pane,
+        // since each open window's own strip tracks its own independently.
+        for (auto const& entry : state().panes)
+            if (entry.second->strip) entry.second->strip->TickWindowMove();
         for (auto const& entry : state().panes) {
             auto& pane = *entry.second;
             HWND child = GetWindowFromWindowId(pane.source.SiteBridge().WindowId());
