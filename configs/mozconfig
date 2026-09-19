@@ -1,6 +1,7 @@
-# Full native developer build; eight jobs leave memory headroom on the 32 GB host.
+# Full native developer build; sixteen jobs use most of the 24-thread host while
+# leaving memory headroom on the 32 GB machine. Lower this if the machine swaps.
 mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/../../build/firefox
-mk_add_options MOZ_MAKE_FLAGS=-j8
+mk_add_options MOZ_MAKE_FLAGS=-j16
 ac_add_options --enable-application=browser
 ac_add_options --enable-optimize
 # Keep this initial baseline small enough for the 100 GB Dev Drive.
