@@ -1,11 +1,15 @@
 # Dot-source this script before running project build commands.
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $env:MOZBUILD_STATE_PATH = Join-Path $projectRoot '.cache/mozbuild'
-$env:CARGO_HOME = Join-Path $projectRoot '.cache/cargo'
-$env:RUSTUP_HOME = Join-Path $projectRoot '.cache/rustup'
-$env:NUGET_PACKAGES = Join-Path $projectRoot '.cache/nuget/packages'
-$env:NUGET_HTTP_CACHE_PATH = Join-Path $projectRoot '.cache/nuget/http'
-$env:PIP_CACHE_DIR = Join-Path $projectRoot '.cache/pip'
+# Installed toolchains and package caches are read-mostly and safe to share between
+# checkouts: set FIREFOX_WINUI_SHARED_CACHE to another checkout's .cache to reuse them.
+# mozbuild state and sccache stay per-checkout so builds cannot interfere.
+$sharedCache = if ($env:FIREFOX_WINUI_SHARED_CACHE) { $env:FIREFOX_WINUI_SHARED_CACHE } else { Join-Path $projectRoot '.cache' }
+$env:CARGO_HOME = Join-Path $sharedCache 'cargo'
+$env:RUSTUP_HOME = Join-Path $sharedCache 'rustup'
+$env:NUGET_PACKAGES = Join-Path $sharedCache 'nuget/packages'
+$env:NUGET_HTTP_CACHE_PATH = Join-Path $sharedCache 'nuget/http'
+$env:PIP_CACHE_DIR = Join-Path $sharedCache 'pip'
 $env:SCCACHE_DIR = Join-Path $projectRoot '.cache/sccache'
 foreach ($cachePath in @($env:MOZBUILD_STATE_PATH, $env:CARGO_HOME, $env:RUSTUP_HOME,
     $env:NUGET_PACKAGES, $env:NUGET_HTTP_CACHE_PATH, $env:PIP_CACHE_DIR, $env:SCCACHE_DIR)) {
