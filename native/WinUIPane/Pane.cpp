@@ -117,6 +117,49 @@ struct WorkScope {
     }
     ~WorkScope() { Stop(); }
 };
+// How long a native intent actually takes, which is what the request path
+// built over milestones 3 to 6 exists to make short and nobody had measured.
+// Section 10 asks for enqueue, drain, execution and completion separately, so
+// they are separate here rather than one round-trip number:
+//
+//   wakeup    the request is queued -> the host drains it. The cost of waking
+//             Firefox, which is the part the pane controls.
+//   execute   drained -> the host reports its outcome. Firefox's own work.
+//   total     queued -> outcome. What the user waits for, at this layer.
+//
+// Both ends are inside this DLL, so all three use one clock and need no
+// agreement with the browser about what time it is.
+enum Stage : size_t { StageWakeup, StageExecute, StageTotal };
+// A mean is the wrong summary here and saying so is cheaper than being
+// corrected by it: the distribution is bimodal, because a modal dialog or a
+// blocked queue legitimately holds a request for as long as it holds it. These
+// buckets are the shape, in milliseconds, and the last one is the tail.
+constexpr double kLatencyBuckets[]{1.0, 4.0, 16.0, 64.0, 256.0};
+constexpr size_t kLatencyBucketCount = sizeof(kLatencyBuckets) / sizeof(kLatencyBuckets[0]) + 1;
+struct StageWork {
+    EntryWork work;
+    uint64_t buckets[kLatencyBucketCount];
+};
+inline StageWork* requestLatency() {
+    static StageWork stages[]{
+        {{L"wakeup", 0, 0, 0}, {}}, {{L"execute", 0, 0, 0}, {}}, {{L"total", 0, 0, 0}, {}}, {{nullptr, 0, 0, 0}, {}},
+    };
+    return stages;
+}
+inline void RecordStage(size_t stage, double elapsed) {
+    auto& record = requestLatency()[stage];
+    ++record.work.calls;
+    record.work.totalMs += elapsed;
+    if (elapsed > record.work.maxMs) record.work.maxMs = elapsed;
+    size_t bucket = kLatencyBucketCount - 1;
+    for (size_t i = 0; i < kLatencyBucketCount - 1; ++i) {
+        if (elapsed <= kLatencyBuckets[i]) {
+            bucket = i;
+            break;
+        }
+    }
+    ++record.buckets[bucket];
+}
 enum Entry : size_t {
     EntryUpdate,
     EntryUpdateTabStrip,
@@ -244,6 +287,13 @@ struct Pane {
     // 297ms across about 102,000 messages, 5.0us to 2.9us each.
     HWND childWindow{};
     Microsoft::UI::Content::ContentIsland contentIsland{nullptr};
+    // When each outstanding request was queued, and when it was handed over.
+    // Erased on completion, and otherwise bounded at 256 entries by evicting
+    // the lowest id, which is the oldest: a superseded request is evicted from
+    // the queue and never completes, so its stamp would stay here forever.
+    // Populated only while work accounting is on.
+    std::map<uint64_t, double> queuedAt;
+    std::map<uint64_t, double> drainedAt;
     uint32_t browserSelection{};
     bool syncing{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
@@ -363,6 +413,13 @@ struct Pane {
         bool notify = false;
         uint32_t status = 0;
         auto request = shell.Enqueue(kind, id, contextRevision, std::wstring_view(action), notify, &status);
+        if (request && WorkAccountingEnabled()) {
+            // A superseded request is evicted from the queue and never
+            // completes, so its stamp would sit here forever. Ids are
+            // monotonic, so dropping the lowest drops the oldest.
+            while (queuedAt.size() >= 256) queuedAt.erase(queuedAt.begin());
+            queuedAt[request] = NowMs();
+        }
         if (notify) ScheduleDrain();
         if (!request && DiagnosticsEnabled())
             fwprintf(stderr, L"WinUIPane request refused kind=%u tab=%u status=%u\n", unsigned(kind), id, status);
@@ -1554,6 +1611,13 @@ HRESULT WINAPI DrainRequests(HWND hwnd, wchar_t* output, uint32_t capacity) noex
             // The id is a double on the wire, matching every other counter that
             // crosses this boundary; the queue keeps ids well inside 2^53.
             entry.SetNamedValue(L"id", NativeTabMenu::Value::CreateNumberValue(double(request.id)));
+            if (WorkAccountingEnabled()) {
+                const double now = NowMs();
+                auto queued = pane.queuedAt.find(request.id);
+                if (queued != pane.queuedAt.end()) RecordStage(StageWakeup, now - queued->second);
+                while (pane.drainedAt.size() >= 256) pane.drainedAt.erase(pane.drainedAt.begin());
+                pane.drainedAt[request.id] = now;
+            }
             entry.SetNamedValue(L"kind", NativeTabMenu::Value::CreateNumberValue(request.kind));
             entry.SetNamedValue(L"tab", NativeTabMenu::Value::CreateNumberValue(request.tab));
             entry.SetNamedValue(L"revision", NativeTabMenu::Value::CreateNumberValue(request.context_revision));
@@ -1607,6 +1671,19 @@ HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
             if (!std::isfinite(id) || id < 1 || id > NativeJson::kMaxSafeInteger || std::floor(id) != id ||
                 outcome > 4)
                 return E_INVALIDARG;
+            if (WorkAccountingEnabled()) {
+                const double now = NowMs();
+                auto drained = pane.drainedAt.find(uint64_t(id));
+                if (drained != pane.drainedAt.end()) {
+                    RecordStage(StageExecute, now - drained->second);
+                    pane.drainedAt.erase(drained);
+                }
+                auto queued = pane.queuedAt.find(uint64_t(id));
+                if (queued != pane.queuedAt.end()) {
+                    RecordStage(StageTotal, now - queued->second);
+                    pane.queuedAt.erase(queued);
+                }
+            }
             pane.shell.Complete(uint64_t(id), NativeShellCore::Outcome(outcome));
         }
         const bool blocked = message.GetNamedBoolean(L"blocked", false);
@@ -1735,6 +1812,14 @@ HRESULT WINAPI Shutdown() noexcept {
                          entry->name, entry->calls, entry->totalMs, entry->maxMs,
                          entry->totalMs / double(entry->calls));
             }
+            for (auto* stage = requestLatency(); stage->work.name; ++stage) {
+                if (!stage->work.calls) continue;
+                fwprintf(stderr, L"WinUIPane request-latency stage=%s n=%llu ms=%.3f maxMs=%.3f meanMs=%.4f"
+                                 L" le1=%llu le4=%llu le16=%llu le64=%llu le256=%llu over=%llu\n",
+                         stage->work.name, stage->work.calls, stage->work.totalMs, stage->work.maxMs,
+                         stage->work.totalMs / double(stage->work.calls), stage->buckets[0], stage->buckets[1],
+                         stage->buckets[2], stage->buckets[3], stage->buckets[4], stage->buckets[5]);
+            }
             auto& work = geometryWork();
             fprintf(stderr,
                     "WinUIPane geometry-work updates=%llu geometryApplied=%llu restacks=%llu "
@@ -1831,6 +1916,12 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetEntryCalls(const
     for (auto* entry = nativeWork(); entry->name; ++entry) {
         if (wcscmp(entry->name, name) == 0) {
             *calls = entry->calls;
+            return S_OK;
+        }
+    }
+    for (auto* stage = requestLatency(); stage->work.name; ++stage) {
+        if (wcscmp(stage->work.name, name) == 0) {
+            *calls = stage->work.calls;
             return S_OK;
         }
     }

@@ -1648,6 +1648,10 @@ int wmain(int argc, wchar_t** argv) {
                                         wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--strip") == 0 ||
                                         wcscmp(argv[2], L"--drag") == 0)),
             "DLL path and optional --inspect required");
+    // Before the DLL loads, because the pane reads this once. Without it the
+    // request path's stages are counted but never timed, and the assertions
+    // below would be asserting on a switched-off instrument.
+    Require(SetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_WORK", L"1"), "enable native work accounting");
     Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "STA initialization");
     HMODULE module = LoadLibraryExW(
         argv[1], nullptr,
@@ -2070,6 +2074,19 @@ int wmain(int argc, wchar_t** argv) {
         Require(entryCalls(L"update") == rejectedBefore + 1, "a rejected call is still accounted for");
         Require(entryCalls(L"syncTabs") > 0, "tab publication is accounted for");
         Require(entryCalls(L"translate") > 0, "message translation is accounted for");
+        // The request path's own latency, which is what milestones 3 to 6 were
+        // for. Every request this suite has already driven should have passed
+        // through all three stages: queued, drained, answered.
+        auto wakeups = entryCalls(L"wakeup");
+        auto executes = entryCalls(L"execute");
+        auto totals = entryCalls(L"total");
+        Require(wakeups > 0, "a queued request records how long the host took to drain it");
+        Require(executes > 0, "a drained request records how long the host took to answer it");
+        Require(totals > 0, "an answered request records its whole round trip");
+        // A request cannot be answered before it was drained, nor drained
+        // before it was queued, so these counts can only run in this order.
+        Require(executes <= wakeups && totals <= wakeups,
+                "no request is answered or completed without first being drained");
     }
     unsigned children{};
     EnumChildWindows(first, CountChild, reinterpret_cast<LPARAM>(&children));
