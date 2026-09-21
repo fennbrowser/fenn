@@ -2548,10 +2548,10 @@ index 0000000000..82113c7476
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..a07d26b2f5
+index 0000000000..618c23367b
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,921 @@
+@@ -0,0 +1,956 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2573,8 +2573,15 @@ index 0000000000..a07d26b2f5
 +    this.sessionId = String(++nextSession);
 +    this.window = window;
 +    this.input = window.gURLBar;
-+    this.revision = 0;
-+    this.sequence = 0;
++    // Every mutation that changes what a publication would say already advances
++    // one of these two counters -- including the asynchronous label and image
++    // completions, which have no event of their own. Routing them through
++    // accessors is what lets the host publish on change instead of on a timer:
++    // it captures every existing site, and every future one, without each
++    // having to remember to announce itself.
++    this._revision = 0;
++    this._sequence = 0;
++    this.onChanged = null;
 +    this.closed = false;
 +    this.active = null;
 +    this.editId = 0;
@@ -2589,6 +2596,7 @@ index 0000000000..a07d26b2f5
 +      for (const image of this.modeImageLoads) image.src = "";
 +      this.modeImageLoads.clear();
 +      this.modeDirty = true; this.modeGeneration++;
++      this.changed();
 +    };
 +    this.modePrefs = ["browser.urlbar.shortcuts.", "browser.settings-redesign.enabled", "browser.nova.enabled"];
 +    this.modePrefsObserver = {observe:this.modeChanged};
@@ -2611,6 +2619,32 @@ index 0000000000..a07d26b2f5
 +    this.originalFocus = () => this.releaseNativePresentation();
 +    this.input.inputField.addEventListener("focus", this.originalFocus);
 +    Services.prefs.addObserver(window.gWinUIPane.pref, this);
++  }
++
++  get revision() { return this._revision; }
++  set revision(value) {
++    const changed = value !== this._revision;
++    this._revision = value;
++    if (changed) this.changed();
++  }
++
++  get sequence() { return this._sequence; }
++  set sequence(value) {
++    const changed = value !== this._sequence;
++    this._sequence = value;
++    if (changed) this.changed();
++  }
++
++  // A publication would now say something different. Never throws into a
++  // caller that was only updating state: a broken host must not corrupt the
++  // session.
++  changed() {
++    if (this.closed || !this.onChanged) return;
++    try {
++      this.onChanged();
++    } catch (error) {
++      console.error("WinUI address change notification failed", error);
++    }
 +  }
 +
 +  refreshNativeModes() {
@@ -2636,6 +2670,7 @@ index 0000000000..a07d26b2f5
 +        delete row.icon;
 +        if (icon) this.loadNativeImage(menu, row, {icon, size:16}, valid);
 +      }
++      this.changed();
 +    }).catch(console.error).finally(() => { this.modeLoading = false; });
 +  }
 +
@@ -3475,10 +3510,10 @@ index 0000000000..a07d26b2f5
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..abf0c2192b
+index 0000000000..f5fe02ad37
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1206 @@
+@@ -0,0 +1,1241 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3507,6 +3542,12 @@ index 0000000000..abf0c2192b
 +  contextDirty: false,
 +  structuralDirty: true,
 +  stripDirty: true,
++  // The address surface needs republishing. Set by everything that can change
++  // what a publication would say: the session's own counters (which advance on
++  // every mutation, including asynchronous label and image completions), the
++  // urlbar's input and focus, window activation, tab changes, and the prefs
++  // and fullscreen state that decide whether the surface runs at all.
++  addressDirty: true,
 +  // The pane's presentation-model revision as of the last snapshot or delta.
 +  // Every delta names it; a mismatch means producer and consumer diverged, and
 +  // is answered with one snapshot rather than a retry.
@@ -3576,6 +3617,9 @@ index 0000000000..abf0c2192b
 +    "TabGrouped",
 +    "TabUngrouped",
 +  ]),
++  // Window activation changes whether the native surface holds focus at all,
++  // which nothing inside the document reports.
++  windowEvents: ["activate", "deactivate"],
 +  events: [
 +    "resize",
 +    "fullscreen",
@@ -3628,14 +3672,35 @@ index 0000000000..abf0c2192b
 +    this.urlbar = document.getElementById("urlbar");
 +    this.urlbarPanel = gURLBar.view.panel;
 +    this.observer.observe(this.urlbarPanel);
-+    this.mutation = new MutationObserver(() => this.schedule());
-+    this.mutation.observe(document.documentElement, { attributes: true });
-+    this.mutation.observe(this.urlbar, {
-+      attributes: true,
-+      attributeFilter: ["open"],
++    // The address surface's mode button reports its own visibility from
++    // computed style, which follows the urlbar's attributes (pageproxystate,
++    // focused, usertyping, and the switcher's own offscreen) rather than any
++    // event. Watching those attributes is what replaces sampling it.
++    this.modeSwitcher = this.urlbar.querySelector(".searchmode-switcher");
++    this.mutation = new MutationObserver(records => {
++      if (records.some(record => record.target === this.urlbar ||
++                                 record.target === this.modeSwitcher)) {
++        this.addressDirty = true;
++      }
++      this.schedule();
 +    });
++    this.mutation.observe(document.documentElement, { attributes: true });
++    this.mutation.observe(this.urlbar, { attributes: true });
++    if (this.modeSwitcher) {
++      this.mutation.observe(this.modeSwitcher, { attributes: true });
++    }
 +    for (let type of this.events) {
 +      window.addEventListener(type, this, true);
++    }
++    for (const type of this.windowEvents) {
++      window.addEventListener(type, this, true);
++    }
++    // Typing and focus in Firefox's own urlbar change what the native surface
++    // should show; the session records them but not every path advances a
++    // counter before the publication is wanted.
++    this.urlbarInput = gURLBar.inputField;
++    for (const type of ["input", "focus", "blur"]) {
++      this.urlbarInput.addEventListener(type, this, true);
 +    }
 +    for (const type of this.tabEvents)
 +      gBrowser.tabContainer.addEventListener(type, this);
@@ -3649,51 +3714,12 @@ index 0000000000..abf0c2192b
 +    // pane posts it from its own queue; nothing here polls for them.
 +    Services.obs.addObserver(this, "winui-pane-drain");
 +    Services.obs.addObserver(this, "intl:app-locales-changed");
-+    this.updateLegacyTimer();
 +    Services.prefs.addObserver(this.pref, this);
 +    Services.prefs.addObserver(this.stripPref, this);
 +    Services.prefs.addObserver(this.addressPref, this);
 +    this.schedule();
 +  },
 +
-+  // The transitional timer. One surface is still not migrated and needs a tick:
-+  // the native address prototype, which is opt-in and off by default. The tab
-+  // strip no longer needs it -- its gestures are requests on the shared queue
-+  // and its presentation is republished from group and split-view events -- so
-+  // in both shipped configurations no timer runs at all and a quiet window
-+  // schedules nothing.
-+  updateLegacyTimer() {
-+    const needed = !!this.element && Services.prefs.getBoolPref(this.addressPref, false);
-+    if (!needed) {
-+      if (this.legacyTimer) window.clearInterval(this.legacyTimer);
-+      this.legacyTimer = 0;
-+      return;
-+    }
-+    if (this.legacyTimer) return;
-+    this.legacyTimer = window.setInterval(() => {
-+      try {
-+        // Deliberately not syncTabs(), publishStrip() or any tab-state call:
-+        // everything the pane and the strip present is event-driven now. The
-+        // address prototype is the only reason this interval exists.
-+        try {
-+          this.syncAddress();
-+        } catch (error) {
-+          console.error("Native address synchronization failed", error);
-+          this.addressSession?.close();
-+          this.addressSession = null;
-+          this.addressFailed = true;
-+          try {
-+            window.windowUtils.syncWinUIAddress(
-+              JSON.stringify({ version: 1, enabled: false })
-+            );
-+          } catch {}
-+        }
-+      } catch (error) {
-+        console.error("WinUI legacy synchronization failed", error);
-+        this.uninit();
-+      }
-+    }, 100);
-+  },
 +
 +  // One drain per notification. Everything here runs from a task the pane
 +  // posted, never from a XAML callback stack.
@@ -3911,6 +3937,11 @@ index 0000000000..abf0c2192b
 +        "chrome://browser/content/WinUIUrlbarSession.sys.mjs"
 +      );
 +      this.addressSession = new WinUIUrlbarSession(window);
++      // The session advances revision/sequence on every mutation that changes
++      // what a publication would say, including the asynchronous label and
++      // image completions that have no event of their own. This is what
++      // replaces sampling it.
++      this.addressSession.onChanged = () => this.invalidateAddress();
 +      this.addressTab = gBrowser.selectedTab;
 +    }
 +    const session = this.addressSession;
@@ -4384,6 +4415,33 @@ index 0000000000..abf0c2192b
 +      this.publishStrip();
 +    }
 +    if (this.dirtyTitles.size || this.dirtySelection) this.publishTabDelta();
++    if (this.addressDirty) {
++      this.addressDirty = false;
++      try {
++        this.syncAddress();
++      } catch (error) {
++        // Unchanged from the interval this replaced: a failed address
++        // publication disables that surface and leaves the rest of the pane
++        // running, rather than taking the window down with it.
++        console.error("Native address synchronization failed", error);
++        this.addressSession?.close();
++        this.addressSession = null;
++        this.addressFailed = true;
++        try {
++          window.windowUtils.syncWinUIAddress(
++            JSON.stringify({ version: 1, enabled: false })
++          );
++        } catch {}
++      }
++    }
++  },
++
++  // Anything that could change what the address publication would say. Cheap
++  // and idempotent: it sets a flag and asks for the frame that is already
++  // coming, so callers do not have to know whether a change is real.
++  invalidateAddress() {
++    this.addressDirty = true;
++    this.schedule();
 +  },
 +
 +  visibleTabs() {
@@ -4516,7 +4574,9 @@ index 0000000000..abf0c2192b
 +      return;
 +    }
 +    if (data === this.addressPref) {
-+      this.updateLegacyTimer();
++      // Turning the surface on or off changes what the next publication says,
++      // including the one that tells native to hide it.
++      this.invalidateAddress();
 +      return;
 +    }
 +    if (!Services.prefs.getBoolPref(this.pref, false)) {
@@ -4529,6 +4589,11 @@ index 0000000000..abf0c2192b
 +    if (event.type == "keydown") {
 +      this.backwards = event.shiftKey;
 +      return;
++    }
++    if (this.windowEvents.includes(event.type) ||
++        event.target === this.urlbarInput) {
++      this.invalidateAddress();
++      if (this.windowEvents.includes(event.type)) return;
 +    }
 +    // Record what changed, at the producer, so the publication below can be a
 +    // delta instead of a rebuilt description of every tab.
@@ -4632,8 +4697,6 @@ index 0000000000..abf0c2192b
 +
 +  uninit() {
 +    if (!this.element) return;
-+    if (this.legacyTimer) window.clearInterval(this.legacyTimer);
-+    this.legacyTimer = 0;
 +    if (this.unblockTimer) window.clearTimeout(this.unblockTimer);
 +    this.unblockTimer = 0;
 +    this.blocked = false;
@@ -4659,6 +4722,13 @@ index 0000000000..abf0c2192b
 +    // removing a listener that was never added is a no-op.
 +    for (const type of this.stripStateEvents)
 +      gBrowser.tabContainer.removeEventListener(type, this);
++    for (const type of this.windowEvents)
++      window.removeEventListener(type, this, true);
++    if (this.urlbarInput) {
++      for (const type of ["input", "focus", "blur"])
++        this.urlbarInput.removeEventListener(type, this, true);
++      this.urlbarInput = null;
++    }
 +    if (this.attached) {
 +      try {
 +        window.windowUtils.updateWinUIPane(0, 0, 0, 0, false, false, false, []);

@@ -767,6 +767,12 @@ struct Pane {
         address->dispatch = [this](hstring const& action) {
             addressRequest = Enqueue(NativeShellCore::AddressAction, 0, address->revision, action);
         };
+        // The island and the HWND live here, so the answer to "does this
+        // surface hold focus" is assembled here and the address controls only
+        // say when to ask.
+        address->observeFocus = [this] {
+            if (address) address->ObserveFocus(source.HasFocus() && GetForegroundWindow() == parent);
+        };
         // Deliberately not tracked as an outstanding intent: a report is not
         // something the surface is waiting to hear back about.
         address->reportVisible = [this](hstring const& action) {

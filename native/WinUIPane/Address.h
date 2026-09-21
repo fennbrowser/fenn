@@ -31,6 +31,7 @@ struct NativeAddress {
     std::set<winrt::hstring> reportedVisible;
     double reportedSequence{-1};
     bool visibilityQueued{};
+    bool focusObservationQueued{};
     // Supplied by the owning pane: the one definition of which intent survives
     // when two are in play. The rules live in native/ShellCore/src/intent.rs
     // where every pair is tested; nothing here re-implements them.
@@ -46,6 +47,30 @@ struct NativeAddress {
     // because a report is not an intent: it must not supersede one, and
     // answering it must not be read as answering one.
     std::function<void(winrt::hstring const&)> reportVisible;
+    // Re-evaluates focus and stages the resulting transition. Supplied by the
+    // owning pane, which alone holds the island and the HWND that the answer
+    // depends on. Calling it is always safe: ObserveFocus acts only on a
+    // change, so extra calls cost a focus query and nothing else.
+    std::function<void()> observeFocus;
+
+    // Focus moved somewhere inside this surface, or out of it. XAML routes
+    // GotFocus/LostFocus up from the element that changed, so subscribing on
+    // the root sees every transition within the address controls. The answer
+    // is taken on the next dispatcher turn because at the moment these fire
+    // the new focus has not settled -- during a move between two of our own
+    // controls, LostFocus arrives before the new element has focus, and asking
+    // then would report a spurious departure.
+    void ScheduleFocusObservation() {
+        if (focusObservationQueued) return;
+        auto queue = Dispatching::DispatcherQueue::GetForCurrentThread();
+        if (!queue) return;
+        focusObservationQueued = true;
+        queue.TryEnqueue([this, alive = std::weak_ptr<int>(lifetime)] {
+            if (alive.expired()) return;
+            focusObservationQueued = false;
+            if (observeFocus) observeFocus();
+        });
+    }
     double revision{}, sequence{-1}, editId{}, selectionId{}, acknowledgedEditId{};
     // A commit the user made before the browser could answer it. It is not
     // lost and it is not retried on a clock: it waits for the publication that
@@ -313,6 +338,14 @@ struct NativeAddress {
             Action(L"select");
         });
         suggestions.list.IsItemClickEnabled(true);
+        // Focus transitions used to be noticed only because syncAddress ran on
+        // a timer and sampled them. These are what let that timer go.
+        root.GotFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) ScheduleFocusObservation();
+        });
+        root.LostFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) ScheduleFocusObservation();
+        });
         // What is on screen changes when the list scrolls, when it is resized,
         // and when rows are realized. EffectiveViewportChanged is raised for
         // exactly those, which is what lets the visibility report stop being
