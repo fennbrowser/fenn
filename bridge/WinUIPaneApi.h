@@ -2,7 +2,12 @@
 #include <windows.h>
 #include <stdint.h>
 
-// v13 puts the address surface's own intents on the v11 request path as well,
+// v14 puts the last two commands -- close and new tab -- on the v11 request
+// path. syncTabs therefore drains nothing: it loses its close/new-tab
+// out-parameters and the reserved context/command pair with them, keeping only
+// the presentation-model revision. No call in this ABI drains anything, and
+// nothing in the shell polls.
+// v13 put the address surface's own intents on the v11 request path as well,
 // including the visibility of its rows -- the one thing about it that no
 // browser event reports. syncAddress therefore returns nothing and loses its
 // output buffer, and no entry point in this ABI is asked whether it has work.
@@ -14,7 +19,7 @@
 // completeRequests) and incremental tab deltas (applyTabDelta), and retired
 // syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 // retaining the sidebar entry point.
-#define WINUI_PANE_ABI_VERSION 13u
+#define WINUI_PANE_ABI_VERSION 14u
 
 // All calls run on the browser's owning STA. Coordinates are client physical
 // pixels. The module remains loaded until process exit, including after shutdown.
@@ -64,7 +69,9 @@ struct WinUIPaneApi {
     // Only one action is drained per snapshot; Firefox revalidates availability.
     // A close request does not remove a row or choose a successor. The next
     // snapshot acknowledges it: do not sync while Firefox is deciding closure.
-    HRESULT (WINAPI* syncTabs)(HWND, const WinUITab*, uint32_t, uint32_t, uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*);
+    // Publication only since v14; the single out-parameter is the pane's
+    // presentation-model revision after this snapshot.
+    HRESULT (WINAPI* syncTabs)(HWND, const WinUITab*, uint32_t, uint32_t, uint32_t*);
     // Versioned JSON messages, copied during the call; output capacity is in wchar_t.
     // Publication only since v13; intents arrive through drainRequests.
     HRESULT (WINAPI* syncAddress)(HWND, const wchar_t*);
@@ -87,10 +94,10 @@ struct WinUIPaneApi {
     // Take one bounded batch of native requests as JSON:
     //   {"version":1,"generation":N,"legacy":bool,
     //    "requests":[{"id":..,"kind":..,"tab":..,"revision":..,"action":{...}}]}
-    // "kind" is 1 select-tab, 2 tab-menu transition. "legacy" means the pane
-    // also has work for an unmigrated transport (a queued close or new tab),
-    // which the host services by calling syncTabs; those commands do not appear
-    // as requests, so none of them has two executors.
+    // "kind" is 1 select-tab, 2 tab-menu transition, 3 close tab, 4 new tab,
+    // 5 strip gesture, 6 address intent, 7 search-mode intent, 8 address
+    // visibility report. Every native intent appears here and nowhere else, so
+    // none of them has two executors.
     // Returns S_FALSE with an empty output when there was nothing to take, or
     // when a drain is already open. Every batch must be closed by
     // completeRequests, including when execution is refused; otherwise the

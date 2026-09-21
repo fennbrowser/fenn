@@ -100,7 +100,6 @@ struct Pane {
     // every drain it opens; a drain still open when the next one arrives is a
     // host error, counted here rather than silently absorbed.
     bool drainOpen{};
-    bool legacyNotifyPending{};
     uint64_t abandonedDrains{};
     // The selection request whose optimistic native feedback has not yet been
     // reconciled with an authoritative result. Zero means the published Firefox
@@ -110,9 +109,9 @@ struct Pane {
     // slots can be released when the host reports the outcome.
     uint64_t addressRequest{}, modeRequest{};
     uint32_t pendingSelectionRevision{};
-    uint32_t pendingNewTabs{};
-    std::deque<uint32_t> pendingCloses;
-    uint32_t inFlightClose{};
+    // Closes handed to the queue and not yet answered, so a second click on a
+    // tab Firefox is still deciding about does not queue a second close.
+    std::map<uint32_t, uint64_t> outstandingCloses;
     uint32_t browserSelection{};
     bool syncing{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
@@ -153,7 +152,6 @@ struct Pane {
         notifySink = nullptr;
         notifyContext = nullptr;
         drainOpen = false;
-        legacyNotifyPending = false;
         pendingSelectionRequest = 0;
         tabMenu.Close();
         shell.Close();
@@ -248,12 +246,29 @@ struct Pane {
     // tab, which still execute through syncTabs). This is a wakeup only: it
     // carries no request and no execution authority, and it keeps the
     // one-outstanding-notification rule by latching.
-    void ScheduleLegacyDrain() {
-        if (legacyNotifyPending) return;
-        legacyNotifyPending = true;
-        if (!notifySink || !notifySink(notifyContext)) legacyNotifyPending = false;
+    // Close and new-tab are ordinary requests on the shared queue. The queue
+    // does not collapse them -- each is a command the user gave -- so the
+    // duplicate suppression the old deque provided is kept here: a tab already
+    // being closed must not be closed twice if the user clicks again while
+    // Firefox is still deciding (a beforeunload prompt can take as long as it
+    // likes).
+    void QueueClose(uint32_t id) {
+        if (!id || outstandingCloses.count(id)) return;
+        NativeTabMenu::Object action;
+        action.SetNamedValue(L"kind", NativeTabMenu::Value::CreateStringValue(L"close"));
+        action.SetNamedValue(L"tab", NativeTabMenu::Value::CreateNumberValue(id));
+        if (auto request = Enqueue(NativeShellCore::CloseTab, id, tabMenu.stateRevision, action.Stringify()))
+            outstandingCloses.emplace(id, request);
+        // Closing must not leave a selection request suppressing the
+        // authoritative selection Firefox picks for the successor.
+        pendingSelectionRequest = 0;
     }
-    bool HasLegacyWork() const { return !pendingCloses.empty() || pendingNewTabs != 0; }
+    void QueueNewTab() {
+        NativeTabMenu::Object action;
+        action.SetNamedValue(L"kind", NativeTabMenu::Value::CreateStringValue(L"new-tab"));
+        Enqueue(NativeShellCore::NewTab, 0, tabMenu.stateRevision, action.Stringify());
+        pendingSelectionRequest = 0;
+    }
     void QueueTabSelection(uint32_t activate = 0) {
         NativeTabMenu::Array selected;
         uint32_t active = activate;
@@ -295,6 +310,11 @@ struct Pane {
                 addressRequest = 0;
                 address->ClearStaged();
             }
+            for (auto it = outstandingCloses.begin(); it != outstandingCloses.end(); ++it)
+                if (it->second == outcomes[i].id) {
+                    outstandingCloses.erase(it);
+                    break;
+                }
             if (address && outcomes[i].id == modeRequest) {
                 modeRequest = 0;
                 address->mode.pending = L"";
@@ -610,20 +630,8 @@ struct Pane {
                 Enqueue(NativeShellCore::StripAction, 0, strip->presentationRevision, action);
             };
             strip->select = [this](uint32_t id) { QueueStripSelection(id); };
-            strip->close = [this](uint32_t id) {
-                if (id != inFlightClose &&
-                    std::find(pendingCloses.begin(), pendingCloses.end(), id) == pendingCloses.end())
-                    pendingCloses.push_back(id);
-                // Closing must not leave a selection request suppressing the
-                // authoritative selection Firefox picks for the successor.
-                pendingSelectionRequest = 0;
-                ScheduleLegacyDrain();
-            };
-            strip->add = [this] {
-                if (pendingNewTabs < 10000) ++pendingNewTabs;
-                pendingSelectionRequest = 0;
-                ScheduleLegacyDrain();
-            };
+            strip->close = [this](uint32_t id) { QueueClose(id); };
+            strip->add = [this] { QueueNewTab(); };
             takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(parent); });
             source.Content(strip->root);
             strip->armDragSession = [this](uint32_t id) { ArmDragSession(*this, id); };
@@ -689,13 +697,9 @@ struct Pane {
                         if (auto row = weak.get()) {
                             auto index = tabs.IndexFromContainer(row);
                             if (index >= 0 && size_t(index) < tabIds.size()) {
-                                auto id = tabIds[index];
-                                if (id == inFlightClose) return;
-                                if (std::find(pendingCloses.begin(), pendingCloses.end(), id) == pendingCloses.end())
-                                    pendingCloses.push_back(id);
-                                // Clicking a background close button must not select its row.
-                                pendingSelectionRequest = 0;
-                                ScheduleLegacyDrain();
+                                // Clicking a background close button must not select its row,
+                                // which QueueClose also takes care of.
+                                QueueClose(tabIds[index]);
                             }
                         }
                     });
@@ -749,10 +753,7 @@ struct Pane {
         Controls::Grid::SetRow(newTab, 2);
         newTab.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired() || syncing) return;
-            // Bounded per-window queue, drained only by Firefox's event loop.
-            if (pendingNewTabs < 10000) ++pendingNewTabs;
-            pendingSelectionRequest = 0;
-            ScheduleLegacyDrain();
+            QueueNewTab();
         });
         panel.Children().Append(newTab);
         address = std::make_unique<NativeAddress>();
@@ -1274,17 +1275,14 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
         return to_hresult();
     }
 }
-HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected, uint32_t* requested,
-                        uint32_t* closeRequested, uint32_t* newRequested, uint32_t* contextId,
-                        uint32_t* command) noexcept {
+// Publication only, since v14: close and new-tab joined the request path, and
+// the reserved context/command pair went with them, so nothing is drained here.
+HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected,
+                        uint32_t* requested) noexcept {
     try {
         check_hresult(Check(hwnd));
-        if (!requested || !closeRequested || !newRequested || !contextId || !command) return E_POINTER;
+        if (!requested) return E_POINTER;
         *requested = 0;
-        *closeRequested = 0;
-        *newRequested = 0;
-        *contextId = 0;
-        *command = 0;
         if (!hwnd || (count && !tabs) || count > 10000) return E_INVALIDARG;
         std::set<uint32_t> ids;
         for (uint32_t i = 0; i < count; ++i) {
@@ -1296,22 +1294,19 @@ HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end()) return E_INVALIDARG;
         auto& pane = *found->second;
-        while (!pane.pendingCloses.empty() && !ids.count(pane.pendingCloses.front())) pane.pendingCloses.pop_front();
-        auto close = pane.pendingCloses.empty() ? 0 : pane.pendingCloses.front();
-        auto create = !close && pane.pendingNewTabs ? 1u : 0u;
         // Reconcile any outstanding optimistic selection feedback against the
         // authoritative outcomes recorded since the last snapshot.
         pane.ReconcileOutcomes();
+        // A tab that has left the snapshot can no longer be closed, and its
+        // request will be refused if it is still queued; forget it so a later
+        // tab reusing nothing of it is not suppressed.
+        for (auto it = pane.outstandingCloses.begin(); it != pane.outstandingCloses.end();)
+            it = ids.count(it->first) ? std::next(it) : pane.outstandingCloses.erase(it);
         pane.Sync(tabs, count, selected);
         pane.browserSelection = selected;
-        if (close) pane.pendingCloses.pop_front();
-        pane.inFlightClose = close;
-        if (create) --pane.pendingNewTabs;
-        *newRequested = create;
-        *closeRequested = close;
         // Since v11 this carries the presentation-model revision this snapshot
-        // produced; the next applyTabDelta names it as its base. Selection
-        // travels on the request path instead.
+        // produced; the next applyTabDelta names it as its base. Selection,
+        // close and new-tab all travel on the request path instead.
         *requested = pane.ModelRevision();
         return S_OK;
     } catch (hresult_error const& error) {
@@ -1360,19 +1355,14 @@ HRESULT WINAPI DrainRequests(HWND hwnd, wchar_t* output, uint32_t capacity) noex
             if (pane.shell.EndDrain()) pane.ScheduleDrain();
             pane.drainOpen = false;
         }
-        const bool legacy = pane.HasLegacyWork();
-        // The legacy latch is cleared only once this call actually tells the
-        // host about that work. A refused drain must leave it set, or the work
-        // would be left with no wakeup and no way to ask for another.
         if (!pane.shell.BeginDrain()) return S_FALSE;  // already draining, or blocked
-        pane.legacyNotifyPending = false;
         pane.drainOpen = true;
         // Bounded batch: entries and bytes, so one drain cannot monopolise the
         // browser's main thread however much input accumulated.
         constexpr uint32_t kMaxBatchEntries = 16;
         constexpr size_t kMaxBatchBytes = 64 * 1024;
         auto batch = pane.shell.TakeBatch(kMaxBatchEntries, kMaxBatchBytes);
-        if (!batch.size() && !legacy) {
+        if (!batch.size()) {
             // Nothing to do; close the drain here so the host need not answer.
             if (pane.shell.EndDrain()) pane.ScheduleDrain();
             pane.drainOpen = false;
@@ -1396,7 +1386,6 @@ HRESULT WINAPI DrainRequests(HWND hwnd, wchar_t* output, uint32_t capacity) noex
         envelope.SetNamedValue(L"version", NativeTabMenu::Value::CreateNumberValue(1));
         envelope.SetNamedValue(L"generation",
                                NativeTabMenu::Value::CreateNumberValue(double(pane.shell.Stats().generation)));
-        envelope.SetNamedValue(L"legacy", NativeTabMenu::Value::CreateBooleanValue(legacy));
         envelope.SetNamedValue(L"requests", requests);
         auto text = envelope.Stringify();
         if (text.size() >= capacity) {
@@ -1454,16 +1443,7 @@ HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
             notify = pane.shell.SetBlocked(false);
         }
         if (!blocked) {
-            // Unmigrated work (a queued close or new tab) has its own latch,
-            // and a drain the host refused while it was busy consumed the
-            // wakeup without taking the work. Re-arm it here, so unblocking
-            // recovers that work too instead of stranding it.
-            if (pane.HasLegacyWork()) {
-                pane.legacyNotifyPending = false;
-                pane.ScheduleLegacyDrain();
-            } else if (notify) {
-                pane.ScheduleDrain();
-            }
+            if (notify) pane.ScheduleDrain();
         }
         pane.ReconcileOutcomes();
         return S_OK;

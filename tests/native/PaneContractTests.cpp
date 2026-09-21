@@ -332,9 +332,8 @@ static void PrepareFixtureMenus(WinUIPaneApi& api, HWND hwnd,
     }
     for (uint32_t i = 0; i < ids.size(); ++i) tabs.push_back({ids[i], titles[i].c_str(), 7});
     MenuPublish(api, hwnd, MenuState(ids).Stringify().c_str());
-    uint32_t selected{}, close{}, create{}, id{}, command{};
-    Require(SUCCEEDED(api.syncTabs(hwnd, tabs.data(), uint32_t(tabs.size()), ids[list.SelectedIndex()], &selected,
-                                   &close, &create, &id, &command)),
+    uint32_t selected{};
+    Require(SUCCEEDED(api.syncTabs(hwnd, tabs.data(), uint32_t(tabs.size()), ids[list.SelectedIndex()], &selected)),
             "publish fixture menus before tab snapshot");
     Pump();
 }
@@ -348,7 +347,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     Require(SUCCEEDED(inspect(hwnd, put_abi(content))), "inspect context menu host");
     auto list = content.as<Controls::Grid>().Children().GetAt(1).as<Controls::ListView>();
     WinUITab tabs[]{{71, L"Context first", 7}, {72, L"Context second", 27}};
-    uint32_t selected{}, close{}, create{}, id{}, command{};
+    uint32_t selected{};
     auto settle = [] {
         for (int i = 0; i < 100; ++i) {
             Pump();
@@ -356,7 +355,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
         }
     };
     auto sync = [&](uint32_t count = 2) {
-        Require(SUCCEEDED(api.syncTabs(hwnd, tabs, count, 71, &selected, &close, &create, &id, &command)),
+        Require(SUCCEEDED(api.syncTabs(hwnd, tabs, count, 71, &selected)),
                 "context tabs");
         settle();
     };
@@ -535,7 +534,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     {
         uint32_t reserved{}, c{}, n{}, i{}, cmd{};
         WinUITab pair[]{{71, L"Context first", 7}, {72, L"Context second", 27}};
-        Require(SUCCEEDED(api.syncTabs(hwnd, pair, 2, 71, &reserved, &c, &n, &i, &cmd)), "snapshot after selection");
+        Require(SUCCEEDED(api.syncTabs(hwnd, pair, 2, 71, &reserved)), "snapshot after selection");
         Require(c == 0 && n == 0 && i == 0 && cmd == 0, "syncTabs no longer drains selection");
     }
     current = MenuState({71, 72});
@@ -557,10 +556,10 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     UIElement content{nullptr};
     Require(SUCCEEDED(inspect(hwnd, put_abi(content))), "inspect request-path host");
     auto list = content.as<Controls::Grid>().Children().GetAt(1).as<Controls::ListView>();
-    uint32_t revision{}, close{}, create{}, context{}, command{};
+    uint32_t revision{};
     WinUITab tabs[]{{101, L"Core first", 7}, {102, L"Core second", 7}, {103, L"Core third", 7}};
     MenuPublish(api, hwnd, MenuState({101, 102, 103}).Stringify().c_str());
-    Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, &revision, &close, &create, &context, &command)),
+    Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, &revision)),
             "seed the presentation model");
     Require(revision != 0, "a snapshot reports the model revision it produced");
     Pump();
@@ -671,7 +670,7 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     // working through its snapshot-only fallback.
     if (auto panic = reinterpret_cast<HRESULT(WINAPI*)(HWND)>(GetProcAddress(module, "WinUIPaneTestCorePanic"))) {
         Require(panic(hwnd) == E_FAIL, "a Rust panic is contained and reported as a failure");
-        Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, &revision, &close, &create, &context, &command)),
+        Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, &revision)),
                 "the pane still accepts snapshots after a contained panic");
         uint32_t next = 0;
         Require(api.applyTabDelta(hwnd, LR"({"version":1,"base":1,"titles":[]})", &next) == E_NOT_VALID_STATE,
@@ -806,9 +805,8 @@ static void CheckThemesAndLongList(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     for (uint32_t i = 0; i < 120; ++i)
         titles.push_back(L"Long tab title for scrolling and resizing " + std::to_wstring(i));
     for (uint32_t i = 0; i < titles.size(); ++i) tabs.push_back({i + 1, titles[i].c_str()});
-    uint32_t requested{}, closeRequested{}, newRequested{}, contextId{}, command{};
-    Require(SUCCEEDED(api.syncTabs(hwnd, tabs.data(), uint32_t(tabs.size()), 120, &requested, &closeRequested,
-                                   &newRequested, &contextId, &command)),
+    uint32_t requested{};
+    Require(SUCCEEDED(api.syncTabs(hwnd, tabs.data(), uint32_t(tabs.size()), 120, &requested)),
             "long list snapshot");
     for (LONG width : {120L, 240L, 420L}) {
         RECT bounds{0, 0, width, 300};
@@ -841,7 +839,7 @@ static void CheckThemesAndLongList(HMODULE module, WinUIPaneApi& api, HWND hwnd)
                 panel.LastVisibleIndex(), list.ActualWidth(), list.ActualHeight());
     }
     Require(
-        SUCCEEDED(api.syncTabs(hwnd, nullptr, 0, 0, &requested, &closeRequested, &newRequested, &contextId, &command)),
+        SUCCEEDED(api.syncTabs(hwnd, nullptr, 0, 0, &requested)),
         "clear long list");
     // Drain deferred container unloading before creating another test island.
     for (int i = 0; i < 100; ++i) {
@@ -972,9 +970,9 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
                                               winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(i == 0));
     MenuPublish(api, host, state.Stringify().c_str());
     WinUITab tabs[]{{11, L"Same title"}, {22, L"Same title"}};
-    uint32_t selected{}, close{}, create{}, context{}, command{};
+    uint32_t selected{};
     auto sync = [&] {
-        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, &selected, &close, &create, &context, &command)),
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, &selected)),
                 "sync strip snapshot");
     };
     sync();
@@ -1036,13 +1034,13 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "short and long titles receive equal comfortable widths");
     WinUITab crowded[12]{{11, L"Same title"}, {22, L"Y"}};
     for (uint32_t i = 2; i < 12; ++i) crowded[i] = {100 + i, L"Another tab"};
-    Require(SUCCEEDED(api.syncTabs(host, crowded, 4, 11, &selected, &close, &create, &context, &command)),
+    Require(SUCCEEDED(api.syncTabs(host, crowded, 4, 11, &selected)),
             "four-tab sizing snapshot");
     settleWidths();
     fprintf(stderr, "Four width actual %.1f Width %.1f Min %.1f Max %.1f align %d\n", first.ActualWidth(),
             first.Width(), first.MinWidth(), first.MaxWidth(), int(first.HorizontalAlignment()));
     Require(first.ActualWidth() < spaciousWidth - 20 && first.ActualWidth() >= 99, "tabs shrink as the strip fills");
-    Require(SUCCEEDED(api.syncTabs(host, crowded, 12, 11, &selected, &close, &create, &context, &command)),
+    Require(SUCCEEDED(api.syncTabs(host, crowded, 12, 11, &selected)),
             "overflow sizing snapshot");
     settleWidths();
     fprintf(stderr, "Tab sizing: spacious=%.1f crowded=%.1f\n", spaciousWidth, first.ActualWidth());
@@ -1293,8 +1291,8 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation for drag test");
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{11, L"First tab"}, {22, L"Second tab"}};
-    uint32_t selected{}, close{}, create{}, context{}, command{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, &selected, &close, &create, &context, &command)),
+    uint32_t selected{};
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, &selected)),
             "sync strip snapshot for drag test");
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
     UIElement content{nullptr};
@@ -1416,8 +1414,8 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation for detach test");
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{55, L"Detach tab"}};
-    uint32_t selected{}, close{}, create{}, context{}, command{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs, 1, 55, &selected, &close, &create, &context, &command)),
+    uint32_t selected{};
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 1, 55, &selected)),
             "sync strip snapshot for detach test");
     UIElement content{nullptr};
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect strip for detach test");
@@ -1504,8 +1502,8 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation for adopt test");
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{33, L"Source tab"}};
-    uint32_t selected{}, close{}, create{}, context{}, command{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs, 1, 33, &selected, &close, &create, &context, &command)),
+    uint32_t selected{};
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 1, 33, &selected)),
             "sync first host's strip snapshot for adopt test");
     UIElement content{nullptr};
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect first host's strip for adopt test");
@@ -1524,8 +1522,8 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     Require(SUCCEEDED(api.updateTabStrip(host2, &rect2, TRUE)), "create strip presentation on second host");
     ShowWindow(host2, SW_SHOW);
     WinUITab tabs2[]{{44, L"Other window's tab"}};
-    uint32_t selected2{}, close2{}, create2{}, context2{}, command2{};
-    Require(SUCCEEDED(api.syncTabs(host2, tabs2, 1, 44, &selected2, &close2, &create2, &context2, &command2)),
+    uint32_t selected2{};
+    Require(SUCCEEDED(api.syncTabs(host2, tabs2, 1, 44, &selected2)),
             "sync second host's strip snapshot for adopt test");
     UIElement content2{nullptr};
     Require(SUCCEEDED(inspect(host2, put_abi(content2))), "inspect second host's strip");
@@ -1685,9 +1683,9 @@ int wmain(int argc, wchar_t** argv) {
         ShowWindow(first, SW_SHOW);
         Pump();
         CheckContextMenu(module, api, first);
-        uint32_t selected{}, close{}, create{}, id{}, command{};
+        uint32_t selected{};
         WinUITab themeTabs[]{{11, L"Renamed tab"}, {22, L"Second tab"}};
-        Require(SUCCEEDED(api.syncTabs(first, themeTabs, 2, 11, &selected, &close, &create, &id, &command)),
+        Require(SUCCEEDED(api.syncTabs(first, themeTabs, 2, 11, &selected)),
                 "theme fixture");
         CheckThemesAndLongList(module, api, first);
         {
@@ -1725,7 +1723,7 @@ int wmain(int argc, wchar_t** argv) {
         puts("Menu checks passed; clean process exit still required");
         return 0;
     }
-    uint32_t requested = 99, closeRequested = 0, newRequested = 0, contextId = 0, command = 0;
+    uint32_t requested = 99;
     // Since ABI v11 `requested` is the presentation-model revision this
     // snapshot produced, not a selection: selection travels on the request
     // path. `noSelectionRequest` is how "nothing was echoed back" is asserted
@@ -1737,38 +1735,59 @@ int wmain(int argc, wchar_t** argv) {
         return advanced;
     };
     auto noSelectionRequest = [&](HWND target) { return !NextRequest(api, target, 1, nullptr, 2).Size(); };
+    // Close and selection share one queue now, and draining completes whatever
+    // it takes -- so asking "was there a selection?" first would swallow the
+    // close. One drain, both questions.
+    auto closeWithoutSelection = [&](HWND target, uint32_t expected, int attempts = 40) {
+        uint32_t closed = 0;
+        bool selected = false;
+        for (int attempt = 0; attempt < attempts && !closed; ++attempt) {
+            auto batch = DrainRequests(api, target);
+            if (batch.Size()) {
+                for (auto value : batch.GetNamedArray(L"requests")) {
+                    auto request = value.GetObject();
+                    auto kind = uint32_t(request.GetNamedNumber(L"kind"));
+                    if (kind == 3) closed = uint32_t(request.GetNamedNumber(L"tab"));
+                    if (kind == 1) selected = true;
+                }
+                CompleteRequests(api, target, batch);
+            }
+            Pump();
+            Sleep(5);
+        }
+        Require(closed == expected, "the clicked tab's close reaches the request queue");
+        Require(!selected, "closing a background tab does not select its row");
+    };
     WinUITab tabs[]{{11, L"First tab"}, {22, L"Unicode tab \u65e5\u672c\u8a9e"}};
     Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)) &&
+        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)) &&
             advancedRevision() && noSelectionRequest(first),
         "initial tabs do not emit user selection, and the snapshot reports a model revision");
     tabs[0].title = L"Renamed tab";
     Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 22, &requested, &closeRequested, &newRequested, &contextId, &command)) &&
+        SUCCEEDED(api.syncTabs(first, tabs, 2, 22, &requested)) &&
             advancedRevision() && noSelectionRequest(first),
         "title and Firefox selection updates do not echo");
     WinUITab reordered[]{{22, L"Moved tab"}, {11, L"Renamed tab"}};
-    Require(SUCCEEDED(api.syncTabs(first, reordered, 2, 22, &requested, &closeRequested, &newRequested, &contextId,
-                                   &command)),
+    Require(SUCCEEDED(api.syncTabs(first, reordered, 2, 22, &requested)),
             "reorder tabs");
-    Require(SUCCEEDED(api.syncTabs(first, reordered, 1, 22, &requested, &closeRequested, &newRequested, &contextId,
-                                   &command)),
+    Require(SUCCEEDED(api.syncTabs(first, reordered, 1, 22, &requested)),
             "close tab");
-    Require(api.syncTabs(first, tabs, 2, 99, &requested, &closeRequested, &newRequested, &contextId, &command) ==
+    Require(api.syncTabs(first, tabs, 2, 99, &requested) ==
                 E_INVALIDARG,
             "reject missing selected tab");
-    Require(api.syncTabs(first, nullptr, 2, 0, &requested, &closeRequested, &newRequested, &contextId, &command) ==
+    Require(api.syncTabs(first, nullptr, 2, 0, &requested) ==
                 E_INVALIDARG,
             "reject null snapshot");
     WinUITab duplicate[]{{11, L"One"}, {11, L"Two"}};
-    Require(api.syncTabs(first, duplicate, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command) ==
+    Require(api.syncTabs(first, duplicate, 2, 11, &requested) ==
                 E_INVALIDARG,
             "reject duplicate identities");
     Require(
-        SUCCEEDED(api.syncTabs(first, nullptr, 0, 0, &requested, &closeRequested, &newRequested, &contextId, &command)),
+        SUCCEEDED(api.syncTabs(first, nullptr, 0, 0, &requested)),
         "empty list");
     Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)),
+        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)),
         "restore tabs");
     HWND island = GetWindow(first, GW_CHILD);
     Require(island != nullptr && island != compositor, "island above compositor sibling");
@@ -1818,7 +1837,7 @@ int wmain(int argc, wchar_t** argv) {
                 "the reverse keyboard selection is its own request");
     }
     Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)),
+        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)),
         "restore after keyboard selection");
     WithTab(first, tabs[1].title, tabs[1].title, true);
     {
@@ -1827,90 +1846,76 @@ int wmain(int argc, wchar_t** argv) {
                 "accessibility selection reaches the browser bridge on the request path");
     }
     Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)),
+        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)),
         "restore selection before close");
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
-    for (int i = 0; i < 200; ++i) {
-        Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId,
-                                       &command)) &&
-                    noSelectionRequest(first),
-                "background close does not select its row");
-        if (closeRequested) break;
-        Pump();
-        Sleep(10);
-    }
-    Require(closeRequested == 22, "background close reaches queue after asynchronous UIA invocation");
+    closeWithoutSelection(first, 22, 200);
+    // Since ABI v14 a close is a request on the shared queue, not something
+    // syncTabs hands back. It is answered by an outcome, and the pane holds it
+    // as outstanding until then -- which is what stops a second click closing
+    // the same tab twice while Firefox is still deciding.
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)) &&
-            !closeRequested,
-        "in-flight repeated close ignored and row retained until Firefox removes it");
+    closeWithoutSelection(first, 22);
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 1, 11, &requested, &closeRequested, &newRequested, &contextId, &command)) &&
-            !closeRequested,
-        "stale close discarded when Firefox already removed the tab");
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)),
-        "restore close fixtures");
+    closeWithoutSelection(first, 22);
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)), "restore close fixtures");
+    // Two different tabs, two requests, in the order they were clicked. The
+    // queue never collapses them: each is a command the user gave.
     WithTab(first, tabs[0].title, tabs[0].title, false, true);
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)) &&
-            closeRequested == 11,
-        "first queued close retained");
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)) &&
-            closeRequested == 22,
-        "second queued close retained");
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)),
-        "acknowledge queued closes");
+    std::vector<uint32_t> closed;
+    for (int attempt = 0; attempt < 40 && closed.size() < 2; ++attempt) {
+        auto batch = DrainRequests(api, first);
+        if (batch.Size()) {
+            for (auto value : batch.GetNamedArray(L"requests")) {
+                auto request = value.GetObject();
+                if (uint32_t(request.GetNamedNumber(L"kind")) == 3)
+                    closed.push_back(uint32_t(request.GetNamedNumber(L"tab")));
+            }
+            CompleteRequests(api, first, batch);
+        }
+        Pump();
+        Sleep(5);
+    }
+    Require(closed == std::vector<uint32_t>({11, 22}), "both queued closes arrive, in order");
     for (int input : {2}) {
         WithTab(first, tabs[1].title, tabs[1].title, false, true, input);
-        auto closeHr =
-            api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command);
-        fprintf(stderr, "Close input=%d hr=%08X revision=%u close=%u\n", input, unsigned(closeHr), requested,
-                closeRequested);
-        Require(SUCCEEDED(closeHr) && closeRequested == 22 && noSelectionRequest(first),
-                "keyboard background close does not select");
+        closeWithoutSelection(first, 22);
     }
-    Require(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, nullptr, &contextId, &command) == E_POINTER,
-            "reject null new-tab output");
+    Require(api.syncTabs(first, tabs, 2, 11, nullptr) == E_POINTER, "reject null revision output");
     for (int input : {0, 2, 3}) {
         WithTab(first, L"FirefoxWinUINewTab", L"New tab", false, false, input);
-        Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId,
-                                       &command)) &&
-                    newRequested == 1 && !closeRequested && noSelectionRequest(first),
-                "UIA/Space/Enter requests new tab without inventing rows");
-        Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId,
-                                       &command)) &&
-                    !newRequested,
-                "new-tab request consumed exactly once");
+        Require(NextRequest(api, first, 4, nullptr).Size(),
+                "UIA/Space/Enter requests a new tab without inventing rows");
+        Require(!NextRequest(api, first, 4, nullptr, 3).Size(),
+                "new-tab request delivered exactly once");
+        Require(noSelectionRequest(first), "requesting a new tab does not select a row");
     }
     WithTab(first, L"FirefoxWinUINewTab", L"New tab");
     WithTab(first, L"FirefoxWinUINewTab", L"New tab");
-    for (int i = 0; i < 2; ++i)
-        Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId,
-                                       &command)) &&
-                    newRequested == 1,
-                "repeated new-tab requests retained");
+    // New tab is never superseded either: two clicks are two tabs.
+    int newTabs = 0;
+    for (int attempt = 0; attempt < 40 && newTabs < 2; ++attempt) {
+        auto batch = DrainRequests(api, first);
+        if (batch.Size()) {
+            for (auto value : batch.GetNamedArray(L"requests"))
+                if (uint32_t(value.GetObject().GetNamedNumber(L"kind")) == 4) ++newTabs;
+            CompleteRequests(api, first, batch);
+        }
+        Pump();
+        Sleep(5);
+    }
+    Require(newTabs == 2, "repeated new-tab requests are each delivered");
     WinUITab duplicates[]{{11, L"New tab"}, {22, L"New tab"}};
-    Require(SUCCEEDED(api.syncTabs(first, duplicates, 2, 11, &requested, &closeRequested, &newRequested, &contextId,
-                                   &command)),
-            "identical title snapshot");
+    Require(SUCCEEDED(api.syncTabs(first, duplicates, 2, 11, &requested)), "identical title snapshot");
     WithTab(first, L"New tab", L"New tab", false, true, 0, 2, 1);
-    Require(SUCCEEDED(api.syncTabs(first, duplicates, 2, 11, &requested, &closeRequested, &newRequested, &contextId,
-                                   &command)) &&
-                closeRequested == 22 && noSelectionRequest(first),
-            "close second identically named tab by stable identity");
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)),
-        "restore titles after duplicate regression");
+    closeWithoutSelection(first, 22);
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)),
+            "restore titles after duplicate regression");
     if (argc == 3) {
         CheckContextMenu(module, api, first);
         Require(SUCCEEDED(
-                    api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)),
+                    api.syncTabs(first, tabs, 2, 11, &requested)),
                 "restore after context tests");
         CheckThemesAndLongList(module, api, first);
     }
@@ -1951,22 +1956,17 @@ int wmain(int argc, wchar_t** argv) {
         Require(second != nullptr, "second host");
         Require(SUCCEEDED(api.update(second, &rect, TRUE)), "create second island");
         WinUITab other[]{{11, L"Independent window"}};
-        Require(SUCCEEDED(api.syncTabs(second, other, 1, 11, &requested, &closeRequested, &newRequested, &contextId,
-                                       &command)) &&
+        Require(SUCCEEDED(api.syncTabs(second, other, 1, 11, &requested)) &&
                     requested && noSelectionRequest(second),
                 "independent window can reuse tab IDs and keeps its own model revision");
         if (cycle == 0) {
             ShowWindow(second, SW_SHOWNOACTIVATE);
             Pump();
             WithTab(second, L"FirefoxWinUINewTab", L"New tab");
-            Require(SUCCEEDED(api.syncTabs(first, nullptr, 0, 0, &requested, &closeRequested, &newRequested, &contextId,
-                                           &command)) &&
-                        !newRequested,
+            Require(!NextRequest(api, first, 4, nullptr, 3).Size(),
                     "second-window new-tab action cannot leak to first window");
-            Require(SUCCEEDED(api.syncTabs(second, other, 1, 11, &requested, &closeRequested, &newRequested, &contextId,
-                                           &command)) &&
-                        newRequested == 1,
-                    "new-tab request reaches its owning window");
+            Require(NextRequest(api, second, 4, nullptr).Size(),
+                    "new-tab request reaches its owning window's queue");
         }
         Require(SUCCEEDED(api.clip(second, cuts, 2)), "second window clipping");
         HRGN firstRegion = CreateRectRgn(0, 0, 0, 0);

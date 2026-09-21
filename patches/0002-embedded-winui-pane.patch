@@ -1534,10 +1534,10 @@ index c59e443d11..03c10b9504 100644
 +winui-tab-strip-muted = Muted
 +winui-tab-strip-playing = Playing audio
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
-index 5d3805f045..1831a13f0c 100644
+index 5d3805f045..447ab26a04 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
 +++ b/dom/base/nsDOMWindowUtils.cpp
-@@ -151,6 +151,145 @@ using namespace mozilla::layers;
+@@ -151,6 +151,140 @@ using namespace mozilla::layers;
  using namespace mozilla::widget;
  using namespace mozilla::gfx;
  
@@ -1606,13 +1606,8 @@ index 5d3805f045..1831a13f0c 100644
 +nsDOMWindowUtils::SyncWinUITabs(const nsTArray<uint32_t>& aIds,
 +                              const nsTArray<nsString>& aTitles,
 +                              const nsTArray<uint32_t>& aCommands,
-+                              uint32_t aSelected, uint32_t* aClose, uint32_t* aNew,
-+                              uint32_t* aContextId, uint32_t* aCommand, uint32_t* aResult) {
++                              uint32_t aSelected, uint32_t* aResult) {
 +  *aResult = 0;
-+  *aClose = 0;
-+  *aNew = 0;
-+  *aContextId = 0;
-+  *aCommand = 0;
 +  auto* doc = GetDocument();
 +  if (!XRE_IsParentProcess() || !doc ||
 +      !doc->NodePrincipal()->IsSystemPrincipal() ||
@@ -1628,7 +1623,7 @@ index 5d3805f045..1831a13f0c 100644
 +  }
 +  auto* widget = GetWidget();
 +  if (!widget) return NS_ERROR_NOT_AVAILABLE;
-+  *aResult = widget->SyncWinUITabs(aIds, aTitles, aCommands, aSelected, aClose, aNew, aContextId, aCommand);
++  *aResult = widget->SyncWinUITabs(aIds, aTitles, aCommands, aSelected);
 +  return NS_OK;
 +}
 +
@@ -1684,10 +1679,10 @@ index 5d3805f045..1831a13f0c 100644
  #define APZZTFI_LOG(...) \
    MOZ_LOG(sApzZoomToFocusedInputLog, LogLevel::Debug, (__VA_ARGS__))
 diff --git a/dom/interfaces/base/nsIDOMWindowUtils.idl b/dom/interfaces/base/nsIDOMWindowUtils.idl
-index 83313786eb..b3b1cdca61 100644
+index 83313786eb..cb04c3c048 100644
 --- a/dom/interfaces/base/nsIDOMWindowUtils.idl
 +++ b/dom/interfaces/base/nsIDOMWindowUtils.idl
-@@ -61,6 +61,41 @@ interface nsISynthesizedEventCallback : nsISupports {
+@@ -61,6 +61,38 @@ interface nsISynthesizedEventCallback : nsISupports {
  [builtinclass, scriptable, uuid(4d6732ca-9da7-4176-b8a1-8dde15cd0bf9)]
  interface nsIDOMWindowUtils : nsISupports {
  
@@ -1710,17 +1705,14 @@ index 83313786eb..b3b1cdca61 100644
 +  unsigned long applyWinUITabDelta(in AString delta);
 +
 +  /**
-+   * Publishes a snapshot and drains one close or new-tab request. Since ABI
-+   * v11 the return value is the pane's model revision after the snapshot, and
-+   * selection is not drained here: it travels on the request path above.
++   * Publishes a snapshot. Since ABI v14 nothing is drained here: selection,
++   * close, new tab and every other native intent travel on the request path
++   * above. The return value is the pane's model revision after the snapshot,
++   * which the next applyWinUITabDelta names as its base.
 +   */
 +  unsigned long syncWinUITabs(in Array<unsigned long> ids,
 +                             in Array<AString> titles, in Array<unsigned long> commands,
-+                             in unsigned long selected,
-+                             out unsigned long closeRequested,
-+                             out unsigned long newRequested,
-+                             out unsigned long contextId,
-+                             out unsigned long command);
++                             in unsigned long selected);
 +
 +  boolean updateWinUIPane(in double x, in double y, in double width,
 +                         in double height, in boolean visible,
@@ -1730,7 +1722,7 @@ index 83313786eb..b3b1cdca61 100644
     * Image animation mode of the window. When this attribute's value
     * is changed, the implementation should set all images in the window
 diff --git a/widget/nsIWidget.h b/widget/nsIWidget.h
-index 031a63b997..d2cbe052bc 100644
+index 031a63b997..36cfa7c11e 100644
 --- a/widget/nsIWidget.h
 +++ b/widget/nsIWidget.h
 @@ -1294,6 +1294,24 @@ class nsIWidget : public nsSupportsWeakReference {
@@ -1745,7 +1737,7 @@ index 031a63b997..d2cbe052bc 100644
 +  virtual uint32_t ApplyWinUITabDelta(const nsAString& aDelta) { return 0; }
 +
 +  virtual uint32_t SyncWinUITabs(const nsTArray<uint32_t>& aIds,
-+                                const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t* aClose, uint32_t* aNew, uint32_t* aContextId, uint32_t* aCommand) {
++                                const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected) {
 +    return 0;
 +  }
 +
@@ -1759,7 +1751,7 @@ index 031a63b997..d2cbe052bc 100644
    nsIWidget();
    virtual ~nsIWidget();
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
-index c6e02a8696..f06cd8d874 100644
+index c6e02a8696..bb860df7c2 100644
 --- a/widget/windows/WinUIPrototype.cpp
 +++ b/widget/windows/WinUIPrototype.cpp
 @@ -2,17 +2,232 @@
@@ -1936,7 +1928,7 @@ index c6e02a8696..f06cd8d874 100644
 +}
 +
 +uint32_t SyncWinUITabs(HWND aWindow, const nsTArray<uint32_t>& aIds,
-+                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t* aClose, uint32_t* aNew, uint32_t* aContextId, uint32_t* aCommand) {
++                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected) {
 +  if (!XRE_IsParentProcess() || !NS_IsMainThread() || sPaneStopped ||
 +      !sPaneApi.syncTabs || aIds.Length() != aTitles.Length() || aIds.Length() != aCommands.Length() ||
 +      !Preferences::GetBool("widget.windows.winui-prototype.pane.enabled", false))
@@ -1946,7 +1938,7 @@ index c6e02a8696..f06cd8d874 100644
 +    tabs.AppendElement(WinUITab{aIds[i], aTitles[i].get(), aCommands[i]});
 +  }
 +  uint32_t requested = 0;
-+  if (FAILED(sPaneApi.syncTabs(aWindow, tabs.Elements(), tabs.Length(), aSelected, &requested, aClose, aNew, aContextId, aCommand)))
++  if (FAILED(sPaneApi.syncTabs(aWindow, tabs.Elements(), tabs.Length(), aSelected, &requested)))
 +    return 0;
 +  return requested;
 +}
@@ -2079,7 +2071,7 @@ index c6e02a8696..f06cd8d874 100644
    FreeLibrary(module);
    TraceWinUIPrototype("probe-complete", aWindow);
 diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
-index 418c5d791d..612388081a 100644
+index 418c5d791d..ab2263f41e 100644
 --- a/widget/windows/WinUIPrototype.h
 +++ b/widget/windows/WinUIPrototype.h
 @@ -4,8 +4,31 @@
@@ -2097,7 +2089,7 @@ index 418c5d791d..612388081a 100644
 +                     bool aFocus, bool aBackwards,
 +                     const nsTArray<LayoutDeviceIntRect>& aOcclusions);
 +uint32_t SyncWinUITabs(HWND aWindow, const nsTArray<uint32_t>& aIds,
-+                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t* aClose, uint32_t* aNew, uint32_t* aContextId, uint32_t* aCommand);
++                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected);
 +bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot);
 +bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot);
 +// ABI v11 request path. The pane wakes the browser through a sink registered
@@ -2153,7 +2145,7 @@ index d4aff8c47e..a34a1a2dfc 100644
              IMEHandler::ProcessRawKeyMessage(msg)) {
            continue;  // the message is consumed.
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index 3f3b5b9200..3dd6a01163 100644
+index 3f3b5b9200..3f5994fe90 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -53,7 +53,6 @@
@@ -2200,9 +2192,9 @@ index 3f3b5b9200..3dd6a01163 100644
 +}
 +
 +uint32_t nsWindow::SyncWinUITabs(const nsTArray<uint32_t>& aIds,
-+                               const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t* aClose, uint32_t* aNew, uint32_t* aContextId, uint32_t* aCommand) {
++                               const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected) {
 +  if (mWindowType != WindowType::TopLevel || mDestroyCalled) return 0;
-+  return mozilla::widget::SyncWinUITabs(mWnd, aIds, aTitles, aCommands, aSelected, aClose, aNew, aContextId, aCommand);
++  return mozilla::widget::SyncWinUITabs(mWnd, aIds, aTitles, aCommands, aSelected);
 +}
 +
 +bool nsWindow::UpdateWinUIPane(
@@ -2234,7 +2226,7 @@ index 3f3b5b9200..3dd6a01163 100644
      mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
    }
 diff --git a/widget/windows/nsWindow.h b/widget/windows/nsWindow.h
-index 1e2660589b..db1d2360b8 100644
+index 1e2660589b..39cb967796 100644
 --- a/widget/windows/nsWindow.h
 +++ b/widget/windows/nsWindow.h
 @@ -139,6 +139,21 @@ class nsWindow final : public nsIWidget {
@@ -2249,7 +2241,7 @@ index 1e2660589b..db1d2360b8 100644
 +  uint32_t ApplyWinUITabDelta(const nsAString& aDelta) override;
 +
 +  uint32_t SyncWinUITabs(const nsTArray<uint32_t>& aIds,
-+                        const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t* aClose, uint32_t* aNew, uint32_t* aContextId, uint32_t* aCommand) override;
++                        const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected) override;
 +
 +  bool UpdateWinUIPane(
 +      const LayoutDeviceIntRect& aRect, bool aVisible, bool aFocus,
@@ -3510,10 +3502,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..f5fe02ad37
+index 0000000000..83b888f77b
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1241 @@
+@@ -0,0 +1,1231 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3764,9 +3756,6 @@ index 0000000000..f5fe02ad37
 +          outcomes.push({ id: request.id,
 +            outcome: modal && !describing ? 2 : this.executeRequest(request) });
 +        }
-+        // Unmigrated transports (a queued close or new tab) execute through
-+        // syncTabs, exactly as before; the queue only supplied the wakeup.
-+        if (batch.legacy) this.syncTabs();
 +      }
 +    } catch (error) {
 +      console.error("WinUI request drain failed", error);
@@ -3801,6 +3790,8 @@ index 0000000000..f5fe02ad37
 +    if (!action) return 2;
 +    // A strip gesture is answered by the strip's own session; it has no reason
 +    // to require the tab-menu session to exist.
++    if (request.kind === 3) return this.executeCloseRequest(action);
++    if (request.kind === 4) return this.executeNewTabRequest();
 +    if (request.kind === 5) return this.executeStripRequest(action);
 +    // 6 is a field/list intent, 7 a search-mode one. They are separate kinds so
 +    // that neither supersedes the other in the queue; the browser-side handling
@@ -4490,59 +4481,50 @@ index 0000000000..f5fe02ad37
 +    this.stripDirty = false;
 +    const titles = tabs.map(tab => (tab.label || "New tab").slice(0, 32768));
 +    const selected = this.tabIds.get(gBrowser.selectedTab) || 0;
-+    const closeRequested = {};
-+    const newRequested = {};
-+    const contextId = {};
-+    const command = {};
-+    // Since ABI v11 the return value is the pane's model revision after this
-+    // snapshot, which the next delta names as its base.
++    // Since ABI v14 this publishes and nothing more: close, new tab and every
++    // other native intent arrive as drained requests.
 +    this.nativeRevision = window.windowUtils.syncWinUITabs(
 +      ids,
 +      titles,
 +      tabs.map(tab => this.tabCommands(tab)),
-+      ids.includes(selected) ? selected : 0,
-+      closeRequested,
-+      newRequested,
-+      contextId,
-+      command
++      ids.includes(selected) ? selected : 0
 +    );
 +    // This snapshot is authoritative for everything recorded so far.
 +    this.dirtyTitles.clear();
 +    this.dirtySelection = false;
 +    this.contextDirty = false;
 +    this.structuralDirty = false;
-+    const closeIndex = ids.indexOf(closeRequested.value);
-+    if (closeIndex >= 0) {
-+      // Firefox owns beforeunload prompts, undo-close state, final-tab behavior,
-+      // and successor selection. Never select a background tab just to close it.
-+      const tab = tabs[closeIndex];
-+      // The pane holds this close as in flight until a snapshot acknowledges
-+      // it, and a cancelled close changes no tab state to trigger one. Ask for
-+      // that snapshot explicitly, or the pane would refuse the user's next
-+      // close of the same tab forever.
-+      this.structuralDirty = true;
-+      // permitUnload spins a nested event loop. A repeated native request must
-+      // not reenter removeTab and bypass the confirmation already in progress.
-+      if (tab._pendingPermitUnload) return;
-+      this.processingAction = true;
-+      try {
-+        gBrowser.removeTab(tab, { animate: true });
-+      } finally {
-+        this.processingAction = false;
-+      }
-+      return;
++  },
++
++  // Close one tab, drained from the request queue. Firefox owns beforeunload
++  // prompts, undo-close state, final-tab behaviour and successor selection;
++  // this never selects a background tab just to close it.
++  executeCloseRequest(action) {
++    const tab = this.resolveStripTab(action?.tab);
++    if (!tab) return 2;
++    // The pane holds this close as outstanding until an outcome answers it,
++    // and a cancelled close changes no tab state to trigger a snapshot. Ask
++    // for one explicitly, or the pane would refuse the user's next close of
++    // the same tab forever.
++    this.structuralDirty = true;
++    // permitUnload spins a nested event loop. A repeated native request must
++    // not reenter removeTab and bypass the confirmation already in progress.
++    if (tab._pendingPermitUnload) return 2;
++    this.processingAction = true;
++    try {
++      gBrowser.removeTab(tab, { animate: true });
++    } finally {
++      this.processingAction = false;
 +    }
-+    if (newRequested.value) {
-+      // Use the same command as Ctrl+T: Firefox owns the new-tab URL, selection,
-+      // notifications, policies and address-bar focus. Rows arrive via tab events.
-+      this.structuralDirty = true;
-+      BrowserCommands.openTab();
-+      return;
-+    }
-+    // contextId/command are reserved and always zero; tab-menu commands travel
-+    // on the request path, so nothing is executed from here.
-+    void contextId;
-+    void command;
++    return 1;
++  },
++
++  // Use the same command as Ctrl+T: Firefox owns the new-tab URL, selection,
++  // notifications, policies and address-bar focus. Rows arrive via tab events.
++  executeNewTabRequest() {
++    this.structuralDirty = true;
++    BrowserCommands.openTab();
++    return 1;
 +  },
 +
 +  observe(subject, topic, data) {
@@ -4757,15 +4739,20 @@ index 0000000000..f5fe02ad37
 +window.addEventListener("unload", () => gWinUIPane.uninit(), { once: true });
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 0000000000..235c39e782
+index 0000000000..e439f17b08
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,122 @@
 +#pragma once
 +#include <windows.h>
 +#include <stdint.h>
 +
-+// v13 puts the address surface's own intents on the v11 request path as well,
++// v14 puts the last two commands -- close and new tab -- on the v11 request
++// path. syncTabs therefore drains nothing: it loses its close/new-tab
++// out-parameters and the reserved context/command pair with them, keeping only
++// the presentation-model revision. No call in this ABI drains anything, and
++// nothing in the shell polls.
++// v13 put the address surface's own intents on the v11 request path as well,
 +// including the visibility of its rows -- the one thing about it that no
 +// browser event reports. syncAddress therefore returns nothing and loses its
 +// output buffer, and no entry point in this ABI is asked whether it has work.
@@ -4777,7 +4764,7 @@ index 0000000000..235c39e782
 +// completeRequests) and incremental tab deltas (applyTabDelta), and retired
 +// syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 +// retaining the sidebar entry point.
-+#define WINUI_PANE_ABI_VERSION 13u
++#define WINUI_PANE_ABI_VERSION 14u
 +
 +// All calls run on the browser's owning STA. Coordinates are client physical
 +// pixels. The module remains loaded until process exit, including after shutdown.
@@ -4827,7 +4814,9 @@ index 0000000000..235c39e782
 +    // Only one action is drained per snapshot; Firefox revalidates availability.
 +    // A close request does not remove a row or choose a successor. The next
 +    // snapshot acknowledges it: do not sync while Firefox is deciding closure.
-+    HRESULT (WINAPI* syncTabs)(HWND, const WinUITab*, uint32_t, uint32_t, uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*);
++    // Publication only since v14; the single out-parameter is the pane's
++    // presentation-model revision after this snapshot.
++    HRESULT (WINAPI* syncTabs)(HWND, const WinUITab*, uint32_t, uint32_t, uint32_t*);
 +    // Versioned JSON messages, copied during the call; output capacity is in wchar_t.
 +    // Publication only since v13; intents arrive through drainRequests.
 +    HRESULT (WINAPI* syncAddress)(HWND, const wchar_t*);
@@ -4850,10 +4839,10 @@ index 0000000000..235c39e782
 +    // Take one bounded batch of native requests as JSON:
 +    //   {"version":1,"generation":N,"legacy":bool,
 +    //    "requests":[{"id":..,"kind":..,"tab":..,"revision":..,"action":{...}}]}
-+    // "kind" is 1 select-tab, 2 tab-menu transition. "legacy" means the pane
-+    // also has work for an unmigrated transport (a queued close or new tab),
-+    // which the host services by calling syncTabs; those commands do not appear
-+    // as requests, so none of them has two executors.
++    // "kind" is 1 select-tab, 2 tab-menu transition, 3 close tab, 4 new tab,
++    // 5 strip gesture, 6 address intent, 7 search-mode intent, 8 address
++    // visibility report. Every native intent appears here and nowhere else, so
++    // none of them has two executors.
 +    // Returns S_FALSE with an empty output when there was nothing to take, or
 +    // when a drain is already open. Every batch must be closed by
 +    // completeRequests, including when execution is refused; otherwise the
