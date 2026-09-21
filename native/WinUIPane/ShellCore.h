@@ -24,11 +24,34 @@ struct NativeShellCore {
     // them as a plain uint32_t, so cbindgen does not generate the enum;
     // ffi.rs pins the accepted range so a kind added on one side alone fails
     // there.
-    enum Kind : uint32_t { SelectTab = 1, MenuEvent = 2, CloseTab = 3, NewTab = 4, StripAction = 5 };
+    enum Kind : uint32_t {
+        SelectTab = 1, MenuEvent = 2, CloseTab = 3, NewTab = 4, StripAction = 5, AddressAction = 6
+    };
     // Outcomes, matching queue.rs `Outcome`.
     enum Outcome : uint32_t { Completed = 1, Rejected = 2, Cancelled = 3, Superseded = 4 };
     // Change kinds, matching model.rs `ChangeKind`.
     enum Change : uint32_t { TitleChanged = 1, SelectionChanged = 2, Inserted = 3, Removed = 4, Moved = 5 };
+    // Address-bar intents and the decisions about them, matching intent.rs.
+    // `NoIntent` is the boundary's "nothing is staged", not a kind.
+    enum Intent : uint32_t {
+        NoIntent = 0, Edit = 1, TextSelection = 2, Select = 3, Activate = 4,
+        Focus = 5, Blur = 6, Dismiss = 7, GlobalAction = 8, Fallback = 9
+    };
+    enum Decision : uint32_t { Stage = 1, Replace = 2, Amend = 3, Defer = 4, DropIntent = 5 };
+
+    // Which of an arriving intent and the staged one survives. The rules are
+    // defined and exhaustively tested in intent.rs; this call is the only
+    // definition the C++ side has, deliberately, so the two cannot drift.
+    // Falls back to dropping the intent if the core is unavailable, which is
+    // the safe direction: a dropped intent loses one action, a wrongly
+    // accepted one can commit against the wrong suggestion.
+    Decision Decide(Intent incoming, Intent staged, ShellIntentConditions const& conditions) const {
+        uint32_t decision = DropIntent;
+        if (!core) return DropIntent;
+        if (shell_core_decide_intent(incoming, staged, &conditions, &decision) != SHELL_STATUS_OK)
+            return DropIntent;
+        return Decision(decision);
+    }
 
     ShellCore* core{};
 

@@ -3,6 +3,7 @@
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include "JsonValidation.h"
+#include "ShellCore.h"
 #include "SearchMode.h"
 #include "GlobalActions.h"
 #include "SuggestionList.h"
@@ -20,6 +21,16 @@ struct NativeAddress {
     SuggestionList suggestions;
     GlobalActionsPanel actions;
     winrt::hstring session, pending, visibility, observedText, submitIntent;
+    // Which intent `pending` holds, as the shell core names it. Kept as a kind
+    // rather than re-parsed out of `pending` on every decision, which is what
+    // this code used to do to recover state it had just written.
+    NativeShellCore::Intent stagedKind{NativeShellCore::NoIntent};
+    // Supplied by the owning pane: the one definition of which intent survives
+    // when two are in play. The rules live in native/ShellCore/src/intent.rs
+    // where every pair is tested; nothing here re-implements them.
+    std::function<NativeShellCore::Decision(NativeShellCore::Intent, NativeShellCore::Intent,
+                                            ShellIntentConditions const&)>
+        decide;
     double revision{}, sequence{-1}, editId{}, selectionId{}, acknowledgedEditId{};
     bool syncing{}, composing{}, enterPending{}, observedComposing{}, queryComplete{}, focusWithin{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
@@ -33,11 +44,11 @@ struct NativeAddress {
     // coordination as Action() does -- kept here rather than in
     // GlobalActionsPanel, which has no access to that state.
     void TryGlobalAction(winrt::hstring const& id, winrt::hstring const& resultId) {
-        if (syncing || composing) return;
         Edit();
-        if (acknowledgedEditId != editId ||
-            (!pending.empty() && JObject::Parse(pending).GetNamedString(L"kind") != L"text-selection"))
-            return;
+        // A global action names a row from the publication that produced it, so
+        // it needs the browser level with our edits, and it yields to anything
+        // staged except a caret move.
+        if (Decide(NativeShellCore::GlobalAction, stagedKind) == NativeShellCore::DropIntent) return;
         auto value = Message(L"global-action");
         value.SetNamedValue(L"id", JValue::CreateStringValue(resultId));
         value.SetNamedValue(L"actionId", JValue::CreateStringValue(id));
@@ -46,8 +57,47 @@ struct NativeAddress {
         intent.SetNamedValue(L"shiftKey", JValue::CreateBooleanValue((GetKeyState(VK_SHIFT) & 0x8000) != 0));
         intent.SetNamedValue(L"altKey", JValue::CreateBooleanValue((GetKeyState(VK_MENU) & 0x8000) != 0));
         value.SetNamedValue(L"intent", intent);
-        pending = value.Stringify();
+        Stage(value, NativeShellCore::GlobalAction);
         enterPending = false;
+    }
+    // Everything the policy may consider, read from WinUI, Win32 and the last
+    // applied publication. Assembled here so the rules cannot quietly start
+    // depending on something else.
+    ShellIntentConditions Observed() const {
+        return ShellIntentConditions{
+            syncing ? 1u : 0u,
+            composing ? 1u : 0u,
+            session.empty() ? 0u : 1u,
+            mode.pending.empty() ? 0u : 1u,
+            acknowledgedEditId == editId ? 1u : 0u,
+            (queryComplete || !suggestions.ids.empty()) ? 1u : 0u,
+        };
+    }
+    NativeShellCore::Decision Decide(NativeShellCore::Intent incoming,
+                                     NativeShellCore::Intent staged) const {
+        // Without a decision function nothing is staged: dropping loses one
+        // action, accepting could commit against the wrong suggestion.
+        return decide ? decide(incoming, staged, Observed()) : NativeShellCore::DropIntent;
+    }
+    static NativeShellCore::Intent IntentOf(wchar_t const* kind) {
+        if (wcscmp(kind, L"select") == 0) return NativeShellCore::Select;
+        if (wcscmp(kind, L"activate") == 0) return NativeShellCore::Activate;
+        if (wcscmp(kind, L"focus") == 0) return NativeShellCore::Focus;
+        if (wcscmp(kind, L"blur") == 0) return NativeShellCore::Blur;
+        if (wcscmp(kind, L"dismiss") == 0) return NativeShellCore::Dismiss;
+        if (wcscmp(kind, L"fallback") == 0) return NativeShellCore::Fallback;
+        // Every kind Action() is called with must map to one: an unmapped kind
+        // would be dropped silently, which is how the fallback button briefly
+        // stopped working.
+        return NativeShellCore::NoIntent;
+    }
+    void Stage(JObject const& value, NativeShellCore::Intent kind) {
+        pending = value.Stringify();
+        stagedKind = kind;
+    }
+    void ClearStaged() {
+        pending = L"";
+        stagedKind = NativeShellCore::NoIntent;
     }
     JObject Message(wchar_t const* kind) {
         JObject value;
@@ -58,8 +108,12 @@ struct NativeAddress {
         return value;
     }
     void Edit() {
-        if (syncing || session.empty()) return;
         if (field.Text() == observedText && composing == observedComposing) return;
+        // A text change replaces whatever was staged: what the user can see is
+        // the newest thing they have said. Composition start and end are edits
+        // too, which is why this is the one intent not suppressed by an active
+        // composition.
+        if (Decide(NativeShellCore::Edit, stagedKind) == NativeShellCore::DropIntent) return;
         observedText = field.Text();
         observedComposing = composing;
         enterPending = false;
@@ -71,11 +125,16 @@ struct NativeAddress {
         value.SetNamedValue(L"selectionEnd",
                             JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
         value.SetNamedValue(L"composing", JValue::CreateBooleanValue(composing));
-        pending = value.Stringify();
+        Stage(value, NativeShellCore::Edit);
     }
     void Action(wchar_t const* kind) {
-        if (syncing || composing || session.empty() || !mode.pending.empty()) return;
-        if (wcscmp(kind, L"activate") == 0) {
+        const auto incoming = IntentOf(kind);
+        if (incoming == NativeShellCore::NoIntent) return;
+        // Is this intent meaningful at all right now -- a question about the
+        // surface, not about what is staged. Asked before Edit() below, which
+        // is where the original guard sat.
+        if (Decide(incoming, NativeShellCore::NoIntent) == NativeShellCore::DropIntent) return;
+        if (incoming == NativeShellCore::Activate) {
             Edit();
             if (submitIntent.empty()) {
                 JObject intent;
@@ -85,29 +144,20 @@ struct NativeAddress {
                 intent.SetNamedValue(L"metaKey", JValue::CreateBooleanValue((GetKeyState(VK_LWIN) & 0x8000) != 0));
                 submitIntent = intent.Stringify();
             }
-            // An edit can already have left the queue while Firefox is still
-            // querying or has not acknowledged it in a native snapshot yet.
-            if (acknowledgedEditId != editId || (!queryComplete && suggestions.ids.empty())) {
+        }
+        // Does it beat what is staged, and are its own preconditions met? The
+        // deferral cases (committing before the browser has acknowledged the
+        // edit, or behind an edit still in flight) come back as Defer.
+        switch (Decide(incoming, stagedKind)) {
+            case NativeShellCore::Defer:
                 enterPending = true;
                 return;
-            }
-        }
-        if (!pending.empty()) {
-            auto kindPending = JObject::Parse(pending).GetNamedString(L"kind");
-            if (wcscmp(kind, L"activate") == 0 && kindPending == L"edit") {
-                enterPending = true;
+            case NativeShellCore::DropIntent:
                 return;
-            }
-            const bool replaceSelection =
-                kindPending == L"text-selection" && (wcscmp(kind, L"select") == 0 || wcscmp(kind, L"activate") == 0);
-            const bool activateSelected = kindPending == L"select" && wcscmp(kind, L"activate") == 0;
-            const bool restoreFocus =
-                wcscmp(kind, L"focus") == 0 && (kindPending == L"text-selection" || kindPending == L"blur");
-            if (wcscmp(kind, L"dismiss") != 0 && wcscmp(kind, L"blur") != 0 && !replaceSelection && !activateSelected &&
-                !restoreFocus)
-                return;
+            default:
+                break;
         }
-        if (wcscmp(kind, L"dismiss") == 0 || wcscmp(kind, L"blur") == 0) {
+        if (incoming == NativeShellCore::Dismiss || incoming == NativeShellCore::Blur) {
             enterPending = false;
             submitIntent = L"";
         }
@@ -119,7 +169,7 @@ struct NativeAddress {
         int index = suggestions.list.SelectedIndex();
         if (index >= 0 && size_t(index) < suggestions.ids.size())
             value.SetNamedValue(L"id", JValue::CreateStringValue(suggestions.ids[index]));
-        pending = value.Stringify();
+        Stage(value, incoming);
     }
     void ObserveFocus(bool islandHasFocus) {
         if (mode.flyout.IsOpen()) return;
@@ -159,22 +209,25 @@ struct NativeAddress {
             Edit();
         });
         field.SelectionChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-            if (alive.expired() || syncing || composing || session.empty()) return;
-            if (!pending.empty()) {
+            if (alive.expired()) return;
+            // A caret move is the least important intent there is: it folds
+            // into a staged edit, which already carries a range, and otherwise
+            // never displaces anything.
+            const auto decision = Decide(NativeShellCore::TextSelection, stagedKind);
+            if (decision == NativeShellCore::Amend) {
                 auto value = JObject::Parse(pending);
-                if (value.GetNamedString(L"kind") == L"edit") {
-                    value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
-                    value.SetNamedValue(L"selectionEnd",
-                                        JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
-                    pending = value.Stringify();
-                }
+                value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
+                value.SetNamedValue(L"selectionEnd",
+                                    JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
+                pending = value.Stringify();
                 return;
             }
+            if (decision != NativeShellCore::Stage && decision != NativeShellCore::Replace) return;
             auto value = Message(L"text-selection");
             value.SetNamedValue(L"selectionId", JValue::CreateNumberValue(++selectionId));
             value.SetNamedValue(L"start", JValue::CreateNumberValue(field.SelectionStart()));
             value.SetNamedValue(L"end", JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
-            pending = value.Stringify();
+            Stage(value, NativeShellCore::TextSelection);
         });
         field.TextCompositionStarted([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
@@ -343,7 +396,7 @@ struct NativeAddress {
             syncing = true;
             root.Visibility(Visibility::Collapsed);
             suggestions.Clear();
-            pending = L"";
+            ClearStaged();
             session = L"";
             enterPending = false;
             submitIntent = L"";
@@ -419,7 +472,7 @@ struct NativeAddress {
         }
         if (nextSession != session) {
             mode.Reset();
-            pending = L"";
+            ClearStaged();
             enterPending = false;
             submitIntent = L"";
             queryComplete = false;
@@ -436,7 +489,7 @@ struct NativeAddress {
         Edit();  // Observe text synchronously before an older snapshot can replace it.
         if (!pending.empty()) {
             auto action = pending;
-            pending = L"";
+            ClearStaged();
             return action;
         }
         if (!mode.pending.empty()) {
@@ -479,7 +532,7 @@ struct NativeAddress {
             enterPending = false;
             Action(L"activate");
             auto action = pending;
-            pending = L"";
+            ClearStaged();
             return action;
         }
         winrt::Windows::Data::Json::JsonArray visible;

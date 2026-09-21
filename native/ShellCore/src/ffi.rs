@@ -33,6 +33,7 @@ use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::thread::ThreadId;
 
+use crate::intent::{self, IntentKind};
 use crate::model::{ApplyError, Change, ModelLimits, TabEntry, TabModel};
 use crate::queue::{
     CompleteError, DrainError, EnqueueStatus, Limits, Outcome, Request, RequestKind, RequestQueue,
@@ -299,6 +300,73 @@ unsafe fn slice<'a>(pointer: *const u16, len: usize) -> Option<&'a [u16]> {
 #[no_mangle]
 pub extern "C" fn shell_core_abi_version() -> u32 {
     SHELL_CORE_ABI_VERSION
+}
+
+/// What the caller observed about the address surface when an intent arrived.
+/// Each field is `0` for false and non-zero for true; `bool` is deliberately
+/// not used across the boundary, where its representation is the host
+/// compiler's business.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ShellIntentConditions {
+    pub applying: u32,
+    pub composing: u32,
+    pub has_session: u32,
+    pub mode_intent_staged: u32,
+    pub edit_acknowledged: u32,
+    pub query_settled: u32,
+}
+
+/// Decide what to do with an arriving address-bar intent, given the one already
+/// staged. `staged` is `0` when nothing is outstanding. `out_decision` receives
+/// a [`crate::intent::Decision`] value.
+///
+/// This is a pure function of its arguments: no core handle, no thread
+/// affinity, no allocation. It exists so the policy has one definition, tested
+/// in `intent.rs`, rather than one in Rust and another in the caller.
+///
+/// # Safety
+/// `conditions` and `out_decision` must be readable/writable pointers.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_decide_intent(
+    incoming: u32,
+    staged: u32,
+    conditions: *const ShellIntentConditions,
+    out_decision: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out_decision.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    let Some(raw) = conditions.as_ref() else {
+        return ShellStatus::InvalidArgument;
+    };
+    let Some(incoming) = IntentKind::from_raw(incoming) else {
+        return ShellStatus::InvalidArgument;
+    };
+    // 0 means "nothing staged"; any other value must name a real kind.
+    let staged = if staged == 0 {
+        None
+    } else {
+        match IntentKind::from_raw(staged) {
+            Some(kind) => Some(kind),
+            None => return ShellStatus::InvalidArgument,
+        }
+    };
+    let conditions = intent::Conditions {
+        applying: raw.applying != 0,
+        composing: raw.composing != 0,
+        has_session: raw.has_session != 0,
+        mode_intent_staged: raw.mode_intent_staged != 0,
+        edit_acknowledged: raw.edit_acknowledged != 0,
+        query_settled: raw.query_settled != 0,
+    };
+    match catch_unwind(AssertUnwindSafe(|| intent::decide(incoming, staged, conditions))) {
+        Ok(decision) => {
+            *out = decision as u32;
+            ShellStatus::Ok
+        }
+        Err(_) => ShellStatus::Panic,
+    }
 }
 
 /// Create one endpoint's core, owned by the calling thread. Returns null only
@@ -961,6 +1029,34 @@ mod tests {
             }
             assert_eq!(shell_core_enqueue(core, 7, 1, 0, std::ptr::null(), 0, &mut result),
                 ShellStatus::InvalidArgument, "one past the last kind");
+            // The intent boundary refuses the same way, and refuses a staged
+            // kind it does not know rather than treating it as "nothing".
+            let conditions = ShellIntentConditions {
+                applying: 0, composing: 0, has_session: 1,
+                mode_intent_staged: 0, edit_acknowledged: 1, query_settled: 1,
+            };
+            let mut decision = 0u32;
+            assert_eq!(
+                shell_core_decide_intent(1, 0, &conditions, &mut decision),
+                ShellStatus::Ok
+            );
+            assert_eq!(decision, crate::intent::Decision::Stage as u32);
+            assert_eq!(
+                shell_core_decide_intent(10, 0, &conditions, &mut decision),
+                ShellStatus::InvalidArgument, "unknown incoming kind"
+            );
+            assert_eq!(
+                shell_core_decide_intent(1, 10, &conditions, &mut decision),
+                ShellStatus::InvalidArgument, "unknown staged kind"
+            );
+            assert_eq!(
+                shell_core_decide_intent(1, 0, std::ptr::null(), &mut decision),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_decide_intent(1, 0, &conditions, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
             // A non-null length with a null pointer must never be dereferenced.
             assert_eq!(
                 shell_core_enqueue(core, 1, 1, 0, std::ptr::null(), 4, &mut result),

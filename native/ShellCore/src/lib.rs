@@ -22,6 +22,7 @@
 //! Strings cross the boundary as UTF-16 (`u16`) because both sides already
 //! speak UTF-16 (`winrt::hstring`, `nsAString`), so nothing is transcoded.
 
+pub mod intent;
 pub mod model;
 pub mod queue;
 

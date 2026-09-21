@@ -94,6 +94,21 @@ typedef uint32_t ShellStatus;
 typedef struct ShellCore ShellCore;
 
 /*
+ What the caller observed about the address surface when an intent arrived.
+ Each field is `0` for false and non-zero for true; `bool` is deliberately
+ not used across the boundary, where its representation is the host
+ compiler's business.
+ */
+typedef struct {
+  uint32_t applying;
+  uint32_t composing;
+  uint32_t has_session;
+  uint32_t mode_intent_staged;
+  uint32_t edit_acknowledged;
+  uint32_t query_settled;
+} ShellIntentConditions;
+
+/*
  Bounds for one endpoint. Zero in any field means "use the built-in default
  for that field", so the host can set only what it cares about.
  */
@@ -215,6 +230,23 @@ extern "C" {
  the one its header was generated for.
  */
 uint32_t shell_core_abi_version(void);
+
+/*
+ Decide what to do with an arriving address-bar intent, given the one already
+ staged. `staged` is `0` when nothing is outstanding. `out_decision` receives
+ a [`crate::intent::Decision`] value.
+
+ This is a pure function of its arguments: no core handle, no thread
+ affinity, no allocation. It exists so the policy has one definition, tested
+ in `intent.rs`, rather than one in Rust and another in the caller.
+
+ # Safety
+ `conditions` and `out_decision` must be readable/writable pointers.
+ */
+ShellStatus shell_core_decide_intent(uint32_t incoming,
+                                     uint32_t staged,
+                                     const ShellIntentConditions *conditions,
+                                     uint32_t *out_decision);
 
 /*
  Create one endpoint's core, owned by the calling thread. Returns null only

@@ -740,6 +740,11 @@ struct Pane {
         });
         panel.Children().Append(newTab);
         address = std::make_unique<NativeAddress>();
+        // One definition of which address intent survives, in the shell core.
+        address->decide = [this](NativeShellCore::Intent incoming, NativeShellCore::Intent staged,
+                                 ShellIntentConditions const& conditions) {
+            return shell.Decide(incoming, staged, conditions);
+        };
         Controls::Grid::SetRow(address->root, 3);
         panel.Children().Append(address->root);
         source.Content(panel);
