@@ -59,6 +59,12 @@ pub enum RequestKind {
     /// therefore outstanding, which is what the single slot this replaced
     /// guaranteed. Carries no tab.
     AddressAction = 6,
+    /// One search-mode intent: revealing, opening, picking or exiting the mode
+    /// menu. A separate kind from [`Self::AddressAction`] precisely so the two
+    /// supersede independently -- they are two slots on the native side, and
+    /// collapsing them into one would let an edit evict a queued mode pick and
+    /// vice versa. Carries no tab.
+    AddressModeAction = 7,
 }
 
 impl RequestKind {
@@ -70,6 +76,7 @@ impl RequestKind {
             4 => Some(Self::NewTab),
             5 => Some(Self::StripAction),
             6 => Some(Self::AddressAction),
+            7 => Some(Self::AddressModeAction),
             _ => None,
         }
     }
@@ -80,7 +87,7 @@ impl RequestKind {
     /// replacement takes the replaced request's *position* so ordering against
     /// other kinds survives the collapse.
     pub fn replaces_queued(self) -> bool {
-        matches!(self, Self::SelectTab | Self::AddressAction)
+        matches!(self, Self::SelectTab | Self::AddressAction | Self::AddressModeAction)
     }
 }
 
@@ -637,6 +644,24 @@ mod tests {
         let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
         assert_eq!(kinds, vec![RequestKind::StripAction, RequestKind::AddressAction]);
         assert_eq!(batch[1].id, second.id);
+    }
+
+    #[test]
+    fn a_mode_intent_and_an_address_intent_do_not_evict_each_other() {
+        // They are two separate slots on the native side. Sharing one kind
+        // would let an edit throw away a queued mode pick, which is a user
+        // action silently lost.
+        let mut q = queue();
+        let mode = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]);
+        let address = q.enqueue(RequestKind::AddressAction, 0, 1, &[]);
+        assert_eq!(address.superseded, 0, "an address intent leaves a mode intent alone");
+        let newer_mode = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]);
+        assert_eq!(newer_mode.superseded, mode.id, "but a mode intent supersedes its own kind");
+        q.begin_drain().unwrap();
+        let batch = q.take_batch(8, 1 << 20);
+        let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
+        assert_eq!(kinds, vec![RequestKind::AddressModeAction, RequestKind::AddressAction]);
+        assert_eq!(batch[0].id, newer_mode.id);
     }
 
     #[test]

@@ -31,6 +31,10 @@ struct NativeSearchMode {
     std::function<void()> edit, clearIntent, focusField;
     std::function<JObject(wchar_t const*)> message;
     std::function<bool()> busy;
+    // Hands one queued mode action to the owning pane's request queue. The slot
+    // below stays as the record of what is outstanding, cleared when the
+    // outcome comes back, so `busy()` and Reset()/Disable() keep working.
+    std::function<void(winrt::hstring const&)> dispatch;
 
     ~NativeSearchMode() {
         lifetime.reset();
@@ -67,6 +71,7 @@ struct NativeSearchMode {
         intent.SetNamedValue(L"metaKey", JValue::CreateBooleanValue(false));
         value.SetNamedValue(L"intent", intent);
         pending = value.Stringify();
+        if (dispatch) dispatch(pending);
         clearIntent();
     }
 

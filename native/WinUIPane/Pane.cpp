@@ -106,6 +106,9 @@ struct Pane {
     // reconciled with an authoritative result. Zero means the published Firefox
     // selection may be applied directly.
     uint64_t pendingSelectionRequest{};
+    // The address and search-mode intents currently in the queue, so their
+    // slots can be released when the host reports the outcome.
+    uint64_t addressRequest{}, modeRequest{};
     uint32_t pendingSelectionRevision{};
     uint32_t pendingNewTabs{};
     std::deque<uint32_t> pendingCloses;
@@ -282,8 +285,21 @@ struct Pane {
     // published selection, so the next apply restores the authoritative one.
     void ReconcileOutcomes() {
         auto outcomes = shell.TakeOutcomes();
-        for (size_t i = 0; i < outcomes.size(); ++i)
+        for (size_t i = 0; i < outcomes.size(); ++i) {
             if (outcomes[i].id == pendingSelectionRequest) pendingSelectionRequest = 0;
+            // An address intent is outstanding until the host says how it went.
+            // Clearing the slot here, rather than when a tick collected it, is
+            // what lets the coalescing policy keep meaning "something is still
+            // in flight" with no tick left to define it.
+            if (address && outcomes[i].id == addressRequest) {
+                addressRequest = 0;
+                address->ClearStaged();
+            }
+            if (address && outcomes[i].id == modeRequest) {
+                modeRequest = 0;
+                address->mode.pending = L"";
+            }
+        }
     }
     // Keep the Rust presentation model in step with the authoritative snapshot,
     // so a later delta has a correct base to apply against. Structural apply to
@@ -744,6 +760,15 @@ struct Pane {
         address->decide = [this](NativeShellCore::Intent incoming, NativeShellCore::Intent staged,
                                  ShellIntentConditions const& conditions) {
             return shell.Decide(incoming, staged, conditions);
+        };
+        // Address intents ride the same queue as every other native intent. A
+        // newer one supersedes the queued one in place, which is the single
+        // outstanding action the staging slot used to guarantee by overwriting.
+        address->dispatch = [this](hstring const& action) {
+            addressRequest = Enqueue(NativeShellCore::AddressAction, 0, address->revision, action);
+        };
+        address->mode.dispatch = [this](hstring const& action) {
+            modeRequest = Enqueue(NativeShellCore::AddressModeAction, 0, address->revision, action);
         };
         Controls::Grid::SetRow(address->root, 3);
         panel.Children().Append(address->root);

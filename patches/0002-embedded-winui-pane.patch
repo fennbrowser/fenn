@@ -3479,10 +3479,10 @@ index 0000000000..a07d26b2f5
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..ab45864e3f
+index 0000000000..13d0464559
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1188 @@
+@@ -0,0 +1,1209 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3780,6 +3780,10 @@ index 0000000000..ab45864e3f
 +    // A strip gesture is answered by the strip's own session; it has no reason
 +    // to require the tab-menu session to exist.
 +    if (request.kind === 5) return this.executeStripRequest(action);
++    // 6 is a field/list intent, 7 a search-mode one. They are separate kinds so
++    // that neither supersedes the other in the queue; the browser-side handling
++    // is the same chain.
++    if (request.kind === 6 || request.kind === 7) return this.executeAddressRequest(action);
 +    const session = this.tabMenuSession;
 +    if (!session) return 2;
 +    if (request.kind === 1) {
@@ -3949,10 +3953,21 @@ index 0000000000..ab45864e3f
 +          image: row.image || null,
 +        })),
 +    };
++    // Publication. Since the intents moved to the request queue this only ever
++    // reports which rows are actually on screen, which is observed from native
++    // layout and has no browser event behind it.
 +    const raw = window.windowUtils.syncWinUIAddress(JSON.stringify(state));
 +    if (!raw) return;
-+    const action = JSON.parse(raw);
-+    if (action.version !== 1 || action.session !== session.sessionId) return;
++    this.executeAddressRequest(JSON.parse(raw));
++  },
++
++  // One native address intent, drained from the request queue. Outcome codes
++  // match the shell core: 1 completed, 2 rejected. A rejection here is a real
++  // answer -- the session moved on, or the surface handed itself back to
++  // Firefox -- not a failure to deliver.
++  executeAddressRequest(action) {
++    const session = this.addressSession;
++    if (!session || action?.version !== 1 || action.session !== session.sessionId) return 2;
 +    if (action.kind === "mode-reveal") {
 +      gURLBar.setUnifiedSearchButtonAvailability(true);
 +      session.modeReveal = (session.modeReveal || 0) + 1;
@@ -3967,8 +3982,11 @@ index 0000000000..ab45864e3f
 +        (!gURLBar.view.nativePresentation &&
 +          gURLBar.view.oneOffSearchButtons?.selectedButton)
 +      ) {
++        // Firefox's own one-off buttons own the interaction: hand the
++        // surface back rather than editing underneath it. The intent was
++        // answered, not lost, so it is a rejection and not a failure.
 +        this.addressFallback();
-+        return;
++        return 2;
 +      }
 +      session.beginNativePresentation();
 +      session.nativeOpen = true;
@@ -3998,14 +4016,17 @@ index 0000000000..ab45864e3f
 +    } else if (action.kind === "focus") {
 +      if (gURLBar.view.oneOffSearchButtons?.selectedButton) {
 +        this.addressFallback();
-+        return;
++        return 2;
 +      }
 +      session.focusNativePresentation();
 +    } else if (action.kind === "dismiss") {
 +      session.dismiss({ ...action, reason: "escape" });
 +    } else if (action.kind === "fallback") {
 +      this.addressFallback();
++    } else if (action.kind !== "visibility") {
++      return 2;
 +    }
++    return 1;
 +  },
 +
 +  addressFallback() {

@@ -31,6 +31,11 @@ struct NativeAddress {
     std::function<NativeShellCore::Decision(NativeShellCore::Intent, NativeShellCore::Intent,
                                             ShellIntentConditions const&)>
         decide;
+    // Hands one staged intent to the owning pane's request queue, which wakes
+    // the host itself. The slot above remains the record of what is
+    // outstanding -- the policy needs it -- and is cleared when the outcome
+    // comes back rather than when a tick happens to collect it.
+    std::function<void(winrt::hstring const&)> dispatch;
     double revision{}, sequence{-1}, editId{}, selectionId{}, acknowledgedEditId{};
     bool syncing{}, composing{}, enterPending{}, observedComposing{}, queryComplete{}, focusWithin{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
@@ -94,6 +99,7 @@ struct NativeAddress {
     void Stage(JObject const& value, NativeShellCore::Intent kind) {
         pending = value.Stringify();
         stagedKind = kind;
+        if (dispatch) dispatch(pending);
     }
     void ClearStaged() {
         pending = L"";
@@ -219,7 +225,7 @@ struct NativeAddress {
                 value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
                 value.SetNamedValue(L"selectionEnd",
                                     JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
-                pending = value.Stringify();
+                Stage(value, stagedKind);
                 return;
             }
             if (decision != NativeShellCore::Stage && decision != NativeShellCore::Replace) return;
@@ -487,16 +493,20 @@ struct NativeAddress {
         }
         root.Visibility(Visibility::Visible);
         Edit();  // Observe text synchronously before an older snapshot can replace it.
-        if (!pending.empty()) {
-            auto action = pending;
-            ClearStaged();
-            return action;
-        }
-        if (!mode.pending.empty()) {
-            auto action = mode.pending;
-            mode.pending = L"";
-            return action;
-        }
+        // Intents are no longer collected here: Stage() and NativeSearchMode::Queue()
+        // hand them straight to the request queue, which wakes the host itself.
+        // Both slots stay as the record of what is outstanding, cleared when the
+        // outcome arrives. The only thing this call still reports is the
+        // visibility of rows, which is observed from layout and has no other
+        // signal behind it.
+        //
+        // A publication that was produced before an outstanding intent predates
+        // it by definition, so applying it would overwrite what the user has
+        // just done -- the field would snap back to the text the browser knew
+        // about when it published. The collection this replaced returned early
+        // for the same reason; it is stated here rather than implied by where
+        // the old code happened to return.
+        if (stagedKind != NativeShellCore::NoIntent || !mode.pending.empty()) return L"";
         syncing = true;
         try {
             field.PlaceholderText(snapshot.GetNamedString(L"placeholder", L"Search or enter address"));
@@ -528,12 +538,12 @@ struct NativeAddress {
         }
         syncing = false;
         mode.ShowPendingReveal();
+        // The deferred commit's precondition is satisfied by a publication, so
+        // this is where it is re-offered. Action() queues it if the policy now
+        // allows it; nothing is returned from here.
         if (enterPending && (queryComplete || !suggestions.ids.empty()) && acknowledgedEditId == editId) {
             enterPending = false;
             Action(L"activate");
-            auto action = pending;
-            ClearStaged();
-            return action;
         }
         winrt::Windows::Data::Json::JsonArray visible;
         suggestions.CollectVisibleIds(visible);

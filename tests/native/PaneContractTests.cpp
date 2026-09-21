@@ -935,13 +935,24 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
             "global action updates preserve button identity");
     field.Text(L"changed");
     Pump();
-    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot, output.data(), uint32_t(output.size()))), "drain native edit");
-    fwprintf(stderr, L"Address drained action: %s\n", output.data());
-    auto action = winrt::Windows::Data::Json::JsonObject::Parse(output.data());
-    Require(action.GetNamedString(L"kind") == L"edit" && action.GetNamedString(L"text") == L"changed" &&
-                action.GetNamedString(L"session") == L"native-test",
+    // A publication produced before the edit predates it, so while the edit is
+    // still outstanding it must not be applied -- otherwise the field snaps
+    // back to the text the browser knew about when it published.
+    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot, output.data(), uint32_t(output.size()))),
+            "an older publication is accepted while an edit is outstanding");
+    Require(field.Text() == L"changed", "old snapshot does not overwrite an outstanding edit");
+    // Since the address intents joined the request path, the edit wakes the
+    // host itself rather than waiting to be collected by the next publication.
+    auto edit = NextRequest(api, hwnd, 6, L"edit").GetNamedObject(L"action");
+    Require(edit.Size(), "native edit reaches the request queue");
+    Require(edit.GetNamedString(L"text") == L"changed" &&
+                edit.GetNamedString(L"session") == L"native-test",
             "native edit is copied and session scoped");
-    Require(field.Text() == L"changed", "old snapshot does not overwrite queued edit");
+    // Once the host has answered it, publications apply again: the browser is
+    // now the authority on what the field should say.
+    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot, output.data(), uint32_t(output.size()))),
+            "publications apply again once the edit has been answered");
+    Require(field.Text() == L"initial", "an answered edit stops holding off publications");
     Require(
         SUCCEEDED(api.syncAddress(hwnd, LR"({"version":1,"enabled":false})", output.data(), uint32_t(output.size()))),
         "disable address controls");

@@ -25,7 +25,8 @@ struct NativeShellCore {
     // ffi.rs pins the accepted range so a kind added on one side alone fails
     // there.
     enum Kind : uint32_t {
-        SelectTab = 1, MenuEvent = 2, CloseTab = 3, NewTab = 4, StripAction = 5, AddressAction = 6
+        SelectTab = 1, MenuEvent = 2, CloseTab = 3, NewTab = 4, StripAction = 5, AddressAction = 6,
+        AddressModeAction = 7
     };
     // Outcomes, matching queue.rs `Outcome`.
     enum Outcome : uint32_t { Completed = 1, Rejected = 2, Cancelled = 3, Superseded = 4 };
