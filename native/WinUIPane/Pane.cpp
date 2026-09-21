@@ -129,7 +129,15 @@ struct WorkScope {
 //
 // Both ends are inside this DLL, so all three use one clock and need no
 // agreement with the browser about what time it is.
-enum Stage : size_t { StageWakeup, StageExecute, StageTotal };
+// "present" is the one stage that is not about the request path: it is the
+// time from handing the pane a change to XAML producing the next frame. Every
+// other number here stops at the outcome the browser reported, which section 10
+// is explicit is not proof anything was drawn.
+//
+// What it does NOT say: that DWM composited that frame to the screen. It says
+// XAML rendered after the change. That is strictly closer to presentation than
+// publication is, and it is as far as this can be taken from inside the pane.
+enum Stage : size_t { StageWakeup, StageExecute, StageTotal, StagePresent };
 // A mean is the wrong summary here and saying so is cheaper than being
 // corrected by it: the distribution is bimodal, because a modal dialog or a
 // blocked queue legitimately holds a request for as long as it holds it. These
@@ -158,8 +166,9 @@ struct StageWork {
 };
 inline StageWork* requestLatency() {
     static StageWork stages[]{
-        {{L"wakeup", 0, 0, 0}, {}, 0, 0, 0}, {{L"execute", 0, 0, 0}, {}, 0, 0, 0},
-        {{L"total", 0, 0, 0}, {}, 0, 0, 0},  {{nullptr, 0, 0, 0}, {}, 0, 0, 0},
+        {{L"wakeup", 0, 0, 0}, {}, 0, 0, 0},  {{L"execute", 0, 0, 0}, {}, 0, 0, 0},
+        {{L"total", 0, 0, 0}, {}, 0, 0, 0},   {{L"present", 0, 0, 0}, {}, 0, 0, 0},
+        {{nullptr, 0, 0, 0}, {}, 0, 0, 0},
     };
     return stages;
 }
@@ -348,6 +357,33 @@ struct Pane {
     // has entered that state. The epoch is what lets a request say "the host
     // blocked at some point while I was waiting" without keeping a history:
     // compare the epoch at enqueue with the one at drain.
+    // Armed when the pane is handed a change, disarmed by the first frame
+    // after it. Deliberately transient: staying subscribed to Rendering would
+    // hold the UI thread in a continuous frame callback, which is the thing
+    // section 6 forbids and the thing the idle measurements check for -- the
+    // instrument would create the condition it is measuring.
+    event_token renderingToken{};
+    double presentArmedAt{};
+    bool presentArmed{};
+    void ArmPresentation() {
+        if (!WorkAccountingEnabled() || presentArmed) return;
+        presentArmedAt = NowMs();
+        presentArmed = true;
+        renderingToken = Media::CompositionTarget::Rendering(
+            [this](Windows::Foundation::IInspectable const&, Windows::Foundation::IInspectable const&) {
+                if (!presentArmed) return;
+                RecordStage(StagePresent, NowMs() - presentArmedAt);
+                presentArmed = false;
+                Media::CompositionTarget::Rendering(renderingToken);
+                renderingToken = {};
+            });
+    }
+    void DisarmPresentation() {
+        if (!presentArmed) return;
+        presentArmed = false;
+        Media::CompositionTarget::Rendering(renderingToken);
+        renderingToken = {};
+    }
     bool hostBlocked{};
     uint64_t blockedEpoch{};
     // Batches taken so far. A request stamped with the value this held when it
@@ -397,7 +433,12 @@ struct Pane {
         return bounds;
     }
 
+    // Every erase of a pane calls Close() first, but the Rendering handler
+    // captures `this`, so the one invariant that must not depend on a call
+    // site getting it right is stated here as well.
+    ~Pane() { DisarmPresentation(); }
     void Close() {
+        DisarmPresentation();
         if (!source) return;
         // The tick-based session (unlike the old thread-blocking DoDragDrop
         // it replaced) can genuinely still be in progress when a window
@@ -1629,6 +1670,7 @@ HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_
         // produced; the next applyTabDelta names it as its base. Selection,
         // close and new-tab all travel on the request path instead.
         *requested = pane.ModelRevision();
+        pane.ArmPresentation();
         return S_OK;
     } catch (hresult_error const& error) {
         fwprintf(stderr, L"WinUIPane tabs hr=0x%08X message=%s\n", unsigned(error.code()), error.message().c_str());
@@ -1813,7 +1855,10 @@ HRESULT WINAPI ApplyTabDelta(HWND hwnd, const wchar_t* input, uint32_t* revision
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end()) return E_INVALIDARG;
         auto hr = found->second->ApplyDelta(NativeTabMenu::Object::Parse(input));
-        if (SUCCEEDED(hr)) *revision = found->second->ModelRevision();
+        if (SUCCEEDED(hr)) {
+            *revision = found->second->ModelRevision();
+            found->second->ArmPresentation();
+        }
         return hr;
     } catch (...) {
         return to_hresult();

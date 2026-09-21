@@ -1983,6 +1983,24 @@ int wmain(int argc, wchar_t** argv) {
         Require(NextRequest(api, first, 4, nullptr).Size(), "the request queued before the stall still arrives");
         Require(stalledWakeups() == stalledBefore + 1,
                 "a wait spent with the pump not reaching us is attributed to the stall, not to the wakeup path");
+        // Presentation is measured by subscribing to the rendering callback,
+        // which is the one thing section 6 forbids keeping. It must therefore
+        // be armed by a change and dropped by the very next frame: one change
+        // produces exactly one sample however long the pump runs afterwards.
+        // If it stayed subscribed this count would climb with every frame.
+        auto presentSamples = [&] {
+            uint64_t value = 0;
+            Require(SUCCEEDED(stageCounter(L"present", L"n", &value)), "read presentation samples");
+            return value;
+        };
+        auto presentedBefore = presentSamples();
+        Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)), "a change to present");
+        for (int i = 0; i < 60; ++i) {
+            Pump();
+            Sleep(10);
+        }
+        Require(presentSamples() == presentedBefore + 1,
+                "one change is one presentation sample, and the frame callback is not left subscribed");
     }
     WinUITab duplicates[]{{11, L"New tab"}, {22, L"New tab"}};
     Require(SUCCEEDED(api.syncTabs(first, duplicates, 2, 11, &requested)), "identical title snapshot");
