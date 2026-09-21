@@ -1728,6 +1728,23 @@ int wmain(int argc, wchar_t** argv) {
             ShowWindow(core, SW_SHOW);
             Pump();
             CheckShellCoreRequests(module, api, core);
+            // That check queues a request while the endpoint is blocked and
+            // drains it after unblocking. Its wait is the host holding the
+            // queue, not the pane being slow to wake it, so it must be
+            // classified apart from the stage's own timing rather than
+            // averaged into it.
+            {
+                auto stageBlocked = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
+                    GetProcAddress(module, "WinUIPaneTestGetStageBlocked"));
+                Require(stageBlocked != nullptr, "blocked-sample counters available");
+                uint64_t held = 0;
+                Require(SUCCEEDED(stageBlocked(L"wakeup", &held)), "read blocked wakeup samples");
+                Require(held > 0, "a request the host held while blocked is not counted as wakeup latency");
+                uint64_t ignored = 0;
+                Require(stageBlocked(L"noSuchStage", &ignored) == E_INVALIDARG, "reject an unknown stage name");
+                Require(stageBlocked(nullptr, &ignored) == E_POINTER, "reject a null stage name");
+                Require(stageBlocked(L"wakeup", nullptr) == E_POINTER, "reject a null blocked output");
+            }
             Require(SUCCEEDED(api.destroy(core)), "shell core island teardown");
             DestroyWindow(core);
             Pump();

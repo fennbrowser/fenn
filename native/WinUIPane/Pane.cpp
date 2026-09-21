@@ -139,15 +139,25 @@ constexpr size_t kLatencyBucketCount = sizeof(kLatencyBuckets) / sizeof(kLatency
 struct StageWork {
     EntryWork work;
     uint64_t buckets[kLatencyBucketCount];
+    // Samples that spanned a period when the host had blocked the queue, and
+    // are therefore not this stage's own cost. Counted, never averaged in: a
+    // modal dialog holds a request for as long as it is open, which is correct
+    // behaviour, and folding it into the mean describes neither case.
+    uint64_t blocked;
 };
 inline StageWork* requestLatency() {
     static StageWork stages[]{
-        {{L"wakeup", 0, 0, 0}, {}}, {{L"execute", 0, 0, 0}, {}}, {{L"total", 0, 0, 0}, {}}, {{nullptr, 0, 0, 0}, {}},
+        {{L"wakeup", 0, 0, 0}, {}, 0}, {{L"execute", 0, 0, 0}, {}, 0},
+        {{L"total", 0, 0, 0}, {}, 0},  {{nullptr, 0, 0, 0}, {}, 0},
     };
     return stages;
 }
-inline void RecordStage(size_t stage, double elapsed) {
+inline void RecordStage(size_t stage, double elapsed, bool blocked = false) {
     auto& record = requestLatency()[stage];
+    if (blocked) {
+        ++record.blocked;
+        return;
+    }
     ++record.work.calls;
     record.work.totalMs += elapsed;
     if (elapsed > record.work.maxMs) record.work.maxMs = elapsed;
@@ -287,12 +297,27 @@ struct Pane {
     // 297ms across about 102,000 messages, 5.0us to 2.9us each.
     HWND childWindow{};
     Microsoft::UI::Content::ContentIsland contentIsland{nullptr};
+    // Whether the host currently has the queue blocked, and how many times it
+    // has entered that state. The epoch is what lets a request say "the host
+    // blocked at some point while I was waiting" without keeping a history:
+    // compare the epoch at enqueue with the one at drain.
+    bool hostBlocked{};
+    uint64_t blockedEpoch{};
+    void SetHostBlocked(bool blocked) {
+        if (blocked && !hostBlocked) ++blockedEpoch;
+        hostBlocked = blocked;
+    }
+    struct QueuedStamp {
+        double at;
+        uint64_t epoch;
+        bool blocked;
+    };
     // When each outstanding request was queued, and when it was handed over.
     // Erased on completion, and otherwise bounded at 256 entries by evicting
     // the lowest id, which is the oldest: a superseded request is evicted from
     // the queue and never completes, so its stamp would stay here forever.
     // Populated only while work accounting is on.
-    std::map<uint64_t, double> queuedAt;
+    std::map<uint64_t, QueuedStamp> queuedAt;
     std::map<uint64_t, double> drainedAt;
     uint32_t browserSelection{};
     bool syncing{};
@@ -418,7 +443,7 @@ struct Pane {
             // completes, so its stamp would sit here forever. Ids are
             // monotonic, so dropping the lowest drops the oldest.
             while (queuedAt.size() >= 256) queuedAt.erase(queuedAt.begin());
-            queuedAt[request] = NowMs();
+            queuedAt[request] = QueuedStamp{NowMs(), blockedEpoch, hostBlocked};
         }
         if (notify) ScheduleDrain();
         if (!request && DiagnosticsEnabled())
@@ -1614,7 +1639,9 @@ HRESULT WINAPI DrainRequests(HWND hwnd, wchar_t* output, uint32_t capacity) noex
             if (WorkAccountingEnabled()) {
                 const double now = NowMs();
                 auto queued = pane.queuedAt.find(request.id);
-                if (queued != pane.queuedAt.end()) RecordStage(StageWakeup, now - queued->second);
+                if (queued != pane.queuedAt.end())
+                    RecordStage(StageWakeup, now - queued->second.at,
+                                queued->second.blocked || queued->second.epoch != pane.blockedEpoch);
                 while (pane.drainedAt.size() >= 256) pane.drainedAt.erase(pane.drainedAt.begin());
                 pane.drainedAt[request.id] = now;
             }
@@ -1680,7 +1707,8 @@ HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
                 }
                 auto queued = pane.queuedAt.find(uint64_t(id));
                 if (queued != pane.queuedAt.end()) {
-                    RecordStage(StageTotal, now - queued->second);
+                    RecordStage(StageTotal, now - queued->second.at,
+                                queued->second.blocked || queued->second.epoch != pane.blockedEpoch);
                     pane.queuedAt.erase(queued);
                 }
             }
@@ -1691,13 +1719,18 @@ HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
         if (pane.drainOpen) {
             notify = pane.shell.EndDrain();
             pane.drainOpen = false;
-            if (blocked) pane.shell.SetBlocked(true);
+            if (blocked) {
+                pane.shell.SetBlocked(true);
+                pane.SetHostBlocked(true);
+            }
         } else if (blocked) {
             pane.shell.SetBlocked(true);
+            pane.SetHostBlocked(true);
         } else {
             // Unblocking outside a drain: the queue says whether requests are
             // waiting, so the host is woken once instead of being re-polled.
             notify = pane.shell.SetBlocked(false);
+            pane.SetHostBlocked(false);
         }
         if (!blocked) {
             if (notify) pane.ScheduleDrain();
@@ -1813,12 +1846,19 @@ HRESULT WINAPI Shutdown() noexcept {
                          entry->totalMs / double(entry->calls));
             }
             for (auto* stage = requestLatency(); stage->work.name; ++stage) {
-                if (!stage->work.calls) continue;
-                fwprintf(stderr, L"WinUIPane request-latency stage=%s n=%llu ms=%.3f maxMs=%.3f meanMs=%.4f"
-                                 L" le1=%llu le4=%llu le16=%llu le64=%llu le256=%llu over=%llu\n",
-                         stage->work.name, stage->work.calls, stage->work.totalMs, stage->work.maxMs,
-                         stage->work.totalMs / double(stage->work.calls), stage->buckets[0], stage->buckets[1],
-                         stage->buckets[2], stage->buckets[3], stage->buckets[4], stage->buckets[5]);
+                if (!stage->work.calls && !stage->blocked) continue;
+                if (!stage->work.calls) {
+                    fwprintf(stderr, L"WinUIPane request-latency stage=%s n=0 blocked=%llu (every sample was "
+                                     L"held by a blocked queue)\n",
+                             stage->work.name, stage->blocked);
+                    continue;
+                }
+                fwprintf(stderr, L"WinUIPane request-latency stage=%s n=%llu blocked=%llu ms=%.3f maxMs=%.3f"
+                                 L" meanMs=%.4f le1=%llu le4=%llu le16=%llu le64=%llu le256=%llu over=%llu\n",
+                         stage->work.name, stage->work.calls, stage->blocked, stage->work.totalMs,
+                         stage->work.maxMs, stage->work.totalMs / double(stage->work.calls), stage->buckets[0],
+                         stage->buckets[1], stage->buckets[2], stage->buckets[3], stage->buckets[4],
+                         stage->buckets[5]);
             }
             auto& work = geometryWork();
             fprintf(stderr,
@@ -1922,6 +1962,20 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetEntryCalls(const
     for (auto* stage = requestLatency(); stage->work.name; ++stage) {
         if (wcscmp(stage->work.name, name) == 0) {
             *calls = stage->work.calls;
+            return S_OK;
+        }
+    }
+    return E_INVALIDARG;
+}
+// Test-only: how many samples of one latency stage were discarded because the
+// host had the queue blocked while they waited. Separate from the call count
+// above so neither reading needs an out-parameter it does not want.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetStageBlocked(const wchar_t* name,
+                                                                             uint64_t* blocked) noexcept {
+    if (!name || !blocked) return E_POINTER;
+    for (auto* stage = requestLatency(); stage->work.name; ++stage) {
+        if (wcscmp(stage->work.name, name) == 0) {
+            *blocked = stage->blocked;
             return S_OK;
         }
     }
