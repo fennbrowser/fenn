@@ -3479,7 +3479,7 @@ index 0000000000..a07d26b2f5
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..13d0464559
+index 0000000000..4d866c9fdb
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,1209 @@
@@ -3783,7 +3783,7 @@ index 0000000000..13d0464559
 +    // 6 is a field/list intent, 7 a search-mode one. They are separate kinds so
 +    // that neither supersedes the other in the queue; the browser-side handling
 +    // is the same chain.
-+    if (request.kind === 6 || request.kind === 7) return this.executeAddressRequest(action);
++    if (request.kind >= 6 && request.kind <= 8) return this.executeAddressRequest(action);
 +    const session = this.tabMenuSession;
 +    if (!session) return 2;
 +    if (request.kind === 1) {

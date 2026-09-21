@@ -11,6 +11,7 @@
 struct NativeAddress {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using JValue = winrt::Windows::Data::Json::JsonValue;
+    using JsonArray = winrt::Windows::Data::Json::JsonArray;
     // The larger favicons address rows can carry, vs. the icon-sized images
     // NativeJson::kIconImageLimits bounds for the mode switcher and global
     // actions below.
@@ -25,6 +26,11 @@ struct NativeAddress {
     // rather than re-parsed out of `pending` on every decision, which is what
     // this code used to do to recover state it had just written.
     NativeShellCore::Intent stagedKind{NativeShellCore::NoIntent};
+    // The visibility last reported, as a set of ids rather than a serialized
+    // message, plus the sequence it was computed against.
+    std::set<winrt::hstring> reportedVisible;
+    double reportedSequence{-1};
+    bool visibilityQueued{};
     // Supplied by the owning pane: the one definition of which intent survives
     // when two are in play. The rules live in native/ShellCore/src/intent.rs
     // where every pair is tested; nothing here re-implements them.
@@ -36,6 +42,10 @@ struct NativeAddress {
     // outstanding -- the policy needs it -- and is cleared when the outcome
     // comes back rather than when a tick happens to collect it.
     std::function<void(winrt::hstring const&)> dispatch;
+    // Reports which rows are on screen. A separate channel from `dispatch`
+    // because a report is not an intent: it must not supersede one, and
+    // answering it must not be read as answering one.
+    std::function<void(winrt::hstring const&)> reportVisible;
     double revision{}, sequence{-1}, editId{}, selectionId{}, acknowledgedEditId{};
     bool syncing{}, composing{}, enterPending{}, observedComposing{}, queryComplete{}, focusWithin{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
@@ -293,6 +303,20 @@ struct NativeAddress {
             Action(L"select");
         });
         suggestions.list.IsItemClickEnabled(true);
+        // What is on screen changes when the list scrolls, when it is resized,
+        // and when rows are realized. EffectiveViewportChanged is raised for
+        // exactly those, which is what lets the visibility report stop being
+        // sampled on a timer: it fires on the scroll that changed the answer,
+        // immediately, and not otherwise.
+        suggestions.list.EffectiveViewportChanged(
+            [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                if (!alive.expired()) ScheduleVisibilityReport();
+            });
+        root.SizeChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            // The global-action buttons live outside the list and are clipped
+            // by the pane itself, so they answer to the pane's own size.
+            if (!alive.expired()) ScheduleVisibilityReport();
+        });
         suggestions.list.ItemClick(
             [this, alive = std::weak_ptr<int>(lifetime)](auto const&, ItemClickEventArgs const& e) {
                 if (alive.expired()) return;
@@ -545,23 +569,56 @@ struct NativeAddress {
             enterPending = false;
             Action(L"activate");
         }
-        winrt::Windows::Data::Json::JsonArray visible;
-        suggestions.CollectVisibleIds(visible);
-        std::set<winrt::hstring> visibleActions;
+        ReportVisibility();
+        return L"";
+    }
+
+    // Which rows and global actions are actually on screen. This is the one
+    // thing about this surface that no browser event can report: it is a fact
+    // about native layout, so native is what observes it.
+    //
+    // Driven by the viewport events below rather than sampled on a timer, and
+    // compared as a set of ids rather than by serialising the report and
+    // comparing strings -- the old form allocated and stringified on every
+    // tick purely to discover that nothing had changed.
+    void ReportVisibility() {
+        if (session.empty()) return;
+        std::set<winrt::hstring> current;
+        for (auto const& id : suggestions.VisibleIds()) current.insert(id);
         for (auto const& visual : actions.visuals) {
             if (!root.XamlRoot() || visual.button.ActualHeight() <= 0) continue;
             auto origin = visual.button.TransformToVisual(nullptr).TransformPoint({0, 0});
             auto size = root.XamlRoot().Size();
             if (origin.Y < size.Height && origin.Y + visual.button.ActualHeight() > 0 && origin.X < size.Width &&
-                origin.X + visual.button.ActualWidth() > 0 && visibleActions.insert(visual.resultId).second)
-                visible.Append(JValue::CreateStringValue(visual.resultId));
+                origin.X + visual.button.ActualWidth() > 0)
+                current.insert(visual.resultId);
         }
+        if (current == reportedVisible && reportedSequence == sequence) return;
+        reportedVisible = current;
+        reportedSequence = sequence;
+        JsonArray ids;
+        for (auto const& id : current) ids.Append(JValue::CreateStringValue(id));
         auto value = Message(L"visibility");
         value.SetNamedValue(L"sequence", JValue::CreateNumberValue(sequence));
-        value.SetNamedValue(L"ids", visible);
-        auto report = value.Stringify();
-        if (report == visibility) return L"";
-        visibility = report;
-        return report;
+        value.SetNamedValue(L"ids", ids);
+        if (reportVisible) reportVisible(value.Stringify());
+    }
+
+    // At most one visibility report is queued on the dispatcher at a time: a
+    // scroll raises many viewport events and they all describe the same
+    // answer, which is only worth computing once they have settled.
+    void ScheduleVisibilityReport() {
+        if (visibilityQueued || session.empty()) return;
+        visibilityQueued = true;
+        auto queue = Dispatching::DispatcherQueue::GetForCurrentThread();
+        if (!queue) {
+            visibilityQueued = false;
+            return;
+        }
+        queue.TryEnqueue([this, alive = std::weak_ptr<int>(lifetime)] {
+            if (alive.expired()) return;
+            visibilityQueued = false;
+            ReportVisibility();
+        });
     }
 };

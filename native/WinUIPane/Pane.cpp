@@ -767,6 +767,11 @@ struct Pane {
         address->dispatch = [this](hstring const& action) {
             addressRequest = Enqueue(NativeShellCore::AddressAction, 0, address->revision, action);
         };
+        // Deliberately not tracked as an outstanding intent: a report is not
+        // something the surface is waiting to hear back about.
+        address->reportVisible = [this](hstring const& action) {
+            Enqueue(NativeShellCore::AddressVisibility, 0, address->revision, action);
+        };
         address->mode.dispatch = [this](hstring const& action) {
             modeRequest = Enqueue(NativeShellCore::AddressModeAction, 0, address->revision, action);
         };

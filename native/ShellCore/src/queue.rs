@@ -65,6 +65,12 @@ pub enum RequestKind {
     /// collapsing them into one would let an edit evict a queued mode pick and
     /// vice versa. Carries no tab.
     AddressModeAction = 7,
+    /// Which address rows are currently on screen. A report about native
+    /// layout, not something the user did, so it has a kind of its own: it
+    /// coalesces with itself -- only the newest answer matters -- but it must
+    /// never displace an intent, and its outcome must not be mistaken for the
+    /// answer to one. Carries no tab.
+    AddressVisibility = 8,
 }
 
 impl RequestKind {
@@ -77,6 +83,7 @@ impl RequestKind {
             5 => Some(Self::StripAction),
             6 => Some(Self::AddressAction),
             7 => Some(Self::AddressModeAction),
+            8 => Some(Self::AddressVisibility),
             _ => None,
         }
     }
@@ -87,7 +94,13 @@ impl RequestKind {
     /// replacement takes the replaced request's *position* so ordering against
     /// other kinds survives the collapse.
     pub fn replaces_queued(self) -> bool {
-        matches!(self, Self::SelectTab | Self::AddressAction | Self::AddressModeAction)
+        matches!(
+            self,
+            Self::SelectTab
+                | Self::AddressAction
+                | Self::AddressModeAction
+                | Self::AddressVisibility
+        )
     }
 }
 
@@ -644,6 +657,26 @@ mod tests {
         let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
         assert_eq!(kinds, vec![RequestKind::StripAction, RequestKind::AddressAction]);
         assert_eq!(batch[1].id, second.id);
+    }
+
+    #[test]
+    fn a_visibility_report_never_displaces_an_intent() {
+        // Reports and intents are different things. A scroll producing a fresh
+        // view of which rows are on screen must not throw away the commit the
+        // user just made, and answering the report must not be mistaken for
+        // answering the commit.
+        let mut q = queue();
+        let commit = q.enqueue(RequestKind::AddressAction, 0, 1, &[]);
+        let report = q.enqueue(RequestKind::AddressVisibility, 0, 1, &[]);
+        assert_eq!(report.superseded, 0, "a report leaves an intent alone");
+        let newer_report = q.enqueue(RequestKind::AddressVisibility, 0, 1, &[]);
+        assert_eq!(newer_report.superseded, report.id, "but reports collapse into the newest");
+        q.begin_drain().unwrap();
+        let batch = q.take_batch(8, 1 << 20);
+        assert_eq!(
+            batch.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![commit.id, newer_report.id]
+        );
     }
 
     #[test]

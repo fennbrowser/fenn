@@ -153,14 +153,20 @@ struct SuggestionList {
         list.SelectedIndex(selectedIt == ids.end() ? -1 : int(selectedIt - ids.begin()));
     }
 
-    void CollectVisibleIds(winrt::Windows::Data::Json::JsonArray& visible) {
+    // The ids whose rows are actually within the list's viewport. Returns them
+    // rather than appending to a JSON array: the caller compares this against
+    // what it last reported, and building JSON to answer "did anything change"
+    // is work done to discover that nothing has.
+    std::vector<winrt::hstring> VisibleIds() const {
         using namespace Microsoft::UI::Xaml;
+        std::vector<winrt::hstring> visible;
         for (uint32_t i = 0; i < ids.size(); ++i) {
             auto row = list.ContainerFromIndex(i).try_as<FrameworkElement>();
             if (!row || row.ActualHeight() <= 0) continue;
             auto origin = row.TransformToVisual(list).TransformPoint({0, 0});
             if (origin.Y < list.ActualHeight() && origin.Y + row.ActualHeight() > 0)
-                visible.Append(winrt::Windows::Data::Json::JsonValue::CreateStringValue(ids[i]));
+                visible.push_back(ids[i]);
         }
+        return visible;
     }
 };
