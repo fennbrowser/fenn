@@ -50,6 +50,15 @@ pub enum RequestKind {
     /// move the user already made. Carries no tab of its own for a group
     /// toggle or an incoming adopt, so it is not subject to the target check.
     StripAction = 5,
+    /// One address-bar input transition: an edit, a selection, an activation,
+    /// focus or blur. A newer one replaces an older queued one, because the
+    /// native side has already decided it should: the address surface runs a
+    /// pairwise policy over the action it last queued (an activate defers
+    /// behind an unacknowledged edit, a select replaces a text-selection, and
+    /// so on) and only queues an action that policy allows. At most one is
+    /// therefore outstanding, which is what the single slot this replaced
+    /// guaranteed. Carries no tab.
+    AddressAction = 6,
 }
 
 impl RequestKind {
@@ -60,6 +69,7 @@ impl RequestKind {
             3 => Some(Self::CloseTab),
             4 => Some(Self::NewTab),
             5 => Some(Self::StripAction),
+            6 => Some(Self::AddressAction),
             _ => None,
         }
     }
@@ -70,7 +80,7 @@ impl RequestKind {
     /// replacement takes the replaced request's *position* so ordering against
     /// other kinds survives the collapse.
     pub fn replaces_queued(self) -> bool {
-        matches!(self, Self::SelectTab)
+        matches!(self, Self::SelectTab | Self::AddressAction)
     }
 }
 
@@ -608,6 +618,45 @@ mod tests {
         let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
         assert_eq!(kinds, vec![RequestKind::SelectTab, RequestKind::MenuEvent]);
         assert_eq!(batch[0].tab, 12, "the newest selection, in the oldest one's place");
+    }
+
+    #[test]
+    fn an_address_action_replaces_the_queued_one_in_place() {
+        let mut q = queue();
+        // The native side has already applied its own policy by the time an
+        // action reaches here, so the queue's job is only to keep at most one
+        // outstanding -- exactly what the single slot this replaced did --
+        // and to report the replaced one rather than drop it silently.
+        q.enqueue(RequestKind::StripAction, 10, 1, &[]);
+        let first = q.enqueue(RequestKind::AddressAction, 0, 1, &[]);
+        let second = q.enqueue(RequestKind::AddressAction, 0, 1, &[]);
+        assert_eq!(second.superseded, first.id);
+        assert_eq!(q.take_outcomes(), vec![(first.id, Outcome::Superseded)]);
+        q.begin_drain().unwrap();
+        let batch = q.take_batch(8, 1 << 20);
+        let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
+        assert_eq!(kinds, vec![RequestKind::StripAction, RequestKind::AddressAction]);
+        assert_eq!(batch[1].id, second.id);
+    }
+
+    #[test]
+    fn an_address_action_does_not_disturb_a_queued_selection() {
+        let mut q = queue();
+        // Two superseding kinds must supersede independently: an address edit
+        // must not consume the queued tab selection's place, or vice versa.
+        let selection = q.enqueue(RequestKind::SelectTab, 10, 1, &[]);
+        let address = q.enqueue(RequestKind::AddressAction, 0, 1, &[]);
+        assert_eq!(address.superseded, 0);
+        let newer_address = q.enqueue(RequestKind::AddressAction, 0, 1, &[]);
+        assert_eq!(newer_address.superseded, address.id);
+        let newer_selection = q.enqueue(RequestKind::SelectTab, 11, 1, &[]);
+        assert_eq!(newer_selection.superseded, selection.id);
+        q.begin_drain().unwrap();
+        let batch = q.take_batch(8, 1 << 20);
+        let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
+        assert_eq!(kinds, vec![RequestKind::SelectTab, RequestKind::AddressAction]);
+        assert_eq!(batch[0].tab, 11);
+        assert_eq!(batch[1].id, newer_address.id);
     }
 
     #[test]
