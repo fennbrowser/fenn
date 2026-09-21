@@ -2,16 +2,21 @@
 #include <windows.h>
 #include <stdint.h>
 
-// v11 adds the event-driven request path (setNotifySink / drainRequests /
-// completeRequests) and incremental tab deltas (applyTabDelta), and retires
+// v12 puts the TabView strip's own gestures (group toggle, reorder, detach,
+// adopt) on the v11 request path, so syncTabMenu no longer returns anything and
+// loses its output buffer: it is now a publication only, and nothing in the
+// pane's protocol has to be asked whether it has work.
+// v11 added the event-driven request path (setNotifySink / drainRequests /
+// completeRequests) and incremental tab deltas (applyTabDelta), and retired
 // syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 // retaining the sidebar entry point.
-#define WINUI_PANE_ABI_VERSION 11u
+#define WINUI_PANE_ABI_VERSION 12u
 
 // All calls run on the browser's owning STA. Coordinates are client physical
 // pixels. The module remains loaded until process exit, including after shutdown.
 // Legacy availability bits for tab snapshots and invalidation. Menu action IDs
-// are opaque strings on syncTabMenu; native code assigns no command semantics.
+// are opaque strings in the published state; native code assigns no command
+// semantics.
 enum WinUITabCommand : uint32_t {
     WinUITabReload = 1u, WinUITabDuplicate = 2u,
     WinUITabPin = 4u, WinUITabUnpin = 8u,
@@ -60,11 +65,13 @@ struct WinUIPaneApi {
     HRESULT (WINAPI* syncAddress)(HWND, const wchar_t*, wchar_t*, uint32_t);
     // Exclusions are pane-local physical pixels; an empty list restores the pane.
     HRESULT (WINAPI* clip)(HWND, const RECT*, uint32_t);
-    // Menu protocol v2: published state and bounded queued input, copied as JSON.
-    // Since v11 the published state carries tab identities and the selected set
-    // only; a tab's command description is published on demand under the "menu"
-    // key, in answer to a drained menu-open request.
-    HRESULT (WINAPI* syncTabMenu)(HWND, const wchar_t*, wchar_t*, uint32_t);
+    // Menu protocol v2: published state, copied as JSON. The published state
+    // carries tab identities and the selected set only; a tab's command
+    // description is published on demand under the "menu" key, in answer to a
+    // drained menu-open request. Since v12 this returns nothing: every native
+    // intent, including the strip's own gestures, arrives through
+    // drainRequests.
+    HRESULT (WINAPI* syncTabMenu)(HWND, const wchar_t*);
     // Same lifetime/geometry contract as update; one presentation per HWND.
     HRESULT (WINAPI* updateTabStrip)(HWND, const RECT*, BOOL);
 

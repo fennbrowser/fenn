@@ -1534,10 +1534,10 @@ index c59e443d11..03c10b9504 100644
 +winui-tab-strip-muted = Muted
 +winui-tab-strip-playing = Playing audio
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
-index 5d3805f045..8355eec16b 100644
+index 5d3805f045..7a83eed8c2 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
 +++ b/dom/base/nsDOMWindowUtils.cpp
-@@ -151,6 +151,147 @@ using namespace mozilla::layers;
+@@ -151,6 +151,146 @@ using namespace mozilla::layers;
  using namespace mozilla::widget;
  using namespace mozilla::gfx;
  
@@ -1553,14 +1553,13 @@ index 5d3805f045..8355eec16b 100644
 +}
 +
 +NS_IMETHODIMP
-+nsDOMWindowUtils::SyncWinUITabMenu(const nsAString& aSnapshot, nsAString& aAction) {
-+  aAction.Truncate();
++nsDOMWindowUtils::SyncWinUITabMenu(const nsAString& aSnapshot) {
 +  auto* doc = GetDocument();
 +  if (!XRE_IsParentProcess() || !doc || !doc->NodePrincipal()->IsSystemPrincipal() ||
 +      !doc->GetDocumentURI()->GetSpecOrDefault().EqualsLiteral("chrome://browser/content/browser.xhtml")) return NS_ERROR_NOT_AVAILABLE;
 +  if (aSnapshot.Length() > 1048576 || aSnapshot.FindChar(char16_t(0)) != kNotFound) return NS_ERROR_INVALID_ARG;
 +  auto* widget = GetWidget();
-+  return widget && widget->SyncWinUITabMenu(aSnapshot, aAction) ? NS_OK : NS_ERROR_NOT_AVAILABLE;
++  return widget && widget->SyncWinUITabMenu(aSnapshot) ? NS_OK : NS_ERROR_NOT_AVAILABLE;
 +}
 +
 +// The v11 request path keeps the same privileged-entry checks as every other
@@ -1686,7 +1685,7 @@ index 5d3805f045..8355eec16b 100644
  #define APZZTFI_LOG(...) \
    MOZ_LOG(sApzZoomToFocusedInputLog, LogLevel::Debug, (__VA_ARGS__))
 diff --git a/dom/interfaces/base/nsIDOMWindowUtils.idl b/dom/interfaces/base/nsIDOMWindowUtils.idl
-index 83313786eb..fc3d06d627 100644
+index 83313786eb..fd1f02ee81 100644
 --- a/dom/interfaces/base/nsIDOMWindowUtils.idl
 +++ b/dom/interfaces/base/nsIDOMWindowUtils.idl
 @@ -61,6 +61,41 @@ interface nsISynthesizedEventCallback : nsISupports {
@@ -1694,7 +1693,7 @@ index 83313786eb..fc3d06d627 100644
  interface nsIDOMWindowUtils : nsISupports {
  
 +  AString syncWinUIAddress(in AString snapshot);
-+  AString syncWinUITabMenu(in AString snapshot);
++  void syncWinUITabMenu(in AString snapshot);
 +
 +  /**
 +   * Event-driven native shell requests (WinUI pane ABI v11). The pane wakes
@@ -1732,7 +1731,7 @@ index 83313786eb..fc3d06d627 100644
     * Image animation mode of the window. When this attribute's value
     * is changed, the implementation should set all images in the window
 diff --git a/widget/nsIWidget.h b/widget/nsIWidget.h
-index 031a63b997..04690d97f7 100644
+index 031a63b997..0528a5ff9d 100644
 --- a/widget/nsIWidget.h
 +++ b/widget/nsIWidget.h
 @@ -1294,6 +1294,24 @@ class nsIWidget : public nsSupportsWeakReference {
@@ -1740,7 +1739,7 @@ index 031a63b997..04690d97f7 100644
    virtual void* GetNativeData(uint32_t aDataType) = 0;
  
 +  virtual bool SyncWinUIAddress(const nsAString& aSnapshot, nsAString& aAction) { return false; }
-+  virtual bool SyncWinUITabMenu(const nsAString& aSnapshot, nsAString& aAction) { return false; }
++  virtual bool SyncWinUITabMenu(const nsAString& aSnapshot) { return false; }
 +
 +  virtual bool DrainWinUIRequests(nsAString& aBatch) { return false; }
 +  virtual bool CompleteWinUIRequests(const nsAString& aOutcomes) { return false; }
@@ -1761,10 +1760,10 @@ index 031a63b997..04690d97f7 100644
    nsIWidget();
    virtual ~nsIWidget();
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
-index c6e02a8696..024d1bbe24 100644
+index c6e02a8696..d6f65b84a4 100644
 --- a/widget/windows/WinUIPrototype.cpp
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -2,17 +2,236 @@
+@@ -2,17 +2,235 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  #include "WinUIPrototype.h"
@@ -1964,15 +1963,14 @@ index c6e02a8696..024d1bbe24 100644
 +  return true;
 +}
 +
-+bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot, nsAString& aAction) {
++// Publication only: since ABI v12 the pane returns nothing here, so there is
++// no output buffer to allocate on every call either.
++bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot) {
 +  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
 +      !sPaneApi.syncTabMenu || aSnapshot.Length() > 1048576 ||
 +      !Preferences::GetBool("widget.windows.winui-prototype.pane.enabled", false)) return false;
 +  nsAutoString snapshot(aSnapshot);
-+  auto output = mozilla::MakeUnique<wchar_t[]>(262144);
-+  if (FAILED(sPaneApi.syncTabMenu(aWindow, snapshot.get(), output.get(), 262144))) return false;
-+  aAction.Assign(reinterpret_cast<const char16_t*>(output.get()));
-+  return true;
++  return SUCCEEDED(sPaneApi.syncTabMenu(aWindow, snapshot.get()));
 +}
 +
 +void DestroyWinUIPane(HWND aWindow) {
@@ -2002,7 +2000,7 @@ index c6e02a8696..024d1bbe24 100644
  
  void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    if (!XRE_IsParentProcess() || !NS_IsMainThread() || !sTraceEnabled) return;
-@@ -20,51 +239,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
+@@ -20,51 +238,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
    const HRESULT hr = CoGetApartmentType(&apartment, &qualifier);
    DWORD ownerProcess = 0;
@@ -2085,7 +2083,7 @@ index c6e02a8696..024d1bbe24 100644
    FreeLibrary(module);
    TraceWinUIPrototype("probe-complete", aWindow);
 diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
-index 418c5d791d..7683b7bf08 100644
+index 418c5d791d..65e80faf15 100644
 --- a/widget/windows/WinUIPrototype.h
 +++ b/widget/windows/WinUIPrototype.h
 @@ -4,8 +4,31 @@
@@ -2105,7 +2103,7 @@ index 418c5d791d..7683b7bf08 100644
 +uint32_t SyncWinUITabs(HWND aWindow, const nsTArray<uint32_t>& aIds,
 +                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t* aClose, uint32_t* aNew, uint32_t* aContextId, uint32_t* aCommand);
 +bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot, nsAString& aAction);
-+bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot, nsAString& aAction);
++bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot);
 +// ABI v11 request path. The pane wakes the browser through a sink registered
 +// here, which only posts a task to this thread's event queue; these are the
 +// host side of that exchange. The notification topic is
@@ -2159,7 +2157,7 @@ index d4aff8c47e..a34a1a2dfc 100644
              IMEHandler::ProcessRawKeyMessage(msg)) {
            continue;  // the message is consumed.
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index 3f3b5b9200..79a97f2678 100644
+index 3f3b5b9200..6656acd9a2 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -53,7 +53,6 @@
@@ -2186,8 +2184,8 @@ index 3f3b5b9200..79a97f2678 100644
 +  return mozilla::widget::SyncWinUIAddress(mWnd, aSnapshot, aAction);
 +}
 +
-+bool nsWindow::SyncWinUITabMenu(const nsAString& aSnapshot, nsAString& aAction) {
-+  return mozilla::widget::SyncWinUITabMenu(mWnd, aSnapshot, aAction);
++bool nsWindow::SyncWinUITabMenu(const nsAString& aSnapshot) {
++  return mozilla::widget::SyncWinUITabMenu(mWnd, aSnapshot);
 +}
 +
 +bool nsWindow::DrainWinUIRequests(nsAString& aBatch) {
@@ -2240,7 +2238,7 @@ index 3f3b5b9200..79a97f2678 100644
      mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
    }
 diff --git a/widget/windows/nsWindow.h b/widget/windows/nsWindow.h
-index 1e2660589b..13bac76463 100644
+index 1e2660589b..3ff5eab934 100644
 --- a/widget/windows/nsWindow.h
 +++ b/widget/windows/nsWindow.h
 @@ -139,6 +139,21 @@ class nsWindow final : public nsIWidget {
@@ -2248,7 +2246,7 @@ index 1e2660589b..13bac76463 100644
    nsWindow();
  
 +  bool SyncWinUIAddress(const nsAString& aSnapshot, nsAString& aAction) override;
-+  bool SyncWinUITabMenu(const nsAString& aSnapshot, nsAString& aAction) override;
++  bool SyncWinUITabMenu(const nsAString& aSnapshot) override;
 +
 +  bool DrainWinUIRequests(nsAString& aBatch) override;
 +  bool CompleteWinUIRequests(const nsAString& aOutcomes) override;
@@ -3481,10 +3479,10 @@ index 0000000000..a07d26b2f5
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..2b16bb3873
+index 0000000000..ab45864e3f
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1122 @@
+@@ -0,0 +1,1188 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3549,6 +3547,39 @@ index 0000000000..2b16bb3873
 +    "TabPinned",
 +    "TabUnpinned",
 +  ],
++  // Group and split-view state the TabView strip presents, and which no tab
++  // event reports. These are not decoration: tab.visible is false for a tab in
++  // a collapsed group (tab.js `get visible()`), so a collapse changes the
++  // published row set with no TabHide behind it. Without these the strip only
++  // corrected itself on the next unrelated tab event -- which is exactly what
++  // the retired timer was papering over. All of them bubble, and the group
++  // ones are dispatched on the group element precisely so they still arrive
++  // when the tab itself has left the DOM.
++  stripStateEvents: [
++    // Change the visible row set or its order.
++    "TabGroupCreate",
++    "TabGroupRemoved",
++    "TabGroupMoved",
++    "TabGroupCollapse",
++    "TabGroupExpand",
++    "TabGrouped",
++    "TabUngrouped",
++    // Presentation only: a group's name or colour, and split-view pairing,
++    // change what a row says about itself, not which rows exist.
++    "TabGroupUpdate",
++    "TabSplitViewActivate",
++    "TabSplitViewDeactivate",
++  ],
++  // Of those, the ones that change which rows exist or their order.
++  stripStructuralEvents: new Set([
++    "TabGroupCreate",
++    "TabGroupRemoved",
++    "TabGroupMoved",
++    "TabGroupCollapse",
++    "TabGroupExpand",
++    "TabGrouped",
++    "TabUngrouped",
++  ]),
 +  events: [
 +    "resize",
 +    "fullscreen",
@@ -3612,6 +3643,12 @@ index 0000000000..2b16bb3873
 +    }
 +    for (const type of this.tabEvents)
 +      gBrowser.tabContainer.addEventListener(type, this);
++    // Only the strip presents groups and split views; the sidebar's row set is
++    // filtered on `hidden` alone, so nothing here would change it.
++    if (this.tabStrip) {
++      for (const type of this.stripStateEvents)
++        gBrowser.tabContainer.addEventListener(type, this);
++    }
 +    // Native requests arrive as one scheduled notification per endpoint. The
 +    // pane posts it from its own queue; nothing here polls for them.
 +    Services.obs.addObserver(this, "winui-pane-drain");
@@ -3623,14 +3660,14 @@ index 0000000000..2b16bb3873
 +    this.schedule();
 +  },
 +
-+  // The transitional timer. Two surfaces are not migrated in this milestone and
-+  // still need a tick: the native address prototype (opt-in, off by default)
-+  // and the TabView strip's own transport (group toggle and reorder) plus its
-+  // presentation refresh. In the default sidebar configuration neither applies
-+  // and no timer runs at all -- a quiet window schedules nothing.
++  // The transitional timer. One surface is still not migrated and needs a tick:
++  // the native address prototype, which is opt-in and off by default. The tab
++  // strip no longer needs it -- its gestures are requests on the shared queue
++  // and its presentation is republished from group and split-view events -- so
++  // in both shipped configurations no timer runs at all and a quiet window
++  // schedules nothing.
 +  updateLegacyTimer() {
-+    const needed = !!this.element &&
-+      (this.tabStrip || Services.prefs.getBoolPref(this.addressPref, false));
++    const needed = !!this.element && Services.prefs.getBoolPref(this.addressPref, false);
 +    if (!needed) {
 +      if (this.legacyTimer) window.clearInterval(this.legacyTimer);
 +      this.legacyTimer = 0;
@@ -3639,14 +3676,9 @@ index 0000000000..2b16bb3873
 +    if (this.legacyTimer) return;
 +    this.legacyTimer = window.setInterval(() => {
 +      try {
-+        // Deliberately not syncTabs(): tab state publication is event-driven.
-+        // The strip's own presentation is republished here as well as on its
-+        // events, unchanged from before this milestone: describeStrip reads
-+        // group and split state that has no single event this adapter tracks,
-+        // and WinUITabStripSession publishes nothing when the result is
-+        // identical. This is one of the paths still to migrate.
-+        if (this.tabStrip) this.publishStrip();
-+        this.syncTabMenu();
++        // Deliberately not syncTabs(), publishStrip() or any tab-state call:
++        // everything the pane and the strip present is event-driven now. The
++        // address prototype is the only reason this interval exists.
 +        try {
 +          this.syncAddress();
 +        } catch (error) {
@@ -3743,9 +3775,13 @@ index 0000000000..2b16bb3873
 +  // Outcome codes match the shell core: 1 completed, 2 rejected. Receipt is not
 +  // success, and a rejection is reported rather than left to be inferred.
 +  executeRequest(request) {
-+    const session = this.tabMenuSession;
 +    const action = request.action;
-+    if (!session || !action) return 2;
++    if (!action) return 2;
++    // A strip gesture is answered by the strip's own session; it has no reason
++    // to require the tab-menu session to exist.
++    if (request.kind === 5) return this.executeStripRequest(action);
++    const session = this.tabMenuSession;
++    if (!session) return 2;
 +    if (request.kind === 1) {
 +      if (!session.receive(action)) return 2;
 +      // Firefox's multiselected set may now differ from the published one, and
@@ -3770,6 +3806,27 @@ index 0000000000..2b16bb3873
 +      this.structuralDirty = true;
 +    }
 +    return accepted ? 1 : 2;
++  },
++
++  // The TabView strip's own completed gestures: a group toggle, a reorder, a
++  // tear-out, or a drop in from another window. Each names the presentation
++  // revision it was formed against and WinUITabStripSession refuses it if that
++  // revision has moved, so a gesture made against a superseded strip is
++  // rejected rather than applied to the wrong tab.
++  executeStripRequest(action) {
++    // A gesture that moves or tears out a tab cannot be honoured while a modal
++    // dialog owns the window or while the window is in fullscreen (where the
++    // strip is not the thing the user is looking at). The caller already
++    // refuses everything during a dialog; fullscreen is this path's own rule,
++    // carried over from the transport it replaces.
++    if (window.fullScreen || document.fullscreenElement) return 2;
++    if (!this.stripSession) return 2;
++    if (!this.stripSession.receive(action)) return 2;
++    // Any of these can move a tab between windows or change the row set, so
++    // the pane's own published state has to be rebuilt rather than patched.
++    this.structuralDirty = true;
++    this.stripDirty = true;
++    return 1;
 +  },
 +
 +  publishMenu(payload) {
@@ -3979,7 +4036,7 @@ index 0000000000..2b16bb3873
 +      const { WinUITabMenuSession } = ChromeUtils.importESModule(
 +        "chrome://browser/content/WinUITabMenuSession.sys.mjs"
 +      );
-+      this.tabMenuL10n = new Localization(["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl"], true);
++      this.localization();
 +      this.tabMenuSession = new WinUITabMenuSession({
 +        resolveTab: id => this.resolveStripTab(id),
 +        describe: tab => this.describeTabMenu(tab),
@@ -4041,23 +4098,6 @@ index 0000000000..2b16bb3873
 +      this.publishMenu(this.tabMenuSession.snapshot());
 +  },
 +
-+  // Legacy transport for the TabView strip's own actions (group toggle and
-+  // reorder), which are not migrated in this milestone. Only reached from the
-+  // strip-mode timer; tab selection and menu transitions never travel here.
-+  syncTabMenu() {
-+    if (!this.attached || this.processingAction || !this.tabMenuSession) return;
-+    const event = window.windowUtils.syncWinUITabMenu(
-+      JSON.stringify(this.tabMenuSession.snapshot())
-+    );
-+    if (event) {
-+      const action = JSON.parse(event);
-+      if (action.kind === "strip-group" || action.kind === "strip-reorder" ||
-+          action.kind === "strip-detach" || action.kind === "strip-adopt") {
-+        if (!gDialogBox.isOpen && !window.fullScreen && !document.fullscreenElement)
-+          this.stripSession?.receive(action);
-+      }
-+    }
-+  },
 +
 +  publishStrip() {
 +    if (!this.stripSession) {
@@ -4173,8 +4213,22 @@ index 0000000000..2b16bb3873
 +    })();
 +  },
 +
++  // The shared label bundle. Created on first use rather than by whichever
++  // publication happens to run first: describeStrip() and describeTabMenu()
++  // both need it, and before this was explicit, a strip publication that
++  // reached describeStrip() before any tab-context publication threw
++  // "l10n is undefined" -- which the caller of the day turned into a full
++  // uninit(), silently tearing the shell down for the rest of the session.
++  localization() {
++    if (!this.tabMenuL10n) {
++      this.tabMenuL10n = new Localization(
++        ["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl"], true);
++    }
++    return this.tabMenuL10n;
++  },
++
 +  describeStrip() {
-+    const l10n = this.tabMenuL10n;
++    const l10n = this.localization();
 +    const label = (id, args) => l10n.formatValueSync(id, args);
 +    // Bounds the raw-pixel bytes one strip snapshot can spend; beyond this,
 +    // remaining rows fall back to the native placeholder glyph rather than
@@ -4243,7 +4297,7 @@ index 0000000000..2b16bb3873
 +      if (item.kind === "separator") return { kind: "separator" };
 +      const key = JSON.stringify([item.resource, item.tabCount]);
 +      if (!labels.has(key)) {
-+        const [message] = this.tabMenuL10n.formatMessagesSync([
++        const [message] = this.localization().formatMessagesSync([
 +          { id: item.resource, args: { tabCount: item.tabCount } }]);
 +        labels.set(key, Object.fromEntries(message.attributes.map(a => [a.name, a.value])));
 +      }
@@ -4481,6 +4535,12 @@ index 0000000000..2b16bb3873
 +      // changed, which needs a snapshot rather than a delta.
 +      this.structuralDirty = true;
 +      this.stripDirty = true;
++    } else if (this.stripStateEvents.includes(event.type)) {
++      // Group and split-view state. A collapse or a regrouping changes which
++      // tabs are visible and in what order, so it needs a snapshot; a group's
++      // name or a split-view pairing only changes what a row says.
++      this.stripDirty = true;
++      if (this.stripStructuralEvents.has(event.type)) this.structuralDirty = true;
 +    }
 +    if (event.type == "popupshown") {
 +      this.popups.add(event.target);
@@ -4581,6 +4641,10 @@ index 0000000000..2b16bb3873
 +    this.tabMenuLabelCache = null;
 +    for (const type of this.tabEvents)
 +      gBrowser.tabContainer.removeEventListener(type, this);
++    // Unconditional: the strip pref can have been flipped since init(), and
++    // removing a listener that was never added is a no-op.
++    for (const type of this.stripStateEvents)
++      gBrowser.tabContainer.removeEventListener(type, this);
 +    if (this.attached) {
 +      try {
 +        window.windowUtils.updateWinUIPane(0, 0, 0, 0, false, false, false, []);
@@ -4609,24 +4673,29 @@ index 0000000000..2b16bb3873
 +window.addEventListener("unload", () => gWinUIPane.uninit(), { once: true });
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 0000000000..0d45a80f22
+index 0000000000..1e3400fc95
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,110 @@
 +#pragma once
 +#include <windows.h>
 +#include <stdint.h>
 +
-+// v11 adds the event-driven request path (setNotifySink / drainRequests /
-+// completeRequests) and incremental tab deltas (applyTabDelta), and retires
++// v12 puts the TabView strip's own gestures (group toggle, reorder, detach,
++// adopt) on the v11 request path, so syncTabMenu no longer returns anything and
++// loses its output buffer: it is now a publication only, and nothing in the
++// pane's protocol has to be asked whether it has work.
++// v11 added the event-driven request path (setNotifySink / drainRequests /
++// completeRequests) and incremental tab deltas (applyTabDelta), and retired
 +// syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 +// retaining the sidebar entry point.
-+#define WINUI_PANE_ABI_VERSION 11u
++#define WINUI_PANE_ABI_VERSION 12u
 +
 +// All calls run on the browser's owning STA. Coordinates are client physical
 +// pixels. The module remains loaded until process exit, including after shutdown.
 +// Legacy availability bits for tab snapshots and invalidation. Menu action IDs
-+// are opaque strings on syncTabMenu; native code assigns no command semantics.
++// are opaque strings in the published state; native code assigns no command
++// semantics.
 +enum WinUITabCommand : uint32_t {
 +    WinUITabReload = 1u, WinUITabDuplicate = 2u,
 +    WinUITabPin = 4u, WinUITabUnpin = 8u,
@@ -4675,11 +4744,13 @@ index 0000000000..0d45a80f22
 +    HRESULT (WINAPI* syncAddress)(HWND, const wchar_t*, wchar_t*, uint32_t);
 +    // Exclusions are pane-local physical pixels; an empty list restores the pane.
 +    HRESULT (WINAPI* clip)(HWND, const RECT*, uint32_t);
-+    // Menu protocol v2: published state and bounded queued input, copied as JSON.
-+    // Since v11 the published state carries tab identities and the selected set
-+    // only; a tab's command description is published on demand under the "menu"
-+    // key, in answer to a drained menu-open request.
-+    HRESULT (WINAPI* syncTabMenu)(HWND, const wchar_t*, wchar_t*, uint32_t);
++    // Menu protocol v2: published state, copied as JSON. The published state
++    // carries tab identities and the selected set only; a tab's command
++    // description is published on demand under the "menu" key, in answer to a
++    // drained menu-open request. Since v12 this returns nothing: every native
++    // intent, including the strip's own gestures, arrives through
++    // drainRequests.
++    HRESULT (WINAPI* syncTabMenu)(HWND, const wchar_t*);
 +    // Same lifetime/geometry contract as update; one presentation per HWND.
 +    HRESULT (WINAPI* updateTabStrip)(HWND, const RECT*, BOOL);
 +

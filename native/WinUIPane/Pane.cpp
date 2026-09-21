@@ -582,6 +582,17 @@ struct Pane {
         if (tabStrip) {
             strip = std::make_unique<NativeTabStrip>(tabMenu);
             strip->ownerHwnd = hwnd;
+            // The strip's own completed gestures ride the same queue as menu
+            // transitions and selection, in the order the user made them. Each
+            // carries the presentation revision it was formed against, so one
+            // formed against a superseded presentation is refused by Firefox
+            // rather than silently dropped here.
+            strip->dispatch = [this](uint32_t id, hstring const& action) {
+                Enqueue(NativeShellCore::StripAction, id, strip->presentationRevision, action);
+            };
+            strip->groupsButton.dispatch = [this](hstring const& action) {
+                Enqueue(NativeShellCore::StripAction, 0, strip->presentationRevision, action);
+            };
             strip->select = [this](uint32_t id) { QueueStripSelection(id); };
             strip->close = [this](uint32_t id) {
                 if (id != inFlightClose &&
@@ -1192,12 +1203,13 @@ HRESULT WINAPI SyncAddress(HWND hwnd, const wchar_t* input, wchar_t* output, uin
         return to_hresult();
     }
 }
-HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input, wchar_t* output, uint32_t capacity) noexcept {
+// Publication only, since v12: nothing native travels back through this call.
+// Every native intent -- menu transitions, selection, and the strip's own
+// gestures -- is queued and drained through the request path instead.
+HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
     try {
         check_hresult(Check(hwnd));
-        if (!input || !output || capacity < 1 || capacity > 262144 || wcsnlen(input, 1048577) > 1048576)
-            return E_INVALIDARG;
-        output[0] = 0;
+        if (!input || wcsnlen(input, 1048577) > 1048576) return E_INVALIDARG;
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end()) return E_INVALIDARG;
         auto snapshot = NativeTabMenu::Object::Parse(input);
@@ -1218,24 +1230,6 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input, wchar_t* output, uin
         auto previousRevision = pane.tabMenu.stateRevision;
         pane.tabMenu.Sync(snapshot);
         if (pane.tabMenu.stateRevision != previousRevision) pane.ApplyPublishedSelection(previousSelection);
-        // Menu transitions and tab selection now travel on the v11 request
-        // path, so this call no longer returns either of them. What remains
-        // here is the legacy strip transport (group toggle, reorder), which is
-        // not part of this milestone and still drains on the host's timer.
-        hstring result;
-        const bool drainLegacy = !snapshot.GetNamedBoolean(L"publishOnly", false) && pane.strip;
-        bool groupResult = drainLegacy && !pane.strip->groupsButton.pending.empty();
-        bool reorderResult = drainLegacy && !groupResult && !pane.strip->pendingReorder.empty();
-        if (groupResult)
-            result = pane.strip->groupsButton.pending;
-        else if (reorderResult)
-            result = pane.strip->pendingReorder;
-        if (result.size() >= capacity) return E_INVALIDARG;
-        wcscpy_s(output, capacity, result.c_str());
-        if (groupResult)
-            pane.strip->groupsButton.pending = L"";
-        else if (reorderResult)
-            pane.strip->pendingReorder = L"";
         return S_OK;
     } catch (...) {
         return to_hresult();

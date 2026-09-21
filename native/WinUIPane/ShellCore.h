@@ -20,8 +20,11 @@
 
 struct NativeShellCore {
     // Request kinds, matching native/ShellCore/src/queue.rs. Kept as an enum
-    // here rather than magic numbers at the call sites.
-    enum Kind : uint32_t { SelectTab = 1, MenuEvent = 2, CloseTab = 3, NewTab = 4 };
+    // here rather than magic numbers at the call sites. The boundary carries
+    // them as a plain uint32_t, so cbindgen does not generate the enum;
+    // ffi.rs pins the accepted range so a kind added on one side alone fails
+    // there.
+    enum Kind : uint32_t { SelectTab = 1, MenuEvent = 2, CloseTab = 3, NewTab = 4, StripAction = 5 };
     // Outcomes, matching queue.rs `Outcome`.
     enum Outcome : uint32_t { Completed = 1, Rejected = 2, Cancelled = 3, Superseded = 4 };
     // Change kinds, matching model.rs `ChangeKind`.

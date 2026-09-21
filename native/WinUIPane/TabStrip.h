@@ -74,15 +74,20 @@ struct NativeTabStrip {
     // RenderTransform), so there is nothing in TabItems() for Sync to fight,
     // but a Firefox update landing mid-gesture (another tab's title, a new
     // tab) must not restyle rows out from under the drag's own bookkeeping.
-    // The completed drag becomes one validated request (pendingReorder,
-    // drained like groupsButton.pending); Firefox's own moveTabTo/
-    // moveTabBefore is the sole authority on the result, and the next
-    // Sync() that actually reorders TabItems() clears the drag's leftover
-    // visual offsets -- correcting anything the gesture visually allowed
-    // that Firefox didn't apply (crossing the pinned boundary, leaving a
-    // group/split), same as the rest of this strip's optimistic actions.
+    // The completed drag becomes one validated request, handed straight to
+    // the pane's queue by `dispatch`; Firefox's own moveTabTo/moveTabBefore
+    // is the sole authority on the result, and the next Sync() that actually
+    // reorders TabItems() clears the drag's leftover visual offsets --
+    // correcting anything the gesture visually allowed that Firefox didn't
+    // apply (crossing the pinned boundary, leaving a group/split), same as
+    // the rest of this strip's optimistic actions.
     bool dragging{};
-    hstring pendingReorder;
+
+    // Hands one completed gesture (reorder, detach, incoming adopt) to the
+    // owning pane's request queue, which wakes the host. `tab` is this
+    // window's own id for the tab being acted on, or 0 when the gesture names
+    // no tab of this window's (an incoming adopt names the source window's).
+    std::function<void(uint32_t tab, hstring const& action)> dispatch;
     // Coalesces the mid-drag active-tab highlight below: at most one apply is
     // ever queued on the dispatcher at a time, and a Sync() landing before it
     // runs just updates the target id rather than queuing a second one.
@@ -310,7 +315,7 @@ struct NativeTabStrip {
         action.SetNamedValue(L"revision", Windows::Data::Json::JsonValue::CreateNumberValue(presentationRevision));
         action.SetNamedValue(L"id", Windows::Data::Json::JsonValue::CreateNumberValue(unbox_value<uint32_t>(tab.Tag())));
         action.SetNamedValue(L"beforeId", Windows::Data::Json::JsonValue::CreateNumberValue(beforeId));
-        pendingReorder = action.Stringify();
+        if (dispatch) dispatch(unbox_value<uint32_t>(tab.Tag()), action.Stringify());
     }
 
     // Queues one validated detach request naming `tab` and the release
@@ -328,7 +333,7 @@ struct NativeTabStrip {
         action.SetNamedValue(L"id", Windows::Data::Json::JsonValue::CreateNumberValue(unbox_value<uint32_t>(tab.Tag())));
         action.SetNamedValue(L"screenX", Windows::Data::Json::JsonValue::CreateNumberValue(double(screenPoint.x)));
         action.SetNamedValue(L"screenY", Windows::Data::Json::JsonValue::CreateNumberValue(double(screenPoint.y)));
-        pendingReorder = action.Stringify();
+        if (dispatch) dispatch(unbox_value<uint32_t>(tab.Tag()), action.Stringify());
     }
 
     // For a cross-window drop landing at `localX` (already converted to
@@ -363,7 +368,9 @@ struct NativeTabStrip {
                                                  double(reinterpret_cast<uintptr_t>(sourceHwnd))));
         action.SetNamedValue(L"id", Windows::Data::Json::JsonValue::CreateNumberValue(tabId));
         action.SetNamedValue(L"index", Windows::Data::Json::JsonValue::CreateNumberValue(index));
-        pendingReorder = action.Stringify();
+        // The adopted tab belongs to the source window, not this one, so this
+        // request names no tab in this window's id space.
+        if (dispatch) dispatch(0, action.Stringify());
     }
 
     static Media::TranslateTransform RowTransform(Controls::TabViewItem const& row) {
@@ -846,9 +853,9 @@ struct NativeTabStrip {
         groupsButton.Apply(label, groups);
         root.FlowDirection(rtl ? FlowDirection::RightToLeft : FlowDirection::LeftToRight);
         presentation.swap(next);
-        // Any successfully applied presentation revokes a queued reorder from
-        // before it, same as groupsButton.Apply does for a queued toggle.
-        pendingReorder = L"";
+        // A gesture formed against an older presentation is not revoked here:
+        // it is already queued, carrying the revision it was formed against,
+        // and Firefox refuses it explicitly on that revision.
         presentationRevision = revision;
         presentationFingerprint = fingerprint;
     }

@@ -5,12 +5,17 @@
 
 // The tab-groups dropdown button and its collapse/expand flyout, presented
 // above the tab strip. Firefox owns group membership and collapse state;
-// this only renders the button/flyout and forwards a queued toggle. Fields
-// this receives are already validated by the caller's upfront pass.
+// this only renders the button/flyout and forwards the toggle as one request.
+// Fields this receives are already validated by the caller's upfront pass.
 struct TabGroupsButton {
     Controls::DropDownButton button;
-    hstring fingerprint, pending;
+    hstring fingerprint;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
+
+    // Hands one completed toggle to the owning pane's request queue. A group
+    // is not a tab, so this carries no tab id; the request's revision is what
+    // Firefox validates it against.
+    std::function<void(hstring const&)> dispatch;
 
     // The owning strip's current presentation revision. Read live at click
     // time rather than captured when the flyout is built: the revision can
@@ -55,7 +60,7 @@ struct TabGroupsButton {
                     action.SetNamedValue(L"revision", JValue::CreateNumberValue(currentRevision()));
                     action.SetNamedValue(L"group", JValue::CreateNumberValue(id));
                     action.SetNamedValue(L"collapsed", JValue::CreateBooleanValue(!collapsed));
-                    pending = action.Stringify();
+                    if (dispatch) dispatch(action.Stringify());
                 });
                 flyout.Items().Append(item);
             }
@@ -65,8 +70,9 @@ struct TabGroupsButton {
         }
         button.Content(box_value(label));
         button.Visibility(groups.Size() ? Visibility::Visible : Visibility::Collapsed);
-        // Any successfully applied presentation revokes a queued toggle from
-        // before it, whether or not the groups themselves changed.
-        pending = L"";
+        // A toggle formed against an older presentation is no longer revoked
+        // here: it is already in the request queue, carrying the revision it
+        // was formed against, and Firefox refuses it explicitly on that
+        // revision rather than having it silently disappear.
     }
 };

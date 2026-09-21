@@ -949,6 +949,18 @@ mod tests {
             assert_eq!(shell_core_stats(core, std::ptr::null_mut()), ShellStatus::InvalidArgument);
             assert_eq!(shell_core_enqueue(core, 99, 1, 0, std::ptr::null(), 0, &mut result),
                 ShellStatus::InvalidArgument, "unknown kind");
+            // The C++ side mirrors these numbers by hand (NativeShellCore::Kind
+            // in native/WinUIPane/ShellCore.h); cbindgen does not export the
+            // enum because the boundary carries it as a u32. Pin the range so a
+            // kind added on one side and not the other fails here.
+            for kind in 1..=5 {
+                assert_eq!(
+                    shell_core_enqueue(core, kind, 1, 0, std::ptr::null(), 0, &mut result),
+                    ShellStatus::Ok, "kind {kind} is part of the boundary"
+                );
+            }
+            assert_eq!(shell_core_enqueue(core, 6, 1, 0, std::ptr::null(), 0, &mut result),
+                ShellStatus::InvalidArgument, "one past the last kind");
             // A non-null length with a null pointer must never be dereferenced.
             assert_eq!(
                 shell_core_enqueue(core, 1, 1, 0, std::ptr::null(), 4, &mut result),

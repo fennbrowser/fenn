@@ -212,13 +212,12 @@ static winrt::Microsoft::UI::Xaml::Controls::ListViewItem RealizedRow(
     Require(false, "native row is loaded and laid out before interaction");
     return nullptr;
 }
-static winrt::Windows::Data::Json::JsonObject MenuExchange(WinUIPaneApi& api, HWND hwnd,
-                                                           wchar_t const* snapshot = L"{\"version\":2}") {
-    std::vector<wchar_t> output(262144);
-    Require(SUCCEEDED(api.syncTabMenu(hwnd, snapshot, output.data(), uint32_t(output.size()))),
-            "menu protocol exchange");
-    return output[0] ? winrt::Windows::Data::Json::JsonObject::Parse(output.data())
-                     : winrt::Windows::Data::Json::JsonObject();
+// Since ABI v12 this is a publication with no reply. Every native intent,
+// including the strip's own gestures, arrives through drainRequests instead,
+// so there is nothing to read back here.
+static void MenuPublish(WinUIPaneApi& api, HWND hwnd,
+                         wchar_t const* snapshot = L"{\"version\":2}") {
+    Require(SUCCEEDED(api.syncTabMenu(hwnd, snapshot)), "menu protocol publication");
 }
 static uint32_t menuTestRevision = 0;
 // Since ABI v11 the recurring publication carries identities and the selected
@@ -332,7 +331,7 @@ static void PrepareFixtureMenus(WinUIPaneApi& api, HWND hwnd,
                                 .Text());
     }
     for (uint32_t i = 0; i < ids.size(); ++i) tabs.push_back({ids[i], titles[i].c_str(), 7});
-    MenuExchange(api, hwnd, MenuState(ids).Stringify().c_str());
+    MenuPublish(api, hwnd, MenuState(ids).Stringify().c_str());
     uint32_t selected{}, close{}, create{}, id{}, command{};
     Require(SUCCEEDED(api.syncTabs(hwnd, tabs.data(), uint32_t(tabs.size()), ids[list.SelectedIndex()], &selected,
                                    &close, &create, &id, &command)),
@@ -365,7 +364,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     Require(SUCCEEDED(api.focus(hwnd, FALSE)), "activate test island before realizing rows");
     settle();  // Finish the new island's Loaded transition before inserting fixture rows.
     auto current = MenuState({71, 72});
-    MenuExchange(api, hwnd, current.Stringify().c_str());
+    MenuPublish(api, hwnd, current.Stringify().c_str());
     sync();
     Controls::MenuFlyout menu{nullptr};
     Object opened;
@@ -410,7 +409,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
                         current.GetNamedObject(L"state").GetNamedNumber(L"revision"),
                 "opening retains target and published revision");
         if (!describe) return;
-        MenuExchange(api, hwnd,
+        MenuPublish(api, hwnd,
                      MenuDescription(opened.GetNamedNumber(L"session"), 72, opened.GetNamedNumber(L"revision"), nested)
                          .Stringify()
                          .c_str());
@@ -445,7 +444,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     // A new published context invalidates every cached description, so the next
     // opening asks again and can be answered differently.
     current = MenuState({71, 72});
-    MenuExchange(api, hwnd, current.Stringify().c_str());
+    MenuPublish(api, hwnd, current.Stringify().c_str());
     sync();
     open(2, true);
     Require(menu.Items().GetAt(0).try_as<Controls::MenuFlyoutSeparator>() != nullptr &&
@@ -453,25 +452,24 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
             "standard separator and submenu renderer");
     auto old = current;
     current = MenuState({71, 72});
-    MenuExchange(api, hwnd, current.Stringify().c_str());
+    MenuPublish(api, hwnd, current.Stringify().c_str());
     settle();
     Require(!menu.IsOpen(), "changed state dismisses obsolete menu");
     open();
-    MenuExchange(api, hwnd, old.Stringify().c_str());
+    MenuPublish(api, hwnd, old.Stringify().c_str());
     Require(menu.IsOpen() && menu.Items().Size() == 3, "late state cannot replace current controls");
     // A description that no longer names the open request must not be rendered.
     auto session = opened.GetNamedNumber(L"session");
     auto revision = opened.GetNamedNumber(L"revision");
     for (auto stale : {MenuDescription(session + 5, 72, revision), MenuDescription(session, 71, revision),
                        MenuDescription(session, 72, revision + 5)}) {
-        MenuExchange(api, hwnd, stale.Stringify().c_str());
+        MenuPublish(api, hwnd, stale.Stringify().c_str());
         settle();
         Require(menu.IsOpen() && menu.Items().Size() == 3,
                 "a description for another session, tab or revision is discarded");
     }
-    std::vector<wchar_t> output(262144);
     auto reject = [&](Object const& malformed, char const* what) {
-        Require(FAILED(api.syncTabMenu(hwnd, malformed.Stringify().c_str(), output.data(), uint32_t(output.size()))),
+        Require(FAILED(api.syncTabMenu(hwnd, malformed.Stringify().c_str())),
                 "invalid state rejected atomically");
         fprintf(stderr, "Reject %s open=%d items=%u\n", what, menu.IsOpen(), menu.Items().Size());
         Require(menu.IsOpen() && menu.Items().Size() == 3, "invalid state preserves current menu");
@@ -484,14 +482,12 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     malformed = MenuState({71, 72});
     malformed.SetNamedValue(L"publishOnly", Value::CreateStringValue(L"true"));
     reject(malformed, "publishOnly of the wrong type");
-    Require(FAILED(api.syncTabMenu(hwnd, L"{broken", output.data(), uint32_t(output.size()))),
-            "malformed JSON rejected");
-    Require(FAILED(api.syncTabMenu(hwnd, L"{\"version\":3}", output.data(), uint32_t(output.size()))),
-            "unknown protocol rejected");
+    Require(FAILED(api.syncTabMenu(hwnd, L"{broken")), "malformed JSON rejected");
+    Require(FAILED(api.syncTabMenu(hwnd, L"{\"version\":3}")), "unknown protocol rejected");
     // An opening whose description never arrives stays non-actionable, and the
     // menu can be dismissed and reopened without leaving stale rows behind.
     current = MenuState({71, 72});
-    MenuExchange(api, hwnd, current.Stringify().c_str());
+    MenuPublish(api, hwnd, current.Stringify().c_str());
     sync();
     open(0, false, /*describe=*/false);
     Require(menu.Items().Size() == 1 && !menu.Items().GetAt(0).IsEnabled(),
@@ -501,13 +497,13 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     while (DrainRequests(api, hwnd).Size()) {
     }
     current = MenuState({71});
-    MenuExchange(api, hwnd, current.Stringify().c_str());
+    MenuPublish(api, hwnd, current.Stringify().c_str());
     sync(1);
     Require(!menu.IsOpen(), "removed target dismisses menu");
     sync();
     Require(!RealizedRow(list, 1).ContextFlyout(), "unpublished target has no loading popup");
     current = MenuState({71, 72});
-    MenuExchange(api, hwnd, current.Stringify().c_str());
+    MenuPublish(api, hwnd, current.Stringify().c_str());
     sync();
     open();
     menu.Hide();
@@ -517,7 +513,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     current = MenuState({71, 72});
     for (auto binding : current.GetNamedObject(L"state").GetNamedArray(L"tabs"))
         binding.GetObject().SetNamedValue(L"selected", Value::CreateBooleanValue(true));
-    MenuExchange(api, hwnd, current.Stringify().c_str());
+    MenuPublish(api, hwnd, current.Stringify().c_str());
     sync();
     Require(list.SelectionMode() == Controls::ListViewSelectionMode::Extended && list.SelectedItems().Size() == 2,
             "Firefox selected set uses native Extended selection independently of active tab");
@@ -543,7 +539,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
         Require(c == 0 && n == 0 && i == 0 && cmd == 0, "syncTabs no longer drains selection");
     }
     current = MenuState({71, 72});
-    MenuExchange(api, hwnd, current.Stringify().c_str());
+    MenuPublish(api, hwnd, current.Stringify().c_str());
     sync();
     puts(
         "Menu protocol: pending-state opening, on-demand descriptions bound to their request, stale-answer "
@@ -563,7 +559,7 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     auto list = content.as<Controls::Grid>().Children().GetAt(1).as<Controls::ListView>();
     uint32_t revision{}, close{}, create{}, context{}, command{};
     WinUITab tabs[]{{101, L"Core first", 7}, {102, L"Core second", 7}, {103, L"Core third", 7}};
-    MenuExchange(api, hwnd, MenuState({101, 102, 103}).Stringify().c_str());
+    MenuPublish(api, hwnd, MenuState({101, 102, 103}).Stringify().c_str());
     Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, &revision, &close, &create, &context, &command)),
             "seed the presentation model");
     Require(revision != 0, "a snapshot reports the model revision it produced");
@@ -780,7 +776,7 @@ static void CheckThemesAndLongList(HMODULE module, WinUIPaneApi& api, HWND hwnd)
         Require(request.Size(), "theme menu opening request");
         auto action = request.GetNamedObject(L"action");
         // Answer the opening so there are real command rows to inspect.
-        MenuExchange(api, hwnd,
+        MenuPublish(api, hwnd,
                      MenuDescription(action.GetNamedNumber(L"session"), uint32_t(action.GetNamedNumber(L"tab")),
                                      action.GetNamedNumber(L"revision"))
                          .Stringify()
@@ -965,7 +961,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     for (uint32_t i = 0; i < 2; ++i)
         bindings.GetObjectAt(i).SetNamedValue(L"selected",
                                               winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(i == 0));
-    MenuExchange(api, host, state.Stringify().c_str());
+    MenuPublish(api, host, state.Stringify().c_str());
     WinUITab tabs[]{{11, L"Same title"}, {22, L"Same title"}};
     uint32_t selected{}, close{}, create{}, context{}, command{};
     auto sync = [&] {
@@ -1060,26 +1056,40 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(view.TabItems().GetAt(0) == second && view.TabItems().GetAt(1) == first,
             "simulate WinUI's own live drag having already reordered TabItems()");
     Require(SUCCEEDED(completeReorder(host, 22)), "drive completed-drag logic for the tab now leading");
-    auto reorderToFront = MenuExchange(api, host);
-    Require(reorderToFront.GetNamedString(L"kind") == L"strip-reorder" &&
-                reorderToFront.GetNamedNumber(L"id") == 22 && reorderToFront.GetNamedNumber(L"beforeId") == 11,
+    // Since ABI v12 a completed gesture is a request on the shared queue; it
+    // wakes the host itself rather than waiting to be read back by the next
+    // publication.
+    auto reorderToFront = NextRequest(api, host, 5, L"strip-reorder");
+    Require(reorderToFront.Size(), "completed drag reaches the request queue");
+    auto frontAction = reorderToFront.GetNamedObject(L"action");
+    Require(frontAction.GetNamedNumber(L"id") == 22 && frontAction.GetNamedNumber(L"beforeId") == 11,
             "completed drag queues a validated request naming the real neighbor");
     Require(SUCCEEDED(completeReorder(host, 11)), "drive completed-drag logic for the tab now trailing");
-    auto reorderToEnd = MenuExchange(api, host);
-    Require(reorderToEnd.GetNamedString(L"kind") == L"strip-reorder" && reorderToEnd.GetNamedNumber(L"id") == 11 &&
+    auto reorderToEnd = NextRequest(api, host, 5, L"strip-reorder").GetNamedObject(L"action");
+    Require(reorderToEnd.Size() && reorderToEnd.GetNamedNumber(L"id") == 11 &&
                 reorderToEnd.GetNamedNumber(L"beforeId") == 0,
             "a tab with no following row requests beforeId 0 (move to end)");
     Require(SUCCEEDED(completeReorder(host, 22)), "queue a reorder request alongside a selection");
     view.SelectedItem(second);
-    // The two travel on different transports now: selection on the v11 request
-    // path, the strip reorder on the unmigrated menu exchange. Neither blocks
-    // the other, and neither appears on both.
-    auto priorityFirst = NextRequest(api, host, 1);
-    Require(priorityFirst.Size() && priorityFirst.GetNamedObject(L"action").GetNamedNumber(L"tab") == 22,
-            "selection drains on the request path");
-    auto priorityReorder = MenuExchange(api, host);
-    Require(priorityReorder.GetNamedString(L"kind") == L"strip-reorder",
-            "the queued reorder still drains on the legacy strip transport");
+    // Both now travel on the one queue, and the order the user produced them
+    // in is the order Firefox sees: the gesture that moved the tab, then the
+    // selection that followed it. There is no second transport for either to
+    // overtake the other on, and neither appears twice.
+    std::vector<uint32_t> observed;
+    for (int i = 0; i < 40 && observed.size() < 2; ++i) {
+        auto batch = DrainRequests(api, host);
+        if (batch.Size()) {
+            for (auto value : batch.GetNamedArray(L"requests")) {
+                auto kind = uint32_t(value.GetObject().GetNamedNumber(L"kind"));
+                if (kind == 1 || kind == 5) observed.push_back(kind);
+            }
+            CompleteRequests(api, host, batch);
+        }
+        Pump();
+        Sleep(5);
+    }
+    Require(observed == std::vector<uint32_t>({5, 1}),
+            "the gesture and the selection that followed it drain once each, in order");
     sync();
     settleWidths();
     Require(view.TabItems().GetAt(0) == first && view.TabItems().GetAt(1) == second,
@@ -1108,7 +1118,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     sync();
     auto richer =
         LR"({"version":2,"publishOnly":true,"strip":{"version":1,"revision":1,"rtl":false,"groupsLabel":"Tab groups","groups":[{"id":7,"name":"Work","label":"Work — Expanded","collapsed":false}],"rows":[{"id":11,"detail":"Work · Split 1 left","flags":1,"image":{"width":2,"height":2,"pixels":"0000ffff0000ffff0000ffff0000ffff"}},{"id":22,"detail":"Work · Split 1 right","flags":6,"image":null}]}})";
-    MenuExchange(api, host, richer);
+    MenuPublish(api, host, richer);
     sync();
     auto header = second.Header().as<Controls::Grid>();
     Require(header.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(1).as<Controls::ProgressRing>().IsActive(),
@@ -1140,7 +1150,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     notBusyNoIconModel.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(2));
     notBusyNoIconModel.GetNamedArray(L"rows").GetObjectAt(1).SetNamedValue(
         L"flags", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(4));
-    MenuExchange(api, host, notBusyNoIcon.Stringify().c_str());
+    MenuPublish(api, host, notBusyNoIcon.Stringify().c_str());
     sync();
     Require(secondFavicon.Visibility() == Visibility::Collapsed,
             "once loading ends, a tab with no favicon shows no icon at all");
@@ -1149,9 +1159,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     oversizedModel.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(3));
     oversizedModel.GetNamedArray(L"rows").GetObjectAt(0).GetNamedObject(L"image").SetNamedValue(
         L"width", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(1000));
-    std::vector<wchar_t> imageRejectOutput(262144);
-    Require(FAILED(api.syncTabMenu(host, oversizedImage.Stringify().c_str(), imageRejectOutput.data(),
-                                   uint32_t(imageRejectOutput.size()))),
+    Require(FAILED(api.syncTabMenu(host, oversizedImage.Stringify().c_str())),
             "oversized favicon dimensions are rejected before native mutation");
     auto groups = view.TabStripHeader().as<Controls::DropDownButton>();
     Require(groups.Visibility() == Visibility::Visible, "group controls expose collapsed groups independently of tabs");
@@ -1168,9 +1176,12 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     auto groupItem = groupMenu.Items().GetAt(0).as<Controls::ToggleMenuFlyoutItem>();
     auto peer = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(groupItem);
     peer.GetPattern(Automation::Peers::PatternInterface::Toggle).as<Automation::Provider::IToggleProvider>().Toggle();
-    event = MenuExchange(api, host);
-    Require(event.GetNamedString(L"kind") == L"strip-group" && event.GetNamedNumber(L"group") == 7 &&
-                event.GetNamedBoolean(L"collapsed"),
+    // Since ABI v12 the toggle is a request on the shared queue, not something
+    // read back from the next publication: it wakes the host on its own.
+    auto groupRequest = NextRequest(api, host, 5, L"strip-group");
+    Require(groupRequest.Size(), "group toggle reaches the request queue");
+    auto groupAction = groupRequest.GetNamedObject(L"action");
+    Require(groupAction.GetNamedNumber(L"group") == 7 && groupAction.GetNamedBoolean(L"collapsed"),
             "group toggle queues validated intent");
     Require(groupItem.IsChecked(), "group checkbox awaits Firefox acknowledgment");
     groupMenu.Hide();
@@ -1182,14 +1193,11 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     auto model = bad.GetNamedObject(L"strip");
     model.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(3));
     model.GetNamedArray(L"rows").Append(model.GetNamedArray(L"rows").GetAt(0));
-    std::vector<wchar_t> invalidOutput(262144);
-    Require(
-        FAILED(api.syncTabMenu(host, bad.Stringify().c_str(), invalidOutput.data(), uint32_t(invalidOutput.size()))),
-        "duplicate presentation IDs rejected before native mutation");
+    Require(FAILED(api.syncTabMenu(host, bad.Stringify().c_str())),
+            "duplicate presentation IDs rejected before native mutation");
     bad.SetNamedValue(L"version", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(99));
-    Require(
-        FAILED(api.syncTabMenu(host, bad.Stringify().c_str(), invalidOutput.data(), uint32_t(invalidOutput.size()))),
-        "invalid outer strip envelope rejected");
+    Require(FAILED(api.syncTabMenu(host, bad.Stringify().c_str())),
+            "invalid outer strip envelope rejected");
     bad.SetNamedValue(L"version", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(2));
     sync();
     Require(second.Header() == header, "metadata updates retain header identity");
@@ -1223,7 +1231,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         auto request = NextRequest(api, host, 2, L"open");
         Require(request.Size(), "strip opening asks for this tab's description");
         auto action = request.GetNamedObject(L"action");
-        MenuExchange(api, host,
+        MenuPublish(api, host,
                      MenuDescription(action.GetNamedNumber(L"session"), uint32_t(action.GetNamedNumber(L"tab")),
                                      action.GetNamedNumber(L"revision"))
                          .Stringify()
@@ -1242,7 +1250,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(second.ContextFlyout() != flyout, "strip opening gets fresh flyout");
     model.GetNamedArray(L"rows").RemoveAtEnd();
     model.SetNamedValue(L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
-    MenuExchange(api, host, bad.Stringify().c_str());
+    MenuPublish(api, host, bad.Stringify().c_str());
     sync();
     Require(root.FlowDirection() == FlowDirection::RightToLeft, "native layout uses Firefox text direction");
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, FALSE)), "hide strip");
@@ -1357,9 +1365,8 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host) {
     send(MOUSEEVENTF_LEFTUP);
     settle(200);
     puts("Drag gesture completed without crashing");
-    auto event = MenuExchange(api, host);
-    Require(event.GetNamedString(L"kind", L"") == L"strip-reorder" && event.GetNamedNumber(L"id") == 11 &&
-                event.GetNamedNumber(L"beforeId") == 0,
+    auto event = NextRequest(api, host, 5, L"strip-reorder").GetNamedObject(L"action");
+    Require(event.Size() && event.GetNamedNumber(L"id") == 11 && event.GetNamedNumber(L"beforeId") == 0,
             "a real pointer drag past the last tab queues a validated move-to-end request");
 }
 
@@ -1444,8 +1451,8 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host) {
     send(MOUSEEVENTF_LEFTUP);
     settle(200);
     puts("Detach gesture completed without crashing");
-    auto detachEvent = MenuExchange(api, host);
-    Require(detachEvent.GetNamedString(L"kind", L"") == L"strip-detach" && detachEvent.GetNamedNumber(L"id") == 55,
+    auto detachEvent = NextRequest(api, host, 5, L"strip-detach").GetNamedObject(L"action");
+    Require(detachEvent.Size() && detachEvent.GetNamedNumber(L"id") == 55,
             "dragging a tab outside every open window's bounds queues a validated detach request");
     Require(detachEvent.GetNamedNumber(L"screenY") > double(hostRect.bottom),
             "the detach request carries a screen point below the host window it left");
@@ -1566,8 +1573,15 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     puts("Cross-window adopt gesture completed without crashing");
     Require(previewOffset > 0.0,
             "hovering the dragged tab over the destination strip opens a live make-room preview gap there");
-    auto adoptEvent = MenuExchange(api, host2);
-    Require(adoptEvent.GetNamedString(L"kind", L"") == L"strip-adopt" && adoptEvent.GetNamedNumber(L"id") == 33 &&
+    // The adopt is queued on the destination window's own endpoint, so it is
+    // drained there -- this is also what proves the two endpoints' queues are
+    // independent rather than one shared list.
+    auto adoptRequest = NextRequest(api, host2, 5, L"strip-adopt");
+    Require(adoptRequest.Size(), "adopt reaches the destination window's request queue");
+    Require(adoptRequest.GetNamedNumber(L"tab") == 0,
+            "an incoming adopt names no tab in the destination window's own id space");
+    auto adoptEvent = adoptRequest.GetNamedObject(L"action");
+    Require(adoptEvent.GetNamedNumber(L"id") == 33 &&
                 adoptEvent.GetNamedNumber(L"sourceHwnd") == double(reinterpret_cast<uintptr_t>(host)),
             "dropping a tab onto another window's strip queues a validated adopt request there");
     Require(SUCCEEDED(api.destroy(host2)), "destroy second host's pane");

@@ -43,6 +43,13 @@ pub enum RequestKind {
     CloseTab = 3,
     /// Open a new tab. Never superseded.
     NewTab = 4,
+    /// One TabView strip command the user completed with a gesture: toggling a
+    /// group, reordering a tab, tearing one out to a new window, or dropping
+    /// one in from another window. Never superseded -- each is a distinct
+    /// completed gesture, and collapsing two reorders would silently discard a
+    /// move the user already made. Carries no tab of its own for a group
+    /// toggle or an incoming adopt, so it is not subject to the target check.
+    StripAction = 5,
 }
 
 impl RequestKind {
@@ -52,6 +59,7 @@ impl RequestKind {
             2 => Some(Self::MenuEvent),
             3 => Some(Self::CloseTab),
             4 => Some(Self::NewTab),
+            5 => Some(Self::StripAction),
             _ => None,
         }
     }
@@ -600,6 +608,53 @@ mod tests {
         let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
         assert_eq!(kinds, vec![RequestKind::SelectTab, RequestKind::MenuEvent]);
         assert_eq!(batch[0].tab, 12, "the newest selection, in the oldest one's place");
+    }
+
+    #[test]
+    fn strip_gestures_are_ordered_and_never_collapsed() {
+        let mut q = queue();
+        // Two drags in a row are two moves the user already made. Collapsing
+        // them would land the tab in the wrong place and report nothing wrong.
+        let first = q.enqueue(RequestKind::StripAction, 10, 1, &[]);
+        let second = q.enqueue(RequestKind::StripAction, 11, 1, &[]);
+        assert_eq!(second.superseded, 0, "a strip gesture never supersedes another");
+        assert_eq!(q.queued_len(), 2);
+        q.begin_drain().unwrap();
+        let batch = q.take_batch(8, 1 << 20);
+        assert_eq!(batch.iter().map(|r| r.id).collect::<Vec<_>>(), vec![first.id, second.id]);
+    }
+
+    #[test]
+    fn a_strip_gesture_without_a_tab_of_its_own_is_accepted() {
+        let mut q = queue();
+        // A group toggle names a group, and an incoming adopt names another
+        // window's tab; neither has an id in this window's tab space. The
+        // kinds that do address a tab still must not be targetless.
+        assert_eq!(q.enqueue(RequestKind::StripAction, 0, 1, &[]).status, EnqueueStatus::Accepted);
+        assert_eq!(
+            q.enqueue(RequestKind::SelectTab, 0, 1, &[]).status,
+            EnqueueStatus::RejectedInvalid
+        );
+    }
+
+    #[test]
+    fn a_strip_gesture_keeps_its_place_among_other_kinds() {
+        let mut q = queue();
+        // A drop that lands a tab and then selects it must reach Firefox in
+        // that order; the selection's supersede rule must not reorder around
+        // the gesture that preceded it.
+        q.enqueue(RequestKind::StripAction, 10, 1, &[]);
+        q.enqueue(RequestKind::SelectTab, 10, 1, &[]);
+        q.enqueue(RequestKind::StripAction, 11, 1, &[]);
+        q.enqueue(RequestKind::SelectTab, 12, 1, &[]);
+        q.begin_drain().unwrap();
+        let batch = q.take_batch(8, 1 << 20);
+        let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![RequestKind::StripAction, RequestKind::SelectTab, RequestKind::StripAction]
+        );
+        assert_eq!(batch[1].tab, 12, "the newest selection, in the oldest one's place");
     }
 
     #[test]
