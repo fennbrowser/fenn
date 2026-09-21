@@ -1671,6 +1671,8 @@ int wmain(int argc, wchar_t** argv) {
             "inspection export exists only in the test DLL");
     Require((GetProcAddress(module, "WinUIPaneTestGetGeometryWork") != nullptr) == (argc == 3),
             "geometry-work export exists only in the test DLL");
+    Require((GetProcAddress(module, "WinUIPaneTestGetEntryCalls") != nullptr) == (argc == 3),
+            "entry-call export exists only in the test DLL");
     RECT rect{0, 0, 240, 300};
     Require(api.update(nullptr, &rect, TRUE) == E_INVALIDARG, "reject null HWND");
     HWND first = CreateWindowExW(0, L"STATIC", L"Pane contract test", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
@@ -2035,6 +2037,39 @@ int wmain(int argc, wchar_t** argv) {
         HRGN restored = CreateRectRgn(0, 0, 0, 0);
         Require(GetWindowRgn(island, restored) == SIMPLEREGION, "the changed region reached the window");
         DeleteObject(restored);
+        // Every ABI entry point accounts for its own calls, which is what makes
+        // native cost attributable at all. The count is what this pins; the
+        // timing alongside it is only taken when the work flag is set, and a
+        // test that asserted on it would be asserting on the clock.
+        auto entryCalls = [&](const wchar_t* name) {
+            auto counts = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
+                GetProcAddress(module, "WinUIPaneTestGetEntryCalls"));
+            Require(counts != nullptr, "entry-call counters available");
+            uint64_t value = 0;
+            Require(SUCCEEDED(counts(name, &value)), "read an entry's call count");
+            return value;
+        };
+        {
+            auto counts = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
+                GetProcAddress(module, "WinUIPaneTestGetEntryCalls"));
+            uint64_t ignored = 0;
+            Require(counts(L"noSuchEntry", &ignored) == E_INVALIDARG, "reject an unknown entry name");
+            Require(counts(nullptr, &ignored) == E_POINTER, "reject a null entry name");
+            Require(counts(L"update", nullptr) == E_POINTER, "reject a null count output");
+        }
+        auto updatesBefore = entryCalls(L"update");
+        auto clipsBefore = entryCalls(L"clip");
+        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "counted update");
+        Require(SUCCEEDED(api.clip(first, nullptr, 0)), "counted clip");
+        Require(entryCalls(L"update") == updatesBefore + 1, "update accounts for its own call");
+        Require(entryCalls(L"clip") == clipsBefore + 1, "clip accounts for its own call");
+        // A rejected call is still a call: it reached the entry point and spent
+        // time there, so leaving it uncounted would understate the cost.
+        auto rejectedBefore = entryCalls(L"update");
+        Require(api.update(nullptr, &rect, TRUE) == E_INVALIDARG, "rejected update");
+        Require(entryCalls(L"update") == rejectedBefore + 1, "a rejected call is still accounted for");
+        Require(entryCalls(L"syncTabs") > 0, "tab publication is accounted for");
+        Require(entryCalls(L"translate") > 0, "message translation is accounted for");
     }
     unsigned children{};
     EnumChildWindows(first, CountChild, reinterpret_cast<LPARAM>(&children));

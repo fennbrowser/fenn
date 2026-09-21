@@ -32,6 +32,101 @@ namespace {
 // what the island already has. Process-wide; read by the contract test through
 // WinUIPaneTestGetGeometryWork and reported at shutdown under
 // FIREFOX_WINUI_PANE_DIAGNOSTICS.
+// Native cost per ABI entry point. Until this existed the only measured
+// numbers in the project were Firefox-side: the adapter's shims wrap each call
+// and so include the time spent in here, but nothing attributed it, and work
+// that never touches the publication path -- update() and clip() running per
+// animation frame -- was not measured at all.
+//
+// Calls are always counted; that is an increment. Timing is taken only when
+// accounting is asked for, because this runs on the browser's main thread and a
+// QueryPerformanceCounter pair on every call is exactly the kind of unmeasured
+// overhead this project exists to remove.
+//
+// Cumulative totals with a call count give mean and worst cost per call, which
+// is what attribution needs and is independent of which window the run was
+// sampling -- so no periodic snapshot is required to read them.
+struct EntryWork {
+    const wchar_t* name;
+    uint64_t calls;
+    double totalMs;
+    double maxMs;
+};
+inline EntryWork* nativeWork() {
+    // Message translation is timed like the rest even though it is called for
+    // every window message on the pump: at roughly 50ns for the clock pair
+    // against a measured 3.5us per call, the instrument costs about 1.4% of
+    // what it reports, which is worth knowing rather than guessing at.
+    static EntryWork entries[]{
+        {L"update", 0, 0, 0},       {L"updateTabStrip", 0, 0, 0}, {L"clip", 0, 0, 0},
+        {L"syncTabs", 0, 0, 0},     {L"syncAddress", 0, 0, 0},    {L"syncTabMenu", 0, 0, 0},
+        {L"drainRequests", 0, 0, 0},{L"completeRequests", 0, 0, 0}, {L"applyTabDelta", 0, 0, 0},
+        {L"focus", 0, 0, 0},        {L"destroy", 0, 0, 0},        {L"translate", 0, 0, 0},
+        {nullptr, 0, 0, 0},
+    };
+    return entries;
+}
+inline double NowMs() {
+    static const double scale = [] {
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        return frequency.QuadPart ? 1000.0 / double(frequency.QuadPart) : 0.0;
+    }();
+    LARGE_INTEGER counter{};
+    QueryPerformanceCounter(&counter);
+    return double(counter.QuadPart) * scale;
+}
+bool DiagnosticsEnabled();
+// Timing and the shutdown report, without the per-call diagnostic lines.
+// The two are separate flags because a measurement run needs the first and is
+// distorted by the second: with FIREFOX_WINUI_PANE_DIAGNOSTICS on, every
+// update() writes a line to a redirected stderr, which cost 20.5ms across 105
+// calls -- a fifth of what update() itself was reported to cost. The perf
+// harness turns diagnostics off for exactly that reason, so it sets this.
+inline bool WorkAccountingEnabled() {
+    static const bool enabled =
+        GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_WORK", nullptr, 0) != 0 || DiagnosticsEnabled();
+    return enabled;
+}
+// Counts on construction, charges elapsed time on destruction, so an entry
+// point that returns early is still counted exactly once.
+struct WorkScope {
+    EntryWork& entry;
+    bool timed;
+    double started;
+    explicit WorkScope(size_t index)
+        : entry(nativeWork()[index]), timed(WorkAccountingEnabled()), started(timed ? NowMs() : 0.0) {
+        ++entry.calls;
+    }
+    WorkScope(const WorkScope&) = delete;
+    WorkScope& operator=(const WorkScope&) = delete;
+    // Charge the time now and stop measuring. Entry points that print a
+    // per-call diagnostic line call this first: that line exists only because
+    // diagnostics are on, it writes to a redirected stderr, and charging it to
+    // the entry point would mean the instrument was measuring itself.
+    void Stop() {
+        if (!timed) return;
+        timed = false;
+        const double elapsed = NowMs() - started;
+        entry.totalMs += elapsed;
+        if (elapsed > entry.maxMs) entry.maxMs = elapsed;
+    }
+    ~WorkScope() { Stop(); }
+};
+enum Entry : size_t {
+    EntryUpdate,
+    EntryUpdateTabStrip,
+    EntryClip,
+    EntrySyncTabs,
+    EntrySyncAddress,
+    EntrySyncTabMenu,
+    EntryDrainRequests,
+    EntryCompleteRequests,
+    EntryApplyTabDelta,
+    EntryFocus,
+    EntryDestroy,
+    EntryTranslate,
+};
 struct GeometryWork {
     uint64_t updates{}, geometryApplied{}, restacks{}, visibilityApplied{}, clips{}, clipsApplied{};
 };
@@ -1153,6 +1248,7 @@ void Initialize() {
 }
 
 HRESULT UpdateImpl(HWND hwnd, const RECT* rect, BOOL visible, bool strip) noexcept {
+    WorkScope scope{strip ? EntryUpdateTabStrip : EntryUpdate};
     try {
         check_hresult(Check(hwnd));
         if (!hwnd || !rect || rect->right < rect->left || rect->bottom < rect->top) return E_INVALIDARG;
@@ -1206,6 +1302,7 @@ HRESULT UpdateImpl(HWND hwnd, const RECT* rect, BOOL visible, bool strip) noexce
             pane.appliedVisible = int(bool(visible));
             ++work.visibilityApplied;
         }
+        scope.Stop();
         if (DiagnosticsEnabled()) {
             RECT actual{};
             GetClientRect(child, &actual);
@@ -1228,6 +1325,7 @@ HRESULT WINAPI UpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcep
     return UpdateImpl(hwnd, rect, visible, true);
 }
 HRESULT WINAPI Clip(HWND hwnd, const RECT* exclusions, uint32_t count) noexcept {
+    WorkScope scope{EntryClip};
     try {
         check_hresult(Check(hwnd));
         if (!hwnd || (count && !exclusions) || count > 1024) return E_INVALIDARG;
@@ -1279,6 +1377,7 @@ HRESULT WINAPI Clip(HWND hwnd, const RECT* exclusions, uint32_t count) noexcept 
         pane.appliedClipClient = bounds;
         pane.clipApplied = true;
         ++work.clipsApplied;
+        scope.Stop();
         if (DiagnosticsEnabled())
             fprintf(stderr, "WinUIPane clip exclusions=%u visible=%d\n", count, IsWindowVisible(child));
         return S_OK;
@@ -1289,6 +1388,7 @@ HRESULT WINAPI Clip(HWND hwnd, const RECT* exclusions, uint32_t count) noexcept 
 // Publication only, since v13: the address surface's intents and its row
 // visibility are queued and drained through the request path instead.
 HRESULT WINAPI SyncAddress(HWND hwnd, const wchar_t* input) noexcept {
+    WorkScope scope{EntrySyncAddress};
     try {
         check_hresult(Check(hwnd));
         if (!input || wcsnlen(input, 1048577) > 1048576) return E_INVALIDARG;
@@ -1307,6 +1407,7 @@ HRESULT WINAPI SyncAddress(HWND hwnd, const wchar_t* input) noexcept {
 // Every native intent -- menu transitions, selection, and the strip's own
 // gestures -- is queued and drained through the request path instead.
 HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
+    WorkScope scope{EntrySyncTabMenu};
     try {
         check_hresult(Check(hwnd));
         if (!input || wcsnlen(input, 1048577) > 1048576) return E_INVALIDARG;
@@ -1339,6 +1440,7 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
 // the reserved context/command pair went with them, so nothing is drained here.
 HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected,
                         uint32_t* requested) noexcept {
+    WorkScope scope{EntrySyncTabs};
     try {
         check_hresult(Check(hwnd));
         if (!requested) return E_POINTER;
@@ -1400,6 +1502,7 @@ HRESULT WINAPI SetNotifySink(HWND hwnd, WinUIPaneNotifyFn notify, void* context)
     }
 }
 HRESULT WINAPI DrainRequests(HWND hwnd, wchar_t* output, uint32_t capacity) noexcept {
+    WorkScope scope{EntryDrainRequests};
     try {
         check_hresult(Check(hwnd));
         if (!output || capacity < 1 || capacity > 262144) return E_INVALIDARG;
@@ -1463,6 +1566,7 @@ HRESULT WINAPI DrainRequests(HWND hwnd, wchar_t* output, uint32_t capacity) noex
     }
 }
 HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
+    WorkScope scope{EntryCompleteRequests};
     try {
         check_hresult(Check(hwnd));
         if (!input || wcsnlen(input, 1048577) > 1048576) return E_INVALIDARG;
@@ -1512,6 +1616,7 @@ HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
     }
 }
 HRESULT WINAPI ApplyTabDelta(HWND hwnd, const wchar_t* input, uint32_t* revision) noexcept {
+    WorkScope scope{EntryApplyTabDelta};
     try {
         check_hresult(Check(hwnd));
         if (!revision) return E_POINTER;
@@ -1528,6 +1633,7 @@ HRESULT WINAPI ApplyTabDelta(HWND hwnd, const wchar_t* input, uint32_t* revision
 }
 
 HRESULT WINAPI Focus(HWND hwnd, BOOL backwards) noexcept {
+    WorkScope scope{EntryFocus};
     try {
         check_hresult(Check(hwnd));
         auto found = state().panes.find(hwnd);
@@ -1540,6 +1646,7 @@ HRESULT WINAPI Focus(HWND hwnd, BOOL backwards) noexcept {
     }
 }
 HRESULT WINAPI Destroy(HWND hwnd) noexcept {
+    WorkScope scope{EntryDestroy};
     try {
         check_hresult(Check());
         auto& panes = state().panes;
@@ -1554,6 +1661,7 @@ HRESULT WINAPI Destroy(HWND hwnd) noexcept {
     }
 }
 BOOL WINAPI Translate(MSG* message) noexcept {
+    WorkScope scope{EntryTranslate};
     try {
         if (!message || FAILED(Check())) return FALSE;
         // Message-agnostic: this is the ground-truth tick a process-wide
@@ -1600,7 +1708,13 @@ BOOL WINAPI Translate(MSG* message) noexcept {
 HRESULT WINAPI Shutdown() noexcept {
     try {
         check_hresult(Check());
-        if (DiagnosticsEnabled()) {
+        if (WorkAccountingEnabled()) {
+            for (auto* entry = nativeWork(); entry->name; ++entry) {
+                if (!entry->calls) continue;
+                fwprintf(stderr, L"WinUIPane native-work entry=%s calls=%llu ms=%.3f maxMs=%.3f meanMs=%.4f\n",
+                         entry->name, entry->calls, entry->totalMs, entry->maxMs,
+                         entry->totalMs / double(entry->calls));
+            }
             auto& work = geometryWork();
             fprintf(stderr,
                     "WinUIPane geometry-work updates=%llu geometryApplied=%llu restacks=%llu "
@@ -1686,6 +1800,21 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestCorePanic(HWND hwnd
     } catch (...) {
         return to_hresult();
     }
+}
+// Test-only: one ABI entry point's call count, looked up by the same name the
+// shutdown report prints, so nothing is coupled to the order of an array.
+// Timing is deliberately not exposed: it is only taken when diagnostics are on,
+// and a test that asserted on it would be asserting on the clock.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetEntryCalls(const wchar_t* name,
+                                                                           uint64_t* calls) noexcept {
+    if (!name || !calls) return E_POINTER;
+    for (auto* entry = nativeWork(); entry->name; ++entry) {
+        if (wcscmp(entry->name, name) == 0) {
+            *calls = entry->calls;
+            return S_OK;
+        }
+    }
+    return E_INVALIDARG;
 }
 // Test-only: the geometry work counters, so the contract test can pin that a
 // repeated update or clip never reaches the island. Values, in order: updates,
