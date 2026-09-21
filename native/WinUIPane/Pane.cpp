@@ -62,6 +62,10 @@ inline EntryWork* nativeWork() {
         {L"syncTabs", 0, 0, 0},     {L"syncAddress", 0, 0, 0},    {L"syncTabMenu", 0, 0, 0},
         {L"drainRequests", 0, 0, 0},{L"completeRequests", 0, 0, 0}, {L"applyTabDelta", 0, 0, 0},
         {L"focus", 0, 0, 0},        {L"destroy", 0, 0, 0},        {L"translate", 0, 0, 0},
+        // Inside the first update() for a window. Separated because one is
+        // paid once per process and the other once per browser window, and a
+        // single 45.9ms figure for "the first update()" cannot tell them apart.
+        {L"initialize", 0, 0, 0},   {L"paneCreate", 0, 0, 0},
         {nullptr, 0, 0, 0},
     };
     return entries;
@@ -126,6 +130,8 @@ enum Entry : size_t {
     EntryFocus,
     EntryDestroy,
     EntryTranslate,
+    EntryInitialize,
+    EntryPaneCreate,
 };
 struct GeometryWork {
     uint64_t updates{}, geometryApplied{}, restacks{}, visibilityApplied{}, clips{}, clipsApplied{};
@@ -230,6 +236,14 @@ struct Pane {
     std::vector<RECT> appliedExclusions;
     RECT appliedClipClient{};
     bool clipApplied{};
+    // Resolved once and kept, because Translate runs for every window message
+    // in the browser process and both are fixed for this pane's life. Deriving
+    // them per message cost two WinRT property calls plus an interop call, and
+    // three more WinRT calls before the popup list: measured over one
+    // integration run, caching them took message translation from 504ms to
+    // 297ms across about 102,000 messages, 5.0us to 2.9us each.
+    HWND childWindow{};
+    Microsoft::UI::Content::ContentIsland contentIsland{nullptr};
     uint32_t browserSelection{};
     bool syncing{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
@@ -1204,6 +1218,7 @@ void Initialize() {
         check_hresult(s.initialization);
         return;
     }
+    WorkScope scope{EntryInitialize};
     s.attempted = true;
     s.thread = GetCurrentThreadId();
     const char* phase = "apartment";
@@ -1265,6 +1280,7 @@ HRESULT UpdateImpl(HWND hwnd, const RECT* rect, BOOL visible, bool strip) noexce
             Initialize();
             auto pane = std::make_unique<Pane>();
             try {
+                WorkScope create{EntryPaneCreate};
                 pane->Create(hwnd, strip);
             } catch (...) {
                 auto error = to_hresult();
@@ -1676,12 +1692,16 @@ BOOL WINAPI Translate(MSG* message) noexcept {
             if (entry.second->strip) entry.second->strip->TickWindowMove();
         for (auto const& entry : state().panes) {
             auto& pane = *entry.second;
-            HWND child = GetWindowFromWindowId(pane.source.SiteBridge().WindowId());
+            if (!pane.childWindow) pane.childWindow = GetWindowFromWindowId(pane.source.SiteBridge().WindowId());
+            HWND child = pane.childWindow;
             bool ownsMessage = message->hwnd == child || IsChild(child, message->hwnd);
             // MenuFlyout can create a top-level popup outside the child HWND.
             // Use WinUI's explicit ownership graph, never all browser/thread HWNDs.
             if (!ownsMessage && (pane.tabMenu.active || pane.address || pane.strip)) {
-                for (auto popup : pane.source.Content().XamlRoot().ContentIsland().Popups()) {
+                // Left to throw exactly as the direct expression did if the
+                // island is not available yet: Translate's own catch handles it.
+                if (!pane.contentIsland) pane.contentIsland = pane.source.Content().XamlRoot().ContentIsland();
+                for (auto popup : pane.contentIsland.Popups()) {
                     HWND popupWindow = GetWindowFromWindowId(popup.WindowId());
                     if (message->hwnd == popupWindow || IsChild(popupWindow, message->hwnd)) {
                         ownsMessage = true;
