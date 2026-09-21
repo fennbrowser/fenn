@@ -183,9 +183,31 @@ static void WithTab(HWND hwnd, const wchar_t* id, const wchar_t* title, bool sel
         Sleep(10);
     }
 }
+// Two conditions, two waits. An island's content tree goes live asynchronously
+// once its host window becomes visible, and nothing can realize a container
+// before that; whether the row then realizes is a separate question with its
+// own, much shorter, answer. Measured on this machine with
+// `PaneContractTests.exe ... --inspect`: the process's first island goes live
+// 78-125ms after creation, a later island 359-625ms, and rarely -- about one
+// long-running process in six -- 9.7-13.4s, with every observable state
+// (IsHostVisible, the child window's visibility, its region) identical in the
+// fast and slow cases. Covering both conditions with one ~5s budget is what
+// turned that outlier into an intermittent failure blamed on hide/show.
+static void AwaitLiveTree(winrt::Microsoft::UI::Xaml::FrameworkElement const& element) {
+    auto started = GetTickCount64();
+    while (!element.IsLoaded() && GetTickCount64() - started < 30000) {
+        Pump();
+        Sleep(5);
+    }
+    auto waited = GetTickCount64() - started;
+    if (waited > 1000)
+        fprintf(stderr, "Island content tree went live after %llums\n", static_cast<unsigned long long>(waited));
+    Require(element.IsLoaded(), "the island's content tree goes live");
+}
 static winrt::Microsoft::UI::Xaml::Controls::ListViewItem RealizedRow(
     winrt::Microsoft::UI::Xaml::Controls::ListView const& list, int32_t index) {
     using namespace winrt::Microsoft::UI::Xaml;
+    AwaitLiveTree(list);
     for (int i = 0; i < 500; ++i) {
         list.UpdateLayout();
         auto row = list.ContainerFromIndex(index).try_as<Controls::ListViewItem>();
