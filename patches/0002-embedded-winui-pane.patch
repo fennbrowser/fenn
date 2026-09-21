@@ -1534,10 +1534,10 @@ index c59e443d11..03c10b9504 100644
 +winui-tab-strip-muted = Muted
 +winui-tab-strip-playing = Playing audio
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
-index 5d3805f045..fedff15fe3 100644
+index 5d3805f045..8355eec16b 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
 +++ b/dom/base/nsDOMWindowUtils.cpp
-@@ -151,6 +151,106 @@ using namespace mozilla::layers;
+@@ -151,6 +151,147 @@ using namespace mozilla::layers;
  using namespace mozilla::widget;
  using namespace mozilla::gfx;
  
@@ -1561,6 +1561,47 @@ index 5d3805f045..fedff15fe3 100644
 +  if (aSnapshot.Length() > 1048576 || aSnapshot.FindChar(char16_t(0)) != kNotFound) return NS_ERROR_INVALID_ARG;
 +  auto* widget = GetWidget();
 +  return widget && widget->SyncWinUITabMenu(aSnapshot, aAction) ? NS_OK : NS_ERROR_NOT_AVAILABLE;
++}
++
++// The v11 request path keeps the same privileged-entry checks as every other
++// WinUI entry point here: parent process, system principal, and the browser
++// document itself. These carry browser commands; page content must never
++// reach them.
++NS_IMETHODIMP
++nsDOMWindowUtils::DrainWinUIRequests(nsAString& aBatch) {
++  aBatch.Truncate();
++  auto* doc = GetDocument();
++  if (!XRE_IsParentProcess() || !doc || !doc->NodePrincipal()->IsSystemPrincipal() ||
++      !doc->GetDocumentURI()->GetSpecOrDefault().EqualsLiteral("chrome://browser/content/browser.xhtml")) return NS_ERROR_NOT_AVAILABLE;
++  auto* widget = GetWidget();
++  if (!widget) return NS_ERROR_NOT_AVAILABLE;
++  // Nothing to drain is not an error: it returns an empty batch, which the
++  // caller reads as "no work".
++  widget->DrainWinUIRequests(aBatch);
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++nsDOMWindowUtils::CompleteWinUIRequests(const nsAString& aOutcomes) {
++  auto* doc = GetDocument();
++  if (!XRE_IsParentProcess() || !doc || !doc->NodePrincipal()->IsSystemPrincipal() ||
++      !doc->GetDocumentURI()->GetSpecOrDefault().EqualsLiteral("chrome://browser/content/browser.xhtml")) return NS_ERROR_NOT_AVAILABLE;
++  if (aOutcomes.Length() > 1048576 || aOutcomes.FindChar(char16_t(0)) != kNotFound) return NS_ERROR_INVALID_ARG;
++  auto* widget = GetWidget();
++  return widget && widget->CompleteWinUIRequests(aOutcomes) ? NS_OK : NS_ERROR_NOT_AVAILABLE;
++}
++
++NS_IMETHODIMP
++nsDOMWindowUtils::ApplyWinUITabDelta(const nsAString& aDelta, uint32_t* aRevision) {
++  *aRevision = 0;
++  auto* doc = GetDocument();
++  if (!XRE_IsParentProcess() || !doc || !doc->NodePrincipal()->IsSystemPrincipal() ||
++      !doc->GetDocumentURI()->GetSpecOrDefault().EqualsLiteral("chrome://browser/content/browser.xhtml")) return NS_ERROR_NOT_AVAILABLE;
++  if (aDelta.Length() > 1048576 || aDelta.FindChar(char16_t(0)) != kNotFound) return NS_ERROR_INVALID_ARG;
++  auto* widget = GetWidget();
++  if (!widget) return NS_ERROR_NOT_AVAILABLE;
++  *aRevision = widget->ApplyWinUITabDelta(aDelta);
++  return NS_OK;
 +}
 +
 +NS_IMETHODIMP
@@ -1645,16 +1686,36 @@ index 5d3805f045..fedff15fe3 100644
  #define APZZTFI_LOG(...) \
    MOZ_LOG(sApzZoomToFocusedInputLog, LogLevel::Debug, (__VA_ARGS__))
 diff --git a/dom/interfaces/base/nsIDOMWindowUtils.idl b/dom/interfaces/base/nsIDOMWindowUtils.idl
-index 83313786eb..694188eb34 100644
+index 83313786eb..fc3d06d627 100644
 --- a/dom/interfaces/base/nsIDOMWindowUtils.idl
 +++ b/dom/interfaces/base/nsIDOMWindowUtils.idl
-@@ -61,6 +61,21 @@ interface nsISynthesizedEventCallback : nsISupports {
+@@ -61,6 +61,41 @@ interface nsISynthesizedEventCallback : nsISupports {
  [builtinclass, scriptable, uuid(4d6732ca-9da7-4176-b8a1-8dde15cd0bf9)]
  interface nsIDOMWindowUtils : nsISupports {
  
 +  AString syncWinUIAddress(in AString snapshot);
 +  AString syncWinUITabMenu(in AString snapshot);
 +
++  /**
++   * Event-driven native shell requests (WinUI pane ABI v11). The pane wakes
++   * chrome with the "winui-pane-drain" notification; chrome answers with one
++   * drain and one completion. Parent process, browser.xhtml only, like every
++   * other entry point here.
++   */
++  AString drainWinUIRequests();
++  void completeWinUIRequests(in AString outcomes);
++  /**
++   * Incremental presentation update. Returns the pane's model revision after
++   * applying, for the next delta's base, or 0 if the delta was refused -- in
++   * which case send one full syncWinUITabs snapshot rather than retrying.
++   */
++  unsigned long applyWinUITabDelta(in AString delta);
++
++  /**
++   * Publishes a snapshot and drains one close or new-tab request. Since ABI
++   * v11 the return value is the pane's model revision after the snapshot, and
++   * selection is not drained here: it travels on the request path above.
++   */
 +  unsigned long syncWinUITabs(in Array<unsigned long> ids,
 +                             in Array<AString> titles, in Array<unsigned long> commands,
 +                             in unsigned long selected,
@@ -1671,15 +1732,19 @@ index 83313786eb..694188eb34 100644
     * Image animation mode of the window. When this attribute's value
     * is changed, the implementation should set all images in the window
 diff --git a/widget/nsIWidget.h b/widget/nsIWidget.h
-index 031a63b997..7f8125ce42 100644
+index 031a63b997..04690d97f7 100644
 --- a/widget/nsIWidget.h
 +++ b/widget/nsIWidget.h
-@@ -1294,6 +1294,20 @@ class nsIWidget : public nsSupportsWeakReference {
+@@ -1294,6 +1294,24 @@ class nsIWidget : public nsSupportsWeakReference {
     */
    virtual void* GetNativeData(uint32_t aDataType) = 0;
  
 +  virtual bool SyncWinUIAddress(const nsAString& aSnapshot, nsAString& aAction) { return false; }
 +  virtual bool SyncWinUITabMenu(const nsAString& aSnapshot, nsAString& aAction) { return false; }
++
++  virtual bool DrainWinUIRequests(nsAString& aBatch) { return false; }
++  virtual bool CompleteWinUIRequests(const nsAString& aOutcomes) { return false; }
++  virtual uint32_t ApplyWinUITabDelta(const nsAString& aDelta) { return 0; }
 +
 +  virtual uint32_t SyncWinUITabs(const nsTArray<uint32_t>& aIds,
 +                                const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t* aClose, uint32_t* aNew, uint32_t* aContextId, uint32_t* aCommand) {
@@ -1696,10 +1761,10 @@ index 031a63b997..7f8125ce42 100644
    nsIWidget();
    virtual ~nsIWidget();
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
-index c6e02a8696..d1658e9d4c 100644
+index c6e02a8696..024d1bbe24 100644
 --- a/widget/windows/WinUIPrototype.cpp
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -2,17 +2,159 @@
+@@ -2,17 +2,236 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  #include "WinUIPrototype.h"
@@ -1713,6 +1778,9 @@ index c6e02a8696..d1658e9d4c 100644
 +#include "WinUIPaneApi.h"
  #include "mozilla/Logging.h"
  #include "mozilla/Preferences.h"
++#include "mozilla/Services.h"
++#include "nsIObserverService.h"
++#include "nsPrintfCString.h"
  #include "nsThreadUtils.h"
 +#include "mozilla/UniquePtr.h"
  #include "nsXULAppAPI.h"
@@ -1753,13 +1821,78 @@ index c6e02a8696..d1658e9d4c 100644
 +                      : E_NOINTERFACE;
 +  if (FAILED(hr) || api.size != sizeof(api) ||
 +      api.version != WINUI_PANE_ABI_VERSION || !api.update || !api.focus ||
-+      !api.destroy || !api.translate || !api.shutdown || !api.clip || !api.syncTabs || !api.syncAddress || !api.syncTabMenu || !api.updateTabStrip) {
++      !api.destroy || !api.translate || !api.shutdown || !api.clip || !api.syncTabs || !api.syncAddress || !api.syncTabMenu || !api.updateTabStrip ||
++      !api.setNotifySink || !api.drainRequests || !api.completeRequests || !api.applyTabDelta) {
 +    MOZ_LOG(sWinUIPrototypeLog, LogLevel::Warning,
 +            ("pane=incompatible hr=0x%08lx", hr));
 +    return false;
 +  }
 +  sPaneApi = api;
 +  return true;
++}
++
++// The endpoint's identity as chrome JavaScript sees it: the same formatting
++// nsIBaseWindow::nativeHandle uses, so a window can match the notification to
++// its own HWND without a new interface.
++static nsPrintfCString EndpointName(HWND aWindow) {
++  return nsPrintfCString("0x%p", aWindow);
++}
++
++// The pane's wakeup. Called on the main thread, usually from inside a XAML
++// callback, so it may only *post*: entering browser JavaScript from this stack
++// is exactly the reentrancy the request path exists to avoid. Returning false
++// tells the pane the wakeup did not happen, so a later request schedules a
++// fresh one instead of waiting for one that will never arrive.
++static BOOL WINAPI NotifyWinUIPaneDrain(void* aContext) {
++  if (!NS_IsMainThread() || sPaneStopped) return FALSE;
++  HWND window = static_cast<HWND>(aContext);
++  nsresult rv = NS_DispatchToMainThread(NS_NewRunnableFunction(
++      "mozilla::widget::WinUIPaneDrain", [window]() {
++        if (sPaneStopped) return;
++        nsCOMPtr<nsIObserverService> observers = services::GetObserverService();
++        if (!observers) return;
++        observers->NotifyObservers(
++            nullptr, "winui-pane-drain",
++            NS_ConvertUTF8toUTF16(EndpointName(window)).get());
++      }));
++  return NS_SUCCEEDED(rv) ? TRUE : FALSE;
++}
++
++bool DrainWinUIRequests(HWND aWindow, nsAString& aBatch) {
++  aBatch.Truncate();
++  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
++      !sPaneApi.drainRequests)
++    return false;
++  auto output = mozilla::MakeUnique<wchar_t[]>(262144);
++  output[0] = 0;
++  HRESULT hr = sPaneApi.drainRequests(aWindow, output.get(), 262144);
++  if (FAILED(hr)) return false;
++  aBatch.Assign(reinterpret_cast<const char16_t*>(output.get()));
++  return true;
++}
++
++bool CompleteWinUIRequests(HWND aWindow, const nsAString& aOutcomes) {
++  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
++      !sPaneApi.completeRequests || aOutcomes.Length() > 1048576)
++    return false;
++  nsAutoString outcomes(aOutcomes);
++  return SUCCEEDED(sPaneApi.completeRequests(aWindow, outcomes.get()));
++}
++
++uint32_t ApplyWinUITabDelta(HWND aWindow, const nsAString& aDelta) {
++  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
++      !sPaneApi.applyTabDelta || aDelta.Length() > 1048576)
++    return 0;
++  nsAutoString delta(aDelta);
++  uint32_t revision = 0;
++  // A zero revision is the caller's signal to send one full snapshot; it is
++  // never a reason to retry the same delta.
++  HRESULT hr = sPaneApi.applyTabDelta(aWindow, delta.get(), &revision);
++  if (FAILED(hr)) return 0;
++  // S_FALSE means the delta applied but the pane has fallen behind and wants a
++  // snapshot. Reporting no revision is how that reaches the producer, which
++  // sends exactly one -- the documented bounded recovery.
++  return hr == S_FALSE ? 0 : revision;
 +}
 +
 +bool UpdateWinUIPane(HWND aWindow, const RECT& aRect, bool aVisible,
@@ -1778,6 +1911,12 @@ index c6e02a8696..d1658e9d4c 100644
 +      "widget.windows.winui-prototype.tabstrip.enabled", false)
 +      ? sPaneApi.updateTabStrip : sPaneApi.update;
 +  HRESULT hr = update(aWindow, &aRect, aVisible);
++  if (SUCCEEDED(hr) && sPaneApi.setNotifySink) {
++    // Registered by the widget, not by chrome script, so the request path
++    // cannot end up with a queue and no wakeup because script failed to set
++    // one up. The context is the endpoint's own HWND.
++    hr = sPaneApi.setNotifySink(aWindow, NotifyWinUIPaneDrain, aWindow);
++  }
 +  if (SUCCEEDED(hr)) {
 +    nsTArray<RECT> occlusions;
 +    for (const auto& r : aOcclusions) {
@@ -1838,6 +1977,9 @@ index c6e02a8696..d1658e9d4c 100644
 +
 +void DestroyWinUIPane(HWND aWindow) {
 +  if (!NS_IsMainThread() || !sPaneApi.destroy || sPaneStopped) return;
++  // Drop the wakeup before the endpoint goes away, so nothing can be posted
++  // for a pane that is already being torn down.
++  if (sPaneApi.setNotifySink) sPaneApi.setNotifySink(aWindow, nullptr, nullptr);
 +  HRESULT hr = sPaneApi.destroy(aWindow);
 +  MOZ_LOG(sWinUIPrototypeLog, LogLevel::Info,
 +          ("pane=destroy hwnd=%p hr=0x%08lx", aWindow, hr));
@@ -1860,7 +2002,7 @@ index c6e02a8696..d1658e9d4c 100644
  
  void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    if (!XRE_IsParentProcess() || !NS_IsMainThread() || !sTraceEnabled) return;
-@@ -20,51 +162,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
+@@ -20,51 +239,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
    const HRESULT hr = CoGetApartmentType(&apartment, &qualifier);
    DWORD ownerProcess = 0;
@@ -1943,10 +2085,10 @@ index c6e02a8696..d1658e9d4c 100644
    FreeLibrary(module);
    TraceWinUIPrototype("probe-complete", aWindow);
 diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
-index 418c5d791d..8f276db688 100644
+index 418c5d791d..7683b7bf08 100644
 --- a/widget/windows/WinUIPrototype.h
 +++ b/widget/windows/WinUIPrototype.h
-@@ -4,8 +4,22 @@
+@@ -4,8 +4,31 @@
  #ifndef widget_windows_WinUIPrototype_h
  #define widget_windows_WinUIPrototype_h
  #include <windows.h>
@@ -1964,6 +2106,15 @@ index 418c5d791d..8f276db688 100644
 +                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t* aClose, uint32_t* aNew, uint32_t* aContextId, uint32_t* aCommand);
 +bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot, nsAString& aAction);
 +bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot, nsAString& aAction);
++// ABI v11 request path. The pane wakes the browser through a sink registered
++// here, which only posts a task to this thread's event queue; these are the
++// host side of that exchange. The notification topic is
++// "winui-pane-drain", whose data is the endpoint's HWND formatted the same way
++// nsIBaseWindow::nativeHandle formats it, so a chrome window can recognise its
++// own endpoint.
++bool DrainWinUIRequests(HWND aWindow, nsAString& aBatch);
++bool CompleteWinUIRequests(HWND aWindow, const nsAString& aOutcomes);
++uint32_t ApplyWinUITabDelta(HWND aWindow, const nsAString& aDelta);
 +void DestroyWinUIPane(HWND aWindow);
 +bool TranslateWinUIPane(MSG& aMessage);
 +void ShutdownWinUIPane();
@@ -2008,7 +2159,7 @@ index d4aff8c47e..a34a1a2dfc 100644
              IMEHandler::ProcessRawKeyMessage(msg)) {
            continue;  // the message is consumed.
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index 3f3b5b9200..f49a1dd0ef 100644
+index 3f3b5b9200..79a97f2678 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -53,7 +53,6 @@
@@ -2027,7 +2178,7 @@ index 3f3b5b9200..f49a1dd0ef 100644
  #include "WinWindowOcclusionTracker.h"
  #include "gfx2DGlue.h"
  #include "gfxConfig.h"
-@@ -1266,6 +1266,29 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+@@ -1266,6 +1266,44 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
    return NS_OK;
  }
  
@@ -2037,6 +2188,21 @@ index 3f3b5b9200..f49a1dd0ef 100644
 +
 +bool nsWindow::SyncWinUITabMenu(const nsAString& aSnapshot, nsAString& aAction) {
 +  return mozilla::widget::SyncWinUITabMenu(mWnd, aSnapshot, aAction);
++}
++
++bool nsWindow::DrainWinUIRequests(nsAString& aBatch) {
++  if (mWindowType != WindowType::TopLevel || mDestroyCalled) return false;
++  return mozilla::widget::DrainWinUIRequests(mWnd, aBatch);
++}
++
++bool nsWindow::CompleteWinUIRequests(const nsAString& aOutcomes) {
++  if (mWindowType != WindowType::TopLevel || mDestroyCalled) return false;
++  return mozilla::widget::CompleteWinUIRequests(mWnd, aOutcomes);
++}
++
++uint32_t nsWindow::ApplyWinUITabDelta(const nsAString& aDelta) {
++  if (mWindowType != WindowType::TopLevel || mDestroyCalled) return 0;
++  return mozilla::widget::ApplyWinUITabDelta(mWnd, aDelta);
 +}
 +
 +uint32_t nsWindow::SyncWinUITabs(const nsTArray<uint32_t>& aIds,
@@ -2057,7 +2223,7 @@ index 3f3b5b9200..f49a1dd0ef 100644
  void nsWindow::LocalesChanged() {
    bool isRTL = intl::LocaleService::GetInstance()->IsAppLocaleRTL();
    if (mIsRTL != isRTL) {
-@@ -1290,6 +1313,7 @@ void nsWindow::Destroy() {
+@@ -1290,6 +1328,7 @@ void nsWindow::Destroy() {
    // deleted.
    nsCOMPtr<nsIWidget> kungFuDeathGrip(this);
  
@@ -2065,7 +2231,7 @@ index 3f3b5b9200..f49a1dd0ef 100644
    DestroyDirectManipulation();
  
    // Before destroying the native window, we need to clean up the resource
-@@ -6922,6 +6946,7 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+@@ -6922,6 +6961,7 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
  
  // WM_DESTROY event handler
  void nsWindow::OnDestroy() {
@@ -2074,15 +2240,19 @@ index 3f3b5b9200..f49a1dd0ef 100644
      mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
    }
 diff --git a/widget/windows/nsWindow.h b/widget/windows/nsWindow.h
-index 1e2660589b..cb7467612c 100644
+index 1e2660589b..13bac76463 100644
 --- a/widget/windows/nsWindow.h
 +++ b/widget/windows/nsWindow.h
-@@ -139,6 +139,17 @@ class nsWindow final : public nsIWidget {
+@@ -139,6 +139,21 @@ class nsWindow final : public nsIWidget {
  
    nsWindow();
  
 +  bool SyncWinUIAddress(const nsAString& aSnapshot, nsAString& aAction) override;
 +  bool SyncWinUITabMenu(const nsAString& aSnapshot, nsAString& aAction) override;
++
++  bool DrainWinUIRequests(nsAString& aBatch) override;
++  bool CompleteWinUIRequests(const nsAString& aOutcomes) override;
++  uint32_t ApplyWinUITabDelta(const nsAString& aDelta) override;
 +
 +  uint32_t SyncWinUITabs(const nsTArray<uint32_t>& aIds,
 +                        const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t* aClose, uint32_t* aNew, uint32_t* aContextId, uint32_t* aCommand) override;
@@ -2202,16 +2372,30 @@ index 0000000000..237dae9f71
 +}
 diff --git a/browser/base/content/WinUITabMenuSession.sys.mjs b/browser/base/content/WinUITabMenuSession.sys.mjs
 new file mode 100644
-index 0000000000..608ebaac73
+index 0000000000..82113c7476
 --- /dev/null
 +++ b/browser/base/content/WinUITabMenuSession.sys.mjs
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,176 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
-+// One current window snapshot, published before its native tabs. Opening only
-+// establishes an input session; it never generates or fetches a menu model.
++// One current window snapshot, published before its native tabs.
++//
++// Publication carries *identities and the selected set* -- what the tab list
++// needs in order to exist -- and nothing about commands. A tab's command
++// description is produced only when that tab's menu is actually opening, which
++// is what `receive({kind: "open"})` answers. Opening establishes an input
++// session; the description is computed once, for one tab, at that moment.
++//
++// Two validity checks, deliberately different:
++//
++// * `structureCurrent` guards selection. Its prerequisites are that the tab
++//   still resolves to the same published target and the published context is
++//   unchanged. A title or favicon change does not revoke a selection.
++// * `current` guards a menu command. Its prerequisite is that this tab's whole
++//   authoritative description is still the one the user is looking at, so it
++//   re-describes that one tab and compares.
 +export class WinUITabMenuSession {
 +  constructor({ resolveTab, describe, execute, select = null, context = () => null }) {
 +    Object.assign(this, { resolveTab, describe, execute, select, context });
@@ -2221,43 +2405,38 @@ index 0000000000..608ebaac73
 +    this.active = null;
 +  }
 +
-+  update(targets, describe = this.describe) {
++  update(targets) {
 +    if (targets.size > 10000) throw new Error("Too many native menu targets");
 +    const liveContext = this.context();
 +    const context = JSON.stringify(liveContext);
 +    const tabs = new Map();
-+    const models = [];
-+    const modelIds = new Map();
 +    const bindings = [];
-+    let changed = this.forceUpdate || context !== this.contextFingerprint || targets.size !== this.tabs.size;
 +    for (const [id, target] of targets) {
 +      if (!Number.isSafeInteger(id) || id < 1 || id > 0xffffffff || !target)
 +        throw new Error("Invalid native menu target");
-+      const description = describe(target);
-+      const fingerprint = JSON.stringify(description);
-+      const previous = this.tabs.get(id);
-+      changed ||= previous?.target !== target || previous?.fingerprint !== fingerprint;
-+      let model = modelIds.get(fingerprint);
-+      if (!model) {
-+        models.push(description.items);
-+        model = models.length;
-+        modelIds.set(fingerprint, model);
-+      }
-+      tabs.set(id, { target, fingerprint, items: models[model - 1] });
-+      bindings.push({ tab: id, model, ...(Array.isArray(liveContext?.selection)
++      tabs.set(id, { target });
++      bindings.push({ tab: id, ...(Array.isArray(liveContext?.selection)
 +        ? { selected: liveContext.selection.includes(id) } : {}) });
 +    }
-+    if (!changed) return null;
-+    if (models.length > 128 || this.revision === 0xffffffff)
++    // The published state is small and linear in tab count: identities, order
++    // and selection. Comparing it costs one serialization, not a description of
++    // every tab, so an unchanged window publishes nothing.
++    const fingerprint = JSON.stringify(bindings);
++    if (!this.forceUpdate && context === this.contextFingerprint &&
++        fingerprint === this.tabsFingerprint) return null;
++    if (this.revision === 0xffffffff)
 +      throw new Error("Native menu snapshot limit exceeded");
 +    const snapshot = { version: 2, publishOnly: true,
-+      state: { revision: this.revision + 1, models, tabs: bindings } };
++      state: { revision: this.revision + 1, tabs: bindings } };
 +    if (JSON.stringify(snapshot).length > 1048576)
 +      throw new Error("Native menu snapshot is too large");
 +    this.revision++;
 +    this.forceUpdate = false;
 +    this.tabs = tabs;
 +    this.contextFingerprint = context;
++    this.tabsFingerprint = fingerprint;
++    // A new publication invalidates any open menu's description, so the native
++    // side discards what it cached and any answer still in flight.
 +    this.active = null;
 +    return snapshot;
 +  }
@@ -2271,10 +2450,42 @@ index 0000000000..608ebaac73
 +    return result;
 +  }
 +
++  // The description to publish for the menu that is currently opening, or null
++  // when nothing is open. Bound to the opening request, so a native side that
++  // has since dismissed, retargeted or been torn down can reject it.
++  menuPublication() {
++    if (!this.active) return null;
++    return { version: 2, publishOnly: true, menu: {
++      session: this.active.session, tab: this.active.tab,
++      revision: this.active.revision, items: this.active.record.items } };
++  }
++
++  // Semantic prerequisites for acting on a tab identity: it still names the
++  // same live, published target, and the published context is unchanged.
++  structureCurrent(id, record) {
++    return !!record && this.resolveTab(id) === record.target &&
++      JSON.stringify(this.context()) === this.contextFingerprint;
++  }
++
++  // Prerequisites for running a command the user is looking at: everything
++  // above, plus this tab's description still being the displayed one. One tab
++  // is described here, never the whole window.
 +  current(id, record) {
-+    return record && this.resolveTab(id) === record.target &&
-+      JSON.stringify(this.context()) === this.contextFingerprint &&
++    return this.structureCurrent(id, record) &&
 +      JSON.stringify(this.describe(record.target)) === record.fingerprint;
++  }
++
++  // Re-check an open menu against current browser state. Called when something
++  // relevant changed while a menu is open, which is the only time a description
++  // is worth producing outside an opening. Returns true if the session was
++  // revoked, so the caller can publish the revocation.
++  revalidateActive() {
++    const active = this.active;
++    if (!active) return false;
++    if (this.current(active.tab, active.record)) return false;
++    this.revoke = active.session;
++    this.active = null;
++    return true;
 +  }
 +
 +  receive(event) {
@@ -2284,7 +2495,8 @@ index 0000000000..608ebaac73
 +          (event.shift !== undefined && typeof event.shift !== "boolean") ||
 +          !Array.isArray(event.tabs) || !event.tabs.length || event.tabs.length > 10000 ||
 +          new Set(event.tabs).size !== event.tabs.length || !event.tabs.includes(event.tab) ||
-+          !event.tabs.every(id => Number.isSafeInteger(id) && this.current(id, this.tabs.get(id))))
++          !event.tabs.every(id => Number.isSafeInteger(id) &&
++            this.structureCurrent(id, this.tabs.get(id))))
 +        return false;
 +      this.select(this.resolveTab(event.tab), event.tabs.map(id => this.resolveTab(id)), event);
 +      return true;
@@ -2297,12 +2509,17 @@ index 0000000000..608ebaac73
 +      this.lastSession = event.session;
 +      const record = this.tabs.get(event.tab);
 +      this.active = null;
-+      if (event.revision !== this.revision || !this.current(event.tab, record)) {
++      if (event.revision !== this.revision || !this.structureCurrent(event.tab, record)) {
 +        this.revoke = event.session;
 +        return false;
 +      }
++      // The one description this window produces, for the one tab whose menu is
++      // opening. Nothing else is described, now or on a timer.
++      const description = this.describe(record.target);
 +      this.active = { session: event.session, tab: event.tab,
-+        revision: this.revision, record };
++        revision: this.revision,
++        record: { target: record.target, items: description.items,
++          fingerprint: JSON.stringify(description) } };
 +      return true;
 +    }
 +    const active = this.active;
@@ -3264,16 +3481,18 @@ index 0000000000..a07d26b2f5
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..86d135d34c
+index 0000000000..2b16bb3873
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,736 @@
+@@ -0,0 +1,1122 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +var gWinUIPane = {
 +  pref: "widget.windows.winui-prototype.pane.enabled",
++  addressPref: "widget.windows.winui-prototype.address.enabled",
++  stripPref: "widget.windows.winui-prototype.tabstrip.enabled",
 +  element: null,
 +  frame: 0,
 +  popups: new Set(),
@@ -3281,6 +3500,31 @@ index 0000000000..86d135d34c
 +  tabIds: new WeakMap(),
 +  processingAction: false,
 +  nextTabId: 1,
++  // Producer-side dirty tracking. A quiet window records nothing and publishes
++  // nothing; a changed title or active tab records exactly what changed, so the
++  // native side is handed one tab instead of every tab.
++  dirtyTitles: new Set(),
++  dirtySelection: false,
++  // The published context (tab identities, order, active tab and the
++  // multiselected set) needs republishing. Distinct from a structural change:
++  // a native selection Firefox accepted changes the multiselected set without
++  // changing the tab list, and the next request is validated against the
++  // published context, so it has to be republished or that request is refused.
++  contextDirty: false,
++  structuralDirty: true,
++  stripDirty: true,
++  // The pane's presentation-model revision as of the last snapshot or delta.
++  // Every delta names it; a mismatch means producer and consumer diverged, and
++  // is answered with one snapshot rather than a retry.
++  nativeRevision: 0,
++  publishedIds: new Set(),
++  // True for the duration of one drain. A drained command can spin a nested
++  // modal loop, and the pane must not be asked for another batch from inside
++  // one.
++  draining: false,
++  blocked: false,
++  unblockDelay: 0,
++  unblockTimer: 0,
 +  // Decoded favicons for the native tab strip, keyed by icon URL so tabs
 +  // sharing a site (or an unchanged favicon) skip re-decoding. Gecko owns
 +  // all image loading/decoding; native code only ever receives raw pixels.
@@ -3293,6 +3537,11 @@ index 0000000000..86d135d34c
 +    "TabOpen",
 +    "TabClose",
 +    "TabSelect",
++    // The multiselected set can change with no other tab event -- clearing it,
++    // or a range selection that leaves the active tab alone. The published
++    // context carries that set and every request is validated against it, so
++    // this is not optional.
++    "TabMultiSelect",
 +    "TabAttrModified",
 +    "TabMove",
 +    "TabHide",
@@ -3317,8 +3566,17 @@ index 0000000000..86d135d34c
 +    ) {
 +      return;
 +    }
-+    this.tabStrip = Services.prefs.getBoolPref(
-+      "widget.windows.winui-prototype.tabstrip.enabled", false);
++    this.tabStrip = Services.prefs.getBoolPref(this.stripPref, false);
++    // This window's native endpoint, formatted exactly as nsIBaseWindow does,
++    // so the pane's drain notification can be matched to this window. An HWND
++    // alone is not a lifetime identity; the request path carries its own
++    // generation, and this only routes the wakeup.
++    try {
++      this.endpoint = window.docShell.treeOwner
++        .QueryInterface(Ci.nsIBaseWindow).nativeHandle;
++    } catch {
++      this.endpoint = "";
++    }
 +    this.element = document.createElementNS(
 +      "http://www.w3.org/1999/xhtml",
 +      "div"
@@ -3354,10 +3612,40 @@ index 0000000000..86d135d34c
 +    }
 +    for (const type of this.tabEvents)
 +      gBrowser.tabContainer.addEventListener(type, this);
-+    // Drain native actions on the browser event loop, avoiding JS reentry from XAML.
-+    this.selectionTimer = window.setInterval(() => {
++    // Native requests arrive as one scheduled notification per endpoint. The
++    // pane posts it from its own queue; nothing here polls for them.
++    Services.obs.addObserver(this, "winui-pane-drain");
++    Services.obs.addObserver(this, "intl:app-locales-changed");
++    this.updateLegacyTimer();
++    Services.prefs.addObserver(this.pref, this);
++    Services.prefs.addObserver(this.stripPref, this);
++    Services.prefs.addObserver(this.addressPref, this);
++    this.schedule();
++  },
++
++  // The transitional timer. Two surfaces are not migrated in this milestone and
++  // still need a tick: the native address prototype (opt-in, off by default)
++  // and the TabView strip's own transport (group toggle and reorder) plus its
++  // presentation refresh. In the default sidebar configuration neither applies
++  // and no timer runs at all -- a quiet window schedules nothing.
++  updateLegacyTimer() {
++    const needed = !!this.element &&
++      (this.tabStrip || Services.prefs.getBoolPref(this.addressPref, false));
++    if (!needed) {
++      if (this.legacyTimer) window.clearInterval(this.legacyTimer);
++      this.legacyTimer = 0;
++      return;
++    }
++    if (this.legacyTimer) return;
++    this.legacyTimer = window.setInterval(() => {
 +      try {
-+        this.syncTabs();
++        // Deliberately not syncTabs(): tab state publication is event-driven.
++        // The strip's own presentation is republished here as well as on its
++        // events, unchanged from before this milestone: describeStrip reads
++        // group and split state that has no single event this adapter tracks,
++        // and WinUITabStripSession publishes nothing when the result is
++        // identical. This is one of the paths still to migrate.
++        if (this.tabStrip) this.publishStrip();
 +        this.syncTabMenu();
 +        try {
 +          this.syncAddress();
@@ -3373,13 +3661,163 @@ index 0000000000..86d135d34c
 +          } catch {}
 +        }
 +      } catch (error) {
-+        console.error("WinUI tab synchronization failed", error);
++        console.error("WinUI legacy synchronization failed", error);
 +        this.uninit();
 +      }
 +    }, 100);
-+    Services.prefs.addObserver(this.pref, this);
-+    Services.prefs.addObserver("widget.windows.winui-prototype.tabstrip.enabled", this);
-+    this.schedule();
++  },
++
++  // One drain per notification. Everything here runs from a task the pane
++  // posted, never from a XAML callback stack.
++  drain() {
++    if (!this.element || !this.attached) return;
++    if (this.draining) {
++      // A drained command can spin a nested modal loop, which can deliver
++      // another wakeup on top of this one. Refuse to nest, but remember, so the
++      // wakeup is not simply lost.
++      this.drainAgain = true;
++      return;
++    }
++    // A command already on this stack means nothing new can run yet. Say so
++    // once and wait to be unblocked; do not take a batch that cannot execute.
++    if (this.processingAction) {
++      this.setBlocked(true);
++      return;
++    }
++    this.draining = true;
++    this.drainAgain = false;
++    let batch = null;
++    // A non-empty batch means the pane has opened a drain and is waiting to be
++    // told how it went. That has to be answered even if the batch turns out to
++    // be unreadable, or the endpoint stays busy until the next drain recovers
++    // it.
++    let opened = false;
++    const outcomes = [];
++    try {
++      const raw = window.windowUtils.drainWinUIRequests();
++      opened = !!raw;
++      batch = raw ? JSON.parse(raw) : null;
++      if (batch?.version !== 1) batch = null;
++      if (batch) {
++        // A modal prompt owns the window. Describing a tab is a read the
++        // browser answers correctly in that state -- Firefox reports every
++        // command disabled while a dialog is open -- so an opening menu is
++        // still told the truth. Anything that would run a command is refused
++        // outright rather than queued behind the prompt.
++        const modal = gDialogBox.isOpen;
++        for (const request of batch.requests || []) {
++          const describing = request.kind === 2 && request.action?.kind === "open";
++          outcomes.push({ id: request.id,
++            outcome: modal && !describing ? 2 : this.executeRequest(request) });
++        }
++        // Unmigrated transports (a queued close or new tab) execute through
++        // syncTabs, exactly as before; the queue only supplied the wakeup.
++        if (batch.legacy) this.syncTabs();
++      }
++    } catch (error) {
++      console.error("WinUI request drain failed", error);
++    } finally {
++      this.draining = false;
++      if (opened) {
++        try {
++          // With no outcomes the message asserts no generation, so an
++          // unreadable batch still closes the drain cleanly.
++          window.windowUtils.completeWinUIRequests(JSON.stringify({
++            version: 1, generation: outcomes.length ? batch.generation : 0,
++            outcomes, blocked: false }));
++        } catch (error) {
++          console.error("WinUI request completion failed", error);
++        }
++      }
++    }
++    // Reflect whatever the executed commands changed, in the same turn.
++    this.publish();
++    if (this.drainAgain) {
++      this.drainAgain = false;
++      // Post rather than recurse: a wakeup that arrived inside a nested modal
++      // loop is serviced on a later turn, not on the stack that raised it.
++      Services.tm.dispatchToMainThread(() => this.drain());
++    }
++  },
++
++  // Outcome codes match the shell core: 1 completed, 2 rejected. Receipt is not
++  // success, and a rejection is reported rather than left to be inferred.
++  executeRequest(request) {
++    const session = this.tabMenuSession;
++    const action = request.action;
++    if (!session || !action) return 2;
++    if (request.kind === 1) {
++      if (!session.receive(action)) return 2;
++      // Firefox's multiselected set may now differ from the published one, and
++      // the published context is what the next request is validated against.
++      this.contextDirty = true;
++      return 1;
++    }
++    if (request.kind !== 2) return 2;
++    const accepted = session.receive(action);
++    if (action.kind === "open") {
++      // Answer the opening with this tab's authoritative description, or with
++      // the revocation the session recorded when it refused.
++      const publication = accepted ? session.menuPublication() : null;
++      this.publishMenu(publication ?? session.snapshot());
++    } else if (!accepted || action.kind === "activate") {
++      this.publishMenu(session.snapshot());
++    }
++    if (action.kind === "activate") {
++      // A command can change anything: pinning, muting, ordering, the tab set.
++      // Republish a full snapshot so the pane's state matches the browser's
++      // again, and so input queued during any nested dialog is revoked.
++      this.structuralDirty = true;
++    }
++    return accepted ? 1 : 2;
++  },
++
++  publishMenu(payload) {
++    try {
++      window.windowUtils.syncWinUITabMenu(JSON.stringify(payload));
++    } catch (error) {
++      console.error("WinUI menu publication failed", error);
++    }
++  },
++
++  // Tell the pane execution is (un)available. Blocking never re-posts: the pane
++  // holds its queue until the unblock arrives. The retry below is bounded and
++  // stops as soon as the window is usable again -- it is a recovery path for a
++  // modal dialog, not a steady-state poll.
++  setBlocked(blocked) {
++    if (blocked === this.blocked) {
++      if (blocked) this.scheduleUnblock();
++      return;
++    }
++    this.blocked = blocked;
++    try {
++      window.windowUtils.completeWinUIRequests(JSON.stringify({
++        version: 1, generation: 0, outcomes: [], blocked }));
++    } catch (error) {
++      console.error("WinUI block signal failed", error);
++    }
++    if (blocked) {
++      this.unblockDelay = 16;
++      this.scheduleUnblock();
++    } else {
++      this.unblockDelay = 0;
++      if (this.unblockTimer) window.clearTimeout(this.unblockTimer);
++      this.unblockTimer = 0;
++    }
++  },
++
++  scheduleUnblock() {
++    if (this.unblockTimer || !this.element) return;
++    this.unblockTimer = window.setTimeout(() => {
++      this.unblockTimer = 0;
++      if (!this.element) return;
++      if (gDialogBox.isOpen || this.processingAction) {
++        this.unblockDelay = Math.min(this.unblockDelay * 2, 250);
++        this.scheduleUnblock();
++        return;
++      }
++      this.setBlocked(false);
++    }, this.unblockDelay);
 +  },
 +
 +  syncAddress() {
@@ -3531,7 +3969,12 @@ index 0000000000..86d135d34c
 +      (!this.tabStrip || tab.visible));
 +  },
 +
-+  publishTabMenus(tabs, ids) {
++  // Publishes tab identities, order and the selected set -- the state the list
++  // and multiselection presentation need. It deliberately does not describe any
++  // tab's commands: that used to happen here for every tab on every pass, and
++  // was the dominant recurring cost of the whole shell. A description is now
++  // produced only for the tab whose menu is opening (WinUITabMenuSession).
++  publishTabContext(tabs, ids) {
 +    if (!this.tabMenuSession) {
 +      const { WinUITabMenuSession } = ChromeUtils.importESModule(
 +        "chrome://browser/content/WinUITabMenuSession.sys.mjs"
@@ -3554,6 +3997,13 @@ index 0000000000..86d135d34c
 +              if (!event.control) {
 +                gBrowser.selectedTab = anchor;
 +                gBrowser.clearMultiSelectedTabs();
++                // Clearing a selection that contains the active tab can move
++                // the active tab to another member of that selection. A range
++                // selection must not change which tab is active, so re-assert
++                // the anchor. Reachable here and not on Firefox's own strip
++                // because a repeated native Shift selection is delivered every
++                // time, where the polled path usually dropped it as stale.
++                if (gBrowser.selectedTab !== anchor) gBrowser.selectedTab = anchor;
 +              }
 +              gBrowser.addRangeToMultiSelectedTabs(anchor, active);
 +              return;
@@ -3576,15 +4026,24 @@ index 0000000000..86d135d34c
 +        },
 +      });
 +    }
-+    // Resolve Fluent labels once per window update, not once per tab.
-+    const labels = this.tabMenuLabels();
 +    const snapshot = this.tabMenuSession.update(
-+      new Map(tabs.map((tab, i) => [ids[i], tab])),
-+      tab => this.describeTabMenu(tab, labels)
++      new Map(tabs.map((tab, i) => [ids[i], tab]))
 +    );
-+    if (snapshot) window.windowUtils.syncWinUITabMenu(JSON.stringify(snapshot));
++    if (snapshot) {
++      window.windowUtils.syncWinUITabMenu(JSON.stringify(snapshot));
++      return;
++    }
++    // Nothing structural changed. If a menu is open, re-check that one tab's
++    // description against current browser state and revoke the session if it no
++    // longer matches what the user is looking at. This is the only place a
++    // description is produced outside an opening, and only while one is open.
++    if (this.tabMenuSession.revalidateActive())
++      this.publishMenu(this.tabMenuSession.snapshot());
 +  },
 +
++  // Legacy transport for the TabView strip's own actions (group toggle and
++  // reorder), which are not migrated in this milestone. Only reached from the
++  // strip-mode timer; tab selection and menu transitions never travel here.
 +  syncTabMenu() {
 +    if (!this.attached || this.processingAction || !this.tabMenuSession) return;
 +    const event = window.windowUtils.syncWinUITabMenu(
@@ -3596,7 +4055,7 @@ index 0000000000..86d135d34c
 +          action.kind === "strip-detach" || action.kind === "strip-adopt") {
 +        if (!gDialogBox.isOpen && !window.fullScreen && !document.fullscreenElement)
 +          this.stripSession?.receive(action);
-+      } else this.tabMenuSession.receive(action);
++      }
 +    }
 +  },
 +
@@ -3705,6 +4164,11 @@ index 0000000000..86d135d34c
 +        image.src = "";
 +        while (this.faviconCache.size > this.kMaxFaviconCache)
 +          this.faviconCache.delete(this.faviconCache.keys().next().value);
++        // A decode finishing is a real change with no tab event behind it. It
++        // used to be picked up by the next timer tick; now it schedules its own
++        // publication, so nothing has to keep looking for it.
++        this.stripDirty = true;
++        this.schedule();
 +      }
 +    })();
 +  },
@@ -3767,8 +4231,11 @@ index 0000000000..86d135d34c
 +  },
 +
 +  tabMenuLabels() {
-+    // One cache per publication; plural arguments are part of each key.
-+    return new Map();
++    // Descriptions are now produced only when a menu opens or a command is
++    // revalidated, so this cache spans calls rather than one publication.
++    // Plural arguments are part of each key; a locale change clears it (see
++    // observe()), which is the only thing that can invalidate a label.
++    return (this.tabMenuLabelCache ||= new Map());
 +  },
 +
 +  describeTabMenu(tab, labels = this.tabMenuLabels()) {
@@ -3820,26 +4287,90 @@ index 0000000000..86d135d34c
 +    }
 +  },
 +
-+  syncTabs() {
++  // Decide the smallest publication that tells the pane what changed. A quiet
++  // window reaches this with nothing dirty and publishes nothing at all.
++  publish(force = false) {
 +    if (!this.element || !this.attached || this.processingAction) return;
-+    const tabs = Array.from(gBrowser.tabs).filter(
++    if (force || this.structuralDirty || !this.nativeRevision) {
++      this.syncTabs();
++      return;
++    }
++    // A selection change also changes the published context (active tab and
++    // multiselected set), which the list presentation binds to and which every
++    // later request is validated against.
++    if (this.dirtySelection || this.contextDirty) {
++      const tabs = this.visibleTabs();
++      const ids = tabs.map(tab => this.tabIds.get(tab));
++      // A tab with no id yet has never been in a snapshot, so this is a
++      // structural change that was not recorded as one. Take the snapshot
++      // rather than publish a context the session would reject.
++      if (ids.some(id => !id)) {
++        this.syncTabs();
++        return;
++      }
++      this.contextDirty = false;
++      this.publishTabContext(tabs, ids);
++    }
++    if (this.tabStrip && this.stripDirty) {
++      this.stripDirty = false;
++      this.publishStrip();
++    }
++    if (this.dirtyTitles.size || this.dirtySelection) this.publishTabDelta();
++  },
++
++  visibleTabs() {
++    return Array.from(gBrowser.tabs).filter(
 +      tab => !tab.closing && !tab.hidden && (!this.tabStrip || tab.visible)
 +    );
++  },
++
++  // One tab's title, or the active tab, applied without rebuilding anything.
++  // The delta names the revision it was computed against; a refusal means the
++  // two sides diverged and is answered with exactly one snapshot.
++  publishTabDelta() {
++    const titles = [];
++    for (const tab of this.dirtyTitles) {
++      const id = this.tabIds.get(tab);
++      if (!id || !this.publishedIds.has(id) || !tab.isConnected || tab.closing) continue;
++      titles.push({ id, title: (tab.label || "New tab").slice(0, 32768) });
++    }
++    const delta = { version: 1, base: this.nativeRevision, titles };
++    if (this.dirtySelection) {
++      const selected = this.tabIds.get(gBrowser.selectedTab) || 0;
++      delta.selected = this.publishedIds.has(selected) ? selected : 0;
++    }
++    this.dirtyTitles.clear();
++    this.dirtySelection = false;
++    if (!titles.length && delta.selected === undefined) return;
++    const revision = window.windowUtils.applyWinUITabDelta(JSON.stringify(delta));
++    if (!revision) {
++      this.syncTabs();
++      return;
++    }
++    this.nativeRevision = revision;
++  },
++
++  syncTabs() {
++    if (!this.element || !this.attached || this.processingAction) return;
++    const tabs = this.visibleTabs();
 +    const ids = tabs.map(tab => {
 +      if (!this.tabIds.has(tab)) this.tabIds.set(tab, this.nextTabId++);
 +      return this.tabIds.get(tab);
 +    });
-+    // Publish descriptions before syncWinUITabs can expose a new native row.
-+    // Publication cannot drain actions; the timer retains its existing cadence.
-+    this.publishTabMenus(tabs, ids);
-+    if (this.tabStrip) this.publishStrip(tabs, ids);
++    this.publishedIds = new Set(ids);
++    // Publish identities before syncWinUITabs can expose a new native row.
++    this.publishTabContext(tabs, ids);
++    if (this.tabStrip) this.publishStrip();
++    this.stripDirty = false;
 +    const titles = tabs.map(tab => (tab.label || "New tab").slice(0, 32768));
 +    const selected = this.tabIds.get(gBrowser.selectedTab) || 0;
 +    const closeRequested = {};
 +    const newRequested = {};
 +    const contextId = {};
 +    const command = {};
-+    const requested = window.windowUtils.syncWinUITabs(
++    // Since ABI v11 the return value is the pane's model revision after this
++    // snapshot, which the next delta names as its base.
++    this.nativeRevision = window.windowUtils.syncWinUITabs(
 +      ids,
 +      titles,
 +      tabs.map(tab => this.tabCommands(tab)),
@@ -3849,11 +4380,21 @@ index 0000000000..86d135d34c
 +      contextId,
 +      command
 +    );
++    // This snapshot is authoritative for everything recorded so far.
++    this.dirtyTitles.clear();
++    this.dirtySelection = false;
++    this.contextDirty = false;
++    this.structuralDirty = false;
 +    const closeIndex = ids.indexOf(closeRequested.value);
 +    if (closeIndex >= 0) {
 +      // Firefox owns beforeunload prompts, undo-close state, final-tab behavior,
 +      // and successor selection. Never select a background tab just to close it.
 +      const tab = tabs[closeIndex];
++      // The pane holds this close as in flight until a snapshot acknowledges
++      // it, and a cancelled close changes no tab state to trigger one. Ask for
++      // that snapshot explicitly, or the pane would refuse the user's next
++      // close of the same tab forever.
++      this.structuralDirty = true;
 +      // permitUnload spins a nested event loop. A repeated native request must
 +      // not reenter removeTab and bypass the confirmation already in progress.
 +      if (tab._pendingPermitUnload) return;
@@ -3868,24 +4409,46 @@ index 0000000000..86d135d34c
 +    if (newRequested.value) {
 +      // Use the same command as Ctrl+T: Firefox owns the new-tab URL, selection,
 +      // notifications, policies and address-bar focus. Rows arrive via tab events.
++      this.structuralDirty = true;
 +      BrowserCommands.openTab();
 +      return;
 +    }
-+    const contextIndex = ids.indexOf(contextId.value);
-+    if (contextIndex >= 0) {
-+      this.runTabCommand(tabs[contextIndex], command.value);
-+      return;
-+    }
-+    const index = ids.indexOf(requested);
-+    if (index >= 0 && tabs[index] != gBrowser.selectedTab) {
-+      gBrowser.selectedTab = tabs[index];
-+    }
++    // contextId/command are reserved and always zero; tab-menu commands travel
++    // on the request path, so nothing is executed from here.
++    void contextId;
++    void command;
 +  },
 +
 +  observe(subject, topic, data) {
-+    if (data === "widget.windows.winui-prototype.tabstrip.enabled") {
++    if (topic === "winui-pane-drain") {
++      // One wakeup, one drain. Other windows' endpoints are ignored.
++      if (this.element && data === this.endpoint) this.drain();
++      return;
++    }
++    if (topic === "intl:app-locales-changed") {
++      // Every cached label is stale. Replace the bundle and the label cache,
++      // and force the next publication so the native side discards the
++      // description it is holding -- the session itself (and its revision
++      // sequence) is kept, since replacing it would move the revision
++      // backwards and the pane would ignore the new state.
++      this.tabMenuLabelCache = null;
++      if (this.tabMenuL10n) {
++        this.tabMenuL10n = new Localization(
++          ["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl"], true);
++      }
++      if (this.tabMenuSession) this.tabMenuSession.forceUpdate = true;
++      this.stripDirty = true;
++      this.structuralDirty = true;
++      this.schedule();
++      return;
++    }
++    if (data === this.stripPref) {
 +      this.uninit();
 +      this.init();
++      return;
++    }
++    if (data === this.addressPref) {
++      this.updateLegacyTimer();
 +      return;
 +    }
 +    if (!Services.prefs.getBoolPref(this.pref, false)) {
@@ -3898,6 +4461,26 @@ index 0000000000..86d135d34c
 +    if (event.type == "keydown") {
 +      this.backwards = event.shiftKey;
 +      return;
++    }
++    // Record what changed, at the producer, so the publication below can be a
++    // delta instead of a rebuilt description of every tab.
++    if (event.type === "TabSelect") {
++      this.dirtySelection = true;
++      this.stripDirty = true;
++    } else if (event.type === "TabMultiSelect") {
++      // The tab set and its order are unchanged; only which tabs are selected.
++      this.contextDirty = true;
++      this.stripDirty = true;
++    } else if (event.type === "TabAttrModified") {
++      if (event.detail?.changed?.includes("label")) this.dirtyTitles.add(event.target);
++      // Any other attribute the strip presents (favicon, busy, audio, pinned)
++      // is a presentation change, not a structural one.
++      this.stripDirty = true;
++    } else if (this.tabEvents.includes(event.type)) {
++      // Open, close, move, hide, show, pin, unpin: the tab set or its order
++      // changed, which needs a snapshot rather than a delta.
++      this.structuralDirty = true;
++      this.stripDirty = true;
 +    }
 +    if (event.type == "popupshown") {
 +      this.popups.add(event.target);
@@ -3962,7 +4545,11 @@ index 0000000000..86d135d34c
 +      );
 +      this.attached = ok;
 +      if (!ok) this.uninit();
-+      else this.syncTabs();
++      else this.publish();
++      // Geometry/visibility work often runs right after a modal dialog closes,
++      // which is the natural moment to tell the pane it may proceed again.
++      if (this.blocked && !gDialogBox.isOpen && !this.processingAction)
++        this.setBlocked(false);
 +    } catch (error) {
 +      console.error("WinUI pane attachment failed", error);
 +      this.uninit();
@@ -3971,12 +4558,27 @@ index 0000000000..86d135d34c
 +
 +  uninit() {
 +    if (!this.element) return;
-+    window.clearInterval(this.selectionTimer);
++    if (this.legacyTimer) window.clearInterval(this.legacyTimer);
++    this.legacyTimer = 0;
++    if (this.unblockTimer) window.clearTimeout(this.unblockTimer);
++    this.unblockTimer = 0;
++    this.blocked = false;
++    this.draining = false;
++    this.nativeRevision = 0;
++    this.dirtyTitles.clear();
++    this.dirtySelection = false;
++    this.structuralDirty = true;
++    this.publishedIds = new Set();
++    try {
++      Services.obs.removeObserver(this, "winui-pane-drain");
++      Services.obs.removeObserver(this, "intl:app-locales-changed");
++    } catch {}
 +    this.addressSession?.close();
 +    this.addressSession = null;
 +    this.tabMenuSession = null;
 +    this.stripSession = null;
 +    this.tabMenuL10n = null;
++    this.tabMenuLabelCache = null;
 +    for (const type of this.tabEvents)
 +      gBrowser.tabContainer.removeEventListener(type, this);
 +    if (this.attached) {
@@ -3993,7 +4595,8 @@ index 0000000000..86d135d34c
 +      window.removeEventListener(type, this, true);
 +    }
 +    Services.prefs.removeObserver(this.pref, this);
-+    Services.prefs.removeObserver("widget.windows.winui-prototype.tabstrip.enabled", this);
++    Services.prefs.removeObserver(this.stripPref, this);
++    Services.prefs.removeObserver(this.addressPref, this);
 +    this.element.remove();
 +    this.element = null;
 +    this.popups.clear();
@@ -4006,16 +4609,19 @@ index 0000000000..86d135d34c
 +window.addEventListener("unload", () => gWinUIPane.uninit(), { once: true });
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 0000000000..6164208894
+index 0000000000..0d45a80f22
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,103 @@
 +#pragma once
 +#include <windows.h>
 +#include <stdint.h>
 +
-+// v10 adds an explicit strip-only host, retaining the sidebar entry point.
-+#define WINUI_PANE_ABI_VERSION 10u
++// v11 adds the event-driven request path (setNotifySink / drainRequests /
++// completeRequests) and incremental tab deltas (applyTabDelta), and retires
++// syncTabs' selection out-parameter. v10 added an explicit strip-only host,
++// retaining the sidebar entry point.
++#define WINUI_PANE_ABI_VERSION 11u
 +
 +// All calls run on the browser's owning STA. Coordinates are client physical
 +// pixels. The module remains loaded until process exit, including after shutdown.
@@ -4032,6 +4638,21 @@ index 0000000000..6164208894
 +    uint32_t commands{}; // Availability plus Pinned state; never both Pin and Unpin.
 +};
 +
++// Wakeup callback for the v11 request path. The pane calls this when, and only
++// when, its queue transitions from "nothing outstanding" to "work waiting": at
++// most one call is outstanding per endpoint until the host drains.
++//
++// It is called on the owning STA, frequently from inside a XAML callback. The
++// implementation may only *schedule* work -- post a task to the browser's own
++// event loop -- and must never run browser code on that stack. `context` is the
++// value passed to setNotifySink and is never interpreted by the pane.
++//
++// Return FALSE if the wakeup could not be scheduled (shutdown, a failed task
++// post). The pane then puts its queue back into a state where the next request
++// schedules a fresh wakeup, rather than waiting forever for one that will never
++// arrive. Returning FALSE is not an error the host must otherwise handle.
++using WinUIPaneNotifyFn = BOOL (WINAPI*)(void* context);
++
 +struct WinUIPaneApi {
 +    uint32_t size;
 +    uint32_t version;
@@ -4040,8 +4661,12 @@ index 0000000000..6164208894
 +    HRESULT (WINAPI* destroy)(HWND);
 +    BOOL (WINAPI* translate)(MSG*);
 +    HRESULT (WINAPI* shutdown)();
-+    // Copies a snapshot and drains one close or new-tab request, then selection.
-+    // The final two outputs are reserved and always zero since ABI v8.
++    // Copies a snapshot and drains one close or new-tab request.
++    // Since v11 the first output is the pane's presentation-model revision
++    // after this snapshot, which the next applyTabDelta must name as its base;
++    // selection travels on the request path below instead, so no command
++    // reaches Firefox through both executors. The final two outputs are
++    // reserved and always zero.
 +    // Only one action is drained per snapshot; Firefox revalidates availability.
 +    // A close request does not remove a row or choose a successor. The next
 +    // snapshot acknowledges it: do not sync while Firefox is deciding closure.
@@ -4051,8 +4676,43 @@ index 0000000000..6164208894
 +    // Exclusions are pane-local physical pixels; an empty list restores the pane.
 +    HRESULT (WINAPI* clip)(HWND, const RECT*, uint32_t);
 +    // Menu protocol v2: published state and bounded queued input, copied as JSON.
++    // Since v11 the published state carries tab identities and the selected set
++    // only; a tab's command description is published on demand under the "menu"
++    // key, in answer to a drained menu-open request.
 +    HRESULT (WINAPI* syncTabMenu)(HWND, const wchar_t*, wchar_t*, uint32_t);
 +    // Same lifetime/geometry contract as update; one presentation per HWND.
 +    HRESULT (WINAPI* updateTabStrip)(HWND, const RECT*, BOOL);
++
++    // --- v11: event-driven requests -------------------------------------
++    // Register (or, with a null callback, clear) the wakeup for one endpoint.
++    // Clearing is part of teardown: the pane makes no further calls afterwards.
++    HRESULT (WINAPI* setNotifySink)(HWND, WinUIPaneNotifyFn, void*);
++    // Take one bounded batch of native requests as JSON:
++    //   {"version":1,"generation":N,"legacy":bool,
++    //    "requests":[{"id":..,"kind":..,"tab":..,"revision":..,"action":{...}}]}
++    // "kind" is 1 select-tab, 2 tab-menu transition. "legacy" means the pane
++    // also has work for an unmigrated transport (a queued close or new tab),
++    // which the host services by calling syncTabs; those commands do not appear
++    // as requests, so none of them has two executors.
++    // Returns S_FALSE with an empty output when there was nothing to take, or
++    // when a drain is already open. Every batch must be closed by
++    // completeRequests, including when execution is refused; otherwise the
++    // endpoint stays busy.
++    HRESULT (WINAPI* drainRequests)(HWND, wchar_t*, uint32_t);
++    // Close the drain with explicit per-request outcomes:
++    //   {"version":1,"generation":N,"outcomes":[{"id":..,"outcome":1..4}],
++    //    "blocked":bool}
++    // "blocked" tells the pane the host cannot execute right now (a nested
++    // modal loop, a command already running); the pane then waits for an
++    // unblocking completeRequests rather than re-posting notifications.
++    HRESULT (WINAPI* completeRequests)(HWND, const wchar_t*);
++    // Apply an incremental presentation update:
++    //   {"version":1,"base":R,"selected":id?,"titles":[{"id":..,"title":".."}]}
++    // "base" must equal the pane's current model revision; the out-parameter
++    // receives the revision after applying, for the next delta's base.
++    // E_NOT_VALID_STATE means the producer and the pane have diverged: answer
++    // with one syncTabs snapshot, never with a retry loop. S_FALSE means the
++    // delta applied but the pane wants a snapshot for an unrelated reason.
++    HRESULT (WINAPI* applyTabDelta)(HWND, const wchar_t*, uint32_t*);
 +};
 +using WinUIPaneGetApiFn = HRESULT (WINAPI*)(uint32_t, uint32_t, WinUIPaneApi*);

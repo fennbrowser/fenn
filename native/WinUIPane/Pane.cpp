@@ -23,6 +23,7 @@ using namespace Microsoft::UI::Xaml;
 using namespace Microsoft::UI::Xaml::Hosting;
 
 #include "Address.h"
+#include "ShellCore.h"
 #include "TabMenu.h"
 #include "TabStrip.h"
 
@@ -90,8 +91,21 @@ struct Pane {
     NativeTabMenu tabMenu;
     std::unique_ptr<NativeTabStrip> strip;
     event_token selection{}, takeFocus{}, containers{};
-    uint32_t pendingSelection{};
-    hstring pendingSelectionSet;
+    // The project-owned Rust core: bounded request queue, drain scheduling,
+    // request identity and outcomes, and the incremental presentation model.
+    NativeShellCore shell;
+    WinUIPaneNotifyFn notifySink{};
+    void* notifyContext{};
+    // True between drainRequests and completeRequests. The host must close
+    // every drain it opens; a drain still open when the next one arrives is a
+    // host error, counted here rather than silently absorbed.
+    bool drainOpen{};
+    bool legacyNotifyPending{};
+    uint64_t abandonedDrains{};
+    // The selection request whose optimistic native feedback has not yet been
+    // reconciled with an authoritative result. Zero means the published Firefox
+    // selection may be applied directly.
+    uint64_t pendingSelectionRequest{};
     uint32_t pendingSelectionRevision{};
     uint32_t pendingNewTabs{};
     std::deque<uint32_t> pendingCloses;
@@ -129,7 +143,17 @@ struct Pane {
         // hoverStrip pointer for the next tick to dereference.
         if (strip && (strip.get() == dragSession().sourceStrip || strip.get() == dragSession().hoverStrip))
             AbortDragSession();
+        // Ordered teardown: stop accepting requests and drop the host wakeup
+        // before anything the queued work refers to goes away, then release the
+        // core last. The sink is cleared first so nothing can be posted to a
+        // host that is already unwinding.
+        notifySink = nullptr;
+        notifyContext = nullptr;
+        drainOpen = false;
+        legacyNotifyPending = false;
+        pendingSelectionRequest = 0;
         tabMenu.Close();
+        shell.Close();
         lifetime.reset();
         if (tabs) {
             tabs.SelectionChanged(selection);
@@ -198,15 +222,49 @@ struct Pane {
         });
         row.ContextFlyout(menu);
     }
+    // Hand one native intent to the Rust queue and, only when the queue says a
+    // wakeup is now needed, ask the host to schedule exactly one. This runs on
+    // XAML callback stacks, so it must never call into the browser: the sink
+    // only posts a task to Firefox's own event loop.
+    uint64_t Enqueue(NativeShellCore::Kind kind, uint32_t id, uint32_t contextRevision, hstring const& action) {
+        bool notify = false;
+        uint32_t status = 0;
+        auto request = shell.Enqueue(kind, id, contextRevision, std::wstring_view(action), notify, &status);
+        if (notify) ScheduleDrain();
+        if (!request && DiagnosticsEnabled())
+            fwprintf(stderr, L"WinUIPane request refused kind=%u tab=%u status=%u\n", unsigned(kind), id, status);
+        return request;
+    }
+    void ScheduleDrain() {
+        // No host wakeup available (teardown, or one that could not schedule):
+        // put the queue back into a state where the next request schedules a
+        // fresh wakeup, rather than waiting for one that will never arrive.
+        if (!notifySink || !notifySink(notifyContext)) shell.NotificationFailed();
+    }
+    // Wake the host for work on an unmigrated transport (a queued close or new
+    // tab, which still execute through syncTabs). This is a wakeup only: it
+    // carries no request and no execution authority, and it keeps the
+    // one-outstanding-notification rule by latching.
+    void ScheduleLegacyDrain() {
+        if (legacyNotifyPending) return;
+        legacyNotifyPending = true;
+        if (!notifySink || !notifySink(notifyContext)) legacyNotifyPending = false;
+    }
+    bool HasLegacyWork() const { return !pendingCloses.empty() || pendingNewTabs != 0; }
     void QueueTabSelection(uint32_t activate = 0) {
         NativeTabMenu::Array selected;
         uint32_t active = activate;
+        std::set<uint32_t> members;
         for (auto item : tabs.SelectedItems()) {
             auto id = unbox_value<uint32_t>(item);
+            if (!members.insert(id).second) continue;
             selected.Append(NativeTabMenu::Value::CreateNumberValue(id));
             if (!active || (!activate && id == browserSelection)) active = id;
         }
         if (!active) return;
+        // In single-selection mode SelectedItems() can be empty, and Firefox
+        // requires the active tab to be a member of the requested set.
+        if (!members.count(active)) selected.Append(NativeTabMenu::Value::CreateNumberValue(active));
         NativeTabMenu::Object event;
         event.SetNamedValue(L"kind", NativeTabMenu::Value::CreateStringValue(L"selection"));
         event.SetNamedValue(L"revision", NativeTabMenu::Value::CreateNumberValue(tabMenu.stateRevision));
@@ -215,13 +273,37 @@ struct Pane {
         event.SetNamedValue(L"control",
                             NativeTabMenu::Value::CreateBooleanValue((GetKeyState(VK_CONTROL) & 0x8000) != 0));
         event.SetNamedValue(L"shift", NativeTabMenu::Value::CreateBooleanValue((GetKeyState(VK_SHIFT) & 0x8000) != 0));
-        pendingSelectionSet = event.Stringify();
+        pendingSelectionRequest =
+            Enqueue(NativeShellCore::SelectTab, active, tabMenu.stateRevision, event.Stringify());
         pendingSelectionRevision = tabMenu.stateRevision;
     }
+    // Reconcile optimistic native feedback with authoritative results. A
+    // rejected, cancelled or superseded selection stops suppressing Firefox's
+    // published selection, so the next apply restores the authoritative one.
+    void ReconcileOutcomes() {
+        auto outcomes = shell.TakeOutcomes();
+        for (size_t i = 0; i < outcomes.size(); ++i)
+            if (outcomes[i].id == pendingSelectionRequest) pendingSelectionRequest = 0;
+    }
+    // Keep the Rust presentation model in step with the authoritative snapshot,
+    // so a later delta has a correct base to apply against. Structural apply to
+    // the controls still happens below from the snapshot itself; the model is
+    // what makes single-property updates cost one row instead of all of them.
+    void SeedModel(const WinUITab* snapshot, uint32_t count, uint32_t selected) {
+        if (!shell) return;
+        shell.BeginSnapshot(shell.Stats().generation, count);
+        for (uint32_t i = 0; i < count; ++i) shell.PushSnapshotTab(snapshot[i].id, snapshot[i].title);
+        uint32_t changes = 0;
+        shell.CommitSnapshot(selected, changes);
+        // The snapshot is the authority: whatever diff it produced has just been
+        // applied from the snapshot itself, so nothing is left pending.
+        shell.TakeChanges();
+    }
     void Sync(const WinUITab* snapshot, uint32_t count, uint32_t selected) {
+        SeedModel(snapshot, count, selected);
         if (strip) {
             browserSelection = selected;
-            if (pendingSelectionRevision != tabMenu.stateRevision) pendingSelectionSet = L"";
+            if (pendingSelectionRevision != tabMenu.stateRevision) pendingSelectionRequest = 0;
             strip->Sync(snapshot, count, selected);
             return;
         }
@@ -236,9 +318,9 @@ struct Pane {
                 commands.emplace(snapshot[i].id, snapshot[i].commands);
                 if (i >= tabIds.size() || tabIds[i] != snapshot[i].id) reordered = true;
             }
-            for (auto it = tabMenu.tabModels.begin(); it != tabMenu.tabModels.end();) {
-                if (!commands.count(it->first))
-                    it = tabMenu.tabModels.erase(it);
+            for (auto it = tabMenu.publishedTabs.begin(); it != tabMenu.publishedTabs.end();) {
+                if (!commands.count(*it))
+                    it = tabMenu.publishedTabs.erase(it);
                 else
                     ++it;
             }
@@ -276,8 +358,8 @@ struct Pane {
             }
             if (tabMenu.hasSelection) {
                 tabs.SelectionMode(Controls::ListViewSelectionMode::Extended);
-                if (pendingSelectionRevision != tabMenu.stateRevision) pendingSelectionSet = L"";
-                if (pendingSelectionSet.empty()) {
+                if (pendingSelectionRevision != tabMenu.stateRevision) pendingSelectionRequest = 0;
+                if (!pendingSelectionRequest) {
                     for (uint32_t i = 0; i < count; ++i) {
                         auto item = items.GetAt(i);
                         uint32_t existing;
@@ -323,11 +405,178 @@ struct Pane {
         event.SetNamedValue(L"tabs", ids);
         event.SetNamedValue(L"control", NativeTabMenu::Value::CreateBooleanValue(control));
         event.SetNamedValue(L"shift", NativeTabMenu::Value::CreateBooleanValue(shift));
-        pendingSelectionSet = event.Stringify();
+        pendingSelectionRequest = Enqueue(NativeShellCore::SelectTab, id, tabMenu.stateRevision, event.Stringify());
         pendingSelectionRevision = tabMenu.stateRevision;
+    }
+
+    // Apply one incremental presentation update. Only the named tab's row is
+    // touched; nothing scans the collection and no description is rebuilt.
+    // A base revision the model no longer holds is reported as a gap, which the
+    // producer answers with one snapshot -- never with a retry loop.
+    HRESULT ApplyDelta(NativeTabMenu::Object const& delta) {
+        if (!shell) return E_NOT_VALID_STATE;
+        if (NativeJson::RequireId(delta, L"version") != 1) return E_INVALIDARG;
+        auto base = NativeJson::RequireId(delta, L"base");
+        if (base != shell.ModelRevision()) return E_NOT_VALID_STATE;
+        // Validate the whole delta before any of it is applied.
+        std::vector<std::pair<uint32_t, hstring>> titles;
+        if (delta.HasKey(L"titles")) {
+            auto entries = delta.GetNamedArray(L"titles");
+            if (entries.Size() > NativeJson::kMaxTabs) return E_INVALIDARG;
+            for (auto value : entries) {
+                auto entry = value.GetObject();
+                auto id = NativeJson::RequireId(entry, L"id");
+                auto title = entry.GetNamedString(L"title");
+                if (title.size() > NativeJson::kMaxFieldText) return E_INVALIDARG;
+                // A tab the model does not hold means producer and consumer have
+                // diverged: ask for a snapshot rather than guess.
+                if (shell.IndexOf(id) == SHELL_NO_INDEX) return E_NOT_VALID_STATE;
+                titles.emplace_back(id, title);
+            }
+        }
+        // "selected": 0 is the valid "no active tab" value, so it is read as a
+        // plain bounded number rather than as a nonzero identity.
+        uint32_t nextSelected = 0;
+        if (delta.HasKey(L"selected")) {
+            auto value = delta.GetNamedNumber(L"selected");
+            if (!std::isfinite(value) || value < 0 || value > UINT32_MAX || std::floor(value) != value)
+                return E_INVALIDARG;
+            nextSelected = uint32_t(value);
+            if (nextSelected && shell.IndexOf(nextSelected) == SHELL_NO_INDEX) return E_NOT_VALID_STATE;
+        }
+        for (auto const& [id, title] : titles) {
+            bool changed = false;
+            auto status = shell.SetTitle(shell.ModelRevision(), id, std::wstring_view(title), changed);
+            if (status != SHELL_STATUS_OK) return status == SHELL_STATUS_GAP ? E_NOT_VALID_STATE : E_INVALIDARG;
+            if (changed) tabTitles[id] = title;
+        }
+        if (delta.HasKey(L"selected")) {
+            bool changed = false;
+            auto status = shell.SetSelected(shell.ModelRevision(), nextSelected, changed);
+            if (status != SHELL_STATUS_OK) return status == SHELL_STATUS_GAP ? E_NOT_VALID_STATE : E_INVALIDARG;
+            if (changed) {
+                browserSelection = nextSelected;
+                // A fresh authoritative selection supersedes optimistic feedback.
+                pendingSelectionRequest = 0;
+            }
+        }
+        // Read the resynchronization flag before ApplyChanges consumes the
+        // change list: taking the changes is what clears it.
+        const bool resync = shell.NeedsSnapshot();
+        ApplyChanges();
+        return resync ? S_FALSE : S_OK;
+    }
+    uint32_t ModelRevision() const { return shell.ModelRevision(); }
+
+    // Turn the model's change records into the smallest native work that shows
+    // them. One changed title is one row update, whatever the tab count.
+    void ApplyChanges() {
+        auto changes = shell.TakeChanges();
+        // Same guard as ApplyPublishedSelection: a pane that is not presenting
+        // has nothing to apply to, and the model catches up at the next
+        // snapshot.
+        if (!changes.size() || (!strip && (!tabs || !items))) return;
+        syncing = true;
+        try {
+            for (size_t i = 0; i < changes.size(); ++i) {
+                auto const& change = changes[i];
+                if (change.kind == NativeShellCore::TitleChanged) {
+                    if (strip)
+                        strip->UpdateTitle(change.tab, tabTitles.count(change.tab) ? tabTitles[change.tab] : L"");
+                    else if (change.to != SHELL_NO_INDEX)
+                        if (auto row = tabs.ContainerFromIndex(int(change.to)).try_as<Controls::ListViewItem>())
+                            UpdateRow(row);
+                } else if (change.kind == NativeShellCore::SelectionChanged) {
+                    // `from`/`to` are the previous and new active tab ids.
+                    if (strip)
+                        strip->ApplySelection(change.from, change.to);
+                    else
+                        ApplySidebarSelection(change.from, change.to);
+                }
+            }
+        } catch (...) {
+            syncing = false;
+            throw;
+        }
+        syncing = false;
+    }
+    // Reconcile the control's selection with the set Firefox just published.
+    // Selection no longer travels on syncTabs, so a publication is the only
+    // thing that moves this; applying it here keeps a selection change from
+    // needing a whole snapshot. Only the rows whose membership actually
+    // changed are touched.
+    void ApplyPublishedSelection(std::set<uint32_t> const& previous) {
+        if (pendingSelectionRevision != tabMenu.stateRevision) pendingSelectionRequest = 0;
+        // A native selection is still awaiting its authoritative result; its
+        // optimistic feedback stands until the outcome or a newer publication.
+        if (pendingSelectionRequest) return;
+        auto const& current = tabMenu.selectedTabs;
+        if (strip) {
+            strip->ApplySelectedSet(previous, current);
+            return;
+        }
+        if (!tabs || !items) return;
+        syncing = true;
+        try {
+            tabs.SelectionMode(tabMenu.hasSelection ? Controls::ListViewSelectionMode::Extended
+                                                    : Controls::ListViewSelectionMode::Single);
+            if (tabMenu.hasSelection) {
+                for (auto id : previous) {
+                    if (current.count(id)) continue;
+                    auto index = shell.IndexOf(id);
+                    if (index == SHELL_NO_INDEX) continue;
+                    uint32_t at{};
+                    if (tabs.SelectedItems().IndexOf(items.GetAt(index), at)) tabs.SelectedItems().RemoveAt(at);
+                }
+                for (auto id : current) {
+                    if (previous.count(id)) continue;
+                    auto index = shell.IndexOf(id);
+                    if (index == SHELL_NO_INDEX) continue;
+                    uint32_t at{};
+                    if (!tabs.SelectedItems().IndexOf(items.GetAt(index), at))
+                        tabs.SelectedItems().Append(items.GetAt(index));
+                }
+            }
+        } catch (...) {
+            syncing = false;
+            throw;
+        }
+        syncing = false;
+    }
+    void ApplySidebarSelection(uint32_t previous, uint32_t current) {
+        auto index = shell.IndexOf(current);
+        if (!tabMenu.hasSelection) {
+            if (index != SHELL_NO_INDEX && tabs.SelectedIndex() != int(index)) {
+                tabs.SelectedIndex(int(index));
+                tabs.ScrollIntoView(items.GetAt(index));
+            }
+        }
+        // The active-tab emphasis lives on the row itself, so refresh exactly
+        // the two rows whose emphasis can have changed.
+        for (auto id : {previous, current}) {
+            auto at = shell.IndexOf(id);
+            if (at == SHELL_NO_INDEX) continue;
+            if (auto row = tabs.ContainerFromIndex(int(at)).try_as<Controls::ListViewItem>()) UpdateRow(row);
+        }
     }
     void Create(HWND hwnd, bool tabStrip = false) {
         parent = hwnd;
+        // Bounds for this endpoint. Zero means "the core's own default".
+        // Deliberately small: these are user intents, not a data channel, and
+        // an unbounded backlog of them would be a bug, not throughput.
+        ShellCoreLimits limits{};
+        limits.max_entries = 64;
+        limits.max_queued_bytes = 256 * 1024;
+        limits.max_request_bytes = 64 * 1024;
+        limits.max_tabs = 10000;
+        limits.max_title_units = 32768;
+        shell.Open(limits);
+        // Menu transitions (open, activate, dismiss) are ordered requests on
+        // the same queue as selection, so a selection formed before an opening
+        // still reaches Firefox first.
+        tabMenu.dispatch = [this](uint32_t id, uint32_t contextRevision, hstring const& action) {
+            Enqueue(NativeShellCore::MenuEvent, id, contextRevision, action);
+        };
         source = DesktopWindowXamlSource();
         source.Initialize(GetWindowIdFromWindow(hwnd));
         if (tabStrip) {
@@ -338,11 +587,15 @@ struct Pane {
                 if (id != inFlightClose &&
                     std::find(pendingCloses.begin(), pendingCloses.end(), id) == pendingCloses.end())
                     pendingCloses.push_back(id);
-                pendingSelectionSet = L"";
+                // Closing must not leave a selection request suppressing the
+                // authoritative selection Firefox picks for the successor.
+                pendingSelectionRequest = 0;
+                ScheduleLegacyDrain();
             };
             strip->add = [this] {
                 if (pendingNewTabs < 10000) ++pendingNewTabs;
-                pendingSelectionSet = L"";
+                pendingSelectionRequest = 0;
+                ScheduleLegacyDrain();
             };
             takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(parent); });
             source.Content(strip->root);
@@ -414,8 +667,8 @@ struct Pane {
                                 if (std::find(pendingCloses.begin(), pendingCloses.end(), id) == pendingCloses.end())
                                     pendingCloses.push_back(id);
                                 // Clicking a background close button must not select its row.
-                                pendingSelection = 0;
-                                pendingSelectionSet = L"";
+                                pendingSelectionRequest = 0;
+                                ScheduleLegacyDrain();
                             }
                         }
                     });
@@ -450,8 +703,12 @@ struct Pane {
                     }
                     QueueTabSelection(endpoint);
                 } else {
+                    // Single-selection mode: the same request path, with the
+                    // clicked row as the only member of the set. Selection
+                    // never travels through syncTabs any more, so no command
+                    // can reach Firefox through two executors.
                     auto index = tabs.SelectedIndex();
-                    if (index >= 0 && size_t(index) < tabIds.size()) pendingSelection = tabIds[index];
+                    if (index >= 0 && size_t(index) < tabIds.size()) QueueTabSelection(tabIds[index]);
                 }
             } catch (...) {}
         });
@@ -467,7 +724,8 @@ struct Pane {
             if (alive.expired() || syncing) return;
             // Bounded per-window queue, drained only by Firefox's event loop.
             if (pendingNewTabs < 10000) ++pendingNewTabs;
-            pendingSelection = 0;
+            pendingSelectionRequest = 0;
+            ScheduleLegacyDrain();
         });
         panel.Children().Append(newTab);
         address = std::make_unique<NativeAddress>();
@@ -953,29 +1211,31 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input, wchar_t* output, uin
             pane.strip->Publish(snapshot.GetNamedObject(L"strip"));
             return S_OK;
         }
-        auto result = pane.tabMenu.Sync(snapshot);
-        // Deliver preceding selection before a queued menu opening can act on it.
-        bool selectionResult = !snapshot.GetNamedBoolean(L"publishOnly", false) && !pane.pendingSelectionSet.empty();
-        bool groupResult = !selectionResult && !snapshot.GetNamedBoolean(L"publishOnly", false) && pane.strip &&
-                           !pane.strip->groupsButton.pending.empty();
-        bool reorderResult = !selectionResult && !groupResult && !snapshot.GetNamedBoolean(L"publishOnly", false) &&
-                              pane.strip && !pane.strip->pendingReorder.empty();
-        if (selectionResult)
-            result = pane.pendingSelectionSet;
-        else if (groupResult)
+        // A publication is the only thing that moves the published selection
+        // now, so apply it here rather than waiting for a snapshot. The
+        // previous set is what makes the apply a diff instead of a rescan.
+        auto previousSelection = pane.tabMenu.selectedTabs;
+        auto previousRevision = pane.tabMenu.stateRevision;
+        pane.tabMenu.Sync(snapshot);
+        if (pane.tabMenu.stateRevision != previousRevision) pane.ApplyPublishedSelection(previousSelection);
+        // Menu transitions and tab selection now travel on the v11 request
+        // path, so this call no longer returns either of them. What remains
+        // here is the legacy strip transport (group toggle, reorder), which is
+        // not part of this milestone and still drains on the host's timer.
+        hstring result;
+        const bool drainLegacy = !snapshot.GetNamedBoolean(L"publishOnly", false) && pane.strip;
+        bool groupResult = drainLegacy && !pane.strip->groupsButton.pending.empty();
+        bool reorderResult = drainLegacy && !groupResult && !pane.strip->pendingReorder.empty();
+        if (groupResult)
             result = pane.strip->groupsButton.pending;
         else if (reorderResult)
             result = pane.strip->pendingReorder;
         if (result.size() >= capacity) return E_INVALIDARG;
         wcscpy_s(output, capacity, result.c_str());
-        if (selectionResult)
-            pane.pendingSelectionSet = L"";
-        else if (groupResult)
+        if (groupResult)
             pane.strip->groupsButton.pending = L"";
         else if (reorderResult)
             pane.strip->pendingReorder = L"";
-        else if (!result.empty())
-            pane.tabMenu.events.pop_front();
         return S_OK;
     } catch (...) {
         return to_hresult();
@@ -1006,18 +1266,20 @@ HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_
         while (!pane.pendingCloses.empty() && !ids.count(pane.pendingCloses.front())) pane.pendingCloses.pop_front();
         auto close = pane.pendingCloses.empty() ? 0 : pane.pendingCloses.front();
         auto create = !close && pane.pendingNewTabs ? 1u : 0u;
-        auto pending = close || create || pane.tabMenu.session ? 0 : pane.pendingSelection;
-        // A newer Firefox selection takes precedence over a queued native action.
-        if (selected != pane.browserSelection || !ids.count(pending)) pending = 0;
-        pane.Sync(tabs, count, pending ? pending : selected);
-        pane.browserSelection = pending ? pending : selected;
-        pane.pendingSelection = 0;
+        // Reconcile any outstanding optimistic selection feedback against the
+        // authoritative outcomes recorded since the last snapshot.
+        pane.ReconcileOutcomes();
+        pane.Sync(tabs, count, selected);
+        pane.browserSelection = selected;
         if (close) pane.pendingCloses.pop_front();
         pane.inFlightClose = close;
         if (create) --pane.pendingNewTabs;
         *newRequested = create;
         *closeRequested = close;
-        *requested = pending;
+        // Since v11 this carries the presentation-model revision this snapshot
+        // produced; the next applyTabDelta names it as its base. Selection
+        // travels on the request path instead.
+        *requested = pane.ModelRevision();
         return S_OK;
     } catch (hresult_error const& error) {
         fwprintf(stderr, L"WinUIPane tabs hr=0x%08X message=%s\n", unsigned(error.code()), error.message().c_str());
@@ -1026,6 +1288,172 @@ HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_
         return to_hresult();
     }
 }
+// --- ABI v11: the event-driven request path -----------------------------
+//
+// One endpoint, one wakeup. The pane calls the sink only when its queue goes
+// from "nothing outstanding" to "work waiting"; the host answers with exactly
+// one drainRequests/completeRequests pair, and completeRequests decides whether
+// another wakeup is owed. Nothing here polls, and nothing here calls the host
+// back except through the sink.
+HRESULT WINAPI SetNotifySink(HWND hwnd, WinUIPaneNotifyFn notify, void* context) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end()) return E_INVALIDARG;
+        auto& pane = *found->second;
+        pane.notifySink = notify;
+        pane.notifyContext = context;
+        // A sink arriving after work was already queued must not strand it: the
+        // queue reports whether a wakeup is still owed.
+        if (notify && pane.shell.NotificationFailed()) pane.ScheduleDrain();
+        return S_OK;
+    } catch (...) {
+        return to_hresult();
+    }
+}
+HRESULT WINAPI DrainRequests(HWND hwnd, wchar_t* output, uint32_t capacity) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        if (!output || capacity < 1 || capacity > 262144) return E_INVALIDARG;
+        output[0] = 0;
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end()) return E_INVALIDARG;
+        auto& pane = *found->second;
+        if (pane.drainOpen) {
+            // The host opened a drain and never closed it. Close it rather than
+            // leave the endpoint busy forever, and count it: a nonzero count is
+            // a host bug, not normal operation.
+            ++pane.abandonedDrains;
+            if (pane.shell.EndDrain()) pane.ScheduleDrain();
+            pane.drainOpen = false;
+        }
+        const bool legacy = pane.HasLegacyWork();
+        // The legacy latch is cleared only once this call actually tells the
+        // host about that work. A refused drain must leave it set, or the work
+        // would be left with no wakeup and no way to ask for another.
+        if (!pane.shell.BeginDrain()) return S_FALSE;  // already draining, or blocked
+        pane.legacyNotifyPending = false;
+        pane.drainOpen = true;
+        // Bounded batch: entries and bytes, so one drain cannot monopolise the
+        // browser's main thread however much input accumulated.
+        constexpr uint32_t kMaxBatchEntries = 16;
+        constexpr size_t kMaxBatchBytes = 64 * 1024;
+        auto batch = pane.shell.TakeBatch(kMaxBatchEntries, kMaxBatchBytes);
+        if (!batch.size() && !legacy) {
+            // Nothing to do; close the drain here so the host need not answer.
+            if (pane.shell.EndDrain()) pane.ScheduleDrain();
+            pane.drainOpen = false;
+            return S_FALSE;
+        }
+        NativeTabMenu::Array requests;
+        for (size_t i = 0; i < batch.size(); ++i) {
+            auto const& request = batch[i];
+            NativeTabMenu::Object entry;
+            // The id is a double on the wire, matching every other counter that
+            // crosses this boundary; the queue keeps ids well inside 2^53.
+            entry.SetNamedValue(L"id", NativeTabMenu::Value::CreateNumberValue(double(request.id)));
+            entry.SetNamedValue(L"kind", NativeTabMenu::Value::CreateNumberValue(request.kind));
+            entry.SetNamedValue(L"tab", NativeTabMenu::Value::CreateNumberValue(request.tab));
+            entry.SetNamedValue(L"revision", NativeTabMenu::Value::CreateNumberValue(request.context_revision));
+            auto payload = batch.payload(i);
+            entry.SetNamedValue(L"action", NativeTabMenu::Object::Parse(hstring(payload)));
+            requests.Append(entry);
+        }
+        NativeTabMenu::Object envelope;
+        envelope.SetNamedValue(L"version", NativeTabMenu::Value::CreateNumberValue(1));
+        envelope.SetNamedValue(L"generation",
+                               NativeTabMenu::Value::CreateNumberValue(double(pane.shell.Stats().generation)));
+        envelope.SetNamedValue(L"legacy", NativeTabMenu::Value::CreateBooleanValue(legacy));
+        envelope.SetNamedValue(L"requests", requests);
+        auto text = envelope.Stringify();
+        if (text.size() >= capacity) {
+            // The host cannot receive this batch. Close the drain and report
+            // failure rather than silently dropping accepted requests; they
+            // stay in flight and are cancelled by the endpoint's teardown.
+            if (pane.shell.EndDrain()) pane.ScheduleDrain();
+            pane.drainOpen = false;
+            return E_NOT_SUFFICIENT_BUFFER;
+        }
+        wcscpy_s(output, capacity, text.c_str());
+        return S_OK;
+    } catch (...) {
+        return to_hresult();
+    }
+}
+HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        if (!input || wcsnlen(input, 1048577) > 1048576) return E_INVALIDARG;
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end()) return E_INVALIDARG;
+        auto& pane = *found->second;
+        auto message = NativeTabMenu::Object::Parse(input);
+        if (NativeJson::RequireId(message, L"version") != 1) return E_INVALIDARG;
+        auto generation = message.GetNamedNumber(L"generation");
+        auto outcomes = message.GetNamedArray(L"outcomes");
+        if (outcomes.Size() > 64) return E_INVALIDARG;
+        // An endpoint whose generation has moved on (a replaced session) must
+        // not accept outcomes formed against the old one. An HWND is not a
+        // lifetime identity; the generation is. A message carrying no outcomes
+        // asserts nothing about identity -- it is the pure block/unblock
+        // signal, which the host may send before it has ever drained.
+        if (outcomes.Size() && generation != double(pane.shell.Stats().generation)) return E_NOT_VALID_STATE;
+        for (auto value : outcomes) {
+            auto entry = value.GetObject();
+            auto id = entry.GetNamedNumber(L"id");
+            auto outcome = NativeJson::RequireId(entry, L"outcome");
+            if (!std::isfinite(id) || id < 1 || id > NativeJson::kMaxSafeInteger || std::floor(id) != id ||
+                outcome > 4)
+                return E_INVALIDARG;
+            pane.shell.Complete(uint64_t(id), NativeShellCore::Outcome(outcome));
+        }
+        const bool blocked = message.GetNamedBoolean(L"blocked", false);
+        bool notify = false;
+        if (pane.drainOpen) {
+            notify = pane.shell.EndDrain();
+            pane.drainOpen = false;
+            if (blocked) pane.shell.SetBlocked(true);
+        } else if (blocked) {
+            pane.shell.SetBlocked(true);
+        } else {
+            // Unblocking outside a drain: the queue says whether requests are
+            // waiting, so the host is woken once instead of being re-polled.
+            notify = pane.shell.SetBlocked(false);
+        }
+        if (!blocked) {
+            // Unmigrated work (a queued close or new tab) has its own latch,
+            // and a drain the host refused while it was busy consumed the
+            // wakeup without taking the work. Re-arm it here, so unblocking
+            // recovers that work too instead of stranding it.
+            if (pane.HasLegacyWork()) {
+                pane.legacyNotifyPending = false;
+                pane.ScheduleLegacyDrain();
+            } else if (notify) {
+                pane.ScheduleDrain();
+            }
+        }
+        pane.ReconcileOutcomes();
+        return S_OK;
+    } catch (...) {
+        return to_hresult();
+    }
+}
+HRESULT WINAPI ApplyTabDelta(HWND hwnd, const wchar_t* input, uint32_t* revision) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        if (!revision) return E_POINTER;
+        *revision = 0;
+        if (!input || wcsnlen(input, 1048577) > 1048576) return E_INVALIDARG;
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end()) return E_INVALIDARG;
+        auto hr = found->second->ApplyDelta(NativeTabMenu::Object::Parse(input));
+        if (SUCCEEDED(hr)) *revision = found->second->ModelRevision();
+        return hr;
+    } catch (...) {
+        return to_hresult();
+    }
+}
+
 HRESULT WINAPI Focus(HWND hwnd, BOOL backwards) noexcept {
     try {
         check_hresult(Check(hwnd));
@@ -1143,11 +1571,41 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneGetApi(uint32_t version
                SyncAddress,
                Clip,
                SyncTabMenu,
-               UpdateTabStrip};
+               UpdateTabStrip,
+               SetNotifySink,
+               DrainRequests,
+               CompleteRequests,
+               ApplyTabDelta};
     return S_OK;
 }
 
 #ifdef WINUI_PANE_TESTING
+// Test-only: make the Rust shell core panic, so the containment path can be
+// exercised from a real call rather than argued for. The core catches it,
+// marks itself poisoned and reports a status; nothing unwinds into C++ and the
+// process survives. Not exported by the shipped DLL.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestCorePanic(HWND hwnd) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end()) return E_INVALIDARG;
+        auto& pane = *found->second;
+        if (!pane.shell) return E_NOT_VALID_STATE;
+        auto status = shell_core_test_panic(pane.shell.core);
+        // A poisoned core must not keep driving the pane: drop it and fall back
+        // to the snapshot path, which is the explicitly isolated legacy route.
+        if (status == SHELL_STATUS_PANIC) {
+            pane.notifySink = nullptr;
+            pane.notifyContext = nullptr;
+            pane.drainOpen = false;
+            pane.shell.Close();
+            return E_FAIL;
+        }
+        return S_OK;
+    } catch (...) {
+        return to_hresult();
+    }
+}
 // Test-only inspection of the actual hosted content. Not exported by the shipped DLL.
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetContent(HWND hwnd, void** output) noexcept {
     try {

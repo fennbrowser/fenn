@@ -100,9 +100,31 @@
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <WindowsAppSDKSelfContainedAudit>false</WindowsAppSDKSelfContainedAudit>
   </PropertyGroup>
+  <!-- The project-owned Rust shell core (native/ShellCore) links in as a static
+       library. Its C boundary is the checked-in, cbindgen-generated
+       bridge/v2/shell_core.h, so an ordinary build never needs cbindgen. -->
+  <PropertyGroup Label="ShellCore">
+    <ShellCoreDir>$(MSBuildThisFileDirectory)..\ShellCore\</ShellCoreDir>
+    <ShellCoreTargetDir>$(MSBuildThisFileDirectory)..\..\build\shell-core\</ShellCoreTargetDir>
+    <ShellCoreProfile Condition="'$(Configuration)'=='Release'">release</ShellCoreProfile>
+    <ShellCoreProfile Condition="'$(Configuration)'!='Release'">debug</ShellCoreProfile>
+    <ShellCoreCargoProfile Condition="'$(Configuration)'=='Release'">--release</ShellCoreCargoProfile>
+    <ShellCoreTriple Condition="'$(Platform)'=='x64'">x86_64-pc-windows-msvc</ShellCoreTriple>
+    <ShellCoreTriple Condition="'$(Platform)'=='Win32'">i686-pc-windows-msvc</ShellCoreTriple>
+    <ShellCoreTriple Condition="'$(Platform)'=='ARM64'">aarch64-pc-windows-msvc</ShellCoreTriple>
+    <ShellCoreLib>$(ShellCoreTargetDir)$(ShellCoreTriple)\$(ShellCoreProfile)\firefox_winui_shell_core.lib</ShellCoreLib>
+    <CargoExe Condition="'$(CargoExe)'==''">cargo</CargoExe>
+  </PropertyGroup>
   <ItemDefinitionGroup>
-    <Link><AdditionalDependencies>gdi32.lib;Ole32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <Link>
+      <!-- The native static libraries rustc reports for this crate on
+           x86_64-pc-windows-msvc. The crate is built with +crt-static, so it
+           requests libcmt, matching this project's /MT RuntimeLibrary in every
+           configuration: one CRT, not two. -->
+      <AdditionalDependencies>gdi32.lib;Ole32.lib;$(ShellCoreLib);ntdll.lib;userenv.lib;ws2_32.lib;dbghelp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
     <ClCompile>
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\..\bridge\v2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions Condition="'$(WinUIPaneTesting)'=='true'">WINUI_PANE_TESTING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PreprocessorDefinitions>DISABLE_XAML_GENERATED_MAIN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -138,6 +160,23 @@
     </ClCompile>
     <ClCompile Include="Pane.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Inputs for the incremental check below: cargo does its own dependency
+         tracking, but MSBuild needs to know when to call it at all. -->
+    <ShellCoreSource Include="$(ShellCoreDir)Cargo.toml" />
+    <ShellCoreSource Include="$(ShellCoreDir)src\**\*.rs" />
+  </ItemGroup>
+  <Target Name="BuildShellCore" BeforeTargets="ClCompile" Inputs="@(ShellCoreSource)" Outputs="$(ShellCoreLib)">
+    <Error Condition="'$(ShellCoreTriple)'==''" Text="No Rust target triple for Platform=$(Platform)." />
+    <Message Importance="high" Text="Building the Rust shell core ($(ShellCoreTriple), $(ShellCoreProfile))" />
+    <!-- +crt-static so the staticlib uses the same CRT as this project's /MT
+         objects. CARGO_TARGET_DIR keeps Rust output under build/ with every
+         other build artifact, not inside the source tree. -->
+    <Exec Command="&quot;$(CargoExe)&quot; build --offline --locked $(ShellCoreCargoProfile) --target $(ShellCoreTriple)"
+          WorkingDirectory="$(ShellCoreDir)"
+          EnvironmentVariables="CARGO_TARGET_DIR=$(ShellCoreTargetDir);RUSTFLAGS=-C target-feature=+crt-static" />
+    <Error Condition="!Exists('$(ShellCoreLib)')" Text="cargo did not produce $(ShellCoreLib)." />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
     <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Web.WebView2.1.0.3719.77\build\native\Microsoft.Web.WebView2.targets" />

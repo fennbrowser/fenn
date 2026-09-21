@@ -195,9 +195,16 @@ static winrt::Microsoft::UI::Xaml::Controls::ListViewItem RealizedRow(
         Pump();
         Sleep(10);
     }
-    fprintf(stderr, "Unrealized row index=%d items=%u list=%.1fx%.1f loaded=%d hostVisible=%d\n", index,
-            list.Items().Size(), list.ActualWidth(), list.ActualHeight(), list.IsLoaded(),
-            list.XamlRoot().IsHostVisible());
+    bool rootLoaded = false, hasParent = false;
+    try {
+        if (auto content = list.XamlRoot().Content().try_as<FrameworkElement>()) rootLoaded = content.IsLoaded();
+        hasParent = list.Parent() != nullptr;
+    } catch (...) {
+    }
+    fprintf(stderr,
+            "Unrealized row index=%d items=%u list=%.1fx%.1f loaded=%d hostVisible=%d rootLoaded=%d parent=%d\n",
+            index, list.Items().Size(), list.ActualWidth(), list.ActualHeight(), list.IsLoaded(),
+            list.XamlRoot().IsHostVisible(), rootLoaded, hasParent);
     auto missingRow = list.ContainerFromIndex(index).try_as<Controls::ListViewItem>();
     if (missingRow)
         fprintf(stderr, "Row loaded=%d template=%d size=%.1fx%.1f\n", missingRow.IsLoaded(),
@@ -214,28 +221,99 @@ static winrt::Windows::Data::Json::JsonObject MenuExchange(WinUIPaneApi& api, HW
                      : winrt::Windows::Data::Json::JsonObject();
 }
 static uint32_t menuTestRevision = 0;
-static winrt::Windows::Data::Json::JsonObject MenuState(std::vector<uint32_t> const& ids, bool nested = false) {
+// Since ABI v11 the recurring publication carries identities and the selected
+// set only. No description of any tab's commands appears here.
+static winrt::Windows::Data::Json::JsonObject MenuState(std::vector<uint32_t> const& ids) {
     using namespace winrt::Windows::Data::Json;
-    auto snapshot = JsonObject::Parse(
-        LR"({"version":2,"publishOnly":true,"state":{"revision":1,"models":[[{"kind":"command","id":"opaque-reload","label":"Reload Tab","enabled":true},{"kind":"command","id":"opaque-duplicate","label":"Duplicate Tab","enabled":false},{"kind":"command","id":"opaque-unpin","label":"Unpin Tab","enabled":true}]],"tabs":[]}})");
+    auto snapshot = JsonObject::Parse(LR"({"version":2,"publishOnly":true,"state":{"revision":1,"tabs":[]}})");
     auto state = snapshot.GetNamedObject(L"state");
     state.SetNamedValue(L"revision", JsonValue::CreateNumberValue(++menuTestRevision));
     for (auto id : ids) {
         JsonObject binding;
         binding.SetNamedValue(L"tab", JsonValue::CreateNumberValue(id));
-        binding.SetNamedValue(L"model", JsonValue::CreateNumberValue(1));
         state.GetNamedArray(L"tabs").Append(binding);
     }
+    return snapshot;
+}
+// The on-demand answer to one opening, bound to its session/tab/revision.
+static winrt::Windows::Data::Json::JsonObject MenuDescription(double session, uint32_t tab, double revision,
+                                                              bool nested = false) {
+    using namespace winrt::Windows::Data::Json;
+    auto items = JsonArray::Parse(
+        LR"([{"kind":"command","id":"opaque-reload","label":"Reload Tab","enabled":true},{"kind":"command","id":"opaque-duplicate","label":"Duplicate Tab","enabled":false},{"kind":"command","id":"opaque-unpin","label":"Unpin Tab","enabled":true}])");
     if (nested) {
-        auto models = state.GetNamedArray(L"models");
         auto sub = JsonObject::Parse(LR"({"kind":"submenu","label":"Actions","enabled":true})");
-        sub.SetNamedValue(L"items", models.GetArrayAt(0));
+        sub.SetNamedValue(L"items", items);
         JsonArray outer;
         outer.Append(JsonObject::Parse(LR"({"kind":"separator"})"));
         outer.Append(sub);
-        models.SetAt(0, outer);
+        items = outer;
     }
+    JsonObject menu;
+    menu.SetNamedValue(L"session", JsonValue::CreateNumberValue(session));
+    menu.SetNamedValue(L"tab", JsonValue::CreateNumberValue(tab));
+    menu.SetNamedValue(L"revision", JsonValue::CreateNumberValue(revision));
+    menu.SetNamedValue(L"items", items);
+    JsonObject snapshot;
+    snapshot.SetNamedValue(L"version", JsonValue::CreateNumberValue(2));
+    snapshot.SetNamedValue(L"publishOnly", JsonValue::CreateBooleanValue(true));
+    snapshot.SetNamedValue(L"menu", menu);
     return snapshot;
+}
+// The v11 request path, as the browser drives it: take one bounded batch, then
+// close it with explicit outcomes. Returns the envelope, empty when there was
+// nothing to take.
+static winrt::Windows::Data::Json::JsonObject DrainRequests(WinUIPaneApi& api, HWND hwnd) {
+    std::vector<wchar_t> output(262144);
+    output[0] = 0;
+    Require(SUCCEEDED(api.drainRequests(hwnd, output.data(), uint32_t(output.size()))), "drain native requests");
+    return output[0] ? winrt::Windows::Data::Json::JsonObject::Parse(output.data())
+                     : winrt::Windows::Data::Json::JsonObject();
+}
+static void CompleteRequests(WinUIPaneApi& api, HWND hwnd, winrt::Windows::Data::Json::JsonObject const& batch,
+                             uint32_t outcome = 1, bool blocked = false) {
+    using namespace winrt::Windows::Data::Json;
+    JsonArray outcomes;
+    if (batch.Size()) {
+        for (auto value : batch.GetNamedArray(L"requests")) {
+            JsonObject entry;
+            entry.SetNamedValue(L"id", JsonValue::CreateNumberValue(value.GetObject().GetNamedNumber(L"id")));
+            entry.SetNamedValue(L"outcome", JsonValue::CreateNumberValue(outcome));
+            outcomes.Append(entry);
+        }
+    }
+    JsonObject message;
+    message.SetNamedValue(L"version", JsonValue::CreateNumberValue(1));
+    message.SetNamedValue(L"generation",
+                          JsonValue::CreateNumberValue(batch.Size() ? batch.GetNamedNumber(L"generation") : 0));
+    message.SetNamedValue(L"outcomes", outcomes);
+    message.SetNamedValue(L"blocked", JsonValue::CreateBooleanValue(blocked));
+    Require(SUCCEEDED(api.completeRequests(hwnd, message.Stringify().c_str())), "complete native requests");
+}
+// Drain until a request of `kind` appears (1 select-tab, 2 menu transition),
+// completing every batch as the browser would. Returns an empty object if none
+// arrives, so a caller can assert absence as well as presence.
+static winrt::Windows::Data::Json::JsonObject NextRequest(WinUIPaneApi& api, HWND hwnd, uint32_t kind,
+                                                          wchar_t const* eventKind = nullptr, int attempts = 40) {
+    using namespace winrt::Windows::Data::Json;
+    for (int i = 0; i < attempts; ++i) {
+        auto batch = DrainRequests(api, hwnd);
+        JsonObject found;
+        if (batch.Size()) {
+            for (auto value : batch.GetNamedArray(L"requests")) {
+                auto request = value.GetObject();
+                if (request.GetNamedNumber(L"kind") != kind) continue;
+                auto action = request.GetNamedObject(L"action");
+                if (eventKind && action.GetNamedString(L"kind") != eventKind) continue;
+                found = request;
+            }
+            CompleteRequests(api, hwnd, batch);
+        }
+        if (found.Size()) return found;
+        Pump();
+        Sleep(5);
+    }
+    return JsonObject();
 }
 // Refresh the existing test fixture after publishing descriptions, as Firefox does.
 static void PrepareFixtureMenus(WinUIPaneApi& api, HWND hwnd,
@@ -279,7 +357,6 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
         }
     };
     auto sync = [&](uint32_t count = 2) {
-        fprintf(stderr, "Context sync count=%u\n", count);
         Require(SUCCEEDED(api.syncTabs(hwnd, tabs, count, 71, &selected, &close, &create, &id, &command)),
                 "context tabs");
         settle();
@@ -287,17 +364,24 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     SetForegroundWindow(hwnd);
     Require(SUCCEEDED(api.focus(hwnd, FALSE)), "activate test island before realizing rows");
     settle();  // Finish the new island's Loaded transition before inserting fixture rows.
-    fprintf(stderr, "Context fixture hwnd=%p rootLoaded=%d\n", hwnd, content.as<FrameworkElement>().IsLoaded());
     auto current = MenuState({71, 72});
     MenuExchange(api, hwnd, current.Stringify().c_str());
     sync();
     Controls::MenuFlyout menu{nullptr};
     Object opened;
-    auto open = [&](uint32_t count = 3) {
+    // Opening a menu: the row shows a deliberately non-actionable pending state
+    // and asks for that one tab's description; the answer is what makes any
+    // command appear. `count` is how many entries the answer produces.
+    //
+    // Every opening asks again, including a reopen of the same row: Firefox is
+    // the only authority on a tab's commands, and a description can go stale
+    // from state no publication carries.
+    auto open = [&](uint32_t count = 3, bool nested = false, bool describe = true) {
         fprintf(stderr, "Context open count=%u revision=%u\n", count, menuTestRevision);
         if (menu && menu.IsOpen()) menu.Hide();
         settle();
-        while (MenuExchange(api, hwnd).Size()) {}
+        while (DrainRequests(api, hwnd).Size()) {
+        }
         auto row = RealizedRow(list, 1);
         menu = row.ContextFlyout().as<Controls::MenuFlyout>();
         SetForegroundWindow(hwnd);
@@ -313,16 +397,26 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
             Sleep(20);
         }
         menu.Opened(token);
-        Require(
-            shown && menu.IsOpen() && menu.Items().Size() == count && menu.Items().GetAt(count - 1).ActualWidth() > 0,
-            "first opening renders published entries before any protocol response");
-        // Publication must leave the pending opening event queued.
-        Require(!MenuExchange(api, hwnd, current.Stringify().c_str()).Size(), "publish-only never drains input");
-        opened = MenuExchange(api, hwnd);
-        while (opened.HasKey(L"kind") && opened.GetNamedString(L"kind") == L"dismiss") opened = MenuExchange(api, hwnd);
-        Require(opened.GetNamedString(L"kind") == L"open" && opened.GetNamedNumber(L"tab") == 72 &&
-                    opened.GetNamedNumber(L"revision") == current.GetNamedObject(L"state").GetNamedNumber(L"revision"),
+        Require(shown && menu.IsOpen(), "the menu opens without waiting for a browser exchange");
+        // Whatever is displayed before the description arrives must not be
+        // actionable: one disabled row, no commands. This holds for a reopen
+        // too, which is what makes a stale description impossible.
+        Require(menu.Items().Size() == 1 && !menu.Items().GetAt(0).IsEnabled(),
+                "an opening menu shows a non-actionable pending state, never stale commands");
+        auto request = NextRequest(api, hwnd, 2, L"open");
+        opened = request.Size() ? request.GetNamedObject(L"action") : Object();
+        Require(opened.Size() && opened.GetNamedNumber(L"tab") == 72 &&
+                    opened.GetNamedNumber(L"revision") ==
+                        current.GetNamedObject(L"state").GetNamedNumber(L"revision"),
                 "opening retains target and published revision");
+        if (!describe) return;
+        MenuExchange(api, hwnd,
+                     MenuDescription(opened.GetNamedNumber(L"session"), 72, opened.GetNamedNumber(L"revision"), nested)
+                         .Stringify()
+                         .c_str());
+        settle();
+        Require(menu.IsOpen() && menu.Items().Size() == count && menu.Items().GetAt(count - 1).ActualWidth() > 0,
+                "the authoritative description replaces the pending state in place");
     };
     Controls::MenuFlyout retained{nullptr};
     Controls::MenuFlyoutItemBase retainedItem{nullptr};
@@ -331,26 +425,29 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
         Require(menu != retained && menu.Items().GetAt(0) != retainedItem, "each opening uses fresh native controls");
         retained = menu;
         retainedItem = menu.Items().GetAt(0);
-        Require(!menu.Items().GetAt(1).IsEnabled(), "model disables native command");
+        Require(!menu.Items().GetAt(1).IsEnabled(), "the description disables a native command");
         Require(menu.Items().GetAt(2).as<Controls::MenuFlyoutItem>().Text() == L"Unpin Tab", "Firefox supplies label");
         auto peer = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(menu.Items().GetAt(index));
         peer.GetPattern(Automation::Peers::PatternInterface::Invoke)
             .as<Automation::Provider::IInvokeProvider>()
             .Invoke();
         Pump();
-        auto event = MenuExchange(api, hwnd);
-        Require(event.GetNamedString(L"kind") == L"activate" && event.GetNamedNumber(L"tab") == 72 &&
+        auto request = NextRequest(api, hwnd, 2, L"activate");
+        auto event = request.Size() ? request.GetNamedObject(L"action") : Object();
+        Require(event.Size() && event.GetNamedNumber(L"tab") == 72 &&
                     event.GetNamedNumber(L"session") == opened.GetNamedNumber(L"session") &&
                     event.GetNamedNumber(L"revision") == opened.GetNamedNumber(L"revision") &&
                     event.GetNamedString(L"id") == (index ? L"opaque-unpin" : L"opaque-reload"),
                 "opaque action retains target/session/revision");
         Require(list.SelectedIndex() == 0, "context activation preserves background selection");
-        auto next = MenuExchange(api, hwnd);
-        Require(!next.HasKey(L"kind") || next.GetNamedString(L"kind") == L"dismiss", "activation consumed once");
+        Require(!NextRequest(api, hwnd, 2, L"activate", 3).Size(), "activation is delivered once");
     }
-    current = MenuState({71, 72}, true);
+    // A new published context invalidates every cached description, so the next
+    // opening asks again and can be answered differently.
+    current = MenuState({71, 72});
     MenuExchange(api, hwnd, current.Stringify().c_str());
-    open(2);
+    sync();
+    open(2, true);
     Require(menu.Items().GetAt(0).try_as<Controls::MenuFlyoutSeparator>() != nullptr &&
                 menu.Items().GetAt(1).as<Controls::MenuFlyoutSubItem>().Items().Size() == 3,
             "standard separator and submenu renderer");
@@ -362,28 +459,47 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     open();
     MenuExchange(api, hwnd, old.Stringify().c_str());
     Require(menu.IsOpen() && menu.Items().Size() == 3, "late state cannot replace current controls");
+    // A description that no longer names the open request must not be rendered.
+    auto session = opened.GetNamedNumber(L"session");
+    auto revision = opened.GetNamedNumber(L"revision");
+    for (auto stale : {MenuDescription(session + 5, 72, revision), MenuDescription(session, 71, revision),
+                       MenuDescription(session, 72, revision + 5)}) {
+        MenuExchange(api, hwnd, stale.Stringify().c_str());
+        settle();
+        Require(menu.IsOpen() && menu.Items().Size() == 3,
+                "a description for another session, tab or revision is discarded");
+    }
     std::vector<wchar_t> output(262144);
-    auto reject = [&](Object const& malformed) {
+    auto reject = [&](Object const& malformed, char const* what) {
         Require(FAILED(api.syncTabMenu(hwnd, malformed.Stringify().c_str(), output.data(), uint32_t(output.size()))),
                 "invalid state rejected atomically");
+        fprintf(stderr, "Reject %s open=%d items=%u\n", what, menu.IsOpen(), menu.Items().Size());
         Require(menu.IsOpen() && menu.Items().Size() == 3, "invalid state preserves current menu");
     };
-    auto malformed = MenuState({71, 72});
-    malformed.GetNamedObject(L"state").GetNamedArray(L"models").GetArrayAt(0).GetObjectAt(1).SetNamedValue(
+    auto malformed = MenuDescription(session, 72, revision);
+    malformed.GetNamedObject(L"menu").GetNamedArray(L"items").GetObjectAt(1).SetNamedValue(
         L"id", Value::CreateStringValue(L"opaque-reload"));
-    reject(malformed);
-    malformed = MenuState({71, 72});
-    malformed.GetNamedObject(L"state").GetNamedArray(L"tabs").GetObjectAt(0).SetNamedValue(L"model",
-                                                                                           Value::CreateNumberValue(2));
-    reject(malformed);
-    reject(MenuState({71, 71}));
+    reject(malformed, "duplicate command id in a description");
+    reject(MenuState({71, 71}), "duplicate tab id in a publication");
     malformed = MenuState({71, 72});
     malformed.SetNamedValue(L"publishOnly", Value::CreateStringValue(L"true"));
-    reject(malformed);
+    reject(malformed, "publishOnly of the wrong type");
     Require(FAILED(api.syncTabMenu(hwnd, L"{broken", output.data(), uint32_t(output.size()))),
             "malformed JSON rejected");
     Require(FAILED(api.syncTabMenu(hwnd, L"{\"version\":3}", output.data(), uint32_t(output.size()))),
             "unknown protocol rejected");
+    // An opening whose description never arrives stays non-actionable, and the
+    // menu can be dismissed and reopened without leaving stale rows behind.
+    current = MenuState({71, 72});
+    MenuExchange(api, hwnd, current.Stringify().c_str());
+    sync();
+    open(0, false, /*describe=*/false);
+    Require(menu.Items().Size() == 1 && !menu.Items().GetAt(0).IsEnabled(),
+            "an unanswered opening never becomes actionable");
+    menu.Hide();
+    settle();
+    while (DrainRequests(api, hwnd).Size()) {
+    }
     current = MenuState({71});
     MenuExchange(api, hwnd, current.Stringify().c_str());
     sync(1);
@@ -396,7 +512,8 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     open();
     menu.Hide();
     settle();
-    while (MenuExchange(api, hwnd).Size()) {}
+    while (DrainRequests(api, hwnd).Size()) {
+    }
     current = MenuState({71, 72});
     for (auto binding : current.GetNamedObject(L"state").GetNamedArray(L"tabs"))
         binding.GetObject().SetNamedValue(L"selected", Value::CreateBooleanValue(true));
@@ -409,20 +526,165 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
             "active tab remains separately accessible");
     list.SelectedItems().Clear();
     list.SelectedItems().Append(list.Items().GetAt(1));
-    sync();
-    auto selectionEvent = MenuExchange(api, hwnd);
-    Require(selectionEvent.GetNamedString(L"kind") == L"selection" && selectionEvent.GetNamedNumber(L"tab") == 72 &&
-                selectionEvent.GetNamedArray(L"tabs").Size() == 1 &&
+    settle();
+    // Selection now travels on the v11 request path, not on syncTabs and not on
+    // the menu exchange: exactly one executor.
+    auto selectionRequest = NextRequest(api, hwnd, 1);
+    auto selectionEvent = selectionRequest.Size() ? selectionRequest.GetNamedObject(L"action") : Object();
+    Require(selectionEvent.Size() && selectionEvent.GetNamedString(L"kind") == L"selection" &&
+                selectionEvent.GetNamedNumber(L"tab") == 72 && selectionEvent.GetNamedArray(L"tabs").Size() == 1 &&
                 selectionEvent.GetNamedArray(L"tabs").GetNumberAt(0) == 72,
-            "native selected set is copied and delivered once through the browser exchange");
-    Require(!MenuExchange(api, hwnd).Size(), "selection request is consumed once");
+            "native selected set is copied and delivered once through the request path");
+    Require(!NextRequest(api, hwnd, 1, nullptr, 3).Size(), "selection request is delivered once");
+    {
+        uint32_t reserved{}, c{}, n{}, i{}, cmd{};
+        WinUITab pair[]{{71, L"Context first", 7}, {72, L"Context second", 27}};
+        Require(SUCCEEDED(api.syncTabs(hwnd, pair, 2, 71, &reserved, &c, &n, &i, &cmd)), "snapshot after selection");
+        Require(c == 0 && n == 0 && i == 0 && cmd == 0, "syncTabs no longer drains selection");
+    }
     current = MenuState({71, 72});
     MenuExchange(api, hwnd, current.Stringify().c_str());
     sync();
     puts(
-        "Menu protocol: first-open presentation, shared state, input isolation, opaque activation, revisions and "
-        "malformed input passed");
+        "Menu protocol: pending-state opening, on-demand descriptions bound to their request, stale-answer "
+        "rejection, opaque activation, revisions and malformed input passed");
 }
+// The v11 request path and the incremental presentation model, both owned by
+// the Rust shell core linked into this DLL. This is the direct evidence that
+// the core is actually driving the pane rather than merely being linked.
+static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
+    using namespace winrt;
+    using namespace winrt::Microsoft::UI::Xaml;
+    using Object = winrt::Windows::Data::Json::JsonObject;
+    using Value = winrt::Windows::Data::Json::JsonValue;
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
+    UIElement content{nullptr};
+    Require(SUCCEEDED(inspect(hwnd, put_abi(content))), "inspect request-path host");
+    auto list = content.as<Controls::Grid>().Children().GetAt(1).as<Controls::ListView>();
+    uint32_t revision{}, close{}, create{}, context{}, command{};
+    WinUITab tabs[]{{101, L"Core first", 7}, {102, L"Core second", 7}, {103, L"Core third", 7}};
+    MenuExchange(api, hwnd, MenuState({101, 102, 103}).Stringify().c_str());
+    Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, &revision, &close, &create, &context, &command)),
+            "seed the presentation model");
+    Require(revision != 0, "a snapshot reports the model revision it produced");
+    Pump();
+
+    // One notification per endpoint. The sink is called on the transition out
+    // of idle and not again until the host drains.
+    static int notifications = 0;
+    notifications = 0;
+    Require(SUCCEEDED(api.setNotifySink(
+                hwnd, [](void*) -> BOOL { ++notifications; return TRUE; }, nullptr)),
+            "register the drain wakeup");
+    for (uint32_t index : {1u, 2u, 1u}) {
+        list.SelectedIndex(int(index));
+        Pump();
+    }
+    Require(notifications == 1, "repeated input accumulates work without reposting the wakeup");
+
+    auto batch = DrainRequests(api, hwnd);
+    Require(batch.Size() && batch.GetNamedNumber(L"version") == 1, "the drain returns a versioned envelope");
+    auto requests = batch.GetNamedArray(L"requests");
+    // Selection is a replaceable value, so three clicks collapse to the newest
+    // one -- explicitly superseded, not silently dropped.
+    Require(requests.Size() == 1 && requests.GetObjectAt(0).GetNamedNumber(L"kind") == 1 &&
+                requests.GetObjectAt(0).GetNamedObject(L"action").GetNamedNumber(L"tab") == 102,
+            "the newest selection supersedes the queued ones");
+    auto requestId = requests.GetObjectAt(0).GetNamedNumber(L"id");
+    // A drain already open is refused rather than nested.
+    Require(!DrainRequests(api, hwnd).Size(), "a second drain is refused while one is open");
+    CompleteRequests(api, hwnd, batch);
+    Require(!DrainRequests(api, hwnd).Size(), "an empty queue drains nothing");
+
+    // Replay: the same completion a second time must not be accepted, and the
+    // generation must match the live endpoint.
+    Object replay;
+    Object outcome;
+    outcome.SetNamedValue(L"id", Value::CreateNumberValue(requestId));
+    outcome.SetNamedValue(L"outcome", Value::CreateNumberValue(1));
+    winrt::Windows::Data::Json::JsonArray outcomes;
+    outcomes.Append(outcome);
+    replay.SetNamedValue(L"version", Value::CreateNumberValue(1));
+    replay.SetNamedValue(L"generation", Value::CreateNumberValue(batch.GetNamedNumber(L"generation") + 99));
+    replay.SetNamedValue(L"outcomes", outcomes);
+    Require(api.completeRequests(hwnd, replay.Stringify().c_str()) == E_NOT_VALID_STATE,
+            "a completion for another endpoint generation is rejected");
+
+    // Blocking: the host says it cannot execute, and nothing is posted until it
+    // says otherwise.
+    notifications = 0;
+    Object blockMessage;
+    blockMessage.SetNamedValue(L"version", Value::CreateNumberValue(1));
+    blockMessage.SetNamedValue(L"generation", Value::CreateNumberValue(0));
+    blockMessage.SetNamedValue(L"outcomes", winrt::Windows::Data::Json::JsonArray());
+    blockMessage.SetNamedValue(L"blocked", Value::CreateBooleanValue(true));
+    Require(SUCCEEDED(api.completeRequests(hwnd, blockMessage.Stringify().c_str())), "block execution");
+    list.SelectedIndex(2);
+    Pump();
+    Require(notifications == 0, "a blocked endpoint never reposts its wakeup");
+    Require(!DrainRequests(api, hwnd).Size(), "a blocked endpoint refuses to hand out work");
+    blockMessage.SetNamedValue(L"blocked", Value::CreateBooleanValue(false));
+    Require(SUCCEEDED(api.completeRequests(hwnd, blockMessage.Stringify().c_str())), "unblock execution");
+    Require(notifications == 1, "unblocking arranges exactly one wakeup for the work that waited");
+    auto resumed = DrainRequests(api, hwnd);
+    Require(resumed.Size() && resumed.GetNamedArray(L"requests").Size() == 1,
+            "the work queued while blocked is still there, and is delivered once");
+    CompleteRequests(api, hwnd, resumed);
+
+    // Incremental presentation. One title changes; nothing else is touched, and
+    // the revision advances so the next delta has a base.
+    auto delta = [&](wchar_t const* json) {
+        uint32_t next = 0;
+        auto hr = api.applyTabDelta(hwnd, json, &next);
+        return std::pair<HRESULT, uint32_t>{hr, next};
+    };
+    auto before = revision;
+    auto title = std::wstring(LR"({"version":1,"base":)") + std::to_wstring(before) +
+                 LR"(,"titles":[{"id":102,"title":"Core renamed"}]})";
+    auto applied = delta(title.c_str());
+    Require(SUCCEEDED(applied.first) && applied.second > before, "a title delta applies and advances the revision");
+    // The same delta replayed names a revision the model has moved past.
+    Require(delta(title.c_str()).first == E_NOT_VALID_STATE,
+            "a delta against a stale base is a gap, answered with a snapshot rather than a retry");
+    auto selection = std::wstring(LR"({"version":1,"base":)") + std::to_wstring(applied.second) +
+                     LR"(,"selected":103,"titles":[]})";
+    auto selected = delta(selection.c_str());
+    Require(SUCCEEDED(selected.first), "a selection delta applies");
+    Pump();
+    Require(list.SelectedIndex() == 2, "the delta moved the native selection without a snapshot");
+    auto unknown = std::wstring(LR"({"version":1,"base":)") + std::to_wstring(selected.second) +
+                   LR"(,"titles":[{"id":999,"title":"absent"}]})";
+    Require(delta(unknown.c_str()).first == E_NOT_VALID_STATE, "a delta for an unknown tab is refused");
+
+    Require(SUCCEEDED(api.setNotifySink(hwnd, nullptr, nullptr)), "clear the drain wakeup");
+    notifications = 0;
+    list.SelectedIndex(0);
+    Pump();
+    Require(notifications == 0, "a cleared sink is never called");
+    // Work queued with no sink must not be stranded: registering one again
+    // schedules the wakeup that could not be delivered.
+    Require(SUCCEEDED(api.setNotifySink(
+                hwnd, [](void*) -> BOOL { ++notifications; return TRUE; }, nullptr)),
+            "re-register the drain wakeup");
+    Require(notifications == 1, "a late sink picks up the work that could not be announced");
+    CompleteRequests(api, hwnd, DrainRequests(api, hwnd));
+    Require(SUCCEEDED(api.setNotifySink(hwnd, nullptr, nullptr)), "leave the fixture without a sink");
+
+    // Last, because it deliberately poisons this endpoint's core: a panic is
+    // contained and reported rather than unwound into C++, and the pane keeps
+    // working through its snapshot-only fallback.
+    if (auto panic = reinterpret_cast<HRESULT(WINAPI*)(HWND)>(GetProcAddress(module, "WinUIPaneTestCorePanic"))) {
+        Require(panic(hwnd) == E_FAIL, "a Rust panic is contained and reported as a failure");
+        Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, &revision, &close, &create, &context, &command)),
+                "the pane still accepts snapshots after a contained panic");
+        uint32_t next = 0;
+        Require(api.applyTabDelta(hwnd, LR"({"version":1,"base":1,"titles":[]})", &next) == E_NOT_VALID_STATE,
+                "a poisoned core refuses deltas instead of pretending to apply them");
+    }
+    puts("Shell core: one wakeup per endpoint, superseding selection, blocked/unblocked execution, bounded batches, "
+         "replay rejection, incremental deltas, gap detection and panic containment passed");
+}
+
 static void CheckThemesAndLongList(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     using namespace winrt::Microsoft::UI::Xaml;
     for (int i = 0; i < 20; ++i) {
@@ -514,9 +776,15 @@ static void CheckThemesAndLongList(HMODULE module, WinUIPaneApi& api, HWND hwnd)
         }
         menu.Opened(openedToken);
         Require(opened, "menu rendered for theme inspection");
-        auto event = MenuExchange(api, hwnd);
-        while (event.HasKey(L"kind") && event.GetNamedString(L"kind") != L"open") event = MenuExchange(api, hwnd);
-        Require(event.HasKey(L"kind"), "theme menu opening event");
+        auto request = NextRequest(api, hwnd, 2, L"open");
+        Require(request.Size(), "theme menu opening request");
+        auto action = request.GetNamedObject(L"action");
+        // Answer the opening so there are real command rows to inspect.
+        MenuExchange(api, hwnd,
+                     MenuDescription(action.GetNamedNumber(L"session"), uint32_t(action.GetNamedNumber(L"tab")),
+                                     action.GetNamedNumber(L"revision"))
+                         .Stringify()
+                         .c_str());
         for (int i = 0; i < 300 && !menu.Items().GetAt(0).ActualWidth(); ++i) {
             Pump();
             Sleep(10);
@@ -722,9 +990,11 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "strip has no address or browser content");
     Require(first != second && view.SelectedItem() == first, "duplicate titles preserve identity and active tab");
     view.SelectedItem(second);
-    auto event = MenuExchange(api, host);
-    Require(event.GetNamedString(L"kind") == L"selection" && event.GetNamedNumber(L"tab") == 22,
-            "TabView selection queues browser intent");
+    auto selectionRequest = NextRequest(api, host, 1);
+    auto event = selectionRequest.Size() ? selectionRequest.GetNamedObject(L"action")
+                                         : winrt::Windows::Data::Json::JsonObject();
+    Require(event.Size() && event.GetNamedString(L"kind") == L"selection" && event.GetNamedNumber(L"tab") == 22,
+            "TabView selection queues browser intent on the request path");
     sync();
     Require(view.SelectedItem() == first, "Firefox snapshot owns active tab");
     tabs[1].title = L"Updated title";
@@ -799,14 +1069,17 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(reorderToEnd.GetNamedString(L"kind") == L"strip-reorder" && reorderToEnd.GetNamedNumber(L"id") == 11 &&
                 reorderToEnd.GetNamedNumber(L"beforeId") == 0,
             "a tab with no following row requests beforeId 0 (move to end)");
-    Require(SUCCEEDED(completeReorder(host, 22)), "queue a reorder request for the drain-priority check");
+    Require(SUCCEEDED(completeReorder(host, 22)), "queue a reorder request alongside a selection");
     view.SelectedItem(second);
-    auto priorityFirst = MenuExchange(api, host);
-    Require(priorityFirst.GetNamedString(L"kind") == L"selection" && priorityFirst.GetNamedNumber(L"tab") == 22,
-            "selection drains before a queued reorder");
+    // The two travel on different transports now: selection on the v11 request
+    // path, the strip reorder on the unmigrated menu exchange. Neither blocks
+    // the other, and neither appears on both.
+    auto priorityFirst = NextRequest(api, host, 1);
+    Require(priorityFirst.Size() && priorityFirst.GetNamedObject(L"action").GetNamedNumber(L"tab") == 22,
+            "selection drains on the request path");
     auto priorityReorder = MenuExchange(api, host);
     Require(priorityReorder.GetNamedString(L"kind") == L"strip-reorder",
-            "queued reorder drains once the selection ahead of it is consumed");
+            "the queued reorder still drains on the legacy strip transport");
     sync();
     settleWidths();
     Require(view.TabItems().GetAt(0) == first && view.TabItems().GetAt(1) == second,
@@ -941,7 +1214,26 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         Sleep(10);
     }
     flyout.Opened(openedToken);
-    Require(opened && flyout.Items().Size() == 3, "strip reuses published menu before exchange");
+    // A strip row's menu takes the same on-demand path as the sidebar's: it
+    // opens on a non-actionable pending row and asks for that one tab's
+    // description, which is what fills it.
+    Require(opened && flyout.Items().Size() == 1 && !flyout.Items().GetAt(0).IsEnabled(),
+            "strip opening shows a non-actionable pending state");
+    {
+        auto request = NextRequest(api, host, 2, L"open");
+        Require(request.Size(), "strip opening asks for this tab's description");
+        auto action = request.GetNamedObject(L"action");
+        MenuExchange(api, host,
+                     MenuDescription(action.GetNamedNumber(L"session"), uint32_t(action.GetNamedNumber(L"tab")),
+                                     action.GetNamedNumber(L"revision"))
+                         .Stringify()
+                         .c_str());
+        for (int i = 0; i < 100 && flyout.Items().Size() != 3; ++i) {
+            Pump();
+            Sleep(10);
+        }
+        Require(flyout.Items().Size() == 3, "the description fills the strip row's menu in place");
+    }
     flyout.Hide();
     for (int i = 0; i < 500 && second.ContextFlyout() == flyout; ++i) {
         Pump();
@@ -1375,6 +1667,20 @@ int wmain(int argc, wchar_t** argv) {
         Require(SUCCEEDED(api.syncTabs(first, themeTabs, 2, 11, &selected, &close, &create, &id, &command)),
                 "theme fixture");
         CheckThemesAndLongList(module, api, first);
+        {
+            // Its own endpoint: the panic check deliberately poisons a core and
+            // drops the pane to its snapshot-only fallback, which must not leak
+            // into the other fixtures.
+            HWND core = CreateWindowExW(0, L"STATIC", L"Shell core host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
+                                        nullptr, GetModuleHandleW(nullptr), nullptr);
+            Require(core && SUCCEEDED(api.update(core, &rect, TRUE)), "shell core island");
+            ShowWindow(core, SW_SHOW);
+            Pump();
+            CheckShellCoreRequests(module, api, core);
+            Require(SUCCEEDED(api.destroy(core)), "shell core island teardown");
+            DestroyWindow(core);
+            Pump();
+        }
         for (int cycle = 0; cycle < 20; ++cycle) {
             HWND second = CreateWindowExW(0, L"STATIC", L"Menu lifecycle host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480,
                                           nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -1397,15 +1703,26 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
     uint32_t requested = 99, closeRequested = 0, newRequested = 0, contextId = 0, command = 0;
+    // Since ABI v11 `requested` is the presentation-model revision this
+    // snapshot produced, not a selection: selection travels on the request
+    // path. `noSelectionRequest` is how "nothing was echoed back" is asserted
+    // now -- on the transport selection actually uses.
+    uint32_t modelRevision = 0;
+    auto advancedRevision = [&] {
+        bool advanced = requested > modelRevision;
+        modelRevision = requested;
+        return advanced;
+    };
+    auto noSelectionRequest = [&](HWND target) { return !NextRequest(api, target, 1, nullptr, 2).Size(); };
     WinUITab tabs[]{{11, L"First tab"}, {22, L"Unicode tab \u65e5\u672c\u8a9e"}};
     Require(
         SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)) &&
-            !requested,
-        "initial tabs do not emit user selection");
+            advancedRevision() && noSelectionRequest(first),
+        "initial tabs do not emit user selection, and the snapshot reports a model revision");
     tabs[0].title = L"Renamed tab";
     Require(
         SUCCEEDED(api.syncTabs(first, tabs, 2, 22, &requested, &closeRequested, &newRequested, &contextId, &command)) &&
-            !requested,
+            advancedRevision() && noSelectionRequest(first),
         "title and Firefox selection updates do not echo");
     WinUITab reordered[]{{22, L"Moved tab"}, {11, L"Renamed tab"}};
     Require(SUCCEEDED(api.syncTabs(first, reordered, 2, 22, &requested, &closeRequested, &newRequested, &contextId,
@@ -1465,27 +1782,27 @@ int wmain(int argc, wchar_t** argv) {
         Pump();
     };
     key(VK_DOWN);
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)) &&
-            requested == 22,
-        "native selection reaches the Firefox bridge");
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 22, &requested, &closeRequested, &newRequested, &contextId, &command)) &&
-            !requested,
-        "selection request consumed exactly once");
-
+    {
+        auto request = NextRequest(api, first, 1);
+        Require(request.Size() && request.GetNamedObject(L"action").GetNamedNumber(L"tab") == 22,
+                "native keyboard selection reaches the Firefox bridge on the request path");
+        Require(noSelectionRequest(first), "selection request is delivered exactly once");
+    }
     key(VK_UP);
-    auto staleHr =
-        api.syncTabs(first, tabs + 1, 1, 22, &requested, &closeRequested, &newRequested, &contextId, &command);
-    Require(SUCCEEDED(staleHr) && !requested, "closed tab discards queued native selection");
+    {
+        auto request = NextRequest(api, first, 1);
+        Require(request.Size() && request.GetNamedObject(L"action").GetNamedNumber(L"tab") == 11,
+                "the reverse keyboard selection is its own request");
+    }
     Require(
         SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)),
-        "restore after stale selection");
+        "restore after keyboard selection");
     WithTab(first, tabs[1].title, tabs[1].title, true);
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)) &&
-            requested == 22,
-        "accessibility selection reaches browser bridge");
+    {
+        auto request = NextRequest(api, first, 1);
+        Require(request.Size() && request.GetNamedObject(L"action").GetNamedNumber(L"tab") == 22,
+                "accessibility selection reaches the browser bridge on the request path");
+    }
     Require(
         SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)),
         "restore selection before close");
@@ -1493,7 +1810,7 @@ int wmain(int argc, wchar_t** argv) {
     for (int i = 0; i < 200; ++i) {
         Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId,
                                        &command)) &&
-                    !requested,
+                    noSelectionRequest(first),
                 "background close does not select its row");
         if (closeRequested) break;
         Pump();
@@ -1530,9 +1847,10 @@ int wmain(int argc, wchar_t** argv) {
         WithTab(first, tabs[1].title, tabs[1].title, false, true, input);
         auto closeHr =
             api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command);
-        fprintf(stderr, "Close input=%d hr=%08X selection=%u close=%u\n", input, unsigned(closeHr), requested,
+        fprintf(stderr, "Close input=%d hr=%08X revision=%u close=%u\n", input, unsigned(closeHr), requested,
                 closeRequested);
-        Require(SUCCEEDED(closeHr) && closeRequested == 22 && !requested, "keyboard background close does not select");
+        Require(SUCCEEDED(closeHr) && closeRequested == 22 && noSelectionRequest(first),
+                "keyboard background close does not select");
     }
     Require(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, nullptr, &contextId, &command) == E_POINTER,
             "reject null new-tab output");
@@ -1540,7 +1858,7 @@ int wmain(int argc, wchar_t** argv) {
         WithTab(first, L"FirefoxWinUINewTab", L"New tab", false, false, input);
         Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId,
                                        &command)) &&
-                    newRequested == 1 && !requested && !closeRequested,
+                    newRequested == 1 && !closeRequested && noSelectionRequest(first),
                 "UIA/Space/Enter requests new tab without inventing rows");
         Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId,
                                        &command)) &&
@@ -1561,7 +1879,7 @@ int wmain(int argc, wchar_t** argv) {
     WithTab(first, L"New tab", L"New tab", false, true, 0, 2, 1);
     Require(SUCCEEDED(api.syncTabs(first, duplicates, 2, 11, &requested, &closeRequested, &newRequested, &contextId,
                                    &command)) &&
-                closeRequested == 22 && !requested,
+                closeRequested == 22 && noSelectionRequest(first),
             "close second identically named tab by stable identity");
     Require(
         SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested, &closeRequested, &newRequested, &contextId, &command)),
@@ -1612,8 +1930,8 @@ int wmain(int argc, wchar_t** argv) {
         WinUITab other[]{{11, L"Independent window"}};
         Require(SUCCEEDED(api.syncTabs(second, other, 1, 11, &requested, &closeRequested, &newRequested, &contextId,
                                        &command)) &&
-                    !requested,
-                "independent window can reuse tab IDs");
+                    requested && noSelectionRequest(second),
+                "independent window can reuse tab IDs and keeps its own model revision");
         if (cycle == 0) {
             ShowWindow(second, SW_SHOWNOACTIVATE);
             Pump();

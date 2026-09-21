@@ -50,13 +50,20 @@ function fixture() {
   return { session, state, calls, target, publish, open, activate };
 }
 
-test("first opening and activation need no model response", () => {
+test("publication carries identities only, and an opening is answered with one description", () => {
   const f = fixture();
   const initial = f.publish();
   assert.equal(initial.version, 2);
   assert.equal(initial.publishOnly, true);
-  assert.deepEqual(initial.state.tabs, [{ tab: 72, model: 1 }]);
+  assert.deepEqual(initial.state.tabs, [{ tab: 72 }]);
+  assert.equal("models" in initial.state, false, "publication never describes commands");
+  assert.equal(f.session.menuPublication(), null, "nothing is described until a menu opens");
   assert(f.open());
+  const answer = f.session.menuPublication();
+  assert.equal(answer.menu.tab, 72);
+  assert.equal(answer.menu.session, 1);
+  assert.equal(answer.menu.revision, f.session.revision);
+  assert.equal(answer.menu.items[0].id, "opaque");
   assert.deepEqual(f.session.snapshot(), { version: 2 });
   assert(f.activate());
   assert.deepEqual(f.calls, [[f.target, "opaque"]]);
@@ -79,16 +86,32 @@ test("a cancelled or throwing command revokes openings queued in its modal loop"
   }
 });
 
-test("unpublished and unknown targets never request lazy menu construction", () => {
+test("unpublished and unknown targets are revoked instead of being described", () => {
   const f = fixture();
+  let describes = 0;
+  f.session.describe = () => { describes++; return { items: [] }; };
   assert.equal(f.open(), false);
+  assert.equal(describes, 0, "an unpublished target costs no description");
   assert.deepEqual(f.session.snapshot(), { version: 2, revoke: 1 });
   assert.equal(f.activate(), false);
 });
 
-test("live eligibility, context and target identity are checked before open and execution", () => {
-  for (const change of [f => f.state.enabled = false, f => f.state.selected = 2,
-    f => f.state.target = null, f => f.state.target = {},
+// Structural prerequisites (the target and the published context) are checked
+// when the menu opens, so an opening against stale structure is revoked before
+// anything is described. A change to what the commands *say* is captured at
+// opening and re-checked at activation instead, because that is the state the
+// user is actually looking at.
+test("structural changes revoke an opening; description changes fail activation", () => {
+  for (const change of [f => f.state.selected = 2, f => f.state.target = null,
+    f => f.state.target = {}]) {
+    const f = fixture(); f.publish();
+    change(f);
+    assert.equal(f.open(), false, "structure moved: nothing is described");
+    assert.equal(f.session.snapshot().revoke, 1);
+    assert.equal(f.activate(), false);
+    assert.equal(f.calls.length, 0);
+  }
+  for (const change of [f => f.state.enabled = false,
     f => f.session.describe = () => ({ items: [{ kind: "command", id: "other", enabled: true }] })]) {
     for (const afterOpen of [false, true]) {
       const f = fixture(); f.publish();
@@ -97,10 +120,31 @@ test("live eligibility, context and target identity are checked before open and 
       if (afterOpen) change(f);
       assert.equal(f.activate(), false);
       assert.equal(f.calls.length, 0);
-      assert.equal(f.session.snapshot().revoke, 1);
-      assert(f.publish()); // Validation must not consume the pending state update.
+      // A command whose eligibility changed after the menu opened revokes the
+      // session; one that was already ineligible when it opened simply is not
+      // in the description, so there is nothing to revoke. Either way the
+      // command did not run, and publication state was not consumed.
+      assert.equal(f.session.snapshot().revoke, afterOpen ? 1 : undefined);
+      assert.equal(f.session.revision, 1);
     }
   }
+});
+
+test("an open menu is revalidated against live state and revoked when it no longer matches", () => {
+  const f = fixture(); f.publish();
+  assert(f.open());
+  assert.equal(f.session.revalidateActive(), false, "unchanged: no revocation");
+  assert.equal(f.session.snapshot().revoke, undefined);
+  f.state.enabled = false;
+  assert(f.session.revalidateActive(), "the displayed commands are no longer current");
+  assert.equal(f.session.snapshot().revoke, 1);
+  assert.equal(f.session.menuPublication(), null);
+  assert.equal(f.activate(), false);
+  // With nothing open, revalidation describes nothing at all.
+  let describes = 0;
+  f.session.describe = () => { describes++; return { items: [] }; };
+  assert.equal(f.session.revalidateActive(), false);
+  assert.equal(describes, 0);
 });
 
 test("changed state replaces the snapshot and rejects old revisions", () => {
@@ -140,23 +184,58 @@ test("nested eligibility and consumption before execution reentry", () => {
   assert(f.activate({ session: 2 }));
 });
 
-test("all live tabs share descriptions without a 32-tab opening cache", () => {
+// The measured regression this milestone removes: publication used to describe
+// every tab's commands, every pass. It must now describe none, and an opening
+// must cost exactly one description regardless of how many tabs exist.
+test("publishing 1,000 tabs describes none of them; opening one describes one", () => {
   const targets = new Map(Array.from({ length: 1000 }, (_, i) => [i + 1, {}]));
+  let describes = 0;
+  const session = new WinUITabMenuSession({
+    resolveTab: id => targets.get(id),
+    describe: () => { describes++; return { items: [{ kind: "command", id: "r", enabled: true }] }; },
+    execute: () => {},
+  });
+  const initial = session.update(targets);
+  assert.equal(initial.state.tabs.length, 1000);
+  assert.equal("models" in initial.state, false);
+  assert.equal(describes, 0, "publication describes no tab");
+  assert.equal(session.update(targets), null, "an unchanged window publishes nothing");
+  assert.equal(describes, 0);
+
+  assert(session.receive({ kind: "open", session: 1, tab: 1000, revision: 1 }));
+  assert.equal(describes, 1, "one opening, one description");
+  assert.equal(session.menuPublication().menu.tab, 1000);
+  assert(session.receive({ kind: "activate", session: 1, tab: 1000, revision: 1, id: "r" }));
+  assert.equal(describes, 2, "activation revalidates that one tab, and no other");
+
+  // Reopening after the forced republication costs one more description, and
+  // still none for the other 999 tabs.
+  describes = 0;
+  const republished = session.update(targets);
+  assert.equal(describes, 0);
+  assert(session.receive({ kind: "open", session: 2, tab: 500, revision: republished.state.revision }));
+  assert.equal(describes, 1);
+
+  targets.delete(1000);
+  describes = 0;
+  assert.equal(session.update(targets).state.tabs.length, 999);
+  assert.equal(describes, 0, "a structural change still describes nothing");
+  assert.equal(session.tabs.has(1000), false);
+  assert.equal(session.receive({ kind: "open", session: 3, tab: 1000, revision: session.revision }), false);
+  assert.equal(describes, 0, "a revoked opening describes nothing");
+});
+
+test("a title-only change publishes nothing, because titles are not published here", () => {
+  const targets = new Map([[1, { label: "a" }], [2, { label: "b" }]]);
   const session = new WinUITabMenuSession({
     resolveTab: id => targets.get(id),
     describe: () => ({ items: [{ kind: "command", id: "r", enabled: true }] }),
     execute: () => {},
   });
-  const initial = session.update(targets);
-  assert.equal(initial.state.models.length, 1);
-  assert.equal(initial.state.tabs.length, 1000);
-  assert.equal(session.update(targets), null);
-  assert(session.receive({ kind: "open", session: 1, tab: 1000, revision: 1 }));
-  assert(session.receive({ kind: "activate", session: 1, tab: 1000, revision: 1, id: "r" }));
-  targets.delete(1000);
-  assert.equal(session.update(targets).state.tabs.length, 999);
-  assert.equal(session.tabs.has(1000), false);
-  assert.equal(session.receive({ kind: "open", session: 2, tab: 1000, revision: 2 }), false);
+  assert(session.update(targets));
+  targets.get(1).label = "changed";
+  assert.equal(session.update(targets), null,
+    "a renamed tab does not invalidate identities, order or selection");
 });
 
 test("publications are window-local and invalid updates preserve the current state", () => {

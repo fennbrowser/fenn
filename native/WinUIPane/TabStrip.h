@@ -88,6 +88,9 @@ struct NativeTabStrip {
     // runs just updates the target id rather than queuing a second one.
     bool highlightQueued{};
     uint32_t queuedActive{};
+    // The active tab as Firefox last stated it, so an incremental apply can
+    // tell "active" from "also selected" without a snapshot.
+    uint32_t activeTabId{};
     enum class DragPhase { None, Armed, Dragging };
     struct DragState {
         DragPhase phase{};
@@ -850,6 +853,57 @@ struct NativeTabStrip {
         presentationFingerprint = fingerprint;
     }
 
+    // Incremental entry points for the v11 delta path: update exactly one row,
+    // or move the active-tab highlight, without visiting the other rows. A tab
+    // with no realized row is simply absent from `rows`; the next snapshot
+    // carries its title when one is realized.
+    void UpdateTitle(uint32_t id, hstring const& title) {
+        auto found = rows.find(id);
+        if (found == rows.end()) return;
+        UpdateHeader(found->second, id, title);
+        Automation::AutomationProperties::SetName(found->second, title);
+    }
+    // The secondary (multiselection) emphasis, applied from the set Firefox
+    // just published. Only rows whose membership changed are touched, so a
+    // selection change costs work proportional to the selection, not to the
+    // number of tabs.
+    void ApplySelectedSet(std::set<uint32_t> const& previous, std::set<uint32_t> const& current) {
+        if (dragging) return;
+        auto emphasize = [&](uint32_t id) {
+            auto row = rows.find(id);
+            if (row == rows.end()) return;
+            bool selected = current.count(id) != 0;
+            row->second.FontWeight(Windows::UI::Text::FontWeight{uint16_t(selected ? 600 : 400)});
+            Automation::AutomationProperties::SetItemStatus(
+                row->second, id == activeTabId ? L"Active tab" : selected ? L"Selected tab" : L"");
+        };
+        for (auto id : previous)
+            if (!current.count(id)) emphasize(id);
+        for (auto id : current)
+            if (!previous.count(id)) emphasize(id);
+    }
+    void ApplySelection(uint32_t previous, uint32_t active) {
+        activeTabId = active;
+        // A live gesture owns the visual order, and Sync()'s queued-highlight
+        // path already handles the mid-drag case; do not bypass it here.
+        if (dragging) return;
+        auto found = rows.find(active);
+        syncing = true;
+        view.SelectedItem(found == rows.end() ? nullptr : found->second);
+        syncing = false;
+        // Only the two rows whose active-tab status can have changed. TabView
+        // realizes a row per tab, so touching all of them here would put back
+        // exactly the per-tab work this path exists to remove.
+        for (auto id : {previous, active}) {
+            auto row = rows.find(id);
+            if (row == rows.end()) continue;
+            bool selected = menu.selectedTabs.count(id) != 0;
+            Automation::AutomationProperties::SetItemStatus(row->second, id == active ? L"Active tab"
+                                                                         : selected   ? L"Selected tab"
+                                                                                      : L"");
+        }
+    }
+
     void UpdateHeader(Controls::TabViewItem const& row, uint32_t id, hstring const& title) {
         auto header = row.Header().as<Controls::Grid>();
         // The loading spinner shares the favicon's slot -- Firefox's own tabs
@@ -920,6 +974,7 @@ struct NativeTabStrip {
     }
 
     void Sync(const WinUITab* tabs, uint32_t count, uint32_t active) {
+        activeTabId = active;
         // A drag in progress only ever moves rows visually; skip touching
         // TabItems()/content entirely rather than risk restyling a row out
         // from under the gesture's own bookkeeping (e.g. tabWidth captured
