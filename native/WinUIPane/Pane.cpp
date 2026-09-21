@@ -66,6 +66,17 @@ inline EntryWork* nativeWork() {
         // paid once per process and the other once per browser window, and a
         // single 45.9ms figure for "the first update()" cannot tell them apart.
         {L"initialize", 0, 0, 0},   {L"paneCreate", 0, 0, 0},
+        // Only the ticks that had a session to advance. Every window message
+        // reaches TickDragSession, and the ones with no drag in progress
+        // return on a pointer test -- section 8 requires no session work after
+        // a gesture completes, so the two must not be counted together or the
+        // count could never show it.
+        {L"dragTick", 0, 0, 0},
+        // Measurement only for now: ticks that ran with the cursor exactly
+        // where the previous tick left it, so every position-derived result
+        // was already known. Counted before deciding whether skipping them is
+        // worth changing a gesture path for.
+        {L"dragTickSame", 0, 0, 0},
         {nullptr, 0, 0, 0},
     };
     return entries;
@@ -241,6 +252,8 @@ enum Entry : size_t {
     EntryTranslate,
     EntryInitialize,
     EntryPaneCreate,
+    EntryDragTick,
+    EntryDragTickSame,
 };
 struct GeometryWork {
     uint64_t updates{}, geometryApplied{}, restacks{}, visibilityApplied{}, clips{}, clipsApplied{};
@@ -1273,6 +1286,7 @@ void ResolveDragDrop(Pane& sourcePane, Pane* hitPane, POINT screenPoint) {
 void TickDragSession() {
     auto& session = dragSession();
     if (!session.sourceHwnd) return;
+    WorkScope tick{EntryDragTick};
     auto& panes = state().panes;
     auto srcIt = panes.find(session.sourceHwnd);
     if (srcIt == panes.end() || srcIt->second->strip.get() != session.sourceStrip) {
@@ -1302,6 +1316,13 @@ void TickDragSession() {
         return;
     }
     // Dragging.
+    if (WorkAccountingEnabled()) {
+        static POINT lastTick{LONG_MIN, LONG_MIN};
+        POINT here{};
+        GetCursorPos(&here);
+        if (here.x == lastTick.x && here.y == lastTick.y) ++nativeWork()[EntryDragTickSame].calls;
+        lastTick = here;
+    }
     if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
         session.sourceStrip->CancelDrag();
         AbortDragSession();

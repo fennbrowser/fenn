@@ -1700,9 +1700,31 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
     if (argc == 3 && wcscmp(argv[2], L"--drag") == 0) {
+        auto dragTicks = [&] {
+            auto counts = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
+                GetProcAddress(module, "WinUIPaneTestGetEntryCalls"));
+            Require(counts != nullptr, "entry-call counters available");
+            uint64_t value = 0;
+            Require(SUCCEEDED(counts(L"dragTick", &value)), "read drag tick count");
+            return value;
+        };
         CheckTabStripDrag(module, api, first);
         CheckTabStripDetach(module, api, first);
         CheckTabStripCrossWindowAdopt(module, api, first);
+        // Section 8: no session work after a gesture completes. Every window
+        // message still reaches TickDragSession, so the only way to show that
+        // a finished drag costs nothing is to keep the messages coming and
+        // require the count of ticks that had a session to advance to stand
+        // still. A tick that returns on the pointer test is not counted, which
+        // is what makes this assertion mean something.
+        auto ticksAfterGestures = dragTicks();
+        Require(ticksAfterGestures > 0, "the completed gestures did tick a live session");
+        for (int i = 0; i < 40; ++i) {
+            Require(PostMessageW(first, WM_NULL, 0, 0), "keep the message pump busy after the gesture");
+            Pump();
+            Sleep(5);
+        }
+        Require(dragTicks() == ticksAfterGestures, "a completed drag leaves no per-message session work behind");
         Require(SUCCEEDED(api.destroy(first)), "destroy drag test island");
         DestroyWindow(first);
         winrt::clear_factory_cache();
