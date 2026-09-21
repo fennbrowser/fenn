@@ -139,23 +139,70 @@ constexpr size_t kLatencyBucketCount = sizeof(kLatencyBuckets) / sizeof(kLatency
 struct StageWork {
     EntryWork work;
     uint64_t buckets[kLatencyBucketCount];
-    // Samples that spanned a period when the host had blocked the queue, and
-    // are therefore not this stage's own cost. Counted, never averaged in: a
-    // modal dialog holds a request for as long as it is open, which is correct
-    // behaviour, and folding it into the mean describes neither case.
+    // Samples this stage is not answerable for, counted and never averaged in.
+    //
+    //   blocked   the host had the queue blocked while the request waited.
+    //   deferred  the request sat through one or more drains before being
+    //             taken. Batches are bounded at 16 entries and 64KB so that a
+    //             burst cannot monopolise the browser's main thread, so this
+    //             is the bound working, not the wakeup being slow.
+    //
+    // Both are real waiting the user experiences; neither is a cost the wakeup
+    // path could remove, which is why they are separated rather than dropped.
     uint64_t blocked;
+    uint64_t deferred;
+    // Samples still counted in the distribution above, but whose wait was
+    // mostly the message pump not reaching this process at all. Real latency
+    // the user experiences; not something the wakeup path could shorten.
+    uint64_t stalled;
 };
 inline StageWork* requestLatency() {
     static StageWork stages[]{
-        {{L"wakeup", 0, 0, 0}, {}, 0}, {{L"execute", 0, 0, 0}, {}, 0},
-        {{L"total", 0, 0, 0}, {}, 0},  {{nullptr, 0, 0, 0}, {}, 0},
+        {{L"wakeup", 0, 0, 0}, {}, 0, 0, 0}, {{L"execute", 0, 0, 0}, {}, 0, 0, 0},
+        {{L"total", 0, 0, 0}, {}, 0, 0, 0},  {{nullptr, 0, 0, 0}, {}, 0, 0, 0},
     };
     return stages;
 }
-inline void RecordStage(size_t stage, double elapsed, bool blocked = false) {
+enum Excluded : uint32_t { NotExcluded, ExcludedBlocked, ExcludedDeferred };
+// The longest the message pump went without delivering anything to us.
+// Translate is called for every window message, so a long gap here means the
+// browser's main thread was not running our code -- which is the only
+// remaining explanation for a long wakeup once blocked and deferred samples
+// are both zero. Corroboration, not proof: it says the pump stopped reaching
+// us, not what it was doing instead.
+inline double& pumpGapMax() {
+    static double value = 0.0;
+    return value;
+}
+// Time the pump spent not reaching us in stretches long enough to matter, as a
+// running total. A request can then be asked how much of its own wait fell
+// inside one, which turns "the main thread was probably busy" into a number
+// attached to the sample rather than a coincidence of magnitudes.
+constexpr double kPumpStallMs = 50.0;
+inline double& pumpStallTotal() {
+    static double value = 0.0;
+    return value;
+}
+inline void RecordPumpGap() {
+    static double last = 0.0;
+    const double now = NowMs();
+    if (last > 0.0) {
+        const double gap = now - last;
+        if (gap > pumpGapMax()) pumpGapMax() = gap;
+        if (gap > kPumpStallMs) pumpStallTotal() += gap;
+    }
+    last = now;
+}
+inline void RecordStage(size_t stage, double elapsed, uint32_t excluded = NotExcluded, double stalled = 0.0) {
     auto& record = requestLatency()[stage];
-    if (blocked) {
+    // Attributed, not excluded: it happened to the user either way.
+    if (elapsed > kPumpStallMs && stalled >= 0.5 * elapsed) ++record.stalled;
+    if (excluded == ExcludedBlocked) {
         ++record.blocked;
+        return;
+    }
+    if (excluded == ExcludedDeferred) {
+        ++record.deferred;
         return;
     }
     ++record.work.calls;
@@ -303,6 +350,10 @@ struct Pane {
     // compare the epoch at enqueue with the one at drain.
     bool hostBlocked{};
     uint64_t blockedEpoch{};
+    // Batches taken so far. A request stamped with the value this held when it
+    // was queued is being taken by the first batch that could have taken it;
+    // anything older sat through one, which the bounded batch size allows.
+    uint64_t drainSequence{};
     void SetHostBlocked(bool blocked) {
         if (blocked && !hostBlocked) ++blockedEpoch;
         hostBlocked = blocked;
@@ -310,6 +361,8 @@ struct Pane {
     struct QueuedStamp {
         double at;
         uint64_t epoch;
+        uint64_t drainSequence;
+        double pumpStall;
         bool blocked;
     };
     // When each outstanding request was queued, and when it was handed over.
@@ -443,7 +496,7 @@ struct Pane {
             // completes, so its stamp would sit here forever. Ids are
             // monotonic, so dropping the lowest drops the oldest.
             while (queuedAt.size() >= 256) queuedAt.erase(queuedAt.begin());
-            queuedAt[request] = QueuedStamp{NowMs(), blockedEpoch, hostBlocked};
+            queuedAt[request] = QueuedStamp{NowMs(), blockedEpoch, drainSequence, pumpStallTotal(), hostBlocked};
         }
         if (notify) ScheduleDrain();
         if (!request && DiagnosticsEnabled())
@@ -1002,6 +1055,14 @@ struct Pane {
     }
 };
 
+// Blocking is checked first: a request held by a blocked queue is held
+// whatever the batches did afterwards, and calling that "deferred" would
+// blame the batch bound for the host's own pause.
+uint32_t Classify(Pane const& pane, Pane::QueuedStamp const& stamp) {
+    if (stamp.blocked || stamp.epoch != pane.blockedEpoch) return ExcludedBlocked;
+    if (pane.drainSequence > stamp.drainSequence + 1) return ExcludedDeferred;
+    return NotExcluded;
+}
 TabDragSession& dragSession() {
     static TabDragSession session;
     return session;
@@ -1629,6 +1690,7 @@ HRESULT WINAPI DrainRequests(HWND hwnd, wchar_t* output, uint32_t capacity) noex
             pane.drainOpen = false;
             return S_FALSE;
         }
+        if (WorkAccountingEnabled()) ++pane.drainSequence;
         NativeTabMenu::Array requests;
         for (size_t i = 0; i < batch.size(); ++i) {
             auto const& request = batch[i];
@@ -1640,8 +1702,8 @@ HRESULT WINAPI DrainRequests(HWND hwnd, wchar_t* output, uint32_t capacity) noex
                 const double now = NowMs();
                 auto queued = pane.queuedAt.find(request.id);
                 if (queued != pane.queuedAt.end())
-                    RecordStage(StageWakeup, now - queued->second.at,
-                                queued->second.blocked || queued->second.epoch != pane.blockedEpoch);
+                    RecordStage(StageWakeup, now - queued->second.at, Classify(pane, queued->second),
+                                pumpStallTotal() - queued->second.pumpStall);
                 while (pane.drainedAt.size() >= 256) pane.drainedAt.erase(pane.drainedAt.begin());
                 pane.drainedAt[request.id] = now;
             }
@@ -1707,8 +1769,8 @@ HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
                 }
                 auto queued = pane.queuedAt.find(uint64_t(id));
                 if (queued != pane.queuedAt.end()) {
-                    RecordStage(StageTotal, now - queued->second.at,
-                                queued->second.blocked || queued->second.epoch != pane.blockedEpoch);
+                    RecordStage(StageTotal, now - queued->second.at, Classify(pane, queued->second),
+                                pumpStallTotal() - queued->second.pumpStall);
                     pane.queuedAt.erase(queued);
                 }
             }
@@ -1788,6 +1850,7 @@ HRESULT WINAPI Destroy(HWND hwnd) noexcept {
 }
 BOOL WINAPI Translate(MSG* message) noexcept {
     WorkScope scope{EntryTranslate};
+    if (WorkAccountingEnabled()) RecordPumpGap();
     try {
         if (!message || FAILED(Check())) return FALSE;
         // Message-agnostic: this is the ground-truth tick a process-wide
@@ -1845,17 +1908,20 @@ HRESULT WINAPI Shutdown() noexcept {
                          entry->name, entry->calls, entry->totalMs, entry->maxMs,
                          entry->totalMs / double(entry->calls));
             }
+            fwprintf(stderr, L"WinUIPane pump-gap maxMs=%.3f\n", pumpGapMax());
             for (auto* stage = requestLatency(); stage->work.name; ++stage) {
-                if (!stage->work.calls && !stage->blocked) continue;
+                if (!stage->work.calls && !stage->blocked && !stage->deferred) continue;
                 if (!stage->work.calls) {
-                    fwprintf(stderr, L"WinUIPane request-latency stage=%s n=0 blocked=%llu (every sample was "
-                                     L"held by a blocked queue)\n",
-                             stage->work.name, stage->blocked);
+                    fwprintf(stderr, L"WinUIPane request-latency stage=%s n=0 blocked=%llu deferred=%llu (no "
+                                     L"sample was this stage's own to answer for)\n",
+                             stage->work.name, stage->blocked, stage->deferred);
                     continue;
                 }
-                fwprintf(stderr, L"WinUIPane request-latency stage=%s n=%llu blocked=%llu ms=%.3f maxMs=%.3f"
-                                 L" meanMs=%.4f le1=%llu le4=%llu le16=%llu le64=%llu le256=%llu over=%llu\n",
-                         stage->work.name, stage->work.calls, stage->blocked, stage->work.totalMs,
+                fwprintf(stderr, L"WinUIPane request-latency stage=%s n=%llu blocked=%llu deferred=%llu stalled=%llu ms=%.3f"
+                                 L" maxMs=%.3f meanMs=%.4f le1=%llu le4=%llu le16=%llu le64=%llu le256=%llu"
+                                 L" over=%llu\n",
+                         stage->work.name, stage->work.calls, stage->blocked, stage->deferred, stage->stalled,
+                         stage->work.totalMs,
                          stage->work.maxMs, stage->work.totalMs / double(stage->work.calls), stage->buckets[0],
                          stage->buckets[1], stage->buckets[2], stage->buckets[3], stage->buckets[4],
                          stage->buckets[5]);
@@ -1967,17 +2033,23 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetEntryCalls(const
     }
     return E_INVALIDARG;
 }
-// Test-only: how many samples of one latency stage were discarded because the
-// host had the queue blocked while they waited. Separate from the call count
-// above so neither reading needs an out-parameter it does not want.
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetStageBlocked(const wchar_t* name,
-                                                                             uint64_t* blocked) noexcept {
-    if (!name || !blocked) return E_POINTER;
+// Test-only: one counter of one latency stage, both named the way the shutdown
+// report names them. A single lookup rather than an export per counter, so
+// adding a way to classify a sample does not add ABI surface to the test DLL.
+// Counters: "n" (samples this stage answers for), "blocked", "deferred",
+// "stalled".
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetStageCounter(const wchar_t* name,
+                                                                             const wchar_t* counter,
+                                                                             uint64_t* value) noexcept {
+    if (!name || !counter || !value) return E_POINTER;
     for (auto* stage = requestLatency(); stage->work.name; ++stage) {
-        if (wcscmp(stage->work.name, name) == 0) {
-            *blocked = stage->blocked;
-            return S_OK;
-        }
+        if (wcscmp(stage->work.name, name) != 0) continue;
+        if (wcscmp(counter, L"n") == 0) *value = stage->work.calls;
+        else if (wcscmp(counter, L"blocked") == 0) *value = stage->blocked;
+        else if (wcscmp(counter, L"deferred") == 0) *value = stage->deferred;
+        else if (wcscmp(counter, L"stalled") == 0) *value = stage->stalled;
+        else return E_INVALIDARG;
+        return S_OK;
     }
     return E_INVALIDARG;
 }

@@ -1677,6 +1677,8 @@ int wmain(int argc, wchar_t** argv) {
             "geometry-work export exists only in the test DLL");
     Require((GetProcAddress(module, "WinUIPaneTestGetEntryCalls") != nullptr) == (argc == 3),
             "entry-call export exists only in the test DLL");
+    Require((GetProcAddress(module, "WinUIPaneTestGetStageCounter") != nullptr) == (argc == 3),
+            "stage-counter export exists only in the test DLL");
     RECT rect{0, 0, 240, 300};
     Require(api.update(nullptr, &rect, TRUE) == E_INVALIDARG, "reject null HWND");
     HWND first = CreateWindowExW(0, L"STATIC", L"Pane contract test", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
@@ -1734,16 +1736,19 @@ int wmain(int argc, wchar_t** argv) {
             // classified apart from the stage's own timing rather than
             // averaged into it.
             {
-                auto stageBlocked = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
-                    GetProcAddress(module, "WinUIPaneTestGetStageBlocked"));
-                Require(stageBlocked != nullptr, "blocked-sample counters available");
+                auto stageCounter = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, const wchar_t*, uint64_t*)>(
+                    GetProcAddress(module, "WinUIPaneTestGetStageCounter"));
+                Require(stageCounter != nullptr, "stage counters available");
                 uint64_t held = 0;
-                Require(SUCCEEDED(stageBlocked(L"wakeup", &held)), "read blocked wakeup samples");
+                Require(SUCCEEDED(stageCounter(L"wakeup", L"blocked", &held)), "read blocked wakeup samples");
                 Require(held > 0, "a request the host held while blocked is not counted as wakeup latency");
                 uint64_t ignored = 0;
-                Require(stageBlocked(L"noSuchStage", &ignored) == E_INVALIDARG, "reject an unknown stage name");
-                Require(stageBlocked(nullptr, &ignored) == E_POINTER, "reject a null stage name");
-                Require(stageBlocked(L"wakeup", nullptr) == E_POINTER, "reject a null blocked output");
+                Require(stageCounter(L"noSuchStage", L"n", &ignored) == E_INVALIDARG, "reject an unknown stage");
+                Require(stageCounter(L"wakeup", L"noSuchCounter", &ignored) == E_INVALIDARG,
+                        "reject an unknown counter");
+                Require(stageCounter(nullptr, L"n", &ignored) == E_POINTER, "reject a null stage name");
+                Require(stageCounter(L"wakeup", nullptr, &ignored) == E_POINTER, "reject a null counter name");
+                Require(stageCounter(L"wakeup", L"n", nullptr) == E_POINTER, "reject a null output");
             }
             Require(SUCCEEDED(api.destroy(core)), "shell core island teardown");
             DestroyWindow(core);
@@ -1953,6 +1958,32 @@ int wmain(int argc, wchar_t** argv) {
         Sleep(5);
     }
     Require(newTabs == 2, "repeated new-tab requests are each delivered");
+    if (argc == 3) {
+        // Validate the stall classifier on a stall this test creates, rather
+        // than trusting a counter that has only ever been printed. Queue a
+        // request, then stop pumping for longer than the stall threshold: from
+        // the pane's side that is exactly what a busy browser main thread looks
+        // like, because Translate is what stops arriving.
+        auto stageCounter = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, const wchar_t*, uint64_t*)>(
+            GetProcAddress(module, "WinUIPaneTestGetStageCounter"));
+        Require(stageCounter != nullptr, "stage counters available");
+        auto stalledWakeups = [&] {
+            uint64_t value = 0;
+            Require(SUCCEEDED(stageCounter(L"wakeup", L"stalled", &value)), "read stalled wakeup samples");
+            return value;
+        };
+        auto stalledBefore = stalledWakeups();
+        WithTab(first, L"FirefoxWinUINewTab", L"New tab");
+        Sleep(300);  // no Pump: from the pane's side the message pump has stopped
+        // The gap is observed by the next message to reach the pane's hook, so
+        // post one rather than hoping something else arrives. Without this the
+        // check passes only when an unrelated message happens to be pending.
+        Require(PostMessageW(first, WM_NULL, 0, 0), "post a message to end the stall");
+        Pump();
+        Require(NextRequest(api, first, 4, nullptr).Size(), "the request queued before the stall still arrives");
+        Require(stalledWakeups() == stalledBefore + 1,
+                "a wait spent with the pump not reaching us is attributed to the stall, not to the wakeup path");
+    }
     WinUITab duplicates[]{{11, L"New tab"}, {22, L"New tab"}};
     Require(SUCCEEDED(api.syncTabs(first, duplicates, 2, 11, &requested)), "identical title snapshot");
     WithTab(first, L"New tab", L"New tab", false, true, 0, 2, 1);
