@@ -28,6 +28,17 @@ using namespace Microsoft::UI::Xaml::Hosting;
 #include "TabStrip.h"
 
 namespace {
+// How much of what update() and clip() are asked to do turns out to repeat
+// what the island already has. Process-wide; read by the contract test through
+// WinUIPaneTestGetGeometryWork and reported at shutdown under
+// FIREFOX_WINUI_PANE_DIAGNOSTICS.
+struct GeometryWork {
+    uint64_t updates{}, geometryApplied{}, restacks{}, visibilityApplied{}, clips{}, clipsApplied{};
+};
+inline GeometryWork& geometryWork() {
+    static GeometryWork value;
+    return value;
+}
 bool DiagnosticsEnabled() {
     static const bool enabled = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;
     return enabled;
@@ -112,6 +123,18 @@ struct Pane {
     // Closes handed to the queue and not yet answered, so a second click on a
     // tab Firefox is still deciding about does not queue a second close.
     std::map<uint32_t, uint64_t> outstandingCloses;
+    // What this island has actually been given. Firefox drives update() from a
+    // requestAnimationFrame whenever anything is dirty, so most calls repeat
+    // the previous geometry and the previous exclusions exactly, and
+    // re-issuing either is measurable work for no change. Stacking is
+    // deliberately not cached: it is read back from the window, because
+    // anything may have restacked the child since.
+    RECT appliedBounds{};
+    bool boundsApplied{};
+    int appliedVisible{-1};
+    std::vector<RECT> appliedExclusions;
+    RECT appliedClipClient{};
+    bool clipApplied{};
     uint32_t browserSelection{};
     bool syncing{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
@@ -1154,15 +1177,34 @@ HRESULT UpdateImpl(HWND hwnd, const RECT* rect, BOOL visible, bool strip) noexce
             }
             found = s.panes.emplace(hwnd, std::move(pane)).first;
         }
-        auto site = found->second->source.SiteBridge();
-        site.MoveAndResize({rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top});
+        auto& pane = *found->second;
+        auto site = pane.source.SiteBridge();
         HWND child = GetWindowFromWindowId(site.WindowId());
+        auto& work = geometryWork();
+        ++work.updates;
+        const RECT requested{rect->left, rect->top, rect->right, rect->bottom};
+        if (!pane.boundsApplied || !EqualRect(&pane.appliedBounds, &requested)) {
+            site.MoveAndResize({rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top});
+            pane.appliedBounds = requested;
+            pane.boundsApplied = true;
+            ++work.geometryApplied;
+        }
         if (visible) {
             // Firefox's compositor is a sibling HWND covering the client area.
-            check_bool(SetWindowPos(child, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE));
-            site.Show();
-        } else {
-            site.Hide();
+            // Ask the window where it actually is rather than remembering where
+            // it was last put: a restack by anything else still has to be undone.
+            if (GetWindow(child, GW_HWNDPREV) != nullptr) {
+                check_bool(SetWindowPos(child, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE));
+                ++work.restacks;
+            }
+        }
+        if (pane.appliedVisible != int(bool(visible))) {
+            if (visible)
+                site.Show();
+            else
+                site.Hide();
+            pane.appliedVisible = int(bool(visible));
+            ++work.visibilityApplied;
         }
         if (DiagnosticsEnabled()) {
             RECT actual{};
@@ -1195,9 +1237,23 @@ HRESULT WINAPI Clip(HWND hwnd, const RECT* exclusions, uint32_t count) noexcept 
         }
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end()) return count ? E_INVALIDARG : S_OK;
-        HWND child = GetWindowFromWindowId(found->second->source.SiteBridge().WindowId());
+        auto& pane = *found->second;
+        HWND child = GetWindowFromWindowId(pane.source.SiteBridge().WindowId());
         RECT bounds{};
         check_bool(GetClientRect(child, &bounds));
+        auto& work = geometryWork();
+        ++work.clips;
+        // The same exclusions against the same client rect produce the same
+        // region, and the window already holds it. Rebuilding it and handing it
+        // back costs a redrawing SetWindowRgn for no change. The client rect is
+        // the whole of what can invalidate a region: it is in the window's own
+        // coordinates, so moving the island leaves it valid and only a resize
+        // does not -- and GetClientRect above has already reported that.
+        if (pane.clipApplied && EqualRect(&pane.appliedClipClient, &bounds) &&
+            pane.appliedExclusions.size() == count &&
+            std::equal(pane.appliedExclusions.begin(), pane.appliedExclusions.end(), exclusions,
+                       [](RECT const& a, RECT const& b) { return EqualRect(&a, &b) != 0; }))
+            return S_OK;
         HRGN region = CreateRectRgnIndirect(&bounds);
         if (!region) return E_OUTOFMEMORY;
         for (uint32_t i = 0; i < count; ++i) {
@@ -1219,6 +1275,10 @@ HRESULT WINAPI Clip(HWND hwnd, const RECT* exclusions, uint32_t count) noexcept 
             DeleteObject(region);
             return E_FAIL;
         }
+        pane.appliedExclusions.assign(exclusions, exclusions + count);
+        pane.appliedClipClient = bounds;
+        pane.clipApplied = true;
+        ++work.clipsApplied;
         if (DiagnosticsEnabled())
             fprintf(stderr, "WinUIPane clip exclusions=%u visible=%d\n", count, IsWindowVisible(child));
         return S_OK;
@@ -1540,6 +1600,14 @@ BOOL WINAPI Translate(MSG* message) noexcept {
 HRESULT WINAPI Shutdown() noexcept {
     try {
         check_hresult(Check());
+        if (DiagnosticsEnabled()) {
+            auto& work = geometryWork();
+            fprintf(stderr,
+                    "WinUIPane geometry-work updates=%llu geometryApplied=%llu restacks=%llu "
+                    "visibilityApplied=%llu clips=%llu clipsApplied=%llu\n",
+                    work.updates, work.geometryApplied, work.restacks, work.visibilityApplied, work.clips,
+                    work.clipsApplied);
+        }
         auto& s = state();
         s.stopped = true;
         for (auto& entry : s.panes) entry.second->Close();
@@ -1618,6 +1686,24 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestCorePanic(HWND hwnd
     } catch (...) {
         return to_hresult();
     }
+}
+// Test-only: the geometry work counters, so the contract test can pin that a
+// repeated update or clip never reaches the island. Values, in order: updates,
+// geometryApplied, restacks, visibilityApplied, clips, clipsApplied.
+// Process-wide and monotonic; callers compare deltas around the call they are
+// pinning. Not exported by the shipped DLL.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetGeometryWork(uint64_t* values,
+                                                                             uint32_t count) noexcept {
+    if (!values) return E_POINTER;
+    if (count < 6) return E_INVALIDARG;
+    auto& work = geometryWork();
+    values[0] = work.updates;
+    values[1] = work.geometryApplied;
+    values[2] = work.restacks;
+    values[3] = work.visibilityApplied;
+    values[4] = work.clips;
+    values[5] = work.clipsApplied;
+    return S_OK;
 }
 // Test-only inspection of the actual hosted content. Not exported by the shipped DLL.
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetContent(HWND hwnd, void** output) noexcept {

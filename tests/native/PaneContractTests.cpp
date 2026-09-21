@@ -1669,6 +1669,8 @@ int wmain(int argc, wchar_t** argv) {
     translatePane = api.translate;
     Require((GetProcAddress(module, "WinUIPaneTestGetContent") != nullptr) == (argc == 3),
             "inspection export exists only in the test DLL");
+    Require((GetProcAddress(module, "WinUIPaneTestGetGeometryWork") != nullptr) == (argc == 3),
+            "geometry-work export exists only in the test DLL");
     RECT rect{0, 0, 240, 300};
     Require(api.update(nullptr, &rect, TRUE) == E_INVALIDARG, "reject null HWND");
     HWND first = CreateWindowExW(0, L"STATIC", L"Pane contract test", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
@@ -1961,6 +1963,79 @@ int wmain(int argc, wchar_t** argv) {
     Require(SUCCEEDED(api.clip(first, nullptr, 0)), "restore full pane");
     Require(GetWindowRgn(island, region) == SIMPLEREGION && PtInRegion(region, 10, 10), "restored region");
     DeleteObject(region);
+    if (argc == 3) {
+        // Firefox calls update() and clip() from a requestAnimationFrame
+        // whenever anything is dirty, so most calls repeat what the island
+        // already has. Measured on a tab/urlbar/resize workload: 41% of rects
+        // and 87% of exclusion sets were repeats, and re-issuing them cost
+        // 45ms of the 106ms spent in these four operations. What must NOT be
+        // skipped is putting the island back on top, because anything may have
+        // restacked it without telling us -- so that is read from the window
+        // rather than remembered.
+        auto work = [&](uint64_t (&values)[6]) {
+            auto counters = reinterpret_cast<HRESULT(WINAPI*)(uint64_t*, uint32_t)>(
+                GetProcAddress(module, "WinUIPaneTestGetGeometryWork"));
+            Require(counters != nullptr, "geometry-work counters available");
+            Require(counters(values, 5) == E_INVALIDARG, "reject an undersized counter buffer");
+            Require(counters(nullptr, 6) == E_POINTER, "reject a null counter buffer");
+            Require(SUCCEEDED(counters(values, 6)), "read geometry-work counters");
+        };
+        uint64_t before[6]{}, after[6]{};
+        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "settle geometry before counting");
+        work(before);
+        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "repeat the same geometry");
+        work(after);
+        Require(after[0] == before[0] + 1, "the repeat is still counted as an update");
+        Require(after[1] == before[1], "a repeated rect is not handed to the island again");
+        Require(after[3] == before[3], "a repeated visibility is not handed to the island again");
+        RECT widened{rect.left, rect.top, rect.right + 8, rect.bottom};
+        Require(SUCCEEDED(api.update(first, &widened, TRUE)), "change the geometry");
+        work(before);
+        Require(before[1] == after[1] + 1, "a changed rect is handed to the island");
+        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "restore geometry after counting");
+        // A real change of visibility still has to reach the island; only a
+        // repeat of the visibility it already has is dropped.
+        work(before);
+        Require(SUCCEEDED(api.update(first, &rect, FALSE)), "hide the island");
+        work(after);
+        Require(after[3] == before[3] + 1, "hiding is handed to the island");
+        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "show the island again");
+        work(before);
+        Require(before[3] == after[3] + 1, "showing again is handed to the island");
+        // A restacked island is put back on top even though nothing else
+        // changed -- the case the sibling compositor produces in Firefox.
+        Require(SetWindowPos(compositor, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE),
+                "restack the sibling above the island");
+        work(before);
+        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "same geometry, restacked sibling");
+        work(after);
+        Require(after[2] == before[2] + 1, "a restacked island is put back on top with no other change");
+        Require(GetWindow(first, GW_CHILD) == island, "island is above the compositor again");
+        Require(after[1] == before[1], "restacking alone does not re-apply geometry");
+        // The same exclusions against the same client rect are the same region.
+        Require(SUCCEEDED(api.clip(first, cuts, 2)), "settle exclusions before counting");
+        work(before);
+        Require(SUCCEEDED(api.clip(first, cuts, 2)), "repeat the same exclusions");
+        work(after);
+        Require(after[4] == before[4] + 1, "the repeat is still counted as a clip");
+        Require(after[5] == before[5], "a repeated region is not set on the window again");
+        // Moving the island does not invalidate a region expressed in its own
+        // coordinates, so the repeat still holds across a move.
+        RECT movedRight{rect.left + 8, rect.top, rect.right + 8, rect.bottom};
+        Require(SUCCEEDED(api.update(first, &movedRight, TRUE)), "move without resizing");
+        work(before);
+        Require(SUCCEEDED(api.clip(first, cuts, 2)), "same exclusions after a move");
+        work(after);
+        Require(after[5] == before[5], "moving the island leaves its region valid");
+        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "restore geometry after the move");
+        work(before);
+        Require(SUCCEEDED(api.clip(first, nullptr, 0)), "change the exclusions");
+        work(after);
+        Require(after[5] == before[5] + 1, "a changed region is set on the window");
+        HRGN restored = CreateRectRgn(0, 0, 0, 0);
+        Require(GetWindowRgn(island, restored) == SIMPLEREGION, "the changed region reached the window");
+        DeleteObject(restored);
+    }
     unsigned children{};
     EnumChildWindows(first, CountChild, reinterpret_cast<LPARAM>(&children));
     Require(children > 0, "real native island child");
