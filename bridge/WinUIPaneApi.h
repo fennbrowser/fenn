@@ -2,7 +2,11 @@
 #include <windows.h>
 #include <stdint.h>
 
-// v12 puts the TabView strip's own gestures (group toggle, reorder, detach,
+// v13 puts the address surface's own intents on the v11 request path as well,
+// including the visibility of its rows -- the one thing about it that no
+// browser event reports. syncAddress therefore returns nothing and loses its
+// output buffer, and no entry point in this ABI is asked whether it has work.
+// v12 put the TabView strip's own gestures (group toggle, reorder, detach,
 // adopt) on the v11 request path, so syncTabMenu no longer returns anything and
 // loses its output buffer: it is now a publication only, and nothing in the
 // pane's protocol has to be asked whether it has work.
@@ -10,7 +14,7 @@
 // completeRequests) and incremental tab deltas (applyTabDelta), and retired
 // syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 // retaining the sidebar entry point.
-#define WINUI_PANE_ABI_VERSION 12u
+#define WINUI_PANE_ABI_VERSION 13u
 
 // All calls run on the browser's owning STA. Coordinates are client physical
 // pixels. The module remains loaded until process exit, including after shutdown.
@@ -62,7 +66,8 @@ struct WinUIPaneApi {
     // snapshot acknowledges it: do not sync while Firefox is deciding closure.
     HRESULT (WINAPI* syncTabs)(HWND, const WinUITab*, uint32_t, uint32_t, uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*);
     // Versioned JSON messages, copied during the call; output capacity is in wchar_t.
-    HRESULT (WINAPI* syncAddress)(HWND, const wchar_t*, wchar_t*, uint32_t);
+    // Publication only since v13; intents arrive through drainRequests.
+    HRESULT (WINAPI* syncAddress)(HWND, const wchar_t*);
     // Exclusions are pane-local physical pixels; an empty list restores the pane.
     HRESULT (WINAPI* clip)(HWND, const RECT*, uint32_t);
     // Menu protocol v2: published state, copied as JSON. The published state

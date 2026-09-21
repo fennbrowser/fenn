@@ -859,9 +859,9 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     std::vector<wchar_t> output(262144);
     const wchar_t* snapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":1,"text":"initial","rows":[{"id":"a","title":"First suggestion"},{"id":"b","title":"Second suggestion"}]})";
-    Require(FAILED(api.syncAddress(hwnd, L"{broken", output.data(), uint32_t(output.size()))),
+    Require(FAILED(api.syncAddress(hwnd, L"{broken")),
             "reject malformed address JSON");
-    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot, output.data(), uint32_t(output.size()))),
+    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)),
             "accept native address snapshot");
     Pump();
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
@@ -875,7 +875,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     auto originalRow = list.Items().GetAt(0);
     const wchar_t* imageSnapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":2,"text":"initial","selectedId":"b","rows":[{"id":"a","title":"First suggestion","sectionLabel":"Shortcuts","imageSize":32,"image":{"width":1,"height":1,"pixels":"0000ffff"}},{"id":"b","title":"Second suggestion"}]})";
-    Require(SUCCEEDED(api.syncAddress(hwnd, imageSnapshot, output.data(), uint32_t(output.size()))),
+    Require(SUCCEEDED(api.syncAddress(hwnd, imageSnapshot)),
             "accept decoded image");
     auto rowContent = originalRow.as<Controls::ListViewItem>().Content().as<Controls::StackPanel>();
     auto image = rowContent.Children()
@@ -893,22 +893,21 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     Require(
         FAILED(api.syncAddress(
             hwnd,
-            LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"text":"initial","rows":[{"id":"a","title":"bad","image":{"width":105,"height":1,"pixels":"00"}}]})",
-            output.data(), uint32_t(output.size()))),
+            LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"text":"initial","rows":[{"id":"a","title":"bad","image":{"width":105,"height":1,"pixels":"00"}}]})")),
         "reject oversized image before mutation");
     Require(list.Items().GetAt(0) == originalRow && image.Source(), "malformed image leaves controls intact");
     const wchar_t* modesSnapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":3,"text":"initial","rows":[{"id":"a","title":"First suggestion"},{"id":"b","title":"Second suggestion"}],"modes":{"generation":1,"applied":0,"active":false,"label":"Test engine","entries":[{"id":"engine","label":"Test engine","local":false,"symbol":"search","image":{"width":1,"height":1,"pixels":"0000ffff"}},{"id":"local","label":"History","local":true,"symbol":"history"},{"id":"settings","label":"Settings","local":true,"symbol":"settings"}]}})";
-    Require(SUCCEEDED(api.syncAddress(hwnd, modesSnapshot, output.data(), uint32_t(output.size()))),
+    Require(SUCCEEDED(api.syncAddress(hwnd, modesSnapshot)),
             "accept native mode model");
     auto modeButton =
         address.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(0).as<Controls::DropDownButton>();
     auto hiddenMode = winrt::Windows::Data::Json::JsonObject::Parse(modesSnapshot);
     hiddenMode.SetNamedValue(L"modeButtonVisible", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
-    Require(SUCCEEDED(api.syncAddress(hwnd, hiddenMode.Stringify().c_str(), output.data(), uint32_t(output.size()))) &&
+    Require(SUCCEEDED(api.syncAddress(hwnd, hiddenMode.Stringify().c_str())) &&
                 modeButton.Visibility() == Visibility::Collapsed && field.Text() == L"initial",
             "Firefox hides the button without changing the address");
-    Require(SUCCEEDED(api.syncAddress(hwnd, modesSnapshot, output.data(), uint32_t(output.size()))) &&
+    Require(SUCCEEDED(api.syncAddress(hwnd, modesSnapshot)) &&
                 modeButton.Visibility() == Visibility::Visible,
             "Firefox can restore the native search button");
     auto modeFlyout = modeButton.Flyout().as<Controls::MenuFlyout>();
@@ -918,19 +917,18 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     Require(
         FAILED(api.syncAddress(
             hwnd,
-            LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"rows":[],"modes":{"generation":1,"active":false,"label":"Test","entries":[]}})",
-            output.data(), uint32_t(output.size()))),
+            LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"rows":[],"modes":{"generation":1,"active":false,"label":"Test","entries":[]}})")),
         "reject changed menu identities without new generation");
     const wchar_t* globalSnapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":4,"text":"initial","rows":[{"id":"a","title":"First suggestion"}],"globalActions":[{"id":"global:action:0","resultId":"global","title":"Search with Fixture","hint":"Press Tab to select:","image":{"width":1,"height":1,"pixels":"0000ffff"}}]})";
-    Require(SUCCEEDED(api.syncAddress(hwnd, globalSnapshot, output.data(), uint32_t(output.size()))),
+    Require(SUCCEEDED(api.syncAddress(hwnd, globalSnapshot)),
             "accept separate global action");
     auto group = address.Children().GetAt(2).as<Controls::StackPanel>();
     auto actionButton = group.Children().GetAt(0).as<Controls::StackPanel>().Children().GetAt(1).as<Controls::Button>();
     Require(list.Items().Size() == 1 && actionButton.Content() &&
                 Automation::AutomationProperties::GetName(actionButton) == L"Search with Fixture",
             "global action is a labeled Button outside the ListView");
-    Require(SUCCEEDED(api.syncAddress(hwnd, globalSnapshot, output.data(), uint32_t(output.size()))) &&
+    Require(SUCCEEDED(api.syncAddress(hwnd, globalSnapshot)) &&
                 group.Children().GetAt(0).as<Controls::StackPanel>().Children().GetAt(1) == actionButton,
             "global action updates preserve button identity");
     field.Text(L"changed");
@@ -938,7 +936,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     // A publication produced before the edit predates it, so while the edit is
     // still outstanding it must not be applied -- otherwise the field snaps
     // back to the text the browser knew about when it published.
-    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot, output.data(), uint32_t(output.size()))),
+    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)),
             "an older publication is accepted while an edit is outstanding");
     Require(field.Text() == L"changed", "old snapshot does not overwrite an outstanding edit");
     // Since the address intents joined the request path, the edit wakes the
@@ -950,11 +948,11 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
             "native edit is copied and session scoped");
     // Once the host has answered it, publications apply again: the browser is
     // now the authority on what the field should say.
-    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot, output.data(), uint32_t(output.size()))),
+    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)),
             "publications apply again once the edit has been answered");
     Require(field.Text() == L"initial", "an answered edit stops holding off publications");
     Require(
-        SUCCEEDED(api.syncAddress(hwnd, LR"({"version":1,"enabled":false})", output.data(), uint32_t(output.size()))),
+        SUCCEEDED(api.syncAddress(hwnd, LR"({"version":1,"enabled":false})")),
         "disable address controls");
     Require(address.Visibility() == Visibility::Collapsed && list.Items().Size() == 0,
             "disable removes native suggestions");

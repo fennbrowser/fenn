@@ -1219,20 +1219,18 @@ HRESULT WINAPI Clip(HWND hwnd, const RECT* exclusions, uint32_t count) noexcept 
         return to_hresult();
     }
 }
-HRESULT WINAPI SyncAddress(HWND hwnd, const wchar_t* input, wchar_t* output, uint32_t capacity) noexcept {
+// Publication only, since v13: the address surface's intents and its row
+// visibility are queued and drained through the request path instead.
+HRESULT WINAPI SyncAddress(HWND hwnd, const wchar_t* input) noexcept {
     try {
         check_hresult(Check(hwnd));
-        if (!input || !output || capacity < 1 || capacity > 262144 || wcsnlen(input, 1048577) > 1048576)
-            return E_INVALIDARG;
-        output[0] = 0;
+        if (!input || wcsnlen(input, 1048577) > 1048576) return E_INVALIDARG;
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end()) return E_INVALIDARG;
         auto snapshot = NativeAddress::JObject::Parse(input);
         if (!found->second->address) return snapshot.GetNamedBoolean(L"enabled", false) ? E_NOTIMPL : S_OK;
         found->second->address->ObserveFocus(found->second->source.HasFocus() && GetForegroundWindow() == hwnd);
-        auto action = found->second->address->Sync(snapshot);
-        if (action.size() >= capacity) return E_INVALIDARG;
-        wcscpy_s(output, capacity, action.c_str());
+        found->second->address->Sync(snapshot);
         return S_OK;
     } catch (...) {
         return to_hresult();

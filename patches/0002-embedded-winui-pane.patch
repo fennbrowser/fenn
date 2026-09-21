@@ -1534,22 +1534,21 @@ index c59e443d11..03c10b9504 100644
 +winui-tab-strip-muted = Muted
 +winui-tab-strip-playing = Playing audio
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
-index 5d3805f045..7a83eed8c2 100644
+index 5d3805f045..1831a13f0c 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
 +++ b/dom/base/nsDOMWindowUtils.cpp
-@@ -151,6 +151,146 @@ using namespace mozilla::layers;
+@@ -151,6 +151,145 @@ using namespace mozilla::layers;
  using namespace mozilla::widget;
  using namespace mozilla::gfx;
  
 +NS_IMETHODIMP
-+nsDOMWindowUtils::SyncWinUIAddress(const nsAString& aSnapshot, nsAString& aAction) {
-+  aAction.Truncate();
++nsDOMWindowUtils::SyncWinUIAddress(const nsAString& aSnapshot) {
 +  auto* doc = GetDocument();
 +  if (!XRE_IsParentProcess() || !doc || !doc->NodePrincipal()->IsSystemPrincipal() ||
 +      !doc->GetDocumentURI()->GetSpecOrDefault().EqualsLiteral("chrome://browser/content/browser.xhtml")) return NS_ERROR_NOT_AVAILABLE;
 +  if (aSnapshot.Length() > 1048576 || aSnapshot.FindChar(char16_t(0)) != kNotFound) return NS_ERROR_INVALID_ARG;
 +  auto* widget = GetWidget();
-+  return widget && widget->SyncWinUIAddress(aSnapshot, aAction) ? NS_OK : NS_ERROR_NOT_AVAILABLE;
++  return widget && widget->SyncWinUIAddress(aSnapshot) ? NS_OK : NS_ERROR_NOT_AVAILABLE;
 +}
 +
 +NS_IMETHODIMP
@@ -1685,14 +1684,14 @@ index 5d3805f045..7a83eed8c2 100644
  #define APZZTFI_LOG(...) \
    MOZ_LOG(sApzZoomToFocusedInputLog, LogLevel::Debug, (__VA_ARGS__))
 diff --git a/dom/interfaces/base/nsIDOMWindowUtils.idl b/dom/interfaces/base/nsIDOMWindowUtils.idl
-index 83313786eb..fd1f02ee81 100644
+index 83313786eb..b3b1cdca61 100644
 --- a/dom/interfaces/base/nsIDOMWindowUtils.idl
 +++ b/dom/interfaces/base/nsIDOMWindowUtils.idl
 @@ -61,6 +61,41 @@ interface nsISynthesizedEventCallback : nsISupports {
  [builtinclass, scriptable, uuid(4d6732ca-9da7-4176-b8a1-8dde15cd0bf9)]
  interface nsIDOMWindowUtils : nsISupports {
  
-+  AString syncWinUIAddress(in AString snapshot);
++  void syncWinUIAddress(in AString snapshot);
 +  void syncWinUITabMenu(in AString snapshot);
 +
 +  /**
@@ -1731,14 +1730,14 @@ index 83313786eb..fd1f02ee81 100644
     * Image animation mode of the window. When this attribute's value
     * is changed, the implementation should set all images in the window
 diff --git a/widget/nsIWidget.h b/widget/nsIWidget.h
-index 031a63b997..0528a5ff9d 100644
+index 031a63b997..d2cbe052bc 100644
 --- a/widget/nsIWidget.h
 +++ b/widget/nsIWidget.h
 @@ -1294,6 +1294,24 @@ class nsIWidget : public nsSupportsWeakReference {
     */
    virtual void* GetNativeData(uint32_t aDataType) = 0;
  
-+  virtual bool SyncWinUIAddress(const nsAString& aSnapshot, nsAString& aAction) { return false; }
++  virtual bool SyncWinUIAddress(const nsAString& aSnapshot) { return false; }
 +  virtual bool SyncWinUITabMenu(const nsAString& aSnapshot) { return false; }
 +
 +  virtual bool DrainWinUIRequests(nsAString& aBatch) { return false; }
@@ -1760,10 +1759,10 @@ index 031a63b997..0528a5ff9d 100644
    nsIWidget();
    virtual ~nsIWidget();
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
-index c6e02a8696..d6f65b84a4 100644
+index c6e02a8696..f06cd8d874 100644
 --- a/widget/windows/WinUIPrototype.cpp
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -2,17 +2,235 @@
+@@ -2,17 +2,232 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  #include "WinUIPrototype.h"
@@ -1952,15 +1951,12 @@ index c6e02a8696..d6f65b84a4 100644
 +  return requested;
 +}
 +
-+bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot, nsAString& aAction) {
++bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot) {
 +  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
 +      !sPaneApi.syncAddress || aSnapshot.Length() > 1048576 ||
 +      !Preferences::GetBool("widget.windows.winui-prototype.pane.enabled", false)) return false;
 +  nsAutoString snapshot(aSnapshot);
-+  auto output = mozilla::MakeUnique<wchar_t[]>(262144);
-+  if (FAILED(sPaneApi.syncAddress(aWindow, snapshot.get(), output.get(), 262144))) return false;
-+  aAction.Assign(reinterpret_cast<const char16_t*>(output.get()));
-+  return true;
++  return SUCCEEDED(sPaneApi.syncAddress(aWindow, snapshot.get()));
 +}
 +
 +// Publication only: since ABI v12 the pane returns nothing here, so there is
@@ -2000,7 +1996,7 @@ index c6e02a8696..d6f65b84a4 100644
  
  void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    if (!XRE_IsParentProcess() || !NS_IsMainThread() || !sTraceEnabled) return;
-@@ -20,51 +238,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
+@@ -20,51 +235,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
    const HRESULT hr = CoGetApartmentType(&apartment, &qualifier);
    DWORD ownerProcess = 0;
@@ -2083,7 +2079,7 @@ index c6e02a8696..d6f65b84a4 100644
    FreeLibrary(module);
    TraceWinUIPrototype("probe-complete", aWindow);
 diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
-index 418c5d791d..65e80faf15 100644
+index 418c5d791d..612388081a 100644
 --- a/widget/windows/WinUIPrototype.h
 +++ b/widget/windows/WinUIPrototype.h
 @@ -4,8 +4,31 @@
@@ -2102,7 +2098,7 @@ index 418c5d791d..65e80faf15 100644
 +                     const nsTArray<LayoutDeviceIntRect>& aOcclusions);
 +uint32_t SyncWinUITabs(HWND aWindow, const nsTArray<uint32_t>& aIds,
 +                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t* aClose, uint32_t* aNew, uint32_t* aContextId, uint32_t* aCommand);
-+bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot, nsAString& aAction);
++bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot);
 +bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot);
 +// ABI v11 request path. The pane wakes the browser through a sink registered
 +// here, which only posts a task to this thread's event queue; these are the
@@ -2157,7 +2153,7 @@ index d4aff8c47e..a34a1a2dfc 100644
              IMEHandler::ProcessRawKeyMessage(msg)) {
            continue;  // the message is consumed.
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index 3f3b5b9200..6656acd9a2 100644
+index 3f3b5b9200..3dd6a01163 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -53,7 +53,6 @@
@@ -2180,8 +2176,8 @@ index 3f3b5b9200..6656acd9a2 100644
    return NS_OK;
  }
  
-+bool nsWindow::SyncWinUIAddress(const nsAString& aSnapshot, nsAString& aAction) {
-+  return mozilla::widget::SyncWinUIAddress(mWnd, aSnapshot, aAction);
++bool nsWindow::SyncWinUIAddress(const nsAString& aSnapshot) {
++  return mozilla::widget::SyncWinUIAddress(mWnd, aSnapshot);
 +}
 +
 +bool nsWindow::SyncWinUITabMenu(const nsAString& aSnapshot) {
@@ -2238,14 +2234,14 @@ index 3f3b5b9200..6656acd9a2 100644
      mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
    }
 diff --git a/widget/windows/nsWindow.h b/widget/windows/nsWindow.h
-index 1e2660589b..3ff5eab934 100644
+index 1e2660589b..db1d2360b8 100644
 --- a/widget/windows/nsWindow.h
 +++ b/widget/windows/nsWindow.h
 @@ -139,6 +139,21 @@ class nsWindow final : public nsIWidget {
  
    nsWindow();
  
-+  bool SyncWinUIAddress(const nsAString& aSnapshot, nsAString& aAction) override;
++  bool SyncWinUIAddress(const nsAString& aSnapshot) override;
 +  bool SyncWinUITabMenu(const nsAString& aSnapshot) override;
 +
 +  bool DrainWinUIRequests(nsAString& aBatch) override;
@@ -3479,10 +3475,10 @@ index 0000000000..a07d26b2f5
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..4d866c9fdb
+index 0000000000..abf0c2192b
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1209 @@
+@@ -0,0 +1,1206 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3953,12 +3949,9 @@ index 0000000000..4d866c9fdb
 +          image: row.image || null,
 +        })),
 +    };
-+    // Publication. Since the intents moved to the request queue this only ever
-+    // reports which rows are actually on screen, which is observed from native
-+    // layout and has no browser event behind it.
-+    const raw = window.windowUtils.syncWinUIAddress(JSON.stringify(state));
-+    if (!raw) return;
-+    this.executeAddressRequest(JSON.parse(raw));
++    // Publication only. Intents, and the visibility of the rows, arrive
++    // through the request queue.
++    window.windowUtils.syncWinUIAddress(JSON.stringify(state));
 +  },
 +
 +  // One native address intent, drained from the request queue. Outcome codes
@@ -4694,15 +4687,19 @@ index 0000000000..4d866c9fdb
 +window.addEventListener("unload", () => gWinUIPane.uninit(), { once: true });
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 0000000000..1e3400fc95
+index 0000000000..235c39e782
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,115 @@
 +#pragma once
 +#include <windows.h>
 +#include <stdint.h>
 +
-+// v12 puts the TabView strip's own gestures (group toggle, reorder, detach,
++// v13 puts the address surface's own intents on the v11 request path as well,
++// including the visibility of its rows -- the one thing about it that no
++// browser event reports. syncAddress therefore returns nothing and loses its
++// output buffer, and no entry point in this ABI is asked whether it has work.
++// v12 put the TabView strip's own gestures (group toggle, reorder, detach,
 +// adopt) on the v11 request path, so syncTabMenu no longer returns anything and
 +// loses its output buffer: it is now a publication only, and nothing in the
 +// pane's protocol has to be asked whether it has work.
@@ -4710,7 +4707,7 @@ index 0000000000..1e3400fc95
 +// completeRequests) and incremental tab deltas (applyTabDelta), and retired
 +// syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 +// retaining the sidebar entry point.
-+#define WINUI_PANE_ABI_VERSION 12u
++#define WINUI_PANE_ABI_VERSION 13u
 +
 +// All calls run on the browser's owning STA. Coordinates are client physical
 +// pixels. The module remains loaded until process exit, including after shutdown.
@@ -4762,7 +4759,8 @@ index 0000000000..1e3400fc95
 +    // snapshot acknowledges it: do not sync while Firefox is deciding closure.
 +    HRESULT (WINAPI* syncTabs)(HWND, const WinUITab*, uint32_t, uint32_t, uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*);
 +    // Versioned JSON messages, copied during the call; output capacity is in wchar_t.
-+    HRESULT (WINAPI* syncAddress)(HWND, const wchar_t*, wchar_t*, uint32_t);
++    // Publication only since v13; intents arrive through drainRequests.
++    HRESULT (WINAPI* syncAddress)(HWND, const wchar_t*);
 +    // Exclusions are pane-local physical pixels; an empty list restores the pane.
 +    HRESULT (WINAPI* clip)(HWND, const RECT*, uint32_t);
 +    // Menu protocol v2: published state, copied as JSON. The published state

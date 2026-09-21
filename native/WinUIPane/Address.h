@@ -47,7 +47,10 @@ struct NativeAddress {
     // answering it must not be read as answering one.
     std::function<void(winrt::hstring const&)> reportVisible;
     double revision{}, sequence{-1}, editId{}, selectionId{}, acknowledgedEditId{};
-    bool syncing{}, composing{}, enterPending{}, observedComposing{}, queryComplete{}, focusWithin{};
+    // A commit the user made before the browser could answer it. It is not
+    // lost and it is not retried on a clock: it waits for the publication that
+    // satisfies its precondition, which is what DeferredCommitReady() names.
+    bool syncing{}, composing{}, deferredCommit{}, observedComposing{}, queryComplete{}, focusWithin{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     ~NativeAddress() { lifetime.reset(); }
 
@@ -73,7 +76,7 @@ struct NativeAddress {
         intent.SetNamedValue(L"altKey", JValue::CreateBooleanValue((GetKeyState(VK_MENU) & 0x8000) != 0));
         value.SetNamedValue(L"intent", intent);
         Stage(value, NativeShellCore::GlobalAction);
-        enterPending = false;
+        deferredCommit = false;
     }
     // Everything the policy may consider, read from WinUI, Win32 and the last
     // applied publication. Assembled here so the rules cannot quietly start
@@ -87,6 +90,13 @@ struct NativeAddress {
             acknowledgedEditId == editId ? 1u : 0u,
             (queryComplete || !suggestions.ids.empty()) ? 1u : 0u,
         };
+    }
+    // Exactly the two conditions the policy defers a commit on, so the retry
+    // and the deferral cannot drift apart. Before this, the deferral lived in
+    // the policy and the retry restated it by hand in the middle of Sync().
+    bool DeferredCommitReady() const {
+        auto observed = Observed();
+        return observed.edit_acknowledged && observed.query_settled;
     }
     NativeShellCore::Decision Decide(NativeShellCore::Intent incoming,
                                      NativeShellCore::Intent staged) const {
@@ -132,7 +142,7 @@ struct NativeAddress {
         if (Decide(NativeShellCore::Edit, stagedKind) == NativeShellCore::DropIntent) return;
         observedText = field.Text();
         observedComposing = composing;
-        enterPending = false;
+        deferredCommit = false;
         submitIntent = L"";
         auto value = Message(L"edit");
         value.SetNamedValue(L"editId", JValue::CreateNumberValue(++editId));
@@ -166,7 +176,7 @@ struct NativeAddress {
         // edit, or behind an edit still in flight) come back as Defer.
         switch (Decide(incoming, stagedKind)) {
             case NativeShellCore::Defer:
-                enterPending = true;
+                deferredCommit = true;
                 return;
             case NativeShellCore::DropIntent:
                 return;
@@ -174,7 +184,7 @@ struct NativeAddress {
                 break;
         }
         if (incoming == NativeShellCore::Dismiss || incoming == NativeShellCore::Blur) {
-            enterPending = false;
+            deferredCommit = false;
             submitIntent = L"";
         }
         auto value = Message(kind);
@@ -378,7 +388,7 @@ struct NativeAddress {
         mode.edit = [this] { Edit(); };
         mode.message = [this](wchar_t const* kind) { return Message(kind); };
         mode.clearIntent = [this] {
-            enterPending = false;
+            deferredCommit = false;
             submitIntent = L"";
         };
         mode.focusField = [this] { field.Focus(FocusState::Programmatic); };
@@ -428,7 +438,7 @@ struct NativeAddress {
             suggestions.Clear();
             ClearStaged();
             session = L"";
-            enterPending = false;
+            deferredCommit = false;
             submitIntent = L"";
             queryComplete = false;
             acknowledgedEditId = 0;
@@ -503,7 +513,7 @@ struct NativeAddress {
         if (nextSession != session) {
             mode.Reset();
             ClearStaged();
-            enterPending = false;
+            deferredCommit = false;
             submitIntent = L"";
             queryComplete = false;
             acknowledgedEditId = 0;
@@ -565,8 +575,8 @@ struct NativeAddress {
         // The deferred commit's precondition is satisfied by a publication, so
         // this is where it is re-offered. Action() queues it if the policy now
         // allows it; nothing is returned from here.
-        if (enterPending && (queryComplete || !suggestions.ids.empty()) && acknowledgedEditId == editId) {
-            enterPending = false;
+        if (deferredCommit && DeferredCommitReady()) {
+            deferredCommit = false;
             Action(L"activate");
         }
         ReportVisibility();
