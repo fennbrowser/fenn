@@ -3502,10 +3502,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..37b3966a8d
+index 0000000000..f3b5819ce1
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1243 @@
+@@ -0,0 +1,1254 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3750,11 +3750,22 @@ index 0000000000..37b3966a8d
 +        // command disabled while a dialog is open -- so an opening menu is
 +        // still told the truth. Anything that would run a command is refused
 +        // outright rather than queued behind the prompt.
-+        const modal = gDialogBox.isOpen;
 +        for (const request of batch.requests || []) {
-+          const describing = request.kind === 2 && request.action?.kind === "open";
-+          outcomes.push({ id: request.id,
-+            outcome: modal && !describing ? 2 : this.executeRequest(request) });
++          let outcome = 2;
++          try {
++            const describing = request.kind === 2 && request.action?.kind === "open";
++            // An earlier command may have opened a dialog, including before
++            // throwing. Recheck before each command rather than once per batch.
++            if (!gDialogBox.isOpen || describing) outcome = this.executeRequest(request);
++          } catch (error) {
++            // Taking a batch puts every request in flight. A throwing command
++            // still needs an outcome or its native pending state never clears;
++            // it must not strand the later requests in this batch either.
++            // Do not retry: the command may already have changed browser state.
++            this.structuralDirty = true;
++            console.error("WinUI request failed", request.id, error);
++          }
++          outcomes.push({ id: request.id, outcome });
 +        }
 +      }
 +    } catch (error) {
