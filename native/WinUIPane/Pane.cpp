@@ -926,8 +926,12 @@ struct Pane {
         // an unbounded backlog of them would be a bug, not throughput.
         ShellCoreLimits limits{};
         limits.max_entries = 64;
-        limits.max_queued_bytes = 256 * 1024;
-        limits.max_request_bytes = 64 * 1024;
+        // JSON can encode each UTF-16 unit as six ASCII units (\uXXXX).
+        // Include the bounded session and envelope, and fit a worst-case edit
+        // in the queue. DrainRequests' 262144-unit buffer fits this request;
+        // the batch byte bound ensures such a large request travels alone.
+        limits.max_request_bytes = 2 * (6 * (NativeJson::kMaxFieldText + NativeJson::kMaxOpaqueId) + 4096);
+        limits.max_queued_bytes = 512 * 1024;
         limits.max_tabs = 10000;
         limits.max_title_units = 32768;
         shell.Open(limits);
@@ -1090,7 +1094,10 @@ struct Pane {
         // newer one supersedes the queued one in place, which is the single
         // outstanding action the staging slot used to guarantee by overwriting.
         address->dispatch = [this](hstring const& action) {
-            addressRequest = Enqueue(NativeShellCore::AddressAction, 0, address->revision, action);
+            auto id = Enqueue(NativeShellCore::AddressAction, 0, address->revision, action);
+            if (!id) return false;
+            addressRequest = id;
+            return true;
         };
         // The island and the HWND live here, so the answer to "does this
         // surface hold focus" is assembled here and the address controls only
@@ -1104,7 +1111,10 @@ struct Pane {
             Enqueue(NativeShellCore::AddressVisibility, 0, address->revision, action);
         };
         address->mode.dispatch = [this](hstring const& action) {
-            modeRequest = Enqueue(NativeShellCore::AddressModeAction, 0, address->revision, action);
+            auto id = Enqueue(NativeShellCore::AddressModeAction, 0, address->revision, action);
+            if (!id) return false;
+            modeRequest = id;
+            return true;
         };
         Controls::Grid::SetRow(address->root, 3);
         panel.Children().Append(address->root);
@@ -1879,6 +1889,7 @@ HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
             if (notify) pane.ScheduleDrain();
         }
         pane.ReconcileOutcomes();
+        if (!blocked && pane.address) pane.address->RetryEdit();
         return S_OK;
     } catch (...) {
         return to_hresult();

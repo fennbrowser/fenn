@@ -34,7 +34,7 @@ struct NativeSearchMode {
     // Hands one queued mode action to the owning pane's request queue. The slot
     // below stays as the record of what is outstanding, cleared when the
     // outcome comes back, so `busy()` and Reset()/Disable() keep working.
-    std::function<void(winrt::hstring const&)> dispatch;
+    std::function<bool(winrt::hstring const&)> dispatch;
 
     ~NativeSearchMode() {
         lifetime.reset();
@@ -70,8 +70,9 @@ struct NativeSearchMode {
         intent.SetNamedValue(L"shiftKey", JValue::CreateBooleanValue((GetKeyState(VK_SHIFT) & 0x8000) != 0));
         intent.SetNamedValue(L"metaKey", JValue::CreateBooleanValue(false));
         value.SetNamedValue(L"intent", intent);
-        pending = value.Stringify();
-        if (dispatch) dispatch(pending);
+        auto action = value.Stringify();
+        if (!dispatch || !dispatch(action)) return;
+        pending = action;
         clearIntent();
     }
 

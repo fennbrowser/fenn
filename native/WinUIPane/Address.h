@@ -42,7 +42,7 @@ struct NativeAddress {
     // the host itself. The slot above remains the record of what is
     // outstanding -- the policy needs it -- and is cleared when the outcome
     // comes back rather than when a tick happens to collect it.
-    std::function<void(winrt::hstring const&)> dispatch;
+    std::function<bool(winrt::hstring const&)> dispatch;
     // Reports which rows are on screen. A separate channel from `dispatch`
     // because a report is not an intent: it must not supersede one, and
     // answering it must not be read as answering one.
@@ -76,6 +76,7 @@ struct NativeAddress {
     // lost and it is not retried on a clock: it waits for the publication that
     // satisfies its precondition, which is what DeferredCommitReady() names.
     bool syncing{}, composing{}, deferredCommit{}, observedComposing{}, queryComplete{}, focusWithin{};
+    bool editNeedsDispatch{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     ~NativeAddress() { lifetime.reset(); }
 
@@ -112,7 +113,7 @@ struct NativeAddress {
             composing ? 1u : 0u,
             session.empty() ? 0u : 1u,
             mode.pending.empty() ? 0u : 1u,
-            acknowledgedEditId == editId ? 1u : 0u,
+            !editNeedsDispatch && acknowledgedEditId == editId ? 1u : 0u,
             (queryComplete || !suggestions.ids.empty()) ? 1u : 0u,
         };
     }
@@ -141,10 +142,14 @@ struct NativeAddress {
         // stopped working.
         return NativeShellCore::NoIntent;
     }
-    void Stage(JObject const& value, NativeShellCore::Intent kind) {
-        pending = value.Stringify();
+    bool Stage(JObject const& value, NativeShellCore::Intent kind) {
+        auto action = value.Stringify();
+        // Refusal has no completion. Keep the last admitted slot and its ID
+        // intact; unadmitted edits are tracked separately below.
+        if (!dispatch || !dispatch(action)) return false;
+        pending = action;
         stagedKind = kind;
-        if (dispatch) dispatch(pending);
+        return true;
     }
     void ClearStaged() {
         pending = L"";
@@ -169,14 +174,22 @@ struct NativeAddress {
         observedComposing = composing;
         deferredCommit = false;
         submitIntent = L"";
+        ++editId;
+        editNeedsDispatch = true;
+        RetryEdit();
+    }
+    // Capacity becomes available at request completion. Retry only an edit
+    // that was never admitted, preserving its ID and any early Enter intent.
+    void RetryEdit() {
+        if (!editNeedsDispatch || session.empty()) return;
         auto value = Message(L"edit");
-        value.SetNamedValue(L"editId", JValue::CreateNumberValue(++editId));
-        value.SetNamedValue(L"text", JValue::CreateStringValue(field.Text()));
+        value.SetNamedValue(L"editId", JValue::CreateNumberValue(editId));
+        value.SetNamedValue(L"text", JValue::CreateStringValue(observedText));
         value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
         value.SetNamedValue(L"selectionEnd",
                             JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
         value.SetNamedValue(L"composing", JValue::CreateBooleanValue(composing));
-        Stage(value, NativeShellCore::Edit);
+        editNeedsDispatch = !Stage(value, NativeShellCore::Edit);
     }
     void Action(wchar_t const* kind) {
         const auto incoming = IntentOf(kind);
@@ -209,6 +222,7 @@ struct NativeAddress {
                 break;
         }
         if (incoming == NativeShellCore::Dismiss || incoming == NativeShellCore::Blur) {
+            editNeedsDispatch = false;
             deferredCommit = false;
             submitIntent = L"";
         }
@@ -264,6 +278,7 @@ struct NativeAddress {
             // A caret move is the least important intent there is: it folds
             // into a staged edit, which already carries a range, and otherwise
             // never displaces anything.
+            if (editNeedsDispatch) return;
             const auto decision = Decide(NativeShellCore::TextSelection, stagedKind);
             if (decision == NativeShellCore::Amend) {
                 auto value = JObject::Parse(pending);
@@ -471,6 +486,7 @@ struct NativeAddress {
             suggestions.Clear();
             ClearStaged();
             session = L"";
+            editNeedsDispatch = false;
             deferredCommit = false;
             submitIntent = L"";
             queryComplete = false;
@@ -554,12 +570,14 @@ struct NativeAddress {
             sequence = -1;
             visibility = L"";
             editId = 0;
+            editNeedsDispatch = false;
             selectionId = 0;
             observedText = field.Text();
             observedComposing = composing;
         }
         root.Visibility(Visibility::Visible);
         Edit();  // Observe text synchronously before an older snapshot can replace it.
+        RetryEdit();
         // Intents are no longer collected here: Stage() and NativeSearchMode::Queue()
         // hand them straight to the request queue, which wakes the host itself.
         // Both slots stay as the record of what is outstanding, cleared when the
@@ -573,7 +591,7 @@ struct NativeAddress {
         // about when it published. The collection this replaced returned early
         // for the same reason; it is stated here rather than implied by where
         // the old code happened to return.
-        if (stagedKind != NativeShellCore::NoIntent || !mode.pending.empty()) return L"";
+        if (editNeedsDispatch || stagedKind != NativeShellCore::NoIntent || !mode.pending.empty()) return L"";
         syncing = true;
         try {
             field.PlaceholderText(snapshot.GetNamedString(L"placeholder", L"Search or enter address"));

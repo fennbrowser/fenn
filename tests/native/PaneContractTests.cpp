@@ -971,9 +971,77 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)),
             "publications apply again once the edit has been answered");
     Require(field.Text() == L"initial", "an answered edit stops holding off publications");
+    // Fill the real pane queue with non-coalescing UIA button invocations.
+    // A rejected edit must survive until completion frees queue capacity.
+    Require(SUCCEEDED(api.syncAddress(hwnd, modesSnapshot)), "restore modes before queue saturation");
+    NextRequest(api, hwnd, 6, nullptr, 2);
+    field.Text(L"previous admitted edit");
+    Pump();
+    auto heldEdit = DrainRequests(api, hwnd);
+    bool heldAddress = false;
+    for (auto value : heldEdit.GetNamedArray(L"requests"))
+        heldAddress |= value.GetObject().GetNamedNumber(L"kind") == 6;
+    Require(heldAddress, "hold the previous admitted edit in flight before filling the queue");
+    auto newTab = content.as<Controls::Grid>().Children().GetAt(2).as<Controls::Button>();
+    auto invoke = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(newTab)
+                      .GetPattern(Automation::Peers::PatternInterface::Invoke)
+                      .as<Automation::Provider::IInvokeProvider>();
+    for (int i = 0; i < 64; ++i) invoke.Invoke();
+    Pump();
+    auto modeInvoke = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(
+                          modeButton.Flyout().as<Controls::MenuFlyout>().Items().GetAt(0))
+                          .GetPattern(Automation::Peers::PatternInterface::Invoke)
+                          .as<Automation::Provider::IInvokeProvider>();
+    modeInvoke.Invoke();
+    Pump();
+    field.Text(L"edit while full");
+    Pump();
+    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "publish while edit admission is refused");
+    Require(field.Text() == L"edit while full", "queue refusal cannot overwrite visible input");
+    CompleteRequests(api, hwnd, heldEdit);
+    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "publish after the previous edit completes");
+    Require(field.Text() == L"edit while full", "old completion preserves the newer unadmitted edit");
+    auto firstFullBatch = DrainRequests(api, hwnd);
+    Require(firstFullBatch.GetNamedArray(L"requests").Size() == 16, "full queue yields a bounded batch");
+    for (auto value : firstFullBatch.GetNamedArray(L"requests"))
+        Require(value.GetObject().GetNamedNumber(L"kind") == 4, "queue was filled by actual new-tab actions");
+    CompleteRequests(api, hwnd, firstFullBatch);
+    auto retried = NextRequest(api, hwnd, 6, L"edit");
+    Require(retried.Size() && retried.GetNamedObject(L"action").GetNamedString(L"text") == L"edit while full",
+            "completion retries an unadmitted edit without requiring another keystroke or snapshot");
+    Require(!NextRequest(api, hwnd, 6, L"edit", 3).Size(), "recovered edit is delivered once");
+    Require(!NextRequest(api, hwnd, 7, nullptr, 3).Size(), "refused mode action is not replayed");
+    // UIA menu invocation can also produce delayed caret notifications. Answer
+    // those legitimate requests before testing whether publication is stuck.
+    for (int i = 0; i < 10 && field.Text() != L"initial"; ++i) {
+        auto batch = DrainRequests(api, hwnd);
+        if (batch.Size()) CompleteRequests(api, hwnd, batch);
+        Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "publish after admission recovery");
+        Pump();
+    }
+    Require(field.Text() == L"initial", "rejected mode and recovered edit leave no phantom staging slot");
+    for (wchar_t character : {L'a', L'"', wchar_t(1)}) {
+        std::wstring text(32768, character);
+        field.Text(text);
+        Pump();
+        Require(field.Text() == text, "real TextBox retains the maximum-length input");
+        Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "publish while maximum edit is outstanding");
+        Require(field.Text() == text, "old publication preserves maximum-length input");
+        auto request = NextRequest(api, hwnd, 6, L"edit");
+        Require(request.Size(), "maximum-length native edit reaches the queue");
+        Require(request.GetNamedObject(L"action").GetNamedString(L"text") == text,
+                "maximum-length edit survives JSON encoding and the drain buffer intact");
+        Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "publish after maximum edit completion");
+        Require(field.Text() == L"initial", "maximum-length completion releases staged state");
+    }
+    for (int i = 0; i < 64; ++i) invoke.Invoke();
+    Pump();
+    field.Text(L"cancelled before admission");
+    Pump();
     Require(
         SUCCEEDED(api.syncAddress(hwnd, LR"({"version":1,"enabled":false})")),
-        "disable address controls");
+        "disable address controls with an unadmitted edit");
+    Require(!NextRequest(api, hwnd, 6, L"edit", 8).Size(), "disabling cancels the unadmitted edit");
     Require(address.Visibility() == Visibility::Collapsed && list.Items().Size() == 0,
             "disable removes native suggestions");
     puts("Native address: real controls, bounded JSON, copied edit, feedback suppression and disable passed");
