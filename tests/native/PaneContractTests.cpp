@@ -1081,8 +1081,11 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     }
     Require(first.IsLoaded() && first.ActualWidth() > 0 && first.ActualHeight() <= 48,
             "stock tab header fits reserved row");
-    Require(root.Children().Size() == 1 && !first.Content() && !second.Content(),
+    Require(root.Children().Size() == 2 && !first.Content() && !second.Content(),
             "strip has no address or browser content");
+    auto mergePreview = root.Children().GetAt(1).as<Controls::Border>();
+    Require(!mergePreview.IsHitTestVisible() && mergePreview.Visibility() == Visibility::Collapsed,
+            "merge feedback is hidden and cannot capture input while idle");
     Require(first != second && view.SelectedItem() == first, "duplicate titles preserve identity and active tab");
     view.SelectedItem(second);
     auto selectionRequest = NextRequest(api, host, 1);

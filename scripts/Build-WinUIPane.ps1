@@ -24,6 +24,10 @@ if ($LASTEXITCODE) {
 }
 Write-Host "Merged native theme resources: $output/resources.pri"
 if ($Test -or $AddressTest -or $MenuTest -or $TabStripTest) {
+    if ($TabStripTest) {
+        & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'tests/native/ExternalDragSource.vcxproj') /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    }
     & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'tests/native/PaneContractTests.vcxproj') /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     if ($Test) {

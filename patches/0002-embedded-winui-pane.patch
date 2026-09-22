@@ -13,14 +13,148 @@ index ad923a202d..856ca45387 100644
 +$(MOZ_APP_NAME)$(BIN_SUFFIX).res: $(srcdir)/firefox.exe.manifest
 +endif
 diff --git a/browser/app/firefox.exe.manifest b/browser/app/firefox.exe.manifest
-index 995b2fc869..8bb5d0b282 100644
+index 995b2fc869..197b2cd2e9 100644
 --- a/browser/app/firefox.exe.manifest
 +++ b/browser/app/firefox.exe.manifest
-@@ -44,4 +44,714 @@
+@@ -44,4 +44,848 @@
        <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
      </application>
    </compatibility>
 +<!-- BEGIN generated WinUI activation metadata -->
++<asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" xmlns:winrtv1="urn:schemas-microsoft-com:winrt.v1" name="Microsoft.Windows.ApplicationModel.Resources.dll">
++    <winrtv1:activatableClass name="Microsoft.Windows.ApplicationModel.Resources.KnownResourceQualifierName" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.Windows.ApplicationModel.Resources.ResourceCandidate" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.Windows.ApplicationModel.Resources.ResourceLoader" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.Windows.ApplicationModel.Resources.ResourceManager" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.Windows.Globalization.ApplicationLanguages" threadingModel="both" />
++  </asmv3:file>
++<asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" xmlns:winrtv1="urn:schemas-microsoft-com:winrt.v1" name="CoreMessagingXP.dll">
++    <winrtv1:activatableClass name="Microsoft.UI.Dispatching.DispatcherExitDeferral" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Dispatching.DispatcherQueue" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Dispatching.DispatcherQueueController" threadingModel="both" />
++  </asmv3:file>
++<asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" xmlns:winrtv1="urn:schemas-microsoft-com:winrt.v1" name="dcompi.dll">
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.AnimationController" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionAnimation" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionApiInformation" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionBrush" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionCapabilities" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionClip" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionDrawingSurface" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionEasingFunction" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionEffectSourceParameter" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionGeometry" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionGradientBrush" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionLight" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionObject" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionPath" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionProjectedShadowCasterCollection" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionShadow" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionShape" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionTransform" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionVirtualDrawingSurface" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Compositor" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.ContainerVisual" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Core.CompositorController" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Diagnostics.CompositionDebugSettings" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Effects.SceneLightingEffect" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Experimental.ExpCompositionVisualSurface" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Interactions.CompositionConditionalValue" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Interactions.InteractionTracker" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Interactions.InteractionTrackerInertiaModifier" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Interactions.InteractionTrackerInertiaMotion" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Interactions.InteractionTrackerInertiaNaturalMotion" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Interactions.InteractionTrackerInertiaRestingValue" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Interactions.InteractionTrackerVector2InertiaModifier" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Interactions.InteractionTrackerVector2InertiaNaturalMotion" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Interactions.VisualInteractionSource" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.KeyFrameAnimation" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.NaturalMotionAnimation" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.ScalarNaturalMotionAnimation" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Scenes.SceneComponent" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Scenes.SceneMaterial" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Scenes.SceneMaterialInput" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Scenes.SceneMesh" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Scenes.SceneMeshRendererComponent" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Scenes.SceneMetallicRoughnessMaterial" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Scenes.SceneNode" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Scenes.SceneObject" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Scenes.ScenePbrMaterial" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Scenes.SceneRendererComponent" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Scenes.SceneSurfaceMaterialInput" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Scenes.SceneVisual" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Vector2NaturalMotionAnimation" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Vector3NaturalMotionAnimation" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.Visual" threadingModel="both" />
++  </asmv3:file>
++<asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" xmlns:winrtv1="urn:schemas-microsoft-com:winrt.v1" name="Microsoft.Graphics.Display.dll">
++    <winrtv1:activatableClass name="Microsoft.Graphics.Display.DisplayInformation" threadingModel="both" />
++  </asmv3:file>
++<asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" xmlns:winrtv1="urn:schemas-microsoft-com:winrt.v1" name="Microsoft.UI.dll">
++    <winrtv1:activatableClass name="Microsoft.UI.Colors" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.ColorHelper" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.System.ThemeSettings" threadingModel="both" />
++  </asmv3:file>
++<asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" xmlns:winrtv1="urn:schemas-microsoft-com:winrt.v1" name="Microsoft.UI.Input.dll">
++    <winrtv1:activatableClass name="Microsoft.UI.Content.ChildSiteLink" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.ContentAppWindowBridge" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.ContentCoordinateConverter" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.ContentExternalBackdropLink" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.ContentExternalOutputLink" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.ContentIsland" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.ContentIslandEnvironment" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.ContentSite" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.ContentSiteEnvironment" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.ContentSiteEnvironmentView" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.ContentSiteView" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.CoreWindowSiteBridge" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.DesktopAttachedSiteBridge" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.DesktopChildSiteBridge" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.DesktopPopupSiteBridge" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.DesktopSiteBridge" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.ProcessStarter" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Content.SystemVisualSiteBridge" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.DragDrop.DragDropManager" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.DragDrop.DragOperation" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.FocusNavigationRequest" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.GestureRecognizer" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputActivationListener" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputCursor" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputCustomCursor" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputDesktopResourceCursor" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputDesktopNamedResourceCursor" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputFocusController" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputFocusNavigationHost" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputKeyboardSource" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputLightDismissAction" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputNonClientPointerSource" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputObject" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputPopupController" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputPreTranslateKeyboardSource" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputPointerSource" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputSystemCursor" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.InputUnderlyingWindowController" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.Interop.PenDeviceInterop" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.PointerPoint" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Input.PointerPredictor" threadingModel="both" />
++  </asmv3:file>
++<asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" xmlns:winrtv1="urn:schemas-microsoft-com:winrt.v1" name="Microsoft.UI.Windowing.dll">
++    <winrtv1:activatableClass name="Microsoft.UI.Windowing.AppWindow" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Windowing.AppWindowPlacementDetails" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Windowing.AppWindowPresenter" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Windowing.CompactOverlayPresenter" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Windowing.DisplayArea" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Windowing.FullScreenPresenter" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Windowing.OverlappedPresenter" threadingModel="both" />
++  </asmv3:file>
++<asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" xmlns:winrtv1="urn:schemas-microsoft-com:winrt.v1" name="Microsoft.UI.Windowing.Core.dll">
++    <winrtv1:activatableClass name="Microsoft.UI.Windowing.AppWindowTitleBar" threadingModel="both" />
++  </asmv3:file>
++<asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" xmlns:winrtv1="urn:schemas-microsoft-com:winrt.v1" name="wuceffectsi.dll">
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.SystemBackdrops.DesktopAcrylicController" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.SystemBackdrops.MicaController" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.SystemBackdrops.SystemBackdropConfiguration" threadingModel="both" />
++  </asmv3:file>
 +<asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" xmlns:winrtv1="urn:schemas-microsoft-com:winrt.v1" name="Microsoft.UI.Xaml.dll">
 +    <winrtv1:activatableClass name="Microsoft.UI.Xaml.AdaptiveTrigger" threadingModel="both" />
 +    <winrtv1:activatableClass name="Microsoft.UI.Xaml.Application" threadingModel="both" />
@@ -2253,26 +2387,31 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..df703d322f
+index 0000000000..fa1b4c7e07
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,140 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +// A separate, versioned presentation inside the existing tab-menu transport.
 +// Group objects never cross the boundary. A fresh read revalidates every action.
++let nextWindowDragSession = 0;
++
 +export class WinUITabStripSession {
 +  constructor({ read, collapse, reorder, detach, adopt }) {
 +    Object.assign(this, { read, collapse, reorder, detach, adopt });
 +    this.ids = new WeakMap();
 +    this.nextId = 1;
 +    this.revision = 0;
++    if (nextWindowDragSession === 0xffffffff) throw new Error("Strip session identity exhausted");
++    this.windowDragSession = ++nextWindowDragSession;
 +  }
 +
 +  describe() {
 +    const { groups, ...state } = this.read();
++    state.windowDragSession = this.windowDragSession;
 +    this.targets = new Map();
 +    state.groups = groups.map(({ target, ...group }) => {
 +      if (!this.ids.has(target)) this.ids.set(target, this.nextId++);
@@ -2315,7 +2454,7 @@ index 0000000000..df703d322f
 +        }
 +      }
 +      strip.removed = [...previous.keys()];
-+      for (const key of ["groups", "groupsLabel", "rtl"]) {
++      for (const key of ["groups", "groupsLabel", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
 +        if (!this.same(state[key], this.state[key])) strip[key] = state[key];
 +      }
 +    }
@@ -2376,11 +2515,18 @@ index 0000000000..df703d322f
 +      if (!Number.isSafeInteger(event.sourceHwnd) || !Number.isSafeInteger(event.id) ||
 +          !Number.isSafeInteger(event.index) || event.index < 0)
 +        return false;
++      if (event.continueDrag !== undefined && (typeof event.continueDrag !== "boolean" ||
++          event.sourceRevision === undefined)) return false;
++      if (event.sourceRevision !== undefined) {
++        if (!Number.isSafeInteger(event.sourceRevision) || event.sourceRevision <= 0 ||
++            !Number.isSafeInteger(event.sourceSession) || event.sourceSession <= 0 || this.consumed) return false;
++        const current = this.describe();
++        if (!this.same(current, this.state) || event.index > current.rows.length) return false;
++      }
 +      if (this.revision === 0xffffffff) throw new Error("Native strip revision exhausted");
 +      this.revision++;
 +      this.consumed = true;
-+      this.adopt(event.sourceHwnd, event.id, event.index);
-+      return true;
++      return this.adopt(event.sourceHwnd, event.id, event.index, event.sourceRevision, event.sourceSession, event.continueDrag) !== false;
 +    }
 +    return false;
 +  }
@@ -3531,10 +3677,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..d132cac804
+index 0000000000..01125973e9
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1264 @@
+@@ -0,0 +1,1287 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3781,6 +3927,7 @@ index 0000000000..d132cac804
 +        // outright rather than queued behind the prompt.
 +        for (const request of batch.requests || []) {
 +          let outcome = 2;
++          this.completedDragTab = 0;
 +          try {
 +            const describing = request.kind === 2 && request.action?.kind === "open";
 +            // An earlier command may have opened a dialog, including before
@@ -3794,7 +3941,11 @@ index 0000000000..d132cac804
 +            this.structuralDirty = true;
 +            console.error("WinUI request failed", request.id, error);
 +          }
-+          outcomes.push({ id: request.id, outcome });
++          const result = { id: request.id, outcome };
++          if (outcome === 1 && request.kind === 5 && request.action?.kind === "strip-adopt" &&
++              request.action.continueDrag === true && this.completedDragTab) result.dragTab = this.completedDragTab;
++          outcomes.push(result);
++          this.completedDragTab = 0;
 +        }
 +      }
 +    } catch (error) {
@@ -4211,7 +4362,7 @@ index 0000000000..d132cac804
 +        // standard way Windows shell-integration code already resolves a
 +        // chrome window's HWND, formatted "0x%p" on the C++ side
 +        // (xpfe/appshell/AppWindow.cpp), hence the hex parse below.
-+        adopt: (sourceHwnd, id, index) => {
++        adopt: (sourceHwnd, id, index, sourceRevision, sourceSession, continueDrag = false) => {
 +          const sourceWindow = Array.from(
 +            Services.wm.getEnumerator("navigator:browser")
 +          ).find(win => {
@@ -4224,8 +4375,20 @@ index 0000000000..d132cac804
 +            }
 +          });
 +          const tab = sourceWindow?.gWinUIPane?.resolveStripTab(id);
-+          if (!tab) return;
-+          gBrowser.adoptTab(tab, { elementIndex: index, selectTab: true });
++          if (!tab || sourceWindow === window ||
++              sourceWindow.docShell.usePrivateBrowsing !== window.docShell.usePrivateBrowsing) return false;
++          if (sourceRevision !== undefined &&
++              (sourceWindow.gWinUIPane.stripSession?.windowDragSession !== sourceSession ||
++               sourceWindow.gWinUIPane.stripSession?.revision !== sourceRevision ||
++               sourceWindow.gBrowser.tabs.filter(other => !other.closing).length !== 1 ||
++               tab.closing || tab._pendingPermitUnload)) return false;
++          const adopted = gBrowser.adoptTab(tab, { elementIndex: index, selectTab: true });
++          if (!adopted) return false;
++          if (continueDrag) {
++            if (!this.tabIds.has(adopted)) this.tabIds.set(adopted, this.nextTabId++);
++            this.completedDragTab = this.tabIds.get(adopted);
++          }
++          return true;
 +        },
 +      });
 +    }
@@ -4344,13 +4507,13 @@ index 0000000000..d132cac804
 +      const splitLabel = split ? label((split.tabs.indexOf(tab) === 0) !== window.RTL_UI
 +        ? "tabbrowser-tab-label-tab-split-view-left" : "tabbrowser-tab-label-tab-split-view-right",
 +        {label: String(splitViews.indexOf(split) + 1)}) : "";
-+      const detail = [group?.name, splitLabel].filter(Boolean).join(" · ");
++      const detail = [group?.name, splitLabel].filter(Boolean).join(" Ã‚Â· ");
 +      const flags = (tab.pinned ? 1 : 0) | (tab.hasAttribute("busy") ? 2 : 0) |
 +        (tab.muted ? 4 : 0) | (tab.hasAttribute("soundplaying") ? 8 : 0);
 +      const status = [tab.pinned && label("winui-tab-strip-pinned"),
 +        (flags & 2) && label("winui-tab-strip-loading"),
 +        tab.muted ? label("winui-tab-strip-muted") : (flags & 8) && label("winui-tab-strip-playing")]
-+        .filter(Boolean).join(" · ");
++        .filter(Boolean).join(" Ã‚Â· ");
 +      const iconUrl = gBrowser.getIcon(tab) || "";
 +      let image = null;
 +      if (iconUrl) {
@@ -4377,7 +4540,13 @@ index 0000000000..d132cac804
 +      }
 +      return { id: this.tabIds.get(tab), detail:detail.slice(0, 2048), status:status.slice(0, 2048), flags, image };
 +    });
++    // Accepted closes can retain their DOM tab during the closing animation.
++    // They are no longer browser tabs that could be dragged or adopted.
++    const liveTabs = Array.from(gBrowser.tabs).filter(tab => !tab.closing);
 +    return { rtl: document.documentElement.matches(":dir(rtl)"),
++      windowDragTabId: liveTabs.length === 1 && liveTabs[0].visible &&
++        !liveTabs[0]._pendingPermitUnload ? this.tabIds.get(liveTabs[0]) || 0 : 0,
++      windowDragPrivate: !!window.docShell.usePrivateBrowsing,
 +      groupsLabel:label("tab-groups-list-title"), groups, rows };
 +  },
 +

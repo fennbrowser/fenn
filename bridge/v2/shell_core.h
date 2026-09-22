@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 2
+#define SHELL_CORE_ABI_VERSION 3
 
 #define SHELL_NO_INDEX UINT32_MAX
 
@@ -233,6 +233,19 @@ typedef struct {
   uintptr_t len;
   void *handle;
 } ShellChangeBatch;
+
+typedef struct {
+  uint64_t endpoint;
+  uint64_t gesture;
+  uint64_t target;
+  uint64_t target_endpoint;
+  uint32_t tab;
+  uint32_t target_revision;
+  /*
+   0 idle, 1 moving, 2 pending adoption, 3 consumed, 4 awaiting result, 5 continuation ready.
+   */
+  uint32_t phase;
+} ShellWindowDrag;
 
 #ifdef __cplusplus
 extern "C" {
@@ -524,6 +537,27 @@ ShellStatus shell_core_model_index_of(ShellCore *core, uint32_t tab, uint32_t *o
  See [`guard`].
  */
 ShellStatus shell_core_test_panic(ShellCore *core);
+
+/*
+ Observe an OS move. Operations: 0 query, 1 begin (target/revision are drag
+ thresholds), 2 motion (eligible and destination identity), 3 finish (eligible
+ means confirmed release or explicit hover handoff), 4 cancel, 5 take pending
+ adoption by gesture token, 6 await request (gesture), 7 complete request
+ (gesture/tab; zero tab rejects), 8 take the accepted continuation once.
+ # Safety
+ See [`guard`]. `out` must be writable.
+ */
+ShellStatus shell_core_window_drag(ShellCore *core,
+                                   uint32_t operation,
+                                   uint32_t tab,
+                                   int32_t x,
+                                   int32_t y,
+                                   uint64_t target,
+                                   uint64_t target_endpoint,
+                                   uint32_t revision,
+                                   bool eligible,
+                                   uint64_t gesture,
+                                   ShellWindowDrag *out);
 
 #ifdef __cplusplus
 }  // extern "C"

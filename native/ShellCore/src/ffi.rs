@@ -190,6 +190,7 @@ pub struct ShellCore {
     queue: RequestQueue,
     model: TabModel,
     strip: StripState,
+    window_drag: crate::window_drag::WindowDrag,
     snapshot: Option<SnapshotBuilder>,
     stats: Counters,
 }
@@ -400,6 +401,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         queue: RequestQueue::new(queue_limits),
         model: TabModel::new(model_limits),
         strip: StripState::default(),
+        window_drag: crate::window_drag::WindowDrag::default(),
         snapshot: None,
         stats: Counters::default(),
     });
@@ -703,6 +705,7 @@ pub unsafe extern "C" fn shell_core_release_outcomes(batch: *mut ShellOutcomeBat
 pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellStatus {
     guard(core, |core| {
         core.queue.cancel_all();
+        core.window_drag.cancel();
         core.snapshot = None;
         ShellStatus::Ok
     })
@@ -716,6 +719,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
 pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
     guard(core, |core| {
         core.queue.close();
+        core.window_drag.cancel();
         core.snapshot = None;
         ShellStatus::Ok
     })
@@ -1326,4 +1330,63 @@ mod tests {
             shell_core_destroy(core);
         }
     }
+
+    #[test]
+    fn replacing_or_closing_an_endpoint_revokes_pending_window_adoption() {
+        unsafe {
+            let core = core();
+            let mut state = crate::window_drag::ShellWindowDrag::default();
+            for close in [false, true] {
+                assert_eq!(shell_core_window_drag(core, 1, 7, 0, 0, 4, 0, 4,
+                    false, 0, &mut state), ShellStatus::Ok);
+                shell_core_window_drag(core, 2, 0, 10, 10, 123, u64::MAX - 1, 4,
+                    true, 0, &mut state);
+                shell_core_window_drag(core, 3, 0, 0, 0, 0, 0, 0,
+                    true, 0, &mut state);
+                assert_eq!(state.phase, 2);
+                let gesture = state.gesture;
+                if close { shell_core_close(core); } else { shell_core_cancel_all(core); }
+                shell_core_window_drag(core, 5, 0, 0, 0, 0, 0, 0,
+                    false, gesture, &mut state);
+                assert_ne!(state.phase, 3);
+            }
+            assert_eq!(shell_core_window_drag(core, 0, 0, 0, 0, 0, 0, 0,
+                false, 0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_window_drag(core, 99, 0, 0, 0, 0, 0, 0,
+                false, 0, &mut state), ShellStatus::InvalidArgument);
+            shell_core_destroy(core);
+        }
+    }
+}
+
+/// Observe an OS move. Operations: 0 query, 1 begin (target/revision are drag
+/// thresholds), 2 motion (eligible and destination identity), 3 finish (eligible
+/// means confirmed release or explicit hover handoff), 4 cancel, 5 take pending
+/// adoption by gesture token, 6 await request (gesture), 7 complete request
+/// (gesture/tab; zero tab rejects), 8 take the accepted continuation once.
+/// # Safety
+/// See [`guard`]. `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_window_drag(
+    core: *mut ShellCore, operation: u32, tab: u32, x: i32, y: i32,
+    target: u64, target_endpoint: u64, revision: u32, eligible: bool,
+    gesture: u64, out: *mut crate::window_drag::ShellWindowDrag,
+) -> ShellStatus {
+    guard(core, |core| {
+        let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+        match operation {
+            0 => {},
+            1 => core.window_drag.begin(tab, x, y, (target.min(u64::from(u32::MAX))) as u32, revision),
+            2 => core.window_drag.observe(eligible, x, y, target, target_endpoint, revision),
+            3 => core.window_drag.finish(eligible),
+            4 => core.window_drag.cancel(),
+            5 => if !core.window_drag.take(gesture) { *out = Default::default(); return ShellStatus::Ok; },
+            6 => core.window_drag.await_adoption(gesture),
+            7 => core.window_drag.complete_adoption(gesture, tab),
+            8 => if !core.window_drag.take_continuation() { *out = Default::default(); return ShellStatus::Ok; },
+            _ => return ShellStatus::InvalidArgument,
+        }
+        *out = core.window_drag.state();
+        ShellStatus::Ok
+    })
 }

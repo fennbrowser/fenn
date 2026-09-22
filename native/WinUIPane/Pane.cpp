@@ -5,6 +5,8 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
 #include <winrt/Microsoft.UI.Content.h>
+#include <winrt/Microsoft.UI.Input.DragDrop.h>
+#include <winrt/Windows.ApplicationModel.DataTransfer.h>
 #include <winrt/Windows.UI.Text.h>
 #include <winrt/Microsoft.UI.Interop.h>
 #include <Microsoft.UI.Dispatching.Interop.h>
@@ -26,8 +28,31 @@ using namespace Microsoft::UI::Xaml::Hosting;
 #include "ShellCore.h"
 #include "TabMenu.h"
 #include "TabStrip.h"
+#include "WindowDrag.h"
 
 namespace {
+bool DiagnosticsEnabled();
+namespace SystemDrag = Microsoft::UI::Input::DragDrop;
+// Reject external system drags before WinUI creates XAML DragEventArgs.
+// AllowDrop=false only rejects them after that unsafe dispatch has happened.
+// This target owns no pane, controls, drag data or deferred work: an in-flight
+// leave/drop remains safe even after the island that requested it is destroyed.
+struct RejectExternalDrop : implements<RejectExternalDrop, SystemDrag::IDropOperationTarget> {
+    using Operation = Windows::ApplicationModel::DataTransfer::DataPackageOperation;
+    Windows::Foundation::IAsyncOperation<Operation> EnterAsync(SystemDrag::DragInfo const&,
+                                                              SystemDrag::DragUIOverride const&) {
+        if (DiagnosticsEnabled()) fprintf(stderr, "WinUIPane external drag rejected\n");
+        co_return Operation::None;
+    }
+    Windows::Foundation::IAsyncOperation<Operation> OverAsync(SystemDrag::DragInfo const&,
+                                                             SystemDrag::DragUIOverride const&) {
+        co_return Operation::None;
+    }
+    Windows::Foundation::IAsyncAction LeaveAsync(SystemDrag::DragInfo const&) { co_return; }
+    Windows::Foundation::IAsyncOperation<Operation> DropAsync(SystemDrag::DragInfo const&) {
+        co_return Operation::None;
+    }
+};
 // How much of what update() and clip() are asked to do turns out to repeat
 // what the island already has. Process-wide; read by the contract test through
 // WinUIPaneTestGetGeometryWork and reported at shutdown under
@@ -285,7 +310,8 @@ struct PaneApplication : ApplicationT<PaneApplication, Markup::IXamlMetadataProv
 // struct Pane (unlike the functions below) because Pane::Close() reads its
 // fields directly, which needs it to be a complete type.
 struct TabDragSession {
-    HWND sourceHwnd{};
+    HWND sourceHwnd{}, departedWindow{};
+    std::weak_ptr<int> departedLife;
     NativeTabStrip* sourceStrip{};
     uint32_t tabId{};
     // Whichever pane's own strip is currently showing a live "make room"
@@ -315,11 +341,19 @@ TabDragSession& dragSession();
 void ArmDragSession(Pane& pane, uint32_t id);
 void AbortDragSession();
 void TickDragSession();
+void BeginWindowMove(Pane&, POINT);
+void UpdateWindowMove(Pane&, POINT);
+void FinishWindowMove(Pane&, POINT, bool);
+void CancelWindowMove(Pane&);
+void ContinueWindowDrag(Pane&);
+void CancelWindowContinuation(Pane&);
+bool CanMergeWindow(Pane&, POINT);
 
 struct Pane {
     HWND parent{};
     std::unique_ptr<NativeAddress> address;
     DesktopWindowXamlSource source{nullptr};
+    SystemDrag::DragDropManager::TargetRequested_revoker externalDropRevoker;
     Controls::ListView tabs{nullptr};
     Windows::Foundation::Collections::IObservableVector<Windows::Foundation::IInspectable> items{nullptr};
     std::vector<uint32_t> tabIds;
@@ -448,7 +482,13 @@ struct Pane {
     // captures `this`, so the one invariant that must not depend on a call
     // site getting it right is stated here as well.
     ~Pane() { DisarmPresentation(); }
+    NativeWindowDrag windowDrag;
+    HWND windowMoveTarget{}, continuationSource{};
+    std::weak_ptr<int> continuationSourceLife;
+    std::weak_ptr<int> windowMoveTargetLife;
     void Close() {
+        CancelWindowMove(*this);
+        windowDrag.Close();
         DisarmPresentation();
         if (!source) return;
         // The tick-based session (unlike the old thread-blocking DoDragDrop
@@ -473,6 +513,7 @@ struct Pane {
             tabs.ContainerContentChanging(containers);
         }
         source.TakeFocusRequested(takeFocus);
+        externalDropRevoker.revoke();
         source.Content(nullptr);
         address.reset();
         strip.reset();
@@ -948,7 +989,7 @@ struct Pane {
             // formed against a superseded presentation is refused by Firefox
             // rather than silently dropped here.
             strip->dispatch = [this](uint32_t id, hstring const& action) {
-                Enqueue(NativeShellCore::StripAction, id, strip->presentationRevision, action);
+                return Enqueue(NativeShellCore::StripAction, id, strip->presentationRevision, action);
             };
             strip->groupsButton.dispatch = [this](hstring const& action) {
                 Enqueue(NativeShellCore::StripAction, 0, strip->presentationRevision, action);
@@ -958,6 +999,24 @@ struct Pane {
             strip->add = [this] { QueueNewTab(); };
             takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(parent); });
             source.Content(strip->root);
+            windowDrag.Open(hwnd, strip.get());
+            windowDrag.begin = [this](POINT point) { BeginWindowMove(*this, point); };
+            windowDrag.move = [this](POINT point) { UpdateWindowMove(*this, point); };
+            windowDrag.canMerge = [this](POINT point) { return CanMergeWindow(*this, point); };
+            windowDrag.continueReady = [this] { ContinueWindowDrag(*this); };
+            windowDrag.abortContinuation = [this] { CancelWindowContinuation(*this); };
+            windowDrag.finish = [this](POINT point, bool release) { FinishWindowMove(*this, point, release); };
+            // Subscribe after XAML installs its default target, before showing
+            // the island. SetTarget substitutes a rejecting target at the system
+            // boundary, before XAML drag event creation (which can fail-fast in
+            // embedded Firefox). Do not Close this shared, WinUI-owned manager
+            // or replace Firefox's HWND/OLE registration. Native tab gestures
+            // use our independent pointer session and never enter this path.
+            auto dropManager = SystemDrag::DragDropManager::GetForIsland(strip->root.XamlRoot().ContentIsland());
+            externalDropRevoker = dropManager.TargetRequested(auto_revoke,
+                [](auto const&, SystemDrag::DropOperationTargetRequestedEventArgs const& args) {
+                    args.SetTarget(make<RejectExternalDrop>());
+                });
             strip->armDragSession = [this](uint32_t id) { ArmDragSession(*this, id); };
             strip->tickDragSession = TickDragSession;
             return;
@@ -1147,6 +1206,172 @@ struct State {
 State& state() {
     static auto value = new State;
     return *value;
+}
+
+enum class WindowMoveOp : uint32_t { Query, Begin, Observe, Finish, Cancel, Take, AwaitAdoption, CompleteAdoption, TakeContinuation };
+ShellWindowDrag WindowMoveState(Pane& pane, WindowMoveOp operation = WindowMoveOp::Query, uint32_t tab = 0, POINT point = {},
+                              uint64_t target = 0, uint64_t endpoint = 0, uint32_t revision = 0,
+                              bool eligible = false, uint64_t gesture = 0) {
+    ShellWindowDrag result{};
+    if (pane.shell.core)
+        shell_core_window_drag(pane.shell.core, uint32_t(operation), tab, point.x, point.y, target, endpoint, revision,
+                               eligible, gesture, &result);
+    return result;
+}
+void ClearWindowMovePreview(Pane& pane) {
+    pane.windowDrag.Preview(false);
+    auto old = state().panes.find(pane.windowMoveTarget);
+    if (!pane.windowMoveTargetLife.expired() && old != state().panes.end() && old->second->strip)
+        old->second->strip->EndForeignDragOver();
+    pane.windowMoveTarget = nullptr;
+    pane.windowMoveTargetLife.reset();
+}
+void CancelWindowMove(Pane& pane) {
+    ClearWindowMovePreview(pane);
+    WindowMoveState(pane, WindowMoveOp::Cancel);
+    for (auto const& [hwnd, other] : state().panes) {
+        if (other.get() != &pane && other->windowMoveTarget == pane.parent) {
+            ClearWindowMovePreview(*other);
+            other->windowDrag.cancelled = true;
+            WindowMoveState(*other, WindowMoveOp::Cancel);
+        }
+    }
+}
+void BeginWindowMove(Pane& pane, POINT point) {
+    ClearWindowMovePreview(pane);
+    uint32_t tab = 0;
+    auto& strip = *pane.strip;
+    if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) && strip.windowDragTabId && strip.rows.size() == 1 && strip.rows.count(strip.windowDragTabId) &&
+        !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000)) {
+        auto bounds = pane.windowDrag.Bounds(strip.rows.at(strip.windowDragTabId));
+        POINT local = point; ScreenToClient(pane.parent, &local);
+        if (NativeWindowDrag::Contains(bounds, local)) tab = strip.windowDragTabId;
+    }
+    if (tab) {
+        strip.select(tab);
+        strip.rows.at(tab).Focus(FocusState::Pointer);
+    }
+    if (DiagnosticsEnabled()) fprintf(stderr, "WinUIPane window-drag begin tab=%u x=%ld y=%ld\n", tab, point.x, point.y);
+    WindowMoveState(pane, WindowMoveOp::Begin, tab, point, GetSystemMetrics(SM_CXDRAG), 0, GetSystemMetrics(SM_CYDRAG));
+}
+Pane* WindowMoveTarget(Pane& source, POINT point) {
+    for (HWND window = GetTopWindow(nullptr); window; window = GetWindow(window, GW_HWNDNEXT)) {
+        if (!IsWindowVisible(window) || IsIconic(window) || window == source.parent ||
+            GetAncestor(window, GA_ROOTOWNER) == source.parent) continue;
+        // Layered transparent windows explicitly pass mouse input through.
+        // In particular, the shell's snap overlay has a large bounding rectangle
+        // even where no UI is visible. Its bounds must not occlude a tab strip.
+        const auto extendedStyle = GetWindowLongPtrW(window, GWL_EXSTYLE);
+        if ((extendedStyle & (WS_EX_LAYERED | WS_EX_TRANSPARENT)) == (WS_EX_LAYERED | WS_EX_TRANSPARENT)) continue;
+        DWORD cloaked{};
+        if (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) continue;
+        RECT bounds{};
+        if (!GetWindowRect(window, &bounds) || !PtInRect(&bounds, point)) continue;
+        auto candidate = state().panes.find(window);
+        if (candidate == state().panes.end()) return nullptr; // unrelated opaque window occludes the strip
+        auto& target = *candidate->second;
+        if (!target.strip || !target.appliedVisible ||
+            target.strip->windowDragPrivate != source.strip->windowDragPrivate) return nullptr;
+        bounds = target.StripScreenBounds();
+        if (!PtInRect(&bounds, point)) return nullptr;
+        POINT client = point;
+        ScreenToClient(GetWindowFromWindowId(target.source.SiteBridge().WindowId()), &client);
+        for (auto const& exclusion : target.appliedExclusions)
+            if (PtInRect(&exclusion, client)) return nullptr;
+        return &target;
+    }
+    return nullptr;
+}
+void UpdateWindowMove(Pane& pane, POINT point) {
+    auto current = WindowMoveState(pane);
+    if (current.phase != 1 || !current.tab) return;
+    const bool eligible = !pane.windowDrag.cancelled && pane.strip && pane.strip->windowDragTabId == current.tab &&
+                          pane.strip->rows.size() == 1 && pane.strip->rows.count(current.tab);
+    Pane* target = eligible ? WindowMoveTarget(pane, point) : nullptr;
+    auto destination = target ? WindowMoveState(*target) : ShellWindowDrag{};
+    auto updated = WindowMoveState(pane, WindowMoveOp::Observe, 0, point, target ? uint64_t(uintptr_t(target->parent)) : 0,
+                                  destination.endpoint, target ? target->strip->presentationRevision : 0, eligible);
+    if (!updated.target || pane.windowMoveTarget != HWND(uintptr_t(updated.target)) || pane.windowMoveTargetLife.expired())
+        ClearWindowMovePreview(pane);
+    if (updated.target && target) {
+        pane.windowDrag.Preview(true);
+        pane.windowMoveTarget = target->parent;
+        pane.windowMoveTargetLife = target->lifetime;
+        target->strip->ForeignDragOver(target->ScreenToStrip(point));
+        if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) pane.windowDrag.RequestMerge();
+    }
+}
+bool CanMergeWindow(Pane& pane, POINT point) {
+    UpdateWindowMove(pane, point);
+    auto current = WindowMoveState(pane);
+    return current.phase == 1 && current.target && !pane.windowDrag.cancelled;
+}
+void CancelWindowContinuation(Pane& pane) {
+    WindowMoveState(pane, WindowMoveOp::Cancel);
+    pane.windowDrag.StopWaiting();
+}
+void ContinueWindowDrag(Pane& pane) {
+    auto current = WindowMoveState(pane);
+    if (current.phase != 4 && current.phase != 5) return;
+    if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000) || (GetAsyncKeyState(VK_ESCAPE) & 0x8000)) {
+        CancelWindowContinuation(pane); return;
+    }
+    if (current.phase != 5 || !pane.strip || !pane.strip->rows.count(current.tab)) return;
+    auto& strip = *pane.strip;
+    if (!strip.rows.at(current.tab).ActualWidth()) return; // wait for its real layout
+    auto taken = WindowMoveState(pane, WindowMoveOp::TakeContinuation);
+    if (taken.phase != 3) return;
+    pane.windowDrag.StopWaiting();
+    AbortDragSession();
+    POINT point{}; GetCursorPos(&point);
+    SetForegroundWindow(pane.parent);
+    strip.drag = {};
+    strip.drag.tabId = taken.tab;
+    strip.drag.phase = NativeTabStrip::DragPhase::Armed;
+    strip.drag.startPoint = pane.ScreenToStrip(point);
+    ArmDragSession(pane, taken.tab);
+    dragSession().departedWindow = pane.continuationSource;
+    dragSession().departedLife = pane.continuationSourceLife;
+    SetCapture(pane.parent);
+    strip.TryPromote(taken.tab, strip.drag.startPoint, true);
+    TickDragSession();
+    if (DiagnosticsEnabled()) fprintf(stderr, "WinUIPane window-drag continued tab=%u\n", taken.tab);
+}
+void FinishWindowMove(Pane& pane, POINT point, bool released) {
+    UpdateWindowMove(pane, point);
+    auto finished = WindowMoveState(pane, WindowMoveOp::Finish, 0, {}, 0, 0, 0, released);
+    if (DiagnosticsEnabled()) fprintf(stderr, "WinUIPane window-drag finish released=%d cancelled=%d phase=%u target=%llu x=%ld y=%ld\n", released, pane.windowDrag.cancelled, finished.phase, finished.target, point.x, point.y);
+    const bool continuation = pane.windowDrag.endingForMerge;
+    auto targetLife = pane.windowMoveTargetLife;
+    ClearWindowMovePreview(pane);
+    if (finished.phase != 2 || !pane.strip) return;
+    auto weak = std::weak_ptr<int>(pane.lifetime);
+    auto sourceHwnd = pane.parent;
+    // Do not mutate a browser or its windows from inside the native move loop.
+    if (!pane.strip->root.DispatcherQueue().TryEnqueue([weak, targetLife, finished, sourceHwnd, point, continuation] {
+        if (weak.expired() || targetLife.expired()) return;
+        auto src = state().panes.find(sourceHwnd);
+        auto dst = state().panes.find(HWND(uintptr_t(finished.target)));
+        if (src == state().panes.end() || dst == state().panes.end()) return;
+        auto& source = *src->second; auto& target = *dst->second;
+        if (!source.strip || !target.strip || source.strip->windowDragTabId != finished.tab ||
+            source.strip->rows.size() != 1 || source.strip->windowDragPrivate != target.strip->windowDragPrivate ||
+            WindowMoveState(target).endpoint != finished.target_endpoint ||
+            target.strip->presentationRevision != finished.target_revision) return;
+        auto taken = WindowMoveState(source, WindowMoveOp::Take, 0, {}, 0, 0, 0, false, finished.gesture);
+        if (taken.phase != 3) return;
+        if (continuation && (GetAsyncKeyState(VK_ESCAPE) & 0x8000)) return;
+        const bool held = continuation && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) && !(GetAsyncKeyState(VK_ESCAPE) & 0x8000);
+        const auto request = target.strip->QueueIncomingAdopt(sourceHwnd, finished.tab,
+            target.strip->ProjectExternalDropIndex(target.ScreenToStrip(point).X), source.strip->presentationRevision,
+            source.strip->windowDragSession, held);
+        if (held && request) {
+            target.continuationSource = sourceHwnd;
+            target.continuationSourceLife = source.lifetime;
+            WindowMoveState(target, WindowMoveOp::AwaitAdoption, 0, {}, 0, 0, 0, false, request);
+            if (!target.windowDrag.StartWaiting()) CancelWindowContinuation(target);
+        }
+    })) WindowMoveState(pane, WindowMoveOp::Cancel);
 }
 
 void ArmDragSession(Pane& pane, uint32_t id) {
@@ -1359,7 +1584,9 @@ void TickDragSession() {
     // window" from "still over my own strip").
     Pane* hitPane = nullptr;
     for (auto& entry : panes) {
-        if (!entry.second->strip || entry.second.get() == &sourcePane) continue;
+        if (!entry.second->strip || entry.second.get() == &sourcePane || !entry.second->appliedVisible ||
+            !IsWindowVisible(entry.first) || IsIconic(entry.first) ||
+            (entry.first == session.departedWindow && !session.departedLife.expired())) continue;
         RECT bounds = entry.second->StripScreenBounds();
         if (PtInRect(&bounds, screenPoint)) {
             hitPane = entry.second.get();
@@ -1529,7 +1756,9 @@ HRESULT UpdateImpl(HWND hwnd, const RECT* rect, BOOL visible, bool strip) noexce
             // Firefox's compositor is a sibling HWND covering the client area.
             // Ask the window where it actually is rather than remembering where
             // it was last put: a restack by anything else still has to be undone.
-            if (GetWindow(child, GW_HWNDPREV) != nullptr) {
+            if (pane.strip) {
+                NativeWindowDrag::Restack(child);
+            } else if (GetWindow(child, GW_HWNDPREV) != nullptr) {
                 check_bool(SetWindowPos(child, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE));
                 ++work.restacks;
             }
@@ -1542,6 +1771,7 @@ HRESULT UpdateImpl(HWND hwnd, const RECT* rect, BOOL visible, bool strip) noexce
             pane.appliedVisible = int(bool(visible));
             ++work.visibilityApplied;
         }
+        if (pane.strip) pane.windowDrag.SetVisible(bool(visible));
         scope.Stop();
         if (DiagnosticsEnabled()) {
             RECT actual{};
@@ -1616,6 +1846,7 @@ HRESULT WINAPI Clip(HWND hwnd, const RECT* exclusions, uint32_t count) noexcept 
         pane.appliedExclusions.assign(exclusions, exclusions + count);
         pane.appliedClipClient = bounds;
         pane.clipApplied = true;
+        if (pane.strip) pane.windowDrag.SetClip(child, pane.appliedExclusions);
         ++work.clipsApplied;
         scope.Stop();
         if (DiagnosticsEnabled())
@@ -1857,6 +2088,22 @@ HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
                 }
             }
             pane.shell.Complete(uint64_t(id), NativeShellCore::Outcome(outcome));
+            const auto pending = WindowMoveState(pane);
+            if (pending.phase == 4 && pending.target == uint64_t(id)) {
+                const auto tab = outcome == 1 && entry.HasKey(L"dragTab") ? NativeJson::RequireId(entry, L"dragTab") : 0;
+                WindowMoveState(pane, WindowMoveOp::CompleteAdoption, tab, {}, 0, 0, 0, false, uint64_t(id));
+                if (!tab) pane.windowDrag.StopWaiting();
+                else {
+                    auto weak = std::weak_ptr<int>(pane.lifetime);
+                    pane.strip->root.DispatcherQueue().TryEnqueue([weak, hwnd] {
+                        if (weak.expired()) return;
+                        auto found = state().panes.find(hwnd);
+                        if (found == state().panes.end() || !found->second->strip) return;
+                        found->second->strip->root.UpdateLayout();
+                        ContinueWindowDrag(*found->second);
+                    });
+                }
+            }
         }
         const bool blocked = message.GetNamedBoolean(L"blocked", false);
         bool notify = false;
@@ -1944,11 +2191,6 @@ BOOL WINAPI Translate(MSG* message) noexcept {
         // TickDragSession), driven by every message this hook sees rather
         // than by parsing any one of them.
         TickDragSession();
-        // Same reasoning, for the empty-strip-space window-move gesture
-        // (TabStrip.h's own WindowMoveState/TickWindowMove) -- per-pane,
-        // since each open window's own strip tracks its own independently.
-        for (auto const& entry : state().panes)
-            if (entry.second->strip) entry.second->strip->TickWindowMove();
         for (auto const& entry : state().panes) {
             auto& pane = *entry.second;
             if (!pane.childWindow) pane.childWindow = GetWindowFromWindowId(pane.source.SiteBridge().WindowId());

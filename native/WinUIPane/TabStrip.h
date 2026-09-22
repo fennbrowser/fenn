@@ -19,7 +19,8 @@
 // WinUI bug, not something fixable on our side by configuration. Reordering
 // is instead hand-rolled below (DragState/PointerPressed and friends): plain
 // pointer capture and manual sibling-shift animations never touch WinUI's
-// native OLE drag-drop path, so the crash can never trigger. Real OS-level
+// native OLE drag-drop path for our own gestures. Pane.cpp separately rejects
+// incoming system drags at the island's DragDropManager boundary. Real OS-level
 // DoDragDrop was tried too and hit
 // the exact same fail-fast from a different, WinUI-internal entry point
 // (SystemDropOperationTargetAdapter, automatically bridging any real OLE
@@ -91,7 +92,7 @@ struct NativeTabStrip {
     // owning pane's request queue, which wakes the host. `tab` is this
     // window's own id for the tab being acted on, or 0 when the gesture names
     // no tab of this window's (an incoming adopt names the source window's).
-    std::function<void(uint32_t tab, hstring const& action)> dispatch;
+    std::function<uint64_t(uint32_t tab, hstring const& action)> dispatch;
     // Coalesces the mid-drag active-tab highlight below: at most one apply is
     // ever queued on the dispatcher at a time, and a Sync() landing before it
     // runs just updates the target id rather than queuing a second one.
@@ -137,23 +138,9 @@ struct NativeTabStrip {
         bool detaching{};
     };
     DragState drag;
-    // Self-driven window-move state for empty-strip-space dragging -- see
-    // the PointerPressed handler's own comment (constructor, below) for why
-    // this doesn't just hand off to Windows' own WM_NCLBUTTONDOWN/HTCAPTION
-    // mechanism. Fully independent of DragState above: a tab drag arms on a
-    // row's own PointerPressed, this arms on `root`'s, and OriginatesOnInteractive
-    // keeps the two from ever both claiming the same physical press.
-    struct WindowMoveState {
-        bool active{};
-        POINT startCursor{};
-        RECT startWindowRect{};
-        // Own double-click-to-maximize/restore detection, since owning this
-        // gesture end to end means DefWindowProc's own NC-caption handling
-        // (which tracks consecutive HTCAPTION clicks itself) never runs.
-        DWORD lastClickTime{};
-        POINT lastClickCursor{};
-    };
-    WindowMoveState windowMove;
+    bool captionDirty{true};
+    uint32_t windowDragTabId{}, windowDragSession{};
+    bool windowDragPrivate{};
     struct RowAnimation {
         Media::Animation::Storyboard storyboard{nullptr};
         double target{};
@@ -196,73 +183,6 @@ struct NativeTabStrip {
         view.AddTabButtonClick([this, alive](auto const&, auto const&) {
             if (!alive.expired() && !syncing) add();
         });
-        // A native top bar should move the window when dragged by its own
-        // empty space, the same as any ordinary title bar -- but the JS
-        // side deliberately sets -moz-window-dragging:no-drag on this
-        // pane's own hosting element (browser-winui-pane.js), since the
-        // XAML Island sitting on top of that DOM region would otherwise
-        // fight Gecko's own CSS-driven drag detection for the same input.
-        // That leaves nothing to move the window at all once the island
-        // takes over that whole area, so this replaces it.
-        //
-        // The first attempt forwarded the press to the real top-level
-        // window as WM_NCLBUTTONDOWN/HTCAPTION (the message a real title
-        // bar generates, letting DefWindowProc's own modal move loop take
-        // over). That doesn't work reliably here: reentering
-        // DefWindowProc's own move-tracking loop from inside WinUI's own
-        // PointerPressed dispatch means it's racing WinUI's own,
-        // independent pointer-tracking for the exact same physical
-        // gesture. Confirmed live: nothing moved while the button was
-        // actually held, then sometime after release the window snapped to
-        // the cursor and kept tracking it, unbounded, until the next click
-        // -- consistent with DefWindowProc's loop never actually seeing the
-        // real button-up (WinUI's own tracking still had it), only later
-        // picking up on some unrelated stray mouse-move that happened to
-        // reach the top-level window instead of the Island, then having no
-        // real terminating condition left to end on.
-        //
-        // Uses the same fix the tab-drag session itself needed for the
-        // equivalent problem: don't depend on any one event-delivery path
-        // WinUI/Gecko might contest -- track the physical gesture with raw
-        // Win32 state instead (TickWindowMove, ticked from Pane.cpp's
-        // Translate() hook the same way TickDragSession is), so which
-        // event-delivery mechanism does or doesn't fire never matters for
-        // correctness. Since this drives the whole gesture itself, it also
-        // has to detect its own double-click-to-maximize/restore --
-        // DefWindowProc's own HTCAPTION handling would have covered that
-        // for free.
-        root.AddHandler(
-            UIElement::PointerPressedEvent(),
-            box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                [this, alive](auto const&, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
-                    if (alive.expired() || syncing) return;
-                    auto point = args.GetCurrentPoint(root);
-                    if (!point.Properties().IsLeftButtonPressed()) return;
-                    if (OriginatesOnInteractive(args.OriginalSource())) return;
-                    args.Handled(true);
-                    POINT cursor{};
-                    ::GetCursorPos(&cursor);
-                    DWORD now = ::GetTickCount();
-                    bool doubleClick =
-                        windowMove.lastClickTime && now - windowMove.lastClickTime <= ::GetDoubleClickTime() &&
-                        std::abs(cursor.x - windowMove.lastClickCursor.x) <= ::GetSystemMetrics(SM_CXDOUBLECLK) &&
-                        std::abs(cursor.y - windowMove.lastClickCursor.y) <= ::GetSystemMetrics(SM_CYDOUBLECLK);
-                    windowMove.lastClickTime = now;
-                    windowMove.lastClickCursor = cursor;
-                    if (doubleClick) {
-                        windowMove.lastClickTime = 0;  // don't chain into a triple-click toggling back
-                        WINDOWPLACEMENT placement{sizeof(placement)};
-                        ::GetWindowPlacement(ownerHwnd, &placement);
-                        ::ShowWindow(ownerHwnd,
-                                     placement.showCmd == SW_SHOWMAXIMIZED ? SW_RESTORE : SW_SHOWMAXIMIZED);
-                        return;
-                    }
-                    ::SetCapture(ownerHwnd);
-                    windowMove.active = true;
-                    windowMove.startCursor = cursor;
-                    ::GetWindowRect(ownerHwnd, &windowMove.startWindowRect);
-                })),
-            true);
         // TabView's internal ListView plays its default add/remove theme
         // transitions (fade out then remove, fade in on insert) whenever a
         // row's position in TabItems() changes via the RemoveAt+InsertAt
@@ -364,9 +284,14 @@ struct NativeTabStrip {
     // this window's own rows yet for Sync()'s usual confirm-tracking to
     // watch (Firefox adopting it in will simply appear as an ordinary new
     // row on this window's next Sync(), same as any other opened tab).
-    void QueueIncomingAdopt(HWND sourceHwnd, uint32_t tabId, uint32_t index) {
+    uint64_t QueueIncomingAdopt(HWND sourceHwnd, uint32_t tabId, uint32_t index, uint32_t sourceRevision = 0, uint32_t sourceSession = 0, bool continuation = false) {
         Windows::Data::Json::JsonObject action;
         action.SetNamedValue(L"kind", Windows::Data::Json::JsonValue::CreateStringValue(L"strip-adopt"));
+        if (sourceRevision) {
+            action.SetNamedValue(L"continueDrag", Windows::Data::Json::JsonValue::CreateBooleanValue(continuation));
+            action.SetNamedValue(L"sourceRevision", Windows::Data::Json::JsonValue::CreateNumberValue(sourceRevision));
+            action.SetNamedValue(L"sourceSession", Windows::Data::Json::JsonValue::CreateNumberValue(sourceSession));
+        }
         action.SetNamedValue(L"revision", Windows::Data::Json::JsonValue::CreateNumberValue(presentationRevision));
         action.SetNamedValue(L"sourceHwnd", Windows::Data::Json::JsonValue::CreateNumberValue(
                                                  double(reinterpret_cast<uintptr_t>(sourceHwnd))));
@@ -374,7 +299,7 @@ struct NativeTabStrip {
         action.SetNamedValue(L"index", Windows::Data::Json::JsonValue::CreateNumberValue(index));
         // The adopted tab belongs to the source window, not this one, so this
         // request names no tab in this window's id space.
-        if (dispatch) dispatch(0, action.Stringify());
+        return dispatch ? dispatch(0, action.Stringify()) : 0;
     }
 
     static Media::TranslateTransform RowTransform(Controls::TabViewItem const& row) {
@@ -554,28 +479,6 @@ struct NativeTabStrip {
         if (rows.count(id)) rows.at(id).Opacity(1);
     }
 
-    // Moves this pane's own top-level window to follow the cursor, for as
-    // long as the button the PointerPressed handler above armed on stays
-    // physically down. Called on every message Pane.cpp's Translate() hook
-    // sees, the same way TabDragSession's own TickDragSession is -- ground
-    // truth is GetCursorPos()/GetAsyncKeyState(), never dependent on any
-    // one WinUI/Gecko event actually firing, for the same reason that
-    // matters for tab dragging (see the constructor's own comment on why
-    // handing this off to WM_NCLBUTTONDOWN didn't work reliably).
-    void TickWindowMove() {
-        if (!windowMove.active) return;
-        if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
-            windowMove.active = false;
-            if (GetCapture() == ownerHwnd) ReleaseCapture();
-            return;
-        }
-        POINT cursor{};
-        GetCursorPos(&cursor);
-        int dx = cursor.x - windowMove.startCursor.x, dy = cursor.y - windowMove.startCursor.y;
-        SetWindowPos(ownerHwnd, nullptr, windowMove.startWindowRect.left + dx, windowMove.startWindowRect.top + dy, 0,
-                     0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-    }
-
     // Ends an armed-but-never-promoted gesture: a plain click (selection
     // already happened normally on press, nothing to commit) or capture
     // lost while still Armed (nothing has moved yet, so there's nothing to
@@ -601,13 +504,13 @@ struct NativeTabStrip {
     // the tab drag redesign). Idempotent once already
     // Dragging (or once `id` no longer matches), so calling it from both is
     // safe -- whichever notices first wins.
-    bool TryPromote(uint32_t id, Windows::Foundation::Point const& point) {
+    bool TryPromote(uint32_t id, Windows::Foundation::Point const& point, bool continuation = false) {
         if (drag.tabId != id || drag.phase != DragPhase::Armed || !rows.count(id)) return false;
         constexpr double kDragThreshold = 4.0;
         // Either axis can arm the drag -- a tear-off gesture often starts as
         // a mostly-vertical pull, which a horizontal-only threshold would
         // never observe crossing.
-        if (std::max(std::abs(point.X - drag.startPoint.X), std::abs(point.Y - drag.startPoint.Y)) < kDragThreshold)
+        if (!continuation && std::max(std::abs(point.X - drag.startPoint.X), std::abs(point.Y - drag.startPoint.Y)) < kDragThreshold)
             return false;
         auto& row = rows.at(id);
         drag.phase = DragPhase::Dragging;
@@ -799,7 +702,9 @@ struct NativeTabStrip {
     void CancelDrag() {
         if (drag.phase == DragPhase::Dragging && rows.count(drag.tabId)) {
             auto row = rows.at(drag.tabId);
-            for (auto pointer : row.PointerCaptures()) row.ReleasePointerCapture(pointer);
+            // A native-window handoff has HWND capture, without a XAML pointer.
+            if (auto captures = row.PointerCaptures())
+                for (auto pointer : captures) row.ReleasePointerCapture(pointer);
             RestoreRowVisibility(drag.tabId);
             for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i) {
                 auto sibling = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
@@ -826,6 +731,10 @@ struct NativeTabStrip {
             throw hresult_invalid_argument();
         if (revision == presentationRevision) return;
         if (base && base != presentationRevision) throw hresult_invalid_argument();
+        const auto dragTab = data.HasKey(L"windowDragTabId") ? NativeJson::RequireRevision(data, L"windowDragTabId") : (base ? windowDragTabId : 0);
+        if (dragTab > UINT32_MAX) throw hresult_invalid_argument();
+        const auto dragSessionId = data.HasKey(L"windowDragSession") ? NativeJson::RequireId(data, L"windowDragSession") : (base ? windowDragSession : 0);
+        const bool dragPrivate = data.GetNamedBoolean(L"windowDragPrivate", base ? windowDragPrivate : false);
         const bool updateGroups = !base || data.HasKey(L"groups") || data.HasKey(L"groupsLabel");
         auto label = base ? data.GetNamedString(L"groupsLabel", groupsLabel) : data.GetNamedString(L"groupsLabel");
         const bool rtl = base ? data.GetNamedBoolean(L"rtl", root.FlowDirection() == FlowDirection::RightToLeft)
@@ -913,6 +822,10 @@ struct NativeTabStrip {
         // A gesture formed against an older presentation is not revoked here:
         // it is already queued, carrying the revision it was formed against,
         // and Firefox refuses it explicitly on that revision.
+        windowDragTabId = uint32_t(dragTab);
+        windowDragSession = dragSessionId;
+        windowDragPrivate = dragPrivate;
+        captionDirty = true;
         presentationRevision = revision;
         presentationFingerprint = fingerprint;
         // Metadata has its own publication now; do not wait for a title delta
@@ -1022,7 +935,7 @@ struct NativeTabStrip {
         audioBox.Visibility(meta.flags & 12 ? Visibility::Visible : Visibility::Collapsed);
         Controls::ToolTipService::SetToolTip(row, box_value(meta.detail.empty() ? title : title + L"\n" + meta.detail));
         Automation::AutomationProperties::SetHelpText(
-            row, meta.detail + (meta.detail.empty() || meta.status.empty() ? L"" : L" · ") + meta.status);
+            row, meta.detail + (meta.detail.empty() || meta.status.empty() ? L"" : L" ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ") + meta.status);
     }
 
     void AttachMenu(Controls::TabViewItem const& row, uint32_t id) {
@@ -1350,5 +1263,6 @@ struct NativeTabStrip {
             throw;
         }
         syncing = false;
+        captionDirty = true;
     }
 };
