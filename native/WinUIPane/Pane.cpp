@@ -428,25 +428,20 @@ struct Pane {
     bool syncing{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
-    // This strip's own on-screen rectangle, for another window's drag to
-    // hit-test a drop point against (Pane.cpp's TickDragSession, checked
-    // against every open pane in state().panes). TransformToVisual(nullptr)
-    // gives the TabView's position relative to this pane's own hosted root
-    // (matching the technique already used for hit-testing screen points
-    // elsewhere in this codebase, e.g. the native drag test's own
-    // tab-to-screen-point resolution); ClientToScreen anchors that to this
-    // pane's owning HWND.
+    // WinUI owns the island's screen origin and rasterization scale. Convert
+    // through its live converter, then through the TabView/root transform;
+    // parent HWND client coordinates and XAML units are different spaces.
     RECT StripScreenBounds() const {
-        RECT bounds{};
-        if (!strip) return bounds;
-        auto topLeft = strip->view.TransformToVisual(nullptr).TransformPoint({0, 0});
-        POINT origin{LONG(topLeft.X), LONG(topLeft.Y)};
-        ClientToScreen(parent, &origin);
-        bounds.left = origin.x;
-        bounds.top = origin.y;
-        bounds.right = origin.x + LONG(strip->view.ActualWidth());
-        bounds.bottom = origin.y + LONG(strip->view.ActualHeight());
-        return bounds;
+        if (!strip) return {};
+        auto rootBounds = strip->view.TransformToVisual(nullptr).TransformBounds(
+            {0, 0, float(strip->view.ActualWidth()), float(strip->view.ActualHeight())});
+        auto screen = strip->view.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(rootBounds);
+        return {screen.X, screen.Y, screen.X + screen.Width, screen.Y + screen.Height};
+    }
+    Windows::Foundation::Point ScreenToStrip(POINT screen) const {
+        auto rootPoint = strip->view.XamlRoot().ContentIsland().CoordinateConverter().ConvertScreenToLocal(
+            Windows::Graphics::PointInt32{screen.x, screen.y});
+        return strip->view.TransformToVisual(nullptr).Inverse().TransformPoint(rootPoint);
     }
 
     // Every erase of a pane calls Close() first, but the Rendering handler
@@ -945,6 +940,7 @@ struct Pane {
         source.Initialize(GetWindowIdFromWindow(hwnd));
         if (tabStrip) {
             strip = std::make_unique<NativeTabStrip>(tabMenu);
+            strip->core = shell.core;
             strip->ownerHwnd = hwnd;
             // The strip's own completed gestures ride the same queue as menu
             // transitions and selection, in the order the user made them. Each
@@ -1288,15 +1284,13 @@ void ResolveDragDrop(Pane& sourcePane, Pane* hitPane, POINT screenPoint) {
     auto& session = dragSession();
     auto* strip = session.sourceStrip;
     if (hitPane && hitPane->strip) {
-        RECT bounds = hitPane->StripScreenBounds();
-        Windows::Foundation::Point local{float(screenPoint.x - bounds.left), float(screenPoint.y - bounds.top)};
+        auto local = hitPane->ScreenToStrip(screenPoint);
         hitPane->strip->AcceptForeignDrop(sourcePane.parent, session.tabId, local);
         strip->FinishDrag(session.tabId);
     } else if (strip->drag.detaching) {
         strip->CommitDetach(session.tabId);
     } else {
-        RECT bounds = sourcePane.StripScreenBounds();
-        Windows::Foundation::Point local{float(screenPoint.x - bounds.left), float(screenPoint.y - bounds.top)};
+        auto local = sourcePane.ScreenToStrip(screenPoint);
         strip->CommitReorder(session.tabId, local);
     }
     AbortDragSession();
@@ -1332,10 +1326,9 @@ void TickDragSession() {
     }
     bool buttonDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
     if (session.sourceStrip->drag.phase == NativeTabStrip::DragPhase::Armed) {
-        RECT bounds = sourcePane.StripScreenBounds();
         POINT screenPoint{};
         GetCursorPos(&screenPoint);
-        Windows::Foundation::Point local{float(screenPoint.x - bounds.left), float(screenPoint.y - bounds.top)};
+        auto local = sourcePane.ScreenToStrip(screenPoint);
         if (session.sourceStrip->TryPromote(session.tabId, local)) return;  // Dragging now; next tick tracks it.
         if (!buttonDown) {
             session.sourceStrip->FinishDrag(session.tabId);
@@ -1384,8 +1377,7 @@ void TickDragSession() {
         // support. UpdateDragVisual no longer touches the dragged row's own
         // visual at all (see its own comment) -- only the floating popup,
         // positioned below, ever represents the dragged tab now.
-        RECT bounds = sourcePane.StripScreenBounds();
-        Windows::Foundation::Point local{float(screenPoint.x - bounds.left), float(screenPoint.y - bounds.top)};
+        auto local = sourcePane.ScreenToStrip(screenPoint);
         session.sourceStrip->UpdateDragVisual(local);
         if (!session.sourceStrip->drag.detaching) newHover = session.sourceStrip;
     }
@@ -1425,8 +1417,7 @@ void TickDragSession() {
     }
     if (hitPane) {
         session.sourceStrip->CloseDragGap();
-        RECT bounds = hitPane->StripScreenBounds();
-        Windows::Foundation::Point local{float(screenPoint.x - bounds.left), float(screenPoint.y - bounds.top)};
+        auto local = hitPane->ScreenToStrip(screenPoint);
         hitPane->strip->ForeignDragOver(local);
     }
     if (!buttonDown) ResolveDragDrop(sourcePane, hitPane, screenPoint);
@@ -2166,7 +2157,19 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetGeometryWork(uin
     values[5] = work.clipsApplied;
     return S_OK;
 }
-// Test-only inspection of the actual hosted content. Not exported by the shipped DLL.
+// Test-only scaling and content inspection. Not exported by the shipped DLL.
+// Exercise real island rasterization without changing desktop display settings.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSetIslandScale(HWND hwnd, float scale) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end() || !std::isfinite(scale) || scale < 1 || scale > 3) return E_INVALIDARG;
+        found->second->source.SiteBridge().OverrideScale(scale);
+        return S_OK;
+    } catch (...) {
+        return to_hresult();
+    }
+}
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetContent(HWND hwnd, void** output) noexcept {
     try {
         if (!output) return E_POINTER;

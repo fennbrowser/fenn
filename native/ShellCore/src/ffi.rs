@@ -39,6 +39,7 @@ use crate::queue::{
     CompleteError, DrainError, EnqueueStatus, Limits, Outcome, Request, RequestKind, RequestQueue,
 };
 use crate::SHELL_CORE_ABI_VERSION;
+use crate::strip::{ShellStripChange, StripState};
 
 /// Result of every entry point. `Ok` is zero so the host can test it directly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -188,6 +189,7 @@ pub struct ShellCore {
     poisoned: bool,
     queue: RequestQueue,
     model: TabModel,
+    strip: StripState,
     snapshot: Option<SnapshotBuilder>,
     stats: Counters,
 }
@@ -397,6 +399,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         poisoned: false,
         queue: RequestQueue::new(queue_limits),
         model: TabModel::new(model_limits),
+        strip: StripState::default(),
         snapshot: None,
         stats: Counters::default(),
     });
@@ -745,6 +748,26 @@ pub unsafe extern "C" fn shell_core_stats(
             reserved: 0,
         };
         ShellStatus::Ok
+    })
+}
+
+/// Atomically accept a strip transaction after native JSON field validation.
+/// Base zero replaces the retained state; other bases must match exactly.
+///
+/// # Safety
+/// See [`guard`]. `changes` must contain `count` readable entries.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_strip_apply(
+    core: *mut ShellCore, base: u32, revision: u32,
+    changes: *const ShellStripChange, count: usize,
+) -> ShellStatus {
+    guard(core, |core| {
+        if count > 20_000 || (count != 0 && changes.is_null()) {
+            return ShellStatus::InvalidArgument;
+        }
+        let changes = if count == 0 { &[] } else { std::slice::from_raw_parts(changes, count) };
+        if core.strip.apply(base, revision, changes) { ShellStatus::Ok }
+        else { ShellStatus::InvalidArgument }
     })
 }
 

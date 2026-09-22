@@ -7,6 +7,7 @@
 #include "JsonValidation.h"
 #include "TabGroupsButton.h"
 #include "TabDragImage.h"
+#include "ShellCore.h"
 
 // Strip-only experiment: TabView owns presentation, Firefox owns all mutations.
 // No content pages or template internals are used. CanDragTabs/CanReorderTabs
@@ -30,6 +31,7 @@ struct NativeTabStrip {
     Controls::Grid root{nullptr};
     Controls::TabView view{nullptr};
     NativeTabMenu& menu;
+    ShellCore* core{};
     std::function<void(uint32_t)> select, close;
     std::function<void()> add;
     // This window's own real top-level HWND, set by Pane.cpp at
@@ -68,6 +70,8 @@ struct NativeTabStrip {
     TabGroupsButton groupsButton;
     uint32_t presentationRevision{};
     hstring presentationFingerprint;
+    hstring groupsLabel;
+    Windows::Data::Json::JsonArray currentGroups;
     bool syncing{};
     // While a hand-rolled drag is in progress, Sync must not touch
     // TabItems() at all -- the drag only ever moves rows visually (a
@@ -810,33 +814,63 @@ struct NativeTabStrip {
 
     // Parse a complete bounded copy before changing XAML or accepting any IDs.
     void Publish(NativeTabMenu::Object const& data) {
-        if (data.GetNamedNumber(L"version") != 1) throw hresult_invalid_argument();
+        auto version = data.GetNamedNumber(L"version");
+        if (version != 1 && version != 2) throw hresult_invalid_argument();
+        const auto baseNumber = version == 2 ? NativeJson::RequireRevision(data, L"base") : 0;
+        if (baseNumber > UINT32_MAX) throw hresult_invalid_argument();
+        const auto base = uint32_t(baseNumber);
         auto revision = NativeJson::RequireId(data, L"revision");
         auto fingerprint = data.Stringify();
         if (revision < presentationRevision ||
             (revision == presentationRevision && fingerprint != presentationFingerprint))
             throw hresult_invalid_argument();
         if (revision == presentationRevision) return;
-        auto label = data.GetNamedString(L"groupsLabel");
-        const bool rtl = data.GetNamedBoolean(L"rtl");
-        auto entries = data.GetNamedArray(L"rows"), groups = data.GetNamedArray(L"groups");
+        if (base && base != presentationRevision) throw hresult_invalid_argument();
+        const bool updateGroups = !base || data.HasKey(L"groups") || data.HasKey(L"groupsLabel");
+        auto label = base ? data.GetNamedString(L"groupsLabel", groupsLabel) : data.GetNamedString(L"groupsLabel");
+        const bool rtl = base ? data.GetNamedBoolean(L"rtl", root.FlowDirection() == FlowDirection::RightToLeft)
+                             : data.GetNamedBoolean(L"rtl");
+        auto entries = data.GetNamedArray(L"rows");
+        auto groups = base && !data.HasKey(L"groups") ? currentGroups : data.GetNamedArray(L"groups");
         if (label.empty() || label.size() > NativeJson::kMaxShortLabel || entries.Size() > NativeJson::kMaxTabs ||
             groups.Size() > NativeJson::kMaxTabs)
             throw hresult_invalid_argument();
         std::map<uint32_t, Presentation> next;
+        std::vector<ShellStripChange> changes;
+        std::set<uint32_t> removed;
+        if (base) {
+            auto removals = data.GetNamedArray(L"removed");
+            if (removals.Size() > NativeJson::kMaxTabs) throw hresult_invalid_argument();
+            for (auto value : removals) {
+                auto number = value.GetNumber();
+                if (!std::isfinite(number) || number < 1 || number > UINT32_MAX || std::floor(number) != number)
+                    throw hresult_invalid_argument();
+                auto id = uint32_t(number);
+                if (!presentation.count(id) || !removed.insert(id).second) throw hresult_invalid_argument();
+                changes.push_back({id, 0, true, false});
+            }
+        }
         size_t totalImagePixels = 0;
         for (auto value : entries) {
             auto entry = value.GetObject();
             auto id = NativeJson::RequireId(entry, L"id");
-            auto flags = entry.GetNamedNumber(L"flags");
-            auto detail = entry.GetNamedString(L"detail");
-            auto status = entry.GetNamedString(L"status", L"");
+            if (removed.count(id)) throw hresult_invalid_argument();
+            auto old = presentation.find(id);
+            bool existing = base && old != presentation.end();
+            auto flags = existing ? entry.GetNamedNumber(L"flags", old->second.flags) : entry.GetNamedNumber(L"flags");
+            auto detail = existing ? entry.GetNamedString(L"detail", old->second.detail) : entry.GetNamedString(L"detail");
+            auto status = entry.GetNamedString(L"status", existing ? old->second.status : L"");
             if (!std::isfinite(flags) || flags < 0 || flags > 15 || std::floor(flags) != flags ||
                 detail.size() > NativeJson::kMaxDetailText || status.size() > NativeJson::kMaxDetailText)
                 throw hresult_invalid_argument();
             NativeJson::ValidateImage(entry, totalImagePixels, kTabImageLimits);
             hstring imagePixels;
             uint32_t imageWidth{}, imageHeight{};
+            if (existing && !entry.HasKey(L"image")) {
+                imagePixels = old->second.imagePixels;
+                imageWidth = old->second.imageWidth;
+                imageHeight = old->second.imageHeight;
+            }
             if (entry.HasKey(L"image") &&
                 entry.GetNamedValue(L"image").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null) {
                 auto image = entry.GetNamedObject(L"image");
@@ -847,6 +881,8 @@ struct NativeTabStrip {
             if (!next.emplace(id, Presentation{detail, uint32_t(flags), status, imagePixels, imageWidth, imageHeight})
                      .second)
                 throw hresult_invalid_argument();
+            changes.push_back({id, imageWidth * imageHeight, false,
+                               entry.HasKey(L"flags") && entry.HasKey(L"detail")});
         }
         std::set<uint32_t> ids;
         for (auto value : groups) {
@@ -858,14 +894,34 @@ struct NativeTabStrip {
                 text.size() > NativeJson::kMaxDetailText)
                 throw hresult_invalid_argument();
         }
-        groupsButton.Apply(label, groups);
-        root.FlowDirection(rtl ? FlowDirection::RightToLeft : FlowDirection::LeftToRight);
-        presentation.swap(next);
+        // The Rust core owns revision/identity and aggregate retained-image
+        // bounds. Everything above is staged before either model or XAML changes.
+        if (!core || shell_core_strip_apply(core, base, revision, changes.data(), changes.size()) != SHELL_STATUS_OK)
+            throw hresult_invalid_argument();
+        if (updateGroups) {
+            groupsButton.Apply(label, groups);
+            groupsLabel = label;
+            currentGroups = groups;
+        }
+        if (!base || data.HasKey(L"rtl"))
+            root.FlowDirection(rtl ? FlowDirection::RightToLeft : FlowDirection::LeftToRight);
+        if (!base) presentation.swap(next);
+        else {
+            for (auto id : removed) presentation.erase(id);
+            for (auto const& [id, value] : next) presentation.insert_or_assign(id, value);
+        }
         // A gesture formed against an older presentation is not revoked here:
         // it is already queued, carrying the revision it was formed against,
         // and Firefox refuses it explicitly on that revision.
         presentationRevision = revision;
         presentationFingerprint = fingerprint;
+        // Metadata has its own publication now; do not wait for a title delta
+        // or a structural Sync to make a changed icon/status visible.
+        for (auto const& change : changes) {
+            auto row = rows.find(change.id);
+            if (change.remove || row == rows.end()) continue;
+            UpdateHeader(row->second, change.id, Automation::AutomationProperties::GetName(row->second));
+        }
     }
 
     // Incremental entry points for the v11 delta path: update exactly one row,

@@ -101,3 +101,41 @@ test("ordinary completed and rejected commands keep their outcomes without forci
   assert.equal(f.errors.length, 0);
   assert.equal(f.pane.structuralDirty, false);
 });
+
+test("title and selection events do not rebuild strip metadata", () => {
+  for (const [type, changed] of [["TabSelect"], ["TabMultiSelect"], ["TabAttrModified", ["label"]]]) {
+    const f = fixture([]);
+    f.pane.stripDirty = false;
+    f.pane.schedule = () => {};
+    f.pane.handleEvent({type, target:{}, detail:{changed}});
+    assert.equal(f.pane.stripDirty, false, type);
+    assert.ok(f.pane.dirtySelection || f.pane.contextDirty || f.pane.dirtyTitles.size);
+  }
+  for (const attribute of ["image", "busy", "muted", "soundplaying", "pinned"]) {
+    const f = fixture([]);
+    f.pane.stripDirty = false;
+    f.pane.schedule = () => {};
+    f.pane.handleEvent({type:"TabAttrModified", target:{}, detail:{changed:[attribute]}});
+    assert.equal(f.pane.stripDirty, true, attribute);
+  }
+});
+
+test("a rejected strip delta recovers with one complete publication", () => {
+  const context = {window:{addEventListener() {}, windowUtils:{}}};
+  runInNewContext(source, context);
+  const pane = context.gWinUIPane;
+  const sent = [], updates = [];
+  pane.stripSession = {update(full = false) {
+    updates.push(full);
+    return {version:2, publishOnly:true, strip:{version:2, base:full ? 0 : 4, revision:full ? 6 : 5}};
+  }};
+  context.window.windowUtils.syncWinUITabMenu = text => {
+    const message = JSON.parse(text);
+    sent.push(message);
+    if (message.strip.base) throw new Error("missing base");
+  };
+  pane.publishStrip();
+  assert.deepEqual(updates, [false, true]);
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].strip.base, 0);
+});

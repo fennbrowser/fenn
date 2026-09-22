@@ -181,3 +181,56 @@ test("adopt requests with stale revisions or malformed fields are rejected", () 
     assert.equal(f.adoptCalls.length, 0);
   }
 });
+
+test("metadata deltas retain unrelated rows, images and groups", () => {
+  const f = fixture();
+  f.state.rows[0].image = {width:2, height:2, pixels:"0000ffff".repeat(4)};
+  f.session.update();
+  f.state.rows[0].flags = 2;
+  const delta = f.session.update().strip;
+  assert.equal(delta.version, 2);
+  assert.equal(delta.base, 2);
+  assert.deepEqual(delta.rows, [{id:11, flags:2}]);
+  assert.deepEqual(delta.removed, []);
+  assert.equal("groups" in delta, false);
+  assert.equal("groupsLabel" in delta, false);
+  assert.equal("rtl" in delta, false);
+  f.state.rows[0].image = null;
+  assert.deepEqual(f.session.update().strip.rows, [{id:11, image:null}]);
+});
+
+test("structural deltas remove and add identities; recovery is independently complete", () => {
+  const f = fixture();
+  f.state.rows.splice(0, 1, {id:33, detail:"New", flags:0, image:null});
+  const delta = f.session.update().strip;
+  assert.deepEqual(delta.removed, [11]);
+  assert.deepEqual(delta.rows, [f.state.rows[0]]);
+  const recovery = f.session.update(true).strip;
+  assert.equal(recovery.base, 0);
+  assert.equal(recovery.revision, 3);
+  assert.deepEqual(recovery.rows, f.state.rows);
+  assert.equal(recovery.groups.length, 1);
+  assert.equal(f.session.update(), null);
+});
+
+test("consumed actions do not advance the acknowledged delta base", () => {
+  const f = fixture();
+  assert.equal(f.session.receive({kind:"strip-adopt", revision:1, sourceHwnd:42, id:77, index:0}), true);
+  const delta = f.session.update().strip;
+  assert.equal(delta.base, 1);
+  assert.equal(delta.revision, 3);
+  assert.deepEqual(delta.rows, []);
+});
+
+test("1,000-tab metadata update contains just one changed field and no pixel payload", () => {
+  const image = {width:1, height:1, pixels:"0000ffff"};
+  const state = {rtl:false, groupsLabel:"Groups", groups:[],
+    rows:Array.from({length:1000}, (_, i) => ({id:i+1, detail:"", flags:0, image}))};
+  const session = new WinUITabStripSession({read: () => ({...state, rows:state.rows.map(r => ({...r}))})});
+  session.update();
+  state.rows[500].flags = 4;
+  const delta = session.update();
+  assert.deepEqual(delta.strip.rows, [{id:501, flags:4}]);
+  assert.ok(JSON.stringify(delta).length < 200);
+  assert.equal(JSON.stringify(delta).includes("pixels"), false);
+});

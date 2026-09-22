@@ -239,7 +239,9 @@ static winrt::Microsoft::UI::Xaml::Controls::ListViewItem RealizedRow(
 // so there is nothing to read back here.
 static void MenuPublish(WinUIPaneApi& api, HWND hwnd,
                          wchar_t const* snapshot = L"{\"version\":2}") {
-    Require(SUCCEEDED(api.syncTabMenu(hwnd, snapshot)), "menu protocol publication");
+    auto result = api.syncTabMenu(hwnd, snapshot);
+    if (FAILED(result)) fwprintf(stderr, L"Publication HRESULT %08x: %ls\n", unsigned(result), snapshot);
+    Require(SUCCEEDED(result), "menu protocol publication");
 }
 static uint32_t menuTestRevision = 0;
 // Since ABI v11 the recurring publication carries identities and the selected
@@ -1298,6 +1300,33 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     bad.SetNamedValue(L"version", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(2));
     sync();
     Require(second.Header() == header, "metadata updates retain header identity");
+    // The metadata delta must update immediately, without a full tab Sync,
+    // and omission must retain the original decoded Image and group flyout.
+    auto firstIcon = first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>()
+                         .Children().GetAt(0).as<Controls::Image>();
+    auto retainedImage = firstIcon.Source();
+    auto retainedFlyout = groups.Flyout();
+    auto metadataDelta = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"rows":[{"id":11,"flags":3}],"removed":[]}})";
+    MenuPublish(api, host, metadataDelta);
+    Require(firstIcon.Source() == retainedImage && retainedImage, "an omitted image preserves the decoded source");
+    Require(groups.Flyout() == retainedFlyout, "a row delta preserves group controls");
+    Require(first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>()
+                .Children().GetAt(1).as<Controls::ProgressRing>().IsActive(), "metadata delta applies without full Sync");
+    MenuPublish(api, host, metadataDelta);  // Identical retry is harmless.
+    for (auto invalid : {
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":"bad"}],"removed":[]}})",
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"detail":null}],"removed":[]}})",
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":4,"rows":[],"removed":[]}})",
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":0},{"id":999,"flags":0}],"removed":[]}})",
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":0},{"id":11,"flags":1}],"removed":[]}})",
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[],"removed":[999]}})"}) {
+        Require(FAILED(api.syncTabMenu(host, invalid)), "invalid delta is rejected atomically");
+        Require(firstIcon.Source() == retainedImage, "rejected delta preserves the image");
+        Require(first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>()
+                    .Children().GetAt(1).as<Controls::ProgressRing>().IsActive(), "rejected delta preserves prior flags");
+    }
+    MenuPublish(api, host, LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"image":null}],"removed":[]}})");
+    Require(!firstIcon.Source(), "explicit null clears a retained image");
     for (auto theme : {ElementTheme::Light, ElementTheme::Dark, ElementTheme::Light}) {
         root.RequestedTheme(theme);
         Pump();
@@ -1346,6 +1375,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     }
     Require(second.ContextFlyout() != flyout, "strip opening gets fresh flyout");
     model.GetNamedArray(L"rows").RemoveAtEnd();
+    model.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(5));
     model.SetNamedValue(L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
     MenuPublish(api, host, bad.Stringify().c_str());
     sync();
@@ -1561,10 +1591,10 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host) {
 // redesign), precisely so a drop landing on a DIFFERENT window's
 // strip resolves there. Same real-pointer-gesture technique as
 // CheckTabStripDrag above.
-enum class AdoptScenario { Drop, CloseTarget, CloseSource, ChangeThenClose, ChangeThenDrop };
+enum class AdoptScenario { Drop, CloseTarget, CloseSource, ChangeThenClose, ChangeThenDrop, Offset };
 
 static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWND host,
-                                         AdoptScenario scenario = AdoptScenario::Drop) {
+                                         AdoptScenario scenario = AdoptScenario::Drop, float sourceScale = 1, float targetScale = 1) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
@@ -1591,8 +1621,14 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         SendInput(1, &input, sizeof(INPUT));
     };
 
-    RECT rect{0, 0, 600, 48};
+    const bool scaled = sourceScale != 1 || targetScale != 1;
+    auto setScale = [&](HWND window, float scale) {
+        auto apply = reinterpret_cast<HRESULT(WINAPI*)(HWND, float)>(GetProcAddress(module, "WinUIPaneTestSetIslandScale"));
+        Require(apply && SUCCEEDED(apply(window, scale)), "set real island rasterization scale");
+    };
+    RECT rect = scenario == AdoptScenario::Offset ? RECT{40, 90, 600, scaled ? 186 : 138} : RECT{0, 0, 600, 48};
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation for adopt test");
+    setScale(host, sourceScale);
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{33, L"Source tab"}};
     uint32_t selected{};
@@ -1608,22 +1644,23 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     }
     Require(sourceTab.IsLoaded() && sourceTab.ActualWidth() > 0, "source tab realized before adopt drag");
 
-    HWND host2 = CreateWindowExW(0, L"STATIC", L"Cross-window drop target", WS_OVERLAPPEDWINDOW, 800, 0, 400, 200,
+    HWND host2 = CreateWindowExW(0, L"STATIC", L"Cross-window drop target", WS_OVERLAPPEDWINDOW, 680, 0, 820, 260,
                                   nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     Require(host2 != nullptr, "second host for cross-window adopt test");
-    RECT rect2{0, 0, 400, 48};
+    RECT rect2 = scenario == AdoptScenario::Offset ? RECT{20, 70, 780, scaled ? 166 : 118} : RECT{0, 0, 400, 48};
     Require(SUCCEEDED(api.updateTabStrip(host2, &rect2, TRUE)), "create strip presentation on second host");
+    setScale(host2, targetScale);
     ShowWindow(host2, SW_SHOW);
     WinUITab tabs2[]{{44, L"Other window's tab"}, {55, L"Removed destination tab"}, {66, L"Last destination tab"}};
     const bool changeTarget = scenario == AdoptScenario::ChangeThenClose || scenario == AdoptScenario::ChangeThenDrop;
-    const uint32_t targetCount = changeTarget ? 3 : 1;
+    const uint32_t targetCount = changeTarget || scaled ? 3 : 1;
     uint32_t selected2{};
     Require(SUCCEEDED(api.syncTabs(host2, tabs2, targetCount, 44, &selected2)),
             "sync second host's strip snapshot for adopt test");
     UIElement content2{nullptr};
     Require(SUCCEEDED(inspect(host2, put_abi(content2))), "inspect second host's strip");
     auto view2 = content2.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
-    auto destTab = view2.TabItems().GetAt(0).as<Controls::TabViewItem>();
+    auto destTab = view2.TabItems().GetAt(scaled ? 1 : 0).as<Controls::TabViewItem>();
     for (int i = 0; i < 300 && (!destTab.IsLoaded() || destTab.ActualWidth() == 0); ++i) {
         Pump();
         Sleep(10);
@@ -1631,21 +1668,65 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     Require(destTab.IsLoaded() && destTab.ActualWidth() > 0, "destination tab realized before adopt drag");
     settle(30);
 
-    auto sourceTopLeft = sourceTab.TransformToVisual(nullptr).TransformPoint({0, 0});
-    POINT sourceClient{LONG(sourceTopLeft.X + sourceTab.ActualWidth() / 2),
-                        LONG(sourceTopLeft.Y + sourceTab.ActualHeight() / 2)};
-    Require(ClientToScreen(host, &sourceClient) != 0, "resolve source tab screen position");
-    // Aimed at the destination tab's own left portion, not its center: with
-    // only one tab in host2, approaching from the left keeps the cursor
-    // before that tab's own midpoint (and so projects to index 0, including
-    // that one row in the "make room" shift) for most of the approach,
-    // which the preview-offset check below depends on landing on.
-    auto destTopLeft = destTab.TransformToVisual(nullptr).TransformPoint({0, 0});
-    POINT destPoint{LONG(destTopLeft.X + 5), LONG(destTopLeft.Y + destTab.ActualHeight() / 2)};
-    Require(ClientToScreen(host2, &destPoint) != 0, "resolve second host's strip screen position");
+    // Query UIA through its client interface on an MTA, as WithTab does.
+    // Calling a XAML peer directly returns island-local bounds, before the
+    // hosting provider converts them to physical screen coordinates.
+    auto screenBounds = [](HWND window, wchar_t const* id) {
+        RECT bounds{};
+        std::atomic<bool> done = false;
+        std::thread client([&] {
+            Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)), "bounds UIA apartment");
+            {
+                ComPtr<IUIAutomation> automation;
+                Require(SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                                                   IID_PPV_ARGS(&automation))), "bounds UIA client");
+                ComPtr<IUIAutomationElement> root, row;
+                Require(SUCCEEDED(automation->ElementFromHandle(window, &root)), "bounds UIA host");
+                VARIANT value{};
+                value.vt = VT_BSTR;
+                value.bstrVal = SysAllocString(id);
+                ComPtr<IUIAutomationCondition> condition;
+                Require(SUCCEEDED(automation->CreatePropertyCondition(UIA_AutomationIdPropertyId, value, &condition)),
+                        "bounds UIA condition");
+                VariantClear(&value);
+                Require(SUCCEEDED(root->FindFirst(TreeScope_Descendants, condition.Get(), &row)) && row,
+                        "find dragged row through UIA");
+                Require(SUCCEEDED(row->get_CurrentBoundingRectangle(&bounds)), "physical UIA row bounds");
+            }
+            CoUninitialize();
+            done = true;
+        });
+        auto deadline = GetTickCount64() + 15000;
+        while (!done && GetTickCount64() < deadline) {
+            Pump();
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT);
+        }
+        Require(done, "bounds UIA completes without deadlock");
+        client.join();
+        Require(bounds.right > bounds.left && bounds.bottom > bounds.top, "UIA reports nonempty screen bounds");
+        return bounds;
+    };
+    auto sourceBounds = screenBounds(host, L"FirefoxWinUITab-33");
+    POINT sourceClient{(sourceBounds.left + sourceBounds.right) / 2, (sourceBounds.top + sourceBounds.bottom) / 2};
+    auto destBounds = screenBounds(host2, scaled ? L"FirefoxWinUITab-55" : L"FirefoxWinUITab-44");
+    if (scaled) {
+        fprintf(stderr, "Island scales source=%.2f target=%.2f\n", view.XamlRoot().RasterizationScale(), view2.XamlRoot().RasterizationScale());
+        Require(std::abs(view.XamlRoot().RasterizationScale() - sourceScale) < .01 &&
+                std::abs(view2.XamlRoot().RasterizationScale() - targetScale) < .01, "WinUI applied both distinct scales");
+    }
+    POINT destPoint{destBounds.left + (scaled ? (destBounds.right - destBounds.left) * 2 / 5 : 5), (destBounds.top + destBounds.bottom) / 2};
     fprintf(stderr, "Adopt test: dragging from (%ld,%ld) toward (%ld,%ld)\n", sourceClient.x, sourceClient.y,
             destPoint.x, destPoint.y);
 
+    // Windows can deny programmatic foreground activation after the launching
+    // app loses its foreground grant. Activate our visible caption with input.
+    RECT hostBounds{};
+    Require(GetWindowRect(host, &hostBounds) != 0, "source caption bounds");
+    SetWindowPos(host, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetCursorPos(hostBounds.left + 100, hostBounds.top + 12);
+    send(MOUSEEVENTF_LEFTDOWN);
+    send(MOUSEEVENTF_LEFTUP);
+    settle();
     for (int attempt = 0; attempt < 30 && GetForegroundWindow() != host; ++attempt) {
         SetForegroundWindow(host);
         settle(10);
@@ -1655,6 +1736,18 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     settle();
     send(MOUSEEVENTF_LEFTDOWN);
     settle();
+    Require(sourceTab.Opacity() == 1, "a stationary press does not promote an offset or scaled drag");
+    if (scaled) {
+        // Change both host and island positions after the gesture starts.
+        // The next hit test must use the live placement, not a cached origin.
+        SetWindowPos(host2, nullptr, 680, 100, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        OffsetRect(&rect2, 9, 13);
+        Require(SUCCEEDED(api.updateTabStrip(host2, &rect2, TRUE)), "move target island during drag");
+        settle();
+        destBounds = screenBounds(host2, L"FirefoxWinUITab-55");
+        destPoint = {(destBounds.left * 3 + destBounds.right * 2) / 5,
+                     (destBounds.top + destBounds.bottom) / 2};
+    }
     // A single thread throughout -- see CheckTabStripDrag's own comment on
     // why nothing here needs to block. This thread IS the STA that owns the
     // XAML objects (nothing else ever blocked it to begin with), so
@@ -1744,6 +1837,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     Require(adoptEvent.GetNamedNumber(L"id") == 33 &&
                 adoptEvent.GetNamedNumber(L"sourceHwnd") == double(reinterpret_cast<uintptr_t>(host)),
             "dropping a tab onto another window's strip queues a validated adopt request there");
+    if (scaled) Require(adoptEvent.GetNamedNumber(L"index") == 1, "scaled drop resolves the UIA-targeted second tab gap");
     if (scenario == AdoptScenario::ChangeThenDrop)
         Require(adoptEvent.GetNamedNumber(L"index") == 0, "drop uses the refreshed destination insertion index");
     Require(SUCCEEDED(api.destroy(host2)), "destroy second host's pane");
@@ -1780,7 +1874,7 @@ int wmain(int argc, wchar_t** argv) {
     Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 ||
                                         wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--strip") == 0 ||
                                         wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                                        wcscmp(argv[2], L"--drag-change") == 0)),
+                                        wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0)),
             "DLL path and optional --inspect required");
     // Before the DLL loads, because the pane reads this once. Without it the
     // request path's stages are counted but never timed, and the assertions
@@ -1834,7 +1928,7 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
     if (argc == 3 && (wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                      wcscmp(argv[2], L"--drag-change") == 0)) {
+                      wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0)) {
         auto dragTicks = [&] {
             auto counts = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
                 GetProcAddress(module, "WinUIPaneTestGetEntryCalls"));
@@ -1843,7 +1937,13 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(counts(L"dragTick", &value)), "read drag tick count");
             return value;
         };
-        if (wcscmp(argv[2], L"--drag-close") == 0) {
+        if (wcscmp(argv[2], L"--drag-scale") == 0) {
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.25f, 1.5f);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.5f, 2.f);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 2.f, 1.25f);
+        } else if (wcscmp(argv[2], L"--drag-offset") == 0) {
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset);
+        } else if (wcscmp(argv[2], L"--drag-close") == 0) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseTarget);
         } else if (wcscmp(argv[2], L"--drag-change") == 0) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::ChangeThenClose);
@@ -1854,6 +1954,8 @@ int wmain(int argc, wchar_t** argv) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseTarget);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::ChangeThenClose);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::ChangeThenDrop);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.25f, 1.5f);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseSource);
         }
         // Section 8: no session work after a gesture completes. Every window

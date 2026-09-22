@@ -2253,10 +2253,10 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..237dae9f71
+index 0000000000..df703d322f
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,128 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2285,15 +2285,44 @@ index 0000000000..237dae9f71
 +    return state;
 +  }
 +
-+  update() {
++  same(a, b) {
++    if (a === b) return true;
++    if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
++    const keys = Object.keys(a);
++    return keys.length === Object.keys(b).length && keys.every(k => this.same(a[k], b[k]));
++  }
++
++  update(full = false) {
 +    const state = this.describe();
-+    const fingerprint = JSON.stringify(state);
-+    if (fingerprint === this.fingerprint) return null;
++    if (!full && !this.consumed && this.same(state, this.state)) return null;
 +    if (this.revision === 0xffffffff) throw new Error("Native strip revision exhausted");
-+    const strip = { version: 1, revision: this.revision + 1, ...state };
++    const base = full ? 0 : (this.publishedRevision || 0);
++    const strip = { version: 2, base, revision: this.revision + 1 };
++    if (!base) Object.assign(strip, state);
++    else {
++      const previous = new Map(this.state.rows.map(row => [row.id, row]));
++      strip.rows = [];
++      for (const row of state.rows) {
++        const old = previous.get(row.id);
++        previous.delete(row.id);
++        if (!old) strip.rows.push(row);
++        else {
++          const patch = { id: row.id };
++          for (const key of Object.keys(row)) {
++            if (key !== "id" && !this.same(row[key], old[key])) patch[key] = row[key];
++          }
++          if (Object.keys(patch).length > 1) strip.rows.push(patch);
++        }
++      }
++      strip.removed = [...previous.keys()];
++      for (const key of ["groups", "groupsLabel", "rtl"]) {
++        if (!this.same(state[key], this.state[key])) strip[key] = state[key];
++      }
++    }
 +    if (JSON.stringify(strip).length > 900000) throw new Error("Native strip snapshot too large");
-+    this.fingerprint = fingerprint;
-+    this.revision++;
++    this.state = state;
++    this.consumed = false;
++    this.publishedRevision = ++this.revision;
 +    return { version: 2, publishOnly: true, strip };
 +  }
 +
@@ -2302,12 +2331,12 @@ index 0000000000..237dae9f71
 +    if (event.kind === "strip-group") {
 +      if (!Number.isSafeInteger(event.group) || typeof event.collapsed !== "boolean") return false;
 +      const current = this.describe();
-+      if (JSON.stringify(current) !== this.fingerprint) return false;
++      if (this.consumed || !this.same(current, this.state)) return false;
 +      const group = current.groups.find(g => g.id === event.group);
 +      if (!group || group.collapsed === event.collapsed) return false;
 +      const target = this.targets.get(event.group);
 +      // Consume before Firefox mutates state or enters any nested browser work.
-+      this.fingerprint = null;
++      this.consumed = true;
 +      this.collapse(target, event.collapsed);
 +      return true;
 +    }
@@ -2317,14 +2346,14 @@ index 0000000000..237dae9f71
 +      if (!Number.isSafeInteger(event.id) || !Number.isSafeInteger(event.beforeId) || event.beforeId < 0)
 +        return false;
 +      const current = this.describe();
-+      if (JSON.stringify(current) !== this.fingerprint) return false;
++      if (this.consumed || !this.same(current, this.state)) return false;
 +      const index = current.rows.findIndex(r => r.id === event.id);
 +      if (index < 0) return false;
 +      if (event.beforeId) {
 +        if (!current.rows.some(r => r.id === event.beforeId)) return false;
 +        if (current.rows[index + 1]?.id === event.beforeId) return false;
 +      } else if (index === current.rows.length - 1) return false;
-+      this.fingerprint = null;
++      this.consumed = true;
 +      this.reorder(event.id, event.beforeId);
 +      return true;
 +    }
@@ -2332,24 +2361,24 @@ index 0000000000..237dae9f71
 +      if (!Number.isSafeInteger(event.id) || !Number.isFinite(event.screenX) || !Number.isFinite(event.screenY))
 +        return false;
 +      const current = this.describe();
-+      if (JSON.stringify(current) !== this.fingerprint) return false;
++      if (this.consumed || !this.same(current, this.state)) return false;
 +      if (!current.rows.some(r => r.id === event.id)) return false;
 +      // Consume before Firefox mutates state or enters any nested browser work.
-+      this.fingerprint = null;
++      this.consumed = true;
 +      this.detach(event.id, { screenX: event.screenX, screenY: event.screenY });
 +      return true;
 +    }
 +    if (event.kind === "strip-adopt") {
 +      // Unlike the other kinds, `id` names a row in the SOURCE window's own
 +      // session, not this one's -- there is no local snapshot to revalidate
-+      // it against. Bump the revision directly instead of invalidating a
-+      // fingerprint, so a repeat delivery of the same action is rejected by
-+      // the top-level revision check above, same as every other kind.
++      // it against. Consume the action revision, but keep publishedRevision
++      // unchanged: the consumer has not received that new revision yet.
 +      if (!Number.isSafeInteger(event.sourceHwnd) || !Number.isSafeInteger(event.id) ||
 +          !Number.isSafeInteger(event.index) || event.index < 0)
 +        return false;
 +      if (this.revision === 0xffffffff) throw new Error("Native strip revision exhausted");
 +      this.revision++;
++      this.consumed = true;
 +      this.adopt(event.sourceHwnd, event.id, event.index);
 +      return true;
 +    }
@@ -3502,10 +3531,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..f3b5819ce1
+index 0000000000..d132cac804
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1254 @@
+@@ -0,0 +1,1264 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4201,7 +4230,16 @@ index 0000000000..f3b5819ce1
 +      });
 +    }
 +    const snapshot = this.stripSession.update();
-+    if (snapshot) window.windowUtils.syncWinUITabMenu(JSON.stringify(snapshot));
++    if (snapshot) {
++      try {
++        window.windowUtils.syncWinUITabMenu(JSON.stringify(snapshot));
++      } catch (error) {
++        if (!snapshot.strip.base) throw error;
++        // A rejected/missing base must not leave the retained native model
++        // behind. A bounded full publication is also independently validated.
++        window.windowUtils.syncWinUITabMenu(JSON.stringify(this.stripSession.update(true)));
++      }
++    }
 +  },
 +
 +  // Bounds distinct favicon URLs retained across a browsing session; oldest
@@ -4604,16 +4642,17 @@ index 0000000000..f3b5819ce1
 +    // delta instead of a rebuilt description of every tab.
 +    if (event.type === "TabSelect") {
 +      this.dirtySelection = true;
-+      this.stripDirty = true;
 +    } else if (event.type === "TabMultiSelect") {
 +      // The tab set and its order are unchanged; only which tabs are selected.
 +      this.contextDirty = true;
-+      this.stripDirty = true;
 +    } else if (event.type === "TabAttrModified") {
 +      if (event.detail?.changed?.includes("label")) this.dirtyTitles.add(event.target);
-+      // Any other attribute the strip presents (favicon, busy, audio, pinned)
-+      // is a presentation change, not a structural one.
-+      this.stripDirty = true;
++      // Titles and selection have their own incremental path. Only attributes
++      // actually read by describeStrip need metadata publication.
++      const changed = event.detail?.changed;
++      if (!changed || changed.some(name =>
++        ["image", "busy", "muted", "soundplaying", "pinned"].includes(name)))
++        this.stripDirty = true;
 +    } else if (this.tabEvents.includes(event.type)) {
 +      // Open, close, move, hide, show, pin, unpin: the tab set or its order
 +      // changed, which needs a snapshot rather than a delta.

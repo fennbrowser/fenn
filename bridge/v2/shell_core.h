@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 1
+#define SHELL_CORE_ABI_VERSION 2
 
 #define SHELL_NO_INDEX UINT32_MAX
 
@@ -204,6 +204,19 @@ typedef struct {
   uint32_t pending_changes;
   uint32_t reserved;
 } ShellCoreStats;
+
+typedef struct {
+  uint32_t id;
+  /*
+   Total pixels in the resulting row, including an image retained by omission.
+   */
+  uint32_t pixels;
+  bool remove;
+  /*
+   New rows must supply every required field, not a patch of an unknown ID.
+   */
+  bool complete;
+} ShellStripChange;
 
 typedef struct {
   uint32_t kind;
@@ -392,6 +405,19 @@ ShellStatus shell_core_close(ShellCore *core);
  See [`guard`]. `out` must be writable.
  */
 ShellStatus shell_core_stats(ShellCore *core, ShellCoreStats *out);
+
+/*
+ Atomically accept a strip transaction after native JSON field validation.
+ Base zero replaces the retained state; other bases must match exactly.
+
+ # Safety
+ See [`guard`]. `changes` must contain `count` readable entries.
+ */
+ShellStatus shell_core_strip_apply(ShellCore *core,
+                                   uint32_t base,
+                                   uint32_t revision,
+                                   const ShellStripChange *changes,
+                                   uintptr_t count);
 
 /*
  The model revision a delta must be computed against.
