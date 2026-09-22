@@ -3502,10 +3502,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..83b888f77b
+index 0000000000..37b3966a8d
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1231 @@
+@@ -0,0 +1,1243 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4266,12 +4266,21 @@ index 0000000000..83b888f77b
 +  describeStrip() {
 +    const l10n = this.localization();
 +    const label = (id, args) => l10n.formatValueSync(id, args);
-+    // Bounds the raw-pixel bytes one strip snapshot can spend; beyond this,
++    // Bounds what images may spend of one strip snapshot; beyond this,
 +    // remaining rows fall back to the native placeholder glyph rather than
 +    // risking WinUITabStripSession's snapshot-size cap, whose failure mode
 +    // tears down the whole pane (see browser-winui-pane.js update()).
-+    let imagePixels = 0;
-+    const maxImagePixels = 262144;
++    //
++    // Budgeted in characters, because that is the unit of the cap it protects:
++    // the cap tests JSON.stringify(strip).length against 900,000. It used to
++    // be 262,144 *pixels*, but each pixel is hex-encoded as 8 characters, so
++    // that allowed about 2.1 million characters of images against a 900,000
++    // cap -- and the pane tore itself down at about 110 tabs with ordinary
++    // 32x32 favicons. 500,000 leaves 400,000 for everything else, which at the
++    // ~60 characters per row measured at 300 and 1,000 tabs covers over six
++    // thousand rows.
++    let imageChars = 0;
++    const maxImageChars = 500000;
 +    const groups = gBrowser.tabGroups.filter(group => group.isConnected).map(target => {
 +      const name = target.label || label("tab-group-name-default");
 +      return { target, name: name.slice(0, 1024), collapsed: target.collapsed,
@@ -4311,8 +4320,11 @@ index 0000000000..83b888f77b
 +        this.faviconLastKnownByTab.delete(tab);
 +      }
 +      if (image) {
-+        if (imagePixels + image.width * image.height > maxImagePixels) image = null;
-+        else imagePixels += image.width * image.height;
++        // The image's real cost in the snapshot: its encoded pixels, not
++        // their count.
++        const cost = image.pixels.length;
++        if (imageChars + cost > maxImageChars) image = null;
++        else imageChars += cost;
 +      }
 +      return { id: this.tabIds.get(tab), detail:detail.slice(0, 2048), status:status.slice(0, 2048), flags, image };
 +    });
