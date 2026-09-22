@@ -1493,7 +1493,10 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host) {
 // redesign), precisely so a drop landing on a DIFFERENT window's
 // strip resolves there. Same real-pointer-gesture technique as
 // CheckTabStripDrag above.
-static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWND host) {
+enum class AdoptScenario { Drop, CloseTarget, CloseSource, ChangeThenClose, ChangeThenDrop };
+
+static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWND host,
+                                         AdoptScenario scenario = AdoptScenario::Drop) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
@@ -1543,9 +1546,11 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     RECT rect2{0, 0, 400, 48};
     Require(SUCCEEDED(api.updateTabStrip(host2, &rect2, TRUE)), "create strip presentation on second host");
     ShowWindow(host2, SW_SHOW);
-    WinUITab tabs2[]{{44, L"Other window's tab"}};
+    WinUITab tabs2[]{{44, L"Other window's tab"}, {55, L"Removed destination tab"}, {66, L"Last destination tab"}};
+    const bool changeTarget = scenario == AdoptScenario::ChangeThenClose || scenario == AdoptScenario::ChangeThenDrop;
+    const uint32_t targetCount = changeTarget ? 3 : 1;
     uint32_t selected2{};
-    Require(SUCCEEDED(api.syncTabs(host2, tabs2, 1, 44, &selected2)),
+    Require(SUCCEEDED(api.syncTabs(host2, tabs2, targetCount, 44, &selected2)),
             "sync second host's strip snapshot for adopt test");
     UIElement content2{nullptr};
     Require(SUCCEEDED(inspect(host2, put_abi(content2))), "inspect second host's strip");
@@ -1573,8 +1578,11 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     fprintf(stderr, "Adopt test: dragging from (%ld,%ld) toward (%ld,%ld)\n", sourceClient.x, sourceClient.y,
             destPoint.x, destPoint.y);
 
-    SetForegroundWindow(host);
-    settle();
+    for (int attempt = 0; attempt < 30 && GetForegroundWindow() != host; ++attempt) {
+        SetForegroundWindow(host);
+        settle(10);
+    }
+    Require(GetForegroundWindow() == host, "source window owns foreground before injecting drag input");
     Require(SetCursorPos(sourceClient.x, sourceClient.y) != 0, "position cursor over source tab");
     settle();
     send(MOUSEEVENTF_LEFTDOWN);
@@ -1597,6 +1605,61 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     moveTo(destPoint.x, destPoint.y);
     settle(30);
     double previewOffset = destTab.RenderTransform().as<Media::TranslateTransform>().X();
+    Require(previewOffset > 0.0, "fixture entered a real foreign drag preview before mutation");
+    // Wait for the asynchronous drag bitmap: opacity 0 proves the actual
+    // source gesture promoted and its popup owns the visual.
+    for (int i = 0; i < 300 && sourceTab.Opacity() != 0; ++i) settle(1);
+    Require(sourceTab.Opacity() == 0, "fixture has a hidden source row before destination mutation");
+    if (changeTarget) {
+        WinUITab changed[]{{66, L"Moved destination tab"}, {77, L"New destination tab"},
+                           {88, L"Replacement destination tab"}};
+        // Closing covers shrinkage; dropping covers a same-count replacement
+        // and reorder, which a count-only invalidation would miss.
+        uint32_t changedCount = scenario == AdoptScenario::ChangeThenDrop ? 3 : 2;
+        Require(SUCCEEDED(api.syncTabs(host2, changed, changedCount, 66, &selected2)),
+                "destination removes, replaces and reorders tabs while foreign drag is held");
+    }
+    if (scenario == AdoptScenario::CloseSource) {
+        Require(SUCCEEDED(api.destroy(host)), "source pane closes during foreign hover");
+        send(MOUSEEVENTF_LEFTUP);
+        settle();
+        Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() == 0,
+                "closing source resets the surviving destination preview");
+        Require(!NextRequest(api, host2, 5).Size(), "source close does not commit a foreign adopt");
+        Require(SUCCEEDED(api.destroy(host2)), "destroy target after source cancellation");
+        DestroyWindow(host2);
+        puts("CHECKS PASSED: source teardown clears the foreign preview");
+        return;
+    }
+    if (scenario == AdoptScenario::CloseTarget || scenario == AdoptScenario::ChangeThenClose) {
+        // Do not pump between mutation and close: teardown must not index the
+        // old three-row preview through the new two-row collection.
+        HRESULT closed = api.destroy(host2);
+        fprintf(stderr, "Destination teardown during drag: hr=0x%08lx sourceOpacity=%.1f\n",
+                static_cast<unsigned long>(closed), sourceTab.Opacity());
+        send(MOUSEEVENTF_LEFTUP);
+        Require(SUCCEEDED(closed), "destination with active foreign preview tears down without stale indices");
+        DestroyWindow(host2);
+        settle();
+        Require(sourceTab.Opacity() == 1, "closing the hovered destination restores the surviving source row");
+        WinUITab refreshed[]{{33, L"Source after cancelled drag"}, {88, L"New source tab"}};
+        Require(SUCCEEDED(api.syncTabs(host, refreshed, 2, 33, &selected)),
+                "source accepts snapshot after destination disappears");
+        Require(view.TabItems().Size() == 2, "destination close clears source dragging guard");
+        Require(!NextRequest(api, host, 5).Size(), "destination close does not commit reorder or detach");
+        puts("CHECKS PASSED: destination teardown cancels the live source gesture");
+        return;
+    }
+    if (scenario == AdoptScenario::ChangeThenDrop) {
+        settle(30);
+        // Old cached rows, including the removed first row, must be reset.
+        Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() == 0,
+                "removed destination row has no surviving preview transform");
+        auto current = view2.TabItems().GetAt(0).as<Controls::TabViewItem>();
+        Require(winrt::unbox_value<uint32_t>(current.Tag()) == 66, "destination order changed during hover");
+        Require(current.RenderTransform().as<Media::TranslateTransform>().X() > 0,
+                "foreign preview is rebuilt for the new destination order");
+    }
     send(MOUSEEVENTF_LEFTUP);
     settle(200);
     puts("Cross-window adopt gesture completed without crashing");
@@ -1613,6 +1676,8 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     Require(adoptEvent.GetNamedNumber(L"id") == 33 &&
                 adoptEvent.GetNamedNumber(L"sourceHwnd") == double(reinterpret_cast<uintptr_t>(host)),
             "dropping a tab onto another window's strip queues a validated adopt request there");
+    if (scenario == AdoptScenario::ChangeThenDrop)
+        Require(adoptEvent.GetNamedNumber(L"index") == 0, "drop uses the refreshed destination insertion index");
     Require(SUCCEEDED(api.destroy(host2)), "destroy second host's pane");
     DestroyWindow(host2);
 }
@@ -1646,7 +1711,8 @@ int wmain(int argc, wchar_t** argv) {
             "install teardown exception guard");
     Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 ||
                                         wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--strip") == 0 ||
-                                        wcscmp(argv[2], L"--drag") == 0)),
+                                        wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
+                                        wcscmp(argv[2], L"--drag-change") == 0)),
             "DLL path and optional --inspect required");
     // Before the DLL loads, because the pane reads this once. Without it the
     // request path's stages are counted but never timed, and the assertions
@@ -1699,7 +1765,8 @@ int wmain(int argc, wchar_t** argv) {
         puts("CHECKS PASSED: TabView layout, stable IDs, selection, menus, theme, hide/show, teardown");
         return 0;
     }
-    if (argc == 3 && wcscmp(argv[2], L"--drag") == 0) {
+    if (argc == 3 && (wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
+                      wcscmp(argv[2], L"--drag-change") == 0)) {
         auto dragTicks = [&] {
             auto counts = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
                 GetProcAddress(module, "WinUIPaneTestGetEntryCalls"));
@@ -1708,9 +1775,19 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(counts(L"dragTick", &value)), "read drag tick count");
             return value;
         };
-        CheckTabStripDrag(module, api, first);
-        CheckTabStripDetach(module, api, first);
-        CheckTabStripCrossWindowAdopt(module, api, first);
+        if (wcscmp(argv[2], L"--drag-close") == 0) {
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseTarget);
+        } else if (wcscmp(argv[2], L"--drag-change") == 0) {
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::ChangeThenClose);
+        } else {
+            CheckTabStripDrag(module, api, first);
+            CheckTabStripDetach(module, api, first);
+            CheckTabStripCrossWindowAdopt(module, api, first);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseTarget);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::ChangeThenClose);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::ChangeThenDrop);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseSource);
+        }
         // Section 8: no session work after a gesture completes. Every window
         // message still reaches TickDragSession, so the only way to show that
         // a finished drag costs nothing is to keep the messages coming and

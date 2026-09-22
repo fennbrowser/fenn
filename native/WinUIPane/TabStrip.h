@@ -716,30 +716,41 @@ struct NativeTabStrip {
         bool active{};
         uint32_t projectedIndex{};
         double tabWidth{};
-        std::vector<double> originalLeftEdge;
+        struct Row {
+            Controls::TabViewItem item{nullptr};
+            uint32_t id{};
+            double left{};
+        };
+        // Keep the exact objects we transformed. Collection indices can name
+        // different rows, or no row at all, after a Firefox structural update.
+        std::vector<Row> rows;
     };
     ForeignDragState foreignDrag;
 
     void ForeignDragOver(Windows::Foundation::Point const& point) {
         if (!foreignDrag.active) {
+            // A preceding snapshot may have changed the layout. Capture the
+            // new untransformed geometry once, not on every drag tick.
+            view.UpdateLayout();
             foreignDrag.active = true;
             foreignDrag.projectedIndex = ~0u;
             foreignDrag.tabWidth =
                 view.TabItems().Size() ? view.TabItems().GetAt(0).as<Controls::TabViewItem>().ActualWidth() : 0;
-            foreignDrag.originalLeftEdge.clear();
+            foreignDrag.rows.clear();
             for (uint32_t i = 0; i < view.TabItems().Size(); ++i) {
                 auto item = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
-                foreignDrag.originalLeftEdge.push_back(item.TransformToVisual(view).TransformPoint({0, 0}).X);
+                foreignDrag.rows.push_back({item, unbox_value<uint32_t>(item.Tag()),
+                                           item.TransformToVisual(view).TransformPoint({0, 0}).X});
             }
         }
         uint32_t projected = 0;
-        for (uint32_t i = 0; i < foreignDrag.originalLeftEdge.size(); ++i)
-            if (foreignDrag.originalLeftEdge[i] + foreignDrag.tabWidth / 2 < point.X) projected = i + 1;
+        for (uint32_t i = 0; i < foreignDrag.rows.size(); ++i)
+            if (foreignDrag.rows[i].left + foreignDrag.tabWidth / 2 < point.X) projected = i + 1;
         if (projected == foreignDrag.projectedIndex) return;
         foreignDrag.projectedIndex = projected;
-        for (uint32_t i = 0; i < foreignDrag.originalLeftEdge.size(); ++i) {
-            auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
-            AnimateRowOffset(row, unbox_value<uint32_t>(row.Tag()), i >= projected ? foreignDrag.tabWidth : 0);
+        for (uint32_t i = 0; i < foreignDrag.rows.size(); ++i) {
+            auto const& row = foreignDrag.rows[i];
+            AnimateRowOffset(row.item, row.id, i >= projected ? foreignDrag.tabWidth : 0);
         }
     }
 
@@ -753,11 +764,8 @@ struct NativeTabStrip {
     // no matching "before" state to justify).
     void EndForeignDragOver() {
         if (!foreignDrag.active) return;
-        foreignDrag.active = false;
-        for (uint32_t i = 0; i < foreignDrag.originalLeftEdge.size(); ++i) {
-            auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
-            ResetRowOffset(row, unbox_value<uint32_t>(row.Tag()));
-        }
+        auto previous = std::exchange(foreignDrag, ForeignDragState{});
+        for (auto const& row : previous.rows) ResetRowOffset(row.item, row.id);
     }
 
     // Commits a tab dropped here from a DIFFERENT pane's own in-flight
@@ -771,11 +779,11 @@ struct NativeTabStrip {
     // the real authority, same as every other queued request this strip
     // sends.
     bool AcceptForeignDrop(HWND sourceHwnd, uint32_t tabId, Windows::Foundation::Point const& point) {
-        // Use the index the preview actually showed, not a fresh
-        // recomputation -- the two agree in practice (nothing else moves
-        // TabItems() mid-hover), but committing to what was visually
-        // promised is the more defensible source of truth.
-        uint32_t index = foreignDrag.active ? foreignDrag.projectedIndex : ProjectExternalDropIndex(double(point.X));
+        // Sync invalidates a preview before a structural update. Rebuild it
+        // even if release arrives before the next hover tick, so a drop never
+        // commits an insertion index from the previous destination row set.
+        ForeignDragOver(point);
+        uint32_t index = foreignDrag.projectedIndex;
         EndForeignDragOver();
         QueueIncomingAdopt(sourceHwnd, tabId, index);
         return true;
@@ -1022,6 +1030,14 @@ struct NativeTabStrip {
                 }
             }
             return;
+        }
+        if (foreignDrag.active) {
+            bool changed = count != foreignDrag.rows.size();
+            for (uint32_t i = 0; !changed && i < count; ++i)
+                changed = tabs[i].id != foreignDrag.rows[i].id;
+            // Clear transforms while the old rows still belong to the strip.
+            // The next hover (or release) captures the new order and geometry.
+            if (changed) EndForeignDragOver();
         }
         syncing = true;
         try {

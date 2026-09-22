@@ -293,6 +293,9 @@ struct TabDragSession {
     // gesture started on, a different pane's own strip while hovering it
     // (ForeignDragOver), or null during a true tear-off (neither).
     NativeTabStrip* hoverStrip{};
+    // A bitmap completion belongs to this gesture, not merely to the source
+    // pane or an HWND that Windows may reuse after cancellation.
+    std::shared_ptr<int> lifetime;
     // The tear-off visual (TabDragImage.h) -- only created once the cursor
     // first clears every open pane's own StripScreenBounds(), and destroyed
     // again as soon as it re-enters one; see ShowOrMoveTearoff/
@@ -1142,6 +1145,7 @@ State& state() {
 
 void ArmDragSession(Pane& pane, uint32_t id) {
     auto& session = dragSession();
+    session.lifetime = std::make_shared<int>(0);
     session.sourceHwnd = pane.parent;
     session.sourceStrip = pane.strip.get();
     session.tabId = id;
@@ -1168,11 +1172,25 @@ void DestroyTearoffWindow(TabDragSession& session) {
 // having been closed mid-gesture, which this tick-based design allows in a
 // way the old, thread-blocking DoDragDrop call structurally couldn't.
 void AbortDragSession() {
-    auto& session = dragSession();
-    if (session.hoverStrip && session.hoverStrip != session.sourceStrip) session.hoverStrip->EndForeignDragOver();
+    // Revoke global tracking and asynchronous rendering before releasing
+    // capture or touching XAML, either of which can deliver more callbacks.
+    auto session = std::exchange(dragSession(), TabDragSession{});
+    session.lifetime.reset();
+    auto& panes = state().panes;
+    auto source = panes.find(session.sourceHwnd);
+    if (source != panes.end() && source->second->strip.get() == session.sourceStrip && session.sourceStrip &&
+        session.sourceStrip->drag.phase != NativeTabStrip::DragPhase::None)
+        session.sourceStrip->CancelDrag();
+    if (session.hoverStrip && session.hoverStrip != session.sourceStrip) {
+        for (auto& [hwnd, pane] : panes) {
+            if (pane->strip.get() == session.hoverStrip) {
+                pane->strip->EndForeignDragOver();
+                break;
+            }
+        }
+    }
     DestroyTearoffWindow(session);
     if (session.sourceHwnd && GetCapture() == session.sourceHwnd) ReleaseCapture();
-    session = TabDragSession{};
 }
 
 constexpr wchar_t kTearoffClassName[] = L"FirefoxWinUITabTearoff";
@@ -1238,7 +1256,7 @@ void ShowOrMoveTearoff(TabDragSession& session, POINT screenPoint) {
         SetWindowPos(session.tearoffWindow, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         if (session.sourceStrip && session.sourceStrip->rows.count(session.tabId))
             RenderTearoffAsync(session.sourceStrip->rows.at(session.tabId), session.tearoffWindow,
-                                std::weak_ptr<int>(session.sourceStrip->lifetime));
+                                std::weak_ptr<int>(session.lifetime));
     }
     if (!session.tearoffBitmap) return;
     POINT topLeft{screenPoint.x - session.tearoffWidth / 2, screenPoint.y - session.tearoffHeight / 2};
