@@ -11,6 +11,7 @@ struct NativeWindowCaption {
     TitleBar bar{nullptr};
     Controls::Grid root{nullptr};
     Controls::ColumnDefinition leftInset{nullptr}, rightInset{nullptr};
+    Controls::Border leftBottomLine{nullptr}, rightBottomLine{nullptr};
     HWND owner{};
     bool previousExtended{}, visible{};
     Height previousHeight{};
@@ -38,6 +39,17 @@ struct NativeWindowCaption {
         grid.ColumnDefinitions().Append(tabs);
         grid.ColumnDefinitions().Append(rightInset);
         Controls::Grid::SetColumn(grid.Children().GetAt(0).as<FrameworkElement>(), 1);
+        // Continue TabView's themed bottom edge beneath the system captions
+        // in the 40-DIP layout without covering the selected tab's open edge.
+        auto makeBottomLine = [&](int column) {
+            auto line = Markup::XamlReader::Load(
+                LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource TabViewBorderBrush}" Height="1" VerticalAlignment="Bottom" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
+            Controls::Grid::SetColumn(line, column);
+            grid.Children().Append(line);
+            return line;
+        };
+        leftBottomLine = makeBottomLine(0);
+        rightBottomLine = makeBottomLine(2);
         auto weak = std::weak_ptr<int>(lifetime);
         root.ActualThemeChanged([this, weak](auto const&, auto const&) {
             if (!weak.expired()) Update();
@@ -70,6 +82,11 @@ struct NativeWindowCaption {
         // The Firefox reservation is the layout contract, in island DIPs.
         // Keep 32-DIP tab items bottom-aligned in all three supported heights.
         const double height = root.ActualHeight();
+        const auto lineVisibility = height > 33 && height < 47 ? Visibility::Visible : Visibility::Collapsed;
+        if (leftBottomLine.Visibility() != lineVisibility) {
+            leftBottomLine.Visibility(lineVisibility);
+            rightBottomLine.Visibility(lineVisibility);
+        }
         if (height > 0) {
             const auto option = height >= 47 ? Height::Tall : Height::Standard;
             if (bar.PreferredHeightOption() != option) bar.PreferredHeightOption(option);

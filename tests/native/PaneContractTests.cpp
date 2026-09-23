@@ -1085,7 +1085,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "stock tab header fits reserved row");
     Require(view.ActualHeight() == 40 && root.ActualHeight() == view.ActualHeight(),
             "reservation fits the unchanged stock TabView without an empty bottom band");
-    Require(root.Children().Size() == 2 && !first.Content() && !second.Content(),
+    Require(root.Children().Size() == 4 && !first.Content() && !second.Content(),
             "strip has no address or browser content");
     Require(root.ColumnDefinitions().Size() == 3 && root.ColumnDefinitions().GetAt(2).Width().Value > 0,
             "system caption buttons reserve their SDK inset");
@@ -1113,10 +1113,16 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         Require(root.ActualHeight() == height && view.ActualHeight() == height && first.ActualHeight() == 32,
                 "all strip layouts preserve tab height without a bottom band");
         Require(systemCaption.PreferredHeightOption() == expected, "caption size follows strip layout");
+        for (uint32_t index : {1u, 2u}) {
+            auto line = root.Children().GetAt(index).as<Controls::Border>();
+            Require(line.Visibility() == (height == 40 ? Visibility::Visible : Visibility::Collapsed) &&
+                        !line.IsHitTestVisible() && line.Height() == 1 && line.Background(),
+                    "caption inset bottom border is decorative and only visible in the 40-DIP layout");
+        }
         Require(view.TabItems().GetAt(0) == first && view.SelectedItem() == first,
                 "height changes preserve tab identity and selection");
     }
-    auto mergePreview = root.Children().GetAt(1).as<Controls::Border>();
+    auto mergePreview = root.Children().GetAt(3).as<Controls::Border>();
     Require(!mergePreview.IsHitTestVisible() && mergePreview.Visibility() == Visibility::Collapsed,
             "merge feedback is hidden and cannot capture input while idle");
     Require(first != second && view.SelectedItem() == first, "duplicate titles preserve identity and active tab");
