@@ -8,9 +8,10 @@
 #include "TabGroupsButton.h"
 #include "TabDragImage.h"
 #include "ShellCore.h"
+#include "InlineTabGroups.h"
 
 // Strip-only experiment: TabView owns presentation, Firefox owns all mutations.
-// No content pages or template internals are used. CanDragTabs/CanReorderTabs
+// Inline grouping has a localized TabListView template dependency. CanDragTabs/CanReorderTabs
 // are OFF permanently: enabling them reliably fail-fasts inside
 // Microsoft.UI.Xaml.dll's own native drag-drop implementation the moment a
 // drag starts in the full embedded browser, though not in a minimal
@@ -71,6 +72,24 @@ struct NativeTabStrip {
     };
     std::map<uint32_t, Presentation> presentation;
     TabGroupsButton groupsButton;
+    InlineTabGroups inlineGroups;
+    std::vector<ShellStripSlot> groupLayout;
+    bool hasGroupLayout{};
+
+    bool CanApplyGroupLayout() const {
+        if (!hasGroupLayout || !inlineGroups.configured || dragging) return false;
+        uint32_t index = 0;
+        for (auto slot : groupLayout) {
+            if (!slot.tab) continue;
+            if (index >= view.TabItems().Size() ||
+                unbox_value<uint32_t>(view.TabItems().GetAt(index++).as<Controls::TabViewItem>().Tag()) != slot.tab) return false;
+        }
+        return index == view.TabItems().Size();
+    }
+    void ApplyGroupLayout() {
+        inlineGroups.Sync(view, groupLayout, rows, currentGroups);
+        groupsButton.button.Visibility(Visibility::Collapsed);
+    }
     uint32_t presentationRevision{};
     hstring presentationFingerprint;
     hstring groupsLabel;
@@ -95,6 +114,35 @@ struct NativeTabStrip {
     // window's own id for the tab being acted on, or 0 when the gesture names
     // no tab of this window's (an incoming adopt names the source window's).
     std::function<uint64_t(uint32_t tab, hstring const& action)> dispatch;
+    // UI-only rollback callbacks keyed by the Rust queue's request identities.
+    // Weak source lifetimes keep cross-window completion safe during teardown.
+    std::map<uint64_t, std::function<void(bool)>> dropResults;
+    std::set<uint32_t> departingRows;
+    void WatchDrop(uint64_t request, std::function<void(bool)> complete) {
+        if (request) dropResults.emplace(request, std::move(complete));
+        else complete(false);
+    }
+    void CompleteDrop(uint64_t request, bool accepted) {
+        auto entry = dropResults.extract(request);
+        if (!entry.empty()) entry.mapped()(accepted);
+    }
+    void BeginDeparture(uint32_t id) {
+        for (auto affected : drag.affectedRowIds)
+            if (rows.count(affected)) ResetRowOffset(rows.at(affected), affected);
+        drag.affectedRowIds.clear();
+        drag.awaitingConfirm = false;
+        drag.pendingRequest = 0;
+        if (rows.count(id)) {
+            ResetRowOffset(rows.at(id), id);
+            departingRows.insert(id);
+            rows.at(id).Opacity(0);
+        }
+        drag.phase = DragPhase::None;
+        dragging = false;
+    }
+    void RejectDeparture(uint32_t id) {
+        if (departingRows.erase(id)) RestoreRowVisibility(id);
+    }
     // Coalesces the mid-drag active-tab highlight below: at most one apply is
     // ever queued on the dispatcher at a time, and a Sync() landing before it
     // runs just updates the target id rather than queuing a second one.
@@ -116,6 +164,7 @@ struct NativeTabStrip {
         // shift visuals only affect rendering, so hit-testing against a live
         // (already-shifted) position would feed back into itself.
         std::vector<double> originalLeftEdge;
+        std::vector<double> originalWidth;
         // Rows touched by this gesture (the dragged one, any shifted
         // siblings) whose transform needs resetting once the real reorder
         // this gesture requested actually lands via Sync().
@@ -127,6 +176,7 @@ struct NativeTabStrip {
         // confirmation has actually landed, would snap the row back to its
         // pre-drag spot for a frame.
         bool awaitingConfirm{};
+        uint64_t pendingRequest{};
         uint32_t confirmTabId{};
         uint32_t confirmBeforeId{};
         // Set once the pointer clears the strip's own bounds by a real
@@ -170,6 +220,16 @@ struct NativeTabStrip {
         view = root.Children().GetAt(0).as<Controls::TabView>();
         view.TabStripHeader(groupsButton.button);
         groupsButton.currentRevision = [this] { return presentationRevision; };
+        inlineGroups.toggle = [this](uint32_t id, bool collapsed) {
+            if (dragging || !groupsButton.dispatch) return;
+            using JValue = Windows::Data::Json::JsonValue;
+            Windows::Data::Json::JsonObject action;
+            action.SetNamedValue(L"kind", JValue::CreateStringValue(L"strip-group"));
+            action.SetNamedValue(L"revision", JValue::CreateNumberValue(presentationRevision));
+            action.SetNamedValue(L"group", JValue::CreateNumberValue(id));
+            action.SetNamedValue(L"collapsed", JValue::CreateBooleanValue(collapsed));
+            groupsButton.dispatch(action.Stringify());
+        };
         auto alive = std::weak_ptr<int>(lifetime);
         view.SelectionChanged([this, alive](auto const&, auto const&) {
             if (alive.expired() || syncing || !view.SelectedItem()) return;
@@ -195,7 +255,17 @@ struct NativeTabStrip {
         // time, so the inner ListView can only be found once Loaded fires.
         view.Loaded([this, alive](auto const&, auto const&) {
             if (alive.expired()) return;
-            if (auto listView = FindTabListView(view)) listView.ItemContainerTransitions(Media::Animation::TransitionCollection{});
+            if (auto listView = FindTabListView(view)) {
+                listView.ItemContainerTransitions(Media::Animation::TransitionCollection{});
+                inlineGroups.Configure(listView);
+                if (CanApplyGroupLayout()) {
+                    auto selected = view.SelectedItem();
+                    syncing = true;
+                    ApplyGroupLayout();
+                    view.SelectedItem(selected);
+                    syncing = false;
+                }
+            }
             if (auto button = FindAddButton(view)) AttachAddMenu(button);
         });
     }
@@ -232,7 +302,13 @@ struct NativeTabStrip {
         });
         button.ContextFlyout(flyout);
     }
-    ~NativeTabStrip() { lifetime.reset(); }
+    ~NativeTabStrip() {
+        lifetime.reset();
+        auto pending = std::move(dropResults);
+        for (auto& [id, complete] : pending) {
+            try { complete(false); } catch (...) { /* A peer island may also be closing. */ }
+        }
+    }
 
     Controls::MenuFlyout barMenu{nullptr};
     void ShowBarMenu(Windows::Foundation::Point position) {
@@ -280,14 +356,14 @@ struct NativeTabStrip {
                                     : nullptr);
     }
 
-    void CompleteReorderAt(Controls::TabViewItem const& tab, Controls::TabViewItem const& beforeRow) {
+    uint64_t CompleteReorderAt(Controls::TabViewItem const& tab, Controls::TabViewItem const& beforeRow) {
         uint32_t beforeId = beforeRow && beforeRow != tab ? unbox_value<uint32_t>(beforeRow.Tag()) : 0;
         Windows::Data::Json::JsonObject action;
         action.SetNamedValue(L"kind", Windows::Data::Json::JsonValue::CreateStringValue(L"strip-reorder"));
         action.SetNamedValue(L"revision", Windows::Data::Json::JsonValue::CreateNumberValue(presentationRevision));
         action.SetNamedValue(L"id", Windows::Data::Json::JsonValue::CreateNumberValue(unbox_value<uint32_t>(tab.Tag())));
         action.SetNamedValue(L"beforeId", Windows::Data::Json::JsonValue::CreateNumberValue(beforeId));
-        if (dispatch) dispatch(unbox_value<uint32_t>(tab.Tag()), action.Stringify());
+        return dispatch ? dispatch(unbox_value<uint32_t>(tab.Tag()), action.Stringify()) : 0;
     }
 
     // Queues one validated detach request naming `tab` and the release
@@ -296,7 +372,7 @@ struct NativeTabStrip {
     // opens the new window at that point via gBrowser.replaceTabWithWindow's
     // own left/top options, so there is nothing to compute here beyond the
     // cursor's current screen position.
-    void CompleteDetach(Controls::TabViewItem const& tab) {
+    uint64_t CompleteDetach(Controls::TabViewItem const& tab) {
         POINT screenPoint{};
         GetCursorPos(&screenPoint);
         Windows::Data::Json::JsonObject action;
@@ -305,7 +381,7 @@ struct NativeTabStrip {
         action.SetNamedValue(L"id", Windows::Data::Json::JsonValue::CreateNumberValue(unbox_value<uint32_t>(tab.Tag())));
         action.SetNamedValue(L"screenX", Windows::Data::Json::JsonValue::CreateNumberValue(double(screenPoint.x)));
         action.SetNamedValue(L"screenY", Windows::Data::Json::JsonValue::CreateNumberValue(double(screenPoint.y)));
-        if (dispatch) dispatch(unbox_value<uint32_t>(tab.Tag()), action.Stringify());
+        return dispatch ? dispatch(unbox_value<uint32_t>(tab.Tag()), action.Stringify()) : 0;
     }
 
     // For a cross-window drop landing at `localX` (already converted to
@@ -390,7 +466,7 @@ struct NativeTabStrip {
         uint32_t before = 0;
         for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i) {
             if (i == drag.originalIndex) continue;
-            if (drag.originalLeftEdge[i] + drag.tabWidth / 2 < centerX) ++before;
+            if (drag.originalLeftEdge[i] + drag.originalWidth[i] / 2 < centerX) ++before;
         }
         return before < drag.originalIndex ? before : before + 1;
     }
@@ -399,7 +475,7 @@ struct NativeTabStrip {
     // value -- it reverts to whatever the value was before that Storyboard
     // began. Capture the true current value first and restore it right
     // after, or anything that stops an in-flight slide (a retarget, a new
-    // drag grabbing a row whose previous drop is still easing in) snaps the
+    // drag grabbing a row whose previous gap shift is still easing in) snaps the
     // row backward first, fighting itself instead of continuing smoothly.
     void StopRowAnimation(Controls::TabViewItem const& row, uint32_t id) {
         auto it = rowAnimations.find(id);
@@ -417,7 +493,20 @@ struct NativeTabStrip {
             if (it->second.target == target) return;
             StopRowAnimation(row, id);
         }
+        auto transform = RowTransform(row);
+        if (!row.IsLoaded()) {
+            // A newly inserted/reinserted row cannot run a live storyboard yet.
+            // Its first layout should already contain the insertion gap.
+            transform.X(target);
+            return;
+        }
+        const auto from = transform.X();
+        // Keep the settled value in the base property as well as the timeline.
+        // Recycling/unloading a row can end the timeline without holding its
+        // final value; it must not then fall back to the old offset.
+        transform.X(target);
         Media::Animation::DoubleAnimation animation;
+        animation.From(from);
         animation.To(target);
         // Duration is a plain {TimeSpan, DurationType} struct, not a class
         // with a real constructor -- brace-initializing with just a TimeSpan
@@ -430,13 +519,17 @@ struct NativeTabStrip {
         Media::Animation::CubicEase ease;
         ease.EasingMode(Media::Animation::EasingMode::EaseOut);
         animation.EasingFunction(ease);
-        Media::Animation::Storyboard::SetTarget(animation, RowTransform(row));
+        Media::Animation::Storyboard::SetTarget(animation, transform);
         Media::Animation::Storyboard::SetTargetProperty(animation, L"X");
         Media::Animation::Storyboard storyboard;
         storyboard.Children().Append(animation);
         auto alive = std::weak_ptr<int>(lifetime);
-        storyboard.Completed([this, alive, id](auto const&, auto const&) {
-            if (!alive.expired()) rowAnimations.erase(id);
+        storyboard.Completed([this, alive, id](auto const& sender, auto const&) {
+            if (alive.expired()) return;
+            auto current = rowAnimations.find(id);
+            // A replaced timeline may still deliver its queued completion.
+            if (current != rowAnimations.end() && current->second.storyboard == sender)
+                rowAnimations.erase(current);
         });
         rowAnimations[id] = RowAnimation{storyboard, target};
         storyboard.Begin();
@@ -463,8 +556,8 @@ struct NativeTabStrip {
     void ShiftSibling(uint32_t originalIndex) {
         auto row = view.TabItems().GetAt(originalIndex).as<Controls::TabViewItem>();
         double target = 0;
-        if (originalIndex < drag.originalIndex && originalIndex >= drag.projectedIndex) target = drag.tabWidth;
-        else if (originalIndex > drag.originalIndex && originalIndex < drag.projectedIndex) target = -drag.tabWidth;
+        if (originalIndex < drag.originalIndex && originalIndex >= drag.projectedIndex) target = drag.originalLeftEdge[originalIndex + 1] - drag.originalLeftEdge[originalIndex];
+        else if (originalIndex > drag.originalIndex && originalIndex < drag.projectedIndex) target = drag.originalLeftEdge[originalIndex - 1] - drag.originalLeftEdge[originalIndex];
         auto id = unbox_value<uint32_t>(row.Tag());
         AnimateRowOffset(row, id, target);
         if (target != 0 &&
@@ -533,8 +626,7 @@ struct NativeTabStrip {
     // recover). Once a gesture is promoted to Dragging, Pane.cpp's
     // TabDragSession owns resolving it end to end (CommitReorder/
     // AcceptForeignDrop/CommitDetach/CancelDrag below) -- this is also
-    // reused there, for the outcome where a foreign pane's own strip
-    // accepted the drop, to reset this strip's own phase/dragging flag.
+    // used only for outcomes that have no pending browser transfer.
     void FinishDrag(uint32_t id) {
         if (drag.tabId != id) return;
         RestoreRowVisibility(id);
@@ -544,14 +636,8 @@ struct NativeTabStrip {
 
     // Promotes Armed -> Dragging using `point` (view-local DIPs, same space
     // PointerMoved's own GetCurrentPoint(view) uses) as the drag's live
-    // position. Two independent callers can each observe the same 4 DIP
-    // threshold crossing and call this: PointerMoved below (the low-latency
-    // path, for as long as WinUI's own capture on this row happens to
-    // survive) and Pane.cpp's TickDragSession (the GetCursorPos/
-    // GetAsyncKeyState-driven poll that doesn't depend on it at all, see
-    // the tab drag redesign). Idempotent once already
-    // Dragging (or once `id` no longer matches), so calling it from both is
-    // safe -- whichever notices first wins.
+    // position. Routed moves and the message hook both tick the same live
+    // cursor sampler in Pane.cpp. Idempotent once already Dragging.
     bool TryPromote(uint32_t id, Windows::Foundation::Point const& point, bool continuation = false) {
         if (drag.tabId != id || drag.phase != DragPhase::Armed || !rows.count(id)) return false;
         constexpr double kDragThreshold = 4.0;
@@ -563,14 +649,9 @@ struct NativeTabStrip {
         auto& row = rows.at(id);
         drag.phase = DragPhase::Dragging;
         drag.detaching = false;
-        // Any row still easing from a prior settle or sibling-shift (this
-        // row's own drop settle if it's grabbed again quickly, or a sibling
-        // shift that hadn't finished) must be stopped before the snapshot
-        // below, or this drag's grid math would be built on stale,
-        // mid-animation coordinates -- and for this row specifically,
-        // leaving its own leftover settle running would let it later force
-        // the transform back to 0 once it completes, fighting this drag's
-        // own direct manipulation.
+        // Stop any remaining gap shifts before taking the new drag's
+        // geometry snapshot, so its grid math does not use stale,
+        // mid-animation coordinates or compete with a running storyboard.
         {
             std::vector<uint32_t> activeIds;
             for (auto& [animId, anim] : rowAnimations) activeIds.push_back(animId);
@@ -582,9 +663,11 @@ struct NativeTabStrip {
         drag.projectedIndex = drag.originalIndex;
         drag.tabWidth = row.ActualWidth();
         drag.originalLeftEdge.clear();
+        drag.originalWidth.clear();
         for (uint32_t i = 0; i < view.TabItems().Size(); ++i) {
             auto item = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
             drag.originalLeftEdge.push_back(item.TransformToVisual(view).TransformPoint({0, 0}).X);
+            drag.originalWidth.push_back(item.ActualWidth());
         }
         dragging = true;
         UpdateDragVisual(point);
@@ -618,44 +701,42 @@ struct NativeTabStrip {
                               ? view.TabItems().GetAt(targetIndex).as<Controls::TabViewItem>()
                               : nullptr;
         drag.confirmBeforeId = beforeRow && beforeRow != row ? unbox_value<uint32_t>(beforeRow.Tag()) : 0;
-        CompleteReorderAt(row, beforeRow);
-        RestoreRowVisibility(tabId);
-        // Unlike every other exit path (FinishDrag/CancelDrag), this never
-        // reset drag.phase back to None on success -- harmless in practice
-        // (the next PointerPressed unconditionally overwrites it to Armed
-        // regardless), except that a stale Dragging phase left on this same
-        // tab could make a later, unrelated Escape keypress on it (while
-        // merely focused, nothing to do with dragging) incorrectly invoke
-        // CancelDrag via its own `drag.phase != DragPhase::None` guard.
+        // The floating drag image is about to disappear, but Firefox has not
+        // reordered the real row yet. Reveal it at the destination slot rather
+        // than briefly painting its old slot during the command round trip.
+        const auto landingIndex = targetIndex > drag.originalIndex ? targetIndex - 1 : targetIndex;
+        if (landingIndex < drag.originalLeftEdge.size() && drag.originalIndex < drag.originalLeftEdge.size()) {
+            ResetRowOffset(row, tabId);
+            RowTransform(row).X(drag.originalLeftEdge[landingIndex] - drag.originalLeftEdge[drag.originalIndex]);
+        }
         drag.phase = DragPhase::None;
         dragging = false;
+        const auto request = CompleteReorderAt(row, beforeRow);
+        drag.pendingRequest = request;
+        auto alive = std::weak_ptr<int>(lifetime);
+        WatchDrop(request, [this, alive, request](bool accepted) {
+            if (alive.expired() || drag.pendingRequest != request || dragging) return;
+            if (!accepted) {
+                for (auto id : drag.affectedRowIds)
+                    if (rows.count(id)) ResetRowOffset(rows.at(id), id);
+                drag.affectedRowIds.clear();
+                drag.awaitingConfirm = false;
+                drag.pendingRequest = 0;
+            }
+        });
+        RestoreRowVisibility(tabId);
         return true;
     }
 
-    // Commits this exact tab's own in-flight gesture as a detach-to-new-
-    // window -- called by Pane.cpp's TickDragSession once release resolves
-    // as hovering no pane's own strip at all. `confirmBeforeId` of 0 with
-    // `awaitingConfirm` set means the same thing it does for a plain
-    // move-to-end reorder (CompleteReorderAt), but here it's actually
-    // "landed" the moment Sync() no longer sees this tab at all: it will
-    // have moved to the new window Firefox opens for it, not stayed at the
-    // strip's own end. Any siblings this gesture shifted to open a gap
-    // before detaching still get cleaned up the same way (CloseDragGap
-    // already closes that gap as soon as the cursor left this strip, but
-    // doesn't clear affectedRowIds -- this keeps the same eventual reset
-    // Sync() already does for every other outcome).
+    // A transfer is confirmed by source removal, not by a matching index
+    // (in particular, a departing last tab must remain hidden until removal).
     void CommitDetach(uint32_t id) {
         if (!rows.count(id)) return;
-        drag.affectedRowIds.push_back(id);
-        drag.awaitingConfirm = true;
-        drag.confirmTabId = id;
-        drag.confirmBeforeId = 0;
-        CompleteDetach(rows.at(id));
-        RestoreRowVisibility(id);
-        // See CommitReorder's own comment: this never reset drag.phase back
-        // to None on success either.
-        drag.phase = DragPhase::None;
-        dragging = false;
+        BeginDeparture(id);
+        auto alive = std::weak_ptr<int>(lifetime);
+        WatchDrop(CompleteDetach(rows.at(id)), [this, alive, id](bool accepted) {
+            if (!alive.expired() && !accepted) RejectDeparture(id);
+        });
     }
 
     // Live "make room" preview shown in this strip while a DIFFERENT pane's
@@ -669,6 +750,7 @@ struct NativeTabStrip {
     // back into itself.
     struct ForeignDragState {
         bool active{};
+        uint64_t pendingRequest{};
         uint32_t projectedIndex{};
         double tabWidth{};
         struct Row {
@@ -683,6 +765,7 @@ struct NativeTabStrip {
     ForeignDragState foreignDrag;
 
     void ForeignDragOver(Windows::Foundation::Point const& point) {
+        if (foreignDrag.pendingRequest) EndForeignDragOver(true);
         if (!foreignDrag.active) {
             // A preceding snapshot may have changed the layout. Capture the
             // new untransformed geometry once, not on every drag tick.
@@ -709,16 +792,10 @@ struct NativeTabStrip {
         }
     }
 
-    // Closes the preview gap immediately -- called once the drag leaves
-    // this strip's own bounds without dropping here, and once a drop here
-    // is resolved (the real new row, once Firefox's adopt actually lands on
-    // some later Sync(), arrives through the ordinary insert path with no
-    // gap of its own to settle into; holding this preview open across that
-    // round trip would need the same awaitingConfirm-style bookkeeping
-    // DragState uses for a reordered EXISTING row, which a brand-new row has
-    // no matching "before" state to justify).
-    void EndForeignDragOver() {
-        if (!foreignDrag.active) return;
+    // Hover exit closes the gap, but releasing over this strip retains it
+    // until a structural snapshot replaces the preview or the request fails.
+    void EndForeignDragOver(bool force = false) {
+        if (!foreignDrag.active || (foreignDrag.pendingRequest && !force)) return;
         auto previous = std::exchange(foreignDrag, ForeignDragState{});
         for (auto const& row : previous.rows) ResetRowOffset(row.item, row.id);
     }
@@ -728,20 +805,20 @@ struct NativeTabStrip {
     // as hovering this strip while some other pane owns the gesture.
     // `point` is already translated to this strip's own local coordinate
     // space (Pane.cpp's StripScreenBounds owns that conversion, since it
-    // alone knows the hosting HWND). Always succeeds -- there is no local
-    // drag state to validate against here, unlike CommitReorder; Firefox's
+    // alone knows the hosting HWND). Zero means queue admission failed. Firefox's
     // own adopt handler and the JS session's snapshot-based validation are
     // the real authority, same as every other queued request this strip
     // sends.
-    bool AcceptForeignDrop(HWND sourceHwnd, uint32_t tabId, Windows::Foundation::Point const& point) {
+    uint64_t AcceptForeignDrop(HWND sourceHwnd, uint32_t tabId, Windows::Foundation::Point const& point) {
         // Sync invalidates a preview before a structural update. Rebuild it
         // even if release arrives before the next hover tick, so a drop never
         // commits an insertion index from the previous destination row set.
         ForeignDragOver(point);
         uint32_t index = foreignDrag.projectedIndex;
-        EndForeignDragOver();
-        QueueIncomingAdopt(sourceHwnd, tabId, index);
-        return true;
+        const auto request = QueueIncomingAdopt(sourceHwnd, tabId, index);
+        foreignDrag.pendingRequest = request;
+        if (!request) EndForeignDragOver(true);
+        return request;
     }
 
     // Escape: abandon the gesture with no request sent, snapping every
@@ -853,16 +930,38 @@ struct NativeTabStrip {
             auto id = NativeJson::RequireId(group, L"id");
             auto name = group.GetNamedString(L"name"), text = group.GetNamedString(L"label");
             group.GetNamedBoolean(L"collapsed");
+            const auto color = group.GetNamedNumber(L"color", 0);
+            if (!std::isfinite(color) || color < 0 || color > UINT32_MAX || std::floor(color) != color)
+                throw hresult_invalid_argument();
             if (!ids.insert(id).second || name.empty() || name.size() > NativeJson::kMaxShortLabel || text.empty() ||
                 text.size() > NativeJson::kMaxDetailText)
                 throw hresult_invalid_argument();
         }
+        std::vector<ShellStripSlot> layout;
+        const bool layoutChanged = data.HasKey(L"layout");
+        if (!base && hasGroupLayout && !layoutChanged) throw hresult_invalid_argument();
+        if (layoutChanged) {
+            auto slots = data.GetNamedArray(L"layout");
+            if (slots.Size() > 20000) throw hresult_invalid_argument();
+            for (auto value : slots) {
+                auto slot = value.GetObject();
+                auto group = NativeJson::RequireRevision(slot, L"group");
+                auto tab = NativeJson::RequireRevision(slot, L"tab");
+                if (group > UINT32_MAX || tab > UINT32_MAX || (group && !ids.count(uint32_t(group))))
+                    throw hresult_invalid_argument();
+                layout.push_back({uint32_t(group), uint32_t(tab)});
+            }
+        } else if (base && hasGroupLayout) {
+            for (auto slot : groupLayout)
+                if (slot.group && !ids.count(slot.group)) throw hresult_invalid_argument();
+        }
         // The Rust core owns revision/identity and aggregate retained-image
         // bounds. Everything above is staged before either model or XAML changes.
-        if (!core || shell_core_strip_apply(core, base, revision, changes.data(), changes.size()) != SHELL_STATUS_OK)
+        if (!core || shell_core_strip_apply_layout(core, base, revision, changes.data(), changes.size(), layout.data(), layout.size(), layoutChanged) != SHELL_STATUS_OK)
             throw hresult_invalid_argument();
         if (updateGroups) {
-            groupsButton.Apply(label, groups);
+            if (!inlineGroups.active) groupsButton.Apply(label, groups);
+            else if (!dragging) inlineGroups.Metadata(groups);
             groupsLabel = label;
             currentGroups = groups;
         }
@@ -882,6 +981,21 @@ struct NativeTabStrip {
         captionDirty = true;
         presentationRevision = revision;
         presentationFingerprint = fingerprint;
+        if (layoutChanged) {
+            size_t size = layout.size();
+            if (shell_core_strip_layout(core, layout.data(), layout.size(), &size) != SHELL_STATUS_OK)
+                throw hresult_invalid_argument();
+            groupLayout = std::move(layout);
+            hasGroupLayout = true;
+            if (CanApplyGroupLayout()) {
+                const bool previous = syncing;
+                auto selected = view.SelectedItem();
+                syncing = true;
+                ApplyGroupLayout();
+                view.SelectedItem(selected);
+                syncing = previous;
+            }
+        }
         // Metadata has its own publication now; do not wait for a title delta
         // or a structural Sync to make a changed icon/status visible.
         for (auto const& change : changes) {
@@ -1000,7 +1114,7 @@ struct NativeTabStrip {
             Controls::ToolTipService::SetToolTip(row, box_value(title + L"\n" + meta.containerName +
                 (meta.detail.empty() ? L"" : L"\n" + meta.detail)));
         Automation::AutomationProperties::SetHelpText(
-            row, meta.detail + (meta.detail.empty() || meta.status.empty() ? L"" : L" ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ") + meta.status);
+            row, meta.detail + (meta.detail.empty() || meta.status.empty() ? L"" : L" \u00b7 ") + meta.status);
         if (!meta.containerName.empty()) Automation::AutomationProperties::SetHelpText(
             row, meta.containerName + L" " + meta.detail + L" " + meta.status);
     }
@@ -1067,13 +1181,17 @@ struct NativeTabStrip {
             }
             return;
         }
+        bool refreshForeignPreview = false;
         if (foreignDrag.active) {
             bool changed = count != foreignDrag.rows.size();
             for (uint32_t i = 0; !changed && i < count; ++i)
                 changed = tabs[i].id != foreignDrag.rows[i].id;
             // Clear transforms while the old rows still belong to the strip.
             // The next hover (or release) captures the new order and geometry.
-            if (changed) EndForeignDragOver();
+            if (changed) {
+                refreshForeignPreview = !foreignDrag.pendingRequest;
+                EndForeignDragOver(true);
+            }
         }
         syncing = true;
         try {
@@ -1099,44 +1217,14 @@ struct NativeTabStrip {
                     for (auto id : drag.affectedRowIds) {
                         if (!rows.count(id)) continue;
                         auto row = rows.at(id);
-                        // The dropped tab's own offset is wherever the
-                        // cursor happened to be, not necessarily flush with
-                        // the target slot's exact grid position (unlike a
-                        // shifted sibling, whose offset is always exactly
-                        // one tab width and so already matches the reorder
-                        // below exactly). TabItems() is about to jump
-                        // straight to that grid position a few lines down,
-                        // so ease from the equivalent residual offset
-                        // (current position minus that upcoming jump)
-                        // rather than snapping to it.
-                        if (id == drag.confirmTabId && !drag.originalLeftEdge.empty() &&
-                            drag.originalIndex < drag.originalLeftEdge.size()) {
-                            // projectedIndex is the index of the row this tab
-                            // was inserted BEFORE in the pre-reorder
-                            // TabItems() (ProjectDropIndex/FinishDrag's own
-                            // convention) -- not this tab's own post-reorder
-                            // index. Removing this tab from its original slot
-                            // shifts everything after it back by one, so a
-                            // rightward move (projectedIndex > originalIndex)
-                            // actually lands one slot earlier than
-                            // projectedIndex; a leftward move lands exactly
-                            // at projectedIndex. Either way the result is
-                            // always a valid originalLeftEdge index, so
-                            // "move to end" needs no separate out-of-range
-                            // case.
-                            uint32_t landingIndex = drag.projectedIndex > drag.originalIndex
-                                                         ? drag.projectedIndex - 1
-                                                         : drag.projectedIndex;
-                            double targetLeftEdge = drag.originalLeftEdge[landingIndex];
-                            double gridDelta = targetLeftEdge - drag.originalLeftEdge[drag.originalIndex];
-                            RowTransform(row).X(RowTransform(row).X() - gridDelta);
-                            AnimateRowOffset(row, id, 0);
-                        } else {
-                            ResetRowOffset(row, id);
-                        }
+                        // Firefox has confirmed the final order. Clear the
+                        // preview transforms in this same sync and let layout
+                        // place the tab directly, without a post-drop slide.
+                        ResetRowOffset(row, id);
                     }
                     drag.affectedRowIds.clear();
                     drag.awaitingConfirm = false;
+                    drag.pendingRequest = 0;
                 }
             }
             std::set<uint32_t> current;
@@ -1224,26 +1312,12 @@ struct NativeTabStrip {
                         UIElement::PointerMovedEvent(),
                         box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
                             [this, alive, id](auto const&,
-                                              Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
-                                // Armed: try the same threshold-crossing
-                                // promotion Pane.cpp's TickDragSession polls
-                                // for independently -- whichever notices
-                                // first wins (TryPromote is idempotent).
-                                // Dragging: this is purely an accelerant,
-                                // feeding the same tick Pane.cpp's own
-                                // Translate() hook already drives, just
-                                // sooner when WinUI's capture on this row
-                                // happens to still be alive. Neither path is
-                                // required for correctness; losing this
-                                // event entirely (WinUI capture stolen out
-                                // from under it) costs latency, not the
-                                // gesture itself.
+                                              Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&) {
+                                // Use the same live cursor sample as the session poll.
+                                // Queued routed coordinates can belong to an older
+                                // layout or gesture after a transfer.
                                 if (alive.expired() || syncing || drag.tabId != id || drag.phase == DragPhase::None)
                                     return;
-                                if (drag.phase == DragPhase::Armed) {
-                                    TryPromote(id, args.GetCurrentPoint(view).Position());
-                                    return;
-                                }
                                 if (tickDragSession) tickDragSession();
                             })),
                         true);
@@ -1312,15 +1386,27 @@ struct NativeTabStrip {
                                                                      : selected   ? L"Selected tab"
                                                                                   : L"");
                 uint32_t old;
-                if (!view.TabItems().IndexOf(row, old) || old != i) {
+                if (!inlineGroups.active && (!view.TabItems().IndexOf(row, old) || old != i)) {
                     if (view.TabItems().IndexOf(row, old)) view.TabItems().RemoveAt(old);
                     view.TabItems().InsertAt(i, row);
                 }
             }
-            while (view.TabItems().Size() > count) view.TabItems().RemoveAtEnd();
+            if (hasGroupLayout && inlineGroups.configured) {
+                uint32_t index = 0;
+                for (auto slot : groupLayout) {
+                    if (!slot.tab) continue;
+                    if (index >= count || tabs[index++].id != slot.tab) throw hresult_invalid_argument();
+                }
+                if (index != count) throw hresult_invalid_argument();
+                ApplyGroupLayout();
+            } else {
+                while (view.TabItems().Size() > count) view.TabItems().RemoveAtEnd();
+            }
             for (auto it = rows.begin(); it != rows.end();) {
-                if (!current.count(it->first))
+                if (!current.count(it->first)) {
+                    departingRows.erase(it->first);
                     it = rows.erase(it);
+                }
                 else
                     ++it;
             }
@@ -1331,5 +1417,8 @@ struct NativeTabStrip {
         }
         syncing = false;
         captionDirty = true;
+        // A stationary cursor may produce no further input after this layout
+        // change. Refresh a live hover now using the session's cursor sampler.
+        if (refreshForeignPreview && tickDragSession) tickDragSession();
     }
 };

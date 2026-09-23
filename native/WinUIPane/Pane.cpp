@@ -663,6 +663,7 @@ struct Pane {
     void ReconcileOutcomes() {
         auto outcomes = shell.TakeOutcomes();
         for (size_t i = 0; i < outcomes.size(); ++i) {
+            if (strip) strip->CompleteDrop(outcomes[i].id, outcomes[i].outcome == NativeShellCore::Completed);
             if (outcomes[i].id == pendingSelectionRequest) pendingSelectionRequest = 0;
             // An address intent is outstanding until the host says how it went.
             // Clearing the slot here, rather than when a tick collected it, is
@@ -1517,8 +1518,19 @@ void ResolveDragDrop(Pane& sourcePane, Pane* hitPane, POINT screenPoint) {
     auto* strip = session.sourceStrip;
     if (hitPane && hitPane->strip) {
         auto local = hitPane->ScreenToStrip(screenPoint);
-        hitPane->strip->AcceptForeignDrop(sourcePane.parent, session.tabId, local);
-        strip->FinishDrag(session.tabId);
+        const auto tab = session.tabId;
+        strip->BeginDeparture(tab);
+        auto sourceLife = std::weak_ptr<int>(strip->lifetime);
+        auto destination = hitPane->strip.get();
+        auto destinationLife = std::weak_ptr<int>(destination->lifetime);
+        const auto request = destination->AcceptForeignDrop(sourcePane.parent, tab, local);
+        destination->WatchDrop(request, [strip, sourceLife, destination, destinationLife, tab, request](bool accepted) {
+            if (!accepted) {
+                if (!sourceLife.expired()) strip->RejectDeparture(tab);
+                if (!destinationLife.expired() && destination->foreignDrag.pendingRequest == request)
+                    destination->EndForeignDragOver(true);
+            }
+        });
     } else if (strip->drag.detaching) {
         strip->CommitDetach(session.tabId);
     } else {
@@ -1561,10 +1573,11 @@ void TickDragSession() {
         POINT screenPoint{};
         GetCursorPos(&screenPoint);
         auto local = sourcePane.ScreenToStrip(screenPoint);
-        if (session.sourceStrip->TryPromote(session.tabId, local)) return;  // Dragging now; next tick tracks it.
         if (!buttonDown) {
             session.sourceStrip->FinishDrag(session.tabId);
             AbortDragSession();
+        } else {
+            session.sourceStrip->TryPromote(session.tabId, local);
         }
         return;
     }

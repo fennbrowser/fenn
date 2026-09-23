@@ -39,7 +39,7 @@ use crate::queue::{
     CompleteError, DrainError, EnqueueStatus, Limits, Outcome, Request, RequestKind, RequestQueue,
 };
 use crate::SHELL_CORE_ABI_VERSION;
-use crate::strip::{ShellStripChange, StripState};
+use crate::strip::{ShellStripChange, ShellStripSlot, StripState};
 
 /// Result of every entry point. `Ok` is zero so the host can test it directly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -772,6 +772,46 @@ pub unsafe extern "C" fn shell_core_strip_apply(
         let changes = if count == 0 { &[] } else { std::slice::from_raw_parts(changes, count) };
         if core.strip.apply(base, revision, changes) { ShellStatus::Ok }
         else { ShellStatus::InvalidArgument }
+    })
+}
+
+/// Atomically validate strip metadata and optional ordered group layout.
+/// # Safety
+/// See [`guard`]. Arrays must contain their stated number of readable entries.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_strip_apply_layout(
+    core: *mut ShellCore, base: u32, revision: u32,
+    changes: *const ShellStripChange, count: usize,
+    layout: *const ShellStripSlot, layout_count: usize, has_layout: bool,
+) -> ShellStatus {
+    guard(core, |core| {
+        if count > 20_000 || layout_count > 20_000 || (count != 0 && changes.is_null()) ||
+           (layout_count != 0 && (layout.is_null() || !has_layout)) { return ShellStatus::InvalidArgument; }
+        let changes = if count == 0 { &[] } else { std::slice::from_raw_parts(changes, count) };
+        let layout = if !has_layout { None } else if layout_count == 0 { Some(&[][..]) }
+                     else { Some(std::slice::from_raw_parts(layout, layout_count)) };
+        if core.strip.apply_layout(base, revision, changes, layout) { ShellStatus::Ok }
+        else { ShellStatus::InvalidArgument }
+    })
+}
+
+/// Copy the retained ordered layout. Returns required count; no partial copy.
+/// # Safety
+/// See [`guard`]. `count` must be writable; `slots` has `capacity` writable entries.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_strip_layout(
+    core: *mut ShellCore, slots: *mut ShellStripSlot, capacity: usize, count: *mut usize,
+) -> ShellStatus {
+    guard(core, |core| {
+        if count.is_null() { return ShellStatus::InvalidArgument; }
+        let layout = core.strip.layout();
+        *count = layout.len();
+        if capacity < layout.len() { return ShellStatus::InvalidArgument; }
+        if !layout.is_empty() {
+            if slots.is_null() { return ShellStatus::InvalidArgument; }
+            std::ptr::copy_nonoverlapping(layout.as_ptr(), slots, layout.len());
+        }
+        ShellStatus::Ok
     })
 }
 

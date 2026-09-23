@@ -283,3 +283,43 @@ test("1,000-tab metadata update contains just one changed field and no pixel pay
   assert.ok(JSON.stringify(delta).length < 200);
   assert.equal(JSON.stringify(delta).includes("pixels"), false);
 });
+
+
+test("ordered group anchors retain opaque identity through active-member collapse", () => {
+  const f = fixture();
+  f.state.layout = [{target:f.target}, {target:f.target, tab:11}, {tab:22}];
+  let update = f.session.update();
+  const id = f.action.group;
+  assert.deepEqual(update.strip.layout, [{group:id,tab:0},{group:id,tab:11},{group:0,tab:22}]);
+  assert.equal(JSON.stringify(update).includes("target"), false);
+  f.state.groups[0].collapsed = true;
+  update = f.session.update();
+  assert.equal(update.strip.layout, undefined, "retained active member does not rebuild order");
+  f.state.rows.shift();
+  f.state.layout.splice(1,1);
+  update = f.session.update();
+  assert.deepEqual(update.strip.layout, [{group:id,tab:0},{group:0,tab:22}]);
+  assert.deepEqual(update.strip.removed, [11]);
+  f.state.groups[0].name = "Renamed";
+  assert.equal(f.session.update().strip.layout, undefined, "metadata preserves layout");
+});
+
+test("layout cannot serialize an unregistered group object", () => {
+  const f = fixture();
+  f.state.layout = [{target:{}}];
+  assert.throws(() => f.session.update(), /Invalid native strip layout/);
+});
+
+
+test("group color changes publish metadata without replacing ordered membership", () => {
+  const f = fixture();
+  f.state.layout = [{target:f.target}, {target:f.target, tab:11}, {tab:22}];
+  f.state.groups[0].color = 0xff336699;
+  f.session.update();
+  f.state.groups[0].color = 0xffdd3322;
+  const update = f.session.update();
+  assert.equal(update.strip.groups[0].color, 0xffdd3322);
+  assert.equal(update.strip.groups[0].id, f.action.group);
+  assert.equal(update.strip.layout, undefined);
+  assert.deepEqual(update.strip.rows, []);
+});

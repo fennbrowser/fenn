@@ -2431,10 +2431,10 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..fa1b4c7e07
+index 0000000000..fb627159bf
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,147 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2463,6 +2463,13 @@ index 0000000000..fa1b4c7e07
 +      this.targets.set(id, target);
 +      return { id, ...group };
 +    });
++    if (state.layout) {
++      state.layout = state.layout.map(entry => entry.target
++        ? { group: this.ids.get(entry.target), tab: entry.tab || 0 }
++        : { group: 0, tab: entry.tab });
++      if (state.layout.length > 20000 || state.layout.some(e => !e.group && !e.tab))
++        throw new Error("Invalid native strip layout");
++    }
 +    if (state.groups.length > 10000 || state.rows.length > 10000)
 +      throw new Error("Native strip snapshot limit exceeded");
 +    return state;
@@ -2498,7 +2505,7 @@ index 0000000000..fa1b4c7e07
 +        }
 +      }
 +      strip.removed = [...previous.keys()];
-+      for (const key of ["groups", "groupsLabel", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
++      for (const key of ["layout", "groups", "groupsLabel", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
 +        if (!this.same(state[key], this.state[key])) strip[key] = state[key];
 +      }
 +    }
@@ -3723,10 +3730,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..8aa127e92f
+index 0000000000..03847b6380
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1504 @@
+@@ -0,0 +1,1528 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3900,6 +3907,7 @@ index 0000000000..8aa127e92f
 +                                 record.target === this.modeSwitcher)) {
 +        this.addressDirty = true;
 +      }
++      if (this.tabStrip && records.some(record => record.target === document.documentElement)) this.stripDirty = true;
 +      this.schedule();
 +    });
 +    this.mutation.observe(document.documentElement, { attributes: true });
@@ -3928,6 +3936,9 @@ index 0000000000..8aa127e92f
 +      for (const type of this.stripStateEvents)
 +        gBrowser.tabContainer.addEventListener(type, this);
 +    }
++    this.groupColorMedia = ["(prefers-color-scheme: dark)", "(forced-colors: active)"].map(query => matchMedia(query));
++    this.groupColorChanged = () => { this.stripDirty = true; this.schedule(); };
++    for (const query of this.groupColorMedia) query.addEventListener("change", this.groupColorChanged);
 +    // Native requests arrive as one scheduled notification per endpoint. The
 +    // pane posts it from its own queue; nothing here polls for them.
 +    Services.obs.addObserver(this, "winui-pane-drain");
@@ -4562,12 +4573,29 @@ index 0000000000..8aa127e92f
 +    const maxImageChars = 500000;
 +    const groups = gBrowser.tabGroups.filter(group => group.isConnected).map(target => {
 +      const name = target.label || label("tab-group-name-default");
-+      return { target, name: name.slice(0, 1024), collapsed: target.collapsed,
++      // The line retains the group accent in both classic and Nova styling;
++      // label foreground can instead be white for contrast in Nova.
++      const line = target.querySelector(".tab-group-line");
++      const rgba = InspectorUtils.colorToRGBA(getComputedStyle(line || target.labelElement).backgroundColor);
++      const color = rgba ? ((Math.round(rgba.a * 255) * 0x1000000) + (rgba.r << 16) + (rgba.g << 8) + rgba.b) : 0;
++      return { target, name: name.slice(0, 1024), collapsed: target.collapsed, color,
 +        label: label(target.collapsed ? "tab-group-label-tooltip-collapsed"
 +          : "tab-group-label-tooltip-expanded", {tabGroupName:name}).slice(0, 2048) };
 +    });
++    // Preserve group anchors even when Firefox hides every member.
++    const visibleTabs = this.visibleTabs();
++    const visible = new Set(visibleTabs);
++    const layout = [];
++    const anchored = new Set();
++    for (const tab of gBrowser.tabs) {
++      if (tab.group && !anchored.has(tab.group)) {
++        anchored.add(tab.group);
++        layout.push({ target: tab.group });
++      }
++      if (visible.has(tab)) layout.push({ tab: this.tabIds.get(tab), target: tab.group || null });
++    }
 +    const splitViews = [...new Set(Array.from(gBrowser.tabs, tab => tab.splitview).filter(Boolean))];
-+    const rows = Array.from(gBrowser.tabs).filter(tab => tab.visible).map(tab => {
++    const rows = visibleTabs.map(tab => {
 +      const group = groups.find(g => g.target === tab.group);
 +      const split = tab.splitview;
 +      // Firefox's native tab accessibility labels already distinguish split sides.
@@ -4617,7 +4645,7 @@ index 0000000000..8aa127e92f
 +      windowDragTabId: liveTabs.length === 1 && liveTabs[0].visible &&
 +        !liveTabs[0]._pendingPermitUnload ? this.tabIds.get(liveTabs[0]) || 0 : 0,
 +      windowDragPrivate: !!window.docShell.usePrivateBrowsing,
-+      groupsLabel:label("tab-groups-list-title"), groups, rows };
++      groupsLabel:label("tab-groups-list-title"), groups, rows, layout };
 +  },
 +
 +  tabMenuLabels() {
@@ -4864,10 +4892,10 @@ index 0000000000..8aa127e92f
 +    if (this.dirtySelection || this.contextDirty) {
 +      const tabs = this.visibleTabs();
 +      const ids = tabs.map(tab => this.tabIds.get(tab));
-+      // A tab with no id yet has never been in a snapshot, so this is a
-+      // structural change that was not recorded as one. Take the snapshot
-+      // rather than publish a context the session would reject.
-+      if (ids.some(id => !id)) {
++      // Selecting away from a collapsed group's retained active member can
++      // change tab.visible without a TabHide event. Any membership change
++      // needs an ordered snapshot, even when every tab already has an ID.
++      if (ids.length !== this.publishedIds.size || ids.some(id => !id || !this.publishedIds.has(id))) {
 +        this.syncTabs();
 +        return;
 +      }
@@ -5215,6 +5243,9 @@ index 0000000000..8aa127e92f
 +    for (let type of this.events) {
 +      window.removeEventListener(type, this, true);
 +    }
++    for (const query of this.groupColorMedia || []) query.removeEventListener("change", this.groupColorChanged);
++    this.groupColorMedia = null;
++    this.groupColorChanged = null;
 +    Services.prefs.removeObserver(this.pref, this);
 +    Services.prefs.removeObserver(this.stripPref, this);
 +    Services.prefs.removeObserver(this.stripHeightPref, this);

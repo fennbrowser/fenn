@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 3
+#define SHELL_CORE_ABI_VERSION 4
 
 #define SHELL_NO_INDEX UINT32_MAX
 
@@ -217,6 +217,14 @@ typedef struct {
    */
   bool complete;
 } ShellStripChange;
+
+/*
+ Ordered group anchors (tab == 0) and visible members. Group zero is ungrouped.
+ */
+typedef struct {
+  uint32_t group;
+  uint32_t tab;
+} ShellStripSlot;
 
 typedef struct {
   uint32_t kind;
@@ -431,6 +439,30 @@ ShellStatus shell_core_strip_apply(ShellCore *core,
                                    uint32_t revision,
                                    const ShellStripChange *changes,
                                    uintptr_t count);
+
+/*
+ Atomically validate strip metadata and optional ordered group layout.
+ # Safety
+ See [`guard`]. Arrays must contain their stated number of readable entries.
+ */
+ShellStatus shell_core_strip_apply_layout(ShellCore *core,
+                                          uint32_t base,
+                                          uint32_t revision,
+                                          const ShellStripChange *changes,
+                                          uintptr_t count,
+                                          const ShellStripSlot *layout,
+                                          uintptr_t layout_count,
+                                          bool has_layout);
+
+/*
+ Copy the retained ordered layout. Returns required count; no partial copy.
+ # Safety
+ See [`guard`]. `count` must be writable; `slots` has `capacity` writable entries.
+ */
+ShellStatus shell_core_strip_layout(ShellCore *core,
+                                    ShellStripSlot *slots,
+                                    uintptr_t capacity,
+                                    uintptr_t *count);
 
 /*
  The model revision a delta must be computed against.

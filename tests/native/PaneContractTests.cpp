@@ -12,12 +12,14 @@
 #undef GetCurrentTime
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.UI.h>
+#include <winrt/Windows.UI.ViewManagement.h>
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
+#include <winrt/Microsoft.UI.Xaml.Shapes.h>
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include <winrt/Microsoft.UI.Windowing.h>
 #include <winrt/Microsoft.UI.Interop.h>
@@ -319,7 +321,7 @@ static void CompleteRequests(WinUIPaneApi& api, HWND hwnd, winrt::Windows::Data:
 // completing every batch as the browser would. Returns an empty object if none
 // arrives, so a caller can assert absence as well as presence.
 static winrt::Windows::Data::Json::JsonObject NextRequest(WinUIPaneApi& api, HWND hwnd, uint32_t kind,
-                                                          wchar_t const* eventKind = nullptr, int attempts = 40) {
+                                                          wchar_t const* eventKind = nullptr, int attempts = 40, uint32_t outcome = 1) {
     using namespace winrt::Windows::Data::Json;
     for (int i = 0; i < attempts; ++i) {
         auto batch = DrainRequests(api, hwnd);
@@ -332,7 +334,7 @@ static winrt::Windows::Data::Json::JsonObject NextRequest(WinUIPaneApi& api, HWN
                 if (eventKind && action.GetNamedString(L"kind") != eventKind) continue;
                 found = request;
             }
-            CompleteRequests(api, hwnd, batch);
+            CompleteRequests(api, hwnd, batch, outcome);
         }
         if (found.Size()) return found;
         Pump();
@@ -1464,6 +1466,88 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(groupOpened, "group popup open before island teardown");
 }
 
+static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
+    using namespace winrt;
+    using namespace winrt::Microsoft::UI::Xaml;
+    RECT rect{0, 0, 1200, 40};
+    SetWindowPos(host, nullptr, 0, 0, 1200, 300, SWP_NOMOVE | SWP_NOZORDER);
+    Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create inline strip");
+    ShowWindow(host, SW_SHOW);
+    SetForegroundWindow(host);
+    MenuPublish(api, host, MenuState({41, 42}).Stringify().c_str());
+    auto full = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":1,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Collapse Research","collapsed":false,"color":4281558681},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":9,"tab":0}]}})";
+    MenuPublish(api, host, full);
+    WinUITab tabs[]{{41,L"Home"},{42,L"Research page"}};
+    uint32_t selected{};
+    Require(SUCCEEDED(api.syncTabs(host,tabs,2,41,&selected)), "sync grouped tabs");
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
+    UIElement content{nullptr};
+    Require(SUCCEEDED(inspect(host,put_abi(content))), "inspect inline strip");
+    auto root = content.as<Controls::Grid>();
+    auto view = root.Children().GetAt(0).as<Controls::TabView>();
+    auto settle = [&] { for (int i=0;i<20;++i) { Pump(); Sleep(10); } root.UpdateLayout(); };
+    std::function<Controls::Button(DependencyObject const&, hstring const&)> find;
+    find = [&](DependencyObject const& node, hstring const& id) -> Controls::Button {
+        if (auto button = node.try_as<Controls::Button>(); button && Automation::AutomationProperties::GetAutomationId(button) == id) return button;
+        for (int i=0;i<Media::VisualTreeHelper::GetChildrenCount(node);++i)
+            if (auto found = find(Media::VisualTreeHelper::GetChild(node,i),id)) return found;
+        return nullptr;
+    };
+    for (int i=0;i<1500 && !root.IsLoaded();++i) { Pump(); Sleep(10); }
+    Require(root.IsLoaded(), "recreated inline island has loaded");
+    for (int i=0;i<500 && !find(view,L"FirefoxWinUIInlineGroup-9");++i) { Pump(); Sleep(10); }
+    settle();
+    auto header = find(view,L"FirefoxWinUIInlineGroup-7");
+    printf("Inline layout: items=%u width=%.1f height=%.1f header=%d empty=%d\n", view.TabItems().Size(),
+           view.ActualWidth(), view.ActualHeight(), bool(header), bool(find(view,L"FirefoxWinUIInlineGroup-9")));
+    fflush(stdout);
+    Require(bool(header) && bool(find(view,L"FirefoxWinUIInlineGroup-9")), "inline and empty group headers exist");
+    auto marker = header.Content().as<Controls::StackPanel>().Children().GetAt(2).as<Shapes::Ellipse>();
+    Require(marker.Visibility() == Visibility::Visible, "Firefox group color marker is visible");
+    auto accent = header.Resources().ThemeDictionaries().Lookup(box_value(L"Default")).as<ResourceDictionary>()
+        .Lookup(box_value(L"InlineGroupColorBrush")).as<Media::SolidColorBrush>();
+    Require(accent.Color() == winrt::Windows::UI::Color{255,51,102,153}, "group accent comes from Firefox ARGB");
+    auto first = view.TabItems().GetAt(0);
+    for (auto theme : {ElementTheme::Light, ElementTheme::Dark, ElementTheme::Light}) {
+        root.RequestedTheme(theme);
+        settle();
+        Require(find(view,L"FirefoxWinUIInlineGroup-7") == header, "theme retains inline header");
+        Require(header.ActualHeight() > 0 && header.ActualHeight() <= 40 && view.ActualHeight() <= 40, "inline group fits reserved strip height");
+        auto painted = marker.Fill().as<Media::SolidColorBrush>().Color();
+        if (winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast()) {
+            const auto system = GetSysColor(COLOR_WINDOWTEXT);
+            Require(painted == winrt::Windows::UI::Color{255,GetRValue(system),GetGValue(system),GetBValue(system)}, "high contrast marker uses system text color");
+        } else Require(painted == accent.Color(), "light/dark marker uses Firefox accent");
+    }
+    auto peer = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(header);
+    peer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+    auto request = NextRequest(api,host,5,L"strip-group");
+    Require(request.Size() && request.GetNamedObject(L"action").GetNamedNumber(L"group") == 7, "inline header uses shared group command");
+    auto invalid = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":1,"revision":2,"rows":[],"removed":[42]}})";
+    Require(FAILED(api.syncTabMenu(host,invalid)), "membership delta requires matching layout");
+    for (double badColor : {-1.0, 4294967296.0, 1.5}) {
+        auto bad = winrt::Windows::Data::Json::JsonObject::Parse(full);
+        auto strip = bad.GetNamedObject(L"strip");
+        strip.SetNamedValue(L"base", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(1));
+        strip.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(2));
+        strip.GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(L"color", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(badColor));
+        Require(FAILED(api.syncTabMenu(host,bad.Stringify().c_str())), "invalid group ARGB rejected atomically");
+        Require(accent.Color() == winrt::Windows::UI::Color{255,51,102,153}, "invalid color leaves retained marker unchanged");
+    }
+    auto collapsed = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":1,"revision":2,"rtl":true,"rows":[],"removed":[42],"groups":[{"id":7,"name":"Renamed","label":"Expand Renamed","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":9,"tab":0}]}})";
+    auto collapseData = winrt::Windows::Data::Json::JsonObject::Parse(collapsed);
+    collapseData.GetNamedObject(L"strip").SetNamedValue(L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
+    MenuPublish(api,host,collapseData.Stringify().c_str());
+    Require(SUCCEEDED(api.syncTabs(host,tabs,1,41,&selected)), "sync hidden group member");
+    settle();
+    Require(marker.Visibility() == Visibility::Collapsed, "legacy group metadata without color hides marker");
+    Require(view.TabItems().Size() == 1 && view.TabItems().GetAt(0) == first && view.SelectedItem() == first, "collapse retains real active tab");
+    Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
+    MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"rtl":true,"rows":[],"removed":[]}})");
+    Require(root.FlowDirection() == FlowDirection::RightToLeft, "inline groups inherit RTL");
+    puts("CHECKS PASSED: retained inline groups, disclosure command, compact themes, RTL and atomic layout validation");
+}
+
 // A real OS drag gesture, via SendInput, against the same island-hosted
 // TabView every other strip check uses. Originally added to reproduce the
 // WinUI native-drag crash in isolation (see the tab strip layout notes)
@@ -1474,7 +1558,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
 // hooks only drive the logic directly, never a real pointer sequence). Kept
 // as its own entry point, not folded into CheckTabStrip, so a regression
 // here can never take the rest of the suite down with it.
-static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host) {
+static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     RECT rect{0, 0, 600, 48};
@@ -1562,9 +1646,24 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host) {
     send(MOUSEEVENTF_LEFTUP);
     settle(200);
     puts("Drag gesture completed without crashing");
-    auto event = NextRequest(api, host, 5, L"strip-reorder").GetNamedObject(L"action");
+    auto event = NextRequest(api, host, 5, L"strip-reorder",40,reject ? 2 : 1).GetNamedObject(L"action");
     Require(event.Size() && event.GetNamedNumber(L"id") == 11 && event.GetNamedNumber(L"beforeId") == 0,
             "a real pointer drag past the last tab queues a validated move-to-end request");
+    if (reject) {
+        Require(first.Opacity() == 1 && first.RenderTransform().as<Media::TranslateTransform>().X() == 0,
+                "rejected reorder restores the source slot without a settle animation");
+        return;
+    }
+    const auto pendingOffset = first.RenderTransform().as<Media::TranslateTransform>().X();
+    Require(first.Opacity() == 1 && pendingOffset > first.ActualWidth() / 2,
+            "released tab is revealed at the destination while awaiting Firefox");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,2,11,&selected)), "unrelated old-order snapshot while reorder is pending");
+    Require(first.RenderTransform().as<Media::TranslateTransform>().X() == pendingOffset,
+            "old-order snapshot does not flash the released tab at its original slot");
+    WinUITab confirmed[]{{22,L"Second tab"},{11,L"First tab"}};
+    Require(SUCCEEDED(api.syncTabs(host,confirmed,2,11,&selected)), "Firefox confirms move to end");
+    Require(view.TabItems().GetAt(1) == first && first.RenderTransform().as<Media::TranslateTransform>().X() == 0,
+            "confirmed order replaces the temporary offset without a settle animation");
 }
 
 // Detach-to-new-window. Releasing well outside every open pane's own strip
@@ -1573,7 +1672,7 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host) {
 // redesign) means release resolves as "no pane's strip is under the
 // cursor" -- CommitDetach queues strip-detach at the real release point,
 // same as before.
-static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host) {
+static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
@@ -1648,7 +1747,12 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host) {
     send(MOUSEEVENTF_LEFTUP);
     settle(200);
     puts("Detach gesture completed without crashing");
-    auto detachEvent = NextRequest(api, host, 5, L"strip-detach").GetNamedObject(L"action");
+    Require(tab.Opacity() == 0, "detach release keeps the real source tab hidden");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,1,55,&selected)), "old source snapshot during detach");
+    Require(tab.Opacity() == 0, "a departing last tab is not mistaken for a confirmed move to end");
+    auto detachEvent = NextRequest(api, host, 5, L"strip-detach",40,reject ? 2 : 1).GetNamedObject(L"action");
+    Require(tab.Opacity() == (reject ? 1 : 0), "detach outcome restores rejected tabs but preserves accepted handoff");
+    Require(SUCCEEDED(api.syncTabs(host,nullptr,0,0,&selected)), "source removal confirms detach");
     Require(detachEvent.Size() && detachEvent.GetNamedNumber(L"id") == 55,
             "dragging a tab outside every open window's bounds queues a validated detach request");
     Require(detachEvent.GetNamedNumber(L"screenY") > double(hostRect.bottom),
@@ -1661,7 +1765,7 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host) {
 // redesign), precisely so a drop landing on a DIFFERENT window's
 // strip resolves there. Same real-pointer-gesture technique as
 // CheckTabStripDrag above.
-enum class AdoptScenario { Drop, CloseTarget, CloseSource, ChangeThenClose, ChangeThenDrop, Offset };
+enum class AdoptScenario { Drop, RejectDrop, CloseAfterDrop, CloseSourceAfterDrop, CloseTarget, CloseSource, ChangeThenClose, ChangeThenDrop, Offset };
 
 static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWND host,
                                          AdoptScenario scenario = AdoptScenario::Drop, float sourceScale = 1, float targetScale = 1) {
@@ -1788,14 +1892,9 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     fprintf(stderr, "Adopt test: dragging from (%ld,%ld) toward (%ld,%ld)\n", sourceClient.x, sourceClient.y,
             destPoint.x, destPoint.y);
 
-    // Windows can deny programmatic foreground activation after the launching
-    // app loses its foreground grant. Activate our visible caption with input.
-    RECT hostBounds{};
-    Require(GetWindowRect(host, &hostBounds) != 0, "source caption bounds");
+    // Foreground the source before injecting the actual tab gesture.
     SetWindowPos(host, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    SetCursorPos(hostBounds.left + 100, hostBounds.top + 12);
-    send(MOUSEEVENTF_LEFTDOWN);
-    send(MOUSEEVENTF_LEFTUP);
+    SetForegroundWindow(host);
     settle();
     for (int attempt = 0; attempt < 30 && GetForegroundWindow() != host; ++attempt) {
         SetForegroundWindow(host);
@@ -1899,7 +1998,31 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     // The adopt is queued on the destination window's own endpoint, so it is
     // drained there -- this is also what proves the two endpoints' queues are
     // independent rather than one shared list.
-    auto adoptRequest = NextRequest(api, host2, 5, L"strip-adopt");
+    Require(sourceTab.Opacity() == 0, "foreign drop does not reveal the original source slot");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,1,33,&selected)), "old source snapshot during adoption");
+    Require(sourceTab.Opacity() == 0, "old source snapshot preserves pending departure");
+    if (!changeTarget && !scaled) {
+        Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() > 0,
+                "destination gap survives release until adoption is published");
+        Require(SUCCEEDED(api.syncTabs(host2,tabs2,targetCount,44,&selected2)), "old destination snapshot during adoption");
+        Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() > 0,
+                "old destination snapshot does not close the pending gap");
+    }
+    if (scenario == AdoptScenario::CloseAfterDrop) {
+        Require(SUCCEEDED(api.destroy(host2)), "destination closes before adoption outcome");
+        Require(sourceTab.Opacity() == 1, "closing pending destination restores source tab");
+        DestroyWindow(host2);
+        return;
+    }
+    if (scenario == AdoptScenario::CloseSourceAfterDrop) {
+        Require(SUCCEEDED(api.destroy(host)), "source closes before adoption outcome");
+        Require(NextRequest(api,host2,5,L"strip-adopt",40,2).Size(), "pending outcome survives source teardown");
+        Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() == 0, "failed adoption clears gap after source teardown");
+        Require(SUCCEEDED(api.destroy(host2)), "destroy pending target");
+        DestroyWindow(host2);
+        return;
+    }
+    auto adoptRequest = NextRequest(api, host2, 5, L"strip-adopt",40,scenario == AdoptScenario::RejectDrop ? 2 : 1);
     Require(adoptRequest.Size(), "adopt reaches the destination window's request queue");
     Require(adoptRequest.GetNamedNumber(L"tab") == 0,
             "an incoming adopt names no tab in the destination window's own id space");
@@ -1910,6 +2033,16 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     if (scaled) Require(adoptEvent.GetNamedNumber(L"index") == 1, "scaled drop resolves the UIA-targeted second tab gap");
     if (scenario == AdoptScenario::ChangeThenDrop)
         Require(adoptEvent.GetNamedNumber(L"index") == 0, "drop uses the refreshed destination insertion index");
+    if (scenario == AdoptScenario::RejectDrop) {
+        Require(sourceTab.Opacity() == 1, "rejected adoption restores source visibility");
+        Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() == 0, "rejected adoption closes destination gap");
+    } else {
+        Require(sourceTab.Opacity() == 0, "accepted adoption waits for source removal");
+        WinUITab adopted[]{{77,L"Adopted tab"},{44,L"Other window's tab"}};
+        Require(SUCCEEDED(api.syncTabs(host2,adopted,2,77,&selected2)), "destination publishes adopted tab");
+        Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() == 0, "adopted layout replaces preview gap");
+        Require(SUCCEEDED(api.syncTabs(host,nullptr,0,0,&selected)), "source publishes departure");
+    }
     Require(SUCCEEDED(api.destroy(host2)), "destroy second host's pane");
     DestroyWindow(host2);
 }
@@ -1942,8 +2075,8 @@ int wmain(int argc, wchar_t** argv) {
                 }) != nullptr,
             "install teardown exception guard");
     Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 ||
-                                        wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--strip") == 0 ||
-                                        wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
+                                        wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 ||
+                                        wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
                                         wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0)),
             "DLL path and optional --inspect required");
     // Before the DLL loads, because the pane reads this once. Without it the
@@ -1987,10 +2120,15 @@ int wmain(int argc, wchar_t** argv) {
     Require(compositor != nullptr, "compositor sibling");
     Require(api.update(first, nullptr, TRUE) == E_INVALIDARG, "reject null geometry");
     Require(SUCCEEDED(api.update(first, &rect, TRUE)), "first island");
-    if (argc == 3 && wcscmp(argv[2], L"--strip") == 0) {
+    if (argc == 3 && (wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0)) {
+        if (wcscmp(argv[2], L"--strip") == 0) {
         CheckTabStrip(module, api, first);
         Require(SUCCEEDED(api.destroy(first)), "destroy strip before host");
         Require(!GetPropW(first, WINUI_PANE_SYSTEM_CAPTION_PROPERTY), "destroy releases native caption ownership");
+        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "recreate island for inline group checks");
+        }
+        CheckInlineGroups(module, api, first);
+        Require(SUCCEEDED(api.destroy(first)), "destroy inline groups before host");
         DestroyWindow(first);
         winrt::clear_factory_cache();
         Require(SUCCEEDED(api.shutdown()), "strip clean shutdown");
@@ -1998,7 +2136,7 @@ int wmain(int argc, wchar_t** argv) {
         puts("CHECKS PASSED: TabView layout, stable IDs, selection, menus, theme, hide/show, teardown");
         return 0;
     }
-    if (argc == 3 && (wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
+    if (argc == 3 && (wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
                       wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0)) {
         auto dragTicks = [&] {
             auto counts = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
@@ -2008,7 +2146,17 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(counts(L"dragTick", &value)), "read drag tick count");
             return value;
         };
-        if (wcscmp(argv[2], L"--drag-scale") == 0) {
+        if (wcscmp(argv[2], L"--transfers") == 0) {
+            CheckTabStripDetach(module, api, first);
+            CheckTabStripDetach(module, api, first, true);
+            CheckTabStripCrossWindowAdopt(module, api, first);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::RejectDrop);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseAfterDrop);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseSourceAfterDrop);
+        } else if (wcscmp(argv[2], L"--reorder") == 0) {
+            CheckTabStripDrag(module, api, first);
+            CheckTabStripDrag(module, api, first, true);
+        } else if (wcscmp(argv[2], L"--drag-scale") == 0) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.25f, 1.5f);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.5f, 2.f);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 2.f, 1.25f);
@@ -2018,6 +2166,7 @@ int wmain(int argc, wchar_t** argv) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseTarget);
         } else if (wcscmp(argv[2], L"--drag-change") == 0) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::ChangeThenClose);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::ChangeThenDrop);
         } else {
             CheckTabStripDrag(module, api, first);
             CheckTabStripDetach(module, api, first);
