@@ -66,6 +66,8 @@ struct NativeTabStrip {
         hstring status;
         hstring imagePixels;
         uint32_t imageWidth{}, imageHeight{};
+        hstring containerName;
+        uint32_t containerColor{};
     };
     std::map<uint32_t, Presentation> presentation;
     TabGroupsButton groupsButton;
@@ -194,6 +196,7 @@ struct NativeTabStrip {
         view.Loaded([this, alive](auto const&, auto const&) {
             if (alive.expired()) return;
             if (auto listView = FindTabListView(view)) listView.ItemContainerTransitions(Media::Animation::TransitionCollection{});
+            if (auto button = FindAddButton(view)) AttachAddMenu(button);
         });
     }
 
@@ -205,7 +208,52 @@ struct NativeTabStrip {
             if (auto found = FindTabListView(Media::VisualTreeHelper::GetChild(node, i))) return found;
         return nullptr;
     }
+    static Controls::Button FindAddButton(DependencyObject const& node) {
+        if (auto button = node.try_as<Controls::Button>(); button && button.Name() == L"AddButton") return button;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto found = FindAddButton(Media::VisualTreeHelper::GetChild(node, i))) return found;
+        return nullptr;
+    }
+    void AttachAddMenu(Controls::Button const& button) {
+        Automation::AutomationProperties::SetAutomationId(button, L"FirefoxWinUIStripNewTab");
+        Controls::MenuFlyout flyout;
+        flyout.Items().Append(NativeTabMenu::Placeholder());
+        auto alive = std::weak_ptr<int>(lifetime);
+        flyout.Opening([this, alive, weak = make_weak(flyout)](auto const&, auto const&) {
+            if (!alive.expired()) menu.Open(weak.get(), activeTabId, L"new-tab");
+        });
+        flyout.Opened([this, alive, weak = make_weak(flyout)](auto const&, auto const&) {
+            if (!alive.expired() && weak.get() == menu.active) menu.FocusFirst();
+        });
+        flyout.Closed([this, alive, weak = make_weak(flyout), target = make_weak(button)](auto const&, auto const&) {
+            if (alive.expired()) return;
+            if (weak.get() == menu.active) menu.Dismiss();
+            if (auto button = target.get(); button && button.ContextFlyout() == weak.get()) AttachAddMenu(button);
+        });
+        button.ContextFlyout(flyout);
+    }
     ~NativeTabStrip() { lifetime.reset(); }
+
+    Controls::MenuFlyout barMenu{nullptr};
+    void ShowBarMenu(Windows::Foundation::Point position) {
+        if (barMenu) barMenu.Hide();
+        barMenu = Controls::MenuFlyout();
+        barMenu.Items().Append(NativeTabMenu::Placeholder());
+        auto alive = std::weak_ptr<int>(lifetime);
+        auto weak = make_weak(barMenu);
+        barMenu.Opening([this, alive, weak](auto const&, auto const&) {
+            if (!alive.expired()) menu.Open(weak.get(), activeTabId, L"tab-bar");
+        });
+        barMenu.Opened([this, alive, weak](auto const&, auto const&) {
+            if (!alive.expired() && weak.get() == menu.active) menu.FocusFirst();
+        });
+        barMenu.Closed([this, alive, weak](auto const&, auto const&) {
+            if (!alive.expired() && weak.get() == menu.active) menu.Dismiss();
+        });
+        Controls::Primitives::FlyoutShowOptions options;
+        options.Position(position);
+        barMenu.ShowAt(root, options);
+    }
 
     // Queues one validated reorder request naming `tab`'s real neighbor: the
     // row currently after it in TabItems(), or 0 ("move to end") if it's
@@ -769,6 +817,11 @@ struct NativeTabStrip {
             auto flags = existing ? entry.GetNamedNumber(L"flags", old->second.flags) : entry.GetNamedNumber(L"flags");
             auto detail = existing ? entry.GetNamedString(L"detail", old->second.detail) : entry.GetNamedString(L"detail");
             auto status = entry.GetNamedString(L"status", existing ? old->second.status : L"");
+            auto containerName = entry.GetNamedString(L"containerName", existing ? old->second.containerName : L"");
+            auto containerColor = entry.GetNamedNumber(L"containerColor", existing ? old->second.containerColor : 0);
+            if (containerName.size() > NativeJson::kMaxShortLabel || !std::isfinite(containerColor) ||
+                containerColor < 0 || containerColor > UINT32_MAX || std::floor(containerColor) != containerColor)
+                throw hresult_invalid_argument();
             if (!std::isfinite(flags) || flags < 0 || flags > 15 || std::floor(flags) != flags ||
                 detail.size() > NativeJson::kMaxDetailText || status.size() > NativeJson::kMaxDetailText)
                 throw hresult_invalid_argument();
@@ -787,7 +840,8 @@ struct NativeTabStrip {
                 imageWidth = uint32_t(image.GetNamedNumber(L"width"));
                 imageHeight = uint32_t(image.GetNamedNumber(L"height"));
             }
-            if (!next.emplace(id, Presentation{detail, uint32_t(flags), status, imagePixels, imageWidth, imageHeight})
+            if (!next.emplace(id, Presentation{detail, uint32_t(flags), status, imagePixels, imageWidth, imageHeight,
+                                               containerName, uint32_t(containerColor)})
                      .second)
                 throw hresult_invalid_argument();
             changes.push_back({id, imageWidth * imageHeight, false,
@@ -908,6 +962,14 @@ struct NativeTabStrip {
         auto audioBox = header.Children().GetAt(3).as<Controls::Viewbox>();
         auto audio = audioBox.Child().as<Controls::SymbolIcon>();
         auto meta = presentation.count(id) ? presentation.at(id) : Presentation{};
+        auto container = header.Children().GetAt(4).as<Controls::Border>();
+        container.Visibility(meta.containerName.empty() ? Visibility::Collapsed : Visibility::Visible);
+        if (unbox_value_or<uint32_t>(container.Tag(), 0) != meta.containerColor) {
+            auto color = meta.containerColor;
+            container.Background(Media::SolidColorBrush(Windows::UI::Color{
+                255, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color)}));
+            container.Tag(box_value(color));
+        }
         // Compare against the value last applied to this Image, not against
         // any prior Presentation -- the map is replaced wholesale on every
         // Publish(), so it cannot itself remember what is currently shown.
@@ -934,8 +996,13 @@ struct NativeTabStrip {
         audio.Symbol(meta.flags & 4 ? Controls::Symbol::Mute : Controls::Symbol::Volume);
         audioBox.Visibility(meta.flags & 12 ? Visibility::Visible : Visibility::Collapsed);
         Controls::ToolTipService::SetToolTip(row, box_value(meta.detail.empty() ? title : title + L"\n" + meta.detail));
+        if (!meta.containerName.empty())
+            Controls::ToolTipService::SetToolTip(row, box_value(title + L"\n" + meta.containerName +
+                (meta.detail.empty() ? L"" : L"\n" + meta.detail)));
         Automation::AutomationProperties::SetHelpText(
             row, meta.detail + (meta.detail.empty() || meta.status.empty() ? L"" : L" ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ") + meta.status);
+        if (!meta.containerName.empty()) Automation::AutomationProperties::SetHelpText(
+            row, meta.containerName + L" " + meta.detail + L" " + meta.status);
     }
 
     void AttachMenu(Controls::TabViewItem const& row, uint32_t id) {
@@ -1083,7 +1150,7 @@ struct NativeTabStrip {
                     row.HorizontalContentAlignment(HorizontalAlignment::Stretch);
                     row.RenderTransform(Media::TranslateTransform{});
                     row.Header(Markup::XamlReader::Load(
-                        LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid Width="16" Height="16"><Image Stretch="Uniform" AutomationProperties.AccessibilityView="Raw"/><ProgressRing Width="16" Height="16" IsActive="False" AutomationProperties.AccessibilityView="Raw"/></Grid><Viewbox Grid.Column="1" Width="16" Height="16"><SymbolIcon Symbol="Pin"/></Viewbox><StackPanel Grid.Column="2" MaxWidth="220" VerticalAlignment="Center"><TextBlock TextTrimming="CharacterEllipsis"/><TextBlock FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/></StackPanel><Viewbox Grid.Column="3" Width="16" Height="16"><SymbolIcon Symbol="Volume"/></Viewbox></Grid>)"));
+                        LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid Width="16" Height="16"><Image Stretch="Uniform" AutomationProperties.AccessibilityView="Raw"/><ProgressRing Width="16" Height="16" IsActive="False" AutomationProperties.AccessibilityView="Raw"/></Grid><Viewbox Grid.Column="1" Width="16" Height="16"><SymbolIcon Symbol="Pin"/></Viewbox><StackPanel Grid.Column="2" MaxWidth="220" VerticalAlignment="Center"><TextBlock TextTrimming="CharacterEllipsis"/><TextBlock FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/></StackPanel><Viewbox Grid.Column="3" Width="16" Height="16"><SymbolIcon Symbol="Volume"/></Viewbox><Border Grid.Column="4" Width="8" Height="8" CornerRadius="4" VerticalAlignment="Center" Visibility="Collapsed" Background="{ThemeResource TextFillColorPrimaryBrush}" AutomationProperties.AccessibilityView="Raw"/></Grid>)"));
                     Automation::AutomationProperties::SetAutomationId(row, L"FirefoxWinUITab-" + to_hstring(id));
                     auto alive = std::weak_ptr<int>(lifetime);
                     row.AddHandler(

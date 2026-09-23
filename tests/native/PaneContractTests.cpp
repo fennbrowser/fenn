@@ -434,13 +434,19 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
                         current.GetNamedObject(L"state").GetNamedNumber(L"revision"),
                 "opening retains target and published revision");
         if (!describe) return;
-        MenuPublish(api, hwnd,
-                     MenuDescription(opened.GetNamedNumber(L"session"), 72, opened.GetNamedNumber(L"revision"), nested)
-                         .Stringify()
-                         .c_str());
+        auto description = MenuDescription(opened.GetNamedNumber(L"session"), 72, opened.GetNamedNumber(L"revision"), nested);
+        if (!nested) description.GetNamedObject(L"menu").GetNamedArray(L"items").GetObjectAt(1).SetNamedValue(
+            L"checked", Value::CreateBooleanValue(true));
+        if (!nested) description.GetNamedObject(L"menu").GetNamedArray(L"items").GetObjectAt(0).SetNamedValue(
+            L"image", Object::Parse(LR"({"width":2,"height":2,"pixels":"0000ffff00000000000000000000ffff"})"));
+        MenuPublish(api, hwnd, description.Stringify().c_str());
         settle();
         Require(menu.IsOpen() && menu.Items().Size() == count && menu.Items().GetAt(count - 1).ActualWidth() > 0,
                 "the authoritative description replaces the pending state in place");
+        Require(nested || bool(menu.Items().GetAt(0).as<Controls::MenuFlyoutItem>().Icon().try_as<Controls::ImageIcon>().Source()),
+                "menu uses a decoded image icon, never a font fallback glyph");
+        Require(nested || menu.Items().GetAt(1).as<Controls::ToggleMenuFlyoutItem>().IsChecked(),
+                "authoritative checked state is rendered by a native toggle menu item");
     };
     Controls::MenuFlyout retained{nullptr};
     Controls::MenuFlyoutItemBase retainedItem{nullptr};
@@ -1348,14 +1354,21 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
                          .Children().GetAt(0).as<Controls::Image>();
     auto retainedImage = firstIcon.Source();
     auto retainedFlyout = groups.Flyout();
-    auto metadataDelta = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"rows":[{"id":11,"flags":3}],"removed":[]}})";
+    auto metadataDelta = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"rows":[{"id":11,"flags":3,"containerName":"Personal","containerColor":4281839103}],"removed":[]}})";
     MenuPublish(api, host, metadataDelta);
     Require(firstIcon.Source() == retainedImage && retainedImage, "an omitted image preserves the decoded source");
     Require(groups.Flyout() == retainedFlyout, "a row delta preserves group controls");
     Require(first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>()
                 .Children().GetAt(1).as<Controls::ProgressRing>().IsActive(), "metadata delta applies without full Sync");
     MenuPublish(api, host, metadataDelta);  // Identical retry is harmless.
+    auto container = first.Header().as<Controls::Grid>().Children().GetAt(4).as<Controls::Border>();
+    Require(container.Visibility() == Visibility::Visible &&
+                container.Background().as<Media::SolidColorBrush>().Color() == winrt::Windows::UI::Color{255, 55, 173, 255},
+            "container delta paints the authoritative Firefox color");
+    Require(std::wstring_view(Automation::AutomationProperties::GetHelpText(first)).find(L"Personal") != std::wstring_view::npos,
+            "container name is accessible independently of color");
     for (auto invalid : {
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"containerColor":-1}],"removed":[]}})",
         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":"bad"}],"removed":[]}})",
         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"detail":null}],"removed":[]}})",
         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":4,"rows":[],"removed":[]}})",
@@ -1367,7 +1380,8 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         Require(first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>()
                     .Children().GetAt(1).as<Controls::ProgressRing>().IsActive(), "rejected delta preserves prior flags");
     }
-    MenuPublish(api, host, LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"image":null}],"removed":[]}})");
+    MenuPublish(api, host, LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"image":null,"containerName":"","containerColor":0}],"removed":[]}})");
+    Require(container.Visibility() == Visibility::Collapsed, "cleared container removes its indicator in place");
     Require(!firstIcon.Source(), "explicit null clears a retained image");
     for (auto theme : {ElementTheme::Light, ElementTheme::Dark, ElementTheme::Light}) {
         root.RequestedTheme(theme);

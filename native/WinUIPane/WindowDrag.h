@@ -177,6 +177,27 @@ struct NativeWindowDrag {
                     }
                     if (msg == WM_NCMBUTTONUP) { self->strip->close(tab); return 0; }
                 }
+                if ((msg == WM_NCRBUTTONUP || msg == WM_CONTEXTMENU) && self->visible &&
+                    self->SystemButtonAt(ScreenPoint(l)) == HTNOWHERE) {
+                    POINT point = ScreenPoint(l);
+                    ScreenToClient(self->owner, &point);
+                    const bool excluded = std::any_of(self->pass.begin(), self->pass.end(),
+                        [&](auto rect) { return Contains(rect, point); });
+                    const bool caption = std::any_of(self->caption.begin(), self->caption.end(),
+                        [&](auto rect) { return Contains(rect, point); });
+                    if (caption && !excluded) {
+                        auto bounds = self->Bounds(self->strip->root);
+                        auto scale = self->strip->root.XamlRoot().RasterizationScale();
+                        Windows::Foundation::Point position{float((point.x - bounds.X) / scale),
+                                                            float((point.y - bounds.Y) / scale)};
+                        auto weak = std::weak_ptr<int>(self->lifetime);
+                        self->strip->root.DispatcherQueue().TryEnqueue([self, weak, position] {
+                            if (weak.expired() || !self->visible) return;
+                            try { self->strip->ShowBarMenu(position); } catch (...) {}
+                        });
+                        return 0;
+                    }
+                }
             }
             if ((msg == WM_CANCELMODE && !self->endingForMerge) || (msg == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE)) self->cancelled = true;
             if (msg == WM_CAPTURECHANGED && self->inMove && l && HWND(l) != hwnd) self->cancelled = true;

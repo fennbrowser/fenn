@@ -24,6 +24,9 @@ struct NativeTabMenu {
     struct Entry {
         winrt::hstring kind, id, label, accessKey;
         bool enabled{};
+        bool checkable{}, checked{};
+        uint32_t color{};
+        Object image{nullptr};
         std::vector<Entry> children;
     };
     Microsoft::UI::Xaml::Controls::MenuFlyout active{nullptr};
@@ -42,6 +45,7 @@ struct NativeTabMenu {
     // Set while a menu is open with the pending row shown and its description
     // still outstanding. Nothing in that state is actionable.
     bool awaitingDescription{};
+    winrt::hstring surface{L"tab"};
     // Wired by the owning pane to the bounded request queue in the Rust shell
     // core. Menu transitions are ordered and are never coalesced.
     std::function<void(uint32_t tabId, uint32_t contextRevision, winrt::hstring const& action)> dispatch;
@@ -58,7 +62,9 @@ struct NativeTabMenu {
     }
 
     static std::vector<Entry> Parse(Array const& entries, std::set<winrt::hstring>& ids, uint32_t& count,
-                                    uint32_t depth = 0) {
+                                    uint32_t depth = 0, size_t* imageTotal = nullptr) {
+        size_t localTotal = 0;
+        if (!imageTotal) imageTotal = &localTotal;
         if (depth > 4 || entries.Size() > 128) throw winrt::hresult_invalid_argument();
         std::vector<Entry> result;
         for (auto value : entries) {
@@ -70,6 +76,15 @@ struct NativeTabMenu {
                 e.label = o.GetNamedString(L"label");
                 e.accessKey = o.GetNamedString(L"accessKey", L"");
                 e.enabled = o.GetNamedBoolean(L"enabled");
+                e.checkable = o.HasKey(L"checked");
+                e.checked = o.GetNamedBoolean(L"checked", false);
+                auto color = o.GetNamedNumber(L"color", 0);
+                if (!std::isfinite(color) || color < 0 || color > UINT32_MAX || std::floor(color) != color)
+                    throw winrt::hresult_invalid_argument();
+                e.color = uint32_t(color);
+                NativeJson::ValidateImage(o, *imageTotal, NativeJson::ImageLimits{32, 128 * 1024});
+                if (o.HasKey(L"image") && o.GetNamedValue(L"image").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null)
+                    e.image = o.GetNamedObject(L"image");
                 if (e.label.empty() || e.label.size() > NativeJson::kMaxShortLabel || e.accessKey.size() > 16)
                     throw winrt::hresult_invalid_argument();
                 if (e.kind == L"command") {
@@ -77,7 +92,7 @@ struct NativeTabMenu {
                     if (e.id.empty() || e.id.size() > 64 || !ids.insert(e.id).second)
                         throw winrt::hresult_invalid_argument();
                 } else if (e.kind == L"submenu") {
-                    e.children = Parse(o.GetNamedArray(L"items"), ids, count, depth + 1);
+                    e.children = Parse(o.GetNamedArray(L"items"), ids, count, depth + 1, imageTotal);
                     if (e.children.empty()) throw winrt::hresult_invalid_argument();
                 } else
                     throw winrt::hresult_invalid_argument();
@@ -94,6 +109,7 @@ struct NativeTabMenu {
         event.SetNamedValue(L"tab", Value::CreateNumberValue(tab));
         event.SetNamedValue(L"revision", Value::CreateNumberValue(revision));
         event.SetNamedValue(L"id", Value::CreateStringValue(id));
+        event.SetNamedValue(L"surface", Value::CreateStringValue(surface));
         dispatch(tab, revision, event.Stringify());
     }
     // `revoke` marks the session as already invalid on the Firefox side. There
@@ -147,7 +163,17 @@ struct NativeTabMenu {
                 continue;
             }
             MenuFlyoutItem item;
+            if (e.checkable) {
+                ToggleMenuFlyoutItem toggle;
+                toggle.IsChecked(e.checked);
+                item = toggle;
+            }
             item.Text(e.label);
+            if (e.image) {
+                ImageIcon icon;
+                icon.Source(NativeJson::DecodeImage(e.image));
+                item.Icon(icon);
+            }
             item.AccessKey(e.accessKey);
             item.IsEnabled(e.enabled);
             if (parentEnabled && e.enabled) modelIds.insert(e.id);
@@ -186,7 +212,8 @@ struct NativeTabMenu {
         rendered.Append(Placeholder());
         Replace(rendered);
     }
-    void Open(Microsoft::UI::Xaml::Controls::MenuFlyout const& menu, uint32_t id) {
+    void Open(Microsoft::UI::Xaml::Controls::MenuFlyout const& menu, uint32_t id,
+              winrt::hstring const& requestedSurface = L"tab") {
         Dismiss();
         if (!id || nextSession == UINT32_MAX) return;
         if (!publishedTabs.count(id)) {
@@ -194,6 +221,7 @@ struct NativeTabMenu {
             return;
         }
         active = menu;
+        surface = requestedSurface;
         tab = id;
         session = ++nextSession;
         revision = stateRevision;

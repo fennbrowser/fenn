@@ -913,7 +913,7 @@ index 783c67d397..bc31b137ba 100644
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
 diff --git a/browser/components/tabbrowser/content/tab-context-menu.js b/browser/components/tabbrowser/content/tab-context-menu.js
-index 694225ca00..44b4e2085c 100644
+index 694225ca00..3aaee3d5ba 100644
 --- a/browser/components/tabbrowser/content/tab-context-menu.js
 +++ b/browser/components/tabbrowser/content/tab-context-menu.js
 @@ -5,6 +5,116 @@
@@ -1062,7 +1062,21 @@ index 694225ca00..44b4e2085c 100644
        let newTab = SessionStore.duplicateTab(window, tab);
        if (tab.group) {
          Glean.tabgroup.tabInteractions.duplicate.add();
-@@ -1239,15 +1352,15 @@ var TabContextMenu = {
+@@ -1175,8 +1288,12 @@ var TabContextMenu = {
+     let userContextId = parseInt(
+       event.target.getAttribute("data-usercontextid")
+     );
++    this.reopenTabsInContainer(Array.from(this.contextTabs), userContextId);
++  },
+ 
+-    for (let tab of this.contextTabs) {
++  // Shared by the DOM and native menus; preserve principals and selection.
++  reopenTabsInContainer(contextTabs, userContextId) {
++    for (let tab of contextTabs) {
+       if (tab.getAttribute("usercontextid") == userContextId) {
+         continue;
+       }
+@@ -1239,15 +1356,15 @@ var TabContextMenu = {
      }
    },
  
@@ -1081,7 +1095,7 @@ index 694225ca00..44b4e2085c 100644
          animate: true,
          metricsContext: gBrowser.TabMetrics.userTriggeredContext(
            gBrowser.TabMetrics.METRIC_SOURCE.TAB_MENU
-@@ -1256,8 +1369,8 @@ var TabContextMenu = {
+@@ -1256,8 +1373,8 @@ var TabContextMenu = {
      }
    },
  
@@ -2563,10 +2577,10 @@ index 0000000000..fa1b4c7e07
 +}
 diff --git a/browser/base/content/WinUITabMenuSession.sys.mjs b/browser/base/content/WinUITabMenuSession.sys.mjs
 new file mode 100644
-index 0000000000..82113c7476
+index 0000000000..961c3b61a4
 --- /dev/null
 +++ b/browser/base/content/WinUITabMenuSession.sys.mjs
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,178 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2663,7 +2677,7 @@ index 0000000000..82113c7476
 +  // is described here, never the whole window.
 +  current(id, record) {
 +    return this.structureCurrent(id, record) &&
-+      JSON.stringify(this.describe(record.target)) === record.fingerprint;
++      JSON.stringify(this.describe(record.target, record.surface)) === record.fingerprint;
 +  }
 +
 +  // Re-check an open menu against current browser state. Called when something
@@ -2696,6 +2710,7 @@ index 0000000000..82113c7476
 +        event.session > 0xffffffff || !Number.isSafeInteger(event.tab) ||
 +        event.tab < 1 || event.tab > 0xffffffff) return false;
 +    if (event.kind === "open") {
++      if (event.surface !== undefined && !["tab", "new-tab", "tab-bar"].includes(event.surface)) return false;
 +      if (event.session <= this.lastSession) return false;
 +      this.lastSession = event.session;
 +      const record = this.tabs.get(event.tab);
@@ -2706,10 +2721,11 @@ index 0000000000..82113c7476
 +      }
 +      // The one description this window produces, for the one tab whose menu is
 +      // opening. Nothing else is described, now or on a timer.
-+      const description = this.describe(record.target);
++      const surface = event.surface || "tab";
++      const description = this.describe(record.target, surface);
 +      this.active = { session: event.session, tab: event.tab,
 +        revision: this.revision,
-+        record: { target: record.target, items: description.items,
++        record: { target: record.target, surface, items: description.items,
 +          fingerprint: JSON.stringify(description) } };
 +      return true;
 +    }
@@ -2734,7 +2750,7 @@ index 0000000000..82113c7476
 +    if (!find(active.record.items)) return false;
 +    this.active = null;
 +    try {
-+      this.execute(active.record.target, event.id);
++      this.execute(active.record.target, event.id, active.record.surface);
 +    } finally {
 +      // Browser commands may spin a modal loop without changing tab state
 +      // (notably a cancelled close). Revoke input queued during that command.
@@ -3707,10 +3723,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..3aeef0e15d
+index 0000000000..8aa127e92f
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1303 @@
+@@ -0,0 +1,1504 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3916,6 +3932,10 @@ index 0000000000..3aeef0e15d
 +    // pane posts it from its own queue; nothing here polls for them.
 +    Services.obs.addObserver(this, "winui-pane-drain");
 +    Services.obs.addObserver(this, "intl:app-locales-changed");
++    for (const topic of ["created", "updated", "deleted", "reordered", "service-load-finished"])
++      Services.obs.addObserver(this, `contextual-identity-${topic}`);
++    Services.prefs.addObserver("privacy.userContext.enabled", this);
++    Services.prefs.addObserver("browser.nova.enabled", this);
 +    Services.prefs.addObserver(this.pref, this);
 +    Services.prefs.addObserver(this.stripPref, this);
 +    Services.prefs.addObserver(this.stripHeightPref, this);
@@ -4039,7 +4059,16 @@ index 0000000000..3aeef0e15d
 +      // Answer the opening with this tab's authoritative description, or with
 +      // the revocation the session recorded when it refused.
 +      const publication = accepted ? session.menuPublication() : null;
-+      this.publishMenu(publication ?? session.snapshot());
++      if (publication) {
++        // Keep the pending row until Gecko has rasterized the packaged icons.
++        // The session is already open, so dismiss/retarget events still revoke
++        // this asynchronous answer. Image pixels never enter semantic fingerprints.
++        this.prepareContainerMenu(publication).then(answer => {
++          if (this.tabMenuSession !== session || session.active?.session !== action.session) return;
++          if (session.revalidateActive()) this.publishMenu(session.snapshot());
++          else this.publishMenu(answer);
++        }).catch(error => console.error("Native container icons failed", error));
++      } else this.publishMenu(session.snapshot());
 +    } else if (!accepted || action.kind === "activate") {
 +      this.publishMenu(session.snapshot());
 +    }
@@ -4302,10 +4331,12 @@ index 0000000000..3aeef0e15d
 +      this.localization();
 +      this.tabMenuSession = new WinUITabMenuSession({
 +        resolveTab: id => this.resolveStripTab(id),
-+        describe: tab => this.describeTabMenu(tab),
++        describe: (tab, surface) => surface === "tab-bar" ? this.describeTabBarMenu() :
++          surface === "new-tab" ? this.describeContainerMenu(null) : this.describeTabMenu(tab),
 +        context: () => ({ selected: this.tabIds.get(gBrowser.selectedTab) || 0,
 +          selection: Array.from(gBrowser.selectedTabs, t => this.tabIds.get(t) || 0) }),
-+        execute: (tab, id) => this.runTabCommand(tab, id),
++        execute: (tab, id, surface) => surface === "tab-bar" ? this.runTabBarCommand(id) :
++          this.runTabCommand(surface === "new-tab" ? null : tab, id),
 +        select: (active, tabs, event) => {
 +          if (gDialogBox.isOpen) return;
 +          this.processingAction = true;
@@ -4506,7 +4537,7 @@ index 0000000000..3aeef0e15d
 +  localization() {
 +    if (!this.tabMenuL10n) {
 +      this.tabMenuL10n = new Localization(
-+        ["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl"], true);
++        ["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl", "browser/toolbarContextMenu.ftl"], true);
 +    }
 +    return this.tabMenuL10n;
 +  },
@@ -4574,7 +4605,10 @@ index 0000000000..3aeef0e15d
 +        if (imageChars + cost > maxImageChars) image = null;
 +        else imageChars += cost;
 +      }
-+      return { id: this.tabIds.get(tab), detail:detail.slice(0, 2048), status:status.slice(0, 2048), flags, image };
++      const container = ContextualIdentityService.getPublicIdentityFromId(tab.userContextId);
++      return { id: this.tabIds.get(tab), detail:detail.slice(0, 2048), status:status.slice(0, 2048), flags, image,
++        containerName: container ? ContextualIdentityService.getUserContextLabel(tab.userContextId).slice(0, 1024) : "",
++        containerColor: container ? this.containerColor(container) : 0 };
 +    });
 +    // Accepted closes can retain their DOM tab during the closing animation.
 +    // They are no longer browser tabs that could be dragged or adopted.
@@ -4610,7 +4644,179 @@ index 0000000000..3aeef0e15d
 +      else result.items = item.items.map(localize);
 +      return result;
 +    };
-+    return { items: TabContextMenu.describeCoreCommands(tab).map(localize) };
++    const items = TabContextMenu.describeCoreCommands(tab).map(localize);
++    if (this.containersAvailable()) {
++      const [message] = this.localization().formatMessagesSync([
++        { id: "tab-context-open-in-new-container-tab2" }]);
++      const attributes = Object.fromEntries(message.attributes.map(a => [a.name, a.value]));
++      const index = items.findIndex(item => item.id === "select-all");
++      items.splice(index < 0 ? items.length : index, 0, { kind: "submenu",
++        label: attributes.label, accessKey: attributes.accesskey || "",
++        enabled: !gDialogBox.isOpen, items: this.describeContainerMenu(tab).items });
++    }
++    return { items };
++  },
++
++  containersAvailable() {
++    return Services.prefs.getBoolPref("privacy.userContext.enabled", false) &&
++      !PrivateBrowsingUtils.isWindowPrivate(window);
++  },
++
++  describeTabBarMenu() {
++    const enabled = !gDialogBox.isOpen;
++    const closed = SessionStore.getLastClosedTabCount(window);
++    const multi = gBrowser.selectedTabs.length > 1;
++    const command = (id, resource, available = true, extra = {}) => {
++      const [message] = this.localization().formatMessagesSync([{id: resource, args: {tabCount: closed}}]);
++      const attrs = Object.fromEntries(message.attributes.map(a => [a.name, a.value]));
++      return {kind: "command", id, label: attrs.label, accessKey: attrs.accesskey || "",
++        enabled: enabled && available, ...extra};
++    };
++    const separator = () => ({kind: "separator"});
++    const items = [command("bar-new", "toolbar-context-menu-new-tab"), separator(),
++      command("bar-reload", multi ? "toolbar-context-menu-reload-selected-tabs" : "toolbar-context-menu-reload-selected-tab"),
++      command("bar-bookmark", multi ? "toolbar-context-menu-bookmark-selected-tabs" : "toolbar-context-menu-bookmark-selected-tab"),
++      command("bar-select-all", "toolbar-context-menu-select-all-tabs", !gBrowser.allTabsSelected()),
++      command("bar-restore", "toolbar-context-menu-reopen-closed-tabs", closed > 0), separator()];
++    const menubar = document.getElementById("toolbar-menubar");
++    if (menubar?.hasAttribute("toolbarname")) items.push({kind: "command", id: "bar-menubar",
++      label: menubar.getAttribute("toolbarname"), accessKey: menubar.getAttribute("accesskey") || "",
++      enabled, checked: !menubar.hasAttribute("autohide")});
++    const bookmarks = document.getElementById("PersonalToolbar");
++    if (bookmarks?.hasAttribute("toolbarname")) items.push({kind: "submenu",
++      label: bookmarks.getAttribute("toolbarname"), accessKey: bookmarks.getAttribute("accesskey") || "", enabled,
++      items: [["always", "always-show"], ["newtab", "on-new-tab"], ["never", "never-show"]].map(([value, suffix]) =>
++        command(`bar-bookmarks-${value}`, `toolbar-context-menu-bookmarks-toolbar-${suffix}-2`, true,
++          {checked: gBookmarksToolbarVisibility === value}))});
++    return {items};
++  },
++
++  runTabBarCommand(id) {
++    if (this.processingAction) return;
++    const find = items => items.some(item => item.enabled && (item.id === id || item.items && find(item.items)));
++    if (!find(this.describeTabBarMenu().items)) return;
++    this.processingAction = true;
++    try {
++      switch (id) {
++        case "bar-new": BrowserCommands.openTab(); break;
++        case "bar-reload": gBrowser.reloadMultiSelectedTabs(); break;
++        case "bar-bookmark": PlacesCommandHook.bookmarkTabs(Array.from(gBrowser.selectedTabs)); break;
++        case "bar-select-all": gBrowser.selectAllTabs(); break;
++        case "bar-restore": SessionWindowUI.undoCloseTab(window); break;
++        default: {
++          const toolbarId = id === "bar-menubar" ? "toolbar-menubar" : "PersonalToolbar";
++          const visible = id === "bar-menubar" ? document.getElementById(toolbarId).hasAttribute("autohide") :
++            id.slice("bar-bookmarks-".length);
++          if (toolbarId === "PersonalToolbar")
++            Services.prefs.setCharPref("browser.toolbars.bookmarks.visibility", visible);
++          CustomizableUI.setToolbarVisibility(toolbarId, visible);
++          BrowserUsageTelemetry.recordToolbarVisibility(toolbarId, visible, "toolbar-context-menu");
++        }
++      }
++    } finally { this.processingAction = false; }
++  },
++
++  containerColor(identity) {
++    const color = ContextualIdentityService.getContainerColorCode(identity.color);
++    return /^#[0-9a-f]{6}$/i.test(color) ? (0xff000000 + parseInt(color.slice(1), 16)) : 0;
++  },
++
++  describeContainerMenu(tab) {
++    const enabled = !gDialogBox.isOpen && (!tab || TabContextMenu.getCommandTabs(tab).every(t =>
++      t.isConnected && !t.closing && !t.hidden && !t._pendingPermitUnload && t.linkedBrowser));
++    const command = (id, label, color = 0) => ({ kind: "command", id, label: label.slice(0, 1024),
++      accessKey: "", enabled, color });
++    const label = id => ContextualIdentityService.formatContextLabel(id);
++    const items = [];
++    if (!tab || tab.userContextId) {
++      items.push(command("container:0", label("user-context-new-tab")));
++    }
++    if (!this.containersAvailable()) return { items };
++    if (items.length) items.push({ kind: "separator" });
++    for (const identity of ContextualIdentityService.getPublicIdentities()) {
++      if (tab?.userContextId === identity.userContextId) continue;
++      items.push(command(`container:${identity.userContextId}`,
++        ContextualIdentityService.getUserContextLabel(identity.userContextId), this.containerColor(identity)));
++      items.at(-1).containerIcon = identity.icon;
++      items.at(-1).containerColorName = identity.color;
++    }
++    items.push({ kind: "separator" },
++      command("container-add", label("user-context-add-container")),
++      command("container-manage", label("user-context-manage-containers")));
++    return { items };
++  },
++
++  async prepareContainerMenu(publication) {
++    const images = new Map();
++    const visit = async items => Promise.all(items.map(async item => {
++      if (item.items) return { ...item, items: await visit(item.items) };
++      if (!item.containerIcon) return item;
++      const url = ContextualIdentityService.getContainerIconURL(item.containerIcon);
++      if (!url) return item;
++      const key = `${url}:${item.containerColorName}`;
++      if (!images.has(key)) images.set(key, this.renderContainerMenuIcon(url, item.containerColorName));
++      return { ...item, image: await images.get(key) };
++    }));
++    return { ...publication, menu: { ...publication.menu, items: await visit(publication.menu.items) } };
++  },
++
++  async renderContainerMenuIcon(url, colorName) {
++    // Only ContextualIdentityService's packaged resource URLs reach this method.
++    // Gecko selects the SVG's Nova/Proton variant; native never loads a URL.
++    const image = new window.Image();
++    let probe;
++    try {
++      image.src = url;
++      await image.decode();
++      probe = document.createElementNS("http://www.w3.org/1999/xhtml", "span");
++      probe.className = `identity-color-${colorName}`;
++      probe.style.cssText = "position:fixed;visibility:hidden;color:var(--identity-fill-color,var(--identity-icon-color));";
++      document.documentElement.append(probe);
++      const color = window.getComputedStyle(probe).color;
++      const canvas = document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
++      canvas.width = canvas.height = 32;
++      const ctx = canvas.getContext("2d");
++      const nova = Services.prefs.getBoolPref("browser.nova.enabled", false);
++      ctx.drawImage(image, nova ? 4 : 0, nova ? 4 : 0, nova ? 24 : 32, nova ? 24 : 32);
++      ctx.globalCompositeOperation = "source-in";
++      ctx.fillStyle = color;
++      ctx.fillRect(0, 0, 32, 32);
++      if (nova) {
++        ctx.globalCompositeOperation = "destination-over";
++        ctx.globalAlpha = .15;
++        ctx.beginPath(); ctx.arc(16, 16, 16, 0, Math.PI * 2); ctx.fill();
++      }
++      const rgba = ctx.getImageData(0, 0, 32, 32).data;
++      let pixels = "";
++      for (let i = 0; i < rgba.length; i += 4) {
++        const a = rgba[i + 3];
++        for (const value of [Math.round(rgba[i + 2] * a / 255),
++          Math.round(rgba[i + 1] * a / 255), Math.round(rgba[i] * a / 255), a])
++          pixels += value.toString(16).padStart(2, "0");
++      }
++      return { width: 32, height: 32, pixels };
++    } catch (error) {
++      console.error("Native container icon decode failed", error);
++      return null;
++    } finally {
++      probe?.remove();
++      image.src = "";
++    }
++  },
++
++  runContainerCommand(tab, command) {
++    if (!this.describeContainerMenu(tab).items.some(item => item.id === command && item.enabled)) return;
++    const source = tab ? "tab_context_menu" : "new_tab_button";
++    if (command === "container-add") {
++      ContainerCreationPanel.open(window, source);
++    } else if (command === "container-manage") {
++      openPreferences("paneContainers", { urlParams: { entrypoint: source } });
++    } else {
++      const userContextId = Number(command.slice("container:".length));
++      if (tab) TabContextMenu.reopenTabsInContainer(TabContextMenu.getCommandTabs(tab), userContextId);
++      else openTrustedLinkIn(BROWSER_NEW_TAB_URL, "tab", {
++        userContextId, eventDetail: { containerSource: source } });
++    }
 +  },
 +
 +  // Single-tab commands, using the same browser operations as main-popupset.js.
@@ -4637,7 +4843,8 @@ index 0000000000..3aeef0e15d
 +    if (this.processingAction) return;
 +    this.processingAction = true;
 +    try {
-+      TabContextMenu.executeCoreCommand(tab, command);
++      if (command.startsWith("container")) this.runContainerCommand(tab, command);
++      else TabContextMenu.executeCoreCommand(tab, command);
 +    } finally {
 +      this.processingAction = false;
 +    }
@@ -4794,6 +5001,12 @@ index 0000000000..3aeef0e15d
 +  },
 +
 +  observe(subject, topic, data) {
++    if (topic.startsWith("contextual-identity-") || data === "privacy.userContext.enabled" ||
++        data === "browser.nova.enabled") {
++      this.stripDirty = this.contextDirty = true;
++      this.schedule();
++      return;
++    }
 +    if (topic === "winui-pane-drain") {
 +      // One wakeup, one drain. Other windows' endpoints are ignored.
 +      if (this.element && data === this.endpoint) this.drain();
@@ -4808,7 +5021,7 @@ index 0000000000..3aeef0e15d
 +      this.tabMenuLabelCache = null;
 +      if (this.tabMenuL10n) {
 +        this.tabMenuL10n = new Localization(
-+          ["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl"], true);
++          ["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl", "browser/toolbarContextMenu.ftl"], true);
 +      }
 +      if (this.tabMenuSession) this.tabMenuSession.forceUpdate = true;
 +      this.stripDirty = true;
@@ -4865,7 +5078,7 @@ index 0000000000..3aeef0e15d
 +      // actually read by describeStrip need metadata publication.
 +      const changed = event.detail?.changed;
 +      if (!changed || changed.some(name =>
-+        ["image", "busy", "muted", "soundplaying", "pinned"].includes(name)))
++        ["image", "busy", "muted", "soundplaying", "pinned", "usercontextid"].includes(name)))
 +        this.stripDirty = true;
 +    } else if (this.tabEvents.includes(event.type)) {
 +      // Open, close, move, hide, show, pin, unpin: the tab set or its order
@@ -4967,6 +5180,8 @@ index 0000000000..3aeef0e15d
 +    try {
 +      Services.obs.removeObserver(this, "winui-pane-drain");
 +      Services.obs.removeObserver(this, "intl:app-locales-changed");
++      for (const topic of ["created", "updated", "deleted", "reordered", "service-load-finished"])
++        Services.obs.removeObserver(this, `contextual-identity-${topic}`);
 +    } catch {}
 +    this.addressSession?.close();
 +    this.addressSession = null;
@@ -5004,6 +5219,8 @@ index 0000000000..3aeef0e15d
 +    Services.prefs.removeObserver(this.stripPref, this);
 +    Services.prefs.removeObserver(this.stripHeightPref, this);
 +    Services.prefs.removeObserver(this.addressPref, this);
++    Services.prefs.removeObserver("privacy.userContext.enabled", this);
++    Services.prefs.removeObserver("browser.nova.enabled", this);
 +    this.element.remove();
 +    this.element = null;
 +    this.popups.clear();

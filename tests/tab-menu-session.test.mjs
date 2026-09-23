@@ -66,10 +66,35 @@ test("publication carries identities only, and an opening is answered with one d
   assert.equal(answer.menu.items[0].id, "opaque");
   assert.deepEqual(f.session.snapshot(), { version: 2 });
   assert(f.activate());
-  assert.deepEqual(f.calls, [[f.target, "opaque"]]);
+  assert.deepEqual(f.calls, [[f.target, "opaque", "tab"]]);
   assert.equal(f.activate(), false);
   assert(f.publish()); // Commands revoke input queued during their execution.
   assert.equal(f.publish(), null);
+});
+
+test("new-tab menu binds its surface at opening and revalidates it before execution", () => {
+  const target = {}, calls = [];
+  let name = "Work";
+  const session = new WinUITabMenuSession({
+    resolveTab: id => id === 1 ? target : null,
+    describe: (_tab, surface) => ({items: [{kind: "command", enabled: true,
+      id: surface === "new-tab" ? "container:2" : "close", label: name}]}),
+    execute: (...args) => calls.push(args),
+  });
+  session.update(new Map([[1, target]]));
+  const event = {tab: 1, revision: session.revision, session: 1, surface: "new-tab"};
+  assert(session.receive({...event, kind: "open"}));
+  assert.equal(session.menuPublication().menu.items[0].id, "container:2");
+  assert(!session.receive({...event, kind: "activate", id: "close", surface: "tab"}));
+  name = "Renamed";
+  assert(!session.receive({...event, kind: "activate", id: "container:2"}));
+  assert.equal(calls.length, 0);
+  event.session++;
+  assert(session.receive({...event, kind: "open"}));
+  assert(session.receive({...event, kind: "activate", id: "container:2", surface: "tab"}));
+  assert.deepEqual(calls, [[target, "container:2", "new-tab"]]);
+  assert(!session.receive({...event, kind: "activate", id: "container:2"}));
+  assert(!session.receive({...event, session: 3, kind: "open", surface: "unknown"}));
 });
 
 test("a cancelled or throwing command revokes openings queued in its modal loop", () => {

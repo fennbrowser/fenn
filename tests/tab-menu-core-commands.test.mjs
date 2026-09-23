@@ -42,6 +42,38 @@ function fixture() {
   return { menu: context.TabContextMenu, browser, calls, selectedTabs, context };
 }
 
+test("container reopen preserves principal isolation, pinned and muted state, and background selection", () => {
+  const f = fixture();
+  const opens = [];
+  f.context.Services = {scriptSecurityManager: {
+    createNullPrincipal: oa => ({isNullPrincipal: true, ...oa}),
+    principalWithOA: (principal, oa) => ({...principal, ...oa}),
+  }};
+  f.context.Glean.containers = {tabAssignedContainer: {record() {}}};
+  f.browser.addTab = (url, options) => {
+    const created = {toggleMuteAudio: reason => { created.muteReason = reason; }};
+    opens.push({url, options, created});
+    return created;
+  };
+  const makeTab = (principal, id = 1) => ({linkedPanel: true, pinned: true, index: 4,
+    muted: true, muteReason: "user", getAttribute: () => String(id),
+    linkedBrowser: {contentPrincipal: principal, currentURI: {spec: "https://example.test/"}}});
+  const background = makeTab({isContentPrincipal: true, userContextId: 1});
+  const active = makeTab({isNullPrincipal: true});
+  const already = makeTab({isContentPrincipal: true}, 2);
+  f.browser.selectedTab = active;
+  f.menu.reopenTabsInContainer([background, active, already], 2);
+  assert.equal(opens.length, 2);
+  assert.equal(opens[0].options.triggeringPrincipal.userContextId, 2);
+  assert.equal(opens[1].options.triggeringPrincipal.userContextId, 2);
+  assert.equal(opens[1].options.triggeringPrincipal.isNullPrincipal, true);
+  assert.equal(opens[0].options.pinned, true);
+  assert.equal(opens[0].options.tabIndex, 5);
+  assert.equal(opens[0].created.muteReason, "user");
+  assert.equal(f.browser.selectedTab, opens[1].created);
+  assert.equal(background.linkedBrowser.contentPrincipal.userContextId, 1);
+});
+
 test("background target and multiselection resolve without changing DOM context", () => {
   const f = fixture();
   const active = { multiselected: true };
