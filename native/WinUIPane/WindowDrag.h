@@ -1,4 +1,5 @@
 #pragma once
+#include "WindowCaption.h"
 #include <commctrl.h>
 #include <windowsx.h>
 #include <dwmapi.h>
@@ -16,6 +17,7 @@ struct NativeWindowDrag {
     using Kind = Microsoft::UI::Input::NonClientRegionKind;
     HWND owner{};
     NativeTabStrip* strip{};
+    NativeWindowCaption windowCaption;
     Input input{nullptr};
     Controls::Border mergePreview{nullptr};
     std::vector<Rect> clipped;
@@ -23,6 +25,7 @@ struct NativeWindowDrag {
     HHOOK filter{}, continuationFilter{};
     bool mergePosted{}, endingForMerge{}, continuationQueued{};
     std::vector<Rect> ownedCaption, ownedPass, caption, pass;
+    std::vector<Rect> systemMinimize, systemMaximize, systemClose;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     std::function<void(POINT)> begin, move;
     std::function<void(POINT, bool)> finish;
@@ -39,6 +42,14 @@ struct NativeWindowDrag {
                int64_t(p.y) < int64_t(r.Y) + r.Height;
     }
     static POINT ScreenPoint(LPARAM l) { return {GET_X_LPARAM(l), GET_Y_LPARAM(l)}; }
+    int SystemButtonAt(POINT screen) const {
+        if (!visible) return HTNOWHERE;
+        ScreenToClient(owner, &screen);
+        for (auto r : systemClose) if (Contains(r, screen)) return HTCLOSE;
+        for (auto r : systemMaximize) if (Contains(r, screen)) return HTMAXBUTTON;
+        for (auto r : systemMinimize) if (Contains(r, screen)) return HTMINBUTTON;
+        return HTNOWHERE;
+    }
     static LRESULT CALLBACK Filter(int code, WPARAM w, LPARAM l) noexcept {
         if (code >= 0 && w == PM_REMOVE && active) {
             auto msg = reinterpret_cast<MSG*>(l);
@@ -92,6 +103,10 @@ struct NativeWindowDrag {
     static LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data) noexcept {
         auto self = reinterpret_cast<NativeWindowDrag*>(data);
         try {
+            if ((msg == WM_NCLBUTTONDOWN || msg == WM_NCLBUTTONUP || msg == WM_SYSCOMMAND) &&
+                GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0))
+                fprintf(stderr, "WinUIPane system-caption msg=%x hit=%llu region=%d\n", msg,
+                        static_cast<unsigned long long>(w), self->SystemButtonAt(ScreenPoint(l)));
             if (msg == MergeMessage()) {
                 const bool requested = self->mergePosted;
                 POINT point{}; GetCursorPos(&point);
@@ -128,6 +143,7 @@ struct NativeWindowDrag {
                 if (self->move) self->move(point);
             }
             if (msg == WM_NCHITTEST && self->visible) {
+                if (auto button = self->SystemButtonAt(ScreenPoint(l)); button != HTNOWHERE) return button;
                 const auto normal = DefSubclassProc(hwnd, msg, w, l);
                 if (normal >= HTLEFT && normal <= HTBOTTOMRIGHT) return normal;
                 POINT p = ScreenPoint(l); ScreenToClient(hwnd, &p);
@@ -164,9 +180,13 @@ struct NativeWindowDrag {
             }
             if ((msg == WM_CANCELMODE && !self->endingForMerge) || (msg == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE)) self->cancelled = true;
             if (msg == WM_CAPTURECHANGED && self->inMove && l && HWND(l) != hwnd) self->cancelled = true;
-            if (msg == WM_WINDOWPOSCHANGED && self->strip) self->strip->captionDirty = true;
+            if (msg == WM_WINDOWPOSCHANGED && self->strip) {
+                self->strip->captionDirty = true;
+                self->windowCaption.Update();
+            }
             if (msg == WM_NCDESTROY) {
                 self->cancelled = true;
+                self->windowCaption.Close(false);
                 self->StopFilter();
                 RemoveWindowSubclass(hwnd, Proc, id);
                 self->owner = nullptr;
@@ -223,12 +243,17 @@ struct NativeWindowDrag {
     void RefreshCache() {
         auto c = input.GetRegionRects(Kind::Caption), p = input.GetRegionRects(Kind::Passthrough);
         caption.assign(c.begin(), c.end()); pass.assign(p.begin(), p.end());
+        auto min = input.GetRegionRects(Kind::Minimize), max = input.GetRegionRects(Kind::Maximize), close = input.GetRegionRects(Kind::Close);
+        systemMinimize.assign(min.begin(), min.end());
+        systemMaximize.assign(max.begin(), max.end());
+        systemClose.assign(close.begin(), close.end());
     }
     void Update() {
         if (!strip || !strip->root.IsLoaded() || updating || !strip->captionDirty) return;
         if (!input && !AttachInput()) return;
         updating = true;
         try {
+            windowCaption.Update();
             const bool sole = visible && strip->windowDragTabId && strip->rows.size() == 1 &&
                               strip->rows.count(strip->windowDragTabId);
             if (inMove && soleTab && !sole) cancelled = true;
@@ -250,6 +275,7 @@ struct NativeWindowDrag {
         updating = false;
     }
     void SetVisible(bool value) {
+        windowCaption.SetVisible(value);
         if (visible != value && strip) strip->captionDirty = true;
         visible = value;
         Update();
@@ -276,8 +302,10 @@ struct NativeWindowDrag {
     }
     void Open(HWND hwnd, NativeTabStrip* value) {
         owner = hwnd; strip = value;
+        windowCaption.Open(hwnd, strip->root);
         mergePreview = Markup::XamlReader::Load(
             LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentFillColorDefaultBrush}" BorderThickness="2" CornerRadius="4" Margin="1" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AutomationId="FirefoxWinUIWindowMergePreview" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
+        Controls::Grid::SetColumnSpan(mergePreview, 3);
         strip->root.Children().Append(mergePreview);
         auto weak = std::weak_ptr<int>(lifetime);
         strip->root.LayoutUpdated([this, weak](auto const&, auto const&) {
@@ -300,6 +328,7 @@ struct NativeWindowDrag {
     }
     void Close() noexcept {
         lifetime.reset();
+        windowCaption.Close();
         StopWaiting();
         StopFilter();
         if (input) {

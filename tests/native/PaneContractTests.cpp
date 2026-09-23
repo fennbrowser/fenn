@@ -19,6 +19,8 @@
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Microsoft.UI.Dispatching.h>
+#include <winrt/Microsoft.UI.Windowing.h>
+#include <winrt/Microsoft.UI.Interop.h>
 #include <UIAutomation.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
@@ -1052,7 +1054,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
 static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
-    RECT rect{0, 0, 600, 48};
+    RECT rect{0, 0, 600, 40};
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation");
     ShowWindow(host, SW_SHOW);
     auto state = MenuState({11, 22});
@@ -1079,10 +1081,41 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         Pump();
         Sleep(10);
     }
-    Require(first.IsLoaded() && first.ActualWidth() > 0 && first.ActualHeight() <= 48,
+    Require(first.IsLoaded() && first.ActualWidth() > 0 && first.ActualHeight() == 32,
             "stock tab header fits reserved row");
+    Require(view.ActualHeight() == 40 && root.ActualHeight() == view.ActualHeight(),
+            "reservation fits the unchanged stock TabView without an empty bottom band");
     Require(root.Children().Size() == 2 && !first.Content() && !second.Content(),
             "strip has no address or browser content");
+    Require(root.ColumnDefinitions().Size() == 3 && root.ColumnDefinitions().GetAt(2).Width().Value > 0,
+            "system caption buttons reserve their SDK inset");
+    Require(view.ActualWidth() + root.ColumnDefinitions().GetAt(0).Width().Value +
+                root.ColumnDefinitions().GetAt(2).Width().Value <= root.ActualWidth() + 1,
+            "tabs do not overlap the system caption inset");
+    auto systemCaption = winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(
+        winrt::Microsoft::UI::GetWindowIdFromWindow(host)).TitleBar();
+    Require(systemCaption.ExtendsContentIntoTitleBar() &&
+                systemCaption.PreferredHeightOption() == winrt::Microsoft::UI::Windowing::TitleBarHeightOption::Standard &&
+                GetPropW(host, WINUI_PANE_SYSTEM_CAPTION_PROPERTY),
+            "Windows owns the visible native strip caption");
+    Require(systemCaption.Height() <= root.ActualHeight() * root.XamlRoot().RasterizationScale(),
+            "system caption controls stay inside the tab strip reservation");
+    for (int height : {32, 48, 40}) {
+        rect.bottom = height;
+        Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "change strip height");
+        const auto expected = height == 48 ? winrt::Microsoft::UI::Windowing::TitleBarHeightOption::Tall
+                                          : winrt::Microsoft::UI::Windowing::TitleBarHeightOption::Standard;
+        for (int i = 0; i < 100; ++i) {
+            Pump();
+            if (view.ActualHeight() == height && systemCaption.PreferredHeightOption() == expected) break;
+            Sleep(10);
+        }
+        Require(root.ActualHeight() == height && view.ActualHeight() == height && first.ActualHeight() == 32,
+                "all strip layouts preserve tab height without a bottom band");
+        Require(systemCaption.PreferredHeightOption() == expected, "caption size follows strip layout");
+        Require(view.TabItems().GetAt(0) == first && view.SelectedItem() == first,
+                "height changes preserve tab identity and selection");
+    }
     auto mergePreview = root.Children().GetAt(1).as<Controls::Border>();
     Require(!mergePreview.IsHitTestVisible() && mergePreview.Visibility() == Visibility::Collapsed,
             "merge feedback is hidden and cannot capture input while idle");
@@ -1334,6 +1367,14 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         root.RequestedTheme(theme);
         Pump();
         Require(root.ActualTheme() == theme, "strip follows live theme");
+        const auto captionTheme = theme == ElementTheme::Dark
+            ? winrt::Microsoft::UI::Windowing::TitleBarTheme::Dark : winrt::Microsoft::UI::Windowing::TitleBarTheme::Light;
+        for (int i = 0; i < 100 && systemCaption.PreferredTheme() != captionTheme; ++i) {
+            Pump();
+            Sleep(10);
+        }
+        Require(systemCaption.PreferredTheme() == captionTheme,
+                "Windows caption follows live strip theme without overriding hover colors");
     }
     auto flyout = second.ContextFlyout().as<Controls::MenuFlyout>();
     SetForegroundWindow(host);
@@ -1384,7 +1425,9 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     sync();
     Require(root.FlowDirection() == FlowDirection::RightToLeft, "native layout uses Firefox text direction");
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, FALSE)), "hide strip");
+    Require(!GetPropW(host, WINUI_PANE_SYSTEM_CAPTION_PROPERTY), "hidden strip releases caption ownership");
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "restore strip");
+    Require(GetPropW(host, WINUI_PANE_SYSTEM_CAPTION_PROPERTY) != nullptr, "shown strip reacquires caption ownership");
     // Leave the group popup open: the caller destroys the island before its HWND.
     groupOpened = false;
     groupToken = groupMenu.Opened([&](auto const&, auto const&) { groupOpened = true; });
@@ -1923,6 +1966,7 @@ int wmain(int argc, wchar_t** argv) {
     if (argc == 3 && wcscmp(argv[2], L"--strip") == 0) {
         CheckTabStrip(module, api, first);
         Require(SUCCEEDED(api.destroy(first)), "destroy strip before host");
+        Require(!GetPropW(first, WINUI_PANE_SYSTEM_CAPTION_PROPERTY), "destroy releases native caption ownership");
         DestroyWindow(first);
         winrt::clear_factory_cache();
         Require(SUCCEEDED(api.shutdown()), "strip clean shutdown");

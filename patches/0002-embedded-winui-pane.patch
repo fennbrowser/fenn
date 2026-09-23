@@ -866,16 +866,18 @@ index 995b2fc869..197b2cd2e9 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 0f32a4f45c..f00fb3b47f 100644
+index 0f32a4f45c..b3f04f732b 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3793,6 +3793,11 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3793,6 +3793,13 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
 +pref("widget.windows.winui-prototype.pane.enabled", false);
 +// Strip-only presentation; Firefox keeps its original tab and navigation UI.
 +pref("widget.windows.winui-prototype.tabstrip.enabled", false);
++// Native top-bar height: 32 compact, 40 current design, 48 tall.
++pref("widget.windows.winui-prototype.tabstrip.height", 40);
 +pref("widget.windows.winui-prototype.address.enabled", false);
 +
  #ifdef XP_MACOSX
@@ -1885,10 +1887,10 @@ index 031a63b997..36cfa7c11e 100644
    nsIWidget();
    virtual ~nsIWidget();
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
-index c6e02a8696..bb860df7c2 100644
+index c6e02a8696..336d018771 100644
 --- a/widget/windows/WinUIPrototype.cpp
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -2,17 +2,232 @@
+@@ -2,17 +2,238 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  #include "WinUIPrototype.h"
@@ -1909,6 +1911,12 @@ index c6e02a8696..bb860df7c2 100644
 +#include "mozilla/UniquePtr.h"
  #include "nsXULAppAPI.h"
  
++namespace mozilla::widget {
++bool HasWinUISystemCaption(HWND aWindow) {
++  return GetPropW(aWindow, WINUI_PANE_SYSTEM_CAPTION_PROPERTY) != nullptr;
++}
++}  // namespace mozilla::widget
++
  namespace mozilla::widget {
  static LazyLogModule sWinUIPrototypeLog("WinUIPrototype");
  static bool sTraceEnabled = false;  // Main-thread only; inert after enablement.
@@ -2122,7 +2130,7 @@ index c6e02a8696..bb860df7c2 100644
  
  void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    if (!XRE_IsParentProcess() || !NS_IsMainThread() || !sTraceEnabled) return;
-@@ -20,51 +235,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
+@@ -20,51 +241,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
    const HRESULT hr = CoGetApartmentType(&apartment, &qualifier);
    DWORD ownerProcess = 0;
@@ -2205,10 +2213,10 @@ index c6e02a8696..bb860df7c2 100644
    FreeLibrary(module);
    TraceWinUIPrototype("probe-complete", aWindow);
 diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
-index 418c5d791d..ab2263f41e 100644
+index 418c5d791d..82b3d35961 100644
 --- a/widget/windows/WinUIPrototype.h
 +++ b/widget/windows/WinUIPrototype.h
-@@ -4,8 +4,31 @@
+@@ -4,8 +4,32 @@
  #ifndef widget_windows_WinUIPrototype_h
  #define widget_windows_WinUIPrototype_h
  #include <windows.h>
@@ -2237,6 +2245,7 @@ index 418c5d791d..ab2263f41e 100644
 +uint32_t ApplyWinUITabDelta(HWND aWindow, const nsAString& aDelta);
 +void DestroyWinUIPane(HWND aWindow);
 +bool TranslateWinUIPane(MSG& aMessage);
++bool HasWinUISystemCaption(HWND aWindow);
 +void ShutdownWinUIPane();
  }  // namespace mozilla::widget
  #endif
@@ -2279,7 +2288,7 @@ index d4aff8c47e..a34a1a2dfc 100644
              IMEHandler::ProcessRawKeyMessage(msg)) {
            continue;  // the message is consumed.
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index 3f3b5b9200..3f5994fe90 100644
+index 3f3b5b9200..f80012fc0a 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -53,7 +53,6 @@
@@ -2351,7 +2360,28 @@ index 3f3b5b9200..3f5994fe90 100644
    DestroyDirectManipulation();
  
    // Before destroying the native window, we need to clean up the resource
-@@ -6922,6 +6961,7 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+@@ -5641,7 +5680,8 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+         mDraggingWindowWithMouse = true;
+       }
+ 
+-      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient) {
++      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient &&
++          !mozilla::widget::HasWinUISystemCaption(mWnd)) {
+         DispatchMouseEvent(eMouseDown, wParamFromGlobalMouseState(),
+                            lParamToClient(lParam), false, MouseButton::ePrimary,
+                            MOUSE_INPUT_SOURCE(), nullptr, IsNonclient::Yes);
+@@ -5652,7 +5692,9 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+     }
+ 
+     case WM_NCLBUTTONUP: {
+-      if (mCustomNonClient) {
++      // The native strip uses SDK-drawn caption controls. Forward their
++      // original input to the previous (App SDK) window proc, not DOM chrome.
++      if (mCustomNonClient && !mozilla::widget::HasWinUISystemCaption(mWnd)) {
+         result = DispatchMouseEvent(eMouseUp, wParamFromGlobalMouseState(),
+                                     lParamToClient(lParam), false,
+                                     MouseButton::ePrimary, MOUSE_INPUT_SOURCE(),
+@@ -6922,6 +6964,7 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
  
  // WM_DESTROY event handler
  void nsWindow::OnDestroy() {
@@ -3677,10 +3707,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..01125973e9
+index 0000000000..3aeef0e15d
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1287 @@
+@@ -0,0 +1,1303 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3689,6 +3719,7 @@ index 0000000000..01125973e9
 +  pref: "widget.windows.winui-prototype.pane.enabled",
 +  addressPref: "widget.windows.winui-prototype.address.enabled",
 +  stripPref: "widget.windows.winui-prototype.tabstrip.enabled",
++  stripHeightPref: "widget.windows.winui-prototype.tabstrip.height",
 +  element: null,
 +  frame: 0,
 +  popups: new Set(),
@@ -3825,8 +3856,12 @@ index 0000000000..01125973e9
 +    this.element.style.cssText =
 +      "width:240px;min-width:0;max-width:35vw;flex-shrink:0;background:var(--toolbar-bgcolor, Canvas);";
 +    if (this.tabStrip) {
++      // The native header follows this reservation: 32-DIP tabs with 0, 8,
++      // or 16 DIPs of top padding. Unsupported preferences use the default.
++      const requested = Services.prefs.getIntPref(this.stripHeightPref, 40);
++      const height = [32, 40, 48].includes(requested) ? requested : 40;
 +      this.element.style.cssText =
-+        "height:48px;min-height:48px;flex-shrink:0;-moz-window-dragging:no-drag;";
++        `height:${height}px;min-height:${height}px;flex-shrink:0;-moz-window-dragging:no-drag;`;
 +      const toolbar = document.getElementById("TabsToolbar");
 +      toolbar.before(this.element);
 +    } else {
@@ -3883,6 +3918,7 @@ index 0000000000..01125973e9
 +    Services.obs.addObserver(this, "intl:app-locales-changed");
 +    Services.prefs.addObserver(this.pref, this);
 +    Services.prefs.addObserver(this.stripPref, this);
++    Services.prefs.addObserver(this.stripHeightPref, this);
 +    Services.prefs.addObserver(this.addressPref, this);
 +    this.schedule();
 +  },
@@ -4785,6 +4821,15 @@ index 0000000000..01125973e9
 +      this.init();
 +      return;
 +    }
++    if (data === this.stripHeightPref) {
++      if (this.tabStrip && this.element) {
++        const requested = Services.prefs.getIntPref(this.stripHeightPref, 40);
++        const height = [32, 40, 48].includes(requested) ? requested : 40;
++        this.element.style.height = this.element.style.minHeight = `${height}px`;
++        this.schedule();
++      }
++      return;
++    }
 +    if (data === this.addressPref) {
 +      // Turning the surface on or off changes what the next publication says,
 +      // including the one that tells native to hide it.
@@ -4957,6 +5002,7 @@ index 0000000000..01125973e9
 +    }
 +    Services.prefs.removeObserver(this.pref, this);
 +    Services.prefs.removeObserver(this.stripPref, this);
++    Services.prefs.removeObserver(this.stripHeightPref, this);
 +    Services.prefs.removeObserver(this.addressPref, this);
 +    this.element.remove();
 +    this.element = null;
@@ -4970,13 +5016,17 @@ index 0000000000..01125973e9
 +window.addEventListener("unload", () => gWinUIPane.uninit(), { once: true });
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 0000000000..e439f17b08
+index 0000000000..6c9c6f54a5
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,126 @@
 +#pragma once
 +#include <windows.h>
 +#include <stdint.h>
++
++// Owning-thread HWND marker: while present, Windows App SDK owns caption
++// button input and Gecko must not redirect non-client presses to DOM buttons.
++#define WINUI_PANE_SYSTEM_CAPTION_PROPERTY L"FirefoxWinUIPane.SystemCaption.1"
 +
 +// v14 puts the last two commands -- close and new tab -- on the v11 request
 +// path. syncTabs therefore drains nothing: it loses its close/new-tab
