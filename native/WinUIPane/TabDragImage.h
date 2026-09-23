@@ -11,6 +11,47 @@
 // anything with its own hidden WinUI-owned behavior.
 namespace TabDragImage {
 
+// Use the installed TabViewItem template's own floating surface, including its
+// theme/high-contrast resources and all four rounded corners. Stock dragging is
+// disabled in this host, so snapshot capture must enter this visual state itself.
+// This is a localized template-state dependency, not a second tab template.
+inline void SetFloatingAppearance(winrt::Microsoft::UI::Xaml::Controls::TabViewItem const& row, bool floating) {
+    winrt::Microsoft::UI::Xaml::VisualStateManager::GoToState(
+        row, floating ? L"DragDropVisualVisible" : L"DragDropVisualNotVisible", false);
+}
+
+// The hover/pressed TabContainer sits above the floating background and the
+// stock template binds its radius through TopCornerRadiusFilterConverter.
+// Use the full native radius only while capturing; retain the original binding
+// (or local value) so normal styling remains live after capture or failure.
+struct CaptureCorners {
+    winrt::Microsoft::UI::Xaml::Controls::Grid container{nullptr};
+    winrt::Microsoft::UI::Xaml::Data::BindingBase binding{nullptr};
+    winrt::Windows::Foundation::IInspectable local{nullptr};
+
+    explicit CaptureCorners(winrt::Microsoft::UI::Xaml::Controls::TabViewItem const& row) {
+        using namespace winrt::Microsoft::UI::Xaml;
+        auto root = Media::VisualTreeHelper::GetChild(row, 0).as<FrameworkElement>();
+        container = root.FindName(L"TabContainer").try_as<Controls::Grid>();
+        if (!container) return;
+        auto property = Controls::Grid::CornerRadiusProperty();
+        if (auto expression = container.GetBindingExpression(property)) binding = expression.ParentBinding();
+        local = container.ReadLocalValue(property);
+        container.CornerRadius(row.CornerRadius());
+    }
+    ~CaptureCorners() {
+        if (!container) return;
+        try {
+            auto property = winrt::Microsoft::UI::Xaml::Controls::Grid::CornerRadiusProperty();
+            if (binding) container.SetBinding(property, binding);
+            else if (local == winrt::Microsoft::UI::Xaml::DependencyProperty::UnsetValue()) container.ClearValue(property);
+            else container.SetValue(property, local);
+        } catch (...) { /* The island may have been torn down during capture. */ }
+    }
+    CaptureCorners(CaptureCorners const&) = delete;
+    CaptureCorners& operator=(CaptureCorners const&) = delete;
+};
+
 // A coroutine, not a blocking call: RenderTargetBitmap::RenderAsync/
 // GetPixelsAsync are real async WinRT operations, and blocking on them
 // (a plain .get()) from the UI thread would deadlock -- their own

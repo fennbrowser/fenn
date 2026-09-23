@@ -118,6 +118,7 @@ struct NativeTabStrip {
     // Weak source lifetimes keep cross-window completion safe during teardown.
     std::map<uint64_t, std::function<void(bool)>> dropResults;
     std::set<uint32_t> departingRows;
+    std::function<uint32_t()> pendingWindowDragTab;
     void WatchDrop(uint64_t request, std::function<void(bool)> complete) {
         if (request) dropResults.emplace(request, std::move(complete));
         else complete(false);
@@ -136,6 +137,7 @@ struct NativeTabStrip {
             ResetRowOffset(rows.at(id), id);
             departingRows.insert(id);
             rows.at(id).Opacity(0);
+            TabDragImage::SetFloatingAppearance(rows.at(id), false);
         }
         drag.phase = DragPhase::None;
         dragging = false;
@@ -617,7 +619,10 @@ struct NativeTabStrip {
     // before the popup's own snapshot finished rendering never got this
     // far in the first place).
     void RestoreRowVisibility(uint32_t id) {
-        if (rows.count(id)) rows.at(id).Opacity(1);
+        if (rows.count(id)) {
+            TabDragImage::SetFloatingAppearance(rows.at(id), false);
+            rows.at(id).Opacity(1);
+        }
     }
 
     // Ends an armed-but-never-promoted gesture: a plain click (selection
@@ -1227,6 +1232,7 @@ struct NativeTabStrip {
                     drag.pendingRequest = 0;
                 }
             }
+            const auto continuationTab = pendingWindowDragTab ? pendingWindowDragTab() : 0;
             std::set<uint32_t> current;
             for (uint32_t i = 0; i < count; ++i) {
                 const auto id = tabs[i].id;
@@ -1376,6 +1382,7 @@ struct NativeTabStrip {
                     AttachMenu(row, id);
                 }
                 auto row = rows.at(id);
+                if (id == continuationTab) row.Opacity(0);
                 UpdateHeader(row, id, tabs[i].title);
                 Automation::AutomationProperties::SetName(row, tabs[i].title);
                 // Secondary selection is explicit and theme-aware; SelectedItem

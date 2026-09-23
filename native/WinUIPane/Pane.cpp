@@ -347,6 +347,7 @@ void UpdateWindowMove(Pane&, POINT);
 void FinishWindowMove(Pane&, POINT, bool);
 void CancelWindowMove(Pane&);
 void ContinueWindowDrag(Pane&);
+uint32_t PendingWindowDragTab(Pane&);
 void CancelWindowContinuation(Pane&);
 bool CanMergeWindow(Pane&, POINT);
 
@@ -1011,6 +1012,7 @@ struct Pane {
             windowDrag.begin = [this](POINT point) { BeginWindowMove(*this, point); };
             windowDrag.move = [this](POINT point) { UpdateWindowMove(*this, point); };
             windowDrag.canMerge = [this](POINT point) { return CanMergeWindow(*this, point); };
+            strip->pendingWindowDragTab = [this] { return PendingWindowDragTab(*this); };
             windowDrag.continueReady = [this] { ContinueWindowDrag(*this); };
             windowDrag.abortContinuation = [this] { CancelWindowContinuation(*this); };
             windowDrag.finish = [this](POINT point, bool release) { FinishWindowMove(*this, point, release); };
@@ -1314,7 +1316,13 @@ bool CanMergeWindow(Pane& pane, POINT point) {
     auto current = WindowMoveState(pane);
     return current.phase == 1 && current.target && !pane.windowDrag.cancelled;
 }
+uint32_t PendingWindowDragTab(Pane& pane) {
+    auto current = WindowMoveState(pane);
+    return current.phase == 5 ? current.tab : 0;
+}
 void CancelWindowContinuation(Pane& pane) {
+    auto tab = PendingWindowDragTab(pane);
+    if (tab && pane.strip) pane.strip->RestoreRowVisibility(tab);
     WindowMoveState(pane, WindowMoveOp::Cancel);
     pane.windowDrag.StopWaiting();
 }
@@ -1451,21 +1459,35 @@ void EnsureTearoffClassRegistered() {
 // leaves a strip. A coroutine, not a blocking call, for the same reason
 // TabDragImage::RenderElementToBitmapAsync itself is one (see that file).
 // Guards against the session having moved on (a new gesture) by the time it
-// resumes. Hides `row` itself only once this actually completes, not before
-// -- rendering it first is what makes the bitmap show the tab at all rather
-// than a blank/transparent image, since RenderTargetBitmap captures what
-// would actually be composited, including opacity.
+// resumes. Capture the template root, excluding the outer item's opacity,
+// so the real row stays hidden throughout asynchronous capture. In particular,
+// a newly adopted row must never paint in its layout slot before this is ready.
 winrt::fire_and_forget RenderTearoffAsync(Controls::TabViewItem row, HWND popup, std::weak_ptr<int> alive) {
     int width{}, height{};
     uint64_t bitmap{};
     try {
-        bitmap = co_await TabDragImage::RenderElementToBitmapAsync(row, &width, &height);
+        row.ApplyTemplate();
+        TabDragImage::SetFloatingAppearance(row, true);
+        TabDragImage::CaptureCorners corners(row);
+        row.UpdateLayout();
+        auto visual = Media::VisualTreeHelper::GetChild(row, 0).as<UIElement>();
+        row.Opacity(0);
+        bitmap = co_await TabDragImage::RenderElementToBitmapAsync(visual, &width, &height);
     } catch (...) {
+        if (DiagnosticsEnabled()) fprintf(stderr, "WinUIPane drag capture failed hr=0x%08X\n", unsigned(winrt::to_hresult()));
+        if (!alive.expired()) {
+            TabDragImage::SetFloatingAppearance(row, false);
+            row.Opacity(1);
+        }
         co_return;
     }
     auto& session = dragSession();
     if (alive.expired() || !bitmap || session.tearoffWindow != popup) {
         if (bitmap) DeleteObject(HBITMAP(bitmap));
+        if (!alive.expired()) {
+            TabDragImage::SetFloatingAppearance(row, false);
+            row.Opacity(1);
+        }
         co_return;
     }
     session.tearoffBitmap = HBITMAP(bitmap);
@@ -2114,6 +2136,9 @@ HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
                 WindowMoveState(pane, WindowMoveOp::CompleteAdoption, tab, {}, 0, 0, 0, false, uint64_t(id));
                 if (!tab) pane.windowDrag.StopWaiting();
                 else {
+                    // Suppress an already-present adopted row before queuing layout.
+                    // Sync uses the same core state if the row arrives afterwards.
+                    if (pane.strip->rows.count(tab)) pane.strip->rows.at(tab).Opacity(0);
                     auto weak = std::weak_ptr<int>(pane.lifetime);
                     pane.strip->root.DispatcherQueue().TryEnqueue([weak, hwnd] {
                         if (weak.expired()) return;
@@ -2482,6 +2507,33 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestCompleteReorderAt(H
     } catch (...) {
         return to_hresult();
     }
+}
+// Test-only: seed the real Rust continuation state, then exercise its UI handoff.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestWindowContinuation(HWND hwnd, uint32_t tab, uint32_t op) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
+        auto& pane = *found->second;
+        if (op == 0) {
+            WindowMoveState(pane, WindowMoveOp::AwaitAdoption, 0, {}, 0, 0, 0, false, 1);
+            WindowMoveState(pane, WindowMoveOp::CompleteAdoption, tab, {}, 0, 0, 0, false, 1);
+        } else if (op == 1) ContinueWindowDrag(pane);
+        else if (op == 2) CancelWindowContinuation(pane);
+        else return E_INVALIDARG;
+        return S_OK;
+    } catch (...) { return to_hresult(); }
+}
+// Test-only: copy the actual popup bitmap for pixel regression checks.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestCopyDragBitmap(HBITMAP* result) noexcept {
+    if (!result) return E_POINTER;
+    *result = nullptr;
+    try {
+        check_hresult(Check());
+        if (!dragSession().tearoffBitmap) return S_FALSE;
+        *result = HBITMAP(CopyImage(dragSession().tearoffBitmap, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION));
+        return *result ? S_OK : E_FAIL;
+    } catch (...) { return to_hresult(); }
 }
 // Test-only: force the same drag-in-progress state a real gesture sets, for
 // the same reason as above -- confirms Sync() ignores Firefox snapshots that

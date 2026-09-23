@@ -1558,7 +1558,131 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
 // hooks only drive the logic directly, never a real pointer sequence). Kept
 // as its own entry point, not folded into CheckTabStrip, so a regression
 // here can never take the rest of the suite down with it.
-static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false) {
+static void CheckAttachedTabAppearance(winrt::Microsoft::UI::Xaml::Controls::TabViewItem const& row) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    std::function<FrameworkElement(DependencyObject const&)> find = [&](DependencyObject const& node) -> FrameworkElement {
+        if (auto element = node.try_as<FrameworkElement>(); element && element.Name() == L"TabDragVisualContainer") return element;
+        for (int i=0; i<Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto found = find(Media::VisualTreeHelper::GetChild(node,i))) return found;
+        return nullptr;
+    };
+    auto floating = find(row);
+    Require(floating && floating.Visibility() == Visibility::Collapsed, "released or cancelled tab restores the attached template state");
+    auto root = Media::VisualTreeHelper::GetChild(row,0).as<FrameworkElement>();
+    auto container = root.FindName(L"TabContainer").as<Controls::Grid>();
+    auto corners = container.CornerRadius();
+    Require(corners.BottomLeft == 0 && corners.BottomRight == 0 &&
+            container.GetBindingExpression(Controls::Grid::CornerRadiusProperty()),
+            "capture restores the attached bottom corners and their live template binding");
+}
+
+// Inspect pixels from the actual floating HWND's bitmap, not a substitute row.
+static void CheckFloatingDragBitmap(HMODULE module, bool dark = false) {
+    auto copy = reinterpret_cast<HRESULT(WINAPI*)(HBITMAP*)>(GetProcAddress(module, "WinUIPaneTestCopyDragBitmap"));
+    Require(copy != nullptr, "drag bitmap inspection available");
+    HBITMAP bitmap{};
+    for (int i=0; i<300 && !bitmap; ++i) {
+        Require(SUCCEEDED(copy(&bitmap)), "copy drag bitmap");
+        if (!bitmap) { Pump(); Sleep(10); }
+    }
+    Require(bitmap != nullptr, "floating drag bitmap rendered");
+    DIBSECTION dib{};
+    Require(GetObjectW(bitmap, sizeof(dib), &dib) == sizeof(dib) && dib.dsBm.bmBits, "drag bitmap pixels available");
+    const int width = dib.dsBm.bmWidth, height = dib.dsBm.bmHeight;
+    auto alpha = [&](int x, int y) {
+        const int scan = dib.dsBmih.biHeight < 0 ? y : height - 1 - y;
+        return static_cast<unsigned char*>(dib.dsBm.bmBits)[scan * dib.dsBm.bmWidthBytes + x * 4 + 3];
+    };
+    // RenderTargetBitmap can include transparent padding at non-unit island
+    // scales. Measure the painted body rather than assuming it fills the bitmap.
+    int top=0, bottom=height-1, left=0, right=width-1;
+    while (top < height && alpha(width/2,top) < 200) ++top;
+    while (bottom > top && alpha(width/2,bottom) < 200) --bottom;
+    Require(bottom-top > 12, "floating tab has a filled vertical body");
+    const int middle = (top+bottom)/2;
+    while (left < width && alpha(left,middle) < 200) ++left;
+    while (right > left && alpha(right,middle) < 200) --right;
+    Require(right-left > 16, "floating tab has an opaque body");
+    // Save the same pixels for visual review alongside the automated alpha checks.
+    BITMAPV4HEADER header{};
+    header.bV4Size = sizeof(header);
+    header.bV4Width = width;
+    header.bV4Height = dib.dsBmih.biHeight;
+    header.bV4Planes = 1;
+    header.bV4BitCount = 32;
+    header.bV4V4Compression = BI_BITFIELDS;
+    header.bV4RedMask = 0x00ff0000;
+    header.bV4GreenMask = 0x0000ff00;
+    header.bV4BlueMask = 0x000000ff;
+    header.bV4AlphaMask = 0xff000000;
+    BITMAPFILEHEADER fileHeader{};
+    fileHeader.bfType = 0x4d42;
+    fileHeader.bfOffBits = sizeof(fileHeader) + sizeof(header);
+    fileHeader.bfSize = fileHeader.bfOffBits + dib.dsBm.bmWidthBytes * height;
+    FILE* output{};
+    if (fopen_s(&output, dark ? "artifacts/setup/tab-floating-dark.bmp" : "artifacts/setup/tab-floating-light.bmp", "wb") == 0) {
+        fwrite(&fileHeader,sizeof(fileHeader),1,output);
+        fwrite(&header,sizeof(header),1,output);
+        fwrite(dib.dsBm.bmBits,dib.dsBm.bmWidthBytes,height,output);
+        fclose(output);
+    }
+    fprintf(stderr, "Floating corner alpha: %u, %u\n", alpha(left+1,bottom-1), alpha(right-1,bottom-1));
+    Require(alpha(left,bottom) == 0 && alpha(right,bottom) == 0 &&
+            alpha(left+1,bottom-1) <= 16 && alpha(right-1,bottom-1) <= 16,
+            "floating bitmap has rounded bottom corners without attached tab feet");
+    DeleteObject(bitmap);
+}
+
+static void CheckWindowContinuation(HMODULE module, WinUIPaneApi& api, HWND host) {
+    using namespace winrt;
+    using namespace winrt::Microsoft::UI::Xaml;
+    RECT rect{0,0,600,48};
+    Require(SUCCEEDED(api.updateTabStrip(host,&rect,TRUE)), "create continuation strip");
+    ShowWindow(host,SW_SHOW);
+    SetForegroundWindow(host);
+    auto continuation = reinterpret_cast<HRESULT(WINAPI*)(HWND,uint32_t,uint32_t)>(GetProcAddress(module,"WinUIPaneTestWindowContinuation"));
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND,void**)>(GetProcAddress(module,"WinUIPaneTestGetContent"));
+    Require(continuation && inspect, "continuation inspection available");
+    WinUITab tabs[]{{41,L"Existing tab"},{42,L"Second tab"},{77,L"Merged tab"}};
+    uint32_t selected{};
+    Require(SUCCEEDED(api.syncTabs(host,tabs,2,41,&selected)), "initial destination tabs");
+    Require(SUCCEEDED(continuation(host,77,0)), "Firefox identifies the merged tab before its snapshot");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,3,77,&selected)), "publish adopted tab");
+    UIElement content{nullptr};
+    Require(SUCCEEDED(inspect(host,put_abi(content))), "inspect continuation strip");
+    auto root = content.as<Controls::Grid>();
+    auto view = root.Children().GetAt(0).as<Controls::TabView>();
+    auto row = view.TabItems().GetAt(2).as<Controls::TabViewItem>();
+    Require(row.Opacity() == 0, "adopted tab is hidden before its first layout frame");
+    Require(SUCCEEDED(continuation(host,77,2)), "cancel before drag continuation starts");
+    Require(row.Opacity() == 1, "cancelled pending continuation restores the adopted row");
+    for (int i=0;i<40;++i) { Pump(); root.UpdateLayout(); Sleep(10); }
+    CheckAttachedTabAppearance(row);
+    Require(SUCCEEDED(continuation(host,77,0)), "prepare held continuation");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,3,77,&selected)), "hide retained adopted row during pending continuation");
+    Require(row.Opacity() == 0, "retained adopted row is hidden before capture");
+    // Hold the button over blank content, then continue into the destination
+    // strip at a point different from the adopted row's real layout slot.
+    POINT cursor{200,180};
+    ClientToScreen(host,&cursor);
+    SetCursorPos(cursor.x,cursor.y);
+    INPUT input{}; input.type=INPUT_MOUSE; input.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
+    SendInput(1,&input,sizeof(input));
+    for (int i=0;i<10;++i) { Pump(); Sleep(10); }
+    cursor = {200,24}; ClientToScreen(host,&cursor); SetCursorPos(cursor.x,cursor.y);
+    Require(SUCCEEDED(continuation(host,77,1)), "take real window-drag continuation");
+    Require(row.Opacity() == 0, "capture never reveals the adopted tab in its layout slot");
+    CheckFloatingDragBitmap(module);
+    Require(row.Opacity() == 0, "floating image owns continued drag appearance");
+    input.mi.dwFlags=MOUSEEVENTF_LEFTUP; SendInput(1,&input,sizeof(input));
+    for (int i=0;i<40;++i) { Pump(); Sleep(10); }
+    NextRequest(api,host,5,L"strip-reorder");
+    Require(row.Opacity() == 1, "release restores the real adopted tab");
+    CheckAttachedTabAppearance(row);
+    puts("CHECKS PASSED: merged tab stays hidden through layout/capture, pending cancel restores it");
+}
+
+static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false, bool inactive = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     RECT rect{0, 0, 600, 48};
@@ -1566,12 +1690,13 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{11, L"First tab"}, {22, L"Second tab"}};
     uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, &selected)),
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 2, inactive ? 22 : 11, &selected)),
             "sync strip snapshot for drag test");
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
     UIElement content{nullptr};
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect strip for drag test");
     auto root = content.as<Controls::Grid>();
+    root.RequestedTheme(reject ? ElementTheme::Dark : ElementTheme::Light);
     auto view = root.Children().GetAt(0).as<Controls::TabView>();
     auto first = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
     for (int i = 0; i < 300 && (!first.IsLoaded() || first.ActualWidth() == 0); ++i) {
@@ -1643,9 +1768,11 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
         moveTo(client.x + step * 20, client.y);
         settle(5);
     }
+    CheckFloatingDragBitmap(module, reject);
     send(MOUSEEVENTF_LEFTUP);
     settle(200);
     puts("Drag gesture completed without crashing");
+    CheckAttachedTabAppearance(first);
     auto event = NextRequest(api, host, 5, L"strip-reorder",40,reject ? 2 : 1).GetNamedObject(L"action");
     Require(event.Size() && event.GetNamedNumber(L"id") == 11 && event.GetNamedNumber(L"beforeId") == 0,
             "a real pointer drag past the last tab queues a validated move-to-end request");
@@ -1744,10 +1871,12 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
         moveTo(screenX, screenY);
         settle(5);
     }
+    CheckFloatingDragBitmap(module);
     send(MOUSEEVENTF_LEFTUP);
     settle(200);
     puts("Detach gesture completed without crashing");
     Require(tab.Opacity() == 0, "detach release keeps the real source tab hidden");
+    CheckAttachedTabAppearance(tab);
     Require(SUCCEEDED(api.syncTabs(host,tabs,1,55,&selected)), "old source snapshot during detach");
     Require(tab.Opacity() == 0, "a departing last tab is not mistaken for a confirmed move to end");
     auto detachEvent = NextRequest(api, host, 5, L"strip-detach",40,reject ? 2 : 1).GetNamedObject(L"action");
@@ -1972,6 +2101,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         DestroyWindow(host2);
         settle();
         Require(sourceTab.Opacity() == 1, "closing the hovered destination restores the surviving source row");
+        CheckAttachedTabAppearance(sourceTab);
         WinUITab refreshed[]{{33, L"Source after cancelled drag"}, {88, L"New source tab"}};
         Require(SUCCEEDED(api.syncTabs(host, refreshed, 2, 33, &selected)),
                 "source accepts snapshot after destination disappears");
@@ -1990,6 +2120,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         Require(current.RenderTransform().as<Media::TranslateTransform>().X() > 0,
                 "foreign preview is rebuilt for the new destination order");
     }
+    CheckFloatingDragBitmap(module);
     send(MOUSEEVENTF_LEFTUP);
     settle(200);
     puts("Cross-window adopt gesture completed without crashing");
@@ -1999,6 +2130,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     // drained there -- this is also what proves the two endpoints' queues are
     // independent rather than one shared list.
     Require(sourceTab.Opacity() == 0, "foreign drop does not reveal the original source slot");
+    CheckAttachedTabAppearance(sourceTab);
     Require(SUCCEEDED(api.syncTabs(host,tabs,1,33,&selected)), "old source snapshot during adoption");
     Require(sourceTab.Opacity() == 0, "old source snapshot preserves pending departure");
     if (!changeTarget && !scaled) {
@@ -2076,7 +2208,7 @@ int wmain(int argc, wchar_t** argv) {
             "install teardown exception guard");
     Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 ||
                                         wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 ||
-                                        wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
+                                        wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--continuation") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
                                         wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0)),
             "DLL path and optional --inspect required");
     // Before the DLL loads, because the pane reads this once. Without it the
@@ -2136,7 +2268,7 @@ int wmain(int argc, wchar_t** argv) {
         puts("CHECKS PASSED: TabView layout, stable IDs, selection, menus, theme, hide/show, teardown");
         return 0;
     }
-    if (argc == 3 && (wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
+    if (argc == 3 && (wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--continuation") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
                       wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0)) {
         auto dragTicks = [&] {
             auto counts = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
@@ -2146,7 +2278,9 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(counts(L"dragTick", &value)), "read drag tick count");
             return value;
         };
-        if (wcscmp(argv[2], L"--transfers") == 0) {
+        if (wcscmp(argv[2], L"--continuation") == 0) {
+            CheckWindowContinuation(module, api, first);
+        } else if (wcscmp(argv[2], L"--transfers") == 0) {
             CheckTabStripDetach(module, api, first);
             CheckTabStripDetach(module, api, first, true);
             CheckTabStripCrossWindowAdopt(module, api, first);
@@ -2156,6 +2290,8 @@ int wmain(int argc, wchar_t** argv) {
         } else if (wcscmp(argv[2], L"--reorder") == 0) {
             CheckTabStripDrag(module, api, first);
             CheckTabStripDrag(module, api, first, true);
+            CheckTabStripDrag(module, api, first, false, true);
+            CheckTabStripDrag(module, api, first, true, true);
         } else if (wcscmp(argv[2], L"--drag-scale") == 0) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.25f, 1.5f);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.5f, 2.f);
