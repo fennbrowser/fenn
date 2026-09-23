@@ -323,3 +323,49 @@ test("group color changes publish metadata without replacing ordered membership"
   assert.equal(update.strip.layout, undefined);
   assert.deepEqual(update.strip.rows, []);
 });
+
+function groupingFixture() {
+  const f = fixture();
+  f.state.rows.forEach(r => Object.assign(r, {groupSource:true, groupTarget:true}));
+  f.session.update();
+  f.created = [];
+  f.session.createGroup = (...args) => f.created.push(args);
+  f.groupAction = {kind:"strip-create-group", session:f.session.windowDragSession,
+    revision:f.session.revision, id:11, targetId:22, before:true};
+  return f;
+}
+
+test("group drop creates exactly once and preserves requested order", () => {
+  const f = groupingFixture();
+  assert.equal(f.session.receive(f.groupAction), true);
+  assert.equal(f.session.receive(f.groupAction), false);
+  assert.deepEqual(f.created, [[11,22,true]]);
+});
+
+test("group drop rejects stale identities, malformed actions and ineligible current tabs", () => {
+  for (const change of [
+    f => f.groupAction.session++, f => f.groupAction.revision--,
+    f => f.groupAction.targetId = 99, f => f.groupAction.targetId = 11,
+    f => f.groupAction.before = 1, f => f.groupAction.id = 1.5,
+    f => f.state.rows.pop(), f => f.state.rows[0].groupSource = false,
+    f => f.state.rows[1].groupTarget = false,
+  ]) {
+    const f = groupingFixture(); change(f);
+    assert.equal(f.session.receive(f.groupAction), false);
+    assert.deepEqual(f.created, []);
+  }
+});
+
+test("group drop revalidates semantics without rejecting unrelated metadata", () => {
+  const f = groupingFixture();
+  f.state.rows[1].detail = "New title";
+  assert.equal(f.session.receive(f.groupAction), true);
+  assert.deepEqual(f.created, [[11,22,true]]);
+});
+
+test("group drop returns explicit browser rejection and cannot replay", () => {
+  const f = groupingFixture();
+  f.session.createGroup = () => false;
+  assert.equal(f.session.receive(f.groupAction), false);
+  assert.equal(f.session.receive(f.groupAction), false);
+});

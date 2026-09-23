@@ -190,6 +190,7 @@ pub struct ShellCore {
     queue: RequestQueue,
     model: TabModel,
     strip: StripState,
+    group_hover: crate::group_hover::GroupHover,
     window_drag: crate::window_drag::WindowDrag,
     snapshot: Option<SnapshotBuilder>,
     stats: Counters,
@@ -401,6 +402,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         queue: RequestQueue::new(queue_limits),
         model: TabModel::new(model_limits),
         strip: StripState::default(),
+        group_hover: crate::group_hover::GroupHover::default(),
         window_drag: crate::window_drag::WindowDrag::default(),
         snapshot: None,
         stats: Counters::default(),
@@ -706,6 +708,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
     guard(core, |core| {
         core.queue.cancel_all();
         core.window_drag.cancel();
+        core.group_hover = Default::default();
         core.snapshot = None;
         ShellStatus::Ok
     })
@@ -720,6 +723,7 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
     guard(core, |core| {
         core.queue.close();
         core.window_drag.cancel();
+        core.group_hover = Default::default();
         core.snapshot = None;
         ShellStatus::Ok
     })
@@ -1051,6 +1055,23 @@ mod tests {
 
     fn utf16(value: &str) -> Vec<u16> {
         value.encode_utf16().collect()
+    }
+
+    #[test]
+    fn group_dwell_is_revoked_by_endpoint_cancellation() {
+        unsafe {
+            let core = core();
+            let mut armed = false;
+            assert_eq!(shell_core_group_hover(core, 1, 2, 100, 240, &mut armed), ShellStatus::Ok);
+            assert!(!armed);
+            assert_eq!(shell_core_group_hover(core, 1, 2, 340, 240, &mut armed), ShellStatus::Ok);
+            assert!(armed);
+            assert_eq!(shell_core_cancel_all(core), ShellStatus::Ok);
+            assert_eq!(shell_core_group_hover(core, 1, 2, 350, 240, &mut armed), ShellStatus::Ok);
+            assert!(!armed);
+            assert_eq!(shell_core_group_hover(core, 1, 2, 590, 240, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            shell_core_destroy(core);
+        }
     }
 
     #[test]
@@ -1427,6 +1448,19 @@ pub unsafe extern "C" fn shell_core_window_drag(
             _ => return ShellStatus::InvalidArgument,
         }
         *out = core.window_drag.state();
+        ShellStatus::Ok
+    })
+}
+
+/// Observe a dwell candidate, or pass target=0 to cancel. Returns armed state.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_hover(
+    core: *mut ShellCore, source: u32, target: u32, now_ms: u64,
+    delay_ms: u32, armed: *mut bool,
+) -> ShellStatus {
+    guard(core, |core| {
+        let Some(armed) = armed.as_mut() else { return ShellStatus::InvalidArgument; };
+        *armed = core.group_hover.observe(source, target, now_ms, delay_ms);
         ShellStatus::Ok
     })
 }

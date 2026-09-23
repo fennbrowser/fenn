@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <winrt/Microsoft.UI.Input.h>
+#include <winrt/Microsoft.UI.Dispatching.h>
 #include "JsonValidation.h"
 #include "TabGroupsButton.h"
 #include "TabDragImage.h"
@@ -32,6 +33,10 @@
 struct NativeTabStrip {
     Controls::Grid root{nullptr};
     Controls::TabView view{nullptr};
+    Controls::Border groupIndicator{nullptr};
+    Microsoft::UI::Dispatching::DispatcherQueueTimer groupTimer{nullptr};
+    uint32_t groupingDelay{240}, groupCandidate{}, armedGroupTarget{};
+
     NativeTabMenu& menu;
     ShellCore* core{};
     std::function<void(uint32_t)> select, close;
@@ -69,6 +74,7 @@ struct NativeTabStrip {
         uint32_t imageWidth{}, imageHeight{};
         hstring containerName;
         uint32_t containerColor{};
+        bool groupSource{}, groupTarget{};
     };
     std::map<uint32_t, Presentation> presentation;
     TabGroupsButton groupsButton;
@@ -128,6 +134,7 @@ struct NativeTabStrip {
         if (!entry.empty()) entry.mapped()(accepted);
     }
     void BeginDeparture(uint32_t id) {
+        ClearGroupHover();
         for (auto affected : drag.affectedRowIds)
             if (rows.count(affected)) ResetRowOffset(rows.at(affected), affected);
         drag.affectedRowIds.clear();
@@ -220,6 +227,14 @@ struct NativeTabStrip {
                 LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="Transparent"><TabView TabWidthMode="Equal" CanDragTabs="False" CanReorderTabs="False" AllowDrop="False" VerticalAlignment="Top" AutomationProperties.AutomationId="FirefoxWinUITabStrip" AutomationProperties.Name="Tabs in this window" /></Grid>)")
                 .as<Controls::Grid>();
         view = root.Children().GetAt(0).as<Controls::TabView>();
+        groupIndicator = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentTextFillColorPrimaryBrush}" BorderThickness="2" CornerRadius="4" Grid.ColumnSpan="3" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
+        root.Children().Append(groupIndicator);
+        groupTimer = root.DispatcherQueue().CreateTimer();
+        groupTimer.IsRepeating(false);
+        auto timerLife = std::weak_ptr<int>(lifetime);
+        groupTimer.Tick([this, timerLife](auto const&, auto const&) {
+            if (!timerLife.expired() && dragging && tickDragSession) tickDragSession();
+        });
         view.TabStripHeader(groupsButton.button);
         groupsButton.currentRevision = [this] { return presentationRevision; };
         inlineGroups.toggle = [this](uint32_t id, bool collapsed) {
@@ -305,6 +320,7 @@ struct NativeTabStrip {
         button.ContextFlyout(flyout);
     }
     ~NativeTabStrip() {
+        if (groupTimer) groupTimer.Stop();
         lifetime.reset();
         auto pending = std::move(dropResults);
         for (auto& [id, complete] : pending) {
@@ -503,6 +519,7 @@ struct NativeTabStrip {
             return;
         }
         const auto from = transform.X();
+        if (from == target) return; // no timeline to wait for when nothing moves
         // Keep the settled value in the base property as well as the timeline.
         // Recycling/unloading a row can end the timeline without holding its
         // final value; it must not then fall back to the old offset.
@@ -530,8 +547,12 @@ struct NativeTabStrip {
             if (alive.expired()) return;
             auto current = rowAnimations.find(id);
             // A replaced timeline may still deliver its queued completion.
-            if (current != rowAnimations.end() && current->second.storyboard == sender)
+            if (current != rowAnimations.end() && current->second.storyboard == sender) {
                 rowAnimations.erase(current);
+                // Reconsider a stationary pointer only after the last slide
+                // settles. A pending grouping timer never owns these offsets.
+                if (rowAnimations.empty() && dragging && tickDragSession) tickDragSession();
+            }
         });
         rowAnimations[id] = RowAnimation{storyboard, target};
         storyboard.Begin();
@@ -567,6 +588,66 @@ struct NativeTabStrip {
             drag.affectedRowIds.push_back(id);
     }
 
+    void ClearGroupHover() {
+        if (groupTimer) groupTimer.Stop();
+        if (groupIndicator) groupIndicator.Visibility(Visibility::Collapsed);
+        groupCandidate = armedGroupTarget = 0;
+        bool armed{};
+        if (core) shell_core_group_hover(core, 0, 0, 0, 0, &armed);
+    }
+
+    bool UpdateGroupHover(Windows::Foundation::Point const& point) {
+        // The reorder storyboard owns its transforms until completion. Revoke
+        // dwell while it moves, including a timer queued before the slide.
+        if (!rowAnimations.empty()) { ClearGroupHover(); return false; }
+        uint32_t candidate{};
+        const auto source = presentation.find(drag.tabId);
+        if (core && source != presentation.end() && source->second.groupSource &&
+            point.Y >= 0 && point.Y <= view.ActualHeight()) {
+            // Grouping uses the settled visual position, including an existing
+            // reorder offset. Never group the tab that used to occupy a gap.
+            for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i) {
+                auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
+                const auto id = unbox_value<uint32_t>(row.Tag());
+                if (id == drag.tabId) continue; // its hidden source slot can overlap a shifted target
+                const auto left = drag.originalLeftEdge[i] + RowTransform(row).X();
+                const auto width = drag.originalWidth[i];
+                if (point.X < left + width * .3 || point.X > left + width * .7) continue;
+                const auto target = presentation.find(id);
+                if (target != presentation.end() && target->second.groupTarget)
+                    candidate = id;
+                break;
+            }
+        }
+        if (!candidate) { ClearGroupHover(); return false; }
+        bool armed{};
+        if (shell_core_group_hover(core, drag.tabId, candidate, GetTickCount64(), groupingDelay, &armed) != SHELL_STATUS_OK) {
+            ClearGroupHover(); return false;
+        }
+        if (candidate != groupCandidate) {
+            groupTimer.Stop();
+            groupCandidate = candidate;
+            groupTimer.Interval(std::chrono::milliseconds(std::max(1u, groupingDelay)));
+            groupTimer.Start();
+        }
+        // The Win32 clock is quantized; a one-shot can arrive just before
+        // the dwell deadline. Rearm only while this candidate is pending.
+        if (!armed && !groupTimer.IsRunning()) {
+            groupTimer.Interval(std::chrono::milliseconds(16));
+            groupTimer.Start();
+        }
+        armedGroupTarget = armed ? candidate : 0;
+        groupIndicator.Visibility(armed ? Visibility::Visible : Visibility::Collapsed);
+        if (armed) {
+            auto row = rows.at(candidate);
+            const auto at = row.TransformToVisual(root).TransformPoint({0, 0});
+            groupIndicator.Margin({at.X - 3, at.Y, 0, 0});
+            groupIndicator.Width(row.ActualWidth() + 6);
+            groupIndicator.Height(row.ActualHeight());
+        }
+        return true;
+    }
+
     // Re-derives the reorder/tear-off state from the cursor's current
     // position, clamped the same way a row confined to this strip's own
     // width would be -- but doesn't touch the dragged row's own visual at
@@ -582,20 +663,24 @@ struct NativeTabStrip {
     // independently-tuned clamps disagreeing with each other) -- there's
     // no transition left to get wrong. `point` is the pointer's current
     // position relative to `view`, used both for the horizontal reorder
-    // math and to notice the gesture has cleared the strip's own vertical
+    // math and to notice the gesture has cleared the strip's own
     // bounds and become a tear-off.
-    void UpdateDragVisual(Windows::Foundation::Point const& point) {
+    void UpdateDragVisual(Windows::Foundation::Point const& point, bool allowGrouping = true) {
         double origin = drag.originalLeftEdge[drag.originalIndex];
         double minX = -origin, maxX = view.ActualWidth() - drag.tabWidth - origin;
         double rawDeltaX = point.X - drag.startPoint.X;
         double clampedX = std::clamp(rawDeltaX, std::min(minX, maxX), std::max(minX, maxX));
-        // A real margin past the strip's own top/bottom, not just a small
-        // wobble while reordering within it -- matches the "drag it clearly
-        // off the strip" feel of a real browser's tear-off.
+        // Keep one strip-height of tolerance on every edge. Horizontal
+        // overshoot can still move to the end, but must not leave an
+        // unlimited attachment band across the desktop (including after
+        // a sole-tab window merge continues as a tab drag).
         double stripHeight = view.ActualHeight();
         bool wasDetaching = drag.detaching;
-        drag.detaching = stripHeight > 0 && (point.Y < -stripHeight || point.Y > stripHeight * 2);
+        drag.detaching = stripHeight > 0 &&
+            (point.X < -stripHeight || point.X > view.ActualWidth() + stripHeight ||
+             point.Y < -stripHeight || point.Y > stripHeight * 2);
         if (drag.detaching) {
+            ClearGroupHover();
             // Just left the strip with a reorder gap still open -- close it,
             // since nothing should be making room for a tab that's leaving.
             if (!wasDetaching && drag.projectedIndex != drag.originalIndex) {
@@ -605,6 +690,7 @@ struct NativeTabStrip {
             }
             return;
         }
+        if (allowGrouping && UpdateGroupHover(point)) return;
         auto projected = ProjectDropIndex(origin + drag.tabWidth / 2 + clampedX);
         if (projected == drag.projectedIndex) return;
         drag.projectedIndex = projected;
@@ -633,6 +719,7 @@ struct NativeTabStrip {
     // AcceptForeignDrop/CommitDetach/CancelDrag below) -- this is also
     // used only for outcomes that have no pending browser transfer.
     void FinishDrag(uint32_t id) {
+        ClearGroupHover();
         if (drag.tabId != id) return;
         RestoreRowVisibility(id);
         drag.phase = DragPhase::None;
@@ -685,6 +772,7 @@ struct NativeTabStrip {
     // UpdateDragVisual's own detach-branch logic: nothing should keep
     // making room for a tab that's no longer hovering.
     void CloseDragGap() {
+        ClearGroupHover();
         if (drag.phase != DragPhase::Dragging || drag.projectedIndex == drag.originalIndex) return;
         drag.projectedIndex = drag.originalIndex;
         for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i)
@@ -697,6 +785,23 @@ struct NativeTabStrip {
     bool CommitReorder(uint32_t tabId, Windows::Foundation::Point const& point) {
         if (drag.tabId != tabId || drag.phase != DragPhase::Dragging || !rows.count(tabId)) return false;
         UpdateDragVisual(point);
+        if (armedGroupTarget) {
+            using Value = Windows::Data::Json::JsonValue;
+            Windows::Data::Json::JsonObject action;
+            action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-create-group"));
+            action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));
+            action.SetNamedValue(L"session", Value::CreateNumberValue(windowDragSession));
+            action.SetNamedValue(L"id", Value::CreateNumberValue(tabId));
+            action.SetNamedValue(L"targetId", Value::CreateNumberValue(armedGroupTarget));
+            uint32_t targetIndex{};
+            view.TabItems().IndexOf(rows.at(armedGroupTarget), targetIndex);
+            action.SetNamedValue(L"before", Value::CreateBooleanValue(drag.originalIndex < targetIndex));
+            CancelDrag();
+            if (dispatch) dispatch(tabId, action.Stringify());
+            return true;
+        }
+        ClearGroupHover();
+        UpdateDragVisual(point, false);
         auto row = rows.at(tabId);
         auto targetIndex = drag.projectedIndex;
         drag.affectedRowIds.push_back(tabId);
@@ -830,21 +935,20 @@ struct NativeTabStrip {
     // touched row back immediately -- nothing has been committed yet, so
     // there is nothing to await from Firefox before resetting.
     void CancelDrag() {
-        if (drag.phase == DragPhase::Dragging && rows.count(drag.tabId)) {
-            auto row = rows.at(drag.tabId);
-            // A native-window handoff has HWND capture, without a XAML pointer.
-            if (auto captures = row.PointerCaptures())
-                for (auto pointer : captures) row.ReleasePointerCapture(pointer);
-            RestoreRowVisibility(drag.tabId);
-            for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i) {
-                auto sibling = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
-                ResetRowOffset(sibling, unbox_value<uint32_t>(sibling.Tag()));
-            }
-        }
+        const bool wasDragging = drag.phase == DragPhase::Dragging;
+        const auto tab = drag.tabId;
+        // Revoke the local gesture before any XAML work can reenter. Reset
+        // actual retained rows, not geometry indices captured by an old layout.
         drag.phase = DragPhase::None;
         drag.detaching = false;
         drag.affectedRowIds.clear();
         dragging = false;
+        ClearGroupHover();
+        if (wasDragging) {
+            RestoreRowVisibility(tab);
+            for (auto const& [id, row] : rows) ResetRowOffset(row, id);
+            if (rows.count(tab)) rows.at(tab).ReleasePointerCaptures();
+        }
     }
 
     // Parse a complete bounded copy before changing XAML or accepting any IDs.
@@ -865,6 +969,9 @@ struct NativeTabStrip {
         if (dragTab > UINT32_MAX) throw hresult_invalid_argument();
         const auto dragSessionId = data.HasKey(L"windowDragSession") ? NativeJson::RequireId(data, L"windowDragSession") : (base ? windowDragSession : 0);
         const bool dragPrivate = data.GetNamedBoolean(L"windowDragPrivate", base ? windowDragPrivate : false);
+        const auto delay = data.GetNamedNumber(L"groupingDelay", base ? groupingDelay : 240);
+        if (!std::isfinite(delay) || delay < 0 || delay > 60000 || std::floor(delay) != delay)
+            throw hresult_invalid_argument();
         const bool updateGroups = !base || data.HasKey(L"groups") || data.HasKey(L"groupsLabel");
         auto label = base ? data.GetNamedString(L"groupsLabel", groupsLabel) : data.GetNamedString(L"groupsLabel");
         const bool rtl = base ? data.GetNamedBoolean(L"rtl", root.FlowDirection() == FlowDirection::RightToLeft)
@@ -923,7 +1030,9 @@ struct NativeTabStrip {
                 imageHeight = uint32_t(image.GetNamedNumber(L"height"));
             }
             if (!next.emplace(id, Presentation{detail, uint32_t(flags), status, imagePixels, imageWidth, imageHeight,
-                                               containerName, uint32_t(containerColor)})
+                                               containerName, uint32_t(containerColor),
+                                               entry.GetNamedBoolean(L"groupSource", existing && old->second.groupSource),
+                                               entry.GetNamedBoolean(L"groupTarget", existing && old->second.groupTarget)})
                      .second)
                 throw hresult_invalid_argument();
             changes.push_back({id, imageWidth * imageHeight, false,
@@ -980,6 +1089,10 @@ struct NativeTabStrip {
         // A gesture formed against an older presentation is not revoked here:
         // it is already queued, carrying the revision it was formed against,
         // and Firefox refuses it explicitly on that revision.
+        if (groupingDelay != uint32_t(delay) || layoutChanged || !removed.empty()) ClearGroupHover();
+        groupingDelay = uint32_t(delay);
+        if (groupCandidate && (!presentation.count(groupCandidate) || !presentation.at(groupCandidate).groupTarget ||
+            !presentation.count(drag.tabId) || !presentation.at(drag.tabId).groupSource)) ClearGroupHover();
         windowDragTabId = uint32_t(dragTab);
         windowDragSession = dragSessionId;
         windowDragPrivate = dragPrivate;
@@ -1306,12 +1419,14 @@ struct NativeTabStrip {
                                 // correctness depends on from here on:
                                 // row.CapturePointer only ever feeds the
                                 // low-latency accelerant path.
-                                if (!row.CapturePointer(args.Pointer())) return;
-                                ::SetCapture(ownerHwnd);
+                                // Revoke the old session before overwriting its
+                                // local state or taking capture for this press.
+                                if (armDragSession) armDragSession(id);
                                 drag.phase = DragPhase::Armed;
                                 drag.tabId = id;
                                 drag.startPoint = point.Position();
-                                if (armDragSession) armDragSession(id);
+                                if (!row.CapturePointer(args.Pointer())) { FinishDrag(id); return; }
+                                ::SetCapture(ownerHwnd);
                             })),
                         true);
                     row.AddHandler(

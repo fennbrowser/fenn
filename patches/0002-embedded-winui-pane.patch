@@ -1901,10 +1901,10 @@ index 031a63b997..36cfa7c11e 100644
    nsIWidget();
    virtual ~nsIWidget();
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
-index c6e02a8696..336d018771 100644
+index c6e02a8696..ff9c62cf16 100644
 --- a/widget/windows/WinUIPrototype.cpp
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -2,17 +2,238 @@
+@@ -2,17 +2,242 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  #include "WinUIPrototype.h"
@@ -1917,6 +1917,7 @@ index c6e02a8696..336d018771 100644
 +#include "WinUIBridgeApi.h"
 +#include "WinUIPaneApi.h"
  #include "mozilla/Logging.h"
++#include "mozilla/CycleCollectedJSContext.h"
  #include "mozilla/Preferences.h"
 +#include "mozilla/Services.h"
 +#include "nsIObserverService.h"
@@ -1997,6 +1998,9 @@ index c6e02a8696..336d018771 100644
 +        if (sPaneStopped) return;
 +        nsCOMPtr<nsIObserverService> observers = services::GetObserverService();
 +        if (!observers) return;
++        // Keep custom-element reactions and mutation observers inside one
++        // browser command turn (an empty new group must survive until filled).
++        nsAutoMicroTask microtask;
 +        observers->NotifyObservers(
 +            nullptr, "winui-pane-drain",
 +            NS_ConvertUTF8toUTF16(EndpointName(window)).get());
@@ -2144,7 +2148,7 @@ index c6e02a8696..336d018771 100644
  
  void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    if (!XRE_IsParentProcess() || !NS_IsMainThread() || !sTraceEnabled) return;
-@@ -20,51 +241,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
+@@ -20,51 +245,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
    const HRESULT hr = CoGetApartmentType(&apartment, &qualifier);
    DWORD ownerProcess = 0;
@@ -2431,10 +2435,10 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..fb627159bf
+index 0000000000..89a9b24efe
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,161 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2444,8 +2448,8 @@ index 0000000000..fb627159bf
 +let nextWindowDragSession = 0;
 +
 +export class WinUITabStripSession {
-+  constructor({ read, collapse, reorder, detach, adopt }) {
-+    Object.assign(this, { read, collapse, reorder, detach, adopt });
++  constructor({ read, collapse, reorder, detach, adopt, createGroup }) {
++    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup });
 +    this.ids = new WeakMap();
 +    this.nextId = 1;
 +    this.revision = 0;
@@ -2505,7 +2509,7 @@ index 0000000000..fb627159bf
 +        }
 +      }
 +      strip.removed = [...previous.keys()];
-+      for (const key of ["layout", "groups", "groupsLabel", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
++      for (const key of ["groupingDelay", "layout", "groups", "groupsLabel", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
 +        if (!this.same(state[key], this.state[key])) strip[key] = state[key];
 +      }
 +    }
@@ -2517,6 +2521,20 @@ index 0000000000..fb627159bf
 +  }
 +
 +  receive(event) {
++    if (event?.kind === "strip-create-group") {
++      // Metadata updates do not revoke a dwell. Revalidate browser semantics,
++      // source/target membership and order against the current publication.
++      if (event.session !== this.windowDragSession || this.consumed ||
++          !Number.isSafeInteger(event.id) || !Number.isSafeInteger(event.targetId) ||
++          event.id === event.targetId || typeof event.before !== "boolean") return false;
++      const current = this.describe();
++      const source = current.rows.find(r => r.id === event.id);
++      const target = current.rows.find(r => r.id === event.targetId);
++      if (!source?.groupSource || !target?.groupTarget || !this.createGroup) return false;
++      if (!Number.isSafeInteger(event.revision) || event.revision !== this.revision) return false;
++      this.consumed = true;
++      return this.createGroup(event.id, event.targetId, event.before) !== false;
++    }
 +    if (event?.revision !== this.revision) return false;
 +    if (event.kind === "strip-group") {
 +      if (!Number.isSafeInteger(event.group) || typeof event.collapsed !== "boolean") return false;
@@ -3730,10 +3748,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..03847b6380
+index 0000000000..8523683bcf
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1528 @@
+@@ -0,0 +1,1562 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3743,6 +3761,8 @@ index 0000000000..03847b6380
 +  addressPref: "widget.windows.winui-prototype.address.enabled",
 +  stripPref: "widget.windows.winui-prototype.tabstrip.enabled",
 +  stripHeightPref: "widget.windows.winui-prototype.tabstrip.height",
++  groupingPrefs: ["browser.tabs.groups.enabled", "browser.tabs.dragDrop.createGroup.enabled",
++    "browser.tabs.dragDrop.createGroup.delayMS"],
 +  element: null,
 +  frame: 0,
 +  popups: new Set(),
@@ -3950,6 +3970,7 @@ index 0000000000..03847b6380
 +    Services.prefs.addObserver(this.pref, this);
 +    Services.prefs.addObserver(this.stripPref, this);
 +    Services.prefs.addObserver(this.stripHeightPref, this);
++    for (const pref of this.groupingPrefs) Services.prefs.addObserver(pref, this);
 +    Services.prefs.addObserver(this.addressPref, this);
 +    this.schedule();
 +  },
@@ -4410,6 +4431,18 @@ index 0000000000..03847b6380
 +        "chrome://browser/content/WinUITabStripSession.sys.mjs");
 +      this.stripSession = new WinUITabStripSession({
 +        read: () => this.describeStrip(),
++        createGroup: (id, targetId, before) => {
++          const tab = this.resolveStripTab(id), target = this.resolveStripTab(targetId);
++          if (!this.canDragGroupTab(tab) || !this.canDragGroupTab(target) ||
++              target.group || tab === target) return false;
++          const tabs = before ? [tab, target] : [target, tab];
++          gBrowser.addTabGroup(tabs, {
++            insertBefore: target,
++            metricsContext: gBrowser.TabMetrics.userTriggeredContext(
++              gBrowser.TabMetrics.METRIC_SOURCE.DRAG_AND_DROP),
++          });
++          return true;
++        },
 +        collapse: (group, collapsed) => {
 +          if (!group.isConnected || !gBrowser.tabGroups.includes(group)) return;
 +          group.setCollapsedFromUser(collapsed);
@@ -4553,6 +4586,16 @@ index 0000000000..03847b6380
 +    return this.tabMenuL10n;
 +  },
 +
++  canDragGroupTab(tab) {
++    // Split wrappers and multi-tab gestures retain ordinary drag behavior until
++    // the native gesture contract can represent their complete moving set.
++    return !!tab && tab.isConnected && !tab.closing && tab.visible &&
++      !tab.pinned && !tab.splitview && !tab._pendingPermitUnload &&
++      gBrowser.selectedTabs.length <= 1 &&
++      Services.prefs.getBoolPref("browser.tabs.groups.enabled", false) &&
++      Services.prefs.getBoolPref("browser.tabs.dragDrop.createGroup.enabled", false);
++  },
++
 +  describeStrip() {
 +    const l10n = this.localization();
 +    const label = (id, args) => l10n.formatValueSync(id, args);
@@ -4634,14 +4677,16 @@ index 0000000000..03847b6380
 +        else imageChars += cost;
 +      }
 +      const container = ContextualIdentityService.getPublicIdentityFromId(tab.userContextId);
-+      return { id: this.tabIds.get(tab), detail:detail.slice(0, 2048), status:status.slice(0, 2048), flags, image,
++      return { id: this.tabIds.get(tab), groupSource: this.canDragGroupTab(tab),
++        groupTarget: this.canDragGroupTab(tab) && !tab.group, detail:detail.slice(0, 2048), status:status.slice(0, 2048), flags, image,
 +        containerName: container ? ContextualIdentityService.getUserContextLabel(tab.userContextId).slice(0, 1024) : "",
 +        containerColor: container ? this.containerColor(container) : 0 };
 +    });
 +    // Accepted closes can retain their DOM tab during the closing animation.
 +    // They are no longer browser tabs that could be dragged or adopted.
 +    const liveTabs = Array.from(gBrowser.tabs).filter(tab => !tab.closing);
-+    return { rtl: document.documentElement.matches(":dir(rtl)"),
++    return { groupingDelay: Math.max(0, Math.min(60000, Services.prefs.getIntPref("browser.tabs.dragDrop.createGroup.delayMS", 240))),
++      rtl: document.documentElement.matches(":dir(rtl)"),
 +      windowDragTabId: liveTabs.length === 1 && liveTabs[0].visible &&
 +        !liveTabs[0]._pendingPermitUnload ? this.tabIds.get(liveTabs[0]) || 0 : 0,
 +      windowDragPrivate: !!window.docShell.usePrivateBrowsing,
@@ -5035,6 +5080,11 @@ index 0000000000..03847b6380
 +      this.schedule();
 +      return;
 +    }
++    if (topic === "nsPref:changed" && this.groupingPrefs.includes(data)) {
++      this.stripDirty = true;
++      this.schedule();
++      return;
++    }
 +    if (topic === "winui-pane-drain") {
 +      // One wakeup, one drain. Other windows' endpoints are ignored.
 +      if (this.element && data === this.endpoint) this.drain();
@@ -5098,6 +5148,7 @@ index 0000000000..03847b6380
 +    if (event.type === "TabSelect") {
 +      this.dirtySelection = true;
 +    } else if (event.type === "TabMultiSelect") {
++      this.stripDirty = true;
 +      // The tab set and its order are unchanged; only which tabs are selected.
 +      this.contextDirty = true;
 +    } else if (event.type === "TabAttrModified") {
@@ -5249,6 +5300,7 @@ index 0000000000..03847b6380
 +    Services.prefs.removeObserver(this.pref, this);
 +    Services.prefs.removeObserver(this.stripPref, this);
 +    Services.prefs.removeObserver(this.stripHeightPref, this);
++    for (const pref of this.groupingPrefs) Services.prefs.removeObserver(pref, this);
 +    Services.prefs.removeObserver(this.addressPref, this);
 +    Services.prefs.removeObserver("privacy.userContext.enabled", this);
 +    Services.prefs.removeObserver("browser.nova.enabled", this);

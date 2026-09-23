@@ -42,6 +42,7 @@ struct InlineTabGroups {
 </DataTemplate>)").as<DataTemplate>());
         style.HeaderContainerStyle(Markup::XamlReader::Load(LR"(
 <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="ListViewHeaderItem">
+ <Setter Property="IsTabStop" Value="False"/>
  <Setter Property="Margin" Value="0"/><Setter Property="Padding" Value="0"/>
  <Setter Property="MinHeight" Value="0"/><Setter Property="VerticalContentAlignment" Value="Center"/>
 </Style>)").as<Style>());
@@ -99,7 +100,11 @@ struct InlineTabGroups {
             if (!slot.tab) { key = slot.group; wanted.push_back(key); members[key]; ungrouped = false; }
             else {
                 if (!slot.group && !ungrouped) {
-                    key = (uint64_t(1) << 32) | slot.tab;
+                    // An ungrouped run belongs to the boundary after the
+                    // preceding group (zero at the start), not its first tab.
+                    // Reordering that tab must not replace the whole group:
+                    // WinUI can retain a stale selected index across replacement.
+                    key = (uint64_t(1) << 32) | key;
                     wanted.push_back(key); ungrouped = true;
                 }
                 members[key].push_back(rows.at(slot.tab));

@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 4
+#define SHELL_CORE_ABI_VERSION 5
 
 #define SHELL_NO_INDEX UINT32_MAX
 
@@ -590,6 +590,16 @@ ShellStatus shell_core_window_drag(ShellCore *core,
                                    bool eligible,
                                    uint64_t gesture,
                                    ShellWindowDrag *out);
+
+/*
+ Observe a dwell candidate, or pass target=0 to cancel. Returns armed state.
+ */
+ShellStatus shell_core_group_hover(ShellCore *core,
+                                   uint32_t source,
+                                   uint32_t target,
+                                   uint64_t now_ms,
+                                   uint32_t delay_ms,
+                                   bool *armed);
 
 #ifdef __cplusplus
 }  // extern "C"

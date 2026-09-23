@@ -44,6 +44,34 @@ static void Pump() {
         DispatchMessageW(&message);
     }
 }
+// Only inspect this test thread's popups; an unrelated running browser can
+// legitimately own a preview with the same window class.
+static std::vector<HWND> DragPreviewWindows() {
+    std::vector<HWND> windows;
+    EnumThreadWindows(GetCurrentThreadId(), [](HWND hwnd, LPARAM data) -> BOOL {
+        wchar_t name[128]{};
+        GetClassNameW(hwnd, name, 128);
+        if (wcscmp(name, L"FirefoxWinUITabTearoff") == 0)
+            reinterpret_cast<std::vector<HWND>*>(data)->push_back(hwnd);
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&windows));
+    return windows;
+}
+static bool nestedDragCreateObserved{};
+static LRESULT CALLBACK DragCreateProbe(int code, WPARAM w, LPARAM l) {
+    if (code == HCBT_CREATEWND && !nestedDragCreateObserved) {
+        wchar_t name[128]{};
+        GetClassNameW(HWND(w), name, 128);
+        if (wcscmp(name, L"FirefoxWinUITabTearoff") == 0) {
+            nestedDragCreateObserved = true;
+            // Simulate message-hook reentry before CreateWindowEx has returned
+            // its HWND to the session, as native callbacks are allowed to do.
+            MSG message{HWND(w), WM_NULL};
+            if (translatePane) translatePane(&message);
+        }
+    }
+    return CallNextHookEx(nullptr, code, w, l);
+}
 // UIA must run off the XAML STA; the host keeps pumping provider requests.
 static void WithTab(HWND hwnd, const wchar_t* id, const wchar_t* title, bool select = false, bool close = false,
                     int input = 0, int expectedMatches = 1, int matchIndex = 0) {
@@ -1083,6 +1111,10 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect strip");
     auto root = content.as<Controls::Grid>();
     auto view = root.Children().GetAt(0).as<Controls::TabView>();
+    auto groupIndicator = root.Children().GetAt(1).as<Controls::Border>();
+    Require(groupIndicator.Visibility() == Visibility::Collapsed && !groupIndicator.IsHitTestVisible() &&
+            groupIndicator.BorderThickness().Left == 2 && groupIndicator.BorderBrush(),
+            "group dwell visual starts hidden, themed and does not intercept input");
     auto first = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
     auto second = view.TabItems().GetAt(1).as<Controls::TabViewItem>();
     for (int i = 0; i < 300 && (!first.IsLoaded() || first.ActualWidth() == 0); ++i) {
@@ -1093,7 +1125,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "stock tab header fits reserved row");
     Require(view.ActualHeight() == 40 && root.ActualHeight() == view.ActualHeight(),
             "reservation fits the unchanged stock TabView without an empty bottom band");
-    Require(root.Children().Size() == 4 && !first.Content() && !second.Content(),
+    Require(root.Children().Size() == 5 && !first.Content() && !second.Content(),
             "strip has no address or browser content");
     Require(root.ColumnDefinitions().Size() == 3 && root.ColumnDefinitions().GetAt(2).Width().Value > 0,
             "system caption buttons reserve their SDK inset");
@@ -1121,7 +1153,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         Require(root.ActualHeight() == height && view.ActualHeight() == height && first.ActualHeight() == 32,
                 "all strip layouts preserve tab height without a bottom band");
         Require(systemCaption.PreferredHeightOption() == expected, "caption size follows strip layout");
-        for (uint32_t index : {1u, 2u}) {
+        for (uint32_t index : {2u, 3u}) {
             auto line = root.Children().GetAt(index).as<Controls::Border>();
             Require(line.Visibility() == (height == 40 ? Visibility::Visible : Visibility::Collapsed) &&
                         !line.IsHitTestVisible() && line.Height() == 1 && line.Background(),
@@ -1130,7 +1162,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         Require(view.TabItems().GetAt(0) == first && view.SelectedItem() == first,
                 "height changes preserve tab identity and selection");
     }
-    auto mergePreview = root.Children().GetAt(3).as<Controls::Border>();
+    auto mergePreview = root.Children().GetAt(4).as<Controls::Border>();
     Require(!mergePreview.IsHitTestVisible() && mergePreview.Visibility() == Visibility::Collapsed,
             "merge feedback is hidden and cannot capture input while idle");
     Require(first != second && view.SelectedItem() == first, "duplicate titles preserve identity and active tab");
@@ -1498,6 +1530,16 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
     for (int i=0;i<500 && !find(view,L"FirefoxWinUIInlineGroup-9");++i) { Pump(); Sleep(10); }
     settle();
     auto header = find(view,L"FirefoxWinUIInlineGroup-7");
+    std::function<void(DependencyObject)> checkHeaderFocus = [&](DependencyObject node) {
+        if (auto header = node.try_as<Controls::ListViewHeaderItem>()) {
+            printf("Group container: width=%.1f height=%.1f tabstop=%d content=%d\n",
+                header.ActualWidth(), header.ActualHeight(), header.IsTabStop(), bool(header.Content()));
+            Require(!header.IsTabStop(), "group containers cannot take focus away from actual disclosure buttons or tabs");
+        }
+        for (int child = 0; child < Media::VisualTreeHelper::GetChildrenCount(node); ++child)
+            checkHeaderFocus(Media::VisualTreeHelper::GetChild(node, child));
+    };
+    checkHeaderFocus(view);
     printf("Inline layout: items=%u width=%.1f height=%.1f header=%d empty=%d\n", view.TabItems().Size(),
            view.ActualWidth(), view.ActualHeight(), bool(header), bool(find(view,L"FirefoxWinUIInlineGroup-9")));
     fflush(stdout);
@@ -1545,6 +1587,32 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
     MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"rtl":true,"rows":[],"removed":[]}})");
     Require(root.FlowDirection() == FlowDirection::RightToLeft, "inline groups inherit RTL");
+    // The grouped source is also used for an entirely ungrouped strip. Moving
+    // its first tab changes the run identity and reparents the retained rows.
+    for (uint32_t revision = 4; revision <= 8; ++revision) {
+        const bool reversed = revision % 2;
+        auto publication = winrt::Windows::Data::Json::JsonObject::Parse(
+            reversed
+                ? LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rtl":false,"groups":[],"rows":[{"id":42,"detail":"","flags":0},{"id":41,"detail":"","flags":0}],"layout":[{"group":0,"tab":42},{"group":0,"tab":41}]}})"
+                : LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rtl":false,"groups":[],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":0,"tab":42}]}})");
+        auto strip = publication.GetNamedObject(L"strip");
+        strip.SetNamedValue(L"base", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(0));
+        strip.SetNamedValue(L"groupsLabel", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"Groups"));
+        strip.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(revision));
+        MenuPublish(api, host, publication.Stringify().c_str());
+        WinUITab ordered[]{{reversed ? 42u : 41u,L"One"},{reversed ? 41u : 42u,L"Two"}};
+        Require(SUCCEEDED(api.syncTabs(host,ordered,2,42,&selected)), "publish two-tab round trip");
+        settle();
+        for (auto item : view.TabItems()) {
+            auto row = item.as<Controls::TabViewItem>();
+            const bool active = unbox_value<uint32_t>(row.Tag()) == 42;
+            if (row.IsSelected() != active)
+                fprintf(stderr, "Round trip revision=%u tab=%u selected=%d expected=%d index=%d\n",
+                       revision, unbox_value<uint32_t>(row.Tag()), row.IsSelected(), active, view.SelectedIndex());
+            Require((view.SelectedItem() == row) == active, "round trip retains TabView selection");
+            Require(row.IsSelected() == active, "round trip retains the row's visual selection");
+        }
+    }
     puts("CHECKS PASSED: retained inline groups, disclosure command, compact themes, RTL and atomic layout validation");
 }
 
@@ -1682,11 +1750,55 @@ static void CheckWindowContinuation(HMODULE module, WinUIPaneApi& api, HWND host
     puts("CHECKS PASSED: merged tab stays hidden through layout/capture, pending cancel restores it");
 }
 
-static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false, bool inactive = false) {
+// Query UIA through its client interface on an MTA, as WithTab does.
+// Calling a XAML peer directly returns island-local bounds, before the
+// hosting provider converts them to physical screen coordinates.
+static RECT TabScreenBounds(HWND window, wchar_t const* id) {
+    RECT bounds{};
+    std::atomic<bool> done = false;
+    std::thread client([&] {
+        Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)), "bounds UIA apartment");
+        {
+            ComPtr<IUIAutomation> automation;
+            Require(SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                                               IID_PPV_ARGS(&automation))), "bounds UIA client");
+            ComPtr<IUIAutomationElement> root, row;
+            Require(SUCCEEDED(automation->ElementFromHandle(window, &root)), "bounds UIA host");
+            VARIANT value{};
+            value.vt = VT_BSTR;
+            value.bstrVal = SysAllocString(id);
+            ComPtr<IUIAutomationCondition> condition;
+            Require(SUCCEEDED(automation->CreatePropertyCondition(UIA_AutomationIdPropertyId, value, &condition)),
+                    "bounds UIA condition");
+            VariantClear(&value);
+            for (int attempt = 0; attempt < 100 && !row; ++attempt) {
+                Require(SUCCEEDED(root->FindFirst(TreeScope_Descendants, condition.Get(), &row)), "query row through UIA");
+                if (!row) Sleep(20);
+            }
+            if (!row) fwprintf(stderr, L"Missing UIA row: %ls\n", id);
+            Require(bool(row), "find dragged row through UIA");
+            Require(SUCCEEDED(row->get_CurrentBoundingRectangle(&bounds)), "physical UIA row bounds");
+        }
+        CoUninitialize();
+        done = true;
+    });
+    auto deadline = GetTickCount64() + 15000;
+    while (!done && GetTickCount64() < deadline) {
+        Pump();
+        MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT);
+    }
+    Require(done, "bounds UIA completes without deadlock");
+    client.join();
+    Require(bounds.right > bounds.left && bounds.bottom > bounds.top, "UIA reports nonempty screen bounds");
+    return bounds;
+}
+
+static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false, bool inactive = false, bool rearm = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     RECT rect{0, 0, 600, 48};
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation for drag test");
+    SetWindowPos(host, nullptr, 300, 200, 640, 480, SWP_NOZORDER | SWP_NOACTIVATE);
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{11, L"First tab"}, {22, L"Second tab"}};
     uint32_t selected{};
@@ -1710,9 +1822,9 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
         root.UpdateLayout();
         Sleep(10);
     }
-    auto topLeft = first.TransformToVisual(nullptr).TransformPoint({0, 0});
-    POINT client{LONG(topLeft.X + first.ActualWidth() / 2), LONG(topLeft.Y + first.ActualHeight() / 2)};
-    Require(ClientToScreen(host, &client) != 0, "resolve tab screen position");
+    auto firstBounds = TabScreenBounds(host, L"FirefoxWinUITab-11");
+    auto lastBounds = TabScreenBounds(host, L"FirefoxWinUITab-22");
+    POINT client{(firstBounds.left + firstBounds.right) / 2, (firstBounds.top + firstBounds.bottom) / 2};
     fprintf(stderr, "Drag test: dragging first tab from screen point (%ld,%ld)\n", client.x, client.y);
     // A single Pump()+Sleep() pair can race SendInput's delivery -- the
     // injected message may not have reached this thread's queue yet at the
@@ -1734,6 +1846,12 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
         input.mi.dwFlags = flags;
         SendInput(1, &input, sizeof(INPUT));
     };
+    HHOOK createProbe{};
+    if (rearm) {
+        nestedDragCreateObserved = false;
+        createProbe = SetWindowsHookExW(WH_CBT, DragCreateProbe, nullptr, GetCurrentThreadId());
+        Require(createProbe != nullptr, "install nested drag-window creation probe");
+    }
     send(MOUSEEVENTF_LEFTDOWN);
     settle();
     // SetCursorPos teleports the cursor and generates a plain WM_MOUSEMOVE,
@@ -1753,24 +1871,40 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
         input.mi.dy = LONG((double(y - vy) * 65535) / vh);
         SendInput(1, &input, sizeof(INPUT));
     };
-    // Nothing blocks this thread anymore -- Pane.cpp's TabDragSession
-    // advances by polling GetCursorPos()/GetAsyncKeyState() on every Pump()
-    // (Translate()'s own pretranslate hook ticks it unconditionally), not by
-    // waiting for a message to reach some nested loop. Plain SendInput moves
-    // the real cursor and updates that ground truth directly, so this drives
-    // the whole gesture from a single thread with no SetCursorPos/
-    // PostMessageW split and no second thread -- matching how the very
-    // first, pre-OLE version of this test drove a real gesture. Comfortably
-    // exceeds any tab width TabWidthMode="Equal" could produce for two tabs
-    // in a 600-unit strip, so the cursor reliably ends up past the second
-    // tab's midpoint regardless of the exact computed width.
+    // Leave horizontally on both sides, then re-enter without releasing.
+    // Re-entry must recover the reorder gap and produce a reorder, not detach.
+    RECT hostBounds{};
+    Require(GetWindowRect(host, &hostBounds), "reorder host bounds");
+    for (LONG x : {hostBounds.left - 120, hostBounds.right + 120}) {
+        moveTo(x, client.y);
+        settle();
+    }
+    // Finish past the last tab's midpoint but inside the actual strip.
+    const LONG endX = lastBounds.right - 8;
     for (int step = 1; step <= 25; ++step) {
-        moveTo(client.x + step * 20, client.y);
+        moveTo(client.x + (endX - client.x) * step / 25, client.y);
         settle(5);
     }
     CheckFloatingDragBitmap(module, reject);
+    if (rearm) {
+        UnhookWindowsHookEx(createProbe);
+        Require(nestedDragCreateObserved, "creation exercised a reentrant message-hook tick");
+        auto popups = DragPreviewWindows();
+        Require(popups.size() == 1, "reentrant creation leaves exactly one owned drag popup");
+        const auto popup = popups.front();
+        auto restart = reinterpret_cast<HRESULT(WINAPI*)(HWND,uint32_t)>(GetProcAddress(module,"WinUIPaneTestRearmDrag"));
+        Require(restart && SUCCEEDED(restart(host,22)), "new press replaces a still-live drag session");
+        Require(!IsWindow(popup) && DragPreviewWindows().empty(),
+                "rearming destroys the old popup instead of losing its handle");
+        Require(first.Opacity() == 1, "rearming restores the previous source tab");
+        send(MOUSEEVENTF_LEFTUP);
+        settle();
+        Require(DragPreviewWindows().empty(), "replacement click leaves no floating tab");
+        return;
+    }
     send(MOUSEEVENTF_LEFTUP);
     settle(200);
+    Require(DragPreviewWindows().empty(), "release destroys the floating drag HWND");
     puts("Drag gesture completed without crashing");
     CheckAttachedTabAppearance(first);
     auto event = NextRequest(api, host, 5, L"strip-reorder",40,reject ? 2 : 1).GetNamedObject(L"action");
@@ -1799,7 +1933,7 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
 // redesign) means release resolves as "no pane's strip is under the
 // cursor" -- CommitDetach queues strip-detach at the real release point,
 // same as before.
-static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false) {
+static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false, int horizontal = 0) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
@@ -1828,6 +1962,7 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
 
     RECT rect{0, 0, 600, 48};
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation for detach test");
+    if (horizontal) SetWindowPos(host, nullptr, 300, 200, 640, 480, SWP_NOZORDER | SWP_NOACTIVATE);
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{55, L"Detach tab"}};
     uint32_t selected{};
@@ -1845,9 +1980,8 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
     SetForegroundWindow(host);
     settle();
 
-    auto topLeft = tab.TransformToVisual(nullptr).TransformPoint({0, 0});
-    POINT client{LONG(topLeft.X + tab.ActualWidth() / 2), LONG(topLeft.Y + tab.ActualHeight() / 2)};
-    Require(ClientToScreen(host, &client) != 0, "resolve detach tab screen position");
+    auto rowBounds = TabScreenBounds(host, L"FirefoxWinUITab-55");
+    POINT client{(rowBounds.left + rowBounds.right) / 2, (rowBounds.top + rowBounds.bottom) / 2};
     RECT hostRect{};
     Require(GetWindowRect(host, &hostRect) != 0, "resolve host window rect for detach test");
     // Comfortably below host's own window entirely, not just below the
@@ -1855,6 +1989,7 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
     // top-level window, so only actually leaving that window's bounds
     // reaches "no target accepted it anywhere."
     POINT detachPoint{hostRect.left + 50, hostRect.bottom + 200};
+    if (horizontal) detachPoint = {horizontal < 0 ? hostRect.left - 120 : hostRect.right + 120, client.y};
     fprintf(stderr, "Detach test: dragging from (%ld,%ld) to (%ld,%ld), outside host rect (%ld,%ld,%ld,%ld)\n",
             client.x, client.y, detachPoint.x, detachPoint.y, hostRect.left, hostRect.top, hostRect.right,
             hostRect.bottom);
@@ -1872,6 +2007,14 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
         settle(5);
     }
     CheckFloatingDragBitmap(module);
+    if (horizontal) {
+        RECT popup{};
+        POINT cursor{};
+        Require(GetWindowRect(FindWindowW(L"FirefoxWinUITabTearoff", nullptr), &popup) && GetCursorPos(&cursor),
+                "read live floating tab and pointer bounds");
+        Require(std::abs((popup.left + popup.right) / 2 - cursor.x) <= 2,
+                "horizontal exit releases the visual clamp and follows the pointer");
+    }
     send(MOUSEEVENTF_LEFTUP);
     settle(200);
     puts("Detach gesture completed without crashing");
@@ -1884,8 +2027,14 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
     Require(SUCCEEDED(api.syncTabs(host,nullptr,0,0,&selected)), "source removal confirms detach");
     Require(detachEvent.Size() && detachEvent.GetNamedNumber(L"id") == 55,
             "dragging a tab outside every open window's bounds queues a validated detach request");
-    Require(detachEvent.GetNamedNumber(L"screenY") > double(hostRect.bottom),
-            "the detach request carries a screen point below the host window it left");
+    if (horizontal) {
+        const auto x = detachEvent.GetNamedNumber(L"screenX");
+        Require(horizontal < 0 ? x < hostRect.left : x > hostRect.right,
+                "horizontal exit detaches beyond the window edge at strip height");
+    } else {
+        Require(detachEvent.GetNamedNumber(L"screenY") > double(hostRect.bottom),
+                "the detach request carries a screen point below the host window it left");
+    }
 }
 
 // Cross-window adopt. A second, independent pane/strip in a real second
@@ -1971,47 +2120,9 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     Require(destTab.IsLoaded() && destTab.ActualWidth() > 0, "destination tab realized before adopt drag");
     settle(30);
 
-    // Query UIA through its client interface on an MTA, as WithTab does.
-    // Calling a XAML peer directly returns island-local bounds, before the
-    // hosting provider converts them to physical screen coordinates.
-    auto screenBounds = [](HWND window, wchar_t const* id) {
-        RECT bounds{};
-        std::atomic<bool> done = false;
-        std::thread client([&] {
-            Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)), "bounds UIA apartment");
-            {
-                ComPtr<IUIAutomation> automation;
-                Require(SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
-                                                   IID_PPV_ARGS(&automation))), "bounds UIA client");
-                ComPtr<IUIAutomationElement> root, row;
-                Require(SUCCEEDED(automation->ElementFromHandle(window, &root)), "bounds UIA host");
-                VARIANT value{};
-                value.vt = VT_BSTR;
-                value.bstrVal = SysAllocString(id);
-                ComPtr<IUIAutomationCondition> condition;
-                Require(SUCCEEDED(automation->CreatePropertyCondition(UIA_AutomationIdPropertyId, value, &condition)),
-                        "bounds UIA condition");
-                VariantClear(&value);
-                Require(SUCCEEDED(root->FindFirst(TreeScope_Descendants, condition.Get(), &row)) && row,
-                        "find dragged row through UIA");
-                Require(SUCCEEDED(row->get_CurrentBoundingRectangle(&bounds)), "physical UIA row bounds");
-            }
-            CoUninitialize();
-            done = true;
-        });
-        auto deadline = GetTickCount64() + 15000;
-        while (!done && GetTickCount64() < deadline) {
-            Pump();
-            MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT);
-        }
-        Require(done, "bounds UIA completes without deadlock");
-        client.join();
-        Require(bounds.right > bounds.left && bounds.bottom > bounds.top, "UIA reports nonempty screen bounds");
-        return bounds;
-    };
-    auto sourceBounds = screenBounds(host, L"FirefoxWinUITab-33");
+    auto sourceBounds = TabScreenBounds(host, L"FirefoxWinUITab-33");
     POINT sourceClient{(sourceBounds.left + sourceBounds.right) / 2, (sourceBounds.top + sourceBounds.bottom) / 2};
-    auto destBounds = screenBounds(host2, scaled ? L"FirefoxWinUITab-55" : L"FirefoxWinUITab-44");
+    auto destBounds = TabScreenBounds(host2, scaled ? L"FirefoxWinUITab-55" : L"FirefoxWinUITab-44");
     if (scaled) {
         fprintf(stderr, "Island scales source=%.2f target=%.2f\n", view.XamlRoot().RasterizationScale(), view2.XamlRoot().RasterizationScale());
         Require(std::abs(view.XamlRoot().RasterizationScale() - sourceScale) < .01 &&
@@ -2042,7 +2153,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         OffsetRect(&rect2, 9, 13);
         Require(SUCCEEDED(api.updateTabStrip(host2, &rect2, TRUE)), "move target island during drag");
         settle();
-        destBounds = screenBounds(host2, L"FirefoxWinUITab-55");
+        destBounds = TabScreenBounds(host2, L"FirefoxWinUITab-55");
         destPoint = {(destBounds.left * 3 + destBounds.right * 2) / 5,
                      (destBounds.top + destBounds.bottom) / 2};
     }
@@ -2281,6 +2392,8 @@ int wmain(int argc, wchar_t** argv) {
         if (wcscmp(argv[2], L"--continuation") == 0) {
             CheckWindowContinuation(module, api, first);
         } else if (wcscmp(argv[2], L"--transfers") == 0) {
+            CheckTabStripDetach(module, api, first, false, -1);
+            CheckTabStripDetach(module, api, first, false, 1);
             CheckTabStripDetach(module, api, first);
             CheckTabStripDetach(module, api, first, true);
             CheckTabStripCrossWindowAdopt(module, api, first);
@@ -2292,6 +2405,16 @@ int wmain(int argc, wchar_t** argv) {
             CheckTabStripDrag(module, api, first, true);
             CheckTabStripDrag(module, api, first, false, true);
             CheckTabStripDrag(module, api, first, true, true);
+            CheckTabStripDrag(module, api, first, false, false, true);
+            auto groupSlide = reinterpret_cast<HRESULT(WINAPI*)(HWND,uint32_t)>(GetProcAddress(module,"WinUIPaneTestGroupSlide"));
+            Require(groupSlide && SUCCEEDED(groupSlide(first,0)), "start a real slide with grouping dwell pending");
+            Require(SUCCEEDED(groupSlide(first,1)), "expired dwell leaves the running storyboard and reorder destination intact");
+            HRESULT settled = E_PENDING;
+            for (int i = 0; i < 100 && settled == E_PENDING; ++i) {
+                Pump(); Sleep(10);
+                settled = groupSlide(first,2);
+            }
+            Require(SUCCEEDED(settled), "after sliding, group only at the actual tab position without resetting its offset");
         } else if (wcscmp(argv[2], L"--drag-scale") == 0) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.25f, 1.5f);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.5f, 2.f);
@@ -2305,6 +2428,8 @@ int wmain(int argc, wchar_t** argv) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::ChangeThenDrop);
         } else {
             CheckTabStripDrag(module, api, first);
+            CheckTabStripDetach(module, api, first, false, -1);
+            CheckTabStripDetach(module, api, first, false, 1);
             CheckTabStripDetach(module, api, first);
             CheckTabStripCrossWindowAdopt(module, api, first);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseTarget);

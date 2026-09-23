@@ -323,10 +323,9 @@ struct TabDragSession {
     // A bitmap completion belongs to this gesture, not merely to the source
     // pane or an HWND that Windows may reuse after cancellation.
     std::shared_ptr<int> lifetime;
-    // The tear-off visual (TabDragImage.h) -- only created once the cursor
-    // first clears every open pane's own StripScreenBounds(), and destroyed
-    // again as soon as it re-enters one; see ShowOrMoveTearoff/
-    // DestroyTearoffWindow below.
+    // The floating visual owns one topmost HWND and bitmap for this gesture,
+    // both on-strip and detached. Abort destroys them before XAML cleanup;
+    // a new arm must abort the previous session before replacing these handles.
     HWND tearoffWindow{};
     HBITMAP tearoffBitmap{};
     int tearoffWidth{}, tearoffHeight{};
@@ -340,7 +339,7 @@ struct TabDragSession {
 struct Pane;
 TabDragSession& dragSession();
 void ArmDragSession(Pane& pane, uint32_t id);
-void AbortDragSession();
+void AbortDragSession() noexcept;
 void TickDragSession();
 void BeginWindowMove(Pane&, POINT);
 void UpdateWindowMove(Pane&, POINT);
@@ -1341,11 +1340,11 @@ void ContinueWindowDrag(Pane& pane) {
     AbortDragSession();
     POINT point{}; GetCursorPos(&point);
     SetForegroundWindow(pane.parent);
+    ArmDragSession(pane, taken.tab);
     strip.drag = {};
     strip.drag.tabId = taken.tab;
     strip.drag.phase = NativeTabStrip::DragPhase::Armed;
     strip.drag.startPoint = pane.ScreenToStrip(point);
-    ArmDragSession(pane, taken.tab);
     dragSession().departedWindow = pane.continuationSource;
     dragSession().departedLife = pane.continuationSourceLife;
     SetCapture(pane.parent);
@@ -1391,6 +1390,9 @@ void FinishWindowMove(Pane& pane, POINT point, bool released) {
 }
 
 void ArmDragSession(Pane& pane, uint32_t id) {
+    // A fresh press can arrive before the old release was sampled. Dispose
+    // its preview and restore its row before assigning the new identities.
+    AbortDragSession();
     auto& session = dragSession();
     session.lifetime = std::make_shared<int>(0);
     session.sourceHwnd = pane.parent;
@@ -1418,26 +1420,28 @@ void DestroyTearoffWindow(TabDragSession& session) {
 // foreign pane accepting the drop, or (defensively) the source pane itself
 // having been closed mid-gesture, which this tick-based design allows in a
 // way the old, thread-blocking DoDragDrop call structurally couldn't.
-void AbortDragSession() {
+void AbortDragSession() noexcept {
     // Revoke global tracking and asynchronous rendering before releasing
     // capture or touching XAML, either of which can deliver more callbacks.
     auto session = std::exchange(dragSession(), TabDragSession{});
     session.lifetime.reset();
+    // OS resources cannot depend on fallible XAML cleanup. Destroy the
+    // detached preview first, while its exact HWND is still owned here.
+    DestroyTearoffWindow(session);
+    if (session.sourceHwnd && GetCapture() == session.sourceHwnd) ReleaseCapture();
     auto& panes = state().panes;
     auto source = panes.find(session.sourceHwnd);
     if (source != panes.end() && source->second->strip.get() == session.sourceStrip && session.sourceStrip &&
         session.sourceStrip->drag.phase != NativeTabStrip::DragPhase::None)
-        session.sourceStrip->CancelDrag();
+        try { session.sourceStrip->CancelDrag(); } catch (...) {}
     if (session.hoverStrip && session.hoverStrip != session.sourceStrip) {
         for (auto& [hwnd, pane] : panes) {
             if (pane->strip.get() == session.hoverStrip) {
-                pane->strip->EndForeignDragOver();
+                try { pane->strip->EndForeignDragOver(); } catch (...) {}
                 break;
             }
         }
     }
-    DestroyTearoffWindow(session);
-    if (session.sourceHwnd && GetCapture() == session.sourceHwnd) ReleaseCapture();
 }
 
 constexpr wchar_t kTearoffClassName[] = L"FirefoxWinUITabTearoff";
@@ -1536,6 +1540,9 @@ void ShowOrMoveTearoff(TabDragSession& session, POINT screenPoint) {
 // only just updated (via UpdateDragVisual) for this exact point when
 // `hitPane` is null.
 void ResolveDragDrop(Pane& sourcePane, Pane* hitPane, POINT screenPoint) {
+    // WinUI can throw while resetting transforms or releasing pointer capture.
+    // Even then the independent topmost HWND must not survive the gesture.
+    struct Finish { ~Finish() { AbortDragSession(); } } finish;
     auto& session = dragSession();
     auto* strip = session.sourceStrip;
     if (hitPane && hitPane->strip) {
@@ -1559,7 +1566,6 @@ void ResolveDragDrop(Pane& sourcePane, Pane* hitPane, POINT screenPoint) {
         auto local = sourcePane.ScreenToStrip(screenPoint);
         strip->CommitReorder(session.tabId, local);
     }
-    AbortDragSession();
 }
 
 // Pane.cpp's own Translate() hook calls this unconditionally on every
@@ -1572,6 +1578,12 @@ void ResolveDragDrop(Pane& sourcePane, Pane* hitPane, POINT screenPoint) {
 // PointerPressed) exists specifically to guarantee regardless of where the
 // cursor physically is.
 void TickDragSession() {
+    // XAML layout/capture callbacks can reenter the message hook while a tick
+    // is already resolving a release or creating the drag visual.
+    static bool ticking{};
+    if (ticking) return;
+    ticking = true;
+    struct TickScope { bool& active; ~TickScope() { active = false; } } scope{ticking};
     auto& session = dragSession();
     if (!session.sourceHwnd) return;
     WorkScope tick{EntryDragTick};
@@ -1638,12 +1650,10 @@ void TickDragSession() {
     NativeTabStrip* newHover = hitPane ? hitPane->strip.get() : nullptr;
     if (!hitPane) {
         // Not over any other pane -- on-strip vs. tear-off is decided by
-        // the source strip's own existing vertical-margin heuristic
-        // (UpdateDragVisual's drag.detaching), which already tolerates
-        // horizontal excess past the strip's own left/right edge (e.g.
-        // dragging past the last tab) as still "on this strip," not a
-        // tear-off -- exactly the move-to-end gesture this is meant to
-        // support. UpdateDragVisual no longer touches the dragged row's own
+        // the source strip's bounded margin on both axes
+        // (UpdateDragVisual's drag.detaching). Small horizontal overshoot
+        // still supports moving past the last tab; farther away detaches.
+        // UpdateDragVisual no longer touches the dragged row's own
         // visual at all (see its own comment) -- only the floating popup,
         // positioned below, ever represents the dragged tab now.
         auto local = sourcePane.ScreenToStrip(screenPoint);
@@ -2522,6 +2532,75 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestWindowContinuation(
         else if (op == 2) CancelWindowContinuation(pane);
         else return E_INVALIDARG;
         return S_OK;
+    } catch (...) { return to_hresult(); }
+}
+// Test-only: a new press arriving before the previous gesture was cleaned up.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestRearmDrag(HWND hwnd, uint32_t tab) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end() || !found->second->strip || !found->second->strip->rows.count(tab)) return E_INVALIDARG;
+        auto& pane = *found->second;
+        ArmDragSession(pane, tab);
+        pane.strip->drag.phase = NativeTabStrip::DragPhase::Armed;
+        pane.strip->drag.tabId = tab;
+        POINT point{}; GetCursorPos(&point);
+        pane.strip->drag.startPoint = pane.ScreenToStrip(point);
+        return S_OK;
+    } catch (...) { return to_hresult(); }
+}
+// Test-only: exercise a queued grouping dwell against a real loaded storyboard.
+// No global drag is armed, so the harness can advance animation time separately.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupSlide(HWND hwnd, uint32_t operation) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
+        auto& strip = *found->second->strip;
+        if (strip.view.TabItems().Size() != 2) return E_INVALIDARG;
+        auto source = strip.view.TabItems().GetAt(0).as<Controls::TabViewItem>();
+        auto target = strip.view.TabItems().GetAt(1).as<Controls::TabViewItem>();
+        const auto sourceId = unbox_value<uint32_t>(source.Tag()), targetId = unbox_value<uint32_t>(target.Tag());
+        if (operation == 0) {
+            strip.CancelDrag();
+            strip.presentation[sourceId].groupSource = true;
+            strip.presentation[targetId].groupTarget = true;
+            strip.groupingDelay = 1000;
+            strip.drag.phase = NativeTabStrip::DragPhase::Armed;
+            strip.drag.tabId = sourceId;
+            strip.drag.startPoint = source.TransformToVisual(strip.view).TransformPoint({float(source.ActualWidth()/2), 16});
+            if (!strip.TryPromote(sourceId, strip.drag.startPoint, true)) return E_FAIL;
+            const Windows::Foundation::Point center{float(strip.drag.originalLeftEdge[1] + target.ActualWidth()/2), 16};
+            if (!strip.UpdateGroupHover(center) || strip.armedGroupTarget) return E_FAIL;
+            strip.drag.projectedIndex = 2;
+            strip.ShiftSibling(1);
+            return strip.rowAnimations.count(targetId) ? S_OK : E_FAIL;
+        }
+        const Windows::Foundation::Point oldCenter{float(strip.drag.originalLeftEdge[1] + target.ActualWidth()/2), 16};
+        if (operation == 1) {
+            // A zero delay represents a timer whose deadline has already passed.
+            strip.groupingDelay = 0;
+            const auto storyboard = strip.rowAnimations.at(targetId).storyboard;
+            const auto offset = strip.RowTransform(target).X();
+            if (strip.UpdateGroupHover(oldCenter) || strip.groupCandidate || strip.armedGroupTarget ||
+                strip.drag.projectedIndex != 2 || !strip.rowAnimations.count(targetId) ||
+                strip.rowAnimations.at(targetId).storyboard != storyboard || strip.RowTransform(target).X() != offset) return E_FAIL;
+            return S_OK;
+        }
+        if (operation == 2) {
+            if (!strip.rowAnimations.empty()) return E_PENDING;
+            const auto offset = strip.RowTransform(target).X();
+            if (offset >= -1 || strip.UpdateGroupHover(oldCenter)) return E_FAIL;
+            auto actualCenter = oldCenter;
+            actualCenter.X += float(offset);
+            if (!strip.UpdateGroupHover(actualCenter) || strip.armedGroupTarget != targetId ||
+                strip.drag.projectedIndex != 2 || strip.RowTransform(target).X() != offset) return E_FAIL;
+            strip.CancelDrag();
+            strip.presentation[sourceId].groupSource = false;
+            strip.presentation[targetId].groupTarget = false;
+            return S_OK;
+        }
+        return E_INVALIDARG;
     } catch (...) { return to_hresult(); }
 }
 // Test-only: copy the actual popup bitmap for pixel regression checks.
