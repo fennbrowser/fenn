@@ -5,6 +5,7 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
 #include <winrt/Microsoft.UI.Content.h>
+#include <winrt/Microsoft.UI.Composition.SystemBackdrops.h>
 #include <winrt/Microsoft.UI.Input.DragDrop.h>
 #include <winrt/Windows.ApplicationModel.DataTransfer.h>
 #include <winrt/Windows.UI.Text.h>
@@ -514,6 +515,7 @@ struct Pane {
         }
         source.TakeFocusRequested(takeFocus);
         externalDropRevoker.revoke();
+        source.SystemBackdrop(nullptr);
         source.Content(nullptr);
         address.reset();
         strip.reset();
@@ -999,6 +1001,11 @@ struct Pane {
             strip->add = [this] { QueueNewTab(); };
             takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(parent); });
             source.Content(strip->root);
+            // The island owns the backdrop and its theme/activation/fallback
+            // handling. Keep it local to the strip, including the caption insets.
+            Media::MicaBackdrop backdrop;
+            backdrop.Kind(Composition::SystemBackdrops::MicaKind::BaseAlt);
+            source.SystemBackdrop(backdrop);
             windowDrag.Open(hwnd, strip.get());
             windowDrag.begin = [this](POINT point) { BeginWindowMove(*this, point); };
             windowDrag.move = [this](POINT point) { UpdateWindowMove(*this, point); };

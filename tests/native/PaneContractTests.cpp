@@ -1373,6 +1373,10 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         root.RequestedTheme(theme);
         Pump();
         Require(root.ActualTheme() == theme, "strip follows live theme");
+        Require(root.Background().as<Media::SolidColorBrush>().Color().A == 0 &&
+                    systemCaption.ButtonBackgroundColor().Value().A == 0 &&
+                    systemCaption.ButtonInactiveBackgroundColor().Value().A == 0,
+                "strip and caption backgrounds reveal the island backdrop across theme changes");
         const auto captionTheme = theme == ElementTheme::Dark
             ? winrt::Microsoft::UI::Windowing::TitleBarTheme::Dark : winrt::Microsoft::UI::Windowing::TitleBarTheme::Light;
         for (int i = 0; i < 100 && systemCaption.PreferredTheme() != captionTheme; ++i) {
