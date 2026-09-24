@@ -145,6 +145,8 @@ pub enum EnqueueStatus {
     RejectedInvalid = 3,
     /// The endpoint is shutting down; nothing new is accepted.
     RejectedClosed = 4,
+    /// This tab already has an admitted close awaiting its outcome.
+    RejectedPendingClose = 5,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -235,6 +237,7 @@ pub struct EnqueueResult {
 
 pub struct RequestQueue {
     limits: Limits,
+    pending: crate::pending::PendingCommands,
     generation: u64,
     next_id: u64,
     queued: VecDeque<Request>,
@@ -253,6 +256,7 @@ impl RequestQueue {
     pub fn new(limits: Limits) -> Self {
         Self {
             limits,
+            pending: Default::default(),
             generation: 1,
             next_id: 1,
             queued: VecDeque::new(),
@@ -298,7 +302,46 @@ impl RequestQueue {
         self.dropped_outcomes
     }
 
+    pub fn selection_pending(&mut self, revision: u32) -> bool {
+        self.pending.selection_pending(revision)
+    }
+
+    pub fn clear_selection(&mut self) { self.pending.clear_selection(); }
+
+    pub fn retain_tabs(&mut self, contains: impl Fn(u32) -> bool) {
+        self.pending.retain_tabs(contains);
+    }
+
     pub fn enqueue(
+        &mut self,
+        kind: RequestKind,
+        tab: u32,
+        context_revision: u32,
+        payload: &[u16],
+    ) -> EnqueueResult {
+        if !self.closed && kind == RequestKind::CloseTab && self.pending.closing(tab) {
+            return EnqueueResult { status: EnqueueStatus::RejectedPendingClose,
+                id: 0, superseded: 0, notify: false };
+        }
+        let result = self.enqueue_inner(kind, tab, context_revision, payload);
+        // Preserve the native feedback rules even on backpressure: a refused
+        // selection restores browser authority; close/new-tab attempts also
+        // release selection feedback, except a duplicate close above.
+        match kind {
+            RequestKind::SelectTab => self.pending.select(result.id, context_revision),
+            RequestKind::CloseTab if tab != 0 => {
+                self.pending.clear_selection();
+                if result.status == EnqueueStatus::Accepted {
+                    self.pending.close(tab, result.id);
+                }
+            }
+            RequestKind::NewTab => self.pending.clear_selection(),
+            _ => {}
+        }
+        result
+    }
+
+    fn enqueue_inner(
         &mut self,
         kind: RequestKind,
         tab: u32,
@@ -490,6 +533,7 @@ impl RequestQueue {
         for id in ids {
             self.record_outcome(id, Outcome::Cancelled);
         }
+        self.pending = Default::default();
         self.queued_bytes = 0;
         self.generation += 1;
         self.block_after_drain = false;
@@ -508,6 +552,7 @@ impl RequestQueue {
     }
 
     fn record_outcome(&mut self, id: u64, outcome: Outcome) {
+        self.pending.complete(id);
         while self.history.len() >= self.limits.completion_history {
             self.history.pop_front();
         }

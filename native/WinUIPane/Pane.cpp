@@ -373,17 +373,9 @@ struct Pane {
     // host error, counted here rather than silently absorbed.
     bool drainOpen{};
     uint64_t abandonedDrains{};
-    // The selection request whose optimistic native feedback has not yet been
-    // reconciled with an authoritative result. Zero means the published Firefox
-    // selection may be applied directly.
-    uint64_t pendingSelectionRequest{};
     // The address and search-mode intents currently in the queue, so their
     // slots can be released when the host reports the outcome.
     uint64_t addressRequest{}, modeRequest{};
-    uint32_t pendingSelectionRevision{};
-    // Closes handed to the queue and not yet answered, so a second click on a
-    // tab Firefox is still deciding about does not queue a second close.
-    std::map<uint32_t, uint64_t> outstandingCloses;
     // What this island has actually been given. Firefox drives update() from a
     // requestAnimationFrame whenever anything is dirty, so most calls repeat
     // the previous geometry and the previous exclusions exactly, and
@@ -505,7 +497,6 @@ struct Pane {
         notifySink = nullptr;
         notifyContext = nullptr;
         drainOpen = false;
-        pendingSelectionRequest = 0;
         tabMenu.Close();
         shell.Close();
         lifetime.reset();
@@ -604,32 +595,19 @@ struct Pane {
         // fresh wakeup, rather than waiting for one that will never arrive.
         if (!notifySink || !notifySink(notifyContext)) shell.NotificationFailed();
     }
-    // Wake the host for work on an unmigrated transport (a queued close or new
-    // tab, which still execute through syncTabs). This is a wakeup only: it
-    // carries no request and no execution authority, and it keeps the
-    // one-outstanding-notification rule by latching.
-    // Close and new-tab are ordinary requests on the shared queue. The queue
-    // does not collapse them -- each is a command the user gave -- so the
-    // duplicate suppression the old deque provided is kept here: a tab already
-    // being closed must not be closed twice if the user clicks again while
-    // Firefox is still deciding (a beforeunload prompt can take as long as it
-    // likes).
+    // ShellCore owns duplicate-close suppression and optimistic selection
+    // lifetime. C++ only constructs the browser action and delivers wakeups.
     void QueueClose(uint32_t id) {
-        if (!id || outstandingCloses.count(id)) return;
+        if (!id) return;
         NativeTabMenu::Object action;
         action.SetNamedValue(L"kind", NativeTabMenu::Value::CreateStringValue(L"close"));
         action.SetNamedValue(L"tab", NativeTabMenu::Value::CreateNumberValue(id));
-        if (auto request = Enqueue(NativeShellCore::CloseTab, id, tabMenu.stateRevision, action.Stringify()))
-            outstandingCloses.emplace(id, request);
-        // Closing must not leave a selection request suppressing the
-        // authoritative selection Firefox picks for the successor.
-        pendingSelectionRequest = 0;
+        Enqueue(NativeShellCore::CloseTab, id, tabMenu.stateRevision, action.Stringify());
     }
     void QueueNewTab() {
         NativeTabMenu::Object action;
         action.SetNamedValue(L"kind", NativeTabMenu::Value::CreateStringValue(L"new-tab"));
         Enqueue(NativeShellCore::NewTab, 0, tabMenu.stateRevision, action.Stringify());
-        pendingSelectionRequest = 0;
     }
     void QueueTabSelection(uint32_t activate = 0) {
         NativeTabMenu::Array selected;
@@ -653,18 +631,14 @@ struct Pane {
         event.SetNamedValue(L"control",
                             NativeTabMenu::Value::CreateBooleanValue((GetKeyState(VK_CONTROL) & 0x8000) != 0));
         event.SetNamedValue(L"shift", NativeTabMenu::Value::CreateBooleanValue((GetKeyState(VK_SHIFT) & 0x8000) != 0));
-        pendingSelectionRequest =
-            Enqueue(NativeShellCore::SelectTab, active, tabMenu.stateRevision, event.Stringify());
-        pendingSelectionRevision = tabMenu.stateRevision;
+        Enqueue(NativeShellCore::SelectTab, active, tabMenu.stateRevision, event.Stringify());
     }
-    // Reconcile optimistic native feedback with authoritative results. A
-    // rejected, cancelled or superseded selection stops suppressing Firefox's
-    // published selection, so the next apply restores the authoritative one.
+    // ShellCore has already reconciled close/selection bookkeeping when each
+    // outcome was recorded. Deliver the remaining surface-specific effects.
     void ReconcileOutcomes() {
         auto outcomes = shell.TakeOutcomes();
         for (size_t i = 0; i < outcomes.size(); ++i) {
             if (strip) strip->CompleteDrop(outcomes[i].id, outcomes[i].outcome == NativeShellCore::Completed);
-            if (outcomes[i].id == pendingSelectionRequest) pendingSelectionRequest = 0;
             // An address intent is outstanding until the host says how it went.
             // Clearing the slot here, rather than when a tick collected it, is
             // what lets the coalescing policy keep meaning "something is still
@@ -673,11 +647,6 @@ struct Pane {
                 addressRequest = 0;
                 address->ClearStaged();
             }
-            for (auto it = outstandingCloses.begin(); it != outstandingCloses.end(); ++it)
-                if (it->second == outcomes[i].id) {
-                    outstandingCloses.erase(it);
-                    break;
-                }
             if (address && outcomes[i].id == modeRequest) {
                 modeRequest = 0;
                 address->mode.pending = L"";
@@ -702,7 +671,7 @@ struct Pane {
         SeedModel(snapshot, count, selected);
         if (strip) {
             browserSelection = selected;
-            if (pendingSelectionRevision != tabMenu.stateRevision) pendingSelectionRequest = 0;
+            shell.SelectionPending(tabMenu.stateRevision);
             strip->Sync(snapshot, count, selected);
             return;
         }
@@ -757,8 +726,7 @@ struct Pane {
             }
             if (tabMenu.hasSelection) {
                 tabs.SelectionMode(Controls::ListViewSelectionMode::Extended);
-                if (pendingSelectionRevision != tabMenu.stateRevision) pendingSelectionRequest = 0;
-                if (!pendingSelectionRequest) {
+                if (!shell.SelectionPending(tabMenu.stateRevision)) {
                     for (uint32_t i = 0; i < count; ++i) {
                         auto item = items.GetAt(i);
                         uint32_t existing;
@@ -804,8 +772,7 @@ struct Pane {
         event.SetNamedValue(L"tabs", ids);
         event.SetNamedValue(L"control", NativeTabMenu::Value::CreateBooleanValue(control));
         event.SetNamedValue(L"shift", NativeTabMenu::Value::CreateBooleanValue(shift));
-        pendingSelectionRequest = Enqueue(NativeShellCore::SelectTab, id, tabMenu.stateRevision, event.Stringify());
-        pendingSelectionRevision = tabMenu.stateRevision;
+        Enqueue(NativeShellCore::SelectTab, id, tabMenu.stateRevision, event.Stringify());
     }
 
     // Apply one incremental presentation update. Only the named tab's row is
@@ -855,8 +822,6 @@ struct Pane {
             if (status != SHELL_STATUS_OK) return status == SHELL_STATUS_GAP ? E_NOT_VALID_STATE : E_INVALIDARG;
             if (changed) {
                 browserSelection = nextSelected;
-                // A fresh authoritative selection supersedes optimistic feedback.
-                pendingSelectionRequest = 0;
             }
         }
         // Read the resynchronization flag before ApplyChanges consumes the
@@ -905,10 +870,9 @@ struct Pane {
     // needing a whole snapshot. Only the rows whose membership actually
     // changed are touched.
     void ApplyPublishedSelection(std::set<uint32_t> const& previous) {
-        if (pendingSelectionRevision != tabMenu.stateRevision) pendingSelectionRequest = 0;
         // A native selection is still awaiting its authoritative result; its
         // optimistic feedback stands until the outcome or a newer publication.
-        if (pendingSelectionRequest) return;
+        if (shell.SelectionPending(tabMenu.stateRevision)) return;
         auto const& current = tabMenu.selectedTabs;
         if (strip) {
             strip->ApplySelectedSet(previous, current);
@@ -1982,11 +1946,6 @@ HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_
         // Reconcile any outstanding optimistic selection feedback against the
         // authoritative outcomes recorded since the last snapshot.
         pane.ReconcileOutcomes();
-        // A tab that has left the snapshot can no longer be closed, and its
-        // request will be refused if it is still queued; forget it so a later
-        // tab reusing nothing of it is not suppressed.
-        for (auto it = pane.outstandingCloses.begin(); it != pane.outstandingCloses.end();)
-            it = ids.count(it->first) ? std::next(it) : pane.outstandingCloses.erase(it);
         pane.Sync(tabs, count, selected);
         pane.browserSelection = selected;
         // Since v11 this carries the presentation-model revision this snapshot

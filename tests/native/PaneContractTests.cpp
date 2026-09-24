@@ -742,6 +742,49 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
          "replay rejection, incremental deltas, gap detection and panic containment passed");
 }
 
+// Exercise OS-delivered Tab navigation before observing address edits.
+static void CheckTabKeyboardNavigation(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    SetForegroundWindow(hwnd);
+    for (int attempt = 0; attempt < 100 && GetForegroundWindow() != hwnd; ++attempt) {
+        Pump();
+        Sleep(10);
+    }
+    Require(GetForegroundWindow() == hwnd, "tab keyboard test owns foreground before injecting input");
+    Require(SUCCEEDED(api.focus(hwnd, FALSE)), "focus island for Tab navigation");
+    Pump();
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
+    UIElement content{nullptr};
+    Require(inspect && SUCCEEDED(inspect(hwnd, winrt::put_abi(content))), "inspect Tab navigation host");
+    auto root = content.as<Controls::Grid>();
+    auto list = root.Children().GetAt(1).as<Controls::ListView>();
+    auto row = RealizedRow(list, list.SelectedIndex());
+    Require(row.Focus(FocusState::Keyboard), "focus selected tab row");
+    auto close = row.ContentTemplateRoot().as<Controls::Grid>().Children().GetAt(1).as<Controls::Button>();
+    bool released = false;
+    Input::KeyEventHandler releaseHandler = [&](auto const&, Input::KeyRoutedEventArgs const& event) {
+        if (event.Key() == winrt::Windows::System::VirtualKey::Tab) released = true;
+    };
+    auto boxedReleaseHandler = winrt::box_value(releaseHandler);
+    root.AddHandler(UIElement::KeyUpEvent(), boxedReleaseHandler, true);
+    INPUT keys[2]{};
+    keys[0].type = keys[1].type = INPUT_KEYBOARD;
+    keys[0].ki.wVk = keys[1].ki.wVk = VK_TAB;
+    keys[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    auto sent = SendInput(2, keys, sizeof(INPUT));
+    if (sent != 2) SendInput(1, &keys[1], sizeof(INPUT));
+    Require(sent == 2, "inject complete Tab press and release");
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        Pump();
+        if (Input::FocusManager::GetFocusedElement(root.XamlRoot()) == close &&
+            released) break;
+        Sleep(10);
+    }
+    root.RemoveHandler(UIElement::KeyUpEvent(), boxedReleaseHandler);
+    Require(Input::FocusManager::GetFocusedElement(root.XamlRoot()) == close && released,
+            "Tab reaches the selected row's native close button and the key is released");
+}
+
 static void CheckThemesAndLongList(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     using namespace winrt::Microsoft::UI::Xaml;
     for (int i = 0; i < 20; ++i) {
@@ -1001,8 +1044,9 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     Require(field.Text() == L"changed", "old snapshot does not overwrite an outstanding edit");
     // Since the address intents joined the request path, the edit wakes the
     // host itself rather than waiting to be collected by the next publication.
-    auto edit = NextRequest(api, hwnd, 6, L"edit").GetNamedObject(L"action");
-    Require(edit.Size(), "native edit reaches the request queue");
+    auto editRequest = NextRequest(api, hwnd, 6, L"edit");
+    Require(editRequest.Size() != 0, "native edit reaches the request queue");
+    auto edit = editRequest.GetNamedObject(L"action");
     Require(edit.GetNamedString(L"text") == L"changed" &&
                 edit.GetNamedString(L"session") == L"native-test",
             "native edit is copied and session scoped");
@@ -1016,12 +1060,28 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     Require(SUCCEEDED(api.syncAddress(hwnd, modesSnapshot)), "restore modes before queue saturation");
     NextRequest(api, hwnd, 6, nullptr, 2);
     field.Text(L"previous admitted edit");
-    Pump();
-    auto heldEdit = DrainRequests(api, hwnd);
-    bool heldAddress = false;
-    for (auto value : heldEdit.GetNamedArray(L"requests"))
-        heldAddress |= value.GetObject().GetNamedNumber(L"kind") == 6;
-    Require(heldAddress, "hold the previous admitted edit in flight before filling the queue");
+    // TextChanged is asynchronous; after Tab navigation this runtime can
+    // defer it beyond a second even though TextChanging fires immediately.
+    // Wait for the actual edit with a wall-clock deadline, without assuming
+    // a pump pass or an unrelated caret/visibility notification proves delivery.
+    winrt::Windows::Data::Json::JsonObject heldEdit;
+    const auto editDeadline = GetTickCount64() + 10000;
+    while (!heldEdit.Size() && GetTickCount64() < editDeadline) {
+        Pump();
+        auto batch = DrainRequests(api, hwnd);
+        if (batch.Size()) {
+            for (auto value : batch.GetNamedArray(L"requests")) {
+                auto request = value.GetObject();
+                if (request.GetNamedNumber(L"kind") != 6) continue;
+                auto action = request.GetNamedObject(L"action");
+                if (action.GetNamedString(L"kind") == L"edit" &&
+                    action.GetNamedString(L"text") == L"previous admitted edit") heldEdit = batch;
+            }
+            if (!heldEdit.Size()) CompleteRequests(api, hwnd, batch);
+        }
+        if (!heldEdit.Size()) Sleep(10);
+    }
+    Require(heldEdit.Size() != 0, "receive and hold the previous admitted edit before filling the queue (10 second deadline)");
     auto newTab = content.as<Controls::Grid>().Children().GetAt(2).as<Controls::Button>();
     auto invoke = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(newTab)
                       .GetPattern(Automation::Peers::PatternInterface::Invoke)
@@ -1042,7 +1102,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "publish after the previous edit completes");
     Require(field.Text() == L"edit while full", "old completion preserves the newer unadmitted edit");
     auto firstFullBatch = DrainRequests(api, hwnd);
-    Require(firstFullBatch.GetNamedArray(L"requests").Size() == 16, "full queue yields a bounded batch");
+    Require(firstFullBatch.Size() && firstFullBatch.GetNamedArray(L"requests").Size() == 16, "full queue yields a bounded batch");
     for (auto value : firstFullBatch.GetNamedArray(L"requests"))
         Require(value.GetObject().GetNamedNumber(L"kind") == 4, "queue was filled by actual new-tab actions");
     CompleteRequests(api, hwnd, firstFullBatch);
@@ -2601,6 +2661,7 @@ int wmain(int argc, wchar_t** argv) {
 
     if (argc == 3 && wcscmp(argv[2], L"--address") == 0) {
         try {
+            CheckTabKeyboardNavigation(module, api, first);
             CheckAddress(api, module, first);
         } catch (winrt::hresult_error const& error) {
             fwprintf(stderr, L"Address test HRESULT 0x%08X: %s\n", unsigned(error.code()), error.message().c_str());
@@ -2661,6 +2722,19 @@ int wmain(int argc, wchar_t** argv) {
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
     closeWithoutSelection(first, 22);
     Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)), "restore close fixtures");
+    // A close remains suppressed both while queued and while Firefox is
+    // deciding. A rejected outcome releases it without needing a publication.
+    WithTab(first, tabs[1].title, tabs[1].title, false, true);
+    WithTab(first, tabs[1].title, tabs[1].title, false, true);
+    auto heldClose = DrainRequests(api, first);
+    Require(heldClose.Size() && heldClose.GetNamedArray(L"requests").Size() == 1 &&
+                heldClose.GetNamedArray(L"requests").GetObjectAt(0).GetNamedNumber(L"kind") == 3,
+            "duplicate queued close is suppressed by ShellCore");
+    WithTab(first, tabs[1].title, tabs[1].title, false, true);
+    CompleteRequests(api, first, heldClose, 2);
+    Require(!NextRequest(api, first, 3, nullptr, 3).Size(), "duplicate in-flight close was not queued");
+    WithTab(first, tabs[1].title, tabs[1].title, false, true);
+    Require(NextRequest(api, first, 3).Size(), "rejected close can be retried without a snapshot");
     // Two different tabs, two requests, in the order they were clicked. The
     // queue never collapses them: each is a command the user gave.
     WithTab(first, tabs[0].title, tabs[0].title, false, true);

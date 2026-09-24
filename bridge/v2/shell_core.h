@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 5
+#define SHELL_CORE_ABI_VERSION 6
 
 #define SHELL_NO_INDEX UINT32_MAX
 
@@ -314,6 +314,15 @@ ShellStatus shell_core_enqueue(ShellCore *core,
                                const uint16_t *payload,
                                uintptr_t payload_len,
                                ShellEnqueueResult *out);
+
+/*
+ Observe the browser context revision and report whether native selection
+ feedback is still pending. A mismatched revision permanently clears it.
+
+ # Safety
+ See [`guard`]. `out` must be writable.
+ */
+ShellStatus shell_core_selection_pending(ShellCore *core, uint32_t revision, bool *out);
 
 /*
  Report that the drain notification could not be scheduled. The core returns

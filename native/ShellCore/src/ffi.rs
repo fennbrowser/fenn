@@ -476,6 +476,22 @@ pub unsafe extern "C" fn shell_core_enqueue(
     })
 }
 
+/// Observe the browser context revision and report whether native selection
+/// feedback is still pending. A mismatched revision permanently clears it.
+///
+/// # Safety
+/// See [`guard`]. `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_selection_pending(
+    core: *mut ShellCore, revision: u32, out: *mut bool,
+) -> ShellStatus {
+    guard(core, |core| {
+        let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+        *out = core.queue.selection_pending(revision);
+        ShellStatus::Ok
+    })
+}
+
 /// Report that the drain notification could not be scheduled. The core returns
 /// to a state where the next enqueue notifies again; `still_pending` says
 /// whether work is waiting, so the host can retry deliberately.
@@ -879,6 +895,7 @@ pub unsafe extern "C" fn shell_core_model_set_selected(
 ) -> ShellStatus {
     guard(core, |core| match core.model.set_selected(base_revision, tab) {
         Ok(value) => {
+            if value { core.queue.clear_selection(); }
             if let Some(out) = changed.as_mut() {
                 *out = value;
             }
@@ -947,6 +964,7 @@ pub unsafe extern "C" fn shell_core_model_commit_snapshot(
         };
         match core.model.apply_snapshot(builder.session, &builder.entries, selected) {
             Ok(count) => {
+                core.queue.retain_tabs(|tab| core.model.contains(tab));
                 if let Some(out) = change_count.as_mut() {
                     *out = count as u32;
                 }
@@ -1081,6 +1099,54 @@ mod tests {
         assert!(!core.is_null());
         unsafe { shell_core_destroy(core) };
         unsafe { shell_core_destroy(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn pending_feedback_follows_validated_publications_across_the_abi() {
+        unsafe {
+            let core = core();
+            let mut result = std::mem::zeroed::<ShellEnqueueResult>();
+            let mut pending = false;
+            let mut changed = false;
+            let mut revision = 0;
+            let enqueue = |kind, tab| {
+                let mut result = std::mem::zeroed::<ShellEnqueueResult>();
+                shell_core_enqueue(core, kind, tab, 9, std::ptr::null(), 0, &mut result)
+            };
+            assert_eq!(shell_core_model_begin_snapshot(core, 1, 2), ShellStatus::Ok);
+            for tab in [1, 2] {
+                assert_eq!(shell_core_model_push_snapshot_tab(core, tab, std::ptr::null(), 0), ShellStatus::Ok);
+            }
+            assert_eq!(shell_core_model_commit_snapshot(core, 1, std::ptr::null_mut()), ShellStatus::Ok);
+            assert_eq!(enqueue(1, 2), ShellStatus::Ok);
+            assert_eq!(shell_core_selection_pending(core, 9, &mut pending), ShellStatus::Ok);
+            assert!(pending);
+            assert_eq!(shell_core_selection_pending(core, 10, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            shell_core_model_revision(core, &mut revision);
+            // Rejected and unchanged publications must preserve feedback.
+            assert_eq!(shell_core_model_set_selected(core, revision + 1, 2, &mut changed), ShellStatus::Gap);
+            assert_eq!(shell_core_model_set_selected(core, revision, 1, &mut changed), ShellStatus::Ok);
+            assert!(!changed);
+            shell_core_selection_pending(core, 9, &mut pending);
+            assert!(pending);
+            shell_core_model_revision(core, &mut revision);
+            assert_eq!(shell_core_model_set_selected(core, revision, 2, &mut changed), ShellStatus::Ok);
+            assert!(changed);
+            shell_core_selection_pending(core, 9, &mut pending);
+            assert!(!pending);
+
+            assert_eq!(enqueue(3, 2), ShellStatus::Ok);
+            // Invalid snapshots cannot prune an admitted close.
+            shell_core_model_begin_snapshot(core, 1, 0);
+            assert_eq!(shell_core_model_commit_snapshot(core, 99, std::ptr::null_mut()), ShellStatus::UnknownTab);
+            assert_eq!(shell_core_enqueue(core, 3, 2, 9, std::ptr::null(), 0, &mut result), ShellStatus::Rejected);
+            assert_eq!(result.status, EnqueueStatus::RejectedPendingClose as u32);
+            shell_core_model_begin_snapshot(core, 1, 0);
+            assert_eq!(shell_core_model_commit_snapshot(core, 0, std::ptr::null_mut()), ShellStatus::Ok);
+            assert_eq!(enqueue(3, 2), ShellStatus::Ok);
+            assert_eq!(shell_core_selection_pending(std::ptr::null_mut(), 9, &mut pending), ShellStatus::InvalidArgument);
+            shell_core_destroy(core);
+        }
     }
 
     #[test]

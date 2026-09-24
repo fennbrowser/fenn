@@ -126,6 +126,11 @@ struct NativeShellCore {
         return hr == SHELL_STATUS_OK ? result.id : 0;
     }
 
+    bool SelectionPending(uint32_t revision) {
+        bool pending = false;
+        return core && shell_core_selection_pending(core, revision, &pending) == SHELL_STATUS_OK && pending;
+    }
+
     bool NotificationFailed() {
         bool pending = false;
         if (core) shell_core_notification_failed(core, &pending);
