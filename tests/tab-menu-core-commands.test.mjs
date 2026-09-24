@@ -155,6 +155,7 @@ function coreFixture() {
   });
   f.selectedTabs.push(tabs[0]);
   f.context.SessionStore.getLastClosedTabCount = () => 0;
+  f.menu.Tabbrowser = { prefs: { tabGroupsEnabled: true } };
   f.menu._unloadTabInContextMenu = true;
   const describe = (tab = tabs[1]) => {
     const result = new Map();
@@ -167,6 +168,43 @@ function coreFixture() {
   };
   return { ...f, tabs, describe };
 }
+
+test("new group uses Firefox creation, snapshots selection and preserves DOM context", () => {
+  const f = coreFixture();
+  const target = f.tabs[1];
+  const domTarget = f.tabs[2];
+  f.menu.contextTab = domTarget;
+  f.menu.contextTabs = [domTarget];
+  f.context.gTabsPanel = { hideAllTabsPanel: () => f.calls.push(["hide-panel"]) };
+  f.browser.addTabGroup = (tabs, options) => {
+    f.calls.push(["group", tabs, options]);
+    f.selectedTabs.length = 0;
+  };
+  const items = f.menu.describeCoreCommands(target);
+  assert.equal(items[1].id, "new-group");
+  assert.equal(items[1].resource, "tab-context-move-tab-to-new-group");
+  assert(f.menu.executeCoreCommand(target, "new-group"));
+  assert.deepEqual(Array.from(f.calls[0][1]), [target]);
+  assert.equal(f.calls[0][2].insertBefore, target);
+  assert.equal(f.calls[0][2].metricsContext.source, "tab-menu");
+  assert.equal(f.browser.selectedTab, target);
+  assert.equal(f.calls.at(-1)[0], "hide-panel");
+  assert.equal(f.menu.contextTab, domTarget);
+  assert.deepEqual(f.menu.contextTabs, [domTarget]);
+  target.multiselected = true;
+  target.group = {};
+  f.selectedTabs.push(f.tabs[0], target);
+  assert.equal(f.describe(target).get("new-group").tabCount, 2);
+  assert(f.menu.executeCoreCommand(target, "new-group"));
+  assert.deepEqual(Array.from(f.calls[2][1]), [f.tabs[0], target]);
+  assert.equal(f.calls[2][2].insertBefore, target.group);
+  assert.equal(f.browser.selectedTab, f.tabs[0]);
+  f.menu.Tabbrowser.prefs.tabGroupsEnabled = false;
+  assert.equal(f.describe(domTarget).has("new-group"), false);
+  assert.equal(f.menu.executeCoreCommand(domTarget, "new-group"), false);
+  f.menu.moveTabsToNewGroup();
+  assert.equal(f.calls[4][1][0], domTarget);
+});
 
 test("core availability follows boundaries, unload preference and closed history", () => {
   const f = coreFixture();

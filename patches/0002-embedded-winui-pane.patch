@@ -913,10 +913,10 @@ index 783c67d397..bc31b137ba 100644
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
 diff --git a/browser/components/tabbrowser/content/tab-context-menu.js b/browser/components/tabbrowser/content/tab-context-menu.js
-index 694225ca00..3aaee3d5ba 100644
+index 694225ca00..17c7d09f99 100644
 --- a/browser/components/tabbrowser/content/tab-context-menu.js
 +++ b/browser/components/tabbrowser/content/tab-context-menu.js
-@@ -5,6 +5,116 @@
+@@ -5,6 +5,119 @@
  var TabContextMenu = {
    contextTab: null,
  
@@ -973,8 +973,10 @@ index 694225ca00..3aaee3d5ba 100644
 +      command("close-others", "close-other-tabs", gBrowser.openTabs.some(t =>
 +        !t.pinned && !t.hidden && (multi ? !t.multiselected : t !== tab))),
 +    ];
-+    const items = [command("new", vertical ? "tab-context-new-tab-open-vertical" : "tab-context-new-tab-open"),
-+      separator(), command("r", multi ? "reload-tabs" : "reload-tab")];
++    const items = [command("new", vertical ? "tab-context-new-tab-open-vertical" : "tab-context-new-tab-open")];
++    if (this.Tabbrowser.prefs.tabGroupsEnabled)
++      items.push(command("new-group", "tab-context-move-tab-to-new-group"));
++    items.push(separator(), command("r", multi ? "reload-tabs" : "reload-tab"));
 +    if (tab.activeMediaBlocked) items.push(command("play", multi ? "tab-context-play-tabs" : "tab-context-play-tab"));
 +    items.push(command("mute", tab.hasAttribute("muted")
 +      ? (multi ? "tabbrowser-context-unmute-selected-tabs" : "tabbrowser-context-unmute-tab")
@@ -1007,6 +1009,7 @@ index 694225ca00..3aaee3d5ba 100644
 +      gBrowser.TabMetrics.METRIC_SOURCE.TAB_MENU) };
 +    switch (id) {
 +      case "new": window.focus(); gBrowser.addAdjacentNewTab(tab); break;
++      case "new-group": this.moveTabsToNewGroup(tab, tabs); break;
 +      case "r": multi ? gBrowser.reloadMultiSelectedTabs() : gBrowser.reloadTab(tab); break;
 +      case "play": multi ? gBrowser.resumeDelayedMediaOnMultiSelectedTabs(tab) : tab.resumeDelayedMedia(); break;
 +      case "mute": multi ? gBrowser.toggleMuteAudioOnMultiSelectedTabs(tab) : tab.toggleMuteAudio(); break;
@@ -1033,7 +1036,7 @@ index 694225ca00..3aaee3d5ba 100644
    /*
     * Declared layout for the tab context menu and its managed submenus, keyed by
     * mode. Each mode maps a popup id to the ordered sections describing that
-@@ -499,9 +609,7 @@ var TabContextMenu = {
+@@ -499,9 +612,7 @@ var TabContextMenu = {
      aPopupMenu.addEventListener("popuphidden", this);
  
      this.multiselected = this.contextTab.multiselected;
@@ -1044,7 +1047,7 @@ index 694225ca00..3aaee3d5ba 100644
  
      let splitViews = new Set();
      // bug1973996: This call is not guaranteed to complete
-@@ -1161,9 +1269,14 @@ var TabContextMenu = {
+@@ -1161,9 +1272,14 @@ var TabContextMenu = {
        containerSource: "tab_context_menu",
      });
    },
@@ -1062,7 +1065,7 @@ index 694225ca00..3aaee3d5ba 100644
        let newTab = SessionStore.duplicateTab(window, tab);
        if (tab.group) {
          Glean.tabgroup.tabInteractions.duplicate.add();
-@@ -1175,8 +1288,12 @@ var TabContextMenu = {
+@@ -1175,8 +1291,12 @@ var TabContextMenu = {
      let userContextId = parseInt(
        event.target.getAttribute("data-usercontextid")
      );
@@ -1076,7 +1079,7 @@ index 694225ca00..3aaee3d5ba 100644
        if (tab.getAttribute("usercontextid") == userContextId) {
          continue;
        }
-@@ -1239,15 +1356,15 @@ var TabContextMenu = {
+@@ -1239,15 +1359,15 @@ var TabContextMenu = {
      }
    },
  
@@ -1095,7 +1098,7 @@ index 694225ca00..3aaee3d5ba 100644
          animate: true,
          metricsContext: gBrowser.TabMetrics.userTriggeredContext(
            gBrowser.TabMetrics.METRIC_SOURCE.TAB_MENU
-@@ -1256,8 +1373,8 @@ var TabContextMenu = {
+@@ -1256,12 +1376,13 @@ var TabContextMenu = {
      }
    },
  
@@ -1105,7 +1108,39 @@ index 694225ca00..3aaee3d5ba 100644
 +    return gBrowser.explicitUnloadTabs(Array.from(contextTabs));
    },
  
-   moveTabsToNewGroup() {
+-  moveTabsToNewGroup() {
+-    let insertBefore = this.contextTab;
++  moveTabsToNewGroup(contextTab = this.contextTab, contextTabs = this.contextTabs) {
++    contextTabs = Array.from(contextTabs);
++    let insertBefore = contextTab;
+     if (insertBefore.index < gBrowser.pinnedTabCount) {
+       let firstUnpinnedTab = gBrowser.tabs[gBrowser.pinnedTabCount];
+       if (firstUnpinnedTab.splitview) {
+@@ -1269,18 +1390,18 @@ var TabContextMenu = {
+       } else {
+         insertBefore = firstUnpinnedTab;
+       }
+-    } else if (this.contextTab.group) {
+-      insertBefore = this.contextTab.group;
+-    } else if (this.contextTab.splitview) {
+-      insertBefore = this.contextTab.splitview;
++    } else if (contextTab.group) {
++      insertBefore = contextTab.group;
++    } else if (contextTab.splitview) {
++      insertBefore = contextTab.splitview;
+     }
+-    gBrowser.addTabGroup(this.contextTabs, {
++    gBrowser.addTabGroup(contextTabs, {
+       insertBefore,
+       metricsContext: gBrowser.TabMetrics.userTriggeredContext(
+         gBrowser.TabMetrics.METRIC_SOURCE.TAB_MENU
+       ),
+     });
+-    gBrowser.selectedTab = this.contextTabs[0];
++    gBrowser.selectedTab = contextTabs[0];
+ 
+     // When using the tab context menu to create a group from the all tabs
+     // panel, make sure we close that panel so that it doesn't obscure the tab
 diff --git a/browser/components/tabbrowser/content/tabgroup.mjs b/browser/components/tabbrowser/content/tabgroup.mjs
 index 282fdbdf2e..131c08fc8d 100644
 --- a/browser/components/tabbrowser/content/tabgroup.mjs
