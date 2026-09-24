@@ -539,6 +539,9 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     malformed.GetNamedObject(L"menu").GetNamedArray(L"items").GetObjectAt(1).SetNamedValue(
         L"id", Value::CreateStringValue(L"opaque-reload"));
     reject(malformed, "duplicate command id in a description");
+    auto mixedEnvelope = MenuState({71, 72});
+    mixedEnvelope.SetNamedValue(L"menu", malformed.GetNamedObject(L"menu"));
+    reject(mixedEnvelope, "new publication plus malformed description leaves old session intact");
     reject(MenuState({71, 71}), "duplicate tab id in a publication");
     malformed = MenuState({71, 72});
     malformed.SetNamedValue(L"publishOnly", Value::CreateStringValue(L"true"));

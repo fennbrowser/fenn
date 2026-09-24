@@ -599,12 +599,12 @@ struct Pane {
         NativeTabMenu::Object action;
         action.SetNamedValue(L"kind", NativeTabMenu::Value::CreateStringValue(L"close"));
         action.SetNamedValue(L"tab", NativeTabMenu::Value::CreateNumberValue(id));
-        Enqueue(NativeShellCore::CloseTab, id, tabMenu.stateRevision, action.Stringify());
+        Enqueue(NativeShellCore::CloseTab, id, tabMenu.StateRevision(), action.Stringify());
     }
     void QueueNewTab() {
         NativeTabMenu::Object action;
         action.SetNamedValue(L"kind", NativeTabMenu::Value::CreateStringValue(L"new-tab"));
-        Enqueue(NativeShellCore::NewTab, 0, tabMenu.stateRevision, action.Stringify());
+        Enqueue(NativeShellCore::NewTab, 0, tabMenu.StateRevision(), action.Stringify());
     }
     void QueueTabSelection(uint32_t activate = 0) {
         NativeTabMenu::Array selected;
@@ -622,13 +622,13 @@ struct Pane {
         if (!members.count(active)) selected.Append(NativeTabMenu::Value::CreateNumberValue(active));
         NativeTabMenu::Object event;
         event.SetNamedValue(L"kind", NativeTabMenu::Value::CreateStringValue(L"selection"));
-        event.SetNamedValue(L"revision", NativeTabMenu::Value::CreateNumberValue(tabMenu.stateRevision));
+        event.SetNamedValue(L"revision", NativeTabMenu::Value::CreateNumberValue(tabMenu.StateRevision()));
         event.SetNamedValue(L"tab", NativeTabMenu::Value::CreateNumberValue(active));
         event.SetNamedValue(L"tabs", selected);
         event.SetNamedValue(L"control",
                             NativeTabMenu::Value::CreateBooleanValue((GetKeyState(VK_CONTROL) & 0x8000) != 0));
         event.SetNamedValue(L"shift", NativeTabMenu::Value::CreateBooleanValue((GetKeyState(VK_SHIFT) & 0x8000) != 0));
-        Enqueue(NativeShellCore::SelectTab, active, tabMenu.stateRevision, event.Stringify());
+        Enqueue(NativeShellCore::SelectTab, active, tabMenu.StateRevision(), event.Stringify());
     }
     // ShellCore has already reconciled tab/address/mode bookkeeping when each
     // outcome was recorded. Deliver the remaining surface-specific effects.
@@ -657,7 +657,7 @@ struct Pane {
         SeedModel(snapshot, count, selected);
         if (strip) {
             browserSelection = selected;
-            shell.SelectionPending(tabMenu.stateRevision);
+            shell.SelectionPending(tabMenu.StateRevision());
             strip->Sync(snapshot, count, selected);
             return;
         }
@@ -672,15 +672,12 @@ struct Pane {
                 commands.emplace(snapshot[i].id, snapshot[i].commands);
                 if (i >= tabIds.size() || tabIds[i] != snapshot[i].id) reordered = true;
             }
-            for (auto it = tabMenu.publishedTabs.begin(); it != tabMenu.publishedTabs.end();) {
-                if (!commands.count(*it))
-                    it = tabMenu.publishedTabs.erase(it);
-                else
-                    ++it;
-            }
+            std::vector<uint32_t> retainedIds;
+            for (auto const& [id, command] : commands) retainedIds.push_back(id);
+            tabMenu.RetainTabs(retainedIds);
             // Revoke the open menu when its target, ordering or eligibility changes.
-            if (tabMenu.tab &&
-                (reordered || !commands.count(tabMenu.tab) || commands[tabMenu.tab] != tabCommands[tabMenu.tab]))
+            if (tabMenu.State().tab &&
+                (reordered || !commands.count(tabMenu.State().tab) || commands[tabMenu.State().tab] != tabCommands[tabMenu.State().tab]))
                 tabMenu.Dismiss(true);
             tabCommands.swap(commands);
             tabTitles.swap(titles);
@@ -712,7 +709,7 @@ struct Pane {
             }
             if (tabMenu.hasSelection) {
                 tabs.SelectionMode(Controls::ListViewSelectionMode::Extended);
-                if (!shell.SelectionPending(tabMenu.stateRevision)) {
+                if (!shell.SelectionPending(tabMenu.StateRevision())) {
                     for (uint32_t i = 0; i < count; ++i) {
                         auto item = items.GetAt(i);
                         uint32_t existing;
@@ -752,13 +749,13 @@ struct Pane {
         for (auto value : selected) ids.Append(NativeTabMenu::Value::CreateNumberValue(value));
         NativeTabMenu::Object event;
         event.SetNamedValue(L"kind", NativeTabMenu::Value::CreateStringValue(L"selection"));
-        event.SetNamedValue(L"revision", NativeTabMenu::Value::CreateNumberValue(tabMenu.stateRevision));
+        event.SetNamedValue(L"revision", NativeTabMenu::Value::CreateNumberValue(tabMenu.StateRevision()));
         event.SetNamedValue(L"tab",
                             NativeTabMenu::Value::CreateNumberValue(selected.count(id) ? id : browserSelection));
         event.SetNamedValue(L"tabs", ids);
         event.SetNamedValue(L"control", NativeTabMenu::Value::CreateBooleanValue(control));
         event.SetNamedValue(L"shift", NativeTabMenu::Value::CreateBooleanValue(shift));
-        Enqueue(NativeShellCore::SelectTab, id, tabMenu.stateRevision, event.Stringify());
+        Enqueue(NativeShellCore::SelectTab, id, tabMenu.StateRevision(), event.Stringify());
     }
 
     // Apply one incremental presentation update. Only the named tab's row is
@@ -858,7 +855,7 @@ struct Pane {
     void ApplyPublishedSelection(std::set<uint32_t> const& previous) {
         // A native selection is still awaiting its authoritative result; its
         // optimistic feedback stands until the outcome or a newer publication.
-        if (shell.SelectionPending(tabMenu.stateRevision)) return;
+        if (shell.SelectionPending(tabMenu.StateRevision())) return;
         auto const& current = tabMenu.selectedTabs;
         if (strip) {
             strip->ApplySelectedSet(previous, current);
@@ -924,6 +921,7 @@ struct Pane {
         limits.max_tabs = 10000;
         limits.max_title_units = 32768;
         shell.Open(limits);
+        tabMenu.core = shell.core;
         // Menu transitions (open, activate, dismiss) are ordered requests on
         // the same queue as selection, so a selection formed before an opening
         // still reaches Firefox first.
@@ -1888,9 +1886,9 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
         // now, so apply it here rather than waiting for a snapshot. The
         // previous set is what makes the apply a diff instead of a rescan.
         auto previousSelection = pane.tabMenu.selectedTabs;
-        auto previousRevision = pane.tabMenu.stateRevision;
+        auto previousRevision = pane.tabMenu.StateRevision();
         pane.tabMenu.Sync(snapshot);
-        if (pane.tabMenu.stateRevision != previousRevision) pane.ApplyPublishedSelection(previousSelection);
+        if (pane.tabMenu.StateRevision() != previousRevision) pane.ApplyPublishedSelection(previousSelection);
         return S_OK;
     } catch (...) {
         return to_hresult();

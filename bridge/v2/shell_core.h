@@ -24,13 +24,21 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 9
+#define SHELL_CORE_ABI_VERSION 10
 
 #define MAX_EDIT_ID 9007199254740991
 
 #define MAX_ROWS 10000
 
 #define SHELL_NO_INDEX UINT32_MAX
+
+#define MAX_TABS 10000
+
+#define MAX_COMMANDS 128
+
+#define MAX_ID 64
+
+#define MAX_FINGERPRINT ((6 * 1024) * 1024)
 
 /*
  Result of every entry point. `Ok` is zero so the host can test it directly.
@@ -299,6 +307,19 @@ typedef struct {
   double left;
   double width;
 } ShellDragRow;
+
+typedef struct {
+  uint32_t session;
+  uint32_t tab;
+  uint32_t revision;
+  uint32_t state_revision;
+  uint32_t awaiting;
+} ShellMenuState;
+
+typedef struct {
+  const uint16_t *data;
+  uintptr_t len;
+} ShellMenuCommand;
 
 #ifdef __cplusplus
 extern "C" {
@@ -813,6 +834,86 @@ ShellStatus shell_core_tab_drag_publish(ShellCore *core,
                                         const uint32_t *ids,
                                         uintptr_t len,
                                         bool *out);
+
+/*
+ Read menu identity and publication revision.
+ # Safety
+ Live core and writable out.
+ */
+ShellStatus shell_core_menu_state(ShellCore *core, ShellMenuState *out);
+
+/*
+ Apply validated publication membership and exact serialized-state identity.
+ # Safety
+ Live core; readable bounded arrays (null only for length zero); writable changed.
+ */
+ShellStatus shell_core_menu_publish(ShellCore *core,
+                                    uint32_t revision,
+                                    const uint32_t *tabs,
+                                    uintptr_t len,
+                                    const uint16_t *fingerprint,
+                                    uintptr_t units,
+                                    bool *changed);
+
+/*
+ Retain only tabs still present in a native tab snapshot.
+ # Safety
+ Live core and readable IDs (null only for zero len).
+ */
+ShellStatus shell_core_menu_retain(ShellCore *core, const uint32_t *ids, uintptr_t len);
+
+/*
+ Test current published membership.
+ # Safety
+ Live core and writable out.
+ */
+ShellStatus shell_core_menu_has_tab(ShellCore *core, uint32_t id, bool *out);
+
+/*
+ Start a new pending description; unknown tabs or exhausted session IDs refuse.
+ # Safety
+ Live core and writable opened.
+ */
+ShellStatus shell_core_menu_open(ShellCore *core, uint32_t tab, bool *opened);
+
+/*
+ Revoke the current session before hiding WinUI controls.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_menu_dismiss(ShellCore *core);
+
+/*
+ Clear membership and session on teardown without reusing session IDs.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_menu_close(ShellCore *core);
+
+/*
+ Bind one description and its enabled opaque command IDs to the current opening.
+ # Safety
+ Live core; readable commands and their UTF-16 slices; writable accepted.
+ */
+ShellStatus shell_core_menu_description(ShellCore *core,
+                                        uint32_t session,
+                                        uint32_t tab,
+                                        uint32_t revision,
+                                        const ShellMenuCommand *commands,
+                                        uintptr_t len,
+                                        bool *accepted);
+
+/*
+ Consume activation once for the exact session/revision and enabled opaque ID.
+ # Safety
+ Live core, readable ID and writable accepted.
+ */
+ShellStatus shell_core_menu_activate(ShellCore *core,
+                                     uint32_t session,
+                                     uint32_t revision,
+                                     const uint16_t *id,
+                                     uintptr_t len,
+                                     bool *accepted);
 
 #ifdef __cplusplus
 }  // extern "C"

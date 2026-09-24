@@ -3,6 +3,7 @@
 #include <cmath>
 #include <functional>
 #include "JsonValidation.h"
+#include "ShellCore.h"
 
 // Presentation only. Firefox owns labels, eligibility and command meaning.
 //
@@ -30,28 +31,21 @@ struct NativeTabMenu {
         std::vector<Entry> children;
     };
     Microsoft::UI::Xaml::Controls::MenuFlyout active{nullptr};
-    uint32_t tab{}, session{}, nextSession{}, revision{};
-    uint32_t stateRevision{};
-    winrt::hstring stateFingerprint;
-    // Descriptions are deliberately not cached across openings. Firefox is the
-    // only authority on what a tab's commands are, and a description can go
-    // stale from things no publication carries (a tab muting itself, a
-    // navigation changing duplicate eligibility). One opening asks once; that
-    // is the whole cost, and it is paid for the one tab being opened.
-    // Tabs in the current Firefox publication. Membership is what makes a row's
-    // context menu attachable and a strip selection addressable; it no longer
-    // implies that a description exists.
-    std::set<uint32_t> publishedTabs;
-    // Set while a menu is open with the pending row shown and its description
-    // still outstanding. Nothing in that state is actionable.
-    bool awaitingDescription{};
+    ShellCore* core{};
+    ShellMenuState State() const {
+        ShellMenuState value{};
+        if (core) shell_core_menu_state(core, &value);
+        return value;
+    }
+    uint32_t StateRevision() const { return State().state_revision; }
+    // Published selection is a WinUI presentation cache. Rust owns protocol
+    // membership and validity; Firefox owns command descriptions and meaning.
     winrt::hstring surface{L"tab"};
     // Wired by the owning pane to the bounded request queue in the Rust shell
     // core. Menu transitions are ordered and are never coalesced.
     std::function<void(uint32_t tabId, uint32_t contextRevision, winrt::hstring const& action)> dispatch;
     std::set<uint32_t> selectedTabs;
     bool hasSelection{};
-    std::set<winrt::hstring> enabledIds;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
     static Microsoft::UI::Xaml::Controls::MenuFlyoutItem Placeholder() {
@@ -102,39 +96,43 @@ struct NativeTabMenu {
         return result;
     }
     void Queue(wchar_t const* kind, winrt::hstring const& id = L"") {
-        if (!dispatch || !session) return;
+        const auto identity = State();
+        if (!dispatch || !identity.session) return;
         Object event;
         event.SetNamedValue(L"kind", Value::CreateStringValue(kind));
-        event.SetNamedValue(L"session", Value::CreateNumberValue(session));
-        event.SetNamedValue(L"tab", Value::CreateNumberValue(tab));
-        event.SetNamedValue(L"revision", Value::CreateNumberValue(revision));
+        event.SetNamedValue(L"session", Value::CreateNumberValue(identity.session));
+        event.SetNamedValue(L"tab", Value::CreateNumberValue(identity.tab));
+        event.SetNamedValue(L"revision", Value::CreateNumberValue(identity.revision));
         event.SetNamedValue(L"id", Value::CreateStringValue(id));
         event.SetNamedValue(L"surface", Value::CreateStringValue(surface));
-        dispatch(tab, revision, event.Stringify());
+        dispatch(identity.tab, identity.revision, event.Stringify());
     }
-    // `revoke` marks the session as already invalid on the Firefox side. There
-    // is nothing to clear locally: every queued event carries this session id,
-    // and Firefox rejects events for a session it no longer considers active.
+    // Always name the old session in dismiss, then revoke it before hiding
+    // controls can reenter. Firefox also rejects already-obsolete sessions.
     void Dismiss(bool revoke = false) {
         (void)revoke;
-        if (session) Queue(L"dismiss");
-        session = tab = revision = 0;
-        awaitingDescription = false;
-        enabledIds.clear();
+        if (State().session) Queue(L"dismiss");
+        if (core) shell_core_menu_dismiss(core);
         auto old = active;
         active = nullptr;
         if (old && old.IsOpen()) old.Hide();
     }
-    bool HasTab(uint32_t id) const { return publishedTabs.count(id) != 0; }
+    bool HasTab(uint32_t id) const {
+        bool found = false;
+        return core && shell_core_menu_has_tab(core, id, &found) == SHELL_STATUS_OK && found;
+    }
+    void RetainTabs(std::vector<uint32_t> const& ids) {
+        if (core) shell_core_menu_retain(core, ids.data(), ids.size());
+    }
     void Close() {
         Dismiss();
-        publishedTabs.clear();
+        if (core) shell_core_menu_close(core);
         dispatch = nullptr;
         lifetime.reset();
     }
 
     void FocusFirst() {
-        if (!active || !revision) return;
+        if (!active || !State().revision) return;
         for (auto item : active.Items()) {
             if (item.IsEnabled() && !item.try_as<Microsoft::UI::Xaml::Controls::MenuFlyoutSeparator>()) {
                 item.Focus(Microsoft::UI::Xaml::FocusState::Programmatic);
@@ -145,7 +143,7 @@ struct NativeTabMenu {
 
     template <typename Vector>
     void Render(Vector const& target, std::vector<Entry> const& entries,
-                Microsoft::UI::Xaml::Controls::MenuFlyout const& ownerMenu, uint32_t modelRevision,
+                Microsoft::UI::Xaml::Controls::MenuFlyout const& ownerMenu, uint32_t modelSession, uint32_t modelRevision,
                 std::set<winrt::hstring>& modelIds, bool parentEnabled = true) {
         using namespace Microsoft::UI::Xaml::Controls;
         for (auto const& e : entries) {
@@ -158,7 +156,7 @@ struct NativeTabMenu {
                 item.Text(e.label);
                 item.AccessKey(e.accessKey);
                 item.IsEnabled(e.enabled);
-                Render(item.Items(), e.children, ownerMenu, modelRevision, modelIds, parentEnabled && e.enabled);
+                Render(item.Items(), e.children, ownerMenu, modelSession, modelRevision, modelIds, parentEnabled && e.enabled);
                 target.Append(item);
                 continue;
             }
@@ -180,12 +178,12 @@ struct NativeTabMenu {
             auto expected = modelRevision;
             auto owner = winrt::make_weak(ownerMenu);
             item.Click(
-                [this, alive = std::weak_ptr<int>(lifetime), owner, expected, id = e.id](auto const&, auto const&) {
-                    if (alive.expired() || !session || awaitingDescription || active != owner.get() ||
-                        revision != expected || !enabledIds.count(id))
-                        return;
+                [this, alive = std::weak_ptr<int>(lifetime), owner, expected, modelSession, id = e.id](auto const&, auto const&) {
+                    if (alive.expired() || active != owner.get()) return;
+                    bool accepted = false;
+                    if (!core || shell_core_menu_activate(core, modelSession, expected,
+                            reinterpret_cast<uint16_t const*>(id.c_str()), id.size(), &accepted) != SHELL_STATUS_OK || !accepted) return;
                     Queue(L"activate", id);
-                    enabledIds.clear();  // A menu session can activate only once.
                 });
             target.Append(item);
         }
@@ -198,16 +196,22 @@ struct NativeTabMenu {
         while (active.Items().Size() > 1) active.Items().RemoveAtEnd();
         for (uint32_t i = 1; i < rendered.Size(); ++i) active.Items().Append(rendered.GetAt(i));
     }
-    void Populate(std::vector<Entry> const& entries) {
+    void Populate(std::vector<Entry> const& entries, uint32_t forSession, uint32_t forTab, uint32_t forRevision) {
+        if (!active) return;
         auto rendered = winrt::single_threaded_vector<Microsoft::UI::Xaml::Controls::MenuFlyoutItemBase>();
-        Render(rendered, entries, active, revision, enabledIds);
-        Replace(rendered);
+        std::set<winrt::hstring> enabled;
+        Render(rendered, entries, active, forSession, forRevision, enabled);
+        std::vector<ShellMenuCommand> commands;
+        for (auto const& id : enabled) commands.push_back({reinterpret_cast<uint16_t const*>(id.c_str()), id.size()});
+        bool accepted = false;
+        if (shell_core_menu_description(core, forSession, forTab, forRevision,
+                commands.data(), commands.size(), &accepted) != SHELL_STATUS_OK) throw winrt::hresult_invalid_argument();
+        if (accepted) Replace(rendered);
     }
     // The pending state: one disabled row, no command ids registered, so there
     // is nothing for a click or a keyboard activation to reach. This is what an
     // opening menu shows until its authoritative description arrives.
     void PopulatePending() {
-        enabledIds.clear();
         auto rendered = winrt::single_threaded_vector<Microsoft::UI::Xaml::Controls::MenuFlyoutItemBase>();
         rendered.Append(Placeholder());
         Replace(rendered);
@@ -215,37 +219,31 @@ struct NativeTabMenu {
     void Open(Microsoft::UI::Xaml::Controls::MenuFlyout const& menu, uint32_t id,
               winrt::hstring const& requestedSurface = L"tab") {
         Dismiss();
-        if (!id || nextSession == UINT32_MAX) return;
-        if (!publishedTabs.count(id)) {
-            // Not a row Firefox currently publishes: nothing to describe.
-            return;
-        }
+        bool opened = false;
+        if (!core || shell_core_menu_open(core, id, &opened) != SHELL_STATUS_OK || !opened) return;
         active = menu;
         surface = requestedSurface;
-        tab = id;
-        session = ++nextSession;
-        revision = stateRevision;
         PopulatePending();
-        awaitingDescription = true;
         // Firefox revalidates and answers with this tab's description. It also
         // revokes the session outright if the opening no longer makes sense.
         Queue(L"open");
     }
     void Sync(Object const& snapshot) {
         if (NativeJson::RequireId(snapshot, L"version") != 2) throw winrt::hresult_invalid_argument();
-        // Validate the whole envelope before anything is applied. The caller
-        // reads publishOnly after this returns, so a malformed value has to be
-        // rejected here or a bad message could still have mutated state.
+        // Parse the entire envelope before changing Rust state or live controls.
         snapshot.GetNamedBoolean(L"publishOnly", false);
         auto revoke = snapshot.HasKey(L"revoke") ? NativeJson::RequireId(snapshot, L"revoke") : 0;
+        uint32_t incoming = 0, forSession = 0, forTab = 0, forRevision = 0;
+        std::vector<uint32_t> nextTabs;
+        std::set<uint32_t> nextSelected;
+        bool nextHasSelection = false;
+        winrt::hstring fingerprint;
+        std::vector<Entry> items;
         if (snapshot.HasKey(L"state")) {
             auto state = snapshot.GetNamedObject(L"state");
-            auto incoming = NativeJson::RequireId(state, L"revision");
+            incoming = NativeJson::RequireId(state, L"revision");
             auto bindings = state.GetNamedArray(L"tabs");
             if (bindings.Size() > NativeJson::kMaxTabs) throw winrt::hresult_invalid_argument();
-            std::set<uint32_t> nextTabs;
-            std::set<uint32_t> nextSelected;
-            bool nextHasSelection = false;
             for (auto value : bindings) {
                 auto binding = value.GetObject();
                 auto id = NativeJson::RequireId(binding, L"tab");
@@ -253,38 +251,32 @@ struct NativeTabMenu {
                     nextHasSelection = true;
                     if (binding.GetNamedBoolean(L"selected")) nextSelected.insert(id);
                 }
-                if (!nextTabs.insert(id).second) throw winrt::hresult_invalid_argument();
+                nextTabs.push_back(id);
             }
-            auto fingerprint = state.Stringify();
-            if (incoming == stateRevision && fingerprint != stateFingerprint) throw winrt::hresult_invalid_argument();
-            // Validate everything before mutation; never let a late state replace
-            // the current window snapshot or alter an already displayed command.
-            if (incoming > stateRevision) {
-                publishedTabs = std::move(nextTabs);
-                selectedTabs = std::move(nextSelected);
-                hasSelection = nextHasSelection;
-                stateRevision = incoming;
-                stateFingerprint = fingerprint;
-                Dismiss(true);
-            }
+            fingerprint = state.Stringify();
         }
         if (snapshot.HasKey(L"menu")) {
             auto answer = snapshot.GetNamedObject(L"menu");
-            auto forSession = NativeJson::RequireId(answer, L"session");
-            auto forTab = NativeJson::RequireId(answer, L"tab");
-            auto forRevision = NativeJson::RequireId(answer, L"revision");
+            forSession = NativeJson::RequireId(answer, L"session");
+            forTab = NativeJson::RequireId(answer, L"tab");
+            forRevision = NativeJson::RequireId(answer, L"revision");
             std::set<winrt::hstring> ids;
             uint32_t count = 0;
-            auto items = Parse(answer.GetNamedArray(L"items"), ids, count);
+            items = Parse(answer.GetNamedArray(L"items"), ids, count);
             if (items.empty()) throw winrt::hresult_invalid_argument();
-            // Bind the answer to the request that is still open. A dismissed,
-            // retargeted or superseded opening leaves the pending row as it is.
-            if (session && awaitingDescription && active && forSession == session && forTab == tab &&
-                forRevision == revision && revision == stateRevision) {
-                Populate(items);
-                awaitingDescription = false;
+        }
+        if (incoming) {
+            bool changed = false;
+            if (!core || shell_core_menu_publish(core, incoming, nextTabs.data(), nextTabs.size(),
+                    reinterpret_cast<uint16_t const*>(fingerprint.c_str()), fingerprint.size(), &changed) != SHELL_STATUS_OK)
+                throw winrt::hresult_invalid_argument();
+            if (changed) {
+                selectedTabs = std::move(nextSelected);
+                hasSelection = nextHasSelection;
+                Dismiss(true);
             }
         }
-        if (revoke && revoke == session) Dismiss(true);
+        if (forSession) Populate(items, forSession, forTab, forRevision);
+        if (revoke && revoke == State().session) Dismiss(true);
     }
 };

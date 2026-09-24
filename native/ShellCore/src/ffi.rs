@@ -191,6 +191,7 @@ pub struct ShellCore {
     model: TabModel,
     strip: StripState,
     group_hover: crate::group_hover::GroupHover,
+    menu: crate::menu::MenuState,
     window_drag: crate::window_drag::WindowDrag,
     snapshot: Option<SnapshotBuilder>,
     stats: Counters,
@@ -403,6 +404,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         model: TabModel::new(model_limits),
         strip: StripState::default(),
         group_hover: crate::group_hover::GroupHover::default(),
+        menu: Default::default(),
         window_drag: crate::window_drag::WindowDrag::default(),
         snapshot: None,
         stats: Counters::default(),
@@ -725,6 +727,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
         core.queue.cancel_all();
         core.window_drag.cancel();
         core.group_hover = Default::default();
+        core.menu.close();
         core.snapshot = None;
         ShellStatus::Ok
     })
@@ -740,6 +743,7 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
         core.queue.close();
         core.window_drag.cancel();
         core.group_hover = Default::default();
+        core.menu.close();
         core.snapshot = None;
         ShellStatus::Ok
     })
@@ -1809,6 +1813,133 @@ mod tab_drag_ffi_tests {
         shell_core_tab_drag_state(core,&mut state); assert_eq!(state.phase,0);
         shell_core_close(core);
         assert_eq!(shell_core_tab_drag_arm(core,1,0.0,0.0),ShellStatus::Closed);
+        shell_core_destroy(core);
+    }}
+}
+
+// Menu protocol lifetime follows the endpoint, independently of UI objects.
+unsafe fn menu_guard(core: *mut ShellCore, body: impl FnOnce(&mut crate::menu::MenuState) -> ShellStatus) -> ShellStatus {
+    guard(core, |core| if core.queue.is_closed() { ShellStatus::Closed } else { body(&mut core.menu) })
+}
+#[repr(C)]
+pub struct ShellMenuCommand { pub data: *const u16, pub len: usize }
+/// Read menu identity and publication revision.
+/// # Safety
+/// Live core and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_menu_state(core: *mut ShellCore, out: *mut crate::menu::ShellMenuState) -> ShellStatus {
+    let Some(out)=out.as_mut() else { return ShellStatus::InvalidArgument; }; *out=Default::default();
+    menu_guard(core,|m| { *out=m.state(); ShellStatus::Ok })
+}
+/// Apply validated publication membership and exact serialized-state identity.
+/// # Safety
+/// Live core; readable bounded arrays (null only for length zero); writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_menu_publish(core: *mut ShellCore, revision: u32, tabs: *const u32, len: usize,
+    fingerprint: *const u16, units: usize, changed: *mut bool) -> ShellStatus {
+    let Some(changed)=changed.as_mut() else { return ShellStatus::InvalidArgument; }; *changed=false;
+    if len>crate::menu::MAX_TABS || units>crate::menu::MAX_FINGERPRINT || (tabs.is_null() && len!=0) { return ShellStatus::InvalidArgument; }
+    let Some(fingerprint)=slice(fingerprint,units) else { return ShellStatus::InvalidArgument; };
+    let tabs=if len==0 { &[] } else { std::slice::from_raw_parts(tabs,len) };
+    menu_guard(core,|m| match m.publish(revision,tabs,fingerprint) {
+        Ok(value)=>{*changed=value;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument,
+    })
+}
+/// Retain only tabs still present in a native tab snapshot.
+/// # Safety
+/// Live core and readable IDs (null only for zero len).
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_menu_retain(core: *mut ShellCore, ids: *const u32, len: usize) -> ShellStatus {
+    if len>crate::menu::MAX_TABS || (ids.is_null() && len!=0) { return ShellStatus::InvalidArgument; }
+    let ids=if len==0 { &[] } else { std::slice::from_raw_parts(ids,len) };
+    menu_guard(core,|m| { m.retain(ids);ShellStatus::Ok })
+}
+/// Test current published membership.
+/// # Safety
+/// Live core and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_menu_has_tab(core: *mut ShellCore, id: u32, out: *mut bool) -> ShellStatus {
+    let Some(out)=out.as_mut() else { return ShellStatus::InvalidArgument; };*out=false;
+    menu_guard(core,|m| {*out=m.has_tab(id);ShellStatus::Ok})
+}
+/// Start a new pending description; unknown tabs or exhausted session IDs refuse.
+/// # Safety
+/// Live core and writable opened.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_menu_open(core: *mut ShellCore, tab: u32, opened: *mut bool) -> ShellStatus {
+    let Some(opened)=opened.as_mut() else { return ShellStatus::InvalidArgument; };*opened=false;
+    menu_guard(core,|m| {*opened=m.open(tab);ShellStatus::Ok})
+}
+/// Revoke the current session before hiding WinUI controls.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_menu_dismiss(core: *mut ShellCore) -> ShellStatus {
+    menu_guard(core,|m| {m.dismiss();ShellStatus::Ok})
+}
+/// Clear membership and session on teardown without reusing session IDs.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_menu_close(core: *mut ShellCore) -> ShellStatus {
+    menu_guard(core,|m| {m.close();ShellStatus::Ok})
+}
+/// Bind one description and its enabled opaque command IDs to the current opening.
+/// # Safety
+/// Live core; readable commands and their UTF-16 slices; writable accepted.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_menu_description(core: *mut ShellCore, session: u32, tab: u32, revision: u32,
+    commands: *const ShellMenuCommand, len: usize, accepted: *mut bool) -> ShellStatus {
+    let Some(accepted)=accepted.as_mut() else { return ShellStatus::InvalidArgument; };*accepted=false;
+    if len>crate::menu::MAX_COMMANDS || (commands.is_null() && len!=0) { return ShellStatus::InvalidArgument; }
+    let commands=if len==0 { &[] } else { std::slice::from_raw_parts(commands,len) };
+    let mut ids=Vec::with_capacity(len);
+    for command in commands {
+        if command.len==0 || command.len>crate::menu::MAX_ID {return ShellStatus::InvalidArgument;}
+        let Some(id)=slice(command.data,command.len) else {return ShellStatus::InvalidArgument;};
+        ids.push(id.to_vec());
+    }
+    menu_guard(core,|m| match m.accept(session,tab,revision,&ids) {
+        Ok(value)=>{*accepted=value;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument,
+    })
+}
+/// Consume activation once for the exact session/revision and enabled opaque ID.
+/// # Safety
+/// Live core, readable ID and writable accepted.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_menu_activate(core: *mut ShellCore, session: u32, revision: u32,
+    id: *const u16, len: usize, accepted: *mut bool) -> ShellStatus {
+    let Some(accepted)=accepted.as_mut() else {return ShellStatus::InvalidArgument;};*accepted=false;
+    if len==0 || len>crate::menu::MAX_ID {return ShellStatus::InvalidArgument;}
+    let Some(id)=slice(id,len) else {return ShellStatus::InvalidArgument;};
+    menu_guard(core,|m| {*accepted=m.activate(session,revision,id);ShellStatus::Ok})
+}
+
+#[cfg(test)]
+mod menu_ffi_tests {
+    use super::*;
+    #[test]
+    fn menu_boundary_roundtrip_and_invalid_buffers_owner_and_close() { unsafe {
+        let core=shell_core_create(&std::mem::zeroed());
+        let mut state=crate::menu::ShellMenuState::default();let mut accepted=false;
+        assert_eq!(shell_core_menu_state(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_menu_publish(core,1,std::ptr::null(),1,std::ptr::null(),0,&mut accepted),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_menu_publish(core,1,&7,10001,std::ptr::null(),0,&mut accepted),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_menu_publish(core,1,&7,1,&65,1,&mut accepted),ShellStatus::Ok);assert!(accepted);
+        assert_eq!(shell_core_menu_open(core,7,&mut accepted),ShellStatus::Ok);assert!(accepted);
+        shell_core_menu_state(core,&mut state);assert_eq!(state.awaiting,1);
+        assert_eq!(shell_core_menu_description(core,state.session,7,1,std::ptr::null(),1,&mut accepted),ShellStatus::InvalidArgument);
+        let invalid=ShellMenuCommand{data:std::ptr::null(),len:1};
+        assert_eq!(shell_core_menu_description(core,state.session,7,1,&invalid,1,&mut accepted),ShellStatus::InvalidArgument);
+        let id=[65u16];let cmd=ShellMenuCommand{data:id.as_ptr(),len:1};
+        assert_eq!(shell_core_menu_description(core,state.session,7,1,&cmd,1,&mut accepted),ShellStatus::Ok);assert!(accepted);
+        assert_eq!(shell_core_menu_activate(core,state.session,1,id.as_ptr(),1,&mut accepted),ShellStatus::Ok);assert!(accepted);
+        shell_core_menu_activate(core,state.session,1,id.as_ptr(),1,&mut accepted);assert!(!accepted);
+        let handle=core as usize;
+        assert_eq!(std::thread::spawn(move || shell_core_menu_dismiss(handle as *mut ShellCore)).join().unwrap(),ShellStatus::WrongThread);
+        shell_core_cancel_all(core);shell_core_menu_state(core,&mut state);assert_eq!(state.session,0);
+        shell_core_menu_has_tab(core,7,&mut accepted);assert!(!accepted);
+        shell_core_close(core);assert_eq!(shell_core_menu_open(core,7,&mut accepted),ShellStatus::Closed);
         shell_core_destroy(core);
     }}
 }
