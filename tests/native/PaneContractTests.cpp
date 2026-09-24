@@ -1063,10 +1063,11 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     Require(SUCCEEDED(api.syncAddress(hwnd, modesSnapshot)), "restore modes before queue saturation");
     NextRequest(api, hwnd, 6, nullptr, 2);
     field.Text(L"previous admitted edit");
-    // TextChanged is asynchronous; after Tab navigation this runtime can
-    // defer it beyond a second even though TextChanging fires immediately.
-    // Wait for the actual edit with a wall-clock deadline, without assuming
-    // a pump pass or an unrelated caret/visibility notification proves delivery.
+    // TextChanged is asynchronous. Tab navigation can leave a chain of
+    // deferred dispatch work before it. Sleep(10) between pump passes delays
+    // each link, accumulating seconds even when new messages are ready.
+    // Wait for messages as well as the deadline; keep waiting for this exact
+    // edit rather than treating an unrelated notification as delivery.
     winrt::Windows::Data::Json::JsonObject heldEdit;
     const auto editDeadline = GetTickCount64() + 10000;
     while (!heldEdit.Size() && GetTickCount64() < editDeadline) {
@@ -1082,7 +1083,10 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
             }
             if (!heldEdit.Size()) CompleteRequests(api, hwnd, batch);
         }
-        if (!heldEdit.Size()) Sleep(10);
+        if (!heldEdit.Size()) {
+            Require(MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE) != WAIT_FAILED,
+                    "wait for address edit messages");
+        }
     }
     Require(heldEdit.Size() != 0, "receive and hold the previous admitted edit before filling the queue (10 second deadline)");
     auto newTab = content.as<Controls::Grid>().Children().GetAt(2).as<Controls::Button>();

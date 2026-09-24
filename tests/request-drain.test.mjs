@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
+import { WinUITabStripSession } from "../upstream/firefox/browser/base/content/WinUITabStripSession.sys.mjs";
 
 // Exercise the shipped browser adapter, not a copy of its drain algorithm.
 const source = readFileSync(new URL(
@@ -102,8 +103,8 @@ test("ordinary completed and rejected commands keep their outcomes without forci
   assert.equal(f.pane.structuralDirty, false);
 });
 
-test("title and selection events do not rebuild strip metadata", () => {
-  for (const [type, changed] of [["TabSelect"], ["TabMultiSelect"], ["TabAttrModified", ["label"]]]) {
+test("title and active-tab selection events do not rebuild strip metadata", () => {
+  for (const [type, changed] of [["TabSelect"], ["TabAttrModified", ["label"]]]) {
     const f = fixture([]);
     f.pane.stripDirty = false;
     f.pane.schedule = () => {};
@@ -117,6 +118,44 @@ test("title and selection events do not rebuild strip metadata", () => {
     f.pane.schedule = () => {};
     f.pane.handleEvent({type:"TabAttrModified", target:{}, detail:{changed:[attribute]}});
     assert.equal(f.pane.stripDirty, true, attribute);
+  }
+});
+
+test("multiselection republishes grouping eligibility as row deltas without rebuilding layout", () => {
+  const tabs = [1, 2].map(() => ({isConnected:true, visible:true, hasAttribute:() => false}));
+  const browser = {tabs, selectedTabs:[tabs[0]], tabGroups:[], getIcon:() => ""};
+  const context = {
+    window:{addEventListener() {}, docShell:{usePrivateBrowsing:false}},
+    document:{documentElement:{matches:() => false}},
+    gBrowser:browser,
+    Services:{prefs:{getBoolPref:() => true, getIntPref:() => 240}},
+    ContextualIdentityService:{getPublicIdentityFromId:() => null},
+  };
+  runInNewContext(source, context);
+  const pane = context.gWinUIPane;
+  pane.localization = () => ({formatValueSync:id => id});
+  pane.visibleTabs = () => tabs;
+  tabs.forEach((tab, index) => pane.tabIds.set(tab, index + 1));
+  pane.schedule = () => {};
+  const session = new WinUITabStripSession({read:() => pane.describeStrip()});
+  let previous = session.update().strip.revision;
+  assert.ok(session.state.rows.every(row => row.groupSource && row.groupTarget));
+
+  for (const selectedTabs of [tabs, [tabs[0]]]) {
+    browser.selectedTabs = selectedTabs;
+    pane.stripDirty = pane.structuralDirty = pane.contextDirty = false;
+    pane.handleEvent({type:"TabMultiSelect", target:tabs[0]});
+    assert.equal(pane.stripDirty, true, "eligibility changes must reach the native strip");
+    assert.equal(pane.contextDirty, true, "menu multiselection state also changes");
+    assert.equal(pane.structuralDirty, false, "membership and order remain intact");
+    const delta = session.update().strip;
+    const eligible = selectedTabs.length === 1;
+    assert.equal(delta.base, previous);
+    assert.deepEqual(delta.rows, [1, 2].map(id => ({id, groupSource:eligible, groupTarget:eligible})));
+    assert.deepEqual(delta.removed, []);
+    for (const key of ["layout", "groups", "groupingDelay"]) assert.equal(key in delta, false, key);
+    previous = delta.revision;
+    assert.equal(session.update(), null, "unchanged eligibility produces no publication");
   }
 });
 
