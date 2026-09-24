@@ -10,6 +10,7 @@
 #include "TabDragImage.h"
 #include "ShellCore.h"
 #include "InlineTabGroups.h"
+#include "GroupSlide.h"
 
 // Strip-only experiment: TabView owns presentation, Firefox owns all mutations.
 // Inline grouping has a localized TabListView template dependency. CanDragTabs/CanReorderTabs
@@ -79,6 +80,7 @@ struct NativeTabStrip {
     std::map<uint32_t, Presentation> presentation;
     TabGroupsButton groupsButton;
     InlineTabGroups inlineGroups;
+    GroupSlide groupSlide;
     std::vector<ShellStripSlot> groupLayout;
     bool hasGroupLayout{};
 
@@ -224,6 +226,7 @@ struct NativeTabStrip {
         return state;
     }
     bool ArmDrag(uint32_t tab, Windows::Foundation::Point point) {
+        groupSlide.Cancel();
         return core && shell_core_tab_drag_arm(core, tab, point.X, point.Y) == SHELL_STATUS_OK;
     }
     void ReconcileDrag() {
@@ -282,6 +285,8 @@ struct NativeTabStrip {
             groupsButton.dispatch(action.Stringify());
         };
         auto alive = std::weak_ptr<int>(lifetime);
+        root.SizeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) groupSlide.Cancel(); });
+        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) groupSlide.Cancel(); });
         view.SelectionChanged([this, alive](auto const&, auto const&) {
             if (alive.expired() || syncing || !view.SelectedItem()) return;
             // Modified gestures are observed on the exact tab below. Never let
@@ -354,6 +359,7 @@ struct NativeTabStrip {
         button.ContextFlyout(flyout);
     }
     ~NativeTabStrip() {
+        groupSlide.Cancel();
         if (groupTimer) groupTimer.Stop();
         lifetime.reset();
         if (core) shell_core_transfer_cancel(core);
@@ -1037,9 +1043,29 @@ struct NativeTabStrip {
         // bounds. Everything above is staged before either model or XAML changes.
         if (!core || shell_core_strip_apply_layout(core, base, revision, changes.data(), changes.size(), layout.data(), layout.size(), layoutChanged) != SHELL_STATUS_OK)
             throw hresult_invalid_argument();
+        if (layoutChanged) {
+            std::vector<uint32_t> toggled;
+            if (updateGroups && inlineGroups.active && !IsDragging()) {
+                for (auto value : groups) {
+                    auto group = value.GetObject();
+                    const auto id = uint32_t(group.GetNamedNumber(L"id"));
+                    auto old = inlineGroups.runs.find(id);
+                    if (old != inlineGroups.runs.end() && old->second.collapsed != group.GetNamedBoolean(L"collapsed"))
+                        toggled.push_back(id);
+                }
+            }
+            std::vector<ShellGroupMotionRow> motion(groupLayout.size() + layout.size());
+            size_t motionCount{};
+            if (shell_core_group_motion(core, groupLayout.data(), groupLayout.size(), layout.data(), layout.size(),
+                    toggled.data(), toggled.size(), motion.data(), motion.size(), &motionCount) == SHELL_STATUS_OK) {
+                motion.resize(motionCount);
+                try { groupSlide.Prepare(root, view, FindTabListView(view), rows, inlineGroups, FindAddButton(view), std::move(motion)); }
+                catch (...) { groupSlide.Cancel(); }
+            } else groupSlide.Cancel();
+        }
         if (updateGroups) {
             if (!inlineGroups.active) groupsButton.Apply(label, groups);
-            else if (!IsDragging()) inlineGroups.Metadata(groups);
+            else if (!IsDragging()) inlineGroups.Metadata(groups, groupSlide.Enabled());
             groupsLabel = label;
             currentGroups = groups;
         }
@@ -1117,6 +1143,7 @@ struct NativeTabStrip {
             if (!previous.count(id)) emphasize(id);
     }
     void ApplySelection(uint32_t previous, uint32_t active) {
+        if (previous != active) groupSlide.Cancel();
         activeTabId = active;
         // A live gesture owns the visual order, and Sync()'s queued-highlight
         // path already handles the mid-drag case; do not bypass it here.
@@ -1263,6 +1290,7 @@ struct NativeTabStrip {
             return;
         }
         bool refreshForeignPreview = false;
+        if (!groupSlide.pending) groupSlide.Cancel();
         if (ForeignPreview().active) {
             std::vector<uint32_t> order;
             for (uint32_t i = 0; i < count; ++i) order.push_back(tabs[i].id);
@@ -1487,6 +1515,13 @@ struct NativeTabStrip {
         }
         syncing = false;
         captionDirty = true;
+        try { groupSlide.Commit(rows, inlineGroups, FindAddButton(view), active); }
+        catch (...) {
+#ifdef WINUI_PANE_TESTING
+            fprintf(stderr, "GroupSlide Commit failed: %08x\n", unsigned(to_hresult()));
+#endif
+            groupSlide.Cancel();
+        }
         // A stationary cursor may produce no further input after this layout
         // change. Refresh a live hover now using the session's cursor sampler.
         if (refreshForeignPreview && tickDragSession) tickDragSession();

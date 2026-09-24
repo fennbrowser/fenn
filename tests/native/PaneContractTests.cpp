@@ -1567,7 +1567,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(groupOpened, "group popup open before island teardown");
 }
 
-static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
+static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool checkMotion) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     RECT rect{0, 0, 1200, 40};
@@ -1575,17 +1575,20 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create inline strip");
     ShowWindow(host, SW_SHOW);
     SetForegroundWindow(host);
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
+    UIElement content{nullptr};
+    Require(SUCCEEDED(inspect(host,put_abi(content))), "inspect inline strip");
+    auto root = content.as<Controls::Grid>();
+    auto view = root.Children().GetAt(0).as<Controls::TabView>();
+    // Finish island activation before inserting the grouped source.
+    AwaitLiveTree(root);
+    for (int i=0;i<20;++i) { Pump(); Sleep(10); }
     MenuPublish(api, host, MenuState({41, 42}).Stringify().c_str());
     auto full = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":1,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Collapse Research","collapsed":false,"color":4281558681},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":9,"tab":0}]}})";
     MenuPublish(api, host, full);
     WinUITab tabs[]{{41,L"Home"},{42,L"Research page"}};
     uint32_t selected{};
     Require(SUCCEEDED(api.syncTabs(host,tabs,2,41,&selected)), "sync grouped tabs");
-    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
-    UIElement content{nullptr};
-    Require(SUCCEEDED(inspect(host,put_abi(content))), "inspect inline strip");
-    auto root = content.as<Controls::Grid>();
-    auto view = root.Children().GetAt(0).as<Controls::TabView>();
     auto settle = [&] { for (int i=0;i<20;++i) { Pump(); Sleep(10); } root.UpdateLayout(); };
     std::function<Controls::Button(DependencyObject const&, hstring const&)> find;
     find = [&](DependencyObject const& node, hstring const& id) -> Controls::Button {
@@ -1629,7 +1632,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
     auto marker = capsule.Children().GetAt(0).as<Shapes::Rectangle>();
     Require(!capsule.IsHitTestVisible() && unbox_value<uint32_t>(header.Tag()) == 7,
         "whole group button is an identified input target for future dragging");
-    Require(capsule.Children().GetAt(1).as<Controls::FontIcon>().Glyph() == L"\uE76C", "expanded group arrow points toward its tabs");
+    Require(capsule.Children().GetAt(1).as<Controls::Grid>().Children().GetAt(0).as<Controls::FontIcon>().Glyph() == L"\uE76C", "expanded group arrow points toward its tabs");
     Require(marker.Visibility() == Visibility::Visible, "Firefox group color marker is visible");
     auto accent = header.Resources().ThemeDictionaries().Lookup(box_value(L"Default")).as<ResourceDictionary>()
         .Lookup(box_value(L"InlineGroupColorBrush")).as<Media::SolidColorBrush>();
@@ -1670,7 +1673,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
     settle();
     Require(marker.Visibility() == Visibility::Collapsed, "legacy group metadata without color hides marker");
     Require(header.ActualWidth() == 32 && capsule.Children().GetAt(1).Visibility() == Visibility::Visible &&
-        capsule.Children().GetAt(1).as<Controls::FontIcon>().Glyph() == L"\uE70D", "collapsed group retains width and points down");
+        capsule.Children().GetAt(1).as<Controls::Grid>().Children().GetAt(0).as<Controls::FontIcon>().Glyph() == L"\uE70D", "collapsed group retains width and points down");
     Require(view.TabItems().Size() == 1 && view.TabItems().GetAt(0) == first && view.SelectedItem() == first, "collapse retains real active tab");
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
     MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"rtl":true,"rows":[],"removed":[]}})");
@@ -1705,7 +1708,57 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
             Require(row.IsSelected() == active, "round trip retains the row's visual selection");
         }
     }
-    puts("CHECKS PASSED: retained inline groups, disclosure command, compact themes, RTL and atomic layout validation");
+    if (checkMotion) {
+        auto motion = reinterpret_cast<HRESULT(WINAPI*)(HWND,uint32_t,uint32_t*)>(GetProcAddress(module,"WinUIPaneTestGroupMotion"));
+        Require(motion != nullptr, "group motion lifecycle hook exists");
+        auto motionState = [&](uint32_t revision, bool collapsed) {
+            auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":9,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":41},{"group":7,"tab":42}]}})");
+            auto strip = state.GetNamedObject(L"strip");
+            strip.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(revision));
+            if (collapsed) {
+                strip.GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(L"collapsed", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
+                strip.GetNamedArray(L"rows").RemoveAt(0);
+                strip.GetNamedArray(L"layout").RemoveAt(1);
+            }
+            MenuPublish(api,host,state.Stringify().c_str());
+            Require(SUCCEEDED(api.syncTabs(host,tabs + (collapsed ? 1 : 0),collapsed ? 1 : 2,42,&selected)), "publish motion fixture");
+        };
+        motionState(9,false); settle();
+        Require(view.TabItems().GetAt(0).as<Controls::TabViewItem>().IsLoaded(), "motion starts with loaded tab visuals");
+        motionState(10,true);
+        uint32_t ghosts{};
+        Require(SUCCEEDED(motion(host,0,&ghosts)), "inspect outgoing visual lifetime");
+        if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled())
+            Require(ghosts == 1, "only the disappearing background tab gets a visual copy");
+        Require(view.TabItems().Size() == 1 && unbox_value<uint32_t>(view.SelectedItem().as<Controls::TabViewItem>().Tag()) == 42,
+            "animation preserves the real selected tab and excludes outgoing visuals from tab navigation");
+        Require(SUCCEEDED(motion(host,1,&ghosts)) && ghosts == 0, "cancellation releases departing visuals");
+        motionState(11,false); settle();
+        Require(SUCCEEDED(motion(host,2,&ghosts)), "simulate reduced-motion preference");
+        motionState(12,true);
+        Require(SUCCEEDED(motion(host,0,&ghosts)) && ghosts == 0, "reduced motion installs final layout without visual copies");
+        auto reducedArrow = find(view,L"FirefoxWinUIInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(1).as<Controls::Grid>();
+        auto reducedIcon = reducedArrow.Children().GetAt(0).as<Controls::FontIcon>();
+        Require(reducedIcon.Glyph() == L"\uE70D" && reducedArrow.RenderTransform().as<Media::RotateTransform>().Angle() == 0,
+            "reduced motion installs the final arrow direction immediately");
+        Require(SUCCEEDED(motion(host,3,&ghosts)), "restore normal motion policy");
+        settle();
+        // An active-only group can toggle without any tab-list publication.
+        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":12,"revision":13,"rows":[],"removed":[],"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}]}})");
+        bool turned = false;
+        for (int i=0;i<12;++i) {
+            Pump(); Sleep(5);
+            const auto angle = reducedArrow.RenderTransform().as<Media::RotateTransform>().Angle();
+            turned |= angle > 0 && angle < 90;
+        }
+        if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled())
+            Require(turned, "active-only group arrow rotates without a tab-list change");
+        settle();
+        Require(reducedIcon.Glyph() == L"\uE76C" && reducedArrow.RenderTransform().as<Media::RotateTransform>().Angle() == 0,
+            "arrow finishes pointing toward the expanded group");
+        puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");
+    }
+    puts("CHECKS PASSED: retained inline groups, disclosure, themes, RTL and atomic layout validation");
 }
 
 // A real OS drag gesture, via SendInput, against the same island-hosted
@@ -2465,7 +2518,7 @@ int wmain(int argc, wchar_t** argv) {
         Require(!GetPropW(first, WINUI_PANE_SYSTEM_CAPTION_PROPERTY), "destroy releases native caption ownership");
         Require(SUCCEEDED(api.update(first, &rect, TRUE)), "recreate island for inline group checks");
         }
-        CheckInlineGroups(module, api, first);
+        CheckInlineGroups(module, api, first, wcscmp(argv[2], L"--inline") == 0);
         Require(SUCCEEDED(api.destroy(first)), "destroy inline groups before host");
         DestroyWindow(first);
         winrt::clear_factory_cache();

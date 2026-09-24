@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 11
+#define SHELL_CORE_ABI_VERSION 12
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -239,6 +239,12 @@ typedef struct {
   uint32_t group;
   uint32_t tab;
 } ShellStripSlot;
+
+typedef struct {
+  uint32_t tab;
+  uint32_t group;
+  bool entering;
+} ShellGroupMotionRow;
 
 typedef struct {
   uint32_t kind;
@@ -555,6 +561,22 @@ ShellStatus shell_core_strip_apply_layout(ShellCore *core,
                                           const ShellStripSlot *layout,
                                           uintptr_t layout_count,
                                           bool has_layout);
+
+/*
+ Plan visual departures/arrivals only for explicitly toggled groups.
+ # Safety
+ See [`guard`]. Arrays have their stated readable/writable lengths.
+ */
+ShellStatus shell_core_group_motion(ShellCore *core,
+                                    const ShellStripSlot *old,
+                                    uintptr_t old_count,
+                                    const ShellStripSlot *new_,
+                                    uintptr_t new_count,
+                                    const uint32_t *groups,
+                                    uintptr_t group_count,
+                                    ShellGroupMotionRow *output,
+                                    uintptr_t capacity,
+                                    uintptr_t *count);
 
 /*
  Copy the retained ordered layout. Returns required count; no partial copy.

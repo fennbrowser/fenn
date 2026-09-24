@@ -40,6 +40,12 @@ if ($Test -or $AddressTest -or $MenuTest -or $TabStripTest) {
     $testMode = if ($TabStripTest) { '--strip' } elseif ($MenuTest) { '--menu' } elseif ($AddressTest) { '--address' } else { '--inspect' }
     & (Join-Path $output 'PaneContractTests.exe') (Join-Path $output 'FirefoxWinUIPaneTest.dll') $testMode
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    if ($TabStripTest) {
+        # Motion needs loaded visuals. Run this in a fresh process: the earlier
+        # hide/show/teardown fixture can leave recreated rows measured but unloaded.
+        & (Join-Path $output 'PaneContractTests.exe') (Join-Path $output 'FirefoxWinUIPaneTest.dll') --inline
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    }
 }
 if ($Stage) {
     & python (Join-Path $PSScriptRoot 'Stage-WinUIPane.py')

@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <map>
 #include <set>
 #include <functional>
@@ -7,6 +8,7 @@
 // WinUI projection only. Firefox supplies order/visibility; ShellCore validates
 // the complete layout. All tab policy and group commands remain in Firefox.
 struct InlineTabGroups {
+    static constexpr auto MotionDuration = std::chrono::milliseconds(150);
     using Object = Windows::Foundation::IInspectable;
     using Vector = Windows::Foundation::Collections::IObservableVector<Object>;
     using Map = Windows::Foundation::Collections::IObservableMap<hstring, Object>;
@@ -18,7 +20,9 @@ struct InlineTabGroups {
         bool collapsed{};
         uint32_t color{};
         Media::SolidColorBrush accent{nullptr};
+        Media::Animation::Storyboard arrowMotion{nullptr};
         Run() { model.Insert(L"Items", items); model.Insert(L"Header", nullptr); }
+        ~Run() { if (arrowMotion) { try { arrowMotion.Stop(); } catch (...) {} } }
     };
     Data::CollectionViewSource source;
     Vector data = single_threaded_observable_vector<Object>();
@@ -69,7 +73,7 @@ struct InlineTabGroups {
         return true;
     }
 
-    void Metadata(Windows::Data::Json::JsonArray const& groups) {
+    void Metadata(Windows::Data::Json::JsonArray const& groups, bool animate = false) {
         for (auto value : groups) {
             auto group = value.GetObject();
             const auto id = uint32_t(group.GetNamedNumber(L"id"));
@@ -78,12 +82,38 @@ struct InlineTabGroups {
             auto& run = found->second;
             auto name = group.GetNamedString(L"name"), label = group.GetNamedString(L"label");
             const bool collapsed = group.GetNamedBoolean(L"collapsed");
-            if (run.name != name || run.collapsed != collapsed) {
-                run.name = name;
+            if (run.name.empty() || run.collapsed != collapsed) {
+                const bool changed = run.collapsed != collapsed;
                 run.collapsed = collapsed;
                 auto panel = run.button.Content().as<Controls::Grid>();
-                panel.Children().GetAt(1).as<Controls::FontIcon>().Glyph(collapsed ? L"\uE70D" : L"\uE76C");
+                auto rotor = panel.Children().GetAt(1).as<Controls::Grid>();
+                auto arrow = rotor.Children().GetAt(0).as<Controls::FontIcon>();
+                // FontIcon owns its transform for native RTL mirroring. Rotate
+                // a separate layout container so those transforms cannot clash.
+                auto turn = rotor.RenderTransform().as<Media::RotateTransform>();
+                const auto previous = turn.Angle();
+                if (run.arrowMotion) { run.arrowMotion.Stop(); run.arrowMotion = nullptr; }
+                arrow.Glyph(collapsed ? L"\uE70D" : L"\uE76C");
+                turn.Angle(0);
+                if (changed && animate && arrow.IsLoaded()) {
+                    // Rotate the new glyph from the old direction. Preserve the
+                    // current angle on reversal instead of jumping to an endpoint.
+                    const auto direction = arrow.FlowDirection() == FlowDirection::RightToLeft ? -1.0 : 1.0;
+                    Media::Animation::DoubleAnimation rotation;
+                    rotation.From(previous + direction * (collapsed ? -90.0 : 90.0));
+                    rotation.To(0.0);
+                    rotation.Duration(Duration{Windows::Foundation::TimeSpan{MotionDuration}, DurationType::TimeSpan});
+                    Media::Animation::CubicEase ease;
+                    ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+                    rotation.EasingFunction(ease);
+                    Media::Animation::Storyboard::SetTarget(rotation, turn);
+                    Media::Animation::Storyboard::SetTargetProperty(rotation, L"Angle");
+                    run.arrowMotion = Media::Animation::Storyboard();
+                    run.arrowMotion.Children().Append(rotation);
+                    run.arrowMotion.Begin();
+                }
             }
+            run.name = name;
             if (run.label != label) {
                 run.label = label;
                 Automation::AutomationProperties::SetName(run.button, label);
@@ -146,7 +176,10 @@ struct InlineTabGroups {
  </ResourceDictionary.ThemeDictionaries></ResourceDictionary></Button.Resources>
  <Grid Width="24" Height="24" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
   <Rectangle Width="16" Height="3" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1" Fill="{ThemeResource InlineGroupColorBrush}" Visibility="Collapsed"/>
-  <FontIcon FontSize="12" MirroredWhenRightToLeft="True"/>
+  <Grid RenderTransformOrigin="0.5,0.5">
+   <Grid.RenderTransform><RotateTransform/></Grid.RenderTransform>
+   <FontIcon FontSize="12" MirroredWhenRightToLeft="True"/>
+  </Grid>
  </Grid>
 </Button>)").as<Controls::Button>();
                 run.accent = run.button.Resources().ThemeDictionaries().Lookup(box_value(L"Default")).as<ResourceDictionary>()
@@ -163,6 +196,14 @@ struct InlineTabGroups {
                     auto found = runs.find(id);
                     if (found != runs.end() && toggle) toggle(uint32_t(id), !found->second.collapsed);
                 });
+                run.button.Unloaded([this, alive, id](auto&&, auto&&) {
+                    if (alive.expired()) return;
+                    auto found = runs.find(id);
+                    if (found != runs.end() && found->second.arrowMotion) {
+                        found->second.arrowMotion.Stop();
+                        found->second.arrowMotion = nullptr;
+                    }
+                });
                 run.model.Insert(L"Header", run.button);
             }
             auto const& desired = members.at(id);
@@ -173,6 +214,15 @@ struct InlineTabGroups {
                 run.items.InsertAt(i, desired[i]);
             }
         }
+        // Prune obsolete runs before positioning survivors. Removing/reinserting
+        // a group merely because its preceding run vanished can leave its
+        // retained button attached to WinUI's recycled header container.
+        std::set<uint64_t> live(wanted.begin(), wanted.end());
+        for (auto const& [id, run] : runs) {
+            if (live.count(id)) continue;
+            uint32_t old;
+            if (data.IndexOf(run.model, old)) data.RemoveAt(old);
+        }
         for (uint32_t i = 0; i < wanted.size(); ++i) {
             Object model = runs.at(wanted[i]).model;
             if (i < data.Size() && data.GetAt(i) == model) continue;
@@ -181,7 +231,6 @@ struct InlineTabGroups {
             data.InsertAt(i, model);
         }
         while (data.Size() > wanted.size()) data.RemoveAtEnd();
-        std::set<uint64_t> live(wanted.begin(), wanted.end());
         for (auto it = runs.begin(); it != runs.end();) {
             if (!live.count(it->first)) it = runs.erase(it); else ++it;
         }

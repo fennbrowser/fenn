@@ -40,6 +40,7 @@ use crate::queue::{
 };
 use crate::SHELL_CORE_ABI_VERSION;
 use crate::strip::{ShellStripChange, ShellStripSlot, StripState};
+use crate::group_motion::ShellGroupMotionRow;
 
 /// Result of every entry point. `Ok` is zero so the host can test it directly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -819,6 +820,30 @@ pub unsafe extern "C" fn shell_core_strip_apply_layout(
     })
 }
 
+/// Plan visual departures/arrivals only for explicitly toggled groups.
+/// # Safety
+/// See [`guard`]. Arrays have their stated readable/writable lengths.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_motion(
+    core: *mut ShellCore, old: *const ShellStripSlot, old_count: usize,
+    new: *const ShellStripSlot, new_count: usize, groups: *const u32, group_count: usize,
+    output: *mut ShellGroupMotionRow, capacity: usize, count: *mut usize,
+) -> ShellStatus {
+    guard(core, |_| {
+        if count.is_null() || old_count > 20_000 || new_count > 20_000 || group_count > 10_000 ||
+            (old_count != 0 && old.is_null()) || (new_count != 0 && new.is_null()) ||
+            (group_count != 0 && groups.is_null()) { return ShellStatus::InvalidArgument; }
+        let old = if old_count == 0 { &[] } else { std::slice::from_raw_parts(old, old_count) };
+        let new = if new_count == 0 { &[] } else { std::slice::from_raw_parts(new, new_count) };
+        let groups = if group_count == 0 { &[] } else { std::slice::from_raw_parts(groups, group_count) };
+        let plan = crate::group_motion::plan(old, new, groups);
+        *count = plan.len();
+        if capacity < plan.len() || (!plan.is_empty() && output.is_null()) { return ShellStatus::InvalidArgument; }
+        if !plan.is_empty() { std::ptr::copy_nonoverlapping(plan.as_ptr(), output, plan.len()); }
+        ShellStatus::Ok
+    })
+}
+
 /// Copy the retained ordered layout. Returns required count; no partial copy.
 /// # Safety
 /// See [`guard`]. `count` must be writable; `slots` has `capacity` writable entries.
@@ -1092,6 +1117,28 @@ mod tests {
             assert_eq!(shell_core_group_hover(core, 1, 2, 350, 240, &mut armed), ShellStatus::Ok);
             assert!(!armed);
             assert_eq!(shell_core_group_hover(core, 1, 2, 590, 240, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            shell_core_destroy(core);
+        }
+    }
+
+    #[test]
+    fn group_motion_output_is_bounded_and_never_partially_written() {
+        unsafe {
+            let core = core();
+            let old = [ShellStripSlot { group: 7, tab: 1 }, ShellStripSlot { group: 7, tab: 2 }];
+            let sentinel = ShellGroupMotionRow { tab: 99, group: 99, entering: true };
+            let mut output = [sentinel; 2];
+            let mut count = 0;
+            assert_eq!(shell_core_group_motion(core, old.as_ptr(), 2, std::ptr::null(), 0,
+                &7, 1, output.as_mut_ptr(), 1, &mut count), ShellStatus::InvalidArgument);
+            assert_eq!(count, 2);
+            assert_eq!(output, [sentinel; 2]);
+            assert_eq!(shell_core_group_motion(core, old.as_ptr(), 2, std::ptr::null(), 0,
+                &7, 1, output.as_mut_ptr(), 2, &mut count), ShellStatus::Ok);
+            assert_eq!(output.iter().map(|r| r.tab).collect::<Vec<_>>(), vec![1, 2]);
+            assert!(output.iter().all(|r| !r.entering));
+            assert_eq!(shell_core_group_motion(core, std::ptr::null(), 20_001, std::ptr::null(), 0,
+                &7, 1, output.as_mut_ptr(), 2, &mut count), ShellStatus::InvalidArgument);
             shell_core_destroy(core);
         }
     }

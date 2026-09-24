@@ -2474,6 +2474,22 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestRearmDrag(HWND hwnd
         return S_OK;
     } catch (...) { return to_hresult(); }
 }
+// Test-only: inspect visual lifetimes and simulate reduced motion without
+// changing the user's Windows animation setting.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupMotion(HWND hwnd, uint32_t operation, uint32_t* ghosts) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (!ghosts || found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
+        auto& motion = found->second->strip->groupSlide;
+        if (operation == 1) motion.Cancel();
+        else if (operation == 2) { motion.Cancel(); motion.disableForTest = true; }
+        else if (operation == 3) motion.disableForTest = false;
+        else if (operation != 0) return E_INVALIDARG;
+        *ghosts = uint32_t(motion.departing.size());
+        return S_OK;
+    } catch (...) { return to_hresult(); }
+}
 // Test-only: exercise a queued grouping dwell against a real loaded storyboard.
 // No global drag is armed, so the harness can advance animation time separately.
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupSlide(HWND hwnd, uint32_t operation) noexcept {
