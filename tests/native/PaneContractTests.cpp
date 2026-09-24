@@ -1611,7 +1611,11 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
            view.ActualWidth(), view.ActualHeight(), bool(header), bool(find(view,L"FirefoxWinUIInlineGroup-9")));
     fflush(stdout);
     Require(bool(header) && bool(find(view,L"FirefoxWinUIInlineGroup-9")), "inline and empty group headers exist");
-    auto marker = header.Content().as<Controls::StackPanel>().Children().GetAt(2).as<Shapes::Ellipse>();
+    auto capsule = header.Content().as<Controls::Grid>();
+    auto marker = capsule.Children().GetAt(0).as<Shapes::Rectangle>();
+    Require(!capsule.IsHitTestVisible() && unbox_value<uint32_t>(header.Tag()) == 7,
+        "whole group button is an identified input target for future dragging");
+    Require(capsule.Children().GetAt(2).as<Controls::FontIcon>().Glyph() == L"\uE70D", "expanded capsule shows disclosure chevron");
     Require(marker.Visibility() == Visibility::Visible, "Firefox group color marker is visible");
     auto accent = header.Resources().ThemeDictionaries().Lookup(box_value(L"Default")).as<ResourceDictionary>()
         .Lookup(box_value(L"InlineGroupColorBrush")).as<Media::SolidColorBrush>();
@@ -1622,6 +1626,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
         settle();
         Require(find(view,L"FirefoxWinUIInlineGroup-7") == header, "theme retains inline header");
         Require(header.ActualHeight() > 0 && header.ActualHeight() <= 40 && view.ActualHeight() <= 40, "inline group fits reserved strip height");
+        Require(header.ActualWidth() == 32 && header.ActualHeight() == 32, "capsule retains a compact 32-DIP input target");
         auto painted = marker.Fill().as<Media::SolidColorBrush>().Color();
         if (winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast()) {
             const auto system = GetSysColor(COLOR_WINDOWTEXT);
@@ -1650,6 +1655,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(SUCCEEDED(api.syncTabs(host,tabs,1,41,&selected)), "sync hidden group member");
     settle();
     Require(marker.Visibility() == Visibility::Collapsed, "legacy group metadata without color hides marker");
+    Require(header.ActualWidth() == 32 && capsule.Children().GetAt(1).Visibility() == Visibility::Visible &&
+        capsule.Children().GetAt(1).as<Controls::FontIcon>().Glyph() == L"\uE76C", "renamed collapsed group retains width and fallback chevron");
     Require(view.TabItems().Size() == 1 && view.TabItems().GetAt(0) == first && view.SelectedItem() == first, "collapse retains real active tab");
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
     MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"rtl":true,"rows":[],"removed":[]}})");

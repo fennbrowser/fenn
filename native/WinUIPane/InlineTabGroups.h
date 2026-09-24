@@ -2,6 +2,7 @@
 #include <map>
 #include <set>
 #include <functional>
+#include <cmath>
 #include <winrt/Windows.Data.Json.h>
 
 // WinUI projection only. Firefox supplies order/visibility; ShellCore validates
@@ -18,6 +19,7 @@ struct InlineTabGroups {
         bool collapsed{};
         uint32_t color{};
         Media::SolidColorBrush accent{nullptr};
+        Media::SolidColorBrush ink{nullptr};
         Run() { model.Insert(L"Items", items); model.Insert(L"Header", nullptr); }
     };
     Data::CollectionViewSource source;
@@ -70,9 +72,9 @@ struct InlineTabGroups {
             if (run.name != name || run.collapsed != collapsed) {
                 run.name = name;
                 run.collapsed = collapsed;
-                auto panel = run.button.Content().as<Controls::StackPanel>();
-                panel.Children().GetAt(0).as<Controls::FontIcon>().Glyph(collapsed ? L"\uE76C" : L"\uE70D");
-                panel.Children().GetAt(1).as<Controls::TextBlock>().Text(name);
+                auto panel = run.button.Content().as<Controls::Grid>();
+                for (uint32_t i : {1u, 2u})
+                    panel.Children().GetAt(i).as<Controls::FontIcon>().Glyph(collapsed ? L"\uE76C" : L"\uE70D");
             }
             if (run.label != label) {
                 run.label = label;
@@ -83,7 +85,15 @@ struct InlineTabGroups {
             if (color != run.color) {
                 run.color = color;
                 run.accent.Color(Windows::UI::Color{uint8_t(color >> 24), uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color)});
-                run.button.Content().as<Controls::StackPanel>().Children().GetAt(2).Visibility(color ? Visibility::Visible : Visibility::Collapsed);
+                // Contrast against Firefox's accent, without assuming its palette.
+                auto linear = [](uint8_t c) { double s = c / 255.0; return s <= .04045 ? s / 12.92 : std::pow((s + .055) / 1.055, 2.4); };
+                const double luminance = .2126 * linear(uint8_t(color >> 16)) + .7152 * linear(uint8_t(color >> 8)) + .0722 * linear(uint8_t(color));
+                const uint8_t ink = luminance > .179 ? 0 : 255;
+                run.ink.Color(Windows::UI::Color{255, ink, ink, ink});
+                auto panel = run.button.Content().as<Controls::Grid>();
+                panel.Children().GetAt(0).Visibility(color ? Visibility::Visible : Visibility::Collapsed);
+                panel.Children().GetAt(1).Visibility(color ? Visibility::Collapsed : Visibility::Visible);
+                panel.Children().GetAt(2).Visibility(color ? Visibility::Visible : Visibility::Collapsed);
             }
             Automation::AutomationProperties::SetItemStatus(run.button, label);
         }
@@ -128,17 +138,26 @@ struct InlineTabGroups {
             auto& run = it->second;
             if (created && id <= UINT32_MAX) {
                 run.button = Markup::XamlReader::Load(LR"(
-<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="4,0" Padding="6,3" MinWidth="0" MinHeight="0" MaxWidth="160" VerticalAlignment="Center">
+<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="4,0" Padding="0" MinWidth="0" MinHeight="0" Width="32" Height="32" CornerRadius="16" VerticalAlignment="Center">
  <Button.Resources><ResourceDictionary><ResourceDictionary.ThemeDictionaries>
-  <ResourceDictionary x:Key="Default"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="Transparent"/></ResourceDictionary>
-  <ResourceDictionary x:Key="HighContrast"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="{ThemeResource SystemColorWindowTextColor}"/></ResourceDictionary>
+  <ResourceDictionary x:Key="Default"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="Transparent"/><SolidColorBrush x:Key="InlineGroupInkBrush" Color="White"/></ResourceDictionary>
+  <ResourceDictionary x:Key="HighContrast"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="{ThemeResource SystemColorWindowTextColor}"/><SolidColorBrush x:Key="InlineGroupInkBrush" Color="{ThemeResource SystemColorWindowColor}"/></ResourceDictionary>
  </ResourceDictionary.ThemeDictionaries></ResourceDictionary></Button.Resources>
- <StackPanel Orientation="Horizontal" Spacing="5"><FontIcon FontSize="10" MirroredWhenRightToLeft="True"/><TextBlock MaxWidth="110" TextTrimming="CharacterEllipsis"/>
-  <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{ThemeResource InlineGroupColorBrush}" Visibility="Collapsed" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>
- </StackPanel>
+ <Grid Width="24" Height="28" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
+  <Rectangle RadiusX="12" RadiusY="12" Fill="{ThemeResource InlineGroupColorBrush}" Visibility="Collapsed"/>
+  <FontIcon FontSize="12" MirroredWhenRightToLeft="True"/>
+  <FontIcon FontSize="12" MirroredWhenRightToLeft="True" Foreground="{ThemeResource InlineGroupInkBrush}" Visibility="Collapsed"/>
+ </Grid>
 </Button>)").as<Controls::Button>();
                 run.accent = run.button.Resources().ThemeDictionaries().Lookup(box_value(L"Default")).as<ResourceDictionary>()
                     .Lookup(box_value(L"InlineGroupColorBrush")).as<Media::SolidColorBrush>();
+                run.ink = run.button.Resources().ThemeDictionaries().Lookup(box_value(L"Default")).as<ResourceDictionary>()
+                    .Lookup(box_value(L"InlineGroupInkBrush")).as<Media::SolidColorBrush>();
+                // One retained 32-DIP Button owns the entire input target. A future
+                // group drag can arm from this opaque ID, use the existing drag
+                // session, and suppress Click after crossing its drag threshold.
+                // Do not enable CanDrag: this host deliberately avoids OLE.
+                run.button.Tag(box_value(uint32_t(id)));
                 Automation::AutomationProperties::SetAutomationId(run.button, L"FirefoxWinUIInlineGroup-" + to_hstring(id));
                 auto alive = std::weak_ptr<int>(lifetime);
                 run.button.Click([this, alive, id](auto&&, auto&&) {
