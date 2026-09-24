@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 12
+#define SHELL_CORE_ABI_VERSION 13
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -577,6 +577,17 @@ ShellStatus shell_core_group_motion(ShellCore *core,
                                     ShellGroupMotionRow *output,
                                     uintptr_t capacity,
                                     uintptr_t *count);
+
+/*
+ Resolve a tab/header hit to a different existing group; zero means no join.
+ # Safety
+ See [`guard`]. `group` must be writable.
+ */
+ShellStatus shell_core_strip_drop_group(ShellCore *core,
+                                        uint32_t source,
+                                        uint32_t tab,
+                                        uint32_t header,
+                                        uint32_t *group);
 
 /*
  Copy the retained ordered layout. Returns required count; no partial copy.

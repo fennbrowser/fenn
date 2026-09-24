@@ -335,6 +335,89 @@ function groupingFixture() {
   return f;
 }
 
+function joiningFixture() {
+  const f = groupingFixture();
+  f.state.layout = [{tab:11}, {target:f.target}, {target:f.target,tab:22}];
+  f.session.update();
+  f.joined = [];
+  f.session.joinGroup = (...args) => f.joined.push(args);
+  f.joinAction = {kind:"strip-join-group", session:f.session.windowDragSession,
+    revision:f.session.revision, id:11, group:f.action.group, targetId:22, before:true};
+  return f;
+}
+
+test("ungroup drops may keep their tab index and are consumed once", () => {
+  for (const beforeId of [0,11]) {
+    const f = joiningFixture();
+    const calls = [];
+    f.session.reorder = (...args) => calls.push(args);
+    const action = {kind:"strip-reorder", revision:f.session.revision, id:22, beforeId, ungroup:true};
+    assert.equal(f.session.receive(action),true);
+    assert.equal(f.session.receive(action),false);
+    assert.deepEqual(calls,[[22,beforeId,true]]);
+  }
+});
+
+test("ungroup rejects stale membership, ineligible sources and malformed requests", () => {
+  for (const change of [f => f.state.layout.pop(), f => f.state.rows[1].groupSource = false,
+    f => f.state.groups[0].target = {}, f => f.action.ungroup = "true",
+    f => f.action.id = 11, f => f.action.beforeId = 22, f => f.action.revision--]) {
+    const f = joiningFixture();
+    f.action = {kind:"strip-reorder", revision:f.session.revision, id:22, beforeId:0, ungroup:true};
+    f.session.reorder = () => assert.fail("must not mutate");
+    change(f);
+    assert.equal(f.session.receive(f.action),false);
+  }
+});
+
+test("existing-group drops join once at a member or a collapsed header", () => {
+  for (const header of [false,true]) {
+    const f = joiningFixture();
+    if (header) {
+      f.state.rows.pop();
+      f.state.layout.pop();
+      f.state.groups[0].collapsed = true;
+      f.session.update();
+      f.joinAction.revision = f.session.revision;
+      f.joinAction.targetId = 0;
+    }
+    assert.equal(f.session.receive(f.joinAction),true);
+    assert.equal(f.session.receive(f.joinAction),false);
+    assert.deepEqual(f.joined,[[11,f.target,header ? 0 : 22,true]]);
+  }
+});
+
+test("existing-group drops reject stale groups, membership, sessions and policy", () => {
+  for (const change of [
+    f => f.joinAction.session++, f => f.joinAction.revision--,
+    f => f.joinAction.group = 999, f => f.joinAction.group = 1.5,
+    f => f.joinAction.targetId = 11, f => f.joinAction.targetId = -1,
+    f => f.joinAction.before = 1, f => f.state.rows[0].groupSource = false,
+    f => f.state.rows[1].groupSource = false, f => f.state.groups.pop(),
+    f => f.state.groups[0].target = {}, f => f.state.layout[2] = {tab:22},
+    f => f.state.layout[0] = {tab:11,target:f.target},
+  ]) {
+    const f = joiningFixture(); change(f);
+    assert.equal(f.session.receive(f.joinAction),false);
+    assert.deepEqual(f.joined,[]);
+  }
+});
+
+test("existing-group drops tolerate metadata changes but consume browser rejection", () => {
+  const f = joiningFixture();
+  f.state.rows[1].detail = "Updated title";
+  f.joinAction.before = false;
+  let calls = 0;
+  f.session.joinGroup = (id, group, targetId, before) => {
+    assert.deepEqual([id,group,targetId,before],[11,f.target,22,false]);
+    calls++;
+    return false;
+  };
+  assert.equal(f.session.receive(f.joinAction),false);
+  assert.equal(f.session.receive(f.joinAction),false);
+  assert.equal(calls,1);
+});
+
 test("group drop creates exactly once and preserves requested order", () => {
   const f = groupingFixture();
   assert.equal(f.session.receive(f.groupAction), true);

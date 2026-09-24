@@ -844,6 +844,20 @@ pub unsafe extern "C" fn shell_core_group_motion(
     })
 }
 
+/// Resolve a tab/header hit to a different existing group; zero means no join.
+/// # Safety
+/// See [`guard`]. `group` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_strip_drop_group(
+    core: *mut ShellCore, source: u32, tab: u32, header: u32, group: *mut u32,
+) -> ShellStatus {
+    guard(core, |core| {
+        if group.is_null() { return ShellStatus::InvalidArgument; }
+        *group = crate::group_drop::target(core.strip.layout(), source, tab, header);
+        ShellStatus::Ok
+    })
+}
+
 /// Copy the retained ordered layout. Returns required count; no partial copy.
 /// # Safety
 /// See [`guard`]. `count` must be writable; `slots` has `capacity` writable entries.

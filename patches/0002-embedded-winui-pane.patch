@@ -2470,10 +2470,10 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..89a9b24efe
+index 0000000000..9bd3f76c24
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,183 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2483,8 +2483,8 @@ index 0000000000..89a9b24efe
 +let nextWindowDragSession = 0;
 +
 +export class WinUITabStripSession {
-+  constructor({ read, collapse, reorder, detach, adopt, createGroup }) {
-+    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup });
++  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup }) {
++    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup });
 +    this.ids = new WeakMap();
 +    this.nextId = 1;
 +    this.revision = 0;
@@ -2556,6 +2556,25 @@ index 0000000000..89a9b24efe
 +  }
 +
 +  receive(event) {
++    if (event?.kind === "strip-join-group") {
++      if (event.session !== this.windowDragSession || this.consumed ||
++          event.revision !== this.revision || !Number.isSafeInteger(event.revision) ||
++          !Number.isSafeInteger(event.id) || event.id <= 0 ||
++          !Number.isSafeInteger(event.group) || event.group <= 0 ||
++          !Number.isSafeInteger(event.targetId) || event.targetId < 0 ||
++          event.id === event.targetId || typeof event.before !== "boolean" || !this.joinGroup) return false;
++      const current = this.describe();
++      const source = current.rows.find(r => r.id === event.id);
++      const from = current.layout?.find(s => s.tab === event.id);
++      const group = this.targets.get(event.group);
++      if (!source?.groupSource || !from || from.group === event.group || !group ||
++          !current.layout.some(s => s.tab === 0 && s.group === event.group) ||
++          !this.same(current.layout, this.state.layout)) return false;
++      if (event.targetId && (!current.rows.find(r => r.id === event.targetId)?.groupSource ||
++          !current.layout.some(s => s.tab === event.targetId && s.group === event.group))) return false;
++      this.consumed = true;
++      return this.joinGroup(event.id, group, event.targetId, event.before) !== false;
++    }
 +    if (event?.kind === "strip-create-group") {
 +      // Metadata updates do not revoke a dwell. Revalidate browser semantics,
 +      // source/target membership and order against the current publication.
@@ -2586,19 +2605,22 @@ index 0000000000..89a9b24efe
 +    if (event.kind === "strip-reorder") {
 +      // beforeId 0 means "move to the end"; any other value must still name
 +      // a row in the fresh snapshot, same as the group id check above.
-+      if (!Number.isSafeInteger(event.id) || !Number.isSafeInteger(event.beforeId) || event.beforeId < 0)
++      if (!Number.isSafeInteger(event.id) || !Number.isSafeInteger(event.beforeId) || event.beforeId < 0 ||
++          (event.ungroup !== undefined && typeof event.ungroup !== "boolean"))
 +        return false;
 +      const current = this.describe();
 +      if (this.consumed || !this.same(current, this.state)) return false;
 +      const index = current.rows.findIndex(r => r.id === event.id);
 +      if (index < 0) return false;
++      const ungroup = event.ungroup === true;
++      if (ungroup && (!current.rows[index].groupSource ||
++          !current.layout?.some(s => s.tab === event.id && s.group))) return false;
 +      if (event.beforeId) {
-+        if (!current.rows.some(r => r.id === event.beforeId)) return false;
-+        if (current.rows[index + 1]?.id === event.beforeId) return false;
-+      } else if (index === current.rows.length - 1) return false;
++        if (event.beforeId === event.id || !current.rows.some(r => r.id === event.beforeId)) return false;
++        if (!ungroup && current.rows[index + 1]?.id === event.beforeId) return false;
++      } else if (!ungroup && index === current.rows.length - 1) return false;
 +      this.consumed = true;
-+      this.reorder(event.id, event.beforeId);
-+      return true;
++      return this.reorder(event.id, event.beforeId, ungroup) !== false;
 +    }
 +    if (event.kind === "strip-detach") {
 +      if (!Number.isSafeInteger(event.id) || !Number.isFinite(event.screenX) || !Number.isFinite(event.screenY))
@@ -3783,10 +3805,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..8523683bcf
+index 0000000000..c988145bd1
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1562 @@
+@@ -0,0 +1,1580 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4468,7 +4490,7 @@ index 0000000000..8523683bcf
 +        read: () => this.describeStrip(),
 +        createGroup: (id, targetId, before) => {
 +          const tab = this.resolveStripTab(id), target = this.resolveStripTab(targetId);
-+          if (!this.canDragGroupTab(tab) || !this.canDragGroupTab(target) ||
++          if (!this.canDragGroupTab(tab, true) || !this.canDragGroupTab(target, true) ||
 +              target.group || tab === target) return false;
 +          const tabs = before ? [tab, target] : [target, tab];
 +          gBrowser.addTabGroup(tabs, {
@@ -4478,22 +4500,40 @@ index 0000000000..8523683bcf
 +          });
 +          return true;
 +        },
++        joinGroup: (id, group, targetId, before) => {
++          const tab = this.resolveStripTab(id);
++          const target = targetId ? this.resolveStripTab(targetId) : null;
++          if (!this.canDragGroupTab(tab) || tab.group === group ||
++              !group.isConnected || !gBrowser.tabGroups.includes(group) ||
++              (targetId && (!this.canDragGroupTab(target) || target.group !== group))) return false;
++          const metricsContext = gBrowser.TabMetrics.userTriggeredContext(
++            gBrowser.TabMetrics.METRIC_SOURCE.DRAG_AND_DROP);
++          group.addTabs([tab], metricsContext);
++          if (target) {
++            const options = {metricsContext:gBrowser.TabMetrics.decomposedContext(metricsContext)};
++            if (before) gBrowser.moveTabBefore(tab, target, options);
++            else gBrowser.moveTabAfter(tab, target, options);
++          }
++          return true;
++        },
 +        collapse: (group, collapsed) => {
 +          if (!group.isConnected || !gBrowser.tabGroups.includes(group)) return;
 +          group.setCollapsedFromUser(collapsed);
 +        },
 +        // beforeId is 0 (native's "no neighbor") for "move to the end";
-+        // moveTabTo's own pinned/unpinned clamping makes an oversized
-+        // elementIndex land at the real end regardless of exact count.
-+        reorder: (id, beforeId) => {
++        // Use a tab index: drag-element indices also count group headers.
++        reorder: (id, beforeId, ungroup = false) => {
 +          const tab = this.resolveStripTab(id);
-+          if (!tab) return;
++          if (!tab || (ungroup && (!tab.group || !this.canDragGroupTab(tab)))) return false;
++          const options = {metricsContext:gBrowser.TabMetrics.userTriggeredContext(
++            gBrowser.TabMetrics.METRIC_SOURCE.DRAG_AND_DROP)};
 +          if (!beforeId) {
-+            gBrowser.moveTabTo(tab, { elementIndex: gBrowser.tabs.length });
++            gBrowser.moveTabTo(tab, { tabIndex: gBrowser.tabs.length, forceUngrouped:ungroup, ...options });
 +            return;
 +          }
 +          const neighbor = this.resolveStripTab(beforeId);
-+          if (neighbor) gBrowser.moveTabBefore(tab, neighbor);
++          if (!neighbor) return false;
++          gBrowser.moveTabBefore(tab, ungroup ? (neighbor.group || neighbor) : neighbor, options);
 +        },
 +        // screenX/screenY are physical pixels (native's GetCursorPos); the
 +        // window-feature left/top Firefox expects are CSS pixels, so this
@@ -4621,14 +4661,14 @@ index 0000000000..8523683bcf
 +    return this.tabMenuL10n;
 +  },
 +
-+  canDragGroupTab(tab) {
++  canDragGroupTab(tab, creating = false) {
 +    // Split wrappers and multi-tab gestures retain ordinary drag behavior until
 +    // the native gesture contract can represent their complete moving set.
 +    return !!tab && tab.isConnected && !tab.closing && tab.visible &&
 +      !tab.pinned && !tab.splitview && !tab._pendingPermitUnload &&
 +      gBrowser.selectedTabs.length <= 1 &&
 +      Services.prefs.getBoolPref("browser.tabs.groups.enabled", false) &&
-+      Services.prefs.getBoolPref("browser.tabs.dragDrop.createGroup.enabled", false);
++      (!creating || Services.prefs.getBoolPref("browser.tabs.dragDrop.createGroup.enabled", false));
 +  },
 +
 +  describeStrip() {
@@ -4713,7 +4753,7 @@ index 0000000000..8523683bcf
 +      }
 +      const container = ContextualIdentityService.getPublicIdentityFromId(tab.userContextId);
 +      return { id: this.tabIds.get(tab), groupSource: this.canDragGroupTab(tab),
-+        groupTarget: this.canDragGroupTab(tab) && !tab.group, detail:detail.slice(0, 2048), status:status.slice(0, 2048), flags, image,
++        groupTarget: this.canDragGroupTab(tab, true) && !tab.group, detail:detail.slice(0, 2048), status:status.slice(0, 2048), flags, image,
 +        containerName: container ? ContextualIdentityService.getUserContextLabel(tab.userContextId).slice(0, 1024) : "",
 +        containerColor: container ? this.containerColor(container) : 0 };
 +    });

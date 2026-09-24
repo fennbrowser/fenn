@@ -37,6 +37,8 @@ struct NativeTabStrip {
     Controls::Border groupIndicator{nullptr};
     Microsoft::UI::Dispatching::DispatcherQueueTimer groupTimer{nullptr};
     uint32_t groupingDelay{240}, groupCandidate{}, armedGroupTarget{};
+    uint32_t joinGroup{}, joinTarget{};
+    bool joinBefore{};
 
     NativeTabMenu& menu;
     ShellCore* core{};
@@ -412,13 +414,14 @@ struct NativeTabStrip {
                                     : nullptr);
     }
 
-    uint64_t CompleteReorderAt(Controls::TabViewItem const& tab, Controls::TabViewItem const& beforeRow) {
+    uint64_t CompleteReorderAt(Controls::TabViewItem const& tab, Controls::TabViewItem const& beforeRow, bool ungroup = false) {
         uint32_t beforeId = beforeRow && beforeRow != tab ? unbox_value<uint32_t>(beforeRow.Tag()) : 0;
         Windows::Data::Json::JsonObject action;
         action.SetNamedValue(L"kind", Windows::Data::Json::JsonValue::CreateStringValue(L"strip-reorder"));
         action.SetNamedValue(L"revision", Windows::Data::Json::JsonValue::CreateNumberValue(presentationRevision));
         action.SetNamedValue(L"id", Windows::Data::Json::JsonValue::CreateNumberValue(unbox_value<uint32_t>(tab.Tag())));
         action.SetNamedValue(L"beforeId", Windows::Data::Json::JsonValue::CreateNumberValue(beforeId));
+        action.SetNamedValue(L"ungroup", Windows::Data::Json::JsonValue::CreateBooleanValue(ungroup));
         return dispatch ? dispatch(unbox_value<uint32_t>(tab.Tag()), action.Stringify()) : 0;
     }
 
@@ -617,18 +620,40 @@ struct NativeTabStrip {
         if (groupTimer) groupTimer.Stop();
         if (groupIndicator) groupIndicator.Visibility(Visibility::Collapsed);
         groupCandidate = armedGroupTarget = 0;
+        joinGroup = joinTarget = 0;
         bool armed{};
         if (core) shell_core_group_hover(core, 0, 0, 0, 0, &armed);
     }
 
     bool UpdateGroupHover(Windows::Foundation::Point const& point) {
+        joinGroup = joinTarget = 0;
         // The reorder storyboard owns its transforms until completion. Revoke
         // dwell while it moves, including a timer queued before the slide.
         if (!rowAnimations.empty()) { ClearGroupHover(); return false; }
         uint32_t candidate{};
         const auto source = presentation.find(Drag().tab);
         if (core && source != presentation.end() && source->second.groupSource &&
+            point.X >= 0 && point.X <= view.ActualWidth() &&
             point.Y >= 0 && point.Y <= view.ActualHeight()) {
+            auto join = [&](uint32_t group, uint32_t tab, FrameworkElement const& element, bool before) {
+                ClearGroupHover();
+                joinGroup = group; joinTarget = tab; joinBefore = before;
+                const auto at = element.TransformToVisual(root).TransformPoint({0,0});
+                groupIndicator.Margin({at.X - 3, at.Y, 0, 0});
+                groupIndicator.Width(element.ActualWidth() + 6);
+                groupIndicator.Height(element.ActualHeight());
+                groupIndicator.Visibility(Visibility::Visible);
+                return true;
+            };
+            // Header hits include fully collapsed groups with no visible member.
+            for (auto const& [id, run] : inlineGroups.runs) {
+                if (!run.button || !run.button.IsLoaded()) continue;
+                const auto at = run.button.TransformToVisual(view).TransformPoint({0,0});
+                if (point.X < at.X || point.X > at.X + run.button.ActualWidth()) continue;
+                uint32_t group{};
+                if (shell_core_strip_drop_group(core, Drag().tab, 0, uint32_t(id), &group) == SHELL_STATUS_OK && group)
+                    return join(group, 0, run.button, false);
+            }
             // Grouping uses the settled visual position, including an existing
             // reorder offset. Never group the tab that used to occupy a gap.
             for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i) {
@@ -637,6 +662,17 @@ struct NativeTabStrip {
                 if (id == Drag().tab) continue; // its hidden source slot can overlap a shifted target
                 const auto left = drag.originalLeftEdge[i] + RowTransform(row).X();
                 const auto width = drag.originalWidth[i];
+                if (point.X >= left && point.X <= left + width) {
+                    uint32_t group{};
+                    const auto target = presentation.find(id);
+                    if (target != presentation.end() && target->second.groupSource &&
+                        shell_core_strip_drop_group(core, Drag().tab, id, 0, &group) == SHELL_STATUS_OK && group) {
+                        // Both pointer and settled bounds are view-local;
+                        // WinUI has already accounted for RTL in this space.
+                        const bool before = point.X < left + width / 2;
+                        return join(group, id, row, before);
+                    }
+                }
                 if (point.X < left + width * .3 || point.X > left + width * .7) continue;
                 const auto target = presentation.find(id);
                 if (target != presentation.end() && target->second.groupTarget)
@@ -784,6 +820,20 @@ struct NativeTabStrip {
     bool CommitReorder(uint32_t tabId, Windows::Foundation::Point const& point) {
         if (Drag().tab != tabId || Drag().phase != DragPhase::Dragging || !rows.count(tabId)) return false;
         UpdateDragVisual(point);
+        if (joinGroup) {
+            using Value = Windows::Data::Json::JsonValue;
+            Windows::Data::Json::JsonObject action;
+            action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-join-group"));
+            action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));
+            action.SetNamedValue(L"session", Value::CreateNumberValue(windowDragSession));
+            action.SetNamedValue(L"id", Value::CreateNumberValue(tabId));
+            action.SetNamedValue(L"group", Value::CreateNumberValue(joinGroup));
+            action.SetNamedValue(L"targetId", Value::CreateNumberValue(joinTarget));
+            action.SetNamedValue(L"before", Value::CreateBooleanValue(joinBefore));
+            CancelDrag();
+            if (dispatch) dispatch(tabId, action.Stringify());
+            return true;
+        }
         if (armedGroupTarget) {
             using Value = Windows::Data::Json::JsonValue;
             Windows::Data::Json::JsonObject action;
@@ -808,12 +858,33 @@ struct NativeTabStrip {
                               ? view.TabItems().GetAt(targetIndex).as<Controls::TabViewItem>()
                               : nullptr;
         const auto beforeId = beforeRow && beforeRow != row ? unbox_value<uint32_t>(beforeRow.Tag()) : 0;
-        // The floating drag image is about to disappear, but Firefox has not
-        // reordered the real row yet. Reveal it at the destination slot rather
-        // than briefly painting its old slot during the command round trip.
+        // A drop outside the source group's rendered members/header is an
+        // explicit ungroup, even if its tab index would remain unchanged.
+        bool ungroup = false;
+        auto sourceSlot = std::find_if(groupLayout.begin(), groupLayout.end(),
+            [tabId](auto slot) { return slot.tab == tabId; });
+        if (sourceSlot != groupLayout.end() && sourceSlot->group && presentation.at(tabId).groupSource) {
+            double left = view.ActualWidth(), right = 0;
+            auto include = [&](FrameworkElement const& element) {
+                auto at = element.TransformToVisual(view).TransformPoint({0,0});
+                left = std::min(left, double(at.X));
+                right = std::max(right, double(at.X) + element.ActualWidth());
+            };
+            for (auto slot : groupLayout) {
+                if (slot.group != sourceSlot->group) continue;
+                if (slot.tab && rows.count(slot.tab)) include(rows.at(slot.tab));
+                if (!slot.tab) {
+                    auto run = inlineGroups.runs.find(slot.group);
+                    if (run != inlineGroups.runs.end() && run->second.button) include(run->second.button);
+                }
+            }
+            // Include the reorder gap between members in the group's bounds.
+            ungroup = point.X < left || point.X > right;
+        }
+        // Reveal the row at its destination during the browser round trip.
         ResetRowOffset(row, tabId);
         RowTransform(row).X(Drag().landing_offset);
-        const auto request = CompleteReorderAt(row, beforeRow);
+        const auto request = CompleteReorderAt(row, beforeRow, ungroup);
         if (shell_core_tab_drag_commit(core, request, beforeId) != SHELL_STATUS_OK)
             shell_core_tab_drag_end(core, true);
         ReconcileDrag();
