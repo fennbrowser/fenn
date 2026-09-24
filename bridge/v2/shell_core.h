@@ -24,9 +24,11 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 8
+#define SHELL_CORE_ABI_VERSION 9
 
 #define MAX_EDIT_ID 9007199254740991
+
+#define MAX_ROWS 10000
 
 #define SHELL_NO_INDEX UINT32_MAX
 
@@ -276,6 +278,27 @@ typedef struct {
    */
   uint32_t modifiers;
 } ShellAddressAction;
+
+typedef struct {
+  /*
+   0 idle, 1 armed, 2 dragging.
+   */
+  uint32_t phase;
+  uint32_t tab;
+  uint32_t original;
+  uint32_t projected;
+  double start_x;
+  double start_y;
+  uint32_t detaching;
+  uint32_t awaiting;
+  uint64_t request;
+  double landing_offset;
+} ShellTabDrag;
+
+typedef struct {
+  double left;
+  double width;
+} ShellDragRow;
 
 #ifdef __cplusplus
 extern "C" {
@@ -703,6 +726,93 @@ ShellStatus shell_core_address_action(ShellCore *core,
  `core` is live and `out` writable.
  */
 ShellStatus shell_core_address_take_deferred(ShellCore *core, bool *out);
+
+/*
+ Read the local tab gesture. No control objects or borrowed geometry escape.
+ # Safety
+ Live core, writable out.
+ */
+ShellStatus shell_core_tab_drag_state(ShellCore *core, ShellTabDrag *out);
+
+/*
+ Arm a tab at a finite measured point, replacing previous local tracking.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_tab_drag_arm(ShellCore *core, uint32_t tab, double x, double y);
+
+/*
+ Test the promotion threshold; a window-to-tab continuation bypasses distance.
+ # Safety
+ Live core, writable out.
+ */
+ShellStatus shell_core_tab_drag_ready(ShellCore *core,
+                                      uint32_t tab,
+                                      double x,
+                                      double y,
+                                      bool continuation,
+                                      bool *out);
+
+/*
+ Copy at most 10,000 finite row rectangles when crossing the drag threshold.
+ # Safety
+ Live core; rows reads len aligned elements.
+ */
+ShellStatus shell_core_tab_drag_promote(ShellCore *core,
+                                        uint32_t original,
+                                        const ShellDragRow *rows,
+                                        uintptr_t len);
+
+/*
+ Update attachment and optionally insertion projection. Group-hover presentation
+ can inspect attachment first and suppress projection while it owns the gap.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_tab_drag_update(ShellCore *core,
+                                       double x,
+                                       double y,
+                                       double width,
+                                       double height,
+                                       bool project);
+
+/*
+ Close the local reorder gap while retaining the active gesture.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_tab_drag_close_gap(ShellCore *core);
+
+/*
+ Compute one sibling's offset from the frozen geometry.
+ # Safety
+ Live core, writable out.
+ */
+ShellStatus shell_core_tab_drag_offset(ShellCore *core, uint32_t index, double *out);
+
+/*
+ End the gesture; cancel also revokes pending reorder confirmation.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_tab_drag_end(ShellCore *core, bool cancel);
+
+/*
+ Bind a queued reorder before draining. Zero denotes queue refusal/no request.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_tab_drag_commit(ShellCore *core, uint64_t request, uint32_t before);
+
+/*
+ Test authoritative order confirmation, including disappearance of the source.
+ # Safety
+ Live core; ids reads len aligned IDs (null allowed only for zero len); writable out.
+ */
+ShellStatus shell_core_tab_drag_publish(ShellCore *core,
+                                        const uint32_t *ids,
+                                        uintptr_t len,
+                                        bool *out);
 
 #ifdef __cplusplus
 }  // extern "C"

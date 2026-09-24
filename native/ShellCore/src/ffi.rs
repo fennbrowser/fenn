@@ -1532,8 +1532,8 @@ pub unsafe extern "C" fn shell_core_group_hover(
 }
 
 
-// Address lifecycle operations share the endpoint's queue lifetime and guard.
-unsafe fn address_guard(core: *mut ShellCore, body: impl FnOnce(&mut RequestQueue) -> ShellStatus) -> ShellStatus {
+// Lifecycle operations share the endpoint's queue lifetime and guard.
+unsafe fn queue_guard(core: *mut ShellCore, body: impl FnOnce(&mut RequestQueue) -> ShellStatus) -> ShellStatus {
     guard(core, |core| {
         if core.queue.is_closed() { return ShellStatus::Closed; }
         body(&mut core.queue)
@@ -1547,7 +1547,7 @@ unsafe fn address_guard(core: *mut ShellCore, body: impl FnOnce(&mut RequestQueu
 pub unsafe extern "C" fn shell_core_address_state(core: *mut ShellCore, out: *mut crate::address::ShellAddressState) -> ShellStatus {
     let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
     *out = Default::default();
-    address_guard(core, |queue| { *out = queue.address.state(); ShellStatus::Ok })
+    queue_guard(core, |queue| { *out = queue.address.state(); ShellStatus::Ok })
 }
 
 /// Reset on address disable or session replacement. Old outcomes cannot clear
@@ -1556,7 +1556,7 @@ pub unsafe extern "C" fn shell_core_address_state(core: *mut ShellCore, out: *mu
 /// `core` is a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_address_reset(core: *mut ShellCore) -> ShellStatus {
-    address_guard(core, |queue| { queue.address = Default::default(); ShellStatus::Ok })
+    queue_guard(core, |queue| { queue.address = Default::default(); ShellStatus::Ok })
 }
 
 /// Forget the mode request on switcher disable/reset. This revokes local
@@ -1565,7 +1565,7 @@ pub unsafe extern "C" fn shell_core_address_reset(core: *mut ShellCore) -> Shell
 /// `core` is a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_address_reset_mode(core: *mut ShellCore) -> ShellStatus {
-    address_guard(core, |queue| { queue.address.reset_mode(); ShellStatus::Ok })
+    queue_guard(core, |queue| { queue.address.reset_mode(); ShellStatus::Ok })
 }
 
 /// Observe a new text/composition edit. Retry keeps this same edit identity.
@@ -1573,7 +1573,7 @@ pub unsafe extern "C" fn shell_core_address_reset_mode(core: *mut ShellCore) -> 
 /// `core` is a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_address_edit(core: *mut ShellCore) -> ShellStatus {
-    address_guard(core, |queue| if queue.address.edit() { ShellStatus::Ok } else { ShellStatus::TooLarge })
+    queue_guard(core, |queue| if queue.address.edit() { ShellStatus::Ok } else { ShellStatus::TooLarge })
 }
 
 /// Associate an admitted address request with its intent before draining it.
@@ -1583,7 +1583,7 @@ pub unsafe extern "C" fn shell_core_address_edit(core: *mut ShellCore) -> ShellS
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_address_stage(core: *mut ShellCore, request: u64, kind: u32) -> ShellStatus {
     let Some(kind) = IntentKind::from_raw(kind) else { return ShellStatus::InvalidArgument; };
-    address_guard(core, |queue| if queue.stage_address(request, kind) { ShellStatus::Ok } else { ShellStatus::UnknownRequest })
+    queue_guard(core, |queue| if queue.stage_address(request, kind) { ShellStatus::Ok } else { ShellStatus::UnknownRequest })
 }
 
 /// Record the acknowledgment/readiness of an applied Firefox publication.
@@ -1592,7 +1592,7 @@ pub unsafe extern "C" fn shell_core_address_stage(core: *mut ShellCore, request:
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_address_publish(core: *mut ShellCore, edit: u64, settled: bool) -> ShellStatus {
     if edit > crate::address::MAX_EDIT_ID { return ShellStatus::InvalidArgument; }
-    address_guard(core, |queue| { queue.address.publish(edit, settled); ShellStatus::Ok })
+    queue_guard(core, |queue| { queue.address.publish(edit, settled); ShellStatus::Ok })
 }
 
 /// Cancel retained Enter (mode changes and global actions).
@@ -1600,7 +1600,7 @@ pub unsafe extern "C" fn shell_core_address_publish(core: *mut ShellCore, edit: 
 /// `core` is a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_address_cancel_submit(core: *mut ShellCore) -> ShellStatus {
-    address_guard(core, |queue| { queue.address.cancel_submit(); ShellStatus::Ok })
+    queue_guard(core, |queue| { queue.address.cancel_submit(); ShellStatus::Ok })
 }
 
 /// Negotiate an action and retain/consume deferred Enter modifiers. The core
@@ -1620,7 +1620,7 @@ pub unsafe extern "C" fn shell_core_address_action(core: *mut ShellCore, incomin
         applying: raw.applying != 0, composing: raw.composing != 0, has_session: raw.has_session != 0,
         mode_intent_staged: false, edit_acknowledged: false, query_settled: false,
     };
-    address_guard(core, |queue| { *out = queue.address.action(incoming, observed, modifiers); ShellStatus::Ok })
+    queue_guard(core, |queue| { *out = queue.address.action(incoming, observed, modifiers); ShellStatus::Ok })
 }
 
 /// Consume the readiness notification for a retained Enter once per publication.
@@ -1630,7 +1630,7 @@ pub unsafe extern "C" fn shell_core_address_action(core: *mut ShellCore, incomin
 pub unsafe extern "C" fn shell_core_address_take_deferred(core: *mut ShellCore, out: *mut bool) -> ShellStatus {
     let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
     *out = false;
-    address_guard(core, |queue| { *out = queue.address.take_deferred(); ShellStatus::Ok })
+    queue_guard(core, |queue| { *out = queue.address.take_deferred(); ShellStatus::Ok })
 }
 
 
@@ -1695,4 +1695,120 @@ mod address_ffi_tests {
             shell_core_destroy(core);
         }
     }
+}
+
+/// Read the local tab gesture. No control objects or borrowed geometry escape.
+/// # Safety
+/// Live core, writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_state(core: *mut ShellCore, out: *mut crate::tab_drag::ShellTabDrag) -> ShellStatus {
+    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out = Default::default();
+    queue_guard(core, |q| { *out = q.tab_drag.state(); ShellStatus::Ok })
+}
+/// Arm a tab at a finite measured point, replacing previous local tracking.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_arm(core: *mut ShellCore, tab: u32, x: f64, y: f64) -> ShellStatus {
+    queue_guard(core, |q| if q.tab_drag.arm(tab,x,y) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+}
+/// Test the promotion threshold; a window-to-tab continuation bypasses distance.
+/// # Safety
+/// Live core, writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_ready(core: *mut ShellCore, tab: u32, x: f64, y: f64, continuation: bool, out: *mut bool) -> ShellStatus {
+    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out = false;
+    queue_guard(core, |q| { *out = q.tab_drag.ready(tab,x,y,continuation); ShellStatus::Ok })
+}
+/// Copy at most 10,000 finite row rectangles when crossing the drag threshold.
+/// # Safety
+/// Live core; rows reads len aligned elements.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_promote(core: *mut ShellCore, original: u32, rows: *const crate::tab_drag::ShellDragRow, len: usize) -> ShellStatus {
+    if rows.is_null() || len == 0 || len > crate::tab_drag::MAX_ROWS { return ShellStatus::InvalidArgument; }
+    queue_guard(core, |q| if q.tab_drag.promote(original, std::slice::from_raw_parts(rows,len)) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+}
+/// Update attachment and optionally insertion projection. Group-hover presentation
+/// can inspect attachment first and suppress projection while it owns the gap.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_update(core: *mut ShellCore, x: f64, y: f64, width: f64, height: f64, project: bool) -> ShellStatus {
+    queue_guard(core, |q| if q.tab_drag.update(x,y,width,height,project) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+}
+/// Close the local reorder gap while retaining the active gesture.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_close_gap(core: *mut ShellCore) -> ShellStatus {
+    queue_guard(core, |q| { q.tab_drag.close_gap(); ShellStatus::Ok })
+}
+/// Compute one sibling's offset from the frozen geometry.
+/// # Safety
+/// Live core, writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_offset(core: *mut ShellCore, index: u32, out: *mut f64) -> ShellStatus {
+    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out = 0.0;
+    queue_guard(core, |q| match q.tab_drag.offset(index) { Some(v) => { *out=v; ShellStatus::Ok }, None => ShellStatus::InvalidArgument })
+}
+/// End the gesture; cancel also revokes pending reorder confirmation.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_end(core: *mut ShellCore, cancel: bool) -> ShellStatus {
+    queue_guard(core, |q| { q.tab_drag.end(cancel); ShellStatus::Ok })
+}
+/// Bind a queued reorder before draining. Zero denotes queue refusal/no request.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_commit(core: *mut ShellCore, request: u64, before: u32) -> ShellStatus {
+    queue_guard(core, |q| if q.commit_tab_drag(request,before) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+}
+/// Test authoritative order confirmation, including disappearance of the source.
+/// # Safety
+/// Live core; ids reads len aligned IDs (null allowed only for zero len); writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_publish(core: *mut ShellCore, ids: *const u32, len: usize, out: *mut bool) -> ShellStatus {
+    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out = false;
+    if len > crate::tab_drag::MAX_ROWS || (ids.is_null() && len != 0) { return ShellStatus::InvalidArgument; }
+    queue_guard(core, |q| { *out = q.tab_drag.publish(if len == 0 { &[] } else { std::slice::from_raw_parts(ids,len) }); ShellStatus::Ok })
+}
+
+#[cfg(test)]
+mod tab_drag_ffi_tests {
+    use super::*;
+    #[test]
+    fn validates_buffers_owner_lifetime_and_drag_roundtrip() { unsafe {
+        let core=shell_core_create(&std::mem::zeroed());
+        let mut state=crate::tab_drag::ShellTabDrag::default();
+        let mut ready=false;
+        assert_eq!(shell_core_tab_drag_state(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_tab_drag_arm(core,1,f64::NAN,0.0),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_tab_drag_arm(core,1,50.0,16.0),ShellStatus::Ok);
+        assert_eq!(shell_core_tab_drag_ready(core,1,55.0,16.0,false,&mut ready),ShellStatus::Ok); assert!(ready);
+        let row=crate::tab_drag::ShellDragRow{left:0.0,width:100.0};
+        assert_eq!(shell_core_tab_drag_promote(core,0,std::ptr::null(),1),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_tab_drag_promote(core,0,&row,10001),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_tab_drag_promote(core,0,&row,1),ShellStatus::Ok);
+        assert_eq!(shell_core_tab_drag_update(core,60.0,16.0,300.0,40.0,true),ShellStatus::Ok);
+        let mut offset=1.0;
+        assert_eq!(shell_core_tab_drag_offset(core,1,&mut offset),ShellStatus::InvalidArgument);
+        assert_eq!(offset,0.0);
+        assert_eq!(shell_core_tab_drag_commit(core,999,0),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_tab_drag_commit(core,0,0),ShellStatus::Ok);
+        assert_eq!(shell_core_tab_drag_publish(core,std::ptr::null(),1,&mut ready),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_tab_drag_publish(core,std::ptr::null(),0,&mut ready),ShellStatus::Ok); assert!(ready);
+        let handle=core as usize;
+        assert_eq!(std::thread::spawn(move || shell_core_tab_drag_end(handle as *mut ShellCore,true)).join().unwrap(),ShellStatus::WrongThread);
+        shell_core_cancel_all(core);
+        shell_core_tab_drag_state(core,&mut state); assert_eq!(state.phase,0);
+        shell_core_close(core);
+        assert_eq!(shell_core_tab_drag_arm(core,1,0.0,0.0),ShellStatus::Closed);
+        shell_core_destroy(core);
+    }}
 }

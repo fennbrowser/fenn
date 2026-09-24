@@ -239,6 +239,7 @@ pub struct RequestQueue {
     limits: Limits,
     pending: crate::pending::PendingCommands,
     pub(crate) address: crate::address::AddressState,
+    pub(crate) tab_drag: crate::tab_drag::TabDrag,
     generation: u64,
     next_id: u64,
     queued: VecDeque<Request>,
@@ -259,6 +260,7 @@ impl RequestQueue {
             limits,
             pending: Default::default(),
             address: Default::default(),
+            tab_drag: Default::default(),
             generation: 1,
             next_id: 1,
             queued: VecDeque::new(),
@@ -302,6 +304,12 @@ impl RequestQueue {
     /// must then reconcile from authoritative state instead of from outcomes.
     pub fn dropped_outcomes(&self) -> u64 {
         self.dropped_outcomes
+    }
+
+    pub fn commit_tab_drag(&mut self, request: u64, before: u32) -> bool {
+        if request != 0 && !self.queued.iter().any(|r| r.id == request &&
+            r.kind == RequestKind::StripAction && r.tab == self.tab_drag.state().tab) { return false; }
+        self.tab_drag.commit(request, before)
     }
 
     pub fn stage_address(&mut self, id: u64, kind: crate::intent::IntentKind) -> bool {
@@ -548,6 +556,7 @@ impl RequestQueue {
         }
         self.pending = Default::default();
         self.address = Default::default();
+        self.tab_drag = Default::default();
         self.queued_bytes = 0;
         self.generation += 1;
         self.block_after_drain = false;
@@ -568,6 +577,7 @@ impl RequestQueue {
     fn record_outcome(&mut self, id: u64, outcome: Outcome) {
         self.pending.complete(id);
         self.address.complete(id);
+        self.tab_drag.complete(id, outcome == Outcome::Completed);
         while self.history.len() >= self.limits.completion_history {
             self.history.pop_front();
         }
@@ -1110,5 +1120,27 @@ mod mode_tests {
         q.enqueue(RequestKind::AddressModeAction, 0, 2, &[]);
         q.cancel_all();
         assert_eq!(q.address.state().mode_pending, 0);
+    }
+}
+
+#[cfg(test)]
+mod tab_drag_tests {
+    use super::*;
+    #[test]
+    fn reordered_feedback_survives_evicted_reports_and_rejects_wrong_requests() {
+        let mut q=RequestQueue::new(Limits{max_pending_outcomes:1,..Default::default()});
+        q.tab_drag.arm(7,0.0,0.0);
+        q.tab_drag.promote(0,&[crate::tab_drag::ShellDragRow{left:0.0,width:100.0}]);
+        let wrong=q.enqueue(RequestKind::NewTab,0,0,&[]).id;
+        assert!(!q.commit_tab_drag(wrong,0));
+        let other=q.enqueue(RequestKind::StripAction,8,0,&[]).id;
+        assert!(!q.commit_tab_drag(other,0));
+        let request=q.enqueue(RequestKind::StripAction,7,0,&[]).id;
+        assert!(q.commit_tab_drag(request,0));
+        q.begin_drain().unwrap();q.take_batch(16,65536);q.end_drain().unwrap();
+        q.complete(request,Outcome::Rejected).unwrap();q.complete(wrong,Outcome::Completed).unwrap();
+        assert!(q.dropped_outcomes()>0); assert_eq!(q.tab_drag.state().awaiting,0);
+        assert_eq!(q.tab_drag.state().request,0);
+        q.cancel_all();assert_eq!(q.tab_drag.state().phase,0);
     }
 }
