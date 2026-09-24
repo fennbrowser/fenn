@@ -1715,7 +1715,7 @@ pub unsafe extern "C" fn shell_core_tab_drag_state(core: *mut ShellCore, out: *m
 /// Live core.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_tab_drag_arm(core: *mut ShellCore, tab: u32, x: f64, y: f64) -> ShellStatus {
-    queue_guard(core, |q| if q.tab_drag.arm(tab,x,y) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+    queue_guard(core, |q| if q.tab_drag.arm(tab,x,y) { q.departures.removed(tab); ShellStatus::Ok } else { ShellStatus::InvalidArgument })
 }
 /// Test the promotion threshold; a window-to-tab continuation bypasses distance.
 /// # Safety
@@ -1941,5 +1941,169 @@ mod menu_ffi_tests {
         shell_core_menu_has_tab(core,7,&mut accepted);assert!(!accepted);
         shell_core_close(core);assert_eq!(shell_core_menu_open(core,7,&mut accepted),ShellStatus::Closed);
         shell_core_destroy(core);
+    }}
+}
+
+unsafe fn foreign_rows<'a>(rows:*const crate::foreign_drag::ShellForeignRow,len:usize) -> Option<&'a [crate::foreign_drag::ShellForeignRow]> {
+    if len>crate::foreign_drag::MAX_ROWS || (rows.is_null() && len!=0) {None}
+    else {Some(if len==0 {&[]} else {std::slice::from_raw_parts(rows,len)})}
+}
+/// Read preview state, including after cancellation/close for native cleanup.
+/// # Safety
+/// Live core and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_foreign_state(core:*mut ShellCore,out:*mut crate::foreign_drag::ShellForeignPreview)->ShellStatus {
+    let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=Default::default();
+    guard(core,|c|{*out=c.queue.foreign.state();ShellStatus::Ok})
+}
+/// Copy finite, bounded measured destination rows before starting a preview.
+/// # Safety
+/// Live core and readable rows (null allowed only for zero len).
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_foreign_begin(core:*mut ShellCore,rows:*const crate::foreign_drag::ShellForeignRow,len:usize)->ShellStatus {
+    let Some(rows)=foreign_rows(rows,len) else{return ShellStatus::InvalidArgument;};
+    queue_guard(core,|q|if q.foreign.begin(rows){ShellStatus::Ok}else{ShellStatus::InvalidArgument})
+}
+/// Project against frozen positions with the existing uniform gap-width rule.
+/// # Safety
+/// Live core and writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_foreign_hover(core:*mut ShellCore,x:f64,changed:*mut bool)->ShellStatus {
+    let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
+    queue_guard(core,|q|match q.foreign.hover(x){Some(v)=>{*changed=v;ShellStatus::Ok},None=>ShellStatus::InvalidArgument})
+}
+/// Hover exit preserves a pending drop unless explicitly forced.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_foreign_end(core:*mut ShellCore,force:bool)->ShellStatus {
+    guard(core,|c|{c.queue.foreign.end(force);ShellStatus::Ok})
+}
+/// Invalidate geometry on ordered membership change, returning whether to rehover.
+/// # Safety
+/// Live core, readable IDs (null only for zero len), writable refresh.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_foreign_layout(core:*mut ShellCore,ids:*const u32,len:usize,refresh:*mut bool)->ShellStatus {
+    let Some(refresh)=refresh.as_mut() else{return ShellStatus::InvalidArgument;};*refresh=false;
+    if len>crate::foreign_drag::MAX_ROWS || (ids.is_null() && len!=0){return ShellStatus::InvalidArgument;}
+    let ids=if len==0 {&[]} else {std::slice::from_raw_parts(ids,len)};
+    queue_guard(core,|q|{*refresh=q.foreign.layout(ids);ShellStatus::Ok})
+}
+/// Whole-window merge projection uses each measured row's own width.
+/// # Safety
+/// Live core, readable rows, writable index.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_foreign_external_index(core:*mut ShellCore,rows:*const crate::foreign_drag::ShellForeignRow,len:usize,x:f64,index:*mut u32)->ShellStatus {
+    let Some(index)=index.as_mut() else{return ShellStatus::InvalidArgument;};*index=0;
+    let Some(rows)=foreign_rows(rows,len) else{return ShellStatus::InvalidArgument;};
+    queue_guard(core,|_|match crate::foreign_drag::ForeignPreview::external_index(rows,x){Some(v)=>{*index=v;ShellStatus::Ok},None=>ShellStatus::InvalidArgument})
+}
+/// Reserve durable destination tracking and an exact source departure token
+/// before hiding the source or admitting work. Both cores must share a thread;
+/// source==destination is supported for detach without aliased mutable borrows.
+/// # Safety
+/// Both handles live; writable out. No reentrant access during this call.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_transfer_reserve(destination:*mut ShellCore,source:*mut ShellCore,tab:u32,out:*mut crate::foreign_drag::ShellTransfer)->ShellStatus {
+    let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=Default::default();
+    if tab==0{return ShellStatus::InvalidArgument;}
+    guard(destination,|d|{
+        if d.queue.is_closed(){return ShellStatus::Closed;}
+        if !d.queue.transfers.can_reserve(){return ShellStatus::Busy;}
+        if destination==source {
+            if !d.queue.departures.can_begin(tab){return ShellStatus::Busy;}
+            let token=d.queue.departures.begin(tab);
+            *out=d.queue.transfers.reserve(d.window_drag.state().endpoint,token,tab);ShellStatus::Ok
+        } else {
+            guard(source,|s|{
+                if s.queue.is_closed(){return ShellStatus::Closed;}
+                if !s.queue.departures.can_begin(tab){return ShellStatus::Busy;}
+                let token=s.queue.departures.begin(tab);
+                *out=d.queue.transfers.reserve(s.window_drag.state().endpoint,token,tab);ShellStatus::Ok
+            })
+        }
+    })
+}
+/// Bind only an admitted strip request before draining; zero records refusal.
+/// # Safety
+/// Live core. preview is true for ordinary destination drops, false for detach.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_transfer_bind(core:*mut ShellCore,ticket:u64,request:u64,preview:bool)->ShellStatus {
+    guard(core,|c|{
+        if request!=0 && c.queue.is_closed(){return ShellStatus::Closed;}
+        if c.queue.bind_transfer(ticket,request,c.window_drag.state().endpoint,preview){ShellStatus::Ok}else{ShellStatus::InvalidArgument}
+    })
+}
+/// Peek a durable cleanup decision. Repeated reads return it until acknowledged.
+/// # Safety
+/// Live core and writable out. Valid after close for destruction-time cleanup.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_transfer_next(core:*mut ShellCore,after:u64,out:*mut crate::foreign_drag::ShellTransfer)->ShellStatus {
+    let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=Default::default();
+    guard(core,|c|{*out=c.queue.transfers.next_effect(after);ShellStatus::Ok})
+}
+/// Release tracking capacity only after native effects have been applied.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_transfer_ack(core:*mut ShellCore,ticket:u64)->ShellStatus {
+    guard(core,|c|if c.queue.transfers.ack(ticket){ShellStatus::Ok}else{ShellStatus::UnknownRequest})
+}
+/// Cancel unresolved transfers when their native destination is destroyed.
+/// Already accepted outcomes remain accepted and still await source publication.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_transfer_cancel(core:*mut ShellCore)->ShellStatus {
+    guard(core,|c|{c.queue.transfers.cancel();c.queue.foreign.end(true);ShellStatus::Ok})
+}
+/// Test a peer's exact endpoint and source departure token before UI restoration.
+/// If clear is true, clear only that matching token after the restoration succeeds.
+/// # Safety
+/// Live source core, writable matches.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_departure_match(core:*mut ShellCore,endpoint:u64,tab:u32,token:u64,clear:bool,matches:*mut bool)->ShellStatus {
+    let Some(matches)=matches.as_mut() else{return ShellStatus::InvalidArgument;};*matches=false;
+    guard(core,|c|{*matches=c.window_drag.state().endpoint==endpoint && c.queue.departures.matches(tab,token);
+        if *matches && clear{c.queue.departures.clear(tab,token);}ShellStatus::Ok})
+}
+/// Source removal confirms an accepted transfer and releases departure tracking.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_departure_removed(core:*mut ShellCore,tab:u32)->ShellStatus {
+    guard(core,|c|{c.queue.departures.removed(tab);ShellStatus::Ok})
+}
+
+#[cfg(test)]
+mod transfer_ffi_tests {
+    use super::*;
+    #[test]
+    fn exact_peers_bounds_closed_cleanup_and_same_core_detach(){unsafe{
+        let source=shell_core_create(&std::mem::zeroed());let dest=shell_core_create(&std::mem::zeroed());
+        let mut old=crate::foreign_drag::ShellTransfer::default();let mut new=old;let mut effect=old;let mut matched=false;
+        assert_eq!(shell_core_transfer_reserve(dest,source,0,&mut old),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_transfer_reserve(dest,source,7,&mut old),ShellStatus::Ok);
+        assert_eq!(shell_core_transfer_bind(dest,old.ticket,0,false),ShellStatus::Ok);
+        assert_eq!(shell_core_transfer_reserve(dest,source,7,&mut new),ShellStatus::Ok);
+        shell_core_departure_match(source,old.source_endpoint,7,old.source_token,false,&mut matched);assert!(!matched);
+        shell_core_departure_match(source,new.source_endpoint+1,7,new.source_token,false,&mut matched);assert!(!matched);
+        shell_core_departure_match(source,new.source_endpoint,7,new.source_token,false,&mut matched);assert!(matched);
+        shell_core_transfer_next(dest,0,&mut effect);assert_eq!(effect.ticket,old.ticket);
+        shell_core_transfer_ack(dest,old.ticket);shell_core_close(dest);
+        shell_core_transfer_next(dest,0,&mut effect);assert_eq!(effect.ticket,new.ticket);assert_eq!(effect.result,2);
+        shell_core_departure_match(source,new.source_endpoint,7,new.source_token,true,&mut matched);assert!(matched);
+        shell_core_transfer_ack(dest,new.ticket);
+        assert_eq!(shell_core_transfer_reserve(dest,source,7,&mut new),ShellStatus::Closed);
+        assert_eq!(shell_core_transfer_reserve(source,source,7,&mut new),ShellStatus::Ok);
+        shell_core_tab_drag_arm(source,7,0.0,0.0);
+        shell_core_departure_match(source,new.source_endpoint,7,new.source_token,false,&mut matched);assert!(!matched);
+        let handle=source as usize;
+        assert_eq!(std::thread::spawn(move || shell_core_transfer_cancel(handle as *mut ShellCore)).join().unwrap(),ShellStatus::WrongThread);
+        assert_eq!(shell_core_foreign_begin(source,std::ptr::null(),1),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_foreign_begin(source,std::ptr::null(),0),ShellStatus::Ok);
+        assert_eq!(shell_core_foreign_hover(source,f64::NAN,&mut matched),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_foreign_layout(source,std::ptr::null(),1,&mut matched),ShellStatus::InvalidArgument);
+        shell_core_transfer_cancel(source);shell_core_destroy(dest);shell_core_destroy(source);
     }}
 }

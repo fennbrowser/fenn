@@ -2181,6 +2181,9 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         Sleep(10);
     }
     Require(destTab.IsLoaded() && destTab.ActualWidth() > 0, "destination tab realized before adopt drag");
+    auto overlap = reinterpret_cast<HRESULT(WINAPI*)(HWND, HWND, uint32_t)>(GetProcAddress(module, "WinUIPaneTestTransferOverlap"));
+    Require(overlap && SUCCEEDED(overlap(host, host2, 33)),
+            "old adoption rejection cannot reveal a newer source departure; latest rejection restores it");
     settle(30);
 
     auto sourceBounds = TabScreenBounds(host, L"FirefoxWinUITab-33");

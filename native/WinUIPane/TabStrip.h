@@ -128,18 +128,68 @@ struct NativeTabStrip {
     // window's own id for the tab being acted on, or 0 when the gesture names
     // no tab of this window's (an incoming adopt names the source window's).
     std::function<uint64_t(uint32_t tab, hstring const& action)> dispatch;
-    // UI-only rollback callbacks keyed by the Rust queue's request identities.
-    // Weak source lifetimes keep cross-window completion safe during teardown.
-    std::map<uint64_t, std::function<void(bool)>> dropResults;
-    std::set<uint32_t> departingRows;
+    // Only peer object lifetimes stay native. Rust owns tickets, request
+    // outcomes and source departure tokens until their UI effects are applied.
+    struct TransferPeer { NativeTabStrip* source; std::weak_ptr<int> lifetime; };
+    std::map<uint64_t, TransferPeer> transferPeers;
     std::function<uint32_t()> pendingWindowDragTab;
-    void WatchDrop(uint64_t request, std::function<void(bool)> complete) {
-        if (request) dropResults.emplace(request, std::move(complete));
-        else complete(false);
+    uint64_t ReserveTransfer(NativeTabStrip& source, uint32_t tab) {
+        ShellTransfer transfer{};
+        if (shell_core_transfer_reserve(core, source.core, tab, &transfer) != SHELL_STATUS_OK) return 0;
+        try { transferPeers.emplace(transfer.ticket, TransferPeer{&source, source.lifetime}); }
+        catch (...) {
+            bool matched = false;
+            shell_core_departure_match(source.core, transfer.source_endpoint, tab, transfer.source_token, true, &matched);
+            shell_core_transfer_bind(core, transfer.ticket, 0, false);
+            shell_core_transfer_ack(core, transfer.ticket);
+            throw;
+        }
+        return transfer.ticket;
     }
-    void CompleteDrop(uint64_t request, bool accepted) {
-        auto entry = dropResults.extract(request);
-        if (!entry.empty()) entry.mapped()(accepted);
+    struct TransferAdmission {
+        NativeTabStrip& destination;
+        uint64_t ticket;
+        bool preview, bound{};
+        ~TransferAdmission() {
+            if (!bound) {
+                shell_core_transfer_bind(destination.core, ticket, 0, preview);
+                try { destination.ReconcileTransfers(); } catch (...) {}
+            }
+        }
+        void Bind(uint64_t request) {
+            if (shell_core_transfer_bind(destination.core, ticket, request, preview) != SHELL_STATUS_OK)
+                throw winrt::hresult_invalid_argument();
+            bound = true;
+            destination.ReconcileTransfers();
+        }
+    };
+    void ReconcileTransfers() {
+        // A closing destination visual must not prevent restoring live peers.
+        try { ReconcileForeignVisuals(); } catch (...) {}
+        uint64_t after = 0;
+        for (;;) {
+            ShellTransfer transfer{};
+            if (shell_core_transfer_next(core, after, &transfer) != SHELL_STATUS_OK || !transfer.ticket) break;
+            after = transfer.ticket;
+            auto peer = transferPeers.find(transfer.ticket);
+            try {
+                if (transfer.result != 1 && peer != transferPeers.end() && !peer->second.lifetime.expired()) {
+                    auto source = peer->second.source;
+                    bool matched = false;
+                    if (shell_core_departure_match(source->core, transfer.source_endpoint, transfer.tab,
+                            transfer.source_token, false, &matched) != SHELL_STATUS_OK) continue;
+                    if (matched) {
+                        source->RestoreRowVisibility(transfer.tab);
+                        shell_core_departure_match(source->core, transfer.source_endpoint, transfer.tab,
+                            transfer.source_token, true, &matched);
+                    }
+                }
+                if (shell_core_transfer_ack(core, transfer.ticket) == SHELL_STATUS_OK) transferPeers.erase(transfer.ticket);
+            } catch (...) {
+                // Keep this effect for the next drain/publication. Other peers
+                // can still be reconciled if one WinUI object is unwinding.
+            }
+        }
     }
     void BeginDeparture(uint32_t id) {
         ClearGroupHover();
@@ -149,14 +199,10 @@ struct NativeTabStrip {
         shell_core_tab_drag_end(core, true);
         if (rows.count(id)) {
             ResetRowOffset(rows.at(id), id);
-            departingRows.insert(id);
             rows.at(id).Opacity(0);
             TabDragImage::SetFloatingAppearance(rows.at(id), false);
         }
         shell_core_tab_drag_end(core, false);
-    }
-    void RejectDeparture(uint32_t id) {
-        if (departingRows.erase(id)) RestoreRowVisibility(id);
     }
     // Coalesces the mid-drag active-tab highlight below: at most one apply is
     // ever queued on the dispatcher at a time, and a Sync() landing before it
@@ -310,10 +356,8 @@ struct NativeTabStrip {
     ~NativeTabStrip() {
         if (groupTimer) groupTimer.Stop();
         lifetime.reset();
-        auto pending = std::move(dropResults);
-        for (auto& [id, complete] : pending) {
-            try { complete(false); } catch (...) { /* A peer island may also be closing. */ }
-        }
+        if (core) shell_core_transfer_cancel(core);
+        try { ReconcileTransfers(); } catch (...) { /* An island may also be closing. */ }
     }
 
     Controls::MenuFlyout barMenu{nullptr};
@@ -398,12 +442,15 @@ struct NativeTabStrip {
     // there is no dragged row of its own to skip or snapshot to hit-test
     // against instead of a live (but here, unmoving) layout.
     uint32_t ProjectExternalDropIndex(double localX) const {
-        uint32_t index = 0;
+        std::vector<ShellForeignRow> measured;
         for (uint32_t i = 0; i < view.TabItems().Size(); ++i) {
             auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
-            auto left = row.TransformToVisual(view).TransformPoint({0, 0}).X;
-            if (left + row.ActualWidth() / 2 < localX) index = i + 1;
+            measured.push_back({unbox_value<uint32_t>(row.Tag()),
+                row.TransformToVisual(view).TransformPoint({0, 0}).X, row.ActualWidth()});
         }
+        uint32_t index = 0;
+        if (shell_core_foreign_external_index(core, measured.data(), measured.size(), localX, &index) != SHELL_STATUS_OK)
+            throw winrt::hresult_invalid_argument();
         return index;
     }
 
@@ -772,11 +819,11 @@ struct NativeTabStrip {
     // (in particular, a departing last tab must remain hidden until removal).
     void CommitDetach(uint32_t id) {
         if (!rows.count(id)) return;
+        const auto ticket = ReserveTransfer(*this, id);
+        if (!ticket) return;
+        TransferAdmission admission{*this, ticket, false};
         BeginDeparture(id);
-        auto alive = std::weak_ptr<int>(lifetime);
-        WatchDrop(CompleteDetach(rows.at(id)), [this, alive, id](bool accepted) {
-            if (!alive.expired() && !accepted) RejectDeparture(id);
-        });
+        admission.Bind(CompleteDetach(rows.at(id)));
     }
 
     // Live "make room" preview shown in this strip while a DIFFERENT pane's
@@ -788,56 +835,47 @@ struct NativeTabStrip {
     // like DragState::originalLeftEdge, so repeated projection hit-tests
     // against a stable layout rather than feeding an already-shifted one
     // back into itself.
-    struct ForeignDragState {
-        bool active{};
-        uint64_t pendingRequest{};
-        uint32_t projectedIndex{};
-        double tabWidth{};
-        struct Row {
-            Controls::TabViewItem item{nullptr};
-            uint32_t id{};
-            double left{};
-        };
-        // Keep the exact objects we transformed. Collection indices can name
-        // different rows, or no row at all, after a Firefox structural update.
-        std::vector<Row> rows;
+    struct ForeignRowVisual {
+        Controls::TabViewItem item{nullptr};
+        uint32_t id{};
     };
-    ForeignDragState foreignDrag;
-
+    // Exact transformed objects survive removal/reordering until reset.
+    std::vector<ForeignRowVisual> foreignRows;
+    ShellForeignPreview ForeignPreview() const {
+        ShellForeignPreview state{};
+        if (core) shell_core_foreign_state(core, &state);
+        return state;
+    }
+    void ReconcileForeignVisuals() {
+        if (ForeignPreview().active) return;
+        for (auto const& row : foreignRows) ResetRowOffset(row.item, row.id);
+        foreignRows.clear();
+    }
     void ForeignDragOver(Windows::Foundation::Point const& point) {
-        if (foreignDrag.pendingRequest) EndForeignDragOver(true);
-        if (!foreignDrag.active) {
-            // A preceding snapshot may have changed the layout. Capture the
-            // new untransformed geometry once, not on every drag tick.
+        if (ForeignPreview().request) EndForeignDragOver(true);
+        if (!ForeignPreview().active) {
+            ReconcileForeignVisuals();
             view.UpdateLayout();
-            foreignDrag.active = true;
-            foreignDrag.projectedIndex = ~0u;
-            foreignDrag.tabWidth =
-                view.TabItems().Size() ? view.TabItems().GetAt(0).as<Controls::TabViewItem>().ActualWidth() : 0;
-            foreignDrag.rows.clear();
+            std::vector<ShellForeignRow> measured;
+            std::vector<ForeignRowVisual> visuals;
             for (uint32_t i = 0; i < view.TabItems().Size(); ++i) {
                 auto item = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
-                foreignDrag.rows.push_back({item, unbox_value<uint32_t>(item.Tag()),
-                                           item.TransformToVisual(view).TransformPoint({0, 0}).X});
+                const auto id = unbox_value<uint32_t>(item.Tag());
+                measured.push_back({id, item.TransformToVisual(view).TransformPoint({0, 0}).X, item.ActualWidth()});
+                visuals.push_back({item, id});
             }
+            if (shell_core_foreign_begin(core, measured.data(), measured.size()) != SHELL_STATUS_OK) return;
+            foreignRows = std::move(visuals);
         }
-        uint32_t projected = 0;
-        for (uint32_t i = 0; i < foreignDrag.rows.size(); ++i)
-            if (foreignDrag.rows[i].left + foreignDrag.tabWidth / 2 < point.X) projected = i + 1;
-        if (projected == foreignDrag.projectedIndex) return;
-        foreignDrag.projectedIndex = projected;
-        for (uint32_t i = 0; i < foreignDrag.rows.size(); ++i) {
-            auto const& row = foreignDrag.rows[i];
-            AnimateRowOffset(row.item, row.id, i >= projected ? foreignDrag.tabWidth : 0);
-        }
+        bool changed = false;
+        if (shell_core_foreign_hover(core, point.X, &changed) != SHELL_STATUS_OK || !changed) return;
+        const auto preview = ForeignPreview();
+        for (uint32_t i = 0; i < foreignRows.size(); ++i)
+            AnimateRowOffset(foreignRows[i].item, foreignRows[i].id, i >= preview.projected ? preview.width : 0);
     }
-
-    // Hover exit closes the gap, but releasing over this strip retains it
-    // until a structural snapshot replaces the preview or the request fails.
     void EndForeignDragOver(bool force = false) {
-        if (!foreignDrag.active || (foreignDrag.pendingRequest && !force)) return;
-        auto previous = std::exchange(foreignDrag, ForeignDragState{});
-        for (auto const& row : previous.rows) ResetRowOffset(row.item, row.id);
+        if (core) shell_core_foreign_end(core, force);
+        ReconcileForeignVisuals();
     }
 
     // Commits a tab dropped here from a DIFFERENT pane's own in-flight
@@ -854,11 +892,9 @@ struct NativeTabStrip {
         // even if release arrives before the next hover tick, so a drop never
         // commits an insertion index from the previous destination row set.
         ForeignDragOver(point);
-        uint32_t index = foreignDrag.projectedIndex;
-        const auto request = QueueIncomingAdopt(sourceHwnd, tabId, index);
-        foreignDrag.pendingRequest = request;
-        if (!request) EndForeignDragOver(true);
-        return request;
+        const auto preview = ForeignPreview();
+        if (!preview.active || preview.projected == UINT32_MAX) return 0;
+        return QueueIncomingAdopt(sourceHwnd, tabId, preview.projected);
     }
 
     // Escape: abandon the gesture with no request sent, snapping every
@@ -1228,17 +1264,12 @@ struct NativeTabStrip {
             return;
         }
         bool refreshForeignPreview = false;
-        if (foreignDrag.active) {
-            bool changed = count != foreignDrag.rows.size();
-            for (uint32_t i = 0; !changed && i < count; ++i)
-                changed = tabs[i].id != foreignDrag.rows[i].id;
-            // Clear transforms while the old rows still belong to the strip.
-            // The next hover (or release) captures the new order and geometry.
-            if (changed) {
-                refreshForeignPreview = !foreignDrag.pendingRequest;
-                EndForeignDragOver(true);
-            }
+        if (ForeignPreview().active) {
+            std::vector<uint32_t> order;
+            for (uint32_t i = 0; i < count; ++i) order.push_back(tabs[i].id);
+            shell_core_foreign_layout(core, order.data(), order.size(), &refreshForeignPreview);
         }
+        ReconcileTransfers();
         syncing = true;
         try {
             if (!drag.affectedRowIds.empty()) {
@@ -1444,7 +1475,7 @@ struct NativeTabStrip {
             }
             for (auto it = rows.begin(); it != rows.end();) {
                 if (!current.count(it->first)) {
-                    departingRows.erase(it->first);
+                    shell_core_departure_removed(core, it->first);
                     it = rows.erase(it);
                 }
                 else

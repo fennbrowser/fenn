@@ -240,6 +240,9 @@ pub struct RequestQueue {
     pending: crate::pending::PendingCommands,
     pub(crate) address: crate::address::AddressState,
     pub(crate) tab_drag: crate::tab_drag::TabDrag,
+    pub(crate) foreign: crate::foreign_drag::ForeignPreview,
+    pub(crate) transfers: crate::foreign_drag::Transfers,
+    pub(crate) departures: crate::foreign_drag::Departures,
     generation: u64,
     next_id: u64,
     queued: VecDeque<Request>,
@@ -261,6 +264,9 @@ impl RequestQueue {
             pending: Default::default(),
             address: Default::default(),
             tab_drag: Default::default(),
+            foreign: Default::default(),
+            transfers: Default::default(),
+            departures: Default::default(),
             generation: 1,
             next_id: 1,
             queued: VecDeque::new(),
@@ -304,6 +310,14 @@ impl RequestQueue {
     /// must then reconcile from authoritative state instead of from outcomes.
     pub fn dropped_outcomes(&self) -> u64 {
         self.dropped_outcomes
+    }
+
+    pub fn bind_transfer(&mut self,ticket:u64,request:u64,own_endpoint:u64,preview:bool) -> bool {
+        let Some(record)=self.transfers.get(ticket) else {return false;};
+        let tab=if record.source_endpoint==own_endpoint {record.tab} else {0};
+        if request!=0 && !self.queued.iter().any(|r|r.id==request && r.kind==RequestKind::StripAction && r.tab==tab) {return false;}
+        if !self.transfers.bind(ticket,request) {return false;}
+        if preview {self.foreign.bind(request);}true
     }
 
     pub fn commit_tab_drag(&mut self, request: u64, before: u32) -> bool {
@@ -557,6 +571,8 @@ impl RequestQueue {
         self.pending = Default::default();
         self.address = Default::default();
         self.tab_drag = Default::default();
+        self.foreign.end(true);
+        self.transfers.cancel();
         self.queued_bytes = 0;
         self.generation += 1;
         self.block_after_drain = false;
@@ -578,6 +594,8 @@ impl RequestQueue {
         self.pending.complete(id);
         self.address.complete(id);
         self.tab_drag.complete(id, outcome == Outcome::Completed);
+        self.foreign.complete(id, outcome == Outcome::Completed);
+        self.transfers.complete(id, outcome == Outcome::Completed);
         while self.history.len() >= self.limits.completion_history {
             self.history.pop_front();
         }
@@ -1142,5 +1160,38 @@ mod tab_drag_tests {
         assert!(q.dropped_outcomes()>0); assert_eq!(q.tab_drag.state().awaiting,0);
         assert_eq!(q.tab_drag.state().request,0);
         q.cancel_all();assert_eq!(q.tab_drag.state().phase,0);
+    }
+}
+
+#[cfg(test)]
+mod foreign_transfer_tests {
+    use super::*;
+    #[test]
+    fn outcomes_survive_report_eviction_and_refused_admission(){
+        let mut q=RequestQueue::new(Limits{max_pending_outcomes:1,max_entries:1,..Default::default()});
+        let t=q.transfers.reserve(77,1,9);
+        let request=q.enqueue(RequestKind::StripAction,0,0,&[]).id;
+        assert!(q.bind_transfer(t.ticket,request,88,false));
+        q.begin_drain().unwrap();q.take_batch(1,65536);q.end_drain().unwrap();
+        let other=q.enqueue(RequestKind::NewTab,0,0,&[]).id;
+        let refused=q.transfers.reserve(77,2,10);
+        assert_eq!(q.enqueue(RequestKind::StripAction,0,0,&[]).status,EnqueueStatus::RejectedQueueFull);
+        assert!(q.bind_transfer(refused.ticket,0,88,false));
+        q.begin_drain().unwrap();q.take_batch(1,65536);q.end_drain().unwrap();
+        q.complete(request,Outcome::Rejected).unwrap();q.complete(other,Outcome::Completed).unwrap();
+        assert_eq!(q.take_outcomes(),vec![(other,Outcome::Completed)]);
+        assert_eq!(q.transfers.next_effect(0).ticket,t.ticket);
+        assert_eq!(q.transfers.next_effect(t.ticket).ticket,refused.ticket);
+        q.close();assert_eq!(q.transfers.next_effect(0).ticket,t.ticket);
+    }
+    #[test]
+    fn bind_rejects_wrong_kind_tab_and_already_drained_requests(){
+        let mut q=RequestQueue::new(Default::default());let t=q.transfers.reserve(1,1,7);
+        let wrong=q.enqueue(RequestKind::NewTab,0,0,&[]).id;assert!(!q.bind_transfer(t.ticket,wrong,1,false));
+        let wrong_tab=q.enqueue(RequestKind::StripAction,8,0,&[]).id;assert!(!q.bind_transfer(t.ticket,wrong_tab,1,false));
+        let valid=q.enqueue(RequestKind::StripAction,7,0,&[]).id;assert!(q.bind_transfer(t.ticket,valid,1,false));
+        q.begin_drain().unwrap();q.take_batch(16,65536);q.end_drain().unwrap();
+        let later=q.transfers.reserve(1,2,7);assert!(!q.bind_transfer(later.ticket,valid,1,false));
+        q.cancel_all();assert_eq!(q.transfers.next_effect(0).result,2);
     }
 }

@@ -351,6 +351,10 @@ void CancelWindowContinuation(Pane&);
 bool CanMergeWindow(Pane&, POINT);
 
 struct Pane {
+    // The project-owned Rust core: bounded request queue, drain scheduling,
+    // request identity and outcomes, and the incremental presentation model.
+    // Declared before consumers so the core also outlives partial construction.
+    NativeShellCore shell;
     HWND parent{};
     std::unique_ptr<NativeAddress> address;
     DesktopWindowXamlSource source{nullptr};
@@ -363,9 +367,6 @@ struct Pane {
     NativeTabMenu tabMenu;
     std::unique_ptr<NativeTabStrip> strip;
     event_token selection{}, takeFocus{}, containers{};
-    // The project-owned Rust core: bounded request queue, drain scheduling,
-    // request identity and outcomes, and the incremental presentation model.
-    NativeShellCore shell;
     WinUIPaneNotifyFn notifySink{};
     void* notifyContext{};
     // True between drainRequests and completeRequests. The host must close
@@ -495,7 +496,7 @@ struct Pane {
         notifyContext = nullptr;
         drainOpen = false;
         tabMenu.Close();
-        shell.Close();
+        if (shell.core) shell_core_close(shell.core);
         lifetime.reset();
         if (tabs) {
             tabs.SelectionChanged(selection);
@@ -507,6 +508,7 @@ struct Pane {
         source.Content(nullptr);
         address.reset();
         strip.reset();
+        shell.Close();
         tabs = nullptr;
         items = nullptr;
         tabIds.clear();
@@ -633,11 +635,11 @@ struct Pane {
     // ShellCore has already reconciled tab/address/mode bookkeeping when each
     // outcome was recorded. Deliver the remaining surface-specific effects.
     void ReconcileOutcomes() {
-        auto outcomes = shell.TakeOutcomes();
-        for (size_t i = 0; i < outcomes.size(); ++i) {
-            if (strip) strip->CompleteDrop(outcomes[i].id, outcomes[i].outcome == NativeShellCore::Completed);
+        shell.TakeOutcomes(); // Diagnostic reports do not own cleanup anymore.
+        if (strip) {
+            strip->ReconcileTransfers();
+            strip->ReconcileDrag();
         }
-        if (strip) strip->ReconcileDrag();
     }
     // Keep the Rust presentation model in step with the authoritative snapshot,
     // so a later delta has a correct base to apply against. Structural apply to
@@ -1483,18 +1485,12 @@ void ResolveDragDrop(Pane& sourcePane, Pane* hitPane, POINT screenPoint) {
     if (hitPane && hitPane->strip) {
         auto local = hitPane->ScreenToStrip(screenPoint);
         const auto tab = session.tabId;
-        strip->BeginDeparture(tab);
-        auto sourceLife = std::weak_ptr<int>(strip->lifetime);
         auto destination = hitPane->strip.get();
-        auto destinationLife = std::weak_ptr<int>(destination->lifetime);
-        const auto request = destination->AcceptForeignDrop(sourcePane.parent, tab, local);
-        destination->WatchDrop(request, [strip, sourceLife, destination, destinationLife, tab, request](bool accepted) {
-            if (!accepted) {
-                if (!sourceLife.expired()) strip->RejectDeparture(tab);
-                if (!destinationLife.expired() && destination->foreignDrag.pendingRequest == request)
-                    destination->EndForeignDragOver(true);
-            }
-        });
+        const auto ticket = destination->ReserveTransfer(*strip, tab);
+        if (!ticket) { strip->CancelDrag(); destination->EndForeignDragOver(true); return; }
+        NativeTabStrip::TransferAdmission admission{*destination, ticket, true};
+        strip->BeginDeparture(tab);
+        admission.Bind(destination->AcceptForeignDrop(sourcePane.parent, tab, local));
     } else if (strip->Drag().detaching) {
         strip->CommitDetach(session.tabId);
     } else {
@@ -2317,6 +2313,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestCorePanic(HWND hwnd
             pane.notifySink = nullptr;
             pane.notifyContext = nullptr;
             pane.drainOpen = false;
+            if (pane.strip) pane.strip->core = nullptr;
             pane.shell.Close();
             return E_FAIL;
         }
@@ -2554,5 +2551,27 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSetDragging(HWND hw
     } catch (...) {
         return to_hresult();
     }
+}
+// Test-only: retain a rejected old departure while a newer one hides the same
+// real row. Cleanup must match the source token, not merely its tab/lifetime.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestTransferOverlap(HWND sourceHwnd, HWND destinationHwnd, uint32_t tab) noexcept {
+    try {
+        check_hresult(Check(sourceHwnd)); check_hresult(Check(destinationHwnd));
+        auto& source = *state().panes.at(sourceHwnd)->strip;
+        auto& destination = *state().panes.at(destinationHwnd)->strip;
+        if (!source.rows.count(tab)) return E_INVALIDARG;
+        const auto old = destination.ReserveTransfer(source, tab);
+        if (!old) return E_FAIL;
+        source.BeginDeparture(tab);
+        if (shell_core_transfer_bind(destination.core, old, 0, false) != SHELL_STATUS_OK) return E_FAIL;
+        const auto newer = destination.ReserveTransfer(source, tab);
+        if (!newer) return E_FAIL;
+        source.BeginDeparture(tab);
+        destination.ReconcileTransfers();
+        if (source.rows.at(tab).Opacity() != 0 || destination.transferPeers.count(old)) return E_FAIL;
+        if (shell_core_transfer_bind(destination.core, newer, 0, false) != SHELL_STATUS_OK) return E_FAIL;
+        destination.ReconcileTransfers();
+        return source.rows.at(tab).Opacity() == 1 && !destination.transferPeers.count(newer) ? S_OK : E_FAIL;
+    } catch (...) { return to_hresult(); }
 }
 #endif

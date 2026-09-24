@@ -24,11 +24,13 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 10
+#define SHELL_CORE_ABI_VERSION 11
 
 #define MAX_EDIT_ID 9007199254740991
 
 #define MAX_ROWS 10000
+
+#define MAX_TRANSFERS 256
 
 #define SHELL_NO_INDEX UINT32_MAX
 
@@ -320,6 +322,31 @@ typedef struct {
   const uint16_t *data;
   uintptr_t len;
 } ShellMenuCommand;
+
+typedef struct {
+  uint32_t active;
+  uint32_t projected;
+  double width;
+  uint64_t request;
+} ShellForeignPreview;
+
+typedef struct {
+  uint32_t id;
+  double left;
+  double width;
+} ShellForeignRow;
+
+typedef struct {
+  uint64_t ticket;
+  uint64_t source_endpoint;
+  uint64_t source_token;
+  uint64_t request;
+  uint32_t tab;
+  /*
+   0 pending, 1 accepted (wait for publication), 2 rejected/cancelled.
+   */
+  uint32_t result;
+} ShellTransfer;
 
 #ifdef __cplusplus
 extern "C" {
@@ -914,6 +941,119 @@ ShellStatus shell_core_menu_activate(ShellCore *core,
                                      const uint16_t *id,
                                      uintptr_t len,
                                      bool *accepted);
+
+/*
+ Read preview state, including after cancellation/close for native cleanup.
+ # Safety
+ Live core and writable out.
+ */
+ShellStatus shell_core_foreign_state(ShellCore *core, ShellForeignPreview *out);
+
+/*
+ Copy finite, bounded measured destination rows before starting a preview.
+ # Safety
+ Live core and readable rows (null allowed only for zero len).
+ */
+ShellStatus shell_core_foreign_begin(ShellCore *core, const ShellForeignRow *rows, uintptr_t len);
+
+/*
+ Project against frozen positions with the existing uniform gap-width rule.
+ # Safety
+ Live core and writable changed.
+ */
+ShellStatus shell_core_foreign_hover(ShellCore *core, double x, bool *changed);
+
+/*
+ Hover exit preserves a pending drop unless explicitly forced.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_foreign_end(ShellCore *core, bool force);
+
+/*
+ Invalidate geometry on ordered membership change, returning whether to rehover.
+ # Safety
+ Live core, readable IDs (null only for zero len), writable refresh.
+ */
+ShellStatus shell_core_foreign_layout(ShellCore *core,
+                                      const uint32_t *ids,
+                                      uintptr_t len,
+                                      bool *refresh);
+
+/*
+ Whole-window merge projection uses each measured row's own width.
+ # Safety
+ Live core, readable rows, writable index.
+ */
+ShellStatus shell_core_foreign_external_index(ShellCore *core,
+                                              const ShellForeignRow *rows,
+                                              uintptr_t len,
+                                              double x,
+                                              uint32_t *index);
+
+/*
+ Reserve durable destination tracking and an exact source departure token
+ before hiding the source or admitting work. Both cores must share a thread;
+ source==destination is supported for detach without aliased mutable borrows.
+ # Safety
+ Both handles live; writable out. No reentrant access during this call.
+ */
+ShellStatus shell_core_transfer_reserve(ShellCore *destination,
+                                        ShellCore *source,
+                                        uint32_t tab,
+                                        ShellTransfer *out);
+
+/*
+ Bind only an admitted strip request before draining; zero records refusal.
+ # Safety
+ Live core. preview is true for ordinary destination drops, false for detach.
+ */
+ShellStatus shell_core_transfer_bind(ShellCore *core,
+                                     uint64_t ticket,
+                                     uint64_t request,
+                                     bool preview);
+
+/*
+ Peek a durable cleanup decision. Repeated reads return it until acknowledged.
+ # Safety
+ Live core and writable out. Valid after close for destruction-time cleanup.
+ */
+ShellStatus shell_core_transfer_next(ShellCore *core, uint64_t after, ShellTransfer *out);
+
+/*
+ Release tracking capacity only after native effects have been applied.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_transfer_ack(ShellCore *core, uint64_t ticket);
+
+/*
+ Cancel unresolved transfers when their native destination is destroyed.
+ Already accepted outcomes remain accepted and still await source publication.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_transfer_cancel(ShellCore *core);
+
+/*
+ Test a peer's exact endpoint and source departure token before UI restoration.
+ If clear is true, clear only that matching token after the restoration succeeds.
+ # Safety
+ Live source core, writable matches.
+ */
+ShellStatus shell_core_departure_match(ShellCore *core,
+                                       uint64_t endpoint,
+                                       uint32_t tab,
+                                       uint64_t token,
+                                       bool clear,
+                                       bool *matches);
+
+/*
+ Source removal confirms an accepted transfer and releases departure tracking.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_departure_removed(ShellCore *core, uint32_t tab);
 
 #ifdef __cplusplus
 }  // extern "C"
