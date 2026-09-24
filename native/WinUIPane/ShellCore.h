@@ -54,6 +54,31 @@ struct NativeShellCore {
         return Decision(decision);
     }
 
+    ShellAddressState AddressState() const {
+        ShellAddressState value{};
+        if (core) shell_core_address_state(core, &value);
+        return value;
+    }
+    void ResetAddressMode() { if (core) shell_core_address_reset_mode(core); }
+    void ResetAddress() { if (core) shell_core_address_reset(core); }
+    bool AddressEdit() { return core && shell_core_address_edit(core) == SHELL_STATUS_OK; }
+    bool StageAddress(uint64_t request, Intent kind) {
+        return core && shell_core_address_stage(core, request, kind) == SHELL_STATUS_OK;
+    }
+    void PublishAddress(uint64_t edit, bool settled) {
+        if (core) shell_core_address_publish(core, edit, settled);
+    }
+    void CancelAddressSubmit() { if (core) shell_core_address_cancel_submit(core); }
+    ShellAddressAction NegotiateAddress(Intent incoming, ShellIntentConditions const& conditions, uint32_t modifiers) {
+        ShellAddressAction action{DropIntent, 0};
+        if (core) shell_core_address_action(core, incoming, &conditions, modifiers, &action);
+        return action;
+    }
+    bool TakeDeferredAddress() {
+        bool ready = false;
+        return core && shell_core_address_take_deferred(core, &ready) == SHELL_STATUS_OK && ready;
+    }
+
     ShellCore* core{};
 
     NativeShellCore() = default;

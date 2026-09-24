@@ -2,11 +2,12 @@
 #include <functional>
 #include <winrt/Windows.Data.Json.h>
 #include "JsonValidation.h"
+#include "ShellCore.h"
 
 // The search-mode switcher (button, flyout of engines/local providers, exit
 // button). Presentation only: Firefox owns mode eligibility, ordering and
-// switching. Firefox owns the request queue's single slot; when a request is
-// queued here it takes priority over the parent's own pending edit/select.
+// switching. Rust tracks admitted mode requests and their priority over
+// address actions until completion or local session reset.
 struct NativeSearchMode {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using JValue = winrt::Windows::Data::Json::JsonValue;
@@ -19,22 +20,21 @@ struct NativeSearchMode {
     Microsoft::UI::Xaml::Controls::TextBlock label;
     std::vector<Microsoft::UI::Xaml::Controls::MenuFlyoutItem> items;
     std::vector<winrt::hstring> ids, pixels;
-    winrt::hstring pending, buttonPixels;
+    NativeShellCore& shell;
+    winrt::hstring buttonPixels;
     double generation{-1}, applied{}, reveal{};
     bool revealPending{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
     // Provided by the owning NativeAddress: observe the pending text edit,
-    // build a versioned envelope, cancel a queued Enter, and return focus to
+    // build a versioned envelope and return focus to
     // the address field. Kept as callbacks rather than a back-reference so
     // this struct has no dependency on NativeAddress's layout.
-    std::function<void()> edit, clearIntent, focusField;
+    std::function<void()> edit, focusField;
     std::function<JObject(wchar_t const*)> message;
     std::function<bool()> busy;
-    // Hands one queued mode action to the owning pane's request queue. The slot
-    // below stays as the record of what is outstanding, cleared when the
-    // outcome comes back, so `busy()` and Reset()/Disable() keep working.
-    std::function<bool(winrt::hstring const&)> dispatch;
+    // Queue admission records mode identity and cancels retained Enter in Rust.
+    std::function<void(winrt::hstring const&)> dispatch;
 
     ~NativeSearchMode() {
         lifetime.reset();
@@ -71,9 +71,7 @@ struct NativeSearchMode {
         intent.SetNamedValue(L"metaKey", JValue::CreateBooleanValue(false));
         value.SetNamedValue(L"intent", intent);
         auto action = value.Stringify();
-        if (!dispatch || !dispatch(action)) return;
-        pending = action;
-        clearIntent();
+        if (dispatch) dispatch(action);
     }
 
     void NewFlyout() {
@@ -89,12 +87,12 @@ struct NativeSearchMode {
         });
     }
 
-    // Hides any open flyout and drops a queued action without disturbing the
+    // Hides any open flyout and revokes local request tracking without disturbing the
     // rest of this switcher's displayed state. Used when the address surface
     // itself is disabled, a strict subset of Reset().
     void Disable() {
         if (flyout.IsOpen()) flyout.Hide();
-        pending = L"";
+        shell.ResetAddressMode();
     }
     // Full reset on a session change: nothing about the previous session's
     // mode selection is valid for a new one.
@@ -212,7 +210,7 @@ struct NativeSearchMode {
         }
     }
 
-    NativeSearchMode() {
+    explicit NativeSearchMode(NativeShellCore& core) : shell(core) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         NewFlyout();

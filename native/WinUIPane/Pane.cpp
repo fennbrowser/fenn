@@ -373,9 +373,6 @@ struct Pane {
     // host error, counted here rather than silently absorbed.
     bool drainOpen{};
     uint64_t abandonedDrains{};
-    // The address and search-mode intents currently in the queue, so their
-    // slots can be released when the host reports the outcome.
-    uint64_t addressRequest{}, modeRequest{};
     // What this island has actually been given. Firefox drives update() from a
     // requestAnimationFrame whenever anything is dirty, so most calls repeat
     // the previous geometry and the previous exclusions exactly, and
@@ -633,24 +630,12 @@ struct Pane {
         event.SetNamedValue(L"shift", NativeTabMenu::Value::CreateBooleanValue((GetKeyState(VK_SHIFT) & 0x8000) != 0));
         Enqueue(NativeShellCore::SelectTab, active, tabMenu.stateRevision, event.Stringify());
     }
-    // ShellCore has already reconciled close/selection bookkeeping when each
+    // ShellCore has already reconciled tab/address/mode bookkeeping when each
     // outcome was recorded. Deliver the remaining surface-specific effects.
     void ReconcileOutcomes() {
         auto outcomes = shell.TakeOutcomes();
         for (size_t i = 0; i < outcomes.size(); ++i) {
             if (strip) strip->CompleteDrop(outcomes[i].id, outcomes[i].outcome == NativeShellCore::Completed);
-            // An address intent is outstanding until the host says how it went.
-            // Clearing the slot here, rather than when a tick collected it, is
-            // what lets the coalescing policy keep meaning "something is still
-            // in flight" with no tick left to define it.
-            if (address && outcomes[i].id == addressRequest) {
-                addressRequest = 0;
-                address->ClearStaged();
-            }
-            if (address && outcomes[i].id == modeRequest) {
-                modeRequest = 0;
-                address->mode.pending = L"";
-            }
         }
     }
     // Keep the Rust presentation model in step with the authoritative snapshot,
@@ -1112,20 +1097,11 @@ struct Pane {
             QueueNewTab();
         });
         panel.Children().Append(newTab);
-        address = std::make_unique<NativeAddress>();
-        // One definition of which address intent survives, in the shell core.
-        address->decide = [this](NativeShellCore::Intent incoming, NativeShellCore::Intent staged,
-                                 ShellIntentConditions const& conditions) {
-            return shell.Decide(incoming, staged, conditions);
-        };
-        // Address intents ride the same queue as every other native intent. A
-        // newer one supersedes the queued one in place, which is the single
-        // outstanding action the staging slot used to guarantee by overwriting.
+        address = std::make_unique<NativeAddress>(shell);
+        // Rust records the admitted request/intent and clears it on matching
+        // completion, including when bounded outcome reports are evicted.
         address->dispatch = [this](hstring const& action) {
-            auto id = Enqueue(NativeShellCore::AddressAction, 0, address->revision, action);
-            if (!id) return false;
-            addressRequest = id;
-            return true;
+            return Enqueue(NativeShellCore::AddressAction, 0, address->revision, action);
         };
         // The island and the HWND live here, so the answer to "does this
         // surface hold focus" is assembled here and the address controls only
@@ -1139,10 +1115,7 @@ struct Pane {
             Enqueue(NativeShellCore::AddressVisibility, 0, address->revision, action);
         };
         address->mode.dispatch = [this](hstring const& action) {
-            auto id = Enqueue(NativeShellCore::AddressModeAction, 0, address->revision, action);
-            if (!id) return false;
-            modeRequest = id;
-            return true;
+            Enqueue(NativeShellCore::AddressModeAction, 0, address->revision, action);
         };
         Controls::Grid::SetRow(address->root, 3);
         panel.Children().Append(address->root);

@@ -21,28 +21,22 @@ struct NativeAddress {
     NativeSearchMode mode;
     SuggestionList suggestions;
     GlobalActionsPanel actions;
-    winrt::hstring session, pending, visibility, observedText, submitIntent;
-    // Which intent `pending` holds, as the shell core names it. Kept as a kind
-    // rather than re-parsed out of `pending` on every decision, which is what
-    // this code used to do to recover state it had just written.
-    NativeShellCore::Intent stagedKind{NativeShellCore::NoIntent};
+    NativeShellCore& shell;
+    // Cached WinUI/JSON observations; lifecycle decisions and IDs live in Rust.
+    winrt::hstring session, pending, visibility, observedText;
+    NativeShellCore::Intent StagedKind() const {
+        return NativeShellCore::Intent(shell.AddressState().staged_kind);
+    }
     // The visibility last reported, as a set of ids rather than a serialized
     // message, plus the sequence it was computed against.
     std::set<winrt::hstring> reportedVisible;
     double reportedSequence{-1};
     bool visibilityQueued{};
     bool focusObservationQueued{};
-    // Supplied by the owning pane: the one definition of which intent survives
-    // when two are in play. The rules live in native/ShellCore/src/intent.rs
-    // where every pair is tested; nothing here re-implements them.
-    std::function<NativeShellCore::Decision(NativeShellCore::Intent, NativeShellCore::Intent,
-                                            ShellIntentConditions const&)>
-        decide;
-    // Hands one staged intent to the owning pane's request queue, which wakes
-    // the host itself. The slot above remains the record of what is
-    // outstanding -- the policy needs it -- and is cleared when the outcome
-    // comes back rather than when a tick happens to collect it.
-    std::function<bool(winrt::hstring const&)> dispatch;
+    // Hands an intent to the owning pane's request queue. Its notification
+    // only posts host work, so the admitted ID is registered with Rust before
+    // draining. Rust clears that identity on the matching outcome.
+    std::function<uint64_t(winrt::hstring const&)> dispatch;
     // Reports which rows are on screen. A separate channel from `dispatch`
     // because a report is not an intent: it must not supersede one, and
     // answering it must not be read as answering one.
@@ -71,12 +65,8 @@ struct NativeAddress {
             if (observeFocus) observeFocus();
         });
     }
-    double revision{}, sequence{-1}, editId{}, selectionId{}, acknowledgedEditId{};
-    // A commit the user made before the browser could answer it. It is not
-    // lost and it is not retried on a clock: it waits for the publication that
-    // satisfies its precondition, which is what DeferredCommitReady() names.
-    bool syncing{}, composing{}, deferredCommit{}, observedComposing{}, queryComplete{}, focusWithin{};
-    bool editNeedsDispatch{};
+    double revision{}, sequence{-1}, selectionId{};
+    bool syncing{}, composing{}, observedComposing{}, focusWithin{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     ~NativeAddress() { lifetime.reset(); }
 
@@ -92,7 +82,7 @@ struct NativeAddress {
         // A global action names a row from the publication that produced it, so
         // it needs the browser level with our edits, and it yields to anything
         // staged except a caret move.
-        if (Decide(NativeShellCore::GlobalAction, stagedKind) == NativeShellCore::DropIntent) return;
+        if (Decide(NativeShellCore::GlobalAction, StagedKind()) == NativeShellCore::DropIntent) return;
         auto value = Message(L"global-action");
         value.SetNamedValue(L"id", JValue::CreateStringValue(resultId));
         value.SetNamedValue(L"actionId", JValue::CreateStringValue(id));
@@ -102,33 +92,26 @@ struct NativeAddress {
         intent.SetNamedValue(L"altKey", JValue::CreateBooleanValue((GetKeyState(VK_MENU) & 0x8000) != 0));
         value.SetNamedValue(L"intent", intent);
         Stage(value, NativeShellCore::GlobalAction);
-        deferredCommit = false;
+        shell.CancelAddressSubmit();
     }
     // Everything the policy may consider, read from WinUI, Win32 and the last
     // applied publication. Assembled here so the rules cannot quietly start
     // depending on something else.
     ShellIntentConditions Observed() const {
+        const auto state = shell.AddressState();
         return ShellIntentConditions{
             syncing ? 1u : 0u,
             composing ? 1u : 0u,
             session.empty() ? 0u : 1u,
-            mode.pending.empty() ? 0u : 1u,
-            !editNeedsDispatch && acknowledgedEditId == editId ? 1u : 0u,
-            (queryComplete || !suggestions.ids.empty()) ? 1u : 0u,
+            state.mode_pending,
+            state.edit_acknowledged,
+            state.query_settled,
         };
-    }
-    // Exactly the two conditions the policy defers a commit on, so the retry
-    // and the deferral cannot drift apart. Before this, the deferral lived in
-    // the policy and the retry restated it by hand in the middle of Sync().
-    bool DeferredCommitReady() const {
-        auto observed = Observed();
-        return observed.edit_acknowledged && observed.query_settled;
     }
     NativeShellCore::Decision Decide(NativeShellCore::Intent incoming,
                                      NativeShellCore::Intent staged) const {
-        // Without a decision function nothing is staged: dropping loses one
-        // action, accepting could commit against the wrong suggestion.
-        return decide ? decide(incoming, staged, Observed()) : NativeShellCore::DropIntent;
+        // The shared Rust policy combines control observations with core state.
+        return shell.Decide(incoming, staged, Observed());
     }
     static NativeShellCore::Intent IntentOf(wchar_t const* kind) {
         if (wcscmp(kind, L"select") == 0) return NativeShellCore::Select;
@@ -146,14 +129,14 @@ struct NativeAddress {
         auto action = value.Stringify();
         // Refusal has no completion. Keep the last admitted slot and its ID
         // intact; unadmitted edits are tracked separately below.
-        if (!dispatch || !dispatch(action)) return false;
+        const auto request = dispatch ? dispatch(action) : 0;
+        if (!request || !shell.StageAddress(request, kind)) return false;
         pending = action;
-        stagedKind = kind;
         return true;
     }
-    void ClearStaged() {
+    void ResetSessionState() {
+        shell.ResetAddress();
         pending = L"";
-        stagedKind = NativeShellCore::NoIntent;
     }
     JObject Message(wchar_t const* kind) {
         JObject value;
@@ -169,27 +152,25 @@ struct NativeAddress {
         // the newest thing they have said. Composition start and end are edits
         // too, which is why this is the one intent not suppressed by an active
         // composition.
-        if (Decide(NativeShellCore::Edit, stagedKind) == NativeShellCore::DropIntent) return;
+        if (Decide(NativeShellCore::Edit, StagedKind()) == NativeShellCore::DropIntent) return;
+        if (!shell.AddressEdit()) return;
         observedText = field.Text();
         observedComposing = composing;
-        deferredCommit = false;
-        submitIntent = L"";
-        ++editId;
-        editNeedsDispatch = true;
         RetryEdit();
     }
     // Capacity becomes available at request completion. Retry only an edit
     // that was never admitted, preserving its ID and any early Enter intent.
     void RetryEdit() {
-        if (!editNeedsDispatch || session.empty()) return;
+        const auto state = shell.AddressState();
+        if (!state.needs_dispatch || session.empty()) return;
         auto value = Message(L"edit");
-        value.SetNamedValue(L"editId", JValue::CreateNumberValue(editId));
+        value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(state.edit_id)));
         value.SetNamedValue(L"text", JValue::CreateStringValue(observedText));
         value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
         value.SetNamedValue(L"selectionEnd",
                             JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
         value.SetNamedValue(L"composing", JValue::CreateBooleanValue(composing));
-        editNeedsDispatch = !Stage(value, NativeShellCore::Edit);
+        Stage(value, NativeShellCore::Edit);
     }
     void Action(wchar_t const* kind) {
         const auto incoming = IntentOf(kind);
@@ -198,38 +179,21 @@ struct NativeAddress {
         // surface, not about what is staged. Asked before Edit() below, which
         // is where the original guard sat.
         if (Decide(incoming, NativeShellCore::NoIntent) == NativeShellCore::DropIntent) return;
-        if (incoming == NativeShellCore::Activate) {
-            Edit();
-            if (submitIntent.empty()) {
-                JObject intent;
-                intent.SetNamedValue(L"ctrlKey", JValue::CreateBooleanValue((GetKeyState(VK_CONTROL) & 0x8000) != 0));
-                intent.SetNamedValue(L"altKey", JValue::CreateBooleanValue((GetKeyState(VK_MENU) & 0x8000) != 0));
-                intent.SetNamedValue(L"shiftKey", JValue::CreateBooleanValue((GetKeyState(VK_SHIFT) & 0x8000) != 0));
-                intent.SetNamedValue(L"metaKey", JValue::CreateBooleanValue((GetKeyState(VK_LWIN) & 0x8000) != 0));
-                submitIntent = intent.Stringify();
-            }
-        }
-        // Does it beat what is staged, and are its own preconditions met? The
-        // deferral cases (committing before the browser has acknowledged the
-        // edit, or behind an edit still in flight) come back as Defer.
-        switch (Decide(incoming, stagedKind)) {
-            case NativeShellCore::Defer:
-                deferredCommit = true;
-                return;
-            case NativeShellCore::DropIntent:
-                return;
-            default:
-                break;
-        }
-        if (incoming == NativeShellCore::Dismiss || incoming == NativeShellCore::Blur) {
-            editNeedsDispatch = false;
-            deferredCommit = false;
-            submitIntent = L"";
-        }
+        if (incoming == NativeShellCore::Activate) Edit();
+        const uint32_t modifiers = ((GetKeyState(VK_CONTROL) & 0x8000) ? 1u : 0u) |
+                                   ((GetKeyState(VK_MENU) & 0x8000) ? 2u : 0u) |
+                                   ((GetKeyState(VK_SHIFT) & 0x8000) ? 4u : 0u) |
+                                   ((GetKeyState(VK_LWIN) & 0x8000) ? 8u : 0u);
+        const auto action = shell.NegotiateAddress(incoming, Observed(), modifiers);
+        if (action.decision == NativeShellCore::Defer || action.decision == NativeShellCore::DropIntent) return;
         auto value = Message(kind);
-        if (wcscmp(kind, L"activate") == 0) {
-            value.SetNamedValue(L"intent", JObject::Parse(submitIntent));
-            submitIntent = L"";
+        if (incoming == NativeShellCore::Activate) {
+            JObject intent;
+            intent.SetNamedValue(L"ctrlKey", JValue::CreateBooleanValue((action.modifiers & 1) != 0));
+            intent.SetNamedValue(L"altKey", JValue::CreateBooleanValue((action.modifiers & 2) != 0));
+            intent.SetNamedValue(L"shiftKey", JValue::CreateBooleanValue((action.modifiers & 4) != 0));
+            intent.SetNamedValue(L"metaKey", JValue::CreateBooleanValue((action.modifiers & 8) != 0));
+            value.SetNamedValue(L"intent", intent);
         }
         int index = suggestions.list.SelectedIndex();
         if (index >= 0 && size_t(index) < suggestions.ids.size())
@@ -256,10 +220,10 @@ struct NativeAddress {
             Action(inside ? L"focus" : L"blur");
             if (GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0))
                 fwprintf(stderr, L"Native address focus inside=%d island=%d pending=%s\n", inside, islandHasFocus,
-                         pending.empty() ? L"none" : JObject::Parse(pending).GetNamedString(L"kind").c_str());
+                         StagedKind() == NativeShellCore::NoIntent ? L"none" : JObject::Parse(pending).GetNamedString(L"kind").c_str());
         }
     }
-    NativeAddress() {
+    explicit NativeAddress(NativeShellCore& core) : mode(core), shell(core) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         root.Visibility(Visibility::Collapsed);
@@ -278,14 +242,14 @@ struct NativeAddress {
             // A caret move is the least important intent there is: it folds
             // into a staged edit, which already carries a range, and otherwise
             // never displaces anything.
-            if (editNeedsDispatch) return;
-            const auto decision = Decide(NativeShellCore::TextSelection, stagedKind);
+            if (shell.AddressState().needs_dispatch) return;
+            const auto decision = Decide(NativeShellCore::TextSelection, StagedKind());
             if (decision == NativeShellCore::Amend) {
                 auto value = JObject::Parse(pending);
                 value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
                 value.SetNamedValue(L"selectionEnd",
                                     JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
-                Stage(value, stagedKind);
+                Stage(value, StagedKind());
                 return;
             }
             if (decision != NativeShellCore::Stage && decision != NativeShellCore::Replace) return;
@@ -435,10 +399,6 @@ struct NativeAddress {
         Grid::SetColumn(mode.exit, 2);
         mode.edit = [this] { Edit(); };
         mode.message = [this](wchar_t const* kind) { return Message(kind); };
-        mode.clearIntent = [this] {
-            deferredCommit = false;
-            submitIntent = L"";
-        };
         mode.focusField = [this] { field.Focus(FocusState::Programmatic); };
         mode.busy = [this] { return syncing || composing || session.empty(); };
         field.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](
@@ -484,19 +444,16 @@ struct NativeAddress {
             syncing = true;
             root.Visibility(Visibility::Collapsed);
             suggestions.Clear();
-            ClearStaged();
+            ResetSessionState();
             session = L"";
-            editNeedsDispatch = false;
-            deferredCommit = false;
-            submitIntent = L"";
-            queryComplete = false;
-            acknowledgedEditId = 0;
             syncing = false;
             return L"";
         }
         auto nextSession = snapshot.GetNamedString(L"session");
         NativeJson::RequireRevision(snapshot, L"revision");
         auto checkedSequence = snapshot.GetNamedNumber(L"sequence", 0);
+        const auto checkedEdit = snapshot.HasKey(L"editId") ? NativeJson::RequireRevision(snapshot, L"editId") : 0;
+        const auto checkedComplete = snapshot.GetNamedBoolean(L"complete", false);
         auto checkedText = snapshot.GetNamedString(L"text", L"");
         auto checkedRows = snapshot.GetNamedArray(L"rows");
         if (nextSession.empty() || nextSession.size() > 256 || checkedText.size() > NativeJson::kMaxFieldText ||
@@ -561,16 +518,10 @@ struct NativeAddress {
         }
         if (nextSession != session) {
             mode.Reset();
-            ClearStaged();
-            deferredCommit = false;
-            submitIntent = L"";
-            queryComplete = false;
-            acknowledgedEditId = 0;
+            ResetSessionState();
             session = nextSession;
             sequence = -1;
             visibility = L"";
-            editId = 0;
-            editNeedsDispatch = false;
             selectionId = 0;
             observedText = field.Text();
             observedComposing = composing;
@@ -591,14 +542,12 @@ struct NativeAddress {
         // about when it published. The collection this replaced returned early
         // for the same reason; it is stated here rather than implied by where
         // the old code happened to return.
-        if (editNeedsDispatch || stagedKind != NativeShellCore::NoIntent || !mode.pending.empty()) return L"";
+        if (shell.AddressState().needs_dispatch || StagedKind() != NativeShellCore::NoIntent || shell.AddressState().mode_pending) return L"";
         syncing = true;
         try {
             field.PlaceholderText(snapshot.GetNamedString(L"placeholder", L"Search or enter address"));
             const auto previousRevision = revision;
             revision = snapshot.GetNamedNumber(L"revision");
-            acknowledgedEditId = snapshot.GetNamedNumber(L"editId", 0);
-            queryComplete = snapshot.GetNamedBoolean(L"complete", false);
             auto text = snapshot.GetNamedString(L"text", L"");
             if (text.size() > NativeJson::kMaxFieldText) winrt::throw_hresult(E_INVALIDARG);
             if (field.Text() != text) {
@@ -617,6 +566,7 @@ struct NativeAddress {
             suggestions.RefreshLabels();
             mode.Sync(snapshot);
             actions.Sync(snapshot);
+            shell.PublishAddress(uint64_t(checkedEdit), checkedComplete || !suggestions.ids.empty());
         } catch (...) {
             syncing = false;
             throw;
@@ -626,10 +576,7 @@ struct NativeAddress {
         // The deferred commit's precondition is satisfied by a publication, so
         // this is where it is re-offered. Action() queues it if the policy now
         // allows it; nothing is returned from here.
-        if (deferredCommit && DeferredCommitReady()) {
-            deferredCommit = false;
-            Action(L"activate");
-        }
+        if (shell.TakeDeferredAddress()) Action(L"activate");
         ReportVisibility();
         return L"";
     }

@@ -238,6 +238,7 @@ pub struct EnqueueResult {
 pub struct RequestQueue {
     limits: Limits,
     pending: crate::pending::PendingCommands,
+    pub(crate) address: crate::address::AddressState,
     generation: u64,
     next_id: u64,
     queued: VecDeque<Request>,
@@ -257,6 +258,7 @@ impl RequestQueue {
         Self {
             limits,
             pending: Default::default(),
+            address: Default::default(),
             generation: 1,
             next_id: 1,
             queued: VecDeque::new(),
@@ -302,6 +304,14 @@ impl RequestQueue {
         self.dropped_outcomes
     }
 
+    pub fn stage_address(&mut self, id: u64, kind: crate::intent::IntentKind) -> bool {
+        if !self.queued.iter().any(|r| r.id == id && r.kind == RequestKind::AddressAction) {
+            return false;
+        }
+        self.address.stage(id, kind);
+        true
+    }
+
     pub fn selection_pending(&mut self, revision: u32) -> bool {
         self.pending.selection_pending(revision)
     }
@@ -336,6 +346,9 @@ impl RequestQueue {
                 }
             }
             RequestKind::NewTab => self.pending.clear_selection(),
+            RequestKind::AddressModeAction if result.status == EnqueueStatus::Accepted => {
+                self.address.stage_mode(result.id);
+            }
             _ => {}
         }
         result
@@ -534,6 +547,7 @@ impl RequestQueue {
             self.record_outcome(id, Outcome::Cancelled);
         }
         self.pending = Default::default();
+        self.address = Default::default();
         self.queued_bytes = 0;
         self.generation += 1;
         self.block_after_drain = false;
@@ -553,6 +567,7 @@ impl RequestQueue {
 
     fn record_outcome(&mut self, id: u64, outcome: Outcome) {
         self.pending.complete(id);
+        self.address.complete(id);
         while self.history.len() >= self.limits.completion_history {
             self.history.pop_front();
         }
@@ -961,5 +976,139 @@ mod tests {
             EnqueueStatus::RejectedInvalid
         );
         assert_eq!(q.enqueue(RequestKind::NewTab, 0, 0, &[]).status, EnqueueStatus::Accepted);
+    }
+}
+
+
+#[cfg(test)]
+mod address_tests {
+    use super::*;
+    use crate::intent::IntentKind;
+
+    #[test]
+    fn address_completion_survives_outcome_report_eviction_and_reset() {
+        let mut q = RequestQueue::new(Limits { max_pending_outcomes: 1, ..Default::default() });
+        q.address.edit();
+        let first = q.enqueue(RequestKind::AddressAction, 0, 1, &[]).id;
+        assert!(q.stage_address(first, IntentKind::Edit));
+        let second = q.enqueue(RequestKind::AddressAction, 0, 1, &[]).id;
+        assert_eq!(q.address.state().staged_kind, 0); // superseded internally
+        assert!(q.stage_address(second, IntentKind::Edit));
+        let tab = q.enqueue(RequestKind::NewTab, 0, 1, &[]).id;
+        assert!(!q.stage_address(tab, IntentKind::Activate));
+        q.begin_drain().unwrap();
+        q.take_batch(16, 65536);
+        assert!(!q.stage_address(second, IntentKind::Edit)); // registration must precede drain
+        q.complete(second, Outcome::Rejected).unwrap();
+        q.complete(tab, Outcome::Completed).unwrap();
+        assert!(q.dropped_outcomes() > 0);
+        assert_eq!(q.address.state().staged_kind, 0);
+        assert_eq!(q.take_outcomes(), vec![(tab, Outcome::Completed)]);
+        q.end_drain().unwrap();
+        q.address.edit();
+        assert_eq!(q.address.state().needs_dispatch, 1);
+        q.cancel_all();
+        assert_eq!(q.address.state().edit_id, 0);
+        assert_eq!(q.address.state().needs_dispatch, 0);
+    }
+
+    #[test]
+    fn refusal_does_not_replace_old_request_or_lose_retry_after_completion() {
+        let mut q = RequestQueue::new(Limits { max_entries: 1, ..Default::default() });
+        q.address.edit();
+        let old = q.enqueue(RequestKind::AddressAction, 0, 1, &[]).id;
+        q.stage_address(old, IntentKind::Edit);
+        q.begin_drain().unwrap(); q.take_batch(1, 65536); q.end_drain().unwrap();
+        q.enqueue(RequestKind::NewTab, 0, 1, &[]);
+        q.address.edit();
+        let refused = q.enqueue(RequestKind::AddressAction, 0, 1, &[]);
+        assert_eq!(refused.status, EnqueueStatus::RejectedQueueFull);
+        assert!(!q.stage_address(refused.id, IntentKind::Edit));
+        q.complete(old, Outcome::Completed).unwrap();
+        assert_eq!(q.address.state().needs_dispatch, 1);
+        assert_eq!(q.address.state().edit_id, 2);
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+    use crate::intent::{Conditions, Decision, IntentKind};
+
+    fn enter(q: &mut RequestQueue, modifiers: u32) -> crate::address::ShellAddressAction {
+        q.address.action(IntentKind::Activate, Conditions { has_session: true,
+            mode_intent_staged: false, ..Default::default() }, modifiers)
+    }
+
+    #[test]
+    fn mode_admission_cancels_enter_and_owns_priority_until_exact_completion() {
+        let mut q = RequestQueue::new(Limits::default());
+        q.address.edit();
+        assert_eq!(enter(&mut q, 5).decision, Decision::Defer as u32);
+        let mode = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]).id;
+        assert_eq!(q.address.state().mode_pending, 1);
+        assert_eq!(enter(&mut q, 8).decision, Decision::Drop as u32);
+        q.begin_drain().unwrap(); q.take_batch(16, 65536); q.end_drain().unwrap();
+        let newer = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]).id;
+        q.complete(mode, Outcome::Completed).unwrap();
+        assert_eq!(q.address.state().mode_pending, 1);
+        q.begin_drain().unwrap(); q.take_batch(16, 65536); q.end_drain().unwrap();
+        q.complete(newer, Outcome::Rejected).unwrap();
+        assert_eq!(q.address.state().mode_pending, 0);
+        q.address.stage(100, IntentKind::Edit); q.address.complete(100);
+        q.address.publish(1, true);
+        assert!(!q.address.take_deferred());
+        assert_eq!(enter(&mut q, 0).modifiers, 0);
+    }
+
+    #[test]
+    fn refused_mode_preserves_retained_enter_and_existing_mode_identity() {
+        let mut q = RequestQueue::new(Limits { max_entries: 1, ..Default::default() });
+        q.enqueue(RequestKind::NewTab, 0, 0, &[]);
+        q.address.edit(); enter(&mut q, 5);
+        assert_eq!(q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]).status,
+                   EnqueueStatus::RejectedQueueFull);
+        assert_eq!(q.address.state().mode_pending, 0);
+        q.address.stage(100, IntentKind::Edit); q.address.complete(100); q.address.publish(1, true);
+        assert!(q.address.take_deferred());
+        assert_eq!(enter(&mut q, 0).modifiers, 5);
+        q.begin_drain().unwrap(); q.take_batch(16, 65536); q.end_drain().unwrap();
+        let mode = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]).id;
+        let oversized = vec![0; q.limits.max_request_bytes / 2 + 1];
+        assert_eq!(q.enqueue(RequestKind::AddressModeAction, 0, 1, &oversized).status,
+                   EnqueueStatus::RejectedTooLarge);
+        assert_eq!(q.address.state().mode_pending, 1);
+        q.begin_drain().unwrap(); q.take_batch(16, 65536); q.end_drain().unwrap();
+        q.complete(mode, Outcome::Completed).unwrap();
+        assert_eq!(q.address.state().mode_pending, 0);
+    }
+
+    #[test]
+    fn mode_supersession_reset_and_report_eviction_cannot_strand_priority() {
+        let mut q = RequestQueue::new(Limits { max_pending_outcomes: 1, ..Default::default() });
+        let old = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]).id;
+        let mode = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]);
+        assert_eq!(mode.superseded, old);
+        assert_eq!(q.address.state().mode_pending, 1);
+        q.begin_drain().unwrap(); q.take_batch(16, 65536); q.end_drain().unwrap();
+        q.address.reset_mode(); // local switcher disable does not cancel browser work
+        assert_eq!(q.address.state().mode_pending, 0);
+        let newer = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]).id;
+        q.complete(mode.id, Outcome::Completed).unwrap();
+        assert_eq!(q.address.state().mode_pending, 1);
+        q.address = Default::default(); // replacement address session
+        let latest = q.enqueue(RequestKind::AddressModeAction, 0, 2, &[]).id;
+        assert_ne!(newer, latest);
+        assert_eq!(q.address.state().mode_pending, 1);
+        let tab = q.enqueue(RequestKind::NewTab, 0, 2, &[]).id;
+        q.begin_drain().unwrap(); q.take_batch(16, 65536); q.end_drain().unwrap();
+        q.complete(latest, Outcome::Rejected).unwrap();
+        q.complete(tab, Outcome::Completed).unwrap();
+        assert!(q.dropped_outcomes() > 0);
+        assert_eq!(q.take_outcomes(), vec![(tab, Outcome::Completed)]);
+        assert_eq!(q.address.state().mode_pending, 0);
+        q.enqueue(RequestKind::AddressModeAction, 0, 2, &[]);
+        q.cancel_all();
+        assert_eq!(q.address.state().mode_pending, 0);
     }
 }

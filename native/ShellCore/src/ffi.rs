@@ -1530,3 +1530,169 @@ pub unsafe extern "C" fn shell_core_group_hover(
         ShellStatus::Ok
     })
 }
+
+
+// Address lifecycle operations share the endpoint's queue lifetime and guard.
+unsafe fn address_guard(core: *mut ShellCore, body: impl FnOnce(&mut RequestQueue) -> ShellStatus) -> ShellStatus {
+    guard(core, |core| {
+        if core.queue.is_closed() { return ShellStatus::Closed; }
+        body(&mut core.queue)
+    })
+}
+
+/// Read address coordination state; no WinUI objects or borrowed data escape.
+/// # Safety
+/// `core` is a live handle and `out` is writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_state(core: *mut ShellCore, out: *mut crate::address::ShellAddressState) -> ShellStatus {
+    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out = Default::default();
+    address_guard(core, |queue| { *out = queue.address.state(); ShellStatus::Ok })
+}
+
+/// Reset on address disable or session replacement. Old outcomes cannot clear
+/// requests admitted after this reset because request IDs are endpoint-unique.
+/// # Safety
+/// `core` is a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_reset(core: *mut ShellCore) -> ShellStatus {
+    address_guard(core, |queue| { queue.address = Default::default(); ShellStatus::Ok })
+}
+
+/// Forget the mode request on switcher disable/reset. This revokes local
+/// tracking, not browser work already admitted to the queue.
+/// # Safety
+/// `core` is a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_reset_mode(core: *mut ShellCore) -> ShellStatus {
+    address_guard(core, |queue| { queue.address.reset_mode(); ShellStatus::Ok })
+}
+
+/// Observe a new text/composition edit. Retry keeps this same edit identity.
+/// # Safety
+/// `core` is a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_edit(core: *mut ShellCore) -> ShellStatus {
+    address_guard(core, |queue| if queue.address.edit() { ShellStatus::Ok } else { ShellStatus::TooLarge })
+}
+
+/// Associate an admitted address request with its intent before draining it.
+/// Zero, non-address, drained and completed request IDs are rejected.
+/// # Safety
+/// `core` is a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_stage(core: *mut ShellCore, request: u64, kind: u32) -> ShellStatus {
+    let Some(kind) = IntentKind::from_raw(kind) else { return ShellStatus::InvalidArgument; };
+    address_guard(core, |queue| if queue.stage_address(request, kind) { ShellStatus::Ok } else { ShellStatus::UnknownRequest })
+}
+
+/// Record the acknowledgment/readiness of an applied Firefox publication.
+/// # Safety
+/// `core` is a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_publish(core: *mut ShellCore, edit: u64, settled: bool) -> ShellStatus {
+    if edit > crate::address::MAX_EDIT_ID { return ShellStatus::InvalidArgument; }
+    address_guard(core, |queue| { queue.address.publish(edit, settled); ShellStatus::Ok })
+}
+
+/// Cancel retained Enter (mode changes and global actions).
+/// # Safety
+/// `core` is a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_cancel_submit(core: *mut ShellCore) -> ShellStatus {
+    address_guard(core, |queue| { queue.address.cancel_submit(); ShellStatus::Ok })
+}
+
+/// Negotiate an action and retain/consume deferred Enter modifiers. The core
+/// supplies mode priority, edit acknowledgment and query readiness; those fields in the
+/// caller's conditions are ignored here.
+/// # Safety
+/// `core` is live, `conditions` readable and `out` writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_action(core: *mut ShellCore, incoming: u32,
+    conditions: *const ShellIntentConditions, modifiers: u32, out: *mut crate::address::ShellAddressAction) -> ShellStatus {
+    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out = crate::address::ShellAddressAction { decision: intent::Decision::Drop as u32, modifiers: 0 };
+    let Some(raw) = conditions.as_ref() else { return ShellStatus::InvalidArgument; };
+    let Some(incoming) = IntentKind::from_raw(incoming) else { return ShellStatus::InvalidArgument; };
+    if modifiers & !15 != 0 { return ShellStatus::InvalidArgument; }
+    let observed = intent::Conditions {
+        applying: raw.applying != 0, composing: raw.composing != 0, has_session: raw.has_session != 0,
+        mode_intent_staged: false, edit_acknowledged: false, query_settled: false,
+    };
+    address_guard(core, |queue| { *out = queue.address.action(incoming, observed, modifiers); ShellStatus::Ok })
+}
+
+/// Consume the readiness notification for a retained Enter once per publication.
+/// # Safety
+/// `core` is live and `out` writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_take_deferred(core: *mut ShellCore, out: *mut bool) -> ShellStatus {
+    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out = false;
+    address_guard(core, |queue| { *out = queue.address.take_deferred(); ShellStatus::Ok })
+}
+
+
+#[cfg(test)]
+mod address_ffi_tests {
+    use super::*;
+    use crate::address::{ShellAddressAction, ShellAddressState};
+
+    #[test]
+    fn lifecycle_boundary_checks_and_publication_gated_enter() {
+        unsafe {
+            let core = shell_core_create(&std::mem::zeroed());
+            assert!(!core.is_null());
+            let mut state = ShellAddressState::default();
+            let mut action = ShellAddressAction::default();
+            let conditions = ShellIntentConditions { applying: 0, composing: 0, has_session: 1,
+                mode_intent_staged: 0, edit_acknowledged: 1, query_settled: 1 };
+            assert_eq!(shell_core_address_state(core, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_address_edit(std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_address_stage(core, 0, 1), ShellStatus::UnknownRequest);
+            assert_eq!(shell_core_address_stage(core, 1, 99), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_address_publish(core, u64::MAX, true), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_address_action(core, 4, &conditions, 16, &mut action), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_address_action(core, 4, std::ptr::null(), 0, &mut action), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_address_edit(core), ShellStatus::Ok);
+            let mut admitted: ShellEnqueueResult = std::mem::zeroed();
+            assert_eq!(shell_core_enqueue(core, 6, 0, 1, std::ptr::null(), 0, &mut admitted), ShellStatus::Ok);
+            assert_eq!(shell_core_address_stage(core, admitted.id, 1), ShellStatus::Ok);
+            assert_eq!(shell_core_address_action(core, 4, &conditions, 5, &mut action), ShellStatus::Ok);
+            assert_eq!(action.decision, intent::Decision::Defer as u32); // ignores caller's claimed readiness
+            assert_eq!(shell_core_begin_drain(core), ShellStatus::Ok);
+            let mut batch: ShellRequestBatch = std::mem::zeroed();
+            assert_eq!(shell_core_take_batch(core, 16, 65536, &mut batch), ShellStatus::Ok);
+            shell_core_release_batch(&mut batch);
+            assert_eq!(shell_core_complete(core, admitted.id, 1), ShellStatus::Ok);
+            let mut ready = true;
+            assert_eq!(shell_core_address_take_deferred(core, &mut ready), ShellStatus::Ok);
+            assert!(!ready);
+            assert_eq!(shell_core_address_publish(core, 1, true), ShellStatus::Ok);
+            assert_eq!(shell_core_address_take_deferred(core, &mut ready), ShellStatus::Ok);
+            assert!(ready);
+            shell_core_address_action(core, 4, &conditions, 0, &mut action);
+            assert_eq!(action.modifiers, 5);
+            assert_eq!(action.decision, intent::Decision::Stage as u32);
+            assert_eq!(shell_core_enqueue(core, 7, 0, 1, std::ptr::null(), 0, &mut admitted), ShellStatus::Ok);
+            shell_core_address_state(core, &mut state);
+            assert_eq!(state.mode_pending, 1);
+            shell_core_address_action(core, 4, &conditions, 0, &mut action);
+            assert_eq!(action.decision, intent::Decision::Drop as u32);
+            assert_eq!(shell_core_address_reset_mode(core), ShellStatus::Ok);
+            shell_core_address_state(core, &mut state);
+            assert_eq!(state.mode_pending, 0);
+            assert_eq!(shell_core_address_reset_mode(std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            shell_core_address_reset(core);
+            shell_core_address_state(core, &mut state);
+            assert_eq!(state.edit_id, 0);
+            let handle = core as usize;
+            assert_eq!(std::thread::spawn(move || shell_core_address_edit(handle as *mut ShellCore)).join().unwrap(), ShellStatus::WrongThread);
+            shell_core_close(core);
+            assert_eq!(shell_core_address_edit(core), ShellStatus::Closed);
+            assert_eq!(shell_core_address_reset_mode(core), ShellStatus::Closed);
+            shell_core_destroy(core);
+        }
+    }
+}

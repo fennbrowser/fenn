@@ -16,8 +16,8 @@
 //! they belong here, where every pair can be enumerated.
 //!
 //! What stays in C++ is everything that reads WinUI or Win32 to *produce* the
-//! inputs: where focus is, whether an IME composition is active, which edit the
-//! browser has acknowledged. Those are arguments to this table, not policy.
+//! inputs: where focus is and whether an IME composition is active. AddressState
+//! derives acknowledgment/readiness from applied browser publications.
 
 /// The kinds of intent that share the single staging slot. Mode-menu intents
 /// (reveal, open, pick, exit) travel on their own slot and are represented here
@@ -75,8 +75,8 @@ impl IntentKind {
 }
 
 /// What the caller observed about the surface at the moment the intent arrived.
-/// Every field is read from WinUI, Win32 or the last applied publication by the
-/// C++ caller; none of it is decided here.
+/// Control observations come from C++; AddressState supplies acknowledgment
+/// and query readiness from the last applied publication.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[repr(C)]
 pub struct Conditions {

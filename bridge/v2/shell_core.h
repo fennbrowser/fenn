@@ -24,7 +24,9 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 6
+#define SHELL_CORE_ABI_VERSION 8
+
+#define MAX_EDIT_ID 9007199254740991
 
 #define SHELL_NO_INDEX UINT32_MAX
 
@@ -254,6 +256,26 @@ typedef struct {
    */
   uint32_t phase;
 } ShellWindowDrag;
+
+typedef struct {
+  uint64_t edit_id;
+  uint32_t staged_kind;
+  uint32_t needs_dispatch;
+  uint32_t edit_acknowledged;
+  uint32_t query_settled;
+  uint32_t mode_pending;
+} ShellAddressState;
+
+typedef struct {
+  /*
+   An intent::Decision value.
+   */
+  uint32_t decision;
+  /*
+   Ctrl=1, Alt=2, Shift=4, Meta=8. Captured on the first Enter.
+   */
+  uint32_t modifiers;
+} ShellAddressAction;
 
 #ifdef __cplusplus
 extern "C" {
@@ -609,6 +631,78 @@ ShellStatus shell_core_group_hover(ShellCore *core,
                                    uint64_t now_ms,
                                    uint32_t delay_ms,
                                    bool *armed);
+
+/*
+ Read address coordination state; no WinUI objects or borrowed data escape.
+ # Safety
+ `core` is a live handle and `out` is writable.
+ */
+ShellStatus shell_core_address_state(ShellCore *core, ShellAddressState *out);
+
+/*
+ Reset on address disable or session replacement. Old outcomes cannot clear
+ requests admitted after this reset because request IDs are endpoint-unique.
+ # Safety
+ `core` is a live handle.
+ */
+ShellStatus shell_core_address_reset(ShellCore *core);
+
+/*
+ Forget the mode request on switcher disable/reset. This revokes local
+ tracking, not browser work already admitted to the queue.
+ # Safety
+ `core` is a live handle.
+ */
+ShellStatus shell_core_address_reset_mode(ShellCore *core);
+
+/*
+ Observe a new text/composition edit. Retry keeps this same edit identity.
+ # Safety
+ `core` is a live handle.
+ */
+ShellStatus shell_core_address_edit(ShellCore *core);
+
+/*
+ Associate an admitted address request with its intent before draining it.
+ Zero, non-address, drained and completed request IDs are rejected.
+ # Safety
+ `core` is a live handle.
+ */
+ShellStatus shell_core_address_stage(ShellCore *core, uint64_t request, uint32_t kind);
+
+/*
+ Record the acknowledgment/readiness of an applied Firefox publication.
+ # Safety
+ `core` is a live handle.
+ */
+ShellStatus shell_core_address_publish(ShellCore *core, uint64_t edit, bool settled);
+
+/*
+ Cancel retained Enter (mode changes and global actions).
+ # Safety
+ `core` is a live handle.
+ */
+ShellStatus shell_core_address_cancel_submit(ShellCore *core);
+
+/*
+ Negotiate an action and retain/consume deferred Enter modifiers. The core
+ supplies mode priority, edit acknowledgment and query readiness; those fields in the
+ caller's conditions are ignored here.
+ # Safety
+ `core` is live, `conditions` readable and `out` writable.
+ */
+ShellStatus shell_core_address_action(ShellCore *core,
+                                      uint32_t incoming,
+                                      const ShellIntentConditions *conditions,
+                                      uint32_t modifiers,
+                                      ShellAddressAction *out);
+
+/*
+ Consume the readiness notification for a retained Enter once per publication.
+ # Safety
+ `core` is live and `out` writable.
+ */
+ShellStatus shell_core_address_take_deferred(ShellCore *core, bool *out);
 
 #ifdef __cplusplus
 }  // extern "C"
