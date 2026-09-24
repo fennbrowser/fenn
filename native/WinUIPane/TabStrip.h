@@ -1154,7 +1154,6 @@ struct NativeTabStrip {
         auto pin = pinBox.Child().as<Controls::SymbolIcon>();
         auto text = header.Children().GetAt(2).as<Controls::StackPanel>();
         auto name = text.Children().GetAt(0).as<Controls::TextBlock>();
-        auto detail = text.Children().GetAt(1).as<Controls::TextBlock>();
         auto audioBox = header.Children().GetAt(3).as<Controls::Viewbox>();
         auto audio = audioBox.Child().as<Controls::SymbolIcon>();
         auto meta = presentation.count(id) ? presentation.at(id) : Presentation{};
@@ -1186,8 +1185,8 @@ struct NativeTabStrip {
         busy.IsActive(isBusy);
         favicon.Visibility(isBusy || hasImage ? Visibility::Visible : Visibility::Collapsed);
         if (name.Text() != title) name.Text(title);
-        if (detail.Text() != meta.detail) detail.Text(meta.detail);
-        detail.Visibility(meta.detail.empty() ? Visibility::Collapsed : Visibility::Visible);
+        // Group/split detail remains in the tooltip and accessibility metadata;
+        // tab faces show only the title.
         pinBox.Visibility(meta.flags & 1 ? Visibility::Visible : Visibility::Collapsed);
         audio.Symbol(meta.flags & 4 ? Controls::Symbol::Mute : Controls::Symbol::Volume);
         audioBox.Visibility(meta.flags & 12 ? Visibility::Visible : Visibility::Collapsed);
@@ -1308,7 +1307,7 @@ struct NativeTabStrip {
                     row.HorizontalContentAlignment(HorizontalAlignment::Stretch);
                     row.RenderTransform(Media::TranslateTransform{});
                     row.Header(Markup::XamlReader::Load(
-                        LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid Width="16" Height="16"><Image Stretch="Uniform" AutomationProperties.AccessibilityView="Raw"/><ProgressRing Width="16" Height="16" IsActive="False" AutomationProperties.AccessibilityView="Raw"/></Grid><Viewbox Grid.Column="1" Width="16" Height="16"><SymbolIcon Symbol="Pin"/></Viewbox><StackPanel Grid.Column="2" MaxWidth="220" VerticalAlignment="Center"><TextBlock TextTrimming="CharacterEllipsis"/><TextBlock FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/></StackPanel><Viewbox Grid.Column="3" Width="16" Height="16"><SymbolIcon Symbol="Volume"/></Viewbox><Border Grid.Column="4" Width="8" Height="8" CornerRadius="4" VerticalAlignment="Center" Visibility="Collapsed" Background="{ThemeResource TextFillColorPrimaryBrush}" AutomationProperties.AccessibilityView="Raw"/></Grid>)"));
+                        LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid Width="16" Height="16"><Image Stretch="Uniform" AutomationProperties.AccessibilityView="Raw"/><ProgressRing Width="16" Height="16" IsActive="False" AutomationProperties.AccessibilityView="Raw"/></Grid><Viewbox Grid.Column="1" Width="16" Height="16"><SymbolIcon Symbol="Pin"/></Viewbox><StackPanel Grid.Column="2" MaxWidth="220" VerticalAlignment="Center"><TextBlock TextTrimming="CharacterEllipsis"/></StackPanel><Viewbox Grid.Column="3" Width="16" Height="16"><SymbolIcon Symbol="Volume"/></Viewbox><Border Grid.Column="4" Width="8" Height="8" CornerRadius="4" VerticalAlignment="Center" Visibility="Collapsed" Background="{ThemeResource TextFillColorPrimaryBrush}" AutomationProperties.AccessibilityView="Raw"/></Grid>)"));
                     Automation::AutomationProperties::SetAutomationId(row, L"FirefoxWinUITab-" + to_hstring(id));
                     auto alive = std::weak_ptr<int>(lifetime);
                     row.AddHandler(

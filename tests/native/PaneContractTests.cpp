@@ -1376,10 +1376,12 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "Firefox mute state drives native icon");
     Require(first.Header().as<Controls::Grid>().Children().GetAt(1).Visibility() == Visibility::Visible,
             "pinned indicator visible");
-    Require(
-        header.Children().GetAt(2).as<Controls::StackPanel>().Children().GetAt(1).as<Controls::TextBlock>().Text() ==
-            L"Work · Split 1 right",
-        "linked group/split detail supplied by Firefox");
+    Require(header.Children().GetAt(2).as<Controls::StackPanel>().Children().Size() == 1,
+        "tab face contains only its title, without a group/split subtitle");
+    Require(std::wstring(unbox_value<hstring>(Controls::ToolTipService::GetToolTip(second))).find(L"Work · Split 1 right") != std::wstring::npos,
+        "group/split detail remains in the native hover tooltip");
+    Require(std::wstring(Automation::AutomationProperties::GetHelpText(second)).find(L"Work · Split 1 right") != std::wstring::npos,
+        "group/split detail remains accessible");
     auto firstFavicon = first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>();
     Require(firstFavicon.Visibility() == Visibility::Visible &&
                 firstFavicon.Children().GetAt(0).as<Controls::Image>().Visibility() == Visibility::Visible &&
@@ -1587,7 +1589,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
     auto settle = [&] { for (int i=0;i<20;++i) { Pump(); Sleep(10); } root.UpdateLayout(); };
     std::function<Controls::Button(DependencyObject const&, hstring const&)> find;
     find = [&](DependencyObject const& node, hstring const& id) -> Controls::Button {
-        if (auto button = node.try_as<Controls::Button>(); button && Automation::AutomationProperties::GetAutomationId(button) == id) return button;
+        if (auto button = node.try_as<Controls::Button>(); button &&
+            (Automation::AutomationProperties::GetAutomationId(button) == id || button.Name() == id)) return button;
         for (int i=0;i<Media::VisualTreeHelper::GetChildrenCount(node);++i)
             if (auto found = find(Media::VisualTreeHelper::GetChild(node,i),id)) return found;
         return nullptr;
@@ -1597,11 +1600,22 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
     for (int i=0;i<500 && !find(view,L"FirefoxWinUIInlineGroup-9");++i) { Pump(); Sleep(10); }
     settle();
     auto header = find(view,L"FirefoxWinUIInlineGroup-7");
+    auto addButton = find(view,L"AddButton");
+    Require(bool(addButton), "grouped strip has the stock add button");
+    const auto groupedAddY = addButton.TransformToVisual(root).TransformPoint({0,0}).Y;
+    std::map<uint32_t, float> groupedRowY;
+    for (auto item : view.TabItems()) {
+        auto row = item.as<Controls::TabViewItem>();
+        groupedRowY[unbox_value<uint32_t>(row.Tag())] = row.TransformToVisual(root).TransformPoint({0,0}).Y;
+    }
     std::function<void(DependencyObject)> checkHeaderFocus = [&](DependencyObject node) {
         if (auto header = node.try_as<Controls::ListViewHeaderItem>()) {
             printf("Group container: width=%.1f height=%.1f tabstop=%d content=%d\n",
                 header.ActualWidth(), header.ActualHeight(), header.IsTabStop(), bool(header.Content()));
             Require(!header.IsTabStop(), "group containers cannot take focus away from actual disclosure buttons or tabs");
+            Require(header.ActualHeight() <= 32, "group header cannot inflate the tab row");
+            auto model = header.Content().as<winrt::Windows::Foundation::Collections::IObservableMap<hstring, winrt::Windows::Foundation::IInspectable>>();
+            if (!model.Lookup(L"Header")) Require(header.ActualWidth() == 24, "retain the original horizontal gap");
         }
         for (int child = 0; child < Media::VisualTreeHelper::GetChildrenCount(node); ++child)
             checkHeaderFocus(Media::VisualTreeHelper::GetChild(node, child));
@@ -1615,7 +1629,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
     auto marker = capsule.Children().GetAt(0).as<Shapes::Rectangle>();
     Require(!capsule.IsHitTestVisible() && unbox_value<uint32_t>(header.Tag()) == 7,
         "whole group button is an identified input target for future dragging");
-    Require(capsule.Children().GetAt(2).as<Controls::FontIcon>().Glyph() == L"\uE70D", "expanded capsule shows disclosure chevron");
+    Require(capsule.Children().GetAt(1).as<Controls::FontIcon>().Glyph() == L"\uE76C", "expanded group arrow points toward its tabs");
     Require(marker.Visibility() == Visibility::Visible, "Firefox group color marker is visible");
     auto accent = header.Resources().ThemeDictionaries().Lookup(box_value(L"Default")).as<ResourceDictionary>()
         .Lookup(box_value(L"InlineGroupColorBrush")).as<Media::SolidColorBrush>();
@@ -1656,7 +1670,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
     settle();
     Require(marker.Visibility() == Visibility::Collapsed, "legacy group metadata without color hides marker");
     Require(header.ActualWidth() == 32 && capsule.Children().GetAt(1).Visibility() == Visibility::Visible &&
-        capsule.Children().GetAt(1).as<Controls::FontIcon>().Glyph() == L"\uE76C", "renamed collapsed group retains width and fallback chevron");
+        capsule.Children().GetAt(1).as<Controls::FontIcon>().Glyph() == L"\uE70D", "collapsed group retains width and points down");
     Require(view.TabItems().Size() == 1 && view.TabItems().GetAt(0) == first && view.SelectedItem() == first, "collapse retains real active tab");
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
     MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"rtl":true,"rows":[],"removed":[]}})");
@@ -1677,8 +1691,12 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host) {
         WinUITab ordered[]{{reversed ? 42u : 41u,L"One"},{reversed ? 41u : 42u,L"Two"}};
         Require(SUCCEEDED(api.syncTabs(host,ordered,2,42,&selected)), "publish two-tab round trip");
         settle();
+        Require(std::abs(addButton.TransformToVisual(root).TransformPoint({0,0}).Y - groupedAddY) < .5,
+            "group presence cannot move the add button vertically");
         for (auto item : view.TabItems()) {
             auto row = item.as<Controls::TabViewItem>();
+            Require(std::abs(row.TransformToVisual(root).TransformPoint({0,0}).Y - groupedRowY.at(unbox_value<uint32_t>(row.Tag()))) < .5,
+                "group presence cannot move tabs vertically");
             const bool active = unbox_value<uint32_t>(row.Tag()) == 42;
             if (row.IsSelected() != active)
                 fprintf(stderr, "Round trip revision=%u tab=%u selected=%d expected=%d index=%d\n",
