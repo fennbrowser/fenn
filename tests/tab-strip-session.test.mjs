@@ -346,6 +346,45 @@ function joiningFixture() {
   return f;
 }
 
+function previewFixture() {
+  const f = joiningFixture();
+  f.state.groups[0].collapsed = true;
+  f.state.groups[0].tabs = [{id:33,title:"Hidden member",image:null}];
+  f.selected = [];
+  f.session.selectGroupTab = (...args) => f.selected.push(args);
+  f.session.update();
+  f.previewAction = {kind:"strip-group-select",session:f.session.windowDragSession,
+    revision:f.session.revision,group:f.action.group,id:33};
+  return f;
+}
+
+test("collapsed-group menu selects an invisible member once without admitting it as a strip row", () => {
+  const f = previewFixture();
+  assert.equal(f.session.receive({...f.previewAction,kind:"strip-reorder",beforeId:0}),false);
+  assert.equal(f.session.receive(f.previewAction),true);
+  assert.equal(f.session.receive(f.previewAction),false);
+  assert.deepEqual(f.selected,[[f.target,33]]);
+});
+
+test("group previews reject removed, expanded, replaced and foreign members", () => {
+  for (const change of [f => f.state.groups[0].tabs = [], f => f.state.groups[0].collapsed = false,
+    f => f.state.groups[0].target = {}, f => f.previewAction.id = 11,
+    f => f.previewAction.session++, f => f.previewAction.revision--,
+    f => f.previewAction.group = 99, f => f.previewAction.id = 1.5]) {
+    const f = previewFixture(); change(f);
+    assert.equal(f.session.receive(f.previewAction),false);
+    assert.deepEqual(f.selected,[]);
+  }
+});
+
+test("preview title changes retain identity; browser refusal is consumed", () => {
+  const f = previewFixture();
+  f.state.groups[0].tabs[0].title = "Updated title";
+  f.session.selectGroupTab = () => false;
+  assert.equal(f.session.receive(f.previewAction),false);
+  assert.equal(f.session.consumed,true);
+});
+
 test("ungroup drops may keep their tab index and are consumed once", () => {
   for (const beforeId of [0,11]) {
     const f = joiningFixture();

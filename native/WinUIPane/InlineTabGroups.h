@@ -4,6 +4,7 @@
 #include <set>
 #include <functional>
 #include <winrt/Windows.Data.Json.h>
+#include "GroupTabsFlyout.h"
 
 // WinUI projection only. Firefox supplies order/visibility; ShellCore validates
 // the complete layout. All tab policy and group commands remain in Firefox.
@@ -17,6 +18,7 @@ struct InlineTabGroups {
         Vector items = single_threaded_observable_vector<Object>();
         Controls::Button button{nullptr};
         hstring name, label, headerText;
+        Windows::Data::Json::JsonObject metadata;
         bool collapsed{};
         uint32_t color{};
         Media::SolidColorBrush accent{nullptr};
@@ -30,8 +32,34 @@ struct InlineTabGroups {
     std::vector<uint64_t> order;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     std::function<void(uint32_t, bool)> toggle;
-    bool configured{}, active{};
+    GroupTabsFlyout hover;
+    bool configured{}, active{}, hasPreview{};
+    Windows::Foundation::Point lastPointer{-1000000,-1000000};
     ~InlineTabGroups() { lifetime.reset(); }
+
+    // A transient popup can leave XAML's routed hover state stale after closing.
+    // Observe native mouse moves through the host's existing message hook too.
+    void PointerAt(Windows::Foundation::Point point, UIElement const& relativeTo) {
+        if (!hasPreview || (point.X == lastPointer.X && point.Y == lastPointer.Y)) return;
+        lastPointer = point;
+        if (hover.allowed && !hover.allowed()) return;
+        auto surface = relativeTo.as<FrameworkElement>();
+        if (point.X < 0 || point.Y < 0 || point.X >= surface.ActualWidth() || point.Y >= surface.ActualHeight()) {
+            hover.Exit(hover.group);
+            return;
+        }
+        for (auto const& [id, run] : runs) {
+            if (!run.button || !run.collapsed || !run.button.IsLoaded()) continue;
+            auto bounds = run.button.TransformToVisual(relativeTo).TransformBounds(
+                {0,0,float(run.button.ActualWidth()),float(run.button.ActualHeight())});
+            if (point.X >= bounds.X && point.X < bounds.X + bounds.Width &&
+                point.Y >= bounds.Y && point.Y < bounds.Y + bounds.Height) {
+                hover.Enter(uint32_t(id),run.button,run.metadata);
+                return;
+            }
+        }
+        hover.Exit(hover.group);
+    }
 
     bool Configure(Controls::ListViewBase const& list) {
         if (configured) return true;
@@ -74,12 +102,16 @@ struct InlineTabGroups {
     }
 
     void Metadata(Windows::Data::Json::JsonArray const& groups, bool animate = false) {
+        hasPreview = false;
         for (auto value : groups) {
             auto group = value.GetObject();
             const auto id = uint32_t(group.GetNamedNumber(L"id"));
             auto found = runs.find(id);
             if (found == runs.end() || !found->second.button) continue;
             auto& run = found->second;
+            run.metadata = group;
+            if (group.GetNamedBoolean(L"collapsed") && group.HasKey(L"tabs") && group.GetNamedArray(L"tabs").Size()) hasPreview = true;
+            hover.Refresh(id, group);
             auto name = group.GetNamedString(L"name"), label = group.GetNamedString(L"label");
             auto headerText = group.GetNamedString(L"headerText", L"");
             auto panel = run.button.Content().as<Controls::Grid>();
@@ -131,7 +163,7 @@ struct InlineTabGroups {
             if (run.label != label) {
                 run.label = label;
                 Automation::AutomationProperties::SetName(run.button, label);
-                Controls::ToolTipService::SetToolTip(run.button, box_value(label));
+                Controls::ToolTipService::SetToolTip(run.button, collapsed ? nullptr : box_value(label));
             }
             const auto color = uint32_t(group.GetNamedNumber(L"color", 0));
             if (color != run.color) {
@@ -163,6 +195,19 @@ struct InlineTabGroups {
                     wanted.push_back(key); ungrouped = true;
                 }
                 members[key].push_back(rows.at(slot.tab));
+            }
+        }
+        // When the last visible member changes, WinUI can recycle the header
+        // presenter while its UIElement content is still parented to the old
+        // presenter. Release that binding before the empty/nonempty transition,
+        // then reattach the same Button after the grouped source settles.
+        std::vector<uint64_t> reattach;
+        for (auto& [id, run] : runs) {
+            auto desired = members.find(id);
+            if (!run.button || desired == members.end()) continue;
+            if (run.items.Size() && desired->second.empty()) {
+                run.model.Insert(L"Header",nullptr);
+                reattach.push_back(id);
             }
         }
         // Remove departing objects from their old parent before inserting them
@@ -208,11 +253,29 @@ struct InlineTabGroups {
                 auto alive = std::weak_ptr<int>(lifetime);
                 run.button.Click([this, alive, id](auto&&, auto&&) {
                     if (alive.expired()) return;
+                    hover.Hide();
                     auto found = runs.find(id);
                     if (found != runs.end() && toggle) toggle(uint32_t(id), !found->second.collapsed);
                 });
+                run.button.PointerEntered([this, alive, id](auto&&, auto&&) {
+                    if (alive.expired()) return;
+                    auto found = runs.find(id);
+                    if (found != runs.end()) hover.Enter(uint32_t(id), found->second.button, found->second.metadata);
+                });
+                run.button.PointerExited([this, alive, id](auto&&, auto&&) {
+                    if (!alive.expired()) hover.Exit(uint32_t(id));
+                });
+                run.button.KeyDown([this, alive, id](auto&&, auto&& args) {
+                    if (alive.expired() || args.Key() != Windows::System::VirtualKey::Down) return;
+                    auto found = runs.find(id);
+                    if (found != runs.end() && found->second.collapsed) {
+                        args.Handled(true);
+                        hover.Enter(uint32_t(id), found->second.button, found->second.metadata, true);
+                    }
+                });
                 run.button.Unloaded([this, alive, id](auto&&, auto&&) {
                     if (alive.expired()) return;
+                    if (hover.group == id) hover.Hide();
                     auto found = runs.find(id);
                     if (found != runs.end() && found->second.arrowMotion) {
                         found->second.arrowMotion.Stop();
@@ -250,6 +313,7 @@ struct InlineTabGroups {
             if (!live.count(it->first)) it = runs.erase(it); else ++it;
         }
         order = std::move(wanted);
+        for (auto id : reattach) if (runs.count(id)) runs.at(id).model.Insert(L"Header",runs.at(id).button);
         Metadata(groups);
         if (!active) {
             view.TabItems().Clear();

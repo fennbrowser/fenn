@@ -276,6 +276,18 @@ struct NativeTabStrip {
         });
         view.TabStripHeader(groupsButton.button);
         groupsButton.currentRevision = [this] { return presentationRevision; };
+        inlineGroups.hover.allowed = [this] { return !IsDragging() && !(GetKeyState(VK_LBUTTON) & 0x8000) && root.IsLoaded() && root.Visibility() == Visibility::Visible; };
+        inlineGroups.hover.activate = [this](uint32_t group, uint32_t tab) {
+            if (IsDragging() || !groupsButton.dispatch) return;
+            using Value = Windows::Data::Json::JsonValue;
+            Windows::Data::Json::JsonObject action;
+            action.SetNamedValue(L"kind",Value::CreateStringValue(L"strip-group-select"));
+            action.SetNamedValue(L"revision",Value::CreateNumberValue(presentationRevision));
+            action.SetNamedValue(L"session",Value::CreateNumberValue(windowDragSession));
+            action.SetNamedValue(L"group",Value::CreateNumberValue(group));
+            action.SetNamedValue(L"id",Value::CreateNumberValue(tab));
+            groupsButton.dispatch(action.Stringify());
+        };
         inlineGroups.toggle = [this](uint32_t id, bool collapsed) {
             if (IsDragging() || !groupsButton.dispatch) return;
             using JValue = Windows::Data::Json::JsonValue;
@@ -288,7 +300,7 @@ struct NativeTabStrip {
         };
         auto alive = std::weak_ptr<int>(lifetime);
         root.SizeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) groupSlide.Cancel(); });
-        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) groupSlide.Cancel(); });
+        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
         view.SelectionChanged([this, alive](auto const&, auto const&) {
             if (alive.expired() || syncing || !view.SelectedItem()) return;
             // Modified gestures are observed on the exact tab below. Never let
@@ -772,6 +784,7 @@ struct NativeTabStrip {
     // position. Routed moves and the message hook both tick the same live
     // cursor sampler in Pane.cpp. Idempotent once already Dragging.
     bool TryPromote(uint32_t id, Windows::Foundation::Point const& point, bool continuation = false) {
+        inlineGroups.hover.Hide();
         if (Drag().tab != id || Drag().phase != DragPhase::Armed || !rows.count(id)) return false;
         bool ready = false;
         if (shell_core_tab_drag_ready(core, id, point.X, point.Y, continuation, &ready) != SHELL_STATUS_OK || !ready) return false;
@@ -1079,12 +1092,24 @@ struct NativeTabStrip {
             changes.push_back({id, imageWidth * imageHeight, false,
                                entry.HasKey(L"flags") && entry.HasKey(L"detail")});
         }
-        std::set<uint32_t> ids;
+        std::set<uint32_t> ids, previewIds;
+        size_t previewPixels = 0;
         for (auto value : groups) {
             auto group = value.GetObject();
             auto id = NativeJson::RequireId(group, L"id");
             auto name = group.GetNamedString(L"name"), text = group.GetNamedString(L"label");
             auto headerText = group.GetNamedString(L"headerText", L"");
+            if (group.HasKey(L"tabs")) {
+                auto tabs = group.GetNamedArray(L"tabs");
+                if (tabs.Size() > NativeJson::kMaxTabs) throw hresult_invalid_argument();
+                for (auto value : tabs) {
+                    auto tab = value.GetObject();
+                    if (!previewIds.insert(NativeJson::RequireId(tab,L"id")).second || previewIds.size() > NativeJson::kMaxTabs)
+                        throw hresult_invalid_argument();
+                    NativeJson::RequireLength(tab.GetNamedString(L"title"), NativeJson::kMaxShortLabel);
+                    NativeJson::ValidateImage(tab,previewPixels,kTabImageLimits);
+                }
+            }
             group.GetNamedBoolean(L"collapsed");
             const auto color = group.GetNamedNumber(L"color", 0);
             if (!std::isfinite(color) || color < 0 || color > UINT32_MAX || std::floor(color) != color)

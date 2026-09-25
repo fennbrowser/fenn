@@ -2470,10 +2470,10 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..9bd3f76c24
+index 0000000000..0480d8b0b1
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,196 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2483,8 +2483,8 @@ index 0000000000..9bd3f76c24
 +let nextWindowDragSession = 0;
 +
 +export class WinUITabStripSession {
-+  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup }) {
-+    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup });
++  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab }) {
++    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab });
 +    this.ids = new WeakMap();
 +    this.nextId = 1;
 +    this.revision = 0;
@@ -2556,6 +2556,19 @@ index 0000000000..9bd3f76c24
 +  }
 +
 +  receive(event) {
++    if (event?.kind === "strip-group-select") {
++      if (this.consumed || event.session !== this.windowDragSession || event.revision !== this.revision ||
++          !Number.isSafeInteger(event.group) || event.group <= 0 ||
++          !Number.isSafeInteger(event.id) || event.id <= 0 || !this.selectGroupTab) return false;
++      const current = this.describe();
++      const group = current.groups.find(g => g.id === event.group);
++      const published = this.state.groups.find(g => g.id === event.group);
++      if (!group?.collapsed || !published?.collapsed || !group.tabs?.some(t => t.id === event.id) ||
++          !this.same(group.tabs.map(t => t.id), published.tabs?.map(t => t.id))) return false;
++      const target = this.targets.get(event.group);
++      this.consumed = true;
++      return this.selectGroupTab(target,event.id) !== false;
++    }
 +    if (event?.kind === "strip-join-group") {
 +      if (event.session !== this.windowDragSession || this.consumed ||
 +          event.revision !== this.revision || !Number.isSafeInteger(event.revision) ||
@@ -3805,10 +3818,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..64fa159106
+index 0000000000..828781dadd
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1581 @@
+@@ -0,0 +1,1610 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4488,6 +4501,15 @@ index 0000000000..64fa159106
 +        "chrome://browser/content/WinUITabStripSession.sys.mjs");
 +      this.stripSession = new WinUITabStripSession({
 +        read: () => this.describeStrip(),
++        selectGroupTab: (group, id) => {
++          if (gDialogBox.isOpen || !group?.isConnected || !group.collapsed || !gBrowser.tabGroups.includes(group)) return false;
++          const tab = group.tabs.find(tab => this.tabIds.get(tab) === id &&
++            tab.isConnected && !tab.closing && !tab.hidden);
++          if (!tab) return false;
++          gBrowser.clearMultiSelectedTabs();
++          gBrowser.selectedTab = tab;
++          return true;
++        },
 +        createGroup: (id, targetId, before) => {
 +          const tab = this.resolveStripTab(id), target = this.resolveStripTab(targetId);
 +          if (!this.canDragGroupTab(tab, true) || !this.canDragGroupTab(target, true) ||
@@ -4696,7 +4718,22 @@ index 0000000000..64fa159106
 +      const line = target.querySelector(".tab-group-line");
 +      const rgba = InspectorUtils.colorToRGBA(getComputedStyle(line || target.labelElement).backgroundColor);
 +      const color = rgba ? ((Math.round(rgba.a * 255) * 0x1000000) + (rgba.r << 16) + (rgba.g << 8) + rgba.b) : 0;
++      // Group previews include collapsed members that are absent from strip rows.
++      // Keep their identities in the group scope; ordinary strip actions must
++      // continue to reject invisible tabs.
++      const tabs = target.collapsed ? target.tabs.filter(tab => tab.isConnected && !tab.closing && !tab.hidden).map(tab => {
++        if (!this.tabIds.has(tab)) this.tabIds.set(tab, this.nextTabId++);
++        const url = gBrowser.getIcon(tab) || "";
++        let image = url ? (this.faviconCache.get(url) || this.faviconLastKnownByTab.get(tab) || null) : null;
++        if (url && !this.faviconCache.has(url)) this.loadTabFavicon(url);
++        if (image) {
++          if (imageChars + image.pixels.length > maxImageChars) image = null;
++          else imageChars += image.pixels.length;
++        }
++        return {id:this.tabIds.get(tab), title:(tab.label || "New tab").slice(0,1024), image};
++      }) : [];
 +      return { target, name: name.slice(0, 1024), collapsed: target.collapsed, color,
++        tabs,
 +        headerText: (target.label || "").slice(0, 1024),
 +        label: label(target.collapsed ? "tab-group-label-tooltip-collapsed"
 +          : "tab-group-label-tooltip-expanded", {tabGroupName:name}).slice(0, 2048) };
@@ -5228,7 +5265,12 @@ index 0000000000..64fa159106
 +      // The tab set and its order are unchanged; only which tabs are selected.
 +      this.contextDirty = true;
 +    } else if (event.type === "TabAttrModified") {
-+      if (event.detail?.changed?.includes("label")) this.dirtyTitles.add(event.target);
++      if (event.detail?.changed?.includes("label")) {
++        this.dirtyTitles.add(event.target);
++        // Collapsed members are absent from ordinary row-title deltas, but
++        // their titles are visible in the group's native hover menu.
++        if (event.target.group?.collapsed) this.stripDirty = true;
++      }
 +      // Titles and selection have their own incremental path. Only attributes
 +      // actually read by describeStrip need metadata publication.
 +      const changed = event.detail?.changed;

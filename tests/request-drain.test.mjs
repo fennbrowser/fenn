@@ -121,6 +121,17 @@ test("title and active-tab selection events do not rebuild strip metadata", () =
   }
 });
 
+test("collapsed-member title changes refresh group previews without changing strip membership", () => {
+  const f = fixture([]);
+  f.pane.stripDirty = false;
+  f.pane.schedule = () => {};
+  const tab = {group:{collapsed:true}};
+  f.pane.handleEvent({type:"TabAttrModified",target:tab,detail:{changed:["label"]}});
+  assert.equal(f.pane.stripDirty,true);
+  assert.equal(f.pane.structuralDirty,false);
+  assert.equal(f.pane.dirtyTitles.has(tab),true);
+});
+
 test("multiselection republishes grouping eligibility as row deltas without rebuilding layout", () => {
   const tabs = [1, 2].map(() => ({isConnected:true, visible:true, hasAttribute:() => false}));
   const browser = {tabs, selectedTabs:[tabs[0]], tabGroups:[], getIcon:() => ""};

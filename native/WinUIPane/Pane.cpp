@@ -2174,6 +2174,17 @@ BOOL WINAPI Translate(MSG* message) noexcept {
         TickDragSession();
         for (auto const& entry : state().panes) {
             auto& pane = *entry.second;
+            if (pane.strip && pane.strip->inlineGroups.hover.open &&
+                message->message == WM_KEYDOWN && message->wParam == VK_ESCAPE &&
+                GetForegroundWindow() == pane.parent) {
+                pane.strip->inlineGroups.hover.Dismiss();
+                return TRUE;
+            }
+            if (pane.strip && pane.strip->inlineGroups.hasPreview && pane.strip->root.IsLoaded() &&
+                GetForegroundWindow() == pane.parent) {
+                POINT point{};
+                if (GetCursorPos(&point)) pane.strip->inlineGroups.PointerAt(pane.ScreenToStrip(point),pane.strip->view);
+            }
             if (!pane.childWindow) pane.childWindow = GetWindowFromWindowId(pane.source.SiteBridge().WindowId());
             HWND child = pane.childWindow;
             bool ownsMessage = message->hwnd == child || IsChild(child, message->hwnd);
