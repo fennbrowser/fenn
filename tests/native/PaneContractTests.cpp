@@ -1869,8 +1869,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         auto glowHeader = find(view,L"FirefoxWinUIInlineGroup-7");
         auto hr = glowHeader.TransformToVisual(ambientLayer).TransformBounds(
             {0,0,float(glowHeader.ActualWidth()),float(glowHeader.ActualHeight())});
-        Require(std::abs(groupVisual.Offset().x - hr.X) < 1 &&
-            std::abs(groupVisual.Size().x - (br.X + br.Width - hr.X)) < 1 &&
+        Require(std::abs(groupVisual.Offset().x - (hr.X - 18)) < 1 &&
+            std::abs(groupVisual.Size().x - (br.X + br.Width - hr.X + 36)) < 1 &&
             std::abs(containerVisual.Size().x - std::min(76.f, ar.Width - 12.f)) < 1,
             "bottom field includes the disclosure button and both tabs; container glow is compact");
         winrt::Microsoft::UI::Composition::SpriteVisual groupCenter{nullptr};
@@ -1895,6 +1895,29 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         auto dot = a.Header().as<Controls::Grid>().Children().GetAt(4).as<Controls::Border>();
         Require(dot.Visibility() == Visibility::Collapsed && topGlow.Children().Count() == 1,
             "container glow defaults on and dot defaults off");
+        auto rimCanvas = ambientLayer.Children().GetAt(0).as<Controls::Canvas>();
+        Require(!rimCanvas.IsHitTestVisible() && Automation::AutomationProperties::GetAccessibilityView(rimCanvas) ==
+            Automation::Peers::AccessibilityView::Raw, "surface reflections are decorative only");
+        auto rimRoot = Hosting::ElementCompositionPreview::GetElementChildVisual(rimCanvas)
+            .as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+        auto rim = [&](wchar_t const* name) {
+            for (auto visual : rimRoot.Children())
+                if (visual.Comment() == name) return visual.as<winrt::Microsoft::UI::Composition::SpriteVisual>();
+            return winrt::Microsoft::UI::Composition::SpriteVisual{nullptr};
+        };
+        Require(rim(L"active-group-reflection").IsVisible() &&
+            (!rim(L"active-container-reflection") || !rim(L"active-container-reflection").IsVisible()),
+            "only the active tab's own glow sources produce surface highlights");
+        auto groupRim = rim(L"active-group-reflection");
+        auto rimShape = groupRim.Children().First().Current().as<winrt::Microsoft::UI::Composition::ShapeVisual>();
+        auto stroke = rimShape.Shapes().GetAt(0).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
+        auto rimGeometry = stroke.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>();
+        auto rimBrush = stroke.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
+        Require(rimGeometry.Path() && stroke.StrokeThickness() == 1.25f &&
+            std::abs(groupRim.Size().x - (br.Width + 8)) < 1 && std::abs(groupRim.Offset().x - (br.X - 4)) < 1 &&
+            rimBrush.StartPoint().y == br.Height - 12 &&
+            rimBrush.ColorStops().GetAt(0).Color().A == 0 && rimBrush.ColorStops().GetAt(4).Color().A == 185,
+            "group reflection flares outside the attached tab and fades up its lower sides");
         auto toggleIndicators = [&](uint32_t revision, bool glow, bool showDot) {
             auto update = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
             auto strip = update.GetNamedObject(L"strip");
@@ -1927,6 +1950,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         auto joined = topGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
         Require(topGlow.Children().Count() == 2 && joined.Children().Count() == 0 && joined.Size().x <= 76,
             "same-color neighboring containers retain compact individual glows");
+        auto upperRim = rim(L"active-container-reflection");
+        Require(upperRim && upperRim.IsVisible() && upperRim.Size().x <= 76 && upperRim.Size().y == 1.25f &&
+            std::abs(upperRim.Offset().y - br.Y) < 1 && !rim(L"active-group-reflection").IsVisible(),
+            "ungrouped active container has a short crisp top highlight and no bottom highlight");
         auto activeClip = diffusion.Clip().as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>();
         Require(activeClip.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path() != nullptr,
             "the active tab cuts a notch in the final diffused glow rather than changing the per-tab fields");
@@ -1934,6 +1961,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         settle();
         Require(diffusion.Clip() != activeClip && topGlow.Children().First().Current() == joined,
             "active-tab clipping follows selection without replacing the container glow");
+        Require(std::abs(upperRim.Offset().x + upperRim.Size().x / 2 - (ar.X + ar.Width / 2)) < 1,
+            "the retained surface highlight follows active-tab changes");
         activeClip = diffusion.Clip().as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>();
         Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "restore the second active tab");
         settle();
@@ -1960,6 +1989,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         motionState(26,false); settle();
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 0,
             "removing color and container metadata releases both decorations");
+        Require(!rim(L"active-container-reflection").IsVisible() && !rim(L"active-group-reflection").IsVisible(),
+            "clearing glow sources also hides their surface reflections");
         puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");
     }
     puts("CHECKS PASSED: retained inline groups, disclosure, themes, RTL and atomic layout validation");

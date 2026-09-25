@@ -97,6 +97,7 @@ struct NativeTabStrip {
         if (!root.IsLoaded() || root.Visibility() != Visibility::Visible) {
             ambient.Motion(false);
             ambient.bottom.IsVisible(false); ambient.top.IsVisible(false);
+            if (ambient.rims) ambient.rims.IsVisible(false);
             return;
         }
         auto scroller = GroupScroller(view);
@@ -116,6 +117,19 @@ struct NativeTabStrip {
         // the scroll viewport's horizontal clipping and bottom boundary.
         ambientViewport.Height += ambientViewport.Y;
         ambientViewport.Y = 0;
+        // A non-overflowing TabView can size its scroller exactly to the final
+        // tab. Leave room for the end's rounded light falloff rather than
+        // slicing it at that tab's edge. Overflow keeps the strict viewport.
+        if (scroller && scroller.ScrollableWidth() < .5) {
+            float left = std::max(0.f, ambientViewport.X - 24.f);
+            float right = std::min(float(root.ActualWidth()), ambientViewport.X + ambientViewport.Width + 24.f);
+            if (auto add = FindAddButton(view); add && add.IsLoaded()) {
+                const auto addBounds = boundsOf(add);
+                if (addBounds.X >= viewport.X + viewport.Width - 1) right = std::min(right, addBounds.X);
+                if (addBounds.X + addBounds.Width <= viewport.X + 1) left = std::max(left, addBounds.X + addBounds.Width);
+            }
+            ambientViewport.X = left; ambientViewport.Width = std::max(0.f, right - left);
+        }
         Windows::Foundation::Rect activeBounds{};
         auto activeRow = rows.find(activeTabId);
         if (activeRow != rows.end() && activeRow->second.IsLoaded() &&
@@ -177,10 +191,28 @@ struct NativeTabStrip {
             }
             if (bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
             groups.insert(id);
+            // Let the rounded fade reach beyond the terminal tab corner before
+            // disappearing; the viewport still clips at the strip boundary.
+            bounds.X -= 18; bounds.Width += 36;
             ambient.Put(ambient.groups, id, color, bounds, false);
         }
         ambient.Prune(ambient.groups, groups, false);
         ambient.Prune(ambient.containers, containers, true);
+        uint32_t activeGroup = 0;
+        for (auto slot : groupLayout) if (slot.tab == activeTabId) { activeGroup = slot.group; break; }
+        auto container = ambient.containers.find(activeTabId);
+        auto group = ambient.groups.find(activeGroup);
+        const bool activeVisible = activeBounds.Width > 0 && activeBounds.Height > 0;
+        auto upperBounds = activeBounds;
+        if (container != ambient.containers.end()) {
+            upperBounds.X = container->second.bounds.X;
+            upperBounds.Width = container->second.bounds.Width;
+        }
+        upperBounds.Height = 1.25f;
+        auto lowerBounds = activeBounds;
+        lowerBounds.X -= 4; lowerBounds.Width += 8;
+        ambient.Rim(ambient.upperRim, activeVisible && container != ambient.containers.end() ? container->second.color : 0, upperBounds, true);
+        ambient.Rim(ambient.lowerRim, activeVisible && group != ambient.groups.end() ? group->second.color : 0, lowerBounds, false);
     }
     // Presentation only: keep browser membership, selection and collapse state.
     // Retaining the items also avoids recycling the captured group header.

@@ -13,9 +13,14 @@ struct TabAmbient {
     struct Field {
         Sprite visual{nullptr}, left{nullptr}, middle{nullptr}, right{nullptr};
         Gradient brush{nullptr}, leftBrush{nullptr}, rightBrush{nullptr};
+        winrt::Microsoft::UI::Composition::ShapeVisual rimShape{nullptr};
+        winrt::Microsoft::UI::Composition::CompositionPathGeometry rimGeometry{nullptr};
         uint32_t color{}; Rect bounds{}; bool capped{};
     };
     winrt::Microsoft::UI::Xaml::Controls::Canvas layer{nullptr};
+    winrt::Microsoft::UI::Xaml::Controls::Canvas rimLayer{nullptr};
+    winrt::Microsoft::UI::Composition::ContainerVisual rims{nullptr};
+    Field upperRim, lowerRim;
     winrt::Microsoft::UI::Composition::ContainerVisual bottom{nullptr}, top{nullptr};
     winrt::Microsoft::UI::Composition::LayerVisual diffusion{nullptr};
     winrt::com_ptr<ID2D1Factory> clipFactory;
@@ -41,6 +46,8 @@ struct TabAmbient {
         using namespace winrt::Microsoft::UI::Xaml;
         layer = Markup::XamlReader::Load(LR"(<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Grid.ColumnSpan="3" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw" FlowDirection="LeftToRight"/>)").as<Controls::Canvas>();
         root.Children().Append(layer);
+        rimLayer = Markup::XamlReader::Load(LR"(<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Canvas>();
+        layer.Children().Append(rimLayer);
         auto weak = std::weak_ptr<int>(life);
         layer.Loaded([this, weak](auto&&, auto&&) {
             if (weak.expired()) return;
@@ -57,6 +64,8 @@ struct TabAmbient {
         try {
             if (!bottom) {
                 auto compositor = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(layer).Compositor();
+                rims = compositor.CreateContainerVisual();
+                winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::SetElementChildVisual(rimLayer, rims);
                 diffusion = compositor.CreateLayerVisual();
                 diffusion.Effect(compositor.CreateEffectFactory(winrt::make<TabGlowDiffusion>()).CreateBrush());
                 diffusion.Opacity(.9f);
@@ -77,6 +86,7 @@ struct TabAmbient {
 #endif
             if (bottom) bottom.IsVisible(false);
             if (top) top.IsVisible(false);
+            if (rims) rims.IsVisible(false);
         }
         updating = false;
     }
@@ -94,6 +104,7 @@ struct TabAmbient {
     void Clip(Rect viewport, bool visible, Rect active = {}) {
         visible = visible && !accessibility.HighContrast();
         bottom.IsVisible(visible); top.IsVisible(visible);
+        rims.IsVisible(visible);
         const winrt::Windows::Foundation::Numerics::float2 size{
             std::max(0.f, viewport.X + viewport.Width), std::max(0.f, viewport.Y + viewport.Height)};
         if (diffusion.Size() != size) diffusion.Size(size);
@@ -131,6 +142,76 @@ struct TabAmbient {
             old.Rect(viewport);
             layer.Clip(old);
         } else if (old.Rect() != viewport) old.Rect(viewport);
+    }
+    // Crisp surface reflections are outside the diffusion layer. Tint each
+    // independently toward white; never mix the group and container colors.
+    void Rim(Field& field, uint32_t color, Rect bounds, bool upper) {
+        const bool visible = color && bounds.Width > 0 && bounds.Height > 0;
+        if (!visible) { if (field.visual) field.visual.IsVisible(false); return; }
+        if (!field.visual) {
+            auto compositor = rims.Compositor();
+            field.visual = compositor.CreateSpriteVisual();
+            field.visual.Comment(upper ? L"active-container-reflection" : L"active-group-reflection");
+            auto brush = compositor.CreateLinearGradientBrush();
+            brush.StartPoint({0, .5f}); brush.EndPoint({1, .5f});
+            for (auto [offset, alpha] : {std::pair{0.f, 0}, {.25f, 45}, {.5f, upper ? 155 : 100}, {.75f, upper ? 45 : 145}, {1.f, upper ? 0 : 185}})
+                brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(alpha), 0, 0, 0}));
+            field.brush = brush;
+            if (upper) field.visual.Brush(brush);
+            else {
+                // The attached tab flares outward into the strip. It has no
+                // closed bottom stroke (which would suggest a floating pill).
+                brush.MappingMode(winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute);
+                field.rimGeometry = compositor.CreatePathGeometry();
+                auto stroke = compositor.CreateSpriteShape(field.rimGeometry);
+                stroke.StrokeBrush(brush); stroke.StrokeThickness(1.25f);
+                field.rimShape = compositor.CreateShapeVisual();
+                field.rimShape.Shapes().Append(stroke);
+                field.visual.Children().InsertAtTop(field.rimShape);
+            }
+            rims.Children().InsertAtTop(field.visual);
+        }
+        field.visual.IsVisible(true);
+        if (field.color != color) {
+            field.color = color;
+            auto shine = [](uint8_t channel) { return uint8_t(channel + (255 - channel) * .55f); };
+            for (auto stop : field.brush.ColorStops()) {
+                auto value = stop.Color();
+                value.R = shine(uint8_t(color >> 16)); value.G = shine(uint8_t(color >> 8)); value.B = shine(uint8_t(color));
+                stop.Color(value);
+            }
+        }
+        if (field.bounds != bounds) {
+            field.bounds = bounds;
+            field.visual.Offset({bounds.X, bounds.Y, 0});
+            field.visual.Size({bounds.Width, bounds.Height});
+            if (field.rimShape) {
+                field.rimShape.Size({bounds.Width, bounds.Height});
+                if (!clipFactory) winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, clipFactory.put()));
+                winrt::com_ptr<ID2D1PathGeometry> path;
+                winrt::check_hresult(clipFactory->CreatePathGeometry(path.put()));
+                winrt::com_ptr<ID2D1GeometrySink> sink;
+                winrt::check_hresult(path->Open(sink.put()));
+                // Match the installed TabViewItem template's 4-DIP outward
+                // radius. Separate open figures keep the content edge open.
+                const float y = std::max(0.f, bounds.Height - .625f);
+                const float r = std::min(4.f, std::min(bounds.Width / 2, y));
+                const float start = std::max(0.f, y - 12.f);
+                sink->BeginFigure({r, start}, D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddLine({r, y - r});
+                sink->AddBezier({{r, y - r * .447715f}, {r * .447715f, y}, {0, y}});
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                sink->BeginFigure({bounds.Width - r, start}, D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddLine({bounds.Width - r, y - r});
+                sink->AddBezier({{bounds.Width - r, y - r * .447715f}, {bounds.Width - r * .447715f, y}, {bounds.Width, y}});
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                winrt::check_hresult(sink->Close());
+                field.rimGeometry.Path(winrt::Microsoft::UI::Composition::CompositionPath(winrt::make<TabAmbientClip>(std::move(path))));
+                auto brush = field.brush.as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
+                brush.StartPoint({0, std::max(0.f, bounds.Height - 12)});
+                brush.EndPoint({0, bounds.Height});
+            }
+        }
     }
     void Put(std::map<uint32_t, Field>& fields, uint32_t id, uint32_t color, Rect bounds, bool upper, bool connected = false) {
         const bool capped = !upper || connected;
