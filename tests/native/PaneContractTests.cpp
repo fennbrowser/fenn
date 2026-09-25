@@ -1793,6 +1793,46 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled())
             Require(turned,"empty-group arrow rotates down after header reattachment");
         settle();
+        motionState(16,false); settle();
+        auto dragged=view.TabItems().GetAt(0).as<Controls::TabViewItem>();
+        auto draggedActive=view.TabItems().GetAt(1).as<Controls::TabViewItem>();
+        auto borrowedContent=dragged.Header().as<UIElement>();
+        auto activeContent=draggedActive.Header();
+        const auto input=borrowedContent.IsHitTestVisible();
+        const auto accessibility=Automation::AutomationProperties::GetAccessibilityView(borrowedContent);
+        const auto automationId=Automation::AutomationProperties::GetAutomationId(borrowedContent);
+        for (bool early : {true,false}) {
+            Require(SUCCEEDED(motion(host,4,&ghosts)),"start temporary drag collapse with shared slide animation");
+            Require(dragged.Visibility()==Visibility::Collapsed && draggedActive.Visibility()==Visibility::Collapsed,
+                "drag collapse removes background and active rows from layout immediately");
+            if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
+                Require(ghosts==2 && !dragged.Header() && !draggedActive.Header(),"drag collapse slides both retained rows");
+                Require(!borrowedContent.IsHitTestVisible() && Automation::AutomationProperties::GetAccessibilityView(borrowedContent)==Automation::Peers::AccessibilityView::Raw,
+                    "borrowed drag visuals are excluded from input and accessibility");
+            }
+            if (!early) settle();
+            Require(SUCCEEDED(motion(host,5,&ghosts)) && ghosts==0,"drop or cancellation clears drag-collapse visuals");
+            settle();
+            Require(dragged.Header()==borrowedContent && draggedActive.Header()==activeContent &&
+                dragged.Visibility()==Visibility::Visible && draggedActive.Visibility()==Visibility::Visible,
+                "animation completion and early cancellation restore exact tab content");
+            Require(borrowedContent.IsHitTestVisible()==input && Automation::AutomationProperties::GetAccessibilityView(borrowedContent)==accessibility &&
+                Automation::AutomationProperties::GetAutomationId(borrowedContent)==automationId,
+                "restored tabs retain their input and automation properties");
+            Require(view.SelectedItem()==draggedActive,"drag animation preserves active tab selection");
+        }
+        Require(SUCCEEDED(motion(host,4,&ghosts)),"start slide before incremental title update");
+        Require(SUCCEEDED(motion(host,6,&ghosts)) && ghosts==0 && dragged.Header()==borrowedContent,
+            "incremental title update returns borrowed content before editing it");
+        Require(Automation::AutomationProperties::GetName(dragged)==L"Updated during drag",
+            "title updates remain live during temporary collapse");
+        Require(SUCCEEDED(motion(host,5,&ghosts)),"restore group after incremental update");
+        settle();
+        Require(SUCCEEDED(motion(host,2,&ghosts)),"disable temporary drag motion");
+        Require(SUCCEEDED(motion(host,4,&ghosts)) && ghosts==0 && dragged.Header()==borrowedContent,
+            "reduced-motion drag collapse keeps original content without visual copies");
+        Require(SUCCEEDED(motion(host,5,&ghosts)),"restore reduced-motion drag collapse");
+        Require(SUCCEEDED(motion(host,3,&ghosts)),"restore animation preference after drag checks");
         puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");
     }
     puts("CHECKS PASSED: retained inline groups, disclosure, themes, RTL and atomic layout validation");

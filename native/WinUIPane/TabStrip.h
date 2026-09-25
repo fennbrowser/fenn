@@ -89,14 +89,32 @@ struct NativeTabStrip {
     // Retaining the items also avoids recycling the captured group header.
     std::map<uint32_t, Visibility> groupDragVisibility;
     void CollapseDraggingGroup(uint32_t group) {
+        std::vector<ShellStripSlot> compact;
+        for (auto slot : groupLayout)
+            if (!slot.tab || slot.group != group) compact.push_back(slot);
+        std::vector<ShellGroupMotionRow> motion(groupLayout.size());
+        size_t count{};
+        if (shell_core_group_motion(core,groupLayout.data(),groupLayout.size(),compact.data(),compact.size(),
+                &group,1,motion.data(),motion.size(),&count)==SHELL_STATUS_OK) {
+            motion.resize(count);
+            try { groupSlide.Prepare(root,view,FindTabListView(view),rows,inlineGroups,FindAddButton(view),std::move(motion)); }
+            catch (...) { groupSlide.Cancel(); }
+        }
         for (auto slot : groupLayout) {
             if (!slot.tab || slot.group != group || !rows.count(slot.tab)) continue;
             auto row = rows.at(slot.tab);
             groupDragVisibility.emplace(slot.tab, row.Visibility());
             row.Visibility(Visibility::Collapsed);
         }
+        // The browser retains these rows. Borrow their header visuals only for
+        // the existing slide effect, restoring them on completion or early drop.
+        auto visible=rows;
+        for (auto [id,visibility] : groupDragVisibility) visible.erase(id);
+        try { groupSlide.Commit(visible,inlineGroups,FindAddButton(view),activeTabId,true); }
+        catch (...) { groupSlide.Cancel(); }
     }
     void RestoreDraggingGroup() {
+        if (!groupDragVisibility.empty()) groupSlide.Cancel();
         for (auto [id, visibility] : groupDragVisibility)
             if (rows.count(id)) rows.at(id).Visibility(visibility);
         groupDragVisibility.clear();
@@ -1483,6 +1501,9 @@ struct NativeTabStrip {
     }
 
     void UpdateHeader(Controls::TabViewItem const& row, uint32_t id, hstring const& title) {
+        // Incremental title/favicon updates may arrive during the short slide.
+        // Return borrowed content before the normal header update accesses it.
+        if (!row.Header() && !groupSlide.borrowed.empty()) groupSlide.Cancel();
         auto header = row.Header().as<Controls::Grid>();
         // The loading spinner shares the favicon's slot -- Firefox's own tabs
         // work the same way -- rather than reserving its own column: while

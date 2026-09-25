@@ -2510,6 +2510,9 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupMotion(HWND hw
         if (operation == 1) motion.Cancel();
         else if (operation == 2) { motion.Cancel(); motion.disableForTest = true; }
         else if (operation == 3) motion.disableForTest = false;
+        else if (operation == 4) found->second->strip->CollapseDraggingGroup(7);
+        else if (operation == 5) found->second->strip->RestoreDraggingGroup();
+        else if (operation == 6) found->second->strip->UpdateTitle(41,L"Updated during drag");
         else if (operation != 0) return E_INVALIDARG;
         *ghosts = uint32_t(motion.departing.size());
         return S_OK;

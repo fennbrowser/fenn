@@ -9,6 +9,10 @@ struct GroupSlide {
     struct Frame { Element element{nullptr}; Rect bounds{}; };
     struct Moving { Element element{nullptr}; Media::Transform previous{nullptr}; };
     struct Ghost { Controls::Border clipper{nullptr}; Rect bounds{}; };
+    struct Borrowed { Controls::TabViewItem source{nullptr}, ghost{nullptr}; Windows::Foundation::IInspectable content{nullptr}; };
+    struct InputState { UIElement element{nullptr}; bool hitTest{}; Automation::Peers::AccessibilityView accessibility{}; hstring id; };
+    std::vector<Borrowed> borrowed;
+    std::vector<InputState> inputStates;
     std::map<uint64_t, Frame> before;
     std::vector<ShellGroupMotionRow> plan;
     std::vector<Moving> moving;
@@ -48,6 +52,21 @@ struct GroupSlide {
             try { viewport.MinWidth(savedMinWidth); } catch (...) {}
         }
         for (auto& item : moving) { try { item.element.RenderTransform(item.previous); } catch (...) {} }
+        for (auto& item : inputStates) {
+            try {
+                item.element.IsHitTestVisible(item.hitTest);
+                Automation::AutomationProperties::SetAccessibilityView(item.element,item.accessibility);
+                Automation::AutomationProperties::SetAutomationId(item.element,item.id);
+            } catch (...) {}
+        }
+        inputStates.clear();
+        for (auto& item : borrowed) {
+            try {
+                item.ghost.Header(nullptr);
+                if (!item.source.Header()) item.source.Header(item.content);
+            } catch (...) {}
+        }
+        borrowed.clear();
         moving.clear(); departing.clear(); active = nullptr;
         if (overlay) { try { overlay.Children().Clear(); } catch (...) {} }
         before.clear(); plan.clear();
@@ -86,16 +105,19 @@ struct GroupSlide {
         clip.Rect(Bounds(view, root));
         overlay.Clip(clip);
     }
-    // Departing controls have left the real tab list. They are visual-only,
+    // Departing controls have left the visible tab layout. They are visual-only,
     // including their close buttons and any other descendants in the UIA tree.
-    static void MakeVisualOnly(DependencyObject const& node) {
+    static void MakeVisualOnly(DependencyObject const& node, std::vector<InputState>* restore = nullptr) {
         if (auto element = node.try_as<UIElement>()) {
+            if (restore) restore->push_back({element,element.IsHitTestVisible(),
+                Automation::AutomationProperties::GetAccessibilityView(element),
+                Automation::AutomationProperties::GetAutomationId(element)});
             element.IsHitTestVisible(false);
             Automation::AutomationProperties::SetAccessibilityView(element, Automation::Peers::AccessibilityView::Raw);
             Automation::AutomationProperties::SetAutomationId(element, L"");
         }
         for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
-            MakeVisualOnly(Media::VisualTreeHelper::GetChild(node, i));
+            MakeVisualOnly(Media::VisualTreeHelper::GetChild(node, i),restore);
     }
     void Slide(Element const& element, double from, double to) {
         if (std::abs(from - to) < .5) return;
@@ -130,7 +152,8 @@ struct GroupSlide {
         }
     }
     void Commit(std::map<uint32_t, Controls::TabViewItem> const& rows,
-                InlineTabGroups const& groups, Controls::Button const& add, uint32_t activeId) {
+                InlineTabGroups const& groups, Controls::Button const& add, uint32_t activeId,
+                bool retainDeparting = false) {
         if (!pending) return;
         pending = false;
         if (!Enabled()) { Cancel(); return; }
@@ -167,7 +190,9 @@ struct GroupSlide {
                 auto content = source.Header();
                 source.Header(nullptr);
                 Controls::TabViewItem ghost;
+                if (retainDeparting) borrowed.push_back({source,ghost,content});
                 ghost.Header(content);
+                ghost.IsSelected(source.IsSelected());
                 ghost.IsClosable(source.IsClosable());
                 ghost.FontWeight(source.FontWeight());
                 ghost.HorizontalContentAlignment(source.HorizontalContentAlignment());
@@ -182,7 +207,7 @@ struct GroupSlide {
                 Controls::Canvas::SetTop(wrapper, old.bounds.Y);
                 overlay.Children().Append(wrapper);
                 ghost.UpdateLayout();
-                MakeVisualOnly(ghost);
+                MakeVisualOnly(ghost,retainDeparting ? &inputStates : nullptr);
                 departing.push_back({wrapper, old.bounds});
                 Slide(old.element, 0, edge - old.bounds.X - (rtl ? 0 : old.bounds.Width));
             }
