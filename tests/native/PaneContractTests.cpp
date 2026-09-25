@@ -1615,6 +1615,9 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             Automation::Peers::AccessibilityView::Raw, "ambient decoration cannot capture input or enter the control tree");
     auto ambient = Hosting::ElementCompositionPreview::GetElementChildVisual(ambientLayer)
         .as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+    auto diffusion = ambient.as<winrt::Microsoft::UI::Composition::LayerVisual>();
+    Require(diffusion.Effect() && diffusion.Size().x > 0 && diffusion.Size().y > 0 &&
+        diffusion.Opacity() == .9f, "ambient-only diffusion has an active effect and viewport-sized surface");
     auto bottomGlow = ambient.Children().First().Current().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
     auto upperIterator = ambient.Children().First(); upperIterator.MoveNext();
     auto topGlow = upperIterator.Current().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
@@ -1908,8 +1911,37 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         settle();
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 1,
             "container glow survives tab realization after ungrouping");
+        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":22,"revision":23,"rows":[{"id":42,"containerName":"Other identity, same color","containerColor":4289934591}],"removed":[]}})");
+        settle();
+        a = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
+        b = view.TabItems().GetAt(1).as<Controls::TabViewItem>();
+        ar = a.TransformToVisual(ambientLayer).TransformBounds({0,0,float(a.ActualWidth()),float(a.ActualHeight())});
+        br = b.TransformToVisual(ambientLayer).TransformBounds({0,0,float(b.ActualWidth()),float(b.ActualHeight())});
+        auto joined = topGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
+        Require(topGlow.Children().Count() == 1 && joined.Children().Count() == 3 &&
+            std::abs(joined.Size().x - (br.X + br.Width - ar.X - 10)) < 1,
+            "adjacent same-color containers share one rounded field across both tabs regardless of identity");
+        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":23,"revision":24,"rows":[{"id":42,"containerColor":4281558681}],"removed":[]}})");
+        settle();
+        Require(topGlow.Children().Count() == 2, "different colors retain two independently composited fields");
+        float leftEnd = 0, rightStart = 0;
+        for (auto visual : topGlow.Children()) {
+            Require(visual.as<winrt::Microsoft::UI::Composition::SpriteVisual>().Children().Count() == 3,
+                "neighboring color fields retain rounded caps");
+            if (visual.Comment() == L"container:41") leftEnd = visual.Offset().x + visual.Size().x;
+            if (visual.Comment() == L"container:42") rightStart = visual.Offset().x;
+        }
+        Require(std::abs(leftEnd - (ar.X + ar.Width + 12)) < 1 &&
+            std::abs(rightStart - (br.X - 12)) < 1 && leftEnd > rightStart,
+            "different-color translucent ends overlap across the tab boundary");
+        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":24,"revision":25,"rows":[{"id":42,"containerName":"","containerColor":0}],"removed":[]}})");
+        settle();
+        auto isolated = topGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
+        Require(topGlow.Children().Count() == 1 && isolated.Children().Count() == 0 &&
+            std::abs(isolated.Size().x - (ar.Width - 10)) < 1,
+            "removing a neighbor container restores the isolated ellipse without a stale joined field");
         // Clear both color sources in the next full snapshot.
-        motionState(23,false); settle();
+        motionState(26,false); settle();
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 0,
             "removing color and container metadata releases both decorations");
         puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");

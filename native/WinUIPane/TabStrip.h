@@ -120,15 +120,46 @@ struct NativeTabStrip {
         ambient.Motion(IsDragging() || GroupDrag().phase || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty());
         std::set<uint32_t> containers, groups;
         std::map<uint32_t, Windows::Foundation::Rect> groupBounds;
+        // Physical order includes uncolored tabs as barriers and works in RTL.
+        // Use complete layout bounds so scrolling never recenters a field.
+        struct ContainerRun { uint32_t id, color; Windows::Foundation::Rect bounds; bool colored, connected{}; };
+        std::vector<ContainerRun> runs;
         for (auto const& [id, row] : rows) {
             if (!row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) continue;
             auto meta = presentation.find(id);
-            if (!containerGlow || meta == presentation.end() || meta->second.containerName.empty()) continue;
+            if (!containerGlow) continue;
             auto bounds = boundsOf(row);
-            bounds.X += 5; bounds.Width = std::max(0.f, bounds.Width - 10);
-            if (bounds.Width <= 0 || bounds.Height <= 0 || bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
-            containers.insert(id);
-            ambient.Put(ambient.containers, id, meta->second.containerColor, bounds, true);
+            if (bounds.Width <= 0 || bounds.Height <= 0) continue;
+            const bool colored = meta != presentation.end() && !meta->second.containerName.empty();
+            runs.push_back({id, colored ? meta->second.containerColor : 0, bounds, colored});
+        }
+        std::sort(runs.begin(), runs.end(), [](auto const& a, auto const& b) { return a.bounds.X < b.bounds.X; });
+        auto adjacent = [](auto const& a, auto const& b) {
+            const auto gap = b.bounds.X - (a.bounds.X + a.bounds.Width);
+            return a.colored && b.colored && std::abs(gap) <= 4.f &&
+                std::abs(a.bounds.Y - b.bounds.Y) < 1.f && std::abs(a.bounds.Height - b.bounds.Height) < 1.f;
+        };
+        std::vector<ContainerRun> merged;
+        for (auto run : runs) {
+            if (!merged.empty() && adjacent(merged.back(), run) && merged.back().color == run.color) {
+                auto& last = merged.back();
+                last.bounds.Width = run.bounds.X + run.bounds.Width - last.bounds.X;
+                last.connected = true;
+            } else merged.push_back(run);
+        }
+        for (size_t i = 0; i < merged.size(); ++i) {
+            auto const& run = merged[i];
+            if (!run.colored) continue;
+            const bool left = i && adjacent(merged[i - 1], run);
+            const bool right = i + 1 < merged.size() && adjacent(run, merged[i + 1]);
+            auto bounds = run.bounds;
+            // Different colors retain separate translucent fields. Their short
+            // rounded caps overlap across the shared edge, without a hard split.
+            const float leftInset = left ? -12.f : 5.f, rightInset = right ? -12.f : 5.f;
+            bounds.X += leftInset; bounds.Width -= leftInset + rightInset;
+            if (bounds.Width <= 0 || bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
+            containers.insert(run.id);
+            ambient.Put(ambient.containers, run.id, run.color, bounds, true, run.connected || left || right);
         }
         // Keep the complete laid-out union, then clip it to the viewport. Using
         // the clipped bounds to size the gradient would recenter it on scroll.

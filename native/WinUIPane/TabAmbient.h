@@ -1,6 +1,7 @@
 #pragma once
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
 #include <winrt/Windows.UI.ViewManagement.h>
+#include "TabGlowDiffusion.h"
 
 // Decorative Composition children cannot take focus, enter UIA's control tree,
 // or affect TabView measurement. Both fields use ordinary source-over alpha.
@@ -11,10 +12,11 @@ struct TabAmbient {
     struct Field {
         Sprite visual{nullptr}, left{nullptr}, middle{nullptr}, right{nullptr};
         Gradient brush{nullptr}, leftBrush{nullptr}, rightBrush{nullptr};
-        uint32_t color{}; Rect bounds{};
+        uint32_t color{}; Rect bounds{}; bool capped{};
     };
     winrt::Microsoft::UI::Xaml::Controls::Canvas layer{nullptr};
     winrt::Microsoft::UI::Composition::ContainerVisual bottom{nullptr}, top{nullptr};
+    winrt::Microsoft::UI::Composition::LayerVisual diffusion{nullptr};
     std::map<uint32_t, Field> groups, containers;
     winrt::Windows::UI::ViewManagement::AccessibilitySettings accessibility;
     winrt::Windows::UI::ViewManagement::UISettings settings;
@@ -52,7 +54,10 @@ struct TabAmbient {
         try {
             if (!bottom) {
                 auto compositor = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(layer).Compositor();
-                auto parent = compositor.CreateContainerVisual();
+                diffusion = compositor.CreateLayerVisual();
+                diffusion.Effect(compositor.CreateEffectFactory(winrt::make<TabGlowDiffusion>()).CreateBrush());
+                diffusion.Opacity(.9f);
+                auto parent = diffusion;
                 bottom = compositor.CreateContainerVisual(); top = compositor.CreateContainerVisual();
                 parent.Children().InsertAtTop(bottom); parent.Children().InsertAtTop(top);
                 winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::SetElementChildVisual(layer, parent);
@@ -86,6 +91,9 @@ struct TabAmbient {
     void Clip(Rect viewport, bool visible) {
         visible = visible && !accessibility.HighContrast();
         bottom.IsVisible(visible); top.IsVisible(visible);
+        const winrt::Windows::Foundation::Numerics::float2 size{
+            std::max(0.f, viewport.X + viewport.Width), std::max(0.f, viewport.Y + viewport.Height)};
+        if (diffusion.Size() != size) diffusion.Size(size);
         // Avoid invalidating XAML layout from LayoutUpdated.
         auto old = layer.Clip();
         if (!old) {
@@ -94,7 +102,8 @@ struct TabAmbient {
             layer.Clip(old);
         } else if (old.Rect() != viewport) old.Rect(viewport);
     }
-    void Put(std::map<uint32_t, Field>& fields, uint32_t id, uint32_t color, Rect bounds, bool upper) {
+    void Put(std::map<uint32_t, Field>& fields, uint32_t id, uint32_t color, Rect bounds, bool upper, bool connected = false) {
+        const bool capped = !upper || connected;
         if (upper) {
             // Expose the upper half of the same light source above the tab.
             // Keep its peak at the original tab edge and its existing falloff
@@ -103,7 +112,12 @@ struct TabAmbient {
             bounds.Height *= 1.8f;
         }
         auto& field = fields[id];
+        if (field.visual && field.capped != capped) {
+            (upper ? top : bottom).Children().Remove(field.visual);
+            field = Field{};
+        }
         if (!field.visual) {
+            field.capped = capped;
             auto owner = upper ? top : bottom;
             auto compositor = owner.Compositor();
             field.visual = compositor.CreateSpriteVisual();
@@ -111,10 +125,10 @@ struct TabAmbient {
             auto radial = [&](float x, float y, float radius) {
                 auto brush = compositor.CreateRadialGradientBrush();
                 brush.EllipseCenter({x, y});
-                brush.EllipseRadius({radius, .8f});
+                brush.EllipseRadius({radius, upper ? .8f / 1.8f : .8f});
                 return brush;
             };
-            if (upper) {
+            if (!capped) {
                 auto brush = radial(.5f, .8f / 1.8f, .5f);
                 brush.EllipseRadius({.5f, .8f / 1.8f});
                 field.brush = brush;
@@ -125,15 +139,16 @@ struct TabAmbient {
                 // same distance, so their alpha matches at every height. Keep
                 // the caps bounded rather than dimming entire outer tabs as
                 // one ellipse stretched across a large group would do.
-                auto center = radial(.5f, 1.f, 1.f);
+                const float y = upper ? .8f / 1.8f : 1.f;
+                auto center = radial(.5f, y, 1.f);
                 field.brush = center;
-                field.leftBrush = radial(2.f, 1.f, 2.f);
-                field.rightBrush = radial(-1.f, 1.f, 2.f);
+                field.leftBrush = radial(2.f, y, 2.f);
+                field.rightBrush = radial(-1.f, y, 2.f);
                 field.left = compositor.CreateSpriteVisual();
                 field.middle = compositor.CreateSpriteVisual();
                 field.right = compositor.CreateSpriteVisual();
                 field.left.Brush(field.leftBrush); field.middle.Brush(center); field.right.Brush(field.rightBrush);
-                field.middle.Comment(L"group-center");
+                field.middle.Comment(upper ? L"container-center" : L"group-center");
                 field.visual.Children().InsertAtTop(field.left);
                 field.visual.Children().InsertAtTop(field.middle);
                 field.visual.Children().InsertAtTop(field.right);
@@ -164,8 +179,8 @@ struct TabAmbient {
             field.bounds = bounds;
             field.visual.Offset({bounds.X, bounds.Y, 0});
             field.visual.Size({bounds.Width, bounds.Height});
-            if (!upper) {
-                const auto cap = std::min(64.f, bounds.Width / 4);
+            if (capped) {
+                const auto cap = std::min(upper ? 32.f : 64.f, bounds.Width / 4);
                 field.left.Size({cap, bounds.Height});
                 field.middle.Offset({cap, 0, 0});
                 field.middle.Size({bounds.Width - 2 * cap, bounds.Height});
