@@ -20,6 +20,8 @@
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Microsoft.UI.Xaml.Shapes.h>
+#include <winrt/Microsoft.UI.Xaml.Hosting.h>
+#include <winrt/Microsoft.UI.Composition.h>
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include <winrt/Microsoft.UI.Windowing.h>
 #include <winrt/Microsoft.UI.Interop.h>
@@ -1158,7 +1160,9 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     RECT rect{0, 0, 600, 40};
-    Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation");
+    const auto stripResult = api.updateTabStrip(host, &rect, TRUE);
+    if (FAILED(stripResult)) fwprintf(stderr, L"Strip creation HRESULT: %08x\n", unsigned(stripResult));
+    Require(SUCCEEDED(stripResult), "create strip presentation");
     ShowWindow(host, SW_SHOW);
     auto state = MenuState({11, 22});
     auto bindings = state.GetNamedObject(L"state").GetNamedArray(L"tabs");
@@ -1178,7 +1182,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect strip");
     auto root = content.as<Controls::Grid>();
     auto view = root.Children().GetAt(0).as<Controls::TabView>();
-    auto groupIndicator = root.Children().GetAt(1).as<Controls::Border>();
+    auto groupIndicator = root.Children().GetAt(2).as<Controls::Border>();
     Require(groupIndicator.Visibility() == Visibility::Collapsed && !groupIndicator.IsHitTestVisible() &&
             groupIndicator.BorderThickness().Left == 2 && groupIndicator.BorderBrush(),
             "group dwell visual starts hidden, themed and does not intercept input");
@@ -1192,7 +1196,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "stock tab header fits reserved row");
     Require(view.ActualHeight() == 40 && root.ActualHeight() == view.ActualHeight(),
             "reservation fits the unchanged stock TabView without an empty bottom band");
-    Require(root.Children().Size() == 5 && !first.Content() && !second.Content(),
+    Require(root.Children().Size() == 6 && !first.Content() && !second.Content(),
             "strip has no address or browser content");
     Require(root.ColumnDefinitions().Size() == 3 && root.ColumnDefinitions().GetAt(2).Width().Value > 0,
             "system caption buttons reserve their SDK inset");
@@ -1220,7 +1224,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         Require(root.ActualHeight() == height && view.ActualHeight() == height && first.ActualHeight() == 32,
                 "all strip layouts preserve tab height without a bottom band");
         Require(systemCaption.PreferredHeightOption() == expected, "caption size follows strip layout");
-        for (uint32_t index : {2u, 3u}) {
+        for (uint32_t index : {3u, 4u}) {
             auto line = root.Children().GetAt(index).as<Controls::Border>();
             Require(line.Visibility() == (height == 40 ? Visibility::Visible : Visibility::Collapsed) &&
                         !line.IsHitTestVisible() && line.Height() == 1 && line.Background(),
@@ -1229,7 +1233,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         Require(view.TabItems().GetAt(0) == first && view.SelectedItem() == first,
                 "height changes preserve tab identity and selection");
     }
-    auto mergePreview = root.Children().GetAt(4).as<Controls::Border>();
+    auto mergePreview = root.Children().GetAt(5).as<Controls::Border>();
     Require(!mergePreview.IsHitTestVisible() && mergePreview.Visibility() == Visibility::Collapsed,
             "merge feedback is hidden and cannot capture input while idle");
     Require(first != second && view.SelectedItem() == first, "duplicate titles preserve identity and active tab");
@@ -1457,7 +1461,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
                          .Children().GetAt(0).as<Controls::Image>();
     auto retainedImage = firstIcon.Source();
     auto retainedFlyout = groups.Flyout();
-    auto metadataDelta = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"rows":[{"id":11,"flags":3,"containerName":"Personal","containerColor":4281839103}],"removed":[]}})";
+    auto metadataDelta = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"containerDot":true,"rows":[{"id":11,"flags":3,"containerName":"Personal","containerColor":4281839103}],"removed":[]}})";
     MenuPublish(api, host, metadataDelta);
     Require(firstIcon.Source() == retainedImage && retainedImage, "an omitted image preserves the decoded source");
     Require(groups.Flyout() == retainedFlyout, "a row delta preserves group controls");
@@ -1500,6 +1504,9 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             Pump();
             Sleep(10);
         }
+        if (systemCaption.PreferredTheme() != captionTheme)
+            fprintf(stderr, "Caption theme mismatch: root=%d requested=%d caption=%d expected=%d loaded=%d\n",
+                int(root.ActualTheme()), int(theme), int(systemCaption.PreferredTheme()), int(captionTheme), root.IsLoaded());
         Require(systemCaption.PreferredTheme() == captionTheme,
                 "Windows caption follows live strip theme without overriding hover colors");
     }
@@ -1603,6 +1610,18 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     for (int i=0;i<500 && !find(view,L"FirefoxWinUIInlineGroup-9");++i) { Pump(); Sleep(10); }
     settle();
     auto header = find(view,L"FirefoxWinUIInlineGroup-7");
+    auto ambientLayer = root.Children().GetAt(1).as<Controls::Canvas>();
+    Require(!ambientLayer.IsHitTestVisible() && Automation::AutomationProperties::GetAccessibilityView(ambientLayer) ==
+            Automation::Peers::AccessibilityView::Raw, "ambient decoration cannot capture input or enter the control tree");
+    auto ambient = Hosting::ElementCompositionPreview::GetElementChildVisual(ambientLayer)
+        .as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+    auto bottomGlow = ambient.Children().First().Current().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+    auto upperIterator = ambient.Children().First(); upperIterator.MoveNext();
+    auto topGlow = upperIterator.Current().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+    printf("Ambient fields: bottom=%d top=%d live=%d\n", bottomGlow.Children().Count(), topGlow.Children().Count(), checkMotion);
+    fflush(stdout);
+    // The initial grouped-source insertion may not have realized its members
+    // yet. Assert complete field geometry in the loaded motion fixture below.
     auto addButton = find(view,L"AddButton");
     Require(bool(addButton), "grouped strip has the stock add button");
     const auto groupedAddY = addButton.TransformToVisual(root).TransformPoint({0,0}).Y;
@@ -1833,6 +1852,66 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             "reduced-motion drag collapse keeps original content without visual copies");
         Require(SUCCEEDED(motion(host,5,&ghosts)),"restore reduced-motion drag collapse");
         Require(SUCCEEDED(motion(host,3,&ghosts)),"restore animation preference after drag checks");
+        // Publish independent colors without changing group or tab membership.
+        auto colored = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":16,"revision":17,"rows":[{"id":41,"containerName":"Personal","containerColor":4289934591}],"removed":[],"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}]}})");
+        MenuPublish(api,host,colored.Stringify().c_str()); settle();
+        Require(bottomGlow.Children().Count() == 1 && topGlow.Children().Count() == 1,
+            "two grouped tabs share one bottom field and a container adds an independent top field");
+        auto groupVisual = bottomGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
+        auto containerVisual = topGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
+        auto a = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
+        auto b = view.TabItems().GetAt(1).as<Controls::TabViewItem>();
+        auto ar = a.TransformToVisual(ambientLayer).TransformBounds({0,0,float(a.ActualWidth()),float(a.ActualHeight())});
+        auto br = b.TransformToVisual(ambientLayer).TransformBounds({0,0,float(b.ActualWidth()),float(b.ActualHeight())});
+        Require(std::abs(groupVisual.Size().x - (br.X + br.Width - ar.X)) < 1 &&
+            std::abs(containerVisual.Size().x - (ar.Width - 10)) < 1,
+            "bottom field spans both tabs without a seam; the container field is inset on its own tab");
+        winrt::Microsoft::UI::Composition::SpriteVisual groupCenter{nullptr};
+        for (auto child : groupVisual.Children())
+            if (child.Comment() == L"group-center") groupCenter = child.as<winrt::Microsoft::UI::Composition::SpriteVisual>();
+        Require(groupVisual.Children().Count() == 3 && groupCenter &&
+            std::abs(groupCenter.Size().x - (groupVisual.Size().x - 128)) < 1 && groupCenter.Offset().x == 64,
+            "rounded group caps stay bounded to 64 DIP, keeping first and last members illuminated");
+        auto lowerBrush = groupCenter.Brush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+        auto upperBrush = containerVisual.Brush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+        Require(containerVisual.Offset().y < ar.Y && ambientLayer.Clip().Rect().Y == 0 &&
+            std::abs(containerVisual.Offset().y + upperBrush.EllipseCenter().y * containerVisual.Size().y - ar.Y) < .01f &&
+            std::abs(upperBrush.EllipseRadius().y * containerVisual.Size().y - .8f * ar.Height) < .01f,
+            "container glow crosses the tab top into strip padding, retaining its peak and downward falloff");
+        Require(lowerBrush.EllipseCenter().y == 1 && lowerBrush.EllipseRadius().x == 1.f &&
+            upperBrush.EllipseCenter().y > 0 && upperBrush.EllipseRadius().x == .5f &&
+            lowerBrush.ColorStops().GetAt(0).Color() != upperBrush.ColorStops().GetAt(0).Color(),
+            "combined state retains two independently colored opposite-edge gradients");
+        auto dot = a.Header().as<Controls::Grid>().Children().GetAt(4).as<Controls::Border>();
+        Require(dot.Visibility() == Visibility::Collapsed && topGlow.Children().Count() == 1,
+            "container glow defaults on and dot defaults off");
+        auto toggleIndicators = [&](uint32_t revision, bool glow, bool showDot) {
+            auto update = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
+            auto strip = update.GetNamedObject(L"strip");
+            using Value = winrt::Windows::Data::Json::JsonValue;
+            strip.SetNamedValue(L"base", Value::CreateNumberValue(revision - 1));
+            strip.SetNamedValue(L"revision", Value::CreateNumberValue(revision));
+            strip.SetNamedValue(L"containerGlow", Value::CreateBooleanValue(glow));
+            strip.SetNamedValue(L"containerDot", Value::CreateBooleanValue(showDot));
+            MenuPublish(api,host,update.Stringify().c_str()); settle();
+            Require(topGlow.Children().Count() == (glow ? 1 : 0) &&
+                dot.Visibility() == (showDot ? Visibility::Visible : Visibility::Collapsed) &&
+                bottomGlow.Children().Count() == 1,
+                "live container options apply independently without hiding the group glow");
+        };
+        toggleIndicators(18, false, true);
+        toggleIndicators(19, true, true);
+        toggleIndicators(20, false, false);
+        toggleIndicators(21, true, false);
+        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":21,"revision":22,"rows":[],"removed":[],"groups":[],"layout":[{"group":0,"tab":41},{"group":0,"tab":42}]}})");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "ungroup colored container tabs");
+        settle();
+        Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 1,
+            "container glow survives tab realization after ungrouping");
+        // Clear both color sources in the next full snapshot.
+        motionState(23,false); settle();
+        Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 0,
+            "removing color and container metadata releases both decorations");
         puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");
     }
     puts("CHECKS PASSED: retained inline groups, disclosure, themes, RTL and atomic layout validation");

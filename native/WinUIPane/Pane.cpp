@@ -1732,6 +1732,11 @@ HRESULT UpdateImpl(HWND hwnd, const RECT* rect, BOOL visible, bool strip) noexce
                 pane->Create(hwnd, strip);
             } catch (...) {
                 auto error = to_hresult();
+                if (DiagnosticsEnabled()) {
+                    try { throw; }
+                    catch (hresult_error const& detail) { fwprintf(stderr, L"WinUIPane create hr=0x%08X message=%s\n", unsigned(error), detail.message().c_str()); }
+                    catch (...) {}
+                }
                 pane->Close();
                 return error;
             }

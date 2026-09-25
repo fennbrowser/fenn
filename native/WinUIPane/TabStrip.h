@@ -13,6 +13,7 @@
 #include "GroupSlide.h"
 #include "GroupDragVisual.h"
 #include "GroupDragShift.h"
+#include "TabAmbient.h"
 
 // Strip-only experiment: TabView owns presentation, Firefox owns all mutations.
 // Inline grouping has a localized TabListView template dependency. CanDragTabs/CanReorderTabs
@@ -87,6 +88,78 @@ struct NativeTabStrip {
     GroupSlide groupSlide;
     GroupDragVisual groupDragVisual;
     GroupDragShift groupDragShift;
+    TabAmbient ambient;
+    bool containerGlow{true}, containerDot{};
+    Controls::ScrollViewer ambientScroller{nullptr};
+    winrt::event_token ambientScrollToken{};
+    void RefreshAmbient() {
+        if (!ambient.layer) return;
+        if (!root.IsLoaded() || root.Visibility() != Visibility::Visible) {
+            ambient.Motion(false);
+            ambient.bottom.IsVisible(false); ambient.top.IsVisible(false);
+            return;
+        }
+        auto scroller = GroupScroller(view);
+        if (scroller != ambientScroller) {
+            if (ambientScroller) ambientScroller.ViewChanged(ambientScrollToken);
+            ambientScroller = scroller;
+            if (scroller) ambientScrollToken = scroller.ViewChanged([this, alive = std::weak_ptr<int>(lifetime)](auto&&, auto&&) {
+                if (!alive.expired()) ambient.Update();
+            });
+        }
+        auto boundsOf = [&](FrameworkElement const& item) {
+            return item.TransformToVisual(ambient.layer).TransformBounds({0, 0, float(item.ActualWidth()), float(item.ActualHeight())});
+        };
+        auto viewport = scroller ? boundsOf(scroller) : boundsOf(view);
+        auto ambientViewport = viewport;
+        // Permit container light in the strip's top padding while retaining
+        // the scroll viewport's horizontal clipping and bottom boundary.
+        ambientViewport.Height += ambientViewport.Y;
+        ambientViewport.Y = 0;
+        ambient.Clip(ambientViewport, root.Visibility() == Visibility::Visible);
+        ambient.Motion(IsDragging() || GroupDrag().phase || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty());
+        std::set<uint32_t> containers, groups;
+        std::map<uint32_t, Windows::Foundation::Rect> groupBounds;
+        for (auto const& [id, row] : rows) {
+            if (!row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) continue;
+            auto meta = presentation.find(id);
+            if (!containerGlow || meta == presentation.end() || meta->second.containerName.empty()) continue;
+            auto bounds = boundsOf(row);
+            bounds.X += 5; bounds.Width = std::max(0.f, bounds.Width - 10);
+            if (bounds.Width <= 0 || bounds.Height <= 0 || bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
+            containers.insert(id);
+            ambient.Put(ambient.containers, id, meta->second.containerColor, bounds, true);
+        }
+        // Keep the complete laid-out union, then clip it to the viewport. Using
+        // the clipped bounds to size the gradient would recenter it on scroll.
+        for (auto slot : groupLayout) {
+            if (!slot.group || !slot.tab || !rows.count(slot.tab)) continue;
+            auto row = rows.at(slot.tab);
+            if (!row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) continue;
+            auto bounds = boundsOf(row);
+            if (bounds.Width <= 0 || bounds.Height <= 0) continue;
+            auto [it, inserted] = groupBounds.emplace(slot.group, bounds);
+            if (!inserted) {
+                auto& total = it->second;
+                auto right = std::max(total.X + total.Width, bounds.X + bounds.Width);
+                auto bottom = std::max(total.Y + total.Height, bounds.Y + bounds.Height);
+                total.X = std::min(total.X, bounds.X); total.Y = std::min(total.Y, bounds.Y);
+                total.Width = right - total.X; total.Height = bottom - total.Y;
+            }
+        }
+        for (auto value : currentGroups) {
+            auto group = value.GetObject();
+            auto id = uint32_t(group.GetNamedNumber(L"id"));
+            auto color = uint32_t(group.GetNamedNumber(L"color", 0));
+            if (!color || !groupBounds.count(id)) continue;
+            auto bounds = groupBounds.at(id);
+            if (bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
+            groups.insert(id);
+            ambient.Put(ambient.groups, id, color, bounds, false);
+        }
+        ambient.Prune(ambient.groups, groups, false);
+        ambient.Prune(ambient.containers, containers, true);
+    }
     // Presentation only: keep browser membership, selection and collapse state.
     // Retaining the items also avoids recycling the captured group header.
     std::map<uint32_t, Visibility> groupDragVisibility;
@@ -456,6 +529,8 @@ struct NativeTabStrip {
                 LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="Transparent"><TabView TabWidthMode="Equal" CanDragTabs="False" CanReorderTabs="False" AllowDrop="False" VerticalAlignment="Top" AutomationProperties.AutomationId="FirefoxWinUITabStrip" AutomationProperties.Name="Tabs in this window" /></Grid>)")
                 .as<Controls::Grid>();
         view = root.Children().GetAt(0).as<Controls::TabView>();
+        ambient.Create(root);
+        ambient.refresh = [this] { RefreshAmbient(); };
         groupIndicator = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentTextFillColorPrimaryBrush}" BorderThickness="2" CornerRadius="4" Grid.ColumnSpan="3" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         root.Children().Append(groupIndicator);
         groupTimer = root.DispatcherQueue().CreateTimer();
@@ -529,7 +604,7 @@ struct NativeTabStrip {
         };
         auto alive = std::weak_ptr<int>(lifetime);
         root.SizeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) groupSlide.Cancel(); });
-        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
+        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { ambient.Motion(false); groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
         root.PreviewKeyDown([this, alive](auto&&, auto const& args) {
             if (alive.expired() || GroupDrag().phase) return;
             const auto key=args.Key();
@@ -616,6 +691,9 @@ struct NativeTabStrip {
         button.ContextFlyout(flyout);
     }
     ~NativeTabStrip() {
+        ambient.refresh = nullptr;
+        ambient.Motion(false);
+        if (ambientScroller) ambientScroller.ViewChanged(ambientScrollToken);
         groupSlide.Cancel();
         groupDragVisual.Hide();
         StopGroupSelectionGuard();
@@ -1269,6 +1347,8 @@ struct NativeTabStrip {
         const auto dragSessionId = data.HasKey(L"windowDragSession") ? NativeJson::RequireId(data, L"windowDragSession") : (base ? windowDragSession : 0);
         const bool dragPrivate = data.GetNamedBoolean(L"windowDragPrivate", base ? windowDragPrivate : false);
         const auto delay = data.GetNamedNumber(L"groupingDelay", base ? groupingDelay : 240);
+        const bool nextContainerGlow = data.HasKey(L"containerGlow") ? data.GetNamedBoolean(L"containerGlow") : base ? containerGlow : true;
+        const bool nextContainerDot = data.HasKey(L"containerDot") ? data.GetNamedBoolean(L"containerDot") : base ? containerDot : false;
         if (!std::isfinite(delay) || delay < 0 || delay > 60000 || std::floor(delay) != delay)
             throw hresult_invalid_argument();
         const bool updateGroups = !base || data.HasKey(L"groups") || data.HasKey(L"groupsLabel");
@@ -1468,6 +1548,13 @@ struct NativeTabStrip {
             }
         }
         shell_core_group_drag_publish(core,groupLayout.data(),groupLayout.size());
+        const bool dotChanged = containerDot != nextContainerDot;
+        containerDot = nextContainerDot;
+        containerGlow = nextContainerGlow;
+        if (dotChanged) {
+            for (auto const& [id, row] : rows)
+                UpdateHeader(row, id, Automation::AutomationProperties::GetName(row));
+        }
         // Metadata has its own publication now; do not wait for a title delta
         // or a structural Sync to make a changed icon/status visible.
         for (auto const& change : changes) {
@@ -1475,6 +1562,7 @@ struct NativeTabStrip {
             if (change.remove || row == rows.end()) continue;
             UpdateHeader(row->second, change.id, Automation::AutomationProperties::GetName(row->second));
         }
+        ambient.Update();
     }
 
     // Incremental entry points for the v11 delta path: update exactly one row,
@@ -1552,7 +1640,7 @@ struct NativeTabStrip {
         auto audio = audioBox.Child().as<Controls::SymbolIcon>();
         auto meta = presentation.count(id) ? presentation.at(id) : Presentation{};
         auto container = header.Children().GetAt(4).as<Controls::Border>();
-        container.Visibility(meta.containerName.empty() ? Visibility::Collapsed : Visibility::Visible);
+        container.Visibility(containerDot && !meta.containerName.empty() ? Visibility::Visible : Visibility::Collapsed);
         if (unbox_value_or<uint32_t>(container.Tag(), 0) != meta.containerColor) {
             auto color = meta.containerColor;
             container.Background(Media::SolidColorBrush(Windows::UI::Color{
@@ -1697,6 +1785,11 @@ struct NativeTabStrip {
                 current.insert(id);
                 if (!rows.count(id)) {
                     Controls::TabViewItem row;
+                    row.Loaded([this, alive = std::weak_ptr<int>(lifetime)](auto&&, auto&&) {
+                        // Grouped-source moves can load rows after the final
+                        // layout notification. Refresh once realization settles.
+                        if (!alive.expired()) ambient.ScheduleUpdate();
+                    });
                     row.Tag(box_value(id));
                     row.IsClosable(true);
                     row.HorizontalContentAlignment(HorizontalAlignment::Stretch);
@@ -1893,5 +1986,6 @@ struct NativeTabStrip {
         // A stationary cursor may produce no further input after this layout
         // change. Refresh a live hover now using the session's cursor sampler.
         if (refreshForeignPreview && tickDragSession) tickDragSession();
+        ambient.Update();
     }
 };

@@ -22,6 +22,16 @@ function fixture() {
   return {target, state, calls, reorderCalls, detachCalls, adoptCalls, session, snapshot, action};
 }
 
+test("indicator preference deltas preserve rows and carry only changed options", () => {
+  const f = fixture();
+  f.state.containerGlow = false;
+  f.state.containerDot = true;
+  const delta = f.session.update();
+  assert.equal(delta.strip.containerGlow, false);
+  assert.equal(delta.strip.containerDot, true);
+  assert.deepEqual(delta.strip.rows, []);
+});
+
 test("group objects stay in Firefox; stable opaque IDs survive label/state changes", () => {
   const f = fixture();
   assert.equal("target" in f.snapshot.strip.groups[0], false);

@@ -52,7 +52,11 @@ struct NativeWindowCaption {
         rightBottomLine = makeBottomLine(2);
         auto weak = std::weak_ptr<int>(lifetime);
         root.ActualThemeChanged([this, weak](auto const&, auto const&) {
-            if (!weak.expired()) Update();
+            // Read the settled theme after XAML finishes propagating it through
+            // the tree; decorative children can change notification ordering.
+            if (!weak.expired()) root.DispatcherQueue().TryEnqueue([this, weak] {
+                if (!weak.expired()) Update();
+            });
         });
     }
     void SetVisible(bool value) {

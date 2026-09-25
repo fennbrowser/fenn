@@ -19,7 +19,9 @@ function fixture() {
     PlacesCommandHook: {bookmarkTabs: tabs => calls.push(["bookmark", tabs])},
     CustomizableUI: {setToolbarVisibility: (...args) => calls.push(["toolbar", ...args])},
     BrowserUsageTelemetry: {recordToolbarVisibility() {}},
-    Services: {prefs: {setCharPref: (...args) => calls.push(["pref", ...args])}}};
+    Services: {prefs: {getBoolPref: (key, fallback) => state[key] ?? fallback,
+      setBoolPref: (key, value) => {state[key] = value;},
+      setCharPref: (...args) => calls.push(["pref", ...args])}}};
   runInNewContext(source, context);
   const pane = context.gWinUIPane;
   pane.localization = () => ({formatMessagesSync: ([{id}]) => [{attributes: [{name: "label", value: id}]}]});
@@ -31,7 +33,7 @@ test("empty-space menu exposes only requested commands and authoritative checked
     ["bar-new", "bar-reload", "bar-bookmark", "bar-select-all", "bar-restore", "bar-menubar"]);
   assert.equal(items.find(i => i.id === "bar-restore").enabled, false);
   assert.equal(items.find(i => i.id === "bar-menubar").checked, false);
-  assert.deepEqual(Array.from(items.at(-1).items, i => i.checked), [false, true, false]);
+  assert.deepEqual(Array.from(items.find(i => i.items).items, i => i.checked), [false, true, false]);
   f.state.all = true; f.context.gBrowser.selectedTabs.push({});
   const updated = f.pane.describeTabBarMenu().items;
   assert.equal(updated.find(i => i.id === "bar-select-all").enabled, false);
