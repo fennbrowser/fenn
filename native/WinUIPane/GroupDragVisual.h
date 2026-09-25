@@ -14,7 +14,7 @@ struct GroupDragVisual {
         if (layer) return;
         layer = Markup::XamlReader::Load(LR"(
 <Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" IsHitTestVisible="False" FlowDirection="LeftToRight" AutomationProperties.AccessibilityView="Raw">
- <Border Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" CornerRadius="4"/>
+ <Border Background="{ThemeResource TabViewItemHeaderDragBackground}" CornerRadius="4"/>
  <Border Width="3" Height="30" Background="{ThemeResource SystemControlHighlightAccentBrush}" CornerRadius="1"/>
 </Canvas>)").as<Controls::Canvas>();
         backing = layer.Children().GetAt(0).as<Controls::Border>();
