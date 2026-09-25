@@ -1765,6 +1765,25 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         settle();
         Require(reducedIcon.Glyph() == L"\uE76C" && reducedArrow.RenderTransform().as<Media::RotateTransform>().Angle() == 0,
             "arrow finishes pointing toward the expanded group");
+        // Collapsing every member reparents the retained header. Its disclosure
+        // animation must survive that transient Unloaded/Loaded pair.
+        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":14,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":41},{"group":0,"tab":42}]}})");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "prepare empty-group rotation fixture");
+        settle();
+        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":15,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":true}],"rows":[{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":0,"tab":42}]}})");
+        Require(SUCCEEDED(api.syncTabs(host,tabs+1,1,42,&selected)), "collapse every group member");
+        turned=false;
+        for (int i=0;i<12;++i) {
+            Pump(); Sleep(5);
+            auto button=find(view,L"FirefoxWinUIInlineGroup-7");
+            if (!button || !button.IsLoaded()) continue;
+            auto rotor=button.Content().as<Controls::Grid>().Children().GetAt(1).as<Controls::Grid>();
+            const auto angle=rotor.RenderTransform().as<Media::RotateTransform>().Angle();
+            turned |= angle<0 && angle>-90;
+        }
+        if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled())
+            Require(turned,"empty-group arrow rotates down after header reattachment");
+        settle();
         puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");
     }
     puts("CHECKS PASSED: retained inline groups, disclosure, themes, RTL and atomic layout validation");

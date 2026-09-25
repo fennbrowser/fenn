@@ -300,11 +300,9 @@ struct InlineTabGroups {
                 run.button.Unloaded([this, alive, id](auto&&, auto&&) {
                     if (alive.expired()) return;
                     if (hover.group == id) hover.Hide();
-                    auto found = runs.find(id);
-                    if (found != runs.end() && found->second.arrowMotion) {
-                        found->second.arrowMotion.Stop();
-                        found->second.arrowMotion = nullptr;
-                    }
+                    // Emptying a group briefly reparents this retained Button.
+                    // Keep its finite rotation through that unload; the Run
+                    // destructor stops it when the group actually goes away.
                 });
                 run.model.Insert(L"Header", run.button);
             }
