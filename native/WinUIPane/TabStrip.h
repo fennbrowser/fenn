@@ -98,6 +98,7 @@ struct NativeTabStrip {
             ambient.Motion(false);
             ambient.bottom.IsVisible(false); ambient.top.IsVisible(false);
             if (ambient.rims) ambient.rims.IsVisible(false);
+            if (ambient.spill) ambient.spill.IsVisible(false);
             return;
         }
         auto scroller = GroupScroller(view);
@@ -113,6 +114,7 @@ struct NativeTabStrip {
         };
         auto viewport = scroller ? boundsOf(scroller) : boundsOf(view);
         auto ambientViewport = viewport;
+        bool fadeLeft = false, fadeRight = false;
         // Permit container light in the strip's top padding while retaining
         // the scroll viewport's horizontal clipping and bottom boundary.
         ambientViewport.Height += ambientViewport.Y;
@@ -125,8 +127,12 @@ struct NativeTabStrip {
             float right = std::min(float(root.ActualWidth()), ambientViewport.X + ambientViewport.Width + 24.f);
             if (auto add = FindAddButton(view); add && add.IsLoaded()) {
                 const auto addBounds = boundsOf(add);
-                if (addBounds.X >= viewport.X + viewport.Width - 1) right = std::min(right, addBounds.X);
-                if (addBounds.X + addBounds.Width <= viewport.X + 1) left = std::max(left, addBounds.X + addBounds.Width);
+                if (addBounds.X >= viewport.X + viewport.Width - 1) {
+                    right = std::min(right, addBounds.X); fadeRight = true;
+                }
+                if (addBounds.X + addBounds.Width <= viewport.X + 1) {
+                    left = std::max(left, addBounds.X + addBounds.Width); fadeLeft = true;
+                }
             }
             ambientViewport.X = left; ambientViewport.Width = std::max(0.f, right - left);
         }
@@ -135,7 +141,7 @@ struct NativeTabStrip {
         if (activeRow != rows.end() && activeRow->second.IsLoaded() &&
             activeRow->second.Visibility() == Visibility::Visible && activeRow->second.Opacity() > 0)
             activeBounds = boundsOf(activeRow->second);
-        ambient.Clip(ambientViewport, root.Visibility() == Visibility::Visible, activeBounds);
+        ambient.Clip(ambientViewport, root.Visibility() == Visibility::Visible, activeBounds, fadeLeft, fadeRight);
         ambient.Motion(IsDragging() || GroupDrag().phase || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty());
         std::set<uint32_t> containers, groups;
         std::map<uint32_t, Windows::Foundation::Rect> groupBounds;
@@ -146,6 +152,7 @@ struct NativeTabStrip {
             auto meta = presentation.find(id);
             if (meta == presentation.end() || meta->second.containerName.empty()) continue;
             auto bounds = boundsOf(row);
+            const auto bodyBounds = bounds;
             const float width = std::min(76.f, std::max(0.f, bounds.Width - 12.f));
             bounds.X += (bounds.Width - width) / 2;
             bounds.Width = width;
@@ -153,6 +160,7 @@ struct NativeTabStrip {
             if (bounds.Width <= 0 || bounds.Height <= 0 || bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
             containers.insert(id);
             ambient.Put(ambient.containers, id, meta->second.containerColor, bounds, true);
+            ambient.Spill(ambient.containerSpill, id, meta->second.containerColor, bodyBounds, true);
         }
         // Keep the complete laid-out union, then clip it to the viewport. Using
         // the clipped bounds to size the gradient would recenter it on scroll.
@@ -195,9 +203,12 @@ struct NativeTabStrip {
             // disappearing; the viewport still clips at the strip boundary.
             bounds.X -= 18; bounds.Width += 36;
             ambient.Put(ambient.groups, id, color, bounds, false);
+            ambient.Spill(ambient.groupSpill, id, color, bounds, false);
         }
         ambient.Prune(ambient.groups, groups, false);
         ambient.Prune(ambient.containers, containers, true);
+        ambient.PruneSpill(ambient.groupSpill, groups);
+        ambient.PruneSpill(ambient.containerSpill, containers);
         uint32_t activeGroup = 0;
         for (auto slot : groupLayout) if (slot.tab == activeTabId) { activeGroup = slot.group; break; }
         auto container = ambient.containers.find(activeTabId);
@@ -213,6 +224,11 @@ struct NativeTabStrip {
         lowerBounds.X -= 4; lowerBounds.Width += 8;
         ambient.Rim(ambient.upperRim, activeVisible && container != ambient.containers.end() ? container->second.color : 0, upperBounds, true);
         ambient.Rim(ambient.lowerRim, activeVisible && group != ambient.groups.end() ? group->second.color : 0, lowerBounds, false);
+        if (activeVisible && group != ambient.groups.end() && ambient.lowerRim.visual) {
+            const auto& field = group->second.bounds;
+            const auto position = std::clamp((activeBounds.X + activeBounds.Width / 2 - field.X) / field.Width, 0.f, 1.f);
+            ambient.lowerRim.visual.Opacity(.85f + .15f * (1.f - std::abs(2.f * position - 1.f)));
+        }
     }
     // Presentation only: keep browser membership, selection and collapse state.
     // Retaining the items also avoids recycling the captured group header.

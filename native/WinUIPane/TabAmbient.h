@@ -22,10 +22,15 @@ struct TabAmbient {
     winrt::Microsoft::UI::Composition::ContainerVisual rims{nullptr};
     Field upperRim, lowerRim;
     winrt::Microsoft::UI::Composition::ContainerVisual bottom{nullptr}, top{nullptr};
+    winrt::Microsoft::UI::Composition::ContainerVisual spill{nullptr};
     winrt::Microsoft::UI::Composition::LayerVisual diffusion{nullptr};
+    winrt::Microsoft::UI::Composition::CompositionVisualSurface diffusedSurface{nullptr};
+    winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush edgeFade{nullptr};
+    Sprite output{nullptr};
     winrt::com_ptr<ID2D1Factory> clipFactory;
     Rect clippedViewport{}, clippedActive{};
     std::map<uint32_t, Field> groups, containers;
+    std::map<uint32_t, Field> groupSpill, containerSpill;
     winrt::Windows::UI::ViewManagement::AccessibilitySettings accessibility;
     winrt::Windows::UI::ViewManagement::UISettings settings;
     winrt::event_token contrastToken{}, layoutToken{}, renderingToken{};
@@ -72,7 +77,21 @@ struct TabAmbient {
                 auto parent = diffusion;
                 bottom = compositor.CreateContainerVisual(); top = compositor.CreateContainerVisual();
                 parent.Children().InsertAtTop(bottom); parent.Children().InsertAtTop(top);
-                winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::SetElementChildVisual(layer, parent);
+                spill = compositor.CreateContainerVisual();
+                spill.Comment(L"ambient-color-spill");
+                parent.Children().InsertAtTop(spill);
+                // Mask the already-diffused light, so blur cannot refill the
+                // transparent tail before the new-tab button.
+                diffusedSurface = compositor.CreateVisualSurface();
+                diffusedSurface.SourceVisual(diffusion);
+                auto source = compositor.CreateSurfaceBrush(diffusedSurface);
+                edgeFade = compositor.CreateLinearGradientBrush();
+                edgeFade.MappingMode(winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute);
+                for (int i = 0; i < 4; ++i)
+                    edgeFade.ColorStops().Append(compositor.CreateColorGradientStop(float(i) / 3, {255, 255, 255, 255}));
+                auto mask = compositor.CreateMaskBrush(); mask.Source(source); mask.Mask(edgeFade);
+                output = compositor.CreateSpriteVisual(); output.Brush(mask);
+                winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::SetElementChildVisual(layer, output);
             }
             refresh();
         } catch (...) {
@@ -87,6 +106,7 @@ struct TabAmbient {
             if (bottom) bottom.IsVisible(false);
             if (top) top.IsVisible(false);
             if (rims) rims.IsVisible(false);
+            if (spill) spill.IsVisible(false);
         }
         updating = false;
     }
@@ -101,13 +121,24 @@ struct TabAmbient {
             if (!weak.expired()) Update();
         });
     }
-    void Clip(Rect viewport, bool visible, Rect active = {}) {
+    void Clip(Rect viewport, bool visible, Rect active = {}, bool fadeLeft = false, bool fadeRight = false) {
         visible = visible && !accessibility.HighContrast();
         bottom.IsVisible(visible); top.IsVisible(visible);
         rims.IsVisible(visible);
+        spill.IsVisible(visible);
         const winrt::Windows::Foundation::Numerics::float2 size{
             std::max(0.f, viewport.X + viewport.Width), std::max(0.f, viewport.Y + viewport.Height)};
         if (diffusion.Size() != size) diffusion.Size(size);
+        if (output.Size() != size) {
+            output.Size(size); diffusedSurface.SourceSize(size);
+        }
+        const float width = std::max(1.f, viewport.Width);
+        const float tail = std::min(16.f, width / 2) / width;
+        edgeFade.StartPoint({viewport.X, 0}); edgeFade.EndPoint({viewport.X + width, 0});
+        auto stops = edgeFade.ColorStops();
+        stops.GetAt(0).Color({uint8_t(fadeLeft ? 0 : 255), 255, 255, 255});
+        stops.GetAt(1).Offset(tail); stops.GetAt(2).Offset(1 - tail);
+        stops.GetAt(3).Color({uint8_t(fadeRight ? 0 : 255), 255, 255, 255});
         // Cut only the area above the active tab, after Gaussian diffusion.
         // Shared container fields keep their geometry beneath the notch.
         const float left = std::max(viewport.X, active.X);
@@ -211,6 +242,54 @@ struct TabAmbient {
                 brush.StartPoint({0, std::max(0.f, bounds.Height - 12)});
                 brush.EndPoint({0, bounds.Height});
             }
+        }
+    }
+    void Spill(std::map<uint32_t, Field>& fields, uint32_t id, uint32_t color, Rect bounds, bool upper) {
+        auto& field = fields[id];
+        if (!field.visual) {
+            auto compositor = spill.Compositor();
+            field.visual = compositor.CreateSpriteVisual();
+            field.visual.Comment((upper ? L"container-spill:" : L"group-spill:") + winrt::to_hstring(id));
+            auto lobe = [&](float y, int peak, Gradient& target, Sprite& sprite) {
+                auto brush = compositor.CreateRadialGradientBrush();
+                brush.EllipseCenter({.5f, y}); brush.EllipseRadius({.5f, 1.65f});
+                for (auto [offset, alpha] : {std::pair{0.f, peak}, {.4f, peak * 2 / 3}, {.75f, 1}, {1.f, 0}})
+                    brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(alpha), 0, 0, 0}));
+                target = brush;
+                sprite = compositor.CreateSpriteVisual(); sprite.Brush(brush);
+                field.visual.Children().InsertAtTop(sprite);
+            };
+            // Peaks are only 2–3% alpha; long vertical tails let independent
+            // colors overlap through the body without setting a tab background.
+            lobe(upper ? -.05f : 1.05f, upper ? 8 : 6, field.brush, field.middle);
+            if (!upper) lobe(1.2f, 5, field.leftBrush, field.left);
+            spill.Children().InsertAtTop(field.visual);
+        }
+        if (field.color != color) {
+            field.color = color;
+            for (auto brush : {field.brush, field.leftBrush}) {
+                if (!brush) continue;
+                for (auto stop : brush.ColorStops()) {
+                    auto value = stop.Color();
+                    value.R = uint8_t(color >> 16); value.G = uint8_t(color >> 8); value.B = uint8_t(color);
+                    stop.Color(value);
+                }
+            }
+        }
+        if (field.bounds != bounds) {
+            field.bounds = bounds;
+            field.visual.Offset({bounds.X, bounds.Y, 0}); field.visual.Size({bounds.Width, bounds.Height});
+            field.middle.Size({bounds.Width * (upper ? 1.f : .72f), bounds.Height});
+            if (!upper) {
+                field.left.Size({bounds.Width * .72f, bounds.Height});
+                field.left.Offset({bounds.Width * .28f, 0, 0});
+            }
+        }
+    }
+    void PruneSpill(std::map<uint32_t, Field>& fields, std::set<uint32_t> const& live) {
+        for (auto it = fields.begin(); it != fields.end();) {
+            if (live.count(it->first)) { ++it; continue; }
+            spill.Children().Remove(it->second.visual); it = fields.erase(it);
         }
     }
     void Put(std::map<uint32_t, Field>& fields, uint32_t id, uint32_t color, Rect bounds, bool upper, bool connected = false) {

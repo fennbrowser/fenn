@@ -1613,8 +1613,15 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     auto ambientLayer = root.Children().GetAt(1).as<Controls::Canvas>();
     Require(!ambientLayer.IsHitTestVisible() && Automation::AutomationProperties::GetAccessibilityView(ambientLayer) ==
             Automation::Peers::AccessibilityView::Raw, "ambient decoration cannot capture input or enter the control tree");
-    auto ambient = Hosting::ElementCompositionPreview::GetElementChildVisual(ambientLayer)
-        .as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+    auto ambientOutput = Hosting::ElementCompositionPreview::GetElementChildVisual(ambientLayer)
+        .as<winrt::Microsoft::UI::Composition::SpriteVisual>();
+    auto ambientMask = ambientOutput.Brush().as<winrt::Microsoft::UI::Composition::CompositionMaskBrush>();
+    auto ambientSurface = ambientMask.Source().as<winrt::Microsoft::UI::Composition::CompositionSurfaceBrush>()
+        .Surface().as<winrt::Microsoft::UI::Composition::CompositionVisualSurface>();
+    auto ambient = ambientSurface.SourceVisual().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+    auto edgeFade = ambientMask.Mask().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
+    Require(edgeFade.ColorStops().Size() == 4 && edgeFade.ColorStops().GetAt(1).Color().A == 255 &&
+        edgeFade.ColorStops().GetAt(2).Color().A == 255, "post-diffusion edge mask preserves interior illumination");
     auto diffusion = ambient.as<winrt::Microsoft::UI::Composition::LayerVisual>();
     Require(diffusion.Effect() && diffusion.Size().x > 0 && diffusion.Size().y > 0 &&
         diffusion.Opacity() == .9f, "ambient-only diffusion has an active effect and viewport-sized surface");
@@ -1860,6 +1867,25 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         MenuPublish(api,host,colored.Stringify().c_str()); settle();
         Require(bottomGlow.Children().Count() == 1 && topGlow.Children().Count() == 1,
             "two grouped tabs share one bottom field and a container adds an independent top field");
+        Require(edgeFade.ColorStops().GetAt(0).Color().A == 0 || edgeFade.ColorStops().GetAt(3).Color().A == 0,
+            "non-overflowing glow reaches zero alpha at the new-tab boundary");
+        winrt::Microsoft::UI::Composition::ContainerVisual spill{nullptr};
+        for (auto visual : ambient.Children()) if (visual.Comment() == L"ambient-color-spill")
+            spill = visual.as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+        Require(spill && spill.Children().Count() == 2, "group and container cast remain independent transparent fields");
+        for (auto field : spill.Children()) {
+            const bool isGroup = field.Comment() == L"group-spill:7";
+            auto lobes = field.as<winrt::Microsoft::UI::Composition::SpriteVisual>();
+            Require(lobes.Children().Count() == (isGroup ? 2 : 1),
+                "group spill has overlapping lobes while container spill follows its own tab");
+            for (auto lobe : lobes.Children()) {
+                auto brush = lobe.as<winrt::Microsoft::UI::Composition::SpriteVisual>().Brush()
+                    .as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+                Require(brush.EllipseRadius().y > 1 && (isGroup ? brush.EllipseCenter().y > 1 : brush.EllipseCenter().y < 0),
+                    "weak casts reach across the tab from opposite edges");
+                for (auto stop : brush.ColorStops()) Require(stop.Color().A <= 8, "body spill never becomes a strong tint");
+            }
+        }
         auto groupVisual = bottomGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
         auto containerVisual = topGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
         auto a = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
@@ -1931,6 +1957,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 dot.Visibility() == (showDot ? Visibility::Visible : Visibility::Collapsed) &&
                 bottomGlow.Children().Count() == 1,
                 "live container options apply independently without hiding the group glow");
+            Require(spill.Children().Count() == (glow ? 2 : 1), "disabling container glow also removes its weak body cast");
         };
         toggleIndicators(18, false, true);
         toggleIndicators(19, true, true);
@@ -1989,6 +2016,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         motionState(26,false); settle();
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 0,
             "removing color and container metadata releases both decorations");
+        Require(spill.Children().Count() == 0, "clearing source metadata also removes all weak color spill");
         Require(!rim(L"active-container-reflection").IsVisible() && !rim(L"active-group-reflection").IsVisible(),
             "clearing glow sources also hides their surface reflections");
         puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");
