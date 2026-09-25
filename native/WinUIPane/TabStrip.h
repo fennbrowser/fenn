@@ -85,6 +85,22 @@ struct NativeTabStrip {
     InlineTabGroups inlineGroups;
     GroupSlide groupSlide;
     GroupDragVisual groupDragVisual;
+    // Presentation only: keep browser membership, selection and collapse state.
+    // Retaining the items also avoids recycling the captured group header.
+    std::map<uint32_t, Visibility> groupDragVisibility;
+    void CollapseDraggingGroup(uint32_t group) {
+        for (auto slot : groupLayout) {
+            if (!slot.tab || slot.group != group || !rows.count(slot.tab)) continue;
+            auto row = rows.at(slot.tab);
+            groupDragVisibility.emplace(slot.tab, row.Visibility());
+            row.Visibility(Visibility::Collapsed);
+        }
+    }
+    void RestoreDraggingGroup() {
+        for (auto [id, visibility] : groupDragVisibility)
+            if (rows.count(id)) rows.at(id).Visibility(visibility);
+        groupDragVisibility.clear();
+    }
     ULONGLONG groupScrollTick{};
     // Grouped-source moves can deliver deferred selection after Sync returns.
     // Keep the browser selection until acknowledged layout settles, or new input.
@@ -127,6 +143,7 @@ struct NativeTabStrip {
     }
     void EndGroupDrag(bool commit = false) {
         const auto state=GroupDrag();
+        RestoreDraggingGroup();
         if (!state.phase) { groupDragVisual.Hide(); return; }
         shell_core_group_drag_end(core);
         groupDragVisual.Hide();
@@ -174,7 +191,8 @@ struct NativeTabStrip {
                 if (found==inlineGroups.runs.end() || !found->second.button.IsLoaded()) { EndGroupDrag(); return; }
                 item=found->second.button;
             } else {
-                if (!rows.count(slot.tab) || !rows.at(slot.tab).IsLoaded()) continue;
+                if (!rows.count(slot.tab) || !rows.at(slot.tab).IsLoaded() ||
+                    rows.at(slot.tab).Visibility()==Visibility::Collapsed) continue;
                 if (presentation.count(slot.tab) && (presentation.at(slot.tab).flags&1)) continue;
                 item=rows.at(slot.tab);
             }
@@ -191,7 +209,11 @@ struct NativeTabStrip {
         if (shell_core_group_drag_update(core,point.X,point.Y,inside,slots.data(),slots.size())!=SHELL_STATUS_OK) { EndGroupDrag(); return; }
         const auto state=GroupDrag();
         if (state.phase==2) {
-            if (old.phase==1) { BeginGroupSelectionGuard(); ::SetCapture(ownerHwnd); }
+            if (old.phase==1) {
+                BeginGroupSelectionGuard();
+                ::SetCapture(ownerHwnd);
+                CollapseDraggingGroup(state.group);
+            }
             inlineGroups.suppressClick=state.group;
             inlineGroups.hover.Dismiss();
             auto found=inlineGroups.runs.find(state.group);
