@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 14
+#define SHELL_CORE_ABI_VERSION 15
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -1131,6 +1131,16 @@ ShellStatus shell_core_group_drag_update(ShellCore *core,
                                          bool inside,
                                          const ShellGroupDragSlot *slots,
                                          uintptr_t len);
+
+/*
+ Logical-axis visual offset for a whole group or ungrouped-tab block.
+ # Safety
+ Live core; out is writable for one double.
+ */
+ShellStatus shell_core_group_drag_offset(ShellCore *core,
+                                         uintptr_t index,
+                                         double width,
+                                         double *out);
 
 /*
  Cancel or end the local group gesture before releasing native capture.

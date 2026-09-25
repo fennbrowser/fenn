@@ -2193,6 +2193,17 @@ pub unsafe extern "C" fn shell_core_group_drag_update(core:*mut ShellCore,x:f64,
     if slots.is_null() || len==0 || len>10000 { return ShellStatus::InvalidArgument; }
     queue_guard(core,|q| if q.group_drag.update(x,y,inside,std::slice::from_raw_parts(slots,len)) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
 }
+/// Logical-axis visual offset for a whole group or ungrouped-tab block.
+/// # Safety
+/// Live core; out is writable for one double.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_drag_offset(core:*mut ShellCore,index:usize,width:f64,out:*mut f64)->ShellStatus {
+    if out.is_null() { return ShellStatus::InvalidArgument; }
+    queue_guard(core,|q| match q.group_drag.offset(index,width) {
+        Some(value)=> { *out=value; ShellStatus::Ok },
+        None=>ShellStatus::InvalidArgument,
+    })
+}
 /// Cancel or end the local group gesture before releasing native capture.
 /// # Safety
 /// Live core.
@@ -2214,6 +2225,12 @@ mod group_drag_ffi_tests {
         assert_eq!(shell_core_group_drag_update(core,8.,0.,true,std::ptr::null(),1),ShellStatus::InvalidArgument);
         assert_eq!(shell_core_group_drag_update(core,8.,0.,true,&slot,10001),ShellStatus::InvalidArgument);
         assert_eq!(shell_core_group_drag_update(core,8.,0.,true,&slot,1),ShellStatus::Ok);
+        let mut offset=99.;
+        assert_eq!(shell_core_group_drag_offset(core,0,40.,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_drag_offset(core,1,40.,&mut offset),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_drag_offset(core,0,f64::NAN,&mut offset),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_drag_offset(core,0,40.,&mut offset),ShellStatus::Ok);
+        assert_eq!(offset,0.);
         let handle=core as usize;
         assert_eq!(std::thread::spawn(move || shell_core_group_drag_end(handle as *mut ShellCore)).join().unwrap(),ShellStatus::WrongThread);
         shell_core_cancel_all(core);

@@ -3,7 +3,7 @@
 // Only WinUI objects live here; gesture and insertion decisions live in Rust.
 struct GroupDragVisual {
     Controls::Canvas layer{nullptr};
-    Controls::Border backing{nullptr}, marker{nullptr}, placeholder{nullptr};
+    Controls::Border backing{nullptr}, placeholder{nullptr};
     Controls::Button button{nullptr};
     Windows::Foundation::Collections::IObservableMap<hstring,Windows::Foundation::IInspectable> model{nullptr};
     Windows::Foundation::IInspectable localDirection{nullptr};
@@ -15,11 +15,8 @@ struct GroupDragVisual {
         layer = Markup::XamlReader::Load(LR"(
 <Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" IsHitTestVisible="False" FlowDirection="LeftToRight" AutomationProperties.AccessibilityView="Raw">
  <Border Background="{ThemeResource TabViewItemHeaderDragBackground}" CornerRadius="4"/>
- <Border Width="3" Height="30" Background="{ThemeResource SystemControlHighlightAccentBrush}" CornerRadius="1"/>
 </Canvas>)").as<Controls::Canvas>();
         backing = layer.Children().GetAt(0).as<Controls::Border>();
-        marker = layer.Children().GetAt(1).as<Controls::Border>();
-        Controls::Canvas::SetZIndex(marker,1);
         layer.Visibility(Visibility::Collapsed);
         Controls::Grid::SetColumnSpan(layer,3);
         Controls::Canvas::SetZIndex(layer,20);
@@ -51,7 +48,7 @@ struct GroupDragVisual {
         layer.Children().Append(button);
         layer.Visibility(Visibility::Visible);
     }
-    void Show(double x, double markerX, bool valid, double left, double width) {
+    void Show(double x, double left, double width) {
         layer.Visibility(Visibility::Visible);
         if (button) {
             const auto buttonWidth=button.ActualWidth();
@@ -64,9 +61,6 @@ struct GroupDragVisual {
             Controls::Canvas::SetLeft(backing,position);
             Controls::Canvas::SetTop(backing,top);
         }
-        marker.Visibility(valid ? Visibility::Visible : Visibility::Collapsed);
-        Controls::Canvas::SetLeft(marker,std::clamp(markerX-1.5,left,std::max(left,left+width-3.0)));
-        Controls::Canvas::SetTop(marker,3);
     }
     void Hide() {
         if (timer) timer.Stop();

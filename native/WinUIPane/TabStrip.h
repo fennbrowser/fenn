@@ -12,6 +12,7 @@
 #include "InlineTabGroups.h"
 #include "GroupSlide.h"
 #include "GroupDragVisual.h"
+#include "GroupDragShift.h"
 
 // Strip-only experiment: TabView owns presentation, Firefox owns all mutations.
 // Inline grouping has a localized TabListView template dependency. CanDragTabs/CanReorderTabs
@@ -85,6 +86,7 @@ struct NativeTabStrip {
     InlineTabGroups inlineGroups;
     GroupSlide groupSlide;
     GroupDragVisual groupDragVisual;
+    GroupDragShift groupDragShift;
     // Presentation only: keep browser membership, selection and collapse state.
     // Retaining the items also avoids recycling the captured group header.
     std::map<uint32_t, Visibility> groupDragVisibility;
@@ -161,6 +163,7 @@ struct NativeTabStrip {
     }
     void EndGroupDrag(bool commit = false) {
         const auto state=GroupDrag();
+        groupDragShift.Reset();
         RestoreDraggingGroup();
         if (!state.phase) { groupDragVisual.Hide(); return; }
         shell_core_group_drag_end(core);
@@ -199,6 +202,8 @@ struct NativeTabStrip {
             if (step) scroller.ChangeView(box_value(std::clamp(scroller.HorizontalOffset()+step,0.0,scroller.ScrollableWidth())).as<Windows::Foundation::IReference<double>>(),nullptr,nullptr,true);
         }
         std::vector<ShellGroupDragSlot> slots;
+        struct ShiftItem { uint64_t id; FrameworkElement element; size_t block; };
+        std::vector<ShiftItem> shiftItems;
         auto boundsOf=[&](FrameworkElement const& item) {
             return item.TransformToVisual(view).TransformBounds({0,0,float(item.ActualWidth()),float(item.ActualHeight())});
         };
@@ -216,7 +221,11 @@ struct NativeTabStrip {
                 if (presentation.count(slot.tab) && (presentation.at(slot.tab).flags&1)) continue;
                 item=rows.at(slot.tab);
             }
-            const auto bounds=boundsOf(item);
+            const auto key=slot.tab ? uint64_t(slot.tab) : GroupSlide::GroupKey(slot.group);
+            auto bounds=boundsOf(item);
+            // Targeting uses unshifted geometry so opening a gap cannot move
+            // its own midpoint and reverse a stationary pointer's destination.
+            bounds.X-=float(groupDragShift.Offset(key));
             double start=bounds.X;
             double end=bounds.X+bounds.Width;
             if (slot.tab && slot.group) {
@@ -225,6 +234,7 @@ struct NativeTabStrip {
                     slots.back().end=std::max(slots.back().end,end);
                 }
             } else slots.push_back({slot.group,slot.tab,start,end});
+            shiftItems.push_back({key,item,slots.size()-1});
         }
         if (shell_core_group_drag_update(core,point.X,point.Y,inside,slots.data(),slots.size())!=SHELL_STATUS_OK) { EndGroupDrag(); return; }
         const auto state=GroupDrag();
@@ -241,15 +251,24 @@ struct NativeTabStrip {
             }
             inlineGroups.suppressClick=state.group;
             inlineGroups.hover.Dismiss();
+            // Finish the initial collapse before taking ownership of the
+            // surviving controls' transforms for the reorder preview.
+            if (!groupSlide.pending && !groupSlide.storyboard && groupDragVisual.placeholder) {
+                const auto width=groupDragVisual.placeholder.Width()+groupDragVisual.margin.Left+groupDragVisual.margin.Right;
+                for (auto const& item : shiftItems) {
+                    double offset{};
+                    if (shell_core_group_drag_offset(core,item.block,width,&offset)==SHELL_STATUS_OK)
+                        groupDragShift.Apply(item.id,item.element,offset,groupSlide.Enabled());
+                }
+            }
             auto found=inlineGroups.runs.find(state.group);
             if (found!=inlineGroups.runs.end()) {
                 // WinUI already maps view coordinates into logical order in RTL.
                 // The overlay is explicitly LTR, so transform into its own space.
                 auto transform=view.TransformToVisual(groupDragVisual.layer);
                 auto cursor=transform.TransformPoint(point);
-                auto marker=transform.TransformPoint({float(state.marker),0});
                 auto bounds=transform.TransformBounds({0,0,float(view.ActualWidth()),float(view.ActualHeight())});
-                groupDragVisual.Show(cursor.X,marker.X,state.valid,bounds.X,bounds.Width);
+                groupDragVisual.Show(cursor.X,bounds.X,bounds.Width);
             }
         }
         if (!down) EndGroupDrag(true);
