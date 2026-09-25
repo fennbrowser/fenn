@@ -96,6 +96,7 @@ struct NativeTabStrip {
         if (!ambient.layer) return;
         if (!root.IsLoaded() || root.Visibility() != Visibility::Visible) {
             ambient.Motion(false);
+            ambient.ResetMotion();
             ambient.bottom.IsVisible(false); ambient.top.IsVisible(false);
             if (ambient.rims) ambient.rims.IsVisible(false);
             if (ambient.spill) ambient.spill.IsVisible(false);
@@ -113,6 +114,10 @@ struct NativeTabStrip {
             return item.TransformToVisual(ambient.layer).TransformBounds({0, 0, float(item.ActualWidth()), float(item.ActualHeight())});
         };
         auto viewport = scroller ? boundsOf(scroller) : boundsOf(view);
+        const bool followingMotion = IsDragging() || GroupDrag().phase || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty();
+        ambient.BeginFrame(followingMotion, float(root.ActualWidth()), float(root.ActualHeight()),
+            root.XamlRoot().RasterizationScale(), scroller ? scroller.HorizontalOffset() : 0,
+            root.FlowDirection() == FlowDirection::RightToLeft);
         auto ambientViewport = viewport;
         bool fadeLeft = false, fadeRight = false;
         // Permit container light in the strip's top padding while retaining
@@ -142,7 +147,7 @@ struct NativeTabStrip {
             activeRow->second.Visibility() == Visibility::Visible && activeRow->second.Opacity() > 0)
             activeBounds = boundsOf(activeRow->second);
         ambient.Clip(ambientViewport, root.Visibility() == Visibility::Visible, activeBounds, fadeLeft, fadeRight);
-        ambient.Motion(IsDragging() || GroupDrag().phase || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty());
+        ambient.Motion(followingMotion);
         std::set<uint32_t> containers, groups;
         std::map<uint32_t, Windows::Foundation::Rect> groupBounds;
         // A compact half-ellipse centered on each tab's top edge. Container
@@ -674,7 +679,7 @@ struct NativeTabStrip {
         };
         auto alive = std::weak_ptr<int>(lifetime);
         root.SizeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) groupSlide.Cancel(); });
-        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { ambient.Motion(false); groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
+        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { ambient.Motion(false); ambient.ResetMotion(); groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
         root.PreviewKeyDown([this, alive](auto&&, auto const& args) {
             if (alive.expired() || GroupDrag().phase) return;
             const auto key=args.Key();

@@ -2523,6 +2523,24 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupMotion(HWND hw
         return S_OK;
     } catch (...) { return to_hresult(); }
 }
+// Test-only: inspect decorative transitions and toggle reduced motion without
+// changing the user's Windows setting. S_FALSE indicates a frame observer.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestAmbientMotion(HWND hwnd, uint32_t operation, uint64_t* starts) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (!starts || found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
+        auto& ambient = found->second->strip->ambient;
+        if (operation == 1 || operation == 2) {
+            ambient.disableMotionForTest = operation == 1;
+            ambient.ResetMotion();
+        } else if (operation == 3) ambient.ResetMotion();
+        else if (operation != 0) return E_INVALIDARG;
+        ambient.Update();
+        *starts = ambient.motionStarts;
+        return ambient.observing ? S_FALSE : S_OK;
+    } catch (...) { return to_hresult(); }
+}
 // Test-only: exercise a queued grouping dwell against a real loaded storyboard.
 // No global drag is armed, so the harness can advance animation time separately.
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupSlide(HWND hwnd, uint32_t operation) noexcept {
