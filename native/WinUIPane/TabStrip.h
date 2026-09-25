@@ -110,7 +110,7 @@ struct NativeTabStrip {
         // the existing slide effect, restoring them on completion or early drop.
         auto visible=rows;
         for (auto [id,visibility] : groupDragVisibility) visible.erase(id);
-        try { groupSlide.Commit(visible,inlineGroups,FindAddButton(view),activeTabId,true); }
+        try { groupSlide.Commit(visible,inlineGroups,FindAddButton(view),activeTabId,true,group); }
         catch (...) { groupSlide.Cancel(); }
     }
     void RestoreDraggingGroup() {
@@ -206,8 +206,10 @@ struct NativeTabStrip {
             FrameworkElement item{nullptr};
             if (!slot.tab) {
                 auto found=inlineGroups.runs.find(slot.group);
-                if (found==inlineGroups.runs.end() || !found->second.button.IsLoaded()) { EndGroupDrag(); return; }
-                item=found->second.button;
+                if (found==inlineGroups.runs.end()) { EndGroupDrag(); return; }
+                item=slot.group==old.group && groupDragVisual.placeholder
+                    ? groupDragVisual.placeholder.as<FrameworkElement>() : found->second.button.as<FrameworkElement>();
+                if (!item.IsLoaded()) { EndGroupDrag(); return; }
             } else {
                 if (!rows.count(slot.tab) || !rows.at(slot.tab).IsLoaded() ||
                     rows.at(slot.tab).Visibility()==Visibility::Collapsed) continue;
@@ -231,6 +233,11 @@ struct NativeTabStrip {
                 BeginGroupSelectionGuard();
                 ::SetCapture(ownerHwnd);
                 CollapseDraggingGroup(state.group);
+                auto found=inlineGroups.runs.find(state.group);
+                if (found!=inlineGroups.runs.end()) {
+                    try { groupDragVisual.Begin(found->second.button,found->second.model); }
+                    catch (...) { EndGroupDrag(); return; }
+                }
             }
             inlineGroups.suppressClick=state.group;
             inlineGroups.hover.Dismiss();
@@ -242,7 +249,7 @@ struct NativeTabStrip {
                 auto cursor=transform.TransformPoint(point);
                 auto marker=transform.TransformPoint({float(state.marker),0});
                 auto bounds=transform.TransformBounds({0,0,float(view.ActualWidth()),float(view.ActualHeight())});
-                groupDragVisual.Show(found->second.name,cursor.X,marker.X,state.valid,bounds.X,bounds.Width);
+                groupDragVisual.Show(cursor.X,marker.X,state.valid,bounds.X,bounds.Width);
             }
         }
         if (!down) EndGroupDrag(true);
@@ -448,6 +455,9 @@ struct NativeTabStrip {
             inlineGroups.hover.Dismiss();
             groupSlide.Cancel();
             groupDragVisual.Create(root);
+            auto found=inlineGroups.runs.find(id);
+            if (found!=inlineGroups.runs.end())
+                groupDragVisual.Arm(found->second.button,args.GetCurrentPoint(groupDragVisual.layer).Position());
             if (!groupDragVisual.timer) {
                 groupDragVisual.timer=root.DispatcherQueue().CreateTimer();
                 groupDragVisual.timer.Interval(std::chrono::milliseconds(16));

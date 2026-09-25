@@ -153,7 +153,7 @@ struct GroupSlide {
     }
     void Commit(std::map<uint32_t, Controls::TabViewItem> const& rows,
                 InlineTabGroups const& groups, Controls::Button const& add, uint32_t activeId,
-                bool retainDeparting = false) {
+                bool retainDeparting = false, uint32_t draggedGroup = 0) {
         if (!pending) return;
         pending = false;
         if (!Enabled()) { Cancel(); return; }
@@ -216,7 +216,8 @@ struct GroupSlide {
             if (element && element.IsLoaded() && before.count(key)) Slide(element, before.at(key).bounds.X - Bounds(element, root).X, 0);
         };
         for (auto const& [id, row] : rows) move(id, row);
-        for (auto const& [id, run] : groups.runs) if (run.button) move(GroupKey(uint32_t(id)), run.button);
+        for (auto const& [id, run] : groups.runs)
+            if (run.button && id != draggedGroup) move(GroupKey(uint32_t(id)), run.button);
         if (add && before.count(AddKey)) {
             const auto x = Bounds(add, root).X;
             Slide(add, before.at(AddKey).bounds.X - x, finalAdd - x);

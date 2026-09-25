@@ -3,30 +3,82 @@
 // Only WinUI objects live here; gesture and insertion decisions live in Rust.
 struct GroupDragVisual {
     Controls::Canvas layer{nullptr};
-    Controls::Border chip{nullptr}, marker{nullptr};
+    Controls::Border backing{nullptr}, marker{nullptr}, placeholder{nullptr};
+    Controls::Button button{nullptr};
+    Windows::Foundation::Collections::IObservableMap<hstring,Windows::Foundation::IInspectable> model{nullptr};
+    Windows::Foundation::IInspectable localDirection{nullptr};
+    Thickness margin{};
+    double grabX{}, top{};
     Microsoft::UI::Dispatching::DispatcherQueueTimer timer{nullptr};
     void Create(Controls::Grid const& root) {
         if (layer) return;
         layer = Markup::XamlReader::Load(LR"(
 <Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" IsHitTestVisible="False" FlowDirection="LeftToRight" AutomationProperties.AccessibilityView="Raw">
- <Border Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="4" Padding="8,4" MaxWidth="160" Height="30">
-  <TextBlock FontSize="12" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
- </Border>
+ <Border Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" CornerRadius="4"/>
  <Border Width="3" Height="30" Background="{ThemeResource SystemControlHighlightAccentBrush}" CornerRadius="1"/>
 </Canvas>)").as<Controls::Canvas>();
-        chip = layer.Children().GetAt(0).as<Controls::Border>();
+        backing = layer.Children().GetAt(0).as<Controls::Border>();
         marker = layer.Children().GetAt(1).as<Controls::Border>();
+        Controls::Canvas::SetZIndex(marker,1);
         layer.Visibility(Visibility::Collapsed);
+        Controls::Grid::SetColumnSpan(layer,3);
+        Controls::Canvas::SetZIndex(layer,20);
         root.Children().Append(layer);
     }
-    void Show(hstring const& name, double x, double markerX, bool valid, double left, double width) {
-        chip.Child().as<Controls::TextBlock>().Text(name);
+    void Arm(Controls::Button const& source, Windows::Foundation::Point point) {
+        auto bounds=source.TransformToVisual(layer).TransformBounds({0,0,float(source.ActualWidth()),float(source.ActualHeight())});
+        grabX=point.X-bounds.X;
+    }
+    void Begin(Controls::Button const& source,
+               Windows::Foundation::Collections::IObservableMap<hstring,Windows::Foundation::IInspectable> const& header) {
+        if (button) return;
+        const auto bounds=source.TransformToVisual(layer).TransformBounds({0,0,float(source.ActualWidth()),float(source.ActualHeight())});
+        top=bounds.Y;
+        button=source; model=header; margin=source.Margin();
+        localDirection=source.ReadLocalValue(FrameworkElement::FlowDirectionProperty());
+        const auto direction=source.FlowDirection();
+        placeholder=Controls::Border();
+        placeholder.Width(source.ActualWidth()); placeholder.Height(source.ActualHeight());
+        placeholder.Margin(margin);
+        placeholder.IsHitTestVisible(false);
+        Automation::AutomationProperties::SetAccessibilityView(placeholder,Automation::Peers::AccessibilityView::Raw);
+        model.Insert(L"Header",placeholder);
+        // Release the header presenter before putting the same Button in the
+        // un-clipped overlay. HWND capture already owns the promoted gesture.
+        layer.XamlRoot().Content().as<FrameworkElement>().UpdateLayout();
+        button.Margin(Thickness{0,0,0,0});
+        button.FlowDirection(direction);
+        layer.Children().Append(button);
         layer.Visibility(Visibility::Visible);
-        Controls::Canvas::SetLeft(chip,std::clamp(x+12.0,left,std::max(left,left+width-160.0)));
-        Controls::Canvas::SetTop(chip,3);
+    }
+    void Show(double x, double markerX, bool valid, double left, double width) {
+        layer.Visibility(Visibility::Visible);
+        if (button) {
+            const auto buttonWidth=button.ActualWidth();
+            const auto position=std::clamp(x-grabX,left,std::max(left,left+width-buttonWidth));
+            Controls::Canvas::SetLeft(button,position);
+            Controls::Canvas::SetTop(button,top);
+            // SubtleButtonStyle is transparent at rest. Keep underlying tab
+            // labels from showing through the actual button while it moves.
+            backing.Width(buttonWidth); backing.Height(button.ActualHeight());
+            Controls::Canvas::SetLeft(backing,position);
+            Controls::Canvas::SetTop(backing,top);
+        }
         marker.Visibility(valid ? Visibility::Visible : Visibility::Collapsed);
         Controls::Canvas::SetLeft(marker,std::clamp(markerX-1.5,left,std::max(left,left+width-3.0)));
         Controls::Canvas::SetTop(marker,3);
     }
-    void Hide() { if (timer) timer.Stop(); if (layer) layer.Visibility(Visibility::Collapsed); }
+    void Hide() {
+        if (timer) timer.Stop();
+        if (button) {
+            uint32_t index;
+            if (layer.Children().IndexOf(button,index)) layer.Children().RemoveAt(index);
+            button.Margin(margin);
+            if (localDirection==DependencyProperty::UnsetValue()) button.ClearValue(FrameworkElement::FlowDirectionProperty());
+            else button.SetValue(FrameworkElement::FlowDirectionProperty(),localDirection);
+            model.Insert(L"Header",button);
+            button=nullptr; model=nullptr; placeholder=nullptr; localDirection=nullptr;
+        }
+        if (layer) layer.Visibility(Visibility::Collapsed);
+    }
 };
