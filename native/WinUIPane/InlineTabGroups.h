@@ -125,7 +125,7 @@ struct InlineTabGroups {
                 run.headerText = headerText;
                 text.Text(headerText);
                 text.Visibility(named ? Visibility::Visible : Visibility::Collapsed);
-                rotor.Visibility(named ? Visibility::Collapsed : Visibility::Visible);
+                rotor.Margin(named ? Thickness{4,0,0,0} : Thickness{0,0,0,0});
                 if (named) run.button.ClearValue(FrameworkElement::WidthProperty());
                 else run.button.Width(32);
                 if (run.arrowMotion) { run.arrowMotion.Stop(); run.arrowMotion = nullptr; }
@@ -144,7 +144,7 @@ struct InlineTabGroups {
                 if (run.arrowMotion) { run.arrowMotion.Stop(); run.arrowMotion = nullptr; }
                 arrow.Glyph(collapsed ? L"\uE70D" : L"\uE76C");
                 turn.Angle(0);
-                if (changed && animate && !named && arrow.IsLoaded()) {
+                if (changed && animate && arrow.IsLoaded()) {
                     // Rotate the new glyph from the old direction. Preserve the
                     // current angle on reversal instead of jumping to an endpoint.
                     const auto direction = arrow.FlowDirection() == FlowDirection::RightToLeft ? -1.0 : 1.0;
@@ -237,8 +237,9 @@ struct InlineTabGroups {
   <ResourceDictionary x:Key="HighContrast"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="{ThemeResource SystemColorWindowTextColor}"/></ResourceDictionary>
  </ResourceDictionary.ThemeDictionaries></ResourceDictionary></Button.Resources>
  <Grid MinWidth="24" MaxWidth="144" Height="24" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
-  <Rectangle Width="16" Height="3" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1" Fill="{ThemeResource InlineGroupColorBrush}" Visibility="Collapsed"/>
-  <Grid RenderTransformOrigin="0.5,0.5">
+  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+  <Rectangle Grid.ColumnSpan="2" Width="16" Height="3" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1" Fill="{ThemeResource InlineGroupColorBrush}" Visibility="Collapsed"/>
+  <Grid Grid.Column="1" Width="24" RenderTransformOrigin="0.5,0.5">
    <Grid.RenderTransform><RotateTransform/></Grid.RenderTransform>
    <FontIcon FontSize="12" MirroredWhenRightToLeft="True"/>
   </Grid>

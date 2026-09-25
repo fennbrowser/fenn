@@ -1677,8 +1677,17 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     auto groupText = capsule.Children().GetAt(2).as<Controls::TextBlock>();
     Require(header.ActualWidth() > 32 && header.ActualWidth() <= 154 && groupText.Visibility() == Visibility::Visible &&
         groupText.Text() == L"A deliberately long named group for trimming" && groupText.TextTrimming() == TextTrimming::CharacterEllipsis &&
-        capsule.Children().GetAt(1).Visibility() == Visibility::Collapsed &&
-        capsule.Children().GetAt(1).as<Controls::Grid>().Children().GetAt(0).as<Controls::FontIcon>().Glyph() == L"\uE70D", "named group replaces the arrow with bounded text");
+        capsule.Children().GetAt(1).Visibility() == Visibility::Visible &&
+        capsule.Children().GetAt(1).as<Controls::Grid>().Children().GetAt(0).as<Controls::FontIcon>().Glyph() == L"\uE70D", "named group retains the arrow beside bounded text");
+    for (auto direction : {FlowDirection::LeftToRight, FlowDirection::RightToLeft}) {
+        root.FlowDirection(direction); settle();
+        auto rotor=capsule.Children().GetAt(1).as<Controls::Grid>();
+        const auto arrowBounds=rotor.TransformToVisual(nullptr).TransformBounds({0,0,float(rotor.ActualWidth()),float(rotor.ActualHeight())});
+        const auto textBounds=groupText.TransformToVisual(nullptr).TransformBounds({0,0,float(groupText.ActualWidth()),float(groupText.ActualHeight())});
+        Require(direction==FlowDirection::LeftToRight ? arrowBounds.X>=textBounds.X+textBounds.Width : arrowBounds.X+arrowBounds.Width<=textBounds.X,
+            "named group arrow sits on the tab-facing side in LTR and RTL");
+        Require(rotor.ActualWidth()==24 && groupText.ActualWidth()>0,"long name leaves room for the arrow");
+    }
     Require(view.TabItems().Size() == 1 && view.TabItems().GetAt(0) == first && view.SelectedItem() == first, "collapse retains real active tab");
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
     MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"rtl":true,"rows":[],"removed":[],"groups":[{"id":7,"name":"Unnamed group","headerText":"","label":"Expand unnamed group","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}]}})");
@@ -1767,10 +1776,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             "arrow finishes pointing toward the expanded group");
         // Collapsing every member reparents the retained header. Its disclosure
         // animation must survive that transient Unloaded/Loaded pair.
-        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":14,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":41},{"group":0,"tab":42}]}})");
+        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":14,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","headerText":"Research","label":"Research","collapsed":false}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":41},{"group":0,"tab":42}]}})");
         Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "prepare empty-group rotation fixture");
         settle();
-        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":15,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":true}],"rows":[{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":0,"tab":42}]}})");
+        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":15,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","headerText":"Research","label":"Research","collapsed":true}],"rows":[{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":0,"tab":42}]}})");
         Require(SUCCEEDED(api.syncTabs(host,tabs+1,1,42,&selected)), "collapse every group member");
         turned=false;
         for (int i=0;i<12;++i) {
