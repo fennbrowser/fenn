@@ -11,6 +11,7 @@
 #include "ShellCore.h"
 #include "InlineTabGroups.h"
 #include "GroupSlide.h"
+#include "GroupDragVisual.h"
 
 // Strip-only experiment: TabView owns presentation, Firefox owns all mutations.
 // Inline grouping has a localized TabListView template dependency. CanDragTabs/CanReorderTabs
@@ -83,6 +84,129 @@ struct NativeTabStrip {
     TabGroupsButton groupsButton;
     InlineTabGroups inlineGroups;
     GroupSlide groupSlide;
+    GroupDragVisual groupDragVisual;
+    ULONGLONG groupScrollTick{};
+    // Grouped-source moves can deliver deferred selection after Sync returns.
+    // Keep the browser selection until acknowledged layout settles, or new input.
+    bool groupSelectionGuard{}, groupSelectionObserving{};
+    uint32_t groupSelectionFrames{};
+    winrt::event_token groupSelectionRendering{};
+    void StopGroupSelectionGuard() {
+        groupSelectionGuard=false;
+        if (groupSelectionObserving) {
+            groupSelectionObserving=false;
+            Media::CompositionTarget::Rendering(groupSelectionRendering);
+        }
+    }
+    void BeginGroupSelectionGuard() {
+        groupSelectionGuard=true; groupSelectionFrames=0;
+        if (groupSelectionObserving) return;
+        groupSelectionObserving=true;
+        groupSelectionRendering=Media::CompositionTarget::Rendering([this,alive=std::weak_ptr<int>(lifetime)](auto&&,auto&&) {
+            if (alive.expired()) return;
+            if (!groupSelectionGuard) { StopGroupSelectionGuard(); return; }
+            auto state=GroupDrag();
+            if (state.phase || state.awaiting) { groupSelectionFrames=0; return; }
+            if (rows.count(activeTabId) && view.SelectedItem()!=rows.at(activeTabId)) {
+                groupSelectionFrames=0;
+                view.SelectedItem(rows.at(activeTabId));
+            } else if (++groupSelectionFrames>=2) StopGroupSelectionGuard();
+        });
+    }
+    std::function<void(uint32_t)> armGroupDragSession;
+    ShellGroupDrag GroupDrag() const {
+        ShellGroupDrag state{};
+        if (core) shell_core_group_drag_state(core,&state);
+        return state;
+    }
+    static Controls::ScrollViewer GroupScroller(DependencyObject const& node) {
+        if (auto scroll = node.try_as<Controls::ScrollViewer>(); scroll && scroll.Name() == L"ScrollViewer") return scroll;
+        for (int i=0;i<Media::VisualTreeHelper::GetChildrenCount(node);++i)
+            if (auto scroll=GroupScroller(Media::VisualTreeHelper::GetChild(node,i))) return scroll;
+        return nullptr;
+    }
+    void EndGroupDrag(bool commit = false) {
+        const auto state=GroupDrag();
+        if (!state.phase) { groupDragVisual.Hide(); return; }
+        shell_core_group_drag_end(core);
+        groupDragVisual.Hide();
+        if (state.phase==2 && rows.count(activeTabId)) {
+            const auto previous=syncing;
+            syncing=true;
+            view.SelectedItem(rows.at(activeTabId));
+            syncing=previous;
+        }
+        if (state.phase==2 || (state.phase && !commit)) inlineGroups.suppressClick=state.group;
+        if (commit && state.phase==2 && state.valid && dispatch) {
+            using Value=Windows::Data::Json::JsonValue;
+            Windows::Data::Json::JsonObject action;
+            action.SetNamedValue(L"kind",Value::CreateStringValue(L"strip-group-reorder"));
+            action.SetNamedValue(L"revision",Value::CreateNumberValue(presentationRevision));
+            action.SetNamedValue(L"session",Value::CreateNumberValue(windowDragSession));
+            action.SetNamedValue(L"group",Value::CreateNumberValue(state.group));
+            action.SetNamedValue(L"beforeGroup",Value::CreateNumberValue(state.before_group));
+            action.SetNamedValue(L"beforeTab",Value::CreateNumberValue(state.before_tab));
+            const auto request=dispatch(0,action.Stringify());
+            if (request) shell_core_group_drag_wait(core,request,state.group,state.before_group,state.before_tab);
+        }
+    }
+    void TickGroupDrag(Windows::Foundation::Point point, bool down, bool cancel) {
+        const auto old=GroupDrag();
+        if (!old.phase) return;
+        if (cancel || !root.IsLoaded() || root.Visibility()!=Visibility::Visible) { EndGroupDrag(); return; }
+        auto scroller=GroupScroller(view);
+        auto viewport = scroller ? scroller.TransformToVisual(view).TransformBounds({0,0,float(scroller.ActualWidth()),float(scroller.ActualHeight())})
+                                : Windows::Foundation::Rect{0,0,float(view.ActualWidth()),float(view.ActualHeight())};
+        const bool inside=point.X>=viewport.X && point.X<=viewport.X+viewport.Width && point.Y>=0 && point.Y<=view.ActualHeight();
+        if (old.phase==2 && down && inside && scroller && scroller.ScrollableWidth()>0 && GetTickCount64()-groupScrollTick>=16) {
+            groupScrollTick=GetTickCount64();
+            double step=point.X<viewport.X+24 ? -12 : point.X>viewport.X+viewport.Width-24 ? 12 : 0;
+            if (step) scroller.ChangeView(box_value(std::clamp(scroller.HorizontalOffset()+step,0.0,scroller.ScrollableWidth())).as<Windows::Foundation::IReference<double>>(),nullptr,nullptr,true);
+        }
+        std::vector<ShellGroupDragSlot> slots;
+        auto boundsOf=[&](FrameworkElement const& item) {
+            return item.TransformToVisual(view).TransformBounds({0,0,float(item.ActualWidth()),float(item.ActualHeight())});
+        };
+        for (auto slot:groupLayout) {
+            FrameworkElement item{nullptr};
+            if (!slot.tab) {
+                auto found=inlineGroups.runs.find(slot.group);
+                if (found==inlineGroups.runs.end() || !found->second.button.IsLoaded()) { EndGroupDrag(); return; }
+                item=found->second.button;
+            } else {
+                if (!rows.count(slot.tab) || !rows.at(slot.tab).IsLoaded()) continue;
+                if (presentation.count(slot.tab) && (presentation.at(slot.tab).flags&1)) continue;
+                item=rows.at(slot.tab);
+            }
+            const auto bounds=boundsOf(item);
+            double start=bounds.X;
+            double end=bounds.X+bounds.Width;
+            if (slot.tab && slot.group) {
+                if (!slots.empty() && slots.back().group==slot.group) {
+                    slots.back().start=std::min(slots.back().start,start);
+                    slots.back().end=std::max(slots.back().end,end);
+                }
+            } else slots.push_back({slot.group,slot.tab,start,end});
+        }
+        if (shell_core_group_drag_update(core,point.X,point.Y,inside,slots.data(),slots.size())!=SHELL_STATUS_OK) { EndGroupDrag(); return; }
+        const auto state=GroupDrag();
+        if (state.phase==2) {
+            if (old.phase==1) { BeginGroupSelectionGuard(); ::SetCapture(ownerHwnd); }
+            inlineGroups.suppressClick=state.group;
+            inlineGroups.hover.Dismiss();
+            auto found=inlineGroups.runs.find(state.group);
+            if (found!=inlineGroups.runs.end()) {
+                // WinUI already maps view coordinates into logical order in RTL.
+                // The overlay is explicitly LTR, so transform into its own space.
+                auto transform=view.TransformToVisual(groupDragVisual.layer);
+                auto cursor=transform.TransformPoint(point);
+                auto marker=transform.TransformPoint({float(state.marker),0});
+                auto bounds=transform.TransformBounds({0,0,float(view.ActualWidth()),float(view.ActualHeight())});
+                groupDragVisual.Show(found->second.name,cursor.X,marker.X,state.valid,bounds.X,bounds.Width);
+            }
+        }
+        if (!down) EndGroupDrag(true);
+    }
     std::vector<ShellStripSlot> groupLayout;
     bool hasGroupLayout{};
 
@@ -276,9 +400,27 @@ struct NativeTabStrip {
         });
         view.TabStripHeader(groupsButton.button);
         groupsButton.currentRevision = [this] { return presentationRevision; };
-        inlineGroups.hover.allowed = [this] { return !IsDragging() && !(GetKeyState(VK_LBUTTON) & 0x8000) && root.IsLoaded() && root.Visibility() == Visibility::Visible; };
+        inlineGroups.press = [this](uint32_t id, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
+            if (!core || syncing || !armGroupDragSession || (GetKeyState(VK_CONTROL)&0x8000) || (GetKeyState(VK_SHIFT)&0x8000)) return;
+            armGroupDragSession(id);
+            auto point=args.GetCurrentPoint(view).Position();
+            if (shell_core_group_drag_arm(core,id,point.X,point.Y)!=SHELL_STATUS_OK) return;
+            inlineGroups.hover.Dismiss();
+            groupSlide.Cancel();
+            groupDragVisual.Create(root);
+            if (!groupDragVisual.timer) {
+                groupDragVisual.timer=root.DispatcherQueue().CreateTimer();
+                groupDragVisual.timer.Interval(std::chrono::milliseconds(16));
+                groupDragVisual.timer.Tick([this, alive=std::weak_ptr<int>(lifetime)](auto&&,auto&&) {
+                    if (!alive.expired() && tickDragSession) tickDragSession();
+                });
+            }
+            groupDragVisual.timer.Start();
+            // Button retains its stock click/capture until movement promotes the drag.
+        };
+        inlineGroups.hover.allowed = [this] { return !IsDragging() && !GroupDrag().phase && !(GetKeyState(VK_LBUTTON) & 0x8000) && root.IsLoaded() && root.Visibility() == Visibility::Visible; };
         inlineGroups.hover.activate = [this](uint32_t group, uint32_t tab) {
-            if (IsDragging() || !groupsButton.dispatch) return;
+            if (IsDragging() || GroupDrag().phase || !groupsButton.dispatch) return;
             using Value = Windows::Data::Json::JsonValue;
             Windows::Data::Json::JsonObject action;
             action.SetNamedValue(L"kind",Value::CreateStringValue(L"strip-group-select"));
@@ -289,7 +431,8 @@ struct NativeTabStrip {
             groupsButton.dispatch(action.Stringify());
         };
         inlineGroups.toggle = [this](uint32_t id, bool collapsed) {
-            if (IsDragging() || !groupsButton.dispatch) return;
+            if (GroupDrag().phase==1) EndGroupDrag(true);
+            if (IsDragging() || GroupDrag().phase || !groupsButton.dispatch) return;
             using JValue = Windows::Data::Json::JsonValue;
             Windows::Data::Json::JsonObject action;
             action.SetNamedValue(L"kind", JValue::CreateStringValue(L"strip-group"));
@@ -299,7 +442,7 @@ struct NativeTabStrip {
             groupsButton.dispatch(action.Stringify());
         };
         inlineGroups.context = [this](uint32_t id, Windows::Foundation::Rect bounds) {
-            if (IsDragging() || !groupsButton.dispatch) return;
+            if (IsDragging() || GroupDrag().phase || !groupsButton.dispatch) return;
             // The next surface belongs to Gecko. Release island keyboard focus
             // before Firefox opens its panel and focuses the group-name field.
             if (ownerHwnd) SetFocus(ownerHwnd);
@@ -318,8 +461,22 @@ struct NativeTabStrip {
         auto alive = std::weak_ptr<int>(lifetime);
         root.SizeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) groupSlide.Cancel(); });
         root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
+        root.PreviewKeyDown([this, alive](auto&&, auto const& args) {
+            if (alive.expired() || GroupDrag().phase) return;
+            const auto key=args.Key();
+            using Key=Windows::System::VirtualKey;
+            if (key==Key::Left || key==Key::Right || key==Key::Up || key==Key::Down ||
+                key==Key::Home || key==Key::End || key==Key::Tab || key==Key::Space || key==Key::Enter)
+                groupSelectionGuard=false;
+        });
         view.SelectionChanged([this, alive](auto const&, auto const&) {
-            if (alive.expired() || syncing || !view.SelectedItem()) return;
+            if (alive.expired() || syncing || GroupDrag().phase || !view.SelectedItem()) return;
+            if (groupSelectionGuard) {
+                groupSelectionFrames=0;
+                if (rows.count(activeTabId) && view.SelectedItem()!=rows.at(activeTabId))
+                    view.SelectedItem(rows.at(activeTabId));
+                return;
+            }
             // Modified gestures are observed on the exact tab below. Never let
             // TabView's single selection replace Firefox's multiselected set.
             if (GetKeyState(VK_CONTROL) & 0x8000 || GetKeyState(VK_SHIFT) & 0x8000) return;
@@ -391,6 +548,8 @@ struct NativeTabStrip {
     }
     ~NativeTabStrip() {
         groupSlide.Cancel();
+        groupDragVisual.Hide();
+        StopGroupSelectionGuard();
         if (groupTimer) groupTimer.Stop();
         lifetime.reset();
         if (core) shell_core_transfer_cancel(core);
@@ -1109,13 +1268,22 @@ struct NativeTabStrip {
             changes.push_back({id, imageWidth * imageHeight, false,
                                entry.HasKey(L"flags") && entry.HasKey(L"detail")});
         }
-        std::set<uint32_t> ids, previewIds;
+        std::set<uint32_t> ids, previewIds, memberIds;
         size_t previewPixels = 0;
         for (auto value : groups) {
             auto group = value.GetObject();
             auto id = NativeJson::RequireId(group, L"id");
             auto name = group.GetNamedString(L"name"), text = group.GetNamedString(L"label");
             auto headerText = group.GetNamedString(L"headerText", L"");
+            if (group.HasKey(L"members")) {
+                auto members=group.GetNamedArray(L"members");
+                if (members.Size()>NativeJson::kMaxTabs) throw hresult_invalid_argument();
+                for (auto value:members) {
+                    auto id=value.GetNumber();
+                    if (!std::isfinite(id) || id<=0 || id>UINT32_MAX || std::floor(id)!=id ||
+                        !memberIds.insert(uint32_t(id)).second || memberIds.size()>NativeJson::kMaxTabs) throw hresult_invalid_argument();
+                }
+            }
             if (group.HasKey(L"tabs")) {
                 auto tabs = group.GetNamedArray(L"tabs");
                 if (tabs.Size() > NativeJson::kMaxTabs) throw hresult_invalid_argument();
@@ -1157,6 +1325,7 @@ struct NativeTabStrip {
         // bounds. Everything above is staged before either model or XAML changes.
         if (!core || shell_core_strip_apply_layout(core, base, revision, changes.data(), changes.size(), layout.data(), layout.size(), layoutChanged) != SHELL_STATUS_OK)
             throw hresult_invalid_argument();
+        if (GroupDrag().phase && (layoutChanged || !removed.empty() || !base)) EndGroupDrag();
         if (layoutChanged) {
             std::vector<uint32_t> toggled;
             if (updateGroups && inlineGroups.active && !IsDragging()) {
@@ -1176,6 +1345,17 @@ struct NativeTabStrip {
                 try { groupSlide.Prepare(root, view, FindTabListView(view), rows, inlineGroups, FindAddButton(view), std::move(motion)); }
                 catch (...) { groupSlide.Cancel(); }
             } else groupSlide.Cancel();
+        }
+        if (updateGroups && GroupDrag().phase) {
+            auto id=GroupDrag().group;
+            auto old=inlineGroups.runs.find(id);
+            bool same=false;
+            for (auto value:groups) {
+                auto group=value.GetObject();
+                if (uint32_t(group.GetNamedNumber(L"id"))==id && old!=inlineGroups.runs.end())
+                    same=group.GetNamedArray(L"members",Windows::Data::Json::JsonArray()).Stringify()==old->second.metadata.GetNamedArray(L"members",Windows::Data::Json::JsonArray()).Stringify();
+            }
+            if (!same) EndGroupDrag();
         }
         if (updateGroups) {
             if (!inlineGroups.active) groupsButton.Apply(label, groups);
@@ -1218,6 +1398,7 @@ struct NativeTabStrip {
                 syncing = previous;
             }
         }
+        shell_core_group_drag_publish(core,groupLayout.data(),groupLayout.size());
         // Metadata has its own publication now; do not wait for a title delta
         // or a structural Sync to make a changed icon/status visible.
         for (auto const& change : changes) {
@@ -1496,6 +1677,7 @@ struct NativeTabStrip {
                                 // once the stock control catches up on
                                 // release; re-selecting the same id there is
                                 // a no-op.
+                                groupSelectionGuard=false;
                                 select(id);
                                 // Capture immediately, before knowing this is
                                 // a real drag: without capture, PointerMoved

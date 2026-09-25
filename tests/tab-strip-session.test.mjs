@@ -524,3 +524,44 @@ test("group context menu rejects stale identity and invalid screen bounds", () =
       session:f.session.windowDragSession,group:f.action.group,x:1,y:1,width:32,height:32}),false);
   }
 });
+
+
+function groupDragFixture() {
+  const f=fixture();
+  f.state.groups[0].members=[11,33,44];
+  f.state.groups[0].collapsed=true;
+  f.state.layout=[{group:0,tab:22},{target:f.target,tab:0},{target:f.target,tab:11}];
+  f.session.update();
+  f.moves=[];
+  f.session.moveGroup=(...args)=>f.moves.push(args);
+  f.event={kind:"strip-group-reorder",session:f.session.windowDragSession,revision:f.session.revision,
+    group:f.action.group,beforeGroup:0,beforeTab:22};
+  return f;
+}
+test("whole group move preserves opaque group identity including hidden members",()=>{
+  const f=groupDragFixture();
+  assert.equal(f.session.receive(f.event),true);
+  assert.deepEqual(f.moves,[[f.target,null,22]]);
+  assert.equal(f.session.receive(f.event),false);
+});
+test("whole group drop rejects stale sessions, membership, targets, layout and no-ops",()=>{
+  for (const change of [f=>f.event.session++,f=>f.event.revision--,f=>f.event.beforeTab=11,
+    f=>f.event.beforeGroup=f.action.group,f=>f.event.beforeTab=0,f=>f.event.beforeTab=-1,
+    f=>f.event.beforeTab=1.5,f=>f.state.groups[0].members=[11,33],
+    f=>f.state.groups[0].target={},f=>f.state.rows[1].flags=1,
+    f=>f.state.layout.reverse()]) {
+    const f=groupDragFixture(); change(f);
+    assert.equal(f.session.receive(f.event),false); assert.equal(f.moves.length,0);
+  }
+});
+test("whole group destination names another group without merging",()=>{
+  const f=groupDragFixture(), other={};
+  f.state.groups.push({target:other,name:"Other",collapsed:true,members:[55]});
+  f.state.layout.push({target:other,tab:0});
+  f.session.update();
+  const id=f.session.state.groups[1].id;
+  // Adjacent before target is a no-op; move the final target group to the first.
+  assert.equal(f.session.receive({...f.event,revision:f.session.revision,group:id,
+    beforeGroup:f.action.group,beforeTab:0}),true);
+  assert.deepEqual(f.moves,[[other,f.target,0]]);
+});

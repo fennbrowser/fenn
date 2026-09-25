@@ -315,6 +315,7 @@ struct TabDragSession {
     std::weak_ptr<int> departedLife;
     NativeTabStrip* sourceStrip{};
     uint32_t tabId{};
+    bool groupSource{};
     // Whichever pane's own strip is currently showing a live "make room"
     // preview: sourceStrip itself while still hovering the strip the
     // gesture started on, a different pane's own strip while hovering it
@@ -977,6 +978,7 @@ struct Pane {
                     args.SetTarget(make<RejectExternalDrop>());
                 });
             strip->armDragSession = [this](uint32_t id) { ArmDragSession(*this, id); };
+            strip->armGroupDragSession = [this](uint32_t id) { ArmDragSession(*this,id); dragSession().groupSource=true; };
             strip->tickDragSession = TickDragSession;
             return;
         }
@@ -1368,6 +1370,8 @@ void AbortDragSession() noexcept {
     if (session.sourceHwnd && GetCapture() == session.sourceHwnd) ReleaseCapture();
     auto& panes = state().panes;
     auto source = panes.find(session.sourceHwnd);
+    if (source != panes.end() && source->second->strip.get() == session.sourceStrip && session.sourceStrip && session.groupSource)
+        try { session.sourceStrip->EndGroupDrag(); } catch (...) {}
     if (source != panes.end() && source->second->strip.get() == session.sourceStrip && session.sourceStrip &&
         session.sourceStrip->Drag().phase != NativeTabStrip::DragPhase::None)
         try { session.sourceStrip->CancelDrag(); } catch (...) {}
@@ -1526,6 +1530,16 @@ void TickDragSession() {
         return;
     }
     Pane& sourcePane = *srcIt->second;
+    if (session.groupSource) {
+        POINT point{};
+        GetCursorPos(&point);
+        const bool down=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;
+        const bool cancel=(GetAsyncKeyState(VK_ESCAPE)&0x8000)!=0 || GetForegroundWindow()!=sourcePane.parent ||
+            (session.sourceStrip->GroupDrag().phase==2 && GetCapture()!=sourcePane.parent) || !sourcePane.appliedVisible;
+        session.sourceStrip->TickGroupDrag(sourcePane.ScreenToStrip(point),down,cancel);
+        if (!session.sourceStrip->GroupDrag().phase) AbortDragSession();
+        return;
+    }
     if (session.sourceStrip->Drag().phase == NativeTabStrip::DragPhase::None) {
         // Ended some other way already (Escape via WinUI's own
         // PreviewKeyDown, if it happened to still fire) -- just clean up

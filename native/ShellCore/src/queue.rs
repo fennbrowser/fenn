@@ -240,6 +240,7 @@ pub struct RequestQueue {
     pending: crate::pending::PendingCommands,
     pub(crate) address: crate::address::AddressState,
     pub(crate) tab_drag: crate::tab_drag::TabDrag,
+    pub(crate) group_drag: crate::group_drag::GroupDrag,
     pub(crate) foreign: crate::foreign_drag::ForeignPreview,
     pub(crate) transfers: crate::foreign_drag::Transfers,
     pub(crate) departures: crate::foreign_drag::Departures,
@@ -264,6 +265,7 @@ impl RequestQueue {
             pending: Default::default(),
             address: Default::default(),
             tab_drag: Default::default(),
+            group_drag: Default::default(),
             foreign: Default::default(),
             transfers: Default::default(),
             departures: Default::default(),
@@ -320,6 +322,11 @@ impl RequestQueue {
         if preview {self.foreign.bind(request);}true
     }
 
+    pub fn wait_group_drag(&mut self, request:u64, group:u32, before_group:u32, before_tab:u32)->bool {
+        if group==0 || (before_group!=0 && before_tab!=0) || !self.queued.iter().any(|r|
+            r.id==request && r.kind==RequestKind::StripAction && r.tab==0) { return false; }
+        self.group_drag.wait(request,group,before_group,before_tab); true
+    }
     pub fn commit_tab_drag(&mut self, request: u64, before: u32) -> bool {
         if request != 0 && !self.queued.iter().any(|r| r.id == request &&
             r.kind == RequestKind::StripAction && r.tab == self.tab_drag.state().tab) { return false; }
@@ -571,6 +578,7 @@ impl RequestQueue {
         self.pending = Default::default();
         self.address = Default::default();
         self.tab_drag = Default::default();
+        self.group_drag.end();
         self.foreign.end(true);
         self.transfers.cancel();
         self.queued_bytes = 0;
@@ -594,6 +602,7 @@ impl RequestQueue {
         self.pending.complete(id);
         self.address.complete(id);
         self.tab_drag.complete(id, outcome == Outcome::Completed);
+        self.group_drag.complete(id, outcome == Outcome::Completed);
         self.foreign.complete(id, outcome == Outcome::Completed);
         self.transfers.complete(id, outcome == Outcome::Completed);
         while self.history.len() >= self.limits.completion_history {
@@ -1193,5 +1202,22 @@ mod foreign_transfer_tests {
         q.begin_drain().unwrap();q.take_batch(16,65536);q.end_drain().unwrap();
         let later=q.transfers.reserve(1,2,7);assert!(!q.bind_transfer(later.ticket,valid,1,false));
         q.cancel_all();assert_eq!(q.transfers.next_effect(0).result,2);
+    }
+}
+
+#[cfg(test)]
+mod group_drag_tests {
+    use super::*;
+    #[test]
+    fn group_guard_rejection_survives_evicted_outcome_reports() {
+        let mut q=RequestQueue::new(Limits{max_pending_outcomes:1,..Default::default()});
+        let wrong=q.enqueue(RequestKind::StripAction,9,0,&[]).id;
+        assert!(!q.wait_group_drag(wrong,1,0,0));
+        let request=q.enqueue(RequestKind::StripAction,0,0,&[]).id;
+        assert!(q.wait_group_drag(request,1,0,0));
+        q.begin_drain().unwrap(); q.take_batch(16,65536); q.end_drain().unwrap();
+        q.complete(request,Outcome::Rejected).unwrap(); q.complete(wrong,Outcome::Completed).unwrap();
+        assert!(q.dropped_outcomes()>0); assert!(!q.group_drag.state().awaiting);
+        q.group_drag.wait(99,1,0,0); q.cancel_all(); assert!(!q.group_drag.state().awaiting);
     }
 }

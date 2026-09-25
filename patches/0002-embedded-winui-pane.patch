@@ -2508,10 +2508,10 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..96c1c588ed
+index 0000000000..fb60e4b6a0
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,230 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2521,8 +2521,8 @@ index 0000000000..96c1c588ed
 +let nextWindowDragSession = 0;
 +
 +export class WinUITabStripSession {
-+  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu }) {
-+    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu });
++  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, moveGroup }) {
++    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, moveGroup });
 +    this.ids = new WeakMap();
 +    this.nextId = 1;
 +    this.revision = 0;
@@ -2594,6 +2594,27 @@ index 0000000000..96c1c588ed
 +  }
 +
 +  receive(event) {
++    if (event?.kind === "strip-group-reorder") {
++      if (this.consumed || event.session !== this.windowDragSession || event.revision !== this.revision ||
++          !this.moveGroup || !Number.isSafeInteger(event.group) || event.group <= 0 ||
++          !Number.isSafeInteger(event.beforeGroup) || event.beforeGroup < 0 ||
++          !Number.isSafeInteger(event.beforeTab) || event.beforeTab < 0 ||
++          (event.beforeGroup && event.beforeTab) || event.beforeGroup === event.group) return false;
++      const current = this.describe();
++      const group = current.groups.find(g => g.id === event.group);
++      const old = this.state.groups.find(g => g.id === event.group);
++      if (!group || !old || !Array.isArray(current.layout) || !Array.isArray(group.members) ||
++          !this.same(current.layout,this.state.layout) ||
++          !this.same(group.members,old.members)) return false;
++      const units = current.layout.filter(s => !s.tab || (!s.group && !(current.rows.find(r=>r.id===s.tab)?.flags & 1)));
++      const from = units.findIndex(s => s.group === event.group);
++      const to = event.beforeGroup || event.beforeTab
++        ? units.findIndex(s => s.group === event.beforeGroup && s.tab === event.beforeTab) : units.length;
++      if (from < 0 || to < 0 || to === from || to === from+1) return false;
++      this.consumed = true;
++      return this.moveGroup(this.targets.get(event.group),
++        event.beforeGroup ? this.targets.get(event.beforeGroup) : null, event.beforeTab) !== false;
++    }
 +    if (event?.kind === "strip-group-context") {
 +      if (this.consumed || event.session !== this.windowDragSession || event.revision !== this.revision ||
 +          !Number.isSafeInteger(event.group) || event.group <= 0 || !this.openGroupMenu ||
@@ -3869,10 +3890,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..51dce5cd30
+index 0000000000..c36f032f8d
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1618 @@
+@@ -0,0 +1,1635 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4552,6 +4573,19 @@ index 0000000000..51dce5cd30
 +        "chrome://browser/content/WinUITabStripSession.sys.mjs");
 +      this.stripSession = new WinUITabStripSession({
 +        read: () => this.describeStrip(),
++        moveGroup: (group, beforeGroup, beforeTab) => {
++          if (gDialogBox.isOpen || !group?.isConnected || !gBrowser.tabGroups.includes(group) ||
++              !group.tabs.length || group.tabs.some(t=>t.closing)) return false;
++          const target = beforeGroup || (beforeTab ? this.resolveStripTab(beforeTab) : null);
++          if ((beforeGroup || beforeTab) && (!target?.isConnected || target === group || target.group || target.pinned)) return false;
++          // A split's internal gap is not a whole-group insertion boundary.
++          if (target?.splitview && target.splitview.tabs[0] !== target) return false;
++          const options = {metricsContext:gBrowser.TabMetrics.userTriggeredContext(
++            gBrowser.TabMetrics.METRIC_SOURCE.DRAG_AND_DROP)};
++          if (target) gBrowser.moveTabBefore(group,target,options);
++          else gBrowser.moveTabAfter(group,null,options);
++          return true;
++        },
 +        openGroupMenu: (group, bounds) => {
 +          if (gDialogBox.isOpen || !group?.isConnected || !gBrowser.tabGroups.includes(group)) return false;
 +          // WinUI sends physical screen pixels; XUL popup APIs use screen CSS pixels.
@@ -4791,8 +4825,12 @@ index 0000000000..51dce5cd30
 +        }
 +        return {id:this.tabIds.get(tab), title:(tab.label || "New tab").slice(0,1024), image};
 +      }) : [];
++      const members = target.tabs.map(tab => {
++        if (!this.tabIds.has(tab)) this.tabIds.set(tab,this.nextTabId++);
++        return this.tabIds.get(tab);
++      });
 +      return { target, name: name.slice(0, 1024), collapsed: target.collapsed, color,
-+        tabs,
++        tabs, members,
 +        headerText: (target.label || "").slice(0, 1024),
 +        label: label(target.collapsed ? "tab-group-label-tooltip-collapsed"
 +          : "tab-group-label-tooltip-expanded", {tabGroupName:name}).slice(0, 2048) };

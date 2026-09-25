@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 13
+#define SHELL_CORE_ABI_VERSION 14
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -353,6 +353,24 @@ typedef struct {
    */
   uint32_t result;
 } ShellTransfer;
+
+typedef struct {
+  uint32_t phase;
+  uint32_t group;
+  uint32_t before_group;
+  uint32_t before_tab;
+  bool valid;
+  double marker;
+  bool awaiting;
+  uint64_t request;
+} ShellGroupDrag;
+
+typedef struct {
+  uint32_t group;
+  uint32_t tab;
+  double start;
+  double end;
+} ShellGroupDragSlot;
 
 #ifdef __cplusplus
 extern "C" {
@@ -1087,6 +1105,59 @@ ShellStatus shell_core_departure_match(ShellCore *core,
  Live core.
  */
 ShellStatus shell_core_departure_removed(ShellCore *core, uint32_t tab);
+
+/*
+ Read whole-group gesture state.
+ # Safety
+ Live core and writable out.
+ */
+ShellStatus shell_core_group_drag_state(ShellCore *core, ShellGroupDrag *out);
+
+/*
+ Arm a group; IDs are group-scoped, never fake tab IDs.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_group_drag_arm(ShellCore *core, uint32_t group, double x, double y);
+
+/*
+ Advance a group using measured logical-axis blocks in browser order.
+ # Safety
+ Live core; slots reads len aligned entries, at most 10000.
+ */
+ShellStatus shell_core_group_drag_update(ShellCore *core,
+                                         double x,
+                                         double y,
+                                         bool inside,
+                                         const ShellGroupDragSlot *slots,
+                                         uintptr_t len);
+
+/*
+ Cancel or end the local group gesture before releasing native capture.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_group_drag_end(ShellCore *core);
+
+/*
+ Bind group selection stabilization to an admitted reorder request.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_group_drag_wait(ShellCore *core,
+                                       uint64_t request,
+                                       uint32_t group,
+                                       uint32_t before_group,
+                                       uint32_t before_tab);
+
+/*
+ Confirm whole-group order from a validated strip layout.
+ # Safety
+ Live core; slots reads len aligned entries, at most 20000.
+ */
+ShellStatus shell_core_group_drag_publish(ShellCore *core,
+                                          const ShellStripSlot *slots,
+                                          uintptr_t len);
 
 #ifdef __cplusplus
 }  // extern "C"

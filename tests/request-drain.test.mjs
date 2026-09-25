@@ -252,3 +252,24 @@ test("a drag continuation outcome names only its successful adoption request", (
     [{id:1, outcome:1, dragTab:42}, {id:2, outcome:2}, {id:3, outcome:1}]);
   assert.equal(f.pane.completedDragTab, 0);
 });
+
+
+test("whole-group adapter delegates the group object and rejects split-internal/pinned/empty targets",()=>{
+  let commands;
+  const moves=[], group={isConnected:true,tabs:[{}]}, first={isConnected:true}, second={isConnected:true};
+  first.splitview=second.splitview={tabs:[first,second]};
+  const context={window:{addEventListener(){}},gDialogBox:{isOpen:false},
+    ChromeUtils:{importESModule:()=>({WinUITabStripSession:class {
+      constructor(options){commands=options;} update(){return null;}
+    }})},
+    gBrowser:{tabGroups:[group],TabMetrics:{METRIC_SOURCE:{DRAG_AND_DROP:1},userTriggeredContext:()=>({})},
+      moveTabBefore:(...args)=>moves.push(args),moveTabAfter:(...args)=>moves.push(args)}};
+  runInNewContext(source,context);
+  context.gWinUIPane.resolveStripTab=id=>id===1?first:second;
+  context.gWinUIPane.publishStrip();
+  assert.equal(commands.moveGroup(group,null,2),false);
+  assert.equal(commands.moveGroup(group,null,1),true); assert.equal(moves[0][0],group); assert.equal(moves[0][1],first);
+  first.pinned=true; assert.equal(commands.moveGroup(group,null,1),false);
+  group.tabs=[]; assert.equal(commands.moveGroup(group,null,0),false);
+  assert.equal(moves.length,1);
+});

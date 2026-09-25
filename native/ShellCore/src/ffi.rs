@@ -2168,3 +2168,74 @@ mod transfer_ffi_tests {
         shell_core_transfer_cancel(source);shell_core_destroy(dest);shell_core_destroy(source);
     }}
 }
+
+/// Read whole-group gesture state.
+/// # Safety
+/// Live core and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_drag_state(core:*mut ShellCore,out:*mut crate::group_drag::ShellGroupDrag)->ShellStatus {
+    let Some(out)=out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out=Default::default();
+    queue_guard(core,|q| { *out=q.group_drag.state(); ShellStatus::Ok })
+}
+/// Arm a group; IDs are group-scoped, never fake tab IDs.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_drag_arm(core:*mut ShellCore,group:u32,x:f64,y:f64)->ShellStatus {
+    queue_guard(core,|q| if q.group_drag.arm(group,x,y) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+}
+/// Advance a group using measured logical-axis blocks in browser order.
+/// # Safety
+/// Live core; slots reads len aligned entries, at most 10000.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_drag_update(core:*mut ShellCore,x:f64,y:f64,inside:bool,slots:*const crate::group_drag::ShellGroupDragSlot,len:usize)->ShellStatus {
+    if slots.is_null() || len==0 || len>10000 { return ShellStatus::InvalidArgument; }
+    queue_guard(core,|q| if q.group_drag.update(x,y,inside,std::slice::from_raw_parts(slots,len)) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+}
+/// Cancel or end the local group gesture before releasing native capture.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_drag_end(core:*mut ShellCore)->ShellStatus {
+    queue_guard(core,|q| { q.group_drag.end(); ShellStatus::Ok })
+}
+
+#[cfg(test)]
+mod group_drag_ffi_tests {
+    use super::*;
+    #[test]
+    fn group_drag_bounds_lifetime_and_endpoint_cancellation() { unsafe {
+        let core=shell_core_create(&std::mem::zeroed());
+        let mut state=crate::group_drag::ShellGroupDrag::default();
+        assert_eq!(shell_core_group_drag_state(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_drag_arm(core,9,0.,0.),ShellStatus::Ok);
+        let slot=crate::group_drag::ShellGroupDragSlot{group:9,tab:0,start:0.,end:40.};
+        assert_eq!(shell_core_group_drag_update(core,8.,0.,true,std::ptr::null(),1),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_drag_update(core,8.,0.,true,&slot,10001),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_drag_update(core,8.,0.,true,&slot,1),ShellStatus::Ok);
+        let handle=core as usize;
+        assert_eq!(std::thread::spawn(move || shell_core_group_drag_end(handle as *mut ShellCore)).join().unwrap(),ShellStatus::WrongThread);
+        shell_core_cancel_all(core);
+        shell_core_group_drag_state(core,&mut state); assert_eq!(state.phase,0);
+        shell_core_close(core);
+        assert_eq!(shell_core_group_drag_arm(core,9,0.,0.),ShellStatus::Closed);
+        shell_core_destroy(core);
+    }}
+}
+
+/// Bind group selection stabilization to an admitted reorder request.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_drag_wait(core:*mut ShellCore,request:u64,group:u32,before_group:u32,before_tab:u32)->ShellStatus {
+    queue_guard(core,|q| if q.wait_group_drag(request,group,before_group,before_tab) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+}
+/// Confirm whole-group order from a validated strip layout.
+/// # Safety
+/// Live core; slots reads len aligned entries, at most 20000.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_drag_publish(core:*mut ShellCore,slots:*const crate::strip::ShellStripSlot,len:usize)->ShellStatus {
+    if len>20000 || (slots.is_null() && len!=0) { return ShellStatus::InvalidArgument; }
+    queue_guard(core,|q| { q.group_drag.publish(if len==0 { &[] } else { std::slice::from_raw_parts(slots,len) }); ShellStatus::Ok })
+}
