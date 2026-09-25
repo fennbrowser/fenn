@@ -32,6 +32,7 @@ struct InlineTabGroups {
     std::vector<uint64_t> order;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     std::function<void(uint32_t, bool)> toggle;
+    std::function<void(uint32_t, Windows::Foundation::Rect)> context;
     GroupTabsFlyout hover;
     bool configured{}, active{}, hasPreview{};
     Windows::Foundation::Point lastPointer{-1000000,-1000000};
@@ -251,6 +252,18 @@ struct InlineTabGroups {
                 run.button.Tag(box_value(uint32_t(id)));
                 Automation::AutomationProperties::SetAutomationId(run.button, L"FirefoxWinUIInlineGroup-" + to_hstring(id));
                 auto alive = std::weak_ptr<int>(lifetime);
+                run.button.ContextRequested([this, alive, id](auto&&, auto&& args) {
+                    if (alive.expired() || !context) return;
+                    auto found = runs.find(id);
+                    if (found == runs.end() || !found->second.button.IsLoaded()) return;
+                    args.Handled(true);
+                    hover.Dismiss();
+                    auto button = found->second.button;
+                    auto bounds = button.TransformToVisual(nullptr).TransformBounds(
+                        {0,0,float(button.ActualWidth()),float(button.ActualHeight())});
+                    auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(bounds);
+                    context(uint32_t(id), {float(screen.X),float(screen.Y),float(screen.Width),float(screen.Height)});
+                });
                 run.button.Click([this, alive, id](auto&&, auto&&) {
                     if (alive.expired()) return;
                     hover.Hide();

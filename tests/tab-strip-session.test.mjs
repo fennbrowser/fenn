@@ -491,3 +491,36 @@ test("group drop returns explicit browser rejection and cannot replay", () => {
   assert.equal(f.session.receive(f.groupAction), false);
   assert.equal(f.session.receive(f.groupAction), false);
 });
+
+
+test("group context menu resolves live groups once, expanded or collapsed", () => {
+  for (const collapsed of [false,true]) {
+    const f = fixture(), calls = [];
+    f.state.groups[0].collapsed = collapsed;
+    f.session.update();
+    f.session.openGroupMenu = (group, bounds) => calls.push({group,bounds});
+    const event = {kind:"strip-group-context", revision:f.session.revision,
+      session:f.session.windowDragSession, group:f.action.group, x:-120,y:32,width:80,height:32};
+    assert.equal(f.session.receive(event), true);
+    assert.deepEqual(calls, [{group:f.target,bounds:{x:-120,y:32,width:80,height:32}}]);
+    assert.equal(f.session.receive(event), false);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("group context menu rejects stale identity and invalid screen bounds", () => {
+  for (const override of [{session:0},{revision:0},{group:999},{group:1.5},
+    {x:NaN},{y:Infinity},{width:0},{height:-1},{x:1000001}]) {
+    const f = fixture();
+    f.session.openGroupMenu = () => assert.fail("Invalid menu request");
+    assert.equal(f.session.receive({kind:"strip-group-context", revision:f.session.revision,
+      session:f.session.windowDragSession,group:f.action.group,x:1,y:1,width:32,height:32,...override}), false);
+  }
+  for (const replace of [false,true]) {
+    const f = fixture();
+    f.session.openGroupMenu = () => assert.fail("Removed group");
+    if (replace) f.state.groups[0].target = {}; else f.state.groups = [];
+    assert.equal(f.session.receive({kind:"strip-group-context", revision:f.session.revision,
+      session:f.session.windowDragSession,group:f.action.group,x:1,y:1,width:32,height:32}),false);
+  }
+});

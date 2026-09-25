@@ -7,7 +7,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 CHECKOUT = ROOT / "upstream/firefox"
 BASE = "0304f5a3e392699f440f0e15f9ea0bc2790309c6"
-TRACKED = ["browser/locales/en-US/browser/tabbrowser.ftl", "browser/components/tabbrowser/content/tabgroup.mjs", "browser/components/tabbrowser/content/tab-context-menu.js", "browser/components/urlbar/content/UrlbarTelemetryUtils.mjs", "browser/components/urlbar/UrlbarProviderActionsSearchMode.sys.mjs", "browser/components/urlbar/content/SearchModeSwitcher.mjs", "browser/components/urlbar/content/UrlbarInputBase.mjs", "browser/components/urlbar/content/UrlbarView.mjs", "browser/app/Makefile.in", "browser/app/firefox.exe.manifest", "browser/app/profile/firefox.js", "browser/base/jar.mn",
+TRACKED = ["browser/components/tabbrowser/content/tabgroup-menu.js", "browser/locales/en-US/browser/tabbrowser.ftl", "browser/components/tabbrowser/content/tabgroup.mjs", "browser/components/tabbrowser/content/tab-context-menu.js", "browser/components/urlbar/content/UrlbarTelemetryUtils.mjs", "browser/components/urlbar/UrlbarProviderActionsSearchMode.sys.mjs", "browser/components/urlbar/content/SearchModeSwitcher.mjs", "browser/components/urlbar/content/UrlbarInputBase.mjs", "browser/components/urlbar/content/UrlbarView.mjs", "browser/app/Makefile.in", "browser/app/firefox.exe.manifest", "browser/app/profile/firefox.js", "browser/base/jar.mn",
            "browser/base/content/browser-main.js", "dom/base/nsDOMWindowUtils.cpp",
            "dom/interfaces/base/nsIDOMWindowUtils.idl", "widget/nsIWidget.h",
            "widget/windows/nsWindow.h", "widget/windows/nsWindow.cpp",

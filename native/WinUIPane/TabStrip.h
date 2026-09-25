@@ -298,6 +298,23 @@ struct NativeTabStrip {
             action.SetNamedValue(L"collapsed", JValue::CreateBooleanValue(collapsed));
             groupsButton.dispatch(action.Stringify());
         };
+        inlineGroups.context = [this](uint32_t id, Windows::Foundation::Rect bounds) {
+            if (IsDragging() || !groupsButton.dispatch) return;
+            // The next surface belongs to Gecko. Release island keyboard focus
+            // before Firefox opens its panel and focuses the group-name field.
+            if (ownerHwnd) SetFocus(ownerHwnd);
+            using Value = Windows::Data::Json::JsonValue;
+            Windows::Data::Json::JsonObject action;
+            action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-group-context"));
+            action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));
+            action.SetNamedValue(L"session", Value::CreateNumberValue(windowDragSession));
+            action.SetNamedValue(L"group", Value::CreateNumberValue(id));
+            action.SetNamedValue(L"x", Value::CreateNumberValue(bounds.X));
+            action.SetNamedValue(L"y", Value::CreateNumberValue(bounds.Y));
+            action.SetNamedValue(L"width", Value::CreateNumberValue(bounds.Width));
+            action.SetNamedValue(L"height", Value::CreateNumberValue(bounds.Height));
+            groupsButton.dispatch(action.Stringify());
+        };
         auto alive = std::weak_ptr<int>(lifetime);
         root.SizeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) groupSlide.Cancel(); });
         root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { groupSlide.Cancel(); inlineGroups.hover.Hide(); } });

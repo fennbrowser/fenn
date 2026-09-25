@@ -1141,6 +1141,44 @@ index 694225ca00..17c7d09f99 100644
  
      // When using the tab context menu to create a group from the all tabs
      // panel, make sure we close that panel so that it doesn't obscure the tab
+diff --git a/browser/components/tabbrowser/content/tabgroup-menu.js b/browser/components/tabbrowser/content/tabgroup-menu.js
+index 8ffbccbab6..fe09e865a7 100644
+--- a/browser/components/tabbrowser/content/tabgroup-menu.js
++++ b/browser/components/tabbrowser/content/tabgroup-menu.js
+@@ -926,7 +926,7 @@
+       return this.#hasSuggestedMlTabs;
+     }
+ 
+-    openEditModal(group) {
++    openEditModal(group, screenRect = null) {
+       this.activeGroup = group;
+       this.createMode = false;
+       this.suggestionState = this.smartTabGroupsEnabled
+@@ -935,9 +935,21 @@
+ 
+       this.#maybeUpdateLayoutForNova();
+ 
+-      this.#panel.openPopup(group.firstChild, {
+-        position: this.#panelPosition,
+-      });
++      if (screenRect) {
++        this.#panel.openPopupAtScreenRect(
++          "after_start",
++          screenRect.x,
++          screenRect.y,
++          screenRect.width,
++          screenRect.height,
++          false,
++          false
++        );
++      } else {
++        this.#panel.openPopup(group.firstChild, {
++          position: this.#panelPosition,
++        });
++      }
+       document.getElementById("tabGroupEditor_moveGroupToNewWindow").disabled =
+         gBrowser.openTabs.length == this.activeGroup?.tabs.length;
+       let linkCount = this.#getGroupLinks(this.activeGroup).length;
 diff --git a/browser/components/tabbrowser/content/tabgroup.mjs b/browser/components/tabbrowser/content/tabgroup.mjs
 index 282fdbdf2e..131c08fc8d 100644
 --- a/browser/components/tabbrowser/content/tabgroup.mjs
@@ -2470,10 +2508,10 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..0480d8b0b1
+index 0000000000..96c1c588ed
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,209 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2483,8 +2521,8 @@ index 0000000000..0480d8b0b1
 +let nextWindowDragSession = 0;
 +
 +export class WinUITabStripSession {
-+  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab }) {
-+    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab });
++  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu }) {
++    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu });
 +    this.ids = new WeakMap();
 +    this.nextId = 1;
 +    this.revision = 0;
@@ -2556,6 +2594,19 @@ index 0000000000..0480d8b0b1
 +  }
 +
 +  receive(event) {
++    if (event?.kind === "strip-group-context") {
++      if (this.consumed || event.session !== this.windowDragSession || event.revision !== this.revision ||
++          !Number.isSafeInteger(event.group) || event.group <= 0 || !this.openGroupMenu ||
++          ![event.x,event.y,event.width,event.height].every(n => Number.isFinite(n) && Math.abs(n) <= 1000000) ||
++          event.width <= 0 || event.height <= 0) return false;
++      const current = this.describe();
++      if (!current.groups.some(g => g.id === event.group) ||
++          !this.state.groups.some(g => g.id === event.group)) return false;
++      this.consumed = true;
++      return this.openGroupMenu(this.targets.get(event.group), {
++        x:event.x, y:event.y, width:event.width, height:event.height,
++      }) !== false;
++    }
 +    if (event?.kind === "strip-group-select") {
 +      if (this.consumed || event.session !== this.windowDragSession || event.revision !== this.revision ||
 +          !Number.isSafeInteger(event.group) || event.group <= 0 ||
@@ -3818,10 +3869,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..828781dadd
+index 0000000000..51dce5cd30
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1610 @@
+@@ -0,0 +1,1618 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4501,6 +4552,14 @@ index 0000000000..828781dadd
 +        "chrome://browser/content/WinUITabStripSession.sys.mjs");
 +      this.stripSession = new WinUITabStripSession({
 +        read: () => this.describeStrip(),
++        openGroupMenu: (group, bounds) => {
++          if (gDialogBox.isOpen || !group?.isConnected || !gBrowser.tabGroups.includes(group)) return false;
++          // WinUI sends physical screen pixels; XUL popup APIs use screen CSS pixels.
++          const scale = window.devicePixelRatio;
++          const screenRect = Object.fromEntries(Object.entries(bounds).map(([key,value]) => [key,value / scale]));
++          gBrowser.tabGroupMenu.openEditModal(group, screenRect);
++          return true;
++        },
 +        selectGroupTab: (group, id) => {
 +          if (gDialogBox.isOpen || !group?.isConnected || !group.collapsed || !gBrowser.tabGroups.includes(group)) return false;
 +          const tab = group.tabs.find(tab => this.tabIds.get(tab) === id &&
