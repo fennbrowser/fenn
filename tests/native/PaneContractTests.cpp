@@ -1866,20 +1866,27 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         auto b = view.TabItems().GetAt(1).as<Controls::TabViewItem>();
         auto ar = a.TransformToVisual(ambientLayer).TransformBounds({0,0,float(a.ActualWidth()),float(a.ActualHeight())});
         auto br = b.TransformToVisual(ambientLayer).TransformBounds({0,0,float(b.ActualWidth()),float(b.ActualHeight())});
-        Require(std::abs(groupVisual.Size().x - (br.X + br.Width - ar.X)) < 1 &&
-            std::abs(containerVisual.Size().x - (ar.Width - 10)) < 1,
-            "bottom field spans both tabs without a seam; the container field is inset on its own tab");
+        auto glowHeader = find(view,L"FirefoxWinUIInlineGroup-7");
+        auto hr = glowHeader.TransformToVisual(ambientLayer).TransformBounds(
+            {0,0,float(glowHeader.ActualWidth()),float(glowHeader.ActualHeight())});
+        Require(std::abs(groupVisual.Offset().x - hr.X) < 1 &&
+            std::abs(groupVisual.Size().x - (br.X + br.Width - hr.X)) < 1 &&
+            std::abs(containerVisual.Size().x - std::min(76.f, ar.Width - 12.f)) < 1,
+            "bottom field includes the disclosure button and both tabs; container glow is compact");
         winrt::Microsoft::UI::Composition::SpriteVisual groupCenter{nullptr};
         for (auto child : groupVisual.Children())
             if (child.Comment() == L"group-center") groupCenter = child.as<winrt::Microsoft::UI::Composition::SpriteVisual>();
         Require(groupVisual.Children().Count() == 3 && groupCenter &&
-            std::abs(groupCenter.Size().x - (groupVisual.Size().x - 128)) < 1 && groupCenter.Offset().x == 64,
-            "rounded group caps stay bounded to 64 DIP, keeping first and last members illuminated");
+            std::abs(groupCenter.Size().x - (groupVisual.Size().x - 48)) < 1 && groupCenter.Offset().x == 24,
+            "rounded group caps taper only within 24 DIP of the outer corners");
         auto lowerBrush = groupCenter.Brush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+        Require(containerVisual.Children().Count() == 0 &&
+            std::abs(containerVisual.Offset().x + containerVisual.Size().x / 2 - (ar.X + ar.Width / 2)) < 1,
+            "container glow is a single compact ellipse centered on its tab");
         auto upperBrush = containerVisual.Brush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
         Require(containerVisual.Offset().y < ar.Y && ambientLayer.Clip().Rect().Y == 0 &&
             std::abs(containerVisual.Offset().y + upperBrush.EllipseCenter().y * containerVisual.Size().y - ar.Y) < .01f &&
-            std::abs(upperBrush.EllipseRadius().y * containerVisual.Size().y - .8f * ar.Height) < .01f,
+            std::abs(upperBrush.EllipseRadius().y * containerVisual.Size().y - .8f * std::min(20.f, ar.Height * .65f)) < .01f,
             "container glow crosses the tab top into strip padding, retaining its peak and downward falloff");
         Require(lowerBrush.EllipseCenter().y == 1 && lowerBrush.EllipseRadius().x == 1.f &&
             upperBrush.EllipseCenter().y > 0 && upperBrush.EllipseRadius().x == .5f &&
@@ -1918,28 +1925,37 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         ar = a.TransformToVisual(ambientLayer).TransformBounds({0,0,float(a.ActualWidth()),float(a.ActualHeight())});
         br = b.TransformToVisual(ambientLayer).TransformBounds({0,0,float(b.ActualWidth()),float(b.ActualHeight())});
         auto joined = topGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
-        Require(topGlow.Children().Count() == 1 && joined.Children().Count() == 3 &&
-            std::abs(joined.Size().x - (br.X + br.Width - ar.X - 10)) < 1,
-            "adjacent same-color containers share one rounded field across both tabs regardless of identity");
+        Require(topGlow.Children().Count() == 2 && joined.Children().Count() == 0 && joined.Size().x <= 76,
+            "same-color neighboring containers retain compact individual glows");
+        auto activeClip = diffusion.Clip().as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>();
+        Require(activeClip.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path() != nullptr,
+            "the active tab cuts a notch in the final diffused glow rather than changing the per-tab fields");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,41,&selected)), "activate the first container tab");
+        settle();
+        Require(diffusion.Clip() != activeClip && topGlow.Children().First().Current() == joined,
+            "active-tab clipping follows selection without replacing the container glow");
+        activeClip = diffusion.Clip().as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>();
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "restore the second active tab");
+        settle();
+        Require(diffusion.Clip() != activeClip, "moving activation restores the former active tab's upper spill");
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":23,"revision":24,"rows":[{"id":42,"containerColor":4281558681}],"removed":[]}})");
         settle();
         Require(topGlow.Children().Count() == 2, "different colors retain two independently composited fields");
         float leftEnd = 0, rightStart = 0;
         for (auto visual : topGlow.Children()) {
-            Require(visual.as<winrt::Microsoft::UI::Composition::SpriteVisual>().Children().Count() == 3,
-                "neighboring color fields retain rounded caps");
+            Require(visual.as<winrt::Microsoft::UI::Composition::SpriteVisual>().Children().Count() == 0,
+                "neighboring color fields retain compact ellipses");
             if (visual.Comment() == L"container:41") leftEnd = visual.Offset().x + visual.Size().x;
             if (visual.Comment() == L"container:42") rightStart = visual.Offset().x;
         }
-        Require(std::abs(leftEnd - (ar.X + ar.Width + 12)) < 1 &&
-            std::abs(rightStart - (br.X - 12)) < 1 && leftEnd > rightStart,
-            "different-color translucent ends overlap across the tab boundary");
+        Require(leftEnd < rightStart && leftEnd < ar.X + ar.Width && rightStart > br.X,
+            "compact different-color glows remain inside their own tab widths");
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":24,"revision":25,"rows":[{"id":42,"containerName":"","containerColor":0}],"removed":[]}})");
         settle();
         auto isolated = topGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
         Require(topGlow.Children().Count() == 1 && isolated.Children().Count() == 0 &&
-            std::abs(isolated.Size().x - (ar.Width - 10)) < 1,
-            "removing a neighbor container restores the isolated ellipse without a stale joined field");
+            std::abs(isolated.Size().x - std::min(76.f, ar.Width - 12.f)) < 1,
+            "removing a neighbor container leaves the remaining compact glow unchanged");
         // Clear both color sources in the next full snapshot.
         motionState(26,false); settle();
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 0,

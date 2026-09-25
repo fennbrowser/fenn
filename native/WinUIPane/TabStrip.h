@@ -116,50 +116,29 @@ struct NativeTabStrip {
         // the scroll viewport's horizontal clipping and bottom boundary.
         ambientViewport.Height += ambientViewport.Y;
         ambientViewport.Y = 0;
-        ambient.Clip(ambientViewport, root.Visibility() == Visibility::Visible);
+        Windows::Foundation::Rect activeBounds{};
+        auto activeRow = rows.find(activeTabId);
+        if (activeRow != rows.end() && activeRow->second.IsLoaded() &&
+            activeRow->second.Visibility() == Visibility::Visible && activeRow->second.Opacity() > 0)
+            activeBounds = boundsOf(activeRow->second);
+        ambient.Clip(ambientViewport, root.Visibility() == Visibility::Visible, activeBounds);
         ambient.Motion(IsDragging() || GroupDrag().phase || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty());
         std::set<uint32_t> containers, groups;
         std::map<uint32_t, Windows::Foundation::Rect> groupBounds;
-        // Physical order includes uncolored tabs as barriers and works in RTL.
-        // Use complete layout bounds so scrolling never recenters a field.
-        struct ContainerRun { uint32_t id, color; Windows::Foundation::Rect bounds; bool colored, connected{}; };
-        std::vector<ContainerRun> runs;
+        // A compact half-ellipse centered on each tab's top edge. Container
+        // colors remain per-tab; group lighting keeps its wider shared field.
         for (auto const& [id, row] : rows) {
-            if (!row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) continue;
+            if (!containerGlow || !row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) continue;
             auto meta = presentation.find(id);
-            if (!containerGlow) continue;
+            if (meta == presentation.end() || meta->second.containerName.empty()) continue;
             auto bounds = boundsOf(row);
-            if (bounds.Width <= 0 || bounds.Height <= 0) continue;
-            const bool colored = meta != presentation.end() && !meta->second.containerName.empty();
-            runs.push_back({id, colored ? meta->second.containerColor : 0, bounds, colored});
-        }
-        std::sort(runs.begin(), runs.end(), [](auto const& a, auto const& b) { return a.bounds.X < b.bounds.X; });
-        auto adjacent = [](auto const& a, auto const& b) {
-            const auto gap = b.bounds.X - (a.bounds.X + a.bounds.Width);
-            return a.colored && b.colored && std::abs(gap) <= 4.f &&
-                std::abs(a.bounds.Y - b.bounds.Y) < 1.f && std::abs(a.bounds.Height - b.bounds.Height) < 1.f;
-        };
-        std::vector<ContainerRun> merged;
-        for (auto run : runs) {
-            if (!merged.empty() && adjacent(merged.back(), run) && merged.back().color == run.color) {
-                auto& last = merged.back();
-                last.bounds.Width = run.bounds.X + run.bounds.Width - last.bounds.X;
-                last.connected = true;
-            } else merged.push_back(run);
-        }
-        for (size_t i = 0; i < merged.size(); ++i) {
-            auto const& run = merged[i];
-            if (!run.colored) continue;
-            const bool left = i && adjacent(merged[i - 1], run);
-            const bool right = i + 1 < merged.size() && adjacent(run, merged[i + 1]);
-            auto bounds = run.bounds;
-            // Different colors retain separate translucent fields. Their short
-            // rounded caps overlap across the shared edge, without a hard split.
-            const float leftInset = left ? -12.f : 5.f, rightInset = right ? -12.f : 5.f;
-            bounds.X += leftInset; bounds.Width -= leftInset + rightInset;
-            if (bounds.Width <= 0 || bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
-            containers.insert(run.id);
-            ambient.Put(ambient.containers, run.id, run.color, bounds, true, run.connected || left || right);
+            const float width = std::min(76.f, std::max(0.f, bounds.Width - 12.f));
+            bounds.X += (bounds.Width - width) / 2;
+            bounds.Width = width;
+            bounds.Height = std::min(20.f, bounds.Height * .65f);
+            if (bounds.Width <= 0 || bounds.Height <= 0 || bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
+            containers.insert(id);
+            ambient.Put(ambient.containers, id, meta->second.containerColor, bounds, true);
         }
         // Keep the complete laid-out union, then clip it to the viewport. Using
         // the clipped bounds to size the gradient would recenter it on scroll.
@@ -184,6 +163,18 @@ struct NativeTabStrip {
             auto color = uint32_t(group.GetNamedNumber(L"color", 0));
             if (!color || !groupBounds.count(id)) continue;
             auto bounds = groupBounds.at(id);
+            // Include the inline disclosure button horizontally, retaining the
+            // tabs' bottom edge as the light source even if header heights differ.
+            auto header = inlineGroups.runs.find(id);
+            if (header != inlineGroups.runs.end()) {
+                auto button = header->second.button;
+                if (button && button.IsLoaded() && button.Visibility() == Visibility::Visible && button.Opacity() > 0) {
+                    auto headerBounds = boundsOf(button);
+                    auto right = std::max(bounds.X + bounds.Width, headerBounds.X + headerBounds.Width);
+                    bounds.X = std::min(bounds.X, headerBounds.X);
+                    bounds.Width = right - bounds.X;
+                }
+            }
             if (bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
             groups.insert(id);
             ambient.Put(ambient.groups, id, color, bounds, false);
@@ -1635,6 +1626,7 @@ struct NativeTabStrip {
         syncing = true;
         view.SelectedItem(found == rows.end() ? nullptr : found->second);
         syncing = false;
+        ambient.Update();
         // Only the two rows whose active-tab status can have changed. TabView
         // realizes a row per tab, so touching all of them here would put back
         // exactly the per-tab work this path exists to remove.

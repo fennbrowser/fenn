@@ -2,6 +2,7 @@
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 #include "TabGlowDiffusion.h"
+#include "TabAmbientClip.h"
 
 // Decorative Composition children cannot take focus, enter UIA's control tree,
 // or affect TabView measurement. Both fields use ordinary source-over alpha.
@@ -17,6 +18,8 @@ struct TabAmbient {
     winrt::Microsoft::UI::Xaml::Controls::Canvas layer{nullptr};
     winrt::Microsoft::UI::Composition::ContainerVisual bottom{nullptr}, top{nullptr};
     winrt::Microsoft::UI::Composition::LayerVisual diffusion{nullptr};
+    winrt::com_ptr<ID2D1Factory> clipFactory;
+    Rect clippedViewport{}, clippedActive{};
     std::map<uint32_t, Field> groups, containers;
     winrt::Windows::UI::ViewManagement::AccessibilitySettings accessibility;
     winrt::Windows::UI::ViewManagement::UISettings settings;
@@ -88,12 +91,39 @@ struct TabAmbient {
             if (!weak.expired()) Update();
         });
     }
-    void Clip(Rect viewport, bool visible) {
+    void Clip(Rect viewport, bool visible, Rect active = {}) {
         visible = visible && !accessibility.HighContrast();
         bottom.IsVisible(visible); top.IsVisible(visible);
         const winrt::Windows::Foundation::Numerics::float2 size{
             std::max(0.f, viewport.X + viewport.Width), std::max(0.f, viewport.Y + viewport.Height)};
         if (diffusion.Size() != size) diffusion.Size(size);
+        // Cut only the area above the active tab, after Gaussian diffusion.
+        // Shared container fields keep their geometry beneath the notch.
+        const float left = std::max(viewport.X, active.X);
+        const float right = std::min(viewport.X + viewport.Width, active.X + active.Width);
+        if (active.Height <= 0 || right <= left || active.Y <= viewport.Y) {
+            diffusion.Clip(nullptr);
+            clippedActive = {};
+        } else if (!diffusion.Clip() || clippedViewport != viewport || clippedActive != active) {
+            if (!clipFactory) winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, clipFactory.put()));
+            winrt::com_ptr<ID2D1PathGeometry> path;
+            winrt::check_hresult(clipFactory->CreatePathGeometry(path.put()));
+            winrt::com_ptr<ID2D1GeometrySink> sink;
+            winrt::check_hresult(path->Open(sink.put()));
+            sink->BeginFigure({viewport.X, viewport.Y}, D2D1_FIGURE_BEGIN_FILLED);
+            const float edge = std::min(active.Y, viewport.Y + viewport.Height);
+            const D2D1_POINT_2F points[] = {{left, viewport.Y}, {left, edge}, {right, edge},
+                {right, viewport.Y}, {viewport.X + viewport.Width, viewport.Y},
+                {viewport.X + viewport.Width, viewport.Y + viewport.Height}, {viewport.X, viewport.Y + viewport.Height}};
+            sink->AddLines(points, ARRAYSIZE(points));
+            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            winrt::check_hresult(sink->Close());
+            auto compositor = diffusion.Compositor();
+            auto geometry = compositor.CreatePathGeometry(winrt::Microsoft::UI::Composition::CompositionPath(
+                winrt::make<TabAmbientClip>(std::move(path))));
+            diffusion.Clip(compositor.CreateGeometricClip(geometry));
+            clippedViewport = viewport; clippedActive = active;
+        }
         // Avoid invalidating XAML layout from LayoutUpdated.
         auto old = layer.Clip();
         if (!old) {
@@ -180,7 +210,7 @@ struct TabAmbient {
             field.visual.Offset({bounds.X, bounds.Y, 0});
             field.visual.Size({bounds.Width, bounds.Height});
             if (capped) {
-                const auto cap = std::min(upper ? 32.f : 64.f, bounds.Width / 4);
+                const auto cap = std::min(upper ? 16.f : 24.f, bounds.Width / 4);
                 field.left.Size({cap, bounds.Height});
                 field.middle.Offset({cap, 0, 0});
                 field.middle.Size({bounds.Width - 2 * cap, bounds.Height});
