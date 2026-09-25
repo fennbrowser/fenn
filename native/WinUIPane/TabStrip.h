@@ -1084,12 +1084,13 @@ struct NativeTabStrip {
             auto group = value.GetObject();
             auto id = NativeJson::RequireId(group, L"id");
             auto name = group.GetNamedString(L"name"), text = group.GetNamedString(L"label");
+            auto headerText = group.GetNamedString(L"headerText", L"");
             group.GetNamedBoolean(L"collapsed");
             const auto color = group.GetNamedNumber(L"color", 0);
             if (!std::isfinite(color) || color < 0 || color > UINT32_MAX || std::floor(color) != color)
                 throw hresult_invalid_argument();
             if (!ids.insert(id).second || name.empty() || name.size() > NativeJson::kMaxShortLabel || text.empty() ||
-                text.size() > NativeJson::kMaxDetailText)
+                text.size() > NativeJson::kMaxDetailText || headerText.size() > NativeJson::kMaxShortLabel)
                 throw hresult_invalid_argument();
         }
         std::vector<ShellStripSlot> layout;

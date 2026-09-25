@@ -16,7 +16,7 @@ struct InlineTabGroups {
         Map model = single_threaded_observable_map<hstring, Object>();
         Vector items = single_threaded_observable_vector<Object>();
         Controls::Button button{nullptr};
-        hstring name, label;
+        hstring name, label, headerText;
         bool collapsed{};
         uint32_t color{};
         Media::SolidColorBrush accent{nullptr};
@@ -81,6 +81,20 @@ struct InlineTabGroups {
             if (found == runs.end() || !found->second.button) continue;
             auto& run = found->second;
             auto name = group.GetNamedString(L"name"), label = group.GetNamedString(L"label");
+            auto headerText = group.GetNamedString(L"headerText", L"");
+            auto panel = run.button.Content().as<Controls::Grid>();
+            auto rotor = panel.Children().GetAt(1).as<Controls::Grid>();
+            auto text = panel.Children().GetAt(2).as<Controls::TextBlock>();
+            const bool named = !headerText.empty();
+            if (run.headerText != headerText) {
+                run.headerText = headerText;
+                text.Text(headerText);
+                text.Visibility(named ? Visibility::Visible : Visibility::Collapsed);
+                rotor.Visibility(named ? Visibility::Collapsed : Visibility::Visible);
+                if (named) run.button.ClearValue(FrameworkElement::WidthProperty());
+                else run.button.Width(32);
+                if (run.arrowMotion) { run.arrowMotion.Stop(); run.arrowMotion = nullptr; }
+            }
             const bool collapsed = group.GetNamedBoolean(L"collapsed");
             if (run.name.empty() || run.collapsed != collapsed) {
                 const bool changed = run.collapsed != collapsed;
@@ -95,7 +109,7 @@ struct InlineTabGroups {
                 if (run.arrowMotion) { run.arrowMotion.Stop(); run.arrowMotion = nullptr; }
                 arrow.Glyph(collapsed ? L"\uE70D" : L"\uE76C");
                 turn.Angle(0);
-                if (changed && animate && arrow.IsLoaded()) {
+                if (changed && animate && !named && arrow.IsLoaded()) {
                     // Rotate the new glyph from the old direction. Preserve the
                     // current angle on reversal instead of jumping to an endpoint.
                     const auto direction = arrow.FlowDirection() == FlowDirection::RightToLeft ? -1.0 : 1.0;
@@ -169,22 +183,23 @@ struct InlineTabGroups {
             auto& run = it->second;
             if (created && id <= UINT32_MAX) {
                 run.button = Markup::XamlReader::Load(LR"(
-<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Style="{StaticResource SubtleButtonStyle}" Margin="4,0" Padding="0" MinWidth="0" MinHeight="0" Width="32" Height="32" VerticalAlignment="Center">
+<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Style="{StaticResource SubtleButtonStyle}" Margin="4,0" Padding="4,0" MinWidth="32" MinHeight="0" Width="32" Height="32" VerticalAlignment="Center">
  <Button.Resources><ResourceDictionary><ResourceDictionary.ThemeDictionaries>
   <ResourceDictionary x:Key="Default"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="Transparent"/></ResourceDictionary>
   <ResourceDictionary x:Key="HighContrast"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="{ThemeResource SystemColorWindowTextColor}"/></ResourceDictionary>
  </ResourceDictionary.ThemeDictionaries></ResourceDictionary></Button.Resources>
- <Grid Width="24" Height="24" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
+ <Grid MinWidth="24" MaxWidth="144" Height="24" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
   <Rectangle Width="16" Height="3" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1" Fill="{ThemeResource InlineGroupColorBrush}" Visibility="Collapsed"/>
   <Grid RenderTransformOrigin="0.5,0.5">
    <Grid.RenderTransform><RotateTransform/></Grid.RenderTransform>
    <FontIcon FontSize="12" MirroredWhenRightToLeft="True"/>
   </Grid>
+  <TextBlock FontSize="12" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Visibility="Collapsed"/>
  </Grid>
 </Button>)").as<Controls::Button>();
                 run.accent = run.button.Resources().ThemeDictionaries().Lookup(box_value(L"Default")).as<ResourceDictionary>()
                     .Lookup(box_value(L"InlineGroupColorBrush")).as<Media::SolidColorBrush>();
-                // One retained 32-DIP Button owns the entire input target. A future
+                // One retained Button owns the entire input target. A future
                 // group drag can arm from this opaque ID, use the existing drag
                 // session, and suppress Click after crossing its drag threshold.
                 // Do not enable CanDrag: this host deliberately avoids OLE.

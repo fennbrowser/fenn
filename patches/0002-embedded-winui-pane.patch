@@ -3805,10 +3805,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..c988145bd1
+index 0000000000..64fa159106
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1580 @@
+@@ -0,0 +1,1581 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4697,6 +4697,7 @@ index 0000000000..c988145bd1
 +      const rgba = InspectorUtils.colorToRGBA(getComputedStyle(line || target.labelElement).backgroundColor);
 +      const color = rgba ? ((Math.round(rgba.a * 255) * 0x1000000) + (rgba.r << 16) + (rgba.g << 8) + rgba.b) : 0;
 +      return { target, name: name.slice(0, 1024), collapsed: target.collapsed, color,
++        headerText: (target.label || "").slice(0, 1024),
 +        label: label(target.collapsed ? "tab-group-label-tooltip-collapsed"
 +          : "tab-group-label-tooltip-expanded", {tabGroupName:name}).slice(0, 2048) };
 +    });

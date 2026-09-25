@@ -1667,16 +1667,25 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     }
     auto collapsed = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":1,"revision":2,"rtl":true,"rows":[],"removed":[42],"groups":[{"id":7,"name":"Renamed","label":"Expand Renamed","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":9,"tab":0}]}})";
     auto collapseData = winrt::Windows::Data::Json::JsonObject::Parse(collapsed);
+    collapseData.GetNamedObject(L"strip").GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(L"headerText",
+        winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"A deliberately long named group for trimming"));
     collapseData.GetNamedObject(L"strip").SetNamedValue(L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
     MenuPublish(api,host,collapseData.Stringify().c_str());
     Require(SUCCEEDED(api.syncTabs(host,tabs,1,41,&selected)), "sync hidden group member");
     settle();
     Require(marker.Visibility() == Visibility::Collapsed, "legacy group metadata without color hides marker");
-    Require(header.ActualWidth() == 32 && capsule.Children().GetAt(1).Visibility() == Visibility::Visible &&
-        capsule.Children().GetAt(1).as<Controls::Grid>().Children().GetAt(0).as<Controls::FontIcon>().Glyph() == L"\uE70D", "collapsed group retains width and points down");
+    auto groupText = capsule.Children().GetAt(2).as<Controls::TextBlock>();
+    Require(header.ActualWidth() > 32 && header.ActualWidth() <= 154 && groupText.Visibility() == Visibility::Visible &&
+        groupText.Text() == L"A deliberately long named group for trimming" && groupText.TextTrimming() == TextTrimming::CharacterEllipsis &&
+        capsule.Children().GetAt(1).Visibility() == Visibility::Collapsed &&
+        capsule.Children().GetAt(1).as<Controls::Grid>().Children().GetAt(0).as<Controls::FontIcon>().Glyph() == L"\uE70D", "named group replaces the arrow with bounded text");
     Require(view.TabItems().Size() == 1 && view.TabItems().GetAt(0) == first && view.SelectedItem() == first, "collapse retains real active tab");
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
-    MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"rtl":true,"rows":[],"removed":[]}})");
+    MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"rtl":true,"rows":[],"removed":[],"groups":[{"id":7,"name":"Unnamed group","headerText":"","label":"Expand unnamed group","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}]}})");
+    settle();
+    Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && header.ActualWidth() == 32 &&
+        groupText.Visibility() == Visibility::Collapsed && capsule.Children().GetAt(1).Visibility() == Visibility::Visible,
+        "clearing the name restores the arrow on the retained button");
     Require(root.FlowDirection() == FlowDirection::RightToLeft, "inline groups inherit RTL");
     // The grouped source is also used for an entirely ungrouped strip. Moving
     // its first tab changes the run identity and reparents the retained rows.
