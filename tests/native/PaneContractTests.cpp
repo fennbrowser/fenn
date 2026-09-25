@@ -2173,7 +2173,7 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
     return bounds;
 }
 
-static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false, bool inactive = false, bool rearm = false) {
+static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false, bool inactive = false, bool rearm = false, bool grouping = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     RECT rect{0, 0, 600, 48};
@@ -2190,6 +2190,9 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
     auto root = content.as<Controls::Grid>();
     root.RequestedTheme(reject ? ElementTheme::Dark : ElementTheme::Light);
     auto view = root.Children().GetAt(0).as<Controls::TabView>();
+    if (grouping) {
+        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":50,"rtl":false,"groupsLabel":"Groups","groups":[],"windowDragSession":1,"rows":[{"id":11,"detail":"","flags":0,"groupSource":true},{"id":22,"detail":"","flags":0,"groupTarget":true}],"layout":[{"group":0,"tab":11},{"group":0,"tab":22}]}})");
+    }
     auto first = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
     for (int i = 0; i < 300 && (!first.IsLoaded() || first.ActualWidth() == 0); ++i) {
         Pump();
@@ -2259,12 +2262,13 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
         moveTo(x, client.y);
         settle();
     }
-    // Finish past the last tab's midpoint but inside the actual strip.
-    const LONG endX = lastBounds.right - 8;
+    // Finish over the target for grouping, or at the end for a reorder.
+    const LONG endX = grouping ? (lastBounds.left + lastBounds.right) / 2 : lastBounds.right - 8;
     for (int step = 1; step <= 25; ++step) {
         moveTo(client.x + (endX - client.x) * step / 25, client.y);
         settle(5);
     }
+    if (grouping) settle(100);
     CheckFloatingDragBitmap(module, reject);
     if (rearm) {
         UnhookWindowsHookEx(createProbe);
@@ -2287,6 +2291,26 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
     Require(DragPreviewWindows().empty(), "release destroys the floating drag HWND");
     puts("Drag gesture completed without crashing");
     CheckAttachedTabAppearance(first);
+    if (grouping) {
+        auto action = NextRequest(api,host,5,L"strip-create-group").GetNamedObject(L"action");
+        Require(action.GetNamedNumber(L"id") == 11 && action.GetNamedNumber(L"targetId") == 22, "physical dwell creates group");
+        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":50,"revision":51,"rows":[],"removed":[],"groups":[{"id":7,"name":"New group","label":"New group","collapsed":false}],"layout":[{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22}]}})");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,11,&selected)), "Firefox confirms created group");
+        settle(100);
+        // Raw capture can deprive TabViewItem of PointerReleased. Re-enter the
+        // retained source after grouping, without another press or selection.
+        auto groupedBounds = TabScreenBounds(host, L"FirefoxWinUITab-11");
+        moveTo(groupedBounds.left + 16, (groupedBounds.top + groupedBounds.bottom) / 2);
+        settle();
+        moveTo(groupedBounds.right - 48, (groupedBounds.top + groupedBounds.bottom) / 2);
+        settle();
+        CheckAttachedTabAppearance(first);
+        auto templateRoot = Media::VisualTreeHelper::GetChild(first,0).as<FrameworkElement>();
+        auto background = templateRoot.FindName(L"SelectedBackgroundPath").as<FrameworkElement>();
+        Require(first.IsSelected() && background.Visibility() == Visibility::Visible && background.Opacity() == 1,
+                "grouped active tab immediately has its attached selected background");
+        return;
+    }
     auto event = NextRequest(api, host, 5, L"strip-reorder",40,reject ? 2 : 1).GetNamedObject(L"action");
     Require(event.Size() && event.GetNamedNumber(L"id") == 11 && event.GetNamedNumber(L"beforeId") == 0,
             "a real pointer drag past the last tab queues a validated move-to-end request");
@@ -2703,7 +2727,7 @@ int wmain(int argc, wchar_t** argv) {
     Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 ||
                                         wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 ||
                                         wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--continuation") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                                        wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0)),
+                                        wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || wcscmp(argv[2], L"--group-drop") == 0)),
             "DLL path and optional --inspect required");
     // Before the DLL loads, because the pane reads this once. Without it the
     // request path's stages are counted but never timed, and the assertions
@@ -2763,7 +2787,7 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
     if (argc == 3 && (wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--continuation") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                      wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0)) {
+                      wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || wcscmp(argv[2], L"--group-drop") == 0)) {
         auto dragTicks = [&] {
             auto counts = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
                 GetProcAddress(module, "WinUIPaneTestGetEntryCalls"));
@@ -2772,7 +2796,9 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(counts(L"dragTick", &value)), "read drag tick count");
             return value;
         };
-        if (wcscmp(argv[2], L"--continuation") == 0) {
+        if (wcscmp(argv[2], L"--group-drop") == 0) {
+            CheckTabStripDrag(module, api, first, false, false, false, true);
+        } else if (wcscmp(argv[2], L"--continuation") == 0) {
             CheckWindowContinuation(module, api, first);
         } else if (wcscmp(argv[2], L"--transfers") == 0) {
             CheckTabStripDetach(module, api, first, false, -1);

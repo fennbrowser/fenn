@@ -1929,8 +1929,16 @@ struct NativeTabStrip {
                                 // Use the same live cursor sample as the session poll.
                                 // Queued routed coordinates can belong to an older
                                 // layout or gesture after a transfer.
-                                if (alive.expired() || syncing || Drag().tab != id || Drag().phase == DragPhase::None)
+                                if (alive.expired() || syncing || !rows.count(id)) return;
+                                if (Drag().tab != id || Drag().phase == DragPhase::None) {
+                                    // Stock TabViewItem keeps checking for drag after
+                                    // raw capture steals its PointerReleased event.
+                                    // Its class handler can re-enter floating state on
+                                    // a later hover even with no button held. Our session
+                                    // owns dragging, so undo that stale presentation.
+                                    TabDragImage::SetFloatingAppearance(rows.at(id), false);
                                     return;
+                                }
                                 if (tickDragSession) tickDragSession();
                             })),
                         true);
