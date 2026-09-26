@@ -147,9 +147,26 @@ struct NativeTabStrip {
             activeRow->second.Visibility() == Visibility::Visible && activeRow->second.Opacity() > 0)
             activeBounds = boundsOf(activeRow->second);
         ambient.Clip(ambientViewport, root.Visibility() == Visibility::Visible, activeBounds, fadeLeft, fadeRight);
+        std::vector<TabLightContour::Face> faces;
+        for (auto const& [id, row] : rows) {
+            if (!row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) continue;
+            const auto bounds = boundsOf(row);
+            if (bounds.Width <= 0 || bounds.Height <= 0 || bounds.X + bounds.Width + TabLightContour::Flare <= viewport.X ||
+                bounds.X - TabLightContour::Flare >= viewport.X + viewport.Width) continue;
+            const auto radius = row.CornerRadius();
+            faces.push_back({id, bounds, float(radius.TopLeft), float(radius.TopRight), id == activeTabId});
+        }
+        ambient.Faces(ambientViewport, faces);
         ambient.Motion(followingMotion);
         std::set<uint32_t> containers, groups;
         std::map<uint32_t, Windows::Foundation::Rect> groupBounds;
+        std::map<uint32_t, std::vector<std::pair<uint32_t, Windows::Foundation::Rect>>> groupMembers;
+        std::set<uint64_t> outerEdges, sharedEdges;
+        auto containerColor = [&](uint32_t id) -> uint32_t {
+            auto meta = presentation.find(id);
+            return containerGlow && meta != presentation.end() && !meta->second.containerName.empty()
+                ? meta->second.containerColor : 0;
+        };
         // A compact half-ellipse centered on each tab's top edge. Container
         // colors remain per-tab; group lighting keeps its wider shared field.
         for (auto const& [id, row] : rows) {
@@ -175,6 +192,7 @@ struct NativeTabStrip {
             if (!row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) continue;
             auto bounds = boundsOf(row);
             if (bounds.Width <= 0 || bounds.Height <= 0) continue;
+            groupMembers[slot.group].emplace_back(slot.tab, bounds);
             auto [it, inserted] = groupBounds.emplace(slot.group, bounds);
             if (!inserted) {
                 auto& total = it->second;
@@ -204,6 +222,35 @@ struct NativeTabStrip {
             }
             if (bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
             groups.insert(id);
+            auto& members = groupMembers.at(id);
+            std::sort(members.begin(), members.end(), [](auto const& a, auto const& b) {
+                return a.second.X < b.second.X;
+            });
+            // Full physical bounds preserve RTL and scrolling. Never invent a
+            // group end at the viewport edge, or a seam across a drag/layout gap.
+            for (uint64_t side = 0; side < 2; ++side) {
+                const uint64_t key = uint64_t(id) * 2 + side;
+                outerEdges.insert(key);
+                auto edge = bounds;
+                edge.X += side ? edge.Width - 1.25f : 0;
+                edge.Width = 1.25f;
+                auto const& member = side ? members.back() : members.front();
+                const float tabEdge = member.second.X + (side ? member.second.Width - 1.25f : 0);
+                ambient.Edge(ambient.outerEdges[key], color,
+                    std::abs(tabEdge - edge.X) < 2.f ? containerColor(member.first) : 0, 0, edge, true);
+            }
+            for (size_t i = 1; i < members.size(); ++i) {
+                auto const& previous = members[i - 1];
+                auto const& current = members[i];
+                const float end = previous.second.X + previous.second.Width;
+                if (std::abs(end - current.second.X) > 2.f) continue;
+                const uint64_t key = (uint64_t(id) << 32) | current.first;
+                sharedEdges.insert(key);
+                auto edge = current.second;
+                edge.X = (end + edge.X) / 2 - .5f; edge.Width = 1.f;
+                ambient.Edge(ambient.sharedEdges[key], color, containerColor(previous.first),
+                    containerColor(current.first), edge, false);
+            }
             // Let the rounded fade reach beyond the terminal tab corner before
             // disappearing; the viewport still clips at the strip boundary.
             bounds.X -= 18; bounds.Width += 36;
@@ -214,6 +261,8 @@ struct NativeTabStrip {
         ambient.Prune(ambient.containers, containers, true);
         ambient.PruneSpill(ambient.groupSpill, groups);
         ambient.PruneSpill(ambient.containerSpill, containers);
+        ambient.PruneEdges(ambient.outerEdges, outerEdges);
+        ambient.PruneEdges(ambient.sharedEdges, sharedEdges);
         uint32_t activeGroup = 0;
         for (auto slot : groupLayout) if (slot.tab == activeTabId) { activeGroup = slot.group; break; }
         auto container = ambient.containers.find(activeTabId);

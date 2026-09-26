@@ -1616,7 +1616,16 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     auto ambientOutput = Hosting::ElementCompositionPreview::GetElementChildVisual(ambientLayer)
         .as<winrt::Microsoft::UI::Composition::SpriteVisual>();
     auto ambientMask = ambientOutput.Brush().as<winrt::Microsoft::UI::Composition::CompositionMaskBrush>();
-    auto ambientSurface = ambientMask.Source().as<winrt::Microsoft::UI::Composition::CompositionSurfaceBrush>()
+    auto occludedSurface = ambientMask.Source().as<winrt::Microsoft::UI::Composition::CompositionSurfaceBrush>()
+        .Surface().as<winrt::Microsoft::UI::Composition::CompositionVisualSurface>();
+    auto occluded = occludedSurface.SourceVisual().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
+    auto faceMaskBrush = occluded.Brush().as<winrt::Microsoft::UI::Composition::CompositionMaskBrush>();
+    auto faceSurface = faceMaskBrush.Mask().as<winrt::Microsoft::UI::Composition::CompositionSurfaceBrush>()
+        .Surface().as<winrt::Microsoft::UI::Composition::CompositionVisualSurface>();
+    auto faceRoot = faceSurface.SourceVisual().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+    Require(faceRoot.Comment() == L"tab-face-occlusion" && faceSurface.SourceSize().x > 0,
+        "face occlusion uses a bounded Composition surface after diffusion");
+    auto ambientSurface = faceMaskBrush.Source().as<winrt::Microsoft::UI::Composition::CompositionSurfaceBrush>()
         .Surface().as<winrt::Microsoft::UI::Composition::CompositionVisualSurface>();
     auto ambient = ambientSurface.SourceVisual().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
     auto edgeFade = ambientMask.Mask().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
@@ -1892,6 +1901,21 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         auto b = view.TabItems().GetAt(1).as<Controls::TabViewItem>();
         auto ar = a.TransformToVisual(ambientLayer).TransformBounds({0,0,float(a.ActualWidth()),float(a.ActualHeight())});
         auto br = b.TransformToVisual(ambientLayer).TransformBounds({0,0,float(b.ActualWidth()),float(b.ActualHeight())});
+        auto faceShape = [&](uint32_t id) {
+            for (auto visual : faceRoot.Children()) {
+                if (visual.Comment() != L"tab-face:" + winrt::to_hstring(id)) continue;
+                return visual.as<winrt::Microsoft::UI::Composition::ShapeVisual>().Shapes().GetAt(0)
+                    .as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
+            }
+            return winrt::Microsoft::UI::Composition::CompositionSpriteShape{nullptr};
+        };
+        Require(faceRoot.Children().Count() == 3 && faceShape(41) && faceShape(42),
+            "occlusion retains one contour per visible tab and an exterior, excluding the group header");
+        auto faceFill = faceShape(41).FillBrush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
+        Require(faceFill.ColorStops().GetAt(0).Color().A == 255 &&
+            faceFill.ColorStops().GetAt(2).Color().A < 32 && faceFill.ColorStops().GetAt(5).Color().A == 255 &&
+            std::abs(faceFill.StartPoint().y - ar.Y) < 1 && std::abs(faceFill.EndPoint().y - ar.Y - ar.Height) < 1,
+            "post-blur face mask preserves edge light and attenuates the title region in tab coordinates");
         auto glowHeader = find(view,L"FirefoxWinUIInlineGroup-7");
         auto hr = glowHeader.TransformToVisual(ambientLayer).TransformBounds(
             {0,0,float(glowHeader.ActualWidth()),float(glowHeader.ActualHeight())});
@@ -1935,6 +1959,20 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             (!rim(L"active-container-reflection") || !rim(L"active-container-reflection").IsVisible()),
             "only the active tab's own glow sources produce surface highlights");
         auto groupRim = rim(L"active-group-reflection");
+        auto sharedRim = rim(L"group-shared-reflection");
+        Require(sharedRim && rim(L"group-outer-reflection"), "group has shared and outer surface reflections");
+        unsigned outerCount = 0, sharedCount = 0;
+        for (auto visual : rimRoot.Children()) {
+            if (visual.Comment() == L"group-outer-reflection") ++outerCount;
+            if (visual.Comment() == L"group-shared-reflection") ++sharedCount;
+        }
+        Require(outerCount == 2 && sharedCount == 1, "two group ends and exactly one reflection per internal seam");
+        auto sharedBrush = sharedRim.Brush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
+        auto outerBrush = rim(L"group-outer-reflection").Brush()
+            .as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
+        Require(sharedBrush.ColorStops().GetAt(4).Color().A < outerBrush.ColorStops().GetAt(4).Color().A &&
+            sharedBrush.ColorStops().GetAt(2).Color().A == 0 && sharedBrush.ColorStops().GetAt(1).Color().A > 0,
+            "shared seam has weaker group light, a quiet middle and neighboring container contribution");
         auto rimShape = groupRim.Children().First().Current().as<winrt::Microsoft::UI::Composition::ShapeVisual>();
         auto stroke = rimShape.Shapes().GetAt(0).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
         auto rimGeometry = stroke.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>();
@@ -2004,8 +2042,11 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         refreshAmbient(2);
         for (int i=0;i<50;++i) { Pump(); Sleep(10); }
         const auto idleStarts = starts;
+        auto settledFace = faceShape(41).Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path();
         refreshAmbient();
         Require(starts == idleStarts, "settled glow does not launch more animations at rest");
+        Require(faceShape(41).Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path() == settledFace,
+            "unchanged layout retains mask geometry without rebuilding the visual surface");
         puts("CHECKS PASSED: finite glow motion, unchanged snapshots, retargeting and reduced motion");
         auto toggleIndicators = [&](uint32_t revision, bool glow, bool showDot) {
             auto update = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
@@ -2021,6 +2062,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 bottomGlow.Children().Count() == 1,
                 "live container options apply independently without hiding the group glow");
             Require(spill.Children().Count() == (glow ? 2 : 1), "disabling container glow also removes its weak body cast");
+            auto currentSeam = rim(L"group-shared-reflection").Brush()
+                .as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
+            Require(currentSeam.ColorStops().GetAt(1).Color().A == (glow ? 20 : 0),
+                "container option also removes its shared-seam contribution");
         };
         toggleIndicators(18, false, true);
         toggleIndicators(19, true, true);
@@ -2031,6 +2076,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         settle();
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 1,
             "container glow survives tab realization after ungrouping");
+        Require(!rim(L"group-outer-reflection") && !rim(L"group-shared-reflection"),
+            "ungrouping releases group boundary reflections");
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":22,"revision":23,"rows":[{"id":42,"containerName":"Other identity, same color","containerColor":4289934591}],"removed":[]}})");
         settle();
         a = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
