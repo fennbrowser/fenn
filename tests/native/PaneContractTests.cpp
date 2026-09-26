@@ -1965,7 +1965,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             Require(starts > initialStarts && groupVisual.ImplicitAnimations(), "ordinary geometry changes animate retained group light");
             auto offsetAnimation = groupVisual.ImplicitAnimations().Lookup(L"Offset")
                 .as<winrt::Microsoft::UI::Composition::Vector3KeyFrameAnimation>();
-            Require(offsetAnimation.Duration() == std::chrono::milliseconds(420) && offsetAnimation.IterationCount() == 1,
+            Require(offsetAnimation.Duration() == std::chrono::milliseconds(1200) && offsetAnimation.IterationCount() == 1,
                 "calm glow movement is finite and bounded");
             for (auto field : spill.Children()) Require(field.ImplicitAnimations() != nullptr,
                 "body spill transitions with concentrated glow");

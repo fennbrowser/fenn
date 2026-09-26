@@ -94,7 +94,7 @@ struct TabAmbient {
             auto compositor = field.visual.Compositor();
             auto ease = compositor.CreateCubicBezierEasingFunction({.2f, 0}, {.2f, 1});
             auto offset = compositor.CreateVector3KeyFrameAnimation();
-            offset.Target(L"Offset"); offset.Duration(std::chrono::milliseconds(420));
+            offset.Target(L"Offset"); offset.Duration(std::chrono::milliseconds(1200));
             offset.InsertExpressionKeyFrame(0, L"this.StartingValue");
             offset.InsertExpressionKeyFrame(1, L"this.FinalValue", ease);
             auto size = compositor.CreateVector2KeyFrameAnimation();
