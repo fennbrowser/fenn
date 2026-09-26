@@ -1881,7 +1881,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         winrt::Microsoft::UI::Composition::ContainerVisual spill{nullptr};
         for (auto visual : ambient.Children()) if (visual.Comment() == L"ambient-color-spill")
             spill = visual.as<winrt::Microsoft::UI::Composition::ContainerVisual>();
-        Require(spill && spill.Children().Count() == 2, "group and container cast remain independent transparent fields");
+        Require(spill && spill.Children().Count() == 1, "container corners do not add a central body cast");
         for (auto field : spill.Children()) {
             const bool isGroup = field.Comment() == L"group-spill:7";
             auto lobes = field.as<winrt::Microsoft::UI::Composition::SpriteVisual>();
@@ -1901,6 +1901,17 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         auto b = view.TabItems().GetAt(1).as<Controls::TabViewItem>();
         auto ar = a.TransformToVisual(ambientLayer).TransformBounds({0,0,float(a.ActualWidth()),float(a.ActualHeight())});
         auto br = b.TransformToVisual(ambientLayer).TransformBounds({0,0,float(b.ActualWidth()),float(b.ActualHeight())});
+        auto nativeSeparator = [&](Controls::TabViewItem const& row) {
+            auto part = Media::VisualTreeHelper::GetChild(row, 0).as<FrameworkElement>()
+                .FindName(L"TabSeparator").try_as<Controls::Border>();
+            Require(bool(part), "stock tab template exposes its separator");
+            return part;
+        };
+        auto separatorA = nativeSeparator(a);
+        auto separatorColor = separatorA.Background().as<Media::SolidColorBrush>().Color();
+        Require(separatorColor.A == 170 && separatorColor.R == ((4289934591u >> 16) & 255) &&
+            separatorColor.G == ((4289934591u >> 8) & 255) && separatorColor.B == (4289934591u & 255),
+            "unselected container tints its stock trailing divider with its own color");
         auto faceShape = [&](uint32_t id) {
             for (auto visual : faceRoot.Children()) {
                 if (visual.Comment() != L"tab-face:" + winrt::to_hstring(id)) continue;
@@ -1910,7 +1921,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             return winrt::Microsoft::UI::Composition::CompositionSpriteShape{nullptr};
         };
         Require(faceRoot.Children().Count() == 3 && faceShape(41) && faceShape(42),
-            "occlusion retains one contour per visible tab and an exterior, excluding the group header");
+            "occlusion retains one contour per visible tab and an exterior");
         auto faceFill = faceShape(41).FillBrush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
         Require(faceFill.ColorStops().GetAt(0).Color().A == 255 &&
             faceFill.ColorStops().GetAt(2).Color().A < 32 && faceFill.ColorStops().GetAt(5).Color().A == 255 &&
@@ -1919,10 +1930,27 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         auto glowHeader = find(view,L"FirefoxWinUIInlineGroup-7");
         auto hr = glowHeader.TransformToVisual(ambientLayer).TransformBounds(
             {0,0,float(glowHeader.ActualWidth()),float(glowHeader.ActualHeight())});
+        winrt::Windows::Foundation::Numerics::float4 joinedFace{};
+        faceShape(41).Properties().TryGetVector4(L"FaceBounds", joinedFace);
+        printf("Header join: header=%.1f+%.1f tab=%.1f+%.1f mask=%.1f+%.1f\n", hr.X, hr.Width, ar.X, ar.Width, joinedFace.x, joinedFace.z);
+        fflush(stdout);
+        Require(faceShape(41).Properties().TryGetVector4(L"FaceBounds", joinedFace) ==
+            winrt::Microsoft::UI::Composition::CompositionGetValueStatus::Succeeded &&
+            std::abs(joinedFace.x - hr.X) < 1 && std::abs(joinedFace.x + joinedFace.z - ar.X - ar.Width) < 1,
+            "header and first inactive tab share a continuous face mask without a fabricated inner edge");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,41,&selected)), "activate the first grouped member for mask inspection");
+        settle();
+        winrt::Windows::Foundation::Numerics::float4 selectedGroupedFace{};
+        Require(faceShape(41).Properties().TryGetVector4(L"FaceBounds", selectedGroupedFace) ==
+            winrt::Microsoft::UI::Composition::CompositionGetValueStatus::Succeeded &&
+            std::abs(selectedGroupedFace.x - ar.X) < 1 && std::abs(selectedGroupedFace.z - ar.Width) < 1,
+            "selected first member keeps its separate native contour beside the group header");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "restore the second grouped member after mask inspection");
+        settle();
         Require(std::abs(groupVisual.Offset().x - (hr.X - 18)) < 1 &&
             std::abs(groupVisual.Size().x - (br.X + br.Width - hr.X + 36)) < 1 &&
-            std::abs(containerVisual.Size().x - std::min(76.f, ar.Width - 12.f)) < 1,
-            "bottom field includes the disclosure button and both tabs; container glow is compact");
+            std::abs(containerVisual.Size().x - ar.Width) < 1,
+            "bottom field includes the disclosure button and both tabs; container corners follow the full tab");
         winrt::Microsoft::UI::Composition::SpriteVisual groupCenter{nullptr};
         for (auto child : groupVisual.Children())
             if (child.Comment() == L"group-center") groupCenter = child.as<winrt::Microsoft::UI::Composition::SpriteVisual>();
@@ -1930,16 +1958,20 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             std::abs(groupCenter.Size().x - (groupVisual.Size().x - 48)) < 1 && groupCenter.Offset().x == 24,
             "rounded group caps taper only within 24 DIP of the outer corners");
         auto lowerBrush = groupCenter.Brush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
-        Require(containerVisual.Children().Count() == 0 &&
+        Require(containerVisual.Children().Count() == 1 && !containerVisual.Brush() &&
             std::abs(containerVisual.Offset().x + containerVisual.Size().x / 2 - (ar.X + ar.Width / 2)) < 1,
-            "container glow is a single compact ellipse centered on its tab");
-        auto upperBrush = containerVisual.Brush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
-        Require(containerVisual.Offset().y < ar.Y && ambientLayer.Clip().Rect().Y == 0 &&
-            std::abs(containerVisual.Offset().y + upperBrush.EllipseCenter().y * containerVisual.Size().y - ar.Y) < .01f &&
-            std::abs(upperBrush.EllipseRadius().y * containerVisual.Size().y - .8f * std::min(20.f, ar.Height * .65f)) < .01f,
-            "container glow crosses the tab top into strip padding, retaining its peak and downward falloff");
+            "container glow has no central fill");
+        auto cornerShape = containerVisual.Children().First().Current().as<winrt::Microsoft::UI::Composition::ShapeVisual>();
+        Require(cornerShape.Shapes().Size() == 2, "each container has two independent open corner strokes");
+        auto cornerStroke = cornerShape.Shapes().GetAt(0).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
+        auto upperBrush = cornerStroke.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+        Require(std::abs(containerVisual.Offset().y - ar.Y) < 1 && ambientLayer.Clip().Rect().Y == 0 &&
+            !cornerStroke.FillBrush() && cornerStroke.StrokeThickness() == 3 &&
+            upperBrush.EllipseRadius().x <= 28 && upperBrush.EllipseRadius().y <= 16 &&
+            upperBrush.ColorStops().GetAt(3).Color().A == 0,
+            "corner strokes fade locally, leaving the top center and lower edge unpainted");
         Require(lowerBrush.EllipseCenter().y == 1 && lowerBrush.EllipseRadius().x == 1.f &&
-            upperBrush.EllipseCenter().y > 0 && upperBrush.EllipseRadius().x == .5f &&
+            upperBrush.EllipseCenter().y >= 0 &&
             lowerBrush.ColorStops().GetAt(0).Color() != upperBrush.ColorStops().GetAt(0).Color(),
             "combined state retains two independently colored opposite-edge gradients");
         auto dot = a.Header().as<Controls::Grid>().Children().GetAt(4).as<Controls::Border>();
@@ -2061,7 +2093,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 dot.Visibility() == (showDot ? Visibility::Visible : Visibility::Collapsed) &&
                 bottomGlow.Children().Count() == 1,
                 "live container options apply independently without hiding the group glow");
-            Require(spill.Children().Count() == (glow ? 2 : 1), "disabling container glow also removes its weak body cast");
+            Require(spill.Children().Count() == 1, "container option never introduces a body cast");
+            Require(glow ? separatorA.Background().as<Media::SolidColorBrush>().Color().A == 170 :
+                bool(separatorA.GetBindingExpression(Controls::Border::BackgroundProperty())),
+                "disabling glow restores a live theme binding on the native divider");
             auto currentSeam = rim(L"group-shared-reflection").Brush()
                 .as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
             Require(currentSeam.ColorStops().GetAt(1).Color().A == (glow ? 20 : 0),
@@ -2085,12 +2120,12 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         ar = a.TransformToVisual(ambientLayer).TransformBounds({0,0,float(a.ActualWidth()),float(a.ActualHeight())});
         br = b.TransformToVisual(ambientLayer).TransformBounds({0,0,float(b.ActualWidth()),float(b.ActualHeight())});
         auto joined = topGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
-        Require(topGlow.Children().Count() == 2 && joined.Children().Count() == 0 && joined.Size().x <= 76,
-            "same-color neighboring containers retain compact individual glows");
+        Require(topGlow.Children().Count() == 2 && joined.Children().Count() == 1,
+            "same-color neighboring containers retain individual corner strokes");
         auto upperRim = rim(L"active-container-reflection");
-        Require(upperRim && upperRim.IsVisible() && upperRim.Size().x <= 76 && upperRim.Size().y == 1.25f &&
+        Require(upperRim && upperRim.IsVisible() && std::abs(upperRim.Size().x - br.Width) < 1 && upperRim.Children().Count() == 1 &&
             std::abs(upperRim.Offset().y - br.Y) < 1 && !rim(L"active-group-reflection").IsVisible(),
-            "ungrouped active container has a short crisp top highlight and no bottom highlight");
+            "ungrouped active container has corner highlights and no bottom highlight");
         auto activeClip = diffusion.Clip().as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>();
         Require(activeClip.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path() != nullptr,
             "the active tab cuts a notch in the final diffused glow rather than changing the per-tab fields");
@@ -2100,6 +2135,13 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             "active-tab clipping follows selection without replacing the container glow");
         Require(std::abs(upperRim.Offset().x + upperRim.Size().x / 2 - (ar.X + ar.Width / 2)) < 1,
             "the retained surface highlight follows active-tab changes");
+        Require(bool(nativeSeparator(a).GetBindingExpression(Controls::Border::BackgroundProperty())),
+            "activating a container restores its themed divider");
+        winrt::Windows::Foundation::Numerics::float4 selectedFace{};
+        Require(faceShape(41).Properties().TryGetVector4(L"FaceBounds", selectedFace) ==
+            winrt::Microsoft::UI::Composition::CompositionGetValueStatus::Succeeded && std::abs(selectedFace.x - ar.X) < 1 &&
+            std::abs(selectedFace.z - ar.Width) < 1,
+            "ungrouped selected tab retains its separate native contour");
         activeClip = diffusion.Clip().as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>();
         Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "restore the second active tab");
         settle();
@@ -2109,19 +2151,19 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(topGlow.Children().Count() == 2, "different colors retain two independently composited fields");
         float leftEnd = 0, rightStart = 0;
         for (auto visual : topGlow.Children()) {
-            Require(visual.as<winrt::Microsoft::UI::Composition::SpriteVisual>().Children().Count() == 0,
-                "neighboring color fields retain compact ellipses");
+            Require(visual.as<winrt::Microsoft::UI::Composition::SpriteVisual>().Children().Count() == 1,
+                "neighboring color fields retain their own corner strokes");
             if (visual.Comment() == L"container:41") leftEnd = visual.Offset().x + visual.Size().x;
             if (visual.Comment() == L"container:42") rightStart = visual.Offset().x;
         }
-        Require(leftEnd < rightStart && leftEnd < ar.X + ar.Width && rightStart > br.X,
-            "compact different-color glows remain inside their own tab widths");
+        Require(std::abs(leftEnd - (ar.X + ar.Width)) < 1 && std::abs(rightStart - br.X) < 1,
+            "different-color corner fields track their own tab boundaries");
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":24,"revision":25,"rows":[{"id":42,"containerName":"","containerColor":0}],"removed":[]}})");
         settle();
         auto isolated = topGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
-        Require(topGlow.Children().Count() == 1 && isolated.Children().Count() == 0 &&
-            std::abs(isolated.Size().x - std::min(76.f, ar.Width - 12.f)) < 1,
-            "removing a neighbor container leaves the remaining compact glow unchanged");
+        Require(topGlow.Children().Count() == 1 && isolated.Children().Count() == 1 &&
+            std::abs(isolated.Size().x - ar.Width) < 1,
+            "removing a neighbor container leaves the remaining corner glow unchanged");
         // Clear both color sources in the next full snapshot.
         motionState(26,false); settle();
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 0,

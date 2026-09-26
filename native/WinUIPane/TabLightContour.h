@@ -107,6 +107,9 @@ struct Mask {
             }
             visual.Size(size);
             auto shape = visual.Shapes().GetAt(0).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
+#ifdef WINUI_PANE_TESTING
+            shape.Properties().InsertVector4(L"FaceBounds", {face.bounds.X, face.bounds.Y, face.bounds.Width, face.bounds.Height});
+#endif
             auto geometry = shape.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>();
             geometry.Path(winrt::Microsoft::UI::Composition::CompositionPath(winrt::make<TabAmbientClip>(path)));
             auto fill = shape.FillBrush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();

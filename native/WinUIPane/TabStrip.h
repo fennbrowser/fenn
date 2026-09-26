@@ -90,6 +90,55 @@ struct NativeTabStrip {
     GroupDragShift groupDragShift;
     TabAmbient ambient;
     bool containerGlow{true}, containerDot{};
+    Controls::Border separatorTheme{nullptr};
+    struct SeparatorTint {
+        Controls::Border separator{nullptr};
+        Media::SolidColorBrush brush{nullptr};
+        uint32_t color{};
+        bool tinted{};
+    };
+    std::map<uint32_t, SeparatorTint> separatorTints;
+    void RestoreSeparator(SeparatorTint& tint) {
+        if (!tint.tinted) return;
+        // Restore a live ThemeResource through an attached proxy, rather than
+        // keeping a resolved brush from a previous light/dark/contrast theme.
+        Data::Binding binding;
+        binding.Source(separatorTheme); binding.Path(PropertyPath(L"Background"));
+        tint.separator.SetBinding(Controls::Border::BackgroundProperty(), binding);
+        tint.tinted = false; tint.color = 0;
+    }
+    void RefreshSeparators() {
+        std::set<uint32_t> live;
+        const bool enabled = containerGlow && !ambient.accessibility.HighContrast();
+        for (auto const& [id, row] : rows) {
+            if (!row.IsLoaded() || !Media::VisualTreeHelper::GetChildrenCount(row)) continue;
+            auto templateRoot = Media::VisualTreeHelper::GetChild(row, 0).try_as<FrameworkElement>();
+            if (!templateRoot) continue;
+            auto separator = templateRoot.FindName(L"TabSeparator").try_as<Controls::Border>();
+            if (!separator) continue;
+            live.insert(id);
+            auto& tint = separatorTints[id];
+            if (tint.separator != separator) {
+                RestoreSeparator(tint); tint = SeparatorTint{}; tint.separator = separator;
+            }
+            auto meta = presentation.find(id);
+            const uint32_t color = enabled && id != activeTabId && meta != presentation.end() &&
+                !meta->second.containerName.empty() ? meta->second.containerColor : 0;
+            if (!color) { RestoreSeparator(tint); continue; }
+            if (tint.tinted && tint.color == color) continue;
+            const Windows::UI::Color value{170, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color)};
+            if (!tint.brush) tint.brush = Media::SolidColorBrush(value);
+            else tint.brush.Color(value);
+            if (!tint.tinted) separator.Background(tint.brush);
+            tint.tinted = true; tint.color = color;
+            // TabView still owns separator opacity/visibility, including hover,
+            // selected neighbors and RTL. Never create a replacement divider.
+        }
+        for (auto it = separatorTints.begin(); it != separatorTints.end();) {
+            if (live.count(it->first)) { ++it; continue; }
+            RestoreSeparator(it->second); it = separatorTints.erase(it);
+        }
+    }
     Controls::ScrollViewer ambientScroller{nullptr};
     winrt::event_token ambientScrollToken{};
     void RefreshAmbient() {
@@ -102,6 +151,7 @@ struct NativeTabStrip {
             if (ambient.spill) ambient.spill.IsVisible(false);
             return;
         }
+        RefreshSeparators();
         auto scroller = GroupScroller(view);
         if (scroller != ambientScroller) {
             if (ambientScroller) ambientScroller.ViewChanged(ambientScrollToken);
@@ -156,6 +206,34 @@ struct NativeTabStrip {
             const auto radius = row.CornerRadius();
             faces.push_back({id, bounds, float(radius.TopLeft), float(radius.TopRight), id == activeTabId});
         }
+        // The disclosure and first inactive member have no native border at
+        // their join. Give that continuous surface one attenuation profile,
+        // rather than exposing full light under the button and abruptly
+        // cutting it at the tab. Selected tabs retain their visible contour.
+        std::set<uint32_t> joinedGroups;
+        for (auto const& slot : groupLayout) {
+            if (!slot.group || !slot.tab || !joinedGroups.insert(slot.group).second) continue;
+            auto run = inlineGroups.runs.find(slot.group);
+            if (run == inlineGroups.runs.end()) continue;
+            auto button = run->second.button;
+            if (!button || !button.IsLoaded() || button.Visibility() != Visibility::Visible || button.Opacity() == 0) continue;
+            // Faces follow the ID-sorted row map; avoid scanning all tabs for
+            // each group during layout or bounded drag updates.
+            auto face = std::lower_bound(faces.begin(), faces.end(), slot.tab,
+                [](auto const& value, uint32_t id) { return value.id < id; });
+            if (face == faces.end() || face->id != slot.tab || face->selected) continue;
+            const auto header = boundsOf(button);
+            auto& bounds = face->bounds;
+            const auto radius = button.CornerRadius();
+            const auto margin = button.Margin();
+            if (std::abs(header.X + header.Width + float(margin.Right) - bounds.X) <= 2.f) {
+                bounds.Width += bounds.X - header.X; bounds.X = header.X;
+                face->leftRadius = float(radius.TopLeft);
+            } else if (std::abs(bounds.X + bounds.Width + float(margin.Left) - header.X) <= 2.f) {
+                bounds.Width = header.X + header.Width - bounds.X;
+                face->rightRadius = float(radius.TopRight);
+            }
+        }
         ambient.Faces(ambientViewport, faces);
         ambient.Motion(followingMotion);
         std::set<uint32_t> containers, groups;
@@ -167,22 +245,18 @@ struct NativeTabStrip {
             return containerGlow && meta != presentation.end() && !meta->second.containerName.empty()
                 ? meta->second.containerColor : 0;
         };
-        // A compact half-ellipse centered on each tab's top edge. Container
-        // colors remain per-tab; group lighting keeps its wider shared field.
+        // Open upper-corner strokes keep container light off the central face.
+        // Each tab retains its own color and the stock control's corner radii.
         for (auto const& [id, row] : rows) {
             if (!containerGlow || !row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) continue;
             auto meta = presentation.find(id);
             if (meta == presentation.end() || meta->second.containerName.empty()) continue;
             auto bounds = boundsOf(row);
-            const auto bodyBounds = bounds;
-            const float width = std::min(76.f, std::max(0.f, bounds.Width - 12.f));
-            bounds.X += (bounds.Width - width) / 2;
-            bounds.Width = width;
-            bounds.Height = std::min(20.f, bounds.Height * .65f);
             if (bounds.Width <= 0 || bounds.Height <= 0 || bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
             containers.insert(id);
-            ambient.Put(ambient.containers, id, meta->second.containerColor, bounds, true);
-            ambient.Spill(ambient.containerSpill, id, meta->second.containerColor, bodyBounds, true);
+            const auto radius = row.CornerRadius();
+            ambient.Corners(ambient.containers[id], meta->second.containerColor, bounds, float(radius.TopLeft), float(radius.TopRight));
+            ambient.containers[id].visual.Comment(L"container:" + winrt::to_hstring(id));
         }
         // Keep the complete laid-out union, then clip it to the viewport. Using
         // the clipped bounds to size the gradient would recenter it on scroll.
@@ -260,7 +334,7 @@ struct NativeTabStrip {
         ambient.Prune(ambient.groups, groups, false);
         ambient.Prune(ambient.containers, containers, true);
         ambient.PruneSpill(ambient.groupSpill, groups);
-        ambient.PruneSpill(ambient.containerSpill, containers);
+        ambient.PruneSpill(ambient.containerSpill, {});
         ambient.PruneEdges(ambient.outerEdges, outerEdges);
         ambient.PruneEdges(ambient.sharedEdges, sharedEdges);
         uint32_t activeGroup = 0;
@@ -273,10 +347,11 @@ struct NativeTabStrip {
             upperBounds.X = container->second.bounds.X;
             upperBounds.Width = container->second.bounds.Width;
         }
-        upperBounds.Height = 1.25f;
         auto lowerBounds = activeBounds;
         lowerBounds.X -= 4; lowerBounds.Width += 8;
-        ambient.Rim(ambient.upperRim, activeVisible && container != ambient.containers.end() ? container->second.color : 0, upperBounds, true);
+        const auto radius = activeVisible ? activeRow->second.CornerRadius() : CornerRadius{};
+        ambient.Corners(ambient.upperRim, activeVisible && container != ambient.containers.end() ? container->second.color : 0,
+            upperBounds, float(radius.TopLeft), float(radius.TopRight), true);
         ambient.Rim(ambient.lowerRim, activeVisible && group != ambient.groups.end() ? group->second.color : 0, lowerBounds, false);
         if (activeVisible && group != ambient.groups.end() && ambient.lowerRim.visual) {
             const auto& field = group->second.bounds;
@@ -654,6 +729,8 @@ struct NativeTabStrip {
                 .as<Controls::Grid>();
         view = root.Children().GetAt(0).as<Controls::TabView>();
         ambient.Create(root);
+        separatorTheme = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource TabViewItemSeparator}" Visibility="Collapsed" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
+        ambient.layer.Children().Append(separatorTheme);
         ambient.refresh = [this] { RefreshAmbient(); };
         groupIndicator = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentTextFillColorPrimaryBrush}" BorderThickness="2" CornerRadius="4" Grid.ColumnSpan="3" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         root.Children().Append(groupIndicator);

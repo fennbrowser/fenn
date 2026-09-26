@@ -21,6 +21,7 @@ struct TabAmbient {
         winrt::Microsoft::UI::Composition::ShapeVisual rimShape{nullptr};
         winrt::Microsoft::UI::Composition::CompositionPathGeometry rimGeometry{nullptr};
         uint32_t color{}; Rect bounds{}; bool capped{}, animated{};
+        float cornerLeft{-1}, cornerRight{-1};
         std::vector<PartLayout> layouts;
     };
     winrt::Microsoft::UI::Xaml::Controls::Canvas layer{nullptr};
@@ -459,6 +460,73 @@ struct TabAmbient {
             if (live.count(it->first)) { ++it; continue; }
             Snap(it->second);
             spill.Children().Remove(it->second.visual); it = fields.erase(it);
+        }
+    }
+    void Corners(Field& field, uint32_t color, Rect bounds, float leftRadius, float rightRadius, bool reflection = false) {
+        if (!color || bounds.Width <= 0 || bounds.Height <= 0) {
+            if (field.visual) field.visual.IsVisible(false);
+            return;
+        }
+        auto compositor = top.Compositor();
+        if (!field.visual) {
+            field.visual = compositor.CreateSpriteVisual();
+            field.visual.Comment(reflection ? L"active-container-reflection" : L"container-corners");
+            field.rimShape = compositor.CreateShapeVisual();
+            field.rimShape.Offset({-4, -4, 0});
+            for (int side = 0; side < 2; ++side) {
+                auto brush = compositor.CreateRadialGradientBrush();
+                brush.MappingMode(winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute);
+                for (auto [offset, alpha] : {std::pair{0.f, 180}, {.3f, 145}, {.65f, 55}, {1.f, 0}})
+                    brush.ColorStops().Append(compositor.CreateColorGradientStop(offset,
+                        {uint8_t(reflection ? alpha / 2 : alpha), 0, 0, 0}));
+                auto stroke = compositor.CreateSpriteShape(compositor.CreatePathGeometry());
+                stroke.Offset({4, 4}); stroke.StrokeBrush(brush); stroke.StrokeThickness(reflection ? 1.f : 3.f);
+                field.rimShape.Shapes().Append(stroke);
+                (side ? field.rightBrush : field.leftBrush) = brush;
+            }
+            field.visual.Children().InsertAtTop(field.rimShape);
+            (reflection ? rims : top).Children().InsertAtTop(field.visual);
+        }
+        field.visual.IsVisible(true);
+        if (field.color != color) {
+            field.color = color;
+            for (auto brush : {field.leftBrush, field.rightBrush}) for (auto stop : brush.ColorStops()) {
+                auto value = stop.Color();
+                auto channel = [&](uint8_t c) { return reflection ? uint8_t(c + (255 - c) * .3f) : c; };
+                value.R = channel(uint8_t(color >> 16)); value.G = channel(uint8_t(color >> 8)); value.B = channel(uint8_t(color));
+                stop.Color(value);
+            }
+        }
+        if (field.bounds == bounds && field.cornerLeft == leftRadius && field.cornerRight == rightRadius) return;
+        if (!reflection) {
+            // Paths follow the control's current size. Only translate retained
+            // contours; tweening their parent size would detach the right edge.
+            if (field.bounds.Width == bounds.Width && field.bounds.Height == bounds.Height &&
+                field.cornerLeft == leftRadius && field.cornerRight == rightRadius) PrepareGeometry(field, bounds);
+            else Snap(field);
+        }
+        field.bounds = bounds; field.cornerLeft = leftRadius; field.cornerRight = rightRadius;
+        Geometry(field.visual, {bounds.X, bounds.Y, 0}, {bounds.Width, bounds.Height});
+        field.rimShape.Size({bounds.Width + 8, bounds.Height + 8});
+        if (!clipFactory) winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, clipFactory.put()));
+        const float reach = std::min(28.f, bounds.Width / 4), depth = std::min(16.f, bounds.Height / 2);
+        for (int side = 0; side < 2; ++side) {
+            const float r = std::clamp(side ? rightRadius : leftRadius, 0.f, std::min(reach, depth) / 2);
+            auto x = [&](float value) { return side ? bounds.Width - value : value; };
+            winrt::com_ptr<ID2D1PathGeometry> path;
+            winrt::check_hresult(clipFactory->CreatePathGeometry(path.put()));
+            winrt::com_ptr<ID2D1GeometrySink> sink;
+            winrt::check_hresult(path->Open(sink.put()));
+            sink->BeginFigure({x(0), depth}, D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddLine({x(0), r});
+            sink->AddBezier({{x(0), r * TabLightContour::Arc}, {x(r * TabLightContour::Arc), 0}, {x(r), 0}});
+            sink->AddLine({x(reach), 0}); sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            winrt::check_hresult(sink->Close());
+            auto stroke = field.rimShape.Shapes().GetAt(side).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
+            stroke.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path(
+                winrt::Microsoft::UI::Composition::CompositionPath(winrt::make<TabAmbientClip>(std::move(path))));
+            auto brush = stroke.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+            brush.EllipseCenter({x(r), r}); brush.EllipseRadius({std::max(1.f, reach - r), std::max(1.f, depth - r)});
         }
     }
     void Put(std::map<uint32_t, Field>& fields, uint32_t id, uint32_t color, Rect bounds, bool upper, bool connected = false) {
