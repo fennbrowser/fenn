@@ -13,10 +13,10 @@ index ad923a202d..856ca45387 100644
 +$(MOZ_APP_NAME)$(BIN_SUFFIX).res: $(srcdir)/firefox.exe.manifest
 +endif
 diff --git a/browser/app/firefox.exe.manifest b/browser/app/firefox.exe.manifest
-index 995b2fc869..197b2cd2e9 100644
+index 995b2fc869..7add43e3b2 100644
 --- a/browser/app/firefox.exe.manifest
 +++ b/browser/app/firefox.exe.manifest
-@@ -44,4 +44,848 @@
+@@ -44,4 +44,850 @@
        <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
      </application>
    </compatibility>
@@ -37,6 +37,7 @@ index 995b2fc869..197b2cd2e9 100644
 +    <winrtv1:activatableClass name="Microsoft.UI.Composition.AnimationController" threadingModel="both" />
 +    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionAnimation" threadingModel="both" />
 +    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionApiInformation" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionEngine" threadingModel="both" />
 +    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionBrush" threadingModel="both" />
 +    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionCapabilities" threadingModel="both" />
 +    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionClip" threadingModel="both" />
@@ -636,6 +637,7 @@ index 995b2fc869..197b2cd2e9 100644
 +    <winrtv1:activatableClass name="Microsoft.UI.Xaml.ScalarTransition" threadingModel="both" />
 +    <winrtv1:activatableClass name="Microsoft.UI.Xaml.Setter" threadingModel="both" />
 +    <winrtv1:activatableClass name="Microsoft.UI.Xaml.SetterBaseCollection" threadingModel="both" />
++    <winrtv1:activatableClass name="Microsoft.UI.Xaml.Settings.XamlOptionalChanges" threadingModel="both" />
 +    <winrtv1:activatableClass name="Microsoft.UI.Xaml.Shapes.Ellipse" threadingModel="both" />
 +    <winrtv1:activatableClass name="Microsoft.UI.Xaml.Shapes.Line" threadingModel="both" />
 +    <winrtv1:activatableClass name="Microsoft.UI.Xaml.Shapes.Path" threadingModel="both" />
@@ -866,10 +868,10 @@ index 995b2fc869..197b2cd2e9 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 0f32a4f45c..65cf58eb56 100644
+index 47a26fd814..b2a4b62da4 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3793,6 +3793,16 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3831,6 +3831,16 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -887,7 +889,7 @@ index 0f32a4f45c..65cf58eb56 100644
    pref("browser.macAppMenu.setAsDefaultShown", false);
  #endif
 diff --git a/browser/base/content/browser-main.js b/browser/base/content/browser-main.js
-index b100876fc1..48db2ca1db 100644
+index 89ebf87426..eeffb8e367 100644
 --- a/browser/base/content/browser-main.js
 +++ b/browser/base/content/browser-main.js
 @@ -6,6 +6,9 @@
@@ -901,7 +903,7 @@ index b100876fc1..48db2ca1db 100644
    Services.scriptloader.loadSubScript("chrome://browser/content/browser-captivePortal.js", this);
    if (AppConstants.MOZ_DATA_REPORTING) {
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index 783c67d397..bc31b137ba 100644
+index b2b5db6040..7e69cd7465 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
 @@ -33,6 +33,10 @@ browser.jar:
@@ -916,7 +918,7 @@ index 783c67d397..bc31b137ba 100644
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
 diff --git a/browser/components/tabbrowser/content/tab-context-menu.js b/browser/components/tabbrowser/content/tab-context-menu.js
-index 694225ca00..17c7d09f99 100644
+index be3252ae5f..6835234e04 100644
 --- a/browser/components/tabbrowser/content/tab-context-menu.js
 +++ b/browser/components/tabbrowser/content/tab-context-menu.js
 @@ -5,6 +5,119 @@
@@ -1039,7 +1041,7 @@ index 694225ca00..17c7d09f99 100644
    /*
     * Declared layout for the tab context menu and its managed submenus, keyed by
     * mode. Each mode maps a popup id to the ordered sections describing that
-@@ -499,9 +612,7 @@ var TabContextMenu = {
+@@ -503,9 +616,7 @@ var TabContextMenu = {
      aPopupMenu.addEventListener("popuphidden", this);
  
      this.multiselected = this.contextTab.multiselected;
@@ -1050,7 +1052,7 @@ index 694225ca00..17c7d09f99 100644
  
      let splitViews = new Set();
      // bug1973996: This call is not guaranteed to complete
-@@ -1161,9 +1272,14 @@ var TabContextMenu = {
+@@ -1176,9 +1287,14 @@ var TabContextMenu = {
        containerSource: "tab_context_menu",
      });
    },
@@ -1068,7 +1070,7 @@ index 694225ca00..17c7d09f99 100644
        let newTab = SessionStore.duplicateTab(window, tab);
        if (tab.group) {
          Glean.tabgroup.tabInteractions.duplicate.add();
-@@ -1175,8 +1291,12 @@ var TabContextMenu = {
+@@ -1190,8 +1306,12 @@ var TabContextMenu = {
      let userContextId = parseInt(
        event.target.getAttribute("data-usercontextid")
      );
@@ -1082,7 +1084,7 @@ index 694225ca00..17c7d09f99 100644
        if (tab.getAttribute("usercontextid") == userContextId) {
          continue;
        }
-@@ -1239,15 +1359,15 @@ var TabContextMenu = {
+@@ -1254,15 +1374,15 @@ var TabContextMenu = {
      }
    },
  
@@ -1101,7 +1103,7 @@ index 694225ca00..17c7d09f99 100644
          animate: true,
          metricsContext: gBrowser.TabMetrics.userTriggeredContext(
            gBrowser.TabMetrics.METRIC_SOURCE.TAB_MENU
-@@ -1256,12 +1376,13 @@ var TabContextMenu = {
+@@ -1271,12 +1391,13 @@ var TabContextMenu = {
      }
    },
  
@@ -1119,7 +1121,7 @@ index 694225ca00..17c7d09f99 100644
      if (insertBefore.index < gBrowser.pinnedTabCount) {
        let firstUnpinnedTab = gBrowser.tabs[gBrowser.pinnedTabCount];
        if (firstUnpinnedTab.splitview) {
-@@ -1269,18 +1390,18 @@ var TabContextMenu = {
+@@ -1284,18 +1405,18 @@ var TabContextMenu = {
        } else {
          insertBefore = firstUnpinnedTab;
        }
@@ -1145,10 +1147,10 @@ index 694225ca00..17c7d09f99 100644
      // When using the tab context menu to create a group from the all tabs
      // panel, make sure we close that panel so that it doesn't obscure the tab
 diff --git a/browser/components/tabbrowser/content/tabgroup-menu.js b/browser/components/tabbrowser/content/tabgroup-menu.js
-index 8ffbccbab6..fe09e865a7 100644
+index 1902d2d408..b8abe05e5f 100644
 --- a/browser/components/tabbrowser/content/tabgroup-menu.js
 +++ b/browser/components/tabbrowser/content/tabgroup-menu.js
-@@ -926,7 +926,7 @@
+@@ -954,7 +954,7 @@
        return this.#hasSuggestedMlTabs;
      }
  
@@ -1157,7 +1159,7 @@ index 8ffbccbab6..fe09e865a7 100644
        this.activeGroup = group;
        this.createMode = false;
        this.suggestionState = this.smartTabGroupsEnabled
-@@ -935,9 +935,21 @@
+@@ -963,9 +963,21 @@
  
        this.#maybeUpdateLayoutForNova();
  
@@ -1240,10 +1242,10 @@ index d9d7f9dd83..d262035073 100644
      let action = lazy.ActionsProviderQuickActions.getAction(result.payload.key);
      let isInactive = this.#isActionInactive(action);
 diff --git a/browser/components/urlbar/content/SearchModeSwitcher.mjs b/browser/components/urlbar/content/SearchModeSwitcher.mjs
-index 27259ba91e..8ed4d9bd4a 100644
+index 48be82749b..548f018330 100644
 --- a/browser/components/urlbar/content/SearchModeSwitcher.mjs
 +++ b/browser/components/urlbar/content/SearchModeSwitcher.mjs
-@@ -122,6 +122,89 @@ export class SearchModeSwitcher {
+@@ -167,6 +167,89 @@ export class SearchModeSwitcher {
      );
    }
  
@@ -1275,7 +1277,7 @@ index 27259ba91e..8ed4d9bd4a 100644
 +        icon:engine.icon, symbol:"add", local:true});
 +    }
 +    const settingsId = UrlbarPrefs.get("browser.nova.enabled")
-+      ? "urlbar-searchmode-popup-settings" : "urlbar-searchmode-popup-search-settings";
++      ? "urlbar-searchmode-popup-settings2" : "urlbar-searchmode-popup-search-settings2";
 +    const [settings] = await getL10n().formatMessages([{id: settingsId}]);
 +    entries.push({key:"settings", label:settings.value || settings.attributes?.find(a => a.name == "label")?.value || "Settings", symbol:"settings", local:true});
 +    const displayed = await this.#getDisplayedEngineDetails(this.#input.searchMode);
@@ -1333,7 +1335,7 @@ index 27259ba91e..8ed4d9bd4a 100644
    async #onPopupShowing() {
      // Discard event to avoid recording an abandonment.
      this.#input.controller.engagementEvent.discard();
-@@ -765,9 +848,10 @@ export class SearchModeSwitcher {
+@@ -989,9 +1072,10 @@ export class SearchModeSwitcher {
     * @param {string} restrict
     *   The restrict token
     */
@@ -1345,7 +1347,7 @@ index 27259ba91e..8ed4d9bd4a 100644
      });
  
      if (this.#input.sapName == "urlbar") {
-@@ -784,7 +868,7 @@ export class SearchModeSwitcher {
+@@ -1008,7 +1092,7 @@ export class SearchModeSwitcher {
     * @param {KeyboardEvent|MouseEvent} event
     *   The event that triggered the search.
     */
@@ -1354,7 +1356,7 @@ index 27259ba91e..8ed4d9bd4a 100644
      let whereToOpenSerp = this.#whereToOpenSerp(event);
      let searchString = this.#getSearchString();
      if (!event.shiftKey && whereToOpenSerp == "current") {
-@@ -793,6 +877,7 @@ export class SearchModeSwitcher {
+@@ -1017,6 +1101,7 @@ export class SearchModeSwitcher {
        this.#input.search(searchString, {
          searchEngine,
          searchModeEntry: "searchbutton",
@@ -1362,7 +1364,7 @@ index 27259ba91e..8ed4d9bd4a 100644
        });
      } else {
        // Go directly to SERP.
-@@ -936,12 +1021,14 @@ export class SearchModeSwitcher {
+@@ -1162,12 +1247,14 @@ export class SearchModeSwitcher {
     * @param {OpenSearchData} engine
     *   The engine to install.
     */
@@ -1378,7 +1380,7 @@ index 27259ba91e..8ed4d9bd4a 100644
        });
  
        this.#input.controller.engineStore.removeObserver(observer);
-@@ -951,10 +1038,12 @@ export class SearchModeSwitcher {
+@@ -1177,10 +1264,12 @@ export class SearchModeSwitcher {
        Glean.urlbarUnifiedsearchbutton.picked.addon_search.add(1);
      }
  
@@ -1393,10 +1395,10 @@ index 27259ba91e..8ed4d9bd4a 100644
    }
  }
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index 75067662a6..edf6ebd4a2 100644
+index 7e3a12b42c..e48d62d6e2 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
-@@ -1744,7 +1744,15 @@ ${
+@@ -1713,7 +1713,15 @@ ${
     *   Defaults to the parent resolving the selected browser at load time.
     */
    // eslint-disable-next-line complexity
@@ -1413,7 +1415,7 @@ index 75067662a6..edf6ebd4a2 100644
      if (element?.classList.contains("urlbarView-button-menu")) {
        this.view.openResultMenu(result, element);
        return;
-@@ -2121,6 +2129,7 @@ ${
+@@ -2090,6 +2098,7 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -1421,7 +1423,7 @@ index 75067662a6..edf6ebd4a2 100644
              searchMode,
              searchString: this._lastSearchString,
              selType: this.view.telemetryTypeFromElement(result, element),
-@@ -3267,6 +3276,7 @@ ${
+@@ -3236,6 +3245,7 @@ ${
      result = this._resultForCurrentValue,
      checkValue = true,
      startQuery = true,
@@ -1429,7 +1431,7 @@ index 75067662a6..edf6ebd4a2 100644
    }) {
      if (
        !result ||
-@@ -3277,12 +3287,12 @@ ${
+@@ -3246,12 +3256,12 @@ ${
        return false;
      }
  
@@ -1444,7 +1446,7 @@ index 75067662a6..edf6ebd4a2 100644
        // Closing the view discards a previewed search mode, so the mode has to
        // be confirmed before the query below gets a chance to run.
        searchMode.isPreview = false;
-@@ -3292,13 +3302,13 @@ ${
+@@ -3261,13 +3271,13 @@ ${
      let value = result.payload.query?.trimStart() || "";
      this.setValue(value);
  
@@ -1460,7 +1462,7 @@ index 75067662a6..edf6ebd4a2 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -4749,12 +4759,13 @@ ${
+@@ -4738,12 +4748,13 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -1476,7 +1478,7 @@ index 75067662a6..edf6ebd4a2 100644
      ) {
        return null;
      }
-@@ -4769,8 +4780,8 @@ ${
+@@ -4758,8 +4769,8 @@ ${
          result.payload.engine == result.payload.originalEngine)
      ) {
        searchMode = { engineName: result.payload.engine };
@@ -1487,7 +1489,7 @@ index 75067662a6..edf6ebd4a2 100644
      }
  
      if (searchMode) {
-@@ -5477,6 +5488,57 @@ ${
+@@ -5468,6 +5479,57 @@ ${
      }
    }
  
@@ -1545,7 +1547,7 @@ index 75067662a6..edf6ebd4a2 100644
    _on_input(event) {
      // A new input starts a fresh search; bump the epoch so a pending
      // deferred-Enter's async keyup won't reset this search's caret.
-@@ -5505,17 +5567,7 @@ ${
+@@ -5496,17 +5558,7 @@ ${
      }
  
      let value = this.value;
@@ -1564,7 +1566,7 @@ index 75067662a6..edf6ebd4a2 100644
  
      let compositionState = this.#compositionState;
      let compositionClosedPopup = this.#compositionClosedPopup;
-@@ -5530,27 +5582,7 @@ ${
+@@ -5521,27 +5573,7 @@ ${
        this.#compositionHadText = true;
      }
  
@@ -1607,10 +1609,10 @@ index 9596698cf9..b95f43a4b3 100644
  
      return {
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index e0742cadcd..31356d9fd0 100644
+index 5a562d6385..38efc61bb6 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
-@@ -81,6 +81,7 @@ export class UrlbarView {
+@@ -84,6 +84,7 @@ export class UrlbarView {
    }
  
    get oneOffSearchButtons() {
@@ -1618,7 +1620,7 @@ index e0742cadcd..31356d9fd0 100644
      if (this.input.sapName != "urlbar") {
        return null;
      }
-@@ -136,7 +137,46 @@ export class UrlbarView {
+@@ -139,7 +140,46 @@ export class UrlbarView {
     *
     * @returns {boolean}
     */
@@ -1665,7 +1667,7 @@ index e0742cadcd..31356d9fd0 100644
      return this.input.hasAttribute("open");
    }
  
-@@ -209,6 +249,8 @@ export class UrlbarView {
+@@ -212,6 +252,8 @@ export class UrlbarView {
     *   The currently selected result.
     */
    get selectedResult() {
@@ -1674,7 +1676,7 @@ index e0742cadcd..31356d9fd0 100644
      if (!this.isOpen) {
        return null;
      }
-@@ -221,6 +263,7 @@ export class UrlbarView {
+@@ -224,6 +266,7 @@ export class UrlbarView {
     *   The currently selected element.
     */
    get selectedElement() {
@@ -1682,7 +1684,7 @@ index e0742cadcd..31356d9fd0 100644
      if (!this.isOpen) {
        return null;
      }
-@@ -299,6 +342,7 @@ export class UrlbarView {
+@@ -302,6 +345,7 @@ export class UrlbarView {
     */
    telemetryTypeFromElement(result, element) {
      if (!element) {
@@ -1690,7 +1692,7 @@ index e0742cadcd..31356d9fd0 100644
        return "none";
      }
      if (
-@@ -666,6 +710,10 @@ export class UrlbarView {
+@@ -669,6 +713,10 @@ export class UrlbarView {
     *   True if the Urlbar focus border should be shown after the view is closed.
     */
    close({ elementPicked = false, showFocusBorder = true } = {}) {
@@ -1701,7 +1703,7 @@ index e0742cadcd..31356d9fd0 100644
      const isShowingZeroPrefix =
        this.#queryContext && !this.#queryContext.searchString;
      this.controller.cancelQuery();
-@@ -916,6 +964,10 @@ export class UrlbarView {
+@@ -919,6 +967,10 @@ export class UrlbarView {
  
    // UrlbarChildController listener methods.
    onQueryStarted(queryContext) {
@@ -1712,7 +1714,7 @@ index e0742cadcd..31356d9fd0 100644
      this.#queryWasCancelled = false;
      this.#queryUpdatedResults = false;
      this.#openPanelInstance = null;
-@@ -938,6 +990,7 @@ export class UrlbarView {
+@@ -941,6 +993,7 @@ export class UrlbarView {
    }
  
    onQueryFinished(queryContext) {
@@ -1720,7 +1722,7 @@ index e0742cadcd..31356d9fd0 100644
      this.#cancelRemoveStaleRowsTimer();
      if (this.#queryWasCancelled) {
        return;
-@@ -982,6 +1035,7 @@ export class UrlbarView {
+@@ -993,6 +1046,7 @@ export class UrlbarView {
    onQueryResults(queryContext) {
      this.queryContextCache.put(queryContext);
      this.#queryContext = queryContext;
@@ -1728,7 +1730,7 @@ index e0742cadcd..31356d9fd0 100644
  
      if (!this.isOpen) {
        this.clear();
-@@ -2763,7 +2817,7 @@ export class UrlbarView {
+@@ -2774,7 +2828,7 @@ export class UrlbarView {
      }
    }
  
@@ -1737,7 +1739,7 @@ index e0742cadcd..31356d9fd0 100644
      if (
        result.source == UrlbarShared.RESULT_SOURCE.HISTORY &&
        (result.type == UrlbarShared.RESULT_TYPE.SEARCH ||
-@@ -2780,6 +2834,7 @@ export class UrlbarView {
+@@ -2791,6 +2845,7 @@ export class UrlbarView {
        return result.payload.icon;
      }
      if (result.payload.iconBlob) {
@@ -1760,7 +1762,7 @@ index c59e443d11..03c10b9504 100644
 +winui-tab-strip-muted = Muted
 +winui-tab-strip-playing = Playing audio
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
-index 5d3805f045..447ab26a04 100644
+index ae5a803893..d4b6611312 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
 +++ b/dom/base/nsDOMWindowUtils.cpp
 @@ -151,6 +151,140 @@ using namespace mozilla::layers;
@@ -1905,7 +1907,7 @@ index 5d3805f045..447ab26a04 100644
  #define APZZTFI_LOG(...) \
    MOZ_LOG(sApzZoomToFocusedInputLog, LogLevel::Debug, (__VA_ARGS__))
 diff --git a/dom/interfaces/base/nsIDOMWindowUtils.idl b/dom/interfaces/base/nsIDOMWindowUtils.idl
-index 83313786eb..cb04c3c048 100644
+index d8f67f31da..becd76cfa9 100644
 --- a/dom/interfaces/base/nsIDOMWindowUtils.idl
 +++ b/dom/interfaces/base/nsIDOMWindowUtils.idl
 @@ -61,6 +61,38 @@ interface nsISynthesizedEventCallback : nsISupports {
@@ -1948,10 +1950,10 @@ index 83313786eb..cb04c3c048 100644
     * Image animation mode of the window. When this attribute's value
     * is changed, the implementation should set all images in the window
 diff --git a/widget/nsIWidget.h b/widget/nsIWidget.h
-index 031a63b997..36cfa7c11e 100644
+index 2d06d7b7dd..0fecc58800 100644
 --- a/widget/nsIWidget.h
 +++ b/widget/nsIWidget.h
-@@ -1294,6 +1294,24 @@ class nsIWidget : public nsSupportsWeakReference {
+@@ -1292,6 +1292,24 @@ class nsIWidget : public nsSupportsWeakReference {
     */
    virtual void* GetNativeData(uint32_t aDataType) = 0;
  
@@ -2382,7 +2384,7 @@ index d4aff8c47e..a34a1a2dfc 100644
              IMEHandler::ProcessRawKeyMessage(msg)) {
            continue;  // the message is consumed.
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index 3f3b5b9200..f80012fc0a 100644
+index c3f2902636..2903127ead 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -53,7 +53,6 @@
@@ -2401,7 +2403,7 @@ index 3f3b5b9200..f80012fc0a 100644
  #include "WinWindowOcclusionTracker.h"
  #include "gfx2DGlue.h"
  #include "gfxConfig.h"
-@@ -1266,6 +1266,44 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+@@ -1262,6 +1262,44 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
    return NS_OK;
  }
  
@@ -2446,7 +2448,7 @@ index 3f3b5b9200..f80012fc0a 100644
  void nsWindow::LocalesChanged() {
    bool isRTL = intl::LocaleService::GetInstance()->IsAppLocaleRTL();
    if (mIsRTL != isRTL) {
-@@ -1290,6 +1328,7 @@ void nsWindow::Destroy() {
+@@ -1286,6 +1324,7 @@ void nsWindow::Destroy() {
    // deleted.
    nsCOMPtr<nsIWidget> kungFuDeathGrip(this);
  
@@ -2454,7 +2456,7 @@ index 3f3b5b9200..f80012fc0a 100644
    DestroyDirectManipulation();
  
    // Before destroying the native window, we need to clean up the resource
-@@ -5641,7 +5680,8 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5640,7 +5679,8 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
          mDraggingWindowWithMouse = true;
        }
  
@@ -2464,7 +2466,7 @@ index 3f3b5b9200..f80012fc0a 100644
          DispatchMouseEvent(eMouseDown, wParamFromGlobalMouseState(),
                             lParamToClient(lParam), false, MouseButton::ePrimary,
                             MOUSE_INPUT_SOURCE(), nullptr, IsNonclient::Yes);
-@@ -5652,7 +5692,9 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5651,7 +5691,9 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
      }
  
      case WM_NCLBUTTONUP: {
@@ -2475,7 +2477,7 @@ index 3f3b5b9200..f80012fc0a 100644
          result = DispatchMouseEvent(eMouseUp, wParamFromGlobalMouseState(),
                                      lParamToClient(lParam), false,
                                      MouseButton::ePrimary, MOUSE_INPUT_SOURCE(),
-@@ -6922,6 +6964,7 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+@@ -6944,6 +6986,7 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
  
  // WM_DESTROY event handler
  void nsWindow::OnDestroy() {
@@ -3893,7 +3895,7 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..247cb0f965
+index 0000000000..f75b8ccd4a
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,1659 @@
@@ -5032,7 +5034,7 @@ index 0000000000..247cb0f965
 +    const label = id => ContextualIdentityService.formatContextLabel(id);
 +    const items = [];
 +    if (!tab || tab.userContextId) {
-+      items.push(command("container:0", label("user-context-new-tab")));
++      items.push(command("container:0", label("user-context-new-tab2")));
 +    }
 +    if (!this.containersAvailable()) return { items };
 +    if (items.length) items.push({ kind: "separator" });
@@ -5044,8 +5046,8 @@ index 0000000000..247cb0f965
 +      items.at(-1).containerColorName = identity.color;
 +    }
 +    items.push({ kind: "separator" },
-+      command("container-add", label("user-context-add-container")),
-+      command("container-manage", label("user-context-manage-containers")));
++      command("container-add", label("user-context-add-container2")),
++      command("container-manage", label("user-context-manage-containers2")));
 +    return { items };
 +  },
 +

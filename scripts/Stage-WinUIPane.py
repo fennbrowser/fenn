@@ -1,4 +1,4 @@
-"""Stage the 2.2.0 pane without replacing Firefox's existing runtime files."""
+"""Stage the 2.5.1 pane without replacing Firefox's existing runtime files."""
 import hashlib
 import json
 from pathlib import Path
@@ -62,7 +62,7 @@ def stage(source_dir=SOURCE, dest_dir=DEST, manifest=None):
     shutil.copyfile(source_dir / "FirefoxWinUIPane.dll", dest_dir / "FirefoxWinUIPane.dll")
     manifest = manifest or ROOT / "artifacts/setup/winui-pane-staging.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(json.dumps({"appSdk": "2.2.0", "files": records}, indent=2))
+    manifest.write_text(json.dumps({"appSdk": "2.5.1", "files": records}, indent=2))
     print(f"Staged pane and {len(files)} runtime/resource files; manifest: {manifest}")
 
 

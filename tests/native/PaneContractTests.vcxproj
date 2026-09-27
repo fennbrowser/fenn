@@ -21,7 +21,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
     <Manifest><AdditionalManifestFiles>$(MSBuildThisFileDirectory)..\..\bridge\WinUIPane.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles></Manifest>
-    <ClCompile><AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\..\native\WinUIPane\Generated Files;$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.InteractiveExperiences.2.0.15\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><ExceptionHandling>Sync</ExceptionHandling><LanguageStandard>stdcpp20</LanguageStandard><WarningLevel>Level4</WarningLevel><TreatWarningAsError>true</TreatWarningAsError><RuntimeLibrary>MultiThreaded</RuntimeLibrary><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions></ClCompile>
+    <ClCompile><AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\..\native\WinUIPane\Generated Files;$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.9\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><ExceptionHandling>Sync</ExceptionHandling><LanguageStandard>stdcpp20</LanguageStandard><WarningLevel>Level4</WarningLevel><TreatWarningAsError>true</TreatWarningAsError><RuntimeLibrary>MultiThreaded</RuntimeLibrary><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions></ClCompile>
     <Link><SubSystem>Console</SubSystem><AdditionalDependencies>runtimeobject.lib;ole32.lib;oleaut32.lib;uiautomationcore.lib;user32.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
   </ItemDefinitionGroup>
   <ItemGroup><ClCompile Include="PaneContractTests.cpp"/><ClInclude Include="..\..\bridge\WinUIPaneApi.h"/></ItemGroup>

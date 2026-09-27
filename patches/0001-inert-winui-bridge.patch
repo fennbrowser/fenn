@@ -1,8 +1,8 @@
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index b97e9940ea..0f32a4f45c 100644
+index 97d2aca746..47a26fd814 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3776,6 +3776,11 @@ pref("widget.support-xdg-config", true, locked);
+@@ -3814,6 +3814,11 @@ pref("widget.support-xdg-config", true, locked);
  // A preference that enables Content Sharing
  pref("browser.contentsharing.enabled", false);
  
@@ -14,80 +14,39 @@ index b97e9940ea..0f32a4f45c 100644
  // Preferences for the Firefox Referral program #2051647).
  pref("browser.referrals.enabled", false);
  // Set on first run after the referral code has been submitted via the
-diff --git a/widget/windows/moz.build b/widget/windows/moz.build
-index 035e7732dd..408cf51fbf 100644
---- a/widget/windows/moz.build
-+++ b/widget/windows/moz.build
-@@ -139,6 +139,7 @@ SOURCES += [
-     "WinCompositorWidget.cpp",
-     "WindowsSMTCProvider.cpp",
-     "WindowsUIUtils.cpp",
-+    "WinUIPrototype.cpp",
- ]
- 
- # Needs INITGUID and we don't allow INITGUID in unified sources since bug 970429.
-diff --git a/widget/windows/nsAppShell.cpp b/widget/windows/nsAppShell.cpp
-index f5d293a068..d4aff8c47e 100644
---- a/widget/windows/nsAppShell.cpp
-+++ b/widget/windows/nsAppShell.cpp
-@@ -3,6 +3,7 @@
-  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
- 
- #include "nsAppShell.h"
-+#include "WinUIPrototype.h"
- 
- #include <winternl.h>
- 
-@@ -297,6 +298,7 @@ static Atomic<size_t, ReleaseAcquire> sOutstandingNativeEventCallbacks;
- }
- 
- nsAppShell::~nsAppShell() {
-+  mozilla::widget::TraceWinUIPrototype("app-shell-destroy");
-   hal::Shutdown();
- 
-   if (mEventWnd) {
-@@ -313,6 +315,9 @@ nsAppShell::~nsAppShell() {
- NS_IMETHODIMP
- nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
-                     const char16_t* aData) {
-+  if (!strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) {
-+    mozilla::widget::TraceWinUIPrototype("app-shell-xpcom-shutdown");
-+  }
-   if (XRE_IsParentProcess()) {
-     nsCOMPtr<nsIObserverService> obsServ(
-         mozilla::services::GetObserverService());
-diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index e05c38352b..3f3b5b9200 100644
---- a/widget/windows/nsWindow.cpp
-+++ b/widget/windows/nsWindow.cpp
-@@ -53,6 +53,7 @@
-  **************************************************************/
- 
- #include "nsWindow.h"
-+#include "WinUIPrototype.h"
- 
- #include <appmodel.h>
- #include <commctrl.h>
-@@ -1259,6 +1260,9 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
- 
-   RecreateDirectManipulationIfNeeded();
- 
-+  if (mWindowType == WindowType::TopLevel) {
-+    mozilla::widget::ProbeWinUIPrototype(mWnd);
-+  }
-   return NS_OK;
- }
- 
-@@ -6918,6 +6922,9 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
- 
- // WM_DESTROY event handler
- void nsWindow::OnDestroy() {
-+  if (mWindowType == WindowType::TopLevel) {
-+    mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
-+  }
-   mOnDestroyCalled = true;
- 
-   // If this is a toplevel window, notify the taskbar concealer to clean up any
+diff --git a/widget/windows/WinUIBridgeApi.h b/widget/windows/WinUIBridgeApi.h
+new file mode 100644
+index 0000000000..27535c6cff
+--- /dev/null
++++ b/widget/windows/WinUIBridgeApi.h
+@@ -0,0 +1,27 @@
++#pragma once
++#include <windows.h>
++#include <stdint.h>
++
++// ABI v1: caller supplies a live HWND on its owning thread in this process.
++// No ownership transfer, allocation, callback, retained HWND or XAML activation.
++#define WINUI_BRIDGE_ABI_VERSION 1u
++typedef struct WinUIBridgeInfo {
++  uint32_t size;
++  uint32_t abiVersion;
++  uint32_t processId;
++  uint32_t threadId;
++  int32_t apartmentType;
++  int32_t apartmentQualifier;
++} WinUIBridgeInfo;
++
++typedef HRESULT(WINAPI* WinUIBridgeProbeFn)(HWND, uint32_t, uint32_t,
++                                         WinUIBridgeInfo*);
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++HRESULT WINAPI WinUIBridgeProbe(HWND window, uint32_t requestedVersion,
++                               uint32_t infoSize, WinUIBridgeInfo* info);
++#ifdef __cplusplus
++}
++#endif
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
 index 0000000000..c6e02a8696
@@ -183,36 +142,77 @@ index 0000000000..418c5d791d
 +void TraceWinUIPrototype(const char* aPhase, HWND aWindow = nullptr);
 +}  // namespace mozilla::widget
 +#endif
-diff --git a/widget/windows/WinUIBridgeApi.h b/widget/windows/WinUIBridgeApi.h
-new file mode 100644
-index 0000000000..27535c6cff
---- /dev/null
-+++ b/widget/windows/WinUIBridgeApi.h
-@@ -0,0 +1,27 @@
-+#pragma once
-+#include <windows.h>
-+#include <stdint.h>
-+
-+// ABI v1: caller supplies a live HWND on its owning thread in this process.
-+// No ownership transfer, allocation, callback, retained HWND or XAML activation.
-+#define WINUI_BRIDGE_ABI_VERSION 1u
-+typedef struct WinUIBridgeInfo {
-+  uint32_t size;
-+  uint32_t abiVersion;
-+  uint32_t processId;
-+  uint32_t threadId;
-+  int32_t apartmentType;
-+  int32_t apartmentQualifier;
-+} WinUIBridgeInfo;
-+
-+typedef HRESULT(WINAPI* WinUIBridgeProbeFn)(HWND, uint32_t, uint32_t,
-+                                         WinUIBridgeInfo*);
-+
-+#ifdef __cplusplus
-+extern "C" {
-+#endif
-+HRESULT WINAPI WinUIBridgeProbe(HWND window, uint32_t requestedVersion,
-+                               uint32_t infoSize, WinUIBridgeInfo* info);
-+#ifdef __cplusplus
-+}
-+#endif
+diff --git a/widget/windows/moz.build b/widget/windows/moz.build
+index 7ea679558b..8bd6828bef 100644
+--- a/widget/windows/moz.build
++++ b/widget/windows/moz.build
+@@ -145,6 +145,7 @@ SOURCES += [
+     "WinCompositorWidget.cpp",
+     "WindowsSMTCProvider.cpp",
+     "WindowsUIUtils.cpp",
++    "WinUIPrototype.cpp",
+ ]
+ 
+ # Needs INITGUID and we don't allow INITGUID in unified sources since bug 970429.
+diff --git a/widget/windows/nsAppShell.cpp b/widget/windows/nsAppShell.cpp
+index f5d293a068..d4aff8c47e 100644
+--- a/widget/windows/nsAppShell.cpp
++++ b/widget/windows/nsAppShell.cpp
+@@ -3,6 +3,7 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include "nsAppShell.h"
++#include "WinUIPrototype.h"
+ 
+ #include <winternl.h>
+ 
+@@ -297,6 +298,7 @@ static Atomic<size_t, ReleaseAcquire> sOutstandingNativeEventCallbacks;
+ }
+ 
+ nsAppShell::~nsAppShell() {
++  mozilla::widget::TraceWinUIPrototype("app-shell-destroy");
+   hal::Shutdown();
+ 
+   if (mEventWnd) {
+@@ -313,6 +315,9 @@ nsAppShell::~nsAppShell() {
+ NS_IMETHODIMP
+ nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
+                     const char16_t* aData) {
++  if (!strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) {
++    mozilla::widget::TraceWinUIPrototype("app-shell-xpcom-shutdown");
++  }
+   if (XRE_IsParentProcess()) {
+     nsCOMPtr<nsIObserverService> obsServ(
+         mozilla::services::GetObserverService());
+diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
+index 257027a218..c3f2902636 100644
+--- a/widget/windows/nsWindow.cpp
++++ b/widget/windows/nsWindow.cpp
+@@ -53,6 +53,7 @@
+  **************************************************************/
+ 
+ #include "nsWindow.h"
++#include "WinUIPrototype.h"
+ 
+ #include <appmodel.h>
+ #include <commctrl.h>
+@@ -1255,6 +1256,9 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+ 
+   RecreateDirectManipulationIfNeeded();
+ 
++  if (mWindowType == WindowType::TopLevel) {
++    mozilla::widget::ProbeWinUIPrototype(mWnd);
++  }
+   return NS_OK;
+ }
+ 
+@@ -6940,6 +6944,9 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+ 
+ // WM_DESTROY event handler
+ void nsWindow::OnDestroy() {
++  if (mWindowType == WindowType::TopLevel) {
++    mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
++  }
+   mOnDestroyCalled = true;
+ 
+   // If this is a toplevel window, notify the taskbar concealer to clean up any

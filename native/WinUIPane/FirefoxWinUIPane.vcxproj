@@ -78,13 +78,13 @@
     <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.CppWinRT.3.0.260818.1\build\native\Microsoft.Windows.CppWinRT.props" />
     <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.props" />
     <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.props" />
-    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.2.2.0\build\native\Microsoft.WindowsAppSDK.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.2.5.1\build\native\Microsoft.WindowsAppSDK.props" />
     <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.props" />
     <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.DWrite.2.1.0\build\Microsoft.WindowsAppSDK.DWrite.props" />
-    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Foundation.2.1.0\build\native\Microsoft.WindowsAppSDK.Foundation.props" />
-    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.InteractiveExperiences.2.0.15\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props" />
-    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Runtime.2.2.0\build\native\Microsoft.WindowsAppSDK.Runtime.props" />
-    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.WinUI.2.2.1\build\native\Microsoft.WindowsAppSDK.WinUI.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Foundation.2.3.12\build\native\Microsoft.WindowsAppSDK.Foundation.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.9\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Runtime.2.5.1\build\native\Microsoft.WindowsAppSDK.Runtime.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.WinUI.2.3.9\build\native\Microsoft.WindowsAppSDK.WinUI.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -184,13 +184,13 @@
     <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.ImplementationLibrary.1.0.260126.7\build\native\Microsoft.Windows.ImplementationLibrary.targets" />
     <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.targets" />
     <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.targets" />
-    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.2.2.0\build\native\Microsoft.WindowsAppSDK.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.2.5.1\build\native\Microsoft.WindowsAppSDK.targets" />
     <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.targets" />
     <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.DWrite.2.1.0\build\Microsoft.WindowsAppSDK.DWrite.targets" />
-    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Foundation.2.1.0\build\native\Microsoft.WindowsAppSDK.Foundation.targets" />
-    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.InteractiveExperiences.2.0.15\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets" />
-    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Runtime.2.2.0\build\native\Microsoft.WindowsAppSDK.Runtime.targets" />
-    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.WinUI.2.2.1\build\native\Microsoft.WindowsAppSDK.WinUI.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Foundation.2.3.12\build\native\Microsoft.WindowsAppSDK.Foundation.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.9\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Runtime.2.5.1\build\native\Microsoft.WindowsAppSDK.Runtime.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.WinUI.2.3.9\build\native\Microsoft.WindowsAppSDK.WinUI.targets" />
   </ImportGroup>
 </Project>
 

@@ -3,8 +3,8 @@
   "windows": { "displayVersion": "25H2", "build": "26200.9445", "architecture": "x64" },
   "firefox": {
     "repository": "https://github.com/mozilla-firefox/firefox.git",
-    "commit": "0304f5a3e392699f440f0e15f9ea0bc2790309c6",
-    "version": "158.0a1",
+    "commit": "eb8ceeebe16204dabfc82bd9673a09e3db4d0217",
+    "version": "159.0a1",
     "cloneDepth": 1,
     "buildJobs": 8,
     "debugSymbols": false

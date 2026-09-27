@@ -16,6 +16,7 @@
     <winrtv1:activatableClass name="Microsoft.UI.Composition.AnimationController" threadingModel="both" />
     <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionAnimation" threadingModel="both" />
     <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionApiInformation" threadingModel="both" />
+    <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionEngine" threadingModel="both" />
     <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionBrush" threadingModel="both" />
     <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionCapabilities" threadingModel="both" />
     <winrtv1:activatableClass name="Microsoft.UI.Composition.CompositionClip" threadingModel="both" />
@@ -615,6 +616,7 @@
     <winrtv1:activatableClass name="Microsoft.UI.Xaml.ScalarTransition" threadingModel="both" />
     <winrtv1:activatableClass name="Microsoft.UI.Xaml.Setter" threadingModel="both" />
     <winrtv1:activatableClass name="Microsoft.UI.Xaml.SetterBaseCollection" threadingModel="both" />
+    <winrtv1:activatableClass name="Microsoft.UI.Xaml.Settings.XamlOptionalChanges" threadingModel="both" />
     <winrtv1:activatableClass name="Microsoft.UI.Xaml.Shapes.Ellipse" threadingModel="both" />
     <winrtv1:activatableClass name="Microsoft.UI.Xaml.Shapes.Line" threadingModel="both" />
     <winrtv1:activatableClass name="Microsoft.UI.Xaml.Shapes.Path" threadingModel="both" />
