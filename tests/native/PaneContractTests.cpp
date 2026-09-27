@@ -2335,17 +2335,19 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
     Require(SUCCEEDED(inspect(host,winrt::put_abi(content))),"inspect group gap strip");
     auto view=content.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
     SetForegroundWindow(host);
-    for (uint32_t scenario=0;scenario<4;++scenario) {
+    for (uint32_t scenario=0;scenario<6;++scenario) {
         const bool rtl = (scenario & 1) != 0, joining = scenario >= 2;
-        auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":70,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[{"id":11,"detail":"","flags":0},{"id":22,"detail":"","flags":0},{"id":33,"detail":"","flags":0}],"layout":[{"group":0,"tab":11},{"group":7,"tab":0},{"group":7,"tab":22},{"group":0,"tab":33}]}})");
+        auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":70,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[{"id":11,"detail":"","flags":0},{"id":22,"detail":"","flags":0},{"id":44,"detail":"","flags":0},{"id":33,"detail":"","flags":0}],"layout":[{"group":0,"tab":11},{"group":7,"tab":0},{"group":7,"tab":22},{"group":7,"tab":44},{"group":0,"tab":33}]}})");
         state.GetNamedObject(L"strip").SetNamedValue(L"rtl",winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(rtl));
         state.GetNamedObject(L"strip").SetNamedValue(L"revision",winrt::Windows::Data::Json::JsonValue::CreateNumberValue(70 + scenario));
+        state.GetNamedObject(L"strip").GetNamedArray(L"groups").GetAt(0).GetObject()
+            .SetNamedValue(L"headerText",winrt::Windows::Data::Json::JsonValue::CreateStringValue(scenario>=4 ? L"" : L"Research"));
         for (auto value : state.GetNamedObject(L"strip").GetNamedArray(L"rows"))
             value.GetObject().SetNamedValue(L"groupSource",winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(joining));
         MenuPublish(api,host,state.Stringify().c_str());
-        WinUITab tabs[]{{11,L"Before"},{22,L"Group member"},{33,L"After"}};
+        WinUITab tabs[]{{11,L"Before"},{22,L"Group member"},{44,L"Second member"},{33,L"After"}};
         uint32_t selected{};
-        Require(SUCCEEDED(api.syncTabs(host,tabs,3,11,&selected)), "group gap tabs");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,4,11,&selected)), "group gap tabs");
         settle();
         for (bool backward : {false,true}) {
             auto source=TabScreenBounds(host,backward ? L"FirefoxWinUITab-33" : L"FirefoxWinUITab-11");
@@ -2359,7 +2361,7 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
             auto target = backward != rtl ? member.left+16 : member.right-16;
             SetCursorPos(target,(member.top+member.bottom)/2);
             settle();
-            auto sourceWidth=view.TabItems().GetAt(backward ? 2 : 0).as<Controls::TabViewItem>().ActualWidth()
+            auto sourceWidth=view.TabItems().GetAt(backward ? 3 : 0).as<Controls::TabViewItem>().ActualWidth()
                 * content.XamlRoot().RasterizationScale();
             LONG headerDelta{},memberDelta{};
             for (int attempt=0;attempt<20;++attempt) {
@@ -2382,6 +2384,38 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
                 "stationary direct group hover retains the open insertion gap");
             Require(content.as<Controls::Grid>().Children().GetAt(2).as<Controls::Border>().Visibility() == Visibility::Collapsed,
                 "joining an existing group never shows the new-group creation outline");
+            if (joining) {
+                const auto direction=rtl ? -1 : 1;
+                const auto firstGap=(rtl ? member.right : member.left) - (backward ? 0 : direction*sourceWidth);
+                auto pointAt=[&](double distance) {
+                    SetCursorPos(LONG(firstGap+direction*distance),(member.top+member.bottom)/2);
+                    settle();
+                };
+                pointAt(16);
+                pointAt(sourceWidth*.75);
+                auto firstSlot=TabScreenBounds(host,L"FirefoxWinUITab-22");
+                Require(std::abs(firstSlot.left-member.left-(backward ? direction*sourceWidth : 0))<=2,
+                    "the full first insertion gap retains slot one, including beyond its former midpoint");
+                pointAt(sourceWidth*1.6);
+                auto secondSlot=TabScreenBounds(host,L"FirefoxWinUITab-22");
+                Require(std::abs(secondSlot.left-member.left-(backward ? 0 : -direction*sourceWidth))<=2,
+                    "crossing the preview member midpoint advances to slot two");
+                pointAt(sourceWidth*.25);
+                firstSlot=TabScreenBounds(host,L"FirefoxWinUITab-22");
+                Require(std::abs(firstSlot.left-member.left-(backward ? direction*sourceWidth : 0))<=2,
+                    "reverse movement returns to slot one at the preview midpoint");
+                const auto secondBefore=TabScreenBounds(host,L"FirefoxWinUITab-44");
+                for (int crossing=0;crossing<3;++crossing) {
+                    const auto disclosure=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-7");
+                    SetCursorPos((disclosure.left+disclosure.right)/2,(member.top+member.bottom)/2);
+                    settle();
+                    auto overHeader=TabScreenBounds(host,L"FirefoxWinUITab-22");
+                    auto secondAfter=TabScreenBounds(host,L"FirefoxWinUITab-44");
+                    Require(std::abs(overHeader.left-firstSlot.left)<=2 && std::abs(secondAfter.left-secondBefore.left)<=2,
+                        "crossing the disclosure retains the first gap without jumping past either member");
+                    pointAt(sourceWidth*.25);
+                }
+            }
             INPUT escape[2]{};
             escape[0].type=escape[1].type=INPUT_KEYBOARD;
             escape[0].ki.wVk=escape[1].ki.wVk=VK_ESCAPE;

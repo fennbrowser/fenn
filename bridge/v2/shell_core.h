@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 18
+#define SHELL_CORE_ABI_VERSION 20
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -881,6 +881,19 @@ ShellStatus shell_core_tab_drag_update(ShellCore *core,
  Live core. Identities resolve against the accepted strip layout.
  */
 ShellStatus shell_core_tab_drag_join(ShellCore *core, uint32_t group, uint32_t tab, bool before);
+
+/*
+ Hit existing-group members and the current insertion gap in preview geometry.
+ # Safety
+ Live core; writable outputs.
+ */
+ShellStatus shell_core_tab_drag_join_hit(ShellCore *core,
+                                         double x,
+                                         uint32_t header,
+                                         bool collapsed,
+                                         uint32_t *group,
+                                         uint32_t *tab,
+                                         bool *before);
 
 /*
  Close the local reorder gap while retaining the active gesture.

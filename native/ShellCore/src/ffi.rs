@@ -1813,6 +1813,21 @@ pub unsafe extern "C" fn shell_core_tab_drag_join(core: *mut ShellCore, group: u
         if core.queue.tab_drag.join_group(core.strip.layout(),group,tab,before) { ShellStatus::Ok } else { ShellStatus::InvalidArgument }
     })
 }
+/// Hit existing-group members and the current insertion gap in preview geometry.
+/// # Safety
+/// Live core; writable outputs.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_join_hit(core: *mut ShellCore, x: f64, header: u32, collapsed: bool, group: *mut u32, tab: *mut u32, before: *mut bool) -> ShellStatus {
+    let (Some(group),Some(tab),Some(before)) = (group.as_mut(),tab.as_mut(),before.as_mut()) else { return ShellStatus::InvalidArgument; };
+    (*group,*tab,*before) = (0,0,false);
+    guard(core, |core| {
+        if core.queue.is_closed() { return ShellStatus::Closed; }
+        let hit = if header == 0 { core.queue.tab_drag.join_hit(core.strip.layout(),x) }
+            else { core.queue.tab_drag.header_hit(core.strip.layout(),header,collapsed) };
+        if let Some(hit) = hit { (*group,*tab,*before)=hit; }
+        ShellStatus::Ok
+    })
+}
 /// Close the local reorder gap while retaining the active gesture.
 /// # Safety
 /// Live core.

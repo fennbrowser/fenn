@@ -24,6 +24,7 @@ pub struct TabDrag {
     rows: Vec<ShellDragRow>,
     before: u32,
     join_anchor: Option<u32>,
+    join_destination: Option<(u32,u32,bool)>,
 }
 pub const MAX_ROWS: usize = 10_000;
 fn coordinate(v: f64) -> bool { v.is_finite() && v.abs() <= 1_000_000_000.0 }
@@ -56,6 +57,7 @@ impl TabDrag {
         self.state.detaching = detaching as u32;
         if detaching || !project { return true; }
         self.join_anchor = None;
+        self.join_destination = None;
         let original = self.state.original as usize;
         let row = self.rows[original];
         let min = -row.left;
@@ -89,13 +91,55 @@ impl TabDrag {
             index += 1;
         }
         match (anchor,insertion) {
-            (Some(anchor),Some(index)) => self.join(index,anchor),
+            (Some(anchor),Some(index)) if self.join(index,anchor) => {
+                self.join_destination = Some((group,tab,before)); true
+            },
             _ => false,
         }
     }
     pub fn close_gap(&mut self) {
         self.join_anchor = None;
+        self.join_destination = None;
         if self.state.phase == 2 { self.state.projected = self.state.original; }
+    }
+    /// Expanded disclosures target the leading slot; collapsed ones append.
+    pub fn header_hit(&self, layout: &[crate::strip::ShellStripSlot], group: u32, collapsed: bool) -> Option<(u32,u32,bool)> {
+        if self.state.phase != 2 || self.state.detaching != 0 ||
+            crate::group_drop::target(layout,self.state.tab,0,group) != group || group == 0 { return None; }
+        if !collapsed {
+            if let Some(first) = layout.iter().find(|s| s.group == group && s.tab != 0) {
+                return Some((group,first.tab,true));
+            }
+        }
+        Some((group,0,false))
+    }
+    /// Hit the final preview geometry, never an intermediate animation frame.
+    /// The open gap retains its destination across its full width.
+    pub fn join_hit(&self, layout: &[crate::strip::ShellStripSlot], x: f64) -> Option<(u32,u32,bool)> {
+        if self.state.phase != 2 || self.state.detaching != 0 || !coordinate(x) { return None; }
+        let tabs:Vec<_> = layout.iter().filter(|s| s.tab != 0).collect();
+        if tabs.len() != self.rows.len() { return None; }
+        let source_group = tabs.iter().find(|s| s.tab == self.state.tab)?.group;
+        let width = self.rows[self.state.original as usize].width;
+        let left = |i:usize| self.rows[i].left + if self.join_destination.is_some() {
+            self.slot_offset(i as u32,false,false,false).unwrap_or(0.0)
+        } else { 0.0 };
+        if let Some((group,tab,before)) = self.join_destination {
+            let target = if tab != 0 { tabs.iter().position(|s| s.tab == tab) }
+                else { tabs.iter().rposition(|s| s.group == group) };
+            if let Some(i) = target {
+                let start = if tab != 0 && before { left(i)-width } else { left(i)+self.rows[i].width };
+                if x >= start && x <= start+width { return self.join_destination; }
+            }
+        }
+        for (i,slot) in tabs.iter().enumerate() {
+            if slot.group == 0 || slot.group == source_group { continue; }
+            let start=left(i);
+            if x >= start && x <= start+self.rows[i].width {
+                return Some((slot.group,slot.tab,x < start+self.rows[i].width/2.0));
+            }
+        }
+        None
     }
     pub fn offset(&self, index: u32) -> Option<f64> {
         let i = index as usize;
@@ -134,6 +178,7 @@ impl TabDrag {
     pub fn end(&mut self, cancel: bool) {
         self.state.phase = 0;
         self.join_anchor = None;
+        self.join_destination = None;
         if cancel { self.state.detaching = 0; self.state.awaiting = 0; self.state.request = 0; }
     }
     pub fn commit(&mut self, request: u64, before: u32) -> bool {
@@ -231,6 +276,40 @@ mod tests {
         assert!(!d.join(2,1));
         d.end(true);
         assert!(!d.join(2,1));
+    }
+    #[test]
+    fn join_target_follows_preview_and_retains_the_full_first_gap() {
+        use crate::strip::ShellStripSlot as Slot;
+        let layout=[Slot{group:0,tab:1},Slot{group:7,tab:0},Slot{group:7,tab:2},Slot{group:7,tab:3},Slot{group:0,tab:4}];
+        for original in [0,3] {
+            let mut d=TabDrag::default();
+            d.arm(original+1,50.0+original as f64*100.0,16.0);
+            d.promote(original,&[ShellDragRow{left:0.0,width:100.0},ShellDragRow{left:132.0,width:100.0},
+                ShellDragRow{left:232.0,width:100.0},ShellDragRow{left:332.0,width:100.0}]);
+            assert_eq!(d.header_hit(&layout,7,false),Some((7,2,true)));
+            assert_eq!(d.header_hit(&layout,7,true),Some((7,0,false)));
+            assert_eq!(d.header_hit(&layout,99,false),None);
+            let (group,tab,before)=d.header_hit(&layout,7,false).unwrap();
+            assert!(d.join_group(&layout,group,tab,before));
+            assert_eq!(d.state().projected,1); // never skip both members
+            d.close_gap();
+            assert_eq!(d.join_hit(&layout,140.0),Some((7,2,true)));
+            assert!(d.join_group(&layout,7,2,true));
+            let gap=if original==0 { 32.0 } else { 132.0 };
+            for x in [gap+1.0,gap+50.0,gap+99.0] {
+                assert_eq!(d.join_hit(&layout,x),Some((7,2,true)));
+            }
+            // Crossing the shifted first member's midpoint selects slot two.
+            let midpoint=gap+150.0;
+            assert_eq!(d.join_hit(&layout,midpoint-1.0),Some((7,2,true)));
+            assert_eq!(d.join_hit(&layout,midpoint+1.0),Some((7,2,false)));
+            assert!(d.join_group(&layout,7,2,false));
+            assert_eq!(d.join_hit(&layout,midpoint+1.0),Some((7,2,false)));
+            assert_eq!(d.join_hit(&layout,gap+49.0),Some((7,2,true)));
+            d.close_gap();
+            assert_eq!(d.join_hit(&layout,140.0),Some((7,2,true)));
+            assert_eq!(d.join_hit(&layout,f64::NAN),None);
+        }
     }
     #[test]
     fn group_join_resolves_live_members_and_collapsed_headers() {

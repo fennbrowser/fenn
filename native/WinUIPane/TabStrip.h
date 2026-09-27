@@ -1184,6 +1184,7 @@ struct NativeTabStrip {
     }
 
     bool UpdateGroupHover(Windows::Foundation::Point const& point) {
+        const auto previousJoin = joinGroup;
         joinGroup = joinTarget = 0;
         uint32_t candidate{};
         const auto source = presentation.find(Drag().tab);
@@ -1200,34 +1201,33 @@ struct NativeTabStrip {
                 // only to the new-group creation dwell below.
                 return true;
             };
-            // Header hits include fully collapsed groups with no visible member.
-            for (auto const& [id, run] : inlineGroups.runs) {
-                if (!run.button || !run.button.IsLoaded()) continue;
-                const auto left = run.button.TransformToVisual(view).TransformPoint({0,0}).X - tabDragHeaders.Offset(id);
-                if (point.X < left || point.X > left + run.button.ActualWidth()) continue;
-                uint32_t group{};
-                if (shell_core_strip_drop_group(core, Drag().tab, 0, uint32_t(id), &group) == SHELL_STATUS_OK && group)
-                    return join(group, 0, false);
+            uint32_t hitGroup{}, hitTab{};
+            bool hitBefore{};
+            if (shell_core_tab_drag_join_hit(core, point.X, 0, false, &hitGroup, &hitTab, &hitBefore) == SHELL_STATUS_OK && hitGroup) {
+                const auto target = presentation.find(hitTab);
+                if (!hitTab || (target != presentation.end() && target->second.groupSource))
+                    return join(hitGroup, hitTab, hitBefore);
             }
-            // Existing groups use frozen insertion slots. Moving the target to
-            // open a gap must not revoke the join beneath a stationary pointer.
-            for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i) {
-                auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
-                const auto id = unbox_value<uint32_t>(row.Tag());
-                if (id == Drag().tab) continue;
-                const auto left = drag.originalLeftEdge[i];
-                const auto width = drag.originalWidth[i];
-                if (point.X >= left && point.X <= left + width) {
-                    uint32_t group{};
-                    const auto target = presentation.find(id);
-                    if (target != presentation.end() && target->second.groupSource &&
-                        shell_core_strip_drop_group(core, Drag().tab, id, 0, &group) == SHELL_STATUS_OK && group) {
-                        // Both pointer and settled bounds are view-local;
-                        // WinUI has already accounted for RTL in this space.
-                        const bool before = point.X < left + width / 2;
-                        return join(group, id, before);
-                    }
-                }
+            // Header hits include fully collapsed groups with no visible member.
+            uint32_t index{};
+            const auto sourceSlot = std::find_if(groupLayout.begin(), groupLayout.end(),
+                [&](auto slot) { return slot.tab == Drag().tab; });
+            const auto sourceGroup = sourceSlot == groupLayout.end() ? 0 : sourceSlot->group;
+            for (auto slot : groupLayout) {
+                if (slot.tab) { ++index; continue; }
+                const auto id = slot.group;
+                const auto found = inlineGroups.runs.find(id);
+                if (found == inlineGroups.runs.end()) continue;
+                auto const& run = found->second;
+                if (!run.button || !run.button.IsLoaded()) continue;
+                double offset{};
+                // Collapsed headers retain their stable acquisition region:
+                // removing the source can shift the entire button by a tab width.
+                if (!run.collapsed && shell_core_tab_drag_slot_offset(core,index,true,id == sourceGroup,id == previousJoin,&offset) != SHELL_STATUS_OK) continue;
+                const auto left = run.button.TransformToVisual(view).TransformPoint({0,0}).X - tabDragHeaders.Offset(id) + offset;
+                if (point.X < left || point.X > left + run.button.ActualWidth()) continue;
+                if (shell_core_tab_drag_join_hit(core, point.X, id, run.collapsed, &hitGroup, &hitTab, &hitBefore) == SHELL_STATUS_OK && hitGroup)
+                    return join(hitGroup, hitTab, hitBefore);
             }
             // New-group dwell still targets settled live rows, never a former
             // occupant of the insertion gap or a control in mid-animation.
