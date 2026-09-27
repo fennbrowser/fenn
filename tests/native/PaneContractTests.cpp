@@ -2303,7 +2303,13 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
                     "bounds UIA condition");
             VariantClear(&value);
             for (int attempt = 0; attempt < 100 && !row; ++attempt) {
-                Require(SUCCEEDED(root->FindFirst(TreeScope_Descendants, condition.Get(), &row)), "query row through UIA");
+                const auto result=root->FindFirst(TreeScope_Descendants, condition.Get(), &row);
+                if (FAILED(result)) {
+                    // A provider can be briefly unavailable while WinUI swaps
+                    // grouped containers. Keep the same bounded lookup window.
+                    if (attempt==99) fprintf(stderr,"UIA row query failed: 0x%08lx\n",result);
+                    row.Reset();
+                }
                 if (!row) Sleep(20);
             }
             if (!row) fwprintf(stderr, L"Missing UIA row: %ls\n", id);
@@ -2322,6 +2328,85 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
     client.join();
     Require(bounds.right > bounds.left && bounds.bottom > bounds.top, "UIA reports nonempty screen bounds");
     return bounds;
+}
+
+static void CheckGroupNeighbors(WinUIPaneApi& api, HWND host) {
+    using namespace winrt::Windows::Data::Json;
+    auto settle=[] { for (int i=0;i<35;++i) { Pump(); Sleep(10); } };
+    RECT rect{0,0,1100,40};
+    SetWindowPos(host,nullptr,100,100,1140,400,SWP_NOZORDER);
+    Require(SUCCEEDED(api.updateTabStrip(host,&rect,TRUE)),"neighbor strip");
+    ShowWindow(host,SW_SHOW);
+    SetForegroundWindow(host);
+    settle();
+    for (bool rtl : {false,true}) {
+        auto state=JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":100,"groupsLabel":"Groups","groups":[{"id":7,"name":"First","label":"First","collapsed":false},{"id":8,"name":"Second","label":"Second","collapsed":false}],"rows":[{"id":11,"detail":"","flags":0},{"id":22,"detail":"","flags":0},{"id":33,"detail":"","flags":0},{"id":44,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22},{"group":8,"tab":0},{"group":8,"tab":33},{"group":8,"tab":44}]}})");
+        auto strip=state.GetNamedObject(L"strip");
+        strip.SetNamedValue(L"rtl",JsonValue::CreateBooleanValue(rtl));
+        strip.SetNamedValue(L"revision",JsonValue::CreateNumberValue(rtl ? 200 : 100));
+        MenuPublish(api,host,state.Stringify().c_str());
+        WinUITab tabs[]{{11,L"One"},{22,L"Two"},{33,L"Three"},{44,L"Four"}};
+        uint32_t selected{};
+        Require(SUCCEEDED(api.syncTabs(host,tabs,4,33,&selected)),"neighbor tabs");
+        settle();
+        for (int pass=0;pass<3;++pass) {
+            fprintf(stderr,"Start neighbor rtl=%d pass=%d\n",rtl,pass);
+            auto source=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-7");
+            const auto y=(source.top+source.bottom)/2;
+            SetCursorPos((source.left+source.right)/2,y);
+            INPUT mouse{}; mouse.type=INPUT_MOUSE; mouse.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
+            SendInput(1,&mouse,sizeof(mouse)); settle();
+            SetCursorPos((source.left+source.right)/2+(rtl ? -8 : 8),y); settle();
+            auto header=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-8");
+            auto first=TabScreenBounds(host,L"FirefoxWinUITab-33");
+            auto last=TabScreenBounds(host,L"FirefoxWinUITab-44");
+            for (int sweep=0;sweep<4;++sweep) {
+                const auto midpoint=rtl ? (last.left+header.right)/2 : (header.left+last.right)/2;
+                auto x=midpoint+(sweep%2 ? -8 : 8)*(rtl ? -1 : 1);
+                SetCursorPos(x,y);
+                LONG previous=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-8").left;
+                for (int frame=0;frame<20;++frame) {
+                    Pump(); Sleep(16);
+                    auto current=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-8").left;
+                    const auto direction=(sweep%2 ? 1 : -1)*(rtl ? -1 : 1);
+                    if ((current-previous)*direction < -2) fprintf(stderr,"Reversed while held: rtl=%d sweep=%d previous=%ld current=%ld\n",rtl,sweep,previous,current);
+                    Require((current-previous)*direction>=-2,"neighbor preview never reverses while pointer is stationary near midpoint");
+                    previous=current;
+                }
+                settle();
+                auto h=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-8");
+                auto a=TabScreenBounds(host,L"FirefoxWinUITab-33");
+                auto b=TabScreenBounds(host,L"FirefoxWinUITab-44");
+                fprintf(stderr,"Neighbor rtl=%d pass=%d sweep=%d offsets=%ld,%ld,%ld\n",rtl,pass,sweep,h.left-header.left,a.left-first.left,b.left-last.left);
+                Require(std::abs((h.left-header.left)-(a.left-first.left))<=2 && std::abs((a.left-first.left)-(b.left-last.left))<=2,"neighbor header and both members move as one block");
+                settle();
+                auto held=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-8");
+                Require(std::abs(held.left-h.left)<=2,"stationary group target stays stable");
+            }
+            INPUT escape[2]{}; escape[0].type=escape[1].type=INPUT_KEYBOARD;
+            escape[0].ki.wVk=escape[1].ki.wVk=VK_ESCAPE; escape[1].ki.dwFlags=KEYEVENTF_KEYUP;
+            SendInput(1,escape,sizeof(INPUT)); settle(); SendInput(1,escape+1,sizeof(INPUT));
+            mouse.mi.dwFlags=MOUSEEVENTF_LEFTUP; SendInput(1,&mouse,sizeof(mouse)); settle();
+            auto restored=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-7");
+            Require(std::abs(restored.left-source.left)<=2,"source disclosure restored after repeated group crossings");
+        }
+        for (int move=0;move<12;++move) {
+            strip.SetNamedValue(L"revision",JsonValue::CreateNumberValue((rtl ? 200 : 100)+move+1));
+            const bool reverse=(move%2)==0;
+            strip.SetNamedValue(L"layout",JsonArray::Parse(reverse
+                ? LR"([{"group":8,"tab":0},{"group":8,"tab":33},{"group":8,"tab":44},{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22}])"
+                : LR"([{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22},{"group":8,"tab":0},{"group":8,"tab":33},{"group":8,"tab":44}])"));
+            MenuPublish(api,host,state.Stringify().c_str());
+            WinUITab reversed[]{{33,L"Three"},{44,L"Four"},{11,L"One"},{22,L"Two"}};
+            Require(SUCCEEDED(api.syncTabs(host,reverse ? reversed : tabs,4,33,&selected)),"acknowledge neighbor reorder");
+            settle();
+            fprintf(stderr,"Check disclosures rtl=%d move=%d\n",rtl,move);
+            for (auto id : {L"FirefoxWinUIInlineGroup-7",L"FirefoxWinUIInlineGroup-8"}) {
+                auto header=TabScreenBounds(host,id);
+                Require(header.right-header.left>=32,"both retained disclosures remain visible after reorder");
+            }
+        }
+    }
 }
 
 static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND host) {
@@ -2991,7 +3076,7 @@ int wmain(int argc, wchar_t** argv) {
     Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 ||
                                         wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 ||
                                         wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--continuation") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                                        wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || wcscmp(argv[2], L"--group-drop") == 0)),
+                                        wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0))),
             "DLL path and optional --inspect required");
     // Before the DLL loads, because the pane reads this once. Without it the
     // request path's stages are counted but never timed, and the assertions
@@ -3051,7 +3136,7 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
     if (argc == 3 && (wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--continuation") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                      wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || wcscmp(argv[2], L"--group-drop") == 0)) {
+                      wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0))) {
         auto dragTicks = [&] {
             auto counts = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
                 GetProcAddress(module, "WinUIPaneTestGetEntryCalls"));
@@ -3060,7 +3145,9 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(counts(L"dragTick", &value)), "read drag tick count");
             return value;
         };
-        if (wcscmp(argv[2], L"--group-drop") == 0) {
+        if (wcscmp(argv[2], L"--group-neighbors") == 0) {
+            CheckGroupNeighbors(api,first);
+        } else if (wcscmp(argv[2], L"--group-drop") == 0) {
             CheckTabStripDrag(module, api, first, false, false, false, true);
             CheckTabGroupHeaderShift(module, api, first);
         } else if (wcscmp(argv[2], L"--continuation") == 0) {

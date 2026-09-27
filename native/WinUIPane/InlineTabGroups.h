@@ -208,7 +208,7 @@ struct InlineTabGroups {
         for (auto& [id, run] : runs) {
             auto desired = members.find(id);
             if (!run.button || desired == members.end()) continue;
-            if (run.items.Size() && desired->second.empty()) {
+            if ((run.items.Size()==0) != desired->second.empty()) {
                 run.model.Insert(L"Header",nullptr);
                 reattach.push_back(id);
             }
@@ -315,23 +315,21 @@ struct InlineTabGroups {
                 run.items.InsertAt(i, desired[i]);
             }
         }
-        // Prune obsolete runs before positioning survivors. Removing/reinserting
-        // a group merely because its preceding run vanished can leave its
-        // retained button attached to WinUI's recycled header container.
+        // Group removal can synchronously select/measure through TabView while
+        // ItemsStackPanel is updating its valid-element indices. Publish the
+        // final topology with one reset, never a sequence of group removals.
         std::set<uint64_t> live(wanted.begin(), wanted.end());
-        for (auto const& [id, run] : runs) {
-            if (live.count(id)) continue;
-            uint32_t old;
-            if (data.IndexOf(run.model, old)) data.RemoveAt(old);
+        if (wanted != order) {
+            for (auto& [id, run] : runs) {
+                if (run.button) {
+                    run.model.Insert(L"Header",nullptr);
+                    reattach.push_back(id);
+                }
+            }
+            std::vector<Object> models;
+            for (auto id : wanted) models.push_back(runs.at(id).model);
+            data.ReplaceAll(models);
         }
-        for (uint32_t i = 0; i < wanted.size(); ++i) {
-            Object model = runs.at(wanted[i]).model;
-            if (i < data.Size() && data.GetAt(i) == model) continue;
-            uint32_t old;
-            if (data.IndexOf(model, old)) data.RemoveAt(old);
-            data.InsertAt(i, model);
-        }
-        while (data.Size() > wanted.size()) data.RemoveAtEnd();
         for (auto it = runs.begin(); it != runs.end();) {
             if (!live.count(it->first)) it = runs.erase(it); else ++it;
         }

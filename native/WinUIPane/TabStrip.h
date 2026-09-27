@@ -391,6 +391,10 @@ struct NativeTabStrip {
         groupDragVisibility.clear();
     }
     ULONGLONG groupScrollTick{};
+    // Presentation geometry captured after the temporary collapse settles.
+    // Store content-space bounds so scrolling does not feed animated transforms
+    // back into the whole-group insertion decision.
+    std::map<uint64_t,std::pair<double,double>> groupDragGeometry;
     // Grouped-source moves can deliver deferred selection after Sync returns.
     // Keep the browser selection until acknowledged layout settles, or new input.
     bool groupSelectionGuard{}, groupSelectionObserving{};
@@ -432,6 +436,7 @@ struct NativeTabStrip {
     }
     void EndGroupDrag(bool commit = false) {
         const auto state=GroupDrag();
+        groupDragGeometry.clear();
         groupDragShift.Reset();
         RestoreDraggingGroup();
         if (!state.phase) { groupDragVisual.Hide(); return; }
@@ -461,6 +466,8 @@ struct NativeTabStrip {
         const auto old=GroupDrag();
         if (!old.phase) return;
         if (cancel || !root.IsLoaded() || root.Visibility()!=Visibility::Visible) { EndGroupDrag(); return; }
+        const bool geometryReady=old.phase==2 && !groupSlide.pending && !groupSlide.storyboard;
+        if (geometryReady && groupDragGeometry.empty()) view.UpdateLayout();
         auto scroller=GroupScroller(view);
         auto viewport = scroller ? scroller.TransformToVisual(view).TransformBounds({0,0,float(scroller.ActualWidth()),float(scroller.ActualHeight())})
                                 : Windows::Foundation::Rect{0,0,float(view.ActualWidth()),float(view.ActualHeight())};
@@ -508,6 +515,15 @@ struct NativeTabStrip {
             } else slots.push_back({slot.group,slot.tab,start,end});
             shiftItems.push_back({key,item,slots.size()-1});
         }
+        if (geometryReady) {
+            const auto scroll=scroller ? scroller.HorizontalOffset() : 0.0;
+            for (auto& slot : slots) {
+                const auto key=slot.group ? GroupSlide::GroupKey(slot.group) : uint64_t(slot.tab);
+                const auto [entry,inserted]=groupDragGeometry.try_emplace(key,slot.start+scroll,slot.end+scroll);
+                slot.start=entry->second.first-scroll;
+                slot.end=entry->second.second-scroll;
+            }
+        }
         if (shell_core_group_drag_update(core,point.X,point.Y,inside,viewport.X,viewport.X+viewport.Width,slots.data(),slots.size())!=SHELL_STATUS_OK) { EndGroupDrag(); return; }
         const auto state=GroupDrag();
         if (state.phase==2) {
@@ -525,7 +541,7 @@ struct NativeTabStrip {
             inlineGroups.hover.Dismiss();
             // Finish the initial collapse before taking ownership of the
             // surviving controls' transforms for the reorder preview.
-            if (!groupSlide.pending && !groupSlide.storyboard && groupDragVisual.placeholder) {
+            if (geometryReady && groupDragVisual.placeholder) {
                 const auto width=groupDragVisual.placeholder.Width()+groupDragVisual.margin.Left+groupDragVisual.margin.Right;
                 for (auto const& item : shiftItems) {
                     double offset{};
