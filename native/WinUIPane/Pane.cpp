@@ -2199,7 +2199,7 @@ BOOL WINAPI Translate(MSG* message) noexcept {
                 pane.strip->inlineGroups.hover.Dismiss();
                 return TRUE;
             }
-            if (pane.strip && pane.strip->inlineGroups.hasPreview && pane.strip->root.IsLoaded() &&
+            if (pane.strip && !pane.strip->inlineGroups.runs.empty() && pane.strip->root.IsLoaded() &&
                 GetForegroundWindow() == pane.parent) {
                 POINT point{};
                 if (GetCursorPos(&point)) pane.strip->inlineGroups.PointerAt(pane.ScreenToStrip(point),pane.strip->view);

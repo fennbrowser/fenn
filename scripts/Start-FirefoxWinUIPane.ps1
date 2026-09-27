@@ -1,4 +1,4 @@
-param([switch]$NativeAddress, [switch]$NativeTabStrip, [switch]$ContainerDots, [switch]$CaptureCrash,
+param([switch]$NativeAddress, [switch]$NativeTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$CaptureCrash,
       [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight = 40)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -16,6 +16,7 @@ user_pref("browser.startup.homepage_override.mstone", "ignore");
 '@ | Set-Content (Join-Path $demoProfile 'user.js')
 if ($NativeTabStrip) { Add-Content (Join-Path $demoProfile 'user.js') 'user_pref("widget.windows.winui-prototype.tabstrip.enabled", true);' }
 Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.height`", $NativeTabStripHeight);"
+if ($TabGlows) { Add-Content (Join-Path $demoProfile 'user.js') 'user_pref("widget.windows.winui-prototype.tabstrip.glows", true);' }
 if ($ContainerDots) { Add-Content (Join-Path $demoProfile 'user.js') 'user_pref("widget.windows.winui-prototype.tabstrip.containerDot", true);' }
 if ($NativeAddress) { Add-Content (Join-Path $demoProfile 'user.js') 'user_pref("widget.windows.winui-prototype.address.enabled", true);' }
 Write-Host "Starting the WinUI prototype with an isolated profile: $demoProfile"

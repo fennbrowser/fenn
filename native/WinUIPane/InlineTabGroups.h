@@ -32,6 +32,7 @@ struct InlineTabGroups {
     std::vector<uint64_t> order;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     std::function<void(uint32_t, bool)> toggle;
+    std::function<void(uint32_t)> highlight;
     std::function<void(uint32_t, Windows::Foundation::Rect)> context;
     std::function<void(uint32_t, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&)> press;
     uint32_t suppressClick{};
@@ -43,24 +44,27 @@ struct InlineTabGroups {
     // A transient popup can leave XAML's routed hover state stale after closing.
     // Observe native mouse moves through the host's existing message hook too.
     void PointerAt(Windows::Foundation::Point point, UIElement const& relativeTo) {
-        if (!hasPreview || (point.X == lastPointer.X && point.Y == lastPointer.Y)) return;
+        if (point.X == lastPointer.X && point.Y == lastPointer.Y) return;
         lastPointer = point;
-        if (hover.allowed && !hover.allowed()) return;
         auto surface = relativeTo.as<FrameworkElement>();
         if (point.X < 0 || point.Y < 0 || point.X >= surface.ActualWidth() || point.Y >= surface.ActualHeight()) {
+            if (highlight) highlight(0);
             hover.Exit(hover.group);
             return;
         }
         for (auto const& [id, run] : runs) {
-            if (!run.button || !run.collapsed || !run.button.IsLoaded()) continue;
+            if (!run.button || !run.button.IsLoaded() || run.button.Visibility() != Visibility::Visible || run.button.Opacity() == 0) continue;
             auto bounds = run.button.TransformToVisual(relativeTo).TransformBounds(
                 {0,0,float(run.button.ActualWidth()),float(run.button.ActualHeight())});
             if (point.X >= bounds.X && point.X < bounds.X + bounds.Width &&
                 point.Y >= bounds.Y && point.Y < bounds.Y + bounds.Height) {
-                hover.Enter(uint32_t(id),run.button,run.metadata);
+                if (highlight) highlight(uint32_t(id));
+                if (run.collapsed && (!hover.allowed || hover.allowed())) hover.Enter(uint32_t(id),run.button,run.metadata);
+                else hover.Exit(hover.group);
                 return;
             }
         }
+        if (highlight) highlight(0);
         hover.Exit(hover.group);
     }
 
@@ -121,6 +125,7 @@ struct InlineTabGroups {
             auto rotor = panel.Children().GetAt(1).as<Controls::Grid>();
             auto text = panel.Children().GetAt(2).as<Controls::TextBlock>();
             const bool named = !headerText.empty();
+            rotor.Visibility(named ? Visibility::Collapsed : Visibility::Visible);
             if (run.headerText != headerText) {
                 run.headerText = headerText;
                 text.Text(headerText);
@@ -284,11 +289,14 @@ struct InlineTabGroups {
                 });
                 run.button.PointerEntered([this, alive, id](auto&&, auto&&) {
                     if (alive.expired()) return;
+                    if (highlight) highlight(uint32_t(id));
                     auto found = runs.find(id);
                     if (found != runs.end()) hover.Enter(uint32_t(id), found->second.button, found->second.metadata);
                 });
                 run.button.PointerExited([this, alive, id](auto&&, auto&&) {
-                    if (!alive.expired()) hover.Exit(uint32_t(id));
+                    if (alive.expired()) return;
+                    if (highlight) highlight(0);
+                    hover.Exit(uint32_t(id));
                 });
                 run.button.KeyDown([this, alive, id](auto&&, auto&& args) {
                     if (alive.expired() || args.Key() != Windows::System::VirtualKey::Down) return;
@@ -300,6 +308,7 @@ struct InlineTabGroups {
                 });
                 run.button.Unloaded([this, alive, id](auto&&, auto&&) {
                     if (alive.expired()) return;
+                    if (highlight) highlight(0);
                     if (hover.group == id) hover.Hide();
                     // Emptying a group briefly reparents this retained Button.
                     // Keep its finite rotation through that unload; the Run

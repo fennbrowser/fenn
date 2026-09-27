@@ -866,10 +866,10 @@ index 995b2fc869..197b2cd2e9 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 0f32a4f45c..cb6f9a4371 100644
+index 0f32a4f45c..65cf58eb56 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3793,6 +3793,15 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3793,6 +3793,16 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -878,8 +878,9 @@ index 0f32a4f45c..cb6f9a4371 100644
 +pref("widget.windows.winui-prototype.tabstrip.enabled", false);
 +// Native top-bar height: 32 compact, 40 current design, 48 tall.
 +pref("widget.windows.winui-prototype.tabstrip.height", 40);
-+// Container dots replace the default container glow when enabled.
++// Container dots suppress container glow; group and container glows are opt-in.
 +pref("widget.windows.winui-prototype.tabstrip.containerDot", false);
++pref("widget.windows.winui-prototype.tabstrip.glows", false);
 +pref("widget.windows.winui-prototype.address.enabled", false);
 +
  #ifdef XP_MACOSX
@@ -2510,7 +2511,7 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..52327b3d51
+index 0000000000..f60ca5016b
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
 @@ -0,0 +1,230 @@
@@ -2584,7 +2585,7 @@ index 0000000000..52327b3d51
 +        }
 +      }
 +      strip.removed = [...previous.keys()];
-+      for (const key of ["containerGlow", "containerDot", "groupingDelay", "layout", "groups", "groupsLabel", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
++      for (const key of ["groupGlow", "containerGlow", "containerDot", "groupingDelay", "layout", "groups", "groupsLabel", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
 +        if (!this.same(state[key], this.state[key])) strip[key] = state[key];
 +      }
 +    }
@@ -3892,10 +3893,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..0514bf8e36
+index 0000000000..247cb0f965
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1655 @@
+@@ -0,0 +1,1659 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3905,6 +3906,7 @@ index 0000000000..0514bf8e36
 +  addressPref: "widget.windows.winui-prototype.address.enabled",
 +  stripPref: "widget.windows.winui-prototype.tabstrip.enabled",
 +  containerDotPref: "widget.windows.winui-prototype.tabstrip.containerDot",
++  tabGlowsPref: "widget.windows.winui-prototype.tabstrip.glows",
 +  stripHeightPref: "widget.windows.winui-prototype.tabstrip.height",
 +  groupingPrefs: ["browser.tabs.groups.enabled", "browser.tabs.dragDrop.createGroup.enabled",
 +    "browser.tabs.dragDrop.createGroup.delayMS"],
@@ -4116,6 +4118,7 @@ index 0000000000..0514bf8e36
 +    Services.prefs.addObserver(this.stripPref, this);
 +    Services.prefs.addObserver(this.stripHeightPref, this);
 +    Services.prefs.addObserver(this.containerDotPref, this);
++    Services.prefs.addObserver(this.tabGlowsPref, this);
 +    for (const pref of this.groupingPrefs) Services.prefs.addObserver(pref, this);
 +    Services.prefs.addObserver(this.addressPref, this);
 +    this.schedule();
@@ -4910,7 +4913,8 @@ index 0000000000..0514bf8e36
 +    // They are no longer browser tabs that could be dragged or adopted.
 +    const liveTabs = Array.from(gBrowser.tabs).filter(tab => !tab.closing);
 +    return { groupingDelay: Math.max(0, Math.min(60000, Services.prefs.getIntPref("browser.tabs.dragDrop.createGroup.delayMS", 240))),
-+      containerGlow: !this.containerDotsEnabled(),
++      groupGlow: Services.prefs.getBoolPref(this.tabGlowsPref, false),
++      containerGlow: Services.prefs.getBoolPref(this.tabGlowsPref, false) && !this.containerDotsEnabled(),
 +      containerDot: this.containerDotsEnabled(),
 +      rtl: document.documentElement.matches(":dir(rtl)"),
 +      windowDragTabId: liveTabs.length === 1 && liveTabs[0].visible &&
@@ -5300,7 +5304,7 @@ index 0000000000..0514bf8e36
 +  },
 +
 +  observe(subject, topic, data) {
-+    if (topic === "nsPref:changed" && data === this.containerDotPref) {
++    if (topic === "nsPref:changed" && (data === this.containerDotPref || data === this.tabGlowsPref)) {
 +      this.stripDirty = true;
 +      this.schedule();
 +      return;
@@ -5537,6 +5541,7 @@ index 0000000000..0514bf8e36
 +    Services.prefs.removeObserver(this.stripPref, this);
 +    Services.prefs.removeObserver(this.stripHeightPref, this);
 +    Services.prefs.removeObserver(this.containerDotPref, this);
++    Services.prefs.removeObserver(this.tabGlowsPref, this);
 +    for (const pref of this.groupingPrefs) Services.prefs.removeObserver(pref, this);
 +    Services.prefs.removeObserver(this.addressPref, this);
 +    Services.prefs.removeObserver("privacy.userContext.enabled", this);

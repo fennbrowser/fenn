@@ -1196,7 +1196,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "stock tab header fits reserved row");
     Require(view.ActualHeight() == 40 && root.ActualHeight() == view.ActualHeight(),
             "reservation fits the unchanged stock TabView without an empty bottom band");
-    Require(root.Children().Size() == 6 && !first.Content() && !second.Content(),
+    Require(root.Children().Size() == 7 && !first.Content() && !second.Content(),
             "strip has no address or browser content");
     Require(root.ColumnDefinitions().Size() == 3 && root.ColumnDefinitions().GetAt(2).Width().Value > 0,
             "system caption buttons reserve their SDK inset");
@@ -1224,7 +1224,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         Require(root.ActualHeight() == height && view.ActualHeight() == height && first.ActualHeight() == 32,
                 "all strip layouts preserve tab height without a bottom band");
         Require(systemCaption.PreferredHeightOption() == expected, "caption size follows strip layout");
-        for (uint32_t index : {3u, 4u}) {
+        for (uint32_t index : {4u, 5u}) {
             auto line = root.Children().GetAt(index).as<Controls::Border>();
             Require(line.Visibility() == (height == 40 ? Visibility::Visible : Visibility::Collapsed) &&
                         !line.IsHitTestVisible() && line.Height() == 1 && line.Background(),
@@ -1233,7 +1233,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         Require(view.TabItems().GetAt(0) == first && view.SelectedItem() == first,
                 "height changes preserve tab identity and selection");
     }
-    auto mergePreview = root.Children().GetAt(5).as<Controls::Border>();
+    auto mergePreview = root.Children().GetAt(6).as<Controls::Border>();
     Require(!mergePreview.IsHitTestVisible() && mergePreview.Visibility() == Visibility::Collapsed,
             "merge feedback is hidden and cannot capture input while idle");
     Require(first != second && view.SelectedItem() == first, "duplicate titles preserve identity and active tab");
@@ -1680,6 +1680,20 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         root.RequestedTheme(theme);
         settle();
         Require(find(view,L"FirefoxWinUIInlineGroup-7") == header, "theme retains inline header");
+        Controls::Border surface{nullptr};
+        for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children()) {
+            auto border = child.as<Controls::Border>();
+            if (Automation::AutomationProperties::GetAutomationId(border) == L"FirefoxWinUIGroupSurface-7") surface = border;
+        }
+        if (checkMotion) {
+            // The fresh inline fixture has loaded rows; the recreated strip
+            // fixture above can retain measured but unloaded group members.
+            Require(surface && surface.ActualWidth() >= header.ActualWidth() && surface.BorderThickness().Left == 1 &&
+                !surface.IsHitTestVisible() && Automation::AutomationProperties::GetAccessibilityView(surface) == Automation::Peers::AccessibilityView::Raw,
+                "group outline follows the header without adding input or accessibility targets");
+            Require(surface.Background() && surface.BorderBrush() && surface.ActualTheme() == theme,
+                "group surface retains live theme brushes");
+        }
         Require(header.ActualHeight() > 0 && header.ActualHeight() <= 40 && view.ActualHeight() <= 40, "inline group fits reserved strip height");
         Require(header.ActualWidth() == 32 && header.ActualHeight() == 32, "capsule retains a compact 32-DIP input target");
         auto painted = marker.Fill().as<Media::SolidColorBrush>().Color();
@@ -1715,16 +1729,13 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     auto groupText = capsule.Children().GetAt(2).as<Controls::TextBlock>();
     Require(header.ActualWidth() > 32 && header.ActualWidth() <= 154 && groupText.Visibility() == Visibility::Visible &&
         groupText.Text() == L"A deliberately long named group for trimming" && groupText.TextTrimming() == TextTrimming::CharacterEllipsis &&
-        capsule.Children().GetAt(1).Visibility() == Visibility::Visible &&
-        capsule.Children().GetAt(1).as<Controls::Grid>().Children().GetAt(0).as<Controls::FontIcon>().Glyph() == L"\uE70D", "named group retains the arrow beside bounded text");
+        capsule.Children().GetAt(1).Visibility() == Visibility::Collapsed,
+        "named group uses bounded text without a redundant arrow");
     for (auto direction : {FlowDirection::LeftToRight, FlowDirection::RightToLeft}) {
         root.FlowDirection(direction); settle();
         auto rotor=capsule.Children().GetAt(1).as<Controls::Grid>();
-        const auto arrowBounds=rotor.TransformToVisual(nullptr).TransformBounds({0,0,float(rotor.ActualWidth()),float(rotor.ActualHeight())});
-        const auto textBounds=groupText.TransformToVisual(nullptr).TransformBounds({0,0,float(groupText.ActualWidth()),float(groupText.ActualHeight())});
-        Require(direction==FlowDirection::LeftToRight ? arrowBounds.X>=textBounds.X+textBounds.Width : arrowBounds.X+arrowBounds.Width<=textBounds.X,
-            "named group arrow sits on the tab-facing side in LTR and RTL");
-        Require(rotor.ActualWidth()==24 && groupText.ActualWidth()>0,"long name leaves room for the arrow");
+        Require(rotor.Visibility() == Visibility::Collapsed && groupText.ActualWidth()>0,
+            "long name retains its text target in LTR and RTL");
     }
     Require(view.TabItems().Size() == 1 && view.TabItems().GetAt(0) == first && view.SelectedItem() == first, "collapse retains real active tab");
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
@@ -1872,7 +1883,9 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(SUCCEEDED(motion(host,5,&ghosts)),"restore reduced-motion drag collapse");
         Require(SUCCEEDED(motion(host,3,&ghosts)),"restore animation preference after drag checks");
         // Publish independent colors without changing group or tab membership.
-        auto colored = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":16,"revision":17,"rows":[{"id":41,"containerName":"Personal","containerColor":4289934591}],"removed":[],"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}]}})");
+        Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 0,
+            "group and container glows default off");
+        auto colored = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":16,"revision":17,"groupGlow":true,"containerGlow":true,"rows":[{"id":41,"containerName":"Personal","containerColor":4289934591}],"removed":[],"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}]}})");
         MenuPublish(api,host,colored.Stringify().c_str()); settle();
         Require(bottomGlow.Children().Count() == 1 && topGlow.Children().Count() == 1,
             "two grouped tabs share one bottom field and a container adds an independent top field");
@@ -2058,16 +2071,21 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             strip.SetNamedValue(L"base", Value::CreateNumberValue(revision - 1));
             strip.SetNamedValue(L"revision", Value::CreateNumberValue(revision));
             strip.SetNamedValue(L"containerGlow", Value::CreateBooleanValue(glow));
+            strip.SetNamedValue(L"groupGlow", Value::CreateBooleanValue(glow || showDot));
             strip.SetNamedValue(L"containerDot", Value::CreateBooleanValue(showDot));
             MenuPublish(api,host,update.Stringify().c_str()); settle();
             Require(topGlow.Children().Count() == (glow ? 1 : 0) &&
                 dot.Visibility() == (showDot ? Visibility::Visible : Visibility::Collapsed) &&
-                bottomGlow.Children().Count() == 1,
-                "live container options apply independently without hiding the group glow");
-            Require(spill.Children().Count() == 1, "container option never introduces a body cast");
+                bottomGlow.Children().Count() == (glow || showDot ? 1 : 0),
+                "live glow options remove and restore group and container visuals");
+            Require(spill.Children().Count() == (glow || showDot ? 1 : 0), "disabled group glow releases its spill");
             Require(glow ? separatorA.Background().as<Media::SolidColorBrush>().Color().A == 170 :
                 bool(separatorA.GetBindingExpression(Controls::Border::BackgroundProperty())),
                 "disabling glow restores a live theme binding on the native divider");
+            if (!glow && !showDot) {
+                Require(!rim(L"group-shared-reflection") && !rim(L"group-outer-reflection"), "disabled group glow releases reflections");
+                return;
+            }
             auto currentSeam = rim(L"group-shared-reflection").Brush()
                 .as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
             Require(currentSeam.ColorStops().GetAt(1).Color().A == (glow ? 20 : 0),

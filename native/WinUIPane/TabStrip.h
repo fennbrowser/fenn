@@ -14,6 +14,7 @@
 #include "GroupDragVisual.h"
 #include "GroupDragShift.h"
 #include "TabAmbient.h"
+#include "TabGroupSurface.h"
 
 // Strip-only experiment: TabView owns presentation, Firefox owns all mutations.
 // Inline grouping has a localized TabListView template dependency. CanDragTabs/CanReorderTabs
@@ -90,7 +91,8 @@ struct NativeTabStrip {
     GroupDragShift groupDragShift;
     GroupDragShift tabDragHeaders;
     TabAmbient ambient;
-    bool containerGlow{true}, containerDot{};
+    TabGroupSurface groupSurface;
+    bool groupGlow{}, containerGlow{}, containerDot{};
     Controls::Border separatorTheme{nullptr};
     struct SeparatorTint {
         Controls::Border separator{nullptr};
@@ -164,6 +166,32 @@ struct NativeTabStrip {
             return item.TransformToVisual(ambient.layer).TransformBounds({0, 0, float(item.ActualWidth()), float(item.ActualHeight())});
         };
         auto viewport = scroller ? boundsOf(scroller) : boundsOf(view);
+        // Follow realized XAML geometry, including finite drag/collapse motion.
+        // Group identity and membership still come from the validated layout.
+        std::map<uint32_t, Windows::Foundation::Rect> surfaceBounds;
+        auto includeSurface = [&](uint32_t id, FrameworkElement const& element) {
+            if (!element || !element.IsLoaded() || element.Visibility() != Visibility::Visible || element.Opacity() == 0) return;
+            auto rect = boundsOf(element);
+            if (rect.Width <= 0 || rect.Height <= 0) return;
+            auto [it, inserted] = surfaceBounds.emplace(id, rect);
+            if (!inserted) {
+                auto& total = it->second;
+                const auto right = std::max(total.X + total.Width, rect.X + rect.Width);
+                const auto bottom = std::max(total.Y + total.Height, rect.Y + rect.Height);
+                total.X = std::min(total.X, rect.X); total.Y = std::min(total.Y, rect.Y);
+                total.Width = right - total.X; total.Height = bottom - total.Y;
+            }
+        };
+        for (auto const& slot : groupLayout) {
+            if (!slot.group) continue;
+            if (slot.tab) {
+                if (rows.count(slot.tab)) includeSurface(slot.group, rows.at(slot.tab));
+            } else {
+                auto run = inlineGroups.runs.find(slot.group);
+                if (run != inlineGroups.runs.end()) includeSurface(slot.group, run->second.button);
+            }
+        }
+        groupSurface.Update(surfaceBounds, viewport);
         const bool followingMotion = IsDragging() || GroupDrag().phase || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty();
         auto ambientViewport = viewport;
         bool fadeLeft = false, fadeRight = false;
@@ -258,7 +286,7 @@ struct NativeTabStrip {
         // Keep the complete laid-out union, then clip it to the viewport. Using
         // the clipped bounds to size the gradient would recenter it on scroll.
         for (auto slot : groupLayout) {
-            if (!slot.group || !slot.tab || !rows.count(slot.tab)) continue;
+            if (!groupGlow || !slot.group || !slot.tab || !rows.count(slot.tab)) continue;
             auto row = rows.at(slot.tab);
             if (!row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) continue;
             auto bounds = boundsOf(row);
@@ -752,6 +780,8 @@ struct NativeTabStrip {
         ambient.refresh = [this] { RefreshAmbient(); };
         groupIndicator = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentTextFillColorPrimaryBrush}" BorderThickness="2" CornerRadius="4" Grid.ColumnSpan="3" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         root.Children().Append(groupIndicator);
+        groupSurface.Create(root);
+        inlineGroups.highlight = [this](uint32_t id) { groupSurface.Hover(id); };
         groupTimer = root.DispatcherQueue().CreateTimer();
         groupTimer.IsRepeating(false);
         auto timerLife = std::weak_ptr<int>(lifetime);
@@ -1602,7 +1632,8 @@ struct NativeTabStrip {
         const auto dragSessionId = data.HasKey(L"windowDragSession") ? NativeJson::RequireId(data, L"windowDragSession") : (base ? windowDragSession : 0);
         const bool dragPrivate = data.GetNamedBoolean(L"windowDragPrivate", base ? windowDragPrivate : false);
         const auto delay = data.GetNamedNumber(L"groupingDelay", base ? groupingDelay : 240);
-        const bool nextContainerGlow = data.HasKey(L"containerGlow") ? data.GetNamedBoolean(L"containerGlow") : base ? containerGlow : true;
+        const bool nextGroupGlow = data.HasKey(L"groupGlow") ? data.GetNamedBoolean(L"groupGlow") : base ? groupGlow : false;
+        const bool nextContainerGlow = data.HasKey(L"containerGlow") ? data.GetNamedBoolean(L"containerGlow") : base ? containerGlow : false;
         const bool nextContainerDot = data.HasKey(L"containerDot") ? data.GetNamedBoolean(L"containerDot") : base ? containerDot : false;
         if (!std::isfinite(delay) || delay < 0 || delay > 60000 || std::floor(delay) != delay)
             throw hresult_invalid_argument();
@@ -1806,6 +1837,7 @@ struct NativeTabStrip {
         const bool dotChanged = containerDot != nextContainerDot;
         containerDot = nextContainerDot;
         containerGlow = nextContainerGlow;
+        groupGlow = nextGroupGlow;
         if (dotChanged) {
             for (auto const& [id, row] : rows)
                 UpdateHeader(row, id, Automation::AutomationProperties::GetName(row));
