@@ -1672,6 +1672,25 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         "whole group button is an identified input target for future dragging");
     Require(capsule.Children().GetAt(1).as<Controls::Grid>().Children().GetAt(0).as<Controls::FontIcon>().Glyph() == L"\uE76C", "expanded group arrow points toward its tabs");
     Require(marker.Visibility() == Visibility::Visible, "Firefox group color marker is visible");
+    auto indicatorWidth = [&] { return marker.Width(); };
+    auto awaitIndicator = [&](double target) {
+        for (int i=0; i<200 && std::abs(indicatorWidth() - target) >= .001; ++i) { Pump(); Sleep(10); }
+        return std::abs(indicatorWidth() - target) < .001;
+    };
+    Require(std::abs(indicatorWidth() - 6.0) < .001, "inactive group has a short color indicator");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "activate group member for indicator");
+    settle();
+    Require(awaitIndicator(16.0), "active group has a long color indicator");
+    Require(find(view,L"FirefoxWinUIInlineGroup-7") == header, "selection retains group input target");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,2,41,&selected)), "leave active group for indicator");
+    // Retarget before settling to cover reversal from the displayed width.
+    Pump(); Sleep(30); Pump();
+    Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "reverse group indicator transition");
+    settle();
+    Require(awaitIndicator(16.0), "reversed indicator reaches active state");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,2,41,&selected)), "restore ungrouped selection");
+    settle();
+    Require(awaitIndicator(6.0), "ungrouped selection shortens group indicator");
     auto accent = header.Resources().ThemeDictionaries().Lookup(box_value(L"Default")).as<ResourceDictionary>()
         .Lookup(box_value(L"InlineGroupColorBrush")).as<Media::SolidColorBrush>();
     Require(accent.Color() == winrt::Windows::UI::Color{255,51,102,153}, "group accent comes from Firefox ARGB");
@@ -2160,6 +2179,15 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(spill.Children().Count() == 0, "clearing source metadata also removes all weak color spill");
         Require(!rim(L"active-container-reflection").IsVisible() && !rim(L"active-group-reflection").IsVisible(),
             "clearing glow sources also hides their surface reflections");
+        Require(SUCCEEDED(motion(host,2,&ghosts)), "disable motion for indicator selection checks");
+        auto reducedMarker = find(view,L"FirefoxWinUIInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,0,&selected)), "clear active group with reduced motion");
+        Require(reducedMarker.Width() == 6.0,
+            "reduced motion immediately shortens group indicator");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "restore active group with reduced motion");
+        Require(reducedMarker.Width() == 16.0,
+            "reduced motion immediately lengthens group indicator");
+        Require(SUCCEEDED(motion(host,3,&ghosts)), "restore motion after indicator selection checks");
         puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");
     }
     puts("CHECKS PASSED: retained inline groups, disclosure, themes, RTL and atomic layout validation");

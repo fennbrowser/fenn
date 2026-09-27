@@ -604,7 +604,14 @@ struct NativeTabStrip {
     }
     void ApplyGroupLayout() {
         inlineGroups.Sync(view, groupLayout, rows, currentGroups);
+        UpdateGroupIndicator();
         groupsButton.button.Visibility(Visibility::Collapsed);
+    }
+    void UpdateGroupIndicator() {
+        uint32_t activeGroup = 0;
+        if (activeTabId)
+            for (auto slot : groupLayout) if (slot.tab == activeTabId) { activeGroup = slot.group; break; }
+        inlineGroups.ActiveGroup(activeGroup, groupSlide.Enabled());
     }
     uint32_t presentationRevision{};
     hstring presentationFingerprint;
@@ -1891,6 +1898,7 @@ struct NativeTabStrip {
         syncing = true;
         view.SelectedItem(found == rows.end() ? nullptr : found->second);
         syncing = false;
+        UpdateGroupIndicator();
         ambient.Update();
         // Only the two rows whose active-tab status can have changed. TabView
         // realizes a row per tab, so touching all of them here would put back

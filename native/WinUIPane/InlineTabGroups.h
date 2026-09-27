@@ -23,8 +23,13 @@ struct InlineTabGroups {
         uint32_t color{};
         Media::SolidColorBrush accent{nullptr};
         Media::Animation::Storyboard arrowMotion{nullptr};
+        Media::Animation::Storyboard indicatorMotion{nullptr};
+        bool indicatorActive{};
         Run() { model.Insert(L"Items", items); model.Insert(L"Header", nullptr); }
-        ~Run() { if (arrowMotion) { try { arrowMotion.Stop(); } catch (...) {} } }
+        ~Run() {
+            if (arrowMotion) { try { arrowMotion.Stop(); } catch (...) {} }
+            if (indicatorMotion) { try { indicatorMotion.Stop(); } catch (...) {} }
+        }
     };
     Data::CollectionViewSource source;
     Vector data = single_threaded_observable_vector<Object>();
@@ -40,6 +45,42 @@ struct InlineTabGroups {
     bool configured{}, active{}, hasPreview{};
     Windows::Foundation::Point lastPointer{-1000000,-1000000};
     ~InlineTabGroups() { lifetime.reset(); }
+
+    void ActiveGroup(uint32_t activeGroup, bool animate) {
+        for (auto& [id, run] : runs) {
+            if (!run.button) continue;
+            const bool active = id == activeGroup;
+            if (run.indicatorActive == active && (animate || !run.indicatorMotion)) continue;
+            run.indicatorActive = active;
+            auto marker = run.button.Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
+            const auto previous = marker.Width();
+            if (run.indicatorMotion) { run.indicatorMotion.Stop(); run.indicatorMotion = nullptr; }
+            const double target = active ? 16.0 : 6.0;
+            marker.Width(target);
+            if (!animate || !marker.IsLoaded()) continue;
+            try {
+                Media::Animation::DoubleAnimation motion;
+                // Animate geometry rather than scaling the corner radii. The
+                // existing 24-DIP minimum content width keeps the button stable.
+                motion.EnableDependentAnimation(true);
+                motion.From(previous);
+                motion.To(target);
+                motion.Duration(Duration{Windows::Foundation::TimeSpan{MotionDuration}, DurationType::TimeSpan});
+                Media::Animation::CubicEase ease;
+                ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+                motion.EasingFunction(ease);
+                Media::Animation::Storyboard::SetTarget(motion, marker);
+                Media::Animation::Storyboard::SetTargetProperty(motion, L"Width");
+                run.indicatorMotion = Media::Animation::Storyboard();
+                run.indicatorMotion.Children().Append(motion);
+                run.indicatorMotion.Begin();
+            } catch (...) {
+                if (run.indicatorMotion) { try { run.indicatorMotion.Stop(); } catch (...) {} }
+                run.indicatorMotion = nullptr;
+                marker.Width(target);
+            }
+        }
+    }
 
     // A transient popup can leave XAML's routed hover state stale after closing.
     // Observe native mouse moves through the host's existing message hook too.
@@ -243,7 +284,7 @@ struct InlineTabGroups {
  </ResourceDictionary.ThemeDictionaries></ResourceDictionary></Button.Resources>
  <Grid MinWidth="24" MaxWidth="144" Height="24" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
   <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-  <Rectangle Grid.ColumnSpan="2" Width="16" Height="3" VerticalAlignment="Bottom" RadiusX="1" RadiusY="1" Fill="{ThemeResource InlineGroupColorBrush}" Visibility="Collapsed"/>
+  <Rectangle Grid.ColumnSpan="2" Width="6" Height="3" HorizontalAlignment="Center" VerticalAlignment="Bottom" RadiusX="1.5" RadiusY="1.5" Fill="{ThemeResource InlineGroupColorBrush}" Visibility="Collapsed"/>
   <Grid Grid.Column="1" Width="24" RenderTransformOrigin="0.5,0.5">
    <Grid.RenderTransform><RotateTransform/></Grid.RenderTransform>
    <FontIcon FontSize="12" MirroredWhenRightToLeft="True"/>
