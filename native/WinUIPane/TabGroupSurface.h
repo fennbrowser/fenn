@@ -5,20 +5,95 @@
 struct TabGroupSurface {
     Controls::Canvas layer{nullptr};
     std::map<uint32_t, Controls::Border> surfaces;
-    uint32_t hovered{};
-    Style normalStyle{nullptr}, hoverStyle{nullptr};
+    struct Light {
+        Microsoft::UI::Composition::ShapeVisual visual{nullptr};
+        Microsoft::UI::Composition::CompositionRoundedRectangleGeometry geometry{nullptr};
+        uint32_t color{};
+    };
+    std::map<uint32_t, Light> lights;
 
-    void Create(Controls::Grid const& root) {
-        normalStyle = Markup::XamlReader::Load(LR"(<Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Border"><Setter Property="Background" Value="{ThemeResource ControlAltFillColorTertiaryBrush}"/></Style>)").as<Style>();
-        hoverStyle = Markup::XamlReader::Load(LR"(<Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Border"><Setter Property="Background" Value="{ThemeResource ControlAltFillColorQuarternaryBrush}"/></Style>)").as<Style>();
-        layer = Markup::XamlReader::Load(LR"(<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Grid.ColumnSpan="3" Canvas.ZIndex="-1" FlowDirection="LeftToRight" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Canvas>();
-        root.Children().Append(layer);
+    // Reflections belong to the actual outline, below stock tab contents and
+    // selection. Retain four soft corner lobes rather than lighting tab seams.
+    void Lighting(std::map<uint32_t, uint32_t> const& colors) {
+        for (auto const& [id, border] : surfaces) {
+            auto color = colors.find(id);
+            if (color == colors.end()) continue;
+            auto& light = lights[id];
+            if (!light.visual) {
+                auto compositor = Hosting::ElementCompositionPreview::GetElementVisual(border).Compositor();
+                light.visual = compositor.CreateShapeVisual();
+                light.visual.Comment(L"group-outline-reflection");
+                light.geometry = compositor.CreateRoundedRectangleGeometry();
+                light.geometry.Offset({.5f, .5f});
+                for (int corner = 0; corner < 4; ++corner) {
+                    auto brush = compositor.CreateRadialGradientBrush();
+                    brush.MappingMode(Microsoft::UI::Composition::CompositionMappingMode::Absolute);
+                    const int peak[] = {84, 36, 36, 68};
+                    for (auto [offset, alpha] : {std::pair{0.f, peak[corner]}, {.45f, peak[corner] / 2}, {1.f, 0}})
+                        brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(alpha), 0, 0, 0}));
+                    auto stroke = compositor.CreateSpriteShape(light.geometry);
+                    stroke.StrokeThickness(1.f);
+                    stroke.StrokeBrush(brush);
+                    light.visual.Shapes().Append(stroke);
+                }
+                // Reflected color across the material, confined to the existing
+                // outline. Unequal light pools avoid a uniform colored fill.
+                for (int pool = 0; pool < 2; ++pool) {
+                    auto brush = compositor.CreateRadialGradientBrush();
+                    brush.EllipseCenter(pool ? Windows::Foundation::Numerics::float2{.82f, .18f} :
+                        Windows::Foundation::Numerics::float2{.22f, .9f});
+                    brush.EllipseRadius({.95f, 1.2f});
+                    const int peak = pool ? 30 : 48;
+                    for (auto [offset, alpha] : {std::pair{0.f, peak}, {.55f, peak / 2}, {1.f, 0}})
+                        brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(alpha), 0, 0, 0}));
+                    auto body = compositor.CreateSpriteShape(light.geometry);
+                    body.FillBrush(brush);
+                    light.visual.Shapes().Append(body);
+                }
+                Hosting::ElementCompositionPreview::SetElementChildVisual(border, light.visual);
+            }
+            const float width = float(border.Width()), height = float(border.Height());
+            const float radius = float(border.CornerRadius().TopLeft);
+            const Windows::Foundation::Numerics::float2 size{width, height};
+            if (light.visual.Size() != size) {
+                light.visual.Size(size);
+                light.geometry.Size({std::max(0.f, width - 1), std::max(0.f, height - 1)});
+                light.geometry.CornerRadius({std::max(0.f, radius - .5f), std::max(0.f, radius - .5f)});
+                for (uint32_t corner = 0; corner < 4; ++corner) {
+                    auto brush = light.visual.Shapes().GetAt(corner).as<Microsoft::UI::Composition::CompositionSpriteShape>()
+                        .StrokeBrush().as<Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+                    brush.EllipseCenter({corner % 2 ? width - radius : radius, corner / 2 ? height - radius : radius});
+                    brush.EllipseRadius({std::max(1.f, std::min(48.f, width / 3)), std::max(1.f, height * .6f)});
+                }
+            }
+            if (light.color != color->second) {
+                light.color = color->second;
+                auto shine = [](uint8_t channel) { return uint8_t(channel + (255 - channel) * .10f); };
+                for (auto shape : light.visual.Shapes()) {
+                    auto sprite = shape.as<Microsoft::UI::Composition::CompositionSpriteShape>();
+                    const bool body = bool(sprite.FillBrush());
+                    auto brush = (body ? sprite.FillBrush() : sprite.StrokeBrush())
+                        .as<Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+                    for (auto stop : brush.ColorStops()) {
+                        auto value = stop.Color();
+                        value.R = body ? uint8_t(light.color >> 16) : shine(uint8_t(light.color >> 16));
+                        value.G = body ? uint8_t(light.color >> 8) : shine(uint8_t(light.color >> 8));
+                        value.B = body ? uint8_t(light.color) : shine(uint8_t(light.color));
+                        stop.Color(value);
+                    }
+                }
+            }
+        }
+        for (auto it = lights.begin(); it != lights.end();) {
+            if (colors.count(it->first) && surfaces.count(it->first)) { ++it; continue; }
+            if (surfaces.count(it->first)) Hosting::ElementCompositionPreview::SetElementChildVisual(surfaces.at(it->first), nullptr);
+            it = lights.erase(it);
+        }
     }
 
-    void Hover(uint32_t id) {
-        if (hovered == id) return;
-        hovered = id;
-        for (auto const& [key, border] : surfaces) border.Style(key == hovered ? hoverStyle : normalStyle);
+    void Create(Controls::Grid const& root) {
+        layer = Markup::XamlReader::Load(LR"(<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Grid.ColumnSpan="3" Canvas.ZIndex="-1" FlowDirection="LeftToRight" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Canvas>();
+        root.Children().Append(layer);
     }
 
     void Update(std::map<uint32_t, Windows::Foundation::Rect> const& bounds,
@@ -41,8 +116,6 @@ struct TabGroupSurface {
             if (Controls::Canvas::GetTop(border) != rect.Y) Controls::Canvas::SetTop(border, rect.Y);
             if (border.Width() != rect.Width) border.Width(rect.Width);
             if (border.Height() != rect.Height) border.Height(rect.Height);
-            const auto style = id == hovered ? hoverStyle : normalStyle;
-            if (border.Style() != style) border.Style(style);
         }
         for (auto it = surfaces.begin(); it != surfaces.end();) {
             if (bounds.count(it->first)) { ++it; continue; }

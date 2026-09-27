@@ -185,12 +185,12 @@ struct NativeTabStrip {
         for (auto const& slot : groupLayout) {
             if (!slot.group) continue;
             auto run = inlineGroups.runs.find(slot.group);
-            // The shared surface describes an expanded group, not a selected
-            // disclosure button. A collapsed group's retained active tab keeps
-            // its own stock selection surface.
-            if (run == inlineGroups.runs.end() || run->second.collapsed) continue;
+            // Keep the collapsed disclosure connected to Firefox's retained
+            // active member. Hidden members never enlarge the lighting.
+            if (run == inlineGroups.runs.end()) continue;
             if (slot.tab) {
-                if (rows.count(slot.tab)) includeSurface(slot.group, rows.at(slot.tab));
+                if ((!run->second.collapsed || slot.tab == activeTabId) && rows.count(slot.tab))
+                    includeSurface(slot.group, rows.at(slot.tab));
             } else {
                 includeSurface(slot.group, run->second.button);
             }
@@ -266,14 +266,7 @@ struct NativeTabStrip {
         ambient.Faces(ambientViewport, faces);
         ambient.Motion(followingMotion);
         std::set<uint32_t> containers, groups;
-        std::map<uint32_t, Windows::Foundation::Rect> groupBounds;
-        std::map<uint32_t, std::vector<std::pair<uint32_t, Windows::Foundation::Rect>>> groupMembers;
-        std::set<uint64_t> outerEdges, sharedEdges;
-        auto containerColor = [&](uint32_t id) -> uint32_t {
-            auto meta = presentation.find(id);
-            return containerGlow && meta != presentation.end() && !meta->second.containerName.empty()
-                ? meta->second.containerColor : 0;
-        };
+        std::map<uint32_t, uint32_t> outlineColors;
         // Open upper-corner strokes keep container light off the central face.
         // Each tab retains its own color and the stock control's corner radii.
         for (auto const& [id, row] : rows) {
@@ -287,106 +280,51 @@ struct NativeTabStrip {
             ambient.Corners(ambient.containers[id], meta->second.containerColor, bounds, float(radius.TopLeft), float(radius.TopRight));
             ambient.containers[id].visual.Comment(L"container:" + winrt::to_hstring(id));
         }
-        // Keep the complete laid-out union, then clip it to the viewport. Using
-        // the clipped bounds to size the gradient would recenter it on scroll.
-        for (auto slot : groupLayout) {
-            if (!groupGlow || !slot.group || !slot.tab || !rows.count(slot.tab)) continue;
-            auto row = rows.at(slot.tab);
-            if (!row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) continue;
-            auto bounds = boundsOf(row);
-            if (bounds.Width <= 0 || bounds.Height <= 0) continue;
-            groupMembers[slot.group].emplace_back(slot.tab, bounds);
-            auto [it, inserted] = groupBounds.emplace(slot.group, bounds);
-            if (!inserted) {
-                auto& total = it->second;
-                auto right = std::max(total.X + total.Width, bounds.X + bounds.Width);
-                auto bottom = std::max(total.Y + total.Height, bounds.Y + bounds.Height);
-                total.X = std::min(total.X, bounds.X); total.Y = std::min(total.Y, bounds.Y);
-                total.Width = right - total.X; total.Height = bottom - total.Y;
-            }
-        }
+        // The outline and light share the same full physical bounds. Scrolling
+        // clips that geometry without inventing a new group edge at the viewport.
         for (auto value : currentGroups) {
             auto group = value.GetObject();
-            auto id = uint32_t(group.GetNamedNumber(L"id"));
-            auto color = uint32_t(group.GetNamedNumber(L"color", 0));
-            if (!color || !groupBounds.count(id)) continue;
-            auto bounds = groupBounds.at(id);
-            // Include the inline disclosure button horizontally, retaining the
-            // tabs' bottom edge as the light source even if header heights differ.
-            auto header = inlineGroups.runs.find(id);
-            if (header != inlineGroups.runs.end()) {
-                auto button = header->second.button;
-                if (button && button.IsLoaded() && button.Visibility() == Visibility::Visible && button.Opacity() > 0) {
-                    auto headerBounds = boundsOf(button);
-                    auto right = std::max(bounds.X + bounds.Width, headerBounds.X + headerBounds.Width);
-                    bounds.X = std::min(bounds.X, headerBounds.X);
-                    bounds.Width = right - bounds.X;
-                }
-            }
+            const auto id = uint32_t(group.GetNamedNumber(L"id"));
+            const auto color = uint32_t(group.GetNamedNumber(L"color", 0));
+            if (!groupGlow || !color || !surfaceBounds.count(id)) continue;
+            const auto bounds = surfaceBounds.at(id);
             if (bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
             groups.insert(id);
-            auto& members = groupMembers.at(id);
-            std::sort(members.begin(), members.end(), [](auto const& a, auto const& b) {
-                return a.second.X < b.second.X;
-            });
-            // Full physical bounds preserve RTL and scrolling. Never invent a
-            // group end at the viewport edge, or a seam across a drag/layout gap.
-            for (uint64_t side = 0; side < 2; ++side) {
-                const uint64_t key = uint64_t(id) * 2 + side;
-                outerEdges.insert(key);
-                auto edge = bounds;
-                edge.X += side ? edge.Width - 1.25f : 0;
-                edge.Width = 1.25f;
-                auto const& member = side ? members.back() : members.front();
-                const float tabEdge = member.second.X + (side ? member.second.Width - 1.25f : 0);
-                ambient.Edge(ambient.outerEdges[key], color,
-                    std::abs(tabEdge - edge.X) < 2.f ? containerColor(member.first) : 0, 0, edge, true);
-            }
-            for (size_t i = 1; i < members.size(); ++i) {
-                auto const& previous = members[i - 1];
-                auto const& current = members[i];
-                const float end = previous.second.X + previous.second.Width;
-                if (std::abs(end - current.second.X) > 2.f) continue;
-                const uint64_t key = (uint64_t(id) << 32) | current.first;
-                sharedEdges.insert(key);
-                auto edge = current.second;
-                edge.X = (end + edge.X) / 2 - .5f; edge.Width = 1.f;
-                ambient.Edge(ambient.sharedEdges[key], color, containerColor(previous.first),
-                    containerColor(current.first), edge, false);
-            }
-            // Let the rounded fade reach beyond the terminal tab corner before
-            // disappearing; the viewport still clips at the strip boundary.
-            bounds.X -= 18; bounds.Width += 36;
+            if (!ambient.accessibility.HighContrast()) outlineColors.emplace(id, color);
             ambient.Put(ambient.groups, id, color, bounds, false);
+            auto& field = ambient.groups.at(id);
+            // A soft wash belongs inside the rounded group, not under each tab
+            // divider or beyond the ends of the new shared surface.
+            if (field.visual.Opacity() != .65f) field.visual.Opacity(.65f);
+            if (!field.roundedClip) {
+                auto compositor = field.visual.Compositor();
+                field.roundedClip = compositor.CreateRoundedRectangleGeometry();
+                field.visual.Clip(compositor.CreateGeometricClip(field.roundedClip));
+            }
+            const auto radius = float(groupSurface.surfaces.at(id).CornerRadius().TopLeft);
+            const Windows::Foundation::Numerics::float2 size{bounds.Width, bounds.Height}, corners{radius, radius};
+            if (field.roundedClip.Size() != size) field.roundedClip.Size(size);
+            if (field.roundedClip.CornerRadius() != corners) field.roundedClip.CornerRadius(corners);
             ambient.Spill(ambient.groupSpill, id, color, bounds, false);
+            auto spill = ambient.groupSpill.at(id).visual;
+            if (spill.Opacity() != .65f) spill.Opacity(.65f);
         }
+        groupSurface.Lighting(outlineColors);
         ambient.Prune(ambient.groups, groups, false);
         ambient.Prune(ambient.containers, containers, true);
         ambient.PruneSpill(ambient.groupSpill, groups);
         ambient.PruneSpill(ambient.containerSpill, {});
-        ambient.PruneEdges(ambient.outerEdges, outerEdges);
-        ambient.PruneEdges(ambient.sharedEdges, sharedEdges);
-        uint32_t activeGroup = 0;
-        for (auto slot : groupLayout) if (slot.tab == activeTabId) { activeGroup = slot.group; break; }
         auto container = ambient.containers.find(activeTabId);
-        auto group = ambient.groups.find(activeGroup);
         const bool activeVisible = activeBounds.Width > 0 && activeBounds.Height > 0;
         auto upperBounds = activeBounds;
         if (container != ambient.containers.end()) {
             upperBounds.X = container->second.bounds.X;
             upperBounds.Width = container->second.bounds.Width;
         }
-        auto lowerBounds = activeBounds;
-        lowerBounds.X -= 4; lowerBounds.Width += 8;
         const auto radius = activeVisible ? activeRow->second.CornerRadius() : CornerRadius{};
         ambient.Corners(ambient.upperRim, activeVisible && container != ambient.containers.end() ? container->second.color : 0,
             upperBounds, float(radius.TopLeft), float(radius.TopRight), true);
-        ambient.Rim(ambient.lowerRim, activeVisible && group != ambient.groups.end() ? group->second.color : 0, lowerBounds, false);
-        if (activeVisible && group != ambient.groups.end() && ambient.lowerRim.visual) {
-            const auto& field = group->second.bounds;
-            const auto position = std::clamp((activeBounds.X + activeBounds.Width / 2 - field.X) / field.Width, 0.f, 1.f);
-            ambient.lowerRim.visual.Opacity(.85f + .15f * (1.f - std::abs(2.f * position - 1.f)));
-        }
+
     }
     // Presentation only: keep browser membership, selection and collapse state.
     // Retaining the items also avoids recycling the captured group header.
@@ -792,7 +730,6 @@ struct NativeTabStrip {
         groupIndicator = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentTextFillColorPrimaryBrush}" BorderThickness="2" CornerRadius="4" Grid.ColumnSpan="3" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         root.Children().Append(groupIndicator);
         groupSurface.Create(root);
-        inlineGroups.highlight = [this](uint32_t id) { groupSurface.Hover(id); };
         groupTimer = root.DispatcherQueue().CreateTimer();
         groupTimer.IsRepeating(false);
         auto timerLife = std::weak_ptr<int>(lifetime);

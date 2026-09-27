@@ -1782,8 +1782,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             Require(surface && surface.ActualWidth() >= header.ActualWidth() && surface.BorderThickness().Left == 1 &&
                 !surface.IsHitTestVisible() && Automation::AutomationProperties::GetAccessibilityView(surface) == Automation::Peers::AccessibilityView::Raw,
                 "group outline follows the header without adding input or accessibility targets");
-            Require(surface.Background() && surface.BorderBrush() && surface.ActualTheme() == theme,
-                "group surface retains live theme brushes");
+            Require(!surface.Background() && surface.BorderBrush() && surface.ActualTheme() == theme,
+                "group surface has no selection-like fill and retains its live themed outline");
         }
         Require(header.ActualHeight() > 0 && header.ActualHeight() <= 40 && view.ActualHeight() <= 40, "inline group fits reserved strip height");
         Require(header.ActualWidth() == 32 && header.ActualHeight() == 32, "capsule retains a compact 32-DIP input target");
@@ -1907,7 +1907,21 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             "reduced motion installs the final arrow direction immediately");
         Require(SUCCEEDED(motion(host,3,&ghosts)), "restore normal motion policy");
         settle();
-        Require(!hasGroupSurface(), "collapsed group has no selected-looking background even with an active member");
+        Require(hasGroupSurface(), "collapsed group retains its decorative surface");
+        auto collapsedButton = find(view,L"FirefoxWinUIInlineGroup-7");
+        auto retainedTab = view.SelectedItem().as<Controls::TabViewItem>();
+        auto buttonBounds = collapsedButton.TransformToVisual(root).TransformBounds(
+            {0,0,float(collapsedButton.ActualWidth()),float(collapsedButton.ActualHeight())});
+        auto retainedBounds = retainedTab.TransformToVisual(root).TransformBounds(
+            {0,0,float(retainedTab.ActualWidth()),float(retainedTab.ActualHeight())});
+        const auto connectedWidth = std::max(buttonBounds.X + buttonBounds.Width, retainedBounds.X + retainedBounds.Width) -
+            std::min(buttonBounds.X, retainedBounds.X);
+        for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children()) {
+            if (Automation::AutomationProperties::GetAutomationId(child) != L"FirefoxWinUIGroupSurface-7") continue;
+            auto surface = child.as<Controls::Border>();
+            Require(!surface.Background() && std::abs(surface.Width() - connectedWidth) < 1,
+                "collapsed lighting connects the button and retained active member without neutral fill");
+        }
         // An active-only group can toggle without any tab-list publication.
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":12,"revision":13,"rows":[],"removed":[],"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}]}})");
         bool turned = false;
@@ -2057,10 +2071,20 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             winrt::Microsoft::UI::Composition::CompositionGetValueStatus::Succeeded &&
             std::abs(selectedGroupedFace.x - ar.X) < 1 && std::abs(selectedGroupedFace.z - ar.Width) < 1,
             "selected first member keeps its separate native contour beside the group header");
+        for (auto stop : faceFill.ColorStops())
+            Require(stop.Color().A == 0, "selected tab blocks the diffuse wash across its entire face");
+        auto selectedEdge = faceShape(41).StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
+        Require(selectedEdge.ColorStops().GetAt(0).Color().A == 180 && selectedEdge.ColorStops().GetAt(1).Color().A == 0 &&
+            std::abs(selectedEdge.EndPoint().y - (ar.Y + ar.Height - 4)) < 1 &&
+            faceShape(41).StrokeThickness() == 1.5f, "selected tab keeps top/side reflections but blocks its bottom flares");
         Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "restore the second grouped member after mask inspection");
         settle();
-        Require(std::abs(groupVisual.Offset().x - (hr.X - 18)) < 1 &&
-            std::abs(groupVisual.Size().x - (br.X + br.Width - hr.X + 36)) < 1 &&
+        Require(faceFill.ColorStops().GetAt(0).Color().A == 255 && faceFill.ColorStops().GetAt(2).Color().A == 24,
+            "deselection restores the retained face's inactive lighting");
+        Require(selectedEdge.ColorStops().GetAt(1).Color().A == 180,
+            "deselection restores the bottom edge reflection");
+        Require(std::abs(groupVisual.Offset().x - hr.X) < 1 &&
+            std::abs(groupVisual.Size().x - (br.X + br.Width - hr.X)) < 1 &&
             std::abs(containerVisual.Size().x - ar.Width) < 1,
             "bottom field includes the disclosure button and both tabs; container corners follow the full tab");
         winrt::Microsoft::UI::Composition::SpriteVisual groupCenter{nullptr};
@@ -2099,33 +2123,40 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 if (visual.Comment() == name) return visual.as<winrt::Microsoft::UI::Composition::SpriteVisual>();
             return winrt::Microsoft::UI::Composition::SpriteVisual{nullptr};
         };
-        Require(rim(L"active-group-reflection").IsVisible() &&
-            (!rim(L"active-container-reflection") || !rim(L"active-container-reflection").IsVisible()),
-            "only the active tab's own glow sources produce surface highlights");
-        auto groupRim = rim(L"active-group-reflection");
-        auto sharedRim = rim(L"group-shared-reflection");
-        Require(sharedRim && rim(L"group-outer-reflection"), "group has shared and outer surface reflections");
-        unsigned outerCount = 0, sharedCount = 0;
-        for (auto visual : rimRoot.Children()) {
-            if (visual.Comment() == L"group-outer-reflection") ++outerCount;
-            if (visual.Comment() == L"group-shared-reflection") ++sharedCount;
+        Require(!rim(L"active-group-reflection") && !rim(L"group-shared-reflection") && !rim(L"group-outer-reflection"),
+            "group light no longer draws on individual tab contours or divider seams");
+        Controls::Border outlineSurface{nullptr};
+        for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
+            if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-7")
+                outlineSurface = child.as<Controls::Border>();
+        Require(bool(outlineSurface), "lit group has an actual outline surface");
+        auto outlineLight = Hosting::ElementCompositionPreview::GetElementChildVisual(outlineSurface)
+            .as<winrt::Microsoft::UI::Composition::ShapeVisual>();
+        Require(outlineLight.Shapes().Size() == 6 && groupVisual.Opacity() == .65f,
+            "four corner highlights and two material light pools accompany the group wash");
+        auto roundedClip = groupVisual.Clip().as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>()
+            .Geometry().as<winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry>();
+        Require(roundedClip.Size() == groupVisual.Size() && roundedClip.CornerRadius().x == outlineSurface.CornerRadius().TopLeft,
+            "group wash clips to the actual rounded surface");
+        for (auto shape : outlineLight.Shapes()) {
+            auto stroke = shape.as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
+            auto geometry = stroke.Geometry().as<winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry>();
+            if (stroke.FillBrush()) {
+                auto fill = stroke.FillBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+                Require(!stroke.StrokeBrush() && geometry.Size().x + 1 == outlineSurface.Width() &&
+                    fill.ColorStops().GetAt(0).Color().A > fill.ColorStops().GetAt(1).Color().A &&
+                    fill.ColorStops().GetAt(2).Color().A == 0 && fill.EllipseCenter().x != .5f,
+                    "asymmetric material lighting varies within the existing rounded group bounds");
+                continue;
+            }
+            auto brush = stroke.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+            Require(!stroke.FillBrush() && stroke.StrokeThickness() == 1 &&
+                std::abs(geometry.Size().x + 1 - outlineSurface.Width()) < .1 &&
+                geometry.CornerRadius().x + .5 == outlineSurface.CornerRadius().TopLeft &&
+                brush.EllipseRadius().x <= 48 && brush.ColorStops().GetAt(2).Color().A == 0,
+                "specular highlights follow the one-DIP outline and fade away from its corners");
+            for (auto stop : brush.ColorStops()) Require(stop.Color().A <= 84, "group specular highlights remain subtle");
         }
-        Require(outerCount == 2 && sharedCount == 1, "two group ends and exactly one reflection per internal seam");
-        auto sharedBrush = sharedRim.Brush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
-        auto outerBrush = rim(L"group-outer-reflection").Brush()
-            .as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
-        Require(sharedBrush.ColorStops().GetAt(4).Color().A < outerBrush.ColorStops().GetAt(4).Color().A &&
-            sharedBrush.ColorStops().GetAt(2).Color().A == 0 && sharedBrush.ColorStops().GetAt(1).Color().A > 0,
-            "shared seam has weaker group light, a quiet middle and neighboring container contribution");
-        auto rimShape = groupRim.Children().First().Current().as<winrt::Microsoft::UI::Composition::ShapeVisual>();
-        auto stroke = rimShape.Shapes().GetAt(0).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
-        auto rimGeometry = stroke.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>();
-        auto rimBrush = stroke.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
-        Require(rimGeometry.Path() && stroke.StrokeThickness() == 1.25f &&
-            std::abs(groupRim.Size().x - (br.Width + 8)) < 1 && std::abs(groupRim.Offset().x - (br.X - 4)) < 1 &&
-            rimBrush.StartPoint().y == br.Height - 12 &&
-            rimBrush.ColorStops().GetAt(0).Color().A == 0 && rimBrush.ColorStops().GetAt(4).Color().A == 185,
-            "group reflection flares outside the attached tab and fades up its lower sides");
         // Glow geometry follows live controls immediately, without its own easing.
         auto ambientRefresh = reinterpret_cast<HRESULT(WINAPI*)(HWND)>(
             GetProcAddress(module,"WinUIPaneTestRefreshAmbient"));
@@ -2147,6 +2178,9 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         refreshAmbient();
         Require(groupVisual.Size().x > originalWidth + 64 && bottomGlow.Children().First().Current() == groupVisual,
             "rapid geometry changes update the retained light immediately");
+        Require(Hosting::ElementCompositionPreview::GetElementChildVisual(outlineSurface) == outlineLight &&
+            std::abs(outlineLight.Size().x - outlineSurface.Width()) < .1,
+            "outline highlights are retained and follow live group geometry");
         auto setAmbientDragging = reinterpret_cast<HRESULT(WINAPI*)(HWND,BOOL)>(
             GetProcAddress(module,"WinUIPaneTestSetDragging"));
         Require(setAmbientDragging && SUCCEEDED(setAmbientDragging(host,TRUE)), "start direct manipulation");
@@ -2181,14 +2215,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             Require(glow ? separatorA.Background().as<Media::SolidColorBrush>().Color().A == 170 :
                 bool(separatorA.GetBindingExpression(Controls::Border::BackgroundProperty())),
                 "disabling glow restores a live theme binding on the native divider");
-            if (!glow && !showDot) {
-                Require(!rim(L"group-shared-reflection") && !rim(L"group-outer-reflection"), "disabled group glow releases reflections");
-                return;
-            }
-            auto currentSeam = rim(L"group-shared-reflection").Brush()
-                .as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
-            Require(currentSeam.ColorStops().GetAt(1).Color().A == (glow ? 20 : 0),
-                "container option also removes its shared-seam contribution");
+            Require(bool(Hosting::ElementCompositionPreview::GetElementChildVisual(outlineSurface)) == (glow || showDot),
+                "group lighting preference removes and restores outline highlights");
+            Require(!rim(L"group-shared-reflection") && !rim(L"group-outer-reflection"),
+                "container options never restore obsolete group seam highlights");
         };
         toggleIndicators(18, false, true);
         toggleIndicators(19, true, true);
@@ -2212,7 +2242,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             "same-color neighboring containers retain individual corner strokes");
         auto upperRim = rim(L"active-container-reflection");
         Require(upperRim && upperRim.IsVisible() && std::abs(upperRim.Size().x - br.Width) < 1 && upperRim.Children().Count() == 1 &&
-            std::abs(upperRim.Offset().y - br.Y) < 1 && !rim(L"active-group-reflection").IsVisible(),
+            std::abs(upperRim.Offset().y - br.Y) < 1 && !rim(L"active-group-reflection"),
             "ungrouped active container has corner highlights and no bottom highlight");
         auto activeClip = diffusion.Clip().as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>();
         Require(activeClip.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path() != nullptr,
@@ -2257,7 +2287,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 0,
             "removing color and container metadata releases both decorations");
         Require(spill.Children().Count() == 0, "clearing source metadata also removes all weak color spill");
-        Require(!rim(L"active-container-reflection").IsVisible() && !rim(L"active-group-reflection").IsVisible(),
+        Require(!rim(L"active-container-reflection").IsVisible() && !rim(L"active-group-reflection"),
             "clearing glow sources also hides their surface reflections");
         Require(SUCCEEDED(motion(host,2,&ghosts)), "disable motion for indicator selection checks");
         auto reducedMarker = find(view,L"FirefoxWinUIInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();

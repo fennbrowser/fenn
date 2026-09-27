@@ -56,7 +56,8 @@ inline winrt::com_ptr<ID2D1PathGeometry> Outline(ID2D1Factory* factory, Face con
 }
 
 // An alpha-only visual surface: full light outside faces, a narrow edge band,
-// and a restrained residual inside. No XAML control or content is captured.
+// and a restrained residual inside inactive tabs. Selected faces block the
+// diffuse wash while retaining a narrow edge reflection. No control is captured.
 struct Mask {
     using Shape = winrt::Microsoft::UI::Composition::ShapeVisual;
     winrt::Microsoft::UI::Composition::ContainerVisual root{nullptr};
@@ -101,7 +102,11 @@ struct Mask {
                 for (auto [offset, alpha] : {std::pair{0.f, 255}, {.12f, 170}, {.32f, 24}, {.68f, 24}, {.88f, 170}, {1.f, 255}})
                     fill.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(alpha), 255, 255, 255}));
                 shape.FillBrush(fill);
-                shape.StrokeBrush(compositor.CreateColorBrush({180, 255, 255, 255}));
+                auto edge = compositor.CreateLinearGradientBrush();
+                edge.MappingMode(winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute);
+                edge.ColorStops().Append(compositor.CreateColorGradientStop(0, {180, 255, 255, 255}));
+                edge.ColorStops().Append(compositor.CreateColorGradientStop(1, {180, 255, 255, 255}));
+                shape.StrokeBrush(edge);
                 shape.StrokeThickness(1.5f);
                 visual.Shapes().Append(shape);
             }
@@ -113,7 +118,18 @@ struct Mask {
             auto geometry = shape.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>();
             geometry.Path(winrt::Microsoft::UI::Composition::CompositionPath(winrt::make<TabAmbientClip>(path)));
             auto fill = shape.FillBrush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
+            // The selected stock surface sits above the wash. Keep the outline
+            // stroke independent so its specular edge remains visible.
+            constexpr uint8_t inactiveAlpha[] = {255, 170, 24, 24, 170, 255};
+            for (uint32_t i = 0; i < fill.ColorStops().Size(); ++i)
+                fill.ColorStops().GetAt(i).Color({face.selected ? uint8_t(0) : inactiveAlpha[i], 255, 255, 255});
             fill.StartPoint({0, face.bounds.Y}); fill.EndPoint({0, face.bounds.Y + face.bounds.Height});
+            // Fade out before the selected tab's bottom flares: no reflected
+            // light underneath its selection surface, while top/sides remain.
+            auto edge = shape.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
+            const float bottom = face.bounds.Y + face.bounds.Height;
+            edge.StartPoint({0, bottom - Flare - 1}); edge.EndPoint({0, bottom - Flare});
+            edge.ColorStops().GetAt(1).Color({face.selected ? uint8_t(0) : uint8_t(180), 255, 255, 255});
             geometries.push_back(path.get()); paths.push_back(std::move(path));
         }
         for (auto it = faces.begin(); it != faces.end();) {

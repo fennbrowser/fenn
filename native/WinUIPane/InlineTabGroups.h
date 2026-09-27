@@ -417,9 +417,15 @@ struct InlineTabGroups {
         // ItemsStackPanel is updating its valid-element indices. Publish the
         // final topology with one reset, never a sequence of group removals.
         std::set<uint64_t> live(wanted.begin(), wanted.end());
-        if (wanted != order) {
+        if (wanted != order || !reattach.empty()) {
             for (auto& [id, run] : runs) {
                 if (run.button) {
+                    run.model.Insert(L"Header",nullptr);
+                    // Retired presenters can retain a binding to the old map
+                    // in the panel's recycling section. Never put the Button
+                    // back in that map: only the new presentation owns it.
+                    run.model = single_threaded_observable_map<hstring, Object>();
+                    run.model.Insert(L"Items",run.items);
                     run.model.Insert(L"Header",nullptr);
                     reattach.push_back(id);
                 }

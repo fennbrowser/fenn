@@ -16,15 +16,14 @@ struct TabAmbient {
         Gradient brush{nullptr}, leftBrush{nullptr}, rightBrush{nullptr};
         winrt::Microsoft::UI::Composition::ShapeVisual rimShape{nullptr};
         winrt::Microsoft::UI::Composition::CompositionPathGeometry rimGeometry{nullptr};
+        winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry roundedClip{nullptr};
         uint32_t color{}; Rect bounds{}; bool capped{};
         float cornerLeft{-1}, cornerRight{-1};
     };
     winrt::Microsoft::UI::Xaml::Controls::Canvas layer{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Canvas rimLayer{nullptr};
     winrt::Microsoft::UI::Composition::ContainerVisual rims{nullptr};
-    Field upperRim, lowerRim;
-    std::map<uint64_t, Field> outerEdges;
-    std::map<uint64_t, Field> sharedEdges;
+    Field upperRim;
     winrt::Microsoft::UI::Composition::ContainerVisual bottom{nullptr}, top{nullptr};
     winrt::Microsoft::UI::Composition::ContainerVisual spill{nullptr};
     winrt::Microsoft::UI::Composition::LayerVisual diffusion{nullptr};
@@ -198,111 +197,6 @@ struct TabAmbient {
     void Faces(Rect viewport, std::vector<TabLightContour::Face> const& faces) {
         if (!clipFactory) winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, clipFactory.put()));
         faceMask.Update(clipFactory.get(), viewport, faces);
-    }
-    // One retained reflection per physical seam; two independent source lobes
-    // leave a quiet middle rather than outlining every tab like a glass panel.
-    void Edge(Field& field, uint32_t group, uint32_t left, uint32_t right, Rect bounds, bool outer) {
-        auto compositor = rims.Compositor();
-        if (!field.visual) {
-            field.visual = compositor.CreateSpriteVisual();
-            field.visual.Comment(outer ? L"group-outer-reflection" : L"group-shared-reflection");
-            auto brush = compositor.CreateLinearGradientBrush();
-            brush.StartPoint({0, 0}); brush.EndPoint({0, 1});
-            for (float offset : {0.f, .16f, .42f, .68f, .88f, 1.f})
-                brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {}));
-            field.brush = brush; field.visual.Brush(brush);
-            rims.Children().InsertAtTop(field.visual);
-        }
-        auto tint = [](uint32_t color, int alpha) {
-            auto shine = [](uint8_t c) { return uint8_t(c + (255 - c) * .48f); };
-            return winrt::Windows::UI::Color{uint8_t(alpha), shine(uint8_t(color >> 16)),
-                shine(uint8_t(color >> 8)), shine(uint8_t(color))};
-        };
-        uint32_t container = left ? left : right;
-        if (left && right) {
-            container = 0;
-            for (int shift : {0, 8, 16})
-                container |= (((left >> shift & 255) + (right >> shift & 255)) / 2) << shift;
-        }
-        const int strength = outer ? 104 : 46;
-        const winrt::Windows::UI::Color colors[] = {
-            tint(container, 0), tint(container, container ? (outer ? 32 : 20) : 0),
-            tint(group, 0), tint(group, strength / 5), tint(group, strength), tint(group, 0)};
-        for (uint32_t i = 0; i < ARRAYSIZE(colors); ++i) {
-            auto stop = field.brush.ColorStops().GetAt(i);
-            if (stop.Color() != colors[i]) stop.Color(colors[i]);
-        }
-        field.bounds = bounds;
-        Geometry(field.visual, {bounds.X, bounds.Y, 0}, {bounds.Width, bounds.Height});
-    }
-    void PruneEdges(std::map<uint64_t, Field>& fields, std::set<uint64_t> const& live) {
-        for (auto it = fields.begin(); it != fields.end();) {
-            if (live.count(it->first)) { ++it; continue; }
-            rims.Children().Remove(it->second.visual); it = fields.erase(it);
-        }
-    }
-    // Crisp surface reflections are outside the diffusion layer. Tint each
-    // independently toward white; never mix the group and container colors.
-    void Rim(Field& field, uint32_t color, Rect bounds, bool upper) {
-        const bool visible = color && bounds.Width > 0 && bounds.Height > 0;
-        if (!visible) { if (field.visual) field.visual.IsVisible(false); return; }
-        if (!field.visual) {
-            auto compositor = rims.Compositor();
-            field.visual = compositor.CreateSpriteVisual();
-            field.visual.Comment(upper ? L"active-container-reflection" : L"active-group-reflection");
-            auto brush = compositor.CreateLinearGradientBrush();
-            brush.StartPoint({0, .5f}); brush.EndPoint({1, .5f});
-            for (auto [offset, alpha] : {std::pair{0.f, 0}, {.25f, 45}, {.5f, upper ? 155 : 100}, {.75f, upper ? 45 : 145}, {1.f, upper ? 0 : 185}})
-                brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(alpha), 0, 0, 0}));
-            field.brush = brush;
-            if (upper) field.visual.Brush(brush);
-            else {
-                // The attached tab flares outward into the strip. It has no
-                // closed bottom stroke (which would suggest a floating pill).
-                brush.MappingMode(winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute);
-                field.rimGeometry = compositor.CreatePathGeometry();
-                auto stroke = compositor.CreateSpriteShape(field.rimGeometry);
-                stroke.StrokeBrush(brush); stroke.StrokeThickness(1.25f);
-                field.rimShape = compositor.CreateShapeVisual();
-                field.rimShape.Shapes().Append(stroke);
-                field.visual.Children().InsertAtTop(field.rimShape);
-            }
-            rims.Children().InsertAtTop(field.visual);
-        }
-        field.visual.IsVisible(true);
-        if (field.color != color) {
-            field.color = color;
-            auto shine = [](uint8_t channel) { return uint8_t(channel + (255 - channel) * .55f); };
-            for (auto stop : field.brush.ColorStops()) {
-                auto value = stop.Color();
-                value.R = shine(uint8_t(color >> 16)); value.G = shine(uint8_t(color >> 8)); value.B = shine(uint8_t(color));
-                stop.Color(value);
-            }
-        }
-        if (field.bounds != bounds) {
-            field.bounds = bounds;
-            field.visual.Offset({bounds.X, bounds.Y, 0});
-            field.visual.Size({bounds.Width, bounds.Height});
-            if (field.rimShape) {
-                field.rimShape.Size({bounds.Width, bounds.Height});
-                if (!clipFactory) winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, clipFactory.put()));
-                winrt::com_ptr<ID2D1PathGeometry> path;
-                winrt::check_hresult(clipFactory->CreatePathGeometry(path.put()));
-                winrt::com_ptr<ID2D1GeometrySink> sink;
-                winrt::check_hresult(path->Open(sink.put()));
-                // Match the installed TabViewItem template's 4-DIP outward
-                // radius. Separate open figures keep the content edge open.
-                const float y = std::max(0.f, bounds.Height - .625f);
-                const float r = std::min(TabLightContour::Flare, std::min(bounds.Width / 2, y));
-                const float start = std::max(0.f, y - 12.f);
-                TabLightContour::LowerEdges(sink.get(), bounds.Width, y, r, start);
-                winrt::check_hresult(sink->Close());
-                field.rimGeometry.Path(winrt::Microsoft::UI::Composition::CompositionPath(winrt::make<TabAmbientClip>(std::move(path))));
-                auto brush = field.brush.as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
-                brush.StartPoint({0, std::max(0.f, bounds.Height - 12)});
-                brush.EndPoint({0, bounds.Height});
-            }
-        }
     }
     void Spill(std::map<uint32_t, Field>& fields, uint32_t id, uint32_t color, Rect bounds, bool upper) {
         auto& field = fields[id];
