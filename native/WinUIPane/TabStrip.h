@@ -88,6 +88,7 @@ struct NativeTabStrip {
     GroupSlide groupSlide;
     GroupDragVisual groupDragVisual;
     GroupDragShift groupDragShift;
+    GroupDragShift tabDragHeaders;
     TabAmbient ambient;
     bool containerGlow{true}, containerDot{};
     Controls::Border separatorTheme{nullptr};
@@ -654,6 +655,7 @@ struct NativeTabStrip {
         }
     }
     void BeginDeparture(uint32_t id) {
+        tabDragHeaders.Reset();
         ClearGroupHover();
         for (auto affected : drag.affectedRowIds)
             if (rows.count(affected)) ResetRowOffset(rows.at(affected), affected);
@@ -692,6 +694,7 @@ struct NativeTabStrip {
     void ReconcileDrag() {
         const auto state = Drag();
         if (state.phase == DragPhase::Dragging || state.awaiting) return;
+        tabDragHeaders.Reset();
         for (auto id : drag.affectedRowIds)
             if (rows.count(id)) ResetRowOffset(rows.at(id), id);
         drag.affectedRowIds.clear();
@@ -1140,12 +1143,32 @@ struct NativeTabStrip {
     void ShiftSibling(uint32_t originalIndex) {
         auto row = view.TabItems().GetAt(originalIndex).as<Controls::TabViewItem>();
         double target = 0;
-        if (shell_core_tab_drag_offset(core, originalIndex, &target) != SHELL_STATUS_OK) return;
+        auto status = inlineGroups.active
+            ? shell_core_tab_drag_slot_offset(core, originalIndex, false, false, &target)
+            : shell_core_tab_drag_offset(core, originalIndex, &target);
+        if (status != SHELL_STATUS_OK) return;
         auto id = unbox_value<uint32_t>(row.Tag());
         AnimateRowOffset(row, id, target);
         if (target != 0 &&
             std::find(drag.affectedRowIds.begin(), drag.affectedRowIds.end(), id) == drag.affectedRowIds.end())
             drag.affectedRowIds.push_back(id);
+    }
+
+    void ShiftTabDragHeaders() {
+        if (!inlineGroups.active) return;
+        const auto source = Drag().tab;
+        const auto sourceSlot = std::find_if(groupLayout.begin(), groupLayout.end(),
+            [source](auto slot) { return slot.tab == source; });
+        const auto sourceGroup = sourceSlot == groupLayout.end() ? 0 : sourceSlot->group;
+        uint32_t index = 0;
+        for (auto slot : groupLayout) {
+            if (slot.tab) { ++index; continue; }
+            auto found = inlineGroups.runs.find(slot.group);
+            if (found == inlineGroups.runs.end() || !found->second.button) continue;
+            double target{};
+            if (shell_core_tab_drag_slot_offset(core, index, true, slot.group == sourceGroup, &target) == SHELL_STATUS_OK)
+                tabDragHeaders.Apply(slot.group, found->second.button, target, groupSlide.Enabled());
+        }
     }
 
     void ClearGroupHover() {
@@ -1271,6 +1294,7 @@ struct NativeTabStrip {
         if (current.projected == previous.projected) return;
         for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i)
             if (i != current.original) ShiftSibling(i);
+        ShiftTabDragHeaders();
     }
 
     // Undoes whatever TryPromote's render-completion callback hid (see its
@@ -1345,6 +1369,7 @@ struct NativeTabStrip {
         shell_core_tab_drag_close_gap(core);
         for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i)
             if (i != Drag().original) ShiftSibling(i);
+        ShiftTabDragHeaders();
     }
 
     // Commits this exact tab's own in-flight gesture as a self-reorder --
@@ -1516,6 +1541,7 @@ struct NativeTabStrip {
         // Revoke the local gesture before any XAML work can reenter. Reset
         // actual retained rows, not geometry indices captured by an old layout.
         shell_core_tab_drag_end(core, true);
+        tabDragHeaders.Reset();
         drag.affectedRowIds.clear();
         ClearGroupHover();
         if (wasDragging) {
@@ -1965,6 +1991,7 @@ struct NativeTabStrip {
                 bool landed = false;
                 shell_core_tab_drag_publish(core, order.data(), order.size(), &landed);
                 if (landed) {
+                    tabDragHeaders.Reset();
                     for (auto id : drag.affectedRowIds) {
                         if (!rows.count(id)) continue;
                         auto row = rows.at(id);

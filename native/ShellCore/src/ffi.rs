@@ -1819,6 +1819,15 @@ pub unsafe extern "C" fn shell_core_tab_drag_offset(core: *mut ShellCore, index:
     *out = 0.0;
     queue_guard(core, |q| match q.tab_drag.offset(index) { Some(v) => { *out=v; ShellStatus::Ok }, None => ShellStatus::InvalidArgument })
 }
+/// Offset a grouped-layout tab or a header anchored before index (len at end).
+/// # Safety
+/// Live core, writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_slot_offset(core: *mut ShellCore, index: u32, header: bool, source_header: bool, out: *mut f64) -> ShellStatus {
+    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out = 0.0;
+    queue_guard(core, |q| match q.tab_drag.slot_offset(index,header,source_header) { Some(v) => { *out=v; ShellStatus::Ok }, None => ShellStatus::InvalidArgument })
+}
 /// End the gesture; cancel also revokes pending reorder confirmation.
 /// # Safety
 /// Live core.

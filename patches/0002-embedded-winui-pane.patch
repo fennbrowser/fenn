@@ -3892,10 +3892,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..22a7558d53
+index 0000000000..0514bf8e36
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1649 @@
+@@ -0,0 +1,1655 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4652,7 +4652,13 @@ index 0000000000..22a7558d53
 +          }
 +          const neighbor = this.resolveStripTab(beforeId);
 +          if (!neighbor) return false;
-+          gBrowser.moveTabBefore(tab, ungroup ? (neighbor.group || neighbor) : neighbor, options);
++          // Reorder gaps before another group's first visible row are outside
++          // its header. Inserting before the member would implicitly join it;
++          // joining is instead the explicit strip-join-group command above.
++          const group = neighbor.group;
++          const beforeGroup = group && (ungroup ||
++            (tab.group !== group && group.tabs.find(member => member.visible) === neighbor));
++          gBrowser.moveTabBefore(tab, beforeGroup ? group : neighbor, options);
 +        },
 +        // screenX/screenY are physical pixels (native's GetCursorPos); the
 +        // window-feature left/top Firefox expects are CSS pixels, so this

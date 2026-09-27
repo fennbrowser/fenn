@@ -80,6 +80,20 @@ impl TabDrag {
             (Some(to),Some(from)) => to.left-from.left, _ => 0.0,
         }
     }
+    // Group headers occupy their own layout space. Moving a tab transfers only
+    // its width; a distance between neighboring tabs can include a whole header.
+    // A header is anchored immediately before `index` (len for trailing groups).
+    pub fn slot_offset(&self, index: u32, header: bool, source_header: bool) -> Option<f64> {
+        if index as usize > self.rows.len() || (!header && index as usize == self.rows.len()) { return None; }
+        let width = self.rows.get(self.state.original as usize)?.width;
+        // An internal reorder lands after its own header, not before the group.
+        if header && source_header && index == self.state.projected { return Some(0.0); }
+        Some(if self.state.projected < self.state.original && (index < self.state.original || (header && index == self.state.original)) && index >= self.state.projected {
+            width
+        } else if index > self.state.original && index < self.state.projected {
+            -width
+        } else { 0.0 })
+    }
     pub fn end(&mut self, cancel: bool) {
         self.state.phase = 0;
         if cancel { self.state.detaching = 0; self.state.awaiting = 0; self.state.request = 0; }
@@ -118,6 +132,37 @@ mod tests {
         assert!(d.promote(original, &[ShellDragRow{left:0.0,width:100.0},
             ShellDragRow{left:100.0,width:100.0},ShellDragRow{left:200.0,width:100.0}]));
         d
+    }
+    #[test]
+    fn grouped_slots_move_headers_with_members_without_consuming_header_width() {
+        let mut d=TabDrag::default();
+        d.arm(1,50.0,16.0);
+        d.promote(0,&[ShellDragRow{left:0.0,width:100.0},
+            ShellDragRow{left:140.0,width:100.0},ShellDragRow{left:240.0,width:100.0}]);
+        d.update(210.0,16.0,500.0,40.0,true);
+        assert_eq!(d.slot_offset(1,true,false),Some(-100.0));
+        assert_eq!(d.slot_offset(1,false,false),Some(-100.0));
+        assert_eq!(d.slot_offset(2,false,false),Some(0.0));
+        assert_eq!(d.slot_offset(3,true,false),Some(0.0));
+        assert_eq!(d.slot_offset(3,false,false),None);
+        d.close_gap();
+        assert_eq!(d.slot_offset(1,true,false),Some(0.0));
+        assert_eq!(d.slot_offset(0,true,false),Some(0.0));
+        d.arm(3,290.0,16.0);
+        d.promote(2,&[ShellDragRow{left:0.0,width:100.0},
+            ShellDragRow{left:140.0,width:100.0},ShellDragRow{left:280.0,width:120.0}]);
+        d.update(20.0,16.0,500.0,40.0,true);
+        assert_eq!(d.slot_offset(1,true,false),Some(120.0));
+        assert_eq!(d.slot_offset(1,false,false),Some(120.0));
+        assert_eq!(d.slot_offset(2,true,false),Some(120.0));
+        assert_eq!(d.slot_offset(2,false,false),Some(0.0));
+        d.update(100.0,16.0,500.0,40.0,true);
+        assert_eq!(d.state().projected,1);
+        assert_eq!(d.slot_offset(1,true,true),Some(0.0));
+        assert_eq!(d.slot_offset(1,true,false),Some(120.0));
+        assert_eq!(d.slot_offset(1,false,false),Some(120.0));
+        d.close_gap();
+        assert_eq!(d.slot_offset(2,true,false),Some(0.0));
     }
     #[test]
     fn threshold_either_axis_and_continuation() {

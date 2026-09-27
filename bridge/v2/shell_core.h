@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 15
+#define SHELL_CORE_ABI_VERSION 16
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -888,6 +888,17 @@ ShellStatus shell_core_tab_drag_close_gap(ShellCore *core);
  Live core, writable out.
  */
 ShellStatus shell_core_tab_drag_offset(ShellCore *core, uint32_t index, double *out);
+
+/*
+ Offset a grouped-layout tab or a header anchored before index (len at end).
+ # Safety
+ Live core, writable out.
+ */
+ShellStatus shell_core_tab_drag_slot_offset(ShellCore *core,
+                                            uint32_t index,
+                                            bool header,
+                                            bool source_header,
+                                            double *out);
 
 /*
  End the gesture; cancel also revokes pending reorder confirmation.

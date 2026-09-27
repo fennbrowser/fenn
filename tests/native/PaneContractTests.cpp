@@ -2324,6 +2324,69 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
     return bounds;
 }
 
+static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND host) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    auto settle = [] { for (int i=0;i<40;++i) { Pump(); Sleep(10); } };
+    RECT rect{0,0,1000,40};
+    SetWindowPos(host,nullptr,200,200,1040,400,SWP_NOZORDER);
+    Require(SUCCEEDED(api.updateTabStrip(host,&rect,TRUE)), "group gap strip geometry");
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module,"WinUIPaneTestGetContent"));
+    UIElement content{nullptr};
+    Require(SUCCEEDED(inspect(host,winrt::put_abi(content))),"inspect group gap strip");
+    auto view=content.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
+    SetForegroundWindow(host);
+    for (bool rtl : {false,true}) {
+        auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":70,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[{"id":11,"detail":"","flags":0},{"id":22,"detail":"","flags":0},{"id":33,"detail":"","flags":0}],"layout":[{"group":0,"tab":11},{"group":7,"tab":0},{"group":7,"tab":22},{"group":0,"tab":33}]}})");
+        state.GetNamedObject(L"strip").SetNamedValue(L"rtl",winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(rtl));
+        state.GetNamedObject(L"strip").SetNamedValue(L"revision",winrt::Windows::Data::Json::JsonValue::CreateNumberValue(rtl ? 71 : 70));
+        MenuPublish(api,host,state.Stringify().c_str());
+        WinUITab tabs[]{{11,L"Before"},{22,L"Group member"},{33,L"After"}};
+        uint32_t selected{};
+        Require(SUCCEEDED(api.syncTabs(host,tabs,3,11,&selected)), "group gap tabs");
+        settle();
+        for (bool backward : {false,true}) {
+            auto source=TabScreenBounds(host,backward ? L"FirefoxWinUITab-33" : L"FirefoxWinUITab-11");
+            auto member=TabScreenBounds(host,L"FirefoxWinUITab-22");
+            auto header=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-7");
+            SetCursorPos((source.left+source.right)/2,(source.top+source.bottom)/2);
+            settle();
+            INPUT mouse{}; mouse.type=INPUT_MOUSE; mouse.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
+            Require(SendInput(1,&mouse,sizeof(mouse))==1,"press tab for group gap");
+            settle();
+            auto target = backward != rtl ? member.left+16 : member.right-16;
+            SetCursorPos(target,(member.top+member.bottom)/2);
+            settle();
+            auto sourceWidth=view.TabItems().GetAt(backward ? 2 : 0).as<Controls::TabViewItem>().ActualWidth()
+                * content.XamlRoot().RasterizationScale();
+            LONG headerDelta{},memberDelta{};
+            for (int attempt=0;attempt<20;++attempt) {
+                auto shiftedHeader=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-7");
+                auto shiftedMember=TabScreenBounds(host,L"FirefoxWinUITab-22");
+                headerDelta=shiftedHeader.left-header.left;
+                memberDelta=shiftedMember.left-member.left;
+                if (std::abs(headerDelta-memberDelta)<=2 && std::abs(std::abs(headerDelta)-sourceWidth)<=2) break;
+                settle();
+            }
+            fprintf(stderr,"Group gap rtl=%d backward=%d header=%ld member=%ld width=%ld\n",rtl,backward,headerDelta,memberDelta,source.right-source.left);
+            Require(std::abs(headerDelta-memberDelta)<=2 && std::abs(headerDelta)>20,
+                "physical tab drag shifts the retained group button with its member");
+            Require(std::abs(std::abs(headerDelta)-sourceWidth)<=2,
+                "group gap transfers tab width without consuming header space");
+            INPUT escape[2]{};
+            escape[0].type=escape[1].type=INPUT_KEYBOARD;
+            escape[0].ki.wVk=escape[1].ki.wVk=VK_ESCAPE;
+            escape[1].ki.dwFlags=KEYEVENTF_KEYUP;
+            SendInput(1,escape,sizeof(INPUT));
+            settle();
+            SendInput(1,escape+1,sizeof(INPUT));
+            mouse.mi.dwFlags=MOUSEEVENTF_LEFTUP; SendInput(1,&mouse,sizeof(mouse));
+            settle();
+            auto restored=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-7");
+            Require(std::abs(restored.left-header.left)<=2,"Escape restores group header geometry");
+        }
+    }
+}
+
 static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false, bool inactive = false, bool rearm = false, bool grouping = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
@@ -2949,6 +3012,7 @@ int wmain(int argc, wchar_t** argv) {
         };
         if (wcscmp(argv[2], L"--group-drop") == 0) {
             CheckTabStripDrag(module, api, first, false, false, false, true);
+            CheckTabGroupHeaderShift(module, api, first);
         } else if (wcscmp(argv[2], L"--continuation") == 0) {
             CheckWindowContinuation(module, api, first);
         } else if (wcscmp(argv[2], L"--transfers") == 0) {
