@@ -19,6 +19,7 @@ Two sets of files are checked:
 
   Check-LineEndings.py            # report, exit 1 if anything drifted
   Check-LineEndings.py --fix      # repair in place, preserving each edit
+  Check-LineEndings.py --base REF # compare committed changes against REF (CI)
 """
 
 import argparse
@@ -51,14 +52,14 @@ def convert(data, target):
     return lf.replace(b"\n", b"\r\n") if target == "crlf" else lf
 
 
-def tracked_files():
-    out = subprocess.run(["git", "-C", str(ROOT), "diff", "--name-only", "HEAD"],
+def tracked_files(base="HEAD"):
+    out = subprocess.run(["git", "-C", str(ROOT), "diff", "--name-only", "-z", base, "--"],
                          capture_output=True, text=True, check=True).stdout
-    return [name for name in out.split("\n") if name]
+    return [name for name in out.split("\0") if name]
 
 
-def committed(name):
-    result = subprocess.run(["git", "-C", str(ROOT), "show", f"HEAD:{name}"],
+def committed(name, base="HEAD"):
+    result = subprocess.run(["git", "-C", str(ROOT), "show", f"{base}:{name}"],
                             capture_output=True)
     return result.stdout if result.returncode == 0 else None
 
@@ -78,15 +79,24 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--fix", action="store_true",
                         help="rewrite drifted files instead of only reporting them")
+    parser.add_argument("--base", default="HEAD",
+                        help="compare against this commit instead of HEAD (including already committed changes)")
     arguments = parser.parse_args()
+    result = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--verify",
+                             "--end-of-options", f"{arguments.base}^{{commit}}"],
+                            capture_output=True, text=True)
+    if result.returncode:
+        print(f"Cannot resolve comparison commit: {arguments.base}", file=sys.stderr)
+        return 1
+    base = result.stdout.strip()
 
     drifted = []
 
-    for name in tracked_files():
+    for name in tracked_files(base):
         path = ROOT / name
         if not path.is_file() or path.suffix.lower() in BINARY:
             continue
-        before = committed(name)
+        before = committed(name, base)
         if before is None:
             continue  # newly added: it sets its own convention
         want, have = style(before), style(path.read_bytes())

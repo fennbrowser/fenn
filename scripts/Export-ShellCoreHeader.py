@@ -12,6 +12,7 @@ when the Firefox toolchain does.
 """
 
 import argparse
+import json
 import os
 import pathlib
 import subprocess
@@ -20,8 +21,8 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CRATE = ROOT / "native" / "ShellCore"
 HEADER = ROOT / "bridge" / "v2" / "shell_core.h"
-# Kept in sync with native/ShellCore/src/lib.rs and bridge/v2/shell_core.h.
-EXPECTED_CBINDGEN = "0.29.4"
+# Use the same generator pin for local verification and CI provisioning.
+EXPECTED_CBINDGEN = json.loads((ROOT / "configs/toolchain-baseline.json").read_text(encoding="utf-8"))["cbindgen"]
 
 
 def find_cbindgen():

@@ -17,6 +17,7 @@
   "firefoxWindowsSDK": "10.0.28000.0",
   "winuiWindowsSDK": "10.0.26100.0",
   "rust": "1.98.1",
+  "cbindgen": "0.29.4",
   "nodeFromMozillaBootstrap": "22.16.0",
   "windowsAppSDK": "2.4.0",
   "cppWinRT": "3.0.260818.1",
