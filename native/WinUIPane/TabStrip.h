@@ -905,7 +905,7 @@ struct NativeTabStrip {
             if (alive.expired()) return;
             if (auto listView = FindTabListView(view)) {
                 listView.ItemContainerTransitions(Media::Animation::TransitionCollection{});
-                inlineGroups.Configure(listView);
+                inlineGroups.Configure(listView, view);
                 if (CanApplyGroupLayout()) {
                     auto selected = view.SelectedItem();
                     syncing = true;

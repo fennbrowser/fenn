@@ -1290,6 +1290,30 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     settleWidths();
     fprintf(stderr, "Tab sizing: spacious=%.1f crowded=%.1f\n", spaciousWidth, first.ActualWidth());
     Require(first.ActualWidth() >= 99 && first.ActualWidth() <= 101, "tabs stop shrinking at WinUI's 100-unit minimum");
+    // Check real template controls, not just TabView's layout slot: an Auto
+    // column inside the stock template can extend beyond that slot.
+    std::function<FrameworkElement(DependencyObject, hstring)> findStripPart =
+        [&](DependencyObject node, hstring name) -> FrameworkElement {
+        if (auto element = node.try_as<FrameworkElement>(); element && element.Name() == name) return element;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto found = findStripPart(Media::VisualTreeHelper::GetChild(node, i), name)) return found;
+        return nullptr;
+    };
+    for (int width : {800, 600, 400, 300, 800}) {
+        rect.right = width;
+        Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "resize overflowing caption strip");
+        settleWidths();
+        const auto left = root.ColumnDefinitions().GetAt(0).ActualWidth();
+        const auto right = root.ActualWidth() - root.ColumnDefinitions().GetAt(2).ActualWidth();
+        auto add = findStripPart(view, L"AddButton");
+        Require(bool(add), "stock add button exists in overflowing strip");
+        const auto bounds = add.TransformToVisual(root).TransformBounds(
+            {0, 0, float(add.ActualWidth()), float(add.ActualHeight())});
+        fprintf(stderr, "Caption overflow: width=%d view=%.1f safe=[%.1f,%.1f] add=[%.1f,%.1f]\n",
+            width, view.ActualWidth(), left, right, bounds.X, bounds.X + bounds.Width);
+        Require(bounds.X >= left - 1 && bounds.X + bounds.Width <= right + 1,
+                "stock add button stays outside caption insets when overflowing and resizing");
+    }
     sync();
     settleWidths();
     Require(std::abs(first.ActualWidth() - spaciousWidth) < 1, "tabs grow after other tabs close");
@@ -1643,6 +1667,54 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     // yet. Assert complete field geometry in the loaded motion fixture below.
     auto addButton = find(view,L"AddButton");
     Require(bool(addButton), "grouped strip has the stock add button");
+    std::function<FrameworkElement(DependencyObject, hstring)> findOverflowPart =
+        [&](DependencyObject node, hstring name) -> FrameworkElement {
+        if (auto element = node.try_as<FrameworkElement>(); element && element.Name() == name) return element;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto part = findOverflowPart(Media::VisualTreeHelper::GetChild(node, i), name)) return part;
+        return nullptr;
+    };
+    for (int width : {600, 400, 1200}) {
+        rect.right = width;
+        Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "resize grouped strip across overflow threshold");
+        settle();
+        const auto bounds = addButton.TransformToVisual(root).TransformBounds(
+            {0, 0, float(addButton.ActualWidth()), float(addButton.ActualHeight())});
+        const auto right = root.ActualWidth() - root.ColumnDefinitions().GetAt(2).ActualWidth();
+        Require(bounds.X >= root.ColumnDefinitions().GetAt(0).ActualWidth() - 1 &&
+                    bounds.X + bounds.Width <= right + 1 && bounds.Width == 32,
+                "group headers cannot displace the full stock add button into caption space");
+        auto scroller = findOverflowPart(view, L"ScrollViewer").as<Controls::ScrollViewer>();
+        if (width == 600) {
+            Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Visible,
+                    "actual grouped overflow shows stock scroll arrows before tab-count overflow");
+            scroller.ChangeView(box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
+            settle();
+            auto increase = findOverflowPart(view, L"ScrollIncreaseButton").as<Controls::Primitives::RepeatButton>();
+            auto decrease = findOverflowPart(view, L"ScrollDecreaseButton").as<Controls::Primitives::RepeatButton>();
+            fprintf(stderr, "Grouped scroll: offset=%.1f extent=%.1f increase=%d decrease=%d\n",
+                scroller.HorizontalOffset(), scroller.ScrollableWidth(), increase.IsEnabled(), decrease.IsEnabled());
+            Require(increase.IsEnabled() && !decrease.IsEnabled(), "stock arrows reflect start of grouped overflow");
+            auto invoke = [&](FrameworkElement element) {
+                Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(element)
+                    .GetPattern(Automation::Peers::PatternInterface::Invoke)
+                    .as<Automation::Provider::IInvokeProvider>().Invoke();
+                for (int i = 0; i < 5; ++i) settle();
+            };
+            invoke(increase);
+            const auto offset = scroller.HorizontalOffset();
+            fprintf(stderr, "Grouped forward: offset=%.1f extent=%.1f increase=%d decrease=%d\n",
+                offset, scroller.ScrollableWidth(), increase.IsEnabled(), decrease.IsEnabled());
+            Require(offset > 0 && decrease.IsEnabled(), "stock forward arrow scrolls the constrained grouped list");
+            invoke(decrease);
+            fprintf(stderr, "Grouped backward: offset=%.1f extent=%.1f increase=%d decrease=%d\n",
+                scroller.HorizontalOffset(), scroller.ScrollableWidth(), increase.IsEnabled(), decrease.IsEnabled());
+            Require(scroller.HorizontalOffset() < offset, "stock backward arrow scrolls back");
+        } else if (width == 1200) {
+            Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Collapsed,
+                    "stock arrows disappear when grouped tabs fit again");
+        }
+    }
     const auto groupedAddY = addButton.TransformToVisual(root).TransformPoint({0,0}).Y;
     std::map<uint32_t, float> groupedRowY;
     for (auto item : view.TabItems()) {

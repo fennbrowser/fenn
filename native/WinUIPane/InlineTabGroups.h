@@ -109,11 +109,21 @@ struct InlineTabGroups {
         hover.Exit(hover.group);
     }
 
-    bool Configure(Controls::ListViewBase const& list) {
+    bool Configure(Controls::ListViewBase const& list, Controls::TabView const& view) {
         if (configured) return true;
         // Localized template dependency. Callers retain the dropdown fallback
         // when the stock list part is unavailable on a different WinUI version.
         if (!list || list.Name() != L"TabListView") return false;
+        if (!Media::VisualTreeHelper::GetChildrenCount(list)) return false;
+        auto templateRoot = Media::VisualTreeHelper::GetChild(list, 0).try_as<FrameworkElement>();
+        auto scroller = templateRoot ? templateRoot.FindName(L"ScrollViewer").try_as<Controls::ScrollViewer>() : nullptr;
+        auto grid = Media::VisualTreeHelper::GetParent(list).try_as<Controls::Grid>();
+        if (!scroller || !grid || grid.Name() != L"TabContainerGrid" || grid.ColumnDefinitions().Size() != 4) return false;
+        if (!Media::VisualTreeHelper::GetChildrenCount(scroller)) return false;
+        auto scrollRoot = Media::VisualTreeHelper::GetChild(scroller, 0).as<FrameworkElement>();
+        auto decrease = scrollRoot.FindName(L"ScrollDecreaseButton").try_as<Controls::Primitives::RepeatButton>();
+        auto increase = scrollRoot.FindName(L"ScrollIncreaseButton").try_as<Controls::Primitives::RepeatButton>();
+        if (!decrease || !increase) return false;
         Controls::GroupStyle style;
         style.HidesIfEmpty(false);
         style.HeaderTemplate(Markup::XamlReader::Load(LR"(
@@ -145,6 +155,44 @@ struct InlineTabGroups {
         source.IsSourceGrouped(true);
         source.ItemsPath(PropertyPath(L"[Items]"));
         source.Source(data);
+        // TabView's Equal-width calculation counts tabs but not grouped-source
+        // headers (including the 24-DIP ungrouped gap). Its Auto tab column can
+        // therefore consume the add-button space before minimum-width overflow
+        // starts. Bound the actual list, and let its stock ScrollViewer detect
+        // overflow from the real grouped extent instead of that tab-only estimate.
+        scroller.HorizontalScrollBarVisibility(Controls::ScrollBarVisibility::Auto);
+        // The same tab-only estimate also leaves stale arrow enablement when
+        // it thinks everything fits. Reflect actual scroll endpoints; retain
+        // the stock RepeatButtons and their native click/hold handlers.
+        auto refreshArrows = [alive = std::weak_ptr<int>(lifetime), scroll = make_weak(scroller),
+                              back = make_weak(decrease), forward = make_weak(increase)] {
+            if (alive.expired()) return;
+            auto scroller = scroll.get();
+            auto decrease = back.get();
+            auto increase = forward.get();
+            if (!scroller || !decrease || !increase) return;
+            const bool canBack = scroller.HorizontalOffset() > .1;
+            const bool canForward = scroller.ScrollableWidth() - scroller.HorizontalOffset() > .1;
+            if (decrease.IsEnabled() != canBack) decrease.IsEnabled(canBack);
+            if (increase.IsEnabled() != canForward) increase.IsEnabled(canForward);
+        };
+        scroller.ViewChanged([refreshArrows](auto const&, auto const&) { refreshArrows(); });
+        list.LayoutUpdated([alive = std::weak_ptr<int>(lifetime), weakList = make_weak(list),
+                            weakView = make_weak(view), refreshArrows](auto const&, auto const&) {
+            if (alive.expired()) return;
+            auto list = weakList.get();
+            auto view = weakView.get();
+            if (!list || !view || view.ActualWidth() <= 0) return;
+            auto grid = Media::VisualTreeHelper::GetParent(list).try_as<Controls::Grid>();
+            if (!grid || grid.Name() != L"TabContainerGrid" || grid.ColumnDefinitions().Size() != 4) return;
+            auto footer = grid.FindName(L"RightContentPresenter").try_as<FrameworkElement>();
+            const auto available = std::max(0.0, view.ActualWidth() -
+                grid.ColumnDefinitions().GetAt(0).ActualWidth() -
+                grid.ColumnDefinitions().GetAt(2).ActualWidth() -
+                (footer ? footer.DesiredSize().Width : 0));
+            if (list.MaxWidth() != available) list.MaxWidth(available);
+            refreshArrows();
+        });
         configured = true;
         return true;
     }
