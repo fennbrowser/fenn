@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 16
+#define SHELL_CORE_ABI_VERSION 18
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -876,6 +876,13 @@ ShellStatus shell_core_tab_drag_update(ShellCore *core,
                                        bool project);
 
 /*
+ Project a validated existing-group join; tab zero appends at the header.
+ # Safety
+ Live core. Identities resolve against the accepted strip layout.
+ */
+ShellStatus shell_core_tab_drag_join(ShellCore *core, uint32_t group, uint32_t tab, bool before);
+
+/*
  Close the local reorder gap while retaining the active gesture.
  # Safety
  Live core.
@@ -898,6 +905,7 @@ ShellStatus shell_core_tab_drag_slot_offset(ShellCore *core,
                                             uint32_t index,
                                             bool header,
                                             bool source_header,
+                                            bool join_header,
                                             double *out);
 
 /*
@@ -1140,6 +1148,8 @@ ShellStatus shell_core_group_drag_update(ShellCore *core,
                                          double x,
                                          double y,
                                          bool inside,
+                                         double start,
+                                         double end,
                                          const ShellGroupDragSlot *slots,
                                          uintptr_t len);
 

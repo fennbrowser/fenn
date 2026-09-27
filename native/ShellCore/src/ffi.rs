@@ -1803,6 +1803,16 @@ pub unsafe extern "C" fn shell_core_tab_drag_promote(core: *mut ShellCore, origi
 pub unsafe extern "C" fn shell_core_tab_drag_update(core: *mut ShellCore, x: f64, y: f64, width: f64, height: f64, project: bool) -> ShellStatus {
     queue_guard(core, |q| if q.tab_drag.update(x,y,width,height,project) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
 }
+/// Project a validated existing-group join; tab zero appends at the header.
+/// # Safety
+/// Live core. Identities resolve against the accepted strip layout.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_join(core: *mut ShellCore, group: u32, tab: u32, before: bool) -> ShellStatus {
+    guard(core, |core| {
+        if core.queue.is_closed() { return ShellStatus::Closed; }
+        if core.queue.tab_drag.join_group(core.strip.layout(),group,tab,before) { ShellStatus::Ok } else { ShellStatus::InvalidArgument }
+    })
+}
 /// Close the local reorder gap while retaining the active gesture.
 /// # Safety
 /// Live core.
@@ -1823,10 +1833,10 @@ pub unsafe extern "C" fn shell_core_tab_drag_offset(core: *mut ShellCore, index:
 /// # Safety
 /// Live core, writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_slot_offset(core: *mut ShellCore, index: u32, header: bool, source_header: bool, out: *mut f64) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_tab_drag_slot_offset(core: *mut ShellCore, index: u32, header: bool, source_header: bool, join_header: bool, out: *mut f64) -> ShellStatus {
     let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
     *out = 0.0;
-    queue_guard(core, |q| match q.tab_drag.slot_offset(index,header,source_header) { Some(v) => { *out=v; ShellStatus::Ok }, None => ShellStatus::InvalidArgument })
+    queue_guard(core, |q| match q.tab_drag.slot_offset(index,header,source_header,join_header) { Some(v) => { *out=v; ShellStatus::Ok }, None => ShellStatus::InvalidArgument })
 }
 /// End the gesture; cancel also revokes pending reorder confirmation.
 /// # Safety
@@ -2198,9 +2208,12 @@ pub unsafe extern "C" fn shell_core_group_drag_arm(core:*mut ShellCore,group:u32
 /// # Safety
 /// Live core; slots reads len aligned entries, at most 10000.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_drag_update(core:*mut ShellCore,x:f64,y:f64,inside:bool,slots:*const crate::group_drag::ShellGroupDragSlot,len:usize)->ShellStatus {
+pub unsafe extern "C" fn shell_core_group_drag_update(core:*mut ShellCore,x:f64,y:f64,inside:bool,start:f64,end:f64,slots:*const crate::group_drag::ShellGroupDragSlot,len:usize)->ShellStatus {
     if slots.is_null() || len==0 || len>10000 { return ShellStatus::InvalidArgument; }
-    queue_guard(core,|q| if q.group_drag.update(x,y,inside,std::slice::from_raw_parts(slots,len)) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+    guard(core,|core| {
+        if core.queue.is_closed() { return ShellStatus::Closed; }
+        if core.queue.group_drag.update_viewport(x,y,inside,start,end,std::slice::from_raw_parts(slots,len),core.strip.layout()) { ShellStatus::Ok } else { ShellStatus::InvalidArgument }
+    })
 }
 /// Logical-axis visual offset for a whole group or ungrouped-tab block.
 /// # Safety
@@ -2231,9 +2244,9 @@ mod group_drag_ffi_tests {
         assert_eq!(shell_core_group_drag_state(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
         assert_eq!(shell_core_group_drag_arm(core,9,0.,0.),ShellStatus::Ok);
         let slot=crate::group_drag::ShellGroupDragSlot{group:9,tab:0,start:0.,end:40.};
-        assert_eq!(shell_core_group_drag_update(core,8.,0.,true,std::ptr::null(),1),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_drag_update(core,8.,0.,true,&slot,10001),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_drag_update(core,8.,0.,true,&slot,1),ShellStatus::Ok);
+        assert_eq!(shell_core_group_drag_update(core,8.,0.,true,0.,300.,std::ptr::null(),1),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_drag_update(core,8.,0.,true,0.,300.,&slot,10001),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_drag_update(core,8.,0.,true,0.,300.,&slot,1),ShellStatus::Ok);
         let mut offset=99.;
         assert_eq!(shell_core_group_drag_offset(core,0,40.,std::ptr::null_mut()),ShellStatus::InvalidArgument);
         assert_eq!(shell_core_group_drag_offset(core,1,40.,&mut offset),ShellStatus::InvalidArgument);

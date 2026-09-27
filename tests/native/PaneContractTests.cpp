@@ -2335,10 +2335,13 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
     Require(SUCCEEDED(inspect(host,winrt::put_abi(content))),"inspect group gap strip");
     auto view=content.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
     SetForegroundWindow(host);
-    for (bool rtl : {false,true}) {
+    for (uint32_t scenario=0;scenario<4;++scenario) {
+        const bool rtl = (scenario & 1) != 0, joining = scenario >= 2;
         auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":70,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[{"id":11,"detail":"","flags":0},{"id":22,"detail":"","flags":0},{"id":33,"detail":"","flags":0}],"layout":[{"group":0,"tab":11},{"group":7,"tab":0},{"group":7,"tab":22},{"group":0,"tab":33}]}})");
         state.GetNamedObject(L"strip").SetNamedValue(L"rtl",winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(rtl));
-        state.GetNamedObject(L"strip").SetNamedValue(L"revision",winrt::Windows::Data::Json::JsonValue::CreateNumberValue(rtl ? 71 : 70));
+        state.GetNamedObject(L"strip").SetNamedValue(L"revision",winrt::Windows::Data::Json::JsonValue::CreateNumberValue(70 + scenario));
+        for (auto value : state.GetNamedObject(L"strip").GetNamedArray(L"rows"))
+            value.GetObject().SetNamedValue(L"groupSource",winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(joining));
         MenuPublish(api,host,state.Stringify().c_str());
         WinUITab tabs[]{{11,L"Before"},{22,L"Group member"},{33,L"After"}};
         uint32_t selected{};
@@ -2364,14 +2367,21 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
                 auto shiftedMember=TabScreenBounds(host,L"FirefoxWinUITab-22");
                 headerDelta=shiftedHeader.left-header.left;
                 memberDelta=shiftedMember.left-member.left;
-                if (std::abs(headerDelta-memberDelta)<=2 && std::abs(std::abs(headerDelta)-sourceWidth)<=2) break;
+                const auto expectedHeader = joining && backward ? 0 : memberDelta;
+                if (std::abs(headerDelta-expectedHeader)<=2 && std::abs(std::abs(memberDelta)-sourceWidth)<=2) break;
                 settle();
             }
-            fprintf(stderr,"Group gap rtl=%d backward=%d header=%ld member=%ld width=%ld\n",rtl,backward,headerDelta,memberDelta,source.right-source.left);
-            Require(std::abs(headerDelta-memberDelta)<=2 && std::abs(headerDelta)>20,
-                "physical tab drag shifts the retained group button with its member");
-            Require(std::abs(std::abs(headerDelta)-sourceWidth)<=2,
+            fprintf(stderr,"Group gap rtl=%d backward=%d joining=%d header=%ld member=%ld width=%ld\n",rtl,backward,joining,headerDelta,memberDelta,source.right-source.left);
+            Require(std::abs(headerDelta-(joining && backward ? 0 : memberDelta))<=2,
+                "physical join keeps the header before the gap; outside reorder shifts the whole group");
+            Require(std::abs(std::abs(memberDelta)-sourceWidth)<=2,
                 "group gap transfers tab width without consuming header space");
+            settle();
+            auto held=TabScreenBounds(host,L"FirefoxWinUITab-22");
+            Require(std::abs((held.left-member.left)-memberDelta)<=2,
+                "stationary direct group hover retains the open insertion gap");
+            Require(content.as<Controls::Grid>().Children().GetAt(2).as<Controls::Border>().Visibility() == Visibility::Collapsed,
+                "joining an existing group never shows the new-group creation outline");
             INPUT escape[2]{};
             escape[0].type=escape[1].type=INPUT_KEYBOARD;
             escape[0].ki.wVk=escape[1].ki.wVk=VK_ESCAPE;
@@ -2383,6 +2393,8 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
             settle();
             auto restored=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-7");
             Require(std::abs(restored.left-header.left)<=2,"Escape restores group header geometry");
+            restored=TabScreenBounds(host,L"FirefoxWinUITab-22");
+            Require(std::abs(restored.left-member.left)<=2,"Escape restores group member geometry");
         }
     }
 }
@@ -2482,7 +2494,11 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
         moveTo(client.x + (endX - client.x) * step / 25, client.y);
         settle(5);
     }
-    if (grouping) settle(100);
+    if (grouping) {
+        settle(100);
+        Require(root.Children().GetAt(2).as<Controls::Border>().Visibility() == Visibility::Visible,
+            "new-group creation dwell retains its selection outline");
+    }
     CheckFloatingDragBitmap(module, reject);
     if (rearm) {
         UnhookWindowsHookEx(createProbe);

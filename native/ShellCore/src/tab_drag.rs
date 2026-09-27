@@ -23,6 +23,7 @@ pub struct TabDrag {
     state: ShellTabDrag,
     rows: Vec<ShellDragRow>,
     before: u32,
+    join_anchor: Option<u32>,
 }
 pub const MAX_ROWS: usize = 10_000;
 fn coordinate(v: f64) -> bool { v.is_finite() && v.abs() <= 1_000_000_000.0 }
@@ -54,6 +55,7 @@ impl TabDrag {
         if detaching && self.state.detaching == 0 { self.close_gap(); }
         self.state.detaching = detaching as u32;
         if detaching || !project { return true; }
+        self.join_anchor = None;
         let original = self.state.original as usize;
         let row = self.rows[original];
         let min = -row.left;
@@ -64,7 +66,37 @@ impl TabDrag {
         self.state.projected = if before < self.state.original { before } else { before+1 };
         true
     }
-    pub fn close_gap(&mut self) { if self.state.phase == 2 { self.state.projected = self.state.original; } }
+    pub fn join(&mut self, index: u32, anchor: u32) -> bool {
+        if self.state.phase != 2 || self.state.detaching != 0 ||
+            index as usize > self.rows.len() || anchor > index { return false; }
+        self.state.projected = index;
+        self.join_anchor = Some(anchor);
+        true
+    }
+    pub fn join_group(&mut self, layout: &[crate::strip::ShellStripSlot], group: u32, tab: u32, before: bool) -> bool {
+        if group == 0 || crate::group_drop::target(layout,self.state.tab,tab,if tab == 0 { group } else { 0 }) != group {
+            return false;
+        }
+        let (mut index, mut anchor, mut insertion) = (0, None, None);
+        for slot in layout {
+            if slot.tab == 0 {
+                if slot.group == group { anchor = Some(index); if tab == 0 { insertion = Some(index); } }
+                continue;
+            }
+            if (tab == 0 && slot.group == group) || slot.tab == tab {
+                insertion = Some(index + u32::from(tab == 0 || !before));
+            }
+            index += 1;
+        }
+        match (anchor,insertion) {
+            (Some(anchor),Some(index)) => self.join(index,anchor),
+            _ => false,
+        }
+    }
+    pub fn close_gap(&mut self) {
+        self.join_anchor = None;
+        if self.state.phase == 2 { self.state.projected = self.state.original; }
+    }
     pub fn offset(&self, index: u32) -> Option<f64> {
         let i = index as usize;
         if i >= self.rows.len() { return None; }
@@ -83,11 +115,16 @@ impl TabDrag {
     // Group headers occupy their own layout space. Moving a tab transfers only
     // its width; a distance between neighboring tabs can include a whole header.
     // A header is anchored immediately before `index` (len for trailing groups).
-    pub fn slot_offset(&self, index: u32, header: bool, source_header: bool) -> Option<f64> {
+    pub fn slot_offset(&self, index: u32, header: bool, source_header: bool, join_header: bool) -> Option<f64> {
         if index as usize > self.rows.len() || (!header && index as usize == self.rows.len()) { return None; }
         let width = self.rows.get(self.state.original as usize)?.width;
+        // A join gap belongs after the destination header, including when the
+        // tab index stays unchanged and only the header must cross the source.
+        if header && join_header && self.join_anchor == Some(index) {
+            return Some(if self.state.original < index { -width } else { 0.0 });
+        }
         // An internal reorder lands after its own header, not before the group.
-        if header && source_header && index == self.state.projected { return Some(0.0); }
+        if header && source_header && self.join_anchor.is_none() && index == self.state.projected { return Some(0.0); }
         Some(if self.state.projected < self.state.original && (index < self.state.original || (header && index == self.state.original)) && index >= self.state.projected {
             width
         } else if index > self.state.original && index < self.state.projected {
@@ -96,6 +133,7 @@ impl TabDrag {
     }
     pub fn end(&mut self, cancel: bool) {
         self.state.phase = 0;
+        self.join_anchor = None;
         if cancel { self.state.detaching = 0; self.state.awaiting = 0; self.state.request = 0; }
     }
     pub fn commit(&mut self, request: u64, before: u32) -> bool {
@@ -140,29 +178,80 @@ mod tests {
         d.promote(0,&[ShellDragRow{left:0.0,width:100.0},
             ShellDragRow{left:140.0,width:100.0},ShellDragRow{left:240.0,width:100.0}]);
         d.update(210.0,16.0,500.0,40.0,true);
-        assert_eq!(d.slot_offset(1,true,false),Some(-100.0));
-        assert_eq!(d.slot_offset(1,false,false),Some(-100.0));
-        assert_eq!(d.slot_offset(2,false,false),Some(0.0));
-        assert_eq!(d.slot_offset(3,true,false),Some(0.0));
-        assert_eq!(d.slot_offset(3,false,false),None);
+        assert_eq!(d.slot_offset(1,true,false,false),Some(-100.0));
+        assert_eq!(d.slot_offset(1,false,false,false),Some(-100.0));
+        assert_eq!(d.slot_offset(2,false,false,false),Some(0.0));
+        assert_eq!(d.slot_offset(3,true,false,false),Some(0.0));
+        assert_eq!(d.slot_offset(3,false,false,false),None);
         d.close_gap();
-        assert_eq!(d.slot_offset(1,true,false),Some(0.0));
-        assert_eq!(d.slot_offset(0,true,false),Some(0.0));
+        assert_eq!(d.slot_offset(1,true,false,false),Some(0.0));
+        assert_eq!(d.slot_offset(0,true,false,false),Some(0.0));
         d.arm(3,290.0,16.0);
         d.promote(2,&[ShellDragRow{left:0.0,width:100.0},
             ShellDragRow{left:140.0,width:100.0},ShellDragRow{left:280.0,width:120.0}]);
         d.update(20.0,16.0,500.0,40.0,true);
-        assert_eq!(d.slot_offset(1,true,false),Some(120.0));
-        assert_eq!(d.slot_offset(1,false,false),Some(120.0));
-        assert_eq!(d.slot_offset(2,true,false),Some(120.0));
-        assert_eq!(d.slot_offset(2,false,false),Some(0.0));
+        assert_eq!(d.slot_offset(1,true,false,false),Some(120.0));
+        assert_eq!(d.slot_offset(1,false,false,false),Some(120.0));
+        assert_eq!(d.slot_offset(2,true,false,false),Some(120.0));
+        assert_eq!(d.slot_offset(2,false,false,false),Some(0.0));
         d.update(100.0,16.0,500.0,40.0,true);
         assert_eq!(d.state().projected,1);
-        assert_eq!(d.slot_offset(1,true,true),Some(0.0));
-        assert_eq!(d.slot_offset(1,true,false),Some(120.0));
-        assert_eq!(d.slot_offset(1,false,false),Some(120.0));
+        assert_eq!(d.slot_offset(1,true,true,false),Some(0.0));
+        assert_eq!(d.slot_offset(1,true,false,false),Some(120.0));
+        assert_eq!(d.slot_offset(1,false,false,false),Some(120.0));
         d.close_gap();
-        assert_eq!(d.slot_offset(2,true,false),Some(0.0));
+        assert_eq!(d.slot_offset(2,true,false,false),Some(0.0));
+    }
+    #[test]
+    fn direct_group_join_opens_a_gap_and_retains_the_destination_header() {
+        let mut d = drag(2);
+        assert!(d.join(1,1));
+        assert_eq!(d.slot_offset(1,false,false,false),Some(100.0));
+        assert_eq!(d.slot_offset(1,true,false,true),Some(0.0));
+        // Another header at the same tab anchor is not the destination.
+        assert_eq!(d.slot_offset(1,true,false,false),Some(100.0));
+        assert!(d.update(150.0,16.0,400.0,40.0,false));
+        assert_eq!(d.state().projected,1);
+        assert_eq!(d.slot_offset(1,true,false,true),Some(0.0));
+        // Leaving the group restores ordinary reorder boundary behavior.
+        assert!(d.update(140.0,16.0,400.0,40.0,true));
+        assert_eq!(d.slot_offset(1,true,false,true),Some(100.0));
+        d = drag(0);
+        assert!(d.join(1,1));
+        assert_eq!(d.slot_offset(1,false,false,false),Some(0.0));
+        assert_eq!(d.slot_offset(1,true,false,true),Some(-100.0));
+        assert!(d.join(2,1));
+        assert_eq!(d.slot_offset(1,false,false,false),Some(-100.0));
+        assert!(!d.join(4,1));
+        assert!(!d.join(1,2));
+        assert_eq!(d.state().projected,2);
+        d.close_gap();
+        assert_eq!(d.slot_offset(1,true,false,true),Some(0.0));
+        d.update(150.0,81.0,400.0,40.0,false);
+        assert!(!d.join(2,1));
+        d.end(true);
+        assert!(!d.join(2,1));
+    }
+    #[test]
+    fn group_join_resolves_live_members_and_collapsed_headers() {
+        use crate::strip::ShellStripSlot as Slot;
+        let layout = [Slot{group:0,tab:1}, Slot{group:7,tab:0},
+            Slot{group:7,tab:2}, Slot{group:7,tab:3}, Slot{group:9,tab:0}];
+        let mut d = drag(0);
+        assert!(d.join_group(&layout,7,2,true));
+        assert_eq!(d.state().projected,1);
+        assert!(d.join_group(&layout,7,2,false));
+        assert_eq!(d.state().projected,2);
+        assert!(d.join_group(&layout,7,0,false));
+        assert_eq!(d.state().projected,3);
+        assert!(d.join_group(&layout,9,0,false));
+        assert_eq!(d.slot_offset(3,true,false,true),Some(-100.0));
+        for (group,tab) in [(0,2),(7,999),(9,2),(99,0),(7,1)] {
+            assert!(!d.join_group(&layout,group,tab,true));
+            assert_eq!(d.state().projected,3);
+        }
+        d = drag(1);
+        assert!(!d.join_group(&layout,7,3,true));
     }
     #[test]
     fn threshold_either_axis_and_continuation() {

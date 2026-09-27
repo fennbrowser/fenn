@@ -50,6 +50,31 @@ impl GroupDrag {
             else if self.target>self.source && index>self.source && index<self.target { -width }
             else { 0. })
     }
+    pub fn update_viewport(&mut self, x:f64, y:f64, inside:bool, start:f64, end:f64,
+        slots:&[ShellGroupDragSlot], layout:&[crate::strip::ShellStripSlot])->bool {
+        if !finite(start) || !finite(end) || end < start { return false; }
+        if !self.update(x,y,inside,slots) { return false; }
+        if self.state.phase != 2 || !inside || x < end { return true; }
+        // The trailing controls/blank area means after the last visible block,
+        // not after every browser tab. Keep an offscreen successor's identity
+        // even when WinUI has not realized its control.
+        let Some(last) = slots.iter().rposition(|s| s.group != self.state.group && s.start < end && s.end > start) else {
+            self.state.valid = false; return true;
+        };
+        let units:Vec<_> = layout.iter().filter(|s| s.tab == 0 || s.group == 0).collect();
+        let Some(position) = units.iter().position(|s| s.group == slots[last].group && s.tab == slots[last].tab) else {
+            self.state.valid = false; return true;
+        };
+        let next = units.iter().skip(position+1).find(|s| s.group != self.state.group);
+        let (group,tab) = next.map_or((0,0),|s| (s.group,s.tab));
+        self.target = slots.iter().enumerate().skip(last+1).find(|(_,s)| s.group != self.state.group)
+            .map_or(slots.len(),|(i,_)| i);
+        self.state.before_group = group; self.state.before_tab = tab;
+        self.state.marker = slots[last].end.min(end);
+        self.state.valid = units.iter().position(|s| s.group == self.state.group)
+            .is_some_and(|source| source != position+1);
+        true
+    }
     pub fn wait(&mut self, request:u64, group:u32, before_group:u32, before_tab:u32) {
         self.state=ShellGroupDrag { group,before_group,before_tab,awaiting:request!=0,request,..Default::default() };
     }
@@ -88,6 +113,43 @@ mod tests {
         assert_eq!(d.offset(3,40.),None);
         assert_eq!(d.offset(0,f64::NAN),None);
         assert_eq!(d.offset(0,-1.),None);
+    }
+    #[test] fn trailing_area_inserts_before_offscreen_successor_without_realization() {
+        use crate::strip::ShellStripSlot as S;
+        let layout=[S{group:1,tab:0},S{group:1,tab:3},S{group:0,tab:9},S{group:0,tab:10},S{group:2,tab:0}];
+        let measured=[ShellGroupDragSlot{group:1,tab:0,start:0.,end:40.},
+            ShellGroupDragSlot{group:0,tab:9,start:40.,end:140.}];
+        let mut d=GroupDrag::default(); d.arm(1,10.,10.);
+        for x in [120.,150.,400.] {
+            assert!(d.update_viewport(x,10.,true,0.,120.,&measured,&layout));
+            assert_eq!(d.state().before_tab,10);
+            assert!(d.state().valid);
+            assert_eq!(d.offset(1,40.),Some(-40.));
+        }
+        // A fully offscreen measured row must not become the last visible tab.
+        let mut all=measured.to_vec(); all.push(ShellGroupDragSlot{group:0,tab:10,start:140.,end:240.});
+        d.update_viewport(400.,10.,true,0.,120.,&all,&layout);
+        assert_eq!(d.state().before_tab,10);
+        assert_eq!(d.offset(2,40.),Some(0.));
+        d.update_viewport(400.,10.,true,0.,200.,&all,&layout);
+        assert_eq!(d.state().before_group,2); // includes partially visible last row
+        d.update_viewport(400.,10.,true,0.,200.,&all,&layout[..4]);
+        assert_eq!((d.state().before_group,d.state().before_tab),(0,0));
+        d.update_viewport(400.,80.,false,0.,200.,&all,&layout);
+        assert!(!d.state().valid);
+        assert!(!d.update_viewport(400.,10.,true,200.,0.,&all,&layout));
+    }
+    #[test] fn trailing_area_preserves_scrolled_group_boundaries_and_noops() {
+        use crate::strip::ShellStripSlot as S;
+        let layout=[S{group:2,tab:0},S{group:2,tab:8},S{group:1,tab:0},S{group:0,tab:9}];
+        let measured=[ShellGroupDragSlot{group:2,tab:0,start:-80.,end:140.},
+            ShellGroupDragSlot{group:1,tab:0,start:140.,end:180.}];
+        let mut d=GroupDrag::default(); d.arm(1,150.,10.);
+        d.update_viewport(300.,10.,true,0.,120.,&measured,&layout);
+        assert_eq!(d.state().before_tab,9);
+        assert!(!d.state().valid); // already immediately after the visible group
+        d.update_viewport(300.,10.,true,200.,250.,&measured,&layout);
+        assert!(!d.state().valid); // no visible destination
     }
     #[test] fn accepted_request_waits_for_authoritative_order_and_ignores_old_outcomes() {
         use crate::strip::ShellStripSlot as Slot;

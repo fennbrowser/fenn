@@ -464,8 +464,8 @@ struct NativeTabStrip {
         auto scroller=GroupScroller(view);
         auto viewport = scroller ? scroller.TransformToVisual(view).TransformBounds({0,0,float(scroller.ActualWidth()),float(scroller.ActualHeight())})
                                 : Windows::Foundation::Rect{0,0,float(view.ActualWidth()),float(view.ActualHeight())};
-        const bool inside=point.X>=viewport.X && point.X<=viewport.X+viewport.Width && point.Y>=0 && point.Y<=view.ActualHeight();
-        if (old.phase==2 && down && inside && scroller && scroller.ScrollableWidth()>0 && GetTickCount64()-groupScrollTick>=16) {
+        const bool inside=point.X>=viewport.X && point.X<=view.ActualWidth() && point.Y>=0 && point.Y<=view.ActualHeight();
+        if (old.phase==2 && down && inside && point.X<viewport.X+viewport.Width && scroller && scroller.ScrollableWidth()>0 && GetTickCount64()-groupScrollTick>=16) {
             groupScrollTick=GetTickCount64();
             double step=point.X<viewport.X+24 ? -12 : point.X>viewport.X+viewport.Width-24 ? 12 : 0;
             if (step) scroller.ChangeView(box_value(std::clamp(scroller.HorizontalOffset()+step,0.0,scroller.ScrollableWidth())).as<Windows::Foundation::IReference<double>>(),nullptr,nullptr,true);
@@ -483,7 +483,10 @@ struct NativeTabStrip {
                 if (found==inlineGroups.runs.end()) { EndGroupDrag(); return; }
                 item=slot.group==old.group && groupDragVisual.placeholder
                     ? groupDragVisual.placeholder.as<FrameworkElement>() : found->second.button.as<FrameworkElement>();
-                if (!item.IsLoaded()) { EndGroupDrag(); return; }
+                if (!item.IsLoaded()) {
+                    if (slot.group==old.group) { EndGroupDrag(); return; }
+                    continue;
+                }
             } else {
                 if (!rows.count(slot.tab) || !rows.at(slot.tab).IsLoaded() ||
                     rows.at(slot.tab).Visibility()==Visibility::Collapsed) continue;
@@ -501,11 +504,11 @@ struct NativeTabStrip {
                 if (!slots.empty() && slots.back().group==slot.group) {
                     slots.back().start=std::min(slots.back().start,start);
                     slots.back().end=std::max(slots.back().end,end);
-                }
+                } else slots.push_back({slot.group,0,start,end});
             } else slots.push_back({slot.group,slot.tab,start,end});
             shiftItems.push_back({key,item,slots.size()-1});
         }
-        if (shell_core_group_drag_update(core,point.X,point.Y,inside,slots.data(),slots.size())!=SHELL_STATUS_OK) { EndGroupDrag(); return; }
+        if (shell_core_group_drag_update(core,point.X,point.Y,inside,viewport.X,viewport.X+viewport.Width,slots.data(),slots.size())!=SHELL_STATUS_OK) { EndGroupDrag(); return; }
         const auto state=GroupDrag();
         if (state.phase==2) {
             if (old.phase==1) {
@@ -1144,7 +1147,7 @@ struct NativeTabStrip {
         auto row = view.TabItems().GetAt(originalIndex).as<Controls::TabViewItem>();
         double target = 0;
         auto status = inlineGroups.active
-            ? shell_core_tab_drag_slot_offset(core, originalIndex, false, false, &target)
+            ? shell_core_tab_drag_slot_offset(core, originalIndex, false, false, false, &target)
             : shell_core_tab_drag_offset(core, originalIndex, &target);
         if (status != SHELL_STATUS_OK) return;
         auto id = unbox_value<uint32_t>(row.Tag());
@@ -1166,7 +1169,7 @@ struct NativeTabStrip {
             auto found = inlineGroups.runs.find(slot.group);
             if (found == inlineGroups.runs.end() || !found->second.button) continue;
             double target{};
-            if (shell_core_tab_drag_slot_offset(core, index, true, slot.group == sourceGroup, &target) == SHELL_STATUS_OK)
+            if (shell_core_tab_drag_slot_offset(core, index, true, slot.group == sourceGroup, slot.group == joinGroup, &target) == SHELL_STATUS_OK)
                 tabDragHeaders.Apply(slot.group, found->second.button, target, groupSlide.Enabled());
         }
     }
@@ -1182,40 +1185,37 @@ struct NativeTabStrip {
 
     bool UpdateGroupHover(Windows::Foundation::Point const& point) {
         joinGroup = joinTarget = 0;
-        // The reorder storyboard owns its transforms until completion. Revoke
-        // dwell while it moves, including a timer queued before the slide.
-        if (!rowAnimations.empty()) { ClearGroupHover(); return false; }
         uint32_t candidate{};
         const auto source = presentation.find(Drag().tab);
         if (core && source != presentation.end() && source->second.groupSource &&
             point.X >= 0 && point.X <= view.ActualWidth() &&
             point.Y >= 0 && point.Y <= view.ActualHeight()) {
-            auto join = [&](uint32_t group, uint32_t tab, FrameworkElement const& element, bool before) {
+            auto join = [&](uint32_t group, uint32_t tab, bool before) {
+                if (shell_core_tab_drag_join(core, group, tab, before) != SHELL_STATUS_OK) {
+                    ClearGroupHover(); return false;
+                }
                 ClearGroupHover();
                 joinGroup = group; joinTarget = tab; joinBefore = before;
-                const auto at = element.TransformToVisual(root).TransformPoint({0,0});
-                groupIndicator.Margin({at.X - 3, at.Y, 0, 0});
-                groupIndicator.Width(element.ActualWidth() + 6);
-                groupIndicator.Height(element.ActualHeight());
-                groupIndicator.Visibility(Visibility::Visible);
+                // Existing groups use the insertion gap. The outline belongs
+                // only to the new-group creation dwell below.
                 return true;
             };
             // Header hits include fully collapsed groups with no visible member.
             for (auto const& [id, run] : inlineGroups.runs) {
                 if (!run.button || !run.button.IsLoaded()) continue;
-                const auto at = run.button.TransformToVisual(view).TransformPoint({0,0});
-                if (point.X < at.X || point.X > at.X + run.button.ActualWidth()) continue;
+                const auto left = run.button.TransformToVisual(view).TransformPoint({0,0}).X - tabDragHeaders.Offset(id);
+                if (point.X < left || point.X > left + run.button.ActualWidth()) continue;
                 uint32_t group{};
                 if (shell_core_strip_drop_group(core, Drag().tab, 0, uint32_t(id), &group) == SHELL_STATUS_OK && group)
-                    return join(group, 0, run.button, false);
+                    return join(group, 0, false);
             }
-            // Grouping uses the settled visual position, including an existing
-            // reorder offset. Never group the tab that used to occupy a gap.
+            // Existing groups use frozen insertion slots. Moving the target to
+            // open a gap must not revoke the join beneath a stationary pointer.
             for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i) {
                 auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
                 const auto id = unbox_value<uint32_t>(row.Tag());
-                if (id == Drag().tab) continue; // its hidden source slot can overlap a shifted target
-                const auto left = drag.originalLeftEdge[i] + RowTransform(row).X();
+                if (id == Drag().tab) continue;
+                const auto left = drag.originalLeftEdge[i];
                 const auto width = drag.originalWidth[i];
                 if (point.X >= left && point.X <= left + width) {
                     uint32_t group{};
@@ -1225,9 +1225,19 @@ struct NativeTabStrip {
                         // Both pointer and settled bounds are view-local;
                         // WinUI has already accounted for RTL in this space.
                         const bool before = point.X < left + width / 2;
-                        return join(group, id, row, before);
+                        return join(group, id, before);
                     }
                 }
+            }
+            // New-group dwell still targets settled live rows, never a former
+            // occupant of the insertion gap or a control in mid-animation.
+            if (!rowAnimations.empty()) { ClearGroupHover(); return false; }
+            for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i) {
+                auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
+                const auto id = unbox_value<uint32_t>(row.Tag());
+                if (id == Drag().tab) continue;
+                const auto left = drag.originalLeftEdge[i] + RowTransform(row).X();
+                const auto width = drag.originalWidth[i];
                 if (point.X < left + width * .3 || point.X > left + width * .7) continue;
                 const auto target = presentation.find(id);
                 if (target != presentation.end() && target->second.groupTarget)
@@ -1283,15 +1293,20 @@ struct NativeTabStrip {
     // bounds and become a tear-off.
     void UpdateDragVisual(Windows::Foundation::Point const& point, bool allowGrouping = true) {
         const auto previous = Drag();
+        const auto previousJoin = joinGroup;
         if (shell_core_tab_drag_update(core, point.X, point.Y, view.ActualWidth(), view.ActualHeight(), false) != SHELL_STATUS_OK) return;
         if (Drag().detaching) {
             ClearGroupHover();
         } else {
-            if (allowGrouping && UpdateGroupHover(point)) return;
-            if (shell_core_tab_drag_update(core, point.X, point.Y, view.ActualWidth(), view.ActualHeight(), true) != SHELL_STATUS_OK) return;
+            if (allowGrouping && UpdateGroupHover(point)) {
+                if (!joinGroup) {
+                    if (!previousJoin) return;
+                    shell_core_tab_drag_close_gap(core);
+                }
+            } else if (shell_core_tab_drag_update(core, point.X, point.Y, view.ActualWidth(), view.ActualHeight(), true) != SHELL_STATUS_OK) return;
         }
         const auto current = Drag();
-        if (current.projected == previous.projected) return;
+        if (current.projected == previous.projected && joinGroup == previousJoin) return;
         for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i)
             if (i != current.original) ShiftSibling(i);
         ShiftTabDragHeaders();
@@ -1364,8 +1379,9 @@ struct NativeTabStrip {
     // UpdateDragVisual's own detach-branch logic: nothing should keep
     // making room for a tab that's no longer hovering.
     void CloseDragGap() {
+        const bool joining = joinGroup != 0;
         ClearGroupHover();
-        if (Drag().phase != DragPhase::Dragging || Drag().projected == Drag().original) return;
+        if (Drag().phase != DragPhase::Dragging || (!joining && Drag().projected == Drag().original)) return;
         shell_core_tab_drag_close_gap(core);
         for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i)
             if (i != Drag().original) ShiftSibling(i);
