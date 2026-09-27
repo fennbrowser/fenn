@@ -1810,6 +1810,12 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             Require(SUCCEEDED(api.syncTabs(host,tabs + (collapsed ? 1 : 0),collapsed ? 1 : 2,42,&selected)), "publish motion fixture");
         };
         motionState(9,false); settle();
+        auto hasGroupSurface = [&] {
+            for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
+                if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-7") return true;
+            return false;
+        };
+        Require(hasGroupSurface(), "expanded group has its shared background");
         Require(view.TabItems().GetAt(0).as<Controls::TabViewItem>().IsLoaded(), "motion starts with loaded tab visuals");
         motionState(10,true);
         uint32_t ghosts{};
@@ -1829,6 +1835,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             "reduced motion installs the final arrow direction immediately");
         Require(SUCCEEDED(motion(host,3,&ghosts)), "restore normal motion policy");
         settle();
+        Require(!hasGroupSurface(), "collapsed group has no selected-looking background even with an active member");
         // An active-only group can toggle without any tab-list publication.
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":12,"revision":13,"rows":[],"removed":[],"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}]}})");
         bool turned = false;
@@ -1842,6 +1849,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         settle();
         Require(reducedIcon.Glyph() == L"\uE76C" && reducedArrow.RenderTransform().as<Media::RotateTransform>().Angle() == 0,
             "arrow finishes pointing toward the expanded group");
+        Require(hasGroupSurface(), "expansion restores the shared group background");
         // Collapsing every member reparents the retained header. Its disclosure
         // animation must survive that transient Unloaded/Loaded pair.
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":14,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","headerText":"Research","label":"Research","collapsed":false}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":41},{"group":0,"tab":42}]}})");

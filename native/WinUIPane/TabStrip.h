@@ -184,11 +184,15 @@ struct NativeTabStrip {
         };
         for (auto const& slot : groupLayout) {
             if (!slot.group) continue;
+            auto run = inlineGroups.runs.find(slot.group);
+            // The shared surface describes an expanded group, not a selected
+            // disclosure button. A collapsed group's retained active tab keeps
+            // its own stock selection surface.
+            if (run == inlineGroups.runs.end() || run->second.collapsed) continue;
             if (slot.tab) {
                 if (rows.count(slot.tab)) includeSurface(slot.group, rows.at(slot.tab));
             } else {
-                auto run = inlineGroups.runs.find(slot.group);
-                if (run != inlineGroups.runs.end()) includeSurface(slot.group, run->second.button);
+                includeSurface(slot.group, run->second.button);
             }
         }
         groupSurface.Update(surfaceBounds, viewport);
