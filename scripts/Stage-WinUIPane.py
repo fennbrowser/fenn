@@ -30,7 +30,7 @@ def image_digest(path):
     return hashlib.sha256(data).hexdigest()
 
 
-def stage():
+def stage(source_dir=SOURCE, dest_dir=DEST, manifest=None):
     names = {
         "coremessagingxp.dll", "marshal.dll", "dcompi.dll", "dwmcorei.dll",
         "dwmscenei.dll", "dwritecore.dll", "mrm.dll", "wuceffectsi.dll", "winuiedit.dll",
@@ -40,27 +40,28 @@ def stage():
         "microsoft.windows.applicationmodel.resources.dll",
         "resources.pri",
     }
-    files = [p for p in SOURCE.rglob("*") if p.is_file() and
+    files = [p for p in source_dir.rglob("*") if p.is_file() and
              ((p.name.lower() in names or p.name.lower().startswith("microsoft.ui")) and
               p.suffix.lower() in {".dll", ".pri", ".winmd", ".mui"} or
-              p.relative_to(SOURCE).parts[0] == "Microsoft.UI.Xaml")]
-    if not (SOURCE / "Microsoft.ui.xaml.dll").is_file():
+              p.relative_to(source_dir).parts[0] == "Microsoft.UI.Xaml")]
+    if not (source_dir / "Microsoft.ui.xaml.dll").is_file():
         raise RuntimeError("Build the pane and its self-contained runtime first")
     records = []
     for source in files:
-        target = DEST / source.relative_to(SOURCE)
+        target = dest_dir / source.relative_to(source_dir)
         if target.exists() and image_digest(source) != image_digest(target):
             raise RuntimeError(f"Runtime image mismatch: {target}. Nothing staged.")
-        records.append({"file": source.relative_to(SOURCE).as_posix(),
+        records.append({"file": source.relative_to(source_dir).as_posix(),
                         "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                         "imageSha256": image_digest(source), "preserved": target.exists()})
     for source in files:
-        target = DEST / source.relative_to(SOURCE)
+        target = dest_dir / source.relative_to(source_dir)
         if not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)
-    shutil.copyfile(SOURCE / "FirefoxWinUIPane.dll", DEST / "FirefoxWinUIPane.dll")
-    manifest = ROOT / "artifacts/setup/winui-pane-staging.json"
+    shutil.copyfile(source_dir / "FirefoxWinUIPane.dll", dest_dir / "FirefoxWinUIPane.dll")
+    manifest = manifest or ROOT / "artifacts/setup/winui-pane-staging.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(json.dumps({"appSdk": "2.2.0", "files": records}, indent=2))
     print(f"Staged pane and {len(files)} runtime/resource files; manifest: {manifest}")
 
