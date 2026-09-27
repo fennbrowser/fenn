@@ -2014,72 +2014,43 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             rimBrush.StartPoint().y == br.Height - 12 &&
             rimBrush.ColorStops().GetAt(0).Color().A == 0 && rimBrush.ColorStops().GetAt(4).Color().A == 185,
             "group reflection flares outside the attached tab and fades up its lower sides");
-        // Move the live retained controls without a drag. The presenter measures
-        // their new geometry; the compositor owns only the decorative transition.
-        auto ambientMotion = reinterpret_cast<HRESULT(WINAPI*)(HWND,uint32_t,uint64_t*)>(
-            GetProcAddress(module,"WinUIPaneTestAmbientMotion"));
-        Require(ambientMotion != nullptr, "ambient motion inspection available");
-        uint64_t starts{};
-        auto refreshAmbient = [&](uint32_t operation = 0) {
-            Require(ambientMotion(host,operation,&starts) == S_OK,
-                "glow-only transitions never subscribe to XAML frame observation");
+        // Glow geometry follows live controls immediately, without its own easing.
+        auto ambientRefresh = reinterpret_cast<HRESULT(WINAPI*)(HWND)>(
+            GetProcAddress(module,"WinUIPaneTestRefreshAmbient"));
+        Require(ambientRefresh != nullptr, "ambient refresh inspection available");
+        auto refreshAmbient = [&] {
+            Require(ambientRefresh(host) == S_OK, "stationary glow has no frame observer");
+            Require(!groupVisual.ImplicitAnimations(), "group light has no independent transition");
+            for (auto field : spill.Children()) Require(!field.ImplicitAnimations(), "spill has no independent transition");
+            for (auto field : topGlow.Children()) Require(!field.ImplicitAnimations(), "container light has no independent transition");
         };
         refreshAmbient();
-        const auto initialStarts = starts;
         auto aTransform = a.RenderTransform().as<Media::TranslateTransform>();
         auto bTransform = b.RenderTransform().as<Media::TranslateTransform>();
+        const auto originalWidth = groupVisual.Size().x;
         aTransform.X(48); bTransform.X(48);
         refreshAmbient();
-        const bool animate = winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled();
-        if (animate) {
-            Require(starts > initialStarts && groupVisual.ImplicitAnimations(), "ordinary geometry changes animate retained group light");
-            auto offsetAnimation = groupVisual.ImplicitAnimations().Lookup(L"Offset")
-                .as<winrt::Microsoft::UI::Composition::Vector3KeyFrameAnimation>();
-            Require(offsetAnimation.Duration() == std::chrono::milliseconds(1200) && offsetAnimation.IterationCount() == 1,
-                "calm glow movement is finite and bounded");
-            for (auto field : spill.Children()) Require(field.ImplicitAnimations() != nullptr,
-                "body spill transitions with concentrated glow");
-        }
-        const auto movingStarts = starts;
-        refreshAmbient(); refreshAmbient();
-        Require(starts == movingStarts, "unchanged geometry never restarts glow motion");
-        for (int i=0;i<5;++i) { Pump(); Sleep(10); }
-        aTransform.X(24); bTransform.X(72); // Retarget while also resizing the group.
+        Require(groupVisual.Size().x > originalWidth + 40, "group light immediately reaches moved tabs");
+        aTransform.X(24); bTransform.X(72);
         refreshAmbient();
-        if (animate) Require(starts > movingStarts && bottomGlow.Children().First().Current() == groupVisual,
-            "mid-flight retarget preserves the original group visual");
-        refreshAmbient(1);
-        Require(!groupVisual.ImplicitAnimations(), "turning off motion detaches active glow animation templates");
-        auto settledStarts = starts;
-        aTransform.X(12); bTransform.X(12); refreshAmbient();
-        Require(starts == settledStarts && !groupVisual.ImplicitAnimations(), "reduced motion applies geometry without animation");
-        aTransform.X(0); bTransform.X(0); refreshAmbient();
-        refreshAmbient(2); refreshAmbient();
-        aTransform.X(32); bTransform.X(32); refreshAmbient();
+        Require(groupVisual.Size().x > originalWidth + 64 && bottomGlow.Children().First().Current() == groupVisual,
+            "rapid geometry changes update the retained light immediately");
         auto setAmbientDragging = reinterpret_cast<HRESULT(WINAPI*)(HWND,BOOL)>(
             GetProcAddress(module,"WinUIPaneTestSetDragging"));
-        Require(setAmbientDragging && SUCCEEDED(setAmbientDragging(host,TRUE)), "start direct manipulation during glow motion");
-        Require(ambientMotion(host,0,&starts) == S_FALSE && !groupVisual.ImplicitAnimations(),
-            "dragging takes over geometry immediately and only observes the existing gesture");
-        const auto dragStarts = starts;
+        Require(setAmbientDragging && SUCCEEDED(setAmbientDragging(host,TRUE)), "start direct manipulation");
+        Require(ambientRefresh(host) == S_FALSE && !groupVisual.ImplicitAnimations(),
+            "dragging only observes the existing gesture");
         aTransform.X(40); bTransform.X(40);
-        Require(ambientMotion(host,0,&starts) == S_FALSE && starts == dragStarts,
+        Require(ambientRefresh(host) == S_FALSE && !groupVisual.ImplicitAnimations(),
             "live drag coordinates never launch decorative easing");
         Require(SUCCEEDED(setAmbientDragging(host,FALSE)), "end direct manipulation");
-        refreshAmbient();
-        aTransform.X(20); bTransform.X(20); refreshAmbient();
-        refreshAmbient(3);
-        Require(!groupVisual.ImplicitAnimations(), "lifecycle reset settles and disconnects glow motion");
-        aTransform.X(0); bTransform.X(0); refreshAmbient(1);
-        refreshAmbient(2);
+        aTransform.X(0); bTransform.X(0); refreshAmbient();
         for (int i=0;i<50;++i) { Pump(); Sleep(10); }
-        const auto idleStarts = starts;
         auto settledFace = faceShape(41).Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path();
         refreshAmbient();
-        Require(starts == idleStarts, "settled glow does not launch more animations at rest");
         Require(faceShape(41).Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path() == settledFace,
             "unchanged layout retains mask geometry without rebuilding the visual surface");
-        puts("CHECKS PASSED: finite glow motion, unchanged snapshots, retargeting and reduced motion");
+        puts("CHECKS PASSED: immediate glow geometry, retained visuals and bounded drag observation");
         auto toggleIndicators = [&](uint32_t revision, bool glow, bool showDot) {
             auto update = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
             auto strip = update.GetNamedObject(L"strip");

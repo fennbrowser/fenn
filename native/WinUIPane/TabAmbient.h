@@ -11,18 +11,13 @@ struct TabAmbient {
     using Rect = winrt::Windows::Foundation::Rect;
     using Sprite = winrt::Microsoft::UI::Composition::SpriteVisual;
     using Gradient = winrt::Microsoft::UI::Composition::CompositionGradientBrush;
-    struct PartLayout {
-        Sprite visual{nullptr};
-        winrt::Microsoft::UI::Composition::ExpressionAnimation offset{nullptr}, size{nullptr};
-    };
     struct Field {
         Sprite visual{nullptr}, left{nullptr}, middle{nullptr}, right{nullptr};
         Gradient brush{nullptr}, leftBrush{nullptr}, rightBrush{nullptr};
         winrt::Microsoft::UI::Composition::ShapeVisual rimShape{nullptr};
         winrt::Microsoft::UI::Composition::CompositionPathGeometry rimGeometry{nullptr};
-        uint32_t color{}; Rect bounds{}; bool capped{}, animated{};
+        uint32_t color{}; Rect bounds{}; bool capped{};
         float cornerLeft{-1}, cornerRight{-1};
-        std::vector<PartLayout> layouts;
     };
     winrt::Microsoft::UI::Xaml::Controls::Canvas layer{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Canvas rimLayer{nullptr};
@@ -45,114 +40,14 @@ struct TabAmbient {
     std::map<uint32_t, Field> groupSpill, containerSpill;
     winrt::Windows::UI::ViewManagement::AccessibilitySettings accessibility;
     winrt::Windows::UI::ViewManagement::UISettings settings;
-    winrt::event_token contrastToken{}, animationToken{}, layoutToken{}, renderingToken{};
-    winrt::Microsoft::UI::Composition::ImplicitAnimationCollection geometryAnimations{nullptr};
-    bool animateGeometry{}, frameReady{}, lastDirect{};
-    float hostWidth{}, hostHeight{};
-    double hostScale{}, scrollOffset{};
-    bool lastRtl{};
-#ifdef WINUI_PANE_TESTING
-    bool disableMotionForTest{};
-    uint64_t motionStarts{};
-#endif
+    winrt::event_token contrastToken{}, layoutToken{}, renderingToken{};
     std::shared_ptr<int> life = std::make_shared<int>(0);
     std::function<void()> refresh;
     bool observing{}, updating{}, reportedFailure{}, queued{};
-    static void Snap(Field& field) {
-        if (!field.animated) return;
-        for (auto visual : {field.visual, field.left, field.middle, field.right}) {
-            if (!visual) continue;
-            visual.ImplicitAnimations(nullptr);
-            // Implicit animation assignments retain their destination as the
-            // API value. Direct writes disconnect animation and settle there.
-            visual.Offset(visual.Offset());
-            visual.Size(visual.Size());
-        }
-        field.animated = false;
-    }
-    void SettleMotion() {
-        animateGeometry = false;
-        for (auto fields : {&groups, &containers, &groupSpill, &containerSpill})
-            for (auto& [id, field] : *fields) Snap(field);
-    }
-    void ResetMotion() {
-        SettleMotion();
-        frameReady = false;
-    }
-    void BeginFrame(bool direct, float width, float height, double scale, double scroll, bool rtl) {
-        bool enabled = settings.AnimationsEnabled() && !accessibility.HighContrast();
-#ifdef WINUI_PANE_TESTING
-        enabled = enabled && !disableMotionForTest;
-#endif
-        animateGeometry = enabled && frameReady && !direct && !lastDirect &&
-            width == hostWidth && height == hostHeight && scale == hostScale &&
-            scroll == scrollOffset && rtl == lastRtl;
-        if (!animateGeometry) SettleMotion();
-        frameReady = true; lastDirect = direct;
-        hostWidth = width; hostHeight = height; hostScale = scale;
-        scrollOffset = scroll; lastRtl = rtl;
-    }
-    void PrepareGeometry(Field& field, Rect const& bounds) {
-        const bool animate = animateGeometry && field.bounds.Width > 0 && field.bounds.Height > 0 &&
-            // Large discontinuities should not sweep across unrelated tabs.
-            std::abs(bounds.X - field.bounds.X) < std::max(240.f, hostWidth * .6f);
-        if (!animate) { Snap(field); return; }
-        if (!geometryAnimations) {
-            auto compositor = field.visual.Compositor();
-            auto ease = compositor.CreateCubicBezierEasingFunction({.2f, 0}, {.2f, 1});
-            auto offset = compositor.CreateVector3KeyFrameAnimation();
-            offset.Target(L"Offset"); offset.Duration(std::chrono::milliseconds(1200));
-            offset.InsertExpressionKeyFrame(0, L"this.StartingValue");
-            offset.InsertExpressionKeyFrame(1, L"this.FinalValue", ease);
-            auto size = compositor.CreateVector2KeyFrameAnimation();
-            size.Target(L"Size"); size.Duration(offset.Duration());
-            size.InsertExpressionKeyFrame(0, L"this.StartingValue");
-            size.InsertExpressionKeyFrame(1, L"this.FinalValue", ease);
-            geometryAnimations = compositor.CreateImplicitAnimationCollection();
-            geometryAnimations.Insert(L"Offset", offset);
-            geometryAnimations.Insert(L"Size", size);
-        }
-        // Eligibility is explicit. Only these geometry writes trigger the
-        // finite templates; unchanged snapshots do not restart the animation.
-        field.visual.ImplicitAnimations(geometryAnimations);
-        field.animated = true;
-#ifdef WINUI_PANE_TESTING
-        ++motionStarts;
-#endif
-    }
     static void Geometry(Sprite const& visual, winrt::Windows::Foundation::Numerics::float3 offset,
                          winrt::Windows::Foundation::Numerics::float2 size) {
         if (visual.Offset() != offset) visual.Offset(offset);
         if (visual.Size() != size) visual.Size(size);
-    }
-    static void BindParts(Field& field, bool upper, bool isSpill) {
-        if (!field.animated || !field.middle) return;
-        if (field.layouts.empty()) {
-            auto compositor = field.visual.Compositor();
-            auto bind = [&](Sprite const& visual, winrt::hstring offset, winrt::hstring size) {
-                auto position = compositor.CreateExpressionAnimation(offset);
-                auto dimensions = compositor.CreateExpressionAnimation(size);
-                position.SetReferenceParameter(L"field", field.visual);
-                dimensions.SetReferenceParameter(L"field", field.visual);
-                field.layouts.push_back({visual, position, dimensions});
-            };
-            if (isSpill) {
-                bind(field.middle, L"Vector3(0,0,0)", upper ? L"field.Size" : L"Vector2(field.Size.X * .72, field.Size.Y)");
-                if (!upper) bind(field.left, L"Vector3(field.Size.X * .28,0,0)", L"Vector2(field.Size.X * .72, field.Size.Y)");
-            } else {
-                const winrt::hstring cap = upper ? L"Min(16.0, field.Size.X / 4.0)" : L"Min(24.0, field.Size.X / 4.0)";
-                bind(field.left, L"Vector3(0,0,0)", L"Vector2(" + cap + L",field.Size.Y)");
-                bind(field.middle, L"Vector3(" + cap + L",0,0)", L"Vector2(field.Size.X-2*" + cap + L",field.Size.Y)");
-                bind(field.right, L"Vector3(field.Size.X-" + cap + L",0,0)", L"Vector2(" + cap + L",field.Size.Y)");
-            }
-        }
-        // Derive pieces from the compositor's displayed size, including during
-        // retargeting across the cap-width threshold. Independent child easing
-        // can otherwise open seams when only some destinations change.
-        for (auto const& layout : field.layouts) {
-            layout.visual.StartAnimation(L"Offset", layout.offset);
-            layout.visual.StartAnimation(L"Size", layout.size);
-        }
     }
     void ScheduleUpdate() {
         if (queued) return;
@@ -179,9 +74,7 @@ struct TabAmbient {
         contrastToken = settings.ColorValuesChanged([this, weak, queue = root.DispatcherQueue()](auto&&, auto&&) {
             queue.TryEnqueue([this, weak] { if (!weak.expired()) Update(); });
         });
-        animationToken = settings.AnimationsEnabledChanged([this, weak, queue = root.DispatcherQueue()](auto&&, auto&&) {
-            queue.TryEnqueue([this, weak] { if (!weak.expired()) { ResetMotion(); Update(); } });
-        });
+
     }
     void Update() {
         if (updating || !refresh || !layer.IsLoaded()) return;
@@ -250,7 +143,6 @@ struct TabAmbient {
     }
     void Clip(Rect viewport, bool visible, Rect active = {}, bool fadeLeft = false, bool fadeRight = false) {
         visible = visible && !accessibility.HighContrast();
-        if (!visible) ResetMotion();
         bottom.IsVisible(visible); top.IsVisible(visible);
         rims.IsVisible(visible);
         spill.IsVisible(visible);
@@ -445,20 +337,17 @@ struct TabAmbient {
             }
         }
         if (field.bounds != bounds) {
-            PrepareGeometry(field, bounds);
             field.bounds = bounds;
             Geometry(field.visual, {bounds.X, bounds.Y, 0}, {bounds.Width, bounds.Height});
             Geometry(field.middle, {}, {bounds.Width * (upper ? 1.f : .72f), bounds.Height});
             if (!upper) {
                 Geometry(field.left, {bounds.Width * .28f, 0, 0}, {bounds.Width * .72f, bounds.Height});
             }
-            BindParts(field, upper, true);
         }
     }
     void PruneSpill(std::map<uint32_t, Field>& fields, std::set<uint32_t> const& live) {
         for (auto it = fields.begin(); it != fields.end();) {
             if (live.count(it->first)) { ++it; continue; }
-            Snap(it->second);
             spill.Children().Remove(it->second.visual); it = fields.erase(it);
         }
     }
@@ -498,13 +387,6 @@ struct TabAmbient {
             }
         }
         if (field.bounds == bounds && field.cornerLeft == leftRadius && field.cornerRight == rightRadius) return;
-        if (!reflection) {
-            // Paths follow the control's current size. Only translate retained
-            // contours; tweening their parent size would detach the right edge.
-            if (field.bounds.Width == bounds.Width && field.bounds.Height == bounds.Height &&
-                field.cornerLeft == leftRadius && field.cornerRight == rightRadius) PrepareGeometry(field, bounds);
-            else Snap(field);
-        }
         field.bounds = bounds; field.cornerLeft = leftRadius; field.cornerRight = rightRadius;
         Geometry(field.visual, {bounds.X, bounds.Y, 0}, {bounds.Width, bounds.Height});
         field.rimShape.Size({bounds.Width + 8, bounds.Height + 8});
@@ -540,7 +422,6 @@ struct TabAmbient {
         }
         auto& field = fields[id];
         if (field.visual && field.capped != capped) {
-            Snap(field);
             (upper ? top : bottom).Children().Remove(field.visual);
             field = Field{};
         }
@@ -604,7 +485,6 @@ struct TabAmbient {
             }
         }
         if (field.bounds != bounds) {
-            PrepareGeometry(field, bounds);
             field.bounds = bounds;
             Geometry(field.visual, {bounds.X, bounds.Y, 0}, {bounds.Width, bounds.Height});
             if (capped) {
@@ -613,22 +493,18 @@ struct TabAmbient {
                 Geometry(field.middle, {cap, 0, 0}, {bounds.Width - 2 * cap, bounds.Height});
                 Geometry(field.right, {bounds.Width - cap, 0, 0}, {cap, bounds.Height});
             }
-            BindParts(field, upper, false);
         }
     }
     void Prune(std::map<uint32_t, Field>& fields, std::set<uint32_t> const& live, bool upper) {
         for (auto it = fields.begin(); it != fields.end();) {
             if (live.count(it->first)) { ++it; continue; }
-            Snap(it->second);
             (upper ? top : bottom).Children().Remove(it->second.visual);
             it = fields.erase(it);
         }
     }
     ~TabAmbient() {
         life.reset();
-        try { ResetMotion(); } catch (...) {}
         settings.ColorValuesChanged(contrastToken);
-        settings.AnimationsEnabledChanged(animationToken);
         if (layer && layoutToken.value) layer.LayoutUpdated(layoutToken);
         if (observing) winrt::Microsoft::UI::Xaml::Media::CompositionTarget::Rendering(renderingToken);
     }

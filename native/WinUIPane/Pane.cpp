@@ -2523,21 +2523,15 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupMotion(HWND hw
         return S_OK;
     } catch (...) { return to_hresult(); }
 }
-// Test-only: inspect decorative transitions and toggle reduced motion without
-// changing the user's Windows setting. S_FALSE indicates a frame observer.
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestAmbientMotion(HWND hwnd, uint32_t operation, uint64_t* starts) noexcept {
+// Test-only: refresh decorative geometry. S_FALSE indicates a frame observer
+// following an existing native tab animation or drag.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestRefreshAmbient(HWND hwnd) noexcept {
     try {
         check_hresult(Check(hwnd));
         auto found = state().panes.find(hwnd);
-        if (!starts || found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
+        if (found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
         auto& ambient = found->second->strip->ambient;
-        if (operation == 1 || operation == 2) {
-            ambient.disableMotionForTest = operation == 1;
-            ambient.ResetMotion();
-        } else if (operation == 3) ambient.ResetMotion();
-        else if (operation != 0) return E_INVALIDARG;
         ambient.Update();
-        *starts = ambient.motionStarts;
         return ambient.observing ? S_FALSE : S_OK;
     } catch (...) { return to_hresult(); }
 }
