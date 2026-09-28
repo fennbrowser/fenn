@@ -1674,7 +1674,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             if (auto part = findOverflowPart(Media::VisualTreeHelper::GetChild(node, i), name)) return part;
         return nullptr;
     };
-    for (int width : {600, 300, 1200}) {
+    for (int width : {600, 400, 1200}) {
         rect.right = width;
         Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "resize grouped strip across overflow threshold");
         settle();
@@ -1690,26 +1690,14 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         if (width == 600) {
             // Equal mode would fill this width with two tabs and push the
             // expanded and empty collapsed headers into a spurious overflow.
-            auto list = findOverflowPart(view, L"TabListView");
-            fprintf(stderr, "Grouped fit: scrollable=%.1f extent=%.1f viewport=%.1f scroller=%.1f list=%.1f listMax=%.1f\n",
-                scroller.ScrollableWidth(), scroller.ExtentWidth(), scroller.ViewportWidth(), scroller.ActualWidth(),
-                list ? list.ActualWidth() : -1.0, list ? list.MaxWidth() : -1.0);
-            for (auto name : {L"ScrollDecreaseButton", L"ScrollIncreaseButton"})
-                if (auto arrow = findOverflowPart(view, name))
-                    fprintf(stderr, "Grouped fit %ls: visible=%d actual=%.1f margin=%.1f,%.1f\n", name,
-                        arrow.Visibility() == Visibility::Visible, arrow.ActualWidth(), arrow.Margin().Left, arrow.Margin().Right);
-            fprintf(stderr, "Grouped fit computed=%d\n",
-                scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Visible);
-            for (auto const& tab : visibleTabs)
-                fprintf(stderr, "Grouped fit tab %u: actual=%.1f width=%.1f desired=%.1f max=%.1f loaded=%d visible=%d\n",
-                    unbox_value<uint32_t>(tab.Tag()), tab.ActualWidth(), tab.Width(), tab.DesiredSize().Width,
-                    tab.MaxWidth(), tab.IsLoaded(), tab.Visibility() == Visibility::Visible);
+            fprintf(stderr, "Grouped fit: scrollable=%.1f viewport=%.1f tab=%.1f\n", scroller.ScrollableWidth(),
+                scroller.ViewportWidth(), visibleTabs.empty() ? 0.0 : visibleTabs.front().ActualWidth());
             Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Collapsed &&
                         scroller.ScrollableWidth() < .5,
                     "group headers do not show stock arrows while tabs can still shrink");
             for (auto const& tab : visibleTabs)
                 Require(tab.ActualWidth() > 100.5, "headers fit by shrinking tabs above the stock minimum");
-        } else if (width == 300) {
+        } else if (width == 400) {
             Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Visible,
                     "minimum-width grouped overflow shows stock scroll arrows");
             scroller.ChangeView(box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
