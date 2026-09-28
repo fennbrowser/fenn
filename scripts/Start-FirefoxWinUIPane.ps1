@@ -1,7 +1,7 @@
 param([switch]$NativeAddress, [switch]$NativeTabStrip = $true, [switch]$ContainerDots = $true, [switch]$TabGlows = $true, [switch]$CaptureCrash, [string]$DiagnosticsLog,
       [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight = 40,
       [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop = 'MicaAlt',
-      [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach = 'Medium')
+      [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach = 'Large')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $browser = Join-Path $projectRoot 'build/firefox/dist/bin/firefox.exe'

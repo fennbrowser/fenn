@@ -868,10 +868,10 @@ index 995b2fc869..7add43e3b2 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 47a26fd814..4389f0897b 100644
+index 47a26fd814..4f6a3d5e0f 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3831,6 +3831,20 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3831,6 +3831,21 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -885,8 +885,9 @@ index 47a26fd814..4389f0897b 100644
 +pref("widget.windows.winui-prototype.tabstrip.glows", false);
 +// Strip backdrop: "mica", "mica-alt" or "acrylic".
 +pref("widget.windows.winui-prototype.tabstrip.backdrop", "mica-alt");
-+// Group outline reach past outer members: "none", "small", "medium" or "large".
-+pref("widget.windows.winui-prototype.tabstrip.groupReach", "medium");
++// Group outline reach past outer members: "none", "small", "medium" or "large";
++// "large" also moves the native New Tab button by that reach.
++pref("widget.windows.winui-prototype.tabstrip.groupReach", "large");
 +pref("widget.windows.winui-prototype.address.enabled", false);
 +
  #ifdef XP_MACOSX
@@ -3899,7 +3900,7 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..29d22b2e93
+index 0000000000..414953e230
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,1681 @@
@@ -4816,8 +4817,8 @@ index 0000000000..29d22b2e93
 +  // How far native group outlines and lighting reach past their outer
 +  // members. Unsupported values use the default.
 +  groupReach() {
-+    const requested = Services.prefs.getStringPref(this.groupReachPref, "medium");
-+    return ["none", "small", "medium", "large"].includes(requested) ? requested : "medium";
++    const requested = Services.prefs.getStringPref(this.groupReachPref, "large");
++    return ["none", "small", "medium", "large"].includes(requested) ? requested : "large";
 +  },
 +
 +  // The strip island's system backdrop. Unsupported values use the default.

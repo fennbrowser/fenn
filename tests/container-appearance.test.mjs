@@ -94,8 +94,8 @@ test("group reach preference is validated and publishes a live delta", () => {
   pane.visibleTabs = () => [];
   pane.schedule = () => {};
   const session = new WinUITabStripSession({read:() => pane.describeStrip()});
-  assert.equal(session.update().strip.groupReach, "medium");
-  for (const [value, expected] of [["large", "large"], ["none", "none"], ["Small", "medium"], ["small", "small"], ["huge", "medium"]]) {
+  assert.equal(session.update().strip.groupReach, "large");
+  for (const [value, expected] of [["medium", "medium"], ["none", "none"], ["Small", "large"], ["small", "small"], ["huge", "large"]]) {
     const previous = session.state.groupReach;
     reach = value;
     pane.stripDirty = false;

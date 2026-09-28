@@ -1921,8 +1921,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             printf("Group reach: group=%.1f..%.1f header=%.1f next=%.1f..%.1f nextHeader=%.1f..%.1f\n", groupLeft, groupRight,
                 groupHeader.X, emptyLeft, emptyRight, nextHeader.X, nextHeader.X + nextHeader.Width);
             fflush(stdout);
-            Require(std::abs(groupLeft - (groupHeader.X - 3)) < .5f && std::abs(emptyRight - (nextHeader.X + nextHeader.Width + 3)) < .5f,
-                "group surfaces extend 3 DIP past their outer members");
+            Require(std::abs(groupLeft - (groupHeader.X - 5)) < .5f && std::abs(emptyRight - (nextHeader.X + nextHeader.Width + 5)) < .5f,
+                "group surfaces extend the default 5 DIP past their outer members");
             Require(emptyLeft - groupRight >= 1 - .01f && emptyLeft < nextHeader.X && groupRight > nextHeader.X - 4,
                 "neighboring group surfaces share the gap without overlapping");
         }
@@ -2085,8 +2085,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children()) {
             if (Automation::AutomationProperties::GetAutomationId(child) != L"FirefoxWinUIGroupSurface-7") continue;
             auto surface = child.as<Controls::Border>();
-            Require(!surface.Background() && std::abs(surface.Width() - (connectedWidth + 6)) < 1 &&
-                std::abs(float(Controls::Canvas::GetLeft(surface)) - (std::min(buttonBounds.X, retainedBounds.X) - 3)) < 1,
+            Require(!surface.Background() && std::abs(surface.Width() - (connectedWidth + 10)) < 1 &&
+                std::abs(float(Controls::Canvas::GetLeft(surface)) - (std::min(buttonBounds.X, retainedBounds.X) - 5)) < 1,
                 "collapsed lighting connects the button and retained active member, extending past both, without neutral fill");
         }
         // An active-only group can toggle without any tab-list publication.
@@ -2252,9 +2252,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             "deselection restores the retained face's inactive lighting");
         Require(selectedEdge.ColorStops().GetAt(1).Color().A == 180,
             "deselection restores the bottom edge reflection");
-        // A lone group reaches 3 DIP past its outer members on both sides.
-        Require(std::abs(groupVisual.Offset().x - (hr.X - 3)) < 1 &&
-            std::abs(groupVisual.Size().x - (br.X + br.Width - hr.X + 6)) < 1 &&
+        // A lone group reaches 5 DIP (the default large reach) past its
+        // outer members on both sides.
+        Require(std::abs(groupVisual.Offset().x - (hr.X - 5)) < 1 &&
+            std::abs(groupVisual.Size().x - (br.X + br.Width - hr.X + 10)) < 1 &&
             std::abs(containerVisual.Size().x - ar.Width) < 1,
             "bottom field includes the disclosure button and both tabs; container corners follow the full tab");
         winrt::Microsoft::UI::Composition::SpriteVisual groupCenter{nullptr};
@@ -2579,7 +2580,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 const auto at = groupHeader.TransformToVisual(root).TransformPoint({0,0});
                 return at.X - float(Controls::Canvas::GetLeft(reachSurface()));
             };
-            Require(std::abs(reachOf() - 3) < .1f, "medium group reach is the default");
+            Require(std::abs(reachOf() - 5) < .1f, "large group reach is the default");
+            // Only the large reach moves New Tab, by exactly that reach.
+            auto addX = [&] { return addButton.TransformToVisual(root).TransformPoint({0,0}).X; };
+            const auto largeAddX = addX();
             uint32_t reachRevision = 28;
             for (auto [name, expected] : {std::pair{L"none", 0.f}, {L"large", 5.f}, {L"small", 2.f}, {L"medium", 3.f}}) {
                 auto update = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
@@ -2591,6 +2595,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 MenuPublish(api,host,update.Stringify().c_str()); settle();
                 printf("Group reach %ls: %.1f\n", name, reachOf());
                 Require(std::abs(reachOf() - expected) < .1f, "group reach option resizes the group surface");
+                printf("New Tab at %ls: %.1f (large %.1f)\n", name, addX(), largeAddX);
+                Require(std::abs(addX() - (largeAddX - (expected == 5.f ? 0.f : 5.f))) < .5f &&
+                    addButton.Margin().Left == (expected == 5.f ? 5.0 : 0.0),
+                    "only the large reach moves New Tab, by that reach");
             }
             const auto rejected = api.syncTabMenu(host, (LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":)" +
                 std::to_wstring(reachRevision) + LR"(,"revision":)" + std::to_wstring(reachRevision + 1) +

@@ -173,14 +173,28 @@ struct NativeTabStrip {
     // groupReach preference, and the minimum separation kept between two
     // neighboring group surfaces.
     static constexpr float GroupSeparation = 1.f;
-    static constexpr float DefaultGroupReach = 3.f;
+    static constexpr float LargeGroupReach = 5.f, DefaultGroupReach = LargeGroupReach;
     float groupReach{DefaultGroupReach};
     static std::optional<float> GroupReachOf(hstring const& name) {
         if (name == L"none") return 0.f;
         if (name == L"small") return 2.f;
-        if (name == L"medium") return DefaultGroupReach;
-        if (name == L"large") return 5.f;
+        if (name == L"medium") return 3.f;
+        if (name == L"large") return LargeGroupReach;
         return std::nullopt;
+    }
+    // The stock gap before New Tab holds the smaller reaches. At the large
+    // reach, move the button by that reach so the outline keeps the stock
+    // tab-to-button spacing. Presentation only: the button stays in its
+    // template column, which grows by the margin, and keeps its behavior.
+    Controls::Button addSpacingButton{nullptr};
+    Thickness addBaseMargin{};
+    void ApplyAddSpacing() {
+        auto add = FindAddButton(view);
+        if (!add) return;
+        if (add != addSpacingButton) { addSpacingButton = add; addBaseMargin = add.Margin(); }
+        auto margin = addBaseMargin;
+        if (groupReach >= LargeGroupReach) margin.Left += groupReach;
+        if (add.Margin() != margin) add.Margin(margin);
     }
     Controls::ScrollViewer ambientScroller{nullptr};
     winrt::event_token ambientScrollToken{};
@@ -965,6 +979,7 @@ struct NativeTabStrip {
                 }
             }
             if (auto button = FindAddButton(view)) AttachAddMenu(button);
+            ApplyAddSpacing();
         });
     }
 
@@ -1914,7 +1929,7 @@ struct NativeTabStrip {
         containerDot = nextContainerDot;
         containerGlow = nextContainerGlow;
         groupGlow = nextGroupGlow;
-        groupReach = nextGroupReach;
+        if (groupReach != nextGroupReach) { groupReach = nextGroupReach; ApplyAddSpacing(); }
         if (nextBackdrop != backdrop) {
             backdrop = nextBackdrop;
             if (applyBackdrop) applyBackdrop(backdrop);
