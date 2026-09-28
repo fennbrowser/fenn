@@ -1852,7 +1852,9 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             Require(!header.IsTabStop(), "group containers cannot take focus away from actual disclosure buttons or tabs");
             Require(header.ActualHeight() <= 32, "group header cannot inflate the tab row");
             auto model = header.Content().as<winrt::Windows::Foundation::Collections::IObservableMap<hstring, winrt::Windows::Foundation::IInspectable>>();
-            if (!model.Lookup(L"Header")) Require(header.ActualWidth() == 24, "retain the original horizontal gap");
+            if (!model.Lookup(L"Header"))
+                Require(header.ActualWidth() == winrt::unbox_value<double>(model.Lookup(L"Gap")),
+                        "retain the horizontal gap between runs but not before the first tab");
         }
         for (int child = 0; child < Media::VisualTreeHelper::GetChildrenCount(node); ++child)
             checkHeaderFocus(Media::VisualTreeHelper::GetChild(node, child));

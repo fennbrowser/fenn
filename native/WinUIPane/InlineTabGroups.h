@@ -29,7 +29,7 @@ struct InlineTabGroups {
         Media::Animation::Storyboard indicatorMotion{nullptr};
         bool indicatorActive{}, shown{}, indicatorPending{};
         double indicatorFrom{};
-        Run() { model.Insert(L"Items", items); model.Insert(L"Header", nullptr); }
+        Run() { model.Insert(L"Items", items); model.Insert(L"Header", nullptr); model.Insert(L"Gap", box_value(24.0)); }
         ~Run() {
             if (arrowMotion) { try { arrowMotion.Stop(); } catch (...) {} }
             if (indicatorMotion) { try { indicatorMotion.Stop(); } catch (...) {} }
@@ -187,17 +187,18 @@ struct InlineTabGroups {
         style.HidesIfEmpty(false);
         style.HeaderTemplate(Markup::XamlReader::Load(LR"(
 <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
- <ContentPresenter Content="{Binding [Header]}" VerticalAlignment="Center"/>
+ <Grid MinWidth="{Binding [Gap]}"><ContentPresenter Content="{Binding [Header]}" VerticalAlignment="Center"/></Grid>
 </DataTemplate>)").as<DataTemplate>());
         // The stock header stacks a divider below its content, making a
         // 32-DIP capsule measure 41 DIP and displacing the entire tab row.
-        // Keep the owner's 24-DIP empty-header gap without that extra height.
+        // Keep the owner's 24-DIP empty-header gap (the template's Gap entry)
+        // without that extra height. The ungrouped run at the strip's start
+        // has no gap, so the first tab sits at the edge like other apps.
         style.HeaderContainerStyle(Markup::XamlReader::Load(LR"(
 <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="ListViewHeaderItem">
  <Setter Property="IsTabStop" Value="False"/>
  <Setter Property="Margin" Value="0"/><Setter Property="Padding" Value="0"/>
  <Setter Property="MinHeight" Value="0"/><Setter Property="VerticalContentAlignment" Value="Center"/>
- <Setter Property="MinWidth" Value="24"/>
  <Setter Property="Template"><Setter.Value>
   <ControlTemplate TargetType="ListViewHeaderItem">
    <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
@@ -573,6 +574,7 @@ struct InlineTabGroups {
         for (auto id : wanted) {
             auto [it, created] = runs.try_emplace(id);
             auto& run = it->second;
+            if (created && id == (uint64_t(1) << 32)) run.model.Insert(L"Gap", box_value(0.0));
             if (created && id <= UINT32_MAX) {
                 run.button = Markup::XamlReader::Load(LR"(
 <Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Style="{StaticResource SubtleButtonStyle}" Margin="4,0" Padding="4,0" MinWidth="32" MinHeight="0" Width="32" Height="32" VerticalAlignment="Center">
