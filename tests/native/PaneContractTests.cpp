@@ -1694,6 +1694,12 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             fprintf(stderr, "Grouped fit: scrollable=%.1f extent=%.1f viewport=%.1f scroller=%.1f list=%.1f listMax=%.1f\n",
                 scroller.ScrollableWidth(), scroller.ExtentWidth(), scroller.ViewportWidth(), scroller.ActualWidth(),
                 list ? list.ActualWidth() : -1.0, list ? list.MaxWidth() : -1.0);
+            for (auto name : {L"ScrollDecreaseButton", L"ScrollIncreaseButton"})
+                if (auto arrow = findOverflowPart(view, name))
+                    fprintf(stderr, "Grouped fit %ls: visible=%d actual=%.1f margin=%.1f,%.1f\n", name,
+                        arrow.Visibility() == Visibility::Visible, arrow.ActualWidth(), arrow.Margin().Left, arrow.Margin().Right);
+            fprintf(stderr, "Grouped fit computed=%d\n",
+                scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Visible);
             for (auto const& tab : visibleTabs)
                 fprintf(stderr, "Grouped fit tab %u: actual=%.1f width=%.1f desired=%.1f max=%.1f loaded=%d visible=%d\n",
                     unbox_value<uint32_t>(tab.Tag()), tab.ActualWidth(), tab.Width(), tab.DesiredSize().Width,

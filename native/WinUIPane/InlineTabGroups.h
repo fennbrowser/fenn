@@ -217,6 +217,10 @@ struct InlineTabGroups {
                     if (!arrow || arrow.Visibility() != Visibility::Visible) continue;
                     arrows += arrow.ActualWidth() + arrow.Margin().Left + arrow.Margin().Right;
                 }
+                // Arrows can report Visible with a width while their slots
+                // are still empty; subtract only space they actually occupy.
+                const double gap = scroller.ActualWidth() - scroller.ViewportWidth();
+                if (arrows > gap + .5) arrows = 0;
                 const double inset = std::max(0.0, list.ActualWidth() - scroller.ViewportWidth() - arrows);
                 CapTabWidths(available - inset, scroller.ExtentWidth(), minTab, maxTab);
             }
