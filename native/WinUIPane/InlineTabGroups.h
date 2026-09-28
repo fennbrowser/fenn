@@ -225,7 +225,9 @@ struct InlineTabGroups {
                 auto row = item.as<Controls::TabViewItem>();
                 if (row.Visibility() != Visibility::Visible) continue;
                 tabs.push_back(row);
-                if (row.IsLoaded()) { measured += row.DesiredSize().Width; ++loaded; }
+                // Grouped-source rows can be measured and arranged while
+                // IsLoaded stays false, so a nonzero measure marks realization.
+                if (const auto width = row.DesiredSize().Width; width > 0) { measured += width; ++loaded; }
             }
         }
         if (!loaded || space <= 0) return;
@@ -234,7 +236,9 @@ struct InlineTabGroups {
         const double slot = (space - std::max(0.0, extent - tabExtent)) / tabs.size();
         for (auto& row : tabs) {
             const auto margin = row.Margin();
-            const double cap = std::clamp(slot - margin.Left - margin.Right, minTab, maxTab);
+            // Round down: layout rounding up by one pixel would reintroduce
+            // the overflow this cap removes.
+            const double cap = std::clamp(std::floor(slot - margin.Left - margin.Right), minTab, maxTab);
             if (std::abs(row.MaxWidth() - cap) > .5) row.MaxWidth(cap);
         }
     }
