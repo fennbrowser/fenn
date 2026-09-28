@@ -139,7 +139,7 @@ test("multiselection republishes grouping eligibility as row deltas without rebu
     window:{addEventListener() {}, docShell:{usePrivateBrowsing:false}},
     document:{documentElement:{matches:() => false}},
     gBrowser:browser,
-    Services:{prefs:{getBoolPref:() => true, getIntPref:() => 240}},
+    Services:{prefs:{getBoolPref:() => true, getIntPref:() => 240, getStringPref:(_name, fallback) => fallback}},
     ContextualIdentityService:{getPublicIdentityFromId:() => null},
   };
   runInNewContext(source, context);

@@ -13,7 +13,7 @@ test("glows are opt-in and both appearance preferences publish live deltas", () 
     document:{documentElement:{matches:() => false}},
     gBrowser:{tabs:[], selectedTabs:[], tabGroups:[]},
     Services:{prefs:{getBoolPref:(name, fallback) => name === key ? dots ?? fallback : name === glowKey ? glows ?? fallback : fallback,
-      getIntPref:(_name, fallback) => fallback}},
+      getIntPref:(_name, fallback) => fallback, getStringPref:(_name, fallback) => fallback}},
   };
   const source = readFileSync(new URL("../upstream/firefox/browser/base/content/browser-winui-pane.js", import.meta.url), "utf8");
   runInNewContext(source, context);
@@ -41,4 +41,38 @@ test("glows are opt-in and both appearance preferences publish live deltas", () 
     assert.equal(delta.rows.length, 0);
   }
   assert.equal(scheduled, 5);
+});
+
+test("strip backdrop preference is validated and publishes a live delta", () => {
+  let backdrop;
+  const key = "widget.windows.winui-prototype.tabstrip.backdrop";
+  const context = {
+    window:{addEventListener() {}, docShell:{usePrivateBrowsing:false}},
+    document:{documentElement:{matches:() => false}},
+    gBrowser:{tabs:[], selectedTabs:[], tabGroups:[]},
+    Services:{prefs:{getBoolPref:(_name, fallback) => fallback, getIntPref:(_name, fallback) => fallback,
+      getStringPref:(name, fallback) => name === key ? backdrop ?? fallback : fallback}},
+  };
+  const source = readFileSync(new URL("../upstream/firefox/browser/base/content/browser-winui-pane.js", import.meta.url), "utf8");
+  runInNewContext(source, context);
+  const pane = context.gWinUIPane;
+  pane.localization = () => ({formatValueSync:id => id});
+  pane.visibleTabs = () => [];
+  pane.schedule = () => {};
+  const session = new WinUITabStripSession({read:() => pane.describeStrip()});
+  assert.equal(session.update().strip.backdrop, "mica-alt");
+  for (const [value, expected] of [["mica", "mica"], ["acrylic", "acrylic"], ["Mica", "mica-alt"], ["mica", "mica"], ["mica-alt", "mica-alt"]]) {
+    const previous = session.state.backdrop;
+    backdrop = value;
+    pane.stripDirty = false;
+    pane.observe(null, "nsPref:changed", key);
+    assert.equal(pane.stripDirty, true);
+    const delta = session.update();
+    assert.equal(session.state.backdrop, expected);
+    if (expected === previous) assert.equal(delta, null);
+    else {
+      assert.equal(delta.strip.backdrop, expected);
+      assert.equal(delta.strip.rows.length, 0);
+    }
+  }
 });

@@ -955,9 +955,18 @@ struct Pane {
             source.Content(strip->root);
             // The island owns the backdrop and its theme/activation/fallback
             // handling. Keep it local to the strip, including the caption insets.
-            Media::MicaBackdrop backdrop;
-            backdrop.Kind(Composition::SystemBackdrops::MicaKind::BaseAlt);
-            source.SystemBackdrop(backdrop);
+            // Mica Alt until Firefox's first publication names its preference.
+            strip->applyBackdrop = [this](NativeTabStrip::Backdrop kind) {
+                if (kind == NativeTabStrip::Backdrop::Acrylic) {
+                    source.SystemBackdrop(Media::DesktopAcrylicBackdrop());
+                    return;
+                }
+                Media::MicaBackdrop mica;
+                mica.Kind(kind == NativeTabStrip::Backdrop::Mica ? Composition::SystemBackdrops::MicaKind::Base
+                                                                  : Composition::SystemBackdrops::MicaKind::BaseAlt);
+                source.SystemBackdrop(mica);
+            };
+            strip->applyBackdrop(strip->backdrop);
             windowDrag.Open(hwnd, strip.get());
             windowDrag.begin = [this](POINT point) { BeginWindowMove(*this, point); };
             windowDrag.move = [this](POINT point) { UpdateWindowMove(*this, point); };
@@ -2432,6 +2441,19 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetContent(HWND hwn
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end()) return E_INVALIDARG;
         *output = detach_abi(found->second->source.Content());
+        return S_OK;
+    } catch (...) {
+        return to_hresult();
+    }
+}
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetBackdrop(HWND hwnd, void** output) noexcept {
+    try {
+        if (!output) return E_POINTER;
+        *output = nullptr;
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end()) return E_INVALIDARG;
+        *output = detach_abi(found->second->source.SystemBackdrop());
         return S_OK;
     } catch (...) {
         return to_hresult();

@@ -1932,7 +1932,27 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(FAILED(api.syncTabMenu(host,bad.Stringify().c_str())), "invalid group ARGB rejected atomically");
         Require(accent.Color() == winrt::Windows::UI::Color{255,51,102,153}, "invalid color leaves retained marker unchanged");
     }
-    auto collapsed = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":1,"revision":2,"rtl":true,"rows":[],"removed":[42],"groups":[{"id":7,"name":"Renamed","label":"Expand Renamed","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":9,"tab":0}]}})";
+    auto getBackdrop = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetBackdrop"));
+    Require(getBackdrop != nullptr, "strip backdrop inspection hook exists");
+    auto backdrop = [&] {
+        winrt::Microsoft::UI::Xaml::Media::SystemBackdrop value{nullptr};
+        Require(SUCCEEDED(getBackdrop(host, winrt::put_abi(value))) && value, "strip island has a system backdrop");
+        return value;
+    };
+    auto micaKind = [&] {
+        auto mica = backdrop().try_as<Media::MicaBackdrop>();
+        return mica ? int(mica.Kind()) : -1;
+    };
+    Require(micaKind() == int(winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::BaseAlt),
+        "strip backdrop defaults to Mica Alt");
+    for (auto badBackdrop : {L"Mica", L"blur", L""}) {
+        auto bad = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":1,"revision":2,"rows":[],"removed":[]}})");
+        bad.GetNamedObject(L"strip").SetNamedValue(L"backdrop", winrt::Windows::Data::Json::JsonValue::CreateStringValue(badBackdrop));
+        Require(FAILED(api.syncTabMenu(host,bad.Stringify().c_str())), "unknown strip backdrop rejected atomically");
+        Require(micaKind() == int(winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::BaseAlt),
+            "rejected backdrop leaves the retained backdrop unchanged");
+    }
+    auto collapsed = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":1,"revision":2,"backdrop":"acrylic","rtl":true,"rows":[],"removed":[42],"groups":[{"id":7,"name":"Renamed","label":"Expand Renamed","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":9,"tab":0}]}})";
     auto collapseData = winrt::Windows::Data::Json::JsonObject::Parse(collapsed);
     collapseData.GetNamedObject(L"strip").GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(L"headerText",
         winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"A deliberately long named group for trimming"));
@@ -1954,12 +1974,15 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     }
     Require(view.TabItems().Size() == 1 && view.TabItems().GetAt(0) == first && view.SelectedItem() == first, "collapse retains real active tab");
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
-    MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"rtl":true,"rows":[],"removed":[],"groups":[{"id":7,"name":"Unnamed group","headerText":"","label":"Expand unnamed group","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}]}})");
+    Require(backdrop().try_as<Media::DesktopAcrylicBackdrop>() != nullptr, "strip backdrop delta applies desktop acrylic");
+    MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"backdrop":"mica","rtl":true,"rows":[],"removed":[],"groups":[{"id":7,"name":"Unnamed group","headerText":"","label":"Expand unnamed group","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}]}})");
     settle();
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && header.ActualWidth() == 32 &&
         groupText.Visibility() == Visibility::Collapsed && capsule.Children().GetAt(1).Visibility() == Visibility::Visible,
         "clearing the name restores the arrow on the retained button");
     Require(root.FlowDirection() == FlowDirection::RightToLeft, "inline groups inherit RTL");
+    Require(micaKind() == int(winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::Base),
+        "strip backdrop delta applies base Mica");
     // The grouped source is also used for an entirely ungrouped strip. Moving
     // its first tab changes the run identity and reparents the retained rows.
     for (uint32_t revision = 4; revision <= 8; ++revision) {
@@ -1978,6 +2001,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         settle();
         Require(std::abs(addButton.TransformToVisual(root).TransformPoint({0,0}).Y - groupedAddY) < .5,
             "group presence cannot move the add button vertically");
+        Require(micaKind() == int(winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::BaseAlt),
+            "a full snapshot without a backdrop restores Mica Alt");
         for (auto item : view.TabItems()) {
             auto row = item.as<Controls::TabViewItem>();
             Require(std::abs(row.TransformToVisual(root).TransformPoint({0,0}).Y - groupedRowY.at(unbox_value<uint32_t>(row.Tag()))) < .5,

@@ -93,6 +93,11 @@ struct NativeTabStrip {
     TabAmbient ambient;
     TabGroupSurface groupSurface;
     bool groupGlow{}, containerGlow{}, containerDot{};
+    // The island's system backdrop, chosen by Firefox's strip preference. The
+    // pane owns the DesktopWindowXamlSource and applies a validated change.
+    enum class Backdrop { Mica, MicaAlt, Acrylic };
+    Backdrop backdrop{Backdrop::MicaAlt};
+    std::function<void(Backdrop)> applyBackdrop;
     Controls::Border separatorTheme{nullptr};
     struct SeparatorTint {
         Controls::Border separator{nullptr};
@@ -1606,6 +1611,14 @@ struct NativeTabStrip {
         const bool nextGroupGlow = data.HasKey(L"groupGlow") ? data.GetNamedBoolean(L"groupGlow") : base ? groupGlow : false;
         const bool nextContainerGlow = data.HasKey(L"containerGlow") ? data.GetNamedBoolean(L"containerGlow") : base ? containerGlow : false;
         const bool nextContainerDot = data.HasKey(L"containerDot") ? data.GetNamedBoolean(L"containerDot") : base ? containerDot : false;
+        auto nextBackdrop = base ? backdrop : Backdrop::MicaAlt;
+        if (data.HasKey(L"backdrop")) {
+            const auto name = data.GetNamedString(L"backdrop");
+            if (name == L"mica") nextBackdrop = Backdrop::Mica;
+            else if (name == L"mica-alt") nextBackdrop = Backdrop::MicaAlt;
+            else if (name == L"acrylic") nextBackdrop = Backdrop::Acrylic;
+            else throw hresult_invalid_argument();
+        }
         if (!std::isfinite(delay) || delay < 0 || delay > 60000 || std::floor(delay) != delay)
             throw hresult_invalid_argument();
         const bool updateGroups = !base || data.HasKey(L"groups") || data.HasKey(L"groupsLabel");
@@ -1809,6 +1822,10 @@ struct NativeTabStrip {
         containerDot = nextContainerDot;
         containerGlow = nextContainerGlow;
         groupGlow = nextGroupGlow;
+        if (nextBackdrop != backdrop) {
+            backdrop = nextBackdrop;
+            if (applyBackdrop) applyBackdrop(backdrop);
+        }
         if (dotChanged) {
             for (auto const& [id, row] : rows)
                 UpdateHeader(row, id, Automation::AutomationProperties::GetName(row));
