@@ -1695,18 +1695,33 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             fprintf(stderr, "Grouped scroll: offset=%.1f extent=%.1f increase=%d decrease=%d\n",
                 scroller.HorizontalOffset(), scroller.ScrollableWidth(), increase.IsEnabled(), decrease.IsEnabled());
             Require(increase.IsEnabled() && !decrease.IsEnabled(), "stock arrows reflect start of grouped overflow");
-            auto invoke = [&](FrameworkElement element) {
+            auto invoke = [&](FrameworkElement element, bool forward) {
+                // The stock arrow requests animated scrolling. A recreated or
+                // background island can finish after the old one-second delay;
+                // wait for the final view event, not an intermediate offset.
+                const auto before = scroller.HorizontalOffset();
+                bool finished = false;
+                auto changed = scroller.ViewChanged(winrt::auto_revoke,
+                    [&](auto const&, auto const& args) {
+                        const auto offset = scroller.HorizontalOffset();
+                        if (!args.IsIntermediate() && (forward ? offset > before : offset < before))
+                            finished = true;
+                    });
+                const auto started = GetTickCount64();
                 Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(element)
                     .GetPattern(Automation::Peers::PatternInterface::Invoke)
                     .as<Automation::Provider::IInvokeProvider>().Invoke();
-                for (int i = 0; i < 5; ++i) settle();
+                while (!finished && GetTickCount64() - started < 5000) { Pump(); Sleep(5); }
+                fprintf(stderr, "Grouped scroll completion: forward=%d finished=%d waited=%llums\n",
+                    forward, finished, static_cast<unsigned long long>(GetTickCount64() - started));
+                Require(finished, "stock arrow completes scrolling in the requested direction");
             };
-            invoke(increase);
+            invoke(increase, true);
             const auto offset = scroller.HorizontalOffset();
             fprintf(stderr, "Grouped forward: offset=%.1f extent=%.1f increase=%d decrease=%d\n",
                 offset, scroller.ScrollableWidth(), increase.IsEnabled(), decrease.IsEnabled());
             Require(offset > 0 && decrease.IsEnabled(), "stock forward arrow scrolls the constrained grouped list");
-            invoke(decrease);
+            invoke(decrease, false);
             fprintf(stderr, "Grouped backward: offset=%.1f extent=%.1f increase=%d decrease=%d\n",
                 scroller.HorizontalOffset(), scroller.ScrollableWidth(), increase.IsEnabled(), decrease.IsEnabled());
             Require(scroller.HorizontalOffset() < offset, "stock backward arrow scrolls back");
