@@ -326,12 +326,16 @@ struct NativeTabStrip {
                 for (auto const& [id, run] : inlineGroups.runs) extend(run.button);
                 if (contentRight < contentLeft) { contentLeft = viewport.X; contentRight = viewport.X + viewport.Width; }
                 auto fade = [](float space) { return std::clamp(space, 1.f, 16.f); };
+                // A group's halo reaches past its outline by more than the gap
+                // before New Tab. Let it fall off softly under the button's
+                // edge rather than slicing it there.
+                const float haloOverlap = groupGlow ? TabAmbient::HaloReach : 0.f;
                 if (addBounds.X >= viewport.X + viewport.Width - 1) {
-                    right = std::min(right, addBounds.X);
+                    right = std::min(right, addBounds.X + std::min(haloOverlap, addBounds.Width / 2));
                     fadeRight = fade(right - contentRight);
                 }
                 if (addBounds.X + addBounds.Width <= viewport.X + 1) {
-                    left = std::max(left, addBounds.X + addBounds.Width);
+                    left = std::max(left, addBounds.X + addBounds.Width - std::min(haloOverlap, addBounds.Width / 2));
                     fadeLeft = fade(contentLeft - left);
                 }
             }
