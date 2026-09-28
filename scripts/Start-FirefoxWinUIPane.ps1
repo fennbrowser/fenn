@@ -1,4 +1,4 @@
-param([switch]$NativeAddress, [switch]$NativeTabStrip = $true, [switch]$ContainerDots = $true, [switch]$TabGlows = $true, [switch]$CaptureCrash,
+param([switch]$NativeAddress, [switch]$NativeTabStrip = $true, [switch]$ContainerDots = $true, [switch]$TabGlows = $true, [switch]$CaptureCrash, [string]$DiagnosticsLog,
       [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight = 40)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -35,5 +35,18 @@ if ($CaptureCrash) {
             $browser --no-remote --profile $demoProfile (Join-Path $projectRoot 'tests/smoke/browser.html')
     } finally { Pop-Location }
     exit $LASTEXITCODE
+}
+if ($DiagnosticsLog) {
+    # Pane diagnostics go to stderr; the browser inherits the redirected handle.
+    # Scoped to the browser process: the script runs in the caller's session.
+    $previous = $env:FIREFOX_WINUI_PANE_DIAGNOSTICS
+    $env:FIREFOX_WINUI_PANE_DIAGNOSTICS = '1'
+    $log = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DiagnosticsLog)
+    Write-Host "Pane diagnostics: $log"
+    try {
+        Start-Process -FilePath $browser -NoNewWindow -Wait -RedirectStandardError $log -ArgumentList @(
+            '--no-remote', '--profile', "`"$demoProfile`"", "`"$(Join-Path $projectRoot 'tests/smoke/browser.html')`"")
+    } finally { $env:FIREFOX_WINUI_PANE_DIAGNOSTICS = $previous }
+    exit
 }
 & $browser --no-remote --profile $demoProfile (Join-Path $projectRoot 'tests/smoke/browser.html')

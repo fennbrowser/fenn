@@ -3,6 +3,8 @@
 #include <map>
 #include <set>
 #include <functional>
+#include <cstdio>
+#include <string>
 #include <winrt/Windows.Data.Json.h>
 #include "GroupTabsFlyout.h"
 
@@ -158,9 +160,13 @@ struct InlineTabGroups {
         // TabView's Equal-width calculation counts tabs but not grouped-source
         // headers (including the 24-DIP ungrouped gap). Its Auto tab column can
         // therefore consume the add-button space before minimum-width overflow
-        // starts. Bound the actual list, and let its stock ScrollViewer detect
-        // overflow from the real grouped extent instead of that tab-only estimate.
-        scroller.HorizontalScrollBarVisibility(Controls::ScrollBarVisibility::Auto);
+        // starts. Bound the actual list and decide overflow from the real
+        // grouped extent instead of that tab-only estimate. Not Auto: the list's
+        // column sizes to its content and the arrows take width from it, so
+        // Auto latches arrows on after a transient overflow (a collapse slide
+        // releasing its held width, a tab added). LayoutUpdated compares the
+        // extent with the arrow-free width instead; Hidden keeps scrolling.
+        scroller.HorizontalScrollBarVisibility(Controls::ScrollBarVisibility::Hidden);
         // The same tab-only estimate also leaves stale arrow enablement when
         // it thinks everything fits. Reflect actual scroll endpoints; retain
         // the stock RepeatButtons and their native click/hold handlers.
@@ -177,8 +183,76 @@ struct InlineTabGroups {
             if (increase.IsEnabled() != canForward) increase.IsEnabled(canForward);
         };
         scroller.ViewChanged([refreshArrows](auto const&, auto const&) { refreshArrows(); });
-        list.LayoutUpdated([alive = std::weak_ptr<int>(lifetime), weakList = make_weak(list),
-                            weakView = make_weak(view), refreshArrows](auto const&, auto const&) {
+        // TabView asks for the selected tab to be brought into view whenever
+        // the tab list changes size, and on selection, with the tab's desired
+        // width captured at that moment (TabViewItem::StartBringTabIntoView).
+        // The request is routed asynchronously and can arrive after later
+        // layouts and after an explicit scroll: grouped layouts resize the
+        // list twice per strip resize (TabView's Equal width, then the cap
+        // below), so a queue of stale requests used to align the selected
+        // tab's leading edge (a wider old width no longer fits the viewport)
+        // or undo a stock arrow scroll. Re-derive each tab request from the
+        // tab's current bounds, and let an explicit scroll win over requests
+        // issued before it. Size, selection, focus and drag changes after the
+        // scroll still bring the selected or focused tab into view.
+        auto presenter = templateRoot.FindName(L"TabsItemsPresenter").try_as<UIElement>();
+        if (presenter) {
+            const auto alive = std::weak_ptr<int>(lifetime);
+            auto requested = [this, alive](auto&&...) { if (!alive.expired()) requestEpoch = ++scrollEpoch; };
+            presenter.as<FrameworkElement>().SizeChanged(requested);
+            view.SelectionChanged(requested);
+            list.GettingFocus(requested);
+            list.DragItemsCompleted(requested);
+            for (auto const& arrow : {decrease, increase})
+                arrow.Click([this, alive](auto&&...) { if (!alive.expired()) NoteUserScroll(); });
+            scroller.DirectManipulationStarted([this, alive](auto&&...) { if (!alive.expired()) NoteUserScroll(); });
+            scroller.AddHandler(UIElement::PointerWheelChangedEvent(),
+                box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive](auto&&...) { if (!alive.expired()) NoteUserScroll(); })), true);
+            static const bool diagnostics = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;
+            presenter.BringIntoViewRequested([this, alive](auto const&, BringIntoViewRequestedEventArgs const& args) {
+                if (alive.expired()) return;
+                auto tab = args.TargetElement().try_as<Controls::TabViewItem>();
+                if (!tab) return;
+                auto rect = args.TargetRect();
+                const bool stale = userScrollEpoch > requestEpoch;
+                if (stale) args.Handled(true);
+                // StartBringTabIntoView pads the tab by 2 DIP; keep that pad.
+                else if (const auto limit = float(tab.ActualWidth()) + 2 - rect.X; tab.ActualWidth() > 0 && rect.Width > limit) {
+                    rect.Width = std::max(0.f, limit);
+                    args.TargetRect(rect);
+                }
+                if (diagnostics)
+                    fprintf(stderr, "WinUIPane tab-scroll bring tab=%u rect=%.1f,%.1f,%.1f width=%.1f dropped=%d\n",
+                            tab.Tag() ? unbox_value_or<uint32_t>(tab.Tag(), 0) : 0, rect.X, args.TargetRect().Width,
+                            rect.Height, tab.ActualWidth(), stale);
+            });
+        }
+        if (GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0)) {
+            // Diagnostics only: who moves the stock scroller.
+            scroller.ViewChanged([scroll = make_weak(scroller)](auto const&, auto const& args) {
+                if (auto scroller = scroll.get())
+                    fprintf(stderr, "WinUIPane tab-scroll view offset=%.1f intermediate=%d\n",
+                            scroller.HorizontalOffset(), args.IsIntermediate());
+            });
+        }
+        // Equal mode divides the full width among tabs alone, so in its fill
+        // range the headers always overflow by their own width and show
+        // arrows with nothing to reveal (typically after a collapse widens
+        // the remaining tabs). Cap tabs to the space the headers leave;
+        // TabView still writes Width, and the stock minimum keeps real overflow.
+        auto themeWidth = [](wchar_t const* key, double fallback) {
+            try {
+                if (auto value = Application::Current().Resources().TryLookup(box_value(key)))
+                    if (auto width = value.try_as<Windows::Foundation::IReference<double>>()) return width.Value();
+            } catch (...) {}
+            return fallback;
+        };
+        const double minTab = themeWidth(L"TabViewItemMinWidth", 100);
+        const double maxTab = std::max(minTab, themeWidth(L"TabViewItemMaxWidth", 240));
+        list.LayoutUpdated([this, alive = std::weak_ptr<int>(lifetime), weakList = make_weak(list),
+                            weakView = make_weak(view), scroll = make_weak(scroller), minTab, maxTab,
+                            back = make_weak(decrease), forward = make_weak(increase),
+                            refreshArrows](auto const&, auto const&) {
             if (alive.expired()) return;
             auto list = weakList.get();
             auto view = weakView.get();
@@ -191,10 +265,122 @@ struct InlineTabGroups {
                 grid.ColumnDefinitions().GetAt(2).ActualWidth() -
                 (footer ? footer.DesiredSize().Width : 0));
             if (list.MaxWidth() != available) list.MaxWidth(available);
+            if (auto scroller = scroll.get(); scroller && scroller.ActualWidth() > 0) {
+                // The arrow-free width must not depend on the arrows' own
+                // state, or the decision below oscillates: their containers
+                // absorb the scroller's 2-DIP inset. Measure the inset only
+                // while they are hidden and reuse it while they are shown.
+                double inset;
+                if (scroller.ComputedHorizontalScrollBarVisibility() != Visibility::Visible) {
+                    inset = std::max(0.0, list.ActualWidth() - scroller.ViewportWidth());
+                    arrowFreeInset = inset;
+                } else if (arrowFreeInset >= 0) {
+                    inset = arrowFreeInset;
+                } else {
+                    // Not yet seen without arrows: estimate from the padded
+                    // containers the template binds (ScrollDecrease/IncreaseButtonContainer).
+                    double arrows = 0;
+                    for (auto const& weak : {back, forward}) {
+                        auto arrow = weak.get();
+                        auto slot = arrow ? Media::VisualTreeHelper::GetParent(arrow).try_as<FrameworkElement>() : nullptr;
+                        if (!slot) slot = arrow;
+                        if (!slot || slot.Visibility() != Visibility::Visible) continue;
+                        arrows += slot.ActualWidth() + slot.Margin().Left + slot.Margin().Right;
+                    }
+                    inset = std::max(0.0, list.ActualWidth() - scroller.ViewportWidth() - arrows);
+                }
+                const double space = available - inset;
+                const double extent = CapTabWidths(space, scroller.ExtentWidth(), minTab, maxTab);
+                const auto wanted = extent > space + .5 ? Controls::ScrollBarVisibility::Visible
+                                                        : Controls::ScrollBarVisibility::Hidden;
+                if (scroller.HorizontalScrollBarVisibility() != wanted) scroller.HorizontalScrollBarVisibility(wanted);
+                LogScroller(list, scroller, grid, available);
+            }
             refreshArrows();
         });
         configured = true;
         return true;
+    }
+
+    // Opt-in (FIREFOX_WINUI_PANE_DIAGNOSTICS) record of what decides the stock
+    // arrows, written only when it changes. Identifies whether the configured
+    // ScrollViewer is still the templated one and still holds its local Auto.
+    std::string lastScrollLog;
+    double arrowFreeInset = -1;
+    // Orders explicit scrolls against the events after which TabView or focus
+    // issues a tab bring-into-view request (see Configure).
+    uint64_t scrollEpoch{}, requestEpoch{}, userScrollEpoch{};
+    void NoteUserScroll() { userScrollEpoch = ++scrollEpoch; }
+    void LogScroller(Controls::ListViewBase const& list, Controls::ScrollViewer const& scroller,
+                     Controls::Grid const& grid, double available) {
+        static const bool enabled = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;
+        if (!enabled) return;
+        Controls::ScrollViewer current{nullptr};
+        if (Media::VisualTreeHelper::GetChildrenCount(list))
+            if (auto root = Media::VisualTreeHelper::GetChild(list, 0).try_as<FrameworkElement>())
+                current = root.FindName(L"ScrollViewer").try_as<Controls::ScrollViewer>();
+        const auto local = scroller.ReadLocalValue(Controls::ScrollViewer::HorizontalScrollBarVisibilityProperty());
+        const auto localAuto = local.try_as<Windows::Foundation::IReference<Controls::ScrollBarVisibility>>() &&
+            unbox_value<Controls::ScrollBarVisibility>(local) == Controls::ScrollBarVisibility::Auto;
+        const auto column = grid.ColumnDefinitions().GetAt(1);
+        size_t tabs = 0, hidden = 0;
+        double tabWidth = 0;
+        for (auto const& [id, run] : runs) for (auto item : run.items) {
+            auto row = item.as<Controls::TabViewItem>();
+            if (row.Visibility() != Visibility::Visible) { ++hidden; continue; }
+            ++tabs; tabWidth = row.ActualWidth();
+        }
+        char line[512];
+        snprintf(line, sizeof line,
+            "WinUIPane tab-scroll same=%d localAuto=%d mode=%d listMode=%d computed=%d extent=%.1f viewport=%.1f "
+            "offset=%.1f scroller=%.1f list=%.1f listMax=%.1f available=%.1f column=%.1f/%d/%.1f "
+            "runs=%zu tabs=%zu hidden=%zu tab=%.1f\n",
+            current == scroller, localAuto, int(scroller.HorizontalScrollBarVisibility()),
+            int(Controls::ScrollViewer::GetHorizontalScrollBarVisibility(list)),
+            scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Visible,
+            scroller.ExtentWidth(), scroller.ViewportWidth(), scroller.HorizontalOffset(), scroller.ActualWidth(),
+            list.ActualWidth(), list.MaxWidth(), available, column.Width().Value, int(column.Width().GridUnitType),
+            column.ActualWidth(), runs.size(), tabs, hidden, tabWidth);
+        if (lastScrollLog == line) return;
+        lastScrollLog = line;
+        fputs(line, stderr);
+        fflush(stderr);
+    }
+
+    // `space` is the scroll viewport without arrows; `extent` is the grouped
+    // content, so extent minus the tabs is every header, gap and padding.
+    // Returns the extent expected once the caps apply.
+    double CapTabWidths(double space, double extent, double minTab, double maxTab) {
+        std::vector<Controls::TabViewItem> tabs;
+        double measured = 0;
+        size_t loaded = 0;
+        for (auto const& [id, run] : runs) {
+            for (auto item : run.items) {
+                auto row = item.as<Controls::TabViewItem>();
+                if (row.Visibility() != Visibility::Visible) continue;
+                tabs.push_back(row);
+                // Grouped-source rows can be measured and arranged while
+                // IsLoaded stays false, so a nonzero measure marks realization.
+                if (const auto width = row.DesiredSize().Width; width > 0) { measured += width; ++loaded; }
+            }
+        }
+        if (!loaded || space <= 0) return extent;
+        // Unrealized rows are estimated the same way ItemsStackPanel does.
+        const double tabExtent = measured / loaded * tabs.size();
+        const double others = std::max(0.0, extent - tabExtent);
+        const double slot = (space - others) / tabs.size();
+        const double average = measured / loaded;
+        double expected = others;
+        for (auto& row : tabs) {
+            const auto margin = row.Margin();
+            // Round down: layout rounding up by one pixel would reintroduce
+            // the overflow this cap removes.
+            const double cap = std::clamp(std::floor(slot - margin.Left - margin.Right), minTab, maxTab);
+            if (std::abs(row.MaxWidth() - cap) > .5) row.MaxWidth(cap);
+            const double desired = row.DesiredSize().Width;
+            expected += std::min(desired > 0 ? desired : average, cap + margin.Left + margin.Right);
+        }
+        return expected;
     }
 
     void Metadata(Windows::Data::Json::JsonArray const& groups, bool animate = false) {

@@ -445,7 +445,11 @@ struct NativeTabStrip {
         if (old.phase==2 && down && inside && point.X<viewport.X+viewport.Width && scroller && scroller.ScrollableWidth()>0 && GetTickCount64()-groupScrollTick>=16) {
             groupScrollTick=GetTickCount64();
             double step=point.X<viewport.X+24 ? -12 : point.X>viewport.X+viewport.Width-24 ? 12 : 0;
-            if (step) scroller.ChangeView(box_value(std::clamp(scroller.HorizontalOffset()+step,0.0,scroller.ScrollableWidth())).as<Windows::Foundation::IReference<double>>(),nullptr,nullptr,true);
+            if (step) {
+                // An edge scroll is explicit; stale selected-tab requests must not undo it.
+                inlineGroups.NoteUserScroll();
+                scroller.ChangeView(box_value(std::clamp(scroller.HorizontalOffset()+step,0.0,scroller.ScrollableWidth())).as<Windows::Foundation::IReference<double>>(),nullptr,nullptr,true);
+            }
         }
         std::vector<ShellGroupDragSlot> slots;
         struct ShiftItem { uint64_t id; FrameworkElement element; size_t block; };
