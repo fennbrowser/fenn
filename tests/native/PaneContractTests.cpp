@@ -1685,6 +1685,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     bounds.X + bounds.Width <= right + 1 && bounds.Width == 32,
                 "group headers cannot displace the full stock add button into caption space");
         auto scroller = findOverflowPart(view, L"ScrollViewer").as<Controls::ScrollViewer>();
+        const auto arrowMode = scroller.HorizontalScrollBarVisibility();
+        settle();
+        Require(scroller.HorizontalScrollBarVisibility() == arrowMode,
+                "grouped arrow visibility settles instead of alternating between layout passes");
         std::vector<Controls::TabViewItem> visibleTabs;
         for (auto item : view.TabItems()) visibleTabs.push_back(item.as<Controls::TabViewItem>());
         if (width == 600) {

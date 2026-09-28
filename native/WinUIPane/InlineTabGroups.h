@@ -214,24 +214,29 @@ struct InlineTabGroups {
                 (footer ? footer.DesiredSize().Width : 0));
             if (list.MaxWidth() != available) list.MaxWidth(available);
             if (auto scroller = scroll.get(); scroller && scroller.ActualWidth() > 0) {
-                // Without arrows the viewport is the list less its fixed
-                // inset (the scroller keeps 2 DIP); count visible arrows back
-                // in, since fitting is exactly what hides them.
-                double arrows = 0;
-                // The template binds visibility on each button's padded
-                // container (ScrollDecrease/IncreaseButtonContainer).
-                for (auto const& weak : {back, forward}) {
-                    auto arrow = weak.get();
-                    auto slot = arrow ? Media::VisualTreeHelper::GetParent(arrow).try_as<FrameworkElement>() : nullptr;
-                    if (!slot) slot = arrow;
-                    if (!slot || slot.Visibility() != Visibility::Visible) continue;
-                    arrows += slot.ActualWidth() + slot.Margin().Left + slot.Margin().Right;
+                // The arrow-free width must not depend on the arrows' own
+                // state, or the decision below oscillates: their containers
+                // absorb the scroller's 2-DIP inset. Measure the inset only
+                // while they are hidden and reuse it while they are shown.
+                double inset;
+                if (scroller.ComputedHorizontalScrollBarVisibility() != Visibility::Visible) {
+                    inset = std::max(0.0, list.ActualWidth() - scroller.ViewportWidth());
+                    arrowFreeInset = inset;
+                } else if (arrowFreeInset >= 0) {
+                    inset = arrowFreeInset;
+                } else {
+                    // Not yet seen without arrows: estimate from the padded
+                    // containers the template binds (ScrollDecrease/IncreaseButtonContainer).
+                    double arrows = 0;
+                    for (auto const& weak : {back, forward}) {
+                        auto arrow = weak.get();
+                        auto slot = arrow ? Media::VisualTreeHelper::GetParent(arrow).try_as<FrameworkElement>() : nullptr;
+                        if (!slot) slot = arrow;
+                        if (!slot || slot.Visibility() != Visibility::Visible) continue;
+                        arrows += slot.ActualWidth() + slot.Margin().Left + slot.Margin().Right;
+                    }
+                    inset = std::max(0.0, list.ActualWidth() - scroller.ViewportWidth() - arrows);
                 }
-                // Arrows can report Visible with a width while their slots
-                // are still empty; subtract only space they actually occupy.
-                const double gap = scroller.ActualWidth() - scroller.ViewportWidth();
-                if (arrows > gap + .5) arrows = 0;
-                const double inset = std::max(0.0, list.ActualWidth() - scroller.ViewportWidth() - arrows);
                 const double space = available - inset;
                 const double extent = CapTabWidths(space, scroller.ExtentWidth(), minTab, maxTab);
                 const auto wanted = extent > space + .5 ? Controls::ScrollBarVisibility::Visible
@@ -249,6 +254,7 @@ struct InlineTabGroups {
     // arrows, written only when it changes. Identifies whether the configured
     // ScrollViewer is still the templated one and still holds its local Auto.
     std::string lastScrollLog;
+    double arrowFreeInset = -1;
     void LogScroller(Controls::ListViewBase const& list, Controls::ScrollViewer const& scroller,
                      Controls::Grid const& grid, double available) {
         static const bool enabled = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;
