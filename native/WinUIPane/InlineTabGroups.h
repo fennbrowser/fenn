@@ -183,21 +183,56 @@ struct InlineTabGroups {
             if (increase.IsEnabled() != canForward) increase.IsEnabled(canForward);
         };
         scroller.ViewChanged([refreshArrows](auto const&, auto const&) { refreshArrows(); });
+        // TabView asks for the selected tab to be brought into view whenever
+        // the tab list changes size, and on selection, with the tab's desired
+        // width captured at that moment (TabViewItem::StartBringTabIntoView).
+        // The request is routed asynchronously and can arrive after later
+        // layouts and after an explicit scroll: grouped layouts resize the
+        // list twice per strip resize (TabView's Equal width, then the cap
+        // below), so a queue of stale requests used to align the selected
+        // tab's leading edge (a wider old width no longer fits the viewport)
+        // or undo a stock arrow scroll. Re-derive each tab request from the
+        // tab's current bounds, and let an explicit scroll win over requests
+        // issued before it. Size, selection, focus and drag changes after the
+        // scroll still bring the selected or focused tab into view.
+        auto presenter = templateRoot.FindName(L"TabsItemsPresenter").try_as<UIElement>();
+        if (presenter) {
+            const auto alive = std::weak_ptr<int>(lifetime);
+            auto requested = [this, alive](auto&&...) { if (!alive.expired()) requestEpoch = ++scrollEpoch; };
+            presenter.as<FrameworkElement>().SizeChanged(requested);
+            view.SelectionChanged(requested);
+            list.GettingFocus(requested);
+            list.DragItemsCompleted(requested);
+            for (auto const& arrow : {decrease, increase})
+                arrow.Click([this, alive](auto&&...) { if (!alive.expired()) NoteUserScroll(); });
+            scroller.DirectManipulationStarted([this, alive](auto&&...) { if (!alive.expired()) NoteUserScroll(); });
+            scroller.AddHandler(UIElement::PointerWheelChangedEvent(),
+                box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive](auto&&...) { if (!alive.expired()) NoteUserScroll(); })), true);
+            static const bool diagnostics = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;
+            presenter.BringIntoViewRequested([this, alive](auto const&, BringIntoViewRequestedEventArgs const& args) {
+                if (alive.expired()) return;
+                auto tab = args.TargetElement().try_as<Controls::TabViewItem>();
+                if (!tab) return;
+                auto rect = args.TargetRect();
+                const bool stale = userScrollEpoch > requestEpoch;
+                if (stale) args.Handled(true);
+                // StartBringTabIntoView pads the tab by 2 DIP; keep that pad.
+                else if (const auto limit = float(tab.ActualWidth()) + 2 - rect.X; tab.ActualWidth() > 0 && rect.Width > limit) {
+                    rect.Width = std::max(0.f, limit);
+                    args.TargetRect(rect);
+                }
+                if (diagnostics)
+                    fprintf(stderr, "WinUIPane tab-scroll bring tab=%u rect=%.1f,%.1f,%.1f width=%.1f dropped=%d\n",
+                            tab.Tag() ? unbox_value_or<uint32_t>(tab.Tag(), 0) : 0, rect.X, args.TargetRect().Width,
+                            rect.Height, tab.ActualWidth(), stale);
+            });
+        }
         if (GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0)) {
-            // Diagnostics only: who asks the stock scroller to move.
+            // Diagnostics only: who moves the stock scroller.
             scroller.ViewChanged([scroll = make_weak(scroller)](auto const&, auto const& args) {
                 if (auto scroller = scroll.get())
                     fprintf(stderr, "WinUIPane tab-scroll view offset=%.1f intermediate=%d\n",
                             scroller.HorizontalOffset(), args.IsIntermediate());
-            });
-            list.BringIntoViewRequested([](auto const&, auto const& args) {
-                auto target = args.TargetElement().try_as<FrameworkElement>();
-                const auto rect = args.TargetRect();
-                hstring kind = target ? get_class_name(target) : hstring{L"none"};
-                hstring tag = target && target.Tag() ? to_hstring(unbox_value_or<uint32_t>(target.Tag(), 0)) : hstring{};
-                fprintf(stderr, "WinUIPane tab-scroll bring target=%ls tag=%ls rect=%.1f,%.1f,%.1f offset=%.1f,%.1f animate=%d handled=%d\n",
-                        kind.c_str(), tag.c_str(), rect.X, rect.Width, rect.Height,
-                        args.HorizontalOffset(), args.HorizontalAlignmentRatio(), args.AnimationDesired(), args.Handled());
             });
         }
         // Equal mode divides the full width among tabs alone, so in its fill
@@ -272,6 +307,10 @@ struct InlineTabGroups {
     // ScrollViewer is still the templated one and still holds its local Auto.
     std::string lastScrollLog;
     double arrowFreeInset = -1;
+    // Orders explicit scrolls against the events after which TabView or focus
+    // issues a tab bring-into-view request (see Configure).
+    uint64_t scrollEpoch{}, requestEpoch{}, userScrollEpoch{};
+    void NoteUserScroll() { userScrollEpoch = ++scrollEpoch; }
     void LogScroller(Controls::ListViewBase const& list, Controls::ScrollViewer const& scroller,
                      Controls::Grid const& grid, double available) {
         static const bool enabled = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;

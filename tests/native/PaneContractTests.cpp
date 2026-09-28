@@ -1704,38 +1704,108 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         } else if (width == 400) {
             Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Visible,
                     "minimum-width grouped overflow shows stock scroll arrows");
-            // TabView animates the selected tab into view after the resize;
-            // a ChangeView issued during that animation can be dropped.
-            // Repeat the setup scroll until it lands, and report how often.
-            int attempts = 0;
-            bool accepted = false;
-            do {
-                accepted = scroller.ChangeView(box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(),
-                    nullptr, nullptr, true);
-                settle();
-            } while (++attempts < 10 && scroller.HorizontalOffset() > .5);
-            fprintf(stderr, "Grouped start: attempts=%d accepted=%d offset=%.1f\n", attempts, accepted,
-                scroller.HorizontalOffset());
+            Controls::TabViewItem home{nullptr};
+            for (auto const& tab : visibleTabs) if (unbox_value<uint32_t>(tab.Tag()) == 41) home = tab;
+            Require(bool(home), "grouped overflow fixture has its selected first tab");
+            auto scrolled = scroller.Content().as<UIElement>();
+            auto fullyVisible = [&](Controls::TabViewItem const& tab) {
+                const auto x = tab.TransformToVisual(scrolled).TransformPoint({0, 0}).X;
+                return x >= scroller.HorizontalOffset() - .5 &&
+                    x + tab.ActualWidth() <= scroller.HorizontalOffset() + scroller.ViewportWidth() + .5;
+            };
+            // TabView issues a selected-tab bring-into-view request on every
+            // tab-list size change and selection, sized when issued; the
+            // requests are routed asynchronously and may arrive much later.
+            // A marker request queued behind them arrives after all of them.
+            bool marker = false;
+            auto markers = home.BringIntoViewRequested(winrt::auto_revoke, [&](auto const&, BringIntoViewRequestedEventArgs const& args) {
+                if (args.TargetRect().Height == .25f) { marker = true; args.Handled(true); }
+            });
+            auto request = [&](Controls::TabViewItem const& tab, float width, float height) {
+                BringIntoViewOptions options;
+                options.TargetRect(winrt::Windows::Foundation::IReference<winrt::Windows::Foundation::Rect>(
+                    winrt::Windows::Foundation::Rect{0, 0, width, height}));
+                tab.StartBringIntoView(options);
+            };
+            auto drain = [&] {
+                marker = false;
+                request(home, 0, .25f);
+                const auto started = GetTickCount64();
+                while (!marker && GetTickCount64() - started < 5000) { Pump(); Sleep(5); }
+                Require(marker, "queued tab bring-into-view requests are delivered");
+                // Let any view change they started finish.
+                for (int quiet = 0, i = 0; quiet < 2 && i < 25; ++i) {
+                    const auto before = scroller.HorizontalOffset();
+                    settle();
+                    quiet = std::abs(scroller.HorizontalOffset() - before) < .01 ? quiet + 1 : 0;
+                }
+            };
+            drain();
+            fprintf(stderr, "Grouped start: offset=%.1f home=%.1f viewport=%.1f\n", scroller.HorizontalOffset(),
+                home.ActualWidth(), scroller.ViewportWidth());
+            Require(scroller.HorizontalOffset() < .5 && fullyVisible(home),
+                    "resizing into overflow keeps the strip at its start while the selected tab is visible");
+            // A request sized for the tab's old 240-DIP width no longer fits
+            // the viewport and used to align the tab's leading edge.
+            request(home, 242, float(home.ActualHeight()));
+            drain();
+            Require(scroller.HorizontalOffset() < .5, "stale wider selected-tab request cannot move a visible tab");
             auto increase = findOverflowPart(view, L"ScrollIncreaseButton").as<Controls::Primitives::RepeatButton>();
             auto decrease = findOverflowPart(view, L"ScrollDecreaseButton").as<Controls::Primitives::RepeatButton>();
             fprintf(stderr, "Grouped scroll: offset=%.1f extent=%.1f increase=%d decrease=%d\n",
                 scroller.HorizontalOffset(), scroller.ScrollableWidth(), increase.IsEnabled(), decrease.IsEnabled());
             Require(increase.IsEnabled() && !decrease.IsEnabled(), "stock arrows reflect start of grouped overflow");
-            auto invoke = [&](FrameworkElement element) {
+            // TabView's stock arrows ask for exactly 50 DIP (c_scrollAmount).
+            auto invoke = [&](FrameworkElement element, bool forward, bool staleRequest) {
+                const auto before = scroller.HorizontalOffset();
+                const auto target = forward ? std::min(scroller.ScrollableWidth(), before + 50) : std::max(0.0, before - 50);
+                bool finished = false;
+                auto changed = scroller.ViewChanged(winrt::auto_revoke,
+                    [&](auto const&, auto const& args) {
+                        const auto offset = scroller.HorizontalOffset();
+                        if (!args.IsIntermediate() && (forward ? offset > before : offset < before))
+                            finished = true;
+                    });
+                const auto started = GetTickCount64();
                 Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(element)
                     .GetPattern(Automation::Peers::PatternInterface::Invoke)
                     .as<Automation::Provider::IInvokeProvider>().Invoke();
-                for (int i = 0; i < 5; ++i) settle();
+                // A recreated or background island can finish after the old
+                // one-second delay; wait for the final view event.
+                while (!finished && GetTickCount64() - started < 5000) { Pump(); Sleep(5); }
+                fprintf(stderr, "Grouped scroll completion: forward=%d stale=%d finished=%d waited=%llums\n",
+                    forward, staleRequest, finished, static_cast<unsigned long long>(GetTickCount64() - started));
+                Require(finished, "stock arrow completes scrolling in the requested direction");
+                // A resize or selection request TabView issued before the
+                // click but delivered after the scroll; the pane sees only
+                // delivery order, so raising the same request now is equivalent.
+                if (staleRequest) request(home, float(home.DesiredSize().Width) + 2, float(home.ActualHeight()));
+                drain();
+                fprintf(stderr, "Grouped %s: offset=%.1f target=%.1f extent=%.1f increase=%d decrease=%d\n",
+                    forward ? "forward" : "backward", scroller.HorizontalOffset(), target, scroller.ScrollableWidth(),
+                    increase.IsEnabled(), decrease.IsEnabled());
+                return std::abs(scroller.HorizontalOffset() - target) < 1;
             };
-            invoke(increase);
-            const auto offset = scroller.HorizontalOffset();
-            fprintf(stderr, "Grouped forward: offset=%.1f extent=%.1f increase=%d decrease=%d\n",
-                offset, scroller.ScrollableWidth(), increase.IsEnabled(), decrease.IsEnabled());
-            Require(offset > 0 && decrease.IsEnabled(), "stock forward arrow scrolls the constrained grouped list");
-            invoke(decrease);
-            fprintf(stderr, "Grouped backward: offset=%.1f extent=%.1f increase=%d decrease=%d\n",
-                scroller.HorizontalOffset(), scroller.ScrollableWidth(), increase.IsEnabled(), decrease.IsEnabled());
-            Require(scroller.HorizontalOffset() < offset, "stock backward arrow scrolls back");
+            Require(invoke(increase, true, false) && decrease.IsEnabled(),
+                    "stock forward arrow scrolls the constrained grouped list by its full step");
+            Require(invoke(decrease, false, false) && !decrease.IsEnabled(), "stock backward arrow scrolls back to the start");
+            // From 50 DIP on, the selected first tab is partly hidden, so a
+            // late request would pull the strip back to its leading edge.
+            Require(invoke(increase, true, true) && !fullyVisible(home),
+                    "a selected-tab request issued before a stock forward scroll cannot undo it");
+            Require(invoke(increase, true, true), "a stale selected-tab request cannot undo a second forward scroll");
+            Require(invoke(decrease, false, true) && !fullyVisible(home),
+                    "a stale selected-tab request cannot undo a stock backward scroll");
+            // Later selection still brings the selected tab into view.
+            Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 42, &selected)), "select grouped tab after arrow scroll");
+            drain();
+            Controls::TabViewItem research{nullptr};
+            for (auto const& tab : visibleTabs) if (unbox_value<uint32_t>(tab.Tag()) == 42) research = tab;
+            Require(research && research.IsSelected() && fullyVisible(research),
+                    "selection after an arrow scroll still brings the selected tab into view");
+            Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 41, &selected)), "restore first tab after arrow scroll");
+            drain();
+            Require(fullyVisible(home), "restored selection brings the first tab back into view");
         } else if (width == 820) {
             // Coming from real overflow: the content now fits without arrows
             // but not beside them. Auto visibility latched arrows on here.
