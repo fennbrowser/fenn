@@ -1690,8 +1690,14 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         if (width == 600) {
             // Equal mode would fill this width with two tabs and push the
             // expanded and empty collapsed headers into a spurious overflow.
-            fprintf(stderr, "Grouped fit: scrollable=%.1f tab=%.1f\n", scroller.ScrollableWidth(),
-                visibleTabs.empty() ? 0.0 : visibleTabs.front().ActualWidth());
+            auto list = findOverflowPart(view, L"TabListView");
+            fprintf(stderr, "Grouped fit: scrollable=%.1f extent=%.1f viewport=%.1f scroller=%.1f list=%.1f listMax=%.1f\n",
+                scroller.ScrollableWidth(), scroller.ExtentWidth(), scroller.ViewportWidth(), scroller.ActualWidth(),
+                list ? list.ActualWidth() : -1.0, list ? list.MaxWidth() : -1.0);
+            for (auto const& tab : visibleTabs)
+                fprintf(stderr, "Grouped fit tab %u: actual=%.1f width=%.1f desired=%.1f max=%.1f loaded=%d visible=%d\n",
+                    unbox_value<uint32_t>(tab.Tag()), tab.ActualWidth(), tab.Width(), tab.DesiredSize().Width,
+                    tab.MaxWidth(), tab.IsLoaded(), tab.Visibility() == Visibility::Visible);
             Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Collapsed &&
                         scroller.ScrollableWidth() < .5,
                     "group headers do not show stock arrows while tabs can still shrink");
