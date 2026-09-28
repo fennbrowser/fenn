@@ -3,6 +3,8 @@
 #include <map>
 #include <set>
 #include <functional>
+#include <cstdio>
+#include <string>
 #include <winrt/Windows.Data.Json.h>
 #include "GroupTabsFlyout.h"
 
@@ -223,11 +225,52 @@ struct InlineTabGroups {
                 if (arrows > gap + .5) arrows = 0;
                 const double inset = std::max(0.0, list.ActualWidth() - scroller.ViewportWidth() - arrows);
                 CapTabWidths(available - inset, scroller.ExtentWidth(), minTab, maxTab);
+                LogScroller(list, scroller, grid, available);
             }
             refreshArrows();
         });
         configured = true;
         return true;
+    }
+
+    // Opt-in (FIREFOX_WINUI_PANE_DIAGNOSTICS) record of what decides the stock
+    // arrows, written only when it changes. Identifies whether the configured
+    // ScrollViewer is still the templated one and still holds its local Auto.
+    std::string lastScrollLog;
+    void LogScroller(Controls::ListViewBase const& list, Controls::ScrollViewer const& scroller,
+                     Controls::Grid const& grid, double available) {
+        static const bool enabled = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;
+        if (!enabled) return;
+        Controls::ScrollViewer current{nullptr};
+        if (Media::VisualTreeHelper::GetChildrenCount(list))
+            if (auto root = Media::VisualTreeHelper::GetChild(list, 0).try_as<FrameworkElement>())
+                current = root.FindName(L"ScrollViewer").try_as<Controls::ScrollViewer>();
+        const auto local = scroller.ReadLocalValue(Controls::ScrollViewer::HorizontalScrollBarVisibilityProperty());
+        const auto localAuto = local.try_as<Windows::Foundation::IReference<Controls::ScrollBarVisibility>>() &&
+            unbox_value<Controls::ScrollBarVisibility>(local) == Controls::ScrollBarVisibility::Auto;
+        const auto column = grid.ColumnDefinitions().GetAt(1);
+        size_t tabs = 0, hidden = 0;
+        double tabWidth = 0;
+        for (auto const& [id, run] : runs) for (auto item : run.items) {
+            auto row = item.as<Controls::TabViewItem>();
+            if (row.Visibility() != Visibility::Visible) { ++hidden; continue; }
+            ++tabs; tabWidth = row.ActualWidth();
+        }
+        char line[512];
+        snprintf(line, sizeof line,
+            "WinUIPane tab-scroll same=%d localAuto=%d mode=%d listMode=%d computed=%d extent=%.1f viewport=%.1f "
+            "offset=%.1f scroller=%.1f list=%.1f listMax=%.1f available=%.1f column=%.1f/%d/%.1f "
+            "runs=%zu tabs=%zu hidden=%zu tab=%.1f\n",
+            current == scroller, localAuto, int(scroller.HorizontalScrollBarVisibility()),
+            int(Controls::ScrollViewer::GetHorizontalScrollBarVisibility(list)),
+            scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Visible,
+            scroller.ExtentWidth(), scroller.ViewportWidth(), scroller.HorizontalOffset(), scroller.ActualWidth(),
+            list.ActualWidth(), list.MaxWidth(), available, column.Width().Value, int(column.Width().GridUnitType),
+            column.ActualWidth(), runs.size(), tabs, hidden, tabWidth);
+        if (lastScrollLog == line) return;
+        lastScrollLog = line;
+        fputs(line, stderr);
+        fflush(stderr);
     }
 
     // `space` is the scroll viewport without arrows; `extent` is the grouped
