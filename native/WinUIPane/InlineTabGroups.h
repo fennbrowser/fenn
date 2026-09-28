@@ -183,6 +183,23 @@ struct InlineTabGroups {
             if (increase.IsEnabled() != canForward) increase.IsEnabled(canForward);
         };
         scroller.ViewChanged([refreshArrows](auto const&, auto const&) { refreshArrows(); });
+        if (GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0)) {
+            // Diagnostics only: who asks the stock scroller to move.
+            scroller.ViewChanged([scroll = make_weak(scroller)](auto const&, auto const& args) {
+                if (auto scroller = scroll.get())
+                    fprintf(stderr, "WinUIPane tab-scroll view offset=%.1f intermediate=%d\n",
+                            scroller.HorizontalOffset(), args.IsIntermediate());
+            });
+            list.BringIntoViewRequested([](auto const&, auto const& args) {
+                auto target = args.TargetElement().try_as<FrameworkElement>();
+                const auto rect = args.TargetRect();
+                hstring kind = target ? get_class_name(target) : hstring{L"none"};
+                hstring tag = target && target.Tag() ? to_hstring(unbox_value_or<uint32_t>(target.Tag(), 0)) : hstring{};
+                fprintf(stderr, "WinUIPane tab-scroll bring target=%ls tag=%ls rect=%.1f,%.1f,%.1f offset=%.1f,%.1f animate=%d handled=%d\n",
+                        kind.c_str(), tag.c_str(), rect.X, rect.Width, rect.Height,
+                        args.HorizontalOffset(), args.HorizontalAlignmentRatio(), args.AnimationDesired(), args.Handled());
+            });
+        }
         // Equal mode divides the full width among tabs alone, so in its fill
         // range the headers always overflow by their own width and show
         // arrows with nothing to reveal (typically after a collapse widens
