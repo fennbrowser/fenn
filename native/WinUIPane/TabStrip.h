@@ -7,6 +7,7 @@
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include "JsonValidation.h"
 #include "TabGroupsButton.h"
+#include "AllTabsButton.h"
 #include "TabDragImage.h"
 #include "ShellCore.h"
 #include "InlineTabGroups.h"
@@ -85,6 +86,7 @@ struct NativeTabStrip {
     };
     std::map<uint32_t, Presentation> presentation;
     TabGroupsButton groupsButton;
+    AllTabsButton allTabs;
     InlineTabGroups inlineGroups;
     GroupSlide groupSlide;
     GroupDragVisual groupDragVisual;
@@ -868,6 +870,9 @@ struct NativeTabStrip {
             if (!timerLife.expired() && IsDragging() && tickDragSession) tickDragSession();
         });
         view.TabStripHeader(groupsButton.button);
+        allTabs.button.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) OpenAllTabs();
+        });
         groupsButton.currentRevision = [this] { return presentationRevision; };
         inlineGroups.press = [this](uint32_t id, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
             if (!core || syncing || !armGroupDragSession || (GetKeyState(VK_CONTROL)&0x8000) || (GetKeyState(VK_SHIFT)&0x8000)) return;
@@ -1031,6 +1036,27 @@ struct NativeTabStrip {
         lifetime.reset();
         if (core) shell_core_transfer_cancel(core);
         try { ReconcileTransfers(); } catch (...) { /* An island may also be closing. */ }
+    }
+
+    // Names the button's screen rectangle; Firefox opens its own all-tabs panel there.
+    void OpenAllTabs() {
+        if (!dispatch || IsDragging() || GroupDrag().phase || !allTabs.button.XamlRoot()) return;
+        auto button = allTabs.button;
+        auto local = button.TransformToVisual(nullptr).TransformBounds(
+            {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
+        auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+        // The panel belongs to Gecko; release island keyboard focus first.
+        if (ownerHwnd) SetFocus(ownerHwnd);
+        using Value = Windows::Data::Json::JsonValue;
+        Windows::Data::Json::JsonObject action;
+        action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-all-tabs"));
+        action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));
+        action.SetNamedValue(L"session", Value::CreateNumberValue(windowDragSession));
+        action.SetNamedValue(L"x", Value::CreateNumberValue(screen.X));
+        action.SetNamedValue(L"y", Value::CreateNumberValue(screen.Y));
+        action.SetNamedValue(L"width", Value::CreateNumberValue(screen.Width));
+        action.SetNamedValue(L"height", Value::CreateNumberValue(screen.Height));
+        dispatch(0, action.Stringify());
     }
 
     Controls::MenuFlyout barMenu{nullptr};

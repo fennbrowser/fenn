@@ -323,7 +323,7 @@ struct NativeWindowDrag {
     }
     void Open(HWND hwnd, NativeTabStrip* value) {
         owner = hwnd; strip = value;
-        windowCaption.Open(hwnd, strip->root);
+        windowCaption.Open(hwnd, strip->root, strip->allTabs.button, AllTabsButton::kWidth);
         mergePreview = Markup::XamlReader::Load(
             LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentFillColorDefaultBrush}" BorderThickness="2" CornerRadius="4" Margin="1" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AutomationId="FirefoxWinUIWindowMergePreview" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         Controls::Grid::SetColumnSpan(mergePreview, 3);

@@ -1196,7 +1196,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "stock tab header fits reserved row");
     Require(view.ActualHeight() == 40 && root.ActualHeight() == view.ActualHeight(),
             "reservation fits the unchanged stock TabView without an empty bottom band");
-    Require(root.Children().Size() == 7 && !first.Content() && !second.Content(),
+    Require(root.Children().Size() == 8 && !first.Content() && !second.Content(),
             "strip has no address or browser content");
     Require(root.ColumnDefinitions().Size() == 3 && root.ColumnDefinitions().GetAt(2).Width().Value > 0,
             "system caption buttons reserve their SDK inset");
@@ -1205,6 +1205,14 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "tabs do not overlap the system caption inset");
     auto systemCaption = winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(
         winrt::Microsoft::UI::GetWindowIdFromWindow(host)).TitleBar();
+    auto allTabs = root.Children().GetAt(6).as<Controls::Button>();
+    Require(allTabs.Visibility() == Visibility::Visible && Controls::Grid::GetColumn(allTabs) == 2 &&
+                allTabs.Width() == 46 && allTabs.VerticalAlignment() == VerticalAlignment::Top &&
+                allTabs.Content().try_as<Controls::FontIcon>() &&
+                allTabs.Content().as<Controls::FontIcon>().HorizontalAlignment() == HorizontalAlignment::Center &&
+                winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::GetAutomationId(allTabs) == L"FirefoxWinUIAllTabs" &&
+                root.ColumnDefinitions().GetAt(2).Width().Value >= 46,
+            "list-all-tabs button sits in the caption column beside the system buttons");
     Require(systemCaption.ExtendsContentIntoTitleBar() &&
                 systemCaption.PreferredHeightOption() == winrt::Microsoft::UI::Windowing::TitleBarHeightOption::Standard &&
                 GetPropW(host, WINUI_PANE_SYSTEM_CAPTION_PROPERTY),
@@ -1224,6 +1232,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         Require(root.ActualHeight() == height && view.ActualHeight() == height && first.ActualHeight() == 32,
                 "all strip layouts preserve tab height without a bottom band");
         Require(systemCaption.PreferredHeightOption() == expected, "caption size follows strip layout");
+        Require(allTabs.Height() == (height == 48 ? 48 : 32), "list-all-tabs button matches caption button height");
         for (uint32_t index : {4u, 5u}) {
             auto line = root.Children().GetAt(index).as<Controls::Border>();
             Require(line.Visibility() == (height == 40 ? Visibility::Visible : Visibility::Collapsed) &&
@@ -1233,7 +1242,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         Require(view.TabItems().GetAt(0) == first && view.SelectedItem() == first,
                 "height changes preserve tab identity and selection");
     }
-    auto mergePreview = root.Children().GetAt(6).as<Controls::Border>();
+    auto mergePreview = root.Children().GetAt(7).as<Controls::Border>();
     Require(!mergePreview.IsHitTestVisible() && mergePreview.Visibility() == Visibility::Collapsed,
             "merge feedback is hidden and cannot capture input while idle");
     Require(first != second && view.SelectedItem() == first, "duplicate titles preserve identity and active tab");
@@ -1682,7 +1691,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         return nullptr;
     };
     for (int width : {600, 400, 820, 1200}) {
-        rect.right = width;
+        // The list-all-tabs button takes 46 DIPs of the tab area's width.
+        rect.right = width + 46;
         Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "resize grouped strip across overflow threshold");
         settle();
         const auto bounds = addButton.TransformToVisual(root).TransformBounds(

@@ -2518,10 +2518,10 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..be29f14c8a
+index 0000000000..f98ace6455
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,230 @@
+@@ -0,0 +1,239 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2531,8 +2531,8 @@ index 0000000000..be29f14c8a
 +let nextWindowDragSession = 0;
 +
 +export class WinUITabStripSession {
-+  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, moveGroup }) {
-+    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, moveGroup });
++  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup }) {
++    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup });
 +    this.ids = new WeakMap();
 +    this.nextId = 1;
 +    this.revision = 0;
@@ -2624,6 +2624,15 @@ index 0000000000..be29f14c8a
 +      this.consumed = true;
 +      return this.moveGroup(this.targets.get(event.group),
 +        event.beforeGroup ? this.targets.get(event.beforeGroup) : null, event.beforeTab) !== false;
++    }
++    if (event?.kind === "strip-all-tabs") {
++      if (event.session !== this.windowDragSession || event.revision !== this.revision ||
++          !this.openAllTabsMenu ||
++          ![event.x,event.y,event.width,event.height].every(n => Number.isFinite(n) && Math.abs(n) <= 1000000) ||
++          event.width <= 0 || event.height <= 0) return false;
++      return this.openAllTabsMenu({
++        x:event.x, y:event.y, width:event.width, height:event.height,
++      }) !== false;
 +    }
 +    if (event?.kind === "strip-group-context") {
 +      if (this.consumed || event.session !== this.windowDragSession || event.revision !== this.revision ||
@@ -3900,10 +3909,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..414953e230
+index 0000000000..765d2d000e
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1681 @@
+@@ -0,0 +1,1701 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4610,6 +4619,25 @@ index 0000000000..414953e230
 +          const scale = window.devicePixelRatio;
 +          const screenRect = Object.fromEntries(Object.entries(bounds).map(([key,value]) => [key,value / scale]));
 +          gBrowser.tabGroupMenu.openEditModal(group, screenRect);
++          return true;
++        },
++        openAllTabsMenu: bounds => {
++          if (gDialogBox.isOpen) return false;
++          gTabsPanel.init();
++          const scale = window.devicePixelRatio;
++          if (!this.allTabsAnchor) {
++            this.allTabsAnchor = document.createElementNS("http://www.w3.org/1999/xhtml", "div");
++            this.allTabsAnchor.style.cssText = "position:fixed;pointer-events:none;opacity:0;";
++            this.element.append(this.allTabsAnchor);
++          }
++          Object.assign(this.allTabsAnchor.style, {
++            left: `${bounds.x / scale - window.mozInnerScreenX}px`,
++            top: `${bounds.y / scale - window.mozInnerScreenY}px`,
++            width: `${bounds.width / scale}px`,
++            height: `${bounds.height / scale}px`,
++          });
++          Glean.browserUiInteraction.allTabsPanelEntrypoint["alltabs-button"].add(1);
++          PanelUI.showSubView(gTabsPanel.kElements.allTabsView, this.allTabsAnchor);
 +          return true;
 +        },
 +        selectGroupTab: (group, id) => {
@@ -5577,6 +5605,7 @@ index 0000000000..414953e230
 +    Services.prefs.removeObserver("browser.nova.enabled", this);
 +    this.element.remove();
 +    this.element = null;
++    this.allTabsAnchor = null;
 +    this.popups.clear();
 +    this.urlbar = null;
 +    this.urlbarPanel = null;
