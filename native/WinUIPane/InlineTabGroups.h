@@ -193,6 +193,7 @@ struct InlineTabGroups {
         const double maxTab = std::max(minTab, themeWidth(L"TabViewItemMaxWidth", 240));
         list.LayoutUpdated([this, alive = std::weak_ptr<int>(lifetime), weakList = make_weak(list),
                             weakView = make_weak(view), scroll = make_weak(scroller), minTab, maxTab,
+                            back = make_weak(decrease), forward = make_weak(increase),
                             refreshArrows](auto const&, auto const&) {
             if (alive.expired()) return;
             auto list = weakList.get();
@@ -206,15 +207,26 @@ struct InlineTabGroups {
                 grid.ColumnDefinitions().GetAt(2).ActualWidth() -
                 (footer ? footer.DesiredSize().Width : 0));
             if (list.MaxWidth() != available) list.MaxWidth(available);
-            if (auto scroller = scroll.get(); scroller && scroller.ActualWidth() > 0)
-                CapTabWidths(available - (list.ActualWidth() - scroller.ActualWidth()), scroller.ExtentWidth(), minTab, maxTab);
+            if (auto scroller = scroll.get(); scroller && scroller.ActualWidth() > 0) {
+                // Without arrows the viewport is the list less its fixed
+                // inset (the scroller keeps 2 DIP); count visible arrows back
+                // in, since fitting is exactly what hides them.
+                double arrows = 0;
+                for (auto const& weak : {back, forward}) {
+                    auto arrow = weak.get();
+                    if (!arrow || arrow.Visibility() != Visibility::Visible) continue;
+                    arrows += arrow.ActualWidth() + arrow.Margin().Left + arrow.Margin().Right;
+                }
+                const double inset = std::max(0.0, list.ActualWidth() - scroller.ViewportWidth() - arrows);
+                CapTabWidths(available - inset, scroller.ExtentWidth(), minTab, maxTab);
+            }
             refreshArrows();
         });
         configured = true;
         return true;
     }
 
-    // `space` is the scroll region without arrows; `extent` is the grouped
+    // `space` is the scroll viewport without arrows; `extent` is the grouped
     // content, so extent minus the tabs is every header, gap and padding.
     void CapTabWidths(double space, double extent, double minTab, double maxTab) {
         std::vector<Controls::TabViewItem> tabs;
