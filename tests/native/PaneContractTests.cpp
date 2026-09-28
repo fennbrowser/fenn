@@ -1674,7 +1674,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             if (auto part = findOverflowPart(Media::VisualTreeHelper::GetChild(node, i), name)) return part;
         return nullptr;
     };
-    for (int width : {600, 400, 1200}) {
+    for (int width : {600, 300, 1200}) {
         rect.right = width;
         Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "resize grouped strip across overflow threshold");
         settle();
@@ -1685,9 +1685,21 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     bounds.X + bounds.Width <= right + 1 && bounds.Width == 32,
                 "group headers cannot displace the full stock add button into caption space");
         auto scroller = findOverflowPart(view, L"ScrollViewer").as<Controls::ScrollViewer>();
+        std::vector<Controls::TabViewItem> visibleTabs;
+        for (auto item : view.TabItems()) visibleTabs.push_back(item.as<Controls::TabViewItem>());
         if (width == 600) {
+            // Equal mode would fill this width with two tabs and push the
+            // expanded and empty collapsed headers into a spurious overflow.
+            fprintf(stderr, "Grouped fit: scrollable=%.1f tab=%.1f\n", scroller.ScrollableWidth(),
+                visibleTabs.empty() ? 0.0 : visibleTabs.front().ActualWidth());
+            Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Collapsed &&
+                        scroller.ScrollableWidth() < .5,
+                    "group headers do not show stock arrows while tabs can still shrink");
+            for (auto const& tab : visibleTabs)
+                Require(tab.ActualWidth() > 100.5, "headers fit by shrinking tabs above the stock minimum");
+        } else if (width == 300) {
             Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Visible,
-                    "actual grouped overflow shows stock scroll arrows before tab-count overflow");
+                    "minimum-width grouped overflow shows stock scroll arrows");
             scroller.ChangeView(box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
             settle();
             auto increase = findOverflowPart(view, L"ScrollIncreaseButton").as<Controls::Primitives::RepeatButton>();

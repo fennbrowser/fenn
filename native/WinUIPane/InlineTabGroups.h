@@ -177,8 +177,23 @@ struct InlineTabGroups {
             if (increase.IsEnabled() != canForward) increase.IsEnabled(canForward);
         };
         scroller.ViewChanged([refreshArrows](auto const&, auto const&) { refreshArrows(); });
-        list.LayoutUpdated([alive = std::weak_ptr<int>(lifetime), weakList = make_weak(list),
-                            weakView = make_weak(view), refreshArrows](auto const&, auto const&) {
+        // Equal mode divides the full width among tabs alone, so in its fill
+        // range the headers always overflow by their own width and show
+        // arrows with nothing to reveal (typically after a collapse widens
+        // the remaining tabs). Cap tabs to the space the headers leave;
+        // TabView still writes Width, and the stock minimum keeps real overflow.
+        auto themeWidth = [](wchar_t const* key, double fallback) {
+            try {
+                if (auto value = Application::Current().Resources().TryLookup(box_value(key)))
+                    if (auto width = value.try_as<Windows::Foundation::IReference<double>>()) return width.Value();
+            } catch (...) {}
+            return fallback;
+        };
+        const double minTab = themeWidth(L"TabViewItemMinWidth", 100);
+        const double maxTab = std::max(minTab, themeWidth(L"TabViewItemMaxWidth", 240));
+        list.LayoutUpdated([this, alive = std::weak_ptr<int>(lifetime), weakList = make_weak(list),
+                            weakView = make_weak(view), scroll = make_weak(scroller), minTab, maxTab,
+                            refreshArrows](auto const&, auto const&) {
             if (alive.expired()) return;
             auto list = weakList.get();
             auto view = weakView.get();
@@ -191,10 +206,37 @@ struct InlineTabGroups {
                 grid.ColumnDefinitions().GetAt(2).ActualWidth() -
                 (footer ? footer.DesiredSize().Width : 0));
             if (list.MaxWidth() != available) list.MaxWidth(available);
+            if (auto scroller = scroll.get(); scroller && scroller.ActualWidth() > 0)
+                CapTabWidths(available - (list.ActualWidth() - scroller.ActualWidth()), scroller.ExtentWidth(), minTab, maxTab);
             refreshArrows();
         });
         configured = true;
         return true;
+    }
+
+    // `space` is the scroll region without arrows; `extent` is the grouped
+    // content, so extent minus the tabs is every header, gap and padding.
+    void CapTabWidths(double space, double extent, double minTab, double maxTab) {
+        std::vector<Controls::TabViewItem> tabs;
+        double measured = 0;
+        size_t loaded = 0;
+        for (auto const& [id, run] : runs) {
+            for (auto item : run.items) {
+                auto row = item.as<Controls::TabViewItem>();
+                if (row.Visibility() != Visibility::Visible) continue;
+                tabs.push_back(row);
+                if (row.IsLoaded()) { measured += row.DesiredSize().Width; ++loaded; }
+            }
+        }
+        if (!loaded || space <= 0) return;
+        // Unrealized rows are estimated the same way ItemsStackPanel does.
+        const double tabExtent = measured / loaded * tabs.size();
+        const double slot = (space - std::max(0.0, extent - tabExtent)) / tabs.size();
+        for (auto& row : tabs) {
+            const auto margin = row.Margin();
+            const double cap = std::clamp(slot - margin.Left - margin.Right, minTab, maxTab);
+            if (std::abs(row.MaxWidth() - cap) > .5) row.MaxWidth(cap);
+        }
     }
 
     void Metadata(Windows::Data::Json::JsonArray const& groups, bool animate = false) {
