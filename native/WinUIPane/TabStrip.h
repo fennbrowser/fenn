@@ -144,6 +144,7 @@ struct NativeTabStrip {
     }
     Controls::ScrollViewer ambientScroller{nullptr};
     winrt::event_token ambientScrollToken{};
+    FrameworkElement ambientContent{nullptr};
     void RefreshAmbient() {
         if (!ambient.layer) return;
         if (!root.IsLoaded() || root.Visibility() != Visibility::Visible) {
@@ -158,6 +159,7 @@ struct NativeTabStrip {
         if (scroller != ambientScroller) {
             if (ambientScroller) ambientScroller.ViewChanged(ambientScrollToken);
             ambientScroller = scroller;
+            ambientContent = nullptr;
             if (scroller) ambientScrollToken = scroller.ViewChanged([this, alive = std::weak_ptr<int>(lifetime)](auto&&, auto&&) {
                 if (!alive.expired()) ambient.Update();
             });
@@ -166,6 +168,21 @@ struct NativeTabStrip {
             return item.TransformToVisual(ambient.layer).TransformBounds({0, 0, float(item.ActualWidth()), float(item.ActualHeight())});
         };
         auto viewport = scroller ? boundsOf(scroller) : boundsOf(view);
+        // The stock scroller template places its arrow columns beside the
+        // ScrollContentPresenter that clips the tabs. While the arrows are
+        // shown, keep lighting and outlines inside that presenter rather than
+        // drawing across the arrows. Without arrows the bounds are unchanged.
+        if (scroller && scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Visible) {
+            if (!ambientContent && Media::VisualTreeHelper::GetChildrenCount(scroller))
+                if (auto template_ = Media::VisualTreeHelper::GetChild(scroller, 0).try_as<FrameworkElement>())
+                    ambientContent = template_.FindName(L"ScrollContentPresenter").try_as<FrameworkElement>();
+            if (ambientContent && ambientContent.IsLoaded() && ambientContent.ActualWidth() > 0) {
+                const auto content = boundsOf(ambientContent);
+                const auto left = std::max(viewport.X, content.X);
+                const auto right = std::min(viewport.X + viewport.Width, content.X + content.Width);
+                viewport.X = left; viewport.Width = std::max(0.f, right - left);
+            }
+        }
         // Follow realized XAML geometry, including finite drag/collapse motion.
         // Group identity and membership still come from the validated layout.
         std::map<uint32_t, Windows::Foundation::Rect> surfaceBounds;

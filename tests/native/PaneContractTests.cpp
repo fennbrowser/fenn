@@ -1755,6 +1755,19 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             fprintf(stderr, "Grouped scroll: offset=%.1f extent=%.1f increase=%d decrease=%d\n",
                 scroller.HorizontalOffset(), scroller.ScrollableWidth(), increase.IsEnabled(), decrease.IsEnabled());
             Require(increase.IsEnabled() && !decrease.IsEnabled(), "stock arrows reflect start of grouped overflow");
+            // The scroller's template puts the arrows beside the presenter
+            // that clips the tabs; glow and outlines stop at that presenter.
+            const auto arrowBounds = [&](FrameworkElement const& arrow) {
+                return arrow.TransformToVisual(ambientLayer).TransformBounds(
+                    {0, 0, float(arrow.ActualWidth()), float(arrow.ActualHeight())});
+            };
+            const auto glowClip = ambientLayer.Clip().Rect();
+            const auto back = arrowBounds(decrease), forward = arrowBounds(increase);
+            fprintf(stderr, "Grouped glow clip: %.1f..%.1f back=%.1f..%.1f forward=%.1f..%.1f\n",
+                glowClip.X, glowClip.X + glowClip.Width, back.X, back.X + back.Width, forward.X, forward.X + forward.Width);
+            Require(back.Width > 0 && forward.Width > 0 && glowClip.X >= back.X + back.Width - .5 &&
+                        glowClip.X + glowClip.Width <= forward.X + .5,
+                    "tab glow is clipped to the scroll content between the stock arrows");
             // TabView's stock arrows ask for exactly 50 DIP (c_scrollAmount).
             auto invoke = [&](FrameworkElement element, bool forward, bool staleRequest) {
                 const auto before = scroller.HorizontalOffset();
