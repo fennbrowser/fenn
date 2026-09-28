@@ -1908,6 +1908,23 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 "group outline follows the header without adding input or accessibility targets");
             Require(!surface.Background() && surface.BorderBrush() && surface.ActualTheme() == theme,
                 "group surface has no selection-like fill and retains its live themed outline");
+            // Group 9's header follows group 7's last tab across a 4-DIP
+            // margin: both surfaces reach into it and keep a 1-DIP separation.
+            Controls::Border empty{nullptr};
+            for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
+                if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-9") empty = child.as<Controls::Border>();
+            auto emptyHeader = find(view,L"FirefoxWinUIInlineGroup-9");
+            auto groupHeader = header.TransformToVisual(root).TransformBounds({0,0,float(header.ActualWidth()),float(header.ActualHeight())});
+            auto nextHeader = emptyHeader.TransformToVisual(root).TransformBounds({0,0,float(emptyHeader.ActualWidth()),float(emptyHeader.ActualHeight())});
+            const auto groupLeft = float(Controls::Canvas::GetLeft(surface)), groupRight = groupLeft + float(surface.Width());
+            const auto emptyLeft = float(Controls::Canvas::GetLeft(empty)), emptyRight = emptyLeft + float(empty.Width());
+            printf("Group reach: group=%.1f..%.1f header=%.1f next=%.1f..%.1f nextHeader=%.1f..%.1f\n", groupLeft, groupRight,
+                groupHeader.X, emptyLeft, emptyRight, nextHeader.X, nextHeader.X + nextHeader.Width);
+            fflush(stdout);
+            Require(std::abs(groupLeft - (groupHeader.X - 3)) < .5f && std::abs(emptyRight - (nextHeader.X + nextHeader.Width + 3)) < .5f,
+                "group surfaces extend 3 DIP past their outer members");
+            Require(emptyLeft - groupRight >= 1 - .01f && emptyLeft < nextHeader.X && groupRight > nextHeader.X - 4,
+                "neighboring group surfaces share the gap without overlapping");
         }
         Require(header.ActualHeight() > 0 && header.ActualHeight() <= 40 && view.ActualHeight() <= 40, "inline group fits reserved strip height");
         Require(header.ActualWidth() == 32 && header.ActualHeight() == 32, "capsule retains a compact 32-DIP input target");
@@ -2068,8 +2085,9 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children()) {
             if (Automation::AutomationProperties::GetAutomationId(child) != L"FirefoxWinUIGroupSurface-7") continue;
             auto surface = child.as<Controls::Border>();
-            Require(!surface.Background() && std::abs(surface.Width() - connectedWidth) < 1,
-                "collapsed lighting connects the button and retained active member without neutral fill");
+            Require(!surface.Background() && std::abs(surface.Width() - (connectedWidth + 6)) < 1 &&
+                std::abs(float(Controls::Canvas::GetLeft(surface)) - (std::min(buttonBounds.X, retainedBounds.X) - 3)) < 1,
+                "collapsed lighting connects the button and retained active member, extending past both, without neutral fill");
         }
         // An active-only group can toggle without any tab-list publication.
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":12,"revision":13,"rows":[],"removed":[],"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}]}})");
@@ -2187,6 +2205,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(separatorColor.A == 170 && separatorColor.R == ((4289934591u >> 16) & 255) &&
             separatorColor.G == ((4289934591u >> 8) & 255) && separatorColor.B == (4289934591u & 255),
             "unselected container tints its stock trailing divider with its own color");
+        Require(separatorA.Visibility() == Visibility::Visible && nativeSeparator(b).Visibility() == Visibility::Collapsed,
+            "only the group's last member hides the divider beside the group outline");
         auto faceShape = [&](uint32_t id) {
             for (auto visual : faceRoot.Children()) {
                 if (visual.Comment() != L"tab-face:" + winrt::to_hstring(id)) continue;
@@ -2232,8 +2252,9 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             "deselection restores the retained face's inactive lighting");
         Require(selectedEdge.ColorStops().GetAt(1).Color().A == 180,
             "deselection restores the bottom edge reflection");
-        Require(std::abs(groupVisual.Offset().x - hr.X) < 1 &&
-            std::abs(groupVisual.Size().x - (br.X + br.Width - hr.X)) < 1 &&
+        // A lone group reaches 3 DIP past its outer members on both sides.
+        Require(std::abs(groupVisual.Offset().x - (hr.X - 3)) < 1 &&
+            std::abs(groupVisual.Size().x - (br.X + br.Width - hr.X + 6)) < 1 &&
             std::abs(containerVisual.Size().x - ar.Width) < 1,
             "bottom field includes the disclosure button and both tabs; container corners follow the full tab");
         winrt::Microsoft::UI::Composition::SpriteVisual groupCenter{nullptr};
@@ -2415,6 +2436,9 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         settle();
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 1 && halo.Children().Count() == 0,
             "container glow survives tab realization after ungrouping; the group halo is released");
+        for (auto item : view.TabItems())
+            Require(nativeSeparator(item.as<Controls::TabViewItem>()).Visibility() == Visibility::Visible,
+                "ungrouping restores the former group end's divider");
         Require(!rim(L"group-outer-reflection") && !rim(L"group-shared-reflection"),
             "ungrouping releases group boundary reflections");
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":22,"revision":23,"rows":[{"id":42,"containerName":"Other identity, same color","containerColor":4289934591}],"removed":[]}})");
@@ -2543,6 +2567,36 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             Require(!reversals, "the deferred indicator motion never shows its target before shortening from the held width");
             Require(!detached || heldWidth == 16.0, "a detached indicator keeps its displayed width for the motion");
             Require(openMarker.IsLoaded() && openMarker.Width() == 6.0, "leaving the group for a new tab shortens its indicator");
+            // Firefox's groupReach option sets how far the lone group reaches
+            // past its outer members; live deltas resize it in place.
+            auto groupHeader = find(view,L"FirefoxWinUIInlineGroup-7");
+            auto reachSurface = [&] {
+                for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
+                    if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-7") return child.as<Controls::Border>();
+                return Controls::Border{nullptr};
+            };
+            auto reachOf = [&] {
+                const auto at = groupHeader.TransformToVisual(root).TransformPoint({0,0});
+                return at.X - float(Controls::Canvas::GetLeft(reachSurface()));
+            };
+            Require(std::abs(reachOf() - 3) < .1f, "medium group reach is the default");
+            uint32_t reachRevision = 28;
+            for (auto [name, expected] : {std::pair{L"none", 0.f}, {L"large", 5.f}, {L"small", 2.f}, {L"medium", 3.f}}) {
+                auto update = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
+                auto strip = update.GetNamedObject(L"strip");
+                using Value = winrt::Windows::Data::Json::JsonValue;
+                strip.SetNamedValue(L"base", Value::CreateNumberValue(reachRevision));
+                strip.SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
+                strip.SetNamedValue(L"groupReach", Value::CreateStringValue(name));
+                MenuPublish(api,host,update.Stringify().c_str()); settle();
+                printf("Group reach %ls: %.1f\n", name, reachOf());
+                Require(std::abs(reachOf() - expected) < .1f, "group reach option resizes the group surface");
+            }
+            const auto rejected = api.syncTabMenu(host, (LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":)" +
+                std::to_wstring(reachRevision) + LR"(,"revision":)" + std::to_wstring(reachRevision + 1) +
+                LR"(,"rows":[],"removed":[],"groupReach":"huge"}})").c_str());
+            settle();
+            Require(FAILED(rejected) && std::abs(reachOf() - 3) < .1f, "an unknown group reach is rejected without changing the surface");
         }
         puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");
     }

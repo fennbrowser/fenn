@@ -868,10 +868,10 @@ index 995b2fc869..7add43e3b2 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 47a26fd814..31707a979a 100644
+index 47a26fd814..4389f0897b 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3831,6 +3831,18 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3831,6 +3831,20 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -885,6 +885,8 @@ index 47a26fd814..31707a979a 100644
 +pref("widget.windows.winui-prototype.tabstrip.glows", false);
 +// Strip backdrop: "mica", "mica-alt" or "acrylic".
 +pref("widget.windows.winui-prototype.tabstrip.backdrop", "mica-alt");
++// Group outline reach past outer members: "none", "small", "medium" or "large".
++pref("widget.windows.winui-prototype.tabstrip.groupReach", "medium");
 +pref("widget.windows.winui-prototype.address.enabled", false);
 +
  #ifdef XP_MACOSX
@@ -2515,7 +2517,7 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..ba5a0360b0
+index 0000000000..be29f14c8a
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
 @@ -0,0 +1,230 @@
@@ -2589,7 +2591,7 @@ index 0000000000..ba5a0360b0
 +        }
 +      }
 +      strip.removed = [...previous.keys()];
-+      for (const key of ["groupGlow", "containerGlow", "containerDot", "backdrop", "groupingDelay", "layout", "groups", "groupsLabel", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
++      for (const key of ["groupGlow", "containerGlow", "containerDot", "backdrop", "groupReach", "groupingDelay", "layout", "groups", "groupsLabel", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
 +        if (!this.same(state[key], this.state[key])) strip[key] = state[key];
 +      }
 +    }
@@ -3897,10 +3899,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..0d14158012
+index 0000000000..29d22b2e93
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1670 @@
+@@ -0,0 +1,1681 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3912,6 +3914,7 @@ index 0000000000..0d14158012
 +  containerDotPref: "widget.windows.winui-prototype.tabstrip.containerDot",
 +  tabGlowsPref: "widget.windows.winui-prototype.tabstrip.glows",
 +  stripBackdropPref: "widget.windows.winui-prototype.tabstrip.backdrop",
++  groupReachPref: "widget.windows.winui-prototype.tabstrip.groupReach",
 +  stripHeightPref: "widget.windows.winui-prototype.tabstrip.height",
 +  groupingPrefs: ["browser.tabs.groups.enabled", "browser.tabs.dragDrop.createGroup.enabled",
 +    "browser.tabs.dragDrop.createGroup.delayMS"],
@@ -4125,6 +4128,7 @@ index 0000000000..0d14158012
 +    Services.prefs.addObserver(this.containerDotPref, this);
 +    Services.prefs.addObserver(this.tabGlowsPref, this);
 +    Services.prefs.addObserver(this.stripBackdropPref, this);
++    Services.prefs.addObserver(this.groupReachPref, this);
 +    for (const pref of this.groupingPrefs) Services.prefs.addObserver(pref, this);
 +    Services.prefs.addObserver(this.addressPref, this);
 +    this.schedule();
@@ -4809,6 +4813,13 @@ index 0000000000..0d14158012
 +    return Services.prefs.getBoolPref(this.containerDotPref, false);
 +  },
 +
++  // How far native group outlines and lighting reach past their outer
++  // members. Unsupported values use the default.
++  groupReach() {
++    const requested = Services.prefs.getStringPref(this.groupReachPref, "medium");
++    return ["none", "small", "medium", "large"].includes(requested) ? requested : "medium";
++  },
++
 +  // The strip island's system backdrop. Unsupported values use the default.
 +  stripBackdrop() {
 +    const requested = Services.prefs.getStringPref(this.stripBackdropPref, "mica-alt");
@@ -4929,6 +4940,7 @@ index 0000000000..0d14158012
 +      containerGlow: Services.prefs.getBoolPref(this.tabGlowsPref, false) && !this.containerDotsEnabled(),
 +      containerDot: this.containerDotsEnabled(),
 +      backdrop: this.stripBackdrop(),
++      groupReach: this.groupReach(),
 +      rtl: document.documentElement.matches(":dir(rtl)"),
 +      windowDragTabId: liveTabs.length === 1 && liveTabs[0].visible &&
 +        !liveTabs[0]._pendingPermitUnload ? this.tabIds.get(liveTabs[0]) || 0 : 0,
@@ -5318,7 +5330,7 @@ index 0000000000..0d14158012
 +
 +  observe(subject, topic, data) {
 +    if (topic === "nsPref:changed" && (data === this.containerDotPref || data === this.tabGlowsPref ||
-+                                        data === this.stripBackdropPref)) {
++                                        data === this.stripBackdropPref || data === this.groupReachPref)) {
 +      this.stripDirty = true;
 +      this.schedule();
 +      return;
@@ -5557,6 +5569,7 @@ index 0000000000..0d14158012
 +    Services.prefs.removeObserver(this.containerDotPref, this);
 +    Services.prefs.removeObserver(this.tabGlowsPref, this);
 +    Services.prefs.removeObserver(this.stripBackdropPref, this);
++    Services.prefs.removeObserver(this.groupReachPref, this);
 +    for (const pref of this.groupingPrefs) Services.prefs.removeObserver(pref, this);
 +    Services.prefs.removeObserver(this.addressPref, this);
 +    Services.prefs.removeObserver("privacy.userContext.enabled", this);

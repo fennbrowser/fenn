@@ -103,7 +103,7 @@ struct NativeTabStrip {
         Controls::Border separator{nullptr};
         Media::SolidColorBrush brush{nullptr};
         uint32_t color{};
-        bool tinted{};
+        bool tinted{}, hidden{};
     };
     std::map<uint32_t, SeparatorTint> separatorTints;
     void RestoreSeparator(SeparatorTint& tint) {
@@ -118,6 +118,19 @@ struct NativeTabStrip {
     void RefreshSeparators() {
         std::set<uint32_t> live;
         const bool enabled = containerGlow && !ambient.accessibility.HighContrast();
+        // The last shown member of each group ends at the group outline; its
+        // trailing divider would sit directly beside that edge.
+        std::set<uint32_t> groupEnds;
+        if (inlineGroups.active) {
+            std::map<uint32_t, uint32_t> lastMember;
+            for (auto const& slot : groupLayout) {
+                if (!slot.group || !slot.tab) continue;
+                auto run = inlineGroups.runs.find(slot.group);
+                if (run != inlineGroups.runs.end() && (!run->second.collapsed || slot.tab == activeTabId))
+                    lastMember[slot.group] = slot.tab;
+            }
+            for (auto const& [group, tab] : lastMember) groupEnds.insert(tab);
+        }
         for (auto const& [id, row] : rows) {
             if (!row.IsLoaded() || !Media::VisualTreeHelper::GetChildrenCount(row)) continue;
             auto templateRoot = Media::VisualTreeHelper::GetChild(row, 0).try_as<FrameworkElement>();
@@ -128,6 +141,13 @@ struct NativeTabStrip {
             auto& tint = separatorTints[id];
             if (tint.separator != separator) {
                 RestoreSeparator(tint); tint = SeparatorTint{}; tint.separator = separator;
+            }
+            // TabView's visual states drive only the divider's Opacity, so its
+            // Visibility is free for this presentation-only decision.
+            const bool hide = groupEnds.count(id) != 0;
+            if (tint.hidden != hide) {
+                separator.Visibility(hide ? Visibility::Collapsed : Visibility::Visible);
+                tint.hidden = hide;
             }
             auto meta = presentation.find(id);
             const uint32_t color = enabled && id != activeTabId && meta != presentation.end() &&
@@ -144,8 +164,23 @@ struct NativeTabStrip {
         }
         for (auto it = separatorTints.begin(); it != separatorTints.end();) {
             if (live.count(it->first)) { ++it; continue; }
-            RestoreSeparator(it->second); it = separatorTints.erase(it);
+            RestoreSeparator(it->second);
+            if (it->second.hidden) it->second.separator.Visibility(Visibility::Visible);
+            it = separatorTints.erase(it);
         }
+    }
+    // DIP a group surface extends beyond its outer members, from Firefox's
+    // groupReach preference, and the minimum separation kept between two
+    // neighboring group surfaces.
+    static constexpr float GroupSeparation = 1.f;
+    static constexpr float DefaultGroupReach = 3.f;
+    float groupReach{DefaultGroupReach};
+    static std::optional<float> GroupReachOf(hstring const& name) {
+        if (name == L"none") return 0.f;
+        if (name == L"small") return 2.f;
+        if (name == L"medium") return DefaultGroupReach;
+        if (name == L"large") return 5.f;
+        return std::nullopt;
     }
     Controls::ScrollViewer ambientScroller{nullptr};
     winrt::event_token ambientScrollToken{};
@@ -225,10 +260,29 @@ struct NativeTabStrip {
                 includeSurface(slot.group, run->second.button);
             }
         }
-        groupSurface.Update(surfaceBounds, viewport);
+        // Extend every group surface slightly past its first and last member,
+        // so the outline, wash and halo also enclose an active tab at either
+        // end. Neighboring groups share the gap between them and keep a
+        // visible separation; they never overlap.
+        {
+            std::vector<Windows::Foundation::Rect*> ordered;
+            for (auto& [id, rect] : surfaceBounds) ordered.push_back(&rect);
+            std::sort(ordered.begin(), ordered.end(), [](auto a, auto b) { return a->X < b->X; });
+            std::vector<float> left(ordered.size(), groupReach), right(ordered.size(), groupReach);
+            for (size_t i = 1; i < ordered.size(); ++i) {
+                const float gap = ordered[i]->X - (ordered[i - 1]->X + ordered[i - 1]->Width);
+                const float share = std::clamp((gap - GroupSeparation) / 2, 0.f, groupReach);
+                right[i - 1] = std::min(right[i - 1], share);
+                left[i] = std::min(left[i], share);
+            }
+            for (size_t i = 0; i < ordered.size(); ++i) {
+                ordered[i]->X -= left[i];
+                ordered[i]->Width += left[i] + right[i];
+            }
+        }
         const bool followingMotion = IsDragging() || GroupDrag().phase || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty();
         auto ambientViewport = viewport;
-        bool fadeLeft = false, fadeRight = false;
+        float fadeLeft = 0, fadeRight = 0;
         // Permit container light in the strip's top padding while retaining
         // the scroll viewport's horizontal clipping and bottom boundary.
         ambientViewport.Height += ambientViewport.Y;
@@ -241,15 +295,37 @@ struct NativeTabStrip {
             float right = std::min(float(root.ActualWidth()), ambientViewport.X + ambientViewport.Width + 24.f);
             if (auto add = FindAddButton(view); add && add.IsLoaded()) {
                 const auto addBounds = boundsOf(add);
+                // Fall to zero only in the space beyond the outermost tab or
+                // header, never across it: an end tab's contour highlights
+                // must match its other side. The scroller can extend past
+                // that tab, so measure the realized content itself. At least
+                // 1 DIP still reaches zero at the New Tab boundary.
+                float contentLeft = viewport.X + viewport.Width, contentRight = viewport.X;
+                auto extend = [&](FrameworkElement const& element) {
+                    if (!element || !element.IsLoaded() || element.Visibility() != Visibility::Visible) return;
+                    const auto bounds = boundsOf(element);
+                    if (bounds.Width <= 0) return;
+                    contentLeft = std::min(contentLeft, bounds.X);
+                    contentRight = std::max(contentRight, bounds.X + bounds.Width);
+                };
+                for (auto const& [id, row] : rows) extend(row);
+                for (auto const& [id, run] : inlineGroups.runs) extend(run.button);
+                if (contentRight < contentLeft) { contentLeft = viewport.X; contentRight = viewport.X + viewport.Width; }
+                auto fade = [](float space) { return std::clamp(space, 1.f, 16.f); };
                 if (addBounds.X >= viewport.X + viewport.Width - 1) {
-                    right = std::min(right, addBounds.X); fadeRight = true;
+                    right = std::min(right, addBounds.X);
+                    fadeRight = fade(right - contentRight);
                 }
                 if (addBounds.X + addBounds.Width <= viewport.X + 1) {
-                    left = std::max(left, addBounds.X + addBounds.Width); fadeLeft = true;
+                    left = std::max(left, addBounds.X + addBounds.Width);
+                    fadeLeft = fade(contentLeft - left);
                 }
             }
             ambientViewport.X = left; ambientViewport.Width = std::max(0.f, right - left);
         }
+        // Outlines share the light's horizontal bounds, so the extension is
+        // not sliced at a scroller sized exactly to the final tab.
+        groupSurface.Update(surfaceBounds, {ambientViewport.X, viewport.Y, ambientViewport.Width, viewport.Height});
         Windows::Foundation::Rect activeBounds{};
         auto activeRow = rows.find(activeTabId);
         if (activeRow != rows.end() && activeRow->second.IsLoaded() &&
@@ -1629,6 +1705,12 @@ struct NativeTabStrip {
             else if (name == L"acrylic") nextBackdrop = Backdrop::Acrylic;
             else throw hresult_invalid_argument();
         }
+        auto nextGroupReach = base ? groupReach : DefaultGroupReach;
+        if (data.HasKey(L"groupReach")) {
+            auto reach = GroupReachOf(data.GetNamedString(L"groupReach"));
+            if (!reach) throw hresult_invalid_argument();
+            nextGroupReach = *reach;
+        }
         if (!std::isfinite(delay) || delay < 0 || delay > 60000 || std::floor(delay) != delay)
             throw hresult_invalid_argument();
         const bool updateGroups = !base || data.HasKey(L"groups") || data.HasKey(L"groupsLabel");
@@ -1832,6 +1914,7 @@ struct NativeTabStrip {
         containerDot = nextContainerDot;
         containerGlow = nextContainerGlow;
         groupGlow = nextGroupGlow;
+        groupReach = nextGroupReach;
         if (nextBackdrop != backdrop) {
             backdrop = nextBackdrop;
             if (applyBackdrop) applyBackdrop(backdrop);

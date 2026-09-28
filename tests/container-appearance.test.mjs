@@ -76,3 +76,37 @@ test("strip backdrop preference is validated and publishes a live delta", () => 
     }
   }
 });
+
+test("group reach preference is validated and publishes a live delta", () => {
+  let reach;
+  const key = "widget.windows.winui-prototype.tabstrip.groupReach";
+  const context = {
+    window:{addEventListener() {}, docShell:{usePrivateBrowsing:false}},
+    document:{documentElement:{matches:() => false}},
+    gBrowser:{tabs:[], selectedTabs:[], tabGroups:[]},
+    Services:{prefs:{getBoolPref:(_name, fallback) => fallback, getIntPref:(_name, fallback) => fallback,
+      getStringPref:(name, fallback) => name === key ? reach ?? fallback : fallback}},
+  };
+  const source = readFileSync(new URL("../upstream/firefox/browser/base/content/browser-winui-pane.js", import.meta.url), "utf8");
+  runInNewContext(source, context);
+  const pane = context.gWinUIPane;
+  pane.localization = () => ({formatValueSync:id => id});
+  pane.visibleTabs = () => [];
+  pane.schedule = () => {};
+  const session = new WinUITabStripSession({read:() => pane.describeStrip()});
+  assert.equal(session.update().strip.groupReach, "medium");
+  for (const [value, expected] of [["large", "large"], ["none", "none"], ["Small", "medium"], ["small", "small"], ["huge", "medium"]]) {
+    const previous = session.state.groupReach;
+    reach = value;
+    pane.stripDirty = false;
+    pane.observe(null, "nsPref:changed", key);
+    assert.equal(pane.stripDirty, true);
+    const delta = session.update();
+    assert.equal(session.state.groupReach, expected);
+    if (expected === previous) assert.equal(delta, null);
+    else {
+      assert.equal(delta.strip.groupReach, expected);
+      assert.equal(delta.strip.rows.length, 0);
+    }
+  }
+});

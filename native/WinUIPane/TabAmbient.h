@@ -174,7 +174,9 @@ struct TabAmbient {
             Update();
         });
     }
-    void Clip(Rect viewport, bool visible, Rect active = {}, bool fadeLeft = false, bool fadeRight = false) {
+    // fadeLeft/fadeRight are the DIP widths, at each end of the viewport, in
+    // which light falls to zero; zero keeps full light to that edge.
+    void Clip(Rect viewport, bool visible, Rect active = {}, float fadeLeft = 0, float fadeRight = 0) {
         visible = visible && !accessibility.HighContrast();
         bottom.IsVisible(visible); top.IsVisible(visible);
         rims.IsVisible(visible);
@@ -188,12 +190,13 @@ struct TabAmbient {
             occluded.Size(size); occludedSurface.SourceSize(size);
         }
         const float width = std::max(1.f, viewport.Width);
-        const float tail = std::min(16.f, width / 2) / width;
+        const float leftTail = std::clamp(fadeLeft, 0.f, width / 2) / width;
+        const float rightTail = std::clamp(fadeRight, 0.f, width / 2) / width;
         edgeFade.StartPoint({viewport.X, 0}); edgeFade.EndPoint({viewport.X + width, 0});
         auto stops = edgeFade.ColorStops();
-        stops.GetAt(0).Color({uint8_t(fadeLeft ? 0 : 255), 255, 255, 255});
-        stops.GetAt(1).Offset(tail); stops.GetAt(2).Offset(1 - tail);
-        stops.GetAt(3).Color({uint8_t(fadeRight ? 0 : 255), 255, 255, 255});
+        stops.GetAt(0).Color({uint8_t(fadeLeft > 0 ? 0 : 255), 255, 255, 255});
+        stops.GetAt(1).Offset(leftTail); stops.GetAt(2).Offset(1 - rightTail);
+        stops.GetAt(3).Color({uint8_t(fadeRight > 0 ? 0 : 255), 255, 255, 255});
         // Cut only the area above the active tab, after Gaussian diffusion.
         // Shared container fields keep their geometry beneath the notch.
         const float left = std::max(viewport.X, active.X);
