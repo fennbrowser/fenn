@@ -37,15 +37,14 @@ struct TabGroupSurface {
                     light.visual.Shapes().Append(stroke);
                 }
                 // Reflected color across the material, confined to the existing
-                // outline. Unequal light pools avoid a uniform colored fill.
-                for (int pool = 0; pool < 2; ++pool) {
+                // outline. Unequal light pools avoid a uniform colored fill;
+                // TabAmbient's group halo continues them past the outline.
+                for (auto const& pool : TabAmbient::Pools) {
                     auto brush = compositor.CreateRadialGradientBrush();
-                    brush.EllipseCenter(pool ? Windows::Foundation::Numerics::float2{.82f, .18f} :
-                        Windows::Foundation::Numerics::float2{.22f, .9f});
-                    brush.EllipseRadius({.95f, 1.2f});
-                    const int peak = pool ? 30 : 48;
-                    for (auto [offset, alpha] : {std::pair{0.f, peak}, {.55f, peak / 2}, {1.f, 0}})
-                        brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(alpha), 0, 0, 0}));
+                    brush.EllipseCenter({pool.x, pool.y});
+                    brush.EllipseRadius({TabAmbient::PoolRadiusX, TabAmbient::PoolRadiusY});
+                    for (auto [offset, level] : TabAmbient::PoolStops)
+                        brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(pool.peak * level), 0, 0, 0}));
                     auto body = compositor.CreateSpriteShape(light.geometry);
                     body.FillBrush(brush);
                     light.visual.Shapes().Append(body);

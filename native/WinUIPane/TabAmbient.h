@@ -25,8 +25,9 @@ struct TabAmbient {
     winrt::Microsoft::UI::Composition::ContainerVisual rims{nullptr};
     Field upperRim;
     winrt::Microsoft::UI::Composition::ContainerVisual bottom{nullptr}, top{nullptr};
-    winrt::Microsoft::UI::Composition::ContainerVisual spill{nullptr};
-    winrt::Microsoft::UI::Composition::LayerVisual diffusion{nullptr};
+    winrt::Microsoft::UI::Composition::ContainerVisual spill{nullptr}, halo{nullptr};
+    winrt::Microsoft::UI::Composition::LayerVisual diffusion{nullptr}, haloDiffusion{nullptr};
+    winrt::Microsoft::UI::Composition::ContainerVisual lit{nullptr};
     winrt::Microsoft::UI::Composition::CompositionVisualSurface diffusedSurface{nullptr};
     winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush edgeFade{nullptr};
     Sprite output{nullptr};
@@ -36,7 +37,21 @@ struct TabAmbient {
     winrt::com_ptr<ID2D1Factory> clipFactory;
     Rect clippedViewport{}, clippedActive{};
     std::map<uint32_t, Field> groups, containers;
-    std::map<uint32_t, Field> groupSpill, containerSpill;
+    std::map<uint32_t, Field> groupSpill, containerSpill, groupHalo;
+    // Unequal material light pools across a group, in its relative
+    // coordinates. TabGroupSurface paints them inside the outline; the halo
+    // continues the same pools outside it, so the glow stays uneven.
+    struct Pool { float x, y; int peak; };
+    static constexpr Pool Pools[] = {{.22f, .9f, 48}, {.82f, .18f, 30}};
+    static constexpr float PoolRadiusX = .95f, PoolRadiusY = 1.2f;
+    static constexpr std::pair<float, float> PoolStops[] = {{0.f, 1.f}, {.55f, .5f}, {1.f, 0.f}};
+    // Outer halo: concentric rounded rings outside the group outline, each
+    // carrying the pools at a falling fraction of their interior strength.
+    // The shared Gaussian diffusion merges the rings into one falloff.
+    static constexpr float HaloPitch = 2.f;
+    static constexpr float HaloFade[] = {.75f, .56f, .38f, .23f, .12f, .04f};
+    static constexpr uint32_t HaloRings = ARRAYSIZE(HaloFade);
+    static constexpr float HaloReach = HaloPitch * HaloRings;
     winrt::Windows::UI::ViewManagement::AccessibilitySettings accessibility;
     winrt::Windows::UI::ViewManagement::UISettings settings;
     winrt::event_token contrastToken{}, layoutToken{}, renderingToken{};
@@ -92,10 +107,23 @@ struct TabAmbient {
                 spill = compositor.CreateContainerVisual();
                 spill.Comment(L"ambient-color-spill");
                 parent.Children().InsertAtTop(spill);
+                // Halos get their own diffusion layer without the active tab's
+                // notch: the tab sits in front of an unbroken halo, while other
+                // light keeps the hard notch. Both share the masks below.
+                haloDiffusion = compositor.CreateLayerVisual();
+                haloDiffusion.Comment(L"group-halo-diffusion");
+                haloDiffusion.Effect(compositor.CreateEffectFactory(winrt::make<TabGlowDiffusion>()).CreateBrush());
+                haloDiffusion.Opacity(.9f);
+                halo = compositor.CreateContainerVisual();
+                halo.Comment(L"group-halo");
+                haloDiffusion.Children().InsertAtTop(halo);
+                lit = compositor.CreateContainerVisual();
+                lit.Comment(L"ambient-lit");
+                lit.Children().InsertAtTop(diffusion); lit.Children().InsertAtTop(haloDiffusion);
                 // Mask the already-diffused light, so blur cannot refill the
                 // transparent tail before the new-tab button.
                 diffusedSurface = compositor.CreateVisualSurface();
-                diffusedSurface.SourceVisual(diffusion);
+                diffusedSurface.SourceVisual(lit);
                 auto source = compositor.CreateSurfaceBrush(diffusedSurface);
                 faceMask.Create(compositor);
                 auto occlusion = compositor.CreateMaskBrush();
@@ -126,6 +154,7 @@ struct TabAmbient {
             if (top) top.IsVisible(false);
             if (rims) rims.IsVisible(false);
             if (spill) spill.IsVisible(false);
+            if (halo) halo.IsVisible(false);
         }
         updating = false;
     }
@@ -145,9 +174,10 @@ struct TabAmbient {
         bottom.IsVisible(visible); top.IsVisible(visible);
         rims.IsVisible(visible);
         spill.IsVisible(visible);
+        halo.IsVisible(visible);
         const winrt::Windows::Foundation::Numerics::float2 size{
             std::max(0.f, viewport.X + viewport.Width), std::max(0.f, viewport.Y + viewport.Height)};
-        if (diffusion.Size() != size) diffusion.Size(size);
+        if (diffusion.Size() != size) { diffusion.Size(size); haloDiffusion.Size(size); lit.Size(size); }
         if (output.Size() != size) {
             output.Size(size); diffusedSurface.SourceSize(size);
             occluded.Size(size); occludedSurface.SourceSize(size);
@@ -243,6 +273,78 @@ struct TabAmbient {
         for (auto it = fields.begin(); it != fields.end();) {
             if (live.count(it->first)) { ++it; continue; }
             spill.Children().Remove(it->second.visual); it = fields.erase(it);
+        }
+    }
+    // Soft light just beyond the rounded group edge, so the group reads as
+    // glowing instead of ending at a hard boundary. Rings start outside the
+    // outline and leave the group interior unchanged. The post-diffusion face
+    // mask and viewport clips still apply, but the active tab's notch does
+    // not, so the halo surrounds the selected tab unbroken. Shapes are
+    // pool-major: index p * HaloRings + i, with both pools sharing ring i's
+    // geometry.
+    void Halo(uint32_t id, uint32_t color, Rect bounds, float radius) {
+        using namespace winrt::Microsoft::UI::Composition;
+        auto& field = groupHalo[id];
+        auto compositor = halo.Compositor();
+        if (!field.rimShape) {
+            field.rimShape = compositor.CreateShapeVisual();
+            field.rimShape.Comment(L"group-halo:" + winrt::to_hstring(id));
+            std::vector<CompositionRoundedRectangleGeometry> rings;
+            for (uint32_t i = 0; i < HaloRings; ++i) rings.push_back(compositor.CreateRoundedRectangleGeometry());
+            for (auto const& pool : Pools) {
+                for (uint32_t i = 0; i < HaloRings; ++i) {
+                    auto brush = compositor.CreateRadialGradientBrush();
+                    brush.MappingMode(CompositionMappingMode::Absolute);
+                    for (auto [offset, level] : PoolStops)
+                        brush.ColorStops().Append(compositor.CreateColorGradientStop(offset,
+                            {uint8_t(pool.peak * level * HaloFade[i] + .5f), 0, 0, 0}));
+                    auto ring = compositor.CreateSpriteShape(rings[i]);
+                    ring.StrokeBrush(brush);
+                    // Slight overlap avoids antialiased seams between rings.
+                    ring.StrokeThickness(HaloPitch + .25f);
+                    field.rimShape.Shapes().Append(ring);
+                }
+            }
+            halo.Children().InsertAtTop(field.rimShape);
+        }
+        auto brushAt = [&](uint32_t index) {
+            return field.rimShape.Shapes().GetAt(index).as<CompositionSpriteShape>().StrokeBrush()
+                .as<CompositionRadialGradientBrush>();
+        };
+        const uint32_t count = field.rimShape.Shapes().Size();
+        if (field.color != color) {
+            field.color = color;
+            for (uint32_t index = 0; index < count; ++index) for (auto stop : brushAt(index).ColorStops()) {
+                auto value = stop.Color();
+                value.R = uint8_t(color >> 16); value.G = uint8_t(color >> 8); value.B = uint8_t(color);
+                stop.Color(value);
+            }
+        }
+        if (field.bounds == bounds && field.cornerLeft == radius) return;
+        field.bounds = bounds; field.cornerLeft = radius;
+        field.rimShape.Offset({bounds.X - HaloReach, bounds.Y - HaloReach, 0});
+        field.rimShape.Size({bounds.Width + 2 * HaloReach, bounds.Height + 2 * HaloReach});
+        for (uint32_t i = 0; i < HaloRings; ++i) {
+            // Each stroke is centered on its ring, covering [d - pitch/2, d + pitch/2].
+            const float d = HaloPitch * (i + .5f);
+            auto geometry = field.rimShape.Shapes().GetAt(i).as<CompositionSpriteShape>().Geometry()
+                .as<CompositionRoundedRectangleGeometry>();
+            geometry.Offset({HaloReach - d, HaloReach - d});
+            geometry.Size({bounds.Width + 2 * d, bounds.Height + 2 * d});
+            geometry.CornerRadius({radius + d, radius + d});
+        }
+        // Pools stay anchored in group coordinates, matching the interior.
+        for (uint32_t index = 0; index < count; ++index) {
+            auto const& pool = Pools[index / HaloRings];
+            auto brush = brushAt(index);
+            brush.EllipseCenter({HaloReach + pool.x * bounds.Width, HaloReach + pool.y * bounds.Height});
+            brush.EllipseRadius({std::max(1.f, PoolRadiusX * bounds.Width), std::max(1.f, PoolRadiusY * bounds.Height)});
+        }
+    }
+    void PruneHalo(std::set<uint32_t> const& live) {
+        for (auto it = groupHalo.begin(); it != groupHalo.end();) {
+            if (live.count(it->first)) { ++it; continue; }
+            halo.Children().Remove(it->second.rimShape); it = groupHalo.erase(it);
         }
     }
     void Corners(Field& field, uint32_t color, Rect bounds, float leftRadius, float rightRadius, bool reflection = false) {

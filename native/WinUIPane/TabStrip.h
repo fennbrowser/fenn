@@ -325,11 +325,13 @@ struct NativeTabStrip {
             ambient.Spill(ambient.groupSpill, id, color, bounds, false);
             auto spill = ambient.groupSpill.at(id).visual;
             if (spill.Opacity() != .65f) spill.Opacity(.65f);
+            ambient.Halo(id, color, bounds, radius);
         }
         groupSurface.Lighting(outlineColors);
         ambient.Prune(ambient.groups, groups, false);
         ambient.Prune(ambient.containers, containers, true);
         ambient.PruneSpill(ambient.groupSpill, groups);
+        ambient.PruneHalo(groups);
         ambient.PruneSpill(ambient.containerSpill, {});
         auto container = ambient.containers.find(activeTabId);
         const bool activeVisible = activeBounds.Width > 0 && activeBounds.Height > 0;

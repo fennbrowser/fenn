@@ -1651,7 +1651,14 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         "face occlusion uses a bounded Composition surface after diffusion");
     auto ambientSurface = faceMaskBrush.Source().as<winrt::Microsoft::UI::Composition::CompositionSurfaceBrush>()
         .Surface().as<winrt::Microsoft::UI::Composition::CompositionVisualSurface>();
-    auto ambient = ambientSurface.SourceVisual().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+    auto lit = ambientSurface.SourceVisual().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+    Require(lit.Comment() == L"ambient-lit" && lit.Children().Count() == 2,
+        "ambient light and group halos diffuse in separate layers before shared masks");
+    auto ambient = lit.Children().First().Current().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+    auto haloIterator = lit.Children().First(); haloIterator.MoveNext();
+    auto haloDiffusion = haloIterator.Current().as<winrt::Microsoft::UI::Composition::LayerVisual>();
+    Require(haloDiffusion.Comment() == L"group-halo-diffusion" && haloDiffusion.Effect() && haloDiffusion.Opacity() == .9f,
+        "halo layer uses the same diffusion as other ambient light");
     auto edgeFade = ambientMask.Mask().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
     Require(edgeFade.ColorStops().Size() == 4 && edgeFade.ColorStops().GetAt(1).Color().A == 255 &&
         edgeFade.ColorStops().GetAt(2).Color().A == 255, "post-diffusion edge mask preserves interior illumination");
@@ -2255,6 +2262,38 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             .Geometry().as<winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry>();
         Require(roundedClip.Size() == groupVisual.Size() && roundedClip.CornerRadius().x == outlineSurface.CornerRadius().TopLeft,
             "group wash clips to the actual rounded surface");
+        auto halo = haloDiffusion.Children().First().Current().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+        Require(halo.Comment() == L"group-halo" && halo.Children().Count() == 1 &&
+            halo.Children().First().Current().Comment() == L"group-halo:7",
+            "a lit group has one outer halo in the halo diffusion layer");
+        Require(diffusion.Clip() && !haloDiffusion.Clip() && !halo.Clip(),
+            "the active tab keeps its hard notch for other light but does not interrupt the halo");
+        auto haloShape = halo.Children().First().Current().as<winrt::Microsoft::UI::Composition::ShapeVisual>();
+        auto haloFollows = [&] {
+            return std::abs(haloShape.Offset().x + 12 - groupVisual.Offset().x) < .5f &&
+                std::abs(haloShape.Size().x - 24 - groupVisual.Size().x) < .5f;
+        };
+        Require(haloFollows() && haloShape.Shapes().Size() == 12, "halo spans 12 DIP beyond the group with two pools of six rings");
+        for (uint32_t index = 0; index < haloShape.Shapes().Size(); ++index) {
+            auto ring = haloShape.Shapes().GetAt(index).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
+            auto geometry = ring.Geometry().as<winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry>();
+            // Ring i is centered 2i+1 DIP outside the outline; its inner stroke
+            // edge only overlaps the outline by the anti-seam allowance.
+            const float distance = 12 - geometry.Offset().x;
+            Require(!ring.FillBrush() && std::abs(distance - (2.f * (index % 6) + 1)) < .01f &&
+                distance - ring.StrokeThickness() / 2 >= -.2f &&
+                std::abs(geometry.CornerRadius().x - (roundedClip.CornerRadius().x + distance)) < .01f,
+                "halo rings start at the outline and grow outward with concentric corners");
+            auto brush = ring.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+            Require(brush.MappingMode() == winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute &&
+                std::abs(brush.EllipseCenter().x - 12 - (index < 6 ? .22f : .82f) * groupVisual.Size().x) < .5f &&
+                brush.ColorStops().GetAt(0).Color().A <= 36 && brush.ColorStops().GetAt(2).Color().A == 0,
+                "halo continues the uneven interior pools, anchored in group coordinates and subtle");
+            if (index % 6) Require(brush.ColorStops().GetAt(0).Color().A <=
+                haloShape.Shapes().GetAt(index - 1).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>()
+                    .StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>()
+                    .ColorStops().GetAt(0).Color().A, "halo fades with distance from the group");
+        }
         for (auto shape : outlineLight.Shapes()) {
             auto stroke = shape.as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
             auto geometry = stroke.Geometry().as<winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry>();
@@ -2295,6 +2334,9 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         refreshAmbient();
         Require(groupVisual.Size().x > originalWidth + 64 && bottomGlow.Children().First().Current() == groupVisual,
             "rapid geometry changes update the retained light immediately");
+        Require(haloFollows() && halo.Children().First().Current() == haloShape,
+            "the retained halo follows live group geometry");
+        Require(!haloDiffusion.Clip(), "a moving active tab still does not interrupt the default halo");
         Require(Hosting::ElementCompositionPreview::GetElementChildVisual(outlineSurface) == outlineLight &&
             std::abs(outlineLight.Size().x - outlineSurface.Width()) < .1,
             "outline highlights are retained and follow live group geometry");
@@ -2324,11 +2366,13 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             strip.SetNamedValue(L"groupGlow", Value::CreateBooleanValue(glow || showDot));
             strip.SetNamedValue(L"containerDot", Value::CreateBooleanValue(showDot));
             MenuPublish(api,host,update.Stringify().c_str()); settle();
+            Require(!haloDiffusion.Clip(), "glow option changes never notch the halo");
             Require(topGlow.Children().Count() == (glow ? 1 : 0) &&
                 dot.Visibility() == (showDot ? Visibility::Visible : Visibility::Collapsed) &&
                 bottomGlow.Children().Count() == (glow || showDot ? 1 : 0),
                 "live glow options remove and restore group and container visuals");
             Require(spill.Children().Count() == (glow || showDot ? 1 : 0), "disabled group glow releases its spill");
+            Require(halo.Children().Count() == (glow || showDot ? 1 : 0), "disabled group glow releases its halo");
             Require(glow ? separatorA.Background().as<Media::SolidColorBrush>().Color().A == 170 :
                 bool(separatorA.GetBindingExpression(Controls::Border::BackgroundProperty())),
                 "disabling glow restores a live theme binding on the native divider");
@@ -2344,8 +2388,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":21,"revision":22,"rows":[],"removed":[],"groups":[],"layout":[{"group":0,"tab":41},{"group":0,"tab":42}]}})");
         Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "ungroup colored container tabs");
         settle();
-        Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 1,
-            "container glow survives tab realization after ungrouping");
+        Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 1 && halo.Children().Count() == 0,
+            "container glow survives tab realization after ungrouping; the group halo is released");
         Require(!rim(L"group-outer-reflection") && !rim(L"group-shared-reflection"),
             "ungrouping releases group boundary reflections");
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":22,"revision":23,"rows":[{"id":42,"containerName":"Other identity, same color","containerColor":4289934591}],"removed":[]}})");
@@ -2403,7 +2447,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         motionState(26,false); settle();
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 0,
             "removing color and container metadata releases both decorations");
-        Require(spill.Children().Count() == 0, "clearing source metadata also removes all weak color spill");
+        Require(spill.Children().Count() == 0 && halo.Children().Count() == 0,
+            "clearing source metadata also removes all weak color spill and halos");
         Require(!rim(L"active-container-reflection").IsVisible() && !rim(L"active-group-reflection"),
             "clearing glow sources also hides their surface reflections");
         Require(SUCCEEDED(motion(host,2,&ghosts)), "disable motion for indicator selection checks");
