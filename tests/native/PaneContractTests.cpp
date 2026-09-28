@@ -2485,6 +2485,65 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(reducedMarker.Width() == 16.0,
             "reduced motion immediately lengthens group indicator");
         Require(SUCCEEDED(motion(host,3,&ghosts)), "restore motion after indicator selection checks");
+        {
+            // Opening a tab after a trailing group whose member is active adds
+            // a new ungrouped run, which resets the grouped source and detaches
+            // the header and rows. Record every frame: the group's light must
+            // stay retained, and the indicator keeps its displayed width until
+            // the header is realized again to run its motion. The first frames
+            // after a reset can exceed the 150 ms motion here, so intermediate
+            // widths are not sampled.
+            auto lastGroup = [&](uint32_t revision, bool withNewTab) {
+                auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":0,"tab":43}]}})");
+                auto strip = state.GetNamedObject(L"strip");
+                strip.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(revision));
+                if (!withNewTab) { strip.GetNamedArray(L"rows").RemoveAt(2); strip.GetNamedArray(L"layout").RemoveAt(3); }
+                MenuPublish(api,host,state.Stringify().c_str());
+            };
+            WinUITab opened[]{{41,L"Home"},{42,L"Research page"},{43,L"New tab"}};
+            lastGroup(27,false);
+            Require(SUCCEEDED(api.syncTabs(host,opened,2,42,&selected)), "activate the trailing group's member");
+            settle(); settle();
+            Require(bottomGlow.Children().Count() == 1 && halo.Children().Count() == 1, "trailing active group is lit");
+            auto litGroup = bottomGlow.Children().First().Current();
+            auto litHalo = halo.Children().First().Current();
+            auto openMarker = find(view,L"FirefoxWinUIInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
+            Require(openMarker.Width() == 16.0, "active trailing group has a long indicator");
+            int frames = 0, unlit = 0, replaced = 0, reversals = 0;
+            double shortest = openMarker.Width();
+            // The indicator only shortens here. A frame that shows it shorter
+            // and then longer again is visible as a bounce.
+            auto observeWidth = [&] {
+                const auto width = openMarker.Width();
+                if (width > shortest + .01) ++reversals;
+                shortest = std::min(shortest, width);
+            };
+            auto sample = [&] {
+                ++frames;
+                if (bottomGlow.Children().Count() != 1 || halo.Children().Count() != 1) ++unlit;
+                else if (bottomGlow.Children().First().Current() != litGroup || halo.Children().First().Current() != litHalo) ++replaced;
+                observeWidth();
+            };
+            auto token = Media::CompositionTarget::Rendering([&](auto&&, auto&&) { sample(); });
+            auto layoutToken = root.LayoutUpdated([&](auto&&, auto&&) { observeWidth(); });
+            lastGroup(28,true);
+            sample();
+            Require(SUCCEEDED(api.syncTabs(host,opened,3,43,&selected)), "open a new tab after the active group");
+            sample();
+            const bool detached = !openMarker.IsLoaded();
+            const auto heldWidth = openMarker.Width();
+            for (int i=0;i<200 && (!openMarker.IsLoaded() || openMarker.Width() != 6.0);++i) { Pump(); Sleep(10); }
+            settle();
+            Media::CompositionTarget::Rendering(token);
+            root.LayoutUpdated(layoutToken);
+            printf("New tab after active group: frames=%d unlit=%d replaced=%d detached=%d held=%.1f width=%.1f reversals=%d\n",
+                frames, unlit, replaced, detached, heldWidth, openMarker.Width(), reversals);
+            fflush(stdout);
+            Require(!unlit && !replaced, "opening a tab never drops or rebuilds the existing group light");
+            Require(!reversals, "the deferred indicator motion never shows its target before shortening from the held width");
+            Require(!detached || heldWidth == 16.0, "a detached indicator keeps its displayed width for the motion");
+            Require(openMarker.IsLoaded() && openMarker.Width() == 6.0, "leaving the group for a new tab shortens its indicator");
+        }
         puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");
     }
     puts("CHECKS PASSED: retained inline groups, disclosure, themes, RTL and atomic layout validation");

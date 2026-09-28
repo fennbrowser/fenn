@@ -1,6 +1,7 @@
 #pragma once
 #include <chrono>
 #include <map>
+#include <optional>
 #include <set>
 #include <functional>
 #include <cstdio>
@@ -26,7 +27,8 @@ struct InlineTabGroups {
         Media::SolidColorBrush accent{nullptr};
         Media::Animation::Storyboard arrowMotion{nullptr};
         Media::Animation::Storyboard indicatorMotion{nullptr};
-        bool indicatorActive{};
+        bool indicatorActive{}, shown{}, indicatorPending{};
+        double indicatorFrom{};
         Run() { model.Insert(L"Items", items); model.Insert(L"Header", nullptr); }
         ~Run() {
             if (arrowMotion) { try { arrowMotion.Stop(); } catch (...) {} }
@@ -48,39 +50,94 @@ struct InlineTabGroups {
     Windows::Foundation::Point lastPointer{-1000000,-1000000};
     ~InlineTabGroups() { lifetime.reset(); }
 
+    // Headers and rows that were shown before the latest Sync, which then
+    // detached them, and that the panel has not realized again. Decoration
+    // waits for them instead of drawing one frame from a half-realized tree.
+    // A realization that never comes (the item scrolled away) stops holding
+    // it back after a few rendered frames.
+    static constexpr uint64_t RealizeFrames = 12;
+    std::vector<FrameworkElement> realizing;
+    std::optional<uint64_t> realizeFrom;
+    std::function<void()> realized;
+    static void* Identity(FrameworkElement const& element) {
+        return get_abi(element.as<Windows::Foundation::IUnknown>());
+    }
+    // IsLoaded turns true when an element re-enters the tree, before it is
+    // arranged; Loaded is raised after layout, once its bounds are real.
+    void Realized(FrameworkElement const& element) {
+        realizing.erase(std::remove(realizing.begin(), realizing.end(), element), realizing.end());
+        if (realized) realized();
+    }
+    bool Realizing(uint64_t frame) {
+        if (realizing.empty()) return false;
+        if (!realizeFrom) realizeFrom = frame;
+        if (frame - *realizeFrom < RealizeFrames) return true;
+        realizing.clear();
+        return false;
+    }
+
     void ActiveGroup(uint32_t activeGroup, bool animate) {
         for (auto& [id, run] : runs) {
             if (!run.button) continue;
             const bool active = id == activeGroup;
-            if (run.indicatorActive == active && (animate || !run.indicatorMotion)) continue;
+            if (run.indicatorActive == active && (animate || (!run.indicatorMotion && !run.indicatorPending))) continue;
             run.indicatorActive = active;
-            auto marker = run.button.Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
-            const auto previous = marker.Width();
+            auto marker = Marker(run);
+            const auto previous = run.indicatorPending ? run.indicatorFrom : marker.Width();
+            run.indicatorPending = false;
             if (run.indicatorMotion) { run.indicatorMotion.Stop(); run.indicatorMotion = nullptr; }
-            const double target = active ? 16.0 : 6.0;
-            marker.Width(target);
-            if (!animate || !marker.IsLoaded()) continue;
-            try {
-                Media::Animation::DoubleAnimation motion;
-                // Animate geometry rather than scaling the corner radii. The
-                // existing 24-DIP minimum content width keeps the button stable.
-                motion.EnableDependentAnimation(true);
-                motion.From(previous);
-                motion.To(target);
-                motion.Duration(Duration{Windows::Foundation::TimeSpan{MotionDuration}, DurationType::TimeSpan});
-                Media::Animation::CubicEase ease;
-                ease.EasingMode(Media::Animation::EasingMode::EaseOut);
-                motion.EasingFunction(ease);
-                Media::Animation::Storyboard::SetTarget(motion, marker);
-                Media::Animation::Storyboard::SetTargetProperty(motion, L"Width");
-                run.indicatorMotion = Media::Animation::Storyboard();
-                run.indicatorMotion.Children().Append(motion);
-                run.indicatorMotion.Begin();
-            } catch (...) {
-                if (run.indicatorMotion) { try { run.indicatorMotion.Stop(); } catch (...) {} }
-                run.indicatorMotion = nullptr;
-                marker.Width(target);
+            if (animate && run.shown && !run.button.IsLoaded()) {
+                // A grouped-source change can detach a shown header in the
+                // same update that changes the active tab. Keep the displayed
+                // width and start the motion when the header is realized again.
+                run.indicatorPending = true;
+                run.indicatorFrom = previous;
+                marker.Width(previous);
+                continue;
             }
+            AnimateIndicator(id, run, previous, animate);
+        }
+    }
+    static FrameworkElement Marker(Run const& run) {
+        return run.button.Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
+    }
+    void AnimateIndicator(uint64_t id, Run& run, double previous, bool animate) {
+        auto marker = Marker(run);
+        const double target = run.indicatorActive ? 16.0 : 6.0;
+        if (!animate || !marker.IsLoaded()) { marker.Width(target); return; }
+        // Keep the displayed width as the base value until the motion ends.
+        // A storyboard begun during layout (a header's Loaded) can render a
+        // frame before its From value applies, which would flash the target.
+        marker.Width(previous);
+        try {
+            Media::Animation::DoubleAnimation motion;
+            // Animate geometry rather than scaling the corner radii. The
+            // existing 24-DIP minimum content width keeps the button stable.
+            motion.EnableDependentAnimation(true);
+            motion.From(previous);
+            motion.To(target);
+            motion.Duration(Duration{Windows::Foundation::TimeSpan{MotionDuration}, DurationType::TimeSpan});
+            Media::Animation::CubicEase ease;
+            ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+            motion.EasingFunction(ease);
+            Media::Animation::Storyboard::SetTarget(motion, marker);
+            Media::Animation::Storyboard::SetTargetProperty(motion, L"Width");
+            run.indicatorMotion = Media::Animation::Storyboard();
+            run.indicatorMotion.Children().Append(motion);
+            run.indicatorMotion.Completed([this, alive = std::weak_ptr<int>(lifetime), id](auto const& sender, auto&&) {
+                if (alive.expired()) return;
+                auto found = runs.find(id);
+                if (found == runs.end() || found->second.indicatorMotion != sender) return;
+                auto& run = found->second;
+                Marker(run).Width(run.indicatorActive ? 16.0 : 6.0);
+                run.indicatorMotion.Stop();
+                run.indicatorMotion = nullptr;
+            });
+            run.indicatorMotion.Begin();
+        } catch (...) {
+            if (run.indicatorMotion) { try { run.indicatorMotion.Stop(); } catch (...) {} }
+            run.indicatorMotion = nullptr;
+            marker.Width(target);
         }
     }
 
@@ -462,6 +519,13 @@ struct InlineTabGroups {
     void Sync(Controls::TabView const& view, std::vector<ShellStripSlot> const& layout,
               std::map<uint32_t, Controls::TabViewItem> const& rows,
               Windows::Data::Json::JsonArray const& groups) {
+        std::set<void*> shown;
+        for (auto const& element : realizing) shown.insert(Identity(element));
+        for (auto const& [id, run] : runs) {
+            if (run.button && run.button.IsLoaded()) shown.insert(Identity(run.button));
+            for (auto item : run.items)
+                if (auto row = item.as<FrameworkElement>(); row.IsLoaded()) shown.insert(Identity(row));
+        }
         std::vector<uint64_t> wanted;
         std::map<uint64_t, std::vector<Object>> members;
         uint64_t key = 0;
@@ -589,6 +653,18 @@ struct InlineTabGroups {
                     // Keep its finite rotation through that unload; the Run
                     // destructor stops it when the group actually goes away.
                 });
+                run.button.Loaded([this, alive, id](auto&&, auto&&) {
+                    if (alive.expired()) return;
+                    auto found = runs.find(id);
+                    if (found == runs.end()) return;
+                    auto& run = found->second;
+                    run.shown = true;
+                    if (run.indicatorPending) {
+                        run.indicatorPending = false;
+                        AnimateIndicator(id, run, run.indicatorFrom, true);
+                    }
+                    Realized(run.button);
+                });
                 run.model.Insert(L"Header", run.button);
             }
             auto const& desired = members.at(id);
@@ -625,6 +701,15 @@ struct InlineTabGroups {
         }
         order = std::move(wanted);
         for (auto id : reattach) if (runs.count(id)) runs.at(id).model.Insert(L"Header",runs.at(id).button);
+        realizing.clear();
+        auto detached = [&](FrameworkElement const& element) {
+            if (element && !element.IsLoaded() && shown.count(Identity(element))) realizing.push_back(element);
+        };
+        for (auto const& [id, run] : runs) {
+            detached(run.button);
+            for (auto item : run.items) detached(item.as<FrameworkElement>());
+        }
+        realizeFrom.reset();
         Metadata(groups);
         if (!active) {
             view.TabItems().Clear();

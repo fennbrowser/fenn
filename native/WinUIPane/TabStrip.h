@@ -159,6 +159,14 @@ struct NativeTabStrip {
             if (ambient.spill) ambient.spill.IsVisible(false);
             return;
         }
+        // A grouped-source update detached shown headers or rows. Keep the
+        // retained light and outlines until they are realized again, rather
+        // than pruning them for a frame and rebuilding them. Frames observe
+        // this bounded wait; Loaded events usually end it first.
+        if (inlineGroups.Realizing(ambient.frames)) {
+            ambient.Motion(true);
+            return;
+        }
         RefreshSeparators();
         auto scroller = GroupScroller(view);
         if (scroller != ambientScroller) {
@@ -755,6 +763,7 @@ struct NativeTabStrip {
         separatorTheme = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource TabViewItemSeparator}" Visibility="Collapsed" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         ambient.layer.Children().Append(separatorTheme);
         ambient.refresh = [this] { RefreshAmbient(); };
+        inlineGroups.realized = [this] { ambient.ScheduleUpdate(); };
         groupIndicator = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentTextFillColorPrimaryBrush}" BorderThickness="2" CornerRadius="4" Grid.ColumnSpan="3" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         root.Children().Append(groupIndicator);
         groupSurface.Create(root);
@@ -916,6 +925,7 @@ struct NativeTabStrip {
         button.ContextFlyout(flyout);
     }
     ~NativeTabStrip() {
+        inlineGroups.realized = nullptr;
         ambient.refresh = nullptr;
         ambient.Motion(false);
         if (ambientScroller) ambientScroller.ViewChanged(ambientScrollToken);
@@ -2063,10 +2073,12 @@ struct NativeTabStrip {
                 current.insert(id);
                 if (!rows.count(id)) {
                     Controls::TabViewItem row;
-                    row.Loaded([this, alive = std::weak_ptr<int>(lifetime)](auto&&, auto&&) {
+                    row.Loaded([this, alive = std::weak_ptr<int>(lifetime)](auto const& sender, auto&&) {
                         // Grouped-source moves can load rows after the final
                         // layout notification. Refresh once realization settles.
-                        if (!alive.expired()) ambient.ScheduleUpdate();
+                        if (alive.expired()) return;
+                        inlineGroups.Realized(sender.template as<FrameworkElement>());
+                        ambient.ScheduleUpdate();
                     });
                     row.Tag(box_value(id));
                     row.IsClosable(true);

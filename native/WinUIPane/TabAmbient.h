@@ -58,6 +58,9 @@ struct TabAmbient {
     std::shared_ptr<int> life = std::make_shared<int>(0);
     std::function<void()> refresh;
     bool observing{}, updating{}, reportedFailure{}, queued{};
+    // Rendered frames observed while following motion; bounds waits in
+    // frames, so a throttled window cannot end them before it draws.
+    uint64_t frames{};
     static void Geometry(Sprite const& visual, winrt::Windows::Foundation::Numerics::float3 offset,
                          winrt::Windows::Foundation::Numerics::float2 size) {
         if (visual.Offset() != offset) visual.Offset(offset);
@@ -166,7 +169,9 @@ struct TabAmbient {
         observing = moving;
         if (!moving) { Media::CompositionTarget::Rendering(renderingToken); return; }
         renderingToken = Media::CompositionTarget::Rendering([this, weak = std::weak_ptr<int>(life)](auto&&, auto&&) {
-            if (!weak.expired()) Update();
+            if (weak.expired()) return;
+            ++frames;
+            Update();
         });
     }
     void Clip(Rect viewport, bool visible, Rect active = {}, bool fadeLeft = false, bool fadeRight = false) {
