@@ -218,10 +218,14 @@ struct InlineTabGroups {
                 // inset (the scroller keeps 2 DIP); count visible arrows back
                 // in, since fitting is exactly what hides them.
                 double arrows = 0;
+                // The template binds visibility on each button's padded
+                // container (ScrollDecrease/IncreaseButtonContainer).
                 for (auto const& weak : {back, forward}) {
                     auto arrow = weak.get();
-                    if (!arrow || arrow.Visibility() != Visibility::Visible) continue;
-                    arrows += arrow.ActualWidth() + arrow.Margin().Left + arrow.Margin().Right;
+                    auto slot = arrow ? Media::VisualTreeHelper::GetParent(arrow).try_as<FrameworkElement>() : nullptr;
+                    if (!slot) slot = arrow;
+                    if (!slot || slot.Visibility() != Visibility::Visible) continue;
+                    arrows += slot.ActualWidth() + slot.Margin().Left + slot.Margin().Right;
                 }
                 // Arrows can report Visible with a width while their slots
                 // are still empty; subtract only space they actually occupy.
