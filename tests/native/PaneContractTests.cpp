@@ -1674,7 +1674,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             if (auto part = findOverflowPart(Media::VisualTreeHelper::GetChild(node, i), name)) return part;
         return nullptr;
     };
-    for (int width : {600, 400, 1200}) {
+    for (int width : {600, 400, 820, 1200}) {
         rect.right = width;
         Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "resize grouped strip across overflow threshold");
         settle();
@@ -1722,6 +1722,14 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             fprintf(stderr, "Grouped backward: offset=%.1f extent=%.1f increase=%d decrease=%d\n",
                 scroller.HorizontalOffset(), scroller.ScrollableWidth(), increase.IsEnabled(), decrease.IsEnabled());
             Require(scroller.HorizontalOffset() < offset, "stock backward arrow scrolls back");
+        } else if (width == 820) {
+            // Coming from real overflow: the content now fits without arrows
+            // but not beside them. Auto visibility latched arrows on here.
+            fprintf(stderr, "Grouped refit: scrollable=%.1f viewport=%.1f tab=%.1f\n", scroller.ScrollableWidth(),
+                scroller.ViewportWidth(), visibleTabs.empty() ? 0.0 : visibleTabs.front().ActualWidth());
+            Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Collapsed &&
+                        scroller.ScrollableWidth() < .5,
+                    "stock arrows do not stay latched after overflow ends");
         } else if (width == 1200) {
             Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Collapsed,
                     "stock arrows disappear when grouped tabs fit again");

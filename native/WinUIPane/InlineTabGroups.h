@@ -160,9 +160,13 @@ struct InlineTabGroups {
         // TabView's Equal-width calculation counts tabs but not grouped-source
         // headers (including the 24-DIP ungrouped gap). Its Auto tab column can
         // therefore consume the add-button space before minimum-width overflow
-        // starts. Bound the actual list, and let its stock ScrollViewer detect
-        // overflow from the real grouped extent instead of that tab-only estimate.
-        scroller.HorizontalScrollBarVisibility(Controls::ScrollBarVisibility::Auto);
+        // starts. Bound the actual list and decide overflow from the real
+        // grouped extent instead of that tab-only estimate. Not Auto: the list's
+        // column sizes to its content and the arrows take width from it, so
+        // Auto latches arrows on after a transient overflow (a collapse slide
+        // releasing its held width, a tab added). LayoutUpdated compares the
+        // extent with the arrow-free width instead; Hidden keeps scrolling.
+        scroller.HorizontalScrollBarVisibility(Controls::ScrollBarVisibility::Hidden);
         // The same tab-only estimate also leaves stale arrow enablement when
         // it thinks everything fits. Reflect actual scroll endpoints; retain
         // the stock RepeatButtons and their native click/hold handlers.
@@ -224,7 +228,11 @@ struct InlineTabGroups {
                 const double gap = scroller.ActualWidth() - scroller.ViewportWidth();
                 if (arrows > gap + .5) arrows = 0;
                 const double inset = std::max(0.0, list.ActualWidth() - scroller.ViewportWidth() - arrows);
-                CapTabWidths(available - inset, scroller.ExtentWidth(), minTab, maxTab);
+                const double space = available - inset;
+                const double extent = CapTabWidths(space, scroller.ExtentWidth(), minTab, maxTab);
+                const auto wanted = extent > space + .5 ? Controls::ScrollBarVisibility::Visible
+                                                        : Controls::ScrollBarVisibility::Hidden;
+                if (scroller.HorizontalScrollBarVisibility() != wanted) scroller.HorizontalScrollBarVisibility(wanted);
                 LogScroller(list, scroller, grid, available);
             }
             refreshArrows();
@@ -275,7 +283,8 @@ struct InlineTabGroups {
 
     // `space` is the scroll viewport without arrows; `extent` is the grouped
     // content, so extent minus the tabs is every header, gap and padding.
-    void CapTabWidths(double space, double extent, double minTab, double maxTab) {
+    // Returns the extent expected once the caps apply.
+    double CapTabWidths(double space, double extent, double minTab, double maxTab) {
         std::vector<Controls::TabViewItem> tabs;
         double measured = 0;
         size_t loaded = 0;
@@ -289,17 +298,23 @@ struct InlineTabGroups {
                 if (const auto width = row.DesiredSize().Width; width > 0) { measured += width; ++loaded; }
             }
         }
-        if (!loaded || space <= 0) return;
+        if (!loaded || space <= 0) return extent;
         // Unrealized rows are estimated the same way ItemsStackPanel does.
         const double tabExtent = measured / loaded * tabs.size();
-        const double slot = (space - std::max(0.0, extent - tabExtent)) / tabs.size();
+        const double others = std::max(0.0, extent - tabExtent);
+        const double slot = (space - others) / tabs.size();
+        const double average = measured / loaded;
+        double expected = others;
         for (auto& row : tabs) {
             const auto margin = row.Margin();
             // Round down: layout rounding up by one pixel would reintroduce
             // the overflow this cap removes.
             const double cap = std::clamp(std::floor(slot - margin.Left - margin.Right), minTab, maxTab);
             if (std::abs(row.MaxWidth() - cap) > .5) row.MaxWidth(cap);
+            const double desired = row.DesiredSize().Width;
+            expected += std::min(desired > 0 ? desired : average, cap + margin.Left + margin.Right);
         }
+        return expected;
     }
 
     void Metadata(Windows::Data::Json::JsonArray const& groups, bool animate = false) {
