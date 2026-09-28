@@ -1704,8 +1704,18 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         } else if (width == 400) {
             Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Visible,
                     "minimum-width grouped overflow shows stock scroll arrows");
-            scroller.ChangeView(box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
-            settle();
+            // TabView animates the selected tab into view after the resize;
+            // a ChangeView issued during that animation can be dropped.
+            // Repeat the setup scroll until it lands, and report how often.
+            int attempts = 0;
+            bool accepted = false;
+            do {
+                accepted = scroller.ChangeView(box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(),
+                    nullptr, nullptr, true);
+                settle();
+            } while (++attempts < 10 && scroller.HorizontalOffset() > .5);
+            fprintf(stderr, "Grouped start: attempts=%d accepted=%d offset=%.1f\n", attempts, accepted,
+                scroller.HorizontalOffset());
             auto increase = findOverflowPart(view, L"ScrollIncreaseButton").as<Controls::Primitives::RepeatButton>();
             auto decrease = findOverflowPart(view, L"ScrollDecreaseButton").as<Controls::Primitives::RepeatButton>();
             fprintf(stderr, "Grouped scroll: offset=%.1f extent=%.1f increase=%d decrease=%d\n",
