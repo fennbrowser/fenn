@@ -44,6 +44,67 @@ struct NativeTabStrip {
     uint32_t groupingDelay{240}, groupCandidate{}, armedGroupTarget{};
     uint32_t joinGroup{}, joinTarget{};
     bool joinBefore{};
+    // While a tab hovers past a group's last member, that group's shared
+    // surface opens toward the insertion gap over the same 135-ms ease-out
+    // as the sliding tabs, and closes again when the tab leaves. Interior
+    // gaps already lie inside the surface and need no extension.
+    struct JoinReach {
+        uint32_t group{};
+        float from{}, target{};
+        std::chrono::steady_clock::time_point start{};
+        static constexpr float Milliseconds = 135;
+        float Value(std::chrono::steady_clock::time_point now) const {
+            const float t = std::clamp(std::chrono::duration<float, std::milli>(now - start).count() / Milliseconds, 0.f, 1.f);
+            const float eased = 1 - (1 - t) * (1 - t) * (1 - t);
+            return from + (target - from) * eased;
+        }
+        bool Settled(std::chrono::steady_clock::time_point now) const {
+            return std::chrono::duration<float, std::milli>(now - start).count() >= Milliseconds;
+        }
+    } joinReach;
+    // The joined group's last surface while dragging, and the same surface
+    // held after release until Firefox publishes the join, so it stays put
+    // instead of collapsing and growing again.
+    struct JoinHold {
+        uint32_t group{}, tab{};
+        Windows::Foundation::Rect rect{};
+        std::chrono::steady_clock::time_point until{};
+    } joinLast, joinHold;
+    // Lifting a tab out of its group hides its row, which would shrink the
+    // group's surface at once. Hold the surface as it was at pick-up while the
+    // pointer stays within it, then ease it to the remaining members once the
+    // drag has left the group.
+    struct SourceHold {
+        uint32_t group{};
+        Windows::Foundation::Rect rect{}, from{};
+        bool released{};
+        std::chrono::steady_clock::time_point at{};
+    } sourceHold;
+    Windows::Foundation::Point lastDragPoint{};
+    Windows::Foundation::Rect dragSlot{};
+    uint32_t DraggedMemberGroup() {
+        if (!core || Drag().phase != DragPhase::Dragging) return 0;
+        auto meta = presentation.find(Drag().tab);
+        if (meta == presentation.end() || !meta->second.groupSource) return 0;
+        auto slot = std::find_if(groupLayout.begin(), groupLayout.end(), [&](auto value) { return value.tab == Drag().tab; });
+        if (slot == groupLayout.end() || !slot->group) return 0;
+        auto run = inlineGroups.runs.find(slot->group);
+        return run == inlineGroups.runs.end() || run->second.collapsed ? 0 : slot->group;
+    }
+    uint64_t joinFrame{~0ull};
+    std::chrono::steady_clock::time_point joinClock{};
+    // The open gap's width and destination group when it lies past that
+    // group's last visible member; {0, 0} otherwise.
+    std::pair<uint32_t, float> JoinTail() {
+        if (!joinGroup || !core || Drag().phase != DragPhase::Dragging || Drag().original >= drag.originalWidth.size()) return {};
+        auto run = inlineGroups.runs.find(joinGroup);
+        if (run == inlineGroups.runs.end() || run->second.collapsed) return {};
+        uint32_t last{};
+        for (auto const& slot : groupLayout)
+            if (slot.group == joinGroup && slot.tab && slot.tab != Drag().tab) last = slot.tab;
+        const bool atEnd = last ? joinTarget == last && !joinBefore : joinTarget == 0;
+        return atEnd ? std::pair{joinGroup, float(drag.originalWidth[Drag().original])} : std::pair<uint32_t, float>{};
+    }
 
     NativeTabMenu& menu;
     ShellCore* core{};
@@ -276,6 +337,64 @@ struct NativeTabStrip {
                 includeSurface(slot.group, run->second.button);
             }
         }
+        // Open the destination group toward the dragged tab's insertion gap
+        // before the reach and neighbor split below, so the outline, wash and
+        // halo all extend to where the tab will land.
+        // Sample the clock once per rendered frame. Layout-triggered refreshes
+        // in between see the same extension, so the width cannot change with
+        // each pass and keep layout from ever settling (a layout cycle).
+        if (joinFrame != ambient.frames) { joinFrame = ambient.frames; joinClock = std::chrono::steady_clock::now(); }
+        const auto now = joinClock;
+        {
+            const auto [tailGroup, tailWidth] = JoinTail();
+            // A different destination starts closed; the old one snaps shut.
+            if (tailGroup && tailGroup != joinReach.group) joinReach = {tailGroup, 0.f, 0.f, now};
+            const float desired = tailGroup ? tailWidth : 0.f;
+            if (joinReach.group && desired != joinReach.target) {
+                joinReach.from = groupSlide.Enabled() ? joinReach.Value(now) : desired;
+                joinReach.target = desired; joinReach.start = now;
+            }
+            const float extra = joinReach.group ? joinReach.Value(now) : 0.f;
+            auto surface = surfaceBounds.find(joinReach.group);
+            if (extra > 0.01f && surface != surfaceBounds.end()) {
+                if (root.FlowDirection() == FlowDirection::RightToLeft) surface->second.X -= extra;
+                surface->second.Width += extra;
+            }
+            if (joinReach.group && !tailGroup && joinReach.target == 0 && joinReach.Settled(now)) joinReach = {};
+        }
+        {
+            const auto group = DraggedMemberGroup();
+            if (sourceHold.group != group) sourceHold = {};
+            auto surface = group ? surfaceBounds.find(group) : surfaceBounds.end();
+            if (surface != surfaceBounds.end()) {
+                auto& base = surface->second;
+                auto& hold = sourceHold;
+                if (!hold.group) {
+                    hold.group = group; hold.rect = base;
+                    const auto right = std::max(base.X + base.Width, dragSlot.X + dragSlot.Width);
+                    hold.rect.X = std::min(base.X, dragSlot.X); hold.rect.Width = right - hold.rect.X;
+                    hold.from = hold.rect; hold.released = false;
+                    hold.at = now - std::chrono::milliseconds(int(JoinReach::Milliseconds) + 1);
+                }
+                // Ease between the held pick-up extent and the remaining
+                // members, in either direction, as the pointer leaves and
+                // re-enters the group's original extent.
+                auto shown = [&] {
+                    const auto target = hold.released ? base : hold.rect;
+                    const float t = std::clamp(std::chrono::duration<float, std::milli>(now - hold.at).count() / JoinReach::Milliseconds, 0.f, 1.f);
+                    const float eased = 1 - (1 - t) * (1 - t) * (1 - t);
+                    const float left = hold.from.X + (target.X - hold.from.X) * eased;
+                    const float right = hold.from.X + hold.from.Width + (target.X + target.Width - hold.from.X - hold.from.Width) * eased;
+                    return Windows::Foundation::Rect{left, target.Y, right - left, target.Height};
+                };
+                const auto pointer = view.TransformToVisual(ambient.layer).TransformPoint(lastDragPoint);
+                const bool inside = !Drag().detaching && !joinGroup && pointer.X >= hold.rect.X && pointer.X <= hold.rect.X + hold.rect.Width;
+                if (inside == hold.released) {
+                    hold.from = shown(); hold.released = !inside; hold.at = now;
+                }
+                base = shown();
+            }
+        }
         // Extend every group surface slightly past its first and last member,
         // so the outline, wash and halo also enclose an active tab at either
         // end. Neighboring groups share the gap between them and keep a
@@ -296,7 +415,21 @@ struct NativeTabStrip {
                 ordered[i]->Width += left[i] + right[i];
             }
         }
-        const bool followingMotion = IsDragging() || GroupDrag().phase || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty();
+        if (IsDragging() && joinGroup) {
+            if (auto surface = surfaceBounds.find(joinGroup); surface != surfaceBounds.end())
+                joinLast = {joinGroup, 0, surface->second, {}};
+        }
+        if (joinHold.group) {
+            bool joined = false;
+            for (auto const& slot : groupLayout) joined = joined || (slot.group == joinHold.group && slot.tab == joinHold.tab);
+            if (joined || IsDragging() || std::chrono::steady_clock::now() > joinHold.until) {
+                joinHold = {};
+                joinReach = {};
+            } else if (auto surface = surfaceBounds.find(joinHold.group); surface != surfaceBounds.end()) {
+                surface->second = joinHold.rect;
+            }
+        }
+        const bool followingMotion = joinHold.group || sourceHold.group || IsDragging() || GroupDrag().phase || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty() || (joinReach.group && !joinReach.Settled(now));
         auto ambientViewport = viewport;
         float fadeLeft = 0, fadeRight = 0;
         // Permit container light in the strip's top padding while retaining
@@ -1497,6 +1630,7 @@ struct NativeTabStrip {
     // math and to notice the gesture has cleared the strip's own
     // bounds and become a tear-off.
     void UpdateDragVisual(Windows::Foundation::Point const& point, bool allowGrouping = true) {
+        lastDragPoint = point;
         const auto previous = Drag();
         const auto previousJoin = joinGroup;
         if (shell_core_tab_drag_update(core, point.X, point.Y, view.ActualWidth(), view.ActualHeight(), false) != SHELL_STATUS_OK) return;
@@ -1564,6 +1698,8 @@ struct NativeTabStrip {
         }
         uint32_t original = 0;
         view.TabItems().IndexOf(row, original);
+        if (ambient.layer)
+            dragSlot = row.TransformToVisual(ambient.layer).TransformBounds({0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
         std::vector<ShellDragRow> measured;
         drag.originalLeftEdge.clear();
         drag.originalWidth.clear();
@@ -1601,6 +1737,8 @@ struct NativeTabStrip {
         UpdateDragVisual(point);
         if (joinGroup) {
             using Value = Windows::Data::Json::JsonValue;
+            if (joinLast.group == joinGroup)
+                joinHold = {joinGroup, tabId, joinLast.rect, std::chrono::steady_clock::now() + std::chrono::milliseconds(1500)};
             Windows::Data::Json::JsonObject action;
             action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-join-group"));
             action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));

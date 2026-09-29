@@ -2993,6 +2993,47 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
                         "crossing the disclosure retains the first gap without jumping past either member");
                     pointAt(sourceWidth*.25);
                 }
+                // Past the last member the group's surface opens toward the
+                // gap, then closes again when the tab returns inside.
+                auto layer=content.as<Controls::Grid>().Children().GetAt(3).as<Controls::Canvas>();
+                auto lastMember=view.TabItems().GetAt(2).as<Controls::TabViewItem>();
+                auto overhang=[&] {
+                    Controls::Border surface{nullptr};
+                    for (auto child : layer.Children())
+                        if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-7") surface = child.as<Controls::Border>();
+                    Require(surface != nullptr, "the joined group keeps its shared surface");
+                    const float left=float(Controls::Canvas::GetLeft(surface)), right=left+float(surface.Width());
+                    const auto at=lastMember.TransformToVisual(layer).TransformBounds({0,0,float(lastMember.ActualWidth()),float(lastMember.ActualHeight())});
+                    return rtl ? at.X-left : right-(at.X+float(lastMember.ActualWidth()));
+                };
+                const float gapWidth=float(view.TabItems().GetAt(backward ? 3 : 0).as<Controls::TabViewItem>().ActualWidth());
+                Require(overhang()<=8.f,"an interior insertion gap leaves the group surface at its normal reach");
+                auto tail=TabScreenBounds(host,L"FirefoxWinUITab-44");
+                SetCursorPos(rtl ? tail.left+8 : tail.right-8,(tail.top+tail.bottom)/2);
+                settle();
+                fprintf(stderr,"Join tail rtl=%d backward=%d overhang=%.1f gap=%.1f\n",rtl,backward,overhang(),gapWidth);
+                Require(overhang()>=gapWidth-2.f,"the group surface extends to the tab's insertion gap past its last member");
+                pointAt(sourceWidth*.25);
+                Require(overhang()<=8.f,"the group surface closes again once the gap returns inside the group");
+                // Releasing over the end gap keeps the surface in place until
+                // Firefox publishes the join (never here), then lets it settle.
+                SetCursorPos(rtl ? tail.left+8 : tail.right-8,(tail.top+tail.bottom)/2);
+                settle();
+                Require(overhang()>=gapWidth-2.f,"the surface reopens before the drop");
+                auto surfaceNow=[&] {
+                    for (auto child : layer.Children())
+                        if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-7")
+                            return std::pair{float(Controls::Canvas::GetLeft(child)),float(child.as<Controls::Border>().Width())};
+                    return std::pair{0.f,0.f};
+                };
+                const auto beforeDrop=surfaceNow();
+                mouse.mi.dwFlags=MOUSEEVENTF_LEFTUP; SendInput(1,&mouse,sizeof(mouse));
+                settle();
+                const auto afterDrop=surfaceNow();
+                Require(std::abs(afterDrop.first-beforeDrop.first)<=.5f && std::abs(afterDrop.second-beforeDrop.second)<=.5f,
+                    "the group surface stays in place after the drop");
+                for (int i=0;i<6;++i) settle();
+                Require(surfaceNow().second<beforeDrop.second-gapWidth/2,"an unacknowledged drop releases the held surface");
             }
             INPUT escape[2]{};
             escape[0].type=escape[1].type=INPUT_KEYBOARD;
@@ -3009,6 +3050,34 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
             Require(std::abs(restored.left-member.left)<=2,"Escape restores group member geometry");
         }
     }
+    // Lifting a member keeps the group's surface while the pointer stays
+    // inside the group's original extent.
+    auto layer=content.as<Controls::Grid>().Children().GetAt(3).as<Controls::Canvas>();
+    auto surfaceSpan=[&] {
+        for (auto child : layer.Children())
+            if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-7")
+                return std::pair{float(Controls::Canvas::GetLeft(child)),float(child.as<Controls::Border>().Width())};
+        return std::pair{0.f,0.f};
+    };
+    settle();
+    const auto restingSpan=surfaceSpan();
+    auto lifted=TabScreenBounds(host,L"FirefoxWinUITab-44");
+    auto inner=TabScreenBounds(host,L"FirefoxWinUITab-22");
+    SetCursorPos((lifted.left+lifted.right)/2,(lifted.top+lifted.bottom)/2);
+    settle();
+    INPUT press{}; press.type=INPUT_MOUSE; press.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
+    Require(SendInput(1,&press,sizeof(press))==1,"press a group member");
+    settle();
+    SetCursorPos((inner.left+inner.right)/2,(inner.top+inner.bottom)/2);
+    settle();
+    const auto liftedSpan=surfaceSpan();
+    Require(std::abs(liftedSpan.first-restingSpan.first)<=1.f && std::abs(liftedSpan.second-restingSpan.second)<=1.f,
+        "the group surface stays while a lifted member remains within the group");
+    INPUT escape[2]{}; escape[0].type=escape[1].type=INPUT_KEYBOARD;
+    escape[0].ki.wVk=escape[1].ki.wVk=VK_ESCAPE; escape[1].ki.dwFlags=KEYEVENTF_KEYUP;
+    SendInput(1,escape,sizeof(INPUT)); settle(); SendInput(1,escape+1,sizeof(INPUT));
+    press.mi.dwFlags=MOUSEEVENTF_LEFTUP; SendInput(1,&press,sizeof(press));
+    settle();
 }
 
 static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false, bool inactive = false, bool rearm = false, bool grouping = false) {
