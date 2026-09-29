@@ -2561,6 +2561,51 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupMotion(HWND hw
         return S_OK;
     } catch (...) { return to_hresult(); }
 }
+// Test-only: observe the tab add/close motion without a screenshot. Operation
+// 0 fills out[0..9]: tracked row animations, rows with a reveal clip, reveal
+// clips scaled about local x = 0, 1 when the New Tab button carries a nonzero
+// offset (out[3] is its sign: 1 positive, 2 negative), stand-in count, rows
+// with a composition scale or translation in flight, and the first stand-in's
+// Canvas.Left in tenths, then the first row's scale in thousandths and its translation in tenths plus 5000. Operations 1 and 2 set left-to-right or right-to-left.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestEntryMotion(HWND hwnd, uint32_t operation, uint32_t* out) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (!out || found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
+        auto& strip = *found->second->strip;
+        if (operation == 1 || operation == 2) {
+            strip.root.FlowDirection(operation == 2 ? FlowDirection::RightToLeft : FlowDirection::LeftToRight);
+            strip.root.UpdateLayout();
+            return S_OK;
+        }
+        if (operation != 0) return E_INVALIDARG;
+        std::fill(out, out + 10, 0u);
+        out[0] = uint32_t(strip.rowAnimations.size());
+        for (auto const& [id, row] : strip.rows) {
+            if (auto clip = row.Clip().try_as<Media::RectangleGeometry>()) {
+                ++out[1];
+                if (auto scale = clip.Transform().try_as<Media::ScaleTransform>(); scale && scale.CenterX() == 0) ++out[2];
+            }
+            auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(row);
+            winrt::Windows::Foundation::Numerics::float3 shift{};
+            visual.Properties().TryGetVector3(L"Translation", shift);
+            if (std::abs(visual.Scale().x - 1.f) > .001f || std::abs(shift.x) > .001f) ++out[6];
+            if (!out[8] && &row == &strip.rows.begin()->second) {
+                out[8] = uint32_t(std::max(0.f, visual.Scale().x * 1000));
+                out[9] = uint32_t(std::max(0.f, shift.x * 10 + 5000));
+            }
+        }
+        if (auto add = strip.FindAddButton(strip.view))
+            if (auto transform = add.RenderTransform().try_as<Media::TranslateTransform>(); transform && std::abs(transform.X()) > .5)
+                out[3] = transform.X() > 0 ? 1 : 2;
+        if (strip.closeOverlay) {
+            out[4] = strip.closeOverlay.Children().Size();
+            if (out[4]) out[7] = uint32_t(std::max(0.0, Controls::Canvas::GetLeft(strip.closeOverlay.Children().GetAt(0)) * 10));
+        }
+        out[5] = uint32_t(strip.closeStoryboards.size());
+        return S_OK;
+    } catch (...) { return to_hresult(); }
+}
 // Test-only: refresh decorative geometry. S_FALSE indicates a frame observer
 // following an existing native tab animation or drag.
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestRefreshAmbient(HWND hwnd) noexcept {

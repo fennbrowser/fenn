@@ -1501,21 +1501,20 @@ struct NativeTabStrip {
     // Existing tabs change width when a tab is added. Their layout jumps at
     // once; a composition-only offset and scale (from the left edge) puts each
     // back on its old geometry, then eases it to rest, so nothing else fights
-    // the row's XAML RenderTransform. Bounds are mirrored in right-to-left
-    // while composition offsets are not (probed: a row's Visual.Offset is the
-    // same in both), so there the right edge is the fixed anchor.
+    // the row's XAML RenderTransform. Bounds and composition offsets share one
+    // unmirrored space in both flow directions (a row's Visual.Offset is the
+    // same in each), so the left-edge formula holds in right-to-left too; the
+    // right-edge anchor tried first was wrong.
     struct Neighbor { Controls::TabViewItem row{nullptr}; float dx{}, sx{}; };
 
     std::vector<Neighbor> HoldNeighbors(std::map<uint32_t, std::pair<float, float>> const& before, uint32_t newId) {
         std::vector<Neighbor> held;
-        const bool rtl = root.FlowDirection() == FlowDirection::RightToLeft;
         for (auto const& [id, row] : rows) {
             auto old = before.find(id);
             if (id == newId || old == before.end() || !row.IsLoaded()) continue;
             const auto now = row.TransformToVisual(root).TransformBounds(
                 {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
-            const float dx = rtl ? (now.X + now.Width) - (old->second.first + old->second.second) : old->second.first - now.X,
-                        sx = now.Width > 0 ? old->second.second / now.Width : 1.f;
+            const float dx = old->second.first - now.X, sx = now.Width > 0 ? old->second.second / now.Width : 1.f;
             if (std::abs(dx) < .5f && std::abs(sx - 1.f) < .002f) continue;
             auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(row);
             winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::SetIsTranslationEnabled(row, true);

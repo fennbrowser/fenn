@@ -1326,6 +1326,76 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     sync();
     settleWidths();
     Require(std::abs(first.ActualWidth() - spaciousWidth) < 1, "tabs grow after other tabs close");
+    // Adding and closing a tab animate the New Tab button, the tab itself (a
+    // reveal clip or a stand-in) and, when widths change, the other tabs. Check
+    // in both flow directions that each piece starts, points the right way and
+    // is fully cleaned up, by polling the pane's own bookkeeping.
+    {
+        auto entry = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t*)>(GetProcAddress(module, "WinUIPaneTestEntryMotion"));
+        Require(entry != nullptr, "entry motion inspector exists");
+        const bool animated = winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled();
+        struct Seen { bool tracked{}, clipOrigin{}, closing{}, neighbors{}; uint32_t addSign{}, ghostLeft{}, firstScale{}, firstShift{5000}; };
+        auto observe = [&](std::function<void()> change) {
+            Seen seen{};
+            change();
+            for (int i = 0; i < 400; ++i) {
+                uint32_t out[10]{};
+                Require(SUCCEEDED(entry(host, 0, out)), "inspect entry motion");
+                seen.tracked |= out[0] != 0;
+                seen.clipOrigin |= out[1] != 0 && out[1] == out[2];
+                seen.closing |= out[4] != 0;
+                seen.neighbors |= out[6] != 0;
+                if (out[3] && !seen.addSign) seen.addSign = out[3];
+                if (out[7] && !seen.ghostLeft) seen.ghostLeft = out[7];
+                if (out[6] && !seen.firstScale) { seen.firstScale = out[8]; seen.firstShift = out[9]; }
+                if (i > 3 && !out[0] && !out[1] && !out[3] && !out[4] && !out[5] && !out[6] &&
+                    (seen.tracked || seen.closing || !animated)) break;
+                Pump();
+                Sleep(2);
+            }
+            uint32_t out[10]{};
+            Require(SUCCEEDED(entry(host, 0, out)), "inspect settled entry motion");
+            Require(!out[0] && !out[1] && !out[3] && !out[4] && !out[5] && !out[6],
+                    "entry motion leaves no clip, offset, stand-in or composition transform behind");
+            return seen;
+        };
+        uint32_t none[10]{};
+        for (bool rtl : {false, true}) {
+            Require(SUCCEEDED(entry(host, rtl ? 2 : 1, none)), "set flow direction for entry motion");
+            sync(); settleWidths();
+            const auto before = first.ActualWidth();
+            auto firstBounds = [&] {
+                return first.TransformToVisual(root).TransformBounds({0, 0, float(first.ActualWidth()), 1});
+            };
+            const auto firstOld = firstBounds();
+            auto grown = observe([&] { Require(SUCCEEDED(api.syncTabs(host, crowded, 3, 11, &selected)), "add a tab"); });
+            settleWidths();
+            if (animated) {
+                Require(grown.tracked && grown.clipOrigin, "a new tab is revealed through a clip scaled about x = 0 in both directions");
+                Require(grown.addSign == 2u, "New Tab button eases in from its old, lower position in both directions");
+                if (std::abs(first.ActualWidth() - before) > 1) {
+                    Require(grown.neighbors, "existing tabs ease when a new tab changes their width");
+                    // The eased start must reproduce the old geometry: its left edge
+                    // and its width, measured before the change, in both directions.
+                    const auto firstNew = firstBounds();
+                    Require(std::abs((float(grown.firstShift) - 5000) / 10 - (firstOld.X - firstNew.X)) < 1.5 &&
+                                std::abs(float(grown.firstScale) / 1000 - firstOld.Width / firstNew.Width) < .01,
+                            "existing tabs start on their old position and width and ease to the new one in both directions");
+                }
+            }
+            const auto closing = view.TabItems().GetAt(2).as<Controls::TabViewItem>()
+                .TransformToVisual(root).TransformBounds({0, 0, 1, 1});
+            auto closed = observe([&] { sync(); });
+            if (animated) {
+                Require(closed.closing && closed.ghostLeft, "closing a tab shows a stand-in");
+                Require(std::abs(float(closed.ghostLeft) / 10 - closing.X) < 1.5,
+                        "the stand-in starts where the closing tab was");
+                Require(closed.addSign == 1u, "New Tab button eases in from its old, higher position on close in both directions");
+            }
+        }
+        Require(SUCCEEDED(entry(host, 1, none)), "restore left-to-right after entry motion");
+        sync(); settleWidths();
+    }
     // Drag-to-reorder: a real OS drag gesture can't be scripted here (WinUI's
     // gesture recognizer can't be triggered from outside actual pointer
     // input), so simulate what a live drag already leaves behind -- WinUI's
