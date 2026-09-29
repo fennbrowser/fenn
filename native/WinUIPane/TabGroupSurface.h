@@ -90,6 +90,20 @@ struct TabGroupSurface {
         }
     }
 
+    // The header's pointer-over state washes the whole group, not only the
+    // button. The fill is a live theme brush inside the outline, under the tabs.
+    uint32_t hovered{};
+    void ApplyHover(uint32_t id, Controls::Border const& border) {
+        auto fill = border.Child().as<Controls::Border>();
+        const double opacity = id == hovered ? 1.0 : 0.0;
+        if (fill.Opacity() != opacity) fill.Opacity(opacity);
+    }
+    void Hover(uint32_t id) {
+        if (hovered == id) return;
+        hovered = id;
+        for (auto const& [group, border] : surfaces) ApplyHover(group, border);
+    }
+
     void Create(Controls::Grid const& root) {
         layer = Markup::XamlReader::Load(LR"(<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Grid.ColumnSpan="3" Canvas.ZIndex="-1" FlowDirection="LeftToRight" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Canvas>();
         root.Children().Append(layer);
@@ -107,9 +121,13 @@ struct TabGroupSurface {
                 border = Markup::XamlReader::Load(LR"(
 <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8"
- IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
+ IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
+ <Border Background="{ThemeResource SubtleFillColorSecondaryBrush}" CornerRadius="7" Opacity="0"
+  IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>
+</Border>)").as<Controls::Border>();
                 Automation::AutomationProperties::SetAutomationId(border, L"FirefoxWinUIGroupSurface-" + to_hstring(id));
                 layer.Children().Append(border);
+                ApplyHover(id, border);
             }
             if (Controls::Canvas::GetLeft(border) != rect.X) Controls::Canvas::SetLeft(border, rect.X);
             if (Controls::Canvas::GetTop(border) != rect.Y) Controls::Canvas::SetTop(border, rect.Y);

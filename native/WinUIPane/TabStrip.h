@@ -1091,6 +1091,7 @@ struct NativeTabStrip {
             action.SetNamedValue(L"id",Value::CreateNumberValue(tab));
             groupsButton.dispatch(action.Stringify());
         };
+        inlineGroups.highlight = [this](uint32_t id) { groupSurface.Hover(id); };
         inlineGroups.toggle = [this](uint32_t id, bool collapsed) {
             if (GroupDrag().phase==1) EndGroupDrag(true);
             if (IsDragging() || GroupDrag().phase || !groupsButton.dispatch) return;
