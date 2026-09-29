@@ -122,7 +122,7 @@ struct TabGroupSurface {
 <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8"
  IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
- <Border Background="{ThemeResource SubtleFillColorSecondaryBrush}" CornerRadius="7" Opacity="0"
+ <Border Background="{ThemeResource TabViewItemHeaderBackgroundPointerOver}" CornerRadius="7" Opacity="0"
   IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>
 </Border>)").as<Controls::Border>();
                 Automation::AutomationProperties::SetAutomationId(border, L"FirefoxWinUIGroupSurface-" + to_hstring(id));

@@ -579,7 +579,7 @@ struct InlineTabGroups {
                 run.button = Markup::XamlReader::Load(LR"(
 <Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Style="{StaticResource SubtleButtonStyle}" Margin="4,0" Padding="4,0" MinWidth="32" MinHeight="0" Width="32" Height="32" VerticalAlignment="Center">
  <Button.Resources><ResourceDictionary><ResourceDictionary.ThemeDictionaries>
-  <ResourceDictionary x:Key="Default"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="Transparent"/></ResourceDictionary>
+  <ResourceDictionary x:Key="Default"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="Transparent"/><SolidColorBrush x:Key="SubtleButtonBackgroundPointerOver" Color="Transparent"/></ResourceDictionary>
   <ResourceDictionary x:Key="HighContrast"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="{ThemeResource SystemColorWindowTextColor}"/></ResourceDictionary>
  </ResourceDictionary.ThemeDictionaries></ResourceDictionary></Button.Resources>
  <Grid MinWidth="24" MaxWidth="144" Height="24" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
