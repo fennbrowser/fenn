@@ -2546,7 +2546,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupMotion(HWND hw
             auto row = strip.view.TabItems().GetAt(1).as<Controls::TabViewItem>();
             const auto id = unbox_value<uint32_t>(row.Tag());
             if (operation == 7) {
-                strip.RevealNewRow(row, id);
+                strip.RevealNewRow(row, id, std::numeric_limits<double>::quiet_NaN());
                 *ghosts = strip.rowAnimations.count(id) && row.Clip() && strip.RowTransform(row).X() == 0 ? 1 : 0;            } else {
                 strip.ResetRowOffset(row, id);
                 *ghosts = !strip.rowAnimations.count(id) && !row.Clip() && strip.RowTransform(row).X() == 0 ? 1 : 0;

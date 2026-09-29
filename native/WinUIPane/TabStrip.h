@@ -1031,6 +1031,9 @@ struct NativeTabStrip {
     // Storyboard otherwise keeps driving the property and the reset would
     // be ignored.
     std::map<uint32_t, RowAnimation> rowAnimations;
+    Media::Animation::Storyboard addSlide{nullptr};
+    Media::Transform addPrevious{nullptr};
+    bool addHeld{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
     NativeTabStrip(NativeTabMenu& model) : menu(model) {
@@ -1414,23 +1417,80 @@ struct NativeTabStrip {
     // A tab created after the strip was already populated is revealed with a
     // wipe from the edge it shares with the tab before it; the tab itself stays
     // in its slot. Skipped for the first tab and under reduced motion.
-    void RevealNewRow(Controls::TabViewItem const& row, uint32_t id) {
+    // `addBefore` is the New Tab button's X (in root space) before this
+    // publication, or NaN. The button eases from there to its new position with
+    // the reveal, so it keeps pace with the tab opening beside it.
+    void RevealNewRow(Controls::TabViewItem const& row, uint32_t id, double addBefore) {
         if (!groupSlide.Enabled() || IsDragging() || groupSlide.storyboard) return;
         if (row.ActualWidth() < 1) return;
-        if (row.IsLoaded()) { StartReveal(row, id); return; }
+        const double addDelta = HoldAddButton(addBefore);
+        if (row.IsLoaded()) { StartReveal(row, id); StartAddSlide(addDelta); return; }
         // Loaded fires after layout returns, and a storyboard cannot run on an
         // unloaded row. Hold the row invisible until then.
         row.Opacity(0);
         auto token = std::make_shared<winrt::event_token>();
-        *token = row.Loaded([this, alive = std::weak_ptr<int>(lifetime), id, token](auto const& sender, auto&&) {
+        *token = row.Loaded([this, alive = std::weak_ptr<int>(lifetime), id, token, addDelta](auto const& sender, auto&&) {
             auto loaded = sender.template as<Controls::TabViewItem>();
             loaded.Loaded(*token);
             if (alive.expired()) return;
             loaded.Opacity(1);
             auto found = rows.find(id);
-            if (found == rows.end() || found->second != loaded || IsDragging() || !groupSlide.Enabled()) return;
+            if (found == rows.end() || found->second != loaded || IsDragging() || !groupSlide.Enabled()) {
+                StartAddSlide(0);
+                return;
+            }
             StartReveal(loaded, id);
+            StartAddSlide(addDelta);
         });
+    }
+
+    // Places the button at its old position at once (its layout slot has
+    // already moved) and returns that offset for StartAddSlide to ease out.
+    double HoldAddButton(double before) {
+        auto add = FindAddButton(view);
+        if (std::isnan(before) || !add || !add.IsLoaded()) return 0;
+        const auto delta = before - add.TransformToVisual(root).TransformPoint({0, 0}).X;
+        if (std::abs(delta) < .5) return 0;
+        StartAddSlide(0);
+        addPrevious = add.RenderTransform();
+        addHeld = true;
+        Media::TranslateTransform transform;
+        transform.X(delta);
+        add.RenderTransform(transform);
+        return delta;
+    }
+
+    void StartAddSlide(double delta) {
+        auto add = FindAddButton(view);
+        if (delta == 0) {
+            // Nothing to animate (or the reveal was cancelled): restore.
+            if (addSlide) { try { addSlide.Stop(); } catch (...) {} addSlide = nullptr; }
+            if (addHeld && add) add.RenderTransform(addPrevious);
+            addHeld = false; addPrevious = nullptr;
+            return;
+        }
+        if (!add || !add.RenderTransform().try_as<Media::TranslateTransform>()) return;
+        auto transform = add.RenderTransform().as<Media::TranslateTransform>();
+        Media::Animation::DoubleAnimation animation;
+        animation.From(delta);
+        animation.To(0.0);
+        animation.Duration(
+            Duration{Windows::Foundation::TimeSpan{std::chrono::milliseconds(135)}, DurationType::TimeSpan});
+        Media::Animation::CubicEase ease;
+        ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+        animation.EasingFunction(ease);
+        Media::Animation::Storyboard::SetTarget(animation, transform);
+        Media::Animation::Storyboard::SetTargetProperty(animation, L"X");
+        Media::Animation::Storyboard storyboard;
+        storyboard.Children().Append(animation);
+        storyboard.Completed([this, alive = std::weak_ptr<int>(lifetime)](auto const& sender, auto const&) {
+            if (alive.expired() || addSlide != sender) return;
+            addSlide = nullptr;
+            if (auto add = FindAddButton(view); add && addHeld) add.RenderTransform(addPrevious);
+            addHeld = false; addPrevious = nullptr;
+        });
+        addSlide = storyboard;
+        storyboard.Begin();
     }
 
     void StartReveal(Controls::TabViewItem const& row, uint32_t id) {
@@ -2413,6 +2473,7 @@ struct NativeTabStrip {
         }
         bool refreshForeignPreview = false;
         std::vector<uint32_t> createdRows;
+        double addBefore = std::numeric_limits<double>::quiet_NaN();
         if (!groupSlide.pending) groupSlide.Cancel();
         if (ForeignPreview().active) {
             std::vector<uint32_t> order;
@@ -2450,6 +2511,9 @@ struct NativeTabStrip {
             const auto continuationTab = pendingWindowDragTab ? pendingWindowDragTab() : 0;
             std::set<uint32_t> current;
             const bool populated = !rows.empty();
+            if (populated)
+                if (auto add = FindAddButton(view); add && add.IsLoaded())
+                    addBefore = add.TransformToVisual(root).TransformPoint({0, 0}).X;
             for (uint32_t i = 0; i < count; ++i) {
                 const auto id = tabs[i].id;
                 current.insert(id);
@@ -2667,7 +2731,7 @@ struct NativeTabStrip {
         if (createdRows.size() == 1 && rows.count(createdRows[0])) {
             try {
                 root.UpdateLayout();
-                RevealNewRow(rows.at(createdRows[0]), createdRows[0]);
+                RevealNewRow(rows.at(createdRows[0]), createdRows[0], addBefore);
             } catch (...) {}
         }
         // A stationary cursor may produce no further input after this layout
