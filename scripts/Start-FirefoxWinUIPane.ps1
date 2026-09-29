@@ -1,7 +1,7 @@
-param([switch]$NativeAddress, [switch]$NativeTabStrip = $true, [switch]$ContainerDots = $true, [switch]$TabGlows = $true, [switch]$CaptureCrash, [string]$DiagnosticsLog,
+param([switch]$NativeAddress, [switch]$NativeTabStrip = $true, [switch]$ContainerDots = $true, [switch]$TabGlows = $true, [switch]$GroupHover, [switch]$CaptureCrash, [string]$DiagnosticsLog,
       [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight = 40,
       [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop = 'MicaAlt',
-      [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach = 'Large')
+      [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach = 'None')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $browser = Join-Path $projectRoot 'build/firefox/dist/bin/firefox.exe'
@@ -20,6 +20,7 @@ Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui
 Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.height`", $NativeTabStripHeight);"
 Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.glows`", $($TabGlows.IsPresent.ToString().ToLowerInvariant()));"
 Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.containerDot`", $($ContainerDots.IsPresent.ToString().ToLowerInvariant()));"
+Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.groupHover`", $($GroupHover.IsPresent.ToString().ToLowerInvariant()));"
 $backdrop = @{ Mica = 'mica'; MicaAlt = 'mica-alt'; Acrylic = 'acrylic' }[$TabStripBackdrop]
 Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.backdrop`", `"$backdrop`");"
 Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.groupReach`", `"$($TabGroupReach.ToLowerInvariant())`");"

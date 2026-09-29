@@ -155,7 +155,7 @@ struct NativeTabStrip {
     GroupDragShift tabDragHeaders;
     TabAmbient ambient;
     TabGroupSurface groupSurface;
-    bool groupGlow{}, containerGlow{}, containerDot{};
+    bool groupGlow{}, containerGlow{}, containerDot{}, groupHover{};
     // The island's system backdrop, chosen by Firefox's strip preference. The
     // pane owns the DesktopWindowXamlSource and applies a validated change.
     enum class Backdrop { Mica, MicaAlt, Acrylic };
@@ -1091,7 +1091,7 @@ struct NativeTabStrip {
             action.SetNamedValue(L"id",Value::CreateNumberValue(tab));
             groupsButton.dispatch(action.Stringify());
         };
-        inlineGroups.highlight = [this](uint32_t id) { groupSurface.Hover(id); };
+        inlineGroups.highlight = [this](uint32_t id) { groupSurface.Hover(groupHover ? id : 0); };
         inlineGroups.toggle = [this](uint32_t id, bool collapsed) {
             if (GroupDrag().phase==1) EndGroupDrag(true);
             if (IsDragging() || GroupDrag().phase || !groupsButton.dispatch) return;
@@ -1941,6 +1941,7 @@ struct NativeTabStrip {
             else if (name == L"acrylic") nextBackdrop = Backdrop::Acrylic;
             else throw hresult_invalid_argument();
         }
+        const bool nextGroupHover = data.HasKey(L"groupHover") ? data.GetNamedBoolean(L"groupHover") : base ? groupHover : false;
         auto nextGroupReach = base ? groupReach : DefaultGroupReach;
         if (data.HasKey(L"groupReach")) {
             auto reach = GroupReachOf(data.GetNamedString(L"groupReach"));
@@ -2154,6 +2155,7 @@ struct NativeTabStrip {
         containerDot = nextContainerDot;
         containerGlow = nextContainerGlow;
         groupGlow = nextGroupGlow;
+        if (groupHover != nextGroupHover) { groupHover = nextGroupHover; if (!groupHover) groupSurface.Hover(0); }
         if (groupReach != nextGroupReach) { groupReach = nextGroupReach; ApplyAddSpacing(); }
         if (nextBackdrop != backdrop) {
             backdrop = nextBackdrop;
