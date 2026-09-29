@@ -1415,6 +1415,16 @@ struct NativeTabStrip {
         rowAnimations.erase(it);
     }
 
+    // Runs `work` once, from the next frame's Rendering callback: after the
+    // layout that follows the current change, before that frame is presented.
+    void AfterNextLayout(std::function<void()> work) {
+        auto token = std::make_shared<winrt::event_token>();
+        *token = Media::CompositionTarget::Rendering([token, work = std::move(work)](auto&&, auto&&) {
+            Media::CompositionTarget::Rendering(*token);
+            work();
+        });
+    }
+
     // A tab created after the strip was already populated is revealed with a
     // wipe from the edge it shares with the tab before it; the tab itself stays
     // in its slot. Skipped for the first tab and under reduced motion.
@@ -2945,17 +2955,23 @@ struct NativeTabStrip {
                 try { RevealNewRow(rows.at(created), created, addBefore, rowsBefore); } catch (...) {}
             });
         }
-        else if (createdRows.empty() && !std::isnan(addBefore) && rows.size() < priorRowCount) {
-            // A tab closed: the others ease closed over its stand-in. Forcing a
-            // layout here catches TabView mid-update -- its equal widths become
-            // NaN and the group's last tab stays narrow until the pointer moves --
-            // so read the geometry from the next frame, after the natural layout.
-            if (groupSlide.Enabled() && !IsDragging() && !groupSlide.storyboard) {
-                const auto generation = ++closeGeneration;
-                auto token = std::make_shared<winrt::event_token>();
-                *token = Media::CompositionTarget::Rendering([this, alive = std::weak_ptr<int>(lifetime), generation, token,
-                                                              addBefore, rowsBefore, closing](auto&&, auto&&) {
-                    Media::CompositionTarget::Rendering(*token);
+        else if (createdRows.empty() && rows.size() < priorRowCount) {
+            // The toggle above can leave TabView's next layout with every Width
+            // NaN (tabs sized to their content, the group's last tab narrow until
+            // the pointer moves). Repair it once that layout has run, then read the
+            // motion's geometry from the layout the repaired widths produce.
+            const auto generation = ++closeGeneration;
+            const bool animate = !std::isnan(addBefore) && groupSlide.Enabled() && !IsDragging() && !groupSlide.storyboard;
+            AfterNextLayout([this, alive = std::weak_ptr<int>(lifetime), generation, animate, addBefore, rowsBefore, closing] {
+                if (alive.expired() || generation != closeGeneration) return;
+                bool unsized = false;
+                for (auto const& [id, row] : rows) unsized |= std::isnan(row.Width());
+                if (unsized) {
+                    view.TabWidthMode(Controls::TabViewWidthMode::SizeToContent);
+                    view.TabWidthMode(Controls::TabViewWidthMode::Equal);
+                }
+                if (!animate) return;
+                AfterNextLayout([this, alive, generation, addBefore, rowsBefore, closing] {
                     if (alive.expired() || generation != closeGeneration || IsDragging() || groupSlide.storyboard) return;
                     try {
                         const double addDelta = HoldAddButton(addBefore);
@@ -2965,7 +2981,7 @@ struct NativeTabStrip {
                         SettleNeighbors(neighbors, true);
                     } catch (...) {}
                 });
-            }
+            });
         }
         // A stationary cursor may produce no further input after this layout
         // change. Refresh a live hover now using the session's cursor sampler.

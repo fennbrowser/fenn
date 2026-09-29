@@ -1359,40 +1359,67 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
                     "entry motion leaves no clip, offset, stand-in or composition transform behind");
             return seen;
         };
+        auto waitIdle = [&] {
+            for (int i = 0; i < 400; ++i) {
+                uint32_t out[10]{};
+                Require(SUCCEEDED(entry(host, 0, out)), "inspect idle entry motion");
+                if (!out[0] && !out[1] && !out[3] && !out[4] && !out[5] && !out[6]) return;
+                Pump();
+                Sleep(2);
+            }
+        };
+        auto addX = [&] { return findStripPart(view, L"AddButton").TransformToVisual(root).TransformPoint({0, 0}).X; };
         uint32_t none[10]{};
         for (bool rtl : {false, true}) {
             Require(SUCCEEDED(entry(host, rtl ? 2 : 1, none)), "set flow direction for entry motion");
-            sync(); settleWidths();
-            const auto before = first.ActualWidth();
-            auto firstBounds = [&] {
-                return first.TransformToVisual(root).TransformBounds({0, 0, float(first.ActualWidth()), 1});
-            };
-            const auto firstOld = firstBounds();
-            auto grown = observe([&] { Require(SUCCEEDED(api.syncTabs(host, crowded, 3, 11, &selected)), "add a tab"); });
-            settleWidths();
-            if (animated) {
-                Require(grown.tracked && grown.clipOrigin, "a new tab is revealed through a clip scaled about x = 0 in both directions");
-                Require(grown.addSign == 2u, "New Tab button eases in from its old, lower position in both directions");
-                if (std::abs(first.ActualWidth() - before) > 1) {
-                    Require(grown.neighbors, "existing tabs ease when a new tab changes their width");
-                    // The eased start must reproduce the old geometry: its left edge
-                    // and its width, measured before the change, in both directions.
-                    const auto firstNew = firstBounds();
-                    Require(std::abs((float(grown.firstShift) - 5000) / 10 - (firstOld.X - firstNew.X)) < 1.5 &&
-                                std::abs(float(grown.firstScale) / 1000 - firstOld.Width / firstNew.Width) < .01,
-                            "existing tabs start on their old position and width and ease to the new one in both directions");
+            // A narrow strip is already full, so adding a tab resizes the others
+            // and leaves New Tab where it was; a wide one moves New Tab and leaves
+            // the others alone. Each piece is checked in the geometry that needs it.
+            for (bool wide : {false, true}) {
+                rect.right = wide ? 1000 : 800;
+                Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "size the strip for entry motion");
+                sync(); settleWidths(); waitIdle();
+                const auto before = first.ActualWidth();
+                auto firstBounds = [&] {
+                    return first.TransformToVisual(root).TransformBounds({0, 0, float(first.ActualWidth()), 1});
+                };
+                const auto firstOld = firstBounds();
+                const auto addOld = addX();
+                auto grown = observe([&] { Require(SUCCEEDED(api.syncTabs(host, crowded, 3, 11, &selected)), "add a tab"); });
+                settleWidths(); waitIdle();
+                const bool addMoved = std::abs(addX() - addOld) > 1, resized = std::abs(first.ActualWidth() - before) > 1;
+                if (animated) {
+                    Require(grown.tracked && grown.clipOrigin, "a new tab is revealed through a clip scaled about x = 0 in both directions");
+                    if (addMoved) Require(grown.addSign == 2u, "New Tab button eases in from its old, lower position in both directions");
+                    if (resized) {
+                        Require(grown.neighbors, "existing tabs ease when a new tab changes their width");
+                        // The eased start must reproduce the old geometry: its left edge
+                        // and its width, measured before the change, in both directions.
+                        const auto firstNew = firstBounds();
+                        Require(std::abs((float(grown.firstShift) - 5000) / 10 - (firstOld.X - firstNew.X)) < 1.5 &&
+                                    std::abs(float(grown.firstScale) / 1000 - firstOld.Width / firstNew.Width) < .01,
+                                "existing tabs start on their old position and width and ease to the new one in both directions");
+                    }
                 }
-            }
-            const auto closing = view.TabItems().GetAt(2).as<Controls::TabViewItem>()
-                .TransformToVisual(root).TransformBounds({0, 0, 1, 1});
-            auto closed = observe([&] { sync(); });
-            if (animated) {
-                Require(closed.closing && closed.ghostLeft, "closing a tab shows a stand-in");
-                Require(std::abs(float(closed.ghostLeft) / 10 - closing.X) < 1.5,
-                        "the stand-in starts where the closing tab was");
-                Require(closed.addSign == 1u, "New Tab button eases in from its old, higher position on close in both directions");
+                const auto closing = view.TabItems().GetAt(2).as<Controls::TabViewItem>()
+                    .TransformToVisual(root).TransformBounds({0, 0, 1, 1});
+                auto closed = observe([&] { sync(); });
+                settleWidths(); waitIdle();
+                if (animated) {
+                    Require(closed.closing && closed.ghostLeft, "closing a tab shows a stand-in");
+                    Require(std::abs(float(closed.ghostLeft) / 10 - closing.X) < 1.5,
+                            "the stand-in starts where the closing tab was");
+                    if (addMoved) Require(closed.addSign == 1u, "New Tab button eases in from its old, higher position on close in both directions");
+                }
+                // Closing must leave every tab with an Equal-mode width, not
+                // sized to its content (TabView left in SizeToContent).
+                for (auto item : view.TabItems())
+                    if (auto row = item.try_as<Controls::TabViewItem>(); row && row.Tag())
+                        Require(!std::isnan(row.Width()), "closing a tab leaves every tab with an Equal-mode width");
             }
         }
+        rect.right = 800;
+        Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "restore the strip width after entry motion");
         Require(SUCCEEDED(entry(host, 1, none)), "restore left-to-right after entry motion");
         sync(); settleWidths();
     }
@@ -2700,6 +2727,12 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     wprintf(L"Close after group (animated=%d): [%ls] -> after fresh layout [%ls]\n", int(animated), beforeWidths.c_str(), widths().c_str());
                     fflush(stdout);
                     Require(std::abs(closedWidth - lastTab.ActualWidth()) < 1, "closing an ungrouped tab leaves the group's last tab at its settled width");
+                    // Equal mode gives every tab a numeric Width. NaN means TabView
+                    // was left sizing tabs to their content, which is what made the
+                    // group's last tab shrink until the pointer moved.
+                    for (auto item : view.TabItems())
+                        if (auto row = item.try_as<Controls::TabViewItem>(); row && row.Tag())
+                            Require(!std::isnan(row.Width()), "closing a tab leaves every tab with an Equal-mode width");
                     lastGroup(revision++, true);
                     Require(SUCCEEDED(api.syncTabs(host,opened,3,43,&selected)), "reopen the ungrouped tab after the close width check");
                     settle(); settle();
