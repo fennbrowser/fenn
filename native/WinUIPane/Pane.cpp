@@ -2538,15 +2538,15 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupMotion(HWND hw
         else if (operation == 2) { motion.Cancel(); motion.disableForTest = true; }
         else if (operation == 3) motion.disableForTest = false;
         else if (operation == 7 || operation == 8) {
-            // New-tab entry: 7 starts the slide on the second tab and reports
-            // whether it is offset, clipped and tracked; 8 stops it and reports
+            // New-tab entry: 7 starts the reveal on the second tab and reports
+            // whether it is clipped and tracked; 8 stops it and reports
             // whether the row is back to a clean, unclipped rest state.
             auto& strip = *found->second->strip;
             if (strip.view.TabItems().Size() < 2) return E_INVALIDARG;
             auto row = strip.view.TabItems().GetAt(1).as<Controls::TabViewItem>();
             const auto id = unbox_value<uint32_t>(row.Tag());
             if (operation == 7) {
-                strip.SlideOutNewRow(row, id);
+                strip.RevealNewRow(row, id);
                 *ghosts = strip.rowAnimations.count(id) && row.Clip() && strip.RowTransform(row).X() == 0 ? 1 : 0;            } else {
                 strip.ResetRowOffset(row, id);
                 *ghosts = !strip.rowAnimations.count(id) && !row.Clip() && strip.RowTransform(row).X() == 0 ? 1 : 0;

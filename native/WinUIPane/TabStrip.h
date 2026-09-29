@@ -1411,24 +1411,65 @@ struct NativeTabStrip {
         rowAnimations.erase(it);
     }
 
-    // A tab created after the strip was already populated slides out from the
-    // tab before it. Skipped for the first tab, unloaded rows and reduced motion.
-    void SlideOutNewRow(Controls::TabViewItem const& row, uint32_t id) {
-        if (!groupSlide.Enabled() || !row.IsLoaded() || IsDragging() || groupSlide.storyboard) return;
-        const auto width = row.ActualWidth();
-        if (width < 1) return;
+    // A tab created after the strip was already populated is revealed with a
+    // wipe from the edge it shares with the tab before it; the tab itself stays
+    // in its slot. Skipped for the first tab and under reduced motion.
+    void RevealNewRow(Controls::TabViewItem const& row, uint32_t id) {
+        if (!groupSlide.Enabled() || IsDragging() || groupSlide.storyboard) return;
+        if (row.ActualWidth() < 1) return;
+        if (row.IsLoaded()) { StartReveal(row, id); return; }
+        // Loaded fires after layout returns, and a storyboard cannot run on an
+        // unloaded row. Hold the row invisible until then.
+        row.Opacity(0);
+        auto token = std::make_shared<winrt::event_token>();
+        *token = row.Loaded([this, alive = std::weak_ptr<int>(lifetime), id, token](auto const& sender, auto&&) {
+            auto loaded = sender.template as<Controls::TabViewItem>();
+            loaded.Loaded(*token);
+            if (alive.expired()) return;
+            loaded.Opacity(1);
+            auto found = rows.find(id);
+            if (found == rows.end() || found->second != loaded || IsDragging() || !groupSlide.Enabled()) return;
+            StartReveal(loaded, id);
+        });
+    }
+
+    void StartReveal(Controls::TabViewItem const& row, uint32_t id) {
+        if (rowAnimations.count(id)) return;
         const bool rtl = root.FlowDirection() == FlowDirection::RightToLeft;
-        RowTransform(row).X(rtl ? width : -width);
-        AnimateRowOffset(row, id, 0, true);
+        const auto width = row.ActualWidth();
+        Media::ScaleTransform scale;
+        scale.CenterX(rtl ? width : 0);
+        scale.ScaleX(1);
+        Media::RectangleGeometry clip;
+        clip.Rect({0, 0, float(width), float(row.ActualHeight())});
+        clip.Transform(scale);
+        row.Clip(clip);
+        Media::Animation::DoubleAnimation animation;
+        animation.From(0.0);
+        animation.To(1.0);
+        animation.Duration(
+            Duration{Windows::Foundation::TimeSpan{std::chrono::milliseconds(135)}, DurationType::TimeSpan});
+        Media::Animation::CubicEase ease;
+        ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+        animation.EasingFunction(ease);
+        Media::Animation::Storyboard::SetTarget(animation, scale);
+        Media::Animation::Storyboard::SetTargetProperty(animation, L"ScaleX");
+        Media::Animation::Storyboard storyboard;
+        storyboard.Children().Append(animation);
+        storyboard.Completed([this, alive = std::weak_ptr<int>(lifetime), id, weakRow = make_weak(row)](auto const& sender, auto const&) {
+            if (alive.expired()) return;
+            auto current = rowAnimations.find(id);
+            if (current == rowAnimations.end() || current->second.storyboard != sender) return;
+            if (auto row = weakRow.get()) row.Clip(nullptr);
+            rowAnimations.erase(current);
+        });
+        rowAnimations[id] = RowAnimation{storyboard, 0};
+        storyboard.Begin();
     }
 
     // Slides a row's TranslateTransform.X to `target` over a short ease-out,
     // matching the original design's ~120-150ms Storyboard spec.
-    //
-    // `reveal` also clips the row to its own final slot while it moves, so a
-    // new tab appears to slide out from behind its neighbour instead of
-    // painting over it. The clip is dropped when the slide ends or is stopped.
-    void AnimateRowOffset(Controls::TabViewItem const& row, uint32_t id, double target, bool reveal = false) {
+    void AnimateRowOffset(Controls::TabViewItem const& row, uint32_t id, double target) {
         if (auto it = rowAnimations.find(id); it != rowAnimations.end()) {
             if (it->second.target == target) return;
             StopRowAnimation(row, id);
@@ -1464,31 +1505,12 @@ struct NativeTabStrip {
         Media::Animation::Storyboard::SetTargetProperty(animation, L"X");
         Media::Animation::Storyboard storyboard;
         storyboard.Children().Append(animation);
-        if (reveal) {
-            // Visible region = the final slot, expressed in the row's own
-            // coordinates: the slot shifted back by the row's current offset.
-            Media::TranslateTransform clipShift;
-            Media::RectangleGeometry clip;
-            clip.Rect({0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
-            clip.Transform(clipShift);
-            row.Clip(clip);
-            clipShift.X(-target);
-            Media::Animation::DoubleAnimation follow;
-            follow.From(-from);
-            follow.To(-target);
-            follow.Duration(animation.Duration());
-            follow.EasingFunction(ease);
-            Media::Animation::Storyboard::SetTarget(follow, clipShift);
-            Media::Animation::Storyboard::SetTargetProperty(follow, L"X");
-            storyboard.Children().Append(follow);
-        }
         auto alive = std::weak_ptr<int>(lifetime);
-        storyboard.Completed([this, alive, id, reveal, weakRow = make_weak(row)](auto const& sender, auto const&) {
+        storyboard.Completed([this, alive, id](auto const& sender, auto const&) {
             if (alive.expired()) return;
             auto current = rowAnimations.find(id);
             // A replaced timeline may still deliver its queued completion.
             if (current != rowAnimations.end() && current->second.storyboard == sender) {
-                if (reveal) if (auto row = weakRow.get()) row.Clip(nullptr);
                 rowAnimations.erase(current);
                 // Reconsider a stationary pointer only after the last slide
                 // settles. A pending grouping timer never owns these offsets.
@@ -2645,7 +2667,7 @@ struct NativeTabStrip {
         if (createdRows.size() == 1 && rows.count(createdRows[0])) {
             try {
                 root.UpdateLayout();
-                SlideOutNewRow(rows.at(createdRows[0]), createdRows[0]);
+                RevealNewRow(rows.at(createdRows[0]), createdRows[0]);
             } catch (...) {}
         }
         // A stationary cursor may produce no further input after this layout
