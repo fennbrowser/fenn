@@ -2911,6 +2911,14 @@ struct NativeTabStrip {
                     ++it;
             }
             view.SelectedItem(rows.count(active) ? rows.at(active) : nullptr);
+            if (rows.size() < priorRowCount) {
+                // Stock TabView keeps the old tab widths after a removal while
+                // the pointer is over the strip, so the next close button stays
+                // under the cursor. Tabs close by motion here, not by that
+                // lock; changing the width mode makes it recompute right away.
+                view.TabWidthMode(Controls::TabViewWidthMode::SizeToContent);
+                view.TabWidthMode(Controls::TabViewWidthMode::Equal);
+            }
         } catch (...) {
             syncing = false;
             throw;
