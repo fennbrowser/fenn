@@ -1417,19 +1417,72 @@ struct NativeTabStrip {
     // A tab created after the strip was already populated is revealed with a
     // wipe from the edge it shares with the tab before it; the tab itself stays
     // in its slot. Skipped for the first tab and under reduced motion.
+    // Existing tabs change width when a tab is added. Their layout jumps at
+    // once; a composition-only offset and scale (from the left edge) puts each
+    // back on its old geometry, then eases it to rest, so nothing else fights
+    // the row's XAML RenderTransform. Skipped in right-to-left, where the
+    // compositor's mirrored coordinate space has not been verified.
+    struct Neighbor { Controls::TabViewItem row{nullptr}; float dx{}, sx{}; };
+
+    std::vector<Neighbor> HoldNeighbors(std::map<uint32_t, std::pair<float, float>> const& before, uint32_t newId) {
+        std::vector<Neighbor> held;
+        if (root.FlowDirection() == FlowDirection::RightToLeft) return held;
+        for (auto const& [id, row] : rows) {
+            auto old = before.find(id);
+            if (id == newId || old == before.end() || !row.IsLoaded()) continue;
+            const auto now = row.TransformToVisual(root).TransformBounds(
+                {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
+            const float dx = old->second.first - now.X, sx = now.Width > 0 ? old->second.second / now.Width : 1.f;
+            if (std::abs(dx) < .5f && std::abs(sx - 1.f) < .002f) continue;
+            auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(row);
+            winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::SetIsTranslationEnabled(row, true);
+            visual.Properties().InsertVector3(L"Translation", {dx, 0, 0});
+            visual.CenterPoint({0, 0, 0});
+            visual.Scale({sx, 1, 1});
+            held.push_back({row, dx, sx});
+        }
+        return held;
+    }
+
+    static void SettleNeighbors(std::vector<Neighbor> const& held, bool animate) {
+        for (auto const& item : held) {
+            try {
+                auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(item.row);
+                if (!animate) {
+                    visual.Properties().InsertVector3(L"Translation", {0, 0, 0});
+                    visual.Scale({1, 1, 1});
+                    continue;
+                }
+                auto compositor = visual.Compositor();
+                auto ease = compositor.CreateCubicBezierEasingFunction({0.215f, 0.61f}, {0.355f, 1.f});
+                const Windows::Foundation::TimeSpan duration{std::chrono::milliseconds(135)};
+                auto scale = compositor.CreateScalarKeyFrameAnimation();
+                scale.InsertKeyFrame(1.f, 1.f, ease);
+                scale.Duration(duration);
+                visual.StartAnimation(L"Scale.X", scale);
+                auto shift = compositor.CreateScalarKeyFrameAnimation();
+                shift.InsertKeyFrame(1.f, 0.f, ease);
+                shift.Duration(duration);
+                visual.Properties().StartAnimation(L"Translation.X", shift);
+            } catch (...) {}
+        }
+    }
+
     // `addBefore` is the New Tab button's X (in root space) before this
     // publication, or NaN. The button eases from there to its new position with
     // the reveal, so it keeps pace with the tab opening beside it.
-    void RevealNewRow(Controls::TabViewItem const& row, uint32_t id, double addBefore) {
+    void RevealNewRow(Controls::TabViewItem const& row, uint32_t id, double addBefore,
+                      std::map<uint32_t, std::pair<float, float>> const& before = {}) {
         if (!groupSlide.Enabled() || IsDragging() || groupSlide.storyboard) return;
         if (row.ActualWidth() < 1) return;
         const double addDelta = HoldAddButton(addBefore);
-        if (row.IsLoaded()) { StartReveal(row, id); StartAddSlide(addDelta); return; }
+        auto neighbors = std::make_shared<std::vector<Neighbor>>(HoldNeighbors(before, id));
+        if (row.IsLoaded()) { StartReveal(row, id); StartAddSlide(addDelta); SettleNeighbors(*neighbors, true); return; }
         // Loaded fires after layout returns, and a storyboard cannot run on an
         // unloaded row. Hold the row invisible until then.
         row.Opacity(0);
         auto token = std::make_shared<winrt::event_token>();
-        *token = row.Loaded([this, alive = std::weak_ptr<int>(lifetime), id, token, addDelta](auto const& sender, auto&&) {
+        *token = row.Loaded([this, alive = std::weak_ptr<int>(lifetime), id, token, addDelta, neighbors](auto const& sender, auto&&) {
             auto loaded = sender.template as<Controls::TabViewItem>();
             loaded.Loaded(*token);
             if (alive.expired()) return;
@@ -1437,10 +1490,12 @@ struct NativeTabStrip {
             auto found = rows.find(id);
             if (found == rows.end() || found->second != loaded || IsDragging() || !groupSlide.Enabled()) {
                 StartAddSlide(0);
+                SettleNeighbors(*neighbors, false);
                 return;
             }
             StartReveal(loaded, id);
             StartAddSlide(addDelta);
+            SettleNeighbors(*neighbors, true);
         });
     }
 
@@ -2474,6 +2529,7 @@ struct NativeTabStrip {
         bool refreshForeignPreview = false;
         std::vector<uint32_t> createdRows;
         double addBefore = std::numeric_limits<double>::quiet_NaN();
+        std::map<uint32_t, std::pair<float, float>> rowsBefore;
         if (!groupSlide.pending) groupSlide.Cancel();
         if (ForeignPreview().active) {
             std::vector<uint32_t> order;
@@ -2511,9 +2567,16 @@ struct NativeTabStrip {
             const auto continuationTab = pendingWindowDragTab ? pendingWindowDragTab() : 0;
             std::set<uint32_t> current;
             const bool populated = !rows.empty();
-            if (populated)
+            if (populated && count > rows.size()) {
                 if (auto add = FindAddButton(view); add && add.IsLoaded())
                     addBefore = add.TransformToVisual(root).TransformPoint({0, 0}).X;
+                for (auto const& [rowId, row] : rows) {
+                    if (!row.IsLoaded() || rowsBefore.size() >= 128) continue;
+                    const auto bounds = row.TransformToVisual(root).TransformBounds(
+                        {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
+                    rowsBefore.emplace(rowId, std::make_pair(bounds.X, bounds.Width));
+                }
+            }
             for (uint32_t i = 0; i < count; ++i) {
                 const auto id = tabs[i].id;
                 current.insert(id);
@@ -2731,7 +2794,7 @@ struct NativeTabStrip {
         if (createdRows.size() == 1 && rows.count(createdRows[0])) {
             try {
                 root.UpdateLayout();
-                RevealNewRow(rows.at(createdRows[0]), createdRows[0], addBefore);
+                RevealNewRow(rows.at(createdRows[0]), createdRows[0], addBefore, rowsBefore);
             } catch (...) {}
         }
         // A stationary cursor may produce no further input after this layout
