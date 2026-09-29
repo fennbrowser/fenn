@@ -1470,7 +1470,10 @@ struct NativeTabStrip {
         ghost.HorizontalContentAlignment(HorizontalAlignment::Stretch);
         ghost.Width(closing.bounds.Width);
         ghost.Height(closing.bounds.Height);
+        // The stand-in retreats toward the previous tab's edge: its left in
+        // left-to-right, its right in right-to-left (confirmed by eye).
         Media::ScaleTransform scale;
+        scale.CenterX(rtl ? closing.bounds.Width : 0);
         Media::RectangleGeometry clip;
         clip.Rect({0, 0, closing.bounds.Width, closing.bounds.Height});
         clip.Transform(scale);
@@ -1591,9 +1594,9 @@ struct NativeTabStrip {
     double HoldAddButton(double before) {
         auto add = FindAddButton(view);
         if (std::isnan(before) || !add || !add.IsLoaded()) return 0;
-        // Bounds are mirrored in right-to-left; transforms are not.
-        const auto now = add.TransformToVisual(root).TransformPoint({0, 0}).X;
-        const auto delta = root.FlowDirection() == FlowDirection::RightToLeft ? now - before : before - now;
+        // A RenderTransform follows bounds space in both flow directions
+        // (confirmed by eye); only composition offsets are unmirrored.
+        const auto delta = before - add.TransformToVisual(root).TransformPoint({0, 0}).X;
         if (std::abs(delta) < .5) return 0;
         StartAddSlide(0);
         addPrevious = add.RenderTransform();
