@@ -2698,7 +2698,35 @@ struct NativeTabStrip {
                         ambient.ScheduleUpdate();
                     });
                     row.Tag(box_value(id));
-                    row.IsClosable(true);
+                    // The stock close button is shown only while the tab is
+                    // hovered or holds keyboard focus, so narrow tabs keep the
+                    // room for their title. TabViewItem collapses (and stops
+                    // reserving space for) the button while IsClosable is false.
+                    row.IsClosable(false);
+                    {
+                        struct Reveal { bool hover = false; bool focus = false; };
+                        auto state = std::make_shared<Reveal>();
+                        auto apply = [state](auto const& sender) {
+                            auto item = sender.template as<Controls::TabViewItem>();
+                            const bool reveal = state->hover || state->focus;
+                            if (item.IsClosable() != reveal) item.IsClosable(reveal);
+                        };
+                        row.PointerEntered([state, apply](auto const& sender, auto&&) {
+                            state->hover = true; apply(sender);
+                        });
+                        row.PointerExited([state, apply](auto const& sender, auto&&) {
+                            state->hover = false; apply(sender);
+                        });
+                        row.GotFocus([state, apply](auto const& sender, RoutedEventArgs const&) {
+                            // Pointer focus from a click must not pin the button.
+                            state->focus = sender.template as<Controls::Control>().FocusState() ==
+                                FocusState::Keyboard;
+                            apply(sender);
+                        });
+                        row.LostFocus([state, apply](auto const& sender, auto&&) {
+                            state->focus = false; apply(sender);
+                        });
+                    }
                     row.HorizontalContentAlignment(HorizontalAlignment::Stretch);
                     row.RenderTransform(Media::TranslateTransform{});
                     row.Header(Markup::XamlReader::Load(
