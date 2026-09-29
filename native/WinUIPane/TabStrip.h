@@ -1417,6 +1417,86 @@ struct NativeTabStrip {
     // A tab created after the strip was already populated is revealed with a
     // wipe from the edge it shares with the tab before it; the tab itself stays
     // in its slot. Skipped for the first tab and under reduced motion.
+    // The closed tab's row is gone by the time layout runs, so its geometry and
+    // face are captured beforehand and shown by a visual-only stand-in that
+    // wipes closed toward the tab before it while the others close the gap.
+    struct ClosingTab {
+        bool valid{};
+        Windows::Foundation::Rect bounds{};
+        hstring title;
+        Media::ImageSource image{nullptr};
+        bool selected{};
+    };
+    Controls::Canvas closeOverlay{nullptr};
+    std::vector<Media::Animation::Storyboard> closeStoryboards;
+
+    void AddCloseGhost(ClosingTab const& closing) {
+        if (!closing.valid || root.FlowDirection() == FlowDirection::RightToLeft) return;
+        if (!closeOverlay) {
+            closeOverlay = Controls::Canvas();
+            closeOverlay.IsHitTestVisible(false);
+            Automation::AutomationProperties::SetAccessibilityView(closeOverlay, Automation::Peers::AccessibilityView::Raw);
+            Controls::Grid::SetColumnSpan(closeOverlay, 3);
+            Controls::Canvas::SetZIndex(closeOverlay, 10);
+            root.Children().Append(closeOverlay);
+        }
+        Media::RectangleGeometry viewClip;
+        viewClip.Rect(view.TransformToVisual(root).TransformBounds(
+            {0, 0, float(view.ActualWidth()), float(view.ActualHeight())}));
+        closeOverlay.Clip(viewClip);
+        Controls::StackPanel face;
+        face.Orientation(Controls::Orientation::Horizontal);
+        face.Spacing(6);
+        if (closing.image) {
+            Controls::Image icon;
+            icon.Width(16); icon.Height(16);
+            icon.Source(closing.image);
+            face.Children().Append(icon);
+        }
+        Controls::TextBlock name;
+        name.Text(closing.title);
+        name.TextTrimming(TextTrimming::CharacterEllipsis);
+        name.VerticalAlignment(VerticalAlignment::Center);
+        face.Children().Append(name);
+        Controls::TabViewItem ghost;
+        ghost.Header(face);
+        ghost.IsClosable(true);
+        ghost.IsSelected(closing.selected);
+        ghost.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+        ghost.Width(closing.bounds.Width);
+        ghost.Height(closing.bounds.Height);
+        Media::ScaleTransform scale;
+        Media::RectangleGeometry clip;
+        clip.Rect({0, 0, closing.bounds.Width, closing.bounds.Height});
+        clip.Transform(scale);
+        ghost.Clip(clip);
+        Controls::Canvas::SetLeft(ghost, closing.bounds.X);
+        Controls::Canvas::SetTop(ghost, closing.bounds.Y);
+        closeOverlay.Children().Append(ghost);
+        ghost.UpdateLayout();
+        GroupSlide::MakeVisualOnly(ghost);
+        Media::Animation::DoubleAnimation animation;
+        animation.From(1.0);
+        animation.To(0.0);
+        animation.Duration(
+            Duration{Windows::Foundation::TimeSpan{std::chrono::milliseconds(135)}, DurationType::TimeSpan});
+        Media::Animation::CubicEase ease;
+        ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+        animation.EasingFunction(ease);
+        Media::Animation::Storyboard::SetTarget(animation, scale);
+        Media::Animation::Storyboard::SetTargetProperty(animation, L"ScaleX");
+        Media::Animation::Storyboard storyboard;
+        storyboard.Children().Append(animation);
+        storyboard.Completed([this, alive = std::weak_ptr<int>(lifetime), ghost](auto const& sender, auto const&) {
+            if (alive.expired()) return;
+            uint32_t index;
+            if (closeOverlay && closeOverlay.Children().IndexOf(ghost, index)) closeOverlay.Children().RemoveAt(index);
+            std::erase_if(closeStoryboards, [&](auto const& item) { return item == sender; });
+        });
+        closeStoryboards.push_back(storyboard);
+        storyboard.Begin();
+    }
+
     // Existing tabs change width when a tab is added. Their layout jumps at
     // once; a composition-only offset and scale (from the left edge) puts each
     // back on its old geometry, then eases it to rest, so nothing else fights
@@ -2529,6 +2609,7 @@ struct NativeTabStrip {
         bool refreshForeignPreview = false;
         std::vector<uint32_t> createdRows;
         const size_t priorRowCount = rows.size();
+        ClosingTab closing;
         double addBefore = std::numeric_limits<double>::quiet_NaN();
         std::map<uint32_t, std::pair<float, float>> rowsBefore;
         if (!groupSlide.pending) groupSlide.Cancel();
@@ -2572,7 +2653,23 @@ struct NativeTabStrip {
                 if (auto add = FindAddButton(view); add && add.IsLoaded())
                     addBefore = add.TransformToVisual(root).TransformPoint({0, 0}).X;
             }
-            if (populated && count > rows.size()) {
+            if (populated && count + 1 == rows.size()) {
+                std::set<uint32_t> incoming;
+                for (uint32_t i = 0; i < count; ++i) incoming.insert(tabs[i].id);
+                for (auto const& [rowId, row] : rows) {
+                    if (incoming.count(rowId) || !row.IsLoaded()) continue;
+                    closing.valid = true;
+                    closing.bounds = row.TransformToVisual(root).TransformBounds(
+                        {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
+                    closing.title = Automation::AutomationProperties::GetName(row);
+                    closing.selected = row.IsSelected();
+                    if (auto header = row.Header().try_as<Controls::Grid>())
+                        if (auto favicon = header.Children().GetAt(0).try_as<Controls::Grid>())
+                            if (auto image = favicon.Children().GetAt(0).try_as<Controls::Image>())
+                                closing.image = image.Source();
+                }
+            }
+            if (populated && count != rows.size()) {
                 for (auto const& [rowId, row] : rows) {
                     if (!row.IsLoaded() || rowsBefore.size() >= 128) continue;
                     const auto bounds = row.TransformToVisual(root).TransformBounds(
@@ -2801,11 +2898,15 @@ struct NativeTabStrip {
             } catch (...) {}
         }
         else if (createdRows.empty() && !std::isnan(addBefore) && rows.size() < priorRowCount) {
-            // A tab closed: only the New Tab button eases into its new place.
+            // A tab closed: the others ease closed over its stand-in.
             try {
                 if (groupSlide.Enabled() && !IsDragging() && !groupSlide.storyboard) {
                     root.UpdateLayout();
-                    StartAddSlide(HoldAddButton(addBefore));
+                    const double addDelta = HoldAddButton(addBefore);
+                    auto neighbors = HoldNeighbors(rowsBefore, 0);
+                    AddCloseGhost(closing);
+                    StartAddSlide(addDelta);
+                    SettleNeighbors(neighbors, true);
                 }
             } catch (...) {}
         }
