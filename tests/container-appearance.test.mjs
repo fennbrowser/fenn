@@ -18,7 +18,8 @@ test("glows are opt-in and both appearance preferences publish live deltas", () 
   const source = readFileSync(new URL("../upstream/firefox/browser/base/content/browser-winui-pane.js", import.meta.url), "utf8");
   runInNewContext(source, context);
   const pane = context.gWinUIPane;
-  pane.localization = () => ({formatValueSync:id => id});
+  pane.localization = () => ({formatValueSync:id => id,
+    formatMessagesSync: ([{id}]) => [{attributes: [{name: "label", value: id}, {name: "tooltiptext", value: id}]}]});
   pane.visibleTabs = () => [];
   let scheduled = 0;
   pane.schedule = () => scheduled++;
@@ -56,7 +57,8 @@ test("strip backdrop preference is validated and publishes a live delta", () => 
   const source = readFileSync(new URL("../upstream/firefox/browser/base/content/browser-winui-pane.js", import.meta.url), "utf8");
   runInNewContext(source, context);
   const pane = context.gWinUIPane;
-  pane.localization = () => ({formatValueSync:id => id});
+  pane.localization = () => ({formatValueSync:id => id,
+    formatMessagesSync: ([{id}]) => [{attributes: [{name: "label", value: id}, {name: "tooltiptext", value: id}]}]});
   pane.visibleTabs = () => [];
   pane.schedule = () => {};
   const session = new WinUITabStripSession({read:() => pane.describeStrip()});
@@ -90,7 +92,8 @@ test("group reach preference is validated and publishes a live delta", () => {
   const source = readFileSync(new URL("../upstream/firefox/browser/base/content/browser-winui-pane.js", import.meta.url), "utf8");
   runInNewContext(source, context);
   const pane = context.gWinUIPane;
-  pane.localization = () => ({formatValueSync:id => id});
+  pane.localization = () => ({formatValueSync:id => id,
+    formatMessagesSync: ([{id}]) => [{attributes: [{name: "label", value: id}, {name: "tooltiptext", value: id}]}]});
   pane.visibleTabs = () => [];
   pane.schedule = () => {};
   const session = new WinUITabStripSession({read:() => pane.describeStrip()});

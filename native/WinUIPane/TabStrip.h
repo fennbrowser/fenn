@@ -690,6 +690,57 @@ struct NativeTabStrip {
     uint32_t presentationRevision{};
     hstring presentationFingerprint;
     hstring groupsLabel;
+    // Accessible names, tooltips and states published by Firefox from its own
+    // localization. English is only the fallback before the first publication.
+    struct Labels {
+        hstring tabs{L"Tabs in this window"}, active{L"Active tab"}, selected{L"Selected tab"};
+        hstring allTabs{L"List all tabs"}, allTabsTip{L"List all tabs"};
+        hstring newTab{L"New tab"}, newTabTip{L"New tab (Ctrl+T)"};
+    } labels;
+    hstring StatusFor(bool active, bool selected) const {
+        return active ? labels.active : selected ? labels.selected : hstring{};
+    }
+    static Labels ParseLabels(Windows::Data::Json::JsonObject const& data, Labels next) {
+        auto text = [](Windows::Data::Json::JsonObject const& object, wchar_t const* key, hstring& value) {
+            if (!object.HasKey(key)) return;
+            auto candidate = object.GetNamedString(key);
+            if (candidate.empty()) throw hresult_invalid_argument();
+            NativeJson::RequireLength(candidate, NativeJson::kMaxShortLabel);
+            value = candidate;
+        };
+        text(data, L"tabs", next.tabs);
+        text(data, L"active", next.active);
+        text(data, L"selected", next.selected);
+        if (data.HasKey(L"allTabs")) {
+            auto entry = data.GetNamedObject(L"allTabs");
+            text(entry, L"label", next.allTabs);
+            text(entry, L"tooltip", next.allTabsTip);
+        }
+        if (data.HasKey(L"newTab")) {
+            auto entry = data.GetNamedObject(L"newTab");
+            text(entry, L"label", next.newTab);
+            text(entry, L"tooltip", next.newTabTip);
+        }
+        return next;
+    }
+    void ApplyAddButtonLabels() {
+        if (auto button = FindAddButton(view)) {
+            Automation::AutomationProperties::SetName(button, labels.newTab);
+            Controls::ToolTipService::SetToolTip(button, box_value(labels.newTabTip));
+        }
+    }
+    void ApplyLabels(Labels const& next) {
+        const bool statusChanged = next.active != labels.active || next.selected != labels.selected;
+        labels = next;
+        Automation::AutomationProperties::SetName(view, labels.tabs);
+        Automation::AutomationProperties::SetName(allTabs.button, labels.allTabs);
+        Controls::ToolTipService::SetToolTip(allTabs.button, box_value(labels.allTabsTip));
+        ApplyAddButtonLabels();
+        if (statusChanged)
+            for (auto const& [id, row] : rows)
+                Automation::AutomationProperties::SetItemStatus(row,
+                    StatusFor(id == activeTabId, menu.selectedTabs.count(id) != 0));
+    }
     Windows::Data::Json::JsonArray currentGroups;
     bool syncing{};
     // While a hand-rolled drag is in progress, Sync must not touch
@@ -988,6 +1039,7 @@ struct NativeTabStrip {
                 }
             }
             if (auto button = FindAddButton(view)) AttachAddMenu(button);
+            ApplyAddButtonLabels();
             ApplyAddSpacing();
         });
     }
@@ -1767,6 +1819,9 @@ struct NativeTabStrip {
         if (label.empty() || label.size() > NativeJson::kMaxShortLabel || entries.Size() > NativeJson::kMaxTabs ||
             groups.Size() > NativeJson::kMaxTabs)
             throw hresult_invalid_argument();
+        // Parsed with the rest of the envelope so a bad label changes nothing.
+        const bool labelsPublished = data.HasKey(L"labels");
+        const Labels nextLabels = labelsPublished ? ParseLabels(data.GetNamedObject(L"labels"), labels) : labels;
         std::map<uint32_t, Presentation> next;
         std::vector<ShellStripChange> changes;
         std::set<uint32_t> removed;
@@ -1939,6 +1994,7 @@ struct NativeTabStrip {
         captionDirty = true;
         presentationRevision = revision;
         presentationFingerprint = fingerprint;
+        if (labelsPublished) ApplyLabels(nextLabels);
         if (layoutChanged) {
             size_t size = layout.size();
             if (shell_core_strip_layout(core, layout.data(), layout.size(), &size) != SHELL_STATUS_OK)
@@ -1999,8 +2055,7 @@ struct NativeTabStrip {
             if (row == rows.end()) return;
             bool selected = current.count(id) != 0;
             row->second.FontWeight(Windows::UI::Text::FontWeight{uint16_t(selected ? 600 : 400)});
-            Automation::AutomationProperties::SetItemStatus(
-                row->second, id == activeTabId ? L"Active tab" : selected ? L"Selected tab" : L"");
+            Automation::AutomationProperties::SetItemStatus(row->second, StatusFor(id == activeTabId, selected));
         };
         for (auto id : previous)
             if (!current.count(id)) emphasize(id);
@@ -2026,9 +2081,7 @@ struct NativeTabStrip {
             auto row = rows.find(id);
             if (row == rows.end()) continue;
             bool selected = menu.selectedTabs.count(id) != 0;
-            Automation::AutomationProperties::SetItemStatus(row->second, id == active ? L"Active tab"
-                                                                         : selected   ? L"Selected tab"
-                                                                                      : L"");
+            Automation::AutomationProperties::SetItemStatus(row->second, StatusFor(id == active, selected));
         }
     }
 
@@ -2367,9 +2420,7 @@ struct NativeTabStrip {
                 // remains solely the Firefox active tab.
                 bool selected = menu.selectedTabs.count(id) != 0;
                 row.FontWeight(Windows::UI::Text::FontWeight{uint16_t(selected ? 600 : 400)});
-                Automation::AutomationProperties::SetItemStatus(row, id == active ? L"Active tab"
-                                                                     : selected   ? L"Selected tab"
-                                                                                  : L"");
+                Automation::AutomationProperties::SetItemStatus(row, StatusFor(id == active, selected));
                 uint32_t old;
                 if (!inlineGroups.active && (!view.TabItems().IndexOf(row, old) || old != i)) {
                     if (view.TabItems().IndexOf(row, old)) view.TabItems().RemoveAt(old);

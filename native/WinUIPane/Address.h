@@ -231,7 +231,7 @@ struct NativeAddress {
         root.Margin({0, 0, 0, 12});
         field.PlaceholderText(L"Search or enter address");
         field.MaxLength(int32_t(NativeJson::kMaxFieldText));
-        Automation::AutomationProperties::SetName(field, L"Native address prototype");
+        Automation::AutomationProperties::SetName(field, L"Search or enter address");
         Automation::AutomationProperties::SetAutomationId(field, L"FirefoxWinUIAddress");
         field.TextChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
@@ -545,7 +545,20 @@ struct NativeAddress {
         if (shell.AddressState().needs_dispatch || StagedKind() != NativeShellCore::NoIntent || shell.AddressState().mode_pending) return L"";
         syncing = true;
         try {
-            field.PlaceholderText(snapshot.GetNamedString(L"placeholder", L"Search or enter address"));
+            auto placeholder = snapshot.GetNamedString(L"placeholder", L"Search or enter address");
+            NativeJson::RequireLength(placeholder, NativeJson::kMaxShortLabel);
+            field.PlaceholderText(placeholder);
+            // Firefox's own field is named by its placeholder text.
+            if (!placeholder.empty()) Automation::AutomationProperties::SetName(field, placeholder);
+            if (snapshot.HasKey(L"labels")) {
+                auto labels = snapshot.GetNamedObject(L"labels");
+                auto suggestionsName = labels.GetNamedString(L"suggestions", L"Address suggestions");
+                auto actionsName = labels.GetNamedString(L"actions", L"Search actions");
+                NativeJson::RequireLength(suggestionsName, NativeJson::kMaxShortLabel);
+                NativeJson::RequireLength(actionsName, NativeJson::kMaxShortLabel);
+                if (!suggestionsName.empty()) Automation::AutomationProperties::SetName(suggestions.list, suggestionsName);
+                if (!actionsName.empty()) Automation::AutomationProperties::SetName(actions.panel, actionsName);
+            }
             const auto previousRevision = revision;
             revision = snapshot.GetNamedNumber(L"revision");
             auto text = snapshot.GetNamedString(L"text", L"");

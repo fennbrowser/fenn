@@ -551,6 +551,20 @@ test("all-tabs button opens Firefox's panel at its bounds and rejects stale or i
   assert.equal(f.session.receive(event), false);
 });
 
+test("localized labels publish once, then only when Firefox's strings change", () => {
+  const f = fixture();
+  f.state.labels = {tabs: "Tabs in this window", active: "Active tab", selected: "Selected tab",
+    allTabs: {label: "List all tabs", tooltip: "List all tabs"}, newTab: {label: "New Tab", tooltip: "New Tab (Ctrl+T)"}};
+  const full = f.session.update(true);
+  assert.deepEqual(full.strip.labels, f.state.labels);
+  assert.equal(f.session.update(), null);
+  f.state.labels = {...f.state.labels, active: "Aktiver Tab", newTab: {label: "Neuer Tab", tooltip: "Neuer Tab (Strg+T)"}};
+  const delta = f.session.update();
+  assert.deepEqual(delta.strip.labels, f.state.labels);
+  assert.deepEqual(delta.strip.rows, []);
+  assert.equal(f.session.update(), null);
+});
+
 function groupDragFixture() {
   const f=fixture();
   f.state.groups[0].members=[11,33,44];

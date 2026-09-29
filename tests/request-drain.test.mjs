@@ -144,7 +144,8 @@ test("multiselection republishes grouping eligibility as row deltas without rebu
   };
   runInNewContext(source, context);
   const pane = context.gWinUIPane;
-  pane.localization = () => ({formatValueSync:id => id});
+  pane.localization = () => ({formatValueSync:id => id,
+    formatMessagesSync: ([{id}]) => [{attributes: [{name: "label", value: id}, {name: "tooltiptext", value: id}]}]});
   pane.visibleTabs = () => tabs;
   tabs.forEach((tab, index) => pane.tabIds.set(tab, index + 1));
   pane.schedule = () => {};

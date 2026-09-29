@@ -1753,10 +1753,10 @@ index 5a562d6385..38efc61bb6 100644
        if (blobUrl) {
          return blobUrl;
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index c59e443d11..03c10b9504 100644
+index c59e443d11..d32ed3557a 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -523,3 +523,9 @@ split-view-menuitem-close-both-tabs =
+@@ -523,3 +523,16 @@ split-view-menuitem-close-both-tabs =
      .label = Close Both Tabs
  
  ##
@@ -1766,6 +1766,13 @@ index c59e443d11..03c10b9504 100644
 +winui-tab-strip-loading = Loading
 +winui-tab-strip-muted = Muted
 +winui-tab-strip-playing = Playing audio
++
++# Accessible names and states for the opt-in native tab strip and address bar.
++winui-tab-strip-label = Tabs in this window
++winui-tab-strip-active = Active tab
++winui-tab-strip-selected = Selected tab
++winui-address-suggestions = Address suggestions
++winui-address-actions = Search actions
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
 index ae5a803893..d4b6611312 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
@@ -2518,7 +2525,7 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..f98ace6455
+index 0000000000..c591acb6d6
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
 @@ -0,0 +1,239 @@
@@ -2592,7 +2599,7 @@ index 0000000000..f98ace6455
 +        }
 +      }
 +      strip.removed = [...previous.keys()];
-+      for (const key of ["groupGlow", "containerGlow", "containerDot", "backdrop", "groupReach", "groupingDelay", "layout", "groups", "groupsLabel", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
++      for (const key of ["groupGlow", "containerGlow", "containerDot", "backdrop", "groupReach", "groupingDelay", "layout", "groups", "groupsLabel", "labels", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
 +        if (!this.same(state[key], this.state[key])) strip[key] = state[key];
 +      }
 +    }
@@ -3909,10 +3916,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..765d2d000e
+index 0000000000..14619b225d
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1701 @@
+@@ -0,0 +1,1738 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4060,7 +4067,7 @@ index 0000000000..765d2d000e
 +    );
 +    this.element.id = "winui-prototype-pane";
 +    this.element.tabIndex = 0;
-+    this.element.setAttribute("aria-label", "Tabs in this window");
++    this.element.setAttribute("aria-label", this.nativeLabels().tabs);
 +    this.element.style.cssText =
 +      "width:240px;min-width:0;max-width:35vw;flex-shrink:0;background:var(--toolbar-bgcolor, Canvas);";
 +    if (this.tabStrip) {
@@ -4408,6 +4415,7 @@ index 0000000000..765d2d000e
 +        session.editState?.text ||
 +        gURLBar.inputField.value,
 +      placeholder: gURLBar.inputField.getAttribute("placeholder") || "",
++      labels: this.nativeLabels(),
 +      modes: session.nativeModes(),
 +      ...gURLBar.searchModeSwitcher.nativeVisibility(),
 +      modeReveal: session.modeReveal || 0,
@@ -4823,9 +4831,42 @@ index 0000000000..765d2d000e
 +  localization() {
 +    if (!this.tabMenuL10n) {
 +      this.tabMenuL10n = new Localization(
-+        ["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl", "browser/toolbarContextMenu.ftl"], true);
++        ["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl", "browser/toolbarContextMenu.ftl", "browser/browser.ftl"], true);
 +    }
 +    return this.tabMenuL10n;
++  },
++
++  // Accessible names, tooltips and states for native controls. Every string
++  // comes from Firefox's own localization; the native side keeps English only
++  // as a fallback until its first publication.
++  nativeLabels() {
++    if (!this.nativeLabelCache) {
++      const l10n = this.localization();
++      const value = id => l10n.formatValueSync(id);
++      const attributes = id => {
++        const [message] = l10n.formatMessagesSync([{ id }]);
++        return Object.fromEntries(message.attributes.map(a => [a.name, a.value]));
++      };
++      const allTabs = attributes("tabs-toolbar-list-all-tabs");
++      const newTab = attributes("tabs-toolbar-new-tab");
++      let shortcut = "";
++      try {
++        shortcut = ShortcutUtils.prettifyShortcut(document.getElementById("key_newNavigatorTab"));
++      } catch {}
++      // A missing string is omitted, so the native side keeps its fallback.
++      const present = object => Object.fromEntries(Object.entries(object).filter(([, v]) => v)
++        .map(([key, v]) => [key, typeof v === "object" ? present(v) : v]));
++      this.nativeLabelCache = present({
++        tabs: value("winui-tab-strip-label"),
++        active: value("winui-tab-strip-active"),
++        selected: value("winui-tab-strip-selected"),
++        allTabs: { label: allTabs.label, tooltip: allTabs.tooltiptext || allTabs.label },
++        newTab: { label: newTab.label, tooltip: newTab.label && (shortcut ? `${newTab.label} (${shortcut})` : newTab.label) },
++        suggestions: value("winui-address-suggestions"),
++        actions: value("winui-address-actions"),
++      });
++    }
++    return this.nativeLabelCache;
 +  },
 +
 +  canDragGroupTab(tab, creating = false) {
@@ -4974,7 +5015,7 @@ index 0000000000..765d2d000e
 +      windowDragTabId: liveTabs.length === 1 && liveTabs[0].visible &&
 +        !liveTabs[0]._pendingPermitUnload ? this.tabIds.get(liveTabs[0]) || 0 : 0,
 +      windowDragPrivate: !!window.docShell.usePrivateBrowsing,
-+      groupsLabel:label("tab-groups-list-title"), groups, rows, layout };
++      groupsLabel:label("tab-groups-list-title"), labels: this.nativeLabels(), groups, rows, layout };
 +  },
 +
 +  tabMenuLabels() {
@@ -5387,11 +5428,13 @@ index 0000000000..765d2d000e
 +      // sequence) is kept, since replacing it would move the revision
 +      // backwards and the pane would ignore the new state.
 +      this.tabMenuLabelCache = null;
++      this.nativeLabelCache = null;
 +      if (this.tabMenuL10n) {
 +        this.tabMenuL10n = new Localization(
-+          ["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl", "browser/toolbarContextMenu.ftl"], true);
++          ["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl", "browser/toolbarContextMenu.ftl", "browser/browser.ftl"], true);
 +      }
 +      if (this.tabMenuSession) this.tabMenuSession.forceUpdate = true;
++      this.element?.setAttribute("aria-label", this.nativeLabels().tabs);
 +      this.stripDirty = true;
 +      this.structuralDirty = true;
 +      this.schedule();
@@ -5562,6 +5605,7 @@ index 0000000000..765d2d000e
 +    this.tabMenuSession = null;
 +    this.stripSession = null;
 +    this.tabMenuL10n = null;
++    this.nativeLabelCache = null;
 +    this.tabMenuLabelCache = null;
 +    for (const type of this.tabEvents)
 +      gBrowser.tabContainer.removeEventListener(type, this);

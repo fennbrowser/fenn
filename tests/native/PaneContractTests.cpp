@@ -2004,12 +2004,29 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     Require(view.TabItems().Size() == 1 && view.TabItems().GetAt(0) == first && view.SelectedItem() == first, "collapse retains real active tab");
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
     Require(backdrop().try_as<Media::DesktopAcrylicBackdrop>() != nullptr, "strip backdrop delta applies desktop acrylic");
-    MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"backdrop":"mica","rtl":true,"rows":[],"removed":[],"groups":[{"id":7,"name":"Unnamed group","headerText":"","label":"Expand unnamed group","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}]}})");
+    MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"labels":{"tabs":"Registerkarten in diesem Fenster","active":"Aktiver Tab","selected":"Ausgewählter Tab","allTabs":{"label":"Alle Tabs auflisten","tooltip":"Alle Tabs auflisten, Hinweis"},"newTab":{"label":"Neuer Tab","tooltip":"Neuer Tab, Strg+T"}},"backdrop":"mica","rtl":true,"rows":[],"removed":[],"groups":[{"id":7,"name":"Unnamed group","headerText":"","label":"Expand unnamed group","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}]}})");
     settle();
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && header.ActualWidth() == 32 &&
         groupText.Visibility() == Visibility::Collapsed && capsule.Children().GetAt(1).Visibility() == Visibility::Visible,
         "clearing the name restores the arrow on the retained button");
     Require(root.FlowDirection() == FlowDirection::RightToLeft, "inline groups inherit RTL");
+    {
+        auto tip = [](FrameworkElement const& element) {
+            return unbox_value<winrt::hstring>(Controls::ToolTipService::GetToolTip(element));
+        };
+        auto allTabsButton = find(root, L"FirefoxWinUIAllTabs").as<Controls::Button>();
+        auto stockAdd = find(view, L"FirefoxWinUIStripNewTab").as<Controls::Button>();
+        Require(Automation::AutomationProperties::GetName(view) == L"Registerkarten in diesem Fenster",
+                "published label names the tab strip");
+        Require(Automation::AutomationProperties::GetName(allTabsButton) == L"Alle Tabs auflisten" &&
+                    tip(allTabsButton) == L"Alle Tabs auflisten, Hinweis",
+                "list-all-tabs button takes Firefox's localized name and tooltip");
+        Require(Automation::AutomationProperties::GetName(stockAdd) == L"Neuer Tab" &&
+                    tip(stockAdd) == L"Neuer Tab, Strg+T",
+                "stock add button takes Firefox's localized name and tooltip");
+        Require(Automation::AutomationProperties::GetItemStatus(first.as<Controls::TabViewItem>()) == L"Aktiver Tab",
+                "existing rows take the localized active-tab status");
+    }
     Require(micaKind() == int(winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::Base),
         "strip backdrop delta applies base Mica");
     // The grouped source is also used for an entirely ungrouped strip. Moving
