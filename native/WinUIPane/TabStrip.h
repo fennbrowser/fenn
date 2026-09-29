@@ -1407,12 +1407,28 @@ struct NativeTabStrip {
         double current = RowTransform(row).X();
         it->second.storyboard.Stop();
         RowTransform(row).X(current);
+        row.Clip(nullptr);
         rowAnimations.erase(it);
+    }
+
+    // A tab created after the strip was already populated slides out from the
+    // tab before it. Skipped for the first tab, unloaded rows and reduced motion.
+    void SlideOutNewRow(Controls::TabViewItem const& row, uint32_t id) {
+        if (!groupSlide.Enabled() || !row.IsLoaded() || IsDragging() || groupSlide.storyboard) return;
+        const auto width = row.ActualWidth();
+        if (width < 1) return;
+        const bool rtl = root.FlowDirection() == FlowDirection::RightToLeft;
+        RowTransform(row).X(rtl ? width : -width);
+        AnimateRowOffset(row, id, 0, true);
     }
 
     // Slides a row's TranslateTransform.X to `target` over a short ease-out,
     // matching the original design's ~120-150ms Storyboard spec.
-    void AnimateRowOffset(Controls::TabViewItem const& row, uint32_t id, double target) {
+    //
+    // `reveal` also clips the row to its own final slot while it moves, so a
+    // new tab appears to slide out from behind its neighbour instead of
+    // painting over it. The clip is dropped when the slide ends or is stopped.
+    void AnimateRowOffset(Controls::TabViewItem const& row, uint32_t id, double target, bool reveal = false) {
         if (auto it = rowAnimations.find(id); it != rowAnimations.end()) {
             if (it->second.target == target) return;
             StopRowAnimation(row, id);
@@ -1448,12 +1464,31 @@ struct NativeTabStrip {
         Media::Animation::Storyboard::SetTargetProperty(animation, L"X");
         Media::Animation::Storyboard storyboard;
         storyboard.Children().Append(animation);
+        if (reveal) {
+            // Visible region = the final slot, expressed in the row's own
+            // coordinates: the slot shifted back by the row's current offset.
+            Media::TranslateTransform clipShift;
+            Media::RectangleGeometry clip;
+            clip.Rect({0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
+            clip.Transform(clipShift);
+            row.Clip(clip);
+            clipShift.X(-target);
+            Media::Animation::DoubleAnimation follow;
+            follow.From(-from);
+            follow.To(-target);
+            follow.Duration(animation.Duration());
+            follow.EasingFunction(ease);
+            Media::Animation::Storyboard::SetTarget(follow, clipShift);
+            Media::Animation::Storyboard::SetTargetProperty(follow, L"X");
+            storyboard.Children().Append(follow);
+        }
         auto alive = std::weak_ptr<int>(lifetime);
-        storyboard.Completed([this, alive, id](auto const& sender, auto const&) {
+        storyboard.Completed([this, alive, id, reveal, weakRow = make_weak(row)](auto const& sender, auto const&) {
             if (alive.expired()) return;
             auto current = rowAnimations.find(id);
             // A replaced timeline may still deliver its queued completion.
             if (current != rowAnimations.end() && current->second.storyboard == sender) {
+                if (reveal) if (auto row = weakRow.get()) row.Clip(nullptr);
                 rowAnimations.erase(current);
                 // Reconsider a stationary pointer only after the last slide
                 // settles. A pending grouping timer never owns these offsets.
@@ -1472,6 +1507,7 @@ struct NativeTabStrip {
             it->second.storyboard.Stop();
             rowAnimations.erase(it);
         }
+        row.Clip(nullptr);
         RowTransform(row).X(0);
         // Y only ever moves for a tear-off gesture (UpdateDragVisual below);
         // resetting it unconditionally is a no-op for every other row.
@@ -2354,6 +2390,7 @@ struct NativeTabStrip {
             return;
         }
         bool refreshForeignPreview = false;
+        std::vector<uint32_t> createdRows;
         if (!groupSlide.pending) groupSlide.Cancel();
         if (ForeignPreview().active) {
             std::vector<uint32_t> order;
@@ -2390,10 +2427,14 @@ struct NativeTabStrip {
             }
             const auto continuationTab = pendingWindowDragTab ? pendingWindowDragTab() : 0;
             std::set<uint32_t> current;
+            const bool populated = !rows.empty();
             for (uint32_t i = 0; i < count; ++i) {
                 const auto id = tabs[i].id;
                 current.insert(id);
                 if (!rows.count(id)) {
+                    // A lone new tab after the first slot: not startup, a
+                    // restored batch, or a tab adopted from another window.
+                    if (populated && i > 0 && id != continuationTab) createdRows.push_back(id);
                     Controls::TabViewItem row;
                     row.Loaded([this, alive = std::weak_ptr<int>(lifetime)](auto const& sender, auto&&) {
                         // Grouped-source moves can load rows after the final
@@ -2600,6 +2641,12 @@ struct NativeTabStrip {
             fprintf(stderr, "GroupSlide Commit failed: %08x\n", unsigned(to_hresult()));
 #endif
             groupSlide.Cancel();
+        }
+        if (createdRows.size() == 1 && rows.count(createdRows[0])) {
+            try {
+                root.UpdateLayout();
+                SlideOutNewRow(rows.at(createdRows[0]), createdRows[0]);
+            } catch (...) {}
         }
         // A stationary cursor may produce no further input after this layout
         // change. Refresh a live hover now using the session's cursor sampler.

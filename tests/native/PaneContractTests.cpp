@@ -2093,6 +2093,11 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             "animation preserves the real selected tab and excludes outgoing visuals from tab navigation");
         Require(SUCCEEDED(motion(host,1,&ghosts)) && ghosts == 0, "cancellation releases departing visuals");
         motionState(11,false); settle();
+        if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
+            Require(SUCCEEDED(motion(host,1,&ghosts)), "end group motion before the entry slide");
+            Require(SUCCEEDED(motion(host,7,&ghosts)) && ghosts == 1, "new tab slides out clipped to its own slot");
+            Require(SUCCEEDED(motion(host,8,&ghosts)) && ghosts == 1, "stopping the entry slide leaves an unclipped row at rest");
+        }
         Require(SUCCEEDED(motion(host,2,&ghosts)), "simulate reduced-motion preference");
         motionState(12,true);
         Require(SUCCEEDED(motion(host,0,&ghosts)) && ghosts == 0, "reduced motion installs final layout without visual copies");
