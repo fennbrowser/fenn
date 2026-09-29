@@ -1431,7 +1431,10 @@ struct NativeTabStrip {
     std::vector<Media::Animation::Storyboard> closeStoryboards;
 
     void AddCloseGhost(ClosingTab const& closing) {
-        if (!closing.valid || root.FlowDirection() == FlowDirection::RightToLeft) return;
+        if (!closing.valid) return;
+        const bool rtl = root.FlowDirection() == FlowDirection::RightToLeft;
+        // Canvas offsets are measured from the right in right-to-left.
+        auto canvasX = [&](float x, float width) { return rtl ? float(root.ActualWidth()) - (x + width) : x; };
         if (!closeOverlay) {
             closeOverlay = Controls::Canvas();
             closeOverlay.IsHitTestVisible(false);
@@ -1441,8 +1444,10 @@ struct NativeTabStrip {
             root.Children().Append(closeOverlay);
         }
         Media::RectangleGeometry viewClip;
-        viewClip.Rect(view.TransformToVisual(root).TransformBounds(
-            {0, 0, float(view.ActualWidth()), float(view.ActualHeight())}));
+        auto viewBounds = view.TransformToVisual(root).TransformBounds(
+            {0, 0, float(view.ActualWidth()), float(view.ActualHeight())});
+        viewBounds.X = canvasX(viewBounds.X, viewBounds.Width);
+        viewClip.Rect(viewBounds);
         closeOverlay.Clip(viewClip);
         Controls::StackPanel face;
         face.Orientation(Controls::Orientation::Horizontal);
@@ -1470,7 +1475,7 @@ struct NativeTabStrip {
         clip.Rect({0, 0, closing.bounds.Width, closing.bounds.Height});
         clip.Transform(scale);
         ghost.Clip(clip);
-        Controls::Canvas::SetLeft(ghost, closing.bounds.X);
+        Controls::Canvas::SetLeft(ghost, canvasX(closing.bounds.X, closing.bounds.Width));
         Controls::Canvas::SetTop(ghost, closing.bounds.Y);
         closeOverlay.Children().Append(ghost);
         ghost.UpdateLayout();
@@ -1500,19 +1505,21 @@ struct NativeTabStrip {
     // Existing tabs change width when a tab is added. Their layout jumps at
     // once; a composition-only offset and scale (from the left edge) puts each
     // back on its old geometry, then eases it to rest, so nothing else fights
-    // the row's XAML RenderTransform. Skipped in right-to-left, where the
-    // compositor's mirrored coordinate space has not been verified.
+    // the row's XAML RenderTransform. Bounds are mirrored in right-to-left
+    // while composition offsets are not (probed: a row's Visual.Offset is the
+    // same in both), so there the right edge is the fixed anchor.
     struct Neighbor { Controls::TabViewItem row{nullptr}; float dx{}, sx{}; };
 
     std::vector<Neighbor> HoldNeighbors(std::map<uint32_t, std::pair<float, float>> const& before, uint32_t newId) {
         std::vector<Neighbor> held;
-        if (root.FlowDirection() == FlowDirection::RightToLeft) return held;
+        const bool rtl = root.FlowDirection() == FlowDirection::RightToLeft;
         for (auto const& [id, row] : rows) {
             auto old = before.find(id);
             if (id == newId || old == before.end() || !row.IsLoaded()) continue;
             const auto now = row.TransformToVisual(root).TransformBounds(
                 {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
-            const float dx = old->second.first - now.X, sx = now.Width > 0 ? old->second.second / now.Width : 1.f;
+            const float dx = rtl ? (now.X + now.Width) - (old->second.first + old->second.second) : old->second.first - now.X,
+                        sx = now.Width > 0 ? old->second.second / now.Width : 1.f;
             if (std::abs(dx) < .5f && std::abs(sx - 1.f) < .002f) continue;
             auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(row);
             winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::SetIsTranslationEnabled(row, true);
@@ -1584,7 +1591,9 @@ struct NativeTabStrip {
     double HoldAddButton(double before) {
         auto add = FindAddButton(view);
         if (std::isnan(before) || !add || !add.IsLoaded()) return 0;
-        const auto delta = before - add.TransformToVisual(root).TransformPoint({0, 0}).X;
+        // Bounds are mirrored in right-to-left; transforms are not.
+        const auto now = add.TransformToVisual(root).TransformPoint({0, 0}).X;
+        const auto delta = root.FlowDirection() == FlowDirection::RightToLeft ? now - before : before - now;
         if (std::abs(delta) < .5) return 0;
         StartAddSlide(0);
         addPrevious = add.RenderTransform();
@@ -1630,10 +1639,11 @@ struct NativeTabStrip {
 
     void StartReveal(Controls::TabViewItem const& row, uint32_t id) {
         if (rowAnimations.count(id)) return;
-        const bool rtl = root.FlowDirection() == FlowDirection::RightToLeft;
         const auto width = row.ActualWidth();
+        // Local geometry is unmirrored: x = 0 is the edge shared with the
+        // previous tab in both flow directions.
         Media::ScaleTransform scale;
-        scale.CenterX(rtl ? width : 0);
+        scale.CenterX(0);
         scale.ScaleX(1);
         Media::RectangleGeometry clip;
         clip.Rect({0, 0, float(width), float(row.ActualHeight())});
