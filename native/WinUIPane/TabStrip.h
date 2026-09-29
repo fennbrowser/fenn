@@ -1432,9 +1432,6 @@ struct NativeTabStrip {
 
     void AddCloseGhost(ClosingTab const& closing) {
         if (!closing.valid) return;
-        const bool rtl = root.FlowDirection() == FlowDirection::RightToLeft;
-        // Canvas offsets are measured from the right in right-to-left.
-        auto canvasX = [&](float x, float width) { return rtl ? float(root.ActualWidth()) - (x + width) : x; };
         if (!closeOverlay) {
             closeOverlay = Controls::Canvas();
             closeOverlay.IsHitTestVisible(false);
@@ -1444,9 +1441,8 @@ struct NativeTabStrip {
             root.Children().Append(closeOverlay);
         }
         Media::RectangleGeometry viewClip;
-        auto viewBounds = view.TransformToVisual(root).TransformBounds(
+        const auto viewBounds = view.TransformToVisual(root).TransformBounds(
             {0, 0, float(view.ActualWidth()), float(view.ActualHeight())});
-        viewBounds.X = canvasX(viewBounds.X, viewBounds.Width);
         viewClip.Rect(viewBounds);
         closeOverlay.Clip(viewClip);
         Controls::StackPanel face;
@@ -1470,15 +1466,12 @@ struct NativeTabStrip {
         ghost.HorizontalContentAlignment(HorizontalAlignment::Stretch);
         ghost.Width(closing.bounds.Width);
         ghost.Height(closing.bounds.Height);
-        // The stand-in retreats toward the previous tab's edge: its left in
-        // left-to-right, its right in right-to-left (confirmed by eye).
         Media::ScaleTransform scale;
-        scale.CenterX(rtl ? closing.bounds.Width : 0);
         Media::RectangleGeometry clip;
         clip.Rect({0, 0, closing.bounds.Width, closing.bounds.Height});
         clip.Transform(scale);
         ghost.Clip(clip);
-        Controls::Canvas::SetLeft(ghost, canvasX(closing.bounds.X, closing.bounds.Width));
+        Controls::Canvas::SetLeft(ghost, closing.bounds.X);
         Controls::Canvas::SetTop(ghost, closing.bounds.Y);
         closeOverlay.Children().Append(ghost);
         ghost.UpdateLayout();
