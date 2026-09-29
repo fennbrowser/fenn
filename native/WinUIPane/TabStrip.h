@@ -2155,7 +2155,7 @@ struct NativeTabStrip {
         containerDot = nextContainerDot;
         containerGlow = nextContainerGlow;
         groupGlow = nextGroupGlow;
-        if (groupHover != nextGroupHover) { groupHover = nextGroupHover; if (!groupHover) groupSurface.Hover(0); }
+        if (groupHover != nextGroupHover) { groupHover = nextGroupHover; inlineGroups.WashesGroup(groupHover); if (!groupHover) groupSurface.Hover(0); }
         if (groupReach != nextGroupReach) { groupReach = nextGroupReach; ApplyAddSpacing(); }
         if (nextBackdrop != backdrop) {
             backdrop = nextBackdrop;

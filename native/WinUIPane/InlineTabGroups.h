@@ -42,6 +42,22 @@ struct InlineTabGroups {
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     std::function<void(uint32_t, bool)> toggle;
     std::function<void(uint32_t)> highlight;
+    // While the whole group is washed on hover, the header keeps no fill of its
+    // own, so the two do not stack. Otherwise it uses the stock subtle hover.
+    bool washesGroup{};
+    void ApplyHoverFill(Controls::Button const& button) {
+        auto resources = button.Resources();
+        const auto key = box_value(L"SubtleButtonBackgroundPointerOver");
+        if (!washesGroup) { if (resources.HasKey(key)) resources.Remove(key); return; }
+        Media::SolidColorBrush none;
+        none.Color(Windows::UI::Colors::Transparent());
+        resources.Insert(key, none);
+    }
+    void WashesGroup(bool value) {
+        if (washesGroup == value) return;
+        washesGroup = value;
+        for (auto& [id, run] : runs) if (run.button) ApplyHoverFill(run.button);
+    }
     std::function<void(uint32_t, Windows::Foundation::Rect)> context;
     std::function<void(uint32_t, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&)> press;
     uint32_t suppressClick{};
@@ -579,7 +595,7 @@ struct InlineTabGroups {
                 run.button = Markup::XamlReader::Load(LR"(
 <Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Style="{StaticResource SubtleButtonStyle}" Margin="4,0" Padding="4,0" MinWidth="32" MinHeight="0" Width="32" Height="32" VerticalAlignment="Center">
  <Button.Resources><ResourceDictionary><ResourceDictionary.ThemeDictionaries>
-  <ResourceDictionary x:Key="Default"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="Transparent"/><SolidColorBrush x:Key="SubtleButtonBackgroundPointerOver" Color="Transparent"/></ResourceDictionary>
+  <ResourceDictionary x:Key="Default"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="Transparent"/></ResourceDictionary>
   <ResourceDictionary x:Key="HighContrast"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="{ThemeResource SystemColorWindowTextColor}"/></ResourceDictionary>
  </ResourceDictionary.ThemeDictionaries></ResourceDictionary></Button.Resources>
  <Grid MinWidth="24" MaxWidth="144" Height="24" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
@@ -592,6 +608,7 @@ struct InlineTabGroups {
   <TextBlock FontSize="12" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Visibility="Collapsed"/>
  </Grid>
 </Button>)").as<Controls::Button>();
+                ApplyHoverFill(run.button);
                 run.accent = run.button.Resources().ThemeDictionaries().Lookup(box_value(L"Default")).as<ResourceDictionary>()
                     .Lookup(box_value(L"InlineGroupColorBrush")).as<Media::SolidColorBrush>();
                 // One retained Button owns the entire input target. A future
