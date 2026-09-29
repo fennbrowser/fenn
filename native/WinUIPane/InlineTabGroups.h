@@ -322,7 +322,7 @@ struct InlineTabGroups {
             return fallback;
         };
         const double minTab = themeWidth(L"TabViewItemMinWidth", 100);
-        const double maxTab = std::max(minTab, themeWidth(L"TabViewItemMaxWidth", 240));
+        const double maxTab = std::max(minTab, themeWidth(L"TabViewItemMaxWidth", 225));
         list.LayoutUpdated([this, alive = std::weak_ptr<int>(lifetime), weakList = make_weak(list),
                             weakView = make_weak(view), scroll = make_weak(scroller), minTab, maxTab,
                             back = make_weak(decrease), forward = make_weak(increase),

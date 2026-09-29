@@ -1711,6 +1711,8 @@ void Initialize() {
         s.manager = WindowsXamlManager::InitializeForCurrentThread();
         phase = "resources";
         s.app.Resources().MergedDictionaries().Append(Controls::XamlControlsResources());
+        // Firefox caps a tab at 225 CSS px; the stock TabView default is 240.
+        s.app.Resources().Insert(box_value(L"TabViewItemMaxWidth"), box_value(225.0));
         s.initialization = S_OK;
     } catch (...) {
         s.initialization = to_hresult();
