@@ -2528,6 +2528,7 @@ struct NativeTabStrip {
         }
         bool refreshForeignPreview = false;
         std::vector<uint32_t> createdRows;
+        const size_t priorRowCount = rows.size();
         double addBefore = std::numeric_limits<double>::quiet_NaN();
         std::map<uint32_t, std::pair<float, float>> rowsBefore;
         if (!groupSlide.pending) groupSlide.Cancel();
@@ -2567,9 +2568,11 @@ struct NativeTabStrip {
             const auto continuationTab = pendingWindowDragTab ? pendingWindowDragTab() : 0;
             std::set<uint32_t> current;
             const bool populated = !rows.empty();
-            if (populated && count > rows.size()) {
+            if (populated && count != rows.size()) {
                 if (auto add = FindAddButton(view); add && add.IsLoaded())
                     addBefore = add.TransformToVisual(root).TransformPoint({0, 0}).X;
+            }
+            if (populated && count > rows.size()) {
                 for (auto const& [rowId, row] : rows) {
                     if (!row.IsLoaded() || rowsBefore.size() >= 128) continue;
                     const auto bounds = row.TransformToVisual(root).TransformBounds(
@@ -2795,6 +2798,15 @@ struct NativeTabStrip {
             try {
                 root.UpdateLayout();
                 RevealNewRow(rows.at(createdRows[0]), createdRows[0], addBefore, rowsBefore);
+            } catch (...) {}
+        }
+        else if (createdRows.empty() && !std::isnan(addBefore) && rows.size() < priorRowCount) {
+            // A tab closed: only the New Tab button eases into its new place.
+            try {
+                if (groupSlide.Enabled() && !IsDragging() && !groupSlide.storyboard) {
+                    root.UpdateLayout();
+                    StartAddSlide(HoldAddButton(addBefore));
+                }
             } catch (...) {}
         }
         // A stationary cursor may produce no further input after this layout
