@@ -2638,6 +2638,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             auto litHalo = halo.Children().First().Current();
             auto openMarker = find(view,L"FirefoxWinUIInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
             Require(openMarker.Width() == 16.0, "active trailing group has a long indicator");
+            uint32_t reachRevisionStart = 28;
             int frames = 0, unlit = 0, replaced = 0, reversals = 0;
             double shortest = openMarker.Width();
             // The indicator only shortens here. A frame that shows it shorter
@@ -2672,6 +2673,40 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             Require(!reversals, "the deferred indicator motion never shows its target before shortening from the held width");
             Require(!detached || heldWidth == 16.0, "a detached indicator keeps its displayed width for the motion");
             Require(openMarker.IsLoaded() && openMarker.Width() == 6.0, "leaving the group for a new tab shortens its indicator");
+            {
+                // Closing the active ungrouped tab after a group must leave the
+                // group's last tab at the width a fresh layout would give it,
+                // not narrower until the next input forces another layout pass.
+                uint32_t revision = 29;
+                for (bool animated : {true, false}) {
+                    if (!animated) Require(SUCCEEDED(motion(host,2,&ghosts)), "disable motion for the close width check");
+                    lastGroup(revision++, false);
+                    Require(SUCCEEDED(api.syncTabs(host,opened,2,42,&selected)), "close the active ungrouped tab after a group");
+                    settle(); settle();
+                    Controls::TabViewItem lastTab{nullptr};
+                    for (auto item : view.TabItems())
+                        if (auto row = item.try_as<Controls::TabViewItem>(); row && row.Tag() && unbox_value_or<uint32_t>(row.Tag(), 0) == 42) lastTab = row;
+                    Require(bool(lastTab), "find the group's last tab");
+                    const auto closedWidth = lastTab.ActualWidth();
+                    auto widths = [&] {
+                        std::wstring text;
+                        for (auto item : view.TabItems())
+                            if (auto row = item.try_as<Controls::TabViewItem>(); row && row.Tag())
+                                text += std::to_wstring(unbox_value_or<uint32_t>(row.Tag(), 0)) + L"=" + std::to_wstring(int(row.ActualWidth())) + L" ";
+                        return text;
+                    };
+                    const auto beforeWidths = widths();
+                    view.InvalidateMeasure(); root.UpdateLayout(); settle();
+                    wprintf(L"Close after group (animated=%d): [%ls] -> after fresh layout [%ls]\n", int(animated), beforeWidths.c_str(), widths().c_str());
+                    fflush(stdout);
+                    Require(std::abs(closedWidth - lastTab.ActualWidth()) < 1, "closing an ungrouped tab leaves the group's last tab at its settled width");
+                    lastGroup(revision++, true);
+                    Require(SUCCEEDED(api.syncTabs(host,opened,3,43,&selected)), "reopen the ungrouped tab after the close width check");
+                    settle(); settle();
+                    if (!animated) Require(SUCCEEDED(motion(host,3,&ghosts)), "restore motion after the close width check");
+                }
+                reachRevisionStart = revision - 1;
+            }
             // Firefox's groupReach option sets how far the lone group reaches
             // past its outer members; live deltas resize it in place.
             auto groupHeader = find(view,L"FirefoxWinUIInlineGroup-7");
@@ -2688,7 +2723,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             // Only the large reach moves New Tab, by exactly that reach.
             auto addX = [&] { return addButton.TransformToVisual(root).TransformPoint({0,0}).X; };
             const auto largeAddX = addX();
-            uint32_t reachRevision = 28;
+            uint32_t reachRevision = reachRevisionStart;
             for (auto [name, expected] : {std::pair{L"none", 0.f}, {L"large", 5.f}, {L"small", 2.f}, {L"medium", 3.f}}) {
                 auto update = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
                 auto strip = update.GetNamedObject(L"strip");

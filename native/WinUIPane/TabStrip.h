@@ -1032,6 +1032,7 @@ struct NativeTabStrip {
     // be ignored.
     std::map<uint32_t, RowAnimation> rowAnimations;
     Media::Animation::Storyboard addSlide{nullptr};
+    uint64_t closeGeneration{};
     Media::Transform addPrevious{nullptr};
     bool addHeld{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
@@ -2933,23 +2934,38 @@ struct NativeTabStrip {
             groupSlide.Cancel();
         }
         if (createdRows.size() == 1 && rows.count(createdRows[0])) {
-            try {
-                root.UpdateLayout();
-                RevealNewRow(rows.at(createdRows[0]), createdRows[0], addBefore, rowsBefore);
-            } catch (...) {}
+            // Read geometry after the natural layout, not from a forced one
+            // (see the close path below).
+            const auto generation = ++closeGeneration;
+            auto token = std::make_shared<winrt::event_token>();
+            *token = Media::CompositionTarget::Rendering([this, alive = std::weak_ptr<int>(lifetime), generation, token,
+                                                          created = createdRows[0], addBefore, rowsBefore](auto&&, auto&&) {
+                Media::CompositionTarget::Rendering(*token);
+                if (alive.expired() || generation != closeGeneration || !rows.count(created)) return;
+                try { RevealNewRow(rows.at(created), created, addBefore, rowsBefore); } catch (...) {}
+            });
         }
         else if (createdRows.empty() && !std::isnan(addBefore) && rows.size() < priorRowCount) {
-            // A tab closed: the others ease closed over its stand-in.
-            try {
-                if (groupSlide.Enabled() && !IsDragging() && !groupSlide.storyboard) {
-                    root.UpdateLayout();
-                    const double addDelta = HoldAddButton(addBefore);
-                    auto neighbors = HoldNeighbors(rowsBefore, 0);
-                    AddCloseGhost(closing);
-                    StartAddSlide(addDelta);
-                    SettleNeighbors(neighbors, true);
-                }
-            } catch (...) {}
+            // A tab closed: the others ease closed over its stand-in. Forcing a
+            // layout here catches TabView mid-update -- its equal widths become
+            // NaN and the group's last tab stays narrow until the pointer moves --
+            // so read the geometry from the next frame, after the natural layout.
+            if (groupSlide.Enabled() && !IsDragging() && !groupSlide.storyboard) {
+                const auto generation = ++closeGeneration;
+                auto token = std::make_shared<winrt::event_token>();
+                *token = Media::CompositionTarget::Rendering([this, alive = std::weak_ptr<int>(lifetime), generation, token,
+                                                              addBefore, rowsBefore, closing](auto&&, auto&&) {
+                    Media::CompositionTarget::Rendering(*token);
+                    if (alive.expired() || generation != closeGeneration || IsDragging() || groupSlide.storyboard) return;
+                    try {
+                        const double addDelta = HoldAddButton(addBefore);
+                        auto neighbors = HoldNeighbors(rowsBefore, 0);
+                        AddCloseGhost(closing);
+                        StartAddSlide(addDelta);
+                        SettleNeighbors(neighbors, true);
+                    } catch (...) {}
+                });
+            }
         }
         // A stationary cursor may produce no further input after this layout
         // change. Refresh a live hover now using the session's cursor sampler.
