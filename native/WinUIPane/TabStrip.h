@@ -2196,24 +2196,30 @@ struct NativeTabStrip {
     // Scrolls the strip while a drag holds the pointer near either edge, so a
     // tab can be dropped among rows that overflow the visible area. Mirrors
     // TickGroupDrag's edge scroll; every drag tick lands here, so a pointer
-    // held still at the edge keeps scrolling.
-    void EdgeScrollDrag(Windows::Foundation::Point const& point) {
+    // held still at the edge keeps scrolling. Returns whether the strip is
+    // scrolling (or only just stopped): rows stream past a still pointer then,
+    // so new-group hover must not hold the projection frozen on whichever tab
+    // is under it.
+    bool EdgeScrollDrag(Windows::Foundation::Point const& point) {
         if (Drag().phase != DragPhase::Dragging || Drag().detaching || point.Y < 0 || point.Y > view.ActualHeight() ||
-            point.X < 0 || point.X > view.ActualWidth() || GetTickCount64() - drag.scrollTick < 16) return;
+            point.X < 0 || point.X > view.ActualWidth()) return false;
+        const bool recent = GetTickCount64() - drag.scrollTick < 120;
         auto scroller = GroupScroller(view);
-        if (!scroller || scroller.ScrollableWidth() <= 0) return;
+        if (!scroller || scroller.ScrollableWidth() <= 0) return false;
         const auto viewport = scroller.TransformToVisual(view).TransformBounds({0, 0, float(scroller.ActualWidth()), float(scroller.ActualHeight())});
         const bool left = point.X < viewport.X + 24, right = point.X > viewport.X + viewport.Width - 24;
-        if (left == right) return;
-        drag.scrollTick = GetTickCount64();
+        if (left == right) return recent;
         // Content must move away from the pointer's edge. The offset grows as
         // content moves left in LTR and right in RTL.
         const double step = (right ? 12 : -12) * (view.FlowDirection() == FlowDirection::RightToLeft ? -1 : 1);
         const auto target = std::clamp(scroller.HorizontalOffset() + step, 0.0, scroller.ScrollableWidth());
-        if (target == scroller.HorizontalOffset()) return;
+        if (target == scroller.HorizontalOffset()) return recent;
+        if (GetTickCount64() - drag.scrollTick < 16) return true;
+        drag.scrollTick = GetTickCount64();
         inlineGroups.NoteUserScroll();
         scroller.ChangeView(box_value(target).as<Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
         scroller.UpdateLayout();
+        return true;
     }
 
     // Re-derives the reorder/tear-off state from the cursor's current
@@ -2237,7 +2243,7 @@ struct NativeTabStrip {
         lastDragPoint = point;
         const auto previous = Drag();
         const auto previousJoin = joinGroup;
-        EdgeScrollDrag(point);
+        const bool scrolling = EdgeScrollDrag(point);
         // Rows were measured when the drag began; scrolling since moves them
         // by `shift`. Give ShellCore the pointer and visible width in that
         // frame, but keep tear-off decided by the live pointer.
@@ -2250,7 +2256,8 @@ struct NativeTabStrip {
         if (Drag().detaching) {
             ClearGroupHover();
         } else {
-            if (allowGrouping && UpdateGroupHover(point)) {
+            if (scrolling) ClearGroupHover();
+            if (allowGrouping && !scrolling && UpdateGroupHover(point)) {
                 if (!joinGroup) {
                     if (!previousJoin) return;
                     shell_core_tab_drag_close_gap(core);
