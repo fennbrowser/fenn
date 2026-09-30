@@ -2857,12 +2857,23 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     spill.Children().Count() == 0 && halo.Children().Count() == 0 && !outline(),
                     "dimmed glow is released once its fade completes");
                 setOption(L"groupGlow", true);
-                Require(waitFor([&] { return bottomGlow.Children().Count() == 1 && outline(); }) && query(0) == 1,
+                auto outlineChild = [&] {
+                    auto surface = reachSurface();
+                    return surface ? Hosting::ElementCompositionPreview::GetElementChildVisual(surface) : Comp::Visual{nullptr};
+                };
+                Require(waitFor([&] { return bottomGlow.Children().Count() == 1 && query(0) == 1 && outlineChild(); }),
                     "a newly lit group lights up");
+                // The light is at full strength; fronts growing from the
+                // primary pool reveal it, blurred light and outline alike.
+                Require(ambientMask.Mask().try_as<Comp::CompositionSurfaceBrush>() &&
+                    outlineChild().Comment() == L"group-outline-reveal",
+                    "the light spreads from its source through reveal masks");
                 auto wash = bottomGlow.Children().First().Current().as<Comp::SpriteVisual>();
                 Require(wash.Opacity() == .65f && washStop().Color().A == 92,
                     "the light-up leaves static properties at their final values");
                 Require(waitFor([&] { return query(0) == 0; }), "the light-up completes");
+                Require(waitFor([&] { return ambientMask.Mask() == edgeFade && outline(); }),
+                    "reveal masks are released once the light has spread");
                 light = outline(); pool = brushOf(light, 4);
                 auto ring = halo.Children().First().Current().as<Comp::ShapeVisual>();
                 Require(pool.ColorStops().GetAt(0).Color().A == 48 && pool.Scale() == winrt::Windows::Foundation::Numerics::float2{1, 1} &&
@@ -2990,7 +3001,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 Require(bottomGlow.Children().Count() == 0 && spill.Children().Count() == 0 && halo.Children().Count() == 0 &&
                     query(1) == 0 && !outline(), "without the fade-out, extinguished glow is released at once");
                 setOption(L"groupGlow", true);
-                Require(waitFor([&] { return bottomGlow.Children().Count() == 1 && outline(); }) && query(0) == 1,
+                Require(waitFor([&] { return bottomGlow.Children().Count() == 1 && query(0) == 1; }),
                     "without the fade-out, a newly lit group still lights up");
                 Require(waitFor([&] { return query(0) == 0; }), "the light-up completes without the fade-out");
                 setOption(L"groupGlowFadeOut", true); settle();

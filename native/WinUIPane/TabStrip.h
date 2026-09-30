@@ -178,6 +178,7 @@ struct NativeTabStrip {
                 if (field.animated) { ambient.motion.Attach(field.Root(), false); field.animated = false; }
         for (auto& [id, light] : groupSurface.lights)
             if (light.animated) { ambient.motion.Attach(light.visual, false); light.animated = false; }
+        ambient.EndReveals(); groupSurface.EndReveals();
         glowSettled.clear();
     }
     // Positioned light trails only one-off geometry changes. During
@@ -207,16 +208,28 @@ struct NativeTabStrip {
             auto visual = visualOf(ambient.groupHalo, id);
             return visual ? visual.as<Microsoft::UI::Composition::ShapeVisual>() : Microsoft::UI::Composition::ShapeVisual{nullptr};
         };
+        // The blurred light (wash, spill, halo) is revealed over the group
+        // plus the halo and blur's reach; the front starts at the primary pool.
+        auto revealArea = [](Windows::Foundation::Rect rect) {
+            const float margin = TabAmbient::HaloReach + TabAmbient::RevealMargin;
+            return Windows::Foundation::Rect{rect.X - margin, rect.Y - margin, rect.Width + 2 * margin, rect.Height + 2 * margin};
+        };
+        for (auto const& [id, reveal] : std::map<uint32_t, TabAmbient::Reveal>(ambient.reveals))
+            if (auto rect = bounds.find(id); rect != bounds.end()) ambient.MoveReveal(id, revealArea(rect->second));
         // Several groups lighting together start left to right.
         std::sort(lit.begin(), lit.end(), [&](uint32_t a, uint32_t b) { return bounds.at(a).X < bounds.at(b).X; });
         for (size_t index = 0; index < lit.size(); ++index) {
             const auto id = lit[index];
-            TabGlowIgnition::Targets targets;
-            targets.wash = visualOf(ambient.groups, id);
-            targets.spill = visualOf(ambient.groupSpill, id);
-            targets.halo = haloOf(id);
-            targets.outline = outlineOf(id);
-            motion.Ignite(id, targets, float(std::min(index, TabGlowIgnition::StaggerCap)) * TabGlowIgnition::Stagger);
+            const auto rect = bounds.at(id);
+            std::vector<Microsoft::UI::Composition::CompositionRadialGradientBrush> fronts{
+                ambient.BeginReveal(id, revealArea(rect), {rect.X + TabGlowIgnition::OriginX * rect.Width,
+                                                           rect.Y + TabGlowIgnition::OriginY * rect.Height})};
+            if (auto outline = groupSurface.BeginReveal(id)) fronts.push_back(outline);
+            motion.Reveal(id, fronts, float(std::min(index, TabGlowIgnition::StaggerCap)) * TabGlowIgnition::Stagger,
+                [this, id, alive = std::weak_ptr<int>(lifetime)] {
+                    if (alive.expired()) return;
+                    ambient.EndReveal(id); groupSurface.EndReveal(id);
+                });
         }
         for (auto id : haloLitNow)
             if (std::find(lit.begin(), lit.end(), id) == lit.end()) motion.IgniteHalo(id, haloOf(id));
@@ -732,6 +745,8 @@ struct NativeTabStrip {
         auto lit = glowLit.Advance(eligible, groups, seed, gone);
         auto haloLitNow = haloLit.Advance(haloEligible, groupHalo ? groups : std::set<uint32_t>{}, seed, haloGone);
         haloGone.insert(gone.begin(), gone.end());
+        // Light going out ends any reveal first, so it dims or goes whole.
+        for (auto id : gone) { ambient.EndReveal(id); groupSurface.EndReveal(id); }
         groupSurface.Lighting(outlineColors, &ambient.motion, gone);
         groupSurface.Depart(&ambient.motion, gone);
         ambient.Prune(ambient.groups, groups, false, gone);

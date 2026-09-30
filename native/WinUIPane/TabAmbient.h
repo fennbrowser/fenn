@@ -38,6 +38,100 @@ struct TabAmbient {
     winrt::Microsoft::UI::Composition::CompositionVisualSurface diffusedSurface{nullptr};
     winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush edgeFade{nullptr};
     Sprite output{nullptr};
+    winrt::Microsoft::UI::Composition::CompositionMaskBrush finalMask{nullptr};
+    // Spatial light-up of the blurred light (glow motion). While groups are
+    // being revealed, the final mask is a surface: the edge fade everywhere
+    // except those groups' areas, where a front grows from the primary pool
+    // (TabGlowIgnition::Front). Without reveals the mask is the edge fade
+    // alone, as before, so no extra surface renders at rest.
+    struct Reveal { Rect area{}; Sprite sprite{nullptr}; };
+    std::map<uint32_t, Reveal> reveals;
+    winrt::Microsoft::UI::Composition::ContainerVisual revealRoot{nullptr};
+    winrt::Microsoft::UI::Composition::CompositionVisualSurface revealSurface{nullptr};
+    winrt::Microsoft::UI::Composition::CompositionPathGeometry revealExterior{nullptr};
+    winrt::Microsoft::UI::Composition::ShapeVisual revealOutside{nullptr};
+    winrt::Microsoft::UI::Composition::CompositionSurfaceBrush revealMask{nullptr};
+    // Light spreads past the outline: the halo and the blur's reach.
+    static constexpr float RevealMargin = 12;
+    // Start revealing `area` (layer coordinates) from `origin`; returns the
+    // front for TabGlowIgnition::Reveal.
+    winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush BeginReveal(uint32_t id, Rect area,
+            winrt::Windows::Foundation::Numerics::float2 origin) {
+        auto compositor = output.Compositor();
+        if (!revealRoot) {
+            revealRoot = compositor.CreateContainerVisual();
+            revealRoot.Comment(L"group-reveal-mask");
+            revealExterior = compositor.CreatePathGeometry();
+            auto outside = compositor.CreateSpriteShape(revealExterior);
+            outside.FillBrush(edgeFade);
+            revealOutside = compositor.CreateShapeVisual();
+            revealOutside.Shapes().Append(outside);
+            revealRoot.Children().InsertAtBottom(revealOutside);
+            revealSurface = compositor.CreateVisualSurface();
+            revealSurface.SourceVisual(revealRoot);
+            revealMask = compositor.CreateSurfaceBrush(revealSurface);
+        }
+        EndReveal(id);
+        auto& reveal = reveals[id];
+        reveal.area = area;
+        reveal.sprite = compositor.CreateSpriteVisual();
+        reveal.sprite.Comment(L"group-reveal:" + winrt::to_hstring(id));
+        const winrt::Windows::Foundation::Numerics::float2 size{area.Width, area.Height}, center{origin.x - area.X, origin.y - area.Y};
+        auto front = TabGlowIgnition::Front(compositor, center, TabGlowIgnition::Reach(center, size));
+        reveal.sprite.Brush(front);
+        reveal.sprite.Offset({area.X, area.Y, 0}); reveal.sprite.Size(size);
+        revealRoot.Children().InsertAtTop(reveal.sprite);
+        RevealLayout();
+        if (finalMask.Mask() != revealMask) finalMask.Mask(revealMask);
+        return front;
+    }
+    // Follow a revealing group's geometry; its front keeps its origin.
+    void MoveReveal(uint32_t id, Rect area) {
+        auto it = reveals.find(id);
+        if (it == reveals.end() || it->second.area == area) return;
+        const float dx = area.X - it->second.area.X, dy = area.Y - it->second.area.Y;
+        it->second.area = area;
+        auto offset = it->second.sprite.Offset();
+        it->second.sprite.Offset({offset.x + dx, offset.y + dy, 0});
+        it->second.sprite.Size({area.Width, area.Height});
+        RevealLayout();
+    }
+    void EndReveal(uint32_t id) {
+        auto it = reveals.find(id);
+        if (it == reveals.end()) return;
+        revealRoot.Children().Remove(it->second.sprite);
+        reveals.erase(it);
+        if (reveals.empty()) { if (finalMask && finalMask.Mask() != edgeFade) finalMask.Mask(edgeFade); }
+        else RevealLayout();
+    }
+    void EndReveals() { while (!reveals.empty()) EndReveal(reveals.begin()->first); }
+    // The mask surface matches the output; outside the revealing areas it
+    // carries the edge fade unchanged.
+    void RevealLayout() {
+        if (!revealRoot || reveals.empty()) return;
+        const auto size = output.Size();
+        revealRoot.Size(size); revealOutside.Size(size); revealSurface.SourceSize(size);
+        if (!clipFactory) winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, clipFactory.put()));
+        winrt::com_ptr<ID2D1RectangleGeometry> everything;
+        winrt::check_hresult(clipFactory->CreateRectangleGeometry({0, 0, size.x, size.y}, everything.put()));
+        std::vector<winrt::com_ptr<ID2D1RectangleGeometry>> holes;
+        std::vector<ID2D1Geometry*> geometries;
+        for (auto const& [id, reveal] : reveals) {
+            winrt::com_ptr<ID2D1RectangleGeometry> hole;
+            const auto offset = reveal.sprite.Offset(); const auto extent = reveal.sprite.Size();
+            winrt::check_hresult(clipFactory->CreateRectangleGeometry({offset.x, offset.y, offset.x + extent.x, offset.y + extent.y}, hole.put()));
+            geometries.push_back(hole.get()); holes.push_back(std::move(hole));
+        }
+        winrt::com_ptr<ID2D1GeometryGroup> united;
+        winrt::check_hresult(clipFactory->CreateGeometryGroup(D2D1_FILL_MODE_WINDING, geometries.data(), uint32_t(geometries.size()), united.put()));
+        winrt::com_ptr<ID2D1PathGeometry> remaining;
+        winrt::check_hresult(clipFactory->CreatePathGeometry(remaining.put()));
+        winrt::com_ptr<ID2D1GeometrySink> sink;
+        winrt::check_hresult(remaining->Open(sink.put()));
+        winrt::check_hresult(everything->CombineWithGeometry(united.get(), D2D1_COMBINE_MODE_EXCLUDE, nullptr, sink.get()));
+        winrt::check_hresult(sink->Close());
+        revealExterior.Path(winrt::Microsoft::UI::Composition::CompositionPath(winrt::make<TabAmbientClip>(std::move(remaining))));
+    }
     TabLightContour::Mask faceMask;
     Sprite occluded{nullptr};
     winrt::Microsoft::UI::Composition::CompositionVisualSurface occludedSurface{nullptr};
@@ -167,6 +261,7 @@ struct TabAmbient {
                     edgeFade.ColorStops().Append(compositor.CreateColorGradientStop(float(i) / 3, {255, 255, 255, 255}));
                 auto mask = compositor.CreateMaskBrush();
                 mask.Source(compositor.CreateSurfaceBrush(occludedSurface)); mask.Mask(edgeFade);
+                finalMask = mask;
                 output = compositor.CreateSpriteVisual(); output.Brush(mask);
                 winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::SetElementChildVisual(layer, output);
             }
@@ -215,6 +310,7 @@ struct TabAmbient {
         if (output.Size() != size) {
             output.Size(size); diffusedSurface.SourceSize(size);
             occluded.Size(size); occludedSurface.SourceSize(size);
+            RevealLayout();
         }
         const float width = std::max(1.f, viewport.Width);
         const float leftTail = std::clamp(fadeLeft, 0.f, width / 2) / width;

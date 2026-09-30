@@ -10,8 +10,46 @@ struct TabGroupSurface {
         Microsoft::UI::Composition::CompositionRoundedRectangleGeometry geometry{nullptr};
         uint32_t color{};
         bool animated{};
+        // While revealed (glow motion), the outline shows `reveal`: the light
+        // captured in a surface and masked by a growing front.
+        Microsoft::UI::Composition::SpriteVisual reveal{nullptr};
+        Microsoft::UI::Composition::CompositionVisualSurface revealSurface{nullptr};
     };
     std::map<uint32_t, Light> lights;
+
+    // Reveal a group's outline light from its primary pool; the same front
+    // shape as the blurred light, so highlights catch as it arrives.
+    Microsoft::UI::Composition::CompositionRadialGradientBrush BeginReveal(uint32_t id) {
+        auto light = lights.find(id);
+        auto surface = surfaces.find(id);
+        if (light == lights.end() || surface == surfaces.end() || !light->second.visual) return nullptr;
+        EndReveal(id);
+        auto& entry = light->second;
+        auto compositor = entry.visual.Compositor();
+        const auto size = entry.visual.Size();
+        entry.revealSurface = compositor.CreateVisualSurface();
+        entry.revealSurface.SourceVisual(entry.visual);
+        entry.revealSurface.SourceSize(size);
+        const Windows::Foundation::Numerics::float2 center{TabGlowIgnition::OriginX * size.x, TabGlowIgnition::OriginY * size.y};
+        auto front = TabGlowIgnition::Front(compositor, center, TabGlowIgnition::Reach(center, size));
+        auto mask = compositor.CreateMaskBrush();
+        mask.Source(compositor.CreateSurfaceBrush(entry.revealSurface)); mask.Mask(front);
+        entry.reveal = compositor.CreateSpriteVisual();
+        entry.reveal.Comment(L"group-outline-reveal");
+        entry.reveal.Size(size); entry.reveal.Brush(mask);
+        Hosting::ElementCompositionPreview::SetElementChildVisual(surface->second, entry.reveal);
+        return front;
+    }
+    void EndReveal(uint32_t id) {
+        auto light = lights.find(id);
+        if (light == lights.end() || !light->second.reveal) return;
+        auto& entry = light->second;
+        if (auto surface = surfaces.find(id); surface != surfaces.end() &&
+            Hosting::ElementCompositionPreview::GetElementChildVisual(surface->second) == entry.reveal)
+            Hosting::ElementCompositionPreview::SetElementChildVisual(surface->second, entry.visual);
+        entry.reveal = nullptr; entry.revealSurface = nullptr;
+    }
+    void EndReveals() { for (auto& [id, light] : lights) EndReveal(id); }
 
     // Reflections belong to the actual outline, below stock tab contents and
     // selection. Retain four soft corner lobes rather than lighting tab seams.
@@ -60,6 +98,7 @@ struct TabGroupSurface {
             const Windows::Foundation::Numerics::float2 size{width, height};
             if (light.visual.Size() != size) {
                 light.visual.Size(size);
+                if (light.reveal) { light.reveal.Size(size); light.revealSurface.SourceSize(size); }
                 light.geometry.Size({std::max(0.f, width - 1), std::max(0.f, height - 1)});
                 light.geometry.CornerRadius({std::max(0.f, radius - .5f), std::max(0.f, radius - .5f)});
                 for (uint32_t corner = 0; corner < 4; ++corner) {
@@ -93,6 +132,7 @@ struct TabGroupSurface {
         }
         for (auto it = lights.begin(); it != lights.end();) {
             if (colors.count(it->first) && surfaces.count(it->first)) { ++it; continue; }
+            EndReveal(it->first);
             if (surfaces.count(it->first)) {
                 auto border = surfaces.at(it->first);
                 if (motion && dim.count(it->first) && motion->Dims()) {

@@ -3,9 +3,9 @@
 #include <winrt/Windows.UI.ViewManagement.h>
 
 // Opt-in light-up motion for group glow (Firefox's groupGlowAnimations).
-// Newly lit groups warm up from their dominant light pool outward, geometry
-// changes let the bright spots trail the surface, color changes cross-fade and
-// extinguished glow dims before release. Everything here is a Composition
+// Newly lit groups are revealed spatially from their dominant light pool
+// outward, geometry changes let the bright spots trail the surface, color
+// changes cross-fade and extinguished glow dims before release. Everything here is a Composition
 // keyframe or implicit animation: the compositor runs it, no UI-thread render
 // loop starts, and static properties always hold their final values, so later
 // geometry updates and inspection read the settled state.
@@ -18,25 +18,22 @@ struct TabGlowIgnition {
     using Batch = winrt::Microsoft::UI::Composition::CompositionScopedBatch;
     using Color = winrt::Windows::UI::Color;
 
-    // Light-up timeline, in milliseconds from the start of one group's light.
-    // The primary pool (the first of TabAmbient::Pools, lower left) lights first; the
-    // weaker upper-right pool follows, so the glow stays uneven as it grows.
     static constexpr uint32_t PoolCount = 2;
-    // Owner tuning (2026-09-30): slower and more pronounced than the first
-    // 640 ms version; the whole light-up now takes about 1.4 s.
-    static constexpr float PoolDuration = 600, SecondaryDelay = 170;
-    static constexpr float PoolStartScale = .3f, PoolBloom = 1.3f;
-    // The core starts near white and saturates into the group color, like a
-    // warming filament; the bloom still carries a trace of that heat.
-    static constexpr float HotTint = .5f, BloomTint = .25f, BloomAt = .55f;
-    // The wash briefly overshoots its resting opacity with the pools' bloom.
-    static constexpr float WashDelay = 150, SpillDelay = 260, WashDuration = 700, WashBloom = 1.25f;
-    // Outline highlights catch the light last, nearest the primary pool
-    // first. Index order matches TabGroupSurface: TL, TR, BL, BR.
-    static constexpr float CornerDelay[4] = {450, 670, 340, 560};
-    static constexpr float CornerDuration = 480, CornerGlint = 1.6f, CornerStartScale = .05f;
-    // Halo rings bleed outward, inner ring first.
-    static constexpr float HaloDelay = 420, HaloStep = 80, HaloDuration = 520;
+    // Spatial light-up (owner request, 2026-09-30). A slow intensity fade of
+    // faint translucent light shimmers: Composition advances its transparency
+    // in steps while color changes continuously, so each pixel follows a small
+    // sawtooth for as long as the fade lasts. Instead, the light is already at
+    // full strength and a soft-edged front grows from the primary pool
+    // (lower left) until it covers the group, its halo and outline highlights.
+    // Each pixel brightens only while the soft edge passes, about RevealEdge
+    // of the travel, while the whole light-up still takes RevealDuration.
+    static constexpr float RevealDuration = 1100, RevealEdge = .35f;
+    // Where the front starts, in group coordinates (TabAmbient::Pools[0]).
+    static constexpr float OriginX = .22f, OriginY = .9f;
+    // Outline highlights re-catching after growth, and the halo option
+    // turning on alone, still use short intensity ramps.
+    static constexpr float CornerDuration = 260, SecondaryDelay = 90;
+    static constexpr float HaloStep = 45, HaloDuration = 280;
     // Several groups lighting together start left to right, briefly.
     static constexpr float Stagger = 70; static constexpr size_t StaggerCap = 5;
     static constexpr float FollowDuration = 180, TintDuration = 240;
@@ -127,43 +124,19 @@ struct TabGlowIgnition {
         return {uint8_t(std::clamp(alpha, 0.f, 255.f) + .5f), channel(color.R), channel(color.G), channel(color.B)};
     }
 
-    // Stops rise from dark through an optional bloom to their final color.
-    static void Rise(Gradient const& brush, float delay, float duration, float bloom, float hot) {
+    // Stops rise from dark to their final color (the halo option alone).
+    static void Rise(Gradient const& brush, float delay, float duration) {
         auto compositor = brush.Compositor();
         for (auto stop : brush.ColorStops()) {
             const auto final = stop.Color();
             if (!final.A) continue;
             auto animation = compositor.CreateColorKeyFrameAnimation();
             animation.InterpolationColorSpace(winrt::Microsoft::UI::Composition::CompositionColorSpace::Rgb);
-            animation.InsertKeyFrame(0.f, Mix(final, hot, 0));
-            if (bloom != 1.f) animation.InsertKeyFrame(BloomAt, Mix(final, hot * BloomTint / HotTint, final.A * bloom), Smooth(compositor));
+            animation.InsertKeyFrame(0.f, Mix(final, 0, 0));
             animation.InsertKeyFrame(1.f, final, Smooth(compositor));
             Time(animation, delay, duration);
             stop.StartAnimation(L"Color", animation);
         }
-    }
-    // Light spreads from its source: the gradient grows about its own center.
-    // Scale is never set statically, so geometry updates cannot conflict.
-    static void Grow(Gradient const& brush, float from, float delay, float duration) {
-        auto compositor = brush.Compositor();
-        if (auto radial = brush.try_as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>())
-            radial.CenterPoint(radial.EllipseCenter());
-        auto animation = compositor.CreateVector2KeyFrameAnimation();
-        animation.InsertKeyFrame(0.f, {from, from});
-        animation.InsertKeyFrame(1.f, {1.f, 1.f}, Gentle(compositor));
-        Time(animation, delay, duration);
-        brush.StartAnimation(L"Scale", animation);
-    }
-    static void Fade(Visual const& visual, float delay, float duration) {
-        if (!visual) return;
-        auto compositor = visual.Compositor();
-        auto animation = compositor.CreateScalarKeyFrameAnimation();
-        const float final = visual.Opacity();
-        animation.InsertKeyFrame(0.f, 0.f);
-        animation.InsertKeyFrame(BloomAt, std::min(1.f, final * WashBloom), Smooth(compositor));
-        animation.InsertKeyFrame(1.f, final, Smooth(compositor));
-        Time(animation, delay, duration);
-        visual.StartAnimation(L"Opacity", animation);
     }
     static Gradient BrushOf(ShapeVisual const& shapes, uint32_t index) {
         auto sprite = shapes.Shapes().GetAt(index).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
@@ -171,13 +144,6 @@ struct TabGlowIgnition {
         return brush.try_as<Gradient>();
     }
 
-    struct Targets {
-        Visual wash{nullptr}, spill{nullptr};
-        // TabAmbient::Halo rings, pool-major; null without the halo option.
-        ShapeVisual halo{nullptr};
-        // TabGroupSurface outline light: four corner strokes, then the pools.
-        ShapeVisual outline{nullptr};
-    };
     void Track(uint32_t id, Batch const& batch) {
         active.insert_or_assign(id, batch);
         batch.Completed([this, weak = std::weak_ptr<int>(life), id, batch](auto&&, auto&&) {
@@ -190,35 +156,46 @@ struct TabGlowIgnition {
         const uint32_t count = halo.Shapes().Size(), rings = count / PoolCount;
         for (uint32_t index = 0; rings && index < count; ++index) {
             auto brush = BrushOf(halo, index);
-            if (brush) Rise(brush, delay + HaloStep * (index % rings) + SecondaryDelay * (index / rings), HaloDuration, 1.f, 0.f);
+            if (brush) Rise(brush, delay + HaloStep * (index % rings) + SecondaryDelay * (index / rings), HaloDuration);
         }
     }
-    void Ignite(uint32_t id, Targets const& targets, float delay) {
-        Visual any = targets.wash ? targets.wash : targets.spill ? targets.spill :
-            targets.halo ? Visual(targets.halo) : Visual(targets.outline);
-        if (!any) return;
-        auto batch = any.Compositor().CreateScopedBatch(winrt::Microsoft::UI::Composition::CompositionBatchTypes::Animation);
-        if (auto outline = targets.outline) {
-            const uint32_t count = outline.Shapes().Size();
-            for (uint32_t pool = 0; pool < PoolCount && 4 + pool < count; ++pool) {
-                if (auto brush = BrushOf(outline, 4 + pool)) {
-                    const float start = delay + SecondaryDelay * pool;
-                    Rise(brush, start, PoolDuration, PoolBloom, HotTint);
-                    Grow(brush, PoolStartScale, start, PoolDuration);
-                }
-            }
-            for (uint32_t corner = 0; corner < 4 && corner < count; ++corner) {
-                if (auto brush = BrushOf(outline, corner)) {
-                    Rise(brush, delay + CornerDelay[corner], CornerDuration, CornerGlint, HotTint);
-                    Grow(brush, CornerStartScale, delay + CornerDelay[corner], CornerDuration);
-                }
-            }
+    // A reveal front: a white radial mask, opaque out to 1 - RevealEdge of its
+    // radius and clear at the radius. Its static radius is the final one, so
+    // without the animation the light is simply fully revealed.
+    static winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush Front(
+        Compositor const& compositor, winrt::Windows::Foundation::Numerics::float2 center, float radius) {
+        auto brush = compositor.CreateRadialGradientBrush();
+        brush.MappingMode(winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute);
+        brush.EllipseCenter(center);
+        brush.EllipseRadius({radius, radius});
+        for (auto [offset, alpha] : {std::pair{0.f, 255}, {1.f - RevealEdge, 255}, {1.f, 0}})
+            brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(alpha), 255, 255, 255}));
+        return brush;
+    }
+    // The radius that reaches every corner of `size` from `center` with the
+    // soft edge fully past it.
+    static float Reach(winrt::Windows::Foundation::Numerics::float2 center, winrt::Windows::Foundation::Numerics::float2 size) {
+        const float dx = std::max(center.x, size.x - center.x), dy = std::max(center.y, size.y - center.y);
+        return std::max(1.f, std::sqrt(dx * dx + dy * dy) / (1.f - RevealEdge));
+    }
+    // Grow the fronts together; `done` releases the reveal masks.
+    void Reveal(uint32_t id, std::vector<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush> const& fronts,
+                float delay, std::function<void()> done) {
+        if (fronts.empty()) { if (done) done(); return; }
+        auto compositor = fronts.front().Compositor();
+        auto batch = compositor.CreateScopedBatch(winrt::Microsoft::UI::Composition::CompositionBatchTypes::Animation);
+        for (auto const& front : fronts) {
+            auto animation = compositor.CreateVector2KeyFrameAnimation();
+            animation.InsertKeyFrame(0.f, {1.f, 1.f});
+            animation.InsertKeyFrame(1.f, front.EllipseRadius(), Gentle(compositor));
+            Time(animation, delay, RevealDuration);
+            front.StartAnimation(L"EllipseRadius", animation);
         }
-        Fade(targets.wash, delay + WashDelay, WashDuration);
-        Fade(targets.spill, delay + SpillDelay, WashDuration);
-        if (targets.halo) RiseHalo(targets.halo, delay + HaloDelay);
         batch.End();
         Track(id, batch);
+        batch.Completed([weak = std::weak_ptr<int>(life), done = std::move(done)](auto&&, auto&&) {
+            if (!weak.expired() && done) try { done(); } catch (...) {}
+        });
     }
     // The halo option turned on for a group that is already lit.
     void IgniteHalo(uint32_t id, ShapeVisual const& halo) {
