@@ -49,7 +49,7 @@ struct TabAmbient {
     // carrying the pools at a falling fraction of their interior strength.
     // The shared Gaussian diffusion merges the rings into one falloff.
     static constexpr float HaloPitch = 2.f;
-    static constexpr float HaloFade[] = {.75f, .56f, .38f, .23f, .12f, .04f};
+    static constexpr float HaloFade[] = {.75f, .42f, .18f, .05f};
     static constexpr uint32_t HaloRings = ARRAYSIZE(HaloFade);
     static constexpr float HaloReach = HaloPitch * HaloRings;
     winrt::Windows::UI::ViewManagement::AccessibilitySettings accessibility;

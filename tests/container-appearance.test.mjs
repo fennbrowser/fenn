@@ -113,3 +113,34 @@ test("group reach preference is validated and publishes a live delta", () => {
     }
   }
 });
+
+test("group halo is opt-in and its preference publishes a live delta", () => {
+  let halo;
+  const key = "widget.windows.winui-prototype.tabstrip.groupHalo";
+  const context = {
+    window:{addEventListener() {}, docShell:{usePrivateBrowsing:false}},
+    document:{documentElement:{matches:() => false}},
+    gBrowser:{tabs:[], selectedTabs:[], tabGroups:[]},
+    Services:{prefs:{getBoolPref:(name, fallback) => name === key ? halo ?? fallback : fallback,
+      getIntPref:(_name, fallback) => fallback, getStringPref:(_name, fallback) => fallback}},
+  };
+  const source = readFileSync(new URL("../upstream/firefox/browser/base/content/browser-winui-pane.js", import.meta.url), "utf8");
+  runInNewContext(source, context);
+  const pane = context.gWinUIPane;
+  pane.localization = () => ({formatValueSync:id => id,
+    formatMessagesSync: ([{id}]) => [{attributes: [{name: "label", value: id}, {name: "tooltiptext", value: id}]}]});
+  pane.visibleTabs = () => [];
+  pane.schedule = () => {};
+  const session = new WinUITabStripSession({read:() => pane.describeStrip()});
+  assert.equal(session.update().strip.groupHalo, false);
+  for (const value of [true, false]) {
+    halo = value;
+    pane.stripDirty = false;
+    pane.observe(null, "nsPref:changed", key);
+    assert.equal(pane.stripDirty, true);
+    const delta = session.update().strip;
+    assert.equal(session.state.groupHalo, value);
+    assert.equal(delta.groupHalo, value);
+    assert.equal(delta.rows.length, 0);
+  }
+});

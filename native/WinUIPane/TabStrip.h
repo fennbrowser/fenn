@@ -156,6 +156,8 @@ struct NativeTabStrip {
     TabAmbient ambient;
     TabGroupSurface groupSurface;
     bool groupGlow{}, containerGlow{}, containerDot{}, groupHover{};
+    // Opt-in outer halo for group glow; off unless Firefox publishes it.
+    bool groupHalo{};
     // The island's system backdrop, chosen by Firefox's strip preference. The
     // pane owns the DesktopWindowXamlSource and applies a validated change.
     enum class Backdrop { Mica, MicaAlt, Acrylic };
@@ -464,7 +466,7 @@ struct NativeTabStrip {
                 // A group's halo reaches past its outline by more than the gap
                 // before New Tab. Let it fall off softly under the button's
                 // edge rather than slicing it there.
-                const float haloOverlap = groupGlow ? TabAmbient::HaloReach : 0.f;
+                const float haloOverlap = groupGlow && groupHalo ? TabAmbient::HaloReach : 0.f;
                 if (addBounds.X >= viewport.X + viewport.Width - 1) {
                     right = std::min(right, addBounds.X + std::min(haloOverlap, addBounds.Width / 2));
                     fadeRight = fade(right - contentRight);
@@ -567,13 +569,13 @@ struct NativeTabStrip {
             ambient.Spill(ambient.groupSpill, id, color, bounds, false);
             auto spill = ambient.groupSpill.at(id).visual;
             if (spill.Opacity() != .65f) spill.Opacity(.65f);
-            ambient.Halo(id, color, bounds, radius);
+            if (groupHalo) ambient.Halo(id, color, bounds, radius);
         }
         groupSurface.Lighting(outlineColors);
         ambient.Prune(ambient.groups, groups, false);
         ambient.Prune(ambient.containers, containers, true);
         ambient.PruneSpill(ambient.groupSpill, groups);
-        ambient.PruneHalo(groups);
+        ambient.PruneHalo(groupHalo ? groups : std::set<uint32_t>{});
         ambient.PruneSpill(ambient.containerSpill, {});
         auto container = ambient.containers.find(activeTabId);
         const bool activeVisible = activeBounds.Width > 0 && activeBounds.Height > 0;
@@ -2232,6 +2234,7 @@ struct NativeTabStrip {
             else throw hresult_invalid_argument();
         }
         const bool nextGroupHover = data.HasKey(L"groupHover") ? data.GetNamedBoolean(L"groupHover") : base ? groupHover : false;
+        const bool nextGroupHalo = data.HasKey(L"groupHalo") ? data.GetNamedBoolean(L"groupHalo") : base ? groupHalo : false;
         auto nextGroupReach = base ? groupReach : DefaultGroupReach;
         if (data.HasKey(L"groupReach")) {
             auto reach = GroupReachOf(data.GetNamedString(L"groupReach"));
@@ -2446,6 +2449,7 @@ struct NativeTabStrip {
         containerGlow = nextContainerGlow;
         groupGlow = nextGroupGlow;
         if (groupHover != nextGroupHover) { groupHover = nextGroupHover; inlineGroups.WashesGroup(groupHover); if (!groupHover) groupSurface.Hover(0); }
+        groupHalo = nextGroupHalo;
         if (groupReach != nextGroupReach) { groupReach = nextGroupReach; ApplyAddSpacing(); }
         if (nextBackdrop != backdrop) {
             backdrop = nextBackdrop;

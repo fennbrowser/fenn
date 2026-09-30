@@ -2296,7 +2296,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         // Publish independent colors without changing group or tab membership.
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 0,
             "group and container glows default off");
-        auto colored = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":16,"revision":17,"groupGlow":true,"containerGlow":true,"rows":[{"id":41,"containerName":"Personal","containerColor":4289934591}],"removed":[],"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}]}})");
+        auto colored = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":16,"revision":17,"groupGlow":true,"groupHalo":true,"containerGlow":true,"rows":[{"id":41,"containerName":"Personal","containerColor":4289934591}],"removed":[],"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}]}})");
         MenuPublish(api,host,colored.Stringify().c_str()); settle();
         Require(bottomGlow.Children().Count() == 1 && topGlow.Children().Count() == 1,
             "two grouped tabs share one bottom field and a container adds an independent top field");
@@ -2448,26 +2448,26 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             "the active tab keeps its hard notch for other light but does not interrupt the halo");
         auto haloShape = halo.Children().First().Current().as<winrt::Microsoft::UI::Composition::ShapeVisual>();
         auto haloFollows = [&] {
-            return std::abs(haloShape.Offset().x + 12 - groupVisual.Offset().x) < .5f &&
-                std::abs(haloShape.Size().x - 24 - groupVisual.Size().x) < .5f;
+            return std::abs(haloShape.Offset().x + 8 - groupVisual.Offset().x) < .5f &&
+                std::abs(haloShape.Size().x - 16 - groupVisual.Size().x) < .5f;
         };
-        Require(haloFollows() && haloShape.Shapes().Size() == 12, "halo spans 12 DIP beyond the group with two pools of six rings");
+        Require(haloFollows() && haloShape.Shapes().Size() == 8, "halo spans 8 DIP beyond the group with two pools of four rings");
         for (uint32_t index = 0; index < haloShape.Shapes().Size(); ++index) {
             auto ring = haloShape.Shapes().GetAt(index).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
             auto geometry = ring.Geometry().as<winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry>();
             // Ring i is centered 2i+1 DIP outside the outline; its inner stroke
             // edge only overlaps the outline by the anti-seam allowance.
-            const float distance = 12 - geometry.Offset().x;
-            Require(!ring.FillBrush() && std::abs(distance - (2.f * (index % 6) + 1)) < .01f &&
+            const float distance = 8 - geometry.Offset().x;
+            Require(!ring.FillBrush() && std::abs(distance - (2.f * (index % 4) + 1)) < .01f &&
                 distance - ring.StrokeThickness() / 2 >= -.2f &&
                 std::abs(geometry.CornerRadius().x - (roundedClip.CornerRadius().x + distance)) < .01f,
                 "halo rings start at the outline and grow outward with concentric corners");
             auto brush = ring.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
             Require(brush.MappingMode() == winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute &&
-                std::abs(brush.EllipseCenter().x - 12 - (index < 6 ? .22f : .82f) * groupVisual.Size().x) < .5f &&
+                std::abs(brush.EllipseCenter().x - 8 - (index < 4 ? .22f : .82f) * groupVisual.Size().x) < .5f &&
                 brush.ColorStops().GetAt(0).Color().A <= 36 && brush.ColorStops().GetAt(2).Color().A == 0,
                 "halo continues the uneven interior pools, anchored in group coordinates and subtle");
-            if (index % 6) Require(brush.ColorStops().GetAt(0).Color().A <=
+            if (index % 4) Require(brush.ColorStops().GetAt(0).Color().A <=
                 haloShape.Shapes().GetAt(index - 1).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>()
                     .StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>()
                     .ColorStops().GetAt(0).Color().A, "halo fades with distance from the group");
@@ -2534,7 +2534,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(faceShape(41).Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path() == settledFace,
             "unchanged layout retains mask geometry without rebuilding the visual surface");
         puts("CHECKS PASSED: immediate glow geometry, retained visuals and bounded drag observation");
-        auto toggleIndicators = [&](uint32_t revision, bool glow, bool showDot) {
+        auto toggleIndicators = [&](uint32_t revision, bool glow, bool showDot, bool withHalo = true) {
             auto update = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
             auto strip = update.GetNamedObject(L"strip");
             using Value = winrt::Windows::Data::Json::JsonValue;
@@ -2543,6 +2543,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             strip.SetNamedValue(L"containerGlow", Value::CreateBooleanValue(glow));
             strip.SetNamedValue(L"groupGlow", Value::CreateBooleanValue(glow || showDot));
             strip.SetNamedValue(L"containerDot", Value::CreateBooleanValue(showDot));
+            strip.SetNamedValue(L"groupHalo", Value::CreateBooleanValue(withHalo));
             MenuPublish(api,host,update.Stringify().c_str()); settle();
             Require(!haloDiffusion.Clip(), "glow option changes never notch the halo");
             Require(topGlow.Children().Count() == (glow ? 1 : 0) &&
@@ -2550,7 +2551,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 bottomGlow.Children().Count() == (glow || showDot ? 1 : 0),
                 "live glow options remove and restore group and container visuals");
             Require(spill.Children().Count() == (glow || showDot ? 1 : 0), "disabled group glow releases its spill");
-            Require(halo.Children().Count() == (glow || showDot ? 1 : 0), "disabled group glow releases its halo");
+            Require(halo.Children().Count() == ((glow || showDot) && withHalo ? 1 : 0),
+                "disabling group glow or only the halo releases the halo; the group wash stays with glow");
             Require(glow ? separatorA.Background().as<Media::SolidColorBrush>().Color().A == 170 :
                 bool(separatorA.GetBindingExpression(Controls::Border::BackgroundProperty())),
                 "disabling glow restores a live theme binding on the native divider");
@@ -2560,7 +2562,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 "container options never restore obsolete group seam highlights");
         };
         toggleIndicators(18, false, true);
-        toggleIndicators(19, true, true);
+        toggleIndicators(19, true, true, false);
         toggleIndicators(20, false, false);
         toggleIndicators(21, true, false);
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":21,"revision":22,"rows":[],"removed":[],"groups":[],"layout":[{"group":0,"tab":41},{"group":0,"tab":42}]}})");
@@ -2650,7 +2652,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             // after a reset can exceed the 150 ms motion here, so intermediate
             // widths are not sampled.
             auto lastGroup = [&](uint32_t revision, bool withNewTab) {
-                auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":0,"tab":43}]}})");
+                auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":0,"tab":43}]}})");
                 auto strip = state.GetNamedObject(L"strip");
                 strip.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(revision));
                 if (!withNewTab) { strip.GetNamedArray(L"rows").RemoveAt(2); strip.GetNamedArray(L"layout").RemoveAt(3); }
