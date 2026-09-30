@@ -29,6 +29,7 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <wrl/client.h>
+#include "GlowFrameProbe.h"
 using Microsoft::WRL::ComPtr;
 
 static void Require(bool value, const char* message) {
@@ -2883,6 +2884,47 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 Require(pool.ImplicitAnimations() && brushOf(ring, 0).ImplicitAnimations() &&
                     std::abs(pool.EllipseCenter().x - .22f * light.Size().x) < .5f,
                     "once motion settles, one-off geometry changes trail again");
+                if (wchar_t framesPath[MAX_PATH]{}; GetEnvironmentVariableW(L"WINUI_PANE_GLOW_FRAMES", framesPath, MAX_PATH)) {
+                    // Diagnostic: record what reaches the screen during a
+                    // light-up and a dim-out, frame by frame.
+                    auto surface = reachSurface();
+                    const float scale = float(surface.XamlRoot().RasterizationScale());
+                    const auto at = surface.TransformToVisual(nullptr).TransformPoint({0, 0});
+                    const LONG left = LONG(at.X * scale), top = LONG(at.Y * scale);
+                    const LONG width = LONG(surface.Width() * scale), height = LONG(surface.Height() * scale);
+                    std::vector<RECT> regions{{left, top, left + width, top + height},
+                        {left, top + height / 2, left + width / 4, top + height},
+                        {left + width / 2, top, left + width, top + height / 3}};
+                    setOption(L"groupGlow", false);
+                    Require(waitFor([&] { return query(1) == 0 && bottomGlow.Children().Count() == 0; }), "glow is out before recording");
+                    GlowFrameProbe probe;
+                    probe.Start(host, regions);
+                    for (int i = 0; i < 30; ++i) { Pump(); Sleep(10); }
+                    LARGE_INTEGER frequency{}, counter{};
+                    QueryPerformanceFrequency(&frequency);
+                    auto now = [&] { QueryPerformanceCounter(&counter); return counter.QuadPart * 1000.0 / frequency.QuadPart; };
+                    const double lightAt = now();
+                    setOption(L"groupGlow", true);
+                    const double lightPublished = now();
+                    for (const auto until = GetTickCount64() + 2000; GetTickCount64() < until;) { Pump(); Sleep(1); }
+                    const double dimAt = now();
+                    setOption(L"groupGlow", false);
+                    for (const auto until = GetTickCount64() + 700; GetTickCount64() < until;) { Pump(); Sleep(1); }
+                    auto samples = probe.Stop();
+                    if (FILE* file{}; _wfopen_s(&file, framesPath, L"w") == 0 && file) {
+                        fprintf(file, "# region px: whole %ld,%ld %ldx%ld; scale %.2f\n", left, top, width, height, scale);
+                        fprintf(file, "# light-up published at 0 (publish took %.1f ms); dim-out at %.1f\n", lightPublished - lightAt, dimAt - lightAt);
+                        fprintf(file, "ms,whole,lowerLeft,upperRight\n");
+                        for (auto const& frame : samples)
+                            fprintf(file, "%.2f,%.3f,%.3f,%.3f\n", frame.ms - lightAt, frame.means[0], frame.means[1], frame.means[2]);
+                        fclose(file);
+                    }
+                    printf("Glow frames: %zu recorded to %ls\n", samples.size(), framesPath);
+                    fflush(stdout);
+                    setOption(L"groupGlow", true);
+                    Require(waitFor([&] { return bottomGlow.Children().Count() == 1 && query(0) == 0; }), "glow restored after recording");
+                    light = outline(); pool = brushOf(light, 4);
+                }
                 setColor(personal);
                 settle();
                 Require(!query(0) && query(1) == 0 && washStop().Color().R == ((personal >> 16) & 0xff) &&
@@ -3934,7 +3976,44 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     DestroyWindow(host2);
 }
 
+// Diagnostic: `--record-frames <hwnd hex> <ms> <csv>` records the top 48
+// client pixels of any window (e.g. a real Firefox) as 24-pixel column bands,
+// one row per composed frame with its QPC time in milliseconds.
+static int RecordFrames(wchar_t** argv) {
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    const auto hwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(wcstoull(argv[2], nullptr, 16)));
+    const auto duration = _wtoi(argv[3]);
+    RECT client{};
+    if (!IsWindow(hwnd) || !GetClientRect(hwnd, &client)) { fputs("FAIL: no such window\n", stderr); return 2; }
+    // WINUI_GLOW_PIXELS=y samples single pixels every 4 px along row y instead.
+    std::vector<RECT> bands;
+    wchar_t row[16]{};
+    if (GetEnvironmentVariableW(L"WINUI_GLOW_PIXELS", row, 16)) {
+        const LONG y = _wtoi(row);
+        for (LONG x = 0; x < client.right; x += 4) bands.push_back({x, y, x + 1, y + 1});
+    } else {
+        for (LONG x = 0; x + 24 <= client.right; x += 24) bands.push_back({x, 0, x + 24, std::min(48L, client.bottom)});
+    }
+    GlowFrameProbe probe;
+    probe.Start(hwnd, bands);
+    Sleep(DWORD(duration));
+    auto samples = probe.Stop();
+    FILE* file{};
+    if (_wfopen_s(&file, argv[4], L"w") || !file) return 3;
+    fprintf(file, "ms");
+    for (size_t i = 0; i < bands.size(); ++i) fprintf(file, ",x%ld", bands[i].left);
+    fprintf(file, "\n");
+    for (auto const& frame : samples) {
+        fprintf(file, "%.2f", frame.ms);
+        for (auto mean : frame.means) fprintf(file, ",%.3f", mean);
+        fprintf(file, "\n");
+    }
+    fclose(file);
+    printf("Recorded %zu frames\n", samples.size());
+    return 0;
+}
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 5 && wcscmp(argv[1], L"--record-frames") == 0) return RecordFrames(argv);
     Require(AddVectoredExceptionHandler(
                 1,
                 [](EXCEPTION_POINTERS* error) -> LONG {
