@@ -3309,11 +3309,19 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
                 };
                 const float gapWidth=float(view.TabItems().GetAt(backward ? 3 : 0).as<Controls::TabViewItem>().ActualWidth());
                 Require(overhang()<=8.f,"an interior insertion gap leaves the group surface at its normal reach");
+                // Empty slots inside the surface get a stand-in tab face, so
+                // light there matches the neighboring faces.
+                auto glowMotion=reinterpret_cast<HRESULT(WINAPI*)(HWND,uint32_t,uint32_t,uint32_t*)>(GetProcAddress(module,"WinUIPaneTestGlowMotion"));
+                auto slotWidth=[&] { uint32_t width{}; Require(SUCCEEDED(glowMotion(host,4,0,&width)),"inspect drag slot faces"); return float(width); };
+                const auto dragged=TabScreenBounds(host,L"FirefoxWinUITab-22");
+                fprintf(stderr,"Slot faces interior rtl=%d backward=%d width=%.1f gap=%.1f dragged=%ld..%ld\n",rtl,backward,slotWidth(),gapWidth,dragged.left,dragged.right);
+                Require(slotWidth()>=gapWidth-2.f,"an interior insertion gap gets a stand-in tab face");
                 auto tail=TabScreenBounds(host,L"FirefoxWinUITab-44");
                 SetCursorPos(rtl ? tail.left+8 : tail.right-8,(tail.top+tail.bottom)/2);
                 settle();
-                fprintf(stderr,"Join tail rtl=%d backward=%d overhang=%.1f gap=%.1f\n",rtl,backward,overhang(),gapWidth);
+                fprintf(stderr,"Join tail rtl=%d backward=%d overhang=%.1f gap=%.1f slot faces=%.1f\n",rtl,backward,overhang(),gapWidth,slotWidth());
                 Require(overhang()>=gapWidth-2.f,"the group surface extends to the tab's insertion gap past its last member");
+                Require(slotWidth()>=gapWidth-2.f,"the opened tail gets a stand-in tab face instead of unattenuated light");
                 pointAt(sourceWidth*.25);
                 Require(overhang()<=8.f,"the group surface closes again once the gap returns inside the group");
                 // Releasing over the end gap keeps the surface in place until
@@ -3335,6 +3343,7 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
                     "the group surface stays in place after the drop");
                 for (int i=0;i<6;++i) settle();
                 Require(surfaceNow().second<beforeDrop.second-gapWidth/2,"an unacknowledged drop releases the held surface");
+                Require(slotWidth()==0,"no stand-in faces remain once the drag and its held surface end");
             }
             INPUT escape[2]{};
             escape[0].type=escape[1].type=INPUT_KEYBOARD;

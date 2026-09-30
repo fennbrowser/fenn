@@ -82,6 +82,12 @@ struct NativeTabStrip {
     } sourceHold;
     Windows::Foundation::Point lastDragPoint{};
     Windows::Foundation::Rect dragSlot{};
+    // Face IDs for empty drag slots inside a group surface; Firefox tab IDs
+    // never reach this range. Narrower spans are ordinary spacing.
+    static constexpr uint32_t SlotFaceBase = 0xFFFFFF00u;
+    static constexpr float MinSlotGap = 6.f;
+    // Total width of those slot faces in the last refresh (test inspection).
+    float slotFaceWidth{};
     uint32_t DraggedMemberGroup() {
         if (!core || Drag().phase != DragPhase::Dragging) return 0;
         auto meta = presentation.find(Drag().tab);
@@ -599,6 +605,49 @@ struct NativeTabStrip {
                 bounds.Width = header.X + header.Width - bounds.X;
                 face->rightRadius = float(radius.TopRight);
             }
+        }
+        // While a tab is dragged, a group surface can hold an empty slot: the
+        // insertion gap between members, the tail opened past the last one,
+        // or a lifted member's held slot. With no face there, full light
+        // shone through it beside its neighbors' attenuated faces, cut off
+        // sharply at their edges. Give each such slot an inactive tab face
+        // shaped like its neighbors, so the group reads as one run of tabs.
+        if (IsDragging() || joinHold.group || sourceHold.group) {
+            std::vector<TabLightContour::Face> slots;
+            uint32_t slotId = SlotFaceBase;
+            for (auto const& [group, surface] : surfaceBounds) {
+                std::vector<std::pair<float, float>> occupied;
+                TabLightContour::Face const* sample{};
+                for (auto const& face : faces) {
+                    const auto& b = face.bounds;
+                    if (b.X + b.Width <= surface.X || b.X >= surface.X + surface.Width) continue;
+                    occupied.push_back({b.X, b.X + b.Width});
+                    if (!sample || (sample->selected && !face.selected)) sample = &face;
+                }
+                if (!sample) continue;
+                if (auto run = inlineGroups.runs.find(group); run != inlineGroups.runs.end()) {
+                    auto button = run->second.button;
+                    if (button && button.IsLoaded() && button.Visibility() == Visibility::Visible && button.Opacity() > 0) {
+                        const auto header = boundsOf(button);
+                        occupied.push_back({header.X, header.X + header.Width});
+                    }
+                }
+                std::sort(occupied.begin(), occupied.end());
+                auto fill = [&](float from, float to) {
+                    if (to - from < MinSlotGap) return;
+                    slots.push_back({slotId++, {from, sample->bounds.Y, to - from, sample->bounds.Height},
+                        sample->leftRadius, sample->rightRadius, false});
+                };
+                // The reach past the outer members stays lit, as at rest.
+                float cursor = surface.X + groupReach;
+                for (auto [left, right] : occupied) { fill(cursor, left); cursor = std::max(cursor, right); }
+                fill(cursor, surface.X + surface.Width - groupReach);
+            }
+            slotFaceWidth = 0;
+            for (auto const& slot : slots) slotFaceWidth += slot.bounds.Width;
+            faces.insert(faces.end(), slots.begin(), slots.end());
+        } else {
+            slotFaceWidth = 0;
         }
         ambient.Faces(ambientViewport, faces);
         ambient.Motion(followingMotion);
