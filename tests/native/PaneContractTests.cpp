@@ -2842,6 +2842,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     std::abs(pool.EllipseRadius().y - 1.2f * light.Size().y) < .5f && !pool.ImplicitAnimations(),
                     "material pools are placed in group coordinates and carry no implicit motion without the option");
                 setOption(L"groupGlowAnimations", true); settle();
+                // The dim-out is its own opt-in; the checks below use it.
+                setOption(L"groupGlowFadeOut", true); settle();
                 Require(query(2, 1) == 1 && !query(0), "enabling glow motion does not light up groups that are already lit");
                 Require(pool.ImplicitAnimations() && pool.ColorStops().GetAt(0).ImplicitAnimations() &&
                     brushOf(light, 0).ImplicitAnimations() && washStop().ImplicitAnimations(),
@@ -2881,7 +2883,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 // Settled growth re-catches the moved edge's highlights.
                 // A full snapshot keeps lit groups lit, so it cannot light up.
                 auto layout = [&](bool joined) {
-                    auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groupGlowAnimations":true,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":0,"tab":43}]}})");
+                    auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groupGlowAnimations":true,"groupGlowFadeOut":true,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":0,"tab":43}]}})");
                     auto strip = state.GetNamedObject(L"strip");
                     strip.SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
                     if (joined) strip.GetNamedArray(L"layout").GetObjectAt(3).SetNamedValue(L"group", Value::CreateNumberValue(7));
@@ -2900,7 +2902,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 layout(false); settle();
                 // Ungrouping removes the outline surface, which hosts the color
                 // pools: it must dim with them rather than vanish at once.
-                auto ungrouped = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groupGlowAnimations":true,"groups":[],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":0,"tab":42},{"group":0,"tab":43}]}})");
+                auto ungrouped = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groupGlowAnimations":true,"groupGlowFadeOut":true,"groups":[],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":0,"tab":42},{"group":0,"tab":43}]}})");
                 ungrouped.GetNamedObject(L"strip").SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
                 MenuPublish(api,host,ungrouped.Stringify().c_str());
                 Require(SUCCEEDED(api.syncTabs(host,opened,3,43,&selected)), "ungroup the lit group");
@@ -2913,7 +2915,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 printf("Glow regroup: surface=%d outline=%d lighting=%u\n", int(bool(reachSurface())), int(bool(outline())), query(0));
                 fflush(stdout);
                 Require(regrouped && !query(0), "regrouping in a full snapshot shows the group already lit");
-                // groupGlowFadeOut off: glow still lights up, but goes at once.
+                // groupGlowFadeOut off (its default): glow still lights up, but goes at once.
                 setOption(L"groupGlowFadeOut", false); settle();
                 setOption(L"groupGlow", false); settle();
                 Require(bottomGlow.Children().Count() == 0 && spill.Children().Count() == 0 && halo.Children().Count() == 0 &&

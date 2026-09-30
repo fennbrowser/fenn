@@ -868,10 +868,10 @@ index 995b2fc869..7add43e3b2 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 47a26fd814..7f62ee284e 100644
+index 47a26fd814..a45203644a 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3831,6 +3831,30 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3831,6 +3831,31 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -895,8 +895,9 @@ index 47a26fd814..7f62ee284e 100644
 +// Opt-in: group glow lights up gradually where it appears or moves, and dims
 +// when it goes out.
 +pref("widget.windows.winui-prototype.tabstrip.groupGlowAnimations", false);
-+// With glow animations, extinguished glow dims out; false removes it at once.
-+pref("widget.windows.winui-prototype.tabstrip.groupGlowFadeOut", true);
++// Opt-in: with glow animations, extinguished glow dims out instead of
++// disappearing at once.
++pref("widget.windows.winui-prototype.tabstrip.groupGlowFadeOut", false);
 +pref("widget.windows.winui-prototype.address.enabled", false);
 +
  #ifdef XP_MACOSX
@@ -3925,7 +3926,7 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..1fc3714b9d
+index 0000000000..1843e491d2
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,1756 @@
@@ -5031,7 +5032,7 @@ index 0000000000..1fc3714b9d
 +      groupHover: Services.prefs.getBoolPref(this.groupHoverPref, false),
 +      groupHalo: Services.prefs.getBoolPref(this.groupHaloPref, false),
 +      groupGlowAnimations: Services.prefs.getBoolPref(this.groupGlowAnimationsPref, false),
-+      groupGlowFadeOut: Services.prefs.getBoolPref(this.groupGlowFadeOutPref, true),
++      groupGlowFadeOut: Services.prefs.getBoolPref(this.groupGlowFadeOutPref, false),
 +      rtl: document.documentElement.matches(":dir(rtl)"),
 +      windowDragTabId: liveTabs.length === 1 && liveTabs[0].visible &&
 +        !liveTabs[0]._pendingPermitUnload ? this.tabIds.get(liveTabs[0]) || 0 : 0,

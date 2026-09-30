@@ -2336,10 +2336,8 @@ struct NativeTabStrip {
         const bool nextGroupHalo = data.HasKey(L"groupHalo") ? data.GetNamedBoolean(L"groupHalo") : base ? groupHalo : false;
         const bool nextGlowAnimations = data.HasKey(L"groupGlowAnimations") ? data.GetNamedBoolean(L"groupGlowAnimations") :
             base ? ambient.motion.option : false;
-        // Unlike the opt-in options, a snapshot without the key keeps the
-        // fade-out, which belongs to glow motion by default.
         const bool nextGlowFadeOut = data.HasKey(L"groupGlowFadeOut") ? data.GetNamedBoolean(L"groupGlowFadeOut") :
-            base ? ambient.motion.fadeOut : true;
+            base ? ambient.motion.fadeOut : false;
         auto nextGroupReach = base ? groupReach : DefaultGroupReach;
         if (data.HasKey(L"groupReach")) {
             auto reach = GroupReachOf(data.GetNamedString(L"groupReach"));

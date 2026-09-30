@@ -176,7 +176,7 @@ test("group glow animations are opt-in and their preference publishes a live del
   }
 });
 
-test("group glow fade-out defaults on and its preference publishes a live delta", () => {
+test("group glow fade-out is opt-in and its preference publishes a live delta", () => {
   let fadeOut;
   const key = "widget.windows.winui-prototype.tabstrip.groupGlowFadeOut";
   const context = {
@@ -194,8 +194,8 @@ test("group glow fade-out defaults on and its preference publishes a live delta"
   pane.visibleTabs = () => [];
   pane.schedule = () => {};
   const session = new WinUITabStripSession({read:() => pane.describeStrip()});
-  assert.equal(session.update().strip.groupGlowFadeOut, true);
-  for (const value of [false, true]) {
+  assert.equal(session.update().strip.groupGlowFadeOut, false);
+  for (const value of [true, false]) {
     fadeOut = value;
     pane.stripDirty = false;
     pane.observe(null, "nsPref:changed", key);
