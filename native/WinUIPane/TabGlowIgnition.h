@@ -41,9 +41,10 @@ struct TabGlowIgnition {
     static constexpr float Stagger = 70; static constexpr size_t StaggerCap = 5;
     static constexpr float FollowDuration = 180, TintDuration = 240;
     static constexpr float RecatchDip = .4f;
-    // Extinguishing: highlights and halo first, then the body. Owner tuning
-    // (2026-09-30): slowed from about 220 ms to 750 ms in total.
-    static constexpr float DimEdge = 450, DimLag = 150, DimDuration = 600;
+    // Extinguishing is quick: highlights and halo first, then the body.
+    // Owner tuning (2026-09-30): a slower 750 ms dim did not suit the slower
+    // light-up, so it stays about 220 ms.
+    static constexpr float DimEdge = 140, DimLag = 40, DimDuration = 180;
     // A settled group that grew at least this much re-catches its moved edge.
     static constexpr float RecatchGrowth = 8, RecatchEdge = 4;
 
@@ -98,10 +99,8 @@ struct TabGlowIgnition {
     static auto Decelerate(Compositor const& compositor) {
         return compositor.CreateCubicBezierEasingFunction({.1f, .9f}, {.2f, 1.f});
     }
-    // A gentle ease-in: over a long dim, a steep curve would read as a hold
-    // followed by a snap.
     static auto Accelerate(Compositor const& compositor) {
-        return compositor.CreateCubicBezierEasingFunction({.4f, 0.f}, {.8f, .6f});
+        return compositor.CreateCubicBezierEasingFunction({.7f, 0.f}, {1.f, .5f});
     }
     template <class Animation> static void Time(Animation const& animation, float delay, float duration) {
         animation.DelayTime(Ms(delay));
