@@ -373,6 +373,16 @@ struct NativeTabStrip {
     FrameworkElement ambientContent{nullptr};
     void RefreshAmbient() {
         if (!ambient.layer) return;
+        // With diagnostics, report UI-thread refreshes long enough to delay
+        // the reveal masks' geometry while a reveal runs.
+        struct RefreshReport {
+            TabAmbient& ambient; double start;
+            ~RefreshReport() {
+                if (!start || ambient.reveals.empty()) return;
+                const double took = TabGlowIgnition::Now() - start;
+                if (took > 4) fprintf(stderr, "WinUIPane glow refresh took=%.1f at=%.1f\n", took, start);
+            }
+        } reportRefresh{ambient, TabGlowIgnition::Diagnostics() ? TabGlowIgnition::Now() : 0};
         if (!root.IsLoaded() || root.Visibility() != Visibility::Visible) {
             ambient.Motion(false);
             ambient.bottom.IsVisible(false); ambient.top.IsVisible(false);
@@ -746,7 +756,11 @@ struct NativeTabStrip {
         auto haloLitNow = haloLit.Advance(haloEligible, groupHalo ? groups : std::set<uint32_t>{}, seed, haloGone);
         haloGone.insert(gone.begin(), gone.end());
         // Light going out ends any reveal first, so it dims or goes whole.
-        for (auto id : gone) { ambient.EndReveal(id); groupSurface.EndReveal(id); }
+        for (auto id : gone) {
+            if (TabGlowIgnition::Diagnostics() && ambient.reveals.count(id))
+                fprintf(stderr, "WinUIPane glow reveal cancelled group=%u at=%.1f\n", id, TabGlowIgnition::Now());
+            ambient.EndReveal(id); groupSurface.EndReveal(id);
+        }
         groupSurface.Lighting(outlineColors, &ambient.motion, gone);
         groupSurface.Depart(&ambient.motion, gone);
         ambient.Prune(ambient.groups, groups, false, gone);

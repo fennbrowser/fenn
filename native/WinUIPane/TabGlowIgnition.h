@@ -76,6 +76,18 @@ struct TabGlowIgnition {
 
     bool Active(uint32_t id) const { return active.count(id) != 0; }
 
+    // FIREFOX_WINUI_PANE_DIAGNOSTICS: reveal timing on stderr, with QPC
+    // milliseconds comparable to frame capture times.
+    static bool Diagnostics() {
+        static const bool enabled = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;
+        return enabled;
+    }
+    static double Now() {
+        LARGE_INTEGER counter{}, frequency{};
+        QueryPerformanceCounter(&counter); QueryPerformanceFrequency(&frequency);
+        return counter.QuadPart * 1000.0 / frequency.QuadPart;
+    }
+
     // Which groups are lit, as the owner defines new lighting: a group lights
     // up when it first becomes eligible and shown, not when scrolling or
     // realization merely shows an already-lit group again. `seed` accepts
@@ -193,7 +205,9 @@ struct TabGlowIgnition {
         }
         batch.End();
         Track(id, batch);
-        batch.Completed([weak = std::weak_ptr<int>(life), done = std::move(done)](auto&&, auto&&) {
+        if (Diagnostics()) fprintf(stderr, "WinUIPane glow reveal begin group=%u delay=%.0f at=%.1f\n", id, delay, Now());
+        batch.Completed([weak = std::weak_ptr<int>(life), done = std::move(done), id](auto&&, auto&&) {
+            if (Diagnostics()) fprintf(stderr, "WinUIPane glow reveal end group=%u at=%.1f\n", id, Now());
             if (!weak.expired() && done) try { done(); } catch (...) {}
         });
     }
