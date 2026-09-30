@@ -2779,6 +2779,135 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 LR"(,"rows":[],"removed":[],"groupReach":"huge"}})").c_str());
             settle();
             Require(FAILED(rejected) && std::abs(reachOf() - 3) < .1f, "an unknown group reach is rejected without changing the surface");
+            {
+                // Opt-in glow light-up motion (Firefox's groupGlowAnimations).
+                // System animations are forced on here; the option still gates it.
+                namespace Comp = winrt::Microsoft::UI::Composition;
+                using Value = winrt::Windows::Data::Json::JsonValue;
+                auto glowMotion = reinterpret_cast<HRESULT(WINAPI*)(HWND,uint32_t,uint32_t,uint32_t*)>(GetProcAddress(module,"WinUIPaneTestGlowMotion"));
+                Require(glowMotion != nullptr, "glow motion inspection hook exists");
+                auto query = [&](uint32_t operation, uint32_t argument = 7) {
+                    uint32_t result{};
+                    Require(SUCCEEDED(glowMotion(host, operation, argument, &result)), "inspect glow motion");
+                    return result;
+                };
+                auto glowDelta = [&](std::function<void(winrt::Windows::Data::Json::JsonObject const&)> fill) {
+                    auto update = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
+                    auto strip = update.GetNamedObject(L"strip");
+                    strip.SetNamedValue(L"base", Value::CreateNumberValue(reachRevision));
+                    strip.SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
+                    fill(strip);
+                    MenuPublish(api,host,update.Stringify().c_str());
+                };
+                auto setOption = [&](wchar_t const* name, bool on) {
+                    glowDelta([&](auto const& strip) { strip.SetNamedValue(name, Value::CreateBooleanValue(on)); });
+                };
+                auto waitFor = [&](std::function<bool()> done) {
+                    for (int i = 0; i < 300 && !done(); ++i) { Pump(); Sleep(10); }
+                    return done();
+                };
+                auto outline = [&] {
+                    auto surface = reachSurface();
+                    auto visual = surface ? Hosting::ElementCompositionPreview::GetElementChildVisual(surface) : nullptr;
+                    return visual ? visual.try_as<Comp::ShapeVisual>() : Comp::ShapeVisual{nullptr};
+                };
+                auto brushOf = [](Comp::ShapeVisual const& shapes, uint32_t index) {
+                    auto sprite = shapes.Shapes().GetAt(index).as<Comp::CompositionSpriteShape>();
+                    return (sprite.FillBrush() ? sprite.FillBrush() : sprite.StrokeBrush()).as<Comp::CompositionRadialGradientBrush>();
+                };
+                auto washStop = [&] {
+                    auto wash = bottomGlow.Children().First().Current().as<Comp::SpriteVisual>();
+                    return wash.Children().First().Current().as<Comp::SpriteVisual>().Brush()
+                        .as<Comp::CompositionGradientBrush>().ColorStops().GetAt(0);
+                };
+                constexpr uint32_t research = 4281558681, personal = 4289934591;
+                auto setColor = [&](uint32_t color) {
+                    glowDelta([&](auto const& strip) {
+                        auto groups = winrt::Windows::Data::Json::JsonArray::Parse(LR"([{"id":7,"name":"Research","label":"Research","collapsed":false}])");
+                        groups.GetObjectAt(0).SetNamedValue(L"color", Value::CreateNumberValue(color));
+                        strip.SetNamedValue(L"groups", groups);
+                    });
+                };
+                Require(query(2, 1) == 0, "glow motion stays off until Firefox enables its option");
+                setOption(L"groupGlow", false); settle();
+                Require(bottomGlow.Children().Count() == 0 && halo.Children().Count() == 0 && query(1) == 0 && !outline(),
+                    "without the option, extinguished glow is released immediately");
+                setOption(L"groupGlow", true); settle();
+                auto light = outline();
+                Require(bottomGlow.Children().Count() == 1 && !query(0) && light && light.Shapes().Size() == 6,
+                    "without the option, glow appears already lit");
+                auto pool = brushOf(light, 4);
+                Require(pool.MappingMode() == Comp::CompositionMappingMode::Absolute &&
+                    std::abs(pool.EllipseCenter().x - .22f * light.Size().x) < .5f &&
+                    std::abs(pool.EllipseRadius().y - 1.2f * light.Size().y) < .5f && !pool.ImplicitAnimations(),
+                    "material pools are placed in group coordinates and carry no implicit motion without the option");
+                setOption(L"groupGlowAnimations", true); settle();
+                Require(query(2, 1) == 1 && !query(0), "enabling glow motion does not light up groups that are already lit");
+                Require(pool.ImplicitAnimations() && pool.ColorStops().GetAt(0).ImplicitAnimations() &&
+                    brushOf(light, 0).ImplicitAnimations() && washStop().ImplicitAnimations(),
+                    "lit glow trails geometry and cross-fades color once motion is on");
+                setOption(L"groupGlow", false);
+                Require(waitFor([&] { return query(1) >= 4; }) && bottomGlow.Children().Count() == 1 &&
+                    spill.Children().Count() == 1 && halo.Children().Count() == 1 && outline() == light,
+                    "extinguished wash, spill, halo and outline light dim before release");
+                Require(waitFor([&] { return query(1) == 0; }) && bottomGlow.Children().Count() == 0 &&
+                    spill.Children().Count() == 0 && halo.Children().Count() == 0 && !outline(),
+                    "dimmed glow is released once its fade completes");
+                setOption(L"groupGlow", true);
+                Require(waitFor([&] { return bottomGlow.Children().Count() == 1 && outline(); }) && query(0) == 1,
+                    "a newly lit group lights up");
+                auto wash = bottomGlow.Children().First().Current().as<Comp::SpriteVisual>();
+                Require(wash.Opacity() == .65f && washStop().Color().A == 92,
+                    "the light-up leaves static properties at their final values");
+                Require(waitFor([&] { return query(0) == 0; }), "the light-up completes");
+                light = outline(); pool = brushOf(light, 4);
+                auto ring = halo.Children().First().Current().as<Comp::ShapeVisual>();
+                Require(pool.ColorStops().GetAt(0).Color().A == 48 && pool.Scale() == winrt::Windows::Foundation::Numerics::float2{1, 1} &&
+                    brushOf(light, 0).ColorStops().GetAt(0).Color().A == 84 && brushOf(ring, 0).ColorStops().GetAt(0).Color().A == 36 &&
+                    wash.Opacity() == .65f, "a completed light-up settles at the same light as a group lit without motion");
+                setColor(personal);
+                settle();
+                Require(!query(0) && query(1) == 0 && washStop().Color().R == ((personal >> 16) & 0xff) &&
+                    pool.ColorStops().GetAt(0).Color().G == ((personal >> 8) & 0xff) && pool.ColorStops().GetAt(0).Color().A == 48,
+                    "recoloring cross-fades in place without lighting up or dimming");
+                setColor(research); settle();
+                setOption(L"groupHalo", false);
+                Require(waitFor([&] { return query(1) >= 1; }) && halo.Children().Count() == 1 && bottomGlow.Children().Count() == 1,
+                    "turning the halo off dims only the halo");
+                Require(waitFor([&] { return query(1) == 0; }) && halo.Children().Count() == 0, "the dimmed halo is released");
+                setOption(L"groupHalo", true);
+                Require(waitFor([&] { return halo.Children().Count() == 1; }) && query(0) == 1, "turning the halo on lights up only the halo");
+                Require(waitFor([&] { return query(0) == 0; }), "the halo light-up completes");
+                // Settled growth re-catches the moved edge's highlights.
+                // A full snapshot keeps lit groups lit, so it cannot light up.
+                auto layout = [&](bool joined) {
+                    auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groupGlowAnimations":true,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":0,"tab":43}]}})");
+                    auto strip = state.GetNamedObject(L"strip");
+                    strip.SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
+                    if (joined) strip.GetNamedArray(L"layout").GetObjectAt(3).SetNamedValue(L"group", Value::CreateNumberValue(7));
+                    MenuPublish(api,host,state.Stringify().c_str());
+                    Require(SUCCEEDED(api.syncTabs(host,opened,3,43,&selected)), "sync glow growth layout");
+                };
+                layout(false); settle(); settle();
+                const auto recatches = query(3);
+                const auto narrow = reachSurface().Width();
+                layout(true);
+                const bool recaught = waitFor([&] { return query(3) > recatches; });
+                printf("Glow growth: width %.1f -> %.1f, re-catches %u -> %u\n", narrow, reachSurface().Width(), recatches, query(3));
+                fflush(stdout);
+                Require(recaught && !query(0) && query(1) == 0,
+                    "a group that settles wider re-catches its highlights without lighting up again");
+                layout(false); settle();
+                // Reduced motion: every change applies at once and motion detaches.
+                Require(query(2, 0) == 0, "simulate reduced-motion preference for glow");
+                setOption(L"groupGlow", false); settle();
+                Require(bottomGlow.Children().Count() == 0 && query(1) == 0, "reduced motion releases glow at once");
+                setOption(L"groupGlow", true); settle();
+                Require(bottomGlow.Children().Count() == 1 && !query(0) && !brushOf(outline(), 4).ImplicitAnimations() &&
+                    !washStop().ImplicitAnimations(), "reduced motion lights glow at once without implicit motion");
+                query(2, 2);
+                setOption(L"groupGlowAnimations", false); settle();
+            }
         }
         puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");
     }

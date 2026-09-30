@@ -4,6 +4,7 @@
 #include "TabGlowDiffusion.h"
 #include "TabAmbientClip.h"
 #include "TabLightContour.h"
+#include "TabGlowIgnition.h"
 
 // Decorative Composition children cannot take focus, enter UIA's control tree,
 // or affect TabView measurement. Both fields use ordinary source-over alpha.
@@ -19,6 +20,12 @@ struct TabAmbient {
         winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry roundedClip{nullptr};
         uint32_t color{}; Rect bounds{}; bool capped{};
         float cornerLeft{-1}, cornerRight{-1};
+        // Implicit glow motion is attached (TabGlowIgnition::Attach).
+        bool animated{};
+        // The visual that holds this field in its layer.
+        winrt::Microsoft::UI::Composition::Visual Root() const {
+            return rimShape && !visual ? winrt::Microsoft::UI::Composition::Visual(rimShape) : winrt::Microsoft::UI::Composition::Visual(visual);
+        }
     };
     winrt::Microsoft::UI::Xaml::Controls::Canvas layer{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Canvas rimLayer{nullptr};
@@ -43,6 +50,17 @@ struct TabAmbient {
     // continues the same pools outside it, so the glow stays uneven.
     struct Pool { float x, y; int peak; };
     static constexpr Pool Pools[] = {{.22f, .9f, 48}, {.82f, .18f, 30}};
+    static_assert(ARRAYSIZE(Pools) == TabGlowIgnition::PoolCount);
+    // Opt-in light-up motion; the strip owns the option.
+    TabGlowIgnition motion;
+    // Release a field, dimming it first when its group's light went out
+    // (not when it was only scrolled away) and motion is enabled.
+    void Release(winrt::Microsoft::UI::Composition::ContainerVisual const& owner, Field const& field, bool dim, float delay, float duration) {
+        auto visual = field.Root();
+        if (!visual) return;
+        if (!dim || !motion.Enabled()) { owner.Children().Remove(visual); return; }
+        motion.Dim(visual, delay, duration, [owner, visual] { owner.Children().Remove(visual); });
+    }
     static constexpr float PoolRadiusX = .95f, PoolRadiusY = 1.2f;
     static constexpr std::pair<float, float> PoolStops[] = {{0.f, 1.f}, {.55f, .5f}, {1.f, 0.f}};
     // Outer halo: concentric rounded rings outside the group outline, each
@@ -61,6 +79,15 @@ struct TabAmbient {
     // Rendered frames observed while following motion; bounds waits in
     // frames, so a throttled window cannot end them before it draws.
     uint64_t frames{};
+    // Assigning a stop's color first ends any light-up running on it
+    // (TabGlowIgnition), so a recolor is not overridden by its keyframes.
+    static void Tint(winrt::Microsoft::UI::Composition::CompositionColorGradientStop const& stop,
+                     uint8_t r, uint8_t g, uint8_t b) {
+        auto value = stop.Color();
+        value.R = r; value.G = g; value.B = b;
+        stop.StopAnimation(L"Color");
+        stop.Color(value);
+    }
     static void Geometry(Sprite const& visual, winrt::Windows::Foundation::Numerics::float3 offset,
                          winrt::Windows::Foundation::Numerics::float2 size) {
         if (visual.Offset() != offset) visual.Offset(offset);
@@ -261,11 +288,7 @@ struct TabAmbient {
             field.color = color;
             for (auto brush : {field.brush, field.leftBrush}) {
                 if (!brush) continue;
-                for (auto stop : brush.ColorStops()) {
-                    auto value = stop.Color();
-                    value.R = uint8_t(color >> 16); value.G = uint8_t(color >> 8); value.B = uint8_t(color);
-                    stop.Color(value);
-                }
+                for (auto stop : brush.ColorStops()) Tint(stop, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color));
             }
         }
         if (field.bounds != bounds) {
@@ -277,10 +300,11 @@ struct TabAmbient {
             }
         }
     }
-    void PruneSpill(std::map<uint32_t, Field>& fields, std::set<uint32_t> const& live) {
+    void PruneSpill(std::map<uint32_t, Field>& fields, std::set<uint32_t> const& live, std::set<uint32_t> const& dim = {}) {
         for (auto it = fields.begin(); it != fields.end();) {
             if (live.count(it->first)) { ++it; continue; }
-            spill.Children().Remove(it->second.visual); it = fields.erase(it);
+            Release(spill, it->second, dim.count(it->first) != 0, TabGlowIgnition::DimLag, TabGlowIgnition::DimDuration);
+            it = fields.erase(it);
         }
     }
     // Soft light just beyond the rounded group edge, so the group reads as
@@ -322,11 +346,8 @@ struct TabAmbient {
         const uint32_t count = field.rimShape.Shapes().Size();
         if (field.color != color) {
             field.color = color;
-            for (uint32_t index = 0; index < count; ++index) for (auto stop : brushAt(index).ColorStops()) {
-                auto value = stop.Color();
-                value.R = uint8_t(color >> 16); value.G = uint8_t(color >> 8); value.B = uint8_t(color);
-                stop.Color(value);
-            }
+            for (uint32_t index = 0; index < count; ++index) for (auto stop : brushAt(index).ColorStops())
+                Tint(stop, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color));
         }
         if (field.bounds == bounds && field.cornerLeft == radius) return;
         field.bounds = bounds; field.cornerLeft = radius;
@@ -349,10 +370,11 @@ struct TabAmbient {
             brush.EllipseRadius({std::max(1.f, PoolRadiusX * bounds.Width), std::max(1.f, PoolRadiusY * bounds.Height)});
         }
     }
-    void PruneHalo(std::set<uint32_t> const& live) {
+    void PruneHalo(std::set<uint32_t> const& live, std::set<uint32_t> const& dim = {}) {
         for (auto it = groupHalo.begin(); it != groupHalo.end();) {
             if (live.count(it->first)) { ++it; continue; }
-            halo.Children().Remove(it->second.rimShape); it = groupHalo.erase(it);
+            Release(halo, it->second, dim.count(it->first) != 0, 0, TabGlowIgnition::DimEdge);
+            it = groupHalo.erase(it);
         }
     }
     void Corners(Field& field, uint32_t color, Rect bounds, float leftRadius, float rightRadius, bool reflection = false) {
@@ -481,11 +503,7 @@ struct TabAmbient {
             field.color = color;
             for (auto brush : {field.brush, field.leftBrush, field.rightBrush}) {
                 if (!brush) continue;
-                for (auto stop : brush.ColorStops()) {
-                    auto value = stop.Color();
-                    value.R = uint8_t(color >> 16); value.G = uint8_t(color >> 8); value.B = uint8_t(color);
-                    stop.Color(value);
-                }
+                for (auto stop : brush.ColorStops()) Tint(stop, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color));
             }
         }
         if (field.bounds != bounds) {
@@ -499,10 +517,10 @@ struct TabAmbient {
             }
         }
     }
-    void Prune(std::map<uint32_t, Field>& fields, std::set<uint32_t> const& live, bool upper) {
+    void Prune(std::map<uint32_t, Field>& fields, std::set<uint32_t> const& live, bool upper, std::set<uint32_t> const& dim = {}) {
         for (auto it = fields.begin(); it != fields.end();) {
             if (live.count(it->first)) { ++it; continue; }
-            (upper ? top : bottom).Children().Remove(it->second.visual);
+            Release(upper ? top : bottom, it->second, dim.count(it->first) != 0, TabGlowIgnition::DimLag, TabGlowIgnition::DimDuration);
             it = fields.erase(it);
         }
     }

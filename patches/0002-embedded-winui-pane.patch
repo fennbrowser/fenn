@@ -868,10 +868,10 @@ index 995b2fc869..7add43e3b2 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 47a26fd814..7f6f33cd86 100644
+index 47a26fd814..9a2265b634 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3831,6 +3831,25 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3831,6 +3831,28 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -892,6 +892,9 @@ index 47a26fd814..7f6f33cd86 100644
 +pref("widget.windows.winui-prototype.tabstrip.groupHover", false);
 +// Opt-in: with group glow, a soft halo extends past each group's outline.
 +pref("widget.windows.winui-prototype.tabstrip.groupHalo", false);
++// Opt-in: group glow lights up gradually where it appears or moves, and dims
++// when it goes out.
++pref("widget.windows.winui-prototype.tabstrip.groupGlowAnimations", false);
 +pref("widget.windows.winui-prototype.address.enabled", false);
 +
  #ifdef XP_MACOSX
@@ -2529,7 +2532,7 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..f99a443cd7
+index 0000000000..916a1fb686
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
 @@ -0,0 +1,239 @@
@@ -2603,7 +2606,7 @@ index 0000000000..f99a443cd7
 +        }
 +      }
 +      strip.removed = [...previous.keys()];
-+      for (const key of ["groupGlow", "containerGlow", "containerDot", "backdrop", "groupReach", "groupHover", "groupHalo", "groupingDelay", "layout", "groups", "groupsLabel", "labels", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
++      for (const key of ["groupGlow", "containerGlow", "containerDot", "backdrop", "groupReach", "groupHover", "groupHalo", "groupGlowAnimations", "groupingDelay", "layout", "groups", "groupsLabel", "labels", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
 +        if (!this.same(state[key], this.state[key])) strip[key] = state[key];
 +      }
 +    }
@@ -3920,10 +3923,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..457ef4cae2
+index 0000000000..bb1e58e18b
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1747 @@
+@@ -0,0 +1,1752 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3938,6 +3941,7 @@ index 0000000000..457ef4cae2
 +  groupReachPref: "widget.windows.winui-prototype.tabstrip.groupReach",
 +  groupHoverPref: "widget.windows.winui-prototype.tabstrip.groupHover",
 +  groupHaloPref: "widget.windows.winui-prototype.tabstrip.groupHalo",
++  groupGlowAnimationsPref: "widget.windows.winui-prototype.tabstrip.groupGlowAnimations",
 +  stripHeightPref: "widget.windows.winui-prototype.tabstrip.height",
 +  groupingPrefs: ["browser.tabs.groups.enabled", "browser.tabs.dragDrop.createGroup.enabled",
 +    "browser.tabs.dragDrop.createGroup.delayMS"],
@@ -4154,6 +4158,7 @@ index 0000000000..457ef4cae2
 +    Services.prefs.addObserver(this.groupReachPref, this);
 +    Services.prefs.addObserver(this.groupHoverPref, this);
 +    Services.prefs.addObserver(this.groupHaloPref, this);
++    Services.prefs.addObserver(this.groupGlowAnimationsPref, this);
 +    for (const pref of this.groupingPrefs) Services.prefs.addObserver(pref, this);
 +    Services.prefs.addObserver(this.addressPref, this);
 +    this.schedule();
@@ -5021,6 +5026,7 @@ index 0000000000..457ef4cae2
 +      groupReach: this.groupReach(),
 +      groupHover: Services.prefs.getBoolPref(this.groupHoverPref, false),
 +      groupHalo: Services.prefs.getBoolPref(this.groupHaloPref, false),
++      groupGlowAnimations: Services.prefs.getBoolPref(this.groupGlowAnimationsPref, false),
 +      rtl: document.documentElement.matches(":dir(rtl)"),
 +      windowDragTabId: liveTabs.length === 1 && liveTabs[0].visible &&
 +        !liveTabs[0]._pendingPermitUnload ? this.tabIds.get(liveTabs[0]) || 0 : 0,
@@ -5411,7 +5417,8 @@ index 0000000000..457ef4cae2
 +  observe(subject, topic, data) {
 +    if (topic === "nsPref:changed" && (data === this.containerDotPref || data === this.tabGlowsPref ||
 +                                        data === this.stripBackdropPref || data === this.groupReachPref ||
-+                                        data === this.groupHoverPref || data === this.groupHaloPref)) {
++                                        data === this.groupHoverPref || data === this.groupHaloPref ||
++                                        data === this.groupGlowAnimationsPref)) {
 +      this.stripDirty = true;
 +      this.schedule();
 +      return;
@@ -5656,6 +5663,7 @@ index 0000000000..457ef4cae2
 +    Services.prefs.removeObserver(this.groupReachPref, this);
 +    Services.prefs.removeObserver(this.groupHoverPref, this);
 +    Services.prefs.removeObserver(this.groupHaloPref, this);
++    Services.prefs.removeObserver(this.groupGlowAnimationsPref, this);
 +    for (const pref of this.groupingPrefs) Services.prefs.removeObserver(pref, this);
 +    Services.prefs.removeObserver(this.addressPref, this);
 +    Services.prefs.removeObserver("privacy.userContext.enabled", this);

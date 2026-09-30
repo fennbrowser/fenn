@@ -158,6 +158,82 @@ struct NativeTabStrip {
     bool groupGlow{}, containerGlow{}, containerDot{}, groupHover{};
     // Opt-in outer halo for group glow; off unless Firefox publishes it.
     bool groupHalo{};
+    // Opt-in light-up motion for group glow (ambient.motion.option holds
+    // Firefox's groupGlowAnimations). Groups already lit when a full snapshot
+    // arrives, or when motion turns on, are seeded rather than lit up again.
+    TabGlowIgnition::Lit glowLit, haloLit;
+    bool glowSeed{true}, glowAnimated{};
+    // Settled horizontal extent of each lit group in scroll-content space,
+    // so scrolling alone never reads as growth.
+    std::map<uint32_t, std::pair<float, float>> glowSettled;
+    void DetachGlow() {
+        for (auto* fields : {&ambient.groups, &ambient.groupSpill, &ambient.groupHalo})
+            for (auto& [id, field] : *fields)
+                if (field.animated) { ambient.motion.Attach(field.Root(), false); field.animated = false; }
+        for (auto& [id, light] : groupSurface.lights)
+            if (light.animated) { ambient.motion.Attach(light.visual, false); light.animated = false; }
+        glowSettled.clear();
+    }
+    void AnimateGlow(std::set<uint32_t> const& groups, std::vector<uint32_t> lit, std::vector<uint32_t> const& haloLitNow,
+                     std::map<uint32_t, Windows::Foundation::Rect> const& bounds, bool moving, Controls::ScrollViewer const& scroller) {
+        auto& motion = ambient.motion;
+        auto outlineOf = [&](uint32_t id) {
+            auto light = groupSurface.lights.find(id);
+            return light == groupSurface.lights.end() ? Microsoft::UI::Composition::ShapeVisual{nullptr} : light->second.visual;
+        };
+        auto visualOf = [](std::map<uint32_t, TabAmbient::Field> const& fields, uint32_t id) {
+            auto field = fields.find(id);
+            return field == fields.end() ? Microsoft::UI::Composition::Visual{nullptr} : field->second.Root();
+        };
+        auto haloOf = [&](uint32_t id) {
+            auto visual = visualOf(ambient.groupHalo, id);
+            return visual ? visual.as<Microsoft::UI::Composition::ShapeVisual>() : Microsoft::UI::Composition::ShapeVisual{nullptr};
+        };
+        // Several groups lighting together start left to right.
+        std::sort(lit.begin(), lit.end(), [&](uint32_t a, uint32_t b) { return bounds.at(a).X < bounds.at(b).X; });
+        for (size_t index = 0; index < lit.size(); ++index) {
+            const auto id = lit[index];
+            TabGlowIgnition::Targets targets;
+            targets.wash = visualOf(ambient.groups, id);
+            targets.spill = visualOf(ambient.groupSpill, id);
+            targets.halo = haloOf(id);
+            targets.outline = outlineOf(id);
+            motion.Ignite(id, targets, float(std::min(index, TabGlowIgnition::StaggerCap)) * TabGlowIgnition::Stagger);
+        }
+        for (auto id : haloLitNow)
+            if (std::find(lit.begin(), lit.end(), id) == lit.end()) motion.IgniteHalo(id, haloOf(id));
+        // Implicit motion attaches after a field's first color and geometry,
+        // so creating or re-realizing a field never animates from nothing.
+        for (auto id : groups) {
+            for (auto* fields : {&ambient.groups, &ambient.groupSpill, &ambient.groupHalo}) {
+                auto field = fields->find(id);
+                if (field == fields->end() || field->second.animated) continue;
+                motion.Attach(field->second.Root(), true); field->second.animated = true;
+            }
+            auto light = groupSurface.lights.find(id);
+            if (light != groupSurface.lights.end() && !light->second.animated) {
+                motion.Attach(light->second.visual, true); light->second.animated = true;
+            }
+        }
+        for (auto it = glowSettled.begin(); it != glowSettled.end();)
+            it = glowLit.ids.count(it->first) ? std::next(it) : glowSettled.erase(it);
+        // Drags, slides and joins are followed by the implicit motion; compare
+        // extents only once they settle, never on every frame.
+        if (moving) return;
+        const float offset = scroller ? float(scroller.HorizontalOffset()) : 0.f;
+        const bool rtl = root.FlowDirection() == FlowDirection::RightToLeft;
+        for (auto id : groups) {
+            const auto& rect = bounds.at(id);
+            const float left = rect.X + (rtl ? -offset : offset), right = left + rect.Width;
+            auto [settled, inserted] = glowSettled.try_emplace(id, left, right);
+            if (inserted) continue;
+            const auto [oldLeft, oldRight] = settled->second;
+            settled->second = {left, right};
+            if ((right - left) - (oldRight - oldLeft) < TabGlowIgnition::RecatchGrowth || motion.Active(id)) continue;
+            motion.Recatch(outlineOf(id), oldLeft - left >= TabGlowIgnition::RecatchEdge,
+                right - oldRight >= TabGlowIgnition::RecatchEdge);
+        }
+    }
     // The island's system backdrop, chosen by Firefox's strip preference. The
     // pane owns the DesktopWindowXamlSource and applies a validated change.
     enum class Backdrop { Mica, MicaAlt, Acrylic };
@@ -571,12 +647,34 @@ struct NativeTabStrip {
             if (spill.Opacity() != .65f) spill.Opacity(.65f);
             if (groupHalo) ambient.Halo(id, color, bounds, radius);
         }
-        groupSurface.Lighting(outlineColors);
-        ambient.Prune(ambient.groups, groups, false);
+        // Decide which groups newly lit or went out before lighting and
+        // pruning, so either can animate. Culling alone is neither.
+        const bool animate = ambient.motion.Enabled();
+        if (animate != glowAnimated) {
+            glowAnimated = animate;
+            if (animate) glowSeed = true;
+            else { ambient.motion.Cancel(); DetachGlow(); }
+        }
+        std::set<uint32_t> eligible, haloEligible, gone, haloGone;
+        for (auto value : currentGroups) {
+            auto group = value.GetObject();
+            if (!groupGlow || !uint32_t(group.GetNamedNumber(L"color", 0))) continue;
+            const auto id = uint32_t(group.GetNamedNumber(L"id"));
+            eligible.insert(id);
+            if (groupHalo) haloEligible.insert(id);
+        }
+        const bool seed = glowSeed || !animate;
+        glowSeed = false;
+        auto lit = glowLit.Advance(eligible, groups, seed, gone);
+        auto haloLitNow = haloLit.Advance(haloEligible, groupHalo ? groups : std::set<uint32_t>{}, seed, haloGone);
+        haloGone.insert(gone.begin(), gone.end());
+        groupSurface.Lighting(outlineColors, &ambient.motion, gone);
+        ambient.Prune(ambient.groups, groups, false, gone);
         ambient.Prune(ambient.containers, containers, true);
-        ambient.PruneSpill(ambient.groupSpill, groups);
-        ambient.PruneHalo(groupHalo ? groups : std::set<uint32_t>{});
+        ambient.PruneSpill(ambient.groupSpill, groups, gone);
+        ambient.PruneHalo(groupHalo ? groups : std::set<uint32_t>{}, haloGone);
         ambient.PruneSpill(ambient.containerSpill, {});
+        if (animate) AnimateGlow(groups, std::move(lit), haloLitNow, surfaceBounds, followingMotion, scroller);
         auto container = ambient.containers.find(activeTabId);
         const bool activeVisible = activeBounds.Width > 0 && activeBounds.Height > 0;
         auto upperBounds = activeBounds;
@@ -2235,6 +2333,8 @@ struct NativeTabStrip {
         }
         const bool nextGroupHover = data.HasKey(L"groupHover") ? data.GetNamedBoolean(L"groupHover") : base ? groupHover : false;
         const bool nextGroupHalo = data.HasKey(L"groupHalo") ? data.GetNamedBoolean(L"groupHalo") : base ? groupHalo : false;
+        const bool nextGlowAnimations = data.HasKey(L"groupGlowAnimations") ? data.GetNamedBoolean(L"groupGlowAnimations") :
+            base ? ambient.motion.option : false;
         auto nextGroupReach = base ? groupReach : DefaultGroupReach;
         if (data.HasKey(L"groupReach")) {
             auto reach = GroupReachOf(data.GetNamedString(L"groupReach"));
@@ -2450,6 +2550,10 @@ struct NativeTabStrip {
         groupGlow = nextGroupGlow;
         if (groupHover != nextGroupHover) { groupHover = nextGroupHover; inlineGroups.WashesGroup(groupHover); if (!groupHover) groupSurface.Hover(0); }
         groupHalo = nextGroupHalo;
+        ambient.motion.option = nextGlowAnimations;
+        // A full snapshot (window open, session restore) shows its groups
+        // already lit; only later changes light up.
+        if (!base) glowSeed = true;
         if (groupReach != nextGroupReach) { groupReach = nextGroupReach; ApplyAddSpacing(); }
         if (nextBackdrop != backdrop) {
             backdrop = nextBackdrop;

@@ -9,12 +9,15 @@ struct TabGroupSurface {
         Microsoft::UI::Composition::ShapeVisual visual{nullptr};
         Microsoft::UI::Composition::CompositionRoundedRectangleGeometry geometry{nullptr};
         uint32_t color{};
+        bool animated{};
     };
     std::map<uint32_t, Light> lights;
 
     // Reflections belong to the actual outline, below stock tab contents and
     // selection. Retain four soft corner lobes rather than lighting tab seams.
-    void Lighting(std::map<uint32_t, uint32_t> const& colors) {
+    // With glow motion, a group whose light went out (`dim`) fades first.
+    void Lighting(std::map<uint32_t, uint32_t> const& colors, TabGlowIgnition* motion = nullptr,
+                  std::set<uint32_t> const& dim = {}) {
         for (auto const& [id, border] : surfaces) {
             auto color = colors.find(id);
             if (color == colors.end()) continue;
@@ -39,10 +42,11 @@ struct TabGroupSurface {
                 // Reflected color across the material, confined to the existing
                 // outline. Unequal light pools avoid a uniform colored fill;
                 // TabAmbient's group halo continues them past the outline.
+                // Absolute mapping, placed with the size below, lets glow
+                // motion trail the pools behind geometry changes.
                 for (auto const& pool : TabAmbient::Pools) {
                     auto brush = compositor.CreateRadialGradientBrush();
-                    brush.EllipseCenter({pool.x, pool.y});
-                    brush.EllipseRadius({TabAmbient::PoolRadiusX, TabAmbient::PoolRadiusY});
+                    brush.MappingMode(Microsoft::UI::Composition::CompositionMappingMode::Absolute);
                     for (auto [offset, level] : TabAmbient::PoolStops)
                         brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(pool.peak * level), 0, 0, 0}));
                     auto body = compositor.CreateSpriteShape(light.geometry);
@@ -64,6 +68,13 @@ struct TabGroupSurface {
                     brush.EllipseCenter({corner % 2 ? width - radius : radius, corner / 2 ? height - radius : radius});
                     brush.EllipseRadius({std::max(1.f, std::min(48.f, width / 3)), std::max(1.f, height * .6f)});
                 }
+                for (uint32_t index = 0; index < ARRAYSIZE(TabAmbient::Pools); ++index) {
+                    auto const& pool = TabAmbient::Pools[index];
+                    auto brush = light.visual.Shapes().GetAt(4 + index).as<Microsoft::UI::Composition::CompositionSpriteShape>()
+                        .FillBrush().as<Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+                    brush.EllipseCenter({pool.x * width, pool.y * height});
+                    brush.EllipseRadius({std::max(1.f, TabAmbient::PoolRadiusX * width), std::max(1.f, TabAmbient::PoolRadiusY * height)});
+                }
             }
             if (light.color != color->second) {
                 light.color = color->second;
@@ -73,19 +84,28 @@ struct TabGroupSurface {
                     const bool body = bool(sprite.FillBrush());
                     auto brush = (body ? sprite.FillBrush() : sprite.StrokeBrush())
                         .as<Microsoft::UI::Composition::CompositionRadialGradientBrush>();
-                    for (auto stop : brush.ColorStops()) {
-                        auto value = stop.Color();
-                        value.R = body ? uint8_t(light.color >> 16) : shine(uint8_t(light.color >> 16));
-                        value.G = body ? uint8_t(light.color >> 8) : shine(uint8_t(light.color >> 8));
-                        value.B = body ? uint8_t(light.color) : shine(uint8_t(light.color));
-                        stop.Color(value);
-                    }
+                    for (auto stop : brush.ColorStops())
+                        TabAmbient::Tint(stop, body ? uint8_t(light.color >> 16) : shine(uint8_t(light.color >> 16)),
+                            body ? uint8_t(light.color >> 8) : shine(uint8_t(light.color >> 8)),
+                            body ? uint8_t(light.color) : shine(uint8_t(light.color)));
                 }
             }
         }
         for (auto it = lights.begin(); it != lights.end();) {
             if (colors.count(it->first) && surfaces.count(it->first)) { ++it; continue; }
-            if (surfaces.count(it->first)) Hosting::ElementCompositionPreview::SetElementChildVisual(surfaces.at(it->first), nullptr);
+            if (surfaces.count(it->first)) {
+                auto border = surfaces.at(it->first);
+                if (motion && dim.count(it->first) && motion->Enabled()) {
+                    // Only clear the outline if a relit group has not replaced it.
+                    motion->Dim(it->second.visual, 0, TabGlowIgnition::DimEdge + TabGlowIgnition::DimLag,
+                        [border, visual = it->second.visual] {
+                            if (Hosting::ElementCompositionPreview::GetElementChildVisual(border) == visual)
+                                Hosting::ElementCompositionPreview::SetElementChildVisual(border, nullptr);
+                        });
+                } else {
+                    Hosting::ElementCompositionPreview::SetElementChildVisual(border, nullptr);
+                }
+            }
             it = lights.erase(it);
         }
     }

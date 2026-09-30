@@ -2620,6 +2620,29 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestRefreshAmbient(HWND
         return ambient.observing ? S_FALSE : S_OK;
     } catch (...) { return to_hresult(); }
 }
+// Test-only: inspect opt-in group glow motion. 0: is `value` lighting up;
+// 1: visuals still dimming; 2: force system animations off (0), on (1) or
+// back to the system setting (2); 3: edge re-catches so far.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGlowMotion(HWND hwnd, uint32_t operation, uint32_t value, uint32_t* result) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end() || !found->second->strip || !result) return E_INVALIDARG;
+        auto& motion = found->second->strip->ambient.motion;
+        switch (operation) {
+        case 0: *result = motion.Active(value) ? 1 : 0; break;
+        case 1: *result = uint32_t(motion.dimming.size()); break;
+        case 2:
+            if (value > 2) return E_INVALIDARG;
+            if (value == 2) motion.animationsForTest.reset(); else motion.animationsForTest = value == 1;
+            *result = motion.Enabled() ? 1 : 0;
+            break;
+        case 3: *result = uint32_t(motion.recatches); break;
+        default: return E_INVALIDARG;
+        }
+        return S_OK;
+    } catch (...) { return to_hresult(); }
+}
 // Test-only: exercise a queued grouping dwell against a real loaded storyboard.
 // No global drag is armed, so the harness can advance animation time separately.
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupSlide(HWND hwnd, uint32_t operation) noexcept {
