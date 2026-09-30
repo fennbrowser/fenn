@@ -22,20 +22,23 @@ struct TabGlowIgnition {
     // The primary pool (the first of TabAmbient::Pools, lower left) lights first; the
     // weaker upper-right pool follows, so the glow stays uneven as it grows.
     static constexpr uint32_t PoolCount = 2;
-    static constexpr float PoolDuration = 320, SecondaryDelay = 90;
-    static constexpr float PoolStartScale = .45f, PoolBloom = 1.1f;
+    // Owner tuning (2026-09-30): slower and more pronounced than the first
+    // 640 ms version; the whole light-up now takes about 1.4 s.
+    static constexpr float PoolDuration = 600, SecondaryDelay = 170;
+    static constexpr float PoolStartScale = .3f, PoolBloom = 1.3f;
     // The core starts near white and saturates into the group color, like a
     // warming filament; the bloom still carries a trace of that heat.
-    static constexpr float HotTint = .35f, BloomTint = .15f, BloomAt = .55f;
-    static constexpr float WashDelay = 80, SpillDelay = 140, WashDuration = 380;
+    static constexpr float HotTint = .5f, BloomTint = .25f, BloomAt = .55f;
+    // The wash briefly overshoots its resting opacity with the pools' bloom.
+    static constexpr float WashDelay = 150, SpillDelay = 260, WashDuration = 700, WashBloom = 1.25f;
     // Outline highlights catch the light last, nearest the primary pool
     // first. Index order matches TabGroupSurface: TL, TR, BL, BR.
-    static constexpr float CornerDelay[4] = {240, 360, 180, 300};
-    static constexpr float CornerDuration = 260, CornerGlint = 1.25f, CornerStartScale = .05f;
+    static constexpr float CornerDelay[4] = {450, 670, 340, 560};
+    static constexpr float CornerDuration = 480, CornerGlint = 1.6f, CornerStartScale = .05f;
     // Halo rings bleed outward, inner ring first.
-    static constexpr float HaloDelay = 220, HaloStep = 45, HaloDuration = 280;
+    static constexpr float HaloDelay = 420, HaloStep = 80, HaloDuration = 520;
     // Several groups lighting together start left to right, briefly.
-    static constexpr float Stagger = 40; static constexpr size_t StaggerCap = 5;
+    static constexpr float Stagger = 70; static constexpr size_t StaggerCap = 5;
     static constexpr float FollowDuration = 180, TintDuration = 240;
     static constexpr float RecatchDip = .4f;
     // Extinguishing is quicker: highlights and halo first, then the body.
@@ -138,8 +141,10 @@ struct TabGlowIgnition {
         if (!visual) return;
         auto compositor = visual.Compositor();
         auto animation = compositor.CreateScalarKeyFrameAnimation();
+        const float final = visual.Opacity();
         animation.InsertKeyFrame(0.f, 0.f);
-        animation.InsertKeyFrame(1.f, visual.Opacity(), Decelerate(compositor));
+        animation.InsertKeyFrame(BloomAt, std::min(1.f, final * WashBloom), Decelerate(compositor));
+        animation.InsertKeyFrame(1.f, final, Decelerate(compositor));
         Time(animation, delay, duration);
         visual.StartAnimation(L"Opacity", animation);
     }
