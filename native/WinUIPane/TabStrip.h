@@ -1145,7 +1145,17 @@ struct NativeTabStrip {
             }
             // Modified gestures are observed on the exact tab below. Never let
             // TabView's single selection replace Firefox's multiselected set.
-            if (GetKeyState(VK_CONTROL) & 0x8000 || GetKeyState(VK_SHIFT) & 0x8000) return;
+            // Firefox keeps the active tab for these gestures, so return
+            // TabView's visual selection to it instead of the clicked tab.
+            if (GetKeyState(VK_CONTROL) & 0x8000 || GetKeyState(VK_SHIFT) & 0x8000) {
+                RestoreActiveSelection();
+                // The stock ListView is still mid-selection here and can leave
+                // the clicked row looking selected; repeat once it settles.
+                Dispatching::DispatcherQueue::GetForCurrentThread().TryEnqueue([this, alive] {
+                    if (!alive.expired()) RestoreActiveSelection();
+                });
+                return;
+            }
             auto row = view.SelectedItem().as<Controls::TabViewItem>();
             select(unbox_value<uint32_t>(row.Tag()));
         });
@@ -1834,8 +1844,19 @@ struct NativeTabStrip {
                 if (!run.collapsed && shell_core_tab_drag_slot_offset(core,index,true,id == sourceGroup,id == previousJoin,&offset) != SHELL_STATUS_OK) continue;
                 const auto left = run.button.TransformToVisual(view).TransformPoint({0,0}).X - tabDragHeaders.Offset(id) + offset;
                 if (point.X < left || point.X > left + run.button.ActualWidth()) continue;
-                if (shell_core_tab_drag_join_hit(core, point.X, id, run.collapsed, &hitGroup, &hitTab, &hitBefore) == SHELL_STATUS_OK && hitGroup)
-                    return join(hitGroup, hitTab, hitBefore);
+                if (shell_core_tab_drag_join_hit(core, point.X, id, run.collapsed, &hitGroup, &hitTab, &hitBefore) == SHELL_STATUS_OK && hitGroup) {
+                    if (!join(hitGroup, hitTab, hitBefore)) return false;
+                    // A collapsed group has no insertion gap to show, so
+                    // outline its header button as the drop target.
+                    if (run.collapsed && groupIndicator) {
+                        const auto at = run.button.TransformToVisual(root).TransformPoint({0, 0});
+                        groupIndicator.Margin({at.X - 3, at.Y, 0, 0});
+                        groupIndicator.Width(run.button.ActualWidth() + 6);
+                        groupIndicator.Height(run.button.ActualHeight());
+                        groupIndicator.Visibility(Visibility::Visible);
+                    }
+                    return true;
+                }
             }
             // New-group dwell still targets settled live rows, never a former
             // occupant of the insertion gap or a control in mid-animation.
@@ -2458,6 +2479,60 @@ struct NativeTabStrip {
     // just published. Only rows whose membership changed are touched, so a
     // selection change costs work proportional to the selection, not to the
     // number of tabs.
+    // Multiselection outline: a layout-neutral overlay inside the row's template
+    // root. A real BorderThickness on the row changes its measured size, so the
+    // hover-only close button grew the row and shifted the whole strip. The
+    // brush is bound to groupIndicator's live ThemeResource border brush.
+    std::set<uint32_t> outlinedTabs;
+    std::map<uint32_t, Controls::Border> outlines;
+    void AttachOutline(uint32_t id, Controls::TabViewItem const& row) {
+        const bool want = outlinedTabs.count(id) != 0;
+        auto existing = outlines.find(id);
+        if (!want && existing == outlines.end()) return;
+        if (!Media::VisualTreeHelper::GetChildrenCount(row)) row.ApplyTemplate();
+        if (!Media::VisualTreeHelper::GetChildrenCount(row)) return;
+        auto root = Media::VisualTreeHelper::GetChild(row, 0).try_as<FrameworkElement>();
+        if (!root) return;
+        auto container = root.FindName(L"TabContainer").try_as<Controls::Grid>();
+        if (!container) container = root.try_as<Controls::Grid>();
+        if (!container) return;
+        if (existing != outlines.end() && !want) {
+            uint32_t at{};
+            if (container.Children().IndexOf(existing->second, at)) container.Children().RemoveAt(at);
+            outlines.erase(existing);
+            return;
+        }
+        Controls::Border border{nullptr};
+        if (existing == outlines.end()) {
+            border = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderThickness="2" CornerRadius="4" IsHitTestVisible="False" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
+            Data::Binding binding;
+            binding.Source(groupIndicator); binding.Path(PropertyPath(L"BorderBrush"));
+            border.SetBinding(Controls::Border::BorderBrushProperty(), binding);
+            outlines.emplace(id, border);
+        } else border = existing->second;
+        // A Grid lays children out inside its padding; extend over it so the
+        // outline meets the tab's own edges.
+        // The template changes that padding with the close button's state, so
+        // follow it rather than reading it once.
+        auto fit = [container, border] {
+            const auto padding = container.Padding();
+            border.Margin({-padding.Left, -padding.Top, -padding.Right, -padding.Bottom});
+        };
+        fit();
+        uint32_t at{};
+        if (container.Children().IndexOf(border, at)) return;
+        container.RegisterPropertyChangedCallback(Controls::Grid::PaddingProperty(),
+            [fit](auto const&, auto const&) { fit(); });
+        Controls::Grid::SetRowSpan(border, 16);
+        Controls::Grid::SetColumnSpan(border, 16);
+        Controls::Canvas::SetZIndex(border, 100);
+        container.Children().Append(border);
+    }
+    void SetSelectedOutline(Controls::TabViewItem const& row, bool selected) {
+        const auto id = unbox_value<uint32_t>(row.Tag());
+        if (selected) outlinedTabs.insert(id); else outlinedTabs.erase(id);
+        AttachOutline(id, row);
+    }
     void ApplySelectedSet(std::set<uint32_t> const& previous, std::set<uint32_t> const& current) {
         if (IsDragging()) return;
         auto emphasize = [&](uint32_t id) {
@@ -2465,12 +2540,28 @@ struct NativeTabStrip {
             if (row == rows.end()) return;
             bool selected = current.count(id) != 0;
             row->second.FontWeight(Windows::UI::Text::FontWeight{uint16_t(selected ? 600 : 400)});
+            // Firefox's selection always contains the active tab; outline only
+            // a real multiselection.
+            SetSelectedOutline(row->second, selected && current.size() > 1);
             Automation::AutomationProperties::SetItemStatus(row->second, StatusFor(id == activeTabId, selected));
         };
-        for (auto id : previous)
-            if (!current.count(id)) emphasize(id);
+        // The active tab's outline depends on the set's size, so revisit
+        // every member of either set, not only the ones that changed.
+        for (auto id : previous) emphasize(id);
         for (auto id : current)
             if (!previous.count(id)) emphasize(id);
+    }
+    // Firefox's active tab stays TabView's only selected item. Modified clicks
+    // only change Firefox's multiselection, never this.
+    void RestoreActiveSelection() {
+        if (IsDragging()) return;
+        const auto active = rows.find(activeTabId);
+        syncing = true;
+        if (active != rows.end() && view.SelectedItem() != active->second)
+            view.SelectedItem(active->second);
+        for (auto const& [id, row] : rows)
+            if (id != activeTabId && row.IsSelected()) row.IsSelected(false);
+        syncing = false;
     }
     void ApplySelection(uint32_t previous, uint32_t active) {
         if (previous != active) groupSlide.Cancel();
@@ -2885,6 +2976,10 @@ struct NativeTabStrip {
                             }
                         });
                     rows.emplace(id, row);
+                    row.Loaded([this, alive, id](auto const&, auto const&) {
+                        auto found = rows.find(id);
+                        if (!alive.expired() && found != rows.end()) AttachOutline(id, found->second);
+                    });
                     AttachMenu(row, id);
                 }
                 auto row = rows.at(id);
@@ -2895,6 +2990,7 @@ struct NativeTabStrip {
                 // remains solely the Firefox active tab.
                 bool selected = menu.selectedTabs.count(id) != 0;
                 row.FontWeight(Windows::UI::Text::FontWeight{uint16_t(selected ? 600 : 400)});
+                SetSelectedOutline(row, selected && menu.selectedTabs.size() > 1);
                 Automation::AutomationProperties::SetItemStatus(row, StatusFor(id == active, selected));
                 uint32_t old;
                 if (!inlineGroups.active && (!view.TabItems().IndexOf(row, old) || old != i)) {
@@ -2916,6 +3012,7 @@ struct NativeTabStrip {
             for (auto it = rows.begin(); it != rows.end();) {
                 if (!current.count(it->first)) {
                     shell_core_departure_removed(core, it->first);
+                    outlinedTabs.erase(it->first); outlines.erase(it->first);
                     it = rows.erase(it);
                 }
                 else
