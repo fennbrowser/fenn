@@ -2895,6 +2895,12 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     std::vector<RECT> regions{{left, top, left + width, top + height},
                         {left, top + height / 2, left + width / 4, top + height},
                         {left + width / 2, top, left + width, top + height / 3}};
+                    // WINUI_GLOW_PIXELS: also sample single pixels every 2 px
+                    // along the row at that fraction (percent) of the height.
+                    if (wchar_t row[8]{}; GetEnvironmentVariableW(L"WINUI_GLOW_PIXELS", row, 8)) {
+                        const LONG y = top + height * _wtoi(row) / 100;
+                        for (LONG x = left; x < left + width; x += 2) regions.push_back({x, y, x + 1, y + 1});
+                    }
                     setOption(L"groupGlow", false);
                     Require(waitFor([&] { return query(1) == 0 && bottomGlow.Children().Count() == 0; }), "glow is out before recording");
                     GlowFrameProbe probe;
@@ -2914,9 +2920,14 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     if (FILE* file{}; _wfopen_s(&file, framesPath, L"w") == 0 && file) {
                         fprintf(file, "# region px: whole %ld,%ld %ldx%ld; scale %.2f\n", left, top, width, height, scale);
                         fprintf(file, "# light-up published at 0 (publish took %.1f ms); dim-out at %.1f\n", lightPublished - lightAt, dimAt - lightAt);
-                        fprintf(file, "ms,whole,lowerLeft,upperRight\n");
-                        for (auto const& frame : samples)
-                            fprintf(file, "%.2f,%.3f,%.3f,%.3f\n", frame.ms - lightAt, frame.means[0], frame.means[1], frame.means[2]);
+                        fprintf(file, "ms,whole,lowerLeft,upperRight");
+                        for (size_t i = 3; i < regions.size(); ++i) fprintf(file, ",x%ld", regions[i].left);
+                        fprintf(file, "\n");
+                        for (auto const& frame : samples) {
+                            fprintf(file, "%.2f", frame.ms - lightAt);
+                            for (auto mean : frame.means) fprintf(file, ",%.3f", mean);
+                            fprintf(file, "\n");
+                        }
                         fclose(file);
                     }
                     printf("Glow frames: %zu recorded to %ls\n", samples.size(), framesPath);
