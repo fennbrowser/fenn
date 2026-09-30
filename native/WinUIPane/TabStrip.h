@@ -1271,6 +1271,12 @@ struct NativeTabStrip {
     struct DragVisuals {
         std::vector<double> originalLeftEdge, originalWidth;
         std::vector<uint32_t> affectedRowIds;
+        // Where the scroller's content sat, in view coordinates, when the
+        // geometry above was measured. ShellCore keeps that snapshot for the
+        // whole gesture, so live pointer input is mapped into its frame.
+        double contentOrigin{};
+        double shift{};
+        ULONGLONG scrollTick{};
     } drag;
     ShellTabDrag Drag() const {
         ShellTabDrag state{};
@@ -2099,7 +2105,7 @@ struct NativeTabStrip {
             };
             uint32_t hitGroup{}, hitTab{};
             bool hitBefore{};
-            if (shell_core_tab_drag_join_hit(core, point.X, 0, false, &hitGroup, &hitTab, &hitBefore) == SHELL_STATUS_OK && hitGroup) {
+            if (shell_core_tab_drag_join_hit(core, point.X - drag.shift, 0, false, &hitGroup, &hitTab, &hitBefore) == SHELL_STATUS_OK && hitGroup) {
                 const auto target = presentation.find(hitTab);
                 if (!hitTab || (target != presentation.end() && target->second.groupSource))
                     return join(hitGroup, hitTab, hitBefore);
@@ -2122,7 +2128,7 @@ struct NativeTabStrip {
                 if (!run.collapsed && shell_core_tab_drag_slot_offset(core,index,true,id == sourceGroup,id == previousJoin,&offset) != SHELL_STATUS_OK) continue;
                 const auto left = run.button.TransformToVisual(view).TransformPoint({0,0}).X - tabDragHeaders.Offset(id) + offset;
                 if (point.X < left || point.X > left + run.button.ActualWidth()) continue;
-                if (shell_core_tab_drag_join_hit(core, point.X, id, run.collapsed, &hitGroup, &hitTab, &hitBefore) == SHELL_STATUS_OK && hitGroup) {
+                if (shell_core_tab_drag_join_hit(core, point.X - drag.shift, id, run.collapsed, &hitGroup, &hitTab, &hitBefore) == SHELL_STATUS_OK && hitGroup) {
                     if (!join(hitGroup, hitTab, hitBefore)) return false;
                     // A collapsed group has no insertion gap to show, so
                     // outline its header button as the drop target.
@@ -2145,7 +2151,7 @@ struct NativeTabStrip {
                 if (id == Drag().tab) continue;
                 const auto left = drag.originalLeftEdge[i] + RowTransform(row).X();
                 const auto width = drag.originalWidth[i];
-                if (point.X < left + width * .3 || point.X > left + width * .7) continue;
+                if (point.X - drag.shift < left + width * .3 || point.X - drag.shift > left + width * .7) continue;
                 const auto target = presentation.find(id);
                 if (target != presentation.end() && target->second.groupTarget)
                     candidate = id;
@@ -2181,6 +2187,35 @@ struct NativeTabStrip {
         return true;
     }
 
+    double DragContentX() {
+        auto scroller = GroupScroller(view);
+        auto content = scroller ? scroller.Content().try_as<UIElement>() : nullptr;
+        return content ? content.TransformToVisual(view).TransformPoint({0, 0}).X : 0.0;
+    }
+
+    // Scrolls the strip while a drag holds the pointer near either edge, so a
+    // tab can be dropped among rows that overflow the visible area. Mirrors
+    // TickGroupDrag's edge scroll; every drag tick lands here, so a pointer
+    // held still at the edge keeps scrolling.
+    void EdgeScrollDrag(Windows::Foundation::Point const& point) {
+        if (Drag().phase != DragPhase::Dragging || Drag().detaching || point.Y < 0 || point.Y > view.ActualHeight() ||
+            point.X < 0 || point.X > view.ActualWidth() || GetTickCount64() - drag.scrollTick < 16) return;
+        auto scroller = GroupScroller(view);
+        if (!scroller || scroller.ScrollableWidth() <= 0) return;
+        const auto viewport = scroller.TransformToVisual(view).TransformBounds({0, 0, float(scroller.ActualWidth()), float(scroller.ActualHeight())});
+        const bool left = point.X < viewport.X + 24, right = point.X > viewport.X + viewport.Width - 24;
+        if (left == right) return;
+        drag.scrollTick = GetTickCount64();
+        // Content must move away from the pointer's edge. The offset grows as
+        // content moves left in LTR and right in RTL.
+        const double step = (right ? 12 : -12) * (view.FlowDirection() == FlowDirection::RightToLeft ? -1 : 1);
+        const auto target = std::clamp(scroller.HorizontalOffset() + step, 0.0, scroller.ScrollableWidth());
+        if (target == scroller.HorizontalOffset()) return;
+        inlineGroups.NoteUserScroll();
+        scroller.ChangeView(box_value(target).as<Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
+        scroller.UpdateLayout();
+    }
+
     // Re-derives the reorder/tear-off state from the cursor's current
     // position, clamped the same way a row confined to this strip's own
     // width would be -- but doesn't touch the dragged row's own visual at
@@ -2202,7 +2237,16 @@ struct NativeTabStrip {
         lastDragPoint = point;
         const auto previous = Drag();
         const auto previousJoin = joinGroup;
-        if (shell_core_tab_drag_update(core, point.X, point.Y, view.ActualWidth(), view.ActualHeight(), false) != SHELL_STATUS_OK) return;
+        EdgeScrollDrag(point);
+        // Rows were measured when the drag began; scrolling since moves them
+        // by `shift`. Give ShellCore the pointer and visible width in that
+        // frame, but keep tear-off decided by the live pointer.
+        drag.shift = Drag().phase == DragPhase::Dragging ? DragContentX() - drag.contentOrigin : 0.0;
+        const double width = view.ActualWidth(), height = view.ActualHeight();
+        const bool outside = point.X < -height || point.X > width + height;
+        const double coreX = outside ? point.X : std::clamp(point.X - drag.shift, -height, width - drag.shift + height);
+        const double coreWidth = outside ? width : width - drag.shift;
+        if (shell_core_tab_drag_update(core, coreX, point.Y, coreWidth, height, false) != SHELL_STATUS_OK) return;
         if (Drag().detaching) {
             ClearGroupHover();
         } else {
@@ -2211,7 +2255,7 @@ struct NativeTabStrip {
                     if (!previousJoin) return;
                     shell_core_tab_drag_close_gap(core);
                 }
-            } else if (shell_core_tab_drag_update(core, point.X, point.Y, view.ActualWidth(), view.ActualHeight(), true) != SHELL_STATUS_OK) return;
+            } else if (shell_core_tab_drag_update(core, coreX, point.Y, coreWidth, height, true) != SHELL_STATUS_OK) return;
         }
         const auto current = Drag();
         if (current.projected == previous.projected && joinGroup == previousJoin) return;
@@ -2278,6 +2322,8 @@ struct NativeTabStrip {
             drag.originalWidth.push_back(item.ActualWidth());
             measured.push_back({drag.originalLeftEdge.back(), drag.originalWidth.back()});
         }
+        drag.contentOrigin = DragContentX();
+        drag.shift = 0;
         if (shell_core_tab_drag_promote(core, original, measured.data(), measured.size()) != SHELL_STATUS_OK) return false;
         UpdateDragVisual(point);
         return true;

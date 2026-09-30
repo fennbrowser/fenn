@@ -3575,7 +3575,11 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
         settle();
     }
     // Finish over the target for grouping, or at the end for a reorder.
-    const LONG endX = grouping ? (lastBounds.left + lastBounds.right) / 2 : lastBounds.right - 8;
+    // A reorder to the end holds the pointer at the strip's right edge, as a
+    // user would: rows that overflow the viewport scroll into reach there, and
+    // the last tab's own UIA bounds are clipped to the viewport.
+    const LONG viewLeft = firstBounds.left - LONG(first.TransformToVisual(view).TransformPoint({0, 0}).X);
+    const LONG endX = grouping ? (lastBounds.left + lastBounds.right) / 2 : viewLeft + LONG(view.ActualWidth()) - 8;
     for (int step = 1; step <= 25; ++step) {
         moveTo(client.x + (endX - client.x) * step / 25, client.y);
         settle(5);
@@ -3645,6 +3649,81 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
     Require(SUCCEEDED(api.syncTabs(host,confirmed,2,11,&selected)), "Firefox confirms move to end");
     Require(view.TabItems().GetAt(1) == first && first.RenderTransform().as<Media::TranslateTransform>().X() == 0,
             "confirmed order replaces the temporary offset without a settle animation");
+}
+
+// Dropping at the end of a strip whose tabs overflow its viewport. Rows past
+// the viewport can never be reached by moving the pointer alone, so holding
+// it at the right edge must scroll them into reach; releasing there has to
+// queue a move-to-end. Uses enough tabs that no pointer clamp can reach the end.
+static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND host) {
+    using namespace winrt;
+    using namespace winrt::Microsoft::UI::Xaml;
+    RECT rect{0, 0, 600, 48};
+    Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation for overflow drag");
+    SetWindowPos(host, nullptr, 300, 200, 640, 480, SWP_NOZORDER | SWP_NOACTIVATE);
+    ShowWindow(host, SW_SHOW);
+    std::vector<WinUITab> tabs{{11, L"First tab"}};
+    for (uint32_t id = 101; id <= 113; ++id) tabs.push_back({id, L"Overflow tab"});
+    uint32_t selected{};
+    Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), 11, &selected)), "sync overflowing strip");
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
+    UIElement content{nullptr};
+    Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect overflowing strip");
+    auto view = content.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
+    auto first = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
+    for (int i = 0; i < 300 && (!first.IsLoaded() || first.ActualWidth() == 0); ++i) { Pump(); Sleep(10); }
+    Require(first.IsLoaded() && first.ActualWidth() > 0, "overflow tab realized before drag");
+    SetForegroundWindow(host);
+    auto settle = [&](int iterations = 30) { for (int i = 0; i < iterations; ++i) { Pump(); Sleep(10); } };
+    settle();
+    // The strip keeps the active tab revealed, which can leave the first tab
+    // mostly scrolled away. Start from the left so it is fully under the pointer.
+    std::function<Controls::ScrollViewer(DependencyObject const&)> findScroller = [&](DependencyObject const& node) -> Controls::ScrollViewer {
+        if (auto scroll = node.try_as<Controls::ScrollViewer>(); scroll && scroll.Name() == L"ScrollViewer") return scroll;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto found = findScroller(Media::VisualTreeHelper::GetChild(node, i))) return found;
+        return nullptr;
+    };
+    auto scroller = findScroller(view);
+    Require(scroller && scroller.ScrollableWidth() > 0, "overflowing strip has a scroller with room to scroll");
+    scroller.ChangeView(box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
+    settle();
+    auto firstBounds = TabScreenBounds(host, L"FirefoxWinUITab-11");
+    const POINT client{(firstBounds.left + firstBounds.right) / 2, (firstBounds.top + firstBounds.bottom) / 2};
+    const LONG viewLeft = firstBounds.left - LONG(first.TransformToVisual(view).TransformPoint({0, 0}).X);
+    const LONG endX = viewLeft + LONG(view.ActualWidth()) - 8;
+    Require(SetCursorPos(client.x, client.y) != 0, "position cursor over first overflow tab");
+    settle();
+    auto send = [](DWORD flags) { INPUT input{}; input.type = INPUT_MOUSE; input.mi.dwFlags = flags; SendInput(1, &input, sizeof(INPUT)); };
+    auto moveTo = [&](LONG x, LONG y) {
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        INPUT input{};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        input.mi.dx = LONG((double(x - vx) * 65535) / vw);
+        input.mi.dy = LONG((double(y - vy) * 65535) / vh);
+        SendInput(1, &input, sizeof(INPUT));
+    };
+    send(MOUSEEVENTF_LEFTDOWN);
+    settle();
+    for (int step = 1; step <= 25; ++step) { moveTo(client.x + (endX - client.x) * step / 25, client.y); settle(5); }
+    // Hold still at the edge: only the drag's own scrolling can change anything.
+    settle(400);
+    send(MOUSEEVENTF_LEFTUP);
+    settle(200);
+    Require(DragPreviewWindows().empty(), "release destroys the floating drag HWND after an edge-scrolled drag");
+    auto event = NextRequest(api, host, 5, L"strip-reorder", 40).GetNamedObject(L"action");
+    Require(event.Size() && event.GetNamedNumber(L"id") == 11 && event.GetNamedNumber(L"beforeId") == 0,
+            "holding a drag at the edge of an overflowing strip scrolls it so the tab can drop at the end");
+    WinUITab order[14];
+    for (uint32_t i = 0; i < 13; ++i) order[i] = tabs[i + 1];
+    order[13] = tabs[0];
+    Require(SUCCEEDED(api.syncTabs(host, order, 14, 11, &selected)), "Firefox confirms overflow move to end");
+    WinUITab restored[]{{11, L"First tab"}, {22, L"Second tab"}};
+    Require(SUCCEEDED(api.syncTabs(host, restored, 2, 11, &selected)), "restore the two-tab strip");
+    settle();
+    puts("CHECKS PASSED: overflowing strip drags scroll to reach the end");
 }
 
 // Detach-to-new-window. Releasing well outside every open pane's own strip
@@ -4193,6 +4272,7 @@ int wmain(int argc, wchar_t** argv) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::ChangeThenDrop);
         } else {
             CheckTabStripDrag(module, api, first);
+            CheckTabStripOverflowDrag(module, api, first);
             CheckTabStripDetach(module, api, first, false, -1);
             CheckTabStripDetach(module, api, first, false, 1);
             CheckTabStripDetach(module, api, first);
