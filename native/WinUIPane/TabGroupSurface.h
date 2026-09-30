@@ -95,7 +95,7 @@ struct TabGroupSurface {
             if (colors.count(it->first) && surfaces.count(it->first)) { ++it; continue; }
             if (surfaces.count(it->first)) {
                 auto border = surfaces.at(it->first);
-                if (motion && dim.count(it->first) && motion->Enabled()) {
+                if (motion && dim.count(it->first) && motion->Dims()) {
                     // Only clear the outline if a relit group has not replaced it.
                     motion->Dim(it->second.visual, 0, TabGlowIgnition::DimEdge + TabGlowIgnition::DimLag,
                         [border, visual = it->second.visual] {
@@ -177,7 +177,7 @@ struct TabGroupSurface {
         auto leaving = std::move(departing);
         departing.clear();
         for (auto const& [id, border] : leaving) {
-            if (motion && motion->Enabled() && gone.count(id) && Hosting::ElementCompositionPreview::GetElementChildVisual(border)) {
+            if (motion && motion->Dims() && gone.count(id) && Hosting::ElementCompositionPreview::GetElementChildVisual(border)) {
                 motion->Dim(Hosting::ElementCompositionPreview::GetElementVisual(border), 0,
                     TabGlowIgnition::DimEdge + TabGlowIgnition::DimLag, [this, border] { Remove(border); });
             } else {

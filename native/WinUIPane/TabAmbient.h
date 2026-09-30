@@ -58,7 +58,7 @@ struct TabAmbient {
     void Release(winrt::Microsoft::UI::Composition::ContainerVisual const& owner, Field const& field, bool dim, float delay, float duration) {
         auto visual = field.Root();
         if (!visual) return;
-        if (!dim || !motion.Enabled()) { owner.Children().Remove(visual); return; }
+        if (!dim || !motion.Dims()) { owner.Children().Remove(visual); return; }
         motion.Dim(visual, delay, duration, [owner, visual] { owner.Children().Remove(visual); });
     }
     static constexpr float PoolRadiusX = .95f, PoolRadiusY = 1.2f;

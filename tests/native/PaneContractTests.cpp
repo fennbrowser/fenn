@@ -2913,6 +2913,16 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 printf("Glow regroup: surface=%d outline=%d lighting=%u\n", int(bool(reachSurface())), int(bool(outline())), query(0));
                 fflush(stdout);
                 Require(regrouped && !query(0), "regrouping in a full snapshot shows the group already lit");
+                // groupGlowFadeOut off: glow still lights up, but goes at once.
+                setOption(L"groupGlowFadeOut", false); settle();
+                setOption(L"groupGlow", false); settle();
+                Require(bottomGlow.Children().Count() == 0 && spill.Children().Count() == 0 && halo.Children().Count() == 0 &&
+                    query(1) == 0 && !outline(), "without the fade-out, extinguished glow is released at once");
+                setOption(L"groupGlow", true);
+                Require(waitFor([&] { return bottomGlow.Children().Count() == 1 && outline(); }) && query(0) == 1,
+                    "without the fade-out, a newly lit group still lights up");
+                Require(waitFor([&] { return query(0) == 0; }), "the light-up completes without the fade-out");
+                setOption(L"groupGlowFadeOut", true); settle();
                 // Reduced motion: every change applies at once and motion detaches.
                 Require(query(2, 0) == 0, "simulate reduced-motion preference for glow");
                 setOption(L"groupGlow", false); settle();

@@ -49,6 +49,9 @@ struct TabGlowIgnition {
     static constexpr float RecatchGrowth = 8, RecatchEdge = 4;
 
     bool option{};
+    // Firefox's groupGlowFadeOut: with it off, extinguished glow goes at
+    // once while the light-up and other motion remain.
+    bool fadeOut{true};
 #ifdef WINUI_PANE_TESTING
     std::optional<bool> animationsForTest;
 #endif
@@ -60,6 +63,9 @@ struct TabGlowIgnition {
 #endif
         return settings.AnimationsEnabled();
     }
+
+    // Extinguished glow dims before release.
+    bool Dims() const { return fadeOut && Enabled(); }
 
     // Groups whose light-up is still running.
     std::map<uint32_t, Batch> active;

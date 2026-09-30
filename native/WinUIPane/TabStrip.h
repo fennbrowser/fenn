@@ -2336,6 +2336,10 @@ struct NativeTabStrip {
         const bool nextGroupHalo = data.HasKey(L"groupHalo") ? data.GetNamedBoolean(L"groupHalo") : base ? groupHalo : false;
         const bool nextGlowAnimations = data.HasKey(L"groupGlowAnimations") ? data.GetNamedBoolean(L"groupGlowAnimations") :
             base ? ambient.motion.option : false;
+        // Unlike the opt-in options, a snapshot without the key keeps the
+        // fade-out, which belongs to glow motion by default.
+        const bool nextGlowFadeOut = data.HasKey(L"groupGlowFadeOut") ? data.GetNamedBoolean(L"groupGlowFadeOut") :
+            base ? ambient.motion.fadeOut : true;
         auto nextGroupReach = base ? groupReach : DefaultGroupReach;
         if (data.HasKey(L"groupReach")) {
             auto reach = GroupReachOf(data.GetNamedString(L"groupReach"));
@@ -2552,6 +2556,7 @@ struct NativeTabStrip {
         if (groupHover != nextGroupHover) { groupHover = nextGroupHover; inlineGroups.WashesGroup(groupHover); if (!groupHover) groupSurface.Hover(0); }
         groupHalo = nextGroupHalo;
         ambient.motion.option = nextGlowAnimations;
+        ambient.motion.fadeOut = nextGlowFadeOut;
         // A full snapshot (window open, session restore) shows its groups
         // already lit; only later changes light up.
         if (!base) glowSeed = true;
