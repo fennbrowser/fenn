@@ -977,7 +977,10 @@ struct NativeTabStrip {
         auto viewport = scroller ? scroller.TransformToVisual(view).TransformBounds({0,0,float(scroller.ActualWidth()),float(scroller.ActualHeight())})
                                 : Windows::Foundation::Rect{0,0,float(view.ActualWidth()),float(view.ActualHeight())};
         const bool inside=point.X>=viewport.X && point.X<=view.ActualWidth() && point.Y>=0 && point.Y<=view.ActualHeight();
-        if (old.phase==2 && down && inside && point.X<viewport.X+viewport.Width && scroller && scroller.ScrollableWidth()>0 && GetTickCount64()-groupScrollTick>=16) {
+        // The pointer may be past the scroller's own edge, over the trailing
+        // controls: holding it there at the strip's end must keep scrolling.
+        const bool nearStrip=point.X>=0 && point.X<=view.ActualWidth() && point.Y>=0 && point.Y<=view.ActualHeight();
+        if (old.phase==2 && down && nearStrip && scroller && scroller.ScrollableWidth()>0 && GetTickCount64()-groupScrollTick>=16) {
             groupScrollTick=GetTickCount64();
             double step=point.X<viewport.X+24 ? -12 : point.X>viewport.X+viewport.Width-24 ? 12 : 0;
             if (step) {

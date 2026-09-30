@@ -3726,6 +3726,67 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
     puts("CHECKS PASSED: overflowing strip drags scroll to reach the end");
 }
 
+// Dragging a group to the strip's end must keep scrolling even with the pointer
+// past the scroller's own viewport, over the trailing New Tab area.
+static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND host) {
+    using namespace winrt;
+    using namespace winrt::Microsoft::UI::Xaml;
+    RECT rect{0, 0, 600, 48};
+    Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "group edge strip");
+    SetWindowPos(host, nullptr, 300, 200, 640, 480, SWP_NOZORDER | SWP_NOACTIVATE);
+    ShowWindow(host, SW_SHOW);
+    std::vector<WinUITab> tabs{{11, L"One"}, {22, L"Two"}};
+    std::wstring rows = L"{\"id\":11,\"detail\":\"\",\"flags\":0},{\"id\":22,\"detail\":\"\",\"flags\":0}";
+    std::wstring layout = L"{\"group\":7,\"tab\":0},{\"group\":7,\"tab\":11},{\"group\":7,\"tab\":22}";
+    for (uint32_t id = 101; id <= 112; ++id) {
+        tabs.push_back({id, L"Overflow"});
+        rows += L",{\"id\":" + std::to_wstring(id) + L",\"detail\":\"\",\"flags\":0}";
+        layout += L",{\"group\":0,\"tab\":" + std::to_wstring(id) + L"}";
+    }
+    uint32_t selected{};
+    Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), 11, &selected)), "group edge tabs");
+    MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":5000,\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false}],\"rows\":[" + rows + L"],\"layout\":[" + layout + L"]}}").c_str());
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
+    UIElement content{nullptr};
+    Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect group edge strip");
+    auto view = content.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
+    auto settle = [&](int n = 30) { for (int i = 0; i < n; ++i) { Pump(); Sleep(10); } };
+    SetForegroundWindow(host);
+    settle(60);
+    std::function<Controls::ScrollViewer(DependencyObject const&)> find = [&](DependencyObject const& n) -> Controls::ScrollViewer {
+        if (auto sc = n.try_as<Controls::ScrollViewer>(); sc && sc.Name() == L"ScrollViewer") return sc;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(n); ++i) if (auto r = find(Media::VisualTreeHelper::GetChild(n, i))) return r;
+        return nullptr;
+    };
+    auto scroller = find(view);
+    scroller.ChangeView(winrt::box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
+    settle();
+    auto header = TabScreenBounds(host, L"FirefoxWinUIInlineGroup-7");
+    const auto vp = scroller.TransformToVisual(view).TransformBounds({0, 0, float(scroller.ActualWidth()), float(scroller.ActualHeight())});
+    Require(scroller.ScrollableWidth() > 0 && vp.X + vp.Width < view.ActualWidth() - 4,
+            "overflowing strip has trailing controls beyond the scroller viewport");
+    const POINT start{(header.left + header.right) / 2, (header.top + header.bottom) / 2};
+    SetCursorPos(start.x, start.y); settle();
+    auto send = [](DWORD f) { INPUT i{}; i.type = INPUT_MOUSE; i.mi.dwFlags = f; SendInput(1, &i, sizeof(i)); };
+    auto moveTo = [&](LONG x, LONG y) {
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN), vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        INPUT i{}; i.type = INPUT_MOUSE; i.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        i.mi.dx = LONG((double(x - vx) * 65535) / vw); i.mi.dy = LONG((double(y - vy) * 65535) / vh); SendInput(1, &i, sizeof(i));
+    };
+    send(MOUSEEVENTF_LEFTDOWN); settle();
+    moveTo(start.x + 12, start.y); settle();
+    const LONG targetX = 300 + LONG(view.ActualWidth()) - 2;
+    for (int step = 1; step <= 20; ++step) { moveTo(start.x + (targetX - start.x) * step / 20, start.y); settle(5); }
+    settle(300);
+    const auto offset = scroller.HorizontalOffset();
+    const auto scrollable = scroller.ScrollableWidth();
+    INPUT esc[2]{}; esc[0].type = esc[1].type = INPUT_KEYBOARD; esc[0].ki.wVk = esc[1].ki.wVk = VK_ESCAPE; esc[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(1, esc, sizeof(INPUT)); settle(); SendInput(1, esc + 1, sizeof(INPUT));
+    send(MOUSEEVENTF_LEFTUP); settle();
+    Require(scrollable > 0 && offset >= scrollable - 1, "holding a group drag past the viewport edge scrolls the strip to its end");
+    puts("CHECKS PASSED: group drag edge scroll");
+}
+
 // Detach-to-new-window. Releasing well outside every open pane's own strip
 // bounds entirely (Pane.cpp's TickDragSession hit-tests screen points
 // against each pane's own StripScreenBounds(), the tab drag
@@ -4283,6 +4344,8 @@ int wmain(int argc, wchar_t** argv) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.25f, 1.5f);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseSource);
+            // Last: its published presentation outlives the check.
+            CheckGroupDragEdgeScroll(module, api, first);
         }
         // Section 8: no session work after a gesture completes. Every window
         // message still reaches TickDragSession, so the only way to show that
