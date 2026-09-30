@@ -154,11 +154,35 @@ struct TabGroupSurface {
             if (border.Width() != rect.Width) border.Width(rect.Width);
             if (border.Height() != rect.Height) border.Height(rect.Height);
         }
+        // A surface whose group left stays in the canvas until the strip has
+        // decided whether its light went out (Depart): the outline hosts the
+        // group's color pools, so removing it here would cut them off.
         for (auto it = surfaces.begin(); it != surfaces.end();) {
             if (bounds.count(it->first)) { ++it; continue; }
-            uint32_t index;
-            if (layer.Children().IndexOf(it->second, index)) layer.Children().RemoveAt(index);
+            if (auto old = departing.find(it->first); old != departing.end()) { Remove(old->second); departing.erase(old); }
+            departing.emplace(it->first, it->second);
             it = surfaces.erase(it);
+        }
+    }
+
+    std::map<uint32_t, Controls::Border> departing;
+    void Remove(Controls::Border const& border) {
+        uint32_t index;
+        if (border && layer.Children().IndexOf(border, index)) layer.Children().RemoveAt(index);
+    }
+    // Release this pass's departing surfaces. A lit group whose light went out
+    // fades its whole outline, color pools and highlights together, then goes;
+    // everything else (culling, unlit groups, motion off) goes at once.
+    void Depart(TabGlowIgnition* motion, std::set<uint32_t> const& gone) {
+        auto leaving = std::move(departing);
+        departing.clear();
+        for (auto const& [id, border] : leaving) {
+            if (motion && motion->Enabled() && gone.count(id) && Hosting::ElementCompositionPreview::GetElementChildVisual(border)) {
+                motion->Dim(Hosting::ElementCompositionPreview::GetElementVisual(border), 0,
+                    TabGlowIgnition::DimEdge + TabGlowIgnition::DimLag, [this, border] { Remove(border); });
+            } else {
+                Remove(border);
+            }
         }
     }
 };

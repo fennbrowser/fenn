@@ -669,6 +669,7 @@ struct NativeTabStrip {
         auto haloLitNow = haloLit.Advance(haloEligible, groupHalo ? groups : std::set<uint32_t>{}, seed, haloGone);
         haloGone.insert(gone.begin(), gone.end());
         groupSurface.Lighting(outlineColors, &ambient.motion, gone);
+        groupSurface.Depart(&ambient.motion, gone);
         ambient.Prune(ambient.groups, groups, false, gone);
         ambient.Prune(ambient.containers, containers, true);
         ambient.PruneSpill(ambient.groupSpill, groups, gone);

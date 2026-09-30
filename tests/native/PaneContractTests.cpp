@@ -2898,6 +2898,21 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 Require(recaught && !query(0) && query(1) == 0,
                     "a group that settles wider re-catches its highlights without lighting up again");
                 layout(false); settle();
+                // Ungrouping removes the outline surface, which hosts the color
+                // pools: it must dim with them rather than vanish at once.
+                auto ungrouped = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groupGlowAnimations":true,"groups":[],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":0,"tab":42},{"group":0,"tab":43}]}})");
+                ungrouped.GetNamedObject(L"strip").SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
+                MenuPublish(api,host,ungrouped.Stringify().c_str());
+                Require(SUCCEEDED(api.syncTabs(host,opened,3,43,&selected)), "ungroup the lit group");
+                Require(waitFor([&] { return query(1) >= 4; }) && reachSurface() && outline() && bottomGlow.Children().Count() == 1,
+                    "ungrouping keeps the outline, its color pools and the wash while they dim");
+                Require(waitFor([&] { return query(1) == 0; }) && !reachSurface() && bottomGlow.Children().Count() == 0 &&
+                    halo.Children().Count() == 0, "the dimmed outline and light are released once their fade completes");
+                layout(false);
+                const bool regrouped = waitFor([&] { return reachSurface() && outline(); });
+                printf("Glow regroup: surface=%d outline=%d lighting=%u\n", int(bool(reachSurface())), int(bool(outline())), query(0));
+                fflush(stdout);
+                Require(regrouped && !query(0), "regrouping in a full snapshot shows the group already lit");
                 // Reduced motion: every change applies at once and motion detaches.
                 Require(query(2, 0) == 0, "simulate reduced-motion preference for glow");
                 setOption(L"groupGlow", false); settle();
