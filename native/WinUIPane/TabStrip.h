@@ -172,6 +172,33 @@ struct NativeTabStrip {
     // Settled horizontal extent of each lit group in scroll-content space,
     // so scrolling alone never reads as growth.
     std::map<uint32_t, std::pair<float, float>> glowSettled;
+    // While a group's light is being revealed, tab backgrounds fade between
+    // visual states rather than snapping. A drag that forms a group leaves the
+    // pointer over a dropped tab, whose stock pointer-over background would
+    // otherwise switch on in one frame mid-reveal (measured: 210 ms after
+    // release). Uses the template's own TabContainer and the supported
+    // BackgroundTransition, and restores stock instant states afterwards.
+    // Selection changes during the reveal fade too, as they set the same
+    // background.
+    static constexpr float HoverFadeMs = 400;
+    std::map<uint32_t, Controls::Grid> fadedTabs;
+    void FadeTabBackgrounds(bool on) {
+        if (!on) {
+            for (auto& [id, container] : fadedTabs) container.BackgroundTransition(nullptr);
+            fadedTabs.clear();
+            return;
+        }
+        for (auto const& [id, row] : rows) {
+            if (fadedTabs.count(id) || !row.IsLoaded() || !Media::VisualTreeHelper::GetChildrenCount(row)) continue;
+            auto root = Media::VisualTreeHelper::GetChild(row, 0).try_as<FrameworkElement>();
+            auto container = root ? root.FindName(L"TabContainer").try_as<Controls::Grid>() : Controls::Grid{nullptr};
+            if (!container) continue;
+            BrushTransition fade;
+            fade.Duration(TabGlowIgnition::Ms(HoverFadeMs));
+            container.BackgroundTransition(fade);
+            fadedTabs.emplace(id, container);
+        }
+    }
     void DetachGlow() {
         for (auto* fields : {&ambient.groups, &ambient.groupSpill, &ambient.groupHalo})
             for (auto& [id, field] : *fields)
@@ -179,6 +206,7 @@ struct NativeTabStrip {
         for (auto& [id, light] : groupSurface.lights)
             if (light.animated) { ambient.motion.Attach(light.visual, false); light.animated = false; }
         ambient.EndReveals(); groupSurface.EndReveals();
+        FadeTabBackgrounds(false);
         glowSettled.clear();
     }
     // Positioned light trails only one-off geometry changes. During
@@ -229,10 +257,12 @@ struct NativeTabStrip {
                 [this, id, alive = std::weak_ptr<int>(lifetime)] {
                     if (alive.expired()) return;
                     ambient.EndReveal(id); groupSurface.EndReveal(id);
+                    if (ambient.reveals.empty()) FadeTabBackgrounds(false);
                 });
         }
         for (auto id : haloLitNow)
             if (std::find(lit.begin(), lit.end(), id) == lit.end()) motion.IgniteHalo(id, haloOf(id));
+        FadeTabBackgrounds(!ambient.reveals.empty());
         // Implicit motion attaches after a field's first color and geometry,
         // so creating or re-realizing a field never animates from nothing.
         for (auto id : groups) {

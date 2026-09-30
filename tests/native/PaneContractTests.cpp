@@ -2868,12 +2868,20 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 Require(ambientMask.Mask().try_as<Comp::CompositionSurfaceBrush>() &&
                     outlineChild().Comment() == L"group-outline-reveal",
                     "the light spreads from its source through reveal masks");
+                auto tabContainer = [&] {
+                    auto row = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
+                    return Media::VisualTreeHelper::GetChild(row, 0).as<FrameworkElement>().FindName(L"TabContainer").as<Controls::Grid>();
+                };
+                Require(tabContainer().BackgroundTransition() &&
+                    tabContainer().BackgroundTransition().Duration() == std::chrono::milliseconds(400),
+                    "tab backgrounds fade between states while a group is revealing");
                 auto wash = bottomGlow.Children().First().Current().as<Comp::SpriteVisual>();
                 Require(wash.Opacity() == .65f && washStop().Color().A == 92,
                     "the light-up leaves static properties at their final values");
                 Require(waitFor([&] { return query(0) == 0; }), "the light-up completes");
                 Require(waitFor([&] { return ambientMask.Mask() == edgeFade && outline(); }),
                     "reveal masks are released once the light has spread");
+                Require(!tabContainer().BackgroundTransition(), "tab backgrounds snap between states again after the reveal");
                 light = outline(); pool = brushOf(light, 4);
                 auto ring = halo.Children().First().Current().as<Comp::ShapeVisual>();
                 Require(pool.ColorStops().GetAt(0).Color().A == 48 && pool.Scale() == winrt::Windows::Foundation::Numerics::float2{1, 1} &&
