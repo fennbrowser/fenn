@@ -180,6 +180,18 @@ struct NativeTabStrip {
             if (light.animated) { ambient.motion.Attach(light.visual, false); light.animated = false; }
         glowSettled.clear();
     }
+    // Positioned light trails only one-off geometry changes. During
+    // continuous motion it follows the geometry directly; re-place it from
+    // this pass's geometry after stopping any trailing in flight.
+    void FollowGlow(bool on) {
+        auto& motion = ambient.motion;
+        if (motion.following == on) return;
+        motion.following = on;
+        for (auto& [id, field] : ambient.groupHalo)
+            if (field.animated) { motion.Follow(field.rimShape, on); if (!on) field.bounds = {}; }
+        for (auto& [id, light] : groupSurface.lights)
+            if (light.animated) { motion.Follow(light.visual, on); if (!on) light.visual.Size({}); }
+    }
     void AnimateGlow(std::set<uint32_t> const& groups, std::vector<uint32_t> lit, std::vector<uint32_t> const& haloLitNow,
                      std::map<uint32_t, Windows::Foundation::Rect> const& bounds, bool moving, Controls::ScrollViewer const& scroller) {
         auto& motion = ambient.motion;
@@ -514,6 +526,9 @@ struct NativeTabStrip {
             }
         }
         const bool followingMotion = joinHold.group || sourceHold.group || IsDragging() || GroupDrag().phase || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty() || (joinReach.group && !joinReach.Settled(now));
+        // Before this pass places any light, so continuous motion never
+        // starts a trailing animation.
+        if (ambient.motion.Enabled()) FollowGlow(!followingMotion);
         auto ambientViewport = viewport;
         float fadeLeft = 0, fadeRight = 0;
         // Permit container light in the strip's top padding while retaining

@@ -102,8 +102,17 @@ struct TabGlowIgnition {
         return std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
             std::chrono::duration<float, std::milli>(std::max(1.f, value)));
     }
-    static auto Decelerate(Compositor const& compositor) {
-        return compositor.CreateCubicBezierEasingFunction({.1f, .9f}, {.2f, 1.f});
+    // Light builds and settles gradually. A steep decelerate curve made
+    // each ramp jump most of the way within two frames and then crawl, and
+    // restarted just as steeply after a bloom's peak. Symmetric ease-in-out
+    // segments meet a peak with zero velocity from both sides.
+    static auto Smooth(Compositor const& compositor) {
+        return compositor.CreateCubicBezierEasingFunction({.45f, 0.f}, {.55f, 1.f});
+    }
+    // Single-segment settles (growth, re-catch, trailing): starts gently and
+    // eases out, without a front-loaded jump.
+    static auto Gentle(Compositor const& compositor) {
+        return compositor.CreateCubicBezierEasingFunction({.3f, 0.f}, {.2f, 1.f});
     }
     static auto Accelerate(Compositor const& compositor) {
         return compositor.CreateCubicBezierEasingFunction({.7f, 0.f}, {1.f, .5f});
@@ -127,8 +136,8 @@ struct TabGlowIgnition {
             auto animation = compositor.CreateColorKeyFrameAnimation();
             animation.InterpolationColorSpace(winrt::Microsoft::UI::Composition::CompositionColorSpace::Rgb);
             animation.InsertKeyFrame(0.f, Mix(final, hot, 0));
-            if (bloom != 1.f) animation.InsertKeyFrame(BloomAt, Mix(final, hot * BloomTint / HotTint, final.A * bloom), Decelerate(compositor));
-            animation.InsertKeyFrame(1.f, final, Decelerate(compositor));
+            if (bloom != 1.f) animation.InsertKeyFrame(BloomAt, Mix(final, hot * BloomTint / HotTint, final.A * bloom), Smooth(compositor));
+            animation.InsertKeyFrame(1.f, final, Smooth(compositor));
             Time(animation, delay, duration);
             stop.StartAnimation(L"Color", animation);
         }
@@ -141,7 +150,7 @@ struct TabGlowIgnition {
             radial.CenterPoint(radial.EllipseCenter());
         auto animation = compositor.CreateVector2KeyFrameAnimation();
         animation.InsertKeyFrame(0.f, {from, from});
-        animation.InsertKeyFrame(1.f, {1.f, 1.f}, Decelerate(compositor));
+        animation.InsertKeyFrame(1.f, {1.f, 1.f}, Gentle(compositor));
         Time(animation, delay, duration);
         brush.StartAnimation(L"Scale", animation);
     }
@@ -151,8 +160,8 @@ struct TabGlowIgnition {
         auto animation = compositor.CreateScalarKeyFrameAnimation();
         const float final = visual.Opacity();
         animation.InsertKeyFrame(0.f, 0.f);
-        animation.InsertKeyFrame(BloomAt, std::min(1.f, final * WashBloom), Decelerate(compositor));
-        animation.InsertKeyFrame(1.f, final, Decelerate(compositor));
+        animation.InsertKeyFrame(BloomAt, std::min(1.f, final * WashBloom), Smooth(compositor));
+        animation.InsertKeyFrame(1.f, final, Smooth(compositor));
         Time(animation, delay, duration);
         visual.StartAnimation(L"Opacity", animation);
     }
@@ -233,7 +242,7 @@ struct TabGlowIgnition {
                 if (!final.A) continue;
                 auto animation = compositor.CreateColorKeyFrameAnimation();
                 animation.InsertKeyFrame(0.f, Mix(final, 0, final.A * RecatchDip));
-                animation.InsertKeyFrame(1.f, final, Decelerate(compositor));
+                animation.InsertKeyFrame(1.f, final, Gentle(compositor));
                 Time(animation, 0, CornerDuration);
                 stop.StartAnimation(L"Color", animation);
             }
@@ -276,7 +285,7 @@ struct TabGlowIgnition {
         for (auto name : {L"EllipseCenter", L"EllipseRadius"}) {
             auto animation = compositor.CreateVector2KeyFrameAnimation();
             animation.Target(name);
-            animation.InsertExpressionKeyFrame(1.f, L"this.FinalValue", Decelerate(compositor));
+            animation.InsertExpressionKeyFrame(1.f, L"this.FinalValue", Gentle(compositor));
             animation.Duration(Ms(FollowDuration));
             follow.Insert(name, animation);
         }
@@ -284,7 +293,7 @@ struct TabGlowIgnition {
         auto animation = compositor.CreateColorKeyFrameAnimation();
         animation.Target(L"Color");
         animation.InterpolationColorSpace(winrt::Microsoft::UI::Composition::CompositionColorSpace::Rgb);
-        animation.InsertExpressionKeyFrame(1.f, L"this.FinalValue", Decelerate(compositor));
+        animation.InsertExpressionKeyFrame(1.f, L"this.FinalValue", Smooth(compositor));
         animation.Duration(Ms(TintDuration));
         tint.Insert(L"Color", animation);
     }
@@ -292,6 +301,24 @@ struct TabGlowIgnition {
     // stop cross-fades its color, and the positioned light of shape brushes
     // (pools, corner highlights, halo rings) trails geometry changes. Attach
     // only after the first color and geometry, so creation never animates.
+    // Whether positioned light trails geometry changes. Off while the strip
+    // follows continuous motion (drags, slides, joins): the strip then updates
+    // geometry every frame, and restarting a trailing animation from each
+    // update made the light jitter at the UI thread's uneven frame times.
+    bool following{true};
+    // Switch trailing for one lit shape tree. Turning it off also stops any
+    // trailing in flight; the caller then reassigns the current geometry.
+    void Follow(Visual const& visual, bool on) {
+        auto shapes = visual ? visual.try_as<ShapeVisual>() : ShapeVisual{nullptr};
+        if (!shapes) return;
+        if (on) Collections(shapes.Compositor());
+        for (uint32_t index = 0; index < shapes.Shapes().Size(); ++index) {
+            auto brush = BrushOf(shapes, index);
+            if (!brush || !brush.try_as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>()) continue;
+            brush.ImplicitAnimations(on ? follow : nullptr);
+            if (!on) { brush.StopAnimation(L"EllipseCenter"); brush.StopAnimation(L"EllipseRadius"); }
+        }
+    }
     void Attach(Visual const& visual, bool on) {
         if (!visual) return;
         if (on) Collections(visual.Compositor());
@@ -305,7 +332,7 @@ struct TabGlowIgnition {
                 if (!brush) continue;
                 stops(brush);
                 if (brush.try_as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>())
-                    brush.ImplicitAnimations(on ? follow : nullptr);
+                    brush.ImplicitAnimations(on && following ? follow : nullptr);
             }
             return;
         }

@@ -2867,6 +2867,22 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 Require(pool.ColorStops().GetAt(0).Color().A == 48 && pool.Scale() == winrt::Windows::Foundation::Numerics::float2{1, 1} &&
                     brushOf(light, 0).ColorStops().GetAt(0).Color().A == 84 && brushOf(ring, 0).ColorStops().GetAt(0).Color().A == 36 &&
                     wash.Opacity() == .65f, "a completed light-up settles at the same light as a group lit without motion");
+                // Continuous motion: positioned light follows geometry directly
+                // rather than restarting a trailing animation every frame.
+                auto dragHook = reinterpret_cast<HRESULT(WINAPI*)(HWND, BOOL)>(GetProcAddress(module,"WinUIPaneTestSetDragging"));
+                auto refreshHook = reinterpret_cast<HRESULT(WINAPI*)(HWND)>(GetProcAddress(module,"WinUIPaneTestRefreshAmbient"));
+                Require(dragHook && refreshHook && SUCCEEDED(dragHook(host, TRUE)), "simulate a drag for glow trailing");
+                refreshHook(host);
+                light = outline(); pool = brushOf(light, 4);
+                Require(!pool.ImplicitAnimations() && !brushOf(light, 0).ImplicitAnimations() && !brushOf(ring, 0).ImplicitAnimations() &&
+                    std::abs(pool.EllipseCenter().x - .22f * light.Size().x) < .5f && pool.ColorStops().GetAt(0).ImplicitAnimations(),
+                    "during continuous motion, light follows geometry directly while colors still cross-fade");
+                Require(SUCCEEDED(dragHook(host, FALSE)), "end the simulated drag");
+                refreshHook(host); settle();
+                light = outline(); pool = brushOf(light, 4);
+                Require(pool.ImplicitAnimations() && brushOf(ring, 0).ImplicitAnimations() &&
+                    std::abs(pool.EllipseCenter().x - .22f * light.Size().x) < .5f,
+                    "once motion settles, one-off geometry changes trail again");
                 setColor(personal);
                 settle();
                 Require(!query(0) && query(1) == 0 && washStop().Color().R == ((personal >> 16) & 0xff) &&
