@@ -442,15 +442,28 @@ struct InlineTabGroups {
         // Unrealized rows are estimated the same way ItemsStackPanel does.
         const double tabExtent = measured / loaded * tabs.size();
         const double others = std::max(0.0, extent - tabExtent);
-        const double slot = (space - others) / tabs.size();
         const double average = measured / loaded;
+        double scale = 1;
+        try { if (auto root = tabs.front().XamlRoot()) scale = std::max(1.0, root.RasterizationScale()); } catch (...) {}
+        // Split the space in whole physical pixels: the first `extra` tabs take
+        // one pixel more. Flooring every tab alone leaves up to tabs.size()
+        // pixels unused, and that remainder changes with each tab count, so the
+        // New Tab button would drift from the strip's end as tabs are added.
+        // Rounding up per tab would reintroduce the overflow this cap removes.
+        const auto totalPx = int64_t(std::floor(std::max(0.0, space - others) * scale + 1e-6));
+        const auto count = int64_t(tabs.size());
         double expected = others;
+        int64_t index = 0;
         for (auto& row : tabs) {
             const auto margin = row.Margin();
-            // Round down: layout rounding up by one pixel would reintroduce
-            // the overflow this cap removes.
-            const double cap = std::clamp(std::floor(slot - margin.Left - margin.Right), minTab, maxTab);
+            const double slot = double(totalPx / count + (index++ < totalPx % count ? 1 : 0)) / scale;
+            const double cap = std::clamp(slot - margin.Left - margin.Right, minTab, maxTab);
             if (std::abs(row.MaxWidth() - cap) > .5) row.MaxWidth(cap);
+            // TabView's Equal mode writes its own Width, which caps a tab that
+            // was given a spare pixel. A matching minimum pins the split exactly
+            // while the tabs fill the strip and restores the stock minimum after.
+            const double floorWidth = cap < maxTab ? cap : minTab;
+            if (std::abs(row.MinWidth() - floorWidth) > .01) row.MinWidth(floorWidth);
             const double desired = row.DesiredSize().Width;
             expected += std::min(desired > 0 ? desired : average, cap + margin.Left + margin.Right);
         }
