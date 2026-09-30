@@ -1177,6 +1177,10 @@ struct NativeTabStrip {
     // window's own id for the tab being acted on, or 0 when the gesture names
     // no tab of this window's (an incoming adopt names the source window's).
     std::function<uint64_t(uint32_t tab, hstring const& action)> dispatch;
+    // Work-accounting hooks for the drop round trip: release commits a reorder,
+    // and the drop is over once Firefox's snapshot places the tab. Unset when
+    // accounting is off.
+    std::function<void()> dropCommitted, dropLanded;
     // Only peer object lifetimes stay native. Rust owns tickets, request
     // outcomes and source departure tokens until their UI effects are applied.
     struct TransferPeer { NativeTabStrip* source; std::weak_ptr<int> lifetime; };
@@ -2369,6 +2373,7 @@ struct NativeTabStrip {
         const auto request = CompleteReorderAt(row, beforeRow, ungroup);
         if (shell_core_tab_drag_commit(core, request, beforeId) != SHELL_STATUS_OK)
             shell_core_tab_drag_end(core, true);
+        else if (request && dropCommitted) dropCommitted();
         ReconcileDrag();
         RestoreRowVisibility(tabId);
         return true;
@@ -3026,6 +3031,7 @@ struct NativeTabStrip {
                 bool landed = false;
                 shell_core_tab_drag_publish(core, order.data(), order.size(), &landed);
                 if (landed) {
+                    if (dropLanded) dropLanded();
                     tabDragHeaders.Reset();
                     for (auto id : drag.affectedRowIds) {
                         if (!rows.count(id)) continue;

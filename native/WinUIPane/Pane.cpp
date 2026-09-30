@@ -174,7 +174,7 @@ struct WorkScope {
 // What it does NOT say: that DWM composited that frame to the screen. It says
 // XAML rendered after the change. That is strictly closer to presentation than
 // publication is, and it is as far as this can be taken from inside the pane.
-enum Stage : size_t { StageWakeup, StageExecute, StageTotal, StagePresent };
+enum Stage : size_t { StageWakeup, StageExecute, StageTotal, StagePresent, StageDrop };
 // A mean is the wrong summary here and saying so is cheaper than being
 // corrected by it: the distribution is bimodal, because a modal dialog or a
 // blocked queue legitimately holds a request for as long as it holds it. These
@@ -205,6 +205,9 @@ inline StageWork* requestLatency() {
     static StageWork stages[]{
         {{L"wakeup", 0, 0, 0}, {}, 0, 0, 0},  {{L"execute", 0, 0, 0}, {}, 0, 0, 0},
         {{L"total", 0, 0, 0}, {}, 0, 0, 0},   {{L"present", 0, 0, 0}, {}, 0, 0, 0},
+        // Release of a tab reorder until Firefox's snapshot places the tab: the
+        // span a dropped tab sits on its preview transform before it snaps.
+        {{L"drop", 0, 0, 0}, {}, 0, 0, 0},
         {{nullptr, 0, 0, 0}, {}, 0, 0, 0},
     };
     return stages;
@@ -238,6 +241,14 @@ inline void RecordPumpGap() {
         if (gap > kPumpStallMs) pumpStallTotal() += gap;
     }
     last = now;
+}
+inline double& dropCommittedAt() {
+    static double value = 0.0;
+    return value;
+}
+inline double& dropStallAtCommit() {
+    static double value = 0.0;
+    return value;
 }
 inline void RecordStage(size_t stage, double elapsed, uint32_t excluded = NotExcluded, double stalled = 0.0) {
     auto& record = requestLatency()[stage];
@@ -942,6 +953,18 @@ struct Pane {
             // carries the presentation revision it was formed against, so one
             // formed against a superseded presentation is refused by Firefox
             // rather than silently dropped here.
+            if (WorkAccountingEnabled()) {
+                strip->dropCommitted = [] {
+                    dropCommittedAt() = NowMs();
+                    dropStallAtCommit() = pumpStallTotal();
+                };
+                strip->dropLanded = [] {
+                    if (dropCommittedAt() <= 0.0) return;
+                    RecordStage(StageDrop, NowMs() - dropCommittedAt(), NotExcluded,
+                                pumpStallTotal() - dropStallAtCommit());
+                    dropCommittedAt() = 0.0;
+                };
+            }
             strip->dispatch = [this](uint32_t id, hstring const& action) {
                 return Enqueue(NativeShellCore::StripAction, id, strip->presentationRevision, action);
             };
