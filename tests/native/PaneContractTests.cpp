@@ -2956,11 +2956,18 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     light = outline(); pool = brushOf(light, 4);
                 }
                 setColor(personal);
+                Require(waitFor([&] { return query(0) == 1; }) && bottomGlow.Children().Count() == 2 &&
+                    spill.Children().Count() == 2 && outlineChild() && outlineChild().Comment() == L"group-outline-recolor",
+                    "a recolor spreads the new color over copies in the old color from the primary pool");
+                Require(waitFor([&] { return query(0) == 0; }), "the recolor completes");
                 settle();
-                Require(!query(0) && query(1) == 0 && washStop().Color().R == ((personal >> 16) & 0xff) &&
+                Require(query(1) == 0 && bottomGlow.Children().Count() == 1 && spill.Children().Count() == 1 && outline() &&
+                    washStop().Color().R == ((personal >> 16) & 0xff) && washStop().ImplicitAnimations() &&
                     pool.ColorStops().GetAt(0).Color().G == ((personal >> 8) & 0xff) && pool.ColorStops().GetAt(0).Color().A == 48,
-                    "recoloring cross-fades in place without lighting up or dimming");
-                setColor(research); settle();
+                    "after a recolor only the new color remains, at its usual strength, with cross-fades reattached");
+                setColor(research);
+                Require(waitFor([&] { return query(0) == 0 && bottomGlow.Children().Count() == 1; }), "the color is restored");
+                settle();
                 setOption(L"groupHalo", false);
                 Require(waitFor([&] { return query(1) >= 1; }) && halo.Children().Count() == 1 && bottomGlow.Children().Count() == 1,
                     "turning the halo off dims only the halo");

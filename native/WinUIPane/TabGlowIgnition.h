@@ -173,15 +173,18 @@ struct TabGlowIgnition {
     }
     // A reveal front: a white radial mask, opaque out to 1 - RevealEdge of its
     // radius and clear at the radius. Its static radius is the final one, so
-    // without the animation the light is simply fully revealed.
+    // without the animation the light is simply fully revealed. `inverse` is
+    // its complement (clear inside, opaque beyond), for what the front replaces.
     static winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush Front(
-        Compositor const& compositor, winrt::Windows::Foundation::Numerics::float2 center, float radius) {
+        Compositor const& compositor, winrt::Windows::Foundation::Numerics::float2 center, float radius,
+        bool inverse = false) {
         auto brush = compositor.CreateRadialGradientBrush();
         brush.MappingMode(winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute);
         brush.EllipseCenter(center);
         brush.EllipseRadius({radius, radius});
         for (auto [offset, alpha] : {std::pair{0.f, 255}, {1.f - RevealEdge, 255}, {1.f, 0}})
-            brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(alpha), 255, 255, 255}));
+            brush.ColorStops().Append(compositor.CreateColorGradientStop(offset,
+                {uint8_t(inverse ? 255 - alpha : alpha), 255, 255, 255}));
         return brush;
     }
     // The radius that reaches every corner of `size` from `center` with the

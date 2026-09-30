@@ -182,6 +182,8 @@ struct NativeTabStrip {
     // background.
     static constexpr float HoverFadeMs = 400;
     std::map<uint32_t, Controls::Grid> fadedTabs;
+    // Lit groups whose color changed this refresh (glow motion).
+    std::vector<uint32_t> pendingRecolors;
     void FadeTabBackgrounds(bool on) {
         if (!on) {
             for (auto& [id, container] : fadedTabs) container.BackgroundTransition(nullptr);
@@ -205,7 +207,8 @@ struct NativeTabStrip {
                 if (field.animated) { ambient.motion.Attach(field.Root(), false); field.animated = false; }
         for (auto& [id, light] : groupSurface.lights)
             if (light.animated) { ambient.motion.Attach(light.visual, false); light.animated = false; }
-        ambient.EndReveals(); groupSurface.EndReveals();
+        ambient.EndReveals(); ambient.EndRecolors(); groupSurface.EndReveals();
+        pendingRecolors.clear();
         FadeTabBackgrounds(false);
         glowSettled.clear();
     }
@@ -262,6 +265,26 @@ struct NativeTabStrip {
         }
         for (auto id : haloLitNow)
             if (std::find(lit.begin(), lit.end(), id) == lit.end()) motion.IgniteHalo(id, haloOf(id));
+        // A recolor's fronts grow like a light-up's; the old color gives way.
+        for (auto id : std::exchange(pendingRecolors, {})) {
+            auto rect = bounds.find(id);
+            if (rect == bounds.end() || !ambient.recolors.count(id)) { ambient.EndRecolor(id); continue; }
+            const auto area = revealArea(rect->second);
+            const Windows::Foundation::Numerics::float2 origin{rect->second.X + TabGlowIgnition::OriginX * rect->second.Width,
+                                                               rect->second.Y + TabGlowIgnition::OriginY * rect->second.Height};
+            const float radius = TabGlowIgnition::Reach({origin.x - area.X, origin.y - area.Y}, {area.Width, area.Height});
+            auto fronts = ambient.BeginRecolor(id, origin, radius);
+            for (auto const& outline : groupSurface.BeginRecolor(id, ambient.recolors.at(id).color)) fronts.push_back(outline);
+            motion.Reveal(id, fronts, 0, [this, id, alive = std::weak_ptr<int>(lifetime)] {
+                if (alive.expired()) return;
+                ambient.EndRecolor(id); groupSurface.EndReveal(id);
+                // Reattach the stop cross-fades to the restored brushes.
+                for (auto* fields : {&ambient.groups, &ambient.groupSpill})
+                    if (auto field = fields->find(id); field != fields->end()) {
+                        ambient.motion.Attach(field->second.Root(), true); field->second.animated = true;
+                    }
+            });
+        }
         FadeTabBackgrounds(!ambient.reveals.empty());
         // Implicit motion attaches after a field's first color and geometry,
         // so creating or re-realizing a field never animates from nothing.
@@ -745,23 +768,50 @@ struct NativeTabStrip {
             if (bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
             groups.insert(id);
             if (!ambient.accessibility.HighContrast()) outlineColors.emplace(id, color);
-            ambient.Put(ambient.groups, id, color, bounds, false);
-            auto& field = ambient.groups.at(id);
-            // A soft wash belongs inside the rounded group, not under each tab
-            // divider or beyond the ends of the new shared surface.
-            if (field.visual.Opacity() != .65f) field.visual.Opacity(.65f);
-            if (!field.roundedClip) {
-                auto compositor = field.visual.Compositor();
-                field.roundedClip = compositor.CreateRoundedRectangleGeometry();
-                field.visual.Clip(compositor.CreateGeometricClip(field.roundedClip));
+            // A lit group changing color spreads the new color over the old
+            // (glow motion): stop the per-stop cross-fade so the new color
+            // applies at once beneath the reveal, and keep old-color copies.
+            const auto shown = ambient.groups.find(id);
+            const uint32_t previousColor = shown == ambient.groups.end() ? 0 : shown->second.color;
+            if (previousColor && previousColor != color && ambient.motion.Enabled() && glowLit.ids.count(id) &&
+                !ambient.reveals.count(id) && !ambient.recolors.count(id)) {
+                for (auto* fields : {&ambient.groups, &ambient.groupSpill})
+                    if (auto field = fields->find(id); field != fields->end() && field->second.animated) {
+                        ambient.motion.Attach(field->second.Root(), false); field->second.animated = false;
+                    }
+                if (auto light = groupSurface.lights.find(id); light != groupSurface.lights.end() && light->second.animated) {
+                    ambient.motion.Attach(light->second.visual, false); light->second.animated = false;
+                }
+                ambient.recolors[id].color = previousColor;
+                pendingRecolors.push_back(id);
             }
             const auto radius = float(groupSurface.surfaces.at(id).CornerRadius().TopLeft);
-            const Windows::Foundation::Numerics::float2 size{bounds.Width, bounds.Height}, corners{radius, radius};
-            if (field.roundedClip.Size() != size) field.roundedClip.Size(size);
-            if (field.roundedClip.CornerRadius() != corners) field.roundedClip.CornerRadius(corners);
-            ambient.Spill(ambient.groupSpill, id, color, bounds, false);
-            auto spill = ambient.groupSpill.at(id).visual;
-            if (spill.Opacity() != .65f) spill.Opacity(.65f);
+            auto placeWash = [&](std::map<uint32_t, TabAmbient::Field>& fields, uint32_t tint) {
+                ambient.Put(fields, id, tint, bounds, false);
+                auto& field = fields.at(id);
+                // A soft wash belongs inside the rounded group, not under each tab
+                // divider or beyond the ends of the new shared surface.
+                if (field.visual.Opacity() != .65f) field.visual.Opacity(.65f);
+                if (!field.roundedClip) {
+                    auto compositor = field.visual.Compositor();
+                    field.roundedClip = compositor.CreateRoundedRectangleGeometry();
+                    field.visual.Clip(compositor.CreateGeometricClip(field.roundedClip));
+                }
+                const Windows::Foundation::Numerics::float2 size{bounds.Width, bounds.Height}, corners{radius, radius};
+                if (field.roundedClip.Size() != size) field.roundedClip.Size(size);
+                if (field.roundedClip.CornerRadius() != corners) field.roundedClip.CornerRadius(corners);
+            };
+            auto placeSpill = [&](std::map<uint32_t, TabAmbient::Field>& fields, uint32_t tint) {
+                ambient.Spill(fields, id, tint, bounds, false);
+                auto spill = fields.at(id).visual;
+                if (spill.Opacity() != .65f) spill.Opacity(.65f);
+            };
+            placeWash(ambient.groups, color);
+            placeSpill(ambient.groupSpill, color);
+            if (auto recolor = ambient.recolors.find(id); recolor != ambient.recolors.end()) {
+                placeWash(ambient.retiringWash, recolor->second.color);
+                placeSpill(ambient.retiringSpill, recolor->second.color);
+            }
             if (groupHalo) ambient.Halo(id, color, bounds, radius);
         }
         // Decide which groups newly lit or went out before lighting and
@@ -789,7 +839,7 @@ struct NativeTabStrip {
         for (auto id : gone) {
             if (TabGlowIgnition::Diagnostics() && ambient.reveals.count(id))
                 fprintf(stderr, "WinUIPane glow reveal cancelled group=%u at=%.1f\n", id, TabGlowIgnition::Now());
-            ambient.EndReveal(id); groupSurface.EndReveal(id);
+            ambient.EndReveal(id); ambient.EndRecolor(id); groupSurface.EndReveal(id);
         }
         groupSurface.Lighting(outlineColors, &ambient.motion, gone);
         groupSurface.Depart(&ambient.motion, gone);

@@ -105,6 +105,53 @@ struct TabAmbient {
         else RevealLayout();
     }
     void EndReveals() { while (!reveals.empty()) EndReveal(reveals.begin()->first); }
+
+    // Recolor (glow motion): the group's wash and spill keep a copy in the
+    // old color (`retiringWash`, `retiringSpill`, placed by the strip like the
+    // live fields). Before the blur, the live sprites are masked by a front
+    // growing from the primary pool and the copies by its complement, so the
+    // new color spreads over the old with a blurred boundary.
+    struct Recolor { uint32_t color{}; std::vector<std::pair<Sprite, winrt::Microsoft::UI::Composition::CompositionBrush>> masked; };
+    std::map<uint32_t, Recolor> recolors;
+    std::map<uint32_t, Field> retiringWash, retiringSpill;
+    static std::vector<Sprite> Painted(Field const& field) {
+        std::vector<Sprite> sprites;
+        for (auto sprite : {field.left, field.middle, field.right}) if (sprite && sprite.Brush()) sprites.push_back(sprite);
+        if (sprites.empty() && field.visual && field.visual.Brush()) sprites.push_back(field.visual);
+        return sprites;
+    }
+    std::vector<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush> BeginRecolor(uint32_t id,
+            winrt::Windows::Foundation::Numerics::float2 origin, float radius) {
+        std::vector<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush> fronts;
+        auto recolor = recolors.find(id);
+        if (recolor == recolors.end()) return fronts;
+        auto compositor = output.Compositor();
+        auto mask = [&](Field const& field, bool inverse) {
+            const auto base = field.visual.Offset();
+            for (auto const& sprite : Painted(field)) {
+                const auto offset = sprite == field.visual ? winrt::Windows::Foundation::Numerics::float3{} : sprite.Offset();
+                const winrt::Windows::Foundation::Numerics::float2 center{origin.x - base.x - offset.x, origin.y - base.y - offset.y};
+                auto front = TabGlowIgnition::Front(compositor, center, radius, inverse);
+                auto masked = compositor.CreateMaskBrush();
+                masked.Source(sprite.Brush()); masked.Mask(front);
+                recolor->second.masked.emplace_back(sprite, sprite.Brush());
+                sprite.Brush(masked);
+                fronts.push_back(front);
+            }
+        };
+        for (auto* fields : {&groups, &groupSpill}) if (auto field = fields->find(id); field != fields->end()) mask(field->second, false);
+        for (auto* fields : {&retiringWash, &retiringSpill}) if (auto field = fields->find(id); field != fields->end()) mask(field->second, true);
+        return fronts;
+    }
+    void EndRecolor(uint32_t id) {
+        auto recolor = recolors.find(id);
+        if (recolor == recolors.end()) return;
+        for (auto const& [sprite, brush] : recolor->second.masked) sprite.Brush(brush);
+        recolors.erase(recolor);
+        if (auto field = retiringWash.find(id); field != retiringWash.end()) { bottom.Children().Remove(field->second.visual); retiringWash.erase(field); }
+        if (auto field = retiringSpill.find(id); field != retiringSpill.end()) { spill.Children().Remove(field->second.visual); retiringSpill.erase(field); }
+    }
+    void EndRecolors() { while (!recolors.empty()) EndRecolor(recolors.begin()->first); }
     // The mask surface matches the output; outside the revealing areas it
     // carries the edge fade unchanged.
     void RevealLayout() {
