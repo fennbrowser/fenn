@@ -136,7 +136,8 @@ test("multiselection republishes grouping eligibility as row deltas without rebu
   const tabs = [1, 2].map(() => ({isConnected:true, visible:true, hasAttribute:() => false}));
   const browser = {tabs, selectedTabs:[tabs[0]], tabGroups:[], getIcon:() => ""};
   const context = {
-    window:{addEventListener() {}, docShell:{usePrivateBrowsing:false}},
+    window:{addEventListener() {}},
+    PrivateBrowsingUtils:{isWindowPrivate:() => false},
     document:{documentElement:{matches:() => false}},
     gBrowser:browser,
     Services:{prefs:{getBoolPref:() => true, getIntPref:() => 240, getStringPref:(_name, fallback) => fallback}},
@@ -195,13 +196,14 @@ test("window adoption validates the source tab and privacy", () => {
   function adoptionFixture() {
     let callbacks;
     const tab = {closing:false, _pendingPermitUnload:false};
-    const sourceWindow = {docShell:{usePrivateBrowsing:false,
+    const sourceWindow = {private:false, docShell:{
       treeOwner:{QueryInterface:() => ({nativeHandle:"0x1234"})}},
       gBrowser:{tabs:[tab]},
       gWinUIPane:{resolveStripTab: id => id === 7 ? tab : null,
         stripSession:{revision:4, windowDragSession:12}}};
     const adopted = [];
-    const context = {window:{addEventListener() {}, docShell:{usePrivateBrowsing:false}},
+    const context = {window:{addEventListener() {}},
+      PrivateBrowsingUtils:{isWindowPrivate:win => win === sourceWindow && sourceWindow.private},
       Ci:{nsIBaseWindow:{}}, Services:{wm:{getEnumerator:() => [sourceWindow]}},
       gBrowser:{adoptTab:(...args) => { adopted.push(args); return {}; }},
       ChromeUtils:{importESModule:() => ({WinUITabStripSession:class {
@@ -216,7 +218,7 @@ test("window adoption validates the source tab and privacy", () => {
   assert.equal(accepted.adopt(), true);
   assert.equal(accepted.adopted[0][0], accepted.tab);
   for (const change of [
-    f => { f.sourceWindow.docShell.usePrivateBrowsing = true; },
+    f => { f.sourceWindow.private = true; },
     f => { f.sourceWindow.gWinUIPane.resolveStripTab = () => null; },
   ]) {
     const f = adoptionFixture();

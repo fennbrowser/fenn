@@ -9,7 +9,8 @@ test("glows are opt-in and both appearance preferences publish live deltas", () 
   const key = "widget.windows.winui-prototype.tabstrip.containerDot";
   const glowKey = "widget.windows.winui-prototype.tabstrip.glows";
   const context = {
-    window:{addEventListener() {}, docShell:{usePrivateBrowsing:false}},
+    window:{addEventListener() {}},
+    PrivateBrowsingUtils:{isWindowPrivate:() => false},
     document:{documentElement:{matches:() => false}},
     gBrowser:{tabs:[], selectedTabs:[], tabGroups:[]},
     Services:{prefs:{getBoolPref:(name, fallback) => name === key ? dots ?? fallback : name === glowKey ? glows ?? fallback : fallback,
@@ -48,7 +49,8 @@ test("strip backdrop preference is validated and publishes a live delta", () => 
   let backdrop;
   const key = "widget.windows.winui-prototype.tabstrip.backdrop";
   const context = {
-    window:{addEventListener() {}, docShell:{usePrivateBrowsing:false}},
+    window:{addEventListener() {}},
+    PrivateBrowsingUtils:{isWindowPrivate:() => false},
     document:{documentElement:{matches:() => false}},
     gBrowser:{tabs:[], selectedTabs:[], tabGroups:[]},
     Services:{prefs:{getBoolPref:(_name, fallback) => fallback, getIntPref:(_name, fallback) => fallback,
@@ -83,7 +85,8 @@ test("group reach preference is validated and publishes a live delta", () => {
   let reach;
   const key = "widget.windows.winui-prototype.tabstrip.groupReach";
   const context = {
-    window:{addEventListener() {}, docShell:{usePrivateBrowsing:false}},
+    window:{addEventListener() {}},
+    PrivateBrowsingUtils:{isWindowPrivate:() => false},
     document:{documentElement:{matches:() => false}},
     gBrowser:{tabs:[], selectedTabs:[], tabGroups:[]},
     Services:{prefs:{getBoolPref:(_name, fallback) => fallback, getIntPref:(_name, fallback) => fallback,
@@ -118,7 +121,8 @@ test("group halo is opt-in and its preference publishes a live delta", () => {
   let halo;
   const key = "widget.windows.winui-prototype.tabstrip.groupHalo";
   const context = {
-    window:{addEventListener() {}, docShell:{usePrivateBrowsing:false}},
+    window:{addEventListener() {}},
+    PrivateBrowsingUtils:{isWindowPrivate:() => false},
     document:{documentElement:{matches:() => false}},
     gBrowser:{tabs:[], selectedTabs:[], tabGroups:[]},
     Services:{prefs:{getBoolPref:(name, fallback) => name === key ? halo ?? fallback : fallback,
@@ -149,7 +153,8 @@ test("group glow animations are opt-in and their preference publishes a live del
   let animations;
   const key = "widget.windows.winui-prototype.tabstrip.groupGlowAnimations";
   const context = {
-    window:{addEventListener() {}, docShell:{usePrivateBrowsing:false}},
+    window:{addEventListener() {}},
+    PrivateBrowsingUtils:{isWindowPrivate:() => false},
     document:{documentElement:{matches:() => false}},
     gBrowser:{tabs:[], selectedTabs:[], tabGroups:[]},
     Services:{prefs:{getBoolPref:(name, fallback) => name === key ? animations ?? fallback : fallback,
@@ -180,7 +185,8 @@ test("group glow fade-out is opt-in and its preference publishes a live delta", 
   let fadeOut;
   const key = "widget.windows.winui-prototype.tabstrip.groupGlowFadeOut";
   const context = {
-    window:{addEventListener() {}, docShell:{usePrivateBrowsing:false}},
+    window:{addEventListener() {}},
+    PrivateBrowsingUtils:{isWindowPrivate:() => false},
     document:{documentElement:{matches:() => false}},
     gBrowser:{tabs:[], selectedTabs:[], tabGroups:[]},
     Services:{prefs:{getBoolPref:(name, fallback) => name === key ? fadeOut ?? fallback : fallback,
