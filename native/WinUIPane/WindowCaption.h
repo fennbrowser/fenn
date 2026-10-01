@@ -113,7 +113,9 @@ struct NativeWindowCaption {
         if (bar.PreferredTheme() != theme) bar.PreferredTheme(theme);
         const auto scale = root.XamlRoot() ? root.XamlRoot().RasterizationScale() : GetDpiForWindow(owner) / 96.0;
         const bool rtl = root.FlowDirection() == FlowDirection::RightToLeft;
-        const double extra = trailing ? trailingWidth : 0;
+        // File Explorer leaves a wider empty drag area before its trailing controls.
+        constexpr double kDragGap = 24;
+        const double extra = trailing ? trailingWidth + kDragGap : 0;
         const double left = (rtl ? bar.RightInset() : bar.LeftInset()) / scale + (rtl ? extra : 0);
         const double right = (rtl ? bar.LeftInset() : bar.RightInset()) / scale + (rtl ? 0 : extra);
         if (trailing) {
@@ -122,6 +124,10 @@ struct NativeWindowCaption {
             if (Controls::Grid::GetColumn(trailing) != column) Controls::Grid::SetColumn(trailing, column);
             const auto side = rtl ? HorizontalAlignment::Right : HorizontalAlignment::Left;
             if (trailing.HorizontalAlignment() != side) trailing.HorizontalAlignment(side);
+            // The gap sits before the button, which stays grouped with the system buttons.
+            const Thickness margin = rtl ? Thickness{0, 0, kDragGap, 0} : Thickness{kDragGap, 0, 0, 0};
+            const auto current = trailing.Margin();
+            if (current.Left != margin.Left || current.Right != margin.Right) trailing.Margin(margin);
         }
         if (leftInset.Width().Value != left) leftInset.Width({left, GridUnitType::Pixel});
         if (rightInset.Width().Value != right) rightInset.Width({right, GridUnitType::Pixel});
