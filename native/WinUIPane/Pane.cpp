@@ -1399,14 +1399,37 @@ void ResolveDragDrop(Pane& sourcePane, Pane* hitPane, POINT screenPoint) {
     }
 }
 
+// The top-level window a person sees at `screenPoint`, as a drop target
+// would resolve it. Skips the source window and its owned popups, and windows
+// that are both layered and input-transparent: the drag's own preview and the
+// shell's snap overlay are such windows and never take a drop.
+HWND VisibleRootAt(POINT screenPoint, HWND source) {
+    for (HWND window = GetTopWindow(nullptr); window; window = GetWindow(window, GW_HWNDNEXT)) {
+        if (!IsWindowVisible(window) || IsIconic(window) || GetAncestor(window, GA_ROOTOWNER) == source) continue;
+        const auto style = GetWindowLongPtrW(window, GWL_EXSTYLE);
+        if ((style & WS_EX_LAYERED) && (style & WS_EX_TRANSPARENT)) continue;
+        BOOL cloaked = FALSE;
+        if (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) continue;
+        // Top-level window rectangles include invisible resize borders.
+        RECT bounds{};
+        if (FAILED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS, &bounds, sizeof(bounds))) &&
+            !GetWindowRect(window, &bounds)) continue;
+        if (PtInRect(&bounds, screenPoint)) return GetAncestor(window, GA_ROOTOWNER);
+    }
+    return nullptr;
+}
+
 // The other pane whose strip claims `screenPoint`, if any. Never the source,
-// a hidden or minimized window, or a window the gesture just left.
+// a hidden or minimized window, or a strip another window covers there.
 Pane* ForeignStripAt(Pane& sourcePane, TabDragSession const& session, POINT screenPoint) {
     for (auto& entry : state().panes) {
         if (!entry.second->strip || entry.second.get() == &sourcePane || !entry.second->appliedVisible ||
             !IsWindowVisible(entry.first) || IsIconic(entry.first)) continue;
         RECT bounds = entry.second->StripScreenBounds();
-        if (PtInRect(&bounds, screenPoint)) return entry.second.get();
+        if (!PtInRect(&bounds, screenPoint)) continue;
+        if (VisibleRootAt(screenPoint, GetAncestor(sourcePane.parent, GA_ROOT)) != GetAncestor(entry.first, GA_ROOT))
+            return nullptr;
+        return entry.second.get();
     }
     return nullptr;
 }

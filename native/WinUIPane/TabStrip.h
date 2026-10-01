@@ -41,6 +41,10 @@ struct NativeTabStrip {
     Controls::TabView view{nullptr};
     Controls::Border groupIndicator{nullptr};
     Microsoft::UI::Dispatching::DispatcherQueueTimer groupTimer{nullptr};
+    // Ticks an armed or live tab drag. Once XAML has the pointer, WinUI can
+    // deliver input inside Gecko's PeekMessage without returning a message,
+    // so the pump's Translate hook alone may not run until release.
+    Microsoft::UI::Dispatching::DispatcherQueueTimer tabDragTimer{nullptr};
     uint32_t groupingDelay{240}, groupCandidate{}, armedGroupTarget{};
     uint32_t joinGroup{}, joinTarget{};
     bool joinBefore{};
@@ -1473,6 +1477,22 @@ struct NativeTabStrip {
         if (core) shell_core_tab_drag_state(core, &state);
         return state;
     }
+    void StartTabDragTimer() {
+        if (!tabDragTimer) {
+            tabDragTimer = root.DispatcherQueue().CreateTimer();
+            tabDragTimer.Interval(std::chrono::milliseconds(16));
+            tabDragTimer.Tick([this, alive = std::weak_ptr<int>(lifetime)](auto const& timer, auto const&) {
+                if (alive.expired()) return;
+                // Like the pump's Translate hook: an exception escaping a
+                // timer callback would fail-fast the browser.
+                try {
+                    if (Drag().phase == DragPhase::None) { timer.Stop(); return; }
+                    if (tickDragSession) tickDragSession();
+                } catch (...) {}
+            });
+        }
+        tabDragTimer.Start();
+    }
     bool ArmDrag(uint32_t tab, Windows::Foundation::Point point) {
         groupSlide.Cancel();
         return core && shell_core_tab_drag_arm(core, tab, point.X, point.Y) == SHELL_STATUS_OK;
@@ -1712,6 +1732,7 @@ struct NativeTabStrip {
         groupDragVisual.Hide();
         StopGroupSelectionGuard();
         if (groupTimer) groupTimer.Stop();
+        if (tabDragTimer) tabDragTimer.Stop();
         lifetime.reset();
         if (core) shell_core_transfer_cancel(core);
         try { ReconcileTransfers(); } catch (...) { /* An island may also be closing. */ }
@@ -3436,6 +3457,7 @@ struct NativeTabStrip {
                                 if (!ArmDrag(id, point.Position())) return;
                                 if (!row.CapturePointer(args.Pointer())) { FinishDrag(id); return; }
                                 ::SetCapture(ownerHwnd);
+                                StartTabDragTimer();
                             })),
                         true);
                     row.AddHandler(
