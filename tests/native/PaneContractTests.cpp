@@ -1789,8 +1789,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         return nullptr;
     };
     for (int width : {600, 400, 820, 1200}) {
-        // The list-all-tabs button takes 46 DIPs of the tab area's width.
-        rect.right = width + 46;
+        // The list-all-tabs button and the 40-DIP drag gap before it take
+        // 86 DIPs of the tab area's width. Without the gap, 400 left a
+        // viewport narrower than one minimum-width tab.
+        rect.right = width + 46 + 40;
         Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "resize grouped strip across overflow threshold");
         settle();
         const auto bounds = addButton.TransformToVisual(root).TransformBounds(
@@ -3246,9 +3248,20 @@ static void CheckGroupNeighbors(WinUIPaneApi& api, HWND host) {
             INPUT mouse{}; mouse.type=INPUT_MOUSE; mouse.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
             SendInput(1,&mouse,sizeof(mouse)); settle();
             SetCursorPos((source.left+source.right)/2+(rtl ? -8 : 8),y); settle();
-            auto header=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-8");
-            auto first=TabScreenBounds(host,L"FirefoxWinUITab-33");
-            auto last=TabScreenBounds(host,L"FirefoxWinUITab-44");
+            // The lifted group's collapse can still be landing here, and the
+            // three reads are separate UIA round trips: the header can come
+            // from the frame before it and the members from the frame after.
+            // Take the baseline once two consecutive reads agree.
+            RECT header{},first{},last{};
+            for (int attempt=0;attempt<40;++attempt) {
+                const auto h=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-8");
+                const auto a=TabScreenBounds(host,L"FirefoxWinUITab-33");
+                const auto b=TabScreenBounds(host,L"FirefoxWinUITab-44");
+                const bool same=h.left==header.left && a.left==first.left && b.left==last.left;
+                header=h; first=a; last=b;
+                if (same) break;
+                settle();
+            }
             for (int sweep=0;sweep<4;++sweep) {
                 const auto midpoint=rtl ? (last.left+header.right)/2 : (header.left+last.right)/2;
                 auto x=midpoint+(sweep%2 ? -8 : 8)*(rtl ? -1 : 1);
