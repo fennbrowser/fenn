@@ -496,8 +496,13 @@ struct NativeTabStrip {
                 total.Width = right - total.X; total.Height = bottom - total.Y;
             }
         };
+        // A torn-off group is drawn only by its floating window. Its button
+        // stays laid out under the transparent overlay, so leave its outline
+        // and light out explicitly rather than relying on element opacity.
+        const auto groupDrag = GroupDrag();
+        const uint32_t tornOff = groupDrag.phase == 2 && groupDrag.detaching ? groupDrag.group : 0;
         for (auto const& slot : groupLayout) {
-            if (!slot.group) continue;
+            if (!slot.group || slot.group == tornOff) continue;
             auto run = inlineGroups.runs.find(slot.group);
             // Keep the collapsed disclosure connected to Firefox's retained
             // active member. Hidden members never enlarge the lighting.

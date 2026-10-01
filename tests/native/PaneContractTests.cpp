@@ -3747,7 +3747,8 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
 // A detach scenario instead pulls the group header well below the strip:
 // Release asks Firefox for strip-group-detach at the release point; Return comes
 // back over the strip first and must not detach; Sole puts every tab in the
-// group, which has nothing to leave behind and never tears off.
+// group, which still detaches (Firefox closes the emptied window). Off the
+// strip the group's outline and glow are not drawn in it.
 enum class GroupDetach { None, Release, Return, Sole };
 static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND host, bool pickup = false,
                                      GroupDetach detach = GroupDetach::None) {
@@ -3767,7 +3768,7 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
     }
     uint32_t selected{};
     Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), pickup ? 112 : 11, &selected)), "group edge tabs");
-    MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(5000 + (pickup ? 1 : 0) + 2 * int(detach)) + L",\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false}],\"rows\":[" + rows + L"],\"layout\":[" + layout + L"]}}").c_str());
+    MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(5000 + (pickup ? 1 : 0) + 2 * int(detach)) + L",\"rtl\":false" + std::wstring(detach != GroupDetach::None ? L",\"groupGlow\":true" : L"") + L",\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false,\"color\":4281558681}],\"rows\":[" + rows + L"],\"layout\":[" + layout + L"]}}").c_str());
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
     UIElement content{nullptr};
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect group edge strip");
@@ -3798,13 +3799,15 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
     send(MOUSEEVENTF_LEFTDOWN); settle();
     moveTo(start.x + 12, start.y); settle();
     if (detach != GroupDetach::None) {
+        auto glowMotion = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t, uint32_t*)>(GetProcAddress(module, "WinUIPaneTestGlowMotion"));
+        auto decoration = [&] { uint32_t drawn{}; Require(glowMotion && SUCCEEDED(glowMotion(host, 5, 7, &drawn)), "inspect group decoration"); return drawn; };
+        Require(decoration() == 3, "a group lifted inside the strip keeps its outline and glow");
         const POINT away{start.x + 40, start.y + 160};
         for (int step = 1; step <= 10; ++step) { moveTo(start.x + 12 + (away.x - start.x - 12) * step / 10, start.y + (away.y - start.y) * step / 10); settle(5); }
         settle(40);
         auto previews = DragPreviewWindows();
-        if (detach == GroupDetach::Sole) {
-            Require(previews.empty() || !IsWindowVisible(previews[0]), "a group holding every tab never shows a tear-off window");
-        } else {
+        Require(decoration() == 0, "a torn-off group leaves no outline or glow in the strip");
+        {
             Require(previews.size() == 1 && IsWindowVisible(previews[0]), "a group pulled off the strip follows the cursor in a floating window");
             RECT shown{};
             GetWindowRect(previews[0], &shown);
@@ -3816,19 +3819,20 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
             settle(20);
             previews = DragPreviewWindows();
             Require(previews.empty() || !IsWindowVisible(previews[0]), "returning over the strip hides the floating group");
+            Require(decoration() == 3, "returning over the strip restores the group's outline and glow");
         }
         send(MOUSEEVENTF_LEFTUP); settle();
         Require(DragPreviewWindows().empty(), "release destroys the floating group window");
-        auto event = NextRequest(api, host, 5, L"strip-group-detach", detach == GroupDetach::Release ? 40 : 10).GetNamedObject(L"action", nullptr);
-        if (detach == GroupDetach::Release) {
+        auto event = NextRequest(api, host, 5, L"strip-group-detach", detach == GroupDetach::Return ? 10 : 40).GetNamedObject(L"action", nullptr);
+        if (detach != GroupDetach::Return) {
             Require(event && event.GetNamedNumber(L"group") == 7 && event.GetNamedNumber(L"session") >= 0 &&
                     event.GetNamedNumber(L"screenX") == away.x && event.GetNamedNumber(L"screenY") == away.y,
                     "releasing a torn-off group asks Firefox to move it to a new window at the release point");
-            puts("CHECKS PASSED: group tear-off requests a new window");
+            puts(detach == GroupDetach::Sole ? "CHECKS PASSED: a group holding every tab tears off into a new window"
+                                             : "CHECKS PASSED: group tear-off requests a new window");
         } else {
-            Require(!event, "a group released over the strip, or holding every tab, is not detached");
-            puts(detach == GroupDetach::Sole ? "CHECKS PASSED: a group holding every tab does not tear off"
-                                             : "CHECKS PASSED: a group brought back over the strip does not detach");
+            Require(!event, "a group released over the strip is not detached");
+            puts("CHECKS PASSED: a group brought back over the strip does not detach");
         }
         return;
     }

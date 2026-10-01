@@ -2232,18 +2232,12 @@ pub unsafe extern "C" fn shell_core_group_drag_update(core:*mut ShellCore,x:f64,
 }
 /// Classify whether the group has been pulled off its strip, after
 /// `shell_core_group_drag_update` for the same view-local point. `width` and
-/// `height` are the strip view's size. A group holding every published tab
-/// never detaches.
+/// `height` are the strip view's size.
 /// # Safety
 /// Live core.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_group_drag_detach(core:*mut ShellCore,x:f64,y:f64,width:f64,height:f64)->ShellStatus {
-    guard(core,|core| {
-        if core.queue.is_closed() { return ShellStatus::Closed; }
-        let group=core.queue.group_drag.state().group;
-        let sole=core.strip.layout().iter().all(|s| s.group==group);
-        if core.queue.group_drag.classify(x,y,width,height,sole) { ShellStatus::Ok } else { ShellStatus::InvalidArgument }
-    })
+    queue_guard(core,|q| if q.group_drag.classify(x,y,width,height) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
 }
 /// Logical-axis visual offset for a whole group or ungrouped-tab block.
 /// # Safety
@@ -2283,9 +2277,8 @@ mod group_drag_ffi_tests {
         assert_eq!(shell_core_group_drag_offset(core,0,f64::NAN,&mut offset),ShellStatus::InvalidArgument);
         assert_eq!(shell_core_group_drag_offset(core,0,40.,&mut offset),ShellStatus::Ok);
         assert_eq!(offset,0.);
-        // An empty layout counts as "every tab is in this group".
         assert_eq!(shell_core_group_drag_detach(core,8.,200.,300.,40.),ShellStatus::Ok);
-        shell_core_group_drag_state(core,&mut state); assert!(!state.detaching);
+        shell_core_group_drag_state(core,&mut state); assert!(state.detaching);
         assert_eq!(shell_core_group_drag_detach(core,f64::NAN,0.,300.,40.),ShellStatus::InvalidArgument);
         let handle=core as usize;
         assert_eq!(std::thread::spawn(move || shell_core_group_drag_end(handle as *mut ShellCore)).join().unwrap(),ShellStatus::WrongThread);

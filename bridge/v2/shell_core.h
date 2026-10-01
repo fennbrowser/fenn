@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 21
+#define SHELL_CORE_ABI_VERSION 22
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -1174,8 +1174,7 @@ ShellStatus shell_core_group_drag_update(ShellCore *core,
 /*
  Classify whether the group has been pulled off its strip, after
  `shell_core_group_drag_update` for the same view-local point. `width` and
- `height` are the strip view's size. A group holding every published tab
- never detaches.
+ `height` are the strip view's size.
  # Safety
  Live core.
  */

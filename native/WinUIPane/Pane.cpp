@@ -2698,7 +2698,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestRefreshAmbient(HWND
 // Test-only: inspect opt-in group glow motion. 0: is `value` lighting up;
 // 1: visuals still dimming; 2: force system animations off (0), on (1) or
 // back to the system setting (2); 3: edge re-catches so far; 4: total width
-// of the tab faces standing in for empty drag slots in group surfaces.
+// of the tab faces standing in for empty drag slots in group surfaces;
+// 5: group `value`'s drawn decoration, 1 for its outline and 2 for its glow.
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGlowMotion(HWND hwnd, uint32_t operation, uint32_t value, uint32_t* result) noexcept {
     try {
         check_hresult(Check(hwnd));
@@ -2715,6 +2716,11 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGlowMotion(HWND hwn
             break;
         case 3: *result = uint32_t(motion.recatches); break;
         case 4: *result = uint32_t(found->second->strip->slotFaceWidth + .5f); break;
+        case 5: {
+            auto& strip = *found->second->strip;
+            *result = (strip.groupSurface.surfaces.count(value) ? 1u : 0u) | (strip.ambient.groups.count(value) ? 2u : 0u);
+            break;
+        }
         default: return E_INVALIDARG;
         }
         return S_OK;

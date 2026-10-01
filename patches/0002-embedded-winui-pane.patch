@@ -3941,10 +3941,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..cd67c31e30
+index 0000000000..663a7db05e
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1776 @@
+@@ -0,0 +1,1783 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4655,13 +4655,20 @@ index 0000000000..cd67c31e30
 +          return true;
 +        },
 +        // The native strip's whole-group tear-off: Firefox's own group drag
-+        // hands the group to a new window the same way. screenX/screenY are
-+        // physical pixels; window features take screen CSS pixels.
++        // hands the group to a new window the same way. A group holding every
++        // tab moves too; adoption closes the emptied window. screenX/screenY
++        // are physical pixels; window features take screen CSS pixels.
 +        detachGroup: (group, { screenX, screenY }) => {
 +          if (gDialogBox.isOpen || !group?.isConnected || !gBrowser.tabGroups.includes(group) ||
-+              !group.tabs.length || group.tabs.some(t => t.closing) ||
-+              gBrowser.tabs.every(t => t.closing || group.tabs.includes(t))) return false;
++              !group.tabs.length || group.tabs.some(t => t.closing)) return false;
 +          const scale = window.devicePixelRatio;
++          if (gBrowser.tabs.length == 1) {
++            // replaceTabWithWindow keeps a window's last tab; Firefox's own
++            // drag moves the window instead, so do the same.
++            window.moveTo(Math.round(screenX / scale), Math.round(screenY / scale));
++            window.focus();
++            return true;
++          }
 +          gBrowser.recordTabMetrics(gBrowser.TabMetrics.METRIC_ACTION.DETACH,
 +            gBrowser.TabMetrics.userTriggeredContext(gBrowser.TabMetrics.METRIC_SOURCE.DRAG_AND_DROP),
 +            { tabCount: group.tabs.length });

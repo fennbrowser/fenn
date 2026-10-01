@@ -79,11 +79,11 @@ impl GroupDrag {
         true
     }
     /// Classify tear-off with the same bounded margin a single tab uses.
-    /// `sole` means the group holds every strip tab: there is nothing to
-    /// leave behind, so it never detaches.
-    pub fn classify(&mut self, x:f64, y:f64, width:f64, height:f64, sole:bool)->bool {
+    /// A group holding every tab still detaches: Firefox's new window adopts
+    /// it and the emptied source window closes, as with its own group drag.
+    pub fn classify(&mut self, x:f64, y:f64, width:f64, height:f64)->bool {
         if ![x,y,width,height].into_iter().all(finite) || width<0. || height<0. { return false; }
-        self.state.detaching = self.state.phase==2 && !sole && height>0. &&
+        self.state.detaching = self.state.phase==2 && height>0. &&
             (x < -height || x > width+height || y < -height || y > height*2.);
         if self.state.detaching { self.state.valid=false; }
         true
@@ -175,27 +175,25 @@ mod tests {
         d.wait(12,1,2,0); d.complete(12,false); assert!(!d.state().awaiting);
         d.wait(13,1,2,0); d.publish(&[]); assert!(!d.state().awaiting);
     }
-    #[test] fn detaching_uses_tab_margin_closes_gap_and_never_detaches_a_sole_group() {
+    #[test] fn detaching_uses_tab_margin_and_closes_gap() {
         let mut d=GroupDrag::default(); d.arm(1,10.,10.);
-        assert!(d.classify(10.,10.,300.,40.,false)); assert!(!d.state().detaching); // armed only
+        assert!(d.classify(10.,10.,300.,40.)); assert!(!d.state().detaching); // armed only
         d.update(280.,10.,true,&slots()); assert!(d.state().valid);
         for (x,y) in [(280.,80.),(280.,79.9),(-40.,10.),(340.,10.),(280.,-40.)] {
-            d.update(x,y,false,&slots()); d.classify(x,y,300.,40.,false);
+            d.update(x,y,false,&slots()); d.classify(x,y,300.,40.);
             assert!(!d.state().detaching,"{x},{y}");
         }
         for (x,y) in [(280.,80.1),(-40.1,10.),(340.1,10.),(280.,-40.1)] {
-            d.update(x,y,false,&slots()); d.classify(x,y,300.,40.,false);
+            d.update(x,y,false,&slots()); d.classify(x,y,300.,40.);
             assert!(d.state().detaching,"{x},{y}"); assert!(!d.state().valid);
             assert_eq!(d.offset(1,40.),Some(0.));
         }
         // Back over the strip reorders again.
-        d.update(280.,10.,true,&slots()); d.classify(280.,10.,300.,40.,false);
+        d.update(280.,10.,true,&slots()); d.classify(280.,10.,300.,40.);
         assert!(!d.state().detaching); assert!(d.state().valid);
-        d.update(280.,200.,false,&slots()); d.classify(280.,200.,300.,40.,true);
-        assert!(!d.state().detaching);
-        d.classify(280.,200.,300.,0.,false); assert!(!d.state().detaching);
-        assert!(!d.classify(f64::NAN,0.,300.,40.,false));
-        assert!(!d.classify(0.,0.,-1.,40.,false));
+        d.classify(280.,200.,300.,0.); assert!(!d.state().detaching);
+        assert!(!d.classify(f64::NAN,0.,300.,40.));
+        assert!(!d.classify(0.,0.,-1.,40.));
         d.end(); assert!(!d.state().detaching);
     }
     #[test] fn threshold_boundaries_and_noop() {
