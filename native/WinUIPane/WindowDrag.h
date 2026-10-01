@@ -200,6 +200,7 @@ struct NativeWindowDrag {
                 }
             }
             if ((msg == WM_CANCELMODE && !self->endingForMerge) || (msg == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE)) self->cancelled = true;
+            if (msg == WM_ACTIVATE && self->strip) self->strip->allTabs.SetWindowActive(LOWORD(w) != WA_INACTIVE);
             if (msg == WM_CAPTURECHANGED && self->inMove && l && HWND(l) != hwnd) self->cancelled = true;
             if (msg == WM_WINDOWPOSCHANGED && self->strip) {
                 self->strip->captionDirty = true;

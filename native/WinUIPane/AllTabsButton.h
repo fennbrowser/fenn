@@ -7,6 +7,12 @@ struct AllTabsButton {
     static constexpr double kWidth = 46;
     Controls::Button button{nullptr};
 
+    // System caption glyphs dim while the window is inactive; mirror that on the
+    // glyph only so the hover wash keeps its normal strength.
+    void SetWindowActive(bool active) {
+        if (auto glyph = button.Content().try_as<UIElement>()) glyph.Opacity(active ? 1.0 : 0.6);
+    }
+
     AllTabsButton() {
         button = Markup::XamlReader::Load(
             LR"x(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Width="46" Height="32" MinWidth="0" Padding="0" CornerRadius="0" BorderThickness="0" VerticalAlignment="Top" HorizontalAlignment="Left" Visibility="Collapsed" ToolTipService.ToolTip="List all tabs" AutomationProperties.Name="List all tabs" AutomationProperties.AutomationId="FirefoxWinUIAllTabs">
