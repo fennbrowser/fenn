@@ -3953,7 +3953,7 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..4b6cb19d96
+index 0000000000..41fecf00ed
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,1796 @@
@@ -4707,7 +4707,7 @@ index 0000000000..4b6cb19d96
 +          const sourceWindow = this.stripSourceWindow(sourceHwnd);
 +          const sourceStrip = sourceWindow?.gWinUIPane?.stripSession;
 +          if (gDialogBox.isOpen || !sourceStrip || sourceWindow === window ||
-+              sourceWindow.docShell.usePrivateBrowsing !== window.docShell.usePrivateBrowsing ||
++              PrivateBrowsingUtils.isWindowPrivate(sourceWindow) !== PrivateBrowsingUtils.isWindowPrivate(window) ||
 +              sourceStrip.windowDragSession !== sourceSession) return false;
 +          const group = sourceStrip.targets?.get(id);
 +          if (!group?.isConnected || !sourceWindow.gBrowser.tabGroups.includes(group) || !group.tabs.length ||
@@ -4837,7 +4837,7 @@ index 0000000000..4b6cb19d96
 +          const sourceWindow = this.stripSourceWindow(sourceHwnd);
 +          const tab = sourceWindow?.gWinUIPane?.resolveStripTab(id);
 +          if (!tab || sourceWindow === window ||
-+              sourceWindow.docShell.usePrivateBrowsing !== window.docShell.usePrivateBrowsing) return false;
++              PrivateBrowsingUtils.isWindowPrivate(sourceWindow) !== PrivateBrowsingUtils.isWindowPrivate(window)) return false;
 +          const adopted = gBrowser.adoptTab(tab, { elementIndex: index, selectTab: true });
 +          return !!adopted;
 +        },
@@ -5103,7 +5103,7 @@ index 0000000000..4b6cb19d96
 +      groupGlowAnimations: Services.prefs.getBoolPref(this.groupGlowAnimationsPref, false),
 +      groupGlowFadeOut: Services.prefs.getBoolPref(this.groupGlowFadeOutPref, false),
 +      rtl: document.documentElement.matches(":dir(rtl)"),
-+      windowDragPrivate: !!window.docShell.usePrivateBrowsing,
++      windowDragPrivate: PrivateBrowsingUtils.isWindowPrivate(window),
 +      groupsLabel:label("tab-groups-list-title"), labels: this.nativeLabels(), groups, rows, layout };
 +  },
 +
