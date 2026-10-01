@@ -3,20 +3,23 @@
 // Only WinUI objects live here; gesture and insertion decisions live in Rust.
 struct GroupDragVisual {
     Controls::Canvas layer{nullptr};
-    Controls::Border backing{nullptr}, placeholder{nullptr};
+    // The moving button sits in `chip`, whose themed backing keeps underlying
+    // tab labels from showing through; the tear-off snapshot captures it whole.
+    Controls::Border chip{nullptr}, placeholder{nullptr};
     Controls::Button button{nullptr};
     Windows::Foundation::Collections::IObservableMap<hstring,Windows::Foundation::IInspectable> model{nullptr};
     Windows::Foundation::IInspectable localDirection{nullptr};
     Thickness margin{};
     double grabX{}, top{};
+    bool detached{};
     Microsoft::UI::Dispatching::DispatcherQueueTimer timer{nullptr};
     void Create(Controls::Grid const& root) {
         if (layer) return;
         layer = Markup::XamlReader::Load(LR"(
 <Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" IsHitTestVisible="False" FlowDirection="LeftToRight" AutomationProperties.AccessibilityView="Raw">
- <Border Background="{ThemeResource TabViewItemHeaderDragBackground}" CornerRadius="4"/>
+ <Border Background="{ThemeResource TabViewItemHeaderDragBackground}" CornerRadius="4" Visibility="Collapsed"/>
 </Canvas>)").as<Controls::Canvas>();
-        backing = layer.Children().GetAt(0).as<Controls::Border>();
+        chip = layer.Children().GetAt(0).as<Controls::Border>();
         layer.Visibility(Visibility::Collapsed);
         Controls::Grid::SetColumnSpan(layer,3);
         Controls::Canvas::SetZIndex(layer,20);
@@ -45,7 +48,8 @@ struct GroupDragVisual {
         layer.XamlRoot().Content().as<FrameworkElement>().UpdateLayout();
         button.Margin(Thickness{0,0,0,0});
         button.FlowDirection(direction);
-        layer.Children().Append(button);
+        chip.Child(button);
+        chip.Visibility(Visibility::Visible);
         layer.Visibility(Visibility::Visible);
     }
     void Show(double x, double left, double width) {
@@ -53,20 +57,24 @@ struct GroupDragVisual {
         if (button) {
             const auto buttonWidth=button.ActualWidth();
             const auto position=std::clamp(x-grabX,left,std::max(left,left+width-buttonWidth));
-            Controls::Canvas::SetLeft(button,position);
-            Controls::Canvas::SetTop(button,top);
-            // SubtleButtonStyle is transparent at rest. Keep underlying tab
-            // labels from showing through the actual button while it moves.
-            backing.Width(buttonWidth); backing.Height(button.ActualHeight());
-            Controls::Canvas::SetLeft(backing,position);
-            Controls::Canvas::SetTop(backing,top);
+            Controls::Canvas::SetLeft(chip,position);
+            Controls::Canvas::SetTop(chip,top);
         }
+    }
+    // A torn-off group is drawn by the floating window instead. Opacity, not
+    // Visibility: the chip must stay laid out for its snapshot, and capturing
+    // a descendant excludes the layer's own opacity.
+    void Detach(bool value) {
+        if (detached==value || !layer) return;
+        detached=value;
+        layer.Opacity(value ? 0 : 1);
     }
     void Hide() {
         if (timer) timer.Stop();
+        Detach(false);
         if (button) {
-            uint32_t index;
-            if (layer.Children().IndexOf(button,index)) layer.Children().RemoveAt(index);
+            if (chip.Child()==button) chip.Child(nullptr);
+            chip.Visibility(Visibility::Collapsed);
             button.Margin(margin);
             if (localDirection==DependencyProperty::UnsetValue()) button.ClearValue(FrameworkElement::FlowDirectionProperty());
             else button.SetValue(FrameworkElement::FlowDirectionProperty(),localDirection);

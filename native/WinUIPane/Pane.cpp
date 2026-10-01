@@ -1483,15 +1483,20 @@ winrt::fire_and_forget RenderTearoffAsync(Controls::TabViewItem row, HWND popup,
 // hit-testable by anything (WS_EX_TRANSPARENT), so it can never interfere
 // with the geometric hit-testing TickDragSession does against every pane's
 // own StripScreenBounds().
+bool CreateTearoffWindow(TabDragSession& session) {
+    EnsureTearoffClassRegistered();
+    session.tearoffWindow =
+        CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, kTearoffClassName,
+                         L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!session.tearoffWindow) return false;
+    ShowWindow(session.tearoffWindow, SW_SHOWNOACTIVATE);
+    SetWindowPos(session.tearoffWindow, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    return true;
+}
+
 void ShowOrMoveTearoff(TabDragSession& session, POINT screenPoint) {
     if (!session.tearoffWindow) {
-        EnsureTearoffClassRegistered();
-        session.tearoffWindow =
-            CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, kTearoffClassName,
-                             L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
-        if (!session.tearoffWindow) return;
-        ShowWindow(session.tearoffWindow, SW_SHOWNOACTIVATE);
-        SetWindowPos(session.tearoffWindow, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        if (!CreateTearoffWindow(session)) return;
         if (session.sourceStrip && session.sourceStrip->rows.count(session.tabId))
             RenderTearoffAsync(session.sourceStrip->rows.at(session.tabId), session.tearoffWindow,
                                 std::weak_ptr<int>(session.lifetime));
@@ -1500,6 +1505,51 @@ void ShowOrMoveTearoff(TabDragSession& session, POINT screenPoint) {
     POINT topLeft{screenPoint.x - session.tearoffWidth / 2, screenPoint.y - session.tearoffHeight / 2};
     TabDragImage::PaintDragVisual(session.tearoffWindow, session.tearoffBitmap, session.tearoffWidth,
                                    session.tearoffHeight, topLeft);
+}
+
+// A whole group's tear-off snapshot: the overlay chip carrying the actual
+// group button and its themed backing, captured once it first leaves the strip.
+winrt::fire_and_forget RenderGroupTearoffAsync(FrameworkElement chip, HWND popup, std::weak_ptr<int> alive) {
+    int width{}, height{};
+    uint64_t bitmap{};
+    try {
+        bitmap = co_await TabDragImage::RenderElementToBitmapAsync(chip, &width, &height);
+    } catch (...) {
+        if (DiagnosticsEnabled()) fprintf(stderr, "WinUIPane group drag capture failed hr=0x%08X\n", unsigned(winrt::to_hresult()));
+        co_return;
+    }
+    auto& session = dragSession();
+    if (alive.expired() || !bitmap || session.tearoffWindow != popup) {
+        if (bitmap) DeleteObject(HBITMAP(bitmap));
+        co_return;
+    }
+    session.tearoffBitmap = HBITMAP(bitmap);
+    session.tearoffWidth = width;
+    session.tearoffHeight = height;
+}
+
+// Off the strip the group follows the cursor in a floating window, keeping
+// the grab point; back over it, the in-strip chip takes over again. The chip
+// stays visible until the snapshot is ready, so there is never a blank frame.
+void UpdateGroupTearoff(TabDragSession& session, POINT screenPoint, bool detaching) {
+    auto& visual = session.sourceStrip->groupDragVisual;
+    if (!detaching || !visual.button || !visual.chip) {
+        if (session.tearoffWindow) ShowWindow(session.tearoffWindow, SW_HIDE);
+        visual.Detach(false);
+        return;
+    }
+    if (!session.tearoffWindow) {
+        if (!CreateTearoffWindow(session)) return;
+        RenderGroupTearoffAsync(visual.chip, session.tearoffWindow, std::weak_ptr<int>(session.lifetime));
+    }
+    if (!session.tearoffBitmap) return;
+    const double scale = visual.chip.XamlRoot() ? visual.chip.XamlRoot().RasterizationScale() : 1.0;
+    const int grab = std::clamp(int(visual.grabX * scale), 0, session.tearoffWidth);
+    POINT topLeft{screenPoint.x - grab, screenPoint.y - session.tearoffHeight / 2};
+    TabDragImage::PaintDragVisual(session.tearoffWindow, session.tearoffBitmap, session.tearoffWidth,
+                                   session.tearoffHeight, topLeft);
+    if (!IsWindowVisible(session.tearoffWindow)) ShowWindow(session.tearoffWindow, SW_SHOWNOACTIVATE);
+    visual.Detach(true);
 }
 
 // Resolves an ended gesture (button no longer physically down) against
@@ -1569,7 +1619,9 @@ void TickDragSession() {
         const bool cancel=(GetAsyncKeyState(VK_ESCAPE)&0x8000)!=0 || GetForegroundWindow()!=sourcePane.parent ||
             (session.sourceStrip->GroupDrag().phase==2 && GetCapture()!=sourcePane.parent) || !sourcePane.appliedVisible;
         session.sourceStrip->TickGroupDrag(sourcePane.ScreenToStrip(point),down,cancel);
-        if (!session.sourceStrip->GroupDrag().phase) AbortDragSession();
+        const auto group = session.sourceStrip->GroupDrag();
+        if (!group.phase) { AbortDragSession(); return; }
+        UpdateGroupTearoff(session, point, group.phase == 2 && group.detaching);
         return;
     }
     if (session.sourceStrip->Drag().phase == NativeTabStrip::DragPhase::None) {

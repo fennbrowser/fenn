@@ -957,7 +957,21 @@ struct NativeTabStrip {
         // the scroll position through both.
         if (state.phase==2) groupScrollHold=GetTickCount64()+600;
         if (state.phase==2 || (state.phase && !commit)) inlineGroups.suppressClick=state.group;
-        if (commit && state.phase==2 && state.valid && dispatch) {
+        if (commit && state.phase==2 && state.detaching && dispatch) {
+            // Firefox opens the new window at the release point; like a tab
+            // detach, the group stays here until that window adopts it.
+            POINT screenPoint{};
+            GetCursorPos(&screenPoint);
+            using Value=Windows::Data::Json::JsonValue;
+            Windows::Data::Json::JsonObject action;
+            action.SetNamedValue(L"kind",Value::CreateStringValue(L"strip-group-detach"));
+            action.SetNamedValue(L"revision",Value::CreateNumberValue(presentationRevision));
+            action.SetNamedValue(L"session",Value::CreateNumberValue(windowDragSession));
+            action.SetNamedValue(L"group",Value::CreateNumberValue(state.group));
+            action.SetNamedValue(L"screenX",Value::CreateNumberValue(double(screenPoint.x)));
+            action.SetNamedValue(L"screenY",Value::CreateNumberValue(double(screenPoint.y)));
+            dispatch(0,action.Stringify());
+        } else if (commit && state.phase==2 && state.valid && dispatch) {
             using Value=Windows::Data::Json::JsonValue;
             Windows::Data::Json::JsonObject action;
             action.SetNamedValue(L"kind",Value::CreateStringValue(L"strip-group-reorder"));
@@ -1039,7 +1053,8 @@ struct NativeTabStrip {
                 slot.end=entry->second.second-scroll;
             }
         }
-        if (shell_core_group_drag_update(core,point.X,point.Y,inside,viewport.X,viewport.X+viewport.Width,slots.data(),slots.size())!=SHELL_STATUS_OK) { EndGroupDrag(); return; }
+        if (shell_core_group_drag_update(core,point.X,point.Y,inside,viewport.X,viewport.X+viewport.Width,slots.data(),slots.size())!=SHELL_STATUS_OK ||
+            shell_core_group_drag_detach(core,point.X,point.Y,view.ActualWidth(),view.ActualHeight())!=SHELL_STATUS_OK) { EndGroupDrag(); return; }
         const auto state=GroupDrag();
         if (state.phase==2) {
             if (old.phase==1) {

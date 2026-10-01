@@ -3730,7 +3730,14 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
 // past the scroller's own viewport, over the trailing New Tab area. With
 // `pickup`, only lifts the group while the active tab is at the far end: the
 // collapse must not scroll the strip to the active tab.
-static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND host, bool pickup = false) {
+//
+// A detach scenario instead pulls the group header well below the strip:
+// Release asks Firefox for strip-group-detach at the release point; Return comes
+// back over the strip first and must not detach; Sole puts every tab in the
+// group, which has nothing to leave behind and never tears off.
+enum class GroupDetach { None, Release, Return, Sole };
+static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND host, bool pickup = false,
+                                     GroupDetach detach = GroupDetach::None) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     RECT rect{0, 0, 600, 48};
@@ -3743,11 +3750,11 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
     for (uint32_t id = 101; id <= 112; ++id) {
         tabs.push_back({id, L"Overflow"});
         rows += L",{\"id\":" + std::to_wstring(id) + L",\"detail\":\"\",\"flags\":0}";
-        layout += L",{\"group\":0,\"tab\":" + std::to_wstring(id) + L"}";
+        layout += L",{\"group\":" + std::wstring(detach == GroupDetach::Sole ? L"7" : L"0") + L",\"tab\":" + std::to_wstring(id) + L"}";
     }
     uint32_t selected{};
     Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), pickup ? 112 : 11, &selected)), "group edge tabs");
-    MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::wstring(pickup ? L"5001" : L"5000") + L",\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false}],\"rows\":[" + rows + L"],\"layout\":[" + layout + L"]}}").c_str());
+    MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(5000 + (pickup ? 1 : 0) + 2 * int(detach)) + L",\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false}],\"rows\":[" + rows + L"],\"layout\":[" + layout + L"]}}").c_str());
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
     UIElement content{nullptr};
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect group edge strip");
@@ -3777,6 +3784,41 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
     };
     send(MOUSEEVENTF_LEFTDOWN); settle();
     moveTo(start.x + 12, start.y); settle();
+    if (detach != GroupDetach::None) {
+        const POINT away{start.x + 40, start.y + 160};
+        for (int step = 1; step <= 10; ++step) { moveTo(start.x + 12 + (away.x - start.x - 12) * step / 10, start.y + (away.y - start.y) * step / 10); settle(5); }
+        settle(40);
+        auto previews = DragPreviewWindows();
+        if (detach == GroupDetach::Sole) {
+            Require(previews.empty() || !IsWindowVisible(previews[0]), "a group holding every tab never shows a tear-off window");
+        } else {
+            Require(previews.size() == 1 && IsWindowVisible(previews[0]), "a group pulled off the strip follows the cursor in a floating window");
+            RECT shown{};
+            GetWindowRect(previews[0], &shown);
+            Require(shown.right - shown.left > 8 && shown.top < away.y && shown.bottom > away.y &&
+                    shown.left <= away.x && shown.right >= away.x, "the floating group stays under the cursor at its grab point");
+        }
+        if (detach == GroupDetach::Return) {
+            for (int step = 1; step <= 10; ++step) { moveTo(away.x, away.y + (start.y - away.y) * step / 10); settle(5); }
+            settle(20);
+            previews = DragPreviewWindows();
+            Require(previews.empty() || !IsWindowVisible(previews[0]), "returning over the strip hides the floating group");
+        }
+        send(MOUSEEVENTF_LEFTUP); settle();
+        Require(DragPreviewWindows().empty(), "release destroys the floating group window");
+        auto event = NextRequest(api, host, 5, L"strip-group-detach", detach == GroupDetach::Release ? 40 : 10).GetNamedObject(L"action", nullptr);
+        if (detach == GroupDetach::Release) {
+            Require(event && event.GetNamedNumber(L"group") == 7 && event.GetNamedNumber(L"session") >= 0 &&
+                    event.GetNamedNumber(L"screenX") == away.x && event.GetNamedNumber(L"screenY") == away.y,
+                    "releasing a torn-off group asks Firefox to move it to a new window at the release point");
+            puts("CHECKS PASSED: group tear-off requests a new window");
+        } else {
+            Require(!event, "a group released over the strip, or holding every tab, is not detached");
+            puts(detach == GroupDetach::Sole ? "CHECKS PASSED: a group holding every tab does not tear off"
+                                             : "CHECKS PASSED: a group brought back over the strip does not detach");
+        }
+        return;
+    }
     if (pickup) {
         settle(60);
         const auto held = scroller.HorizontalOffset();
@@ -4359,6 +4401,9 @@ int wmain(int argc, wchar_t** argv) {
             // Last: its published presentation outlives the check.
             CheckGroupDragEdgeScroll(module, api, first);
             CheckGroupDragEdgeScroll(module, api, first, true);
+            CheckGroupDragEdgeScroll(module, api, first, false, GroupDetach::Release);
+            CheckGroupDragEdgeScroll(module, api, first, false, GroupDetach::Return);
+            CheckGroupDragEdgeScroll(module, api, first, false, GroupDetach::Sole);
         }
         // Section 8: no session work after a gesture completes. Every window
         // message still reaches TickDragSession, so the only way to show that

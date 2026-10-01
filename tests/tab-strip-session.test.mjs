@@ -604,3 +604,33 @@ test("whole group destination names another group without merging",()=>{
     beforeGroup:f.action.group,beforeTab:0}),true);
   assert.deepEqual(f.moves,[[other,f.target,0]]);
 });
+
+function groupDetachFixture() {
+  const f=groupDragFixture();
+  f.detaches=[];
+  f.session.detachGroup=(...args)=>f.detaches.push(args);
+  f.detach={kind:"strip-group-detach",session:f.session.windowDragSession,revision:f.session.revision,
+    group:f.action.group,screenX:900,screenY:-20};
+  return f;
+}
+test("whole group detach hands Firefox the opaque group and physical release point once",()=>{
+  const f=groupDetachFixture();
+  assert.equal(f.session.receive(f.detach),true);
+  assert.deepEqual(f.detaches,[[f.target,{screenX:900,screenY:-20}]]);
+  assert.equal(f.session.receive(f.detach),false);
+  assert.equal(f.moves.length,0);
+});
+test("whole group detach rejects stale sessions, membership, layout and malformed points",()=>{
+  for (const change of [f=>f.detach.session++,f=>f.detach.revision--,f=>f.detach.group=0,
+    f=>f.detach.group=1.5,f=>f.detach.group=99,f=>f.detach.screenX=NaN,f=>f.detach.screenY=Infinity,
+    f=>f.detach.screenX=1000001,f=>f.state.groups[0].members=[11,33],
+    f=>f.state.groups[0].target={},f=>f.state.layout.reverse(),f=>f.session.detachGroup=null]) {
+    const f=groupDetachFixture(); change(f);
+    assert.equal(f.session.receive(f.detach),false); assert.equal(f.detaches.length,0);
+  }
+});
+test("whole group detach reports Firefox refusal",()=>{
+  const f=groupDetachFixture();
+  f.session.detachGroup=()=>false;
+  assert.equal(f.session.receive(f.detach),false);
+});

@@ -2535,10 +2535,10 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..e87243b0ca
+index 0000000000..00ab6f07c2
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,239 @@
+@@ -0,0 +1,254 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2548,8 +2548,8 @@ index 0000000000..e87243b0ca
 +let nextWindowDragSession = 0;
 +
 +export class WinUITabStripSession {
-+  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup }) {
-+    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup });
++  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup, detachGroup }) {
++    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup, detachGroup });
 +    this.ids = new WeakMap();
 +    this.nextId = 1;
 +    this.revision = 0;
@@ -2641,6 +2641,21 @@ index 0000000000..e87243b0ca
 +      this.consumed = true;
 +      return this.moveGroup(this.targets.get(event.group),
 +        event.beforeGroup ? this.targets.get(event.beforeGroup) : null, event.beforeTab) !== false;
++    }
++    if (event?.kind === "strip-group-detach") {
++      // Like a tab detach, the screen point is physical pixels; Firefox owns
++      // whether the group can leave and how its new window adopts it.
++      if (this.consumed || event.session !== this.windowDragSession || event.revision !== this.revision ||
++          !this.detachGroup || !Number.isSafeInteger(event.group) || event.group <= 0 ||
++          ![event.screenX,event.screenY].every(n => Number.isFinite(n) && Math.abs(n) <= 1000000)) return false;
++      const current = this.describe();
++      const group = current.groups.find(g => g.id === event.group);
++      const old = this.state.groups.find(g => g.id === event.group);
++      if (!group || !old || !Array.isArray(group.members) || !this.same(group.members,old.members) ||
++          !this.same(current.layout,this.state.layout)) return false;
++      this.consumed = true;
++      return this.detachGroup(this.targets.get(event.group),
++        { screenX: event.screenX, screenY: event.screenY }) !== false;
 +    }
 +    if (event?.kind === "strip-all-tabs") {
 +      if (event.session !== this.windowDragSession || event.revision !== this.revision ||
@@ -3926,10 +3941,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..f78fa2e4e7
+index 0000000000..cd67c31e30
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1760 @@
+@@ -0,0 +1,1776 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4638,6 +4653,22 @@ index 0000000000..f78fa2e4e7
 +          if (target) gBrowser.moveTabBefore(group,target,options);
 +          else gBrowser.moveTabAfter(group,null,options);
 +          return true;
++        },
++        // The native strip's whole-group tear-off: Firefox's own group drag
++        // hands the group to a new window the same way. screenX/screenY are
++        // physical pixels; window features take screen CSS pixels.
++        detachGroup: (group, { screenX, screenY }) => {
++          if (gDialogBox.isOpen || !group?.isConnected || !gBrowser.tabGroups.includes(group) ||
++              !group.tabs.length || group.tabs.some(t => t.closing) ||
++              gBrowser.tabs.every(t => t.closing || group.tabs.includes(t))) return false;
++          const scale = window.devicePixelRatio;
++          gBrowser.recordTabMetrics(gBrowser.TabMetrics.METRIC_ACTION.DETACH,
++            gBrowser.TabMetrics.userTriggeredContext(gBrowser.TabMetrics.METRIC_SOURCE.DRAG_AND_DROP),
++            { tabCount: group.tabs.length });
++          return !!gBrowser.replaceTabWithWindow(group, {
++            screenX: Math.round(screenX / scale), screenY: Math.round(screenY / scale),
++            suppressanimation: 1,
++          });
 +        },
 +        openGroupMenu: (group, bounds) => {
 +          if (gDialogBox.isOpen || !group?.isConnected || !gBrowser.tabGroups.includes(group)) return false;

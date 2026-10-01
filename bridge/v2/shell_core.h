@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 20
+#define SHELL_CORE_ABI_VERSION 21
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -363,6 +363,11 @@ typedef struct {
   double marker;
   bool awaiting;
   uint64_t request;
+  /*
+   The pointer has left the strip's bounded margin: release detaches the
+   whole group into a new window instead of reordering it.
+   */
+  bool detaching;
 } ShellGroupDrag;
 
 typedef struct {
@@ -1165,6 +1170,20 @@ ShellStatus shell_core_group_drag_update(ShellCore *core,
                                          double end,
                                          const ShellGroupDragSlot *slots,
                                          uintptr_t len);
+
+/*
+ Classify whether the group has been pulled off its strip, after
+ `shell_core_group_drag_update` for the same view-local point. `width` and
+ `height` are the strip view's size. A group holding every published tab
+ never detaches.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_group_drag_detach(ShellCore *core,
+                                         double x,
+                                         double y,
+                                         double width,
+                                         double height);
 
 /*
  Logical-axis visual offset for a whole group or ungrouped-tab block.
