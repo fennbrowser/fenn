@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 23
+#define SHELL_CORE_ABI_VERSION 24
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -376,6 +376,23 @@ typedef struct {
   double start;
   double end;
 } ShellGroupDragSlot;
+
+/*
+ A group leaving this strip for another window. It stays hidden from the
+ release until Firefox publishes a layout without it, or the move fails.
+ */
+typedef struct {
+  uint32_t group;
+  /*
+   This strip's own detach request, or 0 when another window's strip
+   queued the adopt and reports a rejection itself.
+   */
+  uint64_t request;
+  /*
+   0 pending, 1 accepted (still waiting for removal), 2 failed: restore.
+   */
+  uint32_t result;
+} ShellGroupDeparture;
 
 /*
  Destination of another window's whole-group drag. Insertion is between
@@ -1205,6 +1222,42 @@ ShellStatus shell_core_group_drag_detach(ShellCore *core,
                                          double width,
                                          double height,
                                          bool foreign);
+
+/*
+ Read the group, if any, leaving this strip for another window.
+ # Safety
+ Live core and writable out.
+ */
+ShellStatus shell_core_group_departure_state(ShellCore *core, ShellGroupDeparture *out);
+
+/*
+ Keep `group` hidden while it leaves. `request` is this strip's own queued
+ detach request, or 0 when another window's strip queued the adopt.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_group_departure_begin(ShellCore *core, uint32_t group, uint64_t request);
+
+/*
+ Another window's strip reports that Firefox refused to adopt `group`.
+ # Safety
+ Live core; changed is writable.
+ */
+ShellStatus shell_core_group_departure_reject(ShellCore *core, uint32_t group, bool *changed);
+
+/*
+ After a layout publication: whether the departing group has left it.
+ # Safety
+ Live core; left is writable.
+ */
+ShellStatus shell_core_group_departure_publish(ShellCore *core, bool *left);
+
+/*
+ Forget the departure once its visuals are restored or removed.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_group_departure_end(ShellCore *core);
 
 /*
  Read this strip's state as the destination of another window's group drag.

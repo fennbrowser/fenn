@@ -652,6 +652,7 @@ struct Pane {
             strip->ReconcileTransfers();
             strip->ReconcileDrag();
             strip->ReconcileForeignGroup();
+            strip->ReconcileGroupDeparture();
         }
     }
     // Keep the Rust presentation model in step with the authoritative snapshot,
@@ -1647,12 +1648,13 @@ void TickDragSession() {
             session.hoverStrip->EndForeignGroupOver();
         session.hoverStrip = hover;
         if (hitPane && !down) {
-            // The destination queues the adopt; the source keeps its group until
-            // Firefox moves it, exactly like a tear-off.
+            // The destination queues the adopt; the source keeps the group
+            // hidden until Firefox moves it, exactly like a tear-off.
             const auto group = strip->GroupDrag().group;
             const auto width = strip->GroupDragSlotWidth();
-            hitPane->strip->AcceptForeignGroupDrop(sourcePane.parent, strip->windowDragSession, group,
-                                                   hitPane->ScreenToStrip(point), width);
+            const auto request = hitPane->strip->AcceptForeignGroupDrop(*strip, sourcePane.parent, strip->windowDragSession,
+                                                                        group, hitPane->ScreenToStrip(point), width);
+            strip->EndGroupDrag(false, request != 0);
             session.hoverStrip = nullptr;
             AbortDragSession();
             return;

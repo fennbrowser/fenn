@@ -900,6 +900,64 @@ struct NativeTabStrip {
             if (rows.count(id)) rows.at(id).Visibility(visibility);
         groupDragVisibility.clear();
     }
+    // A group leaving for another window keeps the look the drag gave it --
+    // members collapsed, header slot empty -- until Firefox publishes a layout
+    // without it, so it never pops back while the new window opens. ShellCore
+    // owns the identity and outcome; only these visuals live here.
+    std::map<uint32_t, Visibility> departVisibility;
+    uint32_t departHeader{};
+    Microsoft::UI::Dispatching::DispatcherQueueTimer departTimer{nullptr};
+    ShellGroupDeparture GroupDeparture() const {
+        ShellGroupDeparture state{};
+        if (core) shell_core_group_departure_state(core,&state);
+        return state;
+    }
+    bool DepartGroup(uint32_t group, uint64_t request) {
+        if (!core || shell_core_group_departure_begin(core,group,request)!=SHELL_STATUS_OK) return false;
+        departVisibility=std::move(groupDragVisibility);
+        groupDragVisibility.clear();
+        if (auto run=inlineGroups.runs.find(group); run!=inlineGroups.runs.end() && run->second.button) {
+            run->second.button.Opacity(0);
+            run->second.button.IsHitTestVisible(false);
+            departHeader=group;
+        }
+        // Firefox normally removes the group well within this. If it is still
+        // here, the move did not happen; show the group again.
+        if (!departTimer) {
+            departTimer=root.DispatcherQueue().CreateTimer();
+            departTimer.IsRepeating(false);
+            departTimer.Interval(std::chrono::seconds(8));
+            departTimer.Tick([this, alive=std::weak_ptr<int>(lifetime)](auto&&,auto&&) {
+                if (!alive.expired()) ReleaseGroupDeparture();
+            });
+        }
+        departTimer.Start();
+        return true;
+    }
+    void ReleaseGroupDeparture() {
+        if (departTimer) departTimer.Stop();
+        for (auto [id, visibility] : departVisibility)
+            if (rows.count(id)) rows.at(id).Visibility(visibility);
+        departVisibility.clear();
+        if (departHeader) {
+            if (auto run=inlineGroups.runs.find(departHeader); run!=inlineGroups.runs.end() && run->second.button) {
+                run->second.button.Opacity(1);
+                run->second.button.IsHitTestVisible(true);
+            }
+            departHeader=0;
+        }
+        if (core) shell_core_group_departure_end(core);
+    }
+    // After request outcomes: this strip's own detach was refused.
+    void ReconcileGroupDeparture() {
+        const auto state=GroupDeparture();
+        if (state.group && state.result==2) ReleaseGroupDeparture();
+    }
+    // Another window's strip reports that Firefox refused its adopt.
+    void RejectGroupDeparture(uint32_t group) {
+        bool changed=false;
+        if (core && shell_core_group_departure_reject(core,group,&changed)==SHELL_STATUS_OK && changed) ReleaseGroupDeparture();
+    }
     ULONGLONG groupScrollTick{}, groupScrollHold{};
     // Presentation geometry captured after the temporary collapse settles.
     // Store content-space bounds so scrolling does not feed animated transforms
@@ -944,11 +1002,19 @@ struct NativeTabStrip {
             if (auto scroll=GroupScroller(Media::VisualTreeHelper::GetChild(node,i))) return scroll;
         return nullptr;
     }
-    void EndGroupDrag(bool commit = false) {
+    // `foreign`: another window's strip queued the adopt for this group.
+    void EndGroupDrag(bool commit = false, bool foreign = false) {
         const auto state=GroupDrag();
+        // Torn off from a one-tab window, Firefox moves the window instead of
+        // handing the group over: nothing departs. Another window still adopts it.
+        size_t tabCount{}, groupTabs{};
+        for (auto slot : groupLayout) if (slot.tab) { ++tabCount; if (slot.group==state.group) ++groupTabs; }
+        const bool movesWindow=tabCount==1 && groupTabs==1;
+        const bool detach=commit && state.phase==2 && state.detaching && dispatch;
+        const bool departing=state.phase==2 && (foreign || (detach && !movesWindow));
         groupDragGeometry.clear();
         groupDragShift.Reset();
-        RestoreDraggingGroup();
+        if (!departing) RestoreDraggingGroup();
         if (!state.phase) { groupDragVisual.Hide(); return; }
         shell_core_group_drag_end(core);
         groupDragVisual.Hide();
@@ -962,9 +1028,11 @@ struct NativeTabStrip {
         // the scroll position through both.
         if (state.phase==2) groupScrollHold=GetTickCount64()+600;
         if (state.phase==2 || (state.phase && !commit)) inlineGroups.suppressClick=state.group;
-        if (commit && state.phase==2 && state.detaching && dispatch) {
-            // Firefox opens the new window at the release point; like a tab
-            // detach, the group stays here until that window adopts it.
+        if (foreign) {
+            if (!departing || !DepartGroup(state.group,0)) RestoreDraggingGroup();
+        } else if (detach) {
+            // Firefox opens the new window at the release point; the group stays
+            // hidden here until that window adopts it.
             POINT screenPoint{};
             GetCursorPos(&screenPoint);
             using Value=Windows::Data::Json::JsonValue;
@@ -975,7 +1043,8 @@ struct NativeTabStrip {
             action.SetNamedValue(L"group",Value::CreateNumberValue(state.group));
             action.SetNamedValue(L"screenX",Value::CreateNumberValue(double(screenPoint.x)));
             action.SetNamedValue(L"screenY",Value::CreateNumberValue(double(screenPoint.y)));
-            dispatch(0,action.Stringify());
+            const auto request=dispatch(0,action.Stringify());
+            if (!departing || !request || !DepartGroup(state.group,request)) RestoreDraggingGroup();
         } else if (commit && state.phase==2 && state.valid && dispatch) {
             using Value=Windows::Data::Json::JsonValue;
             Windows::Data::Json::JsonObject action;
@@ -1110,6 +1179,8 @@ struct NativeTabStrip {
     // ShellCore picks an insertion point between whole blocks and holds the
     // gap after the drop; only the WinUI transforms live here.
     GroupDragShift foreignGroupShift;
+    // The window a held adopt takes its group from, told if Firefox refuses.
+    struct ForeignGroupSource { NativeTabStrip* strip{}; std::weak_ptr<int> lifetime; uint32_t group{}; } foreignGroupSource;
     ShellForeignGroup ForeignGroup() const {
         ShellForeignGroup state{};
         if (core) shell_core_group_foreign_state(core,&state);
@@ -1166,11 +1237,14 @@ struct NativeTabStrip {
     // Releases a held gap once Firefox has rejected the adopt.
     void ReconcileForeignGroup() {
         const auto state=ForeignGroup();
+        if (state.result==2 && foreignGroupSource.strip && !foreignGroupSource.lifetime.expired())
+            foreignGroupSource.strip->RejectGroupDeparture(foreignGroupSource.group);
+        if (!state.active || state.result!=0) foreignGroupSource={};
         if (!state.active || state.result==2) EndForeignGroupOver();
     }
     // Queues the adopt on this window's transport. The group ID belongs to the
     // source window's session, which Firefox resolves from its HWND.
-    uint64_t AcceptForeignGroupDrop(HWND sourceHwnd, uint32_t sourceSession, uint32_t group,
+    uint64_t AcceptForeignGroupDrop(NativeTabStrip& source, HWND sourceHwnd, uint32_t sourceSession, uint32_t group,
                                     Windows::Foundation::Point point, double width) {
         if (!dispatch || !ForeignGroupOver(point,width)) { EndForeignGroupOver(true); return 0; }
         const auto target=ForeignGroup();
@@ -1186,6 +1260,7 @@ struct NativeTabStrip {
         action.SetNamedValue(L"beforeTab",Value::CreateNumberValue(target.before_tab));
         const auto request=dispatch(0,action.Stringify());
         if (!request || shell_core_group_foreign_hold(core,request)!=SHELL_STATUS_OK) EndForeignGroupOver(true);
+        else foreignGroupSource={&source,source.lifetime,group};
         return request;
     }
 
@@ -1467,7 +1542,8 @@ struct NativeTabStrip {
         });
         groupsButton.currentRevision = [this] { return presentationRevision; };
         inlineGroups.press = [this](uint32_t id, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
-            if (!core || syncing || !armGroupDragSession || (GetKeyState(VK_CONTROL)&0x8000) || (GetKeyState(VK_SHIFT)&0x8000)) return;
+            if (!core || syncing || !armGroupDragSession || (GetKeyState(VK_CONTROL)&0x8000) || (GetKeyState(VK_SHIFT)&0x8000) ||
+                GroupDeparture().group==id) return;
             armGroupDragSession(id);
             auto point=args.GetCurrentPoint(view).Position();
             if (shell_core_group_drag_arm(core,id,point.X,point.Y)!=SHELL_STATUS_OK) return;
@@ -2824,7 +2900,11 @@ struct NativeTabStrip {
         if (!core || shell_core_strip_apply_layout(core, base, revision, changes.data(), changes.size(), layout.data(), layout.size(), layoutChanged) != SHELL_STATUS_OK)
             throw hresult_invalid_argument();
         if (GroupDrag().phase && (layoutChanged || !removed.empty() || !base)) EndGroupDrag();
-        if (layoutChanged || !base) EndForeignGroupOver(true);
+        if (layoutChanged || !base) {
+            EndForeignGroupOver(true);
+            bool left=false;
+            if (shell_core_group_departure_publish(core,&left)==SHELL_STATUS_OK && left) ReleaseGroupDeparture();
+        }
         if (layoutChanged) {
             std::vector<uint32_t> toggled;
             if (updateGroups && inlineGroups.active && !IsDragging()) {

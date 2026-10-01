@@ -3739,6 +3739,41 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
     puts("CHECKS PASSED: overflowing strip drags scroll to reach the end");
 }
 
+// The innermost element with `id` inside the stock TabListView. Group header
+// IDs also occur outside it, so a whole-tree search can return the wrong one.
+static winrt::Microsoft::UI::Xaml::FrameworkElement FindInTabList(winrt::Microsoft::UI::Xaml::Controls::TabView const& view,
+                                                                 winrt::hstring const& id) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    std::function<FrameworkElement(DependencyObject const&)> list = [&](DependencyObject const& node) -> FrameworkElement {
+        if (auto element = node.try_as<FrameworkElement>(); element && element.Name() == L"TabListView") return element;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto found = list(Media::VisualTreeHelper::GetChild(node, i))) return found;
+        return nullptr;
+    };
+    std::function<FrameworkElement(DependencyObject const&)> find = [&](DependencyObject const& node) -> FrameworkElement {
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto found = find(Media::VisualTreeHelper::GetChild(node, i))) return found;
+        if (auto element = node.try_as<FrameworkElement>(); element && Automation::AutomationProperties::GetAutomationId(element) == id) return element;
+        return nullptr;
+    };
+    auto root = list(view);
+    return root ? find(root) : nullptr;
+}
+// Whether a departing group is hidden as the drag left it: header slot empty
+// and its member rows collapsed.
+static bool GroupHiddenWhileLeaving(winrt::Microsoft::UI::Xaml::Controls::TabView const& view, wchar_t const* header,
+                                    std::initializer_list<uint32_t> members) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    auto button = FindInTabList(view, header);
+    if (!button || button.Opacity() != 0 || button.IsHitTestVisible()) return false;
+    for (uint32_t i = 0; i < view.TabItems().Size(); ++i) {
+        auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
+        const auto tag = winrt::unbox_value<uint32_t>(row.Tag());
+        if (std::find(members.begin(), members.end(), tag) != members.end() && row.Visibility() != Visibility::Collapsed) return false;
+    }
+    return true;
+}
+
 // Drag a whole group from one window's strip onto another's. Over the other
 // strip the floating group sits in its row band and the destination opens a
 // gap before a whole block (never inside its group). Release queues
@@ -3894,6 +3929,18 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
     Require(!NextRequest(api, host, 5, L"strip-group-detach", 10).Size() && !NextRequest(api, host, 5, L"strip-group-reorder", 10).Size(),
             "the source neither detaches nor reorders a group dropped on another window");
     settle();
+    if (accept) {
+        Require(GroupHiddenWhileLeaving(view1, L"FirefoxWinUIInlineGroup-7", {11, 22}),
+                "the source keeps the group hidden while the other window adopts it");
+    } else {
+        auto button = inList(view1, L"FirefoxWinUIInlineGroup-7");
+        Require(button && button.Opacity() == 1 && button.IsHitTestVisible() && !GroupHiddenWhileLeaving(view1, L"FirefoxWinUIInlineGroup-7", {11, 22}),
+                "a refused adopt shows the group in its own window again");
+        for (uint32_t i = 0; i < view1.TabItems().Size(); ++i)
+            Require(view1.TabItems().GetAt(i).as<Controls::TabViewItem>().Visibility() == Visibility::Visible,
+                    "a refused adopt restores the group's tabs");
+    }
+    settle();
     const double held = leftOf(L"FirefoxWinUIInlineGroup-9") - ninthLeft;
     if (accept) {
         Require(std::abs(held - gap) < .5, "an accepted adopt keeps the gap until Firefox publishes the group");
@@ -3904,6 +3951,13 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         Require(landed && landed.ActualWidth() > 0 &&
                 leftOf(L"FirefoxWinUIInlineGroup-12") + landed.ActualWidth() <= leftOf(L"FirefoxWinUIInlineGroup-9") + .5,
                 "the published group replaces the held gap");
+        Require(GroupHiddenWhileLeaving(view1, L"FirefoxWinUIInlineGroup-7", {11, 22}),
+                "the source group stays hidden until its own window publishes without it");
+        WinUITab rest[]{{101, L"Loose"}};
+        MenuPublish(api, host, LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":2,"rtl":false,"windowDragSession":5,"groupsLabel":"Groups","groups":[],"rows":[{"id":101,"detail":"","flags":0}],"layout":[{"group":0,"tab":101}]}})");
+        Require(SUCCEEDED(api.syncTabs(host, rest, 1, 101, &selected)), "the group's tabs leave the source");
+        settle();
+        Require(!inList(view1, L"FirefoxWinUIInlineGroup-7"), "the source's publication removes the departed group");
         puts("CHECKS PASSED: a group dropped on another window is adopted there");
     } else {
         Require(std::abs(held) < .5, "a rejected adopt closes the destination gap");
@@ -3944,7 +3998,7 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
     }
     uint32_t selected{};
     Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), pickup ? 112 : 11, &selected)), "group edge tabs");
-    MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(5000 + (pickup ? 1 : 0) + 2 * int(detach)) + L",\"rtl\":false" + std::wstring(detach != GroupDetach::None ? L",\"groupGlow\":true" : L"") + L",\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false,\"color\":4281558681}],\"rows\":[" + rows + L"],\"layout\":[" + layout + L"]}}").c_str());
+    MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(5000 + (pickup ? 1 : 0) + 4 * int(detach)) + L",\"rtl\":false" + std::wstring(detach != GroupDetach::None ? L",\"groupGlow\":true" : L"") + L",\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false,\"color\":4281558681}],\"rows\":[" + rows + L"],\"layout\":[" + layout + L"]}}").c_str());
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
     UIElement content{nullptr};
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect group edge strip");
@@ -4004,6 +4058,32 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
             Require(event && event.GetNamedNumber(L"group") == 7 && event.GetNamedNumber(L"session") >= 0 &&
                     event.GetNamedNumber(L"screenX") == away.x && event.GetNamedNumber(L"screenY") == away.y,
                     "releasing a torn-off group asks Firefox to move it to a new window at the release point");
+            settle();
+            Require(GroupHiddenWhileLeaving(view, L"FirefoxWinUIInlineGroup-7", {11, 22}),
+                    "an accepted tear-off keeps the group hidden while the new window opens");
+            if (detach == GroupDetach::Release) {
+                // The new window adopts the group: Firefox publishes this window without it.
+                std::vector<WinUITab> rest(tabs.begin() + 2, tabs.end());
+                std::wstring restRows, restLayout;
+                for (auto const& tab : rest) {
+                    restRows += std::wstring(restRows.empty() ? L"" : L",") + L"{\"id\":" + std::to_wstring(tab.id) + L",\"detail\":\"\",\"flags\":0}";
+                    restLayout += std::wstring(restLayout.empty() ? L"" : L",") + L"{\"group\":0,\"tab\":" + std::to_wstring(tab.id) + L"}";
+                }
+                // Firefox publishes the strip before its tabs, as the fixtures above do.
+                MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":5005,\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[],\"rows\":[" +
+                    restRows + L"],\"layout\":[" + restLayout + L"]}}").c_str());
+                Require(SUCCEEDED(api.syncTabs(host, rest.data(), uint32_t(rest.size()), rest[0].id, &selected)), "the group's tabs leave");
+                settle();
+                Require(!FindInTabList(view, L"FirefoxWinUIInlineGroup-7"), "the published layout removes the departed group");
+                for (uint32_t i = 0; i < view.TabItems().Size(); ++i)
+                    Require(view.TabItems().GetAt(i).as<Controls::TabViewItem>().Visibility() == Visibility::Visible,
+                            "no remaining row stays hidden after the group leaves");
+                // Put the departed tabs back for the following scenarios.
+                MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":5006,\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[],\"rows\":[" +
+                    rows + L"],\"layout\":[{\"group\":0,\"tab\":11},{\"group\":0,\"tab\":22}," + restLayout + L"]}}").c_str());
+                Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), 11, &selected)), "the departed tabs return");
+                settle();
+            }
             puts(detach == GroupDetach::Sole ? "CHECKS PASSED: a group holding every tab tears off into a new window"
                                              : "CHECKS PASSED: group tear-off requests a new window");
         } else {

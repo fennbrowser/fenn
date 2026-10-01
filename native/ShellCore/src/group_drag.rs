@@ -167,6 +167,43 @@ impl ForeignGroup {
     }
 }
 
+/// A group leaving this strip for another window. It stays hidden from the
+/// release until Firefox publishes a layout without it, or the move fails.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct ShellGroupDeparture {
+    pub group: u32,
+    /// This strip's own detach request, or 0 when another window's strip
+    /// queued the adopt and reports a rejection itself.
+    pub request: u64,
+    /// 0 pending, 1 accepted (still waiting for removal), 2 failed: restore.
+    pub result: u32,
+}
+#[derive(Default)]
+pub struct GroupDeparture { state: ShellGroupDeparture }
+impl GroupDeparture {
+    pub fn state(&self) -> ShellGroupDeparture { self.state }
+    pub fn begin(&mut self, group:u32, request:u64) -> bool {
+        if group==0 || self.state.group!=0 { return false; }
+        self.state=ShellGroupDeparture { group, request, result:0 }; true
+    }
+    pub fn complete(&mut self, request:u64, accepted:bool) {
+        if self.state.group!=0 && self.state.request==request && request!=0 && self.state.result==0 {
+            self.state.result=if accepted {1} else {2};
+        }
+    }
+    /// Another window's strip reports that Firefox refused its adopt.
+    pub fn reject(&mut self, group:u32) -> bool {
+        if self.state.group==0 || self.state.group!=group || self.state.result==2 { return false; }
+        self.state.result=2; true
+    }
+    /// True once a published layout no longer contains the group.
+    pub fn publish(&mut self, layout:&[crate::strip::ShellStripSlot]) -> bool {
+        self.state.group!=0 && !layout.iter().any(|s| s.group==self.state.group)
+    }
+    pub fn end(&mut self) { self.state=Default::default(); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +325,24 @@ mod tests {
         assert!(!f.hover(f64::NAN,&blocks,&layout));
         assert!(!f.hover(0.,&[blocks[0],blocks[0]],&layout));
         assert!(!f.hover(0.,&[ShellGroupDragSlot{group:1,tab:1,start:0.,end:1.}],&layout));
+    }
+    #[test] fn departure_waits_for_removal_and_restores_on_failure() {
+        use crate::strip::ShellStripSlot as S;
+        let present=[S{group:1,tab:0},S{group:1,tab:3},S{group:0,tab:9}];
+        let removed=[S{group:0,tab:9}];
+        let mut d=GroupDeparture::default();
+        assert!(!d.begin(0,5)); assert!(!d.publish(&removed)); // nothing departing
+        assert!(d.begin(1,5)); assert!(!d.begin(2,6));
+        d.complete(4,false); assert_eq!(d.state().result,0); // another request
+        d.complete(5,true); assert_eq!(d.state().result,1);
+        d.complete(5,false); assert_eq!(d.state().result,1); // first answer stands
+        assert!(!d.publish(&present)); assert!(d.publish(&removed));
+        d.end(); assert_eq!(d.state().group,0);
+        // Our own request rejected.
+        assert!(d.begin(1,7)); d.complete(7,false); assert_eq!(d.state().result,2); d.end();
+        // Another window's strip queued the adopt: only its rejection counts.
+        assert!(d.begin(1,0)); d.complete(0,false); assert_eq!(d.state().result,0);
+        assert!(!d.reject(2)); assert!(d.reject(1)); assert!(!d.reject(1)); assert_eq!(d.state().result,2);
     }
     #[test] fn threshold_boundaries_and_noop() {
         let mut d=GroupDrag::default(); d.arm(1,10.,10.);

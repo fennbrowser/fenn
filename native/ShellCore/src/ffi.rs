@@ -2240,6 +2240,51 @@ pub unsafe extern "C" fn shell_core_group_drag_update(core:*mut ShellCore,x:f64,
 pub unsafe extern "C" fn shell_core_group_drag_detach(core:*mut ShellCore,x:f64,y:f64,width:f64,height:f64,foreign:bool)->ShellStatus {
     queue_guard(core,|q| if q.group_drag.classify(x,y,width,height,foreign) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
 }
+/// Read the group, if any, leaving this strip for another window.
+/// # Safety
+/// Live core and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_departure_state(core:*mut ShellCore,out:*mut crate::group_drag::ShellGroupDeparture)->ShellStatus {
+    let Some(out)=out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out=Default::default();
+    queue_guard(core,|q| { *out=q.group_departure.state(); ShellStatus::Ok })
+}
+/// Keep `group` hidden while it leaves. `request` is this strip's own queued
+/// detach request, or 0 when another window's strip queued the adopt.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_departure_begin(core:*mut ShellCore,group:u32,request:u64)->ShellStatus {
+    queue_guard(core,|q| if q.begin_group_departure(group,request) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+}
+/// Another window's strip reports that Firefox refused to adopt `group`.
+/// # Safety
+/// Live core; changed is writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_departure_reject(core:*mut ShellCore,group:u32,changed:*mut bool)->ShellStatus {
+    let Some(changed)=changed.as_mut() else { return ShellStatus::InvalidArgument; };
+    *changed=false;
+    queue_guard(core,|q| { *changed=q.group_departure.reject(group); ShellStatus::Ok })
+}
+/// After a layout publication: whether the departing group has left it.
+/// # Safety
+/// Live core; left is writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_departure_publish(core:*mut ShellCore,left:*mut bool)->ShellStatus {
+    let Some(left)=left.as_mut() else { return ShellStatus::InvalidArgument; };
+    *left=false;
+    guard(core,|core| {
+        if core.queue.is_closed() { return ShellStatus::Closed; }
+        *left=core.queue.group_departure.publish(core.strip.layout()); ShellStatus::Ok
+    })
+}
+/// Forget the departure once its visuals are restored or removed.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_departure_end(core:*mut ShellCore)->ShellStatus {
+    queue_guard(core,|q| { q.group_departure.end(); ShellStatus::Ok })
+}
 /// Read this strip's state as the destination of another window's group drag.
 /// # Safety
 /// Live core and writable out.
@@ -2347,6 +2392,18 @@ mod group_drag_ffi_tests {
         assert_eq!(shell_core_group_foreign_hold(core,77),ShellStatus::InvalidArgument);
         assert_eq!(shell_core_group_foreign_end(core,false,std::ptr::null_mut()),ShellStatus::InvalidArgument);
         assert_eq!(shell_core_group_foreign_end(core,false,&mut ended),ShellStatus::Ok); assert!(ended);
+        let mut departure=crate::group_drag::ShellGroupDeparture::default();
+        let mut left=false;
+        assert_eq!(shell_core_group_departure_state(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_departure_begin(core,9,77),ShellStatus::InvalidArgument); // not queued
+        assert_eq!(shell_core_group_departure_begin(core,0,0),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_departure_begin(core,9,0),ShellStatus::Ok);
+        shell_core_group_departure_state(core,&mut departure); assert_eq!(departure.group,9);
+        assert_eq!(shell_core_group_departure_publish(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_departure_publish(core,&mut left),ShellStatus::Ok); assert!(left); // empty layout
+        assert_eq!(shell_core_group_departure_reject(core,9,&mut ended),ShellStatus::Ok); assert!(ended);
+        assert_eq!(shell_core_group_departure_end(core),ShellStatus::Ok);
+        shell_core_group_departure_state(core,&mut departure); assert_eq!(departure.group,0);
         let handle=core as usize;
         assert_eq!(std::thread::spawn(move || shell_core_group_drag_end(handle as *mut ShellCore)).join().unwrap(),ShellStatus::WrongThread);
         shell_core_cancel_all(core);

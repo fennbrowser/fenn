@@ -242,6 +242,7 @@ pub struct RequestQueue {
     pub(crate) tab_drag: crate::tab_drag::TabDrag,
     pub(crate) group_drag: crate::group_drag::GroupDrag,
     pub(crate) foreign_group: crate::group_drag::ForeignGroup,
+    pub(crate) group_departure: crate::group_drag::GroupDeparture,
     pub(crate) foreign: crate::foreign_drag::ForeignPreview,
     pub(crate) transfers: crate::foreign_drag::Transfers,
     pub(crate) departures: crate::foreign_drag::Departures,
@@ -268,6 +269,7 @@ impl RequestQueue {
             tab_drag: Default::default(),
             group_drag: Default::default(),
             foreign_group: Default::default(),
+            group_departure: Default::default(),
             foreign: Default::default(),
             transfers: Default::default(),
             departures: Default::default(),
@@ -328,6 +330,10 @@ impl RequestQueue {
         if group==0 || (before_group!=0 && before_tab!=0) || !self.queued.iter().any(|r|
             r.id==request && r.kind==RequestKind::StripAction && r.tab==0) { return false; }
         self.group_drag.wait(request,group,before_group,before_tab); true
+    }
+    pub fn begin_group_departure(&mut self, group:u32, request:u64)->bool {
+        if request!=0 && !self.queued.iter().any(|r| r.id==request && r.kind==RequestKind::StripAction && r.tab==0) { return false; }
+        self.group_departure.begin(group,request)
     }
     pub fn hold_foreign_group(&mut self, request:u64)->bool {
         self.queued.iter().any(|r| r.id==request && r.kind==RequestKind::StripAction && r.tab==0) &&
@@ -610,6 +616,7 @@ impl RequestQueue {
         self.tab_drag.complete(id, outcome == Outcome::Completed);
         self.group_drag.complete(id, outcome == Outcome::Completed);
         self.foreign_group.complete(id, outcome == Outcome::Completed);
+        self.group_departure.complete(id, outcome == Outcome::Completed);
         self.foreign.complete(id, outcome == Outcome::Completed);
         self.transfers.complete(id, outcome == Outcome::Completed);
         while self.history.len() >= self.limits.completion_history {
