@@ -27,7 +27,7 @@ struct AllTabsButton {
       <ResourceDictionary.ThemeDictionaries>
         <ResourceDictionary x:Key="Default">
           <SolidColorBrush x:Key="ButtonBackground" Color="Transparent"/>
-          <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#0BFFFFFF"/>
+          <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#FF2A2A2A"/>
           <StaticResource x:Key="ButtonBackgroundPressed" ResourceKey="SubtleFillColorTertiaryBrush"/>
           <SolidColorBrush x:Key="ButtonBorderBrush" Color="Transparent"/>
           <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
