@@ -114,7 +114,7 @@ struct NativeWindowCaption {
         const auto scale = root.XamlRoot() ? root.XamlRoot().RasterizationScale() : GetDpiForWindow(owner) / 96.0;
         const bool rtl = root.FlowDirection() == FlowDirection::RightToLeft;
         // File Explorer leaves a wider empty drag area before its trailing controls.
-        constexpr double kDragGap = 24;
+        constexpr double kDragGap = 40;
         const double extra = trailing ? trailingWidth + kDragGap : 0;
         const double left = (rtl ? bar.RightInset() : bar.LeftInset()) / scale + (rtl ? extra : 0);
         const double right = (rtl ? bar.LeftInset() : bar.RightInset()) / scale + (rtl ? 0 : extra);
