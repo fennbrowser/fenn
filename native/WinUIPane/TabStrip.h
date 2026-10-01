@@ -1376,7 +1376,6 @@ struct NativeTabStrip {
     // outcomes and source departure tokens until their UI effects are applied.
     struct TransferPeer { NativeTabStrip* source; std::weak_ptr<int> lifetime; };
     std::map<uint64_t, TransferPeer> transferPeers;
-    std::function<uint32_t()> pendingWindowDragTab;
     uint64_t ReserveTransfer(NativeTabStrip& source, uint32_t tab) {
         ShellTransfer transfer{};
         if (shell_core_transfer_reserve(core, source.core, tab, &transfer) != SHELL_STATUS_OK) return 0;
@@ -1487,7 +1486,7 @@ struct NativeTabStrip {
         drag.affectedRowIds.clear();
     }
     bool captionDirty{true};
-    uint32_t windowDragTabId{}, windowDragSession{};
+    uint32_t windowDragSession{};
     bool windowDragPrivate{};
     struct RowAnimation {
         Media::Animation::Storyboard storyboard{nullptr};
@@ -1841,14 +1840,9 @@ struct NativeTabStrip {
     // this window's own rows yet for Sync()'s usual confirm-tracking to
     // watch (Firefox adopting it in will simply appear as an ordinary new
     // row on this window's next Sync(), same as any other opened tab).
-    uint64_t QueueIncomingAdopt(HWND sourceHwnd, uint32_t tabId, uint32_t index, uint32_t sourceRevision = 0, uint32_t sourceSession = 0, bool continuation = false) {
+    uint64_t QueueIncomingAdopt(HWND sourceHwnd, uint32_t tabId, uint32_t index) {
         Windows::Data::Json::JsonObject action;
         action.SetNamedValue(L"kind", Windows::Data::Json::JsonValue::CreateStringValue(L"strip-adopt"));
-        if (sourceRevision) {
-            action.SetNamedValue(L"continueDrag", Windows::Data::Json::JsonValue::CreateBooleanValue(continuation));
-            action.SetNamedValue(L"sourceRevision", Windows::Data::Json::JsonValue::CreateNumberValue(sourceRevision));
-            action.SetNamedValue(L"sourceSession", Windows::Data::Json::JsonValue::CreateNumberValue(sourceSession));
-        }
         action.SetNamedValue(L"revision", Windows::Data::Json::JsonValue::CreateNumberValue(presentationRevision));
         action.SetNamedValue(L"sourceHwnd", Windows::Data::Json::JsonValue::CreateNumberValue(
                                                  double(reinterpret_cast<uintptr_t>(sourceHwnd))));
@@ -2497,11 +2491,11 @@ struct NativeTabStrip {
     // PointerMoved's own GetCurrentPoint(view) uses) as the drag's live
     // position. Routed moves and the message hook both tick the same live
     // cursor sampler in Pane.cpp. Idempotent once already Dragging.
-    bool TryPromote(uint32_t id, Windows::Foundation::Point const& point, bool continuation = false) {
+    bool TryPromote(uint32_t id, Windows::Foundation::Point const& point) {
         inlineGroups.hover.Hide();
         if (Drag().tab != id || Drag().phase != DragPhase::Armed || !rows.count(id)) return false;
         bool ready = false;
-        if (shell_core_tab_drag_ready(core, id, point.X, point.Y, continuation, &ready) != SHELL_STATUS_OK || !ready) return false;
+        if (shell_core_tab_drag_ready(core, id, point.X, point.Y, &ready) != SHELL_STATUS_OK || !ready) return false;
         auto& row = rows.at(id);
         // Stop any remaining gap shifts before taking the new drag's
         // geometry snapshot, so its grid math does not use stale,
@@ -2743,8 +2737,6 @@ struct NativeTabStrip {
             throw hresult_invalid_argument();
         if (revision == presentationRevision) return;
         if (base && base != presentationRevision) throw hresult_invalid_argument();
-        const auto dragTab = data.HasKey(L"windowDragTabId") ? NativeJson::RequireRevision(data, L"windowDragTabId") : (base ? windowDragTabId : 0);
-        if (dragTab > UINT32_MAX) throw hresult_invalid_argument();
         const auto dragSessionId = data.HasKey(L"windowDragSession") ? NativeJson::RequireId(data, L"windowDragSession") : (base ? windowDragSession : 0);
         const bool dragPrivate = data.GetNamedBoolean(L"windowDragPrivate", base ? windowDragPrivate : false);
         const auto delay = data.GetNamedNumber(L"groupingDelay", base ? groupingDelay : 240);
@@ -2956,7 +2948,6 @@ struct NativeTabStrip {
         groupingDelay = uint32_t(delay);
         if (groupCandidate && (!presentation.count(groupCandidate) || !presentation.at(groupCandidate).groupTarget ||
             !presentation.count(Drag().tab) || !presentation.at(Drag().tab).groupSource)) ClearGroupHover();
-        windowDragTabId = uint32_t(dragTab);
         windowDragSession = dragSessionId;
         windowDragPrivate = dragPrivate;
         captionDirty = true;
@@ -3298,7 +3289,6 @@ struct NativeTabStrip {
                     drag.affectedRowIds.clear();
                 }
             }
-            const auto continuationTab = pendingWindowDragTab ? pendingWindowDragTab() : 0;
             std::set<uint32_t> current;
             const bool populated = !rows.empty();
             if (populated && count != rows.size()) {
@@ -3335,7 +3325,7 @@ struct NativeTabStrip {
                 if (!rows.count(id)) {
                     // A lone new tab after the first slot: not startup, a
                     // restored batch, or a tab adopted from another window.
-                    if (populated && i > 0 && id != continuationTab) createdRows.push_back(id);
+                    if (populated && i > 0) createdRows.push_back(id);
                     Controls::TabViewItem row;
                     row.Loaded([this, alive = std::weak_ptr<int>(lifetime)](auto const& sender, auto&&) {
                         // Grouped-source moves can load rows after the final
@@ -3528,7 +3518,6 @@ struct NativeTabStrip {
                     AttachMenu(row, id);
                 }
                 auto row = rows.at(id);
-                if (id == continuationTab) row.Opacity(0);
                 UpdateHeader(row, id, tabs[i].title);
                 Automation::AutomationProperties::SetName(row, tabs[i].title);
                 // Secondary selection is explicit and theme-aware; SelectedItem

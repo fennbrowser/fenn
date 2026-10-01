@@ -191,7 +191,7 @@ test("a rejected strip delta recovers with one complete publication", () => {
   assert.equal(sent[1].strip.base, 0);
 });
 
-test("window adoption validates the live source session, privacy and remaining tabs", () => {
+test("window adoption validates the source tab and privacy", () => {
   function adoptionFixture() {
     let callbacks;
     const tab = {closing:false, _pendingPermitUnload:false};
@@ -210,18 +210,13 @@ test("window adoption validates the live source session, privacy and remaining t
       }})}};
     runInNewContext(source, context);
     context.gWinUIPane.publishStrip();
-    return {sourceWindow, tab, adopted, context, adopt:() => callbacks.adopt(0x1234, 7, 0, 4, 12)};
+    return {sourceWindow, tab, adopted, context, adopt:() => callbacks.adopt(0x1234, 7, 0)};
   }
   const accepted = adoptionFixture();
   assert.equal(accepted.adopt(), true);
   assert.equal(accepted.adopted[0][0], accepted.tab);
   for (const change of [
-    f => { f.sourceWindow.gWinUIPane.stripSession.windowDragSession++; },
-    f => { f.sourceWindow.gWinUIPane.stripSession.revision++; },
     f => { f.sourceWindow.docShell.usePrivateBrowsing = true; },
-    f => { f.sourceWindow.gBrowser.tabs.push({hidden:true}); },
-    f => { f.tab.closing = true; },
-    f => { f.tab._pendingPermitUnload = true; },
     f => { f.sourceWindow.gWinUIPane.resolveStripTab = () => null; },
   ]) {
     const f = adoptionFixture();
@@ -229,29 +224,9 @@ test("window adoption validates the live source session, privacy and remaining t
     assert.equal(f.adopt(), false);
     assert.equal(f.adopted.length, 0);
   }
-  const closing = adoptionFixture();
-  closing.sourceWindow.gBrowser.tabs.push({closing:true});
-  assert.equal(closing.adopt(), true, "an accepted close animation is not another live tab");
   const rejected = adoptionFixture();
   rejected.context.gBrowser.adoptTab = () => null;
   assert.equal(rejected.adopt(), false, "adoptTab rejection reaches the explicit outcome");
-});
-
-
-test("a drag continuation outcome names only its successful adoption request", () => {
-  const f = fixture([
-    {id:1, kind:5, action:{kind:"strip-adopt", continueDrag:true}},
-    {id:2, kind:5, action:{kind:"strip-adopt", continueDrag:true}},
-    {id:3, kind:4, action:{kind:"new-tab"}},
-  ]);
-  f.pane.executeRequest = request => {
-    if (request.id === 1) { f.pane.completedDragTab = 42; return 1; }
-    return request.id === 2 ? 2 : 1;
-  };
-  f.pane.drain();
-  assert.deepEqual(f.completions[0].outcomes,
-    [{id:1, outcome:1, dragTab:42}, {id:2, outcome:2}, {id:3, outcome:1}]);
-  assert.equal(f.pane.completedDragTab, 0);
 });
 
 

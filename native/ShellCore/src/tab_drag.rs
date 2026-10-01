@@ -36,9 +36,9 @@ impl TabDrag {
         self.state = ShellTabDrag { phase: 1, tab, start_x: x, start_y: y, ..Default::default() };
         true
     }
-    pub fn ready(&self, tab: u32, x: f64, y: f64, continuation: bool) -> bool {
+    pub fn ready(&self, tab: u32, x: f64, y: f64) -> bool {
         self.state.phase == 1 && self.state.tab == tab && coordinate(x) && coordinate(y) &&
-            (continuation || (x-self.state.start_x).abs().max((y-self.state.start_y).abs()) >= 4.0)
+            (x-self.state.start_x).abs().max((y-self.state.start_y).abs()) >= 4.0
     }
     pub fn promote(&mut self, original: u32, rows: &[ShellDragRow]) -> bool {
         if self.state.phase != 1 || rows.len() > MAX_ROWS || original as usize >= rows.len() ||
@@ -333,17 +333,16 @@ mod tests {
         assert!(!d.join_group(&layout,7,3,true));
     }
     #[test]
-    fn threshold_either_axis_and_continuation() {
+    fn threshold_either_axis() {
         let mut d = TabDrag::default();
         d.arm(1,10.0,20.0);
-        assert!(!d.ready(1,13.9,23.9,false));
-        assert!(d.ready(1,14.0,20.0,false));
-        assert!(d.ready(1,10.0,16.0,false));
-        assert!(d.ready(1,10.0,20.0,true));
-        assert!(!d.ready(2,14.0,20.0,true));
-        assert!(!d.ready(1,f64::NAN,20.0,true));
+        assert!(!d.ready(1,13.9,23.9));
+        assert!(d.ready(1,14.0,20.0));
+        assert!(d.ready(1,10.0,16.0));
+        assert!(!d.ready(2,14.0,20.0));
+        assert!(!d.ready(1,f64::NAN,20.0));
         d.end(true);
-        assert!(!d.ready(1,14.0,20.0,true));
+        assert!(!d.ready(1,14.0,20.0));
     }
     #[test]
     fn projection_boundaries_offsets_and_landing() {

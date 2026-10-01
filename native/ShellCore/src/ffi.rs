@@ -31,7 +31,10 @@
 
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::AtomicU64;
 use std::thread::ThreadId;
+
+static NEXT_ENDPOINT: AtomicU64 = AtomicU64::new(1);
 
 use crate::intent::{self, IntentKind};
 use crate::model::{ApplyError, Change, ModelLimits, TabEntry, TabModel};
@@ -193,7 +196,8 @@ pub struct ShellCore {
     strip: StripState,
     group_hover: crate::group_hover::GroupHover,
     menu: crate::menu::MenuState,
-    window_drag: crate::window_drag::WindowDrag,
+    /// Identity of this core among every core in the process; transfers name it.
+    endpoint: u64,
     snapshot: Option<SnapshotBuilder>,
     stats: Counters,
 }
@@ -406,7 +410,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         strip: StripState::default(),
         group_hover: crate::group_hover::GroupHover::default(),
         menu: Default::default(),
-        window_drag: crate::window_drag::WindowDrag::default(),
+        endpoint: NEXT_ENDPOINT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         snapshot: None,
         stats: Counters::default(),
     });
@@ -726,7 +730,6 @@ pub unsafe extern "C" fn shell_core_release_outcomes(batch: *mut ShellOutcomeBat
 pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellStatus {
     guard(core, |core| {
         core.queue.cancel_all();
-        core.window_drag.cancel();
         core.group_hover = Default::default();
         core.menu.close();
         core.snapshot = None;
@@ -742,7 +745,6 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
 pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
     guard(core, |core| {
         core.queue.close();
-        core.window_drag.cancel();
         core.group_hover = Default::default();
         core.menu.close();
         core.snapshot = None;
@@ -1522,65 +1524,6 @@ mod tests {
             shell_core_destroy(core);
         }
     }
-
-    #[test]
-    fn replacing_or_closing_an_endpoint_revokes_pending_window_adoption() {
-        unsafe {
-            let core = core();
-            let mut state = crate::window_drag::ShellWindowDrag::default();
-            for close in [false, true] {
-                assert_eq!(shell_core_window_drag(core, 1, 7, 0, 0, 4, 0, 4,
-                    false, 0, &mut state), ShellStatus::Ok);
-                shell_core_window_drag(core, 2, 0, 10, 10, 123, u64::MAX - 1, 4,
-                    true, 0, &mut state);
-                shell_core_window_drag(core, 3, 0, 0, 0, 0, 0, 0,
-                    true, 0, &mut state);
-                assert_eq!(state.phase, 2);
-                let gesture = state.gesture;
-                if close { shell_core_close(core); } else { shell_core_cancel_all(core); }
-                shell_core_window_drag(core, 5, 0, 0, 0, 0, 0, 0,
-                    false, gesture, &mut state);
-                assert_ne!(state.phase, 3);
-            }
-            assert_eq!(shell_core_window_drag(core, 0, 0, 0, 0, 0, 0, 0,
-                false, 0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_window_drag(core, 99, 0, 0, 0, 0, 0, 0,
-                false, 0, &mut state), ShellStatus::InvalidArgument);
-            shell_core_destroy(core);
-        }
-    }
-}
-
-/// Observe an OS move. Operations: 0 query, 1 begin (target/revision are drag
-/// thresholds), 2 motion (eligible and destination identity), 3 finish (eligible
-/// means confirmed release or explicit hover handoff), 4 cancel, 5 take pending
-/// adoption by gesture token, 6 await request (gesture), 7 complete request
-/// (gesture/tab; zero tab rejects), 8 take the accepted continuation once.
-/// # Safety
-/// See [`guard`]. `out` must be writable.
-#[no_mangle]
-pub unsafe extern "C" fn shell_core_window_drag(
-    core: *mut ShellCore, operation: u32, tab: u32, x: i32, y: i32,
-    target: u64, target_endpoint: u64, revision: u32, eligible: bool,
-    gesture: u64, out: *mut crate::window_drag::ShellWindowDrag,
-) -> ShellStatus {
-    guard(core, |core| {
-        let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
-        match operation {
-            0 => {},
-            1 => core.window_drag.begin(tab, x, y, (target.min(u64::from(u32::MAX))) as u32, revision),
-            2 => core.window_drag.observe(eligible, x, y, target, target_endpoint, revision),
-            3 => core.window_drag.finish(eligible),
-            4 => core.window_drag.cancel(),
-            5 => if !core.window_drag.take(gesture) { *out = Default::default(); return ShellStatus::Ok; },
-            6 => core.window_drag.await_adoption(gesture),
-            7 => core.window_drag.complete_adoption(gesture, tab),
-            8 => if !core.window_drag.take_continuation() { *out = Default::default(); return ShellStatus::Ok; },
-            _ => return ShellStatus::InvalidArgument,
-        }
-        *out = core.window_drag.state();
-        ShellStatus::Ok
-    })
 }
 
 /// Observe a dwell candidate, or pass target=0 to cancel. Returns armed state.
@@ -1778,14 +1721,14 @@ pub unsafe extern "C" fn shell_core_tab_drag_state(core: *mut ShellCore, out: *m
 pub unsafe extern "C" fn shell_core_tab_drag_arm(core: *mut ShellCore, tab: u32, x: f64, y: f64) -> ShellStatus {
     queue_guard(core, |q| if q.tab_drag.arm(tab,x,y) { q.departures.removed(tab); ShellStatus::Ok } else { ShellStatus::InvalidArgument })
 }
-/// Test the promotion threshold; a window-to-tab continuation bypasses distance.
+/// Test the promotion threshold.
 /// # Safety
 /// Live core, writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_ready(core: *mut ShellCore, tab: u32, x: f64, y: f64, continuation: bool, out: *mut bool) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_tab_drag_ready(core: *mut ShellCore, tab: u32, x: f64, y: f64, out: *mut bool) -> ShellStatus {
     let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
     *out = false;
-    queue_guard(core, |q| { *out = q.tab_drag.ready(tab,x,y,continuation); ShellStatus::Ok })
+    queue_guard(core, |q| { *out = q.tab_drag.ready(tab,x,y); ShellStatus::Ok })
 }
 /// Copy at most 10,000 finite row rectangles when crossing the drag threshold.
 /// # Safety
@@ -1889,7 +1832,7 @@ mod tab_drag_ffi_tests {
         assert_eq!(shell_core_tab_drag_state(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
         assert_eq!(shell_core_tab_drag_arm(core,1,f64::NAN,0.0),ShellStatus::InvalidArgument);
         assert_eq!(shell_core_tab_drag_arm(core,1,50.0,16.0),ShellStatus::Ok);
-        assert_eq!(shell_core_tab_drag_ready(core,1,55.0,16.0,false,&mut ready),ShellStatus::Ok); assert!(ready);
+        assert_eq!(shell_core_tab_drag_ready(core,1,55.0,16.0,&mut ready),ShellStatus::Ok); assert!(ready);
         let row=crate::tab_drag::ShellDragRow{left:0.0,width:100.0};
         assert_eq!(shell_core_tab_drag_promote(core,0,std::ptr::null(),1),ShellStatus::InvalidArgument);
         assert_eq!(shell_core_tab_drag_promote(core,0,&row,10001),ShellStatus::InvalidArgument);
@@ -2108,13 +2051,13 @@ pub unsafe extern "C" fn shell_core_transfer_reserve(destination:*mut ShellCore,
         if destination==source {
             if !d.queue.departures.can_begin(tab){return ShellStatus::Busy;}
             let token=d.queue.departures.begin(tab);
-            *out=d.queue.transfers.reserve(d.window_drag.state().endpoint,token,tab);ShellStatus::Ok
+            *out=d.queue.transfers.reserve(d.endpoint,token,tab);ShellStatus::Ok
         } else {
             guard(source,|s|{
                 if s.queue.is_closed(){return ShellStatus::Closed;}
                 if !s.queue.departures.can_begin(tab){return ShellStatus::Busy;}
                 let token=s.queue.departures.begin(tab);
-                *out=d.queue.transfers.reserve(s.window_drag.state().endpoint,token,tab);ShellStatus::Ok
+                *out=d.queue.transfers.reserve(s.endpoint,token,tab);ShellStatus::Ok
             })
         }
     })
@@ -2126,7 +2069,7 @@ pub unsafe extern "C" fn shell_core_transfer_reserve(destination:*mut ShellCore,
 pub unsafe extern "C" fn shell_core_transfer_bind(core:*mut ShellCore,ticket:u64,request:u64,preview:bool)->ShellStatus {
     guard(core,|c|{
         if request!=0 && c.queue.is_closed(){return ShellStatus::Closed;}
-        if c.queue.bind_transfer(ticket,request,c.window_drag.state().endpoint,preview){ShellStatus::Ok}else{ShellStatus::InvalidArgument}
+        if c.queue.bind_transfer(ticket,request,c.endpoint,preview){ShellStatus::Ok}else{ShellStatus::InvalidArgument}
     })
 }
 /// Peek a durable cleanup decision. Repeated reads return it until acknowledged.
@@ -2159,7 +2102,7 @@ pub unsafe extern "C" fn shell_core_transfer_cancel(core:*mut ShellCore)->ShellS
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_departure_match(core:*mut ShellCore,endpoint:u64,tab:u32,token:u64,clear:bool,matches:*mut bool)->ShellStatus {
     let Some(matches)=matches.as_mut() else{return ShellStatus::InvalidArgument;};*matches=false;
-    guard(core,|c|{*matches=c.window_drag.state().endpoint==endpoint && c.queue.departures.matches(tab,token);
+    guard(core,|c|{*matches=c.endpoint==endpoint && c.queue.departures.matches(tab,token);
         if *matches && clear{c.queue.departures.clear(tab,token);}ShellStatus::Ok})
 }
 /// Source removal confirms an accepted transfer and releases departure tracking.

@@ -2535,10 +2535,10 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..daeeda428e
+index 0000000000..4e05342323
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,275 @@
+@@ -0,0 +1,266 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2609,7 +2609,7 @@ index 0000000000..daeeda428e
 +        }
 +      }
 +      strip.removed = [...previous.keys()];
-+      for (const key of ["groupGlow", "containerGlow", "containerDot", "backdrop", "groupReach", "groupHover", "groupHalo", "groupGlowAnimations", "groupGlowFadeOut", "groupingDelay", "layout", "groups", "groupsLabel", "labels", "rtl", "windowDragTabId", "windowDragPrivate", "windowDragSession"]) {
++      for (const key of ["groupGlow", "containerGlow", "containerDot", "backdrop", "groupReach", "groupHover", "groupHalo", "groupGlowAnimations", "groupGlowFadeOut", "groupingDelay", "layout", "groups", "groupsLabel", "labels", "rtl", "windowDragPrivate", "windowDragSession"]) {
 +        if (!this.same(state[key], this.state[key])) strip[key] = state[key];
 +      }
 +    }
@@ -2787,8 +2787,7 @@ index 0000000000..daeeda428e
 +      if (!current.rows.some(r => r.id === event.id)) return false;
 +      // Consume before Firefox mutates state or enters any nested browser work.
 +      this.consumed = true;
-+      this.detach(event.id, { screenX: event.screenX, screenY: event.screenY });
-+      return true;
++      return this.detach(event.id, { screenX: event.screenX, screenY: event.screenY }) !== false;
 +    }
 +    if (event.kind === "strip-adopt") {
 +      // Unlike the other kinds, `id` names a row in the SOURCE window's own
@@ -2798,18 +2797,10 @@ index 0000000000..daeeda428e
 +      if (!Number.isSafeInteger(event.sourceHwnd) || !Number.isSafeInteger(event.id) ||
 +          !Number.isSafeInteger(event.index) || event.index < 0)
 +        return false;
-+      if (event.continueDrag !== undefined && (typeof event.continueDrag !== "boolean" ||
-+          event.sourceRevision === undefined)) return false;
-+      if (event.sourceRevision !== undefined) {
-+        if (!Number.isSafeInteger(event.sourceRevision) || event.sourceRevision <= 0 ||
-+            !Number.isSafeInteger(event.sourceSession) || event.sourceSession <= 0 || this.consumed) return false;
-+        const current = this.describe();
-+        if (!this.same(current, this.state) || event.index > current.rows.length) return false;
-+      }
 +      if (this.revision === 0xffffffff) throw new Error("Native strip revision exhausted");
 +      this.revision++;
 +      this.consumed = true;
-+      return this.adopt(event.sourceHwnd, event.id, event.index, event.sourceRevision, event.sourceSession, event.continueDrag) !== false;
++      return this.adopt(event.sourceHwnd, event.id, event.index) !== false;
 +    }
 +    return false;
 +  }
@@ -3962,10 +3953,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..f45326348a
+index 0000000000..4b6cb19d96
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1807 @@
+@@ -0,0 +1,1796 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4245,7 +4236,6 @@ index 0000000000..f45326348a
 +        // outright rather than queued behind the prompt.
 +        for (const request of batch.requests || []) {
 +          let outcome = 2;
-+          this.completedDragTab = 0;
 +          try {
 +            const describing = request.kind === 2 && request.action?.kind === "open";
 +            // An earlier command may have opened a dialog, including before
@@ -4259,11 +4249,7 @@ index 0000000000..f45326348a
 +            this.structuralDirty = true;
 +            console.error("WinUI request failed", request.id, error);
 +          }
-+          const result = { id: request.id, outcome };
-+          if (outcome === 1 && request.kind === 5 && request.action?.kind === "strip-adopt" &&
-+              request.action.continueDrag === true && this.completedDragTab) result.dragTab = this.completedDragTab;
-+          outcomes.push(result);
-+          this.completedDragTab = 0;
++          outcomes.push({ id: request.id, outcome });
 +        }
 +      }
 +    } catch (error) {
@@ -4833,28 +4819,27 @@ index 0000000000..f45326348a
 +        // can land slightly off the actual cursor on a scaled display.
 +        detach: (id, { screenX, screenY }) => {
 +          const tab = this.resolveStripTab(id);
-+          if (!tab) return;
++          if (!tab) return false;
++          if (gBrowser.tabs.length == 1) {
++            // replaceTabWithWindow keeps a window's last tab; Firefox's own
++            // drag moves the window to the drop point instead. Nothing
++            // departs, so report a refusal and let the strip restore the row.
++            const scale = window.devicePixelRatio;
++            window.moveTo(Math.round(screenX / scale), Math.round(screenY / scale));
++            window.focus();
++            return false;
++          }
 +          gBrowser.replaceTabWithWindow(tab, { left: screenX, top: screenY });
 +        },
 +        // sourceHwnd names another open window's own native HWND (as this
 +        // process's Pane.cpp sees it); see stripSourceWindow.
-+        adopt: (sourceHwnd, id, index, sourceRevision, sourceSession, continueDrag = false) => {
++        adopt: (sourceHwnd, id, index) => {
 +          const sourceWindow = this.stripSourceWindow(sourceHwnd);
 +          const tab = sourceWindow?.gWinUIPane?.resolveStripTab(id);
 +          if (!tab || sourceWindow === window ||
 +              sourceWindow.docShell.usePrivateBrowsing !== window.docShell.usePrivateBrowsing) return false;
-+          if (sourceRevision !== undefined &&
-+              (sourceWindow.gWinUIPane.stripSession?.windowDragSession !== sourceSession ||
-+               sourceWindow.gWinUIPane.stripSession?.revision !== sourceRevision ||
-+               sourceWindow.gBrowser.tabs.filter(other => !other.closing).length !== 1 ||
-+               tab.closing || tab._pendingPermitUnload)) return false;
 +          const adopted = gBrowser.adoptTab(tab, { elementIndex: index, selectTab: true });
-+          if (!adopted) return false;
-+          if (continueDrag) {
-+            if (!this.tabIds.has(adopted)) this.tabIds.set(adopted, this.nextTabId++);
-+            this.completedDragTab = this.tabIds.get(adopted);
-+          }
-+          return true;
++          return !!adopted;
 +        },
 +      });
 +    }
@@ -5107,9 +5092,6 @@ index 0000000000..f45326348a
 +        containerName: container ? ContextualIdentityService.getUserContextLabel(tab.userContextId).slice(0, 1024) : "",
 +        containerColor: container ? this.containerColor(container) : 0 };
 +    });
-+    // Accepted closes can retain their DOM tab during the closing animation.
-+    // They are no longer browser tabs that could be dragged or adopted.
-+    const liveTabs = Array.from(gBrowser.tabs).filter(tab => !tab.closing);
 +    return { groupingDelay: Math.max(0, Math.min(60000, Services.prefs.getIntPref("browser.tabs.dragDrop.createGroup.delayMS", 240))),
 +      groupGlow: Services.prefs.getBoolPref(this.tabGlowsPref, false),
 +      containerGlow: Services.prefs.getBoolPref(this.tabGlowsPref, false) && !this.containerDotsEnabled(),
@@ -5121,8 +5103,6 @@ index 0000000000..f45326348a
 +      groupGlowAnimations: Services.prefs.getBoolPref(this.groupGlowAnimationsPref, false),
 +      groupGlowFadeOut: Services.prefs.getBoolPref(this.groupGlowFadeOutPref, false),
 +      rtl: document.documentElement.matches(":dir(rtl)"),
-+      windowDragTabId: liveTabs.length === 1 && liveTabs[0].visible &&
-+        !liveTabs[0]._pendingPermitUnload ? this.tabIds.get(liveTabs[0]) || 0 : 0,
 +      windowDragPrivate: !!window.docShell.usePrivateBrowsing,
 +      groupsLabel:label("tab-groups-list-title"), labels: this.nativeLabels(), groups, rows, layout };
 +  },

@@ -192,53 +192,12 @@ test("adopt requests with stale revisions or malformed fields are rejected", () 
   }
 });
 
-test("window adoption revalidates the destination before forwarding the source revision", () => {
+test("window privacy is published and omitted from deltas while unchanged", () => {
   const f = fixture();
-  const calls = [];
-  f.session.adopt = (...args) => { calls.push(args); return false; };
-  const action = {kind:"strip-adopt", revision:f.snapshot.strip.revision,
-    sourceHwnd:0x1a2b, id:77, index:1, sourceRevision:4, sourceSession:99};
-  assert.equal(f.session.receive(action), false); // Firefox rejection is authoritative.
-  assert.deepEqual(calls, [[0x1a2b, 77, 1, 4, 99, undefined]]);
-  assert.equal(f.session.receive(action), false);
-  assert.equal(calls.length, 1);
-  for (const mutate of [x => x.state.rows.reverse(), x => x.state.rows.pop(),
-    x => { x.state.windowDragPrivate = true; }, x => { x.session.consumed = true; }]) {
-    const next = fixture();
-    mutate(next);
-    assert.equal(next.session.receive(action), false);
-    assert.equal(next.adoptCalls.length, 0);
-  }
-  for (const override of [{sourceRevision:0}, {sourceRevision:1.5}, {sourceRevision:"4"}, {sourceSession:0}, {sourceSession:undefined}, {index:3}, {continueDrag:1}, {continueDrag:true, sourceRevision:undefined}]) {
-    const next = fixture();
-    assert.equal(next.session.receive({...action, ...override}), false);
-    assert.equal(next.adoptCalls.length, 0);
-  }
-});
-
-test("hover adoption forwards an explicit continuation only once", () => {
-  const f = fixture();
-  const calls = [];
-  f.session.adopt = (...args) => { calls.push(args); return true; };
-  const action = {kind:"strip-adopt", revision:f.snapshot.strip.revision,
-    sourceHwnd:0x1a2b, id:77, index:1, sourceRevision:4, sourceSession:99, continueDrag:true};
-  assert.equal(f.session.receive(action), true);
-  assert.deepEqual(calls, [[0x1a2b, 77, 1, 4, 99, true]]);
-  assert.equal(f.session.receive(action), false);
-  assert.equal(calls.length, 1);
-});
-
-test("only-tab eligibility is explicitly published and revoked by deltas", () => {
-  const f = fixture();
-  f.state.windowDragTabId = 11;
-  f.state.windowDragPrivate = false;
-  let delta = f.session.update().strip;
-  assert.equal(delta.windowDragTabId, 11);
-  assert.equal(delta.windowDragPrivate, false);
-  f.state.windowDragTabId = 0;
-  delta = f.session.update().strip;
-  assert.equal(delta.windowDragTabId, 0);
-  assert.equal("windowDragPrivate" in delta, false);
+  f.state.windowDragPrivate = true;
+  const delta = f.session.update().strip;
+  assert.equal(delta.windowDragPrivate, true);
+  assert.equal("windowDragPrivate" in (f.session.update()?.strip ?? {}), false);
 });
 
 test("metadata deltas retain unrelated rows, images and groups", () => {

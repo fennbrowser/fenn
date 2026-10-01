@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 24
+#define SHELL_CORE_ABI_VERSION 25
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -261,19 +261,6 @@ typedef struct {
   uintptr_t len;
   void *handle;
 } ShellChangeBatch;
-
-typedef struct {
-  uint64_t endpoint;
-  uint64_t gesture;
-  uint64_t target;
-  uint64_t target_endpoint;
-  uint32_t tab;
-  uint32_t target_revision;
-  /*
-   0 idle, 1 moving, 2 pending adoption, 3 consumed, 4 awaiting result, 5 continuation ready.
-   */
-  uint32_t phase;
-} ShellWindowDrag;
 
 typedef struct {
   uint64_t edit_id;
@@ -766,27 +753,6 @@ ShellStatus shell_core_model_index_of(ShellCore *core, uint32_t tab, uint32_t *o
 ShellStatus shell_core_test_panic(ShellCore *core);
 
 /*
- Observe an OS move. Operations: 0 query, 1 begin (target/revision are drag
- thresholds), 2 motion (eligible and destination identity), 3 finish (eligible
- means confirmed release or explicit hover handoff), 4 cancel, 5 take pending
- adoption by gesture token, 6 await request (gesture), 7 complete request
- (gesture/tab; zero tab rejects), 8 take the accepted continuation once.
- # Safety
- See [`guard`]. `out` must be writable.
- */
-ShellStatus shell_core_window_drag(ShellCore *core,
-                                   uint32_t operation,
-                                   uint32_t tab,
-                                   int32_t x,
-                                   int32_t y,
-                                   uint64_t target,
-                                   uint64_t target_endpoint,
-                                   uint32_t revision,
-                                   bool eligible,
-                                   uint64_t gesture,
-                                   ShellWindowDrag *out);
-
-/*
  Observe a dwell candidate, or pass target=0 to cancel. Returns armed state.
  */
 ShellStatus shell_core_group_hover(ShellCore *core,
@@ -883,16 +849,11 @@ ShellStatus shell_core_tab_drag_state(ShellCore *core, ShellTabDrag *out);
 ShellStatus shell_core_tab_drag_arm(ShellCore *core, uint32_t tab, double x, double y);
 
 /*
- Test the promotion threshold; a window-to-tab continuation bypasses distance.
+ Test the promotion threshold.
  # Safety
  Live core, writable out.
  */
-ShellStatus shell_core_tab_drag_ready(ShellCore *core,
-                                      uint32_t tab,
-                                      double x,
-                                      double y,
-                                      bool continuation,
-                                      bool *out);
+ShellStatus shell_core_tab_drag_ready(ShellCore *core, uint32_t tab, double x, double y, bool *out);
 
 /*
  Copy at most 10,000 finite row rectangles when crossing the drag threshold.
