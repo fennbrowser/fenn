@@ -3739,6 +3739,182 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
     puts("CHECKS PASSED: overflowing strip drags scroll to reach the end");
 }
 
+// Drag a whole group from one window's strip onto another's. Over the other
+// strip the floating group sits in its row band and the destination opens a
+// gap before a whole block (never inside its group). Release queues
+// strip-group-adopt on the destination naming the source window, its session
+// and the source's group; the source sends nothing. The gap is held until
+// Firefox answers: a rejection or a new layout releases it.
+static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool accept) {
+    using namespace winrt;
+    using namespace winrt::Microsoft::UI::Xaml;
+    auto settle = [](int n = 30) { for (int i = 0; i < n; ++i) { Pump(); Sleep(10); } };
+    auto send = [](DWORD f) { INPUT i{}; i.type = INPUT_MOUSE; i.mi.dwFlags = f; SendInput(1, &i, sizeof(i)); };
+    auto moveTo = [](LONG x, LONG y) {
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN), vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        INPUT i{}; i.type = INPUT_MOUSE; i.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        i.mi.dx = LONG((double(x - vx) * 65535) / vw); i.mi.dy = LONG((double(y - vy) * 65535) / vh); SendInput(1, &i, sizeof(i));
+    };
+    RECT rect{0, 0, 600, 48};
+    // Fresh windows clear of the shared host, which still carries earlier group fixtures.
+    HWND host = CreateWindowExW(0, L"STATIC", L"Group drag source", WS_OVERLAPPEDWINDOW, 1000, 200, 640, 240,
+                                nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Require(host != nullptr, "source window for cross-window group drag");
+    Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "source strip for cross-window group drag");
+    ShowWindow(host, SW_SHOW);
+    WinUITab tabs[]{{11, L"One"}, {22, L"Two"}, {101, L"Loose"}};
+    uint32_t selected{};
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 3, 11, &selected)), "source tabs for cross-window group drag");
+    MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(1) +
+        L",\"rtl\":false,\"windowDragSession\":5,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false}],"
+        L"\"rows\":[{\"id\":11,\"detail\":\"\",\"flags\":0},{\"id\":22,\"detail\":\"\",\"flags\":0},{\"id\":101,\"detail\":\"\",\"flags\":0}],"
+        L"\"layout\":[{\"group\":7,\"tab\":0},{\"group\":7,\"tab\":11},{\"group\":7,\"tab\":22},{\"group\":0,\"tab\":101}]}}").c_str());
+
+    HWND host2 = CreateWindowExW(0, L"STATIC", L"Group drop target", WS_OVERLAPPEDWINDOW, 1000, 480, 640, 240,
+                                  nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Require(host2 != nullptr, "destination window for cross-window group drag");
+    Require(SUCCEEDED(api.updateTabStrip(host2, &rect, TRUE)), "destination strip for cross-window group drag");
+    ShowWindow(host2, SW_SHOWNOACTIVATE);
+    WinUITab tabs2[]{{201, L"Here"}, {203, L"Grouped"}, {202, L"There"}};
+    uint32_t selected2{};
+    Require(SUCCEEDED(api.syncTabs(host2, tabs2, 3, 201, &selected2)), "destination tabs");
+    auto publish2 = [&](uint32_t revision, std::wstring const& extraGroup, std::wstring const& extraLayout) {
+        MenuPublish(api, host2, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(revision) +
+            L",\"rtl\":false,\"windowDragSession\":8,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":9,\"name\":\"Ninth\",\"label\":\"Ninth\",\"collapsed\":false}" + extraGroup + L"],"
+            L"\"rows\":[{\"id\":201,\"detail\":\"\",\"flags\":0},{\"id\":203,\"detail\":\"\",\"flags\":0},{\"id\":202,\"detail\":\"\",\"flags\":0}],"
+            L"\"layout\":[{\"group\":0,\"tab\":201}" + extraLayout + L",{\"group\":9,\"tab\":0},{\"group\":9,\"tab\":203},{\"group\":0,\"tab\":202}]}}").c_str());
+    };
+    publish2(100, L"", L"");
+    settle(60);
+    // Live XAML positions in the destination view: UIA queries are not reliable
+    // while the gesture owns capture, and these include the gap's transforms.
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
+    UIElement content2{nullptr};
+    Require(inspect && SUCCEEDED(inspect(host2, put_abi(content2))), "inspect destination strip");
+    auto view2 = content2.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
+    // Innermost match: a group header's container can share its button's ID,
+    // and the gap moves the button itself.
+    std::function<FrameworkElement(DependencyObject const&, hstring const&)> findId = [&](DependencyObject const& node, hstring const& id) -> FrameworkElement {
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto found = findId(Media::VisualTreeHelper::GetChild(node, i), id)) return found;
+        if (auto element = node.try_as<FrameworkElement>(); element && Automation::AutomationProperties::GetAutomationId(element) == id) return element;
+        return nullptr;
+    };
+    // Group header IDs also appear outside the tab list (the strip header's
+    // group affordances), so search only the stock TabListView.
+    std::function<FrameworkElement(DependencyObject const&)> tabList = [&](DependencyObject const& node) -> FrameworkElement {
+        if (auto element = node.try_as<FrameworkElement>(); element && element.Name() == L"TabListView") return element;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto found = tabList(Media::VisualTreeHelper::GetChild(node, i))) return found;
+        return nullptr;
+    };
+    auto inList = [&](Controls::TabView const& view, hstring const& id) -> FrameworkElement {
+        auto list = tabList(view);
+        Require(list != nullptr, "TabView exposes its tab list");
+        return findId(list, id);
+    };
+    auto leftOf = [&](wchar_t const* id) {
+        auto element = inList(view2, id);
+        Require(element != nullptr, "destination element realized");
+        return double(element.TransformToVisual(view2).TransformPoint({0, 0}).X);
+    };
+    const double ninthLeft = leftOf(L"FirefoxWinUIInlineGroup-9"), memberLeft = leftOf(L"FirefoxWinUITab-203"), firstLeft = leftOf(L"FirefoxWinUITab-201");
+    UIElement content1{nullptr};
+    Require(SUCCEEDED(inspect(host, put_abi(content1))), "inspect source strip");
+    auto view1 = content1.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
+    auto loaded = [&] {
+        for (uint32_t i = 0; i < view1.TabItems().Size(); ++i)
+            if (!view1.TabItems().GetAt(i).as<Controls::TabViewItem>().IsLoaded()) return false;
+        return view1.TabItems().Size() == 3 && inList(view1, L"FirefoxWinUIInlineGroup-7");
+    };
+    for (int i = 0; i < 300 && !loaded(); ++i) settle(1);
+    Require(loaded(), "source rows and group header realized before the group drag");
+    // Screen points from live XAML: each island sits at the strip rect in its
+    // host's client area, scaled by the island's rasterization scale. UIA is
+    // not dependable for these freshly created hosts.
+    auto screenAt = [&](HWND window, Controls::TabView const& view, wchar_t const* id, double fx) {
+        auto element = inList(view, id);
+        Require(element != nullptr, "group header realized for screen mapping");
+        const auto local = element.TransformToVisual(nullptr).TransformPoint({float(element.ActualWidth() * fx), float(element.ActualHeight() / 2)});
+        const double scale = view.XamlRoot().RasterizationScale();
+        POINT origin{rect.left, rect.top};
+        ClientToScreen(window, &origin);
+        return POINT{origin.x + LONG(local.X * scale), origin.y + LONG(local.Y * scale)};
+    };
+    // Both strips overflow; scroll each to its start so the headers are in view.
+    std::function<Controls::ScrollViewer(DependencyObject const&)> scrollerOf = [&](DependencyObject const& n) -> Controls::ScrollViewer {
+        if (auto sc = n.try_as<Controls::ScrollViewer>(); sc && sc.Name() == L"ScrollViewer") return sc;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(n); ++i) if (auto r = scrollerOf(Media::VisualTreeHelper::GetChild(n, i))) return r;
+        return nullptr;
+    };
+    for (auto view : {view1, view2})
+        if (auto scroller = scrollerOf(view))
+            scroller.ChangeView(winrt::box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
+    settle(30);
+    const POINT start = screenAt(host, view1, L"FirefoxWinUIInlineGroup-7", .5);
+    {
+        POINT origin{rect.left, rect.top};
+        ClientToScreen(host, &origin);
+        Require(start.x > origin.x && start.x < origin.x + rect.right, "the source group header is inside its strip");
+    }
+    // Left quarter of the destination group's header: before the whole group.
+    const POINT drop = screenAt(host2, view2, L"FirefoxWinUIInlineGroup-9", .25);
+    SetWindowPos(host, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetForegroundWindow(host);
+    for (int attempt = 0; attempt < 30 && GetForegroundWindow() != host; ++attempt) { SetForegroundWindow(host); settle(10); }
+    Require(GetForegroundWindow() == host, "source window owns foreground before the group drag");
+    SetCursorPos(start.x, start.y); settle();
+    send(MOUSEEVENTF_LEFTDOWN); settle();
+    moveTo(start.x + 12, start.y); settle();
+    for (int step = 1; step <= 20; ++step) { moveTo(start.x + 12 + (drop.x - start.x - 12) * step / 20, start.y + (drop.y - start.y) * step / 20); settle(5); }
+    settle(40);
+    auto previews = DragPreviewWindows();
+    Require(previews.size() == 1 && IsWindowVisible(previews[0]), "over another window's strip the group still follows the cursor");
+    RECT shown{};
+    // The snapshot is asynchronous; the window is sized when it is first painted.
+    for (int i = 0; i < 200; ++i) {
+        GetWindowRect(previews[0], &shown);
+        if (shown.right > shown.left) break;
+        settle(1);
+    }
+    Require(shown.top < drop.y && shown.bottom > drop.y && shown.left <= drop.x && shown.right >= drop.x,
+            "the floating group sits in the destination strip's row band under the cursor");
+    settle(20); // the gap eases in
+    const double gap = leftOf(L"FirefoxWinUIInlineGroup-9") - ninthLeft;
+    Require(gap > 8 && std::abs(leftOf(L"FirefoxWinUITab-203") - memberLeft - gap) < .5,
+            "the destination opens a gap before its whole group, moving header and member together");
+    Require(std::abs(leftOf(L"FirefoxWinUITab-201") - firstLeft) < .5, "blocks before the insertion point stay put");
+    send(MOUSEEVENTF_LEFTUP); settle();
+    Require(DragPreviewWindows().empty(), "release over another strip destroys the floating group");
+    auto event = NextRequest(api, host2, 5, L"strip-group-adopt", 40, accept ? 1 : 2).GetNamedObject(L"action", nullptr);
+    Require(event && event.GetNamedNumber(L"sourceHwnd") == double(reinterpret_cast<uintptr_t>(host)) &&
+            event.GetNamedNumber(L"sourceSession") == 5 && event.GetNamedNumber(L"session") == 8 &&
+            event.GetNamedNumber(L"group") == 7 && event.GetNamedNumber(L"beforeGroup") == 9 && event.GetNamedNumber(L"beforeTab") == 0,
+            "the destination asks Firefox to adopt the source's group before its whole group");
+    Require(!NextRequest(api, host, 5, L"strip-group-detach", 10).Size() && !NextRequest(api, host, 5, L"strip-group-reorder", 10).Size(),
+            "the source neither detaches nor reorders a group dropped on another window");
+    settle();
+    const double held = leftOf(L"FirefoxWinUIInlineGroup-9") - ninthLeft;
+    if (accept) {
+        Require(std::abs(held - gap) < .5, "an accepted adopt keeps the gap until Firefox publishes the group");
+        // Firefox's adoption arrives as a new layout with the group in place.
+        publish2(101, L",{\"id\":12,\"name\":\"First\",\"label\":\"First\",\"collapsed\":true}", L",{\"group\":12,\"tab\":0}");
+        settle(40);
+        auto landed = inList(view2, L"FirefoxWinUIInlineGroup-12");
+        Require(landed && landed.ActualWidth() > 0 &&
+                leftOf(L"FirefoxWinUIInlineGroup-12") + landed.ActualWidth() <= leftOf(L"FirefoxWinUIInlineGroup-9") + .5,
+                "the published group replaces the held gap");
+        puts("CHECKS PASSED: a group dropped on another window is adopted there");
+    } else {
+        Require(std::abs(held) < .5, "a rejected adopt closes the destination gap");
+        puts("CHECKS PASSED: a rejected cross-window group drop restores the destination");
+    }
+    Require(SUCCEEDED(api.destroy(host2)) && SUCCEEDED(api.destroy(host)), "destroy cross-window group panes");
+    DestroyWindow(host2);
+    DestroyWindow(host);
+    settle();
+}
+
 // Dragging a group to the strip's end must keep scrolling even with the pointer
 // past the scroller's own viewport, over the trailing New Tab area. With
 // `pickup`, only lifts the group while the active tab is at the far end: the
@@ -4291,7 +4467,7 @@ int wmain(int argc, wchar_t** argv) {
     Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 ||
                                         wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 ||
                                         wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--continuation") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                                        wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0))),
+                                        wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))),
             "DLL path and optional --inspect required");
     // Before the DLL loads, because the pane reads this once. Without it the
     // request path's stages are counted but never timed, and the assertions
@@ -4351,7 +4527,7 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
     if (argc == 3 && (wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--continuation") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                      wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0))) {
+                      wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))) {
         auto dragTicks = [&] {
             auto counts = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
                 GetProcAddress(module, "WinUIPaneTestGetEntryCalls"));
@@ -4362,6 +4538,10 @@ int wmain(int argc, wchar_t** argv) {
         };
         if (wcscmp(argv[2], L"--group-neighbors") == 0) {
             CheckGroupNeighbors(api,first);
+        } else if (wcscmp(argv[2], L"--group-cross") == 0) {
+            // Only the cross-window group checks: a fast loop while working on them.
+            CheckGroupCrossWindowAdopt(module, api, true);
+            CheckGroupCrossWindowAdopt(module, api, false);
         } else if (wcscmp(argv[2], L"--group-drop") == 0) {
             CheckTabStripDrag(module, api, first, false, false, false, true);
             CheckTabGroupHeaderShift(module, api, first);
@@ -4421,6 +4601,8 @@ int wmain(int argc, wchar_t** argv) {
             CheckGroupDragEdgeScroll(module, api, first, false, GroupDetach::Release);
             CheckGroupDragEdgeScroll(module, api, first, false, GroupDetach::Return);
             CheckGroupDragEdgeScroll(module, api, first, false, GroupDetach::Sole);
+            CheckGroupCrossWindowAdopt(module, api, true);
+            CheckGroupCrossWindowAdopt(module, api, false);
         }
         // Section 8: no session work after a gesture completes. Every window
         // message still reaches TickDragSession, so the only way to show that

@@ -634,3 +634,36 @@ test("whole group detach reports Firefox refusal",()=>{
   f.session.detachGroup=()=>false;
   assert.equal(f.session.receive(f.detach),false);
 });
+
+function groupAdoptFixture() {
+  const f=groupDragFixture();
+  f.adopts=[];
+  f.session.adoptGroup=(...args)=>f.adopts.push(args);
+  f.adopt={kind:"strip-group-adopt",session:f.session.windowDragSession,revision:f.session.revision,
+    sourceHwnd:0x1234,sourceSession:77,group:5,beforeGroup:0,beforeTab:22};
+  return f;
+}
+test("another window's group lands before a whole destination block once",()=>{
+  const f=groupAdoptFixture();
+  assert.equal(f.session.receive(f.adopt),true);
+  assert.deepEqual(f.adopts,[[0x1234,77,5,null,22]]);
+  assert.equal(f.session.receive(f.adopt),false);
+  const g=groupAdoptFixture();
+  assert.equal(g.session.receive({...g.adopt,beforeTab:0,beforeGroup:g.action.group}),true);
+  assert.deepEqual(g.adopts,[[0x1234,77,5,g.target,0]]);
+  const end=groupAdoptFixture();
+  assert.equal(end.session.receive({...end.adopt,beforeTab:0}),true);
+  assert.deepEqual(end.adopts,[[0x1234,77,5,null,0]]);
+});
+test("adopted group rejects stale destinations, members, malformed sources and refusal",()=>{
+  for (const change of [f=>f.adopt.session++,f=>f.adopt.revision--,f=>f.adopt.sourceHwnd=0,
+    f=>f.adopt.sourceHwnd=1.5,f=>f.adopt.sourceSession=0,f=>f.adopt.group=0,f=>f.adopt.beforeTab=-1,
+    f=>f.adopt.beforeGroup=f.action.group,f=>f.adopt.beforeTab=11,f=>f.adopt.beforeTab=99,
+    f=>f.state.rows[1].flags=1,f=>f.state.layout.reverse(),f=>f.session.adoptGroup=null]) {
+    const f=groupAdoptFixture(); change(f);
+    assert.equal(f.session.receive(f.adopt),false); assert.equal(f.adopts.length,0);
+  }
+  const f=groupAdoptFixture();
+  f.session.adoptGroup=()=>false;
+  assert.equal(f.session.receive(f.adopt),false);
+});

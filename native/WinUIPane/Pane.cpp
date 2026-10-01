@@ -651,6 +651,7 @@ struct Pane {
         if (strip) {
             strip->ReconcileTransfers();
             strip->ReconcileDrag();
+            strip->ReconcileForeignGroup();
         }
     }
     // Keep the Rust presentation model in step with the authoritative snapshot,
@@ -1411,6 +1412,7 @@ void AbortDragSession() noexcept {
         for (auto& [hwnd, pane] : panes) {
             if (pane->strip.get() == session.hoverStrip) {
                 try { pane->strip->EndForeignDragOver(); } catch (...) {}
+                try { pane->strip->EndForeignGroupOver(); } catch (...) {}
                 break;
             }
         }
@@ -1531,7 +1533,7 @@ winrt::fire_and_forget RenderGroupTearoffAsync(FrameworkElement chip, HWND popup
 // Off the strip the group follows the cursor in a floating window, keeping
 // the grab point; back over it, the in-strip chip takes over again. The chip
 // stays visible until the snapshot is ready, so there is never a blank frame.
-void UpdateGroupTearoff(TabDragSession& session, POINT screenPoint, bool detaching) {
+void UpdateGroupTearoff(TabDragSession& session, POINT screenPoint, bool detaching, RECT snap) {
     auto& visual = session.sourceStrip->groupDragVisual;
     if (!detaching || !visual.button || !visual.chip) {
         if (session.tearoffWindow) ShowWindow(session.tearoffWindow, SW_HIDE);
@@ -1546,6 +1548,8 @@ void UpdateGroupTearoff(TabDragSession& session, POINT screenPoint, bool detachi
     const double scale = visual.chip.XamlRoot() ? visual.chip.XamlRoot().RasterizationScale() : 1.0;
     const int grab = std::clamp(int(visual.grabX * scale), 0, session.tearoffWidth);
     POINT topLeft{screenPoint.x - grab, screenPoint.y - session.tearoffHeight / 2};
+    // Over another strip, sit in its row band as a header would.
+    if (snap.bottom > snap.top) topLeft.y = snap.top + (snap.bottom - snap.top - session.tearoffHeight) / 2;
     TabDragImage::PaintDragVisual(session.tearoffWindow, session.tearoffBitmap, session.tearoffWidth,
                                    session.tearoffHeight, topLeft);
     if (!IsWindowVisible(session.tearoffWindow)) ShowWindow(session.tearoffWindow, SW_SHOWNOACTIVATE);
@@ -1585,6 +1589,19 @@ void ResolveDragDrop(Pane& sourcePane, Pane* hitPane, POINT screenPoint) {
     }
 }
 
+// The other pane whose strip claims `screenPoint`, if any. Never the source,
+// a hidden or minimized window, or a window the gesture just left.
+Pane* ForeignStripAt(Pane& sourcePane, TabDragSession const& session, POINT screenPoint) {
+    for (auto& entry : state().panes) {
+        if (!entry.second->strip || entry.second.get() == &sourcePane || !entry.second->appliedVisible ||
+            !IsWindowVisible(entry.first) || IsIconic(entry.first) ||
+            (entry.first == session.departedWindow && !session.departedLife.expired())) continue;
+        RECT bounds = entry.second->StripScreenBounds();
+        if (PtInRect(&bounds, screenPoint)) return entry.second.get();
+    }
+    return nullptr;
+}
+
 // Pane.cpp's own Translate() hook calls this unconditionally on every
 // message it pretranslates, and TabStrip.h's PointerMoved calls it directly
 // too while already Dragging, as a lower-latency accelerant -- both routes
@@ -1618,10 +1635,37 @@ void TickDragSession() {
         const bool down=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;
         const bool cancel=(GetAsyncKeyState(VK_ESCAPE)&0x8000)!=0 || GetForegroundWindow()!=sourcePane.parent ||
             (session.sourceStrip->GroupDrag().phase==2 && GetCapture()!=sourcePane.parent) || !sourcePane.appliedVisible;
-        session.sourceStrip->TickGroupDrag(sourcePane.ScreenToStrip(point),down,cancel);
-        const auto group = session.sourceStrip->GroupDrag();
+        auto* strip = session.sourceStrip;
+        // Another window's strip wins over this strip's own margin, as for a
+        // tab. Private and ordinary windows never exchange groups.
+        Pane* hitPane = nullptr;
+        if (!cancel && strip->GroupDrag().phase == 2)
+            if (auto* hit = ForeignStripAt(sourcePane, session, point); hit && hit->strip->windowDragPrivate == strip->windowDragPrivate)
+                hitPane = hit;
+        NativeTabStrip* hover = hitPane ? hitPane->strip.get() : nullptr;
+        if (session.hoverStrip != hover && session.hoverStrip && session.hoverStrip != strip)
+            session.hoverStrip->EndForeignGroupOver();
+        session.hoverStrip = hover;
+        if (hitPane && !down) {
+            // The destination queues the adopt; the source keeps its group until
+            // Firefox moves it, exactly like a tear-off.
+            const auto group = strip->GroupDrag().group;
+            const auto width = strip->GroupDragSlotWidth();
+            hitPane->strip->AcceptForeignGroupDrop(sourcePane.parent, strip->windowDragSession, group,
+                                                   hitPane->ScreenToStrip(point), width);
+            session.hoverStrip = nullptr;
+            AbortDragSession();
+            return;
+        }
+        strip->TickGroupDrag(sourcePane.ScreenToStrip(point), down, cancel, hitPane != nullptr);
+        const auto group = strip->GroupDrag();
         if (!group.phase) { AbortDragSession(); return; }
-        UpdateGroupTearoff(session, point, group.phase == 2 && group.detaching);
+        if (hitPane) {
+            if (!hitPane->strip->ForeignGroupOver(hitPane->ScreenToStrip(point), strip->GroupDragSlotWidth()))
+                session.hoverStrip = nullptr;
+        }
+        UpdateGroupTearoff(session, point, group.phase == 2 && group.detaching,
+                           hitPane ? hitPane->StripScreenBounds() : RECT{});
         return;
     }
     if (session.sourceStrip->Drag().phase == NativeTabStrip::DragPhase::None) {
@@ -1665,17 +1709,7 @@ void TickDragSession() {
     // would never resolve as a foreign hover at all (local Y relative to
     // the source alone can't tell "moved to a horizontally different
     // window" from "still over my own strip").
-    Pane* hitPane = nullptr;
-    for (auto& entry : panes) {
-        if (!entry.second->strip || entry.second.get() == &sourcePane || !entry.second->appliedVisible ||
-            !IsWindowVisible(entry.first) || IsIconic(entry.first) ||
-            (entry.first == session.departedWindow && !session.departedLife.expired())) continue;
-        RECT bounds = entry.second->StripScreenBounds();
-        if (PtInRect(&bounds, screenPoint)) {
-            hitPane = entry.second.get();
-            break;
-        }
-    }
+    Pane* hitPane = ForeignStripAt(sourcePane, session, screenPoint);
     NativeTabStrip* newHover = hitPane ? hitPane->strip.get() : nullptr;
     if (!hitPane) {
         // Not over any other pane -- on-strip vs. tear-off is decided by

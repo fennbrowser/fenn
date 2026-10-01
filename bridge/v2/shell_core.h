@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 22
+#define SHELL_CORE_ABI_VERSION 23
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -376,6 +376,26 @@ typedef struct {
   double start;
   double end;
 } ShellGroupDragSlot;
+
+/*
+ Destination of another window's whole-group drag. Insertion is between
+ whole blocks (an ungrouped tab or a group), never inside a group. After the
+ drop the gap is held until Firefox rejects the adopt or publishes.
+ */
+typedef struct {
+  bool active;
+  /*
+   Measured block the group lands before; the block count means the end.
+   */
+  uint32_t index;
+  uint32_t before_group;
+  uint32_t before_tab;
+  uint64_t request;
+  /*
+   For a held request: 0 pending, 1 accepted, 2 rejected or cancelled.
+   */
+  uint32_t result;
+} ShellForeignGroup;
 
 #ifdef __cplusplus
 extern "C" {
@@ -1174,7 +1194,8 @@ ShellStatus shell_core_group_drag_update(ShellCore *core,
 /*
  Classify whether the group has been pulled off its strip, after
  `shell_core_group_drag_update` for the same view-local point. `width` and
- `height` are the strip view's size.
+ `height` are the strip view's size. `foreign` means another window's strip
+ claims the pointer, which also takes the group off this strip.
  # Safety
  Live core.
  */
@@ -1182,7 +1203,51 @@ ShellStatus shell_core_group_drag_detach(ShellCore *core,
                                          double x,
                                          double y,
                                          double width,
-                                         double height);
+                                         double height,
+                                         bool foreign);
+
+/*
+ Read this strip's state as the destination of another window's group drag.
+ # Safety
+ Live core and writable out.
+ */
+ShellStatus shell_core_group_foreign_state(ShellCore *core, ShellForeignGroup *out);
+
+/*
+ Target another window's group between this strip's measured whole blocks
+ (view-local logical axis, browser order, unshifted).
+ # Safety
+ Live core; slots reads len aligned entries, at most 10000 (may be null when 0).
+ */
+ShellStatus shell_core_group_foreign_hover(ShellCore *core,
+                                           double x,
+                                           const ShellGroupDragSlot *slots,
+                                           uintptr_t len);
+
+/*
+ Visual offset opening the destination gap for one measured block.
+ # Safety
+ Live core; out is writable for one double.
+ */
+ShellStatus shell_core_group_foreign_offset(ShellCore *core,
+                                            uintptr_t index,
+                                            double width,
+                                            double *out);
+
+/*
+ Hold the destination gap for a queued, tab-less adopt request.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_group_foreign_hold(ShellCore *core, uint64_t request);
+
+/*
+ End the destination preview. Without `force`, a held gap survives until its
+ request is rejected; `force` is for a new authoritative layout.
+ # Safety
+ Live core; ended is writable.
+ */
+ShellStatus shell_core_group_foreign_end(ShellCore *core, bool force, bool *ended);
 
 /*
  Logical-axis visual offset for a whole group or ungrouped-tab block.

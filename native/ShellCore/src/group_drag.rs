@@ -81,10 +81,12 @@ impl GroupDrag {
     /// Classify tear-off with the same bounded margin a single tab uses.
     /// A group holding every tab still detaches: Firefox's new window adopts
     /// it and the emptied source window closes, as with its own group drag.
-    pub fn classify(&mut self, x:f64, y:f64, width:f64, height:f64)->bool {
+    /// `foreign`: another window's strip claims the pointer, whatever this
+    /// strip's own geometry says (windows can overlap or sit side by side).
+    pub fn classify(&mut self, x:f64, y:f64, width:f64, height:f64, foreign:bool)->bool {
         if ![x,y,width,height].into_iter().all(finite) || width<0. || height<0. { return false; }
-        self.state.detaching = self.state.phase==2 && height>0. &&
-            (x < -height || x > width+height || y < -height || y > height*2.);
+        self.state.detaching = self.state.phase==2 && (foreign || height>0. &&
+            (x < -height || x > width+height || y < -height || y > height*2.));
         if self.state.detaching { self.state.valid=false; }
         true
     }
@@ -107,6 +109,62 @@ impl GroupDrag {
         if landed { self.state.awaiting=false; }
     }
     pub fn end(&mut self) { self.state=Default::default(); }
+}
+
+/// Destination of another window's whole-group drag. Insertion is between
+/// whole blocks (an ungrouped tab or a group), never inside a group. After the
+/// drop the gap is held until Firefox rejects the adopt or publishes.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct ShellForeignGroup {
+    pub active: bool,
+    /// Measured block the group lands before; the block count means the end.
+    pub index: u32,
+    pub before_group: u32,
+    pub before_tab: u32,
+    pub request: u64,
+    /// For a held request: 0 pending, 1 accepted, 2 rejected or cancelled.
+    pub result: u32,
+}
+#[derive(Default)]
+pub struct ForeignGroup { state: ShellForeignGroup, count: usize }
+impl ForeignGroup {
+    pub fn state(&self) -> ShellForeignGroup { self.state }
+    pub fn hover(&mut self, x:f64, slots:&[ShellGroupDragSlot], layout:&[crate::strip::ShellStripSlot]) -> bool {
+        if self.state.request != 0 || !finite(x) || slots.len() > 10000 { return false; }
+        let mut ids=std::collections::HashSet::new();
+        if slots.iter().any(|s| (s.group==0)==(s.tab==0) || !finite(s.start) || !finite(s.end) || s.end<s.start || !ids.insert((s.group,s.tab))) { return false; }
+        let (index,group,tab)=match slots.iter().position(|s| x < (s.start+s.end)/2.) {
+            Some(i) => (i,slots[i].group,slots[i].tab),
+            // Past the last measured block: keep an unrealized successor's identity.
+            None => {
+                let units:Vec<_>=layout.iter().filter(|s| s.tab==0 || s.group==0).collect();
+                let next=slots.last().and_then(|last| units.iter().position(|s| s.group==last.group && s.tab==last.tab))
+                    .and_then(|i| units.get(i+1));
+                (slots.len(),next.map_or(0,|s| s.group),next.map_or(0,|s| s.tab))
+            }
+        };
+        self.count=slots.len();
+        self.state=ShellForeignGroup { active:true, index:index as u32, before_group:group, before_tab:tab, ..Default::default() };
+        true
+    }
+    pub fn offset(&self, index:usize, width:f64)->Option<f64> {
+        if !finite(width) || width<0. || index>=self.count { return None; }
+        Some(if self.state.active && index>=self.state.index as usize { width } else { 0. })
+    }
+    pub fn hold(&mut self, request:u64)->bool {
+        if !self.state.active || request==0 || self.state.request!=0 { return false; }
+        self.state.request=request; self.state.result=0; true
+    }
+    pub fn complete(&mut self, request:u64, accepted:bool) {
+        if self.state.request==request && request!=0 && self.state.result==0 { self.state.result=if accepted {1} else {2}; }
+    }
+    /// Ends a live preview, or a held one only when `force` (a new layout)
+    /// or once Firefox has rejected it.
+    pub fn end(&mut self, force:bool)->bool {
+        if self.state.request!=0 && !force && self.state.result!=2 { return false; }
+        *self=Default::default(); true
+    }
 }
 
 #[cfg(test)]
@@ -177,24 +235,59 @@ mod tests {
     }
     #[test] fn detaching_uses_tab_margin_and_closes_gap() {
         let mut d=GroupDrag::default(); d.arm(1,10.,10.);
-        assert!(d.classify(10.,10.,300.,40.)); assert!(!d.state().detaching); // armed only
+        assert!(d.classify(10.,10.,300.,40.,false)); assert!(!d.state().detaching); // armed only
         d.update(280.,10.,true,&slots()); assert!(d.state().valid);
         for (x,y) in [(280.,80.),(280.,79.9),(-40.,10.),(340.,10.),(280.,-40.)] {
-            d.update(x,y,false,&slots()); d.classify(x,y,300.,40.);
+            d.update(x,y,false,&slots()); d.classify(x,y,300.,40.,false);
             assert!(!d.state().detaching,"{x},{y}");
         }
         for (x,y) in [(280.,80.1),(-40.1,10.),(340.1,10.),(280.,-40.1)] {
-            d.update(x,y,false,&slots()); d.classify(x,y,300.,40.);
+            d.update(x,y,false,&slots()); d.classify(x,y,300.,40.,false);
             assert!(d.state().detaching,"{x},{y}"); assert!(!d.state().valid);
             assert_eq!(d.offset(1,40.),Some(0.));
         }
         // Back over the strip reorders again.
-        d.update(280.,10.,true,&slots()); d.classify(280.,10.,300.,40.);
+        d.update(280.,10.,true,&slots()); d.classify(280.,10.,300.,40.,false);
         assert!(!d.state().detaching); assert!(d.state().valid);
-        d.classify(280.,200.,300.,0.); assert!(!d.state().detaching);
-        assert!(!d.classify(f64::NAN,0.,300.,40.));
-        assert!(!d.classify(0.,0.,-1.,40.));
+        d.classify(280.,200.,300.,0.,false); assert!(!d.state().detaching);
+        d.update(280.,10.,true,&slots()); d.classify(280.,10.,300.,40.,true);
+        assert!(d.state().detaching && !d.state().valid); // another strip wins
+        assert!(!d.classify(f64::NAN,0.,300.,40.,false));
+        assert!(!d.classify(0.,0.,-1.,40.,false));
         d.end(); assert!(!d.state().detaching);
+    }
+    #[test] fn foreign_group_inserts_between_whole_blocks_and_holds_until_answered() {
+        use crate::strip::ShellStripSlot as S;
+        // Destination: tab 9, group 2 (members merged into one block), tab 10.
+        let blocks=[ShellGroupDragSlot{group:0,tab:9,start:0.,end:100.},
+            ShellGroupDragSlot{group:2,tab:0,start:100.,end:260.},
+            ShellGroupDragSlot{group:0,tab:10,start:260.,end:360.}];
+        let layout=[S{group:0,tab:9},S{group:2,tab:0},S{group:2,tab:4},S{group:0,tab:10},S{group:0,tab:11}];
+        let mut f=ForeignGroup::default();
+        assert_eq!(f.offset(0,40.),None);
+        assert!(f.hover(10.,&blocks,&layout)); assert_eq!((f.state().index,f.state().before_group,f.state().before_tab),(0,0,9));
+        // Inside the group block: before or after the whole group, never between members.
+        assert!(f.hover(170.,&blocks,&layout)); assert_eq!((f.state().before_group,f.state().before_tab),(2,0));
+        assert!(f.hover(190.,&blocks,&layout)); assert_eq!((f.state().index,f.state().before_tab),(2,10));
+        assert_eq!((0..3).map(|i| f.offset(i,40.).unwrap()).collect::<Vec<_>>(),vec![0.,0.,40.]);
+        // Past the last realized block: before the offscreen successor, else the end.
+        assert!(f.hover(400.,&blocks,&layout)); assert_eq!((f.state().index,f.state().before_tab),(3,11));
+        assert!(f.hover(400.,&blocks,&layout[..4])); assert_eq!((f.state().before_group,f.state().before_tab),(0,0));
+        assert!(f.hover(0.,&[],&layout)); assert_eq!(f.state().index,0);
+        assert!(f.hover(10.,&blocks,&layout));
+        // Held: no retargeting, an unforced end keeps the gap, a rejection releases it.
+        assert!(!f.hold(0)); assert!(f.hold(7)); assert!(!f.hold(8));
+        assert!(!f.hover(300.,&blocks,&layout)); assert!(!f.end(false));
+        f.complete(6,false); assert_eq!(f.state().result,0);
+        f.complete(7,false); assert_eq!(f.state().result,2);
+        assert!(f.end(false)); assert!(!f.state().active);
+        assert!(!f.hold(9)); // nothing to hold once ended
+        assert!(f.hover(10.,&blocks,&layout)); assert!(f.hold(9));
+        f.complete(9,true); f.complete(9,false); assert_eq!(f.state().result,1);
+        assert!(!f.end(false)); assert!(f.end(true));
+        assert!(!f.hover(f64::NAN,&blocks,&layout));
+        assert!(!f.hover(0.,&[blocks[0],blocks[0]],&layout));
+        assert!(!f.hover(0.,&[ShellGroupDragSlot{group:1,tab:1,start:0.,end:1.}],&layout));
     }
     #[test] fn threshold_boundaries_and_noop() {
         let mut d=GroupDrag::default(); d.arm(1,10.,10.);

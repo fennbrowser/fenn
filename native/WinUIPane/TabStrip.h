@@ -606,7 +606,7 @@ struct NativeTabStrip {
                 surface->second = joinHold.rect;
             }
         }
-        const bool followingMotion = joinHold.group || sourceHold.group || IsDragging() || GroupDrag().phase || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty() || (joinReach.group && !joinReach.Settled(now));
+        const bool followingMotion = joinHold.group || sourceHold.group || IsDragging() || GroupDrag().phase || !foreignGroupShift.entries.empty() || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty() || (joinReach.group && !joinReach.Settled(now));
         // Before this pass places any light, so continuous motion never
         // starts a trailing animation.
         if (ambient.motion.Enabled()) FollowGlow(!followingMotion);
@@ -989,7 +989,9 @@ struct NativeTabStrip {
             if (request) shell_core_group_drag_wait(core,request,state.group,state.before_group,state.before_tab);
         }
     }
-    void TickGroupDrag(Windows::Foundation::Point point, bool down, bool cancel) {
+    // `foreign`: another window's strip claims the pointer; Pane.cpp resolves
+    // a release there itself, so this strip only takes the group off itself.
+    void TickGroupDrag(Windows::Foundation::Point point, bool down, bool cancel, bool foreign = false) {
         const auto old=GroupDrag();
         if (!old.phase) return;
         if (cancel || !root.IsLoaded() || root.Visibility()!=Visibility::Visible) { EndGroupDrag(); return; }
@@ -1059,7 +1061,7 @@ struct NativeTabStrip {
             }
         }
         if (shell_core_group_drag_update(core,point.X,point.Y,inside,viewport.X,viewport.X+viewport.Width,slots.data(),slots.size())!=SHELL_STATUS_OK ||
-            shell_core_group_drag_detach(core,point.X,point.Y,view.ActualWidth(),view.ActualHeight())!=SHELL_STATUS_OK) { EndGroupDrag(); return; }
+            shell_core_group_drag_detach(core,point.X,point.Y,view.ActualWidth(),view.ActualHeight(),foreign)!=SHELL_STATUS_OK) { EndGroupDrag(); return; }
         const auto state=GroupDrag();
         if (state.phase==2) {
             if (old.phase==1) {
@@ -1098,6 +1100,94 @@ struct NativeTabStrip {
     }
     std::vector<ShellStripSlot> groupLayout;
     bool hasGroupLayout{};
+
+    // The dragged group's slot width, for another window's destination gap.
+    double GroupDragSlotWidth() const {
+        if (!groupDragVisual.placeholder) return 0;
+        return groupDragVisual.placeholder.Width()+groupDragVisual.margin.Left+groupDragVisual.margin.Right;
+    }
+    // This strip as the destination of another window's whole-group drag.
+    // ShellCore picks an insertion point between whole blocks and holds the
+    // gap after the drop; only the WinUI transforms live here.
+    GroupDragShift foreignGroupShift;
+    ShellForeignGroup ForeignGroup() const {
+        ShellForeignGroup state{};
+        if (core) shell_core_group_foreign_state(core,&state);
+        return state;
+    }
+    bool ForeignGroupOver(Windows::Foundation::Point point, double width) {
+        if (!core || !root.IsLoaded() || root.Visibility()!=Visibility::Visible || IsDragging() || GroupDrag().phase) return false;
+        if (ForeignGroup().request) EndForeignGroupOver(true);
+        if (foreignGroupShift.entries.empty()) view.UpdateLayout();
+        std::vector<ShellGroupDragSlot> slots;
+        struct Item { uint64_t key; FrameworkElement element; size_t block; };
+        std::vector<Item> items;
+        for (auto slot : groupLayout) {
+            FrameworkElement item{nullptr};
+            if (!slot.tab) {
+                auto found=inlineGroups.runs.find(slot.group);
+                if (found==inlineGroups.runs.end() || !found->second.button.IsLoaded()) continue;
+                item=found->second.button;
+            } else {
+                if (!rows.count(slot.tab) || !rows.at(slot.tab).IsLoaded() ||
+                    rows.at(slot.tab).Visibility()==Visibility::Collapsed) continue;
+                if (presentation.count(slot.tab) && (presentation.at(slot.tab).flags&1)) continue;
+                item=rows.at(slot.tab);
+            }
+            const auto key=slot.tab ? uint64_t(slot.tab) : GroupSlide::GroupKey(slot.group);
+            auto bounds=item.TransformToVisual(view).TransformBounds({0,0,float(item.ActualWidth()),float(item.ActualHeight())});
+            // Unshifted geometry: opening the gap must not move its own target.
+            const double start=bounds.X-foreignGroupShift.Offset(key), end=start+bounds.Width;
+            if (slot.tab && slot.group) {
+                if (!slots.empty() && slots.back().group==slot.group) {
+                    slots.back().start=std::min(slots.back().start,start);
+                    slots.back().end=std::max(slots.back().end,end);
+                } else slots.push_back({slot.group,0,start,end});
+            } else slots.push_back({slot.group,slot.tab,start,end});
+            items.push_back({key,item,slots.size()-1});
+        }
+        if (shell_core_group_foreign_hover(core,point.X,slots.data(),slots.size())!=SHELL_STATUS_OK) {
+            EndForeignGroupOver(true);
+            return false;
+        }
+        for (auto const& item : items) {
+            double offset{};
+            if (shell_core_group_foreign_offset(core,item.block,width,&offset)==SHELL_STATUS_OK)
+                foreignGroupShift.Apply(item.key,item.element,offset,groupSlide.Enabled());
+        }
+        ambient.Update();
+        return true;
+    }
+    void EndForeignGroupOver(bool force = false) {
+        bool ended=false;
+        if (core) shell_core_group_foreign_end(core,force,&ended);
+        if (ended || !core) foreignGroupShift.Reset();
+    }
+    // Releases a held gap once Firefox has rejected the adopt.
+    void ReconcileForeignGroup() {
+        const auto state=ForeignGroup();
+        if (!state.active || state.result==2) EndForeignGroupOver();
+    }
+    // Queues the adopt on this window's transport. The group ID belongs to the
+    // source window's session, which Firefox resolves from its HWND.
+    uint64_t AcceptForeignGroupDrop(HWND sourceHwnd, uint32_t sourceSession, uint32_t group,
+                                    Windows::Foundation::Point point, double width) {
+        if (!dispatch || !ForeignGroupOver(point,width)) { EndForeignGroupOver(true); return 0; }
+        const auto target=ForeignGroup();
+        using Value=Windows::Data::Json::JsonValue;
+        Windows::Data::Json::JsonObject action;
+        action.SetNamedValue(L"kind",Value::CreateStringValue(L"strip-group-adopt"));
+        action.SetNamedValue(L"revision",Value::CreateNumberValue(presentationRevision));
+        action.SetNamedValue(L"session",Value::CreateNumberValue(windowDragSession));
+        action.SetNamedValue(L"sourceHwnd",Value::CreateNumberValue(double(reinterpret_cast<uintptr_t>(sourceHwnd))));
+        action.SetNamedValue(L"sourceSession",Value::CreateNumberValue(sourceSession));
+        action.SetNamedValue(L"group",Value::CreateNumberValue(group));
+        action.SetNamedValue(L"beforeGroup",Value::CreateNumberValue(target.before_group));
+        action.SetNamedValue(L"beforeTab",Value::CreateNumberValue(target.before_tab));
+        const auto request=dispatch(0,action.Stringify());
+        if (!request || shell_core_group_foreign_hold(core,request)!=SHELL_STATUS_OK) EndForeignGroupOver(true);
+        return request;
+    }
 
     bool CanApplyGroupLayout() const {
         if (!hasGroupLayout || !inlineGroups.configured || IsDragging()) return false;
@@ -2734,6 +2824,7 @@ struct NativeTabStrip {
         if (!core || shell_core_strip_apply_layout(core, base, revision, changes.data(), changes.size(), layout.data(), layout.size(), layoutChanged) != SHELL_STATUS_OK)
             throw hresult_invalid_argument();
         if (GroupDrag().phase && (layoutChanged || !removed.empty() || !base)) EndGroupDrag();
+        if (layoutChanged || !base) EndForeignGroupOver(true);
         if (layoutChanged) {
             std::vector<uint32_t> toggled;
             if (updateGroups && inlineGroups.active && !IsDragging()) {

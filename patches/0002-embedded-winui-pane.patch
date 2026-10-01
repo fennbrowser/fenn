@@ -2535,10 +2535,10 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..00ab6f07c2
+index 0000000000..daeeda428e
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,254 @@
+@@ -0,0 +1,275 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2548,8 +2548,8 @@ index 0000000000..00ab6f07c2
 +let nextWindowDragSession = 0;
 +
 +export class WinUITabStripSession {
-+  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup, detachGroup }) {
-+    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup, detachGroup });
++  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup, detachGroup, adoptGroup }) {
++    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup, detachGroup, adoptGroup });
 +    this.ids = new WeakMap();
 +    this.nextId = 1;
 +    this.revision = 0;
@@ -2656,6 +2656,27 @@ index 0000000000..00ab6f07c2
 +      this.consumed = true;
 +      return this.detachGroup(this.targets.get(event.group),
 +        { screenX: event.screenX, screenY: event.screenY }) !== false;
++    }
++    if (event?.kind === "strip-group-adopt") {
++      // This window receives another window's whole group. The group ID is
++      // opaque to the source window's session; that session resolves it, so
++      // only this window's own destination is checked here.
++      if (this.consumed || event.session !== this.windowDragSession || event.revision !== this.revision ||
++          !this.adoptGroup || !Number.isSafeInteger(event.sourceHwnd) || event.sourceHwnd <= 0 ||
++          !Number.isSafeInteger(event.sourceSession) || event.sourceSession <= 0 ||
++          !Number.isSafeInteger(event.group) || event.group <= 0 ||
++          !Number.isSafeInteger(event.beforeGroup) || event.beforeGroup < 0 ||
++          !Number.isSafeInteger(event.beforeTab) || event.beforeTab < 0 ||
++          (event.beforeGroup && event.beforeTab)) return false;
++      const current = this.describe();
++      if (!Array.isArray(current.layout) || !this.same(current.layout,this.state.layout)) return false;
++      if (event.beforeGroup || event.beforeTab) {
++        const units = current.layout.filter(s => !s.tab || (!s.group && !(current.rows.find(r=>r.id===s.tab)?.flags & 1)));
++        if (!units.some(s => s.group === event.beforeGroup && s.tab === event.beforeTab)) return false;
++      }
++      this.consumed = true;
++      return this.adoptGroup(event.sourceHwnd, event.sourceSession, event.group,
++        event.beforeGroup ? this.targets.get(event.beforeGroup) : null, event.beforeTab) !== false;
 +    }
 +    if (event?.kind === "strip-all-tabs") {
 +      if (event.session !== this.windowDragSession || event.revision !== this.revision ||
@@ -3941,10 +3962,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..663a7db05e
+index 0000000000..f45326348a
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1783 @@
+@@ -0,0 +1,1807 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4554,6 +4575,20 @@ index 0000000000..663a7db05e
 +  // Shared by the tab-menu resolver and native strip actions (reorder):
 +  // an opaque row/tab id is only ever valid while it still names a live,
 +  // currently-published tab.
++  // Resolves another browser window from the HWND its native strip reported.
++  // nsIBaseWindow.nativeHandle is how Windows shell integration already maps a
++  // chrome window to its HWND; AppWindow formats it as "0x%p", hence the hex.
++  stripSourceWindow(sourceHwnd) {
++    return Array.from(Services.wm.getEnumerator("navigator:browser")).find(win => {
++      try {
++        const handle = win.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow).nativeHandle;
++        return parseInt(handle, 16) === sourceHwnd;
++      } catch {
++        return false;
++      }
++    });
++  },
++
 +  resolveStripTab(id) {
 +    return Array.from(gBrowser.tabs).find(tab =>
 +      this.tabIds.get(tab) === id && tab.isConnected && !tab.closing && !tab.hidden &&
@@ -4677,6 +4712,29 @@ index 0000000000..663a7db05e
 +            suppressanimation: 1,
 +          });
 +        },
++        // Another window's whole group dropped on this strip. The source
++        // window's live session resolves its opaque group ID; Firefox's own
++        // cross-window group drop adopts the same way, and closes the source
++        // window if the group was all it held. Adopt at the end, then reuse
++        // the whole-group move so the destination rules match moveGroup.
++        adoptGroup: (sourceHwnd, sourceSession, id, beforeGroup, beforeTab) => {
++          const sourceWindow = this.stripSourceWindow(sourceHwnd);
++          const sourceStrip = sourceWindow?.gWinUIPane?.stripSession;
++          if (gDialogBox.isOpen || !sourceStrip || sourceWindow === window ||
++              sourceWindow.docShell.usePrivateBrowsing !== window.docShell.usePrivateBrowsing ||
++              sourceStrip.windowDragSession !== sourceSession) return false;
++          const group = sourceStrip.targets?.get(id);
++          if (!group?.isConnected || !sourceWindow.gBrowser.tabGroups.includes(group) || !group.tabs.length ||
++              group.tabs.some(t => t.closing || t._pendingPermitUnload)) return false;
++          const target = beforeGroup || (beforeTab ? this.resolveStripTab(beforeTab) : null);
++          if ((beforeGroup || beforeTab) && (!target?.isConnected || target.group || target.pinned)) return false;
++          if (target?.splitview && target.splitview.tabs[0] !== target) return false;
++          const adopted = gBrowser.adoptTabGroup(group, { tabIndex: gBrowser.tabs.length });
++          if (!adopted) return false;
++          if (target) gBrowser.moveTabBefore(adopted, target, {metricsContext:gBrowser.TabMetrics.userTriggeredContext(
++            gBrowser.TabMetrics.METRIC_SOURCE.DRAG_AND_DROP)});
++          return true;
++        },
 +        openGroupMenu: (group, bounds) => {
 +          if (gDialogBox.isOpen || !group?.isConnected || !gBrowser.tabGroups.includes(group)) return false;
 +          // WinUI sends physical screen pixels; XUL popup APIs use screen CSS pixels.
@@ -4779,22 +4837,9 @@ index 0000000000..663a7db05e
 +          gBrowser.replaceTabWithWindow(tab, { left: screenX, top: screenY });
 +        },
 +        // sourceHwnd names another open window's own native HWND (as this
-+        // process's Pane.cpp sees it) -- nsIBaseWindow.nativeHandle is the
-+        // standard way Windows shell-integration code already resolves a
-+        // chrome window's HWND, formatted "0x%p" on the C++ side
-+        // (xpfe/appshell/AppWindow.cpp), hence the hex parse below.
++        // process's Pane.cpp sees it); see stripSourceWindow.
 +        adopt: (sourceHwnd, id, index, sourceRevision, sourceSession, continueDrag = false) => {
-+          const sourceWindow = Array.from(
-+            Services.wm.getEnumerator("navigator:browser")
-+          ).find(win => {
-+            try {
-+              const handle = win.docShell.treeOwner
-+                .QueryInterface(Ci.nsIBaseWindow).nativeHandle;
-+              return parseInt(handle, 16) === sourceHwnd;
-+            } catch {
-+              return false;
-+            }
-+          });
++          const sourceWindow = this.stripSourceWindow(sourceHwnd);
 +          const tab = sourceWindow?.gWinUIPane?.resolveStripTab(id);
 +          if (!tab || sourceWindow === window ||
 +              sourceWindow.docShell.usePrivateBrowsing !== window.docShell.usePrivateBrowsing) return false;

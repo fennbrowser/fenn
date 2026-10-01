@@ -2232,12 +2232,63 @@ pub unsafe extern "C" fn shell_core_group_drag_update(core:*mut ShellCore,x:f64,
 }
 /// Classify whether the group has been pulled off its strip, after
 /// `shell_core_group_drag_update` for the same view-local point. `width` and
-/// `height` are the strip view's size.
+/// `height` are the strip view's size. `foreign` means another window's strip
+/// claims the pointer, which also takes the group off this strip.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_drag_detach(core:*mut ShellCore,x:f64,y:f64,width:f64,height:f64)->ShellStatus {
-    queue_guard(core,|q| if q.group_drag.classify(x,y,width,height) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+pub unsafe extern "C" fn shell_core_group_drag_detach(core:*mut ShellCore,x:f64,y:f64,width:f64,height:f64,foreign:bool)->ShellStatus {
+    queue_guard(core,|q| if q.group_drag.classify(x,y,width,height,foreign) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+}
+/// Read this strip's state as the destination of another window's group drag.
+/// # Safety
+/// Live core and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_foreign_state(core:*mut ShellCore,out:*mut crate::group_drag::ShellForeignGroup)->ShellStatus {
+    let Some(out)=out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out=Default::default();
+    queue_guard(core,|q| { *out=q.foreign_group.state(); ShellStatus::Ok })
+}
+/// Target another window's group between this strip's measured whole blocks
+/// (view-local logical axis, browser order, unshifted).
+/// # Safety
+/// Live core; slots reads len aligned entries, at most 10000 (may be null when 0).
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_foreign_hover(core:*mut ShellCore,x:f64,slots:*const crate::group_drag::ShellGroupDragSlot,len:usize)->ShellStatus {
+    if len>10000 || (slots.is_null() && len!=0) { return ShellStatus::InvalidArgument; }
+    guard(core,|core| {
+        if core.queue.is_closed() { return ShellStatus::Closed; }
+        let slots=if len==0 { &[][..] } else { std::slice::from_raw_parts(slots,len) };
+        if core.queue.foreign_group.hover(x,slots,core.strip.layout()) { ShellStatus::Ok } else { ShellStatus::InvalidArgument }
+    })
+}
+/// Visual offset opening the destination gap for one measured block.
+/// # Safety
+/// Live core; out is writable for one double.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_foreign_offset(core:*mut ShellCore,index:usize,width:f64,out:*mut f64)->ShellStatus {
+    if out.is_null() { return ShellStatus::InvalidArgument; }
+    queue_guard(core,|q| match q.foreign_group.offset(index,width) {
+        Some(value)=> { *out=value; ShellStatus::Ok },
+        None=>ShellStatus::InvalidArgument,
+    })
+}
+/// Hold the destination gap for a queued, tab-less adopt request.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_foreign_hold(core:*mut ShellCore,request:u64)->ShellStatus {
+    queue_guard(core,|q| if q.hold_foreign_group(request) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+}
+/// End the destination preview. Without `force`, a held gap survives until its
+/// request is rejected; `force` is for a new authoritative layout.
+/// # Safety
+/// Live core; ended is writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_foreign_end(core:*mut ShellCore,force:bool,ended:*mut bool)->ShellStatus {
+    let Some(ended)=ended.as_mut() else { return ShellStatus::InvalidArgument; };
+    *ended=false;
+    queue_guard(core,|q| { *ended=q.foreign_group.end(force); ShellStatus::Ok })
 }
 /// Logical-axis visual offset for a whole group or ungrouped-tab block.
 /// # Safety
@@ -2277,9 +2328,25 @@ mod group_drag_ffi_tests {
         assert_eq!(shell_core_group_drag_offset(core,0,f64::NAN,&mut offset),ShellStatus::InvalidArgument);
         assert_eq!(shell_core_group_drag_offset(core,0,40.,&mut offset),ShellStatus::Ok);
         assert_eq!(offset,0.);
-        assert_eq!(shell_core_group_drag_detach(core,8.,200.,300.,40.),ShellStatus::Ok);
+        assert_eq!(shell_core_group_drag_detach(core,8.,200.,300.,40.,false),ShellStatus::Ok);
         shell_core_group_drag_state(core,&mut state); assert!(state.detaching);
-        assert_eq!(shell_core_group_drag_detach(core,f64::NAN,0.,300.,40.),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_drag_detach(core,8.,0.,300.,40.,true),ShellStatus::Ok);
+        shell_core_group_drag_state(core,&mut state); assert!(state.detaching && !state.valid);
+        assert_eq!(shell_core_group_drag_detach(core,f64::NAN,0.,300.,40.,false),ShellStatus::InvalidArgument);
+        let mut foreign=crate::group_drag::ShellForeignGroup::default();
+        let mut ended=false;
+        assert_eq!(shell_core_group_foreign_state(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_foreign_hover(core,0.,std::ptr::null(),1),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_foreign_hover(core,0.,&slot,10001),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_foreign_hover(core,0.,std::ptr::null(),0),ShellStatus::Ok);
+        assert_eq!(shell_core_group_foreign_hover(core,50.,&slot,1),ShellStatus::Ok);
+        shell_core_group_foreign_state(core,&mut foreign); assert!(foreign.active && foreign.index==1);
+        assert_eq!(shell_core_group_foreign_offset(core,0,40.,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_foreign_offset(core,1,40.,&mut offset),ShellStatus::InvalidArgument);
+        // Only a queued strip request can hold the gap.
+        assert_eq!(shell_core_group_foreign_hold(core,77),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_foreign_end(core,false,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_group_foreign_end(core,false,&mut ended),ShellStatus::Ok); assert!(ended);
         let handle=core as usize;
         assert_eq!(std::thread::spawn(move || shell_core_group_drag_end(handle as *mut ShellCore)).join().unwrap(),ShellStatus::WrongThread);
         shell_core_cancel_all(core);
