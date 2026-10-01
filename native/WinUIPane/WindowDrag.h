@@ -211,6 +211,9 @@ struct NativeWindowDrag {
                 !self->TabAt(ScreenPoint(l)) && (GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
                 self->pendingCaption = true;
                 self->pendingStart = ScreenPoint(l);
+                // DefWindowProc activates an inactive window while handling this
+                // press; we are skipping it, so activate here.
+                if (GetForegroundWindow() != hwnd) SetForegroundWindow(hwnd);
                 SetCapture(hwnd);
                 return 0;
             }
