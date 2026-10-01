@@ -289,7 +289,9 @@ struct InlineTabGroups {
                 if (!tab) return;
                 auto rect = args.TargetRect();
                 const bool stale = userScrollEpoch > requestEpoch;
-                if (stale) args.Handled(true);
+                // A lifted group collapses and re-expands; the resulting size
+                // changes must not drag the strip to the active tab.
+                if (stale || (holdScroll && holdScroll())) args.Handled(true);
                 // StartBringTabIntoView pads the tab by 2 DIP; keep that pad.
                 else if (const auto limit = float(tab.ActualWidth()) + 2 - rect.X; tab.ActualWidth() > 0 && rect.Width > limit) {
                     rect.Width = std::max(0.f, limit);
@@ -384,6 +386,8 @@ struct InlineTabGroups {
     // Orders explicit scrolls against the events after which TabView or focus
     // issues a tab bring-into-view request (see Configure).
     uint64_t scrollEpoch{}, requestEpoch{}, userScrollEpoch{};
+    // True while tab bring-into-view requests must be ignored outright.
+    std::function<bool()> holdScroll;
     void NoteUserScroll() { userScrollEpoch = ++scrollEpoch; }
     void LogScroller(Controls::ListViewBase const& list, Controls::ScrollViewer const& scroller,
                      Controls::Grid const& grid, double available) {

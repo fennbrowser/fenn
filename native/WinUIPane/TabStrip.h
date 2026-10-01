@@ -895,7 +895,7 @@ struct NativeTabStrip {
             if (rows.count(id)) rows.at(id).Visibility(visibility);
         groupDragVisibility.clear();
     }
-    ULONGLONG groupScrollTick{};
+    ULONGLONG groupScrollTick{}, groupScrollHold{};
     // Presentation geometry captured after the temporary collapse settles.
     // Store content-space bounds so scrolling does not feed animated transforms
     // back into the whole-group insertion decision.
@@ -953,6 +953,9 @@ struct NativeTabStrip {
             view.SelectedItem(rows.at(activeTabId));
             syncing=previous;
         }
+        // The group re-expands and the browser reorders it a moment later; keep
+        // the scroll position through both.
+        if (state.phase==2) groupScrollHold=GetTickCount64()+600;
         if (state.phase==2 || (state.phase && !commit)) inlineGroups.suppressClick=state.group;
         if (commit && state.phase==2 && state.valid && dispatch) {
             using Value=Windows::Data::Json::JsonValue;
@@ -1335,6 +1338,10 @@ struct NativeTabStrip {
         ambient.layer.Children().Append(separatorTheme);
         ambient.refresh = [this] { RefreshAmbient(); };
         inlineGroups.realized = [this] { ambient.ScheduleUpdate(); };
+        inlineGroups.holdScroll = [this] {
+            const auto state = GroupDrag();
+            return state.phase == 2 || state.awaiting || GetTickCount64() < groupScrollHold;
+        };
         groupIndicator = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentTextFillColorPrimaryBrush}" BorderThickness="2" CornerRadius="4" Grid.ColumnSpan="3" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         root.Children().Append(groupIndicator);
         groupSurface.Create(root);

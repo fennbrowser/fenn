@@ -3727,8 +3727,10 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
 }
 
 // Dragging a group to the strip's end must keep scrolling even with the pointer
-// past the scroller's own viewport, over the trailing New Tab area.
-static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND host) {
+// past the scroller's own viewport, over the trailing New Tab area. With
+// `pickup`, only lifts the group while the active tab is at the far end: the
+// collapse must not scroll the strip to the active tab.
+static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND host, bool pickup = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     RECT rect{0, 0, 600, 48};
@@ -3744,8 +3746,8 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
         layout += L",{\"group\":0,\"tab\":" + std::to_wstring(id) + L"}";
     }
     uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), 11, &selected)), "group edge tabs");
-    MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":5000,\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false}],\"rows\":[" + rows + L"],\"layout\":[" + layout + L"]}}").c_str());
+    Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), pickup ? 112 : 11, &selected)), "group edge tabs");
+    MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::wstring(pickup ? L"5001" : L"5000") + L",\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false}],\"rows\":[" + rows + L"],\"layout\":[" + layout + L"]}}").c_str());
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
     UIElement content{nullptr};
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect group edge strip");
@@ -3775,6 +3777,16 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
     };
     send(MOUSEEVENTF_LEFTDOWN); settle();
     moveTo(start.x + 12, start.y); settle();
+    if (pickup) {
+        settle(60);
+        const auto held = scroller.HorizontalOffset();
+        INPUT esc[2]{}; esc[0].type = esc[1].type = INPUT_KEYBOARD; esc[0].ki.wVk = esc[1].ki.wVk = VK_ESCAPE; esc[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        SendInput(1, esc, sizeof(INPUT)); settle(); SendInput(1, esc + 1, sizeof(INPUT));
+        send(MOUSEEVENTF_LEFTUP); settle();
+        Require(held < 40, "picking up a group leaves the strip scrolled where it was instead of jumping to the active tab");
+        puts("CHECKS PASSED: group pickup keeps the scroll position");
+        return;
+    }
     const LONG targetX = 300 + LONG(view.ActualWidth()) - 2;
     for (int step = 1; step <= 20; ++step) { moveTo(start.x + (targetX - start.x) * step / 20, start.y); settle(5); }
     settle(300);
@@ -4346,6 +4358,7 @@ int wmain(int argc, wchar_t** argv) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseSource);
             // Last: its published presentation outlives the check.
             CheckGroupDragEdgeScroll(module, api, first);
+            CheckGroupDragEdgeScroll(module, api, first, true);
         }
         // Section 8: no session work after a gesture completes. Every window
         // message still reaches TickDragSession, so the only way to show that
