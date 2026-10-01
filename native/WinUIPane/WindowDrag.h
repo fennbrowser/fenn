@@ -24,6 +24,9 @@ struct NativeWindowDrag {
     bool visible{}, updating{}, inMove{}, released{}, cancelled{}, soleTab{}, movingOperation{};
     HHOOK filter{}, continuationFilter{};
     bool mergePosted{}, endingForMerge{}, continuationQueued{};
+    // A caption press on empty strip waits here for the drag threshold; see Proc.
+    bool pendingCaption{};
+    POINT pendingStart{};
     std::vector<Rect> ownedCaption, ownedPass, caption, pass;
     std::vector<Rect> systemMinimize, systemMaximize, systemClose;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
@@ -198,6 +201,43 @@ struct NativeWindowDrag {
                         return 0;
                     }
                 }
+            }
+            // Handing a plain caption press to DefWindowProc starts the system move
+            // loop at once. That loop blocks this thread's dispatcher and island
+            // rendering until release, so activation fades land late. Hold the press
+            // under our own capture and start the system move only once the pointer
+            // passes the drag threshold; a click never enters the loop.
+            if (msg == WM_NCLBUTTONDOWN && w == HTCAPTION && self->visible && !self->inMove && !self->pendingCaption &&
+                !self->TabAt(ScreenPoint(l)) && (GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+                self->pendingCaption = true;
+                self->pendingStart = ScreenPoint(l);
+                SetCapture(hwnd);
+                return 0;
+            }
+            if (self->pendingCaption) {
+                const bool lost = msg == WM_CANCELMODE || (msg == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE) ||
+                                  (msg == WM_CAPTURECHANGED && HWND(l) != hwnd) || msg == WM_NCDESTROY;
+                if (msg == WM_MOUSEMOVE) {
+                    POINT now{}; GetCursorPos(&now);
+                    if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+                        self->pendingCaption = false;
+                        if (GetCapture() == hwnd) ReleaseCapture();
+                        return 0;
+                    }
+                    if (std::abs(now.x - self->pendingStart.x) > GetSystemMetrics(SM_CXDRAG) ||
+                        std::abs(now.y - self->pendingStart.y) > GetSystemMetrics(SM_CYDRAG)) {
+                        self->pendingCaption = false;
+                        if (GetCapture() == hwnd) ReleaseCapture();
+                        return DefSubclassProc(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(now.x, now.y));
+                    }
+                    return 0;
+                }
+                if (msg == WM_LBUTTONUP) {
+                    self->pendingCaption = false;
+                    if (GetCapture() == hwnd) ReleaseCapture();
+                    return 0;
+                }
+                if (lost) self->pendingCaption = false;
             }
             if ((msg == WM_CANCELMODE && !self->endingForMerge) || (msg == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE)) self->cancelled = true;
             if (msg == WM_ACTIVATE && self->strip) self->strip->allTabs.SetWindowActive(LOWORD(w) != WA_INACTIVE);
