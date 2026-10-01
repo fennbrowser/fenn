@@ -20,6 +20,7 @@ struct NativeWindowCaption {
     Height previousHeight{};
     Theme previousTheme{};
     Windows::Foundation::IReference<Windows::UI::Color> previousBackground{nullptr}, previousInactiveBackground{nullptr};
+    Windows::Foundation::IReference<Windows::UI::Color> previousHover{nullptr}, previousPressed{nullptr};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
     void Open(HWND hwnd, Controls::Grid const& grid, FrameworkElement const& element = nullptr, double width = 0) {
@@ -34,6 +35,8 @@ struct NativeWindowCaption {
         previousTheme = bar.PreferredTheme();
         previousBackground = bar.ButtonBackgroundColor();
         previousInactiveBackground = bar.ButtonInactiveBackgroundColor();
+        previousHover = bar.ButtonHoverBackgroundColor();
+        previousPressed = bar.ButtonPressedBackgroundColor();
         Controls::ColumnDefinition tabs;
         tabs.Width({1, GridUnitType::Star});
         leftInset = Controls::ColumnDefinition{};
@@ -87,6 +90,8 @@ struct NativeWindowCaption {
             bar.PreferredTheme(previousTheme);
             bar.ButtonBackgroundColor(previousBackground);
             bar.ButtonInactiveBackgroundColor(previousInactiveBackground);
+            bar.ButtonHoverBackgroundColor(previousHover);
+            bar.ButtonPressedBackgroundColor(previousPressed);
         }
     }
     void Update() {
@@ -111,6 +116,24 @@ struct NativeWindowCaption {
         }
         const auto theme = root.ActualTheme() == ElementTheme::Dark ? Theme::Dark : Theme::Light;
         if (bar.PreferredTheme() != theme) bar.PreferredTheme(theme);
+        // With a transparent button background the SDK derives an opaque gray
+        // hover that ignores the backdrop and differs from other apps. Use the
+        // translucent SubtleFillColorSecondary/Tertiary values WinUI itself uses.
+        // High contrast keeps the system's own rules.
+        const bool contrast = Windows::UI::ViewManagement::AccessibilitySettings().HighContrast();
+        const bool dark = theme == Theme::Dark;
+        const Windows::UI::Color hover = dark ? Windows::UI::Color{0x0F, 255, 255, 255} : Windows::UI::Color{0x09, 0, 0, 0};
+        const Windows::UI::Color pressed = dark ? Windows::UI::Color{0x0A, 255, 255, 255} : Windows::UI::Color{0x06, 0, 0, 0};
+        auto sameColor = [](auto const& a, Windows::UI::Color const& b) {
+            return a && a.Value().A == b.A && a.Value().R == b.R && a.Value().G == b.G && a.Value().B == b.B;
+        };
+        if (contrast) {
+            bar.ButtonHoverBackgroundColor(previousHover);
+            bar.ButtonPressedBackgroundColor(previousPressed);
+        } else {
+            if (!sameColor(bar.ButtonHoverBackgroundColor(), hover)) bar.ButtonHoverBackgroundColor(hover);
+            if (!sameColor(bar.ButtonPressedBackgroundColor(), pressed)) bar.ButtonPressedBackgroundColor(pressed);
+        }
         const auto scale = root.XamlRoot() ? root.XamlRoot().RasterizationScale() : GetDpiForWindow(owner) / 96.0;
         const bool rtl = root.FlowDirection() == FlowDirection::RightToLeft;
         // File Explorer leaves a wider empty drag area before its trailing controls.
