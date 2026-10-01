@@ -325,6 +325,13 @@ struct NativeWindowDrag {
     void Open(HWND hwnd, NativeTabStrip* value) {
         owner = hwnd; strip = value;
         windowCaption.Open(hwnd, strip->root, strip->allTabs.button, AllTabsButton::kWidth);
+        // Caption buttons activate an inactive window on press; a XAML Button
+        // otherwise waits for its release. The Button handles Pressed itself.
+        strip->allTabs.button.AddHandler(UIElement::PointerPressedEvent(),
+            box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([hwnd](auto const&, auto const&) {
+                const HWND top = GetAncestor(hwnd, GA_ROOT);
+                if (top && GetForegroundWindow() != top) SetForegroundWindow(top);
+            })), true);
         mergePreview = Markup::XamlReader::Load(
             LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentFillColorDefaultBrush}" BorderThickness="2" CornerRadius="4" Margin="1" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AutomationId="FirefoxWinUIWindowMergePreview" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         Controls::Grid::SetColumnSpan(mergePreview, 3);
