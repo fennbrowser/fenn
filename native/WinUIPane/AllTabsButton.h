@@ -7,10 +7,16 @@ struct AllTabsButton {
     static constexpr double kWidth = 46;
     Controls::Button button{nullptr};
 
-    // System caption glyphs dim while the window is inactive; mirror that on the
-    // glyph only so the hover wash keeps its normal strength.
+    // System caption glyphs dim while the window is inactive but return to full
+    // strength under the pointer; mirror that on the glyph only so the hover
+    // wash keeps its normal strength.
+    bool windowActive = true, pointerOver = false;
     void SetWindowActive(bool active) {
-        if (auto glyph = button.Content().try_as<UIElement>()) glyph.Opacity(active ? 1.0 : 0.6);
+        windowActive = active;
+        UpdateGlyph();
+    }
+    void UpdateGlyph() {
+        if (auto glyph = button.Content().try_as<UIElement>()) glyph.Opacity(windowActive || pointerOver ? 1.0 : 0.6);
     }
 
     AllTabsButton() {
@@ -50,5 +56,9 @@ struct AllTabsButton {
   </Button.Resources>
   <FontIcon Glyph="&#xE70D;" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center"/>
 </Button>)x").as<Controls::Button>();
+        button.PointerEntered([this](auto const&, auto const&) { pointerOver = true; UpdateGlyph(); });
+        button.PointerExited([this](auto const&, auto const&) { pointerOver = false; UpdateGlyph(); });
+        button.PointerCanceled([this](auto const&, auto const&) { pointerOver = false; UpdateGlyph(); });
+        button.PointerCaptureLost([this](auto const&, auto const&) { pointerOver = false; UpdateGlyph(); });
     }
 };
