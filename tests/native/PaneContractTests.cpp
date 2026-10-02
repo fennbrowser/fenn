@@ -1506,8 +1506,23 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     Require(header.Children().GetAt(3).as<Controls::Viewbox>().Child().as<Controls::SymbolIcon>().Symbol() ==
                 Controls::Symbol::Mute,
             "Firefox mute state drives native icon");
-    Require(first.Header().as<Controls::Grid>().Children().GetAt(1).Visibility() == Visibility::Visible,
-            "pinned indicator visible");
+    {
+        // A pinned tab is shown by its favicon alone: no pin glyph, no title.
+        auto pinned = first.Header().as<Controls::Grid>();
+        Require(pinned.Children().GetAt(0).Visibility() == Visibility::Visible &&
+                    pinned.Children().GetAt(1).Visibility() == Visibility::Collapsed &&
+                    pinned.Children().GetAt(2).Visibility() == Visibility::Collapsed,
+                "pinned tab shows its favicon only");
+        // DesiredSize is capped by the offered width; compare the arranged
+        // width with the header's unconstrained natural width instead.
+        first.UpdateLayout();
+        const auto arranged = pinned.ActualWidth();
+        pinned.Measure({std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()});
+        const auto natural = pinned.DesiredSize().Width;
+        first.InvalidateMeasure();
+        first.UpdateLayout();
+        Require(arranged > 0 && arranged + .5 >= natural, "pinned tab is wide enough for its whole favicon");
+    }
     Require(header.Children().GetAt(2).as<Controls::StackPanel>().Children().Size() == 1,
         "tab face contains only its title, without a group/split subtitle");
     {

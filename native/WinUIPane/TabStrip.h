@@ -1565,6 +1565,7 @@ struct NativeTabStrip {
             const auto state = GroupDrag();
             return state.phase == 2 || state.awaiting || GetTickCount64() < groupScrollHold;
         };
+        inlineGroups.fixedWidth = [this](Controls::TabViewItem const& row) { return IsPinnedRow(row); };
         groupIndicator = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentTextFillColorPrimaryBrush}" BorderThickness="2" CornerRadius="4" Grid.ColumnSpan="3" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         root.Children().Append(groupIndicator);
         groupSurface.Create(root);
@@ -1824,7 +1825,8 @@ struct NativeTabStrip {
                                     : nullptr);
     }
 
-    uint64_t CompleteReorderAt(Controls::TabViewItem const& tab, Controls::TabViewItem const& beforeRow, bool ungroup = false) {
+    uint64_t CompleteReorderAt(Controls::TabViewItem const& tab, Controls::TabViewItem const& beforeRow,
+                               bool ungroup = false, bool unpin = false) {
         uint32_t beforeId = beforeRow && beforeRow != tab ? unbox_value<uint32_t>(beforeRow.Tag()) : 0;
         Windows::Data::Json::JsonObject action;
         action.SetNamedValue(L"kind", Windows::Data::Json::JsonValue::CreateStringValue(L"strip-reorder"));
@@ -1832,6 +1834,7 @@ struct NativeTabStrip {
         action.SetNamedValue(L"id", Windows::Data::Json::JsonValue::CreateNumberValue(unbox_value<uint32_t>(tab.Tag())));
         action.SetNamedValue(L"beforeId", Windows::Data::Json::JsonValue::CreateNumberValue(beforeId));
         action.SetNamedValue(L"ungroup", Windows::Data::Json::JsonValue::CreateBooleanValue(ungroup));
+        action.SetNamedValue(L"unpin", Windows::Data::Json::JsonValue::CreateBooleanValue(unpin));
         return dispatch ? dispatch(unbox_value<uint32_t>(tab.Tag()), action.Stringify()) : 0;
     }
 
@@ -2584,6 +2587,35 @@ struct NativeTabStrip {
     // Commits this exact tab's own in-flight gesture as a self-reorder --
     // called by Pane.cpp's TickDragSession once release resolves as still
     // hovering this same strip.
+    // Firefox's own drop unpins a pinned tab released over the unpinned tabs.
+    // It decides by the drop target, not the index, so the one gap between
+    // the last pinned and first unpinned tab goes by which side of the first
+    // unpinned row (or its group's header) the pointer is released on.
+    bool DropUnpins(uint32_t tabId, Windows::Foundation::Point const& point) {
+        if (!presentation.count(tabId) || !(presentation.at(tabId).flags & 1)) return false;
+        auto past = [&](FrameworkElement const& element) {
+            return point.X >= element.TransformToVisual(view).TransformPoint({0, 0}).X;
+        };
+        auto unpinned = [&](uint32_t id) {
+            auto row = rows.find(id);
+            return id != tabId && row != rows.end() && row->second.Visibility() == Visibility::Visible &&
+                presentation.count(id) && !(presentation.at(id).flags & 1) ? row->second : Controls::TabViewItem{nullptr};
+        };
+        if (hasGroupLayout) {
+            for (auto slot : groupLayout) {
+                if (!slot.tab) {
+                    auto run = inlineGroups.runs.find(slot.group);
+                    if (run != inlineGroups.runs.end() && run->second.button && run->second.button.IsLoaded())
+                        return past(run->second.button);
+                } else if (auto row = unpinned(slot.tab)) return past(row);
+            }
+            return false;
+        }
+        for (auto const& item : view.TabItems())
+            if (auto row = unpinned(unbox_value<uint32_t>(item.as<Controls::TabViewItem>().Tag()))) return past(row);
+        return false;
+    }
+
     bool CommitReorder(uint32_t tabId, Windows::Foundation::Point const& point) {
         if (Drag().tab != tabId || Drag().phase != DragPhase::Dragging || !rows.count(tabId)) return false;
         UpdateDragVisual(point);
@@ -2650,10 +2682,11 @@ struct NativeTabStrip {
             // Include the reorder gap between members in the group's bounds.
             ungroup = point.X < left || point.X > right;
         }
+        const bool unpin = DropUnpins(tabId, point);
         // Reveal the row at its destination during the browser round trip.
         ResetRowOffset(row, tabId);
         RowTransform(row).X(Drag().landing_offset);
-        const auto request = CompleteReorderAt(row, beforeRow, ungroup);
+        const auto request = CompleteReorderAt(row, beforeRow, ungroup, unpin);
         if (shell_core_tab_drag_commit(core, request, beforeId) != SHELL_STATUS_OK)
             shell_core_tab_drag_end(core, true);
         else if (request && dropCommitted) dropCommitted();
@@ -3161,6 +3194,52 @@ struct NativeTabStrip {
         }
     }
 
+    bool IsPinnedRow(Controls::TabViewItem const& row) const {
+        const auto id = unbox_value_or<uint32_t>(row.Tag(), 0);
+        auto found = presentation.find(id);
+        return found != presentation.end() && (found->second.flags & 1);
+    }
+
+    // Like Firefox's own pinned tabs, a pinned row shows only its icons: no
+    // title (still its UIA name and hover card) and no close button. Its
+    // width follows those icons instead of TabView's Equal width.
+    double pinnedChrome = 32;
+    void ApplyPinnedFace(Controls::TabViewItem const& row, Controls::Grid const& header, bool pinned) {
+        auto text = header.Children().GetAt(2).as<FrameworkElement>();
+        const bool wasPinned = text.Visibility() == Visibility::Collapsed;
+        if (pinned != wasPinned) {
+            text.Visibility(pinned ? Visibility::Collapsed : Visibility::Visible);
+            // Grid spacing applies between empty columns too; space only
+            // the shown icons.
+            header.ColumnSpacing(pinned ? 0 : 6);
+            if (pinned && row.IsClosable()) row.IsClosable(false);
+        }
+        if (!pinned) {
+            if (wasPinned) {
+                for (uint32_t i : {1u, 3u, 4u}) header.Children().GetAt(i).as<FrameworkElement>().Margin({});
+                row.ClearValue(FrameworkElement::MinWidthProperty());
+                row.ClearValue(FrameworkElement::MaxWidthProperty());
+            }
+            return;
+        }
+        double width = 0;
+        for (uint32_t i : {0u, 1u, 3u, 4u}) {
+            auto icon = header.Children().GetAt(i).as<FrameworkElement>();
+            const bool shown = icon.Visibility() == Visibility::Visible;
+            icon.Margin({shown && width > 0 ? 6.0 : 0.0, 0, 0, 0});
+            if (shown) width += icon.Margin().Left + icon.Width();
+        }
+        // Add the template's own space around the header (container padding
+        // and border, icon slot), measured from a laid-out row because it is
+        // more than the stock header padding: sizing to that padding alone
+        // clipped the icon. Until a row is laid out, assume generous room.
+        if (row.ActualWidth() > 0 && header.ActualWidth() > 0)
+            pinnedChrome = std::max(0.0, row.ActualWidth() - header.ActualWidth());
+        width += pinnedChrome;
+        if (std::abs(row.MinWidth() - width) > .01) row.MinWidth(width);
+        if (std::abs(row.MaxWidth() - width) > .01) row.MaxWidth(width);
+    }
+
     void UpdateHeader(Controls::TabViewItem const& row, uint32_t id, hstring const& title) {
         // Incremental title/favicon updates may arrive during the short slide.
         // Return borrowed content before the normal header update accesses it.
@@ -3173,11 +3252,10 @@ struct NativeTabStrip {
         auto favicon = header.Children().GetAt(0).as<Controls::Grid>();
         auto faviconImage = favicon.Children().GetAt(0).as<Controls::Image>();
         auto busy = favicon.Children().GetAt(1).as<Controls::ProgressRing>();
-        // Pin/audio are SymbolIcon glyphs at a fixed intrinsic size that
+        // Fallback/audio are SymbolIcon glyphs at a fixed intrinsic size that
         // Width/Height alone would only clip, not scale; a Viewbox scales
         // the glyph down to fit the 16x16 box instead.
-        auto pinBox = header.Children().GetAt(1).as<Controls::Viewbox>();
-        auto pin = pinBox.Child().as<Controls::SymbolIcon>();
+        auto fallbackBox = header.Children().GetAt(1).as<Controls::Viewbox>();
         auto text = header.Children().GetAt(2).as<Controls::StackPanel>();
         auto name = text.Children().GetAt(0).as<Controls::TextBlock>();
         auto audioBox = header.Children().GetAt(3).as<Controls::Viewbox>();
@@ -3213,9 +3291,13 @@ struct NativeTabStrip {
         if (name.Text() != title) name.Text(title);
         // Group/split detail remains in the tooltip and accessibility metadata;
         // tab faces show only the title.
-        pinBox.Visibility(meta.flags & 1 ? Visibility::Visible : Visibility::Collapsed);
+        // A pinned tab is identified by its favicon alone, like Firefox's;
+        // one without a favicon shows a generic page glyph in its place, as
+        // Firefox shows its default favicon. Pinned state is in ItemStatus.
+        fallbackBox.Visibility((meta.flags & 1) && !isBusy && !hasImage ? Visibility::Visible : Visibility::Collapsed);
         audio.Symbol(meta.flags & 4 ? Controls::Symbol::Mute : Controls::Symbol::Volume);
         audioBox.Visibility(meta.flags & 12 ? Visibility::Visible : Visibility::Collapsed);
+        ApplyPinnedFace(row, header, (meta.flags & 1) != 0);
         hoverCard.Update(row, id, title, meta.containerName +
             (meta.containerName.empty() || meta.detail.empty() ? L"" : L" · ") + meta.detail, lifetime);
         Automation::AutomationProperties::SetHelpText(
@@ -3381,9 +3463,10 @@ struct NativeTabStrip {
                     {
                         struct Reveal { bool hover = false; bool focus = false; };
                         auto state = std::make_shared<Reveal>();
-                        auto apply = [state](auto const& sender) {
+                        auto apply = [this, alive = std::weak_ptr<int>(lifetime), state](auto const& sender) {
                             auto item = sender.template as<Controls::TabViewItem>();
-                            const bool reveal = state->hover || state->focus;
+                            const bool reveal = (state->hover || state->focus) &&
+                                !alive.expired() && !IsPinnedRow(item);
                             if (item.IsClosable() != reveal) item.IsClosable(reveal);
                         };
                         row.PointerEntered([state, apply](auto const& sender, auto&&) {
@@ -3405,8 +3488,16 @@ struct NativeTabStrip {
                     row.HorizontalContentAlignment(HorizontalAlignment::Stretch);
                     row.RenderTransform(Media::TranslateTransform{});
                     row.Header(Markup::XamlReader::Load(
-                        LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid Width="16" Height="16"><Image Stretch="Uniform" AutomationProperties.AccessibilityView="Raw"/><ProgressRing Width="16" Height="16" IsActive="False" AutomationProperties.AccessibilityView="Raw"/></Grid><Viewbox Grid.Column="1" Width="16" Height="16"><SymbolIcon Symbol="Pin"/></Viewbox><StackPanel Grid.Column="2" MaxWidth="220" VerticalAlignment="Center"><TextBlock TextTrimming="CharacterEllipsis"/></StackPanel><Viewbox Grid.Column="3" Width="16" Height="16"><SymbolIcon Symbol="Volume"/></Viewbox><Border Grid.Column="4" Width="8" Height="8" CornerRadius="4" VerticalAlignment="Center" Visibility="Collapsed" Background="{ThemeResource TextFillColorPrimaryBrush}" AutomationProperties.AccessibilityView="Raw"/></Grid>)"));
+                        LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid Width="16" Height="16"><Image Stretch="Uniform" AutomationProperties.AccessibilityView="Raw"/><ProgressRing Width="16" Height="16" IsActive="False" AutomationProperties.AccessibilityView="Raw"/></Grid><Viewbox Grid.Column="1" Width="16" Height="16" AutomationProperties.AccessibilityView="Raw"><SymbolIcon Symbol="Globe"/></Viewbox><StackPanel Grid.Column="2" MaxWidth="220" VerticalAlignment="Center"><TextBlock TextTrimming="CharacterEllipsis"/></StackPanel><Viewbox Grid.Column="3" Width="16" Height="16"><SymbolIcon Symbol="Volume"/></Viewbox><Border Grid.Column="4" Width="8" Height="8" CornerRadius="4" VerticalAlignment="Center" Visibility="Collapsed" Background="{ThemeResource TextFillColorPrimaryBrush}" AutomationProperties.AccessibilityView="Raw"/></Grid>)"));
                     Automation::AutomationProperties::SetAutomationId(row, L"FirefoxWinUITab-" + to_hstring(id));
+                    // A pinned row's width depends on its own laid-out chrome.
+                    row.SizeChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const& sender, auto&&) {
+                        if (alive.expired()) return;
+                        auto item = sender.template as<Controls::TabViewItem>();
+                        if (!IsPinnedRow(item)) return;
+                        if (auto header = item.Header().template try_as<Controls::Grid>())
+                            ApplyPinnedFace(item, header, true);
+                    });
                     auto alive = std::weak_ptr<int>(lifetime);
                     row.AddHandler(
                         UIElement::PointerPressedEvent(),

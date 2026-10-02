@@ -2535,10 +2535,10 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..4bad4f0e74
+index 0000000000..128aee51da
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,275 @@
+@@ -0,0 +1,281 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2772,7 +2772,8 @@ index 0000000000..4bad4f0e74
 +      // beforeId 0 means "move to the end"; any other value must still name
 +      // a row in the fresh snapshot, same as the group id check above.
 +      if (!Number.isSafeInteger(event.id) || !Number.isSafeInteger(event.beforeId) || event.beforeId < 0 ||
-+          (event.ungroup !== undefined && typeof event.ungroup !== "boolean"))
++          (event.ungroup !== undefined && typeof event.ungroup !== "boolean") ||
++          (event.unpin !== undefined && typeof event.unpin !== "boolean"))
 +        return false;
 +      const current = this.describe();
 +      if (this.consumed || !this.same(current, this.state)) return false;
@@ -2781,12 +2782,17 @@ index 0000000000..4bad4f0e74
 +      const ungroup = event.ungroup === true;
 +      if (ungroup && (!current.rows[index].groupSource ||
 +          !current.layout?.some(s => s.tab === event.id && s.group))) return false;
++      // A pinned tab released over the unpinned tabs is unpinned, as by
++      // Firefox's own drop, even where its index would remain unchanged.
++      const unpin = event.unpin === true;
++      if (unpin && (!(current.rows[index].flags & 1) || current.rows.every(r => r.flags & 1))) return false;
++      const moves = ungroup || unpin;
 +      if (event.beforeId) {
 +        if (event.beforeId === event.id || !current.rows.some(r => r.id === event.beforeId)) return false;
-+        if (!ungroup && current.rows[index + 1]?.id === event.beforeId) return false;
-+      } else if (!ungroup && index === current.rows.length - 1) return false;
++        if (!moves && current.rows[index + 1]?.id === event.beforeId) return false;
++      } else if (!moves && index === current.rows.length - 1) return false;
 +      this.consumed = true;
-+      return this.reorder(event.id, event.beforeId, ungroup) !== false;
++      return this.reorder(event.id, event.beforeId, ungroup, unpin) !== false;
 +    }
 +    if (event.kind === "strip-detach") {
 +      if (!Number.isSafeInteger(event.id) || !Number.isFinite(event.screenX) || !Number.isFinite(event.screenY))
@@ -3962,10 +3968,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..904c99f5dc
+index 0000000000..3ef173b342
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1900 @@
+@@ -0,0 +1,1904 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4908,17 +4914,21 @@ index 0000000000..904c99f5dc
 +        },
 +        // beforeId is 0 (native's "no neighbor") for "move to the end";
 +        // Use a tab index: drag-element indices also count group headers.
-+        reorder: (id, beforeId, ungroup = false) => {
++        reorder: (id, beforeId, ungroup = false, unpin = false) => {
 +          const tab = this.resolveStripTab(id);
-+          if (!tab || (ungroup && (!tab.group || !this.canDragGroupTab(tab)))) return false;
-+          const options = {metricsContext:gBrowser.TabMetrics.userTriggeredContext(
-+            gBrowser.TabMetrics.METRIC_SOURCE.DRAG_AND_DROP)};
-+          if (!beforeId) {
++          if (!tab || (ungroup && (!tab.group || !this.canDragGroupTab(tab))) || (unpin && !tab.pinned)) return false;
++          const neighbor = beforeId ? this.resolveStripTab(beforeId) : null;
++          if (beforeId && !neighbor) return false;
++          const context = () => gBrowser.TabMetrics.userTriggeredContext(
++            gBrowser.TabMetrics.METRIC_SOURCE.DRAG_AND_DROP);
++          // moveTabTo keeps a pinned tab among the pinned tabs; Firefox's own
++          // drop unpins one released over unpinned tabs first (shouldUnpin).
++          if (unpin) gBrowser.unpinTab(tab, {metricsContext:context()});
++          const options = {metricsContext:context()};
++          if (!neighbor) {
 +            gBrowser.moveTabTo(tab, { tabIndex: gBrowser.tabs.length, forceUngrouped:ungroup, ...options });
 +            return;
 +          }
-+          const neighbor = this.resolveStripTab(beforeId);
-+          if (!neighbor) return false;
 +          // Reorder gaps before another group's first visible row are outside
 +          // its header. Inserting before the member would implicitly join it;
 +          // joining is instead the explicit strip-join-group command above.

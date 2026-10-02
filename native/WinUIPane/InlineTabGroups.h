@@ -388,6 +388,8 @@ struct InlineTabGroups {
     uint64_t scrollEpoch{}, requestEpoch{}, userScrollEpoch{};
     // True while tab bring-into-view requests must be ignored outright.
     std::function<bool()> holdScroll;
+    // True for a tab that keeps its own compact width (a pinned tab).
+    std::function<bool(Controls::TabViewItem const&)> fixedWidth;
     void NoteUserScroll() { userScrollEpoch = ++scrollEpoch; }
     void LogScroller(Controls::ListViewBase const& list, Controls::ScrollViewer const& scroller,
                      Controls::Grid const& grid, double available) {
@@ -435,7 +437,8 @@ struct InlineTabGroups {
         for (auto const& [id, run] : runs) {
             for (auto item : run.items) {
                 auto row = item.as<Controls::TabViewItem>();
-                if (row.Visibility() != Visibility::Visible) continue;
+                // Fixed-width tabs stay in `others` with the headers.
+                if (row.Visibility() != Visibility::Visible || (fixedWidth && fixedWidth(row))) continue;
                 tabs.push_back(row);
                 // Grouped-source rows can be measured and arranged while
                 // IsLoaded stays false, so a nonzero measure marks realization.

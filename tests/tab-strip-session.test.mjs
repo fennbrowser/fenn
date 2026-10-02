@@ -122,6 +122,34 @@ test("a reorder that is already the current order is rejected as a no-op", () =>
   assert.equal(f.reorderCalls.length, 0);
 });
 
+test("a pinned row released over unpinned rows is unpinned even where its index is unchanged", () => {
+  for (const beforeId of [22, 0]) {
+    const f = fixture();
+    f.state.rows[0].flags = 1;
+    f.session.update();
+    const calls = [];
+    f.session.reorder = (...args) => calls.push(args);
+    const action = {kind:"strip-reorder", revision:f.session.revision, id:11, beforeId, unpin:true};
+    assert.equal(f.session.receive(action), true);
+    assert.equal(f.session.receive(action), false);
+    assert.deepEqual(calls, [[11, beforeId, false, true]]);
+  }
+});
+
+test("unpin rejects unpinned sources, an all-pinned strip and malformed requests", () => {
+  for (const change of [f => f.state.rows[0].flags = 0, f => f.state.rows[1].flags = 1,
+    f => f.action.unpin = "true"]) {
+    const f = fixture();
+    f.state.rows[0].flags = 1;
+    f.action = {kind:"strip-reorder", id:11, beforeId:22, unpin:true};
+    change(f);
+    f.session.update();
+    f.action.revision = f.session.revision;
+    f.session.reorder = () => assert.fail("must not mutate");
+    assert.equal(f.session.receive(f.action), false);
+  }
+});
+
 test("reorder requests naming unknown rows, stale revisions or malformed ids are rejected", () => {
   const base = f => ({kind:"strip-reorder", revision:f.snapshot.strip.revision, id:11, beforeId:22});
   for (const override of [{id:999}, {beforeId:999}, {id:1.5}, {beforeId:-1},
@@ -362,7 +390,7 @@ test("ungroup drops may keep their tab index and are consumed once", () => {
     const action = {kind:"strip-reorder", revision:f.session.revision, id:22, beforeId, ungroup:true};
     assert.equal(f.session.receive(action),true);
     assert.equal(f.session.receive(action),false);
-    assert.deepEqual(calls,[[22,beforeId,true]]);
+    assert.deepEqual(calls,[[22,beforeId,true,false]]);
   }
 });
 
