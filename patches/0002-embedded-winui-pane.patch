@@ -2535,10 +2535,10 @@ index 1e2660589b..39cb967796 100644
    /*
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..4e05342323
+index 0000000000..4bad4f0e74
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,275 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2548,8 +2548,8 @@ index 0000000000..4e05342323
 +let nextWindowDragSession = 0;
 +
 +export class WinUITabStripSession {
-+  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup, detachGroup, adoptGroup }) {
-+    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup, detachGroup, adoptGroup });
++  constructor({ read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup, detachGroup, adoptGroup, preview }) {
++    Object.assign(this, { read, collapse, reorder, detach, adopt, createGroup, joinGroup, selectGroupTab, openGroupMenu, openAllTabsMenu, moveGroup, detachGroup, adoptGroup, preview });
 +    this.ids = new WeakMap();
 +    this.nextId = 1;
 +    this.revision = 0;
@@ -2677,6 +2677,15 @@ index 0000000000..4e05342323
 +      this.consumed = true;
 +      return this.adoptGroup(event.sourceHwnd, event.sourceSession, event.group,
 +        event.beforeGroup ? this.targets.get(event.beforeGroup) : null, event.beforeTab) !== false;
++    }
++    if (event?.kind === "strip-preview") {
++      // A hover card asking to be filled. It changes nothing, so it neither
++      // consumes the revision nor needs one: the row only has to still exist.
++      if (event.session !== this.windowDragSession || !this.preview ||
++          !Number.isSafeInteger(event.id) || event.id <= 0 ||
++          !Number.isSafeInteger(event.request) || event.request <= 0 ||
++          !Number.isFinite(event.scale) || event.scale < 0.5 || event.scale > 8) return false;
++      return this.preview(event.id, event.request, event.scale) !== false;
 +    }
 +    if (event?.kind === "strip-all-tabs") {
 +      if (event.session !== this.windowDragSession || event.revision !== this.revision ||
@@ -3953,10 +3962,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..41fecf00ed
+index 0000000000..b7f1f83f06
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1796 @@
+@@ -0,0 +1,1899 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4288,6 +4297,7 @@ index 0000000000..41fecf00ed
 +    if (request.kind === 3) return this.executeCloseRequest(action);
 +    if (request.kind === 4) return this.executeNewTabRequest();
 +    if (request.kind === 5) return this.executeStripRequest(action);
++    if (request.kind === 9) return this.executeStripPreview(action);
 +    // 6 is a field/list intent, 7 a search-mode one. They are separate kinds so
 +    // that neither supersedes the other in the queue; the browser-side handling
 +    // is the same chain.
@@ -4348,6 +4358,107 @@ index 0000000000..41fecf00ed
 +    this.structuralDirty = true;
 +    this.stripDirty = true;
 +    return 1;
++  },
++
++  // A hover card asking for its domain and thumbnail. It changes no browser
++  // state, so unlike a gesture it leaves the published strip alone.
++  executeStripPreview(action) {
++    if (window.fullScreen || document.fullscreenElement || !this.stripSession) return 2;
++    return this.stripSession.receive(action) ? 1 : 2;
++  },
++
++  // Device pixels in one card thumbnail; the native card enforces the same.
++  kMaxPreviewPixels: 100000,
++
++  // Firefox's tab hover preview for the native card. The card already has the
++  // title; this answers with the registrable domain at once, then with a
++  // PageThumbs capture under the same eligibility rules as Firefox's own
++  // preview panel (tab-hover-preview.mjs). Process ids are never shown.
++  previewTab(id, request, scale) {
++    const tab = this.resolveStripTab(id);
++    if (!tab) return false;
++    const thumbnail = this.previewThumbnailEligible(tab);
++    this.publishPreview({ tab: id, request, domain: this.previewDomain(tab), thumbnail });
++    // At most one capture runs. Hovers that arrive meanwhile leave only the
++    // newest waiting; the card ignores answers to any other request anyway.
++    this.previewWanted = thumbnail ? { tab, id, request, scale } : null;
++    if (thumbnail && !this.previewCapturing) this.capturePreviews();
++    return true;
++  },
++
++  previewThumbnailEligible(tab) {
++    return Services.prefs.getBoolPref("browser.tabs.hoverPreview.showThumbnails", false) &&
++      !!tab.linkedBrowser && !tab.hasAttribute("pending") && !tab.selected;
++  },
++
++  // TabPanel.getPrettyURI, narrowed from the host name to its registrable
++  // domain ("news.bbc.co.uk" -> "bbc.co.uk"). Hosts without one, such as IP
++  // addresses and localhost, are shown as they are.
++  previewDomain(tab) {
++    let url = URL.parse(tab.linkedBrowser?.currentURI?.spec || "");
++    if (url?.protocol == "about:" && url.pathname == "reader") {
++      url = URL.parse(url.searchParams.get("url"));
++    }
++    if (!url) return "";
++    if (url.protocol == "about:") return url.href.slice(0, 1024);
++    let host = url.hostname;
++    try {
++      host = Services.eTLD.getBaseDomainFromHost(host);
++    } catch {}
++    return host.replace(/^w{3}\./, "").slice(0, 1024);
++  },
++
++  async capturePreviews() {
++    this.previewCapturing = true;
++    try {
++      while (this.previewWanted) {
++        const { tab, id, request, scale } = this.previewWanted;
++        this.previewWanted = null;
++        const current = () => !this.previewWanted && !!this.stripSession &&
++          this.resolveStripTab(id) === tab && this.previewThumbnailEligible(tab);
++        if (!current()) continue;
++        // 280x140 DIPs at the card's scale, within the native pixel bound.
++        const factor = Math.min(scale, Math.sqrt(this.kMaxPreviewPixels / (280 * 140)));
++        const canvas = document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
++        canvas.width = Math.floor(280 * factor);
++        canvas.height = Math.floor(140 * factor);
++        let captured = false;
++        try {
++          captured = await PageThumbs.captureTabPreviewThumbnail(tab.linkedBrowser, canvas);
++        } catch (error) {
++          // Most likely the tab or window closed while capturing.
++          console.error(error);
++        }
++        if (!current()) continue;
++        const image = captured ? this.encodePixels(
++          canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height)) : null;
++        this.publishPreview({ tab: id, request, domain: this.previewDomain(tab), thumbnail: captured, image });
++      }
++    } finally {
++      this.previewCapturing = false;
++    }
++  },
++
++  // Premultiplied BGRA, hex-encoded, as every native image is sent.
++  encodePixels({ width, height, data }) {
++    const hex = (this.hexBytes ||= Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0")));
++    const parts = new Array(data.length);
++    for (let i = 0; i < data.length; i += 4) {
++      const a = data[i + 3];
++      parts[i] = hex[Math.round(data[i + 2] * a / 255)];
++      parts[i + 1] = hex[Math.round(data[i + 1] * a / 255)];
++      parts[i + 2] = hex[Math.round(data[i] * a / 255)];
++      parts[i + 3] = hex[a];
++    }
++    return { width, height, pixels: parts.join("") };
++  },
++
++  publishPreview(answer) {
++    try {
++      window.windowUtils.syncWinUITabMenu(JSON.stringify({ version: 2, publishOnly: true, tabPreview: answer }));
++    } catch (error) {
++      console.error("WinUI tab preview publication failed", error);
++    }
 +  },
 +
 +  publishMenu(payload) {
@@ -4662,6 +4773,7 @@ index 0000000000..41fecf00ed
 +        "chrome://browser/content/WinUITabStripSession.sys.mjs");
 +      this.stripSession = new WinUITabStripSession({
 +        read: () => this.describeStrip(),
++        preview: (id, request, scale) => this.previewTab(id, request, scale),
 +        moveGroup: (group, beforeGroup, beforeTab) => {
 +          if (gDialogBox.isOpen || !group?.isConnected || !gBrowser.tabGroups.includes(group) ||
 +              !group.tabs.length || group.tabs.some(t=>t.closing)) return false;
@@ -5055,13 +5167,13 @@ index 0000000000..41fecf00ed
 +      const splitLabel = split ? label((split.tabs.indexOf(tab) === 0) !== window.RTL_UI
 +        ? "tabbrowser-tab-label-tab-split-view-left" : "tabbrowser-tab-label-tab-split-view-right",
 +        {label: String(splitViews.indexOf(split) + 1)}) : "";
-+      const detail = [group?.name, splitLabel].filter(Boolean).join(" Ã‚Â· ");
++      const detail = [group?.name, splitLabel].filter(Boolean).join(" \u00b7 ");
 +      const flags = (tab.pinned ? 1 : 0) | (tab.hasAttribute("busy") ? 2 : 0) |
 +        (tab.muted ? 4 : 0) | (tab.hasAttribute("soundplaying") ? 8 : 0);
 +      const status = [tab.pinned && label("winui-tab-strip-pinned"),
 +        (flags & 2) && label("winui-tab-strip-loading"),
 +        tab.muted ? label("winui-tab-strip-muted") : (flags & 8) && label("winui-tab-strip-playing")]
-+        .filter(Boolean).join(" Ã‚Â· ");
++        .filter(Boolean).join(" \u00b7 ");
 +      const iconUrl = gBrowser.getIcon(tab) || "";
 +      let image = null;
 +      if (iconUrl) {
@@ -5755,7 +5867,7 @@ index 0000000000..41fecf00ed
 +window.addEventListener("unload", () => gWinUIPane.uninit(), { once: true });
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 0000000000..6c9c6f54a5
+index 0000000000..e189271859
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
 @@ -0,0 +1,126 @@
@@ -5861,7 +5973,7 @@ index 0000000000..6c9c6f54a5
 +    //    "requests":[{"id":..,"kind":..,"tab":..,"revision":..,"action":{...}}]}
 +    // "kind" is 1 select-tab, 2 tab-menu transition, 3 close tab, 4 new tab,
 +    // 5 strip gesture, 6 address intent, 7 search-mode intent, 8 address
-+    // visibility report. Every native intent appears here and nowhere else, so
++    // visibility report, 9 tab hover-card request. Every native intent appears here and nowhere else, so
 +    // none of them has two executors.
 +    // Returns S_FALSE with an empty output when there was nothing to take, or
 +    // when a drain is already open. Every batch must be closed by

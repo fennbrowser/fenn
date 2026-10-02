@@ -100,7 +100,7 @@ struct WinUIPaneApi {
     //    "requests":[{"id":..,"kind":..,"tab":..,"revision":..,"action":{...}}]}
     // "kind" is 1 select-tab, 2 tab-menu transition, 3 close tab, 4 new tab,
     // 5 strip gesture, 6 address intent, 7 search-mode intent, 8 address
-    // visibility report. Every native intent appears here and nowhere else, so
+    // visibility report, 9 tab hover-card request. Every native intent appears here and nowhere else, so
     // none of them has two executors.
     // Returns S_FALSE with an empty output when there was nothing to take, or
     // when a drain is already open. Every batch must be closed by

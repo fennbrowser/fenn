@@ -960,6 +960,11 @@ struct Pane {
             strip->groupsButton.dispatch = [this](hstring const& action) {
                 Enqueue(NativeShellCore::StripAction, 0, strip->presentationRevision, action);
             };
+            // Hover-card requests coalesce: only the newest hover matters, and
+            // it must never displace a gesture queued before it.
+            strip->preview = [this](hstring const& action) {
+                Enqueue(NativeShellCore::StripPreview, 0, strip->presentationRevision, action);
+            };
             strip->select = [this](uint32_t id) { QueueStripSelection(id); };
             strip->close = [this](uint32_t id) { QueueClose(id); };
             strip->add = [this] { QueueNewTab(); };
@@ -1850,6 +1855,15 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
             pane.strip->Publish(snapshot.GetNamedObject(L"strip"));
             return S_OK;
         }
+        if (snapshot.HasKey(L"tabPreview")) {
+            // Firefox's answer to a hover-card request: also its own envelope,
+            // validated in full before the card changes.
+            if (!pane.strip || snapshot.Size() != 3 || snapshot.GetNamedNumber(L"version") != 2 ||
+                !snapshot.GetNamedBoolean(L"publishOnly", false))
+                return E_INVALIDARG;
+            pane.strip->ApplyPreview(snapshot.GetNamedObject(L"tabPreview"));
+            return S_OK;
+        }
         // A publication is the only thing that moves the published selection
         // now, so apply it here rather than waiting for a snapshot. The
         // previous set is what makes the apply a diff instead of a rescan.
@@ -2631,6 +2645,26 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSetDragging(HWND hw
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
         found->second->strip->testDragging = bool(value);
+        return S_OK;
+    } catch (...) {
+        return to_hresult();
+    }
+}
+// Test-only: hover a row (or leave it) through the same entry points as the
+// pointer, and return that row's hover-card Flyout for inspection.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestHoverCard(HWND hwnd, uint32_t tab, BOOL hover,
+                                                                       void** flyout) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end() || !found->second->strip || !flyout) return E_INVALIDARG;
+        auto& strip = *found->second->strip;
+        auto& card = strip.hoverCard;
+        if (!strip.rows.count(tab) || !card.cards.count(tab)) return E_INVALIDARG;
+        if (hover) card.Enter(tab, strip.rows.at(tab));
+        else card.Hide(tab);
+        // Hand out a new reference; detaching the card's own would empty it.
+        *flyout = detach_abi(Controls::Flyout(card.cards.at(tab).flyout));
         return S_OK;
     } catch (...) {
         return to_hresult();

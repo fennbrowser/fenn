@@ -71,6 +71,11 @@ pub enum RequestKind {
     /// never displace an intent, and its outcome must not be mistaken for the
     /// answer to one. Carries no tab.
     AddressVisibility = 8,
+    /// Which tab's hover card the strip wants filled. Like a visibility
+    /// report it is about what is on screen, not a command: only the newest
+    /// hover matters, so it coalesces with itself, and it never displaces a
+    /// gesture. Carries no tab; the payload names it.
+    StripPreview = 9,
 }
 
 impl RequestKind {
@@ -84,6 +89,7 @@ impl RequestKind {
             6 => Some(Self::AddressAction),
             7 => Some(Self::AddressModeAction),
             8 => Some(Self::AddressVisibility),
+            9 => Some(Self::StripPreview),
             _ => None,
         }
     }
@@ -100,6 +106,7 @@ impl RequestKind {
                 | Self::AddressAction
                 | Self::AddressModeAction
                 | Self::AddressVisibility
+                | Self::StripPreview
         )
     }
 }
@@ -787,6 +794,24 @@ mod tests {
         assert_eq!(
             batch.iter().map(|r| r.id).collect::<Vec<_>>(),
             vec![commit.id, newer_report.id]
+        );
+    }
+
+    #[test]
+    fn hover_previews_collapse_without_displacing_a_gesture() {
+        // Sweeping the pointer across the strip asks for one card per tab;
+        // only the last is still wanted, and none of them may evict a reorder
+        // the user completed in between.
+        let mut q = queue();
+        let first = q.enqueue(RequestKind::StripPreview, 0, 1, &[]);
+        let gesture = q.enqueue(RequestKind::StripAction, 0, 1, &[]);
+        let last = q.enqueue(RequestKind::StripPreview, 0, 1, &[]);
+        assert_eq!(last.superseded, first.id, "only the newest hover survives");
+        q.begin_drain().unwrap();
+        let batch = q.take_batch(8, 1 << 20);
+        assert_eq!(
+            batch.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![last.id, gesture.id]
         );
     }
 

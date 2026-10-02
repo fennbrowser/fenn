@@ -510,6 +510,25 @@ test("all-tabs button opens Firefox's panel at its bounds and rejects stale or i
   assert.equal(f.session.receive(event), false);
 });
 
+test("hover-card requests ask Firefox for a preview without consuming the strip revision", () => {
+  const f = fixture(), calls = [];
+  f.session.preview = (id, request, scale) => calls.push([id, request, scale]);
+  const event = {kind:"strip-preview", session:f.session.windowDragSession, id:11, request:3, scale:1.5};
+  assert.equal(f.session.receive(event), true);
+  // Hovering is not a gesture: it leaves the revision unconsumed and needs none.
+  assert.ok(!f.session.consumed);
+  assert.equal(f.session.receive({...event, request:4}), true);
+  assert.equal(f.session.update(), null, "a preview changes nothing the strip publishes");
+  assert.deepEqual(calls, [[11, 3, 1.5], [11, 4, 1.5]]);
+  for (const override of [{session:0},{id:0},{id:1.5},{request:0},{request:"3"},{scale:NaN},{scale:0.1},{scale:9}])
+    assert.equal(f.session.receive({...event, ...override}), false);
+  f.session.preview = () => false;
+  assert.equal(f.session.receive(event), false, "Firefox's refusal is reported");
+  f.session.preview = null;
+  assert.equal(f.session.receive(event), false);
+  assert.equal(calls.length, 2);
+});
+
 test("localized labels publish once, then only when Firefox's strings change", () => {
   const f = fixture();
   f.state.labels = {tabs: "Tabs in this window", active: "Active tab", selected: "Selected tab",

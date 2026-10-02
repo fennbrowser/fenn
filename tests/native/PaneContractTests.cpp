@@ -1510,8 +1510,103 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "pinned indicator visible");
     Require(header.Children().GetAt(2).as<Controls::StackPanel>().Children().Size() == 1,
         "tab face contains only its title, without a group/split subtitle");
-    Require(std::wstring(unbox_value<hstring>(Controls::ToolTipService::GetToolTip(second))).find(L"Work · Split 1 right") != std::wstring::npos,
-        "group/split detail remains in the native hover tooltip");
+    {
+        // The hover card: a transient Flyout opened by hovering, centered
+        // under its tab, and filled by Firefox's answer to the newest request.
+        auto hoverCard = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, BOOL, void**)>(
+            GetProcAddress(module, "WinUIPaneTestHoverCard"));
+        Require(hoverCard != nullptr, "hover-card test hook exists");
+        auto hover = [&](uint32_t tab, bool on) {
+            void* raw{};
+            Require(SUCCEEDED(hoverCard(host, tab, on, &raw)), "hover-card hook reaches the row");
+            Controls::Flyout flyout{nullptr};
+            winrt::attach_abi(flyout, raw);
+            return flyout;
+        };
+        auto card = hover(22, false);
+        Require(card.SystemBackdrop().try_as<Media::DesktopAcrylicBackdrop>() != nullptr &&
+                    card.ShowMode() == Controls::Primitives::FlyoutShowMode::Transient &&
+                    !card.ShouldConstrainToRootBounds() &&
+                    card.Placement() == Controls::Primitives::FlyoutPlacementMode::Bottom,
+            "hover card is a transient, windowed Flyout below its tab with Desktop Acrylic");
+        auto lines = card.Content().as<Controls::Grid>().Children().GetAt(0).as<Controls::Border>().Child().as<Controls::StackPanel>().Children();
+        auto line = [&](uint32_t i) { return lines.GetAt(i).as<Controls::TextBlock>(); };
+        auto frame = lines.GetAt(3).as<Controls::Border>();
+        auto preview = frame.Child().as<Controls::Image>();
+        Require(line(0).Text() == Automation::AutomationProperties::GetName(second), "hover card shows the tab title");
+        Require(std::wstring(line(2).Text()).find(L"Work · Split 1 right") != std::wstring::npos,
+            "group/split detail remains in the native hover card");
+        Require(line(1).Visibility() == Visibility::Collapsed && frame.Visibility() == Visibility::Collapsed,
+            "no domain or thumbnail before Firefox answers");
+        bool cardOpen = false;
+        auto openedToken = card.Opened([&](auto const&, auto const&) { cardOpen = true; });
+        auto closedToken = card.Closed([&](auto const&, auto const&) { cardOpen = false; });
+        Require(SUCCEEDED(setDragging(host, TRUE)), "simulate a drag before hovering");
+        hover(22, true);
+        for (int i = 0; i < 80; ++i) { Pump(); Sleep(10); }
+        Require(!cardOpen, "no hover card opens while a strip gesture owns the pointer");
+        Require(SUCCEEDED(setDragging(host, FALSE)), "end the simulated drag");
+        hover(22, true);
+        Require(!cardOpen, "the card waits out the hover delay");
+        auto request = NextRequest(api, host, 9, L"strip-preview");
+        Require(request.Size() != 0, "hovering a tab asks Firefox for its preview");
+        for (int i = 0; i < 300 && !cardOpen; ++i) { Pump(); Sleep(10); }
+        Require(cardOpen, "the hover card opens after the hover delay");
+        {
+            Controls::FlyoutPresenter presenter{nullptr};
+            for (auto popup : Media::VisualTreeHelper::GetOpenPopupsForXamlRoot(second.XamlRoot())) {
+                auto candidate = popup.Child().try_as<Controls::FlyoutPresenter>();
+                if (candidate && candidate.Content() == card.Content()) presenter = candidate;
+            }
+            Require(presenter != nullptr, "the open card's presenter is found");
+            for (int i = 0; i < 50 && presenter.ActualWidth() == 0; ++i) { Pump(); Sleep(10); }
+            const auto tabBounds = second.TransformToVisual(nullptr).TransformBounds(
+                {0, 0, float(second.ActualWidth()), float(second.ActualHeight())});
+            const auto cardBounds = presenter.TransformToVisual(nullptr).TransformBounds(
+                {0, 0, float(presenter.ActualWidth()), float(presenter.ActualHeight())});
+            const auto offset = (cardBounds.X + cardBounds.Width / 2) - (tabBounds.X + tabBounds.Width / 2);
+            fwprintf(stderr, L"Hover card tab=%.1f,%.1f %.1fx%.1f card=%.1f,%.1f %.1fx%.1f\n", tabBounds.X,
+                     tabBounds.Y, tabBounds.Width, tabBounds.Height, cardBounds.X, cardBounds.Y, cardBounds.Width,
+                     cardBounds.Height);
+            Require(cardBounds.Width > 0 && std::abs(offset) <= 1.0f &&
+                        cardBounds.Y >= tabBounds.Y + tabBounds.Height - 1.0f,
+                "the hover card is centered under its tab");
+        }
+        auto action = request.GetNamedObject(L"action");
+        Require(action.GetNamedNumber(L"id") == 22 && action.GetNamedNumber(L"scale") > 0,
+            "the preview request names the hovered tab and the card's scale");
+        const auto requestNumber = action.GetNamedNumber(L"request");
+        auto answer = [&](double number, wchar_t const* fields) {
+            return L"{\"version\":2,\"publishOnly\":true,\"tabPreview\":{\"tab\":22,\"request\":" +
+                std::to_wstring(uint64_t(number)) + L"," + fields + L"}}";
+        };
+        MenuPublish(api, host, answer(requestNumber + 1, LR"("domain":"stale.example","thumbnail":true)").c_str());
+        Require(line(1).Visibility() == Visibility::Collapsed, "an answer to another request is ignored");
+        MenuPublish(api, host, answer(requestNumber, LR"("domain":"example.co.uk","thumbnail":true)").c_str());
+        Require(line(1).Text() == L"example.co.uk" && line(1).Visibility() == Visibility::Visible,
+            "Firefox's registrable domain is shown");
+        Require(frame.Visibility() == Visibility::Visible && !preview.Source(),
+            "the thumbnail's space is reserved before the capture lands");
+        Require(FAILED(api.syncTabMenu(host, answer(requestNumber,
+                    LR"("domain":"x","thumbnail":true,"image":{"width":2,"height":2,"pixels":"00"})").c_str())) &&
+                    FAILED(api.syncTabMenu(host, answer(requestNumber,
+                    LR"("domain":"x","thumbnail":true,"image":{"width":700,"height":1,"pixels":"00"})").c_str())) &&
+                    line(1).Text() == L"example.co.uk",
+            "malformed or oversized thumbnails are rejected before the card changes");
+        MenuPublish(api, host, answer(requestNumber,
+            LR"("domain":"example.co.uk","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})").c_str());
+        Require(bool(preview.Source()), "the captured thumbnail is shown");
+        hover(22, false);
+        for (int i = 0; i < 100 && (cardOpen || preview.Source()); ++i) { Pump(); Sleep(5); }
+        Require(!cardOpen, "leaving the tab closes its card");
+        Require(!preview.Source() && frame.Visibility() == Visibility::Collapsed,
+            "a closed card releases its thumbnail");
+        MenuPublish(api, host, answer(requestNumber,
+            LR"("domain":"late.example","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})").c_str());
+        Require(!preview.Source() && line(1).Text() == L"example.co.uk", "a late answer after closing is ignored");
+        card.Opened(openedToken);
+        card.Closed(closedToken);
+    }
     Require(std::wstring(Automation::AutomationProperties::GetHelpText(second)).find(L"Work · Split 1 right") != std::wstring::npos,
         "group/split detail remains accessible");
     auto firstFavicon = first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>();
@@ -1555,6 +1650,26 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     }
     groupMenu.Opened(groupToken);
     Require(groupOpened, "group flyout opens");
+    {
+        // A menu the user opened takes precedence: hovering a tab now opens no card.
+        auto hoverHook = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, BOOL, void**)>(
+            GetProcAddress(module, "WinUIPaneTestHoverCard"));
+        auto hover = [&](uint32_t tab, bool on) {
+            void* raw{};
+            Require(SUCCEEDED(hoverHook(host, tab, on, &raw)), "hover-card hook reaches the row");
+            Controls::Flyout flyout{nullptr};
+            winrt::attach_abi(flyout, raw);
+            return flyout;
+        };
+        auto card = hover(22, false);
+        bool covered = false;
+        auto token = card.Opened([&](auto const&, auto const&) { covered = true; });
+        hover(22, true);
+        for (int i = 0; i < 80; ++i) { Pump(); Sleep(10); }
+        hover(22, false);
+        card.Opened(token);
+        Require(!covered, "no hover card opens over an open menu");
+    }
     auto groupItem = groupMenu.Items().GetAt(0).as<Controls::ToggleMenuFlyoutItem>();
     auto peer = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(groupItem);
     peer.GetPattern(Automation::Peers::PatternInterface::Toggle).as<Automation::Provider::IToggleProvider>().Toggle();

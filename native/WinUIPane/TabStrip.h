@@ -16,6 +16,7 @@
 #include "GroupDragShift.h"
 #include "TabAmbient.h"
 #include "TabGroupSurface.h"
+#include "TabHoverCard.h"
 
 // Strip-only experiment: TabView owns presentation, Firefox owns all mutations.
 // Inline grouping has a localized TabListView template dependency. CanDragTabs/CanReorderTabs
@@ -1376,6 +1377,11 @@ struct NativeTabStrip {
     // and the drop is over once Firefox's snapshot places the tab. Unset when
     // accounting is off.
     std::function<void()> dropCommitted, dropLanded;
+    // Hands one hover-card request to the pane's coalescing preview queue.
+    std::function<void(hstring const& action)> preview;
+    TabHoverCard hoverCard;
+    // Firefox's answer to the newest hover-card request; see TabHoverCard.
+    void ApplyPreview(NativeTabMenu::Object const& answer) { hoverCard.Apply(answer); }
     // Only peer object lifetimes stay native. Rust owns tickets, request
     // outcomes and source departure tokens until their UI effects are applied.
     struct TransferPeer { NativeTabStrip* source; std::weak_ptr<int> lifetime; };
@@ -1541,6 +1547,19 @@ struct NativeTabStrip {
         separatorTheme = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource TabViewItemSeparator}" Visibility="Collapsed" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         ambient.layer.Children().Append(separatorTheme);
         ambient.refresh = [this] { RefreshAmbient(); };
+        hoverCard.suppressed = [this] { return IsDragging() || GroupDrag().phase; };
+        hoverCard.Bind(root);
+        hoverCard.send = [this](uint32_t tab, uint64_t request, double scale) {
+            if (!preview) return;
+            using Value = Windows::Data::Json::JsonValue;
+            Windows::Data::Json::JsonObject action;
+            action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-preview"));
+            action.SetNamedValue(L"session", Value::CreateNumberValue(windowDragSession));
+            action.SetNamedValue(L"id", Value::CreateNumberValue(tab));
+            action.SetNamedValue(L"request", Value::CreateNumberValue(double(request)));
+            action.SetNamedValue(L"scale", Value::CreateNumberValue(scale));
+            preview(action.Stringify());
+        };
         inlineGroups.realized = [this] { ambient.ScheduleUpdate(); };
         inlineGroups.holdScroll = [this] {
             const auto state = GroupDrag();
@@ -3197,10 +3216,8 @@ struct NativeTabStrip {
         pinBox.Visibility(meta.flags & 1 ? Visibility::Visible : Visibility::Collapsed);
         audio.Symbol(meta.flags & 4 ? Controls::Symbol::Mute : Controls::Symbol::Volume);
         audioBox.Visibility(meta.flags & 12 ? Visibility::Visible : Visibility::Collapsed);
-        Controls::ToolTipService::SetToolTip(row, box_value(meta.detail.empty() ? title : title + L"\n" + meta.detail));
-        if (!meta.containerName.empty())
-            Controls::ToolTipService::SetToolTip(row, box_value(title + L"\n" + meta.containerName +
-                (meta.detail.empty() ? L"" : L"\n" + meta.detail)));
+        hoverCard.Update(row, id, title, meta.containerName +
+            (meta.containerName.empty() || meta.detail.empty() ? L"" : L" · ") + meta.detail, lifetime);
         Automation::AutomationProperties::SetHelpText(
             row, meta.detail + (meta.detail.empty() || meta.status.empty() ? L"" : L" \u00b7 ") + meta.status);
         if (!meta.containerName.empty()) Automation::AutomationProperties::SetHelpText(
@@ -3568,7 +3585,7 @@ struct NativeTabStrip {
             for (auto it = rows.begin(); it != rows.end();) {
                 if (!current.count(it->first)) {
                     shell_core_departure_removed(core, it->first);
-                    outlinedTabs.erase(it->first); outlines.erase(it->first);
+                    outlinedTabs.erase(it->first); outlines.erase(it->first); hoverCard.Forget(it->first);
                     it = rows.erase(it);
                 }
                 else

@@ -251,3 +251,82 @@ test("whole-group adapter delegates the group object and rejects split-internal/
   group.tabs=[]; assert.equal(commands.moveGroup(group,null,0),false);
   assert.equal(moves.length,1);
 });
+
+test("a hover-card request is answered with the registrable domain, then one bounded thumbnail", async () => {
+  const published = [], captures = [];
+  const prefs = { "browser.tabs.hoverPreview.showThumbnails": true };
+  const context = {
+    window: { addEventListener() {}, windowUtils: {
+      syncWinUITabMenu: text => published.push(JSON.parse(text)),
+    } },
+    URL,
+    document: { createElementNS: () => {
+      const canvas = { getContext: () => ({ getImageData: (x, y, width, height) => ({ width, height,
+        data: new Uint8ClampedArray(width * height * 4).fill(255).map((v, i) => i % 4 === 3 ? 128 : 200) }) }) };
+      return canvas;
+    } },
+    PageThumbs: { captureTabPreviewThumbnail: (browser, canvas) =>
+      new Promise(resolve => captures.push({ browser, canvas, resolve })) },
+    Services: {
+      prefs: { getBoolPref: (name, fallback) => prefs[name] ?? fallback },
+      eTLD: { getBaseDomainFromHost: host => {
+        if (/^[\d.]+$/.test(host)) throw new Error("NS_ERROR_HOST_IS_IP_ADDRESS");
+        return { "news.bbc.co.uk": "bbc.co.uk", "www.example.org": "example.org" }[host] ?? host.split(".").slice(-2).join(".");
+      } },
+    },
+    console: { error() {} },
+  };
+  runInNewContext(source, context);
+  const pane = context.gWinUIPane;
+  const tab = (spec, extra = {}) => ({ linkedBrowser: { currentURI: { spec } }, selected: false,
+    hasAttribute: name => !!extra[name], ...extra });
+  const tabs = new Map([[11, tab("https://news.bbc.co.uk/sport")], [22, tab("http://192.168.1.1:8080/", { selected: true })],
+    [33, tab("about:reader?url=https%3A%2F%2Fwww.example.org%2Fa", { pending: true })], [44, tab("https://www.mozilla.org/", { pending: true })]]);
+  Object.assign(pane, { element: {}, stripSession: {}, resolveStripTab: id => tabs.get(id) });
+  const answers = () => published.map(p => p.tabPreview);
+
+  // The selected tab, like Firefox's own preview, gets no thumbnail; an IP
+  // address has no registrable domain and is shown as it is.
+  assert.equal(pane.previewTab(22, 1, 1), true);
+  assert.deepEqual(answers(), [{ tab: 22, request: 1, domain: "192.168.1.1", thumbnail: false }]);
+  assert.equal(captures.length, 0);
+  assert.equal(pane.previewTab(33, 2, 1), true);
+  assert.equal(answers()[1].domain, "example.org", "reader view names the page it shows");
+  assert.equal(pane.previewTab(44, 3, 1), true);
+  assert.equal(answers()[2].thumbnail, false, "an unloaded tab has nothing to capture");
+  assert.equal(pane.previewTab(99, 4, 1), false, "a tab no longer in the strip is refused");
+
+  // The domain answers at once; the capture follows, sized to the card's
+  // scale but held within the native pixel bound.
+  assert.equal(pane.previewTab(11, 5, 2), true);
+  assert.deepEqual(answers()[3], { tab: 11, request: 5, domain: "bbc.co.uk", thumbnail: true });
+  assert.equal(captures.length, 1);
+  const { canvas } = captures[0];
+  assert.ok(canvas.width * canvas.height <= 100000 && canvas.width > 400, `${canvas.width}x${canvas.height}`);
+  // A newer hover while capturing waits; the stale capture is never published.
+  assert.equal(pane.previewTab(11, 6, 1), true);
+  assert.equal(captures.length, 1, "one capture at a time");
+  captures[0].resolve(true);
+  await new Promise(resolve => setTimeout(resolve));
+  assert.equal(captures.length, 2);
+  assert.deepEqual([captures[1].canvas.width, captures[1].canvas.height], [280, 140]);
+  captures[1].resolve(true);
+  await new Promise(resolve => setTimeout(resolve));
+  const last = answers().at(-1);
+  assert.equal(answers().filter(a => a.image).length, 1);
+  assert.equal(last.request, 6);
+  assert.deepEqual([last.image.width, last.image.height], [280, 140]);
+  assert.equal(last.image.pixels.length, 280 * 140 * 8);
+  assert.equal(last.image.pixels.slice(0, 8), "64646480", "premultiplied BGRA");
+  assert.equal(pane.previewCapturing, false);
+
+  // A failed capture withdraws the reserved thumbnail rather than leaving it blank.
+  assert.equal(pane.previewTab(11, 7, 1), true);
+  captures[2].resolve(false);
+  await new Promise(resolve => setTimeout(resolve));
+  assert.deepEqual(answers().at(-1), { tab: 11, request: 7, domain: "bbc.co.uk", thumbnail: false, image: null });
+  prefs["browser.tabs.hoverPreview.showThumbnails"] = false;
+  assert.equal(pane.previewTab(11, 8, 1), true);
+  assert.equal(answers().at(-1).thumbnail, false, "Firefox's thumbnail preference is honoured");
+  assert.equal(captures.length, 3);
+});
