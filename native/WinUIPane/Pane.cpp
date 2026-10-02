@@ -2479,6 +2479,20 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupMotion(HWND hw
         else if (operation == 4) found->second->strip->CollapseDraggingGroup(7);
         else if (operation == 5) found->second->strip->RestoreDraggingGroup();
         else if (operation == 6) found->second->strip->UpdateTitle(41,L"Updated during drag");
+        else if (operation == 9) { *ghosts = motion.resizing ? 1 : 0; return S_OK; }
+        else if (operation == 10 || operation == 11) {
+            // 10 pauses the slide and its width motion halfway (75 of 150 ms)
+            // so geometry can be read without depending on frame cadence; 11
+            // resumes it. Reports whether the motion animates any width.
+            *ghosts = motion.resizing ? 1 : 0;
+            if (!motion.storyboard) return S_OK;
+            if (operation == 11) motion.storyboard.Resume();
+            else {
+                motion.storyboard.Pause();
+                motion.storyboard.SeekAlignedToLastTick(Windows::Foundation::TimeSpan{InlineTabGroups::MotionDuration / 2});
+            }
+            return S_OK;
+        }
         else if (operation != 0) return E_INVALIDARG;
         *ghosts = uint32_t(motion.departing.size());
         return S_OK;

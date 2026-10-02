@@ -224,9 +224,14 @@ struct InlineTabGroups {
  </Setter.Value></Setter>
 </Style>)").as<Style>());
         list.GroupStyle().Append(style);
+        // Keep the scroll offset when tabs are added or removed, as Firefox's
+        // own tab strip does. The default KeepItemsInView re-anchored on the
+        // first visible tab when one was appended past the end and misplaced
+        // it, shifting every visible tab by 10 DIP; entry and close motion
+        // already ease tabs that do move.
         list.ItemsPanel(Markup::XamlReader::Load(LR"(
 <ItemsPanelTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
- <ItemsStackPanel Orientation="Horizontal" GroupHeaderPlacement="Left"/>
+ <ItemsStackPanel Orientation="Horizontal" GroupHeaderPlacement="Left" ItemsUpdatingScrollMode="KeepScrollOffset"/>
 </ItemsPanelTemplate>)").as<Controls::ItemsPanelTemplate>());
         source.IsSourceGrouped(true);
         source.ItemsPath(PropertyPath(L"[Items]"));
@@ -293,22 +298,40 @@ struct InlineTabGroups {
                 // changes must not drag the strip to the active tab.
                 if (stale || (holdScroll && holdScroll())) args.Handled(true);
                 // StartBringTabIntoView pads the tab by 2 DIP; keep that pad.
-                else if (const auto limit = float(tab.ActualWidth()) + 2 - rect.X; tab.ActualWidth() > 0 && rect.Width > limit) {
-                    rect.Width = std::max(0.f, limit);
-                    args.TargetRect(rect);
+                else {
+                    if (const auto limit = float(tab.ActualWidth()) + 2 - rect.X; tab.ActualWidth() > 0 && rect.Width > limit) {
+                        rect.Width = std::max(0.f, limit);
+                        args.TargetRect(rect);
+                    }
+                    // TabView scrolls without animation. A tab just opened
+                    // scrolls in smoothly instead, so an overflowing strip moves
+                    // its tabs aside the way one with room does.
+                    if (animateBring && animateBring(tab)) args.AnimationDesired(true);
                 }
                 if (diagnostics)
-                    fprintf(stderr, "WinUIPane tab-scroll bring tab=%u rect=%.1f,%.1f,%.1f width=%.1f dropped=%d\n",
+                    fprintf(stderr, "WinUIPane tab-scroll bring tab=%u rect=%.1f,%.1f,%.1f width=%.1f dropped=%d animated=%d\n",
                             tab.Tag() ? unbox_value_or<uint32_t>(tab.Tag(), 0) : 0, rect.X, args.TargetRect().Width,
-                            rect.Height, tab.ActualWidth(), stale);
+                            rect.Height, tab.ActualWidth(), stale, int(args.AnimationDesired()));
             });
         }
         if (GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0)) {
             // Diagnostics only: who moves the stock scroller.
-            scroller.ViewChanged([scroll = make_weak(scroller)](auto const&, auto const& args) {
-                if (auto scroller = scroll.get())
-                    fprintf(stderr, "WinUIPane tab-scroll view offset=%.1f intermediate=%d\n",
-                            scroller.HorizontalOffset(), args.IsIntermediate());
+            scroller.ViewChanged([scroll = make_weak(scroller), weakList = make_weak(list)](auto const&, auto const& args) {
+                auto scroller = scroll.get();
+                if (!scroller) return;
+                fprintf(stderr, "WinUIPane tab-scroll view offset=%.1f intermediate=%d\n",
+                        scroller.HorizontalOffset(), args.IsIntermediate());
+                if (args.IsIntermediate()) return;
+                // Which item the panel keeps in place across an items change.
+                auto list = weakList.get();
+                auto panel = list ? list.ItemsPanelRoot().try_as<Controls::ItemsStackPanel>() : nullptr;
+                if (!panel) return;
+                double x = -1;
+                if (auto first = list.ContainerFromIndex(panel.FirstVisibleIndex()).try_as<FrameworkElement>())
+                    x = first.TransformToVisual(scroller).TransformPoint({0, 0}).X;
+                fprintf(stderr, "WinUIPane tab-scroll anchor mode=%d first=%d last=%d firstX=%.1f extent=%.1f scrollable=%.1f\n",
+                        int(panel.ItemsUpdatingScrollMode()), panel.FirstVisibleIndex(), panel.LastVisibleIndex(), x,
+                        scroller.ExtentWidth(), scroller.ScrollableWidth());
             });
         }
         // Equal mode divides the full width among tabs alone, so in its fill
@@ -341,6 +364,8 @@ struct InlineTabGroups {
                 grid.ColumnDefinitions().GetAt(2).ActualWidth() -
                 (footer ? footer.DesiredSize().Width : 0));
             if (list.MaxWidth() != available) list.MaxWidth(available);
+            // Animated widths are transient; decide caps and arrows once they end.
+            if (holdCaps && holdCaps()) return;
             if (auto scroller = scroll.get(); scroller && scroller.ActualWidth() > 0) {
                 // The arrow-free width must not depend on the arrows' own
                 // state, or the decision below oscillates: their containers
@@ -388,8 +413,12 @@ struct InlineTabGroups {
     uint64_t scrollEpoch{}, requestEpoch{}, userScrollEpoch{};
     // True while tab bring-into-view requests must be ignored outright.
     std::function<bool()> holdScroll;
+    // True while the owner animates tab widths (see GroupSlide::resizing).
+    std::function<bool()> holdCaps;
     // True for a tab that keeps its own compact width (a pinned tab).
     std::function<bool(Controls::TabViewItem const&)> fixedWidth;
+    // True when bringing this tab into view should scroll smoothly.
+    std::function<bool(Controls::TabViewItem const&)> animateBring;
     void NoteUserScroll() { userScrollEpoch = ++scrollEpoch; }
     void LogScroller(Controls::ListViewBase const& list, Controls::ScrollViewer const& scroller,
                      Controls::Grid const& grid, double available) {

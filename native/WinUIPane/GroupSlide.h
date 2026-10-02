@@ -11,6 +11,7 @@ struct GroupSlide {
     struct Ghost { Controls::Border clipper{nullptr}; Rect bounds{}; };
     struct Borrowed { Controls::TabViewItem source{nullptr}, ghost{nullptr}; Windows::Foundation::IInspectable content{nullptr}; };
     struct InputState { UIElement element{nullptr}; bool hitTest{}; Automation::Peers::AccessibilityView accessibility{}; hstring id; };
+    struct Resize { Controls::TabViewItem row{nullptr}; double from{}, to{}, minWidth{}, maxWidth{}; };
     std::vector<Borrowed> borrowed;
     std::vector<InputState> inputStates;
     std::map<uint64_t, Frame> before;
@@ -24,6 +25,10 @@ struct GroupSlide {
     bool holdingViewport{};
     Element active{nullptr};
     bool rtl{}, pending{};
+    // True while rows animate between their old and new widths. Their layout
+    // is then deliberately wider or narrower than the strip, so the owner
+    // must not recompute width caps, arrows or bring-into-view from it.
+    bool resizing{};
     Media::Animation::Storyboard storyboard{nullptr};
     winrt::event_token rendering{};
     bool observing{};
@@ -42,11 +47,22 @@ struct GroupSlide {
     static Rect Bounds(Element const& element, Element const& relative) {
         return element.TransformToVisual(relative).TransformBounds({0,0,float(element.ActualWidth()),float(element.ActualHeight())});
     }
+    // Grouped-source rows can be measured and arranged while IsLoaded stays
+    // false, so a nonzero arranged width also marks a placed element.
+    static bool Placed(Element const& element) {
+        return element && (element.IsLoaded() || element.ActualWidth() > 0);
+    }
     ~GroupSlide() { life.reset(); try { Cancel(); } catch (...) {} }
     void Cancel() noexcept {
         pending = false;
         if (observing) { try { Media::CompositionTarget::Rendering(rendering); } catch (...) {} observing = false; }
         if (storyboard) { try { storyboard.Stop(); } catch (...) {} storyboard = nullptr; }
+        if (resizing) {
+            // Stopping removed the animated limits; let the caps settle on the
+            // final layout even when no limit changed value at the end.
+            resizing = false;
+            try { if (viewport) viewport.InvalidateMeasure(); } catch (...) {}
+        }
         if (holdingViewport) {
             holdingViewport = false;
             try { viewport.MinWidth(savedMinWidth); } catch (...) {}
@@ -72,8 +88,9 @@ struct GroupSlide {
         before.clear(); plan.clear();
     }
     void Remember(uint64_t key, Element const& element) {
-        if (!element || !element.IsLoaded() || before.size() >= 128) return;
-        auto bounds = Bounds(element, root);
+        if (!Placed(element) || before.size() >= 128) return;
+        Rect bounds{};
+        try { bounds = Bounds(element, root); } catch (...) { return; }
         if (bounds.Width <= 0 || bounds.X + bounds.Width <= 0 || bounds.X >= root.ActualWidth()) return;
         before.emplace(key, Frame{element, bounds});
     }
@@ -159,13 +176,68 @@ struct GroupSlide {
         if (!Enabled()) { Cancel(); return; }
         root.UpdateLayout();
         const auto finalAdd = add ? Bounds(add, root).X : 0;
-        if (viewport && viewport.ActualWidth() < oldViewportWidth) {
+        // Equal-width tabs change size when a group opens into or leaves a full
+        // strip. Animate each remaining tab between its widths instead of
+        // snapping; a drag's collapsed group keeps the existing motion only.
+        std::vector<Resize> resizes;
+        if (!draggedGroup) {
+            for (auto const& [id, row] : rows) {
+                auto old = before.find(id);
+                if (old == before.end() || !Placed(row)) continue;
+                const double to = row.ActualWidth();
+                if (to > 0 && std::abs(old->second.bounds.Width - to) >= .5)
+                    resizes.push_back({row, old->second.bounds.Width, to, row.MinWidth(), row.MaxWidth()});
+            }
+        }
+        if (viewport && (viewport.ActualWidth() < oldViewportWidth || !resizes.empty())) {
+            // Keep the list (and New Tab after it) at its final width while
+            // narrower rows would otherwise let it shrink mid-motion.
             savedMinWidth = viewport.MinWidth();
             holdingViewport = true;
-            viewport.MinWidth(oldViewportWidth);
+            viewport.MinWidth(std::max(oldViewportWidth, viewport.ActualWidth()));
             root.UpdateLayout();
         }
+        // Positions follow the animated widths linearly, so the layout at the
+        // old widths gives each element's reflow offset at the motion's start.
+        // The slides below subtract it, keeping their old visual start points.
+        std::map<uint64_t, double> reflow;
+        if (!resizes.empty()) {
+            resizing = true;
+            std::map<uint64_t, Element> tracked;
+            for (auto const& [id, row] : rows) if (Placed(row)) tracked.emplace(id, row);
+            for (auto const& [id, run] : groups.runs) if (Placed(run.button)) tracked.emplace(GroupKey(uint32_t(id)), run.button);
+            if (Placed(add)) tracked.emplace(AddKey, add);
+            std::map<uint64_t, double> finalX;
+            for (auto const& [key, element] : tracked) finalX.emplace(key, Bounds(element, root).X);
+            auto restore = [&] {
+                for (auto const& item : resizes) { item.row.MinWidth(item.minWidth); item.row.MaxWidth(item.maxWidth); }
+            };
+            try {
+                for (auto const& item : resizes) { item.row.MinWidth(item.from); item.row.MaxWidth(item.from); }
+                root.UpdateLayout();
+                for (auto const& [key, element] : tracked) reflow.emplace(key, Bounds(element, root).X - finalX.at(key));
+            } catch (...) { restore(); throw; }
+            restore();
+            root.UpdateLayout();
+        }
+        auto shift = [&](uint64_t key) { auto found = reflow.find(key); return found == reflow.end() ? 0.0 : found->second; };
         storyboard = Media::Animation::Storyboard();
+        for (auto const& item : resizes) {
+            // An animated limit outranks TabView's own Width writes and the
+            // owner's caps; stopping the Storyboard restores their values.
+            for (auto property : {L"MinWidth", L"MaxWidth"}) {
+                Media::Animation::DoubleAnimation animation;
+                animation.From(item.from); animation.To(item.to);
+                animation.EnableDependentAnimation(true);
+                animation.Duration(Duration{Windows::Foundation::TimeSpan{InlineTabGroups::MotionDuration}, DurationType::TimeSpan});
+                Media::Animation::CubicEase ease;
+                ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+                animation.EasingFunction(ease);
+                Media::Animation::Storyboard::SetTarget(animation, item.row);
+                Media::Animation::Storyboard::SetTargetProperty(animation, property);
+                storyboard.Children().Append(animation);
+            }
+        }
         if (rows.count(activeId) && before.count(activeId)) {
             active = rows.at(activeId);
         }
@@ -177,10 +249,12 @@ struct GroupSlide {
             if (change.entering) {
                 if (!rows.count(change.tab)) continue;
                 auto row = rows.at(change.tab);
+                // Entering rows keep the loaded-only rule: sliding one that is
+                // arranged but unloaded painted under the preceding tab.
                 if (!row.IsLoaded()) continue;
                 const auto now = Bounds(row, root);
                 if (now.X + now.Width <= 0 || now.X >= root.ActualWidth()) continue;
-                Slide(row, edge - now.X - (rtl ? 0 : now.Width), 0);
+                Slide(row, edge - now.X - (rtl ? 0 : now.Width) - shift(change.tab), 0);
             } else if (before.count(change.tab)) {
                 auto old = before.at(change.tab);
                 // WinUI can keep removed containers parented in its recycle
@@ -213,14 +287,14 @@ struct GroupSlide {
             }
         }
         auto move = [&](uint64_t key, Element const& element) {
-            if (element && element.IsLoaded() && before.count(key)) Slide(element, before.at(key).bounds.X - Bounds(element, root).X, 0);
+            if (Placed(element) && before.count(key)) Slide(element, before.at(key).bounds.X - Bounds(element, root).X - shift(key), 0);
         };
         for (auto const& [id, row] : rows) move(id, row);
         for (auto const& [id, run] : groups.runs)
             if (run.button && id != draggedGroup) move(GroupKey(uint32_t(id)), run.button);
         if (add && before.count(AddKey)) {
             const auto x = Bounds(add, root).X;
-            Slide(add, before.at(AddKey).bounds.X - x, finalAdd - x);
+            Slide(add, before.at(AddKey).bounds.X - x - shift(AddKey), finalAdd - x);
         }
         auto weak = std::weak_ptr<int>(life);
         storyboard.Completed([this, weak](auto const& sender, auto const&) {

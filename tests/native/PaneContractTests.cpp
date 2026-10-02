@@ -1416,6 +1416,72 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
                         Require(!std::isnan(row.Width()), "closing a tab leaves every tab with an Equal-mode width");
             }
         }
+        {
+            // Once the strip overflows (its scroll arrows show), a new tab's
+            // container is arranged a layout pass after the first frame. The
+            // reveal must wait for that size rather than give up, both for a
+            // selected tab appended at the end and for one opened mid-strip.
+            Require(SUCCEEDED(entry(host, 1, none)), "left-to-right for overflow entry motion");
+            rect.right = 800;
+            Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "size the strip for overflow entry motion");
+            WinUITab many[14]{{11, L"Same title"}, {22, L"Y"}};
+            for (uint32_t i = 2; i < 14; ++i) many[i] = {300 + i, L"Overflow tab"};
+            Require(SUCCEEDED(api.syncTabs(host, many, 12, 11, &selected)), "overflow the strip");
+            settleWidths(); waitIdle();
+            // This host renders few frames, so lay out on each poll as a
+            // running browser would every frame.
+            auto observeLaidOut = [&](std::function<void()> change) {
+                Seen seen{};
+                change();
+                for (int i = 0; i < 400; ++i) {
+                    Pump();
+                    root.UpdateLayout();
+                    uint32_t out[10]{};
+                    Require(SUCCEEDED(entry(host, 0, out)), "inspect overflow entry motion");
+                    seen.tracked |= out[0] != 0;
+                    seen.clipOrigin |= out[1] != 0 && out[1] == out[2];
+                    if (seen.tracked && !out[0] && !out[1] && !out[3] && !out[6]) break;
+                    Sleep(2);
+                }
+                return seen;
+            };
+            for (bool middle : {false, true}) {
+                WinUITab next[14]{};
+                uint32_t count = 0, active = 11, created = 0;
+                if (middle) {
+                    // Opened beside the active tab, in the visible part of the strip.
+                    created = 399;
+                    for (uint32_t i = 0; i < 13; ++i) {
+                        if (i == 2) next[count++] = {created, L"Opened beside"};
+                        next[count++] = many[i];
+                    }
+                } else {
+                    created = 313;
+                    for (uint32_t i = 0; i < 12; ++i) next[count++] = many[i];
+                    next[count++] = {created, L"New tab"};
+                    active = created;
+                }
+                auto seen = observeLaidOut([&] {
+                    Require(SUCCEEDED(api.syncTabs(host, next, count, active, &selected)), "open a tab in an overflowing strip");
+                });
+                settleWidths(); waitIdle();
+                printf("Overflow entry (%s): tracked=%d clip=%d\n", middle ? "middle" : "end", seen.tracked, seen.clipOrigin);
+                fflush(stdout);
+                if (animated)
+                    Require(seen.tracked && seen.clipOrigin, "a tab opened in an overflowing strip is revealed like one in a strip with room");
+                uint32_t out[10]{};
+                Require(SUCCEEDED(entry(host, 0, out)) && !out[0] && !out[1] && !out[3] && !out[6],
+                        "overflow entry motion leaves no clip, offset or composition transform behind");
+                for (auto item : view.TabItems())
+                    if (auto row = item.try_as<Controls::TabViewItem>())
+                        Require(row.Opacity() == 1, "no tab is left hidden after an overflow entry");
+                if (!middle) {
+                    // Keep the appended tab for the mid-strip case.
+                    for (uint32_t i = 0; i < count; ++i) many[i] = next[i];
+                }
+            }
+            sync(); settleWidths(); waitIdle();
+        }
         rect.right = 800;
         Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "restore the strip width after entry motion");
         Require(SUCCEEDED(entry(host, 1, none)), "restore left-to-right after entry motion");
@@ -3158,6 +3224,74 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     !washStop().ImplicitAnimations(), "reduced motion lights glow at once without implicit motion");
                 query(2, 2);
                 setOption(L"groupGlowAnimations", false); settle();
+            }
+            if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
+                // Opening a group into a full strip narrows the other tabs with
+                // the group's motion instead of snapping them to the new width.
+                using Value = winrt::Windows::Data::Json::JsonValue;
+                WinUITab crowded[]{{41,L"One"},{42,L"Two"},{43,L"Three"},{44,L"Four"},{45,L"Five"},{46,L"Six"},{47,L"Seven"},{48,L"Eight"}};
+                auto crowd = [&](bool collapsed) {
+                    auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":false,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[],"layout":[]}})");
+                    auto strip = state.GetNamedObject(L"strip");
+                    strip.SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
+                    strip.GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(L"collapsed", Value::CreateBooleanValue(collapsed));
+                    auto rows = strip.GetNamedArray(L"rows");
+                    auto slots = strip.GetNamedArray(L"layout");
+                    const uint32_t count = collapsed ? 3 : 8;
+                    for (uint32_t i = 0; i < 8; ++i) {
+                        if (i == 3) slots.Append(winrt::Windows::Data::Json::JsonObject::Parse(LR"({"group":7,"tab":0})"));
+                        if (i >= count) continue;
+                        auto row = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"detail":"","flags":0})");
+                        row.SetNamedValue(L"id", Value::CreateNumberValue(crowded[i].id));
+                        rows.Append(row);
+                        auto slot = winrt::Windows::Data::Json::JsonObject();
+                        slot.SetNamedValue(L"group", Value::CreateNumberValue(i < 3 ? 0 : 7));
+                        slot.SetNamedValue(L"tab", Value::CreateNumberValue(crowded[i].id));
+                        slots.Append(slot);
+                    }
+                    MenuPublish(api,host,state.Stringify().c_str());
+                    Require(SUCCEEDED(api.syncTabs(host,crowded,count,41,&selected)), "sync crowded group fixture");
+                };
+                auto left = [&](FrameworkElement const& element) { return element.TransformToVisual(root).TransformPoint({0,0}).X; };
+                crowd(true); settle(); settle();
+                std::function<FrameworkElement(DependencyObject const&, hstring const&)> findTab =
+                    [&](DependencyObject const& node, hstring const& id) -> FrameworkElement {
+                    if (auto item = node.try_as<Controls::TabViewItem>(); item && Automation::AutomationProperties::GetAutomationId(item) == id) return item;
+                    for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+                        if (auto found = findTab(Media::VisualTreeHelper::GetChild(node, i), id)) return found;
+                    return nullptr;
+                };
+                std::vector<FrameworkElement> loose;
+                for (auto id : {L"FirefoxWinUITab-41", L"FirefoxWinUITab-42", L"FirefoxWinUITab-43"}) {
+                    loose.push_back(findTab(view, id));
+                    Require(loose.back() != nullptr, "find the crowded fixture's ungrouped tabs");
+                }
+                auto crowdHeader = find(view,L"FirefoxWinUIInlineGroup-7").as<FrameworkElement>();
+                const double wide = loose[0].ActualWidth(), headerBefore = left(crowdHeader);
+                crowd(false);
+                uint32_t resizing{}, paused{};
+                Require(SUCCEEDED(motion(host,9,&resizing)) && resizing == 1, "opening a group into a full strip animates tab widths");
+                // Halfway through, CubicEase out has covered 1 - 0.5^3 of the motion.
+                Require(SUCCEEDED(motion(host,10,&paused)) && paused == 1, "pause the width motion halfway");
+                root.UpdateLayout();
+                std::vector<double> midway;
+                for (auto const& tab : loose) midway.push_back(tab.ActualWidth());
+                const double headerMidway = left(crowdHeader);
+                Require(SUCCEEDED(motion(host,11,&paused)), "resume the width motion");
+                for (int i = 0; i < 100 && SUCCEEDED(motion(host,9,&resizing)) && resizing; ++i) { Pump(); Sleep(10); }
+                settle(); settle();
+                const double narrow = loose[0].ActualWidth(), headerAfter = left(crowdHeader);
+                const double progress = 1 - .5 * .5 * .5;
+                printf("Group width motion: tabs %.1f -> %.1f/%.1f/%.1f -> %.1f, header %.1f -> %.1f -> %.1f\n",
+                    wide, midway[0], midway[1], midway[2], narrow, headerBefore, headerMidway, headerAfter);
+                fflush(stdout);
+                Require(narrow < wide - 10, "the crowded fixture narrows the other tabs");
+                for (auto width : midway)
+                    Require(std::abs(width - (wide + (narrow - wide) * progress)) < 1,
+                        "every remaining tab passes through the eased intermediate width instead of snapping");
+                Require(std::abs(headerMidway - (headerBefore + (headerAfter - headerBefore) * progress)) < 1.5,
+                    "the group header follows one eased path while the widths before it animate");
+                Require(SUCCEEDED(motion(host,9,&resizing)) && !resizing, "width motion ends with the group motion");
             }
         }
         puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");

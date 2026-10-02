@@ -1533,6 +1533,10 @@ struct NativeTabStrip {
     std::map<uint32_t, RowAnimation> rowAnimations;
     Media::Animation::Storyboard addSlide{nullptr};
     uint64_t closeGeneration{};
+    // The tab most recently opened beside existing ones, and until when
+    // TabView bringing it into view counts as part of its entry motion.
+    uint32_t enteringTab{};
+    uint64_t enteringUntil{};
     Media::Transform addPrevious{nullptr};
     bool addHeld{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
@@ -1563,9 +1567,15 @@ struct NativeTabStrip {
         inlineGroups.realized = [this] { ambient.ScheduleUpdate(); };
         inlineGroups.holdScroll = [this] {
             const auto state = GroupDrag();
-            return state.phase == 2 || state.awaiting || GetTickCount64() < groupScrollHold;
+            return state.phase == 2 || state.awaiting || groupSlide.resizing || GetTickCount64() < groupScrollHold;
         };
+        inlineGroups.holdCaps = [this] { return groupSlide.resizing; };
         inlineGroups.fixedWidth = [this](Controls::TabViewItem const& row) { return IsPinnedRow(row); };
+        inlineGroups.animateBring = [this](Controls::TabViewItem const& tab) {
+            if (!enteringTab || GetTickCount64() > enteringUntil || !groupSlide.Enabled()) return false;
+            auto found = rows.find(enteringTab);
+            return found != rows.end() && found->second == tab;
+        };
         groupIndicator = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentTextFillColorPrimaryBrush}" BorderThickness="2" CornerRadius="4" Grid.ColumnSpan="3" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         root.Children().Append(groupIndicator);
         groupSurface.Create(root);
@@ -2045,13 +2055,27 @@ struct NativeTabStrip {
     // right-edge anchor tried first was wrong.
     struct Neighbor { Controls::TabViewItem row{nullptr}; float dx{}, sx{}; };
 
+    // Opt-in (FIREFOX_WINUI_PANE_DIAGNOSTICS) trace of the new-tab entry motion.
+    template <typename... Args> static void EntryLog(char const* format, Args... args) {
+        static const bool enabled = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;
+        if (!enabled) return;
+        fprintf(stderr, format, args...);
+        fflush(stderr);
+    }
+
     std::vector<Neighbor> HoldNeighbors(std::map<uint32_t, std::pair<float, float>> const& before, uint32_t newId) {
         std::vector<Neighbor> held;
         for (auto const& [id, row] : rows) {
             auto old = before.find(id);
-            if (id == newId || old == before.end() || !row.IsLoaded()) continue;
+            // Grouped-source rows can be arranged while IsLoaded stays false.
+            if (id == newId || old == before.end() || (!row.IsLoaded() && row.ActualWidth() <= 0)) continue;
             const auto now = row.TransformToVisual(root).TransformBounds(
                 {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
+            // Rows outside the strip before and after cannot be seen moving; a
+            // recycled container's bounds there are not meaningful either.
+            const auto stripWidth = float(root.ActualWidth());
+            auto outside = [stripWidth](float x, float width) { return x + width <= 0 || x >= stripWidth; };
+            if (outside(now.X, now.Width) && outside(old->second.first, old->second.second)) continue;
             const float dx = old->second.first - now.X, sx = now.Width > 0 ? old->second.second / now.Width : 1.f;
             if (std::abs(dx) < .5f && std::abs(sx - 1.f) < .002f) continue;
             auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(row);
@@ -2093,19 +2117,51 @@ struct NativeTabStrip {
     // the reveal, so it keeps pace with the tab opening beside it.
     void RevealNewRow(Controls::TabViewItem const& row, uint32_t id, double addBefore,
                       std::map<uint32_t, std::pair<float, float>> const& before = {}) {
+        EntryLog("WinUIPane entry reveal id=%u enabled=%d dragging=%d slide=%d width=%.1f loaded=%d before=%zu\n",
+            id, int(groupSlide.Enabled()), int(IsDragging()), int(bool(groupSlide.storyboard)), row.ActualWidth(), int(row.IsLoaded()), before.size());
         if (!groupSlide.Enabled() || IsDragging() || groupSlide.storyboard) return;
-        if (row.ActualWidth() < 1) return;
+        if (row.ActualWidth() < 1) {
+            // Once the strip overflows, the new container is arranged a layout
+            // pass after the first frame. Reveal it from its first real size,
+            // which is raised after that layout and before it is drawn.
+            auto token = std::make_shared<winrt::event_token>();
+            *token = row.SizeChanged([this, alive = std::weak_ptr<int>(lifetime), generation = closeGeneration,
+                                      token, id, addBefore, before](auto const& sender, auto&&) {
+                auto sized = sender.template as<Controls::TabViewItem>();
+                EntryLog("WinUIPane entry sized id=%u width=%.1f\n", id, sized.ActualWidth());
+                if (sized.ActualWidth() < 1) return;
+                sized.SizeChanged(*token);
+                if (alive.expired() || generation != closeGeneration) return;
+                auto found = rows.find(id);
+                if (found == rows.end() || found->second != sized) return;
+                try { RevealNewRow(sized, id, addBefore, before); } catch (...) {}
+            });
+            return;
+        }
         const double addDelta = HoldAddButton(addBefore);
         auto neighbors = std::make_shared<std::vector<Neighbor>>(HoldNeighbors(before, id));
+        {
+            double offset = -1;
+            if (auto list = FindTabListView(view))
+                if (Media::VisualTreeHelper::GetChildrenCount(list))
+                    if (auto border = Media::VisualTreeHelper::GetChild(list, 0).try_as<FrameworkElement>())
+                        if (auto scroller = border.FindName(L"ScrollViewer").try_as<Controls::ScrollViewer>()) offset = scroller.HorizontalOffset();
+            const auto at = row.TransformToVisual(root).TransformPoint({0, 0});
+            EntryLog("WinUIPane entry held id=%u x=%.1f neighbors=%zu addDelta=%.1f scroll=%.1f first=%.1f/%.3f\n", id, at.X, neighbors->size(), addDelta,
+                offset, neighbors->empty() ? 0.f : neighbors->front().dx, neighbors->empty() ? 1.f : neighbors->front().sx);
+        }
         if (row.IsLoaded()) { StartReveal(row, id); StartAddSlide(addDelta); SettleNeighbors(*neighbors, true); return; }
         // Loaded fires after layout returns, and a storyboard cannot run on an
         // unloaded row. Hold the row invisible until then.
         row.Opacity(0);
         auto token = std::make_shared<winrt::event_token>();
-        *token = row.Loaded([this, alive = std::weak_ptr<int>(lifetime), id, token, addDelta, neighbors](auto const& sender, auto&&) {
+        auto settled = std::make_shared<bool>(false);
+        *token = row.Loaded([this, alive = std::weak_ptr<int>(lifetime), id, token, settled, addDelta, neighbors](auto const& sender, auto&&) {
             auto loaded = sender.template as<Controls::TabViewItem>();
             loaded.Loaded(*token);
-            if (alive.expired()) return;
+            if (alive.expired() || *settled) return;
+            *settled = true;
+            EntryLog("WinUIPane entry loaded id=%u\n", id);
             loaded.Opacity(1);
             auto found = rows.find(id);
             if (found == rows.end() || found->second != loaded || IsDragging() || !groupSlide.Enabled()) {
@@ -2117,6 +2173,24 @@ struct NativeTabStrip {
             StartAddSlide(addDelta);
             SettleNeighbors(*neighbors, true);
         });
+        // Grouped-source rows can be arranged without ever raising Loaded.
+        // Never leave such a tab hidden: show it in place without the reveal.
+        auto timer = root.DispatcherQueue().CreateTimer();
+        timer.IsRepeating(false);
+        timer.Interval(std::chrono::milliseconds(250));
+        // The handler keeps the timer alive until it fires.
+        auto keep = std::make_shared<winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer>(timer);
+        timer.Tick([this, alive = std::weak_ptr<int>(lifetime), weakRow = make_weak(row), token, settled, neighbors, keep](auto const& sender, auto&&) {
+            sender.Stop();
+            *keep = nullptr;
+            if (alive.expired() || *settled) return;
+            *settled = true;
+            EntryLog("WinUIPane entry never loaded\n");
+            if (auto row = weakRow.get()) { row.Loaded(*token); row.Opacity(1); }
+            StartAddSlide(0);
+            SettleNeighbors(*neighbors, false);
+        });
+        timer.Start();
     }
 
     // Places the button at its old position at once (its layout slot has
@@ -3433,7 +3507,7 @@ struct NativeTabStrip {
             }
             if (populated && count != rows.size()) {
                 for (auto const& [rowId, row] : rows) {
-                    if (!row.IsLoaded() || rowsBefore.size() >= 128) continue;
+                    if ((!row.IsLoaded() && row.ActualWidth() <= 0) || rowsBefore.size() >= 128) continue;
                     const auto bounds = row.TransformToVisual(root).TransformBounds(
                         {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
                     rowsBefore.emplace(rowId, std::make_pair(bounds.X, bounds.Width));
@@ -3455,6 +3529,17 @@ struct NativeTabStrip {
                         ambient.ScheduleUpdate();
                     });
                     row.Tag(box_value(id));
+                    if (populated && inlineGroups.active) {
+                        // The width caps reach a new tab only after its first
+                        // layout, which could measure it wider than the others
+                        // and briefly grow (and scroll) an overflowing strip.
+                        // Start it at an existing tab's cap; with room to spare
+                        // that cap is already at or above its Equal width.
+                        for (auto const& [otherId, other] : rows) {
+                            const auto cap = other.MaxWidth();
+                            if (other.ActualWidth() > 0 && std::isfinite(cap) && cap > 0) { row.MaxWidth(cap); break; }
+                        }
+                    }
                     // The stock close button is shown only while the tab is
                     // hovered or holds keyboard focus, so narrow tabs keep the
                     // room for their title. TabViewItem collapses (and stops
@@ -3704,7 +3789,12 @@ struct NativeTabStrip {
 #endif
             groupSlide.Cancel();
         }
+        if (!createdRows.empty())
+            EntryLog("WinUIPane entry sync created=%zu first=%u prior=%zu rows=%zu before=%zu addBefore=%.1f inline=%d\n", createdRows.size(),
+                createdRows[0], priorRowCount, rows.size(), rowsBefore.size(), addBefore, int(inlineGroups.active));
         if (createdRows.size() == 1 && rows.count(createdRows[0])) {
+            enteringTab = createdRows[0];
+            enteringUntil = GetTickCount64() + 1000;
             // Read geometry after the natural layout, not from a forced one
             // (see the close path below).
             const auto generation = ++closeGeneration;
@@ -3712,6 +3802,7 @@ struct NativeTabStrip {
             *token = Media::CompositionTarget::Rendering([this, alive = std::weak_ptr<int>(lifetime), generation, token,
                                                           created = createdRows[0], addBefore, rowsBefore](auto&&, auto&&) {
                 Media::CompositionTarget::Rendering(*token);
+                EntryLog("WinUIPane entry frame id=%u current=%d\n", created, int(!alive.expired() && generation == closeGeneration && rows.count(created)));
                 if (alive.expired() || generation != closeGeneration || !rows.count(created)) return;
                 try { RevealNewRow(rows.at(created), created, addBefore, rowsBefore); } catch (...) {}
             });
