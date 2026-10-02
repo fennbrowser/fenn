@@ -1010,11 +1010,11 @@ struct NativeTabStrip {
     // `foreign`: another window's strip queued the adopt for this group.
     void EndGroupDrag(bool commit = false, bool foreign = false) {
         const auto state=GroupDrag();
-        // Torn off from a one-tab window, Firefox moves the window instead of
+        // Torn off from a window it fills, Firefox moves the window instead of
         // handing the group over: nothing departs. Another window still adopts it.
         size_t tabCount{}, groupTabs{};
         for (auto slot : groupLayout) if (slot.tab) { ++tabCount; if (slot.group==state.group) ++groupTabs; }
-        const bool movesWindow=tabCount==1 && groupTabs==1;
+        const bool movesWindow=groupTabs && groupTabs==tabCount;
         const bool detach=commit && state.phase==2 && state.detaching && dispatch;
         const bool departing=state.phase==2 && (foreign || (detach && !movesWindow));
         groupDragGeometry.clear();

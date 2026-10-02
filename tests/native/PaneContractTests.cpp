@@ -4040,8 +4040,8 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
 // A detach scenario instead pulls the group header well below the strip:
 // Release asks Firefox for strip-group-detach at the release point; Return comes
 // back over the strip first and must not detach; Sole puts every tab in the
-// group, which still detaches (Firefox closes the emptied window). Off the
-// strip the group's outline and glow are not drawn in it.
+// group, which still sends the request but stays shown, since Firefox moves the
+// window instead. Off the strip the group's outline and glow are not drawn in it.
 enum class GroupDetach { None, Release, Return, Sole };
 static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND host, bool pickup = false,
                                      GroupDetach detach = GroupDetach::None) {
@@ -4122,8 +4122,17 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
                     event.GetNamedNumber(L"screenX") == away.x && event.GetNamedNumber(L"screenY") == away.y,
                     "releasing a torn-off group asks Firefox to move it to a new window at the release point");
             settle();
-            Require(GroupHiddenWhileLeaving(view, L"FirefoxWinUIInlineGroup-7", {11, 22}),
-                    "an accepted tear-off keeps the group hidden while the new window opens");
+            if (detach == GroupDetach::Sole) {
+                auto button = FindInTabList(view, L"FirefoxWinUIInlineGroup-7");
+                Require(button && button.Opacity() == 1 && button.IsHitTestVisible(),
+                        "a group filling its window stays in the strip while Firefox moves the window");
+                for (uint32_t i = 0; i < view.TabItems().Size(); ++i)
+                    Require(view.TabItems().GetAt(i).as<Controls::TabViewItem>().Visibility() == Visibility::Visible,
+                            "a group filling its window keeps its tabs shown while Firefox moves the window");
+            } else {
+                Require(GroupHiddenWhileLeaving(view, L"FirefoxWinUIInlineGroup-7", {11, 22}),
+                        "an accepted tear-off keeps the group hidden while the new window opens");
+            }
             if (detach == GroupDetach::Release) {
                 // The new window adopts the group: Firefox publishes this window without it.
                 std::vector<WinUITab> rest(tabs.begin() + 2, tabs.end());
@@ -4147,7 +4156,7 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
                 Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), 11, &selected)), "the departed tabs return");
                 settle();
             }
-            puts(detach == GroupDetach::Sole ? "CHECKS PASSED: a group holding every tab tears off into a new window"
+            puts(detach == GroupDetach::Sole ? "CHECKS PASSED: a group holding every tab asks Firefox to move its window"
                                              : "CHECKS PASSED: group tear-off requests a new window");
         } else {
             Require(!event, "a group released over the strip is not detached");
