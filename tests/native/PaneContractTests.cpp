@@ -2297,6 +2297,12 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     Require(view.TabItems().Size() == 1 && view.TabItems().GetAt(0) == first && view.SelectedItem() == first, "collapse retains real active tab");
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
     Require(backdrop().try_as<Media::DesktopAcrylicBackdrop>() != nullptr, "strip backdrop delta applies desktop acrylic");
+    // ShellCore owns replay identity: the accepted revision repeated exactly is
+    // a no-op, and different content under that revision is refused.
+    Require(SUCCEEDED(api.syncTabMenu(host,collapseData.Stringify().c_str())), "exact strip replay is a no-op");
+    collapseData.GetNamedObject(L"strip").SetNamedValue(L"backdrop", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"mica"));
+    Require(FAILED(api.syncTabMenu(host,collapseData.Stringify().c_str())), "changed content under an accepted revision is refused");
+    Require(backdrop().try_as<Media::DesktopAcrylicBackdrop>() != nullptr, "refused replay leaves the backdrop unchanged");
     MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"labels":{"tabs":"Registerkarten in diesem Fenster","active":"Aktiver Tab","selected":"Ausgewählter Tab","allTabs":{"label":"Alle Tabs auflisten","tooltip":"Alle Tabs auflisten, Hinweis"},"newTab":{"label":"Neuer Tab","tooltip":"Neuer Tab, Strg+T"}},"backdrop":"mica","rtl":true,"rows":[],"removed":[],"groups":[{"id":7,"name":"Unnamed group","headerText":"","label":"Expand unnamed group","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}]}})");
     settle();
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && header.ActualWidth() == 32 &&

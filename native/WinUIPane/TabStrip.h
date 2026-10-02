@@ -403,15 +403,9 @@ struct NativeTabStrip {
     // groupReach preference, and the minimum separation kept between two
     // neighboring group surfaces.
     static constexpr float GroupSeparation = 1.f;
-    static constexpr float LargeGroupReach = 5.f, DefaultGroupReach = LargeGroupReach;
-    float groupReach{DefaultGroupReach};
-    static std::optional<float> GroupReachOf(hstring const& name) {
-        if (name == L"none") return 0.f;
-        if (name == L"small") return 2.f;
-        if (name == L"medium") return 3.f;
-        if (name == L"large") return LargeGroupReach;
-        return std::nullopt;
-    }
+    // ShellCore maps the preference names to these DIP values and owns the default.
+    static constexpr float LargeGroupReach = 5.f;
+    float groupReach{LargeGroupReach};
     // The stock gap before New Tab holds the smaller reaches. At the large
     // reach, move the button by that reach so the outline keeps the stock
     // tab-to-button spacing. Presentation only: the button stays in its
@@ -1290,8 +1284,9 @@ struct NativeTabStrip {
             for (auto slot : groupLayout) if (slot.tab == activeTabId) { activeGroup = slot.group; break; }
         inlineGroups.ActiveGroup(activeGroup, groupSlide.Enabled());
     }
+    // The accepted revision as gestures report it. ShellCore owns acceptance and
+    // the exact-replay fingerprint.
     uint32_t presentationRevision{};
-    hstring presentationFingerprint;
     hstring groupsLabel;
     // Accessible names, tooltips and states published by Firefox from its own
     // localization. English is only the fallback before the first publication.
@@ -2870,52 +2865,68 @@ struct NativeTabStrip {
         }
     }
 
+    // The publication envelope as Firefox wrote it. Reading checks JSON types
+    // only; ShellCore decides version, base/revision, replay identity, ranges,
+    // names and which omitted options a delta keeps. `raw` points into the
+    // names, so the struct is neither copied nor moved.
+    struct StripEnvelope {
+        ShellStripEnvelope raw{};
+        hstring backdrop, groupReach;
+        explicit StripEnvelope(NativeTabMenu::Object const& data) {
+            auto number = [&](wchar_t const* key) {
+                return data.HasKey(key) ? ShellStripNumber{true, data.GetNamedNumber(key)} : ShellStripNumber{};
+            };
+            auto flag = [&](wchar_t const* key) {
+                return data.HasKey(key) ? ShellStripFlag{true, data.GetNamedBoolean(key)} : ShellStripFlag{};
+            };
+            auto name = [&](wchar_t const* key, hstring& value) {
+                if (!data.HasKey(key)) return ShellStripName{};
+                value = data.GetNamedString(key);
+                return ShellStripName{true, reinterpret_cast<uint16_t const*>(value.c_str()), value.size()};
+            };
+            raw.version = data.GetNamedNumber(L"version");
+            raw.revision = data.GetNamedNumber(L"revision");
+            raw.base = number(L"base");
+            raw.window_drag_session = number(L"windowDragSession");
+            raw.grouping_delay = number(L"groupingDelay");
+            raw.backdrop = name(L"backdrop", backdrop);
+            raw.group_reach = name(L"groupReach", groupReach);
+            raw.window_drag_private = flag(L"windowDragPrivate");
+            raw.group_glow = flag(L"groupGlow");
+            raw.container_glow = flag(L"containerGlow");
+            raw.container_dot = flag(L"containerDot");
+            raw.group_hover = flag(L"groupHover");
+            raw.group_halo = flag(L"groupHalo");
+            raw.group_glow_animations = flag(L"groupGlowAnimations");
+            raw.group_glow_fade_out = flag(L"groupGlowFadeOut");
+            raw.rtl = flag(L"rtl");
+        }
+        StripEnvelope(StripEnvelope const&) = delete;
+        StripEnvelope& operator=(StripEnvelope const&) = delete;
+    };
+    static Backdrop BackdropOf(ShellBackdrop value) {
+        switch (value) {
+        case SHELL_BACKDROP_MICA: return Backdrop::Mica;
+        case SHELL_BACKDROP_ACRYLIC: return Backdrop::Acrylic;
+        default: return Backdrop::MicaAlt;
+        }
+    }
+
     // Parse a complete bounded copy before changing XAML or accepting any IDs.
     void Publish(NativeTabMenu::Object const& data) {
-        auto version = data.GetNamedNumber(L"version");
-        if (version != 1 && version != 2) throw hresult_invalid_argument();
-        const auto baseNumber = version == 2 ? NativeJson::RequireRevision(data, L"base") : 0;
-        if (baseNumber > UINT32_MAX) throw hresult_invalid_argument();
-        const auto base = uint32_t(baseNumber);
-        auto revision = NativeJson::RequireId(data, L"revision");
-        auto fingerprint = data.Stringify();
-        if (revision < presentationRevision ||
-            (revision == presentationRevision && fingerprint != presentationFingerprint))
+        const StripEnvelope envelope{data};
+        const auto fingerprint = data.Stringify();
+        auto fingerprintData = reinterpret_cast<uint16_t const*>(fingerprint.c_str());
+        ShellStripOptions resolved{};
+        bool unchanged{};
+        if (!core || shell_core_strip_resolve(core, &envelope.raw, fingerprintData, fingerprint.size(),
+                                              &resolved, &unchanged) != SHELL_STATUS_OK)
             throw hresult_invalid_argument();
-        if (revision == presentationRevision) return;
-        if (base && base != presentationRevision) throw hresult_invalid_argument();
-        const auto dragSessionId = data.HasKey(L"windowDragSession") ? NativeJson::RequireId(data, L"windowDragSession") : (base ? windowDragSession : 0);
-        const bool dragPrivate = data.GetNamedBoolean(L"windowDragPrivate", base ? windowDragPrivate : false);
-        const auto delay = data.GetNamedNumber(L"groupingDelay", base ? groupingDelay : 240);
-        const bool nextGroupGlow = data.HasKey(L"groupGlow") ? data.GetNamedBoolean(L"groupGlow") : base ? groupGlow : false;
-        const bool nextContainerGlow = data.HasKey(L"containerGlow") ? data.GetNamedBoolean(L"containerGlow") : base ? containerGlow : false;
-        const bool nextContainerDot = data.HasKey(L"containerDot") ? data.GetNamedBoolean(L"containerDot") : base ? containerDot : false;
-        auto nextBackdrop = base ? backdrop : Backdrop::MicaAlt;
-        if (data.HasKey(L"backdrop")) {
-            const auto name = data.GetNamedString(L"backdrop");
-            if (name == L"mica") nextBackdrop = Backdrop::Mica;
-            else if (name == L"mica-alt") nextBackdrop = Backdrop::MicaAlt;
-            else if (name == L"acrylic") nextBackdrop = Backdrop::Acrylic;
-            else throw hresult_invalid_argument();
-        }
-        const bool nextGroupHover = data.HasKey(L"groupHover") ? data.GetNamedBoolean(L"groupHover") : base ? groupHover : false;
-        const bool nextGroupHalo = data.HasKey(L"groupHalo") ? data.GetNamedBoolean(L"groupHalo") : base ? groupHalo : false;
-        const bool nextGlowAnimations = data.HasKey(L"groupGlowAnimations") ? data.GetNamedBoolean(L"groupGlowAnimations") :
-            base ? ambient.motion.option : false;
-        const bool nextGlowFadeOut = data.HasKey(L"groupGlowFadeOut") ? data.GetNamedBoolean(L"groupGlowFadeOut") :
-            base ? ambient.motion.fadeOut : false;
-        auto nextGroupReach = base ? groupReach : DefaultGroupReach;
-        if (data.HasKey(L"groupReach")) {
-            auto reach = GroupReachOf(data.GetNamedString(L"groupReach"));
-            if (!reach) throw hresult_invalid_argument();
-            nextGroupReach = *reach;
-        }
-        if (!std::isfinite(delay) || delay < 0 || delay > 60000 || std::floor(delay) != delay)
-            throw hresult_invalid_argument();
+        if (unchanged) return;
+        const auto base = resolved.base;
+        const auto revision = resolved.revision;
         const bool updateGroups = !base || data.HasKey(L"groups") || data.HasKey(L"groupsLabel");
         auto label = base ? data.GetNamedString(L"groupsLabel", groupsLabel) : data.GetNamedString(L"groupsLabel");
-        const bool rtl = base ? data.GetNamedBoolean(L"rtl", root.FlowDirection() == FlowDirection::RightToLeft)
-                             : data.GetNamedBoolean(L"rtl");
         auto entries = data.GetNamedArray(L"rows");
         auto groups = base && !data.HasKey(L"groups") ? currentGroups : data.GetNamedArray(L"groups");
         if (label.empty() || label.size() > NativeJson::kMaxShortLabel || entries.Size() > NativeJson::kMaxTabs ||
@@ -3034,9 +3045,12 @@ struct NativeTabStrip {
             for (auto slot : groupLayout)
                 if (slot.group && !ids.count(slot.group)) throw hresult_invalid_argument();
         }
-        // The Rust core owns revision/identity and aggregate retained-image
-        // bounds. Everything above is staged before either model or XAML changes.
-        if (!core || shell_core_strip_apply_layout(core, base, revision, changes.data(), changes.size(), layout.data(), layout.size(), layoutChanged) != SHELL_STATUS_OK)
+        // The Rust core owns the envelope, revision/identity and aggregate
+        // retained-image bounds, and accepts them together with the staged rows
+        // and layout. Everything above is staged before either model or XAML changes.
+        ShellStripOptions options{};
+        if (shell_core_strip_publish(core, &envelope.raw, fingerprintData, fingerprint.size(), changes.data(), changes.size(),
+                                     layout.data(), layout.size(), layoutChanged, &options) != SHELL_STATUS_OK)
             throw hresult_invalid_argument();
         if (GroupDrag().phase && (layoutChanged || !removed.empty() || !base)) EndGroupDrag();
         if (layoutChanged || !base) {
@@ -3082,7 +3096,7 @@ struct NativeTabStrip {
             currentGroups = groups;
         }
         if (!base || data.HasKey(L"rtl"))
-            root.FlowDirection(rtl ? FlowDirection::RightToLeft : FlowDirection::LeftToRight);
+            root.FlowDirection(options.rtl ? FlowDirection::RightToLeft : FlowDirection::LeftToRight);
         if (!base) presentation.swap(next);
         else {
             for (auto id : removed) presentation.erase(id);
@@ -3091,15 +3105,14 @@ struct NativeTabStrip {
         // A gesture formed against an older presentation is not revoked here:
         // it is already queued, carrying the revision it was formed against,
         // and Firefox refuses it explicitly on that revision.
-        if (groupingDelay != uint32_t(delay) || layoutChanged || !removed.empty()) ClearGroupHover();
-        groupingDelay = uint32_t(delay);
+        if (groupingDelay != options.grouping_delay || layoutChanged || !removed.empty()) ClearGroupHover();
+        groupingDelay = options.grouping_delay;
         if (groupCandidate && (!presentation.count(groupCandidate) || !presentation.at(groupCandidate).groupTarget ||
             !presentation.count(Drag().tab) || !presentation.at(Drag().tab).groupSource)) ClearGroupHover();
-        windowDragSession = dragSessionId;
-        windowDragPrivate = dragPrivate;
+        windowDragSession = options.window_drag_session;
+        windowDragPrivate = options.window_drag_private;
         captionDirty = true;
         presentationRevision = revision;
-        presentationFingerprint = fingerprint;
         if (labelsPublished) ApplyLabels(nextLabels);
         if (layoutChanged) {
             size_t size = layout.size();
@@ -3117,19 +3130,19 @@ struct NativeTabStrip {
             }
         }
         shell_core_group_drag_publish(core,groupLayout.data(),groupLayout.size());
-        const bool dotChanged = containerDot != nextContainerDot;
-        containerDot = nextContainerDot;
-        containerGlow = nextContainerGlow;
-        groupGlow = nextGroupGlow;
-        if (groupHover != nextGroupHover) { groupHover = nextGroupHover; inlineGroups.WashesGroup(groupHover); if (!groupHover) groupSurface.Hover(0); }
-        groupHalo = nextGroupHalo;
-        ambient.motion.option = nextGlowAnimations;
-        ambient.motion.fadeOut = nextGlowFadeOut;
+        const bool dotChanged = containerDot != options.container_dot;
+        containerDot = options.container_dot;
+        containerGlow = options.container_glow;
+        groupGlow = options.group_glow;
+        if (groupHover != options.group_hover) { groupHover = options.group_hover; inlineGroups.WashesGroup(groupHover); if (!groupHover) groupSurface.Hover(0); }
+        groupHalo = options.group_halo;
+        ambient.motion.option = options.group_glow_animations;
+        ambient.motion.fadeOut = options.group_glow_fade_out;
         // A full snapshot (window open, session restore) shows its groups
         // already lit; only later changes light up.
         if (!base) glowSeed = true;
-        if (groupReach != nextGroupReach) { groupReach = nextGroupReach; ApplyAddSpacing(); }
-        if (nextBackdrop != backdrop) {
+        if (groupReach != options.group_reach) { groupReach = options.group_reach; ApplyAddSpacing(); }
+        if (const auto nextBackdrop = BackdropOf(options.backdrop); nextBackdrop != backdrop) {
             backdrop = nextBackdrop;
             if (applyBackdrop) applyBackdrop(backdrop);
         }

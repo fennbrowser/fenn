@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 25
+#define SHELL_CORE_ABI_VERSION 26
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -99,6 +99,23 @@ enum ShellStatus
 typedef enum ShellStatus ShellStatus;
 #else
 typedef uint32_t ShellStatus;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+enum ShellBackdrop
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  SHELL_BACKDROP_MICA = 0,
+  SHELL_BACKDROP_MICA_ALT = 1,
+  SHELL_BACKDROP_ACRYLIC = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum ShellBackdrop ShellBackdrop;
+#else
+typedef uint32_t ShellBackdrop;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
@@ -218,6 +235,84 @@ typedef struct {
   uint32_t pending_changes;
   uint32_t reserved;
 } ShellCoreStats;
+
+/*
+ A JSON number the host read without interpreting; `present` is false when
+ the key was absent.
+ */
+typedef struct {
+  bool present;
+  double value;
+} ShellStripNumber;
+
+/*
+ UTF-16 enumeration name; `data` may be null only for length zero.
+ */
+typedef struct {
+  bool present;
+  const uint16_t *data;
+  uintptr_t len;
+} ShellStripName;
+
+typedef struct {
+  bool present;
+  bool value;
+} ShellStripFlag;
+
+/*
+ Strip publication envelope as read from its JSON object. The host checks
+ JSON types only; ranges, enumerations, defaults and retention are decided
+ by [`shell_core_strip_resolve`] and [`shell_core_strip_publish`].
+ */
+typedef struct {
+  double version;
+  double revision;
+  /*
+   Read only for version 2, where it is required.
+   */
+  ShellStripNumber base;
+  ShellStripNumber window_drag_session;
+  ShellStripNumber grouping_delay;
+  ShellStripName backdrop;
+  ShellStripName group_reach;
+  ShellStripFlag window_drag_private;
+  ShellStripFlag group_glow;
+  ShellStripFlag container_glow;
+  ShellStripFlag container_dot;
+  ShellStripFlag group_hover;
+  ShellStripFlag group_halo;
+  ShellStripFlag group_glow_animations;
+  ShellStripFlag group_glow_fade_out;
+  ShellStripFlag rtl;
+} ShellStripEnvelope;
+
+/*
+ The resolved publication envelope. A full snapshot (base zero) takes the
+ defaults for omitted options; a delta keeps the accepted values.
+ */
+typedef struct {
+  uint32_t base;
+  uint32_t revision;
+  /*
+   Zero when Firefox has no window drag session for this strip.
+   */
+  uint32_t window_drag_session;
+  uint32_t grouping_delay;
+  ShellBackdrop backdrop;
+  /*
+   DIP that group surfaces reach past their outer members.
+   */
+  float group_reach;
+  bool window_drag_private;
+  bool group_glow;
+  bool container_glow;
+  bool container_dot;
+  bool group_hover;
+  bool group_halo;
+  bool group_glow_animations;
+  bool group_glow_fade_out;
+  bool rtl;
+} ShellStripOptions;
 
 typedef struct {
   uint32_t id;
@@ -583,31 +678,42 @@ ShellStatus shell_core_close(ShellCore *core);
 ShellStatus shell_core_stats(ShellCore *core, ShellCoreStats *out);
 
 /*
- Atomically accept a strip transaction after native JSON field validation.
- Base zero replaces the retained state; other bases must match exactly.
+ Validate a strip publication's envelope before the host stages anything.
+ `unchanged` reports an exact replay of the accepted revision, which needs
+ no work; otherwise `out` holds the options this publication resolves to.
+ Mutates nothing.
 
  # Safety
- See [`guard`]. `changes` must contain `count` readable entries.
+ See [`guard`]. `envelope` must be readable; `fingerprint` readable for
+ `units` values (null only for zero); `out` and `unchanged` writable.
  */
-ShellStatus shell_core_strip_apply(ShellCore *core,
-                                   uint32_t base,
-                                   uint32_t revision,
-                                   const ShellStripChange *changes,
-                                   uintptr_t count);
+ShellStatus shell_core_strip_resolve(ShellCore *core,
+                                     const ShellStripEnvelope *envelope,
+                                     const uint16_t *fingerprint,
+                                     uintptr_t units,
+                                     ShellStripOptions *out,
+                                     bool *unchanged);
 
 /*
- Atomically validate strip metadata and optional ordered group layout.
+ Atomically accept a strip publication: envelope, row metadata and the
+ optional ordered group layout. Base zero replaces the retained state; other
+ bases must match the accepted revision exactly. An exact replay is not a new
+ publication and is refused here; resolve it first.
+
  # Safety
- See [`guard`]. Arrays must contain their stated number of readable entries.
+ As [`shell_core_strip_resolve`]; arrays contain their stated number of
+ readable entries.
  */
-ShellStatus shell_core_strip_apply_layout(ShellCore *core,
-                                          uint32_t base,
-                                          uint32_t revision,
-                                          const ShellStripChange *changes,
-                                          uintptr_t count,
-                                          const ShellStripSlot *layout,
-                                          uintptr_t layout_count,
-                                          bool has_layout);
+ShellStatus shell_core_strip_publish(ShellCore *core,
+                                     const ShellStripEnvelope *envelope,
+                                     const uint16_t *fingerprint,
+                                     uintptr_t units,
+                                     const ShellStripChange *changes,
+                                     uintptr_t count,
+                                     const ShellStripSlot *layout,
+                                     uintptr_t layout_count,
+                                     bool has_layout,
+                                     ShellStripOptions *out);
 
 /*
  Plan visual departures/arrivals only for explicitly toggled groups.

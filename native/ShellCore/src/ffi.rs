@@ -782,43 +782,141 @@ pub unsafe extern "C" fn shell_core_stats(
     })
 }
 
-/// Atomically accept a strip transaction after native JSON field validation.
-/// Base zero replaces the retained state; other bases must match exactly.
-///
+/// A JSON number the host read without interpreting; `present` is false when
+/// the key was absent.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct ShellStripNumber { pub present: bool, pub value: f64 }
+
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct ShellStripFlag { pub present: bool, pub value: bool }
+
+/// UTF-16 enumeration name; `data` may be null only for length zero.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ShellStripName { pub present: bool, pub data: *const u16, pub len: usize }
+
+/// Strip publication envelope as read from its JSON object. The host checks
+/// JSON types only; ranges, enumerations, defaults and retention are decided
+/// by [`shell_core_strip_resolve`] and [`shell_core_strip_publish`].
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ShellStripEnvelope {
+    pub version: f64,
+    pub revision: f64,
+    /// Read only for version 2, where it is required.
+    pub base: ShellStripNumber,
+    pub window_drag_session: ShellStripNumber,
+    pub grouping_delay: ShellStripNumber,
+    pub backdrop: ShellStripName,
+    pub group_reach: ShellStripName,
+    pub window_drag_private: ShellStripFlag,
+    pub group_glow: ShellStripFlag,
+    pub container_glow: ShellStripFlag,
+    pub container_dot: ShellStripFlag,
+    pub group_hover: ShellStripFlag,
+    pub group_halo: ShellStripFlag,
+    pub group_glow_animations: ShellStripFlag,
+    pub group_glow_fade_out: ShellStripFlag,
+    pub rtl: ShellStripFlag,
+}
+
 /// # Safety
-/// See [`guard`]. `changes` must contain `count` readable entries.
-#[no_mangle]
-pub unsafe extern "C" fn shell_core_strip_apply(
-    core: *mut ShellCore, base: u32, revision: u32,
-    changes: *const ShellStripChange, count: usize,
-) -> ShellStatus {
-    guard(core, |core| {
-        if count > 20_000 || (count != 0 && changes.is_null()) {
-            return ShellStatus::InvalidArgument;
-        }
-        let changes = if count == 0 { &[] } else { std::slice::from_raw_parts(changes, count) };
-        if core.strip.apply(base, revision, changes) { ShellStatus::Ok }
-        else { ShellStatus::InvalidArgument }
+/// Every present name must be readable for its stated length.
+unsafe fn envelope<'a>(raw: &ShellStripEnvelope) -> Option<crate::strip::Envelope<'a>> {
+    let number = |n: ShellStripNumber| n.present.then_some(n.value);
+    let flag = |f: ShellStripFlag| f.present.then_some(f.value);
+    let name = |n: ShellStripName| -> Option<Option<&'a [u16]>> {
+        if !n.present { return Some(None); }
+        if n.len > 64 { return None; }
+        slice(n.data, n.len).map(Some)
+    };
+    Some(crate::strip::Envelope {
+        version: raw.version,
+        base: number(raw.base),
+        revision: raw.revision,
+        window_drag_session: number(raw.window_drag_session),
+        window_drag_private: flag(raw.window_drag_private),
+        grouping_delay: number(raw.grouping_delay),
+        backdrop: name(raw.backdrop)?,
+        group_reach: name(raw.group_reach)?,
+        group_glow: flag(raw.group_glow),
+        container_glow: flag(raw.container_glow),
+        container_dot: flag(raw.container_dot),
+        group_hover: flag(raw.group_hover),
+        group_halo: flag(raw.group_halo),
+        group_glow_animations: flag(raw.group_glow_animations),
+        group_glow_fade_out: flag(raw.group_glow_fade_out),
+        rtl: flag(raw.rtl),
     })
 }
 
-/// Atomically validate strip metadata and optional ordered group layout.
+/// Validate a strip publication's envelope before the host stages anything.
+/// `unchanged` reports an exact replay of the accepted revision, which needs
+/// no work; otherwise `out` holds the options this publication resolves to.
+/// Mutates nothing.
+///
 /// # Safety
-/// See [`guard`]. Arrays must contain their stated number of readable entries.
+/// See [`guard`]. `envelope` must be readable; `fingerprint` readable for
+/// `units` values (null only for zero); `out` and `unchanged` writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_strip_apply_layout(
-    core: *mut ShellCore, base: u32, revision: u32,
+pub unsafe extern "C" fn shell_core_strip_resolve(
+    core: *mut ShellCore, envelope: *const ShellStripEnvelope,
+    fingerprint: *const u16, units: usize,
+    out: *mut crate::strip::ShellStripOptions, unchanged: *mut bool,
+) -> ShellStatus {
+    let (Some(out), Some(unchanged)) = (out.as_mut(), unchanged.as_mut()) else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = Default::default();
+    *unchanged = false;
+    let Some(raw) = envelope.as_ref() else { return ShellStatus::InvalidArgument; };
+    if units > crate::strip::MAX_FINGERPRINT { return ShellStatus::InvalidArgument; }
+    let (Some(fingerprint), Some(envelope)) = (slice(fingerprint, units), self::envelope(raw)) else {
+        return ShellStatus::InvalidArgument;
+    };
+    guard(core, |core| match core.strip.resolve(&envelope, fingerprint) {
+        Ok(crate::strip::Resolution::Unchanged) => { *unchanged = true; ShellStatus::Ok }
+        Ok(crate::strip::Resolution::Accepted(options)) => { *out = options; ShellStatus::Ok }
+        Err(()) => ShellStatus::InvalidArgument,
+    })
+}
+
+/// Atomically accept a strip publication: envelope, row metadata and the
+/// optional ordered group layout. Base zero replaces the retained state; other
+/// bases must match the accepted revision exactly. An exact replay is not a new
+/// publication and is refused here; resolve it first.
+///
+/// # Safety
+/// As [`shell_core_strip_resolve`]; arrays contain their stated number of
+/// readable entries.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_strip_publish(
+    core: *mut ShellCore, envelope: *const ShellStripEnvelope,
+    fingerprint: *const u16, units: usize,
     changes: *const ShellStripChange, count: usize,
     layout: *const ShellStripSlot, layout_count: usize, has_layout: bool,
+    out: *mut crate::strip::ShellStripOptions,
 ) -> ShellStatus {
+    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out = Default::default();
+    let Some(raw) = envelope.as_ref() else { return ShellStatus::InvalidArgument; };
+    if units > crate::strip::MAX_FINGERPRINT || count > 20_000 || layout_count > 20_000 ||
+       (count != 0 && changes.is_null()) || (layout_count != 0 && (layout.is_null() || !has_layout)) {
+        return ShellStatus::InvalidArgument;
+    }
+    let (Some(fingerprint), Some(envelope)) = (slice(fingerprint, units), self::envelope(raw)) else {
+        return ShellStatus::InvalidArgument;
+    };
     guard(core, |core| {
-        if count > 20_000 || layout_count > 20_000 || (count != 0 && changes.is_null()) ||
-           (layout_count != 0 && (layout.is_null() || !has_layout)) { return ShellStatus::InvalidArgument; }
         let changes = if count == 0 { &[] } else { std::slice::from_raw_parts(changes, count) };
         let layout = if !has_layout { None } else if layout_count == 0 { Some(&[][..]) }
                      else { Some(std::slice::from_raw_parts(layout, layout_count)) };
-        if core.strip.apply_layout(base, revision, changes, layout) { ShellStatus::Ok }
-        else { ShellStatus::InvalidArgument }
+        match core.strip.publish(&envelope, fingerprint, changes, layout) {
+            Some(options) => { *out = options; ShellStatus::Ok }
+            None => ShellStatus::InvalidArgument,
+        }
     })
 }
 
@@ -1118,6 +1216,66 @@ mod tests {
 
     fn utf16(value: &str) -> Vec<u16> {
         value.encode_utf16().collect()
+    }
+
+    fn strip_envelope(version: f64, base: f64, revision: f64) -> ShellStripEnvelope {
+        let absent = ShellStripName { present: false, data: std::ptr::null(), len: 0 };
+        ShellStripEnvelope {
+            version, revision,
+            base: ShellStripNumber { present: true, value: base },
+            window_drag_session: Default::default(), grouping_delay: Default::default(),
+            backdrop: absent, group_reach: absent,
+            window_drag_private: Default::default(), group_glow: Default::default(),
+            container_glow: Default::default(), container_dot: Default::default(),
+            group_hover: Default::default(), group_halo: Default::default(),
+            group_glow_animations: Default::default(), group_glow_fade_out: Default::default(),
+            rtl: ShellStripFlag { present: true, value: false },
+        }
+    }
+
+    #[test]
+    fn strip_envelope_resolves_then_publishes_atomically() {
+        unsafe {
+            let core = core();
+            let mut options = crate::strip::ShellStripOptions::default();
+            let mut unchanged = true;
+            let acrylic = utf16("acrylic");
+            let mut full = strip_envelope(2.0, 0.0, 1.0);
+            full.backdrop = ShellStripName { present: true, data: acrylic.as_ptr(), len: acrylic.len() };
+            let print = utf16("one");
+            let rows = [ShellStripChange { id: 1, pixels: 0, remove: false, complete: true }];
+            assert_eq!(shell_core_strip_resolve(core, &full, print.as_ptr(), print.len(), &mut options, &mut unchanged), ShellStatus::Ok);
+            assert!(!unchanged);
+            assert_eq!(options.backdrop, crate::strip::ShellBackdrop::Acrylic);
+            // Resolving commits nothing: the same envelope publishes afterwards.
+            assert_eq!(shell_core_strip_publish(core, &full, print.as_ptr(), print.len(), rows.as_ptr(), 1,
+                                                std::ptr::null(), 0, false, &mut options), ShellStatus::Ok);
+            assert_eq!(options.revision, 1);
+            assert_eq!(shell_core_strip_resolve(core, &full, print.as_ptr(), print.len(), &mut options, &mut unchanged), ShellStatus::Ok);
+            assert!(unchanged);
+            assert_eq!(shell_core_strip_publish(core, &full, print.as_ptr(), print.len(), rows.as_ptr(), 1,
+                                                std::ptr::null(), 0, false, &mut options), ShellStatus::InvalidArgument);
+            // A delta keeps the backdrop it omits.
+            let next = strip_envelope(2.0, 1.0, 2.0);
+            assert_eq!(shell_core_strip_publish(core, &next, std::ptr::null(), 0, std::ptr::null(), 0,
+                                                std::ptr::null(), 0, false, &mut options), ShellStatus::Ok);
+            assert_eq!((options.base, options.revision, options.backdrop), (1, 2, crate::strip::ShellBackdrop::Acrylic));
+            // Malformed calls change nothing and report themselves.
+            let long = vec![b'a' as u16; 65];
+            let mut named = strip_envelope(2.0, 2.0, 3.0);
+            named.group_reach = ShellStripName { present: true, data: long.as_ptr(), len: long.len() };
+            assert_eq!(shell_core_strip_resolve(core, &named, std::ptr::null(), 0, &mut options, &mut unchanged), ShellStatus::InvalidArgument);
+            named.group_reach = ShellStripName { present: true, data: std::ptr::null(), len: 1 };
+            assert_eq!(shell_core_strip_resolve(core, &named, std::ptr::null(), 0, &mut options, &mut unchanged), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_strip_resolve(core, std::ptr::null(), std::ptr::null(), 0, &mut options, &mut unchanged), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_strip_resolve(core, &next, std::ptr::null(), 1, &mut options, &mut unchanged), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_strip_publish(core, &named, std::ptr::null(), 0, std::ptr::null(), 0,
+                                                std::ptr::null(), 0, false, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            let delta = strip_envelope(2.0, 2.0, 3.0);
+            assert_eq!(shell_core_strip_resolve(core, &delta, std::ptr::null(), 0, &mut options, &mut unchanged), ShellStatus::Ok);
+            assert_eq!(options.backdrop, crate::strip::ShellBackdrop::Acrylic);
+            shell_core_destroy(core);
+        }
     }
 
     #[test]
