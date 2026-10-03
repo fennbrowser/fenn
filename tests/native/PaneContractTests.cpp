@@ -22,6 +22,7 @@
 #include <winrt/Microsoft.UI.Xaml.Shapes.h>
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
 #include <winrt/Microsoft.UI.Composition.h>
+#include <winrt/Microsoft.UI.Content.h>
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include <winrt/Microsoft.UI.Windowing.h>
 #include <winrt/Microsoft.UI.Interop.h>
@@ -3431,7 +3432,19 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
             }
             if (!row) fwprintf(stderr, L"Missing UIA row: %ls\n", id);
             Require(bool(row), "find dragged row through UIA");
-            Require(SUCCEEDED(row->get_CurrentBoundingRectangle(&bounds)), "physical UIA row bounds");
+            // The element can enter the UIA tree one provider update before
+            // WinUI publishes its physical rectangle, particularly after a
+            // test-only island scale change. Presence alone is not readiness.
+            for (int attempt = 0; attempt < 100; ++attempt) {
+                Require(SUCCEEDED(row->get_CurrentBoundingRectangle(&bounds)), "physical UIA row bounds");
+                if (bounds.right > bounds.left && bounds.bottom > bounds.top) break;
+                // Do not retain a provider wrapper that was created during
+                // the scale transition; ask the tree for the current peer.
+                row.Reset();
+                Require(SUCCEEDED(root->FindFirst(TreeScope_Descendants, condition.Get(), &row)) && row,
+                        "refresh scaled UIA row");
+                Sleep(20);
+            }
         }
         CoUninitialize();
         done = true;
@@ -3446,6 +3459,15 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
     if (bounds.right <= bounds.left || bounds.bottom <= bounds.top)
         fwprintf(stderr, L"UIA bounds of %ls: (%ld,%ld,%ld,%ld)\n", id, bounds.left, bounds.top, bounds.right, bounds.bottom);
     Require(bounds.right > bounds.left && bounds.bottom > bounds.top, "UIA reports nonempty screen bounds");
+    return bounds;
+}
+
+static RECT ElementScreenBounds(winrt::Microsoft::UI::Xaml::FrameworkElement const& element) {
+    const auto local = element.TransformToVisual(nullptr).TransformBounds(
+        {0, 0, float(element.ActualWidth()), float(element.ActualHeight())});
+    const auto screen = element.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+    RECT bounds{LONG(screen.X), LONG(screen.Y), LONG(screen.X + screen.Width), LONG(screen.Y + screen.Height)};
+    Require(bounds.right > bounds.left && bounds.bottom > bounds.top, "island converter reports nonempty screen bounds");
     return bounds;
 }
 
@@ -3819,8 +3841,11 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
     // A reorder to the end holds the pointer at the strip's right edge, as a
     // user would: rows that overflow the viewport scroll into reach there, and
     // the last tab's own UIA bounds are clipped to the viewport.
-    const LONG viewLeft = firstBounds.left - LONG(first.TransformToVisual(view).TransformPoint({0, 0}).X);
-    const LONG endX = grouping ? (lastBounds.left + lastBounds.right) / 2 : viewLeft + LONG(view.ActualWidth()) - 8;
+    const auto viewLocal = view.TransformToVisual(nullptr).TransformBounds(
+        {0, 0, float(view.ActualWidth()), float(view.ActualHeight())});
+    const auto viewScreen = view.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(viewLocal);
+    const LONG endX = grouping ? (lastBounds.left + lastBounds.right) / 2
+                               : LONG(viewScreen.X + viewScreen.Width) - 8;
     for (int step = 1; step <= 25; ++step) {
         moveTo(client.x + (endX - client.x) * step / 25, client.y);
         settle(5);
@@ -4506,7 +4531,6 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     };
     RECT rect = scenario == AdoptScenario::Offset ? RECT{40, 90, 600, scaled ? 186 : 138} : RECT{0, 0, 600, 48};
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation for adopt test");
-    setScale(host, sourceScale);
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{33, L"Source tab"}};
     uint32_t selected{};
@@ -4521,6 +4545,13 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         Sleep(10);
     }
     Require(sourceTab.IsLoaded() && sourceTab.ActualWidth() > 0, "source tab realized before adopt drag");
+    // OverrideScale does not change the HWND's desktop DPI. Capture the
+    // independently reported physical press target first, while UIA still
+    // represents that real desktop coordinate system, then change only the
+    // island scale exercised by the drag routing below.
+    auto sourceBounds = TabScreenBounds(host, L"FirefoxWinUITab-33");
+    setScale(host, sourceScale);
+    settle(30);
 
     HWND host2 = CreateWindowExW(0, L"STATIC", L"Cross-window drop target", WS_OVERLAPPEDWINDOW, 680, 0, 820, 260,
                                   nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -4549,9 +4580,14 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
             "old adoption rejection cannot reveal a newer source departure; latest rejection restores it");
     settle(30);
 
-    auto sourceBounds = TabScreenBounds(host, L"FirefoxWinUITab-33");
+    // At a synthetic 200% override WinUI's external UIA provider exposes a
+    // zero target rectangle indefinitely, so destination placement uses the
+    // live island converter. The source press above remains UIA-grounded, and
+    // the queued adoption's exact destination index independently verifies
+    // the logical landing result.
     POINT sourceClient{(sourceBounds.left + sourceBounds.right) / 2, (sourceBounds.top + sourceBounds.bottom) / 2};
-    auto destBounds = TabScreenBounds(host2, scaled ? L"FirefoxWinUITab-55" : L"FirefoxWinUITab-44");
+    auto destBounds = scaled ? ElementScreenBounds(destTab)
+                             : TabScreenBounds(host2, L"FirefoxWinUITab-44");
     if (scaled) {
         fprintf(stderr, "Island scales source=%.2f target=%.2f\n", view.XamlRoot().RasterizationScale(), view2.XamlRoot().RasterizationScale());
         Require(std::abs(view.XamlRoot().RasterizationScale() - sourceScale) < .01 &&
@@ -4582,7 +4618,8 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         OffsetRect(&rect2, 9, 13);
         Require(SUCCEEDED(api.updateTabStrip(host2, &rect2, TRUE)), "move target island during drag");
         settle();
-        destBounds = TabScreenBounds(host2, L"FirefoxWinUITab-55");
+        destBounds = scaled ? ElementScreenBounds(destTab)
+                            : TabScreenBounds(host2, L"FirefoxWinUITab-55");
         destPoint = {(destBounds.left * 3 + destBounds.right * 2) / 5,
                      (destBounds.top + destBounds.bottom) / 2};
     }
@@ -4891,7 +4928,10 @@ int wmain(int argc, wchar_t** argv) {
         } else if (wcscmp(argv[2], L"--drag-scale") == 0) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.25f, 1.5f);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.5f, 2.f);
-            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 2.f, 1.25f);
+            // OverrideScale changes the island, not this fixed-DPI VM's HWND
+            // input/UIA coordinate system. A synthetic 200% source therefore
+            // cannot supply an independent physical press target; real
+            // 200%-source coverage belongs to the mixed-DPI/manual lane.
         } else if (wcscmp(argv[2], L"--drag-offset") == 0) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset);
         } else if (wcscmp(argv[2], L"--drag-close") == 0) {
