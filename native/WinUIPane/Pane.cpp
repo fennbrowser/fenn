@@ -2608,7 +2608,10 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupSlide(HWND hwn
             if (!strip.TryPromote(sourceId, {start.X + 4, start.Y})) return E_FAIL;
             const Windows::Foundation::Point center{float(strip.drag.originalLeftEdge[1] + target.ActualWidth()/2), 16};
             if (!strip.UpdateGroupHover(center) || strip.armedGroupTarget) return E_FAIL;
-            shell_core_tab_drag_update(strip.core, center.X, center.Y, strip.view.ActualWidth(), strip.view.ActualHeight(), true);
+            // ShellCore deliberately keeps an exact row midpoint before that
+            // row. Cross it explicitly so this fixture always opens the second
+            // insertion gap instead of depending on fractional XAML geometry.
+            shell_core_tab_drag_update(strip.core, center.X + 1, center.Y, strip.view.ActualWidth(), strip.view.ActualHeight(), true);
             strip.ShiftSibling(1);
             return strip.rowAnimations.count(targetId) ? S_OK : E_FAIL;
         }

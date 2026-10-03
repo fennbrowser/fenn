@@ -3386,6 +3386,7 @@ static void CheckFloatingDragBitmap(HMODULE module, bool dark = false) {
     fileHeader.bfOffBits = sizeof(fileHeader) + sizeof(header);
     fileHeader.bfSize = fileHeader.bfOffBits + dib.dsBm.bmWidthBytes * height;
     FILE* output{};
+    CreateDirectoryW(L"artifacts/setup", nullptr);
     if (fopen_s(&output, dark ? "artifacts/setup/tab-floating-dark.bmp" : "artifacts/setup/tab-floating-light.bmp", "wb") == 0) {
         fwrite(&fileHeader,sizeof(fileHeader),1,output);
         fwrite(&header,sizeof(header),1,output);
@@ -3393,9 +3394,25 @@ static void CheckFloatingDragBitmap(HMODULE module, bool dark = false) {
         fclose(output);
     }
     fprintf(stderr, "Floating corner alpha: %u, %u\n", alpha(left+1,bottom-1), alpha(right-1,bottom-1));
-    Require(alpha(left,bottom) == 0 && alpha(right,bottom) == 0 &&
-            alpha(left+1,bottom-1) <= 16 && alpha(right-1,bottom-1) <= 16,
+    // A stock rounded edge is anti-aliased: depending on the row width/theme,
+    // the second-row edge pixel ranges from nearly transparent to partially
+    // covered. An attached-tab foot instead fills the bottom edge. Require two
+    // transparent bottom-row pixels on each side and keep the second-row edge
+    // below half coverage, rather than mistaking valid antialiasing for a foot.
+    auto roundedBottom = [&](auto&& sample) {
+        return sample(left,bottom) == 0 && sample(left+1,bottom) <= 16 &&
+               sample(right-1,bottom) <= 16 && sample(right,bottom) == 0 &&
+               sample(left+1,bottom-1) < 128 && sample(right-1,bottom-1) < 128;
+    };
+    Require(roundedBottom(alpha),
             "floating bitmap has rounded bottom corners without attached tab feet");
+    // Mutation control: the same captured image must fail the predicate when
+    // its bottom corners are made opaque, as an attached-tab foot would do.
+    auto withAttachedFoot = [&](int x, int y) {
+        if (y == bottom && (x <= left+1 || x >= right-1)) return static_cast<unsigned char>(255);
+        return alpha(x,y);
+    };
+    Require(!roundedBottom(withAttachedFoot), "floating-corner check rejects an attached-foot regression");
     DeleteObject(bitmap);
 }
 
