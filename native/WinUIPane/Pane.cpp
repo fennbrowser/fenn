@@ -1426,7 +1426,7 @@ HWND VisibleRootAt(POINT screenPoint, HWND source) {
 
 // The other pane whose strip claims `screenPoint`, if any. Never the source,
 // a hidden or minimized window, or a strip another window covers there.
-Pane* ForeignStripAt(Pane& sourcePane, TabDragSession const& session, POINT screenPoint) {
+Pane* ForeignStripAt(Pane& sourcePane, POINT screenPoint) {
     for (auto& entry : state().panes) {
         if (!entry.second->strip || entry.second.get() == &sourcePane || !entry.second->appliedVisible ||
             !IsWindowVisible(entry.first) || IsIconic(entry.first)) continue;
@@ -1474,11 +1474,12 @@ void TickDragSession() {
             (session.sourceStrip->GroupDrag().phase==2 && GetCapture()!=sourcePane.parent) || !sourcePane.appliedVisible;
         auto* strip = session.sourceStrip;
         // Another window's strip wins over this strip's own margin, as for a
-        // tab. Private and ordinary windows never exchange groups.
+        // tab. Let Firefox reject incompatible private/ordinary adoption so
+        // release rolls the source back; filtering that strip out here turns
+        // the same release into an unintended off-strip tear-off instead.
         Pane* hitPane = nullptr;
         if (!cancel && strip->GroupDrag().phase == 2)
-            if (auto* hit = ForeignStripAt(sourcePane, session, point); hit && hit->strip->windowDragPrivate == strip->windowDragPrivate)
-                hitPane = hit;
+            hitPane = ForeignStripAt(sourcePane, point);
         NativeTabStrip* hover = hitPane ? hitPane->strip.get() : nullptr;
         if (session.hoverStrip != hover && session.hoverStrip && session.hoverStrip != strip)
             session.hoverStrip->EndForeignGroupOver();
@@ -1547,7 +1548,7 @@ void TickDragSession() {
     // would never resolve as a foreign hover at all (local Y relative to
     // the source alone can't tell "moved to a horizontally different
     // window" from "still over my own strip").
-    Pane* hitPane = ForeignStripAt(sourcePane, session, screenPoint);
+    Pane* hitPane = ForeignStripAt(sourcePane, screenPoint);
     NativeTabStrip* newHover = hitPane ? hitPane->strip.get() : nullptr;
     if (!hitPane) {
         // Not over any other pane -- on-strip vs. tear-off is decided by

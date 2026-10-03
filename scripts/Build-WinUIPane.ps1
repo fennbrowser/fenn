@@ -1,4 +1,5 @@
-param([switch]$Stage, [switch]$Restore, [switch]$Test, [switch]$AddressTest, [switch]$MenuTest, [switch]$TabStripTest)
+param([switch]$Stage, [switch]$Restore, [switch]$Test, [switch]$ContractTest,
+      [switch]$AddressTest, [switch]$MenuTest, [switch]$TabStripTest)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Enter-DevEnvironment.ps1')
 $installation = & 'C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe' -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -23,13 +24,23 @@ if ($LASTEXITCODE) {
     exit $LASTEXITCODE
 }
 Write-Host "Merged native theme resources: $output/resources.pri"
-if ($Test -or $AddressTest -or $MenuTest -or $TabStripTest) {
+if ($Test -or $ContractTest -or $AddressTest -or $MenuTest -or $TabStripTest) {
     if ($TabStripTest) {
         & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'tests/native/ExternalDragSource.vcxproj') /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
     }
     & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'tests/native/PaneContractTests.vcxproj') /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    if ($ContractTest) {
+        # Hosted CI has no interactive desktop. This production-DLL lane uses
+        # programmatic ABI/lifecycle/accessibility contracts only; physical
+        # SendInput suites continue to run through Invoke-UiaTestVM.ps1.
+        $productionDll = (Resolve-Path (Join-Path $output 'FirefoxWinUIPane.dll')).Path
+        & (Join-Path $output 'PaneContractTests.exe') $productionDll
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    }
+}
+if ($Test -or $AddressTest -or $MenuTest -or $TabStripTest) {
     if ($Test) {
         & (Join-Path $output 'PaneContractTests.exe') (Join-Path $output 'FirefoxWinUIPane.dll')
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
