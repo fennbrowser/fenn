@@ -9,7 +9,14 @@ if ($Restore) {
 }
 & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'native/WinUIPane/FirefoxWinUIPane.vcxproj') /m:2 /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
-& python (Join-Path $PSScriptRoot 'Export-WinUIPaneManifest.py') --check
+$manifestArgs = @('--check')
+$firefoxManifest = Join-Path $projectRoot 'upstream/firefox/browser/app/firefox.exe.manifest'
+if ($ContractTest -and -not (Test-Path $firefoxManifest)) {
+    # A source-only hosted checkout can still verify the generated canonical
+    # activation manifest. Local Firefox checkouts retain the full comparison.
+    $manifestArgs += '--canonical-only'
+}
+& python (Join-Path $PSScriptRoot 'Export-WinUIPaneManifest.py') @manifestArgs
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 $output = Join-Path $projectRoot 'build/winui-pane/x64/Release'
 $priInput = Join-Path $projectRoot 'build/winui-pane/pri-input'
