@@ -65,6 +65,30 @@ struct InlineTabGroups {
     bool configured{}, active{}, hasPreview{};
     Windows::Foundation::Point lastPointer{-1000000,-1000000};
     ~InlineTabGroups() { lifetime.reset(); }
+    // Called by the strip's destructor, while XAML still runs. The grouped
+    // collection view keeps its own references to `data`, to every model map
+    // (retired ones too) and through them to each run's `items`, and drops them
+    // in a deferred release that can run inside ShutdownQueue, after
+    // WindowsXamlManager.Close. A TabViewItem or header released there faults
+    // in XAML. Empty the collections now, so what XAML still holds owns no
+    // XAML object; see the implementation lessons.
+    void Release(Controls::TabView const& view) noexcept {
+        lifetime.reset();
+        realized = nullptr;
+        realizing.clear();
+        try { if (active) view.TabItemsSource(nullptr); } catch (...) {}
+        try { source.Source(nullptr); } catch (...) {}
+        try { data.Clear(); } catch (...) {}
+        // Retired maps share `items` with the current one; clearing it
+        // empties them as well.
+        for (auto& [id, run] : runs) {
+            try { run.model.Clear(); } catch (...) {}
+            try { run.items.Clear(); } catch (...) {}
+        }
+        runs.clear();
+        order.clear();
+        active = false;
+    }
 
     // Headers and rows that were shown before the latest Sync, which then
     // detached them, and that the panel has not realized again. Decoration

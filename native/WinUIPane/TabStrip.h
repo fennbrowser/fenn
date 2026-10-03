@@ -1761,6 +1761,7 @@ struct NativeTabStrip {
         lifetime.reset();
         if (core) shell_core_transfer_cancel(core);
         try { ReconcileTransfers(); } catch (...) { /* An island may also be closing. */ }
+        inlineGroups.Release(view);
     }
 
     // Names the button's screen rectangle; Firefox opens its own all-tabs panel there.
