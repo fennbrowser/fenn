@@ -39,6 +39,12 @@ static void Require(bool value, const char* message) {
     }
 }
 static BOOL(WINAPI* translatePane)(MSG*) = nullptr;
+// SendInput maps an absolute coordinate to pixel dx * extent / 65536, truncated.
+// Round up so the cursor lands on the requested pixel; scaling by 65535 and
+// truncating lands one pixel short at most desktop sizes.
+static LONG AbsoluteMouse(LONG offset, int extent) {
+    return LONG((int64_t(offset) * 65536 + extent - 1) / extent);
+}
 static void Pump() {
     MSG message{};
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -3435,6 +3441,8 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
     }
     Require(done, "bounds UIA completes without deadlock");
     client.join();
+    if (bounds.right <= bounds.left || bounds.bottom <= bounds.top)
+        fwprintf(stderr, L"UIA bounds of %ls: (%ld,%ld,%ld,%ld)\n", id, bounds.left, bounds.top, bounds.right, bounds.bottom);
     Require(bounds.right > bounds.left && bounds.bottom > bounds.top, "UIA reports nonempty screen bounds");
     return bounds;
 }
@@ -3793,8 +3801,8 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
         INPUT input{};
         input.type = INPUT_MOUSE;
         input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-        input.mi.dx = LONG((double(x - vx) * 65535) / vw);
-        input.mi.dy = LONG((double(y - vy) * 65535) / vh);
+        input.mi.dx = AbsoluteMouse(x - vx, vw);
+        input.mi.dy = AbsoluteMouse(y - vy, vh);
         SendInput(1, &input, sizeof(INPUT));
     };
     // Leave horizontally on both sides, then re-enter without releasing.
@@ -3862,8 +3870,8 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 "grouped active tab immediately has its attached selected background");
         return;
     }
-    auto event = NextRequest(api, host, 5, L"strip-reorder",40,reject ? 2 : 1).GetNamedObject(L"action");
-    Require(event.Size() && event.GetNamedNumber(L"id") == 11 && event.GetNamedNumber(L"beforeId") == 0,
+    auto event = NextRequest(api, host, 5, L"strip-reorder",40,reject ? 2 : 1).GetNamedObject(L"action", nullptr);
+    Require(event && event.Size() && event.GetNamedNumber(L"id") == 11 && event.GetNamedNumber(L"beforeId") == 0,
             "a real pointer drag past the last tab queues a validated move-to-end request");
     if (reject) {
         Require(first.Opacity() == 1 && first.RenderTransform().as<Media::TranslateTransform>().X() == 0,
@@ -3932,8 +3940,8 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
         INPUT input{};
         input.type = INPUT_MOUSE;
         input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-        input.mi.dx = LONG((double(x - vx) * 65535) / vw);
-        input.mi.dy = LONG((double(y - vy) * 65535) / vh);
+        input.mi.dx = AbsoluteMouse(x - vx, vw);
+        input.mi.dy = AbsoluteMouse(y - vy, vh);
         SendInput(1, &input, sizeof(INPUT));
     };
     send(MOUSEEVENTF_LEFTDOWN);
@@ -3944,8 +3952,8 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
     send(MOUSEEVENTF_LEFTUP);
     settle(200);
     Require(DragPreviewWindows().empty(), "release destroys the floating drag HWND after an edge-scrolled drag");
-    auto event = NextRequest(api, host, 5, L"strip-reorder", 40).GetNamedObject(L"action");
-    Require(event.Size() && event.GetNamedNumber(L"id") == 11 && event.GetNamedNumber(L"beforeId") == 0,
+    auto event = NextRequest(api, host, 5, L"strip-reorder", 40).GetNamedObject(L"action", nullptr);
+    Require(event && event.Size() && event.GetNamedNumber(L"id") == 11 && event.GetNamedNumber(L"beforeId") == 0,
             "holding a drag at the edge of an overflowing strip scrolls it so the tab can drop at the end");
     WinUITab order[14];
     for (uint32_t i = 0; i < 13; ++i) order[i] = tabs[i + 1];
@@ -4006,7 +4014,7 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
     auto moveTo = [](LONG x, LONG y) {
         int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN), vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
         INPUT i{}; i.type = INPUT_MOUSE; i.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-        i.mi.dx = LONG((double(x - vx) * 65535) / vw); i.mi.dy = LONG((double(y - vy) * 65535) / vh); SendInput(1, &i, sizeof(i));
+        i.mi.dx = AbsoluteMouse(x - vx, vw); i.mi.dy = AbsoluteMouse(y - vy, vh); SendInput(1, &i, sizeof(i));
     };
     RECT rect{0, 0, 600, 48};
     // Fresh windows clear of the shared host, which still carries earlier group fixtures.
@@ -4242,7 +4250,7 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
     auto moveTo = [&](LONG x, LONG y) {
         int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN), vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
         INPUT i{}; i.type = INPUT_MOUSE; i.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-        i.mi.dx = LONG((double(x - vx) * 65535) / vw); i.mi.dy = LONG((double(y - vy) * 65535) / vh); SendInput(1, &i, sizeof(i));
+        i.mi.dx = AbsoluteMouse(x - vx, vw); i.mi.dy = AbsoluteMouse(y - vy, vh); SendInput(1, &i, sizeof(i));
     };
     send(MOUSEEVENTF_LEFTDOWN); settle();
     moveTo(start.x + 12, start.y); settle();
@@ -4254,6 +4262,8 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
         for (int step = 1; step <= 10; ++step) { moveTo(start.x + 12 + (away.x - start.x - 12) * step / 10, start.y + (away.y - start.y) * step / 10); settle(5); }
         settle(40);
         auto previews = DragPreviewWindows();
+        if (const auto drawn = decoration())
+            fprintf(stderr, "Torn-off group decoration still drawn: %u (1 outline, 2 glow)\n", drawn);
         Require(decoration() == 0, "a torn-off group leaves no outline or glow in the strip");
         {
             Require(previews.size() == 1 && IsWindowVisible(previews[0]), "a group pulled off the strip follows the cursor in a floating window");
@@ -4369,8 +4379,8 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
         INPUT input{};
         input.type = INPUT_MOUSE;
         input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-        input.mi.dx = LONG((double(x - vx) * 65535) / vw);
-        input.mi.dy = LONG((double(y - vy) * 65535) / vh);
+        input.mi.dx = AbsoluteMouse(x - vx, vw);
+        input.mi.dy = AbsoluteMouse(y - vy, vh);
         SendInput(1, &input, sizeof(INPUT));
     };
 
@@ -4482,8 +4492,8 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         INPUT input{};
         input.type = INPUT_MOUSE;
         input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-        input.mi.dx = LONG((double(x - vx) * 65535) / vw);
-        input.mi.dy = LONG((double(y - vy) * 65535) / vh);
+        input.mi.dx = AbsoluteMouse(x - vx, vw);
+        input.mi.dy = AbsoluteMouse(y - vy, vh);
         SendInput(1, &input, sizeof(INPUT));
     };
 
