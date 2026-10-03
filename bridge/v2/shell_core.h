@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 26
+#define SHELL_CORE_ABI_VERSION 27
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -116,6 +116,58 @@ enum ShellBackdrop
 typedef enum ShellBackdrop ShellBackdrop;
 #else
 typedef uint32_t ShellBackdrop;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/*
+ Where the host takes a string or image field of a resolved row from.
+ */
+enum ShellStripSource
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /*
+   The value this publication carries.
+   */
+  SHELL_STRIP_SOURCE_TAKE = 0,
+  /*
+   The value the host already retains for this row.
+   */
+  SHELL_STRIP_SOURCE_KEEP = 1,
+  /*
+   No value: an empty string, or no image.
+   */
+  SHELL_STRIP_SOURCE_EMPTY = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum ShellStripSource ShellStripSource;
+#else
+typedef uint32_t ShellStripSource;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/*
+ Values of [`ShellStripImage::kind`].
+ */
+enum ShellStripImageKind
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  SHELL_STRIP_IMAGE_KIND_ABSENT = 0,
+  /*
+   `"image": null`.
+   */
+  SHELL_STRIP_IMAGE_KIND_NULL = 1,
+  SHELL_STRIP_IMAGE_KIND_SET = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum ShellStripImageKind ShellStripImageKind;
+#else
+typedef uint32_t ShellStripImageKind;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
@@ -314,18 +366,40 @@ typedef struct {
   bool rtl;
 } ShellStripOptions;
 
+/*
+ Presence and length of a row text field; the host keeps the string.
+ */
 typedef struct {
-  uint32_t id;
-  /*
-   Total pixels in the resulting row, including an image retained by omission.
-   */
-  uint32_t pixels;
-  bool remove;
-  /*
-   New rows must supply every required field, not a patch of an unknown ID.
-   */
-  bool complete;
-} ShellStripChange;
+  bool present;
+  uintptr_t len;
+} ShellStripText;
+
+/*
+ A row image as read from the publication: raw dimensions and the hex pixel
+ string, readable for `len` units when `kind` is `Set`.
+ */
+typedef struct {
+  uint32_t kind;
+  double width;
+  double height;
+  const uint16_t *pixels;
+  uintptr_t len;
+} ShellStripImage;
+
+/*
+ One row as read from the publication's `rows`, with JSON types checked only.
+ */
+typedef struct {
+  double id;
+  ShellStripNumber flags;
+  ShellStripNumber container_color;
+  ShellStripFlag group_source;
+  ShellStripFlag group_target;
+  ShellStripText detail;
+  ShellStripText status;
+  ShellStripText container_name;
+  ShellStripImage image;
+} ShellStripRowInput;
 
 /*
  Ordered group anchors (tab == 0) and visible members. Group zero is ungrouped.
@@ -334,6 +408,37 @@ typedef struct {
   uint32_t group;
   uint32_t tab;
 } ShellStripSlot;
+
+/*
+ The publication's row data. `removals` holds the raw `removed` numbers, read
+ only for deltas. Each pointer may be null only with a zero count.
+ */
+typedef struct {
+  const ShellStripRowInput *rows;
+  uintptr_t row_count;
+  const double *removals;
+  uintptr_t removal_count;
+  const ShellStripSlot *layout;
+  uintptr_t layout_count;
+  bool has_layout;
+} ShellStripPublication;
+
+/*
+ One accepted row, in publication order.
+ */
+typedef struct {
+  uint32_t id;
+  uint32_t flags;
+  uint32_t container_color;
+  uint32_t image_width;
+  uint32_t image_height;
+  ShellStripSource detail;
+  ShellStripSource status;
+  ShellStripSource container_name;
+  ShellStripSource image;
+  bool group_source;
+  bool group_target;
+} ShellStripRow;
 
 typedef struct {
   uint32_t tab;
@@ -695,25 +800,28 @@ ShellStatus shell_core_strip_resolve(ShellCore *core,
                                      bool *unchanged);
 
 /*
- Atomically accept a strip publication: envelope, row metadata and the
+ Atomically accept a strip publication: envelope, removals, rows and the
  optional ordered group layout. Base zero replaces the retained state; other
  bases must match the accepted revision exactly. An exact replay is not a new
  publication and is refused here; resolve it first.
 
+ On success `rows` receives one resolved row per input row, in order, saying
+ which retained or published values each field takes, and `removed` receives
+ the validated removal IDs. Nothing is written on failure.
+
  # Safety
- As [`shell_core_strip_resolve`]; arrays contain their stated number of
- readable entries.
+ As [`shell_core_strip_resolve`]; `publication` and its arrays readable for
+ their stated counts; `rows` and `removed` writable for `row_count` and
+ `removal_count` entries (null only for zero); `out` writable.
  */
 ShellStatus shell_core_strip_publish(ShellCore *core,
                                      const ShellStripEnvelope *envelope,
                                      const uint16_t *fingerprint,
                                      uintptr_t units,
-                                     const ShellStripChange *changes,
-                                     uintptr_t count,
-                                     const ShellStripSlot *layout,
-                                     uintptr_t layout_count,
-                                     bool has_layout,
-                                     ShellStripOptions *out);
+                                     const ShellStripPublication *publication,
+                                     ShellStripOptions *out,
+                                     ShellStripRow *rows,
+                                     uint32_t *removed);
 
 /*
  Plan visual departures/arrivals only for explicitly toggled groups.

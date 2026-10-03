@@ -19,6 +19,8 @@ includes = []
 
 [export]
 prefix = ""
+# Named by a u32 field rather than a signature, so not reachable on its own.
+include = ["ShellStripImageKind"]
 item_types = ["enums", "structs", "opaque", "typedefs", "functions", "constants"]
 
 [enum]

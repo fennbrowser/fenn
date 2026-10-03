@@ -1811,7 +1811,9 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":4,"rows":[],"removed":[]}})",
         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":0},{"id":999,"flags":0}],"removed":[]}})",
         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":0},{"id":11,"flags":1}],"removed":[]}})",
-        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[],"removed":[999]}})"}) {
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[],"removed":[999]}})",
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"image":{"width":1,"height":1,"pixels":"0000FFFF"}}],"removed":[]}})",
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":0}],"removed":[11]}})"}) {
         Require(FAILED(api.syncTabMenu(host, invalid)), "invalid delta is rejected atomically");
         Require(firstIcon.Source() == retainedImage, "rejected delta preserves the image");
         Require(first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>()

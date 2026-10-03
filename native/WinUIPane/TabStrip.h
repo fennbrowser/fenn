@@ -2865,6 +2865,57 @@ struct NativeTabStrip {
         }
     }
 
+    // One published row as Firefox wrote it. Reading checks JSON types only;
+    // ShellCore validates the values and decides which of these strings the
+    // row takes. The strings stay here: ShellCore sees only their lengths and
+    // the hex pixels it checks.
+    struct StagedRow {
+        hstring detail, status, containerName, imagePixels;
+        ShellStripRowInput raw{};
+        explicit StagedRow(Windows::Data::Json::JsonObject const& entry) {
+            auto number = [&](wchar_t const* key) {
+                return entry.HasKey(key) ? ShellStripNumber{true, entry.GetNamedNumber(key)} : ShellStripNumber{};
+            };
+            auto flag = [&](wchar_t const* key) {
+                return entry.HasKey(key) ? ShellStripFlag{true, entry.GetNamedBoolean(key)} : ShellStripFlag{};
+            };
+            auto text = [&](wchar_t const* key, hstring& value) {
+                if (!entry.HasKey(key)) return ShellStripText{};
+                value = entry.GetNamedString(key);
+                return ShellStripText{true, value.size()};
+            };
+            raw.id = entry.GetNamedNumber(L"id");
+            raw.flags = number(L"flags");
+            raw.container_color = number(L"containerColor");
+            raw.group_source = flag(L"groupSource");
+            raw.group_target = flag(L"groupTarget");
+            raw.detail = text(L"detail", detail);
+            raw.status = text(L"status", status);
+            raw.container_name = text(L"containerName", containerName);
+            raw.image.kind = SHELL_STRIP_IMAGE_KIND_ABSENT;
+            if (entry.HasKey(L"image")) {
+                if (entry.GetNamedValue(L"image").ValueType() == Windows::Data::Json::JsonValueType::Null) {
+                    raw.image.kind = SHELL_STRIP_IMAGE_KIND_NULL;
+                } else {
+                    auto image = entry.GetNamedObject(L"image");
+                    raw.image.kind = SHELL_STRIP_IMAGE_KIND_SET;
+                    raw.image.width = image.GetNamedNumber(L"width");
+                    raw.image.height = image.GetNamedNumber(L"height");
+                    imagePixels = image.GetNamedString(L"pixels");
+                }
+            }
+        }
+        // Points into imagePixels, so it is taken once the rows stop moving.
+        ShellStripRowInput Input() const {
+            auto input = raw;
+            if (input.image.kind == SHELL_STRIP_IMAGE_KIND_SET) {
+                input.image.pixels = reinterpret_cast<uint16_t const*>(imagePixels.c_str());
+                input.image.len = imagePixels.size();
+            }
+            return input;
+        }
+    };
+
     // The publication envelope as Firefox wrote it. Reading checks JSON types
     // only; ShellCore decides version, base/revision, replay identity, ranges,
     // names and which omitted options a delta keeps. `raw` points into the
@@ -2929,69 +2980,21 @@ struct NativeTabStrip {
         auto label = base ? data.GetNamedString(L"groupsLabel", groupsLabel) : data.GetNamedString(L"groupsLabel");
         auto entries = data.GetNamedArray(L"rows");
         auto groups = base && !data.HasKey(L"groups") ? currentGroups : data.GetNamedArray(L"groups");
-        if (label.empty() || label.size() > NativeJson::kMaxShortLabel || entries.Size() > NativeJson::kMaxTabs ||
-            groups.Size() > NativeJson::kMaxTabs)
+        if (label.empty() || label.size() > NativeJson::kMaxShortLabel || groups.Size() > NativeJson::kMaxTabs)
             throw hresult_invalid_argument();
         // Parsed with the rest of the envelope so a bad label changes nothing.
         const bool labelsPublished = data.HasKey(L"labels");
         const Labels nextLabels = labelsPublished ? ParseLabels(data.GetNamedObject(L"labels"), labels) : labels;
-        std::map<uint32_t, Presentation> next;
-        std::vector<ShellStripChange> changes;
-        std::set<uint32_t> removed;
-        if (base) {
-            auto removals = data.GetNamedArray(L"removed");
-            if (removals.Size() > NativeJson::kMaxTabs) throw hresult_invalid_argument();
-            for (auto value : removals) {
-                auto number = value.GetNumber();
-                if (!std::isfinite(number) || number < 1 || number > UINT32_MAX || std::floor(number) != number)
-                    throw hresult_invalid_argument();
-                auto id = uint32_t(number);
-                if (!presentation.count(id) || !removed.insert(id).second) throw hresult_invalid_argument();
-                changes.push_back({id, 0, true, false});
-            }
-        }
-        size_t totalImagePixels = 0;
-        for (auto value : entries) {
-            auto entry = value.GetObject();
-            auto id = NativeJson::RequireId(entry, L"id");
-            if (removed.count(id)) throw hresult_invalid_argument();
-            auto old = presentation.find(id);
-            bool existing = base && old != presentation.end();
-            auto flags = existing ? entry.GetNamedNumber(L"flags", old->second.flags) : entry.GetNamedNumber(L"flags");
-            auto detail = existing ? entry.GetNamedString(L"detail", old->second.detail) : entry.GetNamedString(L"detail");
-            auto status = entry.GetNamedString(L"status", existing ? old->second.status : L"");
-            auto containerName = entry.GetNamedString(L"containerName", existing ? old->second.containerName : L"");
-            auto containerColor = entry.GetNamedNumber(L"containerColor", existing ? old->second.containerColor : 0);
-            if (containerName.size() > NativeJson::kMaxShortLabel || !std::isfinite(containerColor) ||
-                containerColor < 0 || containerColor > UINT32_MAX || std::floor(containerColor) != containerColor)
-                throw hresult_invalid_argument();
-            if (!std::isfinite(flags) || flags < 0 || flags > 15 || std::floor(flags) != flags ||
-                detail.size() > NativeJson::kMaxDetailText || status.size() > NativeJson::kMaxDetailText)
-                throw hresult_invalid_argument();
-            NativeJson::ValidateImage(entry, totalImagePixels, kTabImageLimits);
-            hstring imagePixels;
-            uint32_t imageWidth{}, imageHeight{};
-            if (existing && !entry.HasKey(L"image")) {
-                imagePixels = old->second.imagePixels;
-                imageWidth = old->second.imageWidth;
-                imageHeight = old->second.imageHeight;
-            }
-            if (entry.HasKey(L"image") &&
-                entry.GetNamedValue(L"image").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null) {
-                auto image = entry.GetNamedObject(L"image");
-                imagePixels = image.GetNamedString(L"pixels");
-                imageWidth = uint32_t(image.GetNamedNumber(L"width"));
-                imageHeight = uint32_t(image.GetNamedNumber(L"height"));
-            }
-            if (!next.emplace(id, Presentation{detail, uint32_t(flags), status, imagePixels, imageWidth, imageHeight,
-                                               containerName, uint32_t(containerColor),
-                                               entry.GetNamedBoolean(L"groupSource", existing && old->second.groupSource),
-                                               entry.GetNamedBoolean(L"groupTarget", existing && old->second.groupTarget)})
-                     .second)
-                throw hresult_invalid_argument();
-            changes.push_back({id, imageWidth * imageHeight, false,
-                               entry.HasKey(L"flags") && entry.HasKey(L"detail")});
-        }
+        // Removals and rows as Firefox wrote them. ShellCore validates them with
+        // the envelope and decides which retained fields each row keeps.
+        std::vector<double> removals;
+        if (base) for (auto value : data.GetNamedArray(L"removed")) removals.push_back(value.GetNumber());
+        std::vector<StagedRow> staged;
+        staged.reserve(entries.Size());
+        for (auto value : entries) staged.emplace_back(value.GetObject());
+        std::vector<ShellStripRowInput> inputs;
+        inputs.reserve(staged.size());
+        for (auto const& row : staged) inputs.push_back(row.Input());
         std::set<uint32_t> ids, previewIds, memberIds;
         size_t previewPixels = 0;
         for (auto value : groups) {
@@ -3045,13 +3048,36 @@ struct NativeTabStrip {
             for (auto slot : groupLayout)
                 if (slot.group && !ids.count(slot.group)) throw hresult_invalid_argument();
         }
-        // The Rust core owns the envelope, revision/identity and aggregate
-        // retained-image bounds, and accepts them together with the staged rows
-        // and layout. Everything above is staged before either model or XAML changes.
+        // The Rust core owns the envelope, revision/identity, row validation and
+        // retention, and aggregate retained-image bounds, and accepts them
+        // together with the staged layout. Everything above is staged before
+        // either model or XAML changes.
+        const ShellStripPublication publication{inputs.data(), inputs.size(), removals.data(), removals.size(),
+                                                layout.data(), layout.size(), layoutChanged};
         ShellStripOptions options{};
-        if (shell_core_strip_publish(core, &envelope.raw, fingerprintData, fingerprint.size(), changes.data(), changes.size(),
-                                     layout.data(), layout.size(), layoutChanged, &options) != SHELL_STATUS_OK)
+        std::vector<ShellStripRow> accepted(inputs.size());
+        std::vector<uint32_t> removed(removals.size());
+        if (shell_core_strip_publish(core, &envelope.raw, fingerprintData, fingerprint.size(), &publication, &options,
+                                     accepted.data(), removed.data()) != SHELL_STATUS_OK)
             throw hresult_invalid_argument();
+        // Project the accepted rows: ShellCore decided which fields each takes,
+        // keeps from the retained presentation, or leaves empty.
+        std::map<uint32_t, Presentation> next;
+        for (size_t i = 0; i < accepted.size(); ++i) {
+            auto const& row = accepted[i];
+            auto const& source = staged[i];
+            const auto old = presentation.find(row.id);
+            auto pick = [&](ShellStripSource from, hstring const& published, hstring Presentation::*retained) {
+                if (from == SHELL_STRIP_SOURCE_TAKE) return published;
+                return from == SHELL_STRIP_SOURCE_KEEP && old != presentation.end() ? old->second.*retained : hstring{};
+            };
+            next.insert_or_assign(row.id, Presentation{
+                pick(row.detail, source.detail, &Presentation::detail), row.flags,
+                pick(row.status, source.status, &Presentation::status),
+                pick(row.image, source.imagePixels, &Presentation::imagePixels), row.image_width, row.image_height,
+                pick(row.container_name, source.containerName, &Presentation::containerName), row.container_color,
+                row.group_source, row.group_target});
+        }
         if (GroupDrag().phase && (layoutChanged || !removed.empty() || !base)) EndGroupDrag();
         if (layoutChanged || !base) {
             EndForeignGroupOver(true);
@@ -3152,9 +3178,9 @@ struct NativeTabStrip {
         }
         // Metadata has its own publication now; do not wait for a title delta
         // or a structural Sync to make a changed icon/status visible.
-        for (auto const& change : changes) {
+        for (auto const& change : accepted) {
             auto row = rows.find(change.id);
-            if (change.remove || row == rows.end()) continue;
+            if (row == rows.end()) continue;
             UpdateHeader(row->second, change.id, Automation::AutomationProperties::GetName(row->second));
         }
         ambient.Update();

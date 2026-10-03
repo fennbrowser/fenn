@@ -3,9 +3,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 //! Strip publication identity and retained resource bounds. WinUI owns the
-//! projection (hstrings, images and controls); this owns atomic delta acceptance
-//! and the publication envelope: version, base/revision, exact-replay identity
-//! and the strip options a delta keeps by omission.
+//! projection (hstrings, images and controls); this owns atomic delta acceptance,
+//! the publication envelope (version, base/revision, exact-replay identity and
+//! the strip options a delta keeps by omission) and row validation: removals,
+//! required fields, ranges, text and image bounds, and which fields a known
+//! row keeps by omission.
 use std::collections::{HashMap, HashSet};
 
 /// A 1 MiB UTF-16 publication re-serialized with every unit escaped (`\uXXXX`).
@@ -23,6 +25,104 @@ pub struct StripState {
     /// Exact serialized form of the accepted revision: a replay must match it.
     fingerprint: Vec<u16>,
     options: ShellStripOptions,
+    /// Scalar row fields a delta keeps by omission. WinUI keeps the strings
+    /// and pixels; this decides when they are kept.
+    fields: HashMap<u32, RowFields>,
+}
+
+/// Bounds shared with Firefox's strip session and the native JSON validation.
+const MAX_ROWS: usize = 10_000;
+const MAX_FLAGS: f64 = 15.0;
+const MAX_SHORT_TEXT: usize = 1024;
+const MAX_DETAIL_TEXT: usize = 2048;
+const MAX_IMAGE_SIDE: f64 = 32.0;
+/// Pixels of new images in one publication; retention is bounded separately.
+const MAX_PUBLISHED_PIXELS: u64 = 262_144;
+
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+struct RowFields {
+    flags: u32,
+    container_color: u32,
+    group_source: bool,
+    group_target: bool,
+    image_width: u32,
+    image_height: u32,
+}
+
+/// Where the host takes a string or image field of a resolved row from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ShellStripSource {
+    /// The value this publication carries.
+    Take = 0,
+    /// The value the host already retains for this row.
+    Keep = 1,
+    /// No value: an empty string, or no image.
+    Empty = 2,
+}
+
+/// One accepted row, in publication order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
+pub struct ShellStripRow {
+    pub id: u32,
+    pub flags: u32,
+    pub container_color: u32,
+    pub image_width: u32,
+    pub image_height: u32,
+    pub detail: ShellStripSource,
+    pub status: ShellStripSource,
+    pub container_name: ShellStripSource,
+    pub image: ShellStripSource,
+    pub group_source: bool,
+    pub group_target: bool,
+}
+
+/// A row image as read from the publication.
+#[derive(Clone, Copy, Default)]
+pub enum ImageInput<'a> {
+    #[default]
+    Absent,
+    /// `"image": null` clears the row's image.
+    Null,
+    Set { width: f64, height: f64, pixels: &'a [u16] },
+}
+
+/// Row fields as read from the publication, before any validation. Text fields
+/// carry only their length: the host keeps the strings.
+#[derive(Clone, Copy, Default)]
+pub struct RowInput<'a> {
+    pub id: f64,
+    pub flags: Option<f64>,
+    pub container_color: Option<f64>,
+    pub group_source: Option<bool>,
+    pub group_target: Option<bool>,
+    pub detail: Option<usize>,
+    pub status: Option<usize>,
+    pub container_name: Option<usize>,
+    pub image: ImageInput<'a>,
+}
+
+/// An accepted publication's resolved state for the host to project.
+#[derive(Debug, PartialEq)]
+pub struct Published {
+    pub options: ShellStripOptions,
+    pub rows: Vec<ShellStripRow>,
+    pub removed: Vec<u32>,
+}
+
+struct Staged {
+    rows: Vec<ShellStripRow>,
+    removed: Vec<u32>,
+    changes: Vec<ShellStripChange>,
+}
+
+fn source(present: bool, existing: bool) -> ShellStripSource {
+    if present { ShellStripSource::Take } else if existing { ShellStripSource::Keep } else { ShellStripSource::Empty }
+}
+
+fn lower_hex(pixels: &[u16]) -> bool {
+    pixels.iter().all(|&c| (u16::from(b'0')..=u16::from(b'9')).contains(&c) || (u16::from(b'a')..=u16::from(b'f')).contains(&c))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,16 +310,88 @@ impl StripState {
         }))
     }
 
+    /// Validate removals and rows against the accepted rows, and resolve which
+    /// fields each row takes, keeps or clears. A row known to a delta keeps
+    /// what it omits; a new row, or any row of a full snapshot, must carry
+    /// `flags` and `detail`. Mutates nothing.
+    fn stage(&self, base: u32, rows: &[RowInput], removals: &[f64]) -> Option<Staged> {
+        if rows.len() > MAX_ROWS || removals.len() > MAX_ROWS || (base == 0 && !removals.is_empty()) { return None; }
+        let mut staged = Staged { rows: Vec::with_capacity(rows.len()), removed: Vec::with_capacity(removals.len()),
+                                  changes: Vec::with_capacity(rows.len() + removals.len()) };
+        for &value in removals {
+            let id = id(value)?;
+            staged.removed.push(id);
+            // Unknown, repeated or re-added IDs are refused when the changes apply.
+            staged.changes.push(ShellStripChange { id, pixels: 0, remove: true, complete: false });
+        }
+        let mut published_pixels = 0u64;
+        for row in rows {
+            let id = id(row.id)?;
+            let old = if base == 0 { None } else { self.fields.get(&id) };
+            let existing = old.is_some();
+            let old = old.copied().unwrap_or_default();
+            let flags = match row.flags {
+                Some(value) => integer(value, 0.0, MAX_FLAGS)? as u32,
+                None if existing => old.flags,
+                None => return None,
+            };
+            if !existing && row.detail.is_none() { return None; }
+            if row.detail.is_some_and(|len| len > MAX_DETAIL_TEXT) || row.status.is_some_and(|len| len > MAX_DETAIL_TEXT) ||
+               row.container_name.is_some_and(|len| len > MAX_SHORT_TEXT) { return None; }
+            let container_color = match row.container_color {
+                Some(value) => integer(value, 0.0, f64::from(u32::MAX))? as u32,
+                None => old.container_color,
+            };
+            let (image, image_width, image_height) = match row.image {
+                ImageInput::Absent => (source(false, existing), old.image_width, old.image_height),
+                ImageInput::Null => (ShellStripSource::Empty, 0, 0),
+                ImageInput::Set { width, height, pixels } => {
+                    let width = integer(width, 1.0, MAX_IMAGE_SIDE)? as u32;
+                    let height = integer(height, 1.0, MAX_IMAGE_SIDE)? as u32;
+                    let count = width * height;
+                    published_pixels += u64::from(count);
+                    if published_pixels > MAX_PUBLISHED_PIXELS || pixels.len() != count as usize * 8 || !lower_hex(pixels) {
+                        return None;
+                    }
+                    (ShellStripSource::Take, width, height)
+                }
+            };
+            staged.rows.push(ShellStripRow {
+                id, flags, container_color, image_width, image_height,
+                detail: source(row.detail.is_some(), existing),
+                status: source(row.status.is_some(), existing),
+                container_name: source(row.container_name.is_some(), existing),
+                image,
+                group_source: row.group_source.unwrap_or(old.group_source),
+                group_target: row.group_target.unwrap_or(old.group_target),
+            });
+            staged.changes.push(ShellStripChange {
+                id, pixels: image_width * image_height, remove: false,
+                complete: row.flags.is_some() && row.detail.is_some(),
+            });
+        }
+        Some(staged)
+    }
+
     /// Accept a new publication atomically: envelope, rows and optional layout
-    /// all validate before the revision, options or fingerprint change.
-    pub fn publish(&mut self, envelope: &Envelope, fingerprint: &[u16], changes: &[ShellStripChange],
-                   layout: Option<&[ShellStripSlot]>) -> Option<ShellStripOptions> {
+    /// all validate before the revision, options, fingerprint or rows change.
+    pub fn publish(&mut self, envelope: &Envelope, fingerprint: &[u16], rows: &[RowInput], removals: &[f64],
+                   layout: Option<&[ShellStripSlot]>) -> Option<Published> {
         let Ok(Resolution::Accepted(options)) = self.resolve(envelope, fingerprint) else { return None; };
-        if !self.apply_layout(options.base, options.revision, changes, layout) { return None; }
+        let staged = self.stage(options.base, rows, removals)?;
+        if !self.apply_layout(options.base, options.revision, &staged.changes, layout) { return None; }
+        if options.base == 0 { self.fields.clear(); }
+        for id in &staged.removed { self.fields.remove(id); }
+        for row in &staged.rows {
+            self.fields.insert(row.id, RowFields {
+                flags: row.flags, container_color: row.container_color, group_source: row.group_source,
+                group_target: row.group_target, image_width: row.image_width, image_height: row.image_height,
+            });
+        }
         self.options = options;
         self.fingerprint.clear();
         self.fingerprint.extend_from_slice(fingerprint);
-        Some(options)
+        Some(Published { options, rows: staged.rows, removed: staged.removed })
     }
 
     pub fn apply_layout(&mut self, base: u32, revision: u32, changes: &[ShellStripChange],
@@ -298,6 +470,9 @@ mod tests {
         ShellStripChange { id, pixels, remove: false, complete: true }
     }
     fn text(value: &str) -> Vec<u16> { value.encode_utf16().collect() }
+    fn fresh(id: u32) -> RowInput<'static> {
+        RowInput { id: f64::from(id), flags: Some(0.0), detail: Some(0), ..Default::default() }
+    }
     fn full(revision: f64) -> Envelope<'static> {
         Envelope { version: 1.0, revision, rtl: Some(false), ..Default::default() }
     }
@@ -311,7 +486,7 @@ mod tests {
         assert_eq!(s.resolve(&Envelope { rtl: None, ..full(1.0) }, &[]), Err(()));
         // Version 2 with base zero is a full snapshot too.
         assert_eq!(s.resolve(&Envelope { rtl: None, ..delta(0.0, 1.0) }, &[]), Err(()));
-        let options = s.publish(&full(1.0), &text("a"), &[row(1, 0)], None).unwrap();
+        let options = s.publish(&full(1.0), &text("a"), &[fresh(1)], &[], None).unwrap().options;
         assert_eq!(options, ShellStripOptions { revision: 1, ..Default::default() });
         assert_eq!(options.grouping_delay, 240);
         assert_eq!(options.backdrop, ShellBackdrop::MicaAlt);
@@ -330,20 +505,20 @@ mod tests {
             group_halo: Some(true), group_glow_animations: Some(true), group_glow_fade_out: Some(true),
             rtl: Some(true), ..full(1.0)
         };
-        let stated = s.publish(&first, &text("1"), &[row(1, 0)], None).unwrap();
-        let kept = s.publish(&delta(1.0, 2.0), &text("2"), &[], None).unwrap();
+        let stated = s.publish(&first, &text("1"), &[fresh(1)], &[], None).unwrap().options;
+        let kept = s.publish(&delta(1.0, 2.0), &text("2"), &[], &[], None).unwrap().options;
         assert_eq!(kept, ShellStripOptions { base: 1, revision: 2, ..stated });
         assert_eq!((kept.backdrop, kept.group_reach, kept.grouping_delay), (ShellBackdrop::Acrylic, 2.0, 0));
-        let changed = s.publish(&Envelope { group_glow: Some(false), ..delta(2.0, 3.0) }, &text("3"), &[], None).unwrap();
+        let changed = s.publish(&Envelope { group_glow: Some(false), ..delta(2.0, 3.0) }, &text("3"), &[], &[], None).unwrap().options;
         assert!(!changed.group_glow && changed.group_halo && changed.rtl);
-        let reset = s.publish(&full(4.0), &text("4"), &[row(1, 0)], None).unwrap();
+        let reset = s.publish(&full(4.0), &text("4"), &[fresh(1)], &[], None).unwrap().options;
         assert_eq!(reset, ShellStripOptions { revision: 4, ..Default::default() });
     }
 
     #[test]
     fn replay_must_match_exactly_and_revisions_only_advance() {
         let mut s = StripState::default();
-        s.publish(&full(5.0), &text("five"), &[row(1, 0)], None).unwrap();
+        s.publish(&full(5.0), &text("five"), &[fresh(1)], &[], None).unwrap().options;
         assert_eq!(s.resolve(&full(5.0), &text("five")), Ok(Resolution::Unchanged));
         // A replay is identified before its envelope is reconsidered.
         assert_eq!(s.resolve(&Envelope { rtl: None, ..full(5.0) }, &text("five")), Ok(Resolution::Unchanged));
@@ -352,7 +527,7 @@ mod tests {
         assert_eq!(s.resolve(&delta(4.0, 6.0), &[]), Err(()));
         assert!(matches!(s.resolve(&delta(5.0, 6.0), &[]), Ok(Resolution::Accepted(_))));
         // Publishing a replay is not a new acceptance.
-        assert!(s.publish(&full(5.0), &text("five"), &[row(1, 0)], None).is_none());
+        assert!(s.publish(&full(5.0), &text("five"), &[fresh(1)], &[], None).is_none());
     }
 
     #[test]
@@ -388,12 +563,104 @@ mod tests {
     #[test]
     fn rejected_rows_leave_envelope_state_untouched() {
         let mut s = StripState::default();
-        let halo = s.publish(&Envelope { group_halo: Some(true), ..full(1.0) }, &text("1"), &[row(1, 0)], None).unwrap();
+        let halo = s.publish(&Envelope { group_halo: Some(true), ..full(1.0) }, &text("1"), &[fresh(1)], &[], None).unwrap().options;
         // Unknown row patched without its required fields.
-        let partial = ShellStripChange { complete: false, ..row(2, 0) };
-        assert!(s.publish(&Envelope { group_halo: Some(false), ..delta(1.0, 2.0) }, &text("2"), &[partial], None).is_none());
+        let partial = RowInput { flags: None, ..fresh(2) };
+        assert!(s.publish(&Envelope { group_halo: Some(false), ..delta(1.0, 2.0) }, &text("2"), &[partial], &[], None).is_none());
         assert_eq!(s.resolve(&delta(1.0, 2.0), &text("2")), Ok(Resolution::Accepted(ShellStripOptions { base: 1, revision: 2, ..halo })));
         assert_eq!(s.resolve(&full(1.0), &text("1")), Ok(Resolution::Unchanged));
+    }
+
+    fn hex(pixels: usize) -> Vec<u16> { text(&"0a".repeat(pixels * 4)) }
+
+    #[test]
+    fn known_rows_keep_omitted_fields_and_new_rows_must_be_complete() {
+        use ShellStripSource::{Empty, Keep, Take};
+        let mut s = StripState::default();
+        let pixels = hex(4);
+        let first = RowInput {
+            flags: Some(5.0), container_color: Some(0xff_00_00 as f64), group_source: Some(true),
+            status: Some(3), container_name: Some(4),
+            image: ImageInput::Set { width: 2.0, height: 2.0, pixels: &pixels }, ..fresh(1)
+        };
+        let row = s.publish(&full(1.0), &text("1"), &[first], &[], None).unwrap().rows[0];
+        assert_eq!((row.flags, row.container_color, row.group_source, row.group_target), (5, 0xff_00_00, true, false));
+        assert_eq!((row.detail, row.status, row.container_name, row.image), (Take, Take, Take, Take));
+        assert_eq!((row.image_width, row.image_height), (2, 2));
+        // A delta patch of a known row keeps everything it omits.
+        let patch = RowInput { id: 1.0, group_target: Some(true), ..Default::default() };
+        let kept = s.publish(&delta(1.0, 2.0), &text("2"), &[patch], &[], None).unwrap().rows[0];
+        assert_eq!(kept, ShellStripRow { group_target: true, detail: Keep, status: Keep, container_name: Keep, image: Keep, ..row });
+        // Null clears the image; the next delta keeps the cleared state.
+        let cleared = s.publish(&delta(2.0, 3.0), &text("3"), &[RowInput { id: 1.0, image: ImageInput::Null, ..Default::default() }], &[], None).unwrap().rows[0];
+        assert_eq!((cleared.image, cleared.image_width, cleared.image_height), (Empty, 0, 0));
+        let after = s.publish(&delta(3.0, 4.0), &text("4"), &[RowInput { id: 1.0, flags: Some(1.0), ..Default::default() }], &[], None).unwrap().rows[0];
+        assert_eq!((after.image, after.image_width, after.group_source), (Keep, 0, true));
+        // A new row in a delta, or any row of a full snapshot, has nothing to keep.
+        for missing in [RowInput { flags: None, ..fresh(2) }, RowInput { detail: None, ..fresh(2) }] {
+            assert!(s.publish(&delta(4.0, 5.0), &text("5"), &[missing], &[], None).is_none());
+        }
+        assert!(s.publish(&full(5.0), &text("5"), &[RowInput { id: 1.0, ..Default::default() }], &[], None).is_none());
+        let fresh_row = s.publish(&delta(4.0, 5.0), &text("5"), &[fresh(2)], &[], None).unwrap().rows[0];
+        assert_eq!((fresh_row.status, fresh_row.container_name, fresh_row.image, fresh_row.group_source), (Empty, Empty, Empty, false));
+        let reset = s.publish(&full(6.0), &text("6"), &[fresh(1)], &[], None).unwrap().rows[0];
+        assert_eq!((reset.flags, reset.group_source, reset.status), (0, false, Empty));
+    }
+
+    #[test]
+    fn malformed_rows_are_rejected() {
+        let s = StripState::default();
+        let stage = |row: RowInput| s.stage(0, &[row], &[]).is_some();
+        assert!(stage(fresh(1)));
+        for id in [0.0, -1.0, 1.5, 4_294_967_296.0, f64::NAN] { assert!(!stage(RowInput { id, ..fresh(1) })); }
+        for flags in [-1.0, 16.0, 0.5, f64::NAN] { assert!(!stage(RowInput { flags: Some(flags), ..fresh(1) })); }
+        assert!(stage(RowInput { flags: Some(15.0), container_color: Some(4_294_967_295.0), ..fresh(1) }));
+        for color in [-1.0, 4_294_967_296.0, 2.5] { assert!(!stage(RowInput { container_color: Some(color), ..fresh(1) })); }
+        assert!(stage(RowInput { detail: Some(2048), status: Some(2048), container_name: Some(1024), ..fresh(1) }));
+        assert!(!stage(RowInput { detail: Some(2049), ..fresh(1) }));
+        assert!(!stage(RowInput { status: Some(2049), ..fresh(1) }));
+        assert!(!stage(RowInput { container_name: Some(1025), ..fresh(1) }));
+        let four = hex(4);
+        let upper = text(&"0A".repeat(16));
+        let spaced = text(&" a".repeat(16));
+        let image = |width: f64, height: f64, pixels: &[u16]| stage(RowInput { image: ImageInput::Set { width, height, pixels }, ..fresh(1) });
+        assert!(image(2.0, 2.0, &four));
+        assert!(image(32.0, 32.0, &hex(1024)));
+        for (width, height) in [(0.0, 4.0), (33.0, 1.0), (1.5, 2.0), (f64::NAN, 1.0)] {
+            assert!(!image(width, height, &four));
+        }
+        assert!(!image(2.0, 2.0, &hex(3)));
+        assert!(!image(2.0, 2.0, &upper));
+        assert!(!image(2.0, 2.0, &spaced));
+    }
+
+    #[test]
+    fn removals_must_name_known_rows_once_and_only_in_deltas() {
+        let mut s = StripState::default();
+        s.publish(&full(1.0), &text("1"), &[fresh(1), fresh(2), fresh(3)], &[], None).unwrap();
+        assert!(s.stage(0, &[], &[1.0]).is_none());
+        for removals in [vec![9.0], vec![1.0, 1.0], vec![0.0], vec![1.5]] {
+            assert!(s.publish(&delta(1.0, 2.0), &text("2"), &[], &removals, None).is_none());
+        }
+        // A removed ID cannot also be published as a row in the same delta.
+        assert!(s.publish(&delta(1.0, 2.0), &text("2"), &[fresh(1)], &[1.0], None).is_none());
+        let published = s.publish(&delta(1.0, 2.0), &text("2"), &[], &[1.0, 2.0], None).unwrap();
+        assert_eq!(published.removed, vec![1, 2]);
+        // Its retained fields go with it: re-adding must be complete again.
+        assert!(s.publish(&delta(2.0, 3.0), &text("3"), &[RowInput { id: 1.0, group_source: Some(true), ..Default::default() }], &[], None).is_none());
+        assert_eq!(s.publish(&delta(2.0, 3.0), &text("3"), &[fresh(1)], &[], None).unwrap().rows[0].detail, ShellStripSource::Take);
+    }
+
+    #[test]
+    fn new_images_are_bounded_per_publication() {
+        let s = StripState::default();
+        let pixels = hex(1024);
+        let rows: Vec<_> = (1..=257).map(|id| RowInput { image: ImageInput::Set { width: 32.0, height: 32.0, pixels: &pixels }, ..fresh(id) }).collect();
+        assert!(s.stage(0, &rows[..256], &[]).is_some());
+        assert!(s.stage(0, &rows, &[]).is_none());
+        let many: Vec<_> = (1..=10_001).map(fresh).collect();
+        assert!(s.stage(0, &many[..10_000], &[]).is_some());
+        assert!(s.stage(0, &many, &[]).is_none());
     }
 
     #[test]

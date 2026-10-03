@@ -42,7 +42,7 @@ use crate::queue::{
     CompleteError, DrainError, EnqueueStatus, Limits, Outcome, Request, RequestKind, RequestQueue,
 };
 use crate::SHELL_CORE_ABI_VERSION;
-use crate::strip::{ShellStripChange, ShellStripSlot, StripState};
+use crate::strip::{ShellStripSlot, StripState};
 use crate::group_motion::ShellGroupMotionRow;
 
 /// Result of every entry point. `Ok` is zero so the host can test it directly.
@@ -883,40 +883,138 @@ pub unsafe extern "C" fn shell_core_strip_resolve(
     })
 }
 
-/// Atomically accept a strip publication: envelope, row metadata and the
+/// Presence and length of a row text field; the host keeps the string.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct ShellStripText { pub present: bool, pub len: usize }
+
+/// Values of [`ShellStripImage::kind`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ShellStripImageKind {
+    Absent = 0,
+    /// `"image": null`.
+    Null = 1,
+    Set = 2,
+}
+
+/// A row image as read from the publication: raw dimensions and the hex pixel
+/// string, readable for `len` units when `kind` is `Set`.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ShellStripImage { pub kind: u32, pub width: f64, pub height: f64, pub pixels: *const u16, pub len: usize }
+
+/// One row as read from the publication's `rows`, with JSON types checked only.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ShellStripRowInput {
+    pub id: f64,
+    pub flags: ShellStripNumber,
+    pub container_color: ShellStripNumber,
+    pub group_source: ShellStripFlag,
+    pub group_target: ShellStripFlag,
+    pub detail: ShellStripText,
+    pub status: ShellStripText,
+    pub container_name: ShellStripText,
+    pub image: ShellStripImage,
+}
+
+/// The publication's row data. `removals` holds the raw `removed` numbers, read
+/// only for deltas. Each pointer may be null only with a zero count.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ShellStripPublication {
+    pub rows: *const ShellStripRowInput,
+    pub row_count: usize,
+    pub removals: *const f64,
+    pub removal_count: usize,
+    pub layout: *const ShellStripSlot,
+    pub layout_count: usize,
+    pub has_layout: bool,
+}
+
+/// One hex pixel per 8 units, at most 32x32 pixels.
+const MAX_IMAGE_UNITS: usize = 32 * 32 * 8;
+
+/// # Safety
+/// Every `Set` image must be readable for its stated length.
+unsafe fn row_input<'a>(raw: &ShellStripRowInput) -> Option<crate::strip::RowInput<'a>> {
+    use crate::strip::ImageInput;
+    let number = |n: ShellStripNumber| n.present.then_some(n.value);
+    let flag = |f: ShellStripFlag| f.present.then_some(f.value);
+    let text = |t: ShellStripText| t.present.then_some(t.len);
+    let image = match raw.image.kind {
+        k if k == ShellStripImageKind::Absent as u32 => ImageInput::Absent,
+        k if k == ShellStripImageKind::Null as u32 => ImageInput::Null,
+        k if k == ShellStripImageKind::Set as u32 => {
+            if raw.image.len > MAX_IMAGE_UNITS { return None; }
+            ImageInput::Set { width: raw.image.width, height: raw.image.height,
+                              pixels: slice(raw.image.pixels, raw.image.len)? }
+        }
+        _ => return None,
+    };
+    Some(crate::strip::RowInput {
+        id: raw.id,
+        flags: number(raw.flags),
+        container_color: number(raw.container_color),
+        group_source: flag(raw.group_source),
+        group_target: flag(raw.group_target),
+        detail: text(raw.detail),
+        status: text(raw.status),
+        container_name: text(raw.container_name),
+        image,
+    })
+}
+
+/// Atomically accept a strip publication: envelope, removals, rows and the
 /// optional ordered group layout. Base zero replaces the retained state; other
 /// bases must match the accepted revision exactly. An exact replay is not a new
 /// publication and is refused here; resolve it first.
 ///
+/// On success `rows` receives one resolved row per input row, in order, saying
+/// which retained or published values each field takes, and `removed` receives
+/// the validated removal IDs. Nothing is written on failure.
+///
 /// # Safety
-/// As [`shell_core_strip_resolve`]; arrays contain their stated number of
-/// readable entries.
+/// As [`shell_core_strip_resolve`]; `publication` and its arrays readable for
+/// their stated counts; `rows` and `removed` writable for `row_count` and
+/// `removal_count` entries (null only for zero); `out` writable.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_strip_publish(
     core: *mut ShellCore, envelope: *const ShellStripEnvelope,
     fingerprint: *const u16, units: usize,
-    changes: *const ShellStripChange, count: usize,
-    layout: *const ShellStripSlot, layout_count: usize, has_layout: bool,
+    publication: *const ShellStripPublication,
     out: *mut crate::strip::ShellStripOptions,
+    rows: *mut crate::strip::ShellStripRow,
+    removed: *mut u32,
 ) -> ShellStatus {
     let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
     *out = Default::default();
-    let Some(raw) = envelope.as_ref() else { return ShellStatus::InvalidArgument; };
-    if units > crate::strip::MAX_FINGERPRINT || count > 20_000 || layout_count > 20_000 ||
-       (count != 0 && changes.is_null()) || (layout_count != 0 && (layout.is_null() || !has_layout)) {
+    let (Some(raw), Some(p)) = (envelope.as_ref(), publication.as_ref()) else { return ShellStatus::InvalidArgument; };
+    if units > crate::strip::MAX_FINGERPRINT || p.row_count > 20_000 || p.removal_count > 20_000 || p.layout_count > 20_000 ||
+       (p.row_count != 0 && (p.rows.is_null() || rows.is_null())) ||
+       (p.removal_count != 0 && (p.removals.is_null() || removed.is_null())) ||
+       (p.layout_count != 0 && (p.layout.is_null() || !p.has_layout)) {
         return ShellStatus::InvalidArgument;
     }
     let (Some(fingerprint), Some(envelope)) = (slice(fingerprint, units), self::envelope(raw)) else {
         return ShellStatus::InvalidArgument;
     };
+    let raw_rows = if p.row_count == 0 { &[] } else { std::slice::from_raw_parts(p.rows, p.row_count) };
+    let Some(inputs) = raw_rows.iter().map(|row| row_input(row)).collect::<Option<Vec<_>>>() else {
+        return ShellStatus::InvalidArgument;
+    };
     guard(core, |core| {
-        let changes = if count == 0 { &[] } else { std::slice::from_raw_parts(changes, count) };
-        let layout = if !has_layout { None } else if layout_count == 0 { Some(&[][..]) }
-                     else { Some(std::slice::from_raw_parts(layout, layout_count)) };
-        match core.strip.publish(&envelope, fingerprint, changes, layout) {
-            Some(options) => { *out = options; ShellStatus::Ok }
-            None => ShellStatus::InvalidArgument,
-        }
+        let removals = if p.removal_count == 0 { &[] } else { std::slice::from_raw_parts(p.removals, p.removal_count) };
+        let layout = if !p.has_layout { None } else if p.layout_count == 0 { Some(&[][..]) }
+                     else { Some(std::slice::from_raw_parts(p.layout, p.layout_count)) };
+        let Some(published) = core.strip.publish(&envelope, fingerprint, &inputs, removals, layout) else {
+            return ShellStatus::InvalidArgument;
+        };
+        *out = published.options;
+        if !published.rows.is_empty() { std::ptr::copy_nonoverlapping(published.rows.as_ptr(), rows, published.rows.len()); }
+        if !published.removed.is_empty() { std::ptr::copy_nonoverlapping(published.removed.as_ptr(), removed, published.removed.len()); }
+        ShellStatus::Ok
     })
 }
 
@@ -1233,6 +1331,32 @@ mod tests {
         }
     }
 
+    fn strip_row(id: f64) -> ShellStripRowInput {
+        ShellStripRowInput {
+            id, flags: ShellStripNumber { present: true, value: 0.0 }, container_color: Default::default(),
+            group_source: Default::default(), group_target: Default::default(),
+            detail: ShellStripText { present: true, len: 0 }, status: Default::default(), container_name: Default::default(),
+            image: ShellStripImage { kind: ShellStripImageKind::Absent as u32, width: 0.0, height: 0.0, pixels: std::ptr::null(), len: 0 },
+        }
+    }
+
+    fn strip_publication(rows: &[ShellStripRowInput], removals: &[f64]) -> ShellStripPublication {
+        ShellStripPublication {
+            rows: if rows.is_empty() { std::ptr::null() } else { rows.as_ptr() }, row_count: rows.len(),
+            removals: if removals.is_empty() { std::ptr::null() } else { removals.as_ptr() }, removal_count: removals.len(),
+            layout: std::ptr::null(), layout_count: 0, has_layout: false,
+        }
+    }
+
+    fn blank_row() -> crate::strip::ShellStripRow {
+        crate::strip::ShellStripRow {
+            id: 0, flags: 0, container_color: 0, image_width: 0, image_height: 0,
+            detail: crate::strip::ShellStripSource::Empty, status: crate::strip::ShellStripSource::Empty,
+            container_name: crate::strip::ShellStripSource::Empty, image: crate::strip::ShellStripSource::Empty,
+            group_source: false, group_target: false,
+        }
+    }
+
     #[test]
     fn strip_envelope_resolves_then_publishes_atomically() {
         unsafe {
@@ -1243,22 +1367,25 @@ mod tests {
             let mut full = strip_envelope(2.0, 0.0, 1.0);
             full.backdrop = ShellStripName { present: true, data: acrylic.as_ptr(), len: acrylic.len() };
             let print = utf16("one");
-            let rows = [ShellStripChange { id: 1, pixels: 0, remove: false, complete: true }];
+            let rows = [strip_row(1.0)];
+            let one = strip_publication(&rows, &[]);
+            let none = strip_publication(&[], &[]);
+            let mut resolved = [blank_row(); 1];
             assert_eq!(shell_core_strip_resolve(core, &full, print.as_ptr(), print.len(), &mut options, &mut unchanged), ShellStatus::Ok);
             assert!(!unchanged);
             assert_eq!(options.backdrop, crate::strip::ShellBackdrop::Acrylic);
             // Resolving commits nothing: the same envelope publishes afterwards.
-            assert_eq!(shell_core_strip_publish(core, &full, print.as_ptr(), print.len(), rows.as_ptr(), 1,
-                                                std::ptr::null(), 0, false, &mut options), ShellStatus::Ok);
+            assert_eq!(shell_core_strip_publish(core, &full, print.as_ptr(), print.len(), &one, &mut options,
+                                                resolved.as_mut_ptr(), std::ptr::null_mut()), ShellStatus::Ok);
             assert_eq!(options.revision, 1);
             assert_eq!(shell_core_strip_resolve(core, &full, print.as_ptr(), print.len(), &mut options, &mut unchanged), ShellStatus::Ok);
             assert!(unchanged);
-            assert_eq!(shell_core_strip_publish(core, &full, print.as_ptr(), print.len(), rows.as_ptr(), 1,
-                                                std::ptr::null(), 0, false, &mut options), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_strip_publish(core, &full, print.as_ptr(), print.len(), &one, &mut options,
+                                                resolved.as_mut_ptr(), std::ptr::null_mut()), ShellStatus::InvalidArgument);
             // A delta keeps the backdrop it omits.
             let next = strip_envelope(2.0, 1.0, 2.0);
-            assert_eq!(shell_core_strip_publish(core, &next, std::ptr::null(), 0, std::ptr::null(), 0,
-                                                std::ptr::null(), 0, false, &mut options), ShellStatus::Ok);
+            assert_eq!(shell_core_strip_publish(core, &next, std::ptr::null(), 0, &none, &mut options,
+                                                std::ptr::null_mut(), std::ptr::null_mut()), ShellStatus::Ok);
             assert_eq!((options.base, options.revision, options.backdrop), (1, 2, crate::strip::ShellBackdrop::Acrylic));
             // Malformed calls change nothing and report themselves.
             let long = vec![b'a' as u16; 65];
@@ -1269,11 +1396,35 @@ mod tests {
             assert_eq!(shell_core_strip_resolve(core, &named, std::ptr::null(), 0, &mut options, &mut unchanged), ShellStatus::InvalidArgument);
             assert_eq!(shell_core_strip_resolve(core, std::ptr::null(), std::ptr::null(), 0, &mut options, &mut unchanged), ShellStatus::InvalidArgument);
             assert_eq!(shell_core_strip_resolve(core, &next, std::ptr::null(), 1, &mut options, &mut unchanged), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_strip_publish(core, &named, std::ptr::null(), 0, std::ptr::null(), 0,
-                                                std::ptr::null(), 0, false, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_strip_publish(core, &named, std::ptr::null(), 0, &none, std::ptr::null_mut(),
+                                                std::ptr::null_mut(), std::ptr::null_mut()), ShellStatus::InvalidArgument);
             let delta = strip_envelope(2.0, 2.0, 3.0);
             assert_eq!(shell_core_strip_resolve(core, &delta, std::ptr::null(), 0, &mut options, &mut unchanged), ShellStatus::Ok);
             assert_eq!(options.backdrop, crate::strip::ShellBackdrop::Acrylic);
+            // Resolved rows and removals come back in order; a malformed row changes nothing.
+            let mut odd = strip_row(4.0);
+            odd.image.kind = 7;
+            let odd_rows = [odd];
+            let odd_publication = strip_publication(&odd_rows, &[]);
+            assert_eq!(shell_core_strip_publish(core, &delta, std::ptr::null(), 0, &odd_publication, &mut options,
+                                                resolved.as_mut_ptr(), std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            let mut long = strip_row(4.0);
+            long.image = ShellStripImage { kind: ShellStripImageKind::Set as u32, width: 32.0, height: 32.0, pixels: std::ptr::null(), len: MAX_IMAGE_UNITS + 1 };
+            let long_rows = [long];
+            let long_publication = strip_publication(&long_rows, &[]);
+            assert_eq!(shell_core_strip_publish(core, &delta, std::ptr::null(), 0, &long_publication, &mut options,
+                                                resolved.as_mut_ptr(), std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            let added = [strip_row(4.0)];
+            let removal = [1.0];
+            let swap = strip_publication(&added, &removal);
+            let mut gone = [0u32; 1];
+            assert_eq!(shell_core_strip_publish(core, &delta, std::ptr::null(), 0, &swap, std::ptr::null_mut(),
+                                                resolved.as_mut_ptr(), gone.as_mut_ptr()), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_strip_publish(core, &delta, std::ptr::null(), 0, &swap, &mut options,
+                                                resolved.as_mut_ptr(), std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_strip_publish(core, &delta, std::ptr::null(), 0, &swap, &mut options,
+                                                resolved.as_mut_ptr(), gone.as_mut_ptr()), ShellStatus::Ok);
+            assert_eq!((resolved[0].id, resolved[0].detail, gone[0]), (4, crate::strip::ShellStripSource::Take, 1));
             shell_core_destroy(core);
         }
     }
