@@ -1427,13 +1427,17 @@ HWND VisibleRootAt(POINT screenPoint, HWND source) {
 // The other pane whose strip claims `screenPoint`, if any. Never the source,
 // a hidden or minimized window, or a strip another window covers there.
 Pane* ForeignStripAt(Pane& sourcePane, POINT screenPoint) {
+    const auto visible = VisibleRootAt(screenPoint, GetAncestor(sourcePane.parent, GA_ROOT));
+    if (!visible) return nullptr;
     for (auto& entry : state().panes) {
         if (!entry.second->strip || entry.second.get() == &sourcePane || !entry.second->appliedVisible ||
             !IsWindowVisible(entry.first) || IsIconic(entry.first)) continue;
         RECT bounds = entry.second->StripScreenBounds();
         if (!PtInRect(&bounds, screenPoint)) continue;
-        if (VisibleRootAt(screenPoint, GetAncestor(sourcePane.parent, GA_ROOT)) != GetAncestor(entry.first, GA_ROOT))
-            return nullptr;
+        // Pane storage is keyed by HWND, not z-order. A covered pane can sort
+        // before the window a person can actually see; skip it and keep
+        // looking instead of turning the visible strip into empty desktop.
+        if (visible != GetAncestor(entry.first, GA_ROOT)) continue;
         return entry.second.get();
     }
     return nullptr;

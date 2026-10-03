@@ -4050,7 +4050,7 @@ static bool GroupHiddenWhileLeaving(winrt::Microsoft::UI::Xaml::Controls::TabVie
 // strip-group-adopt on the destination naming the source window, its session
 // and the source's group; the source sends nothing. The gap is held until
 // Firefox answers: a rejection or a new layout releases it.
-static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool accept) {
+static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool accept, bool overlap = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     auto settle = [](int n = 30) { for (int i = 0; i < n; ++i) { Pump(); Sleep(10); } };
@@ -4078,8 +4078,33 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
     HWND host2 = CreateWindowExW(0, L"STATIC", L"Group drop target", WS_OVERLAPPEDWINDOW, 1000, 480, 640, 240,
                                   nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     Require(host2 != nullptr, "destination window for cross-window group drag");
+    HWND covered{};
+    if (overlap) {
+        HWND candidate = CreateWindowExW(0, L"STATIC", L"Covered group drop target", WS_OVERLAPPEDWINDOW,
+                                         1000, 480, 640, 240, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        Require(candidate != nullptr, "covered destination window for overlapping group drag");
+        // state().panes is ordered by numeric HWND. Make that first candidate
+        // the covered window so the regression deterministically exercises the
+        // old early-return path regardless of handle allocation direction.
+        if (reinterpret_cast<uintptr_t>(candidate) < reinterpret_cast<uintptr_t>(host2)) {
+            covered = candidate;
+        } else {
+            covered = host2;
+            host2 = candidate;
+        }
+        Require(reinterpret_cast<uintptr_t>(covered) < reinterpret_cast<uintptr_t>(host2),
+                "covered pane sorts before the visible destination pane");
+        Require(SUCCEEDED(api.updateTabStrip(covered, &rect, TRUE)), "covered overlapping destination strip");
+        ShowWindow(covered, SW_SHOWNOACTIVATE);
+        WinUITab coveredTabs[]{{301, L"Covered"}};
+        uint32_t coveredSelected{};
+        Require(SUCCEEDED(api.syncTabs(covered, coveredTabs, 1, 301, &coveredSelected)), "covered destination tabs");
+        MenuPublish(api, covered, LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":100,"rtl":false,"windowDragSession":18,"groupsLabel":"Groups","groups":[],"rows":[{"id":301,"detail":"","flags":0}],"layout":[{"group":0,"tab":301}]}})");
+    }
     Require(SUCCEEDED(api.updateTabStrip(host2, &rect, TRUE)), "destination strip for cross-window group drag");
     ShowWindow(host2, SW_SHOWNOACTIVATE);
+    if (covered)
+        SetWindowPos(host2, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     WinUITab tabs2[]{{201, L"Here"}, {203, L"Grouped"}, {202, L"There"}};
     uint32_t selected2{};
     Require(SUCCEEDED(api.syncTabs(host2, tabs2, 3, 201, &selected2)), "destination tabs");
@@ -4164,6 +4189,9 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
     }
     // Left quarter of the destination group's header: before the whole group.
     const POINT drop = screenAt(host2, view2, L"FirefoxWinUIInlineGroup-9", .25);
+    if (covered)
+        Require(GetAncestor(WindowFromPoint(drop), GA_ROOTOWNER) == host2,
+                "the overlapping fixture exposes the intended visible destination");
     SetWindowPos(host, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SetForegroundWindow(host);
     for (int attempt = 0; attempt < 30 && GetForegroundWindow() != host; ++attempt) { SetForegroundWindow(host); settle(10); }
@@ -4182,8 +4210,9 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         if (shown.right > shown.left) break;
         settle(1);
     }
-    Require(shown.top < drop.y && shown.bottom > drop.y && shown.left <= drop.x && shown.right >= drop.x,
-            "the floating group sits in the destination strip's row band under the cursor");
+    if (!overlap)
+        Require(shown.top < drop.y && shown.bottom > drop.y && shown.left <= drop.x && shown.right >= drop.x,
+                "the floating group sits in the destination strip's row band under the cursor");
     settle(20); // the gap eases in
     const double gap = leftOf(L"FirefoxWinUIInlineGroup-9") - ninthLeft;
     Require(gap > 8 && std::abs(leftOf(L"FirefoxWinUITab-203") - memberLeft - gap) < .5,
@@ -4198,6 +4227,9 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
             "the destination asks Firefox to adopt the source's group before its whole group");
     Require(!NextRequest(api, host, 5, L"strip-group-detach", 10).Size() && !NextRequest(api, host, 5, L"strip-group-reorder", 10).Size(),
             "the source neither detaches nor reorders a group dropped on another window");
+    if (covered)
+        Require(!NextRequest(api, covered, 18, L"strip-group-adopt", 10).Size(),
+                "the covered pane never receives the overlapping group drop");
     settle();
     if (accept) {
         Require(GroupHiddenWhileLeaving(view1, L"FirefoxWinUIInlineGroup-7", {11, 22}),
@@ -4228,10 +4260,15 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         Require(SUCCEEDED(api.syncTabs(host, rest, 1, 101, &selected)), "the group's tabs leave the source");
         settle();
         Require(!inList(view1, L"FirefoxWinUIInlineGroup-7"), "the source's publication removes the departed group");
-        puts("CHECKS PASSED: a group dropped on another window is adopted there");
+        puts(overlap ? "CHECKS PASSED: an overlapping group drop selects only the visible destination"
+                     : "CHECKS PASSED: a group dropped on another window is adopted there");
     } else {
         Require(std::abs(held) < .5, "a rejected adopt closes the destination gap");
         puts("CHECKS PASSED: a rejected cross-window group drop restores the destination");
+    }
+    if (covered) {
+        Require(SUCCEEDED(api.destroy(covered)), "destroy covered cross-window group pane");
+        DestroyWindow(covered);
     }
     Require(SUCCEEDED(api.destroy(host2)) && SUCCEEDED(api.destroy(host)), "destroy cross-window group panes");
     DestroyWindow(host2);
@@ -4915,6 +4952,7 @@ int wmain(int argc, wchar_t** argv) {
             // Only the cross-window group checks: a fast loop while working on them.
             CheckGroupCrossWindowAdopt(module, api, true);
             CheckGroupCrossWindowAdopt(module, api, false);
+            CheckGroupCrossWindowAdopt(module, api, true, true);
         } else if (wcscmp(argv[2], L"--group-drop") == 0) {
             CheckTabStripDrag(module, api, first, false, false, false, true);
             CheckTabGroupHeaderShift(module, api, first);
@@ -4977,6 +5015,7 @@ int wmain(int argc, wchar_t** argv) {
             CheckGroupDragEdgeScroll(module, api, first, false, GroupDetach::Sole);
             CheckGroupCrossWindowAdopt(module, api, true);
             CheckGroupCrossWindowAdopt(module, api, false);
+            CheckGroupCrossWindowAdopt(module, api, true, true);
         }
         // Section 8: no session work after a gesture completes. Every window
         // message still reaches TickDragSession, so the only way to show that
