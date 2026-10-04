@@ -7,11 +7,13 @@
 struct NativeNavigationToolbar {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using Button = Microsoft::UI::Xaml::Controls::Button;
-    struct State { bool enabled{}; winrt::hstring label, tooltip; };
+    struct State { bool enabled{}, stopping{}; winrt::hstring label, tooltip; };
     using States = std::array<State, 3>;
     static constexpr wchar_t const* commands[] = {L"back", L"forward", L"reload"};
     Microsoft::UI::Xaml::Controls::StackPanel panel;
     std::array<Button, 3> buttons;
+    std::array<Microsoft::UI::Xaml::Controls::SymbolIcon, 3> icons;
+    bool stopping{};
     std::array<uint32_t, 3> inputModifiers{};
     std::function<void(wchar_t const*, uint32_t)> activate;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
@@ -31,6 +33,7 @@ struct NativeNavigationToolbar {
             auto button = Markup::XamlReader::Load(
                 LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" Width="32" Height="32" MinWidth="0" MinHeight="0" Padding="0"/>)").as<Button>();
             SymbolIcon icon(symbols[i]);
+            icons[i] = icon;
             // Keep the stock symbol and button behavior at Explorer-like density.
             Viewbox iconHost;
             iconHost.Width(12);
@@ -64,7 +67,7 @@ struct NativeNavigationToolbar {
                 if (alive.expired() || !activate || !buttons[i].IsEnabled() || panel.Visibility() != Visibility::Visible) return;
                 const uint32_t modifiers = inputModifiers[i];
                 inputModifiers[i] = 0;
-                activate(commands[i], modifiers);
+                activate(i == 2 && stopping ? L"stop" : commands[i], modifiers);
             });
             buttons[i] = button;
             panel.Children().Append(button);
@@ -79,6 +82,7 @@ struct NativeNavigationToolbar {
             auto entry = navigation.GetNamedObject(commands[i]);
             auto& item = result[i];
             item.enabled = entry.GetNamedBoolean(L"enabled");
+            if (i == 2) item.stopping = entry.GetNamedBoolean(L"stopping", false);
             item.label = entry.GetNamedString(L"label", L"");
             item.tooltip = entry.GetNamedString(L"tooltip", L"");
             NativeJson::RequireLength(item.label, NativeJson::kMaxShortLabel);
@@ -89,6 +93,8 @@ struct NativeNavigationToolbar {
     void Apply(States const& state, bool visible) {
         using namespace Microsoft::UI::Xaml;
         panel.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
+        stopping = visible && state[2].stopping;
+        icons[2].Symbol(stopping ? Controls::Symbol::Cancel : Controls::Symbol::Refresh);
         for (size_t i = 0; i < buttons.size(); ++i) {
             buttons[i].IsEnabled(visible && state[i].enabled);
             if (!state[i].label.empty()) Automation::AutomationProperties::SetName(buttons[i], state[i].label);

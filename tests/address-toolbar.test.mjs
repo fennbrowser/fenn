@@ -14,6 +14,7 @@ function fixture() {
     const attributes = new Map();
     return {
       attributes, setAttribute(k,v) { attributes.set(k,v); calls.push(["attribute",k,v]); },
+      hasAttribute(k) { return attributes.has(k); },
       removeAttribute(k) { attributes.delete(k); }, getAttribute(k) { return attributes.get(k); },
       append() {}, after() {}, remove() { this.removed = true; }, focus() {calls.push(["proxy-focus"]);}, addEventListener(k,fn) { listeners.set(k,fn); }, removeEventListener() {},
       getBoundingClientRect() { return {x:100,y:40,width:600,height:32}; },
@@ -202,6 +203,7 @@ function navigationCommandsFixture() {
     f.window.BrowserCommands[item.method] = event => f.calls.push(["command",item.method,event]);
   }
   f.action = {version:1,kind:"navigation",session:"current",command:"back",modifiers:0};
+  f.elements.get("Browser:Stop").setAttribute("disabled", "true");
   return f;
 }
 
@@ -232,4 +234,21 @@ test("navigation rejects stale tabs/documents/sessions, unavailable surfaces and
     assert.equal(f.toolbar.executeNavigation(f.action),2);
     assert.equal(f.calls.filter(c=>c[0]==="command").length,0);
   }
+});
+
+test("reload becomes localized Stop while Firefox allows stopping, and stale intents cannot reload", () => {
+  const f = navigationCommandsFixture();
+  assert.equal(f.toolbar.navigationState().reload.stopping, false);
+  f.elements.get("Browser:Stop").removeAttribute("disabled");
+  const state = f.toolbar.navigationState().reload;
+  assert.equal(state.stopping, true);
+  assert.equal(state.label, "Localized stop");
+  assert.equal(state.enabled, true);
+  assert.equal(f.toolbar.executeNavigation({...f.action,command:"reload"}), 2);
+  assert.equal(f.toolbar.executeNavigation({...f.action,command:"stop"}), 1);
+  assert.equal(f.calls.filter(c=>c[0]==="command").at(-1)[1], "stop");
+  f.elements.get("Browser:Stop").setAttribute("disabled", "true");
+  assert.equal(f.toolbar.navigationState().reload.stopping, false);
+  assert.equal(f.toolbar.executeNavigation({...f.action,command:"stop"}), 2);
+  assert.equal(f.toolbar.executeNavigation({...f.action,command:"reload"}), 1);
 });

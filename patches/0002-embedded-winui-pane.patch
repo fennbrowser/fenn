@@ -4045,10 +4045,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..4f532f4454
+index 0000000000..030b5292b1
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,199 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -4090,6 +4090,7 @@ index 0000000000..4f532f4454
 +      {id:"back", command:"Browser:Back", element:"back-button", method:"back"},
 +      {id:"forward", command:"Browser:Forward", element:"forward-button", method:"forward"},
 +      {id:"reload", command:"Browser:Reload", element:"reload-button", method:"reloadOrDuplicate"},
++      {id:"stop", command:"Browser:Stop", element:"stop-button", method:"stop"},
 +    ];
 +    this.navigationObserver = new window.MutationObserver(() => owner.invalidateAddress());
 +    for (const item of this.navigationCommands) {
@@ -4123,12 +4124,15 @@ index 0000000000..4f532f4454
 +  }
 +  navigationState() {
 +    const document = this.window.document;
-+    return Object.fromEntries(this.navigationCommands.map(item => {
++    const stop = document.getElementById("Browser:Stop");
++    const stopping = !!stop && !stop.hasAttribute("disabled");
++    return Object.fromEntries(this.navigationCommands.filter(item => item.id !== "stop").map(slot => {
++      const item = slot.id === "reload" && stopping ? this.navigationCommands.find(entry => entry.id === "stop") : slot;
 +      const command = document.getElementById(item.command);
 +      const button = document.getElementById(item.element);
 +      const label = button?.getAttribute("label") || button?.getAttribute("aria-label") ||
 +        this.owner.nativeLabels?.().navigation?.[item.id]?.label || "";
-+      return [item.id, {enabled:!!command && command.getAttribute("disabled") !== "true",
++      return [slot.id, {...(slot.id === "reload" ? {stopping} : {}), enabled:!!command && command.getAttribute("disabled") !== "true",
 +        label, tooltip:button?.getAttribute("tooltiptext") || label}];
 +    }));
 +  }
@@ -4141,7 +4145,9 @@ index 0000000000..4f532f4454
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        !this.navigationState()[item.id].enabled) return 2;
++        !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled ||
++        ((item.id === "stop" || item.id === "reload") &&
++         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
 +    // Use the actual Firefox command handler, including its modifier policy.
 +    const event = new window.MouseEvent("click", {view:window, button:0,
 +      ctrlKey:!!(action.modifiers & 1), altKey:!!(action.modifiers & 2),
@@ -4269,7 +4275,7 @@ index 0000000000..3df9217acc
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..c6b8a91249
+index 0000000000..a4b78c7e62
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,2095 @@
@@ -5531,8 +5537,8 @@ index 0000000000..c6b8a91249
 +        suggestions: value("winui-address-suggestions"),
 +        addressFallback: value("winui-address-fallback"),
 +        actions: value("winui-address-actions"),
-+        navigation: Object.fromEntries(["back", "forward", "reload"].map(id => {
-+          const label = attributes(`toolbar-button-${id}${id === "reload" ? "" : "-2"}`).label;
++        navigation: Object.fromEntries(["back", "forward", "reload", "stop"].map(id => {
++          const label = attributes(`toolbar-button-${id}${["reload", "stop"].includes(id) ? "" : "-2"}`).label;
 +          return [id, {label, tooltip:label}];
 +        })),
 +      });
