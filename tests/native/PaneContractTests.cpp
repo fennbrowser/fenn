@@ -1570,7 +1570,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     tabs[0].title = L"Same title";
     sync();
     auto richer =
-        LR"({"version":2,"publishOnly":true,"strip":{"version":1,"revision":1,"rtl":false,"groupsLabel":"Tab groups","groups":[{"id":7,"name":"Work","label":"Work — Expanded","collapsed":false}],"rows":[{"id":11,"detail":"Work · Split 1 left","flags":1,"image":{"width":2,"height":2,"pixels":"0000ffff0000ffff0000ffff0000ffff"}},{"id":22,"detail":"Work · Split 1 right","flags":6,"image":null}]}})";
+        LR"({"version":2,"publishOnly":true,"strip":{"version":1,"revision":1,"rtl":false,"groupsLabel":"Tab groups","groups":[{"id":7,"name":"Work","label":"Work â€” Expanded","collapsed":false}],"rows":[{"id":11,"detail":"Work Â· Split 1 left","flags":1,"image":{"width":2,"height":2,"pixels":"0000ffff0000ffff0000ffff0000ffff"}},{"id":22,"detail":"Work Â· Split 1 right","flags":6,"image":null}]}})";
     MenuPublish(api, host, richer);
     sync();
     auto header = second.Header().as<Controls::Grid>();
@@ -1622,7 +1622,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         auto frame = lines.GetAt(3).as<Controls::Border>();
         auto preview = frame.Child().as<Controls::Image>();
         Require(line(0).Text() == Automation::AutomationProperties::GetName(second), "hover card shows the tab title");
-        Require(std::wstring(line(2).Text()).find(L"Work · Split 1 right") != std::wstring::npos,
+        Require(std::wstring(line(2).Text()).find(L"Work Â· Split 1 right") != std::wstring::npos,
             "group/split detail remains in the native hover card");
         Require(line(1).Visibility() == Visibility::Collapsed && frame.Visibility() == Visibility::Collapsed,
             "no domain or thumbnail before Firefox answers");
@@ -1695,7 +1695,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         card.Opened(openedToken);
         card.Closed(closedToken);
     }
-    Require(std::wstring(Automation::AutomationProperties::GetHelpText(second)).find(L"Work · Split 1 right") != std::wstring::npos,
+    Require(std::wstring(Automation::AutomationProperties::GetHelpText(second)).find(L"Work Â· Split 1 right") != std::wstring::npos,
         "group/split detail remains accessible");
     auto firstFavicon = first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>();
     Require(firstFavicon.Visibility() == Visibility::Visible &&
@@ -2312,7 +2312,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     collapseData.GetNamedObject(L"strip").SetNamedValue(L"backdrop", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"mica"));
     Require(FAILED(api.syncTabMenu(host,collapseData.Stringify().c_str())), "changed content under an accepted revision is refused");
     Require(backdrop().try_as<Media::DesktopAcrylicBackdrop>() != nullptr, "refused replay leaves the backdrop unchanged");
-    MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"labels":{"tabs":"Registerkarten in diesem Fenster","active":"Aktiver Tab","selected":"Ausgewählter Tab","allTabs":{"label":"Alle Tabs auflisten","tooltip":"Alle Tabs auflisten, Hinweis"},"newTab":{"label":"Neuer Tab","tooltip":"Neuer Tab, Strg+T"}},"backdrop":"mica","rtl":true,"rows":[],"removed":[],"groups":[{"id":7,"name":"Unnamed group","headerText":"","label":"Expand unnamed group","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}]}})");
+    MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"labels":{"tabs":"Registerkarten in diesem Fenster","active":"Aktiver Tab","selected":"AusgewÃ¤hlter Tab","allTabs":{"label":"Alle Tabs auflisten","tooltip":"Alle Tabs auflisten, Hinweis"},"newTab":{"label":"Neuer Tab","tooltip":"Neuer Tab, Strg+T"}},"backdrop":"mica","rtl":true,"rows":[],"removed":[],"groups":[{"id":7,"name":"Unnamed group","headerText":"","label":"Expand unnamed group","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}]}})");
     settle();
     Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && header.ActualWidth() == 32 &&
         groupText.Visibility() == Visibility::Collapsed && capsule.Children().GetAt(1).Visibility() == Visibility::Visible,
@@ -4965,8 +4965,19 @@ int wmain(int argc, wchar_t** argv) {
                     "navigation surface owns its background");
             Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":"invalid","session":"toolbar-contract","revision":1,"sequence":3,"text":"bad","rows":[]})")), "reject invalid navigation presentation");
             Require(field.Text()==L"initial" && root.Margin().Left == 8, "invalid presentation preserves native state");
-            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":3,"text":"initial","rows":[],"navigation":{"back":{"enabled":false,"label":"Localized back"},"forward":{"enabled":true,"label":"Localized forward"},"reload":{"enabled":true,"label":"Localized reload"}}})")), "publish navigation buttons");
+            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":3,"text":"initial","rows":[],"navigation":{"back":{"enabled":false,"label":"Localized back"},"forward":{"enabled":true,"label":"Localized forward"},"reload":{"enabled":true,"label":"Localized reload"},"profile":{"enabled":true,"label":"Localized account"},"extensions":{"enabled":true,"label":"Localized extensions"},"appmenu":{"enabled":true,"label":"Localized menu"},"pinned":[{"id":"pinned-contract","label":"Localized extension","enabled":true,"badge":"7","background":[180,0,0,255],"foreground":[255,255,255,255],"image":{"width":1,"height":1,"pixels":"0000ffff"}}]}})")), "publish navigation buttons");
             auto navigation=toolbarRoot.Children().GetAt(1).as<Controls::StackPanel>();
+            auto menus=toolbarRoot.Children().GetAt(3).as<Controls::StackPanel>();
+            Require(menus.Children().Size()==4 && Controls::Grid::GetColumn(menus)==2, "menu buttons and pinned slot follow the address field");
+            Require(Automation::AutomationProperties::GetName(menus.Children().GetAt(0))==L"Localized account" &&
+                    Automation::AutomationProperties::GetName(menus.Children().GetAt(3))==L"Localized menu", "Firefox menu labels applied");
+            auto pinned=menus.Children().GetAt(2).as<Controls::StackPanel>();
+            Require(pinned.Children().Size()==1, "pinned extension appears between Extensions and Application menu");
+            auto pinnedButton=pinned.Children().GetAt(0).as<Controls::Button>();
+            Require(Automation::AutomationProperties::GetName(pinnedButton)==L"Localized extension" &&
+                    Automation::AutomationProperties::GetItemStatus(pinnedButton)==L"7", "extension title and badge accessible");
+            Require(pinnedButton.Content().as<Controls::Grid>().Children().GetAt(0).as<Controls::Image>().Source()!=nullptr,
+                    "extension raw pixels decoded by native presentation");
             Require(navigation.Visibility()==Visibility::Visible && navigation.Children().Size()==3, "three native navigation buttons");
             auto mica = addressBackdrop().try_as<Media::MicaBackdrop>();
             Require(mica && mica.Kind()==winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::BaseAlt,
@@ -4978,6 +4989,8 @@ int wmain(int argc, wchar_t** argv) {
             Require(field.Text()==L"initial" && navigation.Children().GetAt(1).as<Controls::Button>().IsEnabled(), "malformed navigation preserves editor and buttons");
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":false})")), "disable navigation with address");
             Require(!addressBackdrop(), "disabling navigation releases its system backdrop");
+            Require(menus.Visibility()==Visibility::Collapsed && !menus.Children().GetAt(0).as<Controls::Button>().IsEnabled(), "disable revokes trailing menu buttons");
+            Require(pinned.Children().Size()==0, "disable revokes pinned controls");
             Require(navigation.Visibility()==Visibility::Collapsed && !navigation.Children().GetAt(1).as<Controls::Button>().IsEnabled(), "disable hides and revokes navigation controls");
             Require(SUCCEEDED(api.updateAddress(first,&addressRect,FALSE)), "address-only detach");
             Require(SUCCEEDED(api.updateTabStrip(first,&stripRect,TRUE)), "strip survives address teardown");

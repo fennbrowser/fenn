@@ -907,6 +907,34 @@ index 47a26fd814..5fec4b8b91 100644
  #ifdef XP_MACOSX
    pref("browser.macAppMenu.setAsDefaultShown", false);
  #endif
+diff --git a/browser/base/content/browser-addons.js b/browser/base/content/browser-addons.js
+index d380089ca5..9b130e2420 100644
+--- a/browser/base/content/browser-addons.js
++++ b/browser/base/content/browser-addons.js
+@@ -2740,7 +2740,7 @@ var gUnifiedExtensions = {
+ 
+   // `aEvent` and `reason` are optional. If `reason` is specified, it should be
+   // a valid argument to gUnifiedExtensions.recordButtonTelemetry().
+-  async togglePanel(aEvent, reason) {
++  async togglePanel(aEvent, reason, nativeAnchor = null) {
+     if (!CustomizationHandler.isCustomizing()) {
+       if (aEvent) {
+         if (
+@@ -2801,7 +2801,13 @@ var gUnifiedExtensions = {
+         panel.hidden = false;
+         this.recordButtonTelemetry(reason || "extensions_panel_showing");
+         this.ensureButtonShownBeforeAttachingPanel(panel);
+-        PanelMultiView.openPopup(panel, this._button, {
++        if (
++          nativeAnchor &&
++          (!nativeAnchor.isConnected || nativeAnchor.closest("[hidden]"))
++        ) {
++          return;
++        }
++        PanelMultiView.openPopup(panel, nativeAnchor || this._button, {
+           position: "bottomright topright",
+           triggerEvent: aEvent,
+         });
 diff --git a/browser/base/content/browser-main.js b/browser/base/content/browser-main.js
 index 89ebf87426..eeffb8e367 100644
 --- a/browser/base/content/browser-main.js
@@ -922,10 +950,10 @@ index 89ebf87426..eeffb8e367 100644
    Services.scriptloader.loadSubScript("chrome://browser/content/browser-captivePortal.js", this);
    if (AppConstants.MOZ_DATA_REPORTING) {
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..d77a67ab4f 100644
+index b2b5db6040..8485f6abed 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -33,6 +33,12 @@ browser.jar:
+@@ -33,6 +33,13 @@ browser.jar:
          content/browser/aboutTabCrashed.xhtml         (content/aboutTabCrashed.xhtml)
          content/browser/blanktab.html                 (content/blanktab.html)
          content/browser/browser.js                    (content/browser.js)
@@ -933,11 +961,63 @@ index b2b5db6040..d77a67ab4f 100644
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
 +        content/browser/WinUITabStripSession.sys.mjs     (content/WinUITabStripSession.sys.mjs)
 +        content/browser/WinUIUrlbarSession.sys.mjs      (content/WinUIUrlbarSession.sys.mjs)
++        content/browser/WinUIPinnedExtensions.sys.mjs  (content/WinUIPinnedExtensions.sys.mjs)
 +        content/browser/WinUIAddressToolbar.sys.mjs     (content/WinUIAddressToolbar.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
+diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
+index 76cab7f8e4..5717e00a61 100644
+--- a/browser/components/customizableui/CustomizableUI.sys.mjs
++++ b/browser/components/customizableui/CustomizableUI.sys.mjs
+@@ -3070,6 +3070,9 @@ var CustomizableUIInternal = {
+         anchor = wrapper.anchor;
+       }
+     }
++    // A native toolbar activation retains the real widget command path, but
++    // opens its view at the native button. Only adapter-registered events qualify.
++    anchor = ownerWindow.gWinUIPane?.addressToolbar?.pinned?.events.get(aEvent) || anchor;
+     ownerWindow.PanelUI.showSubView(aWidget.viewId, anchor, aEvent);
+   },
+ 
+diff --git a/browser/components/customizableui/content/panelUI.js b/browser/components/customizableui/content/panelUI.js
+index fb77346559..d186d417cc 100644
+--- a/browser/components/customizableui/content/panelUI.js
++++ b/browser/components/customizableui/content/panelUI.js
+@@ -348,7 +348,7 @@ const PanelUI = {
+    *
+    * @param aEvent the event (if any) that triggers showing the menu.
+    */
+-  show(aEvent) {
++  show(aEvent, nativeAnchor = null) {
+     this._ensureShortcutsShown();
+     (async () => {
+       await this.ensureReady();
+@@ -373,7 +373,13 @@ const PanelUI = {
+         domEvent = aEvent;
+       }
+ 
+-      let anchor = this._getPanelAnchor(this.menuButton);
++      if (
++        nativeAnchor &&
++        (!nativeAnchor.isConnected || nativeAnchor.closest("[hidden]"))
++      ) {
++        return;
++      }
++      let anchor = nativeAnchor || this._getPanelAnchor(this.menuButton);
+       await PanelMultiView.openPopup(this.panel, anchor, {
+         triggerEvent: domEvent,
+       });
+@@ -1121,7 +1127,7 @@ const PanelUI = {
+       notification.options.beforeShowDoorhanger(document);
+     }
+ 
+-    let anchor = this._getPanelAnchor(this.menuButton);
++    let anchor = nativeAnchor || this._getPanelAnchor(this.menuButton);
+ 
+     // Insert Fluent files when needed before notification is opened
+     MozXULElement.insertFTLIfNeeded("branding/brand.ftl");
 diff --git a/browser/components/tabbrowser/content/tab-context-menu.js b/browser/components/tabbrowser/content/tab-context-menu.js
 index be3252ae5f..6835234e04 100644
 --- a/browser/components/tabbrowser/content/tab-context-menu.js
@@ -2610,6 +2690,143 @@ index 1e2660589b..85227d8e69 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/base/content/WinUIPinnedExtensions.sys.mjs b/browser/base/content/WinUIPinnedExtensions.sys.mjs
+new file mode 100644
+index 0000000000..987b6fb980
+--- /dev/null
++++ b/browser/base/content/WinUIPinnedExtensions.sys.mjs
+@@ -0,0 +1,131 @@
++// Firefox owns extension placement, action policy, icons and command execution.
++export class WinUIPinnedExtensions {
++  constructor(toolbar) {
++    this.toolbar = toolbar;
++    this.window = toolbar.window;
++    this.entries = new Map();
++    this.nextId = 0;
++    this.images = new Map();
++    this.loads = new Set();
++    this.events = new WeakMap();
++    this.closed = false;
++    const { CustomizableUI } = ChromeUtils.importESModule(
++      "moz-src:///browser/components/customizableui/CustomizableUI.sys.mjs");
++    const { ExtensionParent } = ChromeUtils.importESModule("resource://gre/modules/ExtensionParent.sys.mjs");
++    this.ui = CustomizableUI;
++    this.iconDetails = ExtensionParent.IconDetails;
++    this.invalidate = () => { if (!this.closed) toolbar.owner.invalidateAddress(); };
++    this.listener = {onWidgetAdded:this.invalidate, onWidgetRemoved:this.invalidate,
++      onWidgetMoved:this.invalidate, onWidgetAfterDOMChange:this.invalidate};
++    this.ui.addListener(this.listener);
++    this.observer = new this.window.MutationObserver(this.invalidate);
++    this.observer.observe(this.window.document.getElementById("nav-bar"), {
++      subtree:true, childList:true, attributes:true,
++      attributeFilter:["label", "tooltiptext", "disabled", "badge", "badgeStyle", "style", "hidden", "brighttext"],
++    });
++    this.theme = this.window.matchMedia("(prefers-color-scheme: dark)");
++    this.theme.addEventListener("change", this.invalidate);
++  }
++  snapshot() {
++    const {window, ui} = this;
++    const keep = new Set();
++    const result = [];
++    for (const widgetId of ui.getWidgetIdsInArea(ui.AREA_NAVBAR)) {
++      const node = ui.getWidget(widgetId)?.forWindow(window)?.node;
++      const button = node?.querySelector(".webextension-browser-action");
++      if (!button || node.hidden || button.hidden || node.hasAttribute("overflowedItem")) continue;
++      const policy = window.WebExtensionPolicy.getByID(button.dataset.extensionid);
++      const action = window.gUnifiedExtensions.browserActionFor(policy);
++      if (!action || !policy.extension.canAccessWindow(window)) continue;
++      // Bound the native publication. Excess widgets remain in Firefox's toolbar.
++      if (result.length === 32) break;
++      keep.add(widgetId);
++      let entry = this.entries.get(widgetId);
++      if (!entry || entry.button !== button) {
++        entry = {id:`pinned-${++this.nextId}`, widgetId, button};
++        this.entries.set(widgetId, entry);
++      }
++      const data = action.action.getContextData(window.gBrowser.selectedTab);
++      let icon = this.iconDetails.getPreferredIcon(data.icon, action.extension, 32).icon;
++      if (typeof icon === "object") icon = icon[node.closest("toolbar")?.hasAttribute("brighttext") ? "dark" : "light"];
++      if (icon && !this.images.has(icon)) this.loadImage(icon);
++      const color = values => values.map(value => Math.max(0, Math.min(255, Math.round(value))));
++      result.push({id:entry.id, label:(button.getAttribute("tooltiptext") || data.title || action.extension.name).slice(0,4096),
++        enabled:!button.hasAttribute("disabled"), badge:(data.badgeText || "").slice(0,4096),
++        background:color(data.badgeBackgroundColor), foreground:color(action.action.getTextColor(data)),
++        image:this.images.get(icon) || null});
++    }
++    for (const [key, entry] of this.entries) if (!keep.has(key)) {
++      for (const command of [`extension:${entry.id}`, `extension-menu:${entry.id}`]) {
++        const anchor = this.toolbar.menuAnchors?.get(command);
++        const panel = this.window.document.getElementById("customizationui-widget-panel");
++        if (anchor && panel?.anchorNode === anchor) panel.hidePopup();
++        anchor?.remove();
++        this.toolbar.menuAnchors?.delete(command);
++      }
++      this.entries.delete(key);
++    }
++    return result;
++  }
++  async loadImage(url) {
++    if (this.closed || this.loads.has(url) || this.loads.size >= 32) return;
++    this.loads.add(url);
++    const image = new this.window.Image();
++    let pixels = null;
++    try {
++      image.src = url;
++      await image.decode();
++      if (!this.closed && image.naturalWidth && image.naturalHeight) {
++        const canvas = this.window.document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
++        canvas.width = canvas.height = 32;
++        const context = canvas.getContext("2d");
++        context.drawImage(image, 0, 0, 32, 32);
++        pixels = this.toolbar.owner.encodePixels(context.getImageData(0, 0, 32, 32));
++      }
++    } catch (_) {} finally {
++      image.src = "";
++      this.loads.delete(url);
++      if (!this.closed) {
++        this.images.set(url, pixels);
++        while (this.images.size > 128) this.images.delete(this.images.keys().next().value);
++        this.invalidate();
++      }
++    }
++  }
++  activate(command, bounds, event) {
++    const context = command.startsWith("extension-menu:");
++    const id = command.slice(command.indexOf(":") + 1);
++    const live = this.snapshot().find(item => item.id === id);
++    const entry = [...this.entries.values()].find(item => item.id === id);
++    if (!live || (!context && !live.enabled) || !entry?.button.isConnected) return 2;
++    const anchor = this.toolbar.menuAnchor(command, bounds);
++    if (!anchor || this.window.gDialogBox?.isOpen) return 2;
++    if (context) {
++      // Preserve Firefox's toolbar extension context menu and its real trigger node.
++      const trigger = new this.window.MouseEvent("winui-extension-context", {bubbles:true});
++      entry.button.dispatchEvent(trigger);
++      this.window.document.getElementById("toolbar-context-menu").openPopupAtScreen(
++        bounds.x / this.window.devicePixelRatio,
++        (bounds.y + bounds.height) / this.window.devicePixelRatio, true, trigger);
++      return 1;
++    }
++    if (anchor.hasAttribute("open")) {
++      this.window.document.getElementById("customizationui-widget-panel")?.hidePopup();
++      return 1;
++    }
++    const trigger = new this.window.MouseEvent("command", {bubbles:true, cancelable:true,
++      button:0, ctrlKey:event.ctrlKey, shiftKey:event.shiftKey, altKey:event.altKey, metaKey:event.metaKey});
++    this.events.set(trigger, anchor);
++    try { entry.button.dispatchEvent(trigger); }
++    finally { this.events.delete(trigger); }
++    return 1;
++  }
++  close() {
++    this.closed = true;
++    this.ui.removeListener(this.listener);
++    this.observer.disconnect();
++    this.theme.removeEventListener("change", this.invalidate);
++    this.entries.clear();
++    this.images.clear();
++  }
++}
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
 index 0000000000..128aee51da
@@ -4045,10 +4262,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..030b5292b1
+index 0000000000..f4b32e1181
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,258 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -4091,14 +4308,21 @@ index 0000000000..030b5292b1
 +      {id:"forward", command:"Browser:Forward", element:"forward-button", method:"forward"},
 +      {id:"reload", command:"Browser:Reload", element:"reload-button", method:"reloadOrDuplicate"},
 +      {id:"stop", command:"Browser:Stop", element:"stop-button", method:"stop"},
++      {id:"profile", element:"fxa-toolbar-menu-button", menu:true},
++      {id:"extensions", element:"unified-extensions-button", menu:true},
++      {id:"appmenu", element:"PanelUI-menu-button", menu:true},
 +    ];
 +    this.navigationObserver = new window.MutationObserver(() => owner.invalidateAddress());
 +    for (const item of this.navigationCommands) {
-+      for (const id of [item.command, item.element]) {
++      for (const id of [item.command, item.element].filter(Boolean)) {
 +        const element = document.getElementById(id);
 +        if (element) this.navigationObserver.observe(element,
 +          {attributes:true,attributeFilter:["disabled","label","tooltiptext","aria-label"]});
 +      }
++    }
++    if (window.gUnifiedExtensions) {
++      const { WinUIPinnedExtensions } = ChromeUtils.importESModule("chrome://browser/content/WinUIPinnedExtensions.sys.mjs");
++      this.pinned = new WinUIPinnedExtensions(this);
 +    }
 +    this.progress = {
 +      onLocationChange: browser => {
@@ -4126,33 +4350,79 @@ index 0000000000..030b5292b1
 +    const document = this.window.document;
 +    const stop = document.getElementById("Browser:Stop");
 +    const stopping = !!stop && !stop.hasAttribute("disabled");
-+    return Object.fromEntries(this.navigationCommands.filter(item => item.id !== "stop").map(slot => {
++    const state = Object.fromEntries(this.navigationCommands.filter(item => item.id !== "stop").map(slot => {
 +      const item = slot.id === "reload" && stopping ? this.navigationCommands.find(entry => entry.id === "stop") : slot;
-+      const command = document.getElementById(item.command);
++      const command = document.getElementById(item.command || item.element);
 +      const button = document.getElementById(item.element);
 +      const label = button?.getAttribute("label") || button?.getAttribute("aria-label") ||
 +        this.owner.nativeLabels?.().navigation?.[item.id]?.label || "";
 +      return [slot.id, {...(slot.id === "reload" ? {stopping} : {}), enabled:!!command && command.getAttribute("disabled") !== "true",
-+        label, tooltip:button?.getAttribute("tooltiptext") || label}];
++        label:label || button?.getAttribute("tooltiptext") || "", tooltip:button?.getAttribute("tooltiptext") || label}];
 +    }));
++    state.pinned = this.pinned?.snapshot() || [];
++    return state;
 +  }
 +  executeNavigation(action) {
 +    const {window, owner} = this;
-+    const item = this.navigationCommands.find(entry => entry.id === action?.command);
++    const extension = typeof action?.command === "string" && /^(extension|extension-menu):pinned-[0-9]+$/.test(action.command);
++    const item = extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === action?.command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled ||
++        (!extension && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
 +    // Use the actual Firefox command handler, including its modifier policy.
 +    const event = new window.MouseEvent("click", {view:window, button:0,
 +      ctrlKey:!!(action.modifiers & 1), altKey:!!(action.modifiers & 2),
 +      shiftKey:!!(action.modifiers & 4), metaKey:!!(action.modifiers & 8)});
++    if (extension) return this.pinned?.activate(action.command, action, event) || 2;
++    if (item.menu) return this.openMenu(item.id, action, event);
 +    window.BrowserCommands[item.method](event);
++    return 1;
++  }
++  menuAnchor(id, bounds) {
++    const {window} = this;
++    if (window.gDialogBox?.isOpen || !["x", "y", "width", "height"].every(key =>
++        Number.isFinite(bounds[key]) && Math.abs(bounds[key]) <= 1000000) ||
++        bounds.width <= 0 || bounds.height <= 0 || bounds.width > 512 || bounds.height > 512) return null;
++    const document = window.document;
++    this.menuAnchors ??= new Map();
++    let anchor = this.menuAnchors.get(id);
++    if (!anchor) {
++      anchor = document.createElementNS("http://www.w3.org/1999/xhtml", "div");
++      anchor.className = "winui-toolbar-menu-anchor";
++      this.row.append(anchor);
++      this.menuAnchors.set(id, anchor);
++    }
++    const scale = window.devicePixelRatio;
++    Object.assign(anchor.style, {
++      left:`${bounds.x / scale - window.mozInnerScreenX}px`,
++      top:`${bounds.y / scale - window.mozInnerScreenY}px`,
++      width:`${bounds.width / scale}px`, height:`${bounds.height / scale}px`,
++    });
++    return anchor;
++  }
++  openMenu(id, bounds, event) {
++    const {window} = this;
++    const document = window.document;
++    const anchor = this.menuAnchor(id, bounds);
++    if (!anchor) return 2;
++    // Keep each menu's Firefox controller, initialization, policy and telemetry.
++    if (id === "profile") {
++      if (anchor.hasAttribute("open")) document.getElementById("customizationui-widget-panel")?.hidePopup();
++      else window.gSync.toggleAccountPanel(anchor, event).catch(console.error);
++    } else if (id === "extensions") {
++      if (["open", "showing"].includes(window.gUnifiedExtensions.panel.state))
++        window.PanelMultiView.hidePopup(window.gUnifiedExtensions.panel);
++      else window.gUnifiedExtensions.togglePanel(event, undefined, anchor).catch(console.error);
++    } else {
++      if (["open", "showing"].includes(window.PanelUI.panel.state)) window.PanelUI.hide();
++      else window.PanelUI.show(event, anchor);
++    }
 +    return 1;
 +  }
 +  update() {
@@ -4164,7 +4434,7 @@ index 0000000000..030b5292b1
 +    }
 +    this.row.hidden = !navigation;
 +    const rect = this.bounds();
-+    if (rect.width < (navigation ? 384 : 240) || rect.height < (navigation ? 48 : 32)) {
++    if (rect.width < (navigation ? 528 : 240) || rect.height < (navigation ? 48 : 32)) {
 +      this.restore();
 +      return false;
 +    }
@@ -4217,6 +4487,10 @@ index 0000000000..030b5292b1
 +  restore() {
 +    if (this.activationFrame) this.window.cancelAnimationFrame(this.activationFrame);
 +    this.activationFrame = 0;
++    for (const id of ["appMenu-popup", "unified-extensions-panel", "customizationui-widget-panel"]) {
++      const panel = this.window.document.getElementById(id);
++      if (panel?.anchorNode && [...(this.menuAnchors?.values() || [])].includes(panel.anchorNode)) panel.hidePopup();
++    }
 +    const hadFocus = this.active && this.focusOwned;
 +    this.active = false;
 +    this.row.hidden = true;
@@ -4240,20 +4514,22 @@ index 0000000000..030b5292b1
 +    this.restore();
 +    this.resize.disconnect();
 +    this.navigationObserver.disconnect();
++    this.pinned?.close();
 +    this.window.gBrowser.removeTabsProgressListener(this.progress);
 +    this.input.removeEventListener("beforefocus", this.beforeFocus);
 +    this.input.removeEventListener("beforeselect", this.beforeFocus);
 +    this.proxy.remove();
++    this.menuAnchors?.clear();
 +    this.row.remove();
 +    this.link.remove();
 +  }
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.css b/browser/base/content/WinUIAddressToolbar.css
 new file mode 100644
-index 0000000000..3df9217acc
+index 0000000000..96f7a7b234
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.css
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,21 @@
 +#winui-address-focus { display: none; }
 +#winui-navigation-toolbar:not([hidden]) {
 +  display: block;
@@ -4273,6 +4549,8 @@ index 0000000000..3df9217acc
 +  position: absolute;
 +  inset: 0;
 +}
++
++.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
 index 0000000000..a4b78c7e62

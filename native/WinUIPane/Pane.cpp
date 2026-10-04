@@ -450,6 +450,7 @@ struct Pane {
         addressSource = nullptr;
     }
     void WireAddress() {
+        address->releaseMenuFocus = [this] { SetFocus(parent); };
         address->navigate = [this](hstring const& action) {
             Enqueue(NativeShellCore::NavigationAction, 0, 0, action);
         };

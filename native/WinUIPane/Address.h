@@ -21,6 +21,7 @@ struct NativeAddress {
     Microsoft::UI::Xaml::Controls::Grid toolbarRoot{nullptr}, toolbarSurface{nullptr};
     std::unique_ptr<NativeNavigationToolbar> navigation;
     std::function<void(winrt::hstring const&)> navigate;
+    std::function<void()> releaseMenuFocus;
     Microsoft::UI::Xaml::Controls::TextBox field;
     NativeSearchMode mode;
     SuggestionList suggestions;
@@ -471,27 +472,41 @@ struct NativeAddress {
                     </ResourceDictionary.ThemeDictionaries>
                 </ResourceDictionary>)").as<ResourceDictionary>());
             toolbarRoot = Grid();
-            ColumnDefinition navigationColumn, addressColumn;
+            ColumnDefinition navigationColumn, addressColumn, menuColumn;
+            menuColumn.Width(GridLengthHelper::Auto());
             navigationColumn.Width(GridLengthHelper::Auto());
             addressColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
             toolbarRoot.ColumnDefinitions().Append(navigationColumn);
             toolbarRoot.ColumnDefinitions().Append(addressColumn);
+            toolbarRoot.ColumnDefinitions().Append(menuColumn);
             navigation = std::make_unique<NativeNavigationToolbar>();
-            navigation->activate = [this](wchar_t const* command, uint32_t modifiers) {
+            navigation->activate = [this](wchar_t const* command, uint32_t modifiers, Controls::Button const& button) {
                 if (syncing || session.empty() || !navigate) return;
                 auto action = Message(L"navigation");
                 action.SetNamedValue(L"command", JValue::CreateStringValue(command));
                 action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
+                if (wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcsncmp(command, L"extension", 9) == 0) {
+                    auto local = button.TransformToVisual(nullptr).TransformBounds(
+                        {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
+                    auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+                    action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
+                    action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
+                    action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
+                    action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
+                    if (releaseMenuFocus) releaseMenuFocus();
+                }
                 navigate(action.Stringify());
             };
             toolbarSurface = Markup::XamlReader::Load(
                 LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}"/>)").as<Grid>();
             toolbarSurface.Visibility(Visibility::Collapsed);
-            Grid::SetColumnSpan(toolbarSurface, 2);
+            Grid::SetColumnSpan(toolbarSurface, 3);
             Grid::SetColumn(root, 1);
             toolbarRoot.Children().Append(toolbarSurface);
             toolbarRoot.Children().Append(navigation->panel);
             toolbarRoot.Children().Append(root);
+            Grid::SetColumn(navigation->trailing, 2);
+            toolbarRoot.Children().Append(navigation->trailing);
             root.VerticalAlignment(VerticalAlignment::Center);
             Automation::AutomationProperties::SetAutomationId(toolbarRoot, L"FirefoxWinUINavigationToolbar");
             field.CopyingToClipboard([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
@@ -588,6 +603,7 @@ struct NativeAddress {
         const auto checkedOpen = snapshot.GetNamedBoolean(L"open", false);
         const auto navigationToolbar = snapshot.GetNamedBoolean(L"navigationToolbar", false);
         const auto navigationState = NativeNavigationToolbar::Read(snapshot);
+        const auto pinnedState = PinnedExtensionButtons::Read(snapshot);
         auto checkedText = snapshot.GetNamedString(L"text", L"");
         auto checkedRows = snapshot.GetNamedArray(L"rows");
         if (nextSession.empty() || nextSession.size() > 256 || checkedText.size() > NativeJson::kMaxFieldText ||
@@ -663,6 +679,7 @@ struct NativeAddress {
         root.Visibility(Visibility::Visible);
         if (toolbarRoot) {
             navigation->Apply(navigationState, navigationToolbar && snapshot.HasKey(L"navigation"));
+            navigation->pinned.Apply(pinnedState, navigationToolbar);
             toolbarSurface.Visibility(navigationToolbar ? Visibility::Visible : Visibility::Collapsed);
             root.Margin(navigationToolbar ? Thickness{8, 8, 8, 8} : Thickness{0, 0, 0, 0});
         }

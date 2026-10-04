@@ -2,43 +2,55 @@
 #include <array>
 #include <functional>
 #include "JsonValidation.h"
+#include "PinnedExtensionButtons.h"
 
 // WinUI presentation only. Firefox owns eligibility, labels and commands.
 struct NativeNavigationToolbar {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using Button = Microsoft::UI::Xaml::Controls::Button;
     struct State { bool enabled{}, stopping{}; winrt::hstring label, tooltip; };
-    using States = std::array<State, 3>;
-    static constexpr wchar_t const* commands[] = {L"back", L"forward", L"reload"};
-    Microsoft::UI::Xaml::Controls::StackPanel panel;
-    std::array<Button, 3> buttons;
-    std::array<Microsoft::UI::Xaml::Controls::SymbolIcon, 3> icons;
+    using States = std::array<State, 6>;
+    static constexpr wchar_t const* commands[] = {L"back", L"forward", L"reload", L"profile", L"extensions", L"appmenu"};
+    Microsoft::UI::Xaml::Controls::StackPanel panel, trailing;
+    std::array<Button, 6> buttons;
+    std::array<Microsoft::UI::Xaml::Controls::SymbolIcon, 6> icons;
+    PinnedExtensionButtons pinned;
     bool stopping{};
-    std::array<uint32_t, 3> inputModifiers{};
-    std::function<void(wchar_t const*, uint32_t)> activate;
+    std::array<uint32_t, 6> inputModifiers{};
+    std::function<void(wchar_t const*, uint32_t, Button const&)> activate;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
     NativeNavigationToolbar() {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
+        pinned.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         panel.Orientation(Orientation::Horizontal);
-        panel.Spacing(16);
+        panel.Spacing(4);
         panel.Margin({8, 0, 0, 0});
         panel.VerticalAlignment(VerticalAlignment::Center);
         panel.Visibility(Visibility::Collapsed);
-        const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh};
-        const wchar_t* names[] = {L"Back", L"Forward", L"Reload"};
-        const wchar_t* ids[] = {L"FirefoxWinUIBack", L"FirefoxWinUIForward", L"FirefoxWinUIReload"};
+        trailing.Orientation(Orientation::Horizontal);
+        trailing.Spacing(4);
+        trailing.Margin({0, 0, 8, 0});
+        trailing.VerticalAlignment(VerticalAlignment::Center);
+        trailing.Visibility(Visibility::Collapsed);
+        const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh, Symbol::Contact, Symbol::Library, Symbol::GlobalNavigationButton};
+        const wchar_t* names[] = {L"Back", L"Forward", L"Reload", L"Account", L"Extensions", L"Application menu"};
+        const wchar_t* ids[] = {L"FirefoxWinUIBack", L"FirefoxWinUIForward", L"FirefoxWinUIReload", L"FirefoxWinUIProfile", L"FirefoxWinUIExtensions", L"FirefoxWinUIAppMenu"};
         for (size_t i = 0; i < buttons.size(); ++i) {
             auto button = Markup::XamlReader::Load(
                 LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" Width="32" Height="32" MinWidth="0" MinHeight="0" Padding="0"/>)").as<Button>();
             SymbolIcon icon(symbols[i]);
             icons[i] = icon;
-            // Keep the stock symbol and button behavior at Explorer-like density.
+            // Firefox-like density with stock icons and generous button targets.
             Viewbox iconHost;
-            iconHost.Width(12);
-            iconHost.Height(12);
+            iconHost.Width(16);
+            iconHost.Height(16);
             iconHost.Child(icon);
+            if (i == 4) {
+                iconHost.Child(Markup::XamlReader::Load(
+                    LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xEA86;"/>)").as<FontIcon>());
+            }
             button.Content(iconHost);
             button.IsEnabled(false);
             Automation::AutomationProperties::SetAutomationId(button, ids[i]);
@@ -67,10 +79,11 @@ struct NativeNavigationToolbar {
                 if (alive.expired() || !activate || !buttons[i].IsEnabled() || panel.Visibility() != Visibility::Visible) return;
                 const uint32_t modifiers = inputModifiers[i];
                 inputModifiers[i] = 0;
-                activate(i == 2 && stopping ? L"stop" : commands[i], modifiers);
+                activate(i == 2 && stopping ? L"stop" : commands[i], modifiers, buttons[i]);
             });
             buttons[i] = button;
-            panel.Children().Append(button);
+            (i < 3 ? panel : trailing).Children().Append(button);
+            if (i == 4) trailing.Children().Append(pinned.panel);
         }
     }
     ~NativeNavigationToolbar() { lifetime.reset(); }
@@ -79,6 +92,7 @@ struct NativeNavigationToolbar {
         if (!snapshot.HasKey(L"navigation")) return result;
         auto navigation = snapshot.GetNamedObject(L"navigation");
         for (size_t i = 0; i < result.size(); ++i) {
+            if (i >= 3 && !navigation.HasKey(commands[i])) continue;
             auto entry = navigation.GetNamedObject(commands[i]);
             auto& item = result[i];
             item.enabled = entry.GetNamedBoolean(L"enabled");
@@ -93,6 +107,8 @@ struct NativeNavigationToolbar {
     void Apply(States const& state, bool visible) {
         using namespace Microsoft::UI::Xaml;
         panel.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
+        trailing.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
+        if (!visible) pinned.Apply({}, false);
         stopping = visible && state[2].stopping;
         icons[2].Symbol(stopping ? Controls::Symbol::Cancel : Controls::Symbol::Refresh);
         for (size_t i = 0; i < buttons.size(); ++i) {

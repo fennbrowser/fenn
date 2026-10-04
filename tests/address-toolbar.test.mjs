@@ -15,6 +15,7 @@ function fixture() {
     return {
       attributes, setAttribute(k,v) { attributes.set(k,v); calls.push(["attribute",k,v]); },
       hasAttribute(k) { return attributes.has(k); },
+      style:{},
       removeAttribute(k) { attributes.delete(k); }, getAttribute(k) { return attributes.get(k); },
       append() {}, after() {}, remove() { this.removed = true; }, focus() {calls.push(["proxy-focus"]);}, addEventListener(k,fn) { listeners.set(k,fn); }, removeEventListener() {},
       getBoundingClientRect() { return {x:100,y:40,width:600,height:32}; },
@@ -251,4 +252,27 @@ test("reload becomes localized Stop while Firefox allows stopping, and stale int
   assert.equal(f.toolbar.navigationState().reload.stopping, false);
   assert.equal(f.toolbar.executeNavigation({...f.action,command:"stop"}), 2);
   assert.equal(f.toolbar.executeNavigation({...f.action,command:"reload"}), 1);
+});
+
+test("native trailing buttons open Firefox controllers at validated screen anchors", () => {
+  const f = navigationCommandsFixture();
+  f.window.devicePixelRatio=2;
+  f.window.mozInnerScreenX=100; f.window.mozInnerScreenY=50;
+  const opened=[];
+  f.window.gSync={toggleAccountPanel:(anchor,event)=>{opened.push(["profile",anchor,event]);return Promise.resolve();}};
+  f.window.gUnifiedExtensions={panel:{state:"closed"},togglePanel:(event,reason,anchor)=>{opened.push(["extensions",anchor,event]);return Promise.resolve();}};
+  f.window.PanelUI={panel:{state:"closed"},show:(event,anchor)=>opened.push(["appmenu",anchor,event])};
+  for (const command of ["profile","extensions","appmenu"]) {
+    const action={...f.action,command,x:800,y:200,width:64,height:64};
+    assert.equal(f.toolbar.executeNavigation({...action,width:-1}),2);
+    assert.equal(f.toolbar.executeNavigation({...action,x:Infinity}),2);
+    assert.equal(f.toolbar.executeNavigation(action),1);
+    assert.equal(opened.at(-1)[0],command);
+    assert.equal(opened.at(-1)[1].style.left,"300px");
+    assert.equal(opened.at(-1)[1].style.top,"50px");
+    assert.equal(opened.at(-1)[1].style.width,"32px");
+  }
+  f.window.gDialogBox={isOpen:true};
+  assert.equal(f.toolbar.executeNavigation({...f.action,command:"appmenu",x:1,y:1,width:32,height:32}),2);
+  assert.equal(opened.length,3);
 });
