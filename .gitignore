@@ -3,6 +3,7 @@
 /upstream/
 /build/
 /.vs/
+/.claude/settings.local.json
 **/bin/
 **/obj/
 **/Generated Files/
