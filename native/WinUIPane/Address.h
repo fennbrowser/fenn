@@ -248,6 +248,23 @@ struct NativeAddress {
         root.Margin({0, 0, 0, 12});
         field.PlaceholderText(L"Search or enter address");
         field.MaxLength(int32_t(NativeJson::kMaxFieldText));
+        field.Loaded([](auto const& sender, auto const&) {
+            auto editor = sender.template as<TextBox>();
+            editor.ApplyTemplate();
+            if (!Media::VisualTreeHelper::GetChildrenCount(editor)) return;
+            auto templateRoot = Media::VisualTreeHelper::GetChild(editor, 0).try_as<FrameworkElement>();
+            auto clear = templateRoot ? templateRoot.FindName(L"DeleteButton").try_as<Button>() : nullptr;
+            if (!clear) return;
+            // Keep the stock editor template and focus states. Its ButtonVisible
+            // animation owns Visibility, so remove the clear affordance's size
+            // and input instead of fighting that animation on every text edit.
+            clear.MinWidth(0);
+            clear.Width(0);
+            clear.MaxWidth(0);
+            clear.Opacity(0);
+            clear.IsHitTestVisible(false);
+            clear.IsEnabled(false);
+        });
         Automation::AutomationProperties::SetName(field, L"Search or enter address");
         Automation::AutomationProperties::SetAutomationId(field, L"FirefoxWinUIAddress");
         field.TextChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
