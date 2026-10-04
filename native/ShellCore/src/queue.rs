@@ -76,6 +76,9 @@ pub enum RequestKind {
     /// hover matters, so it coalesces with itself, and it never displaces a
     /// gesture. Carries no tab; the payload names it.
     StripPreview = 9,
+    /// A browser navigation command. Distinct clicks remain ordered and never
+    /// supersede address edits, visibility reports, or one another.
+    NavigationAction = 10,
 }
 
 impl RequestKind {
@@ -90,6 +93,7 @@ impl RequestKind {
             7 => Some(Self::AddressModeAction),
             8 => Some(Self::AddressVisibility),
             9 => Some(Self::StripPreview),
+            10 => Some(Self::NavigationAction),
             _ => None,
         }
     }
@@ -775,6 +779,20 @@ mod tests {
         let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
         assert_eq!(kinds, vec![RequestKind::StripAction, RequestKind::AddressAction]);
         assert_eq!(batch[1].id, second.id);
+    }
+
+    #[test]
+    fn navigation_clicks_keep_order_without_displacing_edits() {
+        let mut q = queue();
+        let edit = q.enqueue(RequestKind::AddressAction, 0, 1, &[]);
+        let back = q.enqueue(RequestKind::NavigationAction, 0, 0, &[1]);
+        let reload = q.enqueue(RequestKind::NavigationAction, 0, 0, &[2]);
+        assert_eq!(back.status, EnqueueStatus::Accepted);
+        assert_eq!(reload.status, EnqueueStatus::Accepted);
+        assert!(q.take_outcomes().is_empty());
+        q.begin_drain().unwrap();
+        let batch = q.take_batch(8, 1 << 20);
+        assert_eq!(batch.iter().map(|r|r.id).collect::<Vec<_>>(), vec![edit.id, back.id, reload.id]);
     }
 
     #[test]

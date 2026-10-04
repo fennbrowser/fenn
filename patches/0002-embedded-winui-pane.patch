@@ -868,10 +868,10 @@ index 995b2fc869..7add43e3b2 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 47a26fd814..f2e3672be3 100644
+index 47a26fd814..5fec4b8b91 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3831,6 +3831,34 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3831,6 +3831,35 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -902,6 +902,7 @@ index 47a26fd814..f2e3672be3 100644
 +pref("widget.windows.winui-prototype.tabstrip.groupGlowFadeOut", false);
 +pref("widget.windows.winui-prototype.address.enabled", false);
 +pref("widget.windows.winui-prototype.address.toolbar.enabled", false);
++pref("widget.windows.winui-prototype.navigation.toolbar.enabled", false);
 +
  #ifdef XP_MACOSX
    pref("browser.macAppMenu.setAsDefaultShown", false);
@@ -2039,10 +2040,10 @@ index 2d06d7b7dd..3925f8d967 100644
    nsIWidget();
    virtual ~nsIWidget();
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
-index c6e02a8696..a185a7572d 100644
+index c6e02a8696..b1c8230c17 100644
 --- a/widget/windows/WinUIPrototype.cpp
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -2,17 +2,267 @@
+@@ -2,17 +2,269 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  #include "WinUIPrototype.h"
@@ -2267,7 +2268,9 @@ index c6e02a8696..a185a7572d 100644
 +  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
 +      !sPaneApi.updateAddress || !PaneEnabled()) return false;
 +  if (aVisible && !Preferences::GetBool(
-+          "widget.windows.winui-prototype.address.toolbar.enabled", false)) return false;
++          "widget.windows.winui-prototype.address.toolbar.enabled", false) &&
++      !Preferences::GetBool(
++          "widget.windows.winui-prototype.navigation.toolbar.enabled", false)) return false;
 +  HRESULT hr = sPaneApi.updateAddress(aWindow, &aRect, aVisible);
 +  if (SUCCEEDED(hr) && aVisible && aFocus)
 +    hr = sPaneApi.focusAddress(aWindow, aSelectAll);
@@ -2311,7 +2314,7 @@ index c6e02a8696..a185a7572d 100644
  
  void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    if (!XRE_IsParentProcess() || !NS_IsMainThread() || !sTraceEnabled) return;
-@@ -20,51 +270,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
+@@ -20,51 +272,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
    const HRESULT hr = CoGetApartmentType(&apartment, &qualifier);
    DWORD ownerProcess = 0;
@@ -4042,14 +4045,15 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..1e67efe8fd
+index 0000000000..4f532f4454
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,193 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
 +    this.owner = owner;
++    this.navigation = false;
 +    const document = window.document;
 +    this.input = window.gURLBar.inputField;
 +    this.slot = this.input.closest(".urlbar-input-box");
@@ -4065,6 +4069,11 @@ index 0000000000..1e67efe8fd
 +    this.proxy.setAttribute("role", "group");
 +    this.proxy.setAttribute("aria-label", this.input.getAttribute("placeholder") || "");
 +    this.slot.append(this.proxy);
++    this.row = document.createElementNS("http://www.w3.org/1999/xhtml", "div");
++    this.row.id = "winui-navigation-toolbar";
++    this.row.hidden = true;
++    this.row.setAttribute("aria-hidden", "true");
++    owner.element.after(this.row);
 +    this.beforeFocus = event => {
 +      if (this.active && this.focus(event.type === "beforeselect")) event.preventDefault();
 +    };
@@ -4074,6 +4083,22 @@ index 0000000000..1e67efe8fd
 +    this.proxy.addEventListener("focus", this.proxyFocus);
 +    this.resize = new window.ResizeObserver(() => owner.schedule());
 +    this.resize.observe(this.slot);
++    this.resize.observe(this.row);
++    // Observe Firefox's command authority and live localized button labels.
++    // Progress alone can fire before command disabled states are updated.
++    this.navigationCommands = [
++      {id:"back", command:"Browser:Back", element:"back-button", method:"back"},
++      {id:"forward", command:"Browser:Forward", element:"forward-button", method:"forward"},
++      {id:"reload", command:"Browser:Reload", element:"reload-button", method:"reloadOrDuplicate"},
++    ];
++    this.navigationObserver = new window.MutationObserver(() => owner.invalidateAddress());
++    for (const item of this.navigationCommands) {
++      for (const id of [item.command, item.element]) {
++        const element = document.getElementById(id);
++        if (element) this.navigationObserver.observe(element,
++          {attributes:true,attributeFilter:["disabled","label","tooltiptext","aria-label"]});
++      }
++    }
 +    this.progress = {
 +      onLocationChange: browser => {
 +        if (browser === window.gBrowser.selectedBrowser) owner.invalidateAddress();
@@ -4088,17 +4113,55 @@ index 0000000000..1e67efe8fd
 +  supported() {
 +    const { window, owner } = this;
 +    return owner.attached && owner.tabStrip && !this.failed &&
-+      Services.prefs.getBoolPref("widget.windows.winui-prototype.address.toolbar.enabled", false) &&
++      (Services.prefs.getBoolPref("widget.windows.winui-prototype.address.toolbar.enabled", false) ||
++       this.navigationRequested) &&
 +      !window.fullScreen && !window.document.fullscreenElement &&
 +      !window.document.documentElement.hasAttribute("customizing") &&
 +      !Services.prefs.getBoolPref("sidebar.verticalTabs", false) &&
 +      !window.PrivateBrowsingUtils.isWindowPrivate(window) &&
 +      !window.gURLBar.readOnly && !window.gURLBar.inOverflowPanel;
 +  }
++  navigationState() {
++    const document = this.window.document;
++    return Object.fromEntries(this.navigationCommands.map(item => {
++      const command = document.getElementById(item.command);
++      const button = document.getElementById(item.element);
++      const label = button?.getAttribute("label") || button?.getAttribute("aria-label") ||
++        this.owner.nativeLabels?.().navigation?.[item.id]?.label || "";
++      return [item.id, {enabled:!!command && command.getAttribute("disabled") !== "true",
++        label, tooltip:button?.getAttribute("tooltiptext") || label}];
++    }));
++  }
++  executeNavigation(action) {
++    const {window, owner} = this;
++    const item = this.navigationCommands.find(entry => entry.id === action?.command);
++    if (!this.active || !this.navigation || !this.supported() || !item ||
++        action.version !== 1 || action.kind !== "navigation" ||
++        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
++        owner.addressTab !== window.gBrowser.selectedTab ||
++        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
++        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
++        !this.navigationState()[item.id].enabled) return 2;
++    // Use the actual Firefox command handler, including its modifier policy.
++    const event = new window.MouseEvent("click", {view:window, button:0,
++      ctrlKey:!!(action.modifiers & 1), altKey:!!(action.modifiers & 2),
++      shiftKey:!!(action.modifiers & 4), metaKey:!!(action.modifiers & 8)});
++    window.BrowserCommands[item.method](event);
++    return 1;
++  }
 +  update() {
 +    if (!this.supported()) { this.restore(); return false; }
++    const navigation = this.navigationRequested;
++    if (this.navigation !== navigation) {
++      this.restore();
++      this.navigation = navigation;
++    }
++    this.row.hidden = !navigation;
 +    const rect = this.bounds();
-+    if (rect.width < 240 || rect.height < 32) { this.restore(); return false; }
++    if (rect.width < (navigation ? 384 : 240) || rect.height < (navigation ? 48 : 32)) {
++      this.restore();
++      return false;
++    }
 +    if (!this.window.windowUtils.updateWinUIAddress(rect.x, rect.y, rect.width, rect.height,
 +                                                   true, false, false)) {
 +      this.failed = true;
@@ -4106,6 +4169,9 @@ index 0000000000..1e67efe8fd
 +      return false;
 +    }
 +    return true;
++  }
++  get navigationRequested() {
++    return Services.prefs.getBoolPref("widget.windows.winui-prototype.navigation.toolbar.enabled", false);
 +  }
 +  activate() {
 +    if (this.active || this.activationFrame) return;
@@ -4147,6 +4213,7 @@ index 0000000000..1e67efe8fd
 +    this.activationFrame = 0;
 +    const hadFocus = this.active && this.focusOwned;
 +    this.active = false;
++    this.row.hidden = true;
 +    this.window.document.documentElement.removeAttribute("winui-address-active");
 +    this.input.removeAttribute("aria-hidden");
 +    this.switcher.removeAttribute("aria-hidden");
@@ -4156,6 +4223,7 @@ index 0000000000..1e67efe8fd
 +    if (hadFocus) this.window.gURLBar.focus();
 +  }
 +  bounds() {
++    if (this.navigation) return this.row.getBoundingClientRect();
 +    const rect = this.slot.getBoundingClientRect();
 +    const container = this.input.closest(".urlbar-input-container").getBoundingClientRect();
 +    const toolbar = this.window.document.getElementById("nav-bar")?.getBoundingClientRect();
@@ -4165,20 +4233,29 @@ index 0000000000..1e67efe8fd
 +  close() {
 +    this.restore();
 +    this.resize.disconnect();
++    this.navigationObserver.disconnect();
 +    this.window.gBrowser.removeTabsProgressListener(this.progress);
 +    this.input.removeEventListener("beforefocus", this.beforeFocus);
 +    this.input.removeEventListener("beforeselect", this.beforeFocus);
 +    this.proxy.remove();
++    this.row.remove();
 +    this.link.remove();
 +  }
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.css b/browser/base/content/WinUIAddressToolbar.css
 new file mode 100644
-index 0000000000..83cf876c07
+index 0000000000..3df9217acc
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.css
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,19 @@
 +#winui-address-focus { display: none; }
++#winui-navigation-toolbar:not([hidden]) {
++  display: block;
++  min-block-size: 48px;
++  block-size: 48px;
++  flex-shrink: 0;
++  -moz-window-dragging: no-drag;
++}
 +:root[winui-address-active] .urlbar-input-box { position: relative; }
 +:root[winui-address-active] .urlbar-input-box > input { visibility: hidden; }
 +:root[winui-address-active] .searchmode-switcher {
@@ -4192,10 +4269,10 @@ index 0000000000..83cf876c07
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..e8546c1da6
+index 0000000000..c6b8a91249
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2083 @@
+@@ -0,0 +1,2095 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4204,6 +4281,7 @@ index 0000000000..e8546c1da6
 +  pref: "widget.windows.winui-prototype.pane.enabled",
 +  addressPref: "widget.windows.winui-prototype.address.enabled",
 +  addressToolbarPref: "widget.windows.winui-prototype.address.toolbar.enabled",
++  navigationToolbarPref: "widget.windows.winui-prototype.navigation.toolbar.enabled",
 +  stripPref: "widget.windows.winui-prototype.tabstrip.enabled",
 +  replaceTabsPref: "widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs",
 +  containerDotPref: "widget.windows.winui-prototype.tabstrip.containerDot",
@@ -4534,6 +4612,7 @@ index 0000000000..e8546c1da6
 +    for (const pref of this.groupingPrefs) Services.prefs.addObserver(pref, this);
 +    Services.prefs.addObserver(this.addressPref, this);
 +    Services.prefs.addObserver(this.addressToolbarPref, this);
++    Services.prefs.addObserver(this.navigationToolbarPref, this);
 +    this.schedule();
 +  },
 +
@@ -4634,6 +4713,7 @@ index 0000000000..e8546c1da6
 +    if (request.kind === 4) return this.executeNewTabRequest();
 +    if (request.kind === 5) return this.executeStripRequest(action);
 +    if (request.kind === 9) return this.executeStripPreview(action);
++    if (request.kind === 10) return this.addressToolbar?.executeNavigation(action) || 2;
 +    // 6 is a field/list intent, 7 a search-mode one. They are separate kinds so
 +    // that neither supersedes the other in the queue; the browser-side handling
 +    // is the same chain.
@@ -4847,7 +4927,8 @@ index 0000000000..e8546c1da6
 +
 +  syncAddress() {
 +    if (!this.attached || this.processingAction) return;
-+    const toolbarRequested = Services.prefs.getBoolPref(this.addressToolbarPref, false);
++    const toolbarRequested = Services.prefs.getBoolPref(this.addressToolbarPref, false) ||
++      Services.prefs.getBoolPref(this.navigationToolbarPref, false);
 +    if (toolbarRequested && this.tabStrip && !this.addressToolbar) {
 +      const { WinUIAddressToolbar } = ChromeUtils.importESModule(
 +        "chrome://browser/content/WinUIAddressToolbar.sys.mjs"
@@ -4901,6 +4982,8 @@ index 0000000000..e8546c1da6
 +    const state = {
 +      version: 1,
 +      enabled: true,
++      navigationToolbar: toolbar && this.addressToolbar.navigation,
++      ...(toolbar && this.addressToolbar.navigation ? {navigation:this.addressToolbar.navigationState()} : {}),
 +      open: !!session.nativeOpen,
 +      session: session.sessionId,
 +      revision: session.revision,
@@ -5414,7 +5497,7 @@ index 0000000000..e8546c1da6
 +  localization() {
 +    if (!this.tabMenuL10n) {
 +      this.tabMenuL10n = new Localization(
-+        ["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl", "browser/toolbarContextMenu.ftl", "browser/browser.ftl"], true);
++        ["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl", "browser/toolbarContextMenu.ftl", "browser/browser.ftl", "browser/browserContext.ftl"], true);
 +    }
 +    return this.tabMenuL10n;
 +  },
@@ -5448,6 +5531,10 @@ index 0000000000..e8546c1da6
 +        suggestions: value("winui-address-suggestions"),
 +        addressFallback: value("winui-address-fallback"),
 +        actions: value("winui-address-actions"),
++        navigation: Object.fromEntries(["back", "forward", "reload"].map(id => {
++          const label = attributes(`toolbar-button-${id}${id === "reload" ? "" : "-2"}`).label;
++          return [id, {label, tooltip:label}];
++        })),
 +      });
 +    }
 +    return this.nativeLabelCache;
@@ -6055,7 +6142,7 @@ index 0000000000..e8546c1da6
 +      }
 +      return;
 +    }
-+    if (data === this.addressPref || data === this.addressToolbarPref) {
++    if (data === this.addressPref || data === this.addressToolbarPref || data === this.navigationToolbarPref) {
 +      if (this.addressToolbar) this.addressToolbar.failed = false;
 +      // Turning the surface on or off changes what the next publication says,
 +      // including the one that tells native to hide it.
@@ -6175,7 +6262,8 @@ index 0000000000..e8546c1da6
 +      this.attached = ok;
 +      if (!ok) this.uninit();
 +      else {
-+        if (this.addressToolbar || Services.prefs.getBoolPref(this.addressToolbarPref, false)) {
++        if (this.addressToolbar || Services.prefs.getBoolPref(this.addressToolbarPref, false) ||
++            Services.prefs.getBoolPref(this.navigationToolbarPref, false)) {
 +          this.addressDirty = true;
 +        }
 +        this.publish();
@@ -6260,6 +6348,7 @@ index 0000000000..e8546c1da6
 +    for (const pref of this.groupingPrefs) Services.prefs.removeObserver(pref, this);
 +    Services.prefs.removeObserver(this.addressPref, this);
 +    Services.prefs.removeObserver(this.addressToolbarPref, this);
++    Services.prefs.removeObserver(this.navigationToolbarPref, this);
 +    Services.prefs.removeObserver("privacy.userContext.enabled", this);
 +    Services.prefs.removeObserver("browser.nova.enabled", this);
 +    this.element.remove();

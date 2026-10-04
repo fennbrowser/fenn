@@ -7,6 +7,7 @@
 #include "SearchMode.h"
 #include "GlobalActions.h"
 #include "SuggestionList.h"
+#include "NavigationToolbar.h"
 
 struct NativeAddress {
     using JObject = winrt::Windows::Data::Json::JsonObject;
@@ -17,6 +18,9 @@ struct NativeAddress {
     // actions below.
     static constexpr NativeJson::ImageLimits kRowImageLimits{104, 65536};
     Microsoft::UI::Xaml::Controls::StackPanel root;
+    Microsoft::UI::Xaml::Controls::Grid toolbarRoot{nullptr}, toolbarSurface{nullptr};
+    std::unique_ptr<NativeNavigationToolbar> navigation;
+    std::function<void(winrt::hstring const&)> navigate;
     Microsoft::UI::Xaml::Controls::TextBox field;
     NativeSearchMode mode;
     SuggestionList suggestions;
@@ -446,6 +450,50 @@ struct NativeAddress {
         });
         root.Children().Append(header);
         if (toolbar) {
+            // Flatten the unfocused/hover border; leave the stock focused accent
+            // and thickness intact. High contrast keeps its system borders.
+            field.Resources(Markup::XamlReader::Load(LR"(
+                <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                    <ResourceDictionary.ThemeDictionaries>
+                        <ResourceDictionary x:Key="Default">
+                            <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource ControlStrokeColorDefault}"/>
+                            <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource ControlStrokeColorDefault}"/>
+                        </ResourceDictionary>
+                        <ResourceDictionary x:Key="Light">
+                            <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource ControlStrokeColorDefault}"/>
+                            <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource ControlStrokeColorDefault}"/>
+                        </ResourceDictionary>
+                        <ResourceDictionary x:Key="HighContrast">
+                            <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource SystemColorButtonTextColor}"/>
+                            <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource SystemColorHighlightColor}"/>
+                        </ResourceDictionary>
+                    </ResourceDictionary.ThemeDictionaries>
+                </ResourceDictionary>)").as<ResourceDictionary>());
+            toolbarRoot = Grid();
+            ColumnDefinition navigationColumn, addressColumn;
+            navigationColumn.Width(GridLengthHelper::Auto());
+            addressColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+            toolbarRoot.ColumnDefinitions().Append(navigationColumn);
+            toolbarRoot.ColumnDefinitions().Append(addressColumn);
+            navigation = std::make_unique<NativeNavigationToolbar>();
+            navigation->activate = [this](wchar_t const* command, uint32_t modifiers) {
+                if (syncing || session.empty() || !navigate) return;
+                auto action = Message(L"navigation");
+                action.SetNamedValue(L"command", JValue::CreateStringValue(command));
+                action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
+                navigate(action.Stringify());
+            };
+            toolbarSurface = Markup::XamlReader::Load(
+                LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"/>)").as<Grid>();
+            toolbarSurface.Visibility(Visibility::Collapsed);
+            Grid::SetColumnSpan(toolbarSurface, 2);
+            Grid::SetColumn(root, 1);
+            toolbarRoot.Children().Append(toolbarSurface);
+            toolbarRoot.Children().Append(navigation->panel);
+            toolbarRoot.Children().Append(root);
+            root.VerticalAlignment(VerticalAlignment::Center);
+            Automation::AutomationProperties::SetAutomationId(toolbarRoot, L"FirefoxWinUINavigationToolbar");
             field.CopyingToClipboard([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
                 if (alive.expired()) return;
                 e.Handled(true);
@@ -462,6 +510,9 @@ struct NativeAddress {
                 Action(L"fallback", 0, L"cmd_paste");
             });
             root.Margin({0, 0, 0, 0});
+            // The popup floats outside layout; spacing after the header would
+            // shift the visible editor above the navigation buttons' center.
+            root.Spacing(0);
             field.MinHeight(32);
             field.Padding({8, 4, 8, 4});
             popupContent = StackPanel();
@@ -517,6 +568,7 @@ struct NativeAddress {
         using namespace Microsoft::UI::Xaml::Controls;
         if (snapshot.GetNamedNumber(L"version") != 1) winrt::throw_hresult(E_INVALIDARG);
         if (!snapshot.GetNamedBoolean(L"enabled", false)) {
+            if (navigation) navigation->Apply({}, false);
             if (popup) popup.IsOpen(false);
             mode.Disable();
             actions.Clear();
@@ -534,6 +586,8 @@ struct NativeAddress {
         const auto checkedEdit = snapshot.HasKey(L"editId") ? NativeJson::RequireRevision(snapshot, L"editId") : 0;
         const auto checkedComplete = snapshot.GetNamedBoolean(L"complete", false);
         const auto checkedOpen = snapshot.GetNamedBoolean(L"open", false);
+        const auto navigationToolbar = snapshot.GetNamedBoolean(L"navigationToolbar", false);
+        const auto navigationState = NativeNavigationToolbar::Read(snapshot);
         auto checkedText = snapshot.GetNamedString(L"text", L"");
         auto checkedRows = snapshot.GetNamedArray(L"rows");
         if (nextSession.empty() || nextSession.size() > 256 || checkedText.size() > NativeJson::kMaxFieldText ||
@@ -607,6 +661,11 @@ struct NativeAddress {
             observedComposing = composing;
         }
         root.Visibility(Visibility::Visible);
+        if (toolbarRoot) {
+            navigation->Apply(navigationState, navigationToolbar && snapshot.HasKey(L"navigation"));
+            toolbarSurface.Visibility(navigationToolbar ? Visibility::Visible : Visibility::Collapsed);
+            root.Margin(navigationToolbar ? Thickness{8, 8, 8, 8} : Thickness{0, 0, 0, 0});
+        }
         Edit();  // Observe text synchronously before an older snapshot can replace it.
         RetryEdit();
         // Intents are no longer collected here: Stage() and NativeSearchMode::Queue()

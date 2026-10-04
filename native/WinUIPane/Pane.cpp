@@ -437,6 +437,9 @@ struct Pane {
         addressSource = nullptr;
     }
     void WireAddress() {
+        address->navigate = [this](hstring const& action) {
+            Enqueue(NativeShellCore::NavigationAction, 0, 0, action);
+        };
         address->dispatch = [this](hstring const& action) {
             return Enqueue(NativeShellCore::AddressAction, 0, address->revision, action);
         };
@@ -1967,7 +1970,7 @@ HRESULT WINAPI UpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept
                 SetFocus(pane.parent);
                 pane.address->Action(L"blur", (GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
             });
-            pane.addressSource.Content(pane.address->root);
+            pane.addressSource.Content(pane.address->toolbarRoot);
             pane.addressWindow = GetWindowFromWindowId(pane.addressSource.SiteBridge().WindowId());
             check_bool(SetWindowSubclass(pane.addressWindow, Pane::FocusProc, reinterpret_cast<UINT_PTR>(&pane),
                                          reinterpret_cast<DWORD_PTR>(&pane)));

@@ -4932,7 +4932,8 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":1,"open":false,"text":"initial","rows":[]})")), "toolbar publication");
             UIElement content{nullptr};
             Require(SUCCEEDED(inspect(first,winrt::put_abi(content))), "address content");
-            auto root=content.as<Controls::StackPanel>();
+            auto toolbarRoot=content.as<Controls::Grid>();
+            auto root=toolbarRoot.Children().GetAt(2).as<Controls::StackPanel>();
             AwaitLiveTree(root);
             auto field=root.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(1).as<Controls::TextBox>();
             auto layoutStart = GetTickCount64();
@@ -4945,6 +4946,27 @@ int wmain(int argc, wchar_t** argv) {
             Require(field.Text()==L"initial" && field.ActualHeight()>=32, "stock toolbar editor");
             Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"sequence":2,"text":"bad","rows":[{"id":"same","title":"one"},{"id":"same","title":"two"}]})")), "reject invalid toolbar rows");
             Require(field.Text()==L"initial", "invalid publication is atomic");
+            RECT navigationRect{0,40,640,88};
+            Require(SUCCEEDED(api.updateAddress(first,&navigationRect,TRUE)), "full navigation row geometry");
+            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":2,"text":"initial","rows":[]})")), "navigation publication");
+            toolbarRoot.UpdateLayout();
+            Pump();
+            Require(root.Margin().Left == 8 && root.Margin().Top == 8 && field.ActualHeight() >= 32,
+                    "navigation row retains stock editor with native padding");
+            Require(toolbarRoot.Children().GetAt(0).Visibility() == Visibility::Visible,
+                    "navigation surface owns its background");
+            Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":"invalid","session":"toolbar-contract","revision":1,"sequence":3,"text":"bad","rows":[]})")), "reject invalid navigation presentation");
+            Require(field.Text()==L"initial" && root.Margin().Left == 8, "invalid presentation preserves native state");
+            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":3,"text":"initial","rows":[],"navigation":{"back":{"enabled":false,"label":"Localized back"},"forward":{"enabled":true,"label":"Localized forward"},"reload":{"enabled":true,"label":"Localized reload"}}})")), "publish navigation buttons");
+            auto navigation=toolbarRoot.Children().GetAt(1).as<Controls::StackPanel>();
+            Require(navigation.Visibility()==Visibility::Visible && navigation.Children().Size()==3, "three native navigation buttons");
+            Require(!navigation.Children().GetAt(0).as<Controls::Button>().IsEnabled() &&
+                    navigation.Children().GetAt(1).as<Controls::Button>().IsEnabled(), "Firefox controls navigation availability");
+            Require(Automation::AutomationProperties::GetName(navigation.Children().GetAt(2))==L"Localized reload", "Firefox navigation label");
+            Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":4,"text":"bad","rows":[],"navigation":{"back":{"enabled":"bad"}}})")), "reject malformed navigation atomically");
+            Require(field.Text()==L"initial" && navigation.Children().GetAt(1).as<Controls::Button>().IsEnabled(), "malformed navigation preserves editor and buttons");
+            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":false})")), "disable navigation with address");
+            Require(navigation.Visibility()==Visibility::Collapsed && !navigation.Children().GetAt(1).as<Controls::Button>().IsEnabled(), "disable hides and revokes navigation controls");
             Require(SUCCEEDED(api.updateAddress(first,&addressRect,FALSE)), "address-only detach");
             Require(SUCCEEDED(api.updateTabStrip(first,&stripRect,TRUE)), "strip survives address teardown");
             Require(inspect(first,winrt::put_abi(content))==E_NOT_VALID_STATE, "detached host no longer publishes");
