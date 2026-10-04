@@ -23,7 +23,7 @@
 // completeRequests) and incremental tab deltas (applyTabDelta), and retired
 // syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 // retaining the sidebar entry point.
-#define WINUI_PANE_ABI_VERSION 14u
+#define WINUI_PANE_ABI_VERSION 15u
 
 // All calls run on the browser's owning STA. Coordinates are client physical
 // pixels. The module remains loaded until process exit, including after shutdown.
@@ -122,5 +122,8 @@ struct WinUIPaneApi {
     // with one syncTabs snapshot, never with a retry loop. S_FALSE means the
     // delta applied but the pane wants a snapshot for an unrelated reason.
     HRESULT (WINAPI* applyTabDelta)(HWND, const wchar_t*, uint32_t*);
+    // v15: independent toolbar address island; the request endpoint is shared.
+    HRESULT (WINAPI* updateAddress)(HWND, const RECT*, BOOL);
+    HRESULT (WINAPI* focusAddress)(HWND, BOOL);
 };
 using WinUIPaneGetApiFn = HRESULT (WINAPI*)(uint32_t, uint32_t, WinUIPaneApi*);

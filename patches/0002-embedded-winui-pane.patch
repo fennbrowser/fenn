@@ -868,16 +868,18 @@ index 995b2fc869..7add43e3b2 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 47a26fd814..a45203644a 100644
+index 47a26fd814..f2e3672be3 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3831,6 +3831,31 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3831,6 +3831,34 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
 +pref("widget.windows.winui-prototype.pane.enabled", false);
 +// Strip-only presentation; Firefox keeps its original tab and navigation UI.
 +pref("widget.windows.winui-prototype.tabstrip.enabled", false);
++// Replace the horizontal Firefox tab row after native attachment succeeds.
++pref("widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs", false);
 +// Native top-bar height: 32 compact, 40 current design, 48 tall.
 +pref("widget.windows.winui-prototype.tabstrip.height", 40);
 +// Container dots suppress container glow; group and container glows are opt-in.
@@ -899,6 +901,7 @@ index 47a26fd814..a45203644a 100644
 +// disappearing at once.
 +pref("widget.windows.winui-prototype.tabstrip.groupGlowFadeOut", false);
 +pref("widget.windows.winui-prototype.address.enabled", false);
++pref("widget.windows.winui-prototype.address.toolbar.enabled", false);
 +
  #ifdef XP_MACOSX
    pref("browser.macAppMenu.setAsDefaultShown", false);
@@ -918,10 +921,10 @@ index 89ebf87426..eeffb8e367 100644
    Services.scriptloader.loadSubScript("chrome://browser/content/browser-captivePortal.js", this);
    if (AppConstants.MOZ_DATA_REPORTING) {
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..7e69cd7465 100644
+index b2b5db6040..d77a67ab4f 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -33,6 +33,10 @@ browser.jar:
+@@ -33,6 +33,12 @@ browser.jar:
          content/browser/aboutTabCrashed.xhtml         (content/aboutTabCrashed.xhtml)
          content/browser/blanktab.html                 (content/blanktab.html)
          content/browser/browser.js                    (content/browser.js)
@@ -929,6 +932,8 @@ index b2b5db6040..7e69cd7465 100644
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
 +        content/browser/WinUITabStripSession.sys.mjs     (content/WinUITabStripSession.sys.mjs)
 +        content/browser/WinUIUrlbarSession.sys.mjs      (content/WinUIUrlbarSession.sys.mjs)
++        content/browser/WinUIAddressToolbar.sys.mjs     (content/WinUIAddressToolbar.sys.mjs)
++        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
@@ -1763,10 +1768,10 @@ index 5a562d6385..38efc61bb6 100644
        if (blobUrl) {
          return blobUrl;
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index c59e443d11..d32ed3557a 100644
+index c59e443d11..b3228392bc 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -523,3 +523,16 @@ split-view-menuitem-close-both-tabs =
+@@ -523,3 +523,19 @@ split-view-menuitem-close-both-tabs =
      .label = Close Both Tabs
  
  ##
@@ -1779,18 +1784,44 @@ index c59e443d11..d32ed3557a 100644
 +
 +# Accessible names and states for the opt-in native tab strip and address bar.
 +winui-tab-strip-label = Tabs in this window
++winui-use-native-tab-strip =
++    .label = Use native tab strip
 +winui-tab-strip-active = Active tab
 +winui-tab-strip-selected = Selected tab
 +winui-address-suggestions = Address suggestions
 +winui-address-actions = Search actions
++winui-address-fallback = Use Firefox address bar
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
-index ae5a803893..d4b6611312 100644
+index ae5a803893..4d9f2e69e3 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
 +++ b/dom/base/nsDOMWindowUtils.cpp
-@@ -151,6 +151,140 @@ using namespace mozilla::layers;
+@@ -151,6 +151,163 @@ using namespace mozilla::layers;
  using namespace mozilla::widget;
  using namespace mozilla::gfx;
  
++NS_IMETHODIMP
++nsDOMWindowUtils::UpdateWinUIAddress(double aX, double aY, double aWidth,
++                                   double aHeight, bool aVisible, bool aFocus,
++                                   bool aSelectAll, bool* aResult) {
++  *aResult = false;
++  auto* doc = GetDocument();
++  if (!XRE_IsParentProcess() || !doc || !doc->NodePrincipal()->IsSystemPrincipal() ||
++      !doc->GetDocumentURI()->GetSpecOrDefault().EqualsLiteral(
++          "chrome://browser/content/browser.xhtml")) return NS_ERROR_NOT_AVAILABLE;
++  auto* pc = GetPresContext();
++  nsPoint offset;
++  auto* widget = GetWidget(&offset);
++  if (!pc || !widget || !std::isfinite(aX) || !std::isfinite(aY) ||
++      !std::isfinite(aWidth) || !std::isfinite(aHeight) || aWidth < 0 ||
++      aHeight < 0 || std::abs(aX) > 100000 || std::abs(aY) > 100000 ||
++      aWidth > 100000 || aHeight > 100000) return NS_ERROR_INVALID_ARG;
++  CSSRect cssRect(aX, aY, aWidth, aHeight);
++  cssRect.MoveBy(CSSPoint::FromAppUnits(offset));
++  auto rect = LayoutDeviceIntRect::Round(cssRect * pc->CSSToDevPixelScale());
++  *aResult = widget->UpdateWinUIAddress(rect, aVisible, aFocus, aSelectAll);
++  return NS_OK;
++}
++
 +NS_IMETHODIMP
 +nsDOMWindowUtils::SyncWinUIAddress(const nsAString& aSnapshot) {
 +  auto* doc = GetDocument();
@@ -1929,14 +1960,17 @@ index ae5a803893..d4b6611312 100644
  #define APZZTFI_LOG(...) \
    MOZ_LOG(sApzZoomToFocusedInputLog, LogLevel::Debug, (__VA_ARGS__))
 diff --git a/dom/interfaces/base/nsIDOMWindowUtils.idl b/dom/interfaces/base/nsIDOMWindowUtils.idl
-index d8f67f31da..becd76cfa9 100644
+index d8f67f31da..13145e7a16 100644
 --- a/dom/interfaces/base/nsIDOMWindowUtils.idl
 +++ b/dom/interfaces/base/nsIDOMWindowUtils.idl
-@@ -61,6 +61,38 @@ interface nsISynthesizedEventCallback : nsISupports {
+@@ -61,6 +61,41 @@ interface nsISynthesizedEventCallback : nsISupports {
  [builtinclass, scriptable, uuid(4d6732ca-9da7-4176-b8a1-8dde15cd0bf9)]
  interface nsIDOMWindowUtils : nsISupports {
  
 +  void syncWinUIAddress(in AString snapshot);
++  boolean updateWinUIAddress(in double x, in double y, in double width,
++                            in double height, in boolean visible,
++                            in boolean focus, in boolean selectAll);
 +  void syncWinUITabMenu(in AString snapshot);
 +
 +  /**
@@ -1972,14 +2006,18 @@ index d8f67f31da..becd76cfa9 100644
     * Image animation mode of the window. When this attribute's value
     * is changed, the implementation should set all images in the window
 diff --git a/widget/nsIWidget.h b/widget/nsIWidget.h
-index 2d06d7b7dd..0fecc58800 100644
+index 2d06d7b7dd..3925f8d967 100644
 --- a/widget/nsIWidget.h
 +++ b/widget/nsIWidget.h
-@@ -1292,6 +1292,24 @@ class nsIWidget : public nsSupportsWeakReference {
+@@ -1292,6 +1292,28 @@ class nsIWidget : public nsSupportsWeakReference {
     */
    virtual void* GetNativeData(uint32_t aDataType) = 0;
  
 +  virtual bool SyncWinUIAddress(const nsAString& aSnapshot) { return false; }
++  virtual bool UpdateWinUIAddress(const LayoutDeviceIntRect& aRect,
++                                 bool aVisible, bool aFocus, bool aSelectAll) {
++    return false;
++  }
 +  virtual bool SyncWinUITabMenu(const nsAString& aSnapshot) { return false; }
 +
 +  virtual bool DrainWinUIRequests(nsAString& aBatch) { return false; }
@@ -2001,10 +2039,10 @@ index 2d06d7b7dd..0fecc58800 100644
    nsIWidget();
    virtual ~nsIWidget();
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
-index c6e02a8696..ff9c62cf16 100644
+index c6e02a8696..a185a7572d 100644
 --- a/widget/windows/WinUIPrototype.cpp
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -2,17 +2,242 @@
+@@ -2,17 +2,267 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  #include "WinUIPrototype.h"
@@ -2069,7 +2107,8 @@ index c6e02a8696..ff9c62cf16 100644
 +  if (FAILED(hr) || api.size != sizeof(api) ||
 +      api.version != WINUI_PANE_ABI_VERSION || !api.update || !api.focus ||
 +      !api.destroy || !api.translate || !api.shutdown || !api.clip || !api.syncTabs || !api.syncAddress || !api.syncTabMenu || !api.updateTabStrip ||
-+      !api.setNotifySink || !api.drainRequests || !api.completeRequests || !api.applyTabDelta) {
++      !api.setNotifySink || !api.drainRequests || !api.completeRequests || !api.applyTabDelta ||
++      !api.updateAddress || !api.focusAddress) {
 +    MOZ_LOG(sWinUIPrototypeLog, LogLevel::Warning,
 +            ("pane=incompatible hr=0x%08lx", hr));
 +    return false;
@@ -2145,21 +2184,33 @@ index c6e02a8696..ff9c62cf16 100644
 +  return hr == S_FALSE ? 0 : revision;
 +}
 +
++static bool PaneEnabled() {
++  return Preferences::GetBool("widget.windows.winui-prototype.pane.enabled",
++                              false) ||
++         Preferences::GetBool(
++             "widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs",
++             false);
++}
++
 +bool UpdateWinUIPane(HWND aWindow, const RECT& aRect, bool aVisible,
 +                     bool aFocus, bool aBackwards,
 +                     const nsTArray<LayoutDeviceIntRect>& aOcclusions) {
 +  if (!XRE_IsParentProcess() || !NS_IsMainThread() || sPaneStopped)
 +    return false;
-+  if (!Preferences::GetBool("widget.windows.winui-prototype.pane.enabled",
-+                            false)) {
++  if (!PaneEnabled()) {
 +    DestroyWinUIPane(aWindow);
 +    return false;
 +  }
 +  sTraceEnabled = true;
 +  if (!LoadPane()) return false;
-+  auto update = Preferences::GetBool(
-+      "widget.windows.winui-prototype.tabstrip.enabled", false)
-+      ? sPaneApi.updateTabStrip : sPaneApi.update;
++  auto update =
++      Preferences::GetBool("widget.windows.winui-prototype.tabstrip.enabled",
++                           false) ||
++              Preferences::GetBool(
++                  "widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs",
++                  false)
++          ? sPaneApi.updateTabStrip
++          : sPaneApi.update;
 +  HRESULT hr = update(aWindow, &aRect, aVisible);
 +  if (SUCCEEDED(hr) && sPaneApi.setNotifySink) {
 +    // Registered by the widget, not by chrome script, so the request path
@@ -2191,7 +2242,7 @@ index c6e02a8696..ff9c62cf16 100644
 +                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected) {
 +  if (!XRE_IsParentProcess() || !NS_IsMainThread() || sPaneStopped ||
 +      !sPaneApi.syncTabs || aIds.Length() != aTitles.Length() || aIds.Length() != aCommands.Length() ||
-+      !Preferences::GetBool("widget.windows.winui-prototype.pane.enabled", false))
++      !PaneEnabled())
 +    return 0;
 +  nsTArray<WinUITab> tabs;
 +  for (size_t i = 0; i < aIds.Length(); ++i) {
@@ -2206,9 +2257,21 @@ index c6e02a8696..ff9c62cf16 100644
 +bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot) {
 +  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
 +      !sPaneApi.syncAddress || aSnapshot.Length() > 1048576 ||
-+      !Preferences::GetBool("widget.windows.winui-prototype.pane.enabled", false)) return false;
++      !PaneEnabled()) return false;
 +  nsAutoString snapshot(aSnapshot);
 +  return SUCCEEDED(sPaneApi.syncAddress(aWindow, snapshot.get()));
++}
++
++bool UpdateWinUIAddress(HWND aWindow, const RECT& aRect, bool aVisible,
++                       bool aFocus, bool aSelectAll) {
++  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
++      !sPaneApi.updateAddress || !PaneEnabled()) return false;
++  if (aVisible && !Preferences::GetBool(
++          "widget.windows.winui-prototype.address.toolbar.enabled", false)) return false;
++  HRESULT hr = sPaneApi.updateAddress(aWindow, &aRect, aVisible);
++  if (SUCCEEDED(hr) && aVisible && aFocus)
++    hr = sPaneApi.focusAddress(aWindow, aSelectAll);
++  return SUCCEEDED(hr);
 +}
 +
 +// Publication only: since ABI v12 the pane returns nothing here, so there is
@@ -2216,7 +2279,7 @@ index c6e02a8696..ff9c62cf16 100644
 +bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot) {
 +  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
 +      !sPaneApi.syncTabMenu || aSnapshot.Length() > 1048576 ||
-+      !Preferences::GetBool("widget.windows.winui-prototype.pane.enabled", false)) return false;
++      !PaneEnabled()) return false;
 +  nsAutoString snapshot(aSnapshot);
 +  return SUCCEEDED(sPaneApi.syncTabMenu(aWindow, snapshot.get()));
 +}
@@ -2248,7 +2311,7 @@ index c6e02a8696..ff9c62cf16 100644
  
  void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    if (!XRE_IsParentProcess() || !NS_IsMainThread() || !sTraceEnabled) return;
-@@ -20,51 +245,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
+@@ -20,51 +270,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
    const HRESULT hr = CoGetApartmentType(&apartment, &qualifier);
    DWORD ownerProcess = 0;
@@ -2331,10 +2394,10 @@ index c6e02a8696..ff9c62cf16 100644
    FreeLibrary(module);
    TraceWinUIPrototype("probe-complete", aWindow);
 diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
-index 418c5d791d..82b3d35961 100644
+index 418c5d791d..8b306b96e2 100644
 --- a/widget/windows/WinUIPrototype.h
 +++ b/widget/windows/WinUIPrototype.h
-@@ -4,8 +4,32 @@
+@@ -4,8 +4,34 @@
  #ifndef widget_windows_WinUIPrototype_h
  #define widget_windows_WinUIPrototype_h
  #include <windows.h>
@@ -2351,6 +2414,8 @@ index 418c5d791d..82b3d35961 100644
 +uint32_t SyncWinUITabs(HWND aWindow, const nsTArray<uint32_t>& aIds,
 +                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected);
 +bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot);
++bool UpdateWinUIAddress(HWND aWindow, const RECT& aRect, bool aVisible,
++                       bool aFocus, bool aSelectAll);
 +bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot);
 +// ABI v11 request path. The pane wakes the browser through a sink registered
 +// here, which only posts a task to this thread's event queue; these are the
@@ -2406,7 +2471,7 @@ index d4aff8c47e..a34a1a2dfc 100644
              IMEHandler::ProcessRawKeyMessage(msg)) {
            continue;  // the message is consumed.
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index c3f2902636..2903127ead 100644
+index c3f2902636..c5930c560c 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -53,7 +53,6 @@
@@ -2425,12 +2490,19 @@ index c3f2902636..2903127ead 100644
  #include "WinWindowOcclusionTracker.h"
  #include "gfx2DGlue.h"
  #include "gfxConfig.h"
-@@ -1262,6 +1262,44 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+@@ -1262,6 +1262,51 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
    return NS_OK;
  }
  
 +bool nsWindow::SyncWinUIAddress(const nsAString& aSnapshot) {
 +  return mozilla::widget::SyncWinUIAddress(mWnd, aSnapshot);
++}
++
++bool nsWindow::UpdateWinUIAddress(const LayoutDeviceIntRect& aRect,
++                                 bool aVisible, bool aFocus, bool aSelectAll) {
++  if (mWindowType != WindowType::TopLevel || mDestroyCalled) return false;
++  RECT rect{aRect.x, aRect.y, aRect.XMost(), aRect.YMost()};
++  return mozilla::widget::UpdateWinUIAddress(mWnd, rect, aVisible, aFocus, aSelectAll);
 +}
 +
 +bool nsWindow::SyncWinUITabMenu(const nsAString& aSnapshot) {
@@ -2470,7 +2542,7 @@ index c3f2902636..2903127ead 100644
  void nsWindow::LocalesChanged() {
    bool isRTL = intl::LocaleService::GetInstance()->IsAppLocaleRTL();
    if (mIsRTL != isRTL) {
-@@ -1286,6 +1324,7 @@ void nsWindow::Destroy() {
+@@ -1286,6 +1331,7 @@ void nsWindow::Destroy() {
    // deleted.
    nsCOMPtr<nsIWidget> kungFuDeathGrip(this);
  
@@ -2478,7 +2550,7 @@ index c3f2902636..2903127ead 100644
    DestroyDirectManipulation();
  
    // Before destroying the native window, we need to clean up the resource
-@@ -5640,7 +5679,8 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5640,7 +5686,8 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
          mDraggingWindowWithMouse = true;
        }
  
@@ -2488,7 +2560,7 @@ index c3f2902636..2903127ead 100644
          DispatchMouseEvent(eMouseDown, wParamFromGlobalMouseState(),
                             lParamToClient(lParam), false, MouseButton::ePrimary,
                             MOUSE_INPUT_SOURCE(), nullptr, IsNonclient::Yes);
-@@ -5651,7 +5691,9 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5651,7 +5698,9 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
      }
  
      case WM_NCLBUTTONUP: {
@@ -2499,7 +2571,7 @@ index c3f2902636..2903127ead 100644
          result = DispatchMouseEvent(eMouseUp, wParamFromGlobalMouseState(),
                                      lParamToClient(lParam), false,
                                      MouseButton::ePrimary, MOUSE_INPUT_SOURCE(),
-@@ -6944,6 +6986,7 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+@@ -6944,6 +6993,7 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
  
  // WM_DESTROY event handler
  void nsWindow::OnDestroy() {
@@ -2508,14 +2580,16 @@ index c3f2902636..2903127ead 100644
      mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
    }
 diff --git a/widget/windows/nsWindow.h b/widget/windows/nsWindow.h
-index 1e2660589b..39cb967796 100644
+index 1e2660589b..85227d8e69 100644
 --- a/widget/windows/nsWindow.h
 +++ b/widget/windows/nsWindow.h
-@@ -139,6 +139,21 @@ class nsWindow final : public nsIWidget {
+@@ -139,6 +139,23 @@ class nsWindow final : public nsIWidget {
  
    nsWindow();
  
 +  bool SyncWinUIAddress(const nsAString& aSnapshot) override;
++  bool UpdateWinUIAddress(const LayoutDeviceIntRect& aRect,
++                         bool aVisible, bool aFocus, bool aSelectAll) override;
 +  bool SyncWinUITabMenu(const nsAString& aSnapshot) override;
 +
 +  bool DrainWinUIRequests(nsAString& aBatch) override;
@@ -3966,12 +4040,162 @@ index 0000000000..618c23367b
 +    this.window = null;
 +  }
 +}
+diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
+new file mode 100644
+index 0000000000..1e67efe8fd
+--- /dev/null
++++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
+@@ -0,0 +1,126 @@
++export class WinUIAddressToolbar {
++  constructor(window, owner) {
++    this.window = window;
++    this.owner = owner;
++    const document = window.document;
++    this.input = window.gURLBar.inputField;
++    this.slot = this.input.closest(".urlbar-input-box");
++    this.switcher = window.gURLBar.querySelector(".searchmode-switcher");
++    this.switcherWasInert = this.switcher.inert;
++    this.link = document.createElementNS("http://www.w3.org/1999/xhtml", "link");
++    this.link.rel = "stylesheet";
++    this.link.href = "chrome://browser/content/WinUIAddressToolbar.css";
++    document.documentElement.append(this.link);
++    this.proxy = document.createElementNS("http://www.w3.org/1999/xhtml", "div");
++    this.proxy.id = "winui-address-focus";
++    this.proxy.tabIndex = 0;
++    this.proxy.setAttribute("role", "group");
++    this.proxy.setAttribute("aria-label", this.input.getAttribute("placeholder") || "");
++    this.slot.append(this.proxy);
++    this.beforeFocus = event => {
++      if (this.active && this.focus(event.type === "beforeselect")) event.preventDefault();
++    };
++    this.proxyFocus = () => { if (!this.focusing && !this.focusOwned) this.focus(false); };
++    this.input.addEventListener("beforefocus", this.beforeFocus);
++    this.input.addEventListener("beforeselect", this.beforeFocus);
++    this.proxy.addEventListener("focus", this.proxyFocus);
++    this.resize = new window.ResizeObserver(() => owner.schedule());
++    this.resize.observe(this.slot);
++    this.progress = {
++      onLocationChange: browser => {
++        if (browser === window.gBrowser.selectedBrowser) owner.invalidateAddress();
++      },
++      onStateChange: (browser, _progress, _request, flags) => {
++        if (browser === window.gBrowser.selectedBrowser &&
++            (flags & Ci.nsIWebProgressListener.STATE_IS_DOCUMENT)) owner.invalidateAddress();
++      },
++    };
++    window.gBrowser.addTabsProgressListener(this.progress);
++  }
++  supported() {
++    const { window, owner } = this;
++    return owner.attached && owner.tabStrip && !this.failed &&
++      Services.prefs.getBoolPref("widget.windows.winui-prototype.address.toolbar.enabled", false) &&
++      !window.fullScreen && !window.document.fullscreenElement &&
++      !window.document.documentElement.hasAttribute("customizing") &&
++      !Services.prefs.getBoolPref("sidebar.verticalTabs", false) &&
++      !window.PrivateBrowsingUtils.isWindowPrivate(window) &&
++      !window.gURLBar.readOnly && !window.gURLBar.inOverflowPanel;
++  }
++  update() {
++    if (!this.supported()) { this.restore(); return false; }
++    const rect = this.bounds();
++    if (rect.width < 240 || rect.height < 32) { this.restore(); return false; }
++    if (!this.window.windowUtils.updateWinUIAddress(rect.x, rect.y, rect.width, rect.height,
++                                                   true, false, false)) {
++      this.failed = true;
++      this.restore();
++      return false;
++    }
++    return true;
++  }
++  activate() {
++    if (this.active || this.activationFrame) return;
++    // The first publication makes the XAML editor visible. Allow its layout
++    // turn before transferring an already-focused Firefox input to it.
++    this.activationFrame = this.window.requestAnimationFrame(() => {
++      this.activationFrame = 0;
++      if (this.update()) this.finishActivation();
++    });
++  }
++  finishActivation() {
++    if (this.active) return;
++    const editorHadFocus = this.window.document.activeElement === this.input;
++    this.active = true;
++    this.window.document.documentElement.setAttribute("winui-address-active", "");
++    this.input.setAttribute("aria-hidden", "true");
++    this.switcher.setAttribute("aria-hidden", "true");
++    this.switcher.inert = true;
++    if (editorHadFocus) this.focus(false);
++  }
++  focus(selectAll) {
++    const rect = this.bounds();
++    try {
++      this.focusing = true;
++      if (this.active) this.proxy.focus({preventScroll:true});
++      if (this.active && this.window.windowUtils.updateWinUIAddress(rect.x, rect.y, rect.width,
++                                           rect.height, true, true, selectAll)) {
++        this.focusOwned = true;
++        return true;
++      }
++    } catch (error) { console.error(error); }
++    finally { this.focusing = false; }
++    this.failed = true;
++    this.owner.addressFallback();
++    return false;
++  }
++  restore() {
++    if (this.activationFrame) this.window.cancelAnimationFrame(this.activationFrame);
++    this.activationFrame = 0;
++    const hadFocus = this.active && this.focusOwned;
++    this.active = false;
++    this.window.document.documentElement.removeAttribute("winui-address-active");
++    this.input.removeAttribute("aria-hidden");
++    this.switcher.removeAttribute("aria-hidden");
++    this.switcher.inert = !!this.switcherWasInert;
++    this.owner.addressSession?.releaseNativePresentation();
++    try { this.window.windowUtils.updateWinUIAddress(0, 0, 0, 0, false, false, false); } catch {}
++    if (hadFocus) this.window.gURLBar.focus();
++  }
++  bounds() {
++    const rect = this.slot.getBoundingClientRect();
++    const container = this.input.closest(".urlbar-input-container").getBoundingClientRect();
++    const toolbar = this.window.document.getElementById("nav-bar")?.getBoundingClientRect();
++    const height = Math.max(container.height, toolbar?.height || 0) >= 32 ? Math.max(32, rect.height) : rect.height;
++    return {x:rect.x, y:rect.y - (height - rect.height)/2, width:rect.width, height};
++  }
++  close() {
++    this.restore();
++    this.resize.disconnect();
++    this.window.gBrowser.removeTabsProgressListener(this.progress);
++    this.input.removeEventListener("beforefocus", this.beforeFocus);
++    this.input.removeEventListener("beforeselect", this.beforeFocus);
++    this.proxy.remove();
++    this.link.remove();
++  }
++}
+diff --git a/browser/base/content/WinUIAddressToolbar.css b/browser/base/content/WinUIAddressToolbar.css
+new file mode 100644
+index 0000000000..83cf876c07
+--- /dev/null
++++ b/browser/base/content/WinUIAddressToolbar.css
+@@ -0,0 +1,12 @@
++#winui-address-focus { display: none; }
++:root[winui-address-active] .urlbar-input-box { position: relative; }
++:root[winui-address-active] .urlbar-input-box > input { visibility: hidden; }
++:root[winui-address-active] .searchmode-switcher {
++  opacity: 0;
++  pointer-events: none;
++}
++:root[winui-address-active] #winui-address-focus {
++  display: block;
++  position: absolute;
++  inset: 0;
++}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..4a0fcab40f
+index 0000000000..e8546c1da6
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1910 @@
+@@ -0,0 +1,2083 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3979,7 +4203,9 @@ index 0000000000..4a0fcab40f
 +var gWinUIPane = {
 +  pref: "widget.windows.winui-prototype.pane.enabled",
 +  addressPref: "widget.windows.winui-prototype.address.enabled",
++  addressToolbarPref: "widget.windows.winui-prototype.address.toolbar.enabled",
 +  stripPref: "widget.windows.winui-prototype.tabstrip.enabled",
++  replaceTabsPref: "widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs",
 +  containerDotPref: "widget.windows.winui-prototype.tabstrip.containerDot",
 +  tabGlowsPref: "widget.windows.winui-prototype.tabstrip.glows",
 +  stripBackdropPref: "widget.windows.winui-prototype.tabstrip.backdrop",
@@ -4099,14 +4325,110 @@ index 0000000000..4a0fcab40f
 +    "keydown",
 +  ],
 +
++  initOptions() {
++    if (AppConstants.platform !== "win" || !window.toolbar.visible) return;
++    this.optionsObserver = {
++      observe: () => {
++        if (this.reinitPending) return;
++        this.reinitPending = true;
++        Services.tm.dispatchToMainThread(() => {
++          this.reinitPending = false;
++          if (!this.optionsObserver) return;
++          if (this.draining || this.processingAction) {
++            this.optionsRefreshDeferred = true;
++            return;
++          }
++          const replace = Services.prefs.getBoolPref(this.replaceTabsPref, false);
++          const enabled = replace || Services.prefs.getBoolPref(this.pref, false);
++          const strip = replace || Services.prefs.getBoolPref(this.stripPref, false);
++          if (this.element && enabled && this.tabStrip === strip) {
++            this.schedule();
++            return;
++          }
++          this.uninit();
++          this.init();
++        });
++      },
++    };
++    for (const pref of [this.pref, this.stripPref, this.replaceTabsPref]) {
++      Services.prefs.addObserver(pref, this.optionsObserver);
++    }
++    this.replacementStyle = document.createElementNS("http://www.w3.org/1999/xhtml", "style");
++    this.replacementStyle.textContent =
++      `:root[winui-replaces-tabs] #TabsToolbar { display: none !important; }
++       @media not -moz-pref("browser.nova.enabled") {
++         :root[winui-replaces-tabs][privatebrowsingmode="temporary"] #nav-bar > .private-browsing-indicator-with-label {
++           display: flex !important;
++         }
++       }
++       @media -moz-pref("browser.nova.enabled") {
++         :root[winui-replaces-tabs][privatebrowsingmode="temporary"] #nav-bar > .private-browsing-indicator-button {
++           display: flex !important;
++         }
++       }
++       :root[winui-replaces-tabs][contentanalysisactive] #nav-bar > .content-analysis-indicator {
++         display: flex !important;
++       }`;
++    document.documentElement.appendChild(this.replacementStyle);
++    const menu = document.getElementById("toolbar-context-menu");
++    this.replacementOption = document.createXULElement("menuitem");
++    this.replacementOption.id = "toolbar-context-winui-tabs";
++    this.replacementOption.setAttribute("type", "checkbox");
++    menu.appendChild(this.replacementOption);
++    this.replacementOption.addEventListener("command", () => this.toggleReplacement());
++    this.optionsShowing = event => {
++      if (event.target !== menu) return;
++      const [message] = this.localization().formatMessagesSync([{id: "winui-use-native-tab-strip"}]);
++      this.replacementOption.setAttribute("label", message.attributes.find(a => a.name === "label").value);
++      this.replacementOption.setAttribute("checked", Services.prefs.getBoolPref(this.replaceTabsPref, false));
++      this.replacementOption.disabled = Services.prefs.prefIsLocked(this.replaceTabsPref) || gDialogBox.isOpen;
++      this.replacementOption.hidden = false;
++    };
++    menu.addEventListener("popupshowing", this.optionsShowing);
++  },
++
++  uninitOptions() {
++    if (!this.optionsObserver) return;
++    for (const pref of [this.pref, this.stripPref, this.replaceTabsPref]) {
++      Services.prefs.removeObserver(pref, this.optionsObserver);
++    }
++    this.optionsObserver = null;
++    document.getElementById("toolbar-context-menu").removeEventListener("popupshowing", this.optionsShowing);
++    this.replacementOption.remove();
++    this.replacementStyle.remove();
++  },
++
++  toggleReplacement() {
++    if (gDialogBox.isOpen || Services.prefs.prefIsLocked(this.replaceTabsPref)) return;
++    Services.prefs.setBoolPref(this.replaceTabsPref,
++      !Services.prefs.getBoolPref(this.replaceTabsPref, false));
++  },
++
++  setReplacementActive(active) {
++    const root = document.documentElement;
++    if (root.hasAttribute("winui-replaces-tabs") !== active) {
++      root.toggleAttribute("winui-replaces-tabs", active);
++    }
++  },
++
++  hasUnreplacedTabControls() {
++    const target = document.getElementById("TabsToolbar-customization-target");
++    return Array.from(target?.children || []).some(child =>
++      !["tabbrowser-tabs", "new-tab-button", "alltabs-button"].includes(child.id) &&
++      !["toolbarspring", "spacer", "toolbarseparator", "toolbartabstop"].includes(child.localName) &&
++      getComputedStyle(child).display !== "none");
++  },
++
 +  init() {
 +    if (
-+      !Services.prefs.getBoolPref(this.pref, false) ||
++      !(Services.prefs.getBoolPref(this.pref, false) ||
++        Services.prefs.getBoolPref(this.replaceTabsPref, false)) ||
 +      !window.toolbar.visible
 +    ) {
 +      return;
 +    }
-+    this.tabStrip = Services.prefs.getBoolPref(this.stripPref, false);
++    this.tabStrip = Services.prefs.getBoolPref(this.stripPref, false) ||
++      Services.prefs.getBoolPref(this.replaceTabsPref, false);
 +    // This window's native endpoint, formatted exactly as nsIBaseWindow does,
 +    // so the pane's drain notification can be matched to this window. An HWND
 +    // alone is not a lifetime identity; the request path carries its own
@@ -4159,6 +4481,10 @@ index 0000000000..4a0fcab40f
 +      this.schedule();
 +    });
 +    this.mutation.observe(document.documentElement, { attributes: true });
++    if (this.tabStrip) {
++      this.mutation.observe(document.getElementById("TabsToolbar-customization-target"),
++        {childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "collapsed", "class", "style"]});
++    }
 +    this.mutation.observe(this.urlbar, { attributes: true });
 +    if (this.modeSwitcher) {
 +      this.mutation.observe(this.modeSwitcher, { attributes: true });
@@ -4195,8 +4521,7 @@ index 0000000000..4a0fcab40f
 +      Services.obs.addObserver(this, `contextual-identity-${topic}`);
 +    Services.prefs.addObserver("privacy.userContext.enabled", this);
 +    Services.prefs.addObserver("browser.nova.enabled", this);
-+    Services.prefs.addObserver(this.pref, this);
-+    Services.prefs.addObserver(this.stripPref, this);
++    Services.prefs.addObserver("sidebar.verticalTabs", this);
 +    Services.prefs.addObserver(this.stripHeightPref, this);
 +    Services.prefs.addObserver(this.containerDotPref, this);
 +    Services.prefs.addObserver(this.tabGlowsPref, this);
@@ -4208,6 +4533,7 @@ index 0000000000..4a0fcab40f
 +    Services.prefs.addObserver(this.groupGlowFadeOutPref, this);
 +    for (const pref of this.groupingPrefs) Services.prefs.addObserver(pref, this);
 +    Services.prefs.addObserver(this.addressPref, this);
++    Services.prefs.addObserver(this.addressToolbarPref, this);
 +    this.schedule();
 +  },
 +
@@ -4285,6 +4611,10 @@ index 0000000000..4a0fcab40f
 +    }
 +    // Reflect whatever the executed commands changed, in the same turn.
 +    this.publish();
++    if (this.optionsRefreshDeferred) {
++      this.optionsRefreshDeferred = false;
++      this.optionsObserver?.observe();
++    }
 +    if (this.drainAgain) {
 +      this.drainAgain = false;
 +      // Post rather than recurse: a wakeup that arrived inside a nested modal
@@ -4517,20 +4847,29 @@ index 0000000000..4a0fcab40f
 +
 +  syncAddress() {
 +    if (!this.attached || this.processingAction) return;
-+    const requested = Services.prefs.getBoolPref(
++    const toolbarRequested = Services.prefs.getBoolPref(this.addressToolbarPref, false);
++    if (toolbarRequested && this.tabStrip && !this.addressToolbar) {
++      const { WinUIAddressToolbar } = ChromeUtils.importESModule(
++        "chrome://browser/content/WinUIAddressToolbar.sys.mjs"
++      );
++      this.addressToolbar = new WinUIAddressToolbar(window, this);
++    }
++    const toolbar = this.addressToolbar?.update() || false;
++    const requested = toolbarRequested || Services.prefs.getBoolPref(
 +      "widget.windows.winui-prototype.address.enabled",
 +      false
 +    );
 +    if (!requested) this.addressFailed = false;
 +    const enabled =
 +      requested &&
-+      !this.tabStrip &&
++      (toolbar || (!toolbarRequested && !this.tabStrip)) &&
 +      !this.addressFailed &&
 +      !window.fullScreen &&
 +      !document.fullscreenElement;
 +    if (
 +      !enabled ||
 +      this.addressTab !== gBrowser.selectedTab ||
++      this.addressDocument !== gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +      (this.addressSession?.active &&
 +        this.addressSession.active.page !==
 +          gBrowser.selectedBrowser.currentURI.spec)
@@ -4555,12 +4894,14 @@ index 0000000000..4a0fcab40f
 +      // replaces sampling it.
 +      this.addressSession.onChanged = () => this.invalidateAddress();
 +      this.addressTab = gBrowser.selectedTab;
++      this.addressDocument = gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId;
 +    }
 +    const session = this.addressSession;
 +    const snapshot = session.snapshot();
 +    const state = {
 +      version: 1,
 +      enabled: true,
++      open: !!session.nativeOpen,
 +      session: session.sessionId,
 +      revision: session.revision,
 +      editId: session.editId,
@@ -4595,7 +4936,9 @@ index 0000000000..4a0fcab40f
 +    };
 +    // Publication only. Intents, and the visibility of the rows, arrive
 +    // through the request queue.
++    // This privileged publication method returns void and throws on refusal.
 +    window.windowUtils.syncWinUIAddress(JSON.stringify(state));
++    if (toolbar) this.addressToolbar.activate();
 +  },
 +
 +  // One native address intent, drained from the request queue. Outcome codes
@@ -4605,6 +4948,15 @@ index 0000000000..4a0fcab40f
 +  executeAddressRequest(action) {
 +    const session = this.addressSession;
 +    if (!session || action?.version !== 1 || action.session !== session.sessionId) return 2;
++    if ((action.kind === "fallback" || action.kind === "blur") && action.text !== undefined) {
++      if (action.editId > session.editId) {
++        session.acceptEdit({ ...action, revision: session.revision });
++      }
++      if (action.text !== gURLBar.inputField.value || !Number.isInteger(action.selectionStart) ||
++          !Number.isInteger(action.selectionEnd) || action.selectionStart < 0 ||
++          action.selectionEnd < action.selectionStart || action.selectionEnd > action.text.length) return 2;
++      gURLBar.inputField.setSelectionRange(action.selectionStart, action.selectionEnd);
++    }
 +    if (action.kind === "mode-reveal") {
 +      gURLBar.setUnifiedSearchButtonAvailability(true);
 +      session.modeReveal = (session.modeReveal || 0) + 1;
@@ -4649,8 +5001,15 @@ index 0000000000..4a0fcab40f
 +      );
 +      if (result !== "activated") this.addressFallback();
 +    } else if (action.kind === "blur") {
++      if (this.addressToolbar) this.addressToolbar.focusOwned = false;
 +      session.suspendNativePresentation();
++      if (this.addressToolbar && (action.traverse === 1 || action.traverse === -1)) {
++        Services.focus.moveFocus(window, this.addressToolbar.proxy,
++          action.traverse < 0 ? Ci.nsIFocusManager.MOVEFOCUS_BACKWARD : Ci.nsIFocusManager.MOVEFOCUS_FORWARD,
++          Ci.nsIFocusManager.FLAG_BYKEY);
++      }
 +    } else if (action.kind === "focus") {
++      if (this.addressToolbar) this.addressToolbar.focusOwned = true;
 +      if (gURLBar.view.oneOffSearchButtons?.selectedButton) {
 +        this.addressFallback();
 +        return 2;
@@ -4660,6 +5019,7 @@ index 0000000000..4a0fcab40f
 +      session.dismiss({ ...action, reason: "escape" });
 +    } else if (action.kind === "fallback") {
 +      this.addressFallback();
++      if (["cmd_copy", "cmd_cut", "cmd_paste"].includes(action.clipboard)) goDoCommand(action.clipboard);
 +    } else if (action.kind !== "visibility") {
 +      return 2;
 +    }
@@ -4667,6 +5027,10 @@ index 0000000000..4a0fcab40f
 +  },
 +
 +  addressFallback() {
++    if (this.addressToolbar) {
++      this.addressToolbar.failed = true;
++      this.addressToolbar.restore();
++    }
 +    this.addressSession?.releaseNativePresentation();
 +    gURLBar.focus();
 +    gURLBar.startQuery({
@@ -5082,6 +5446,7 @@ index 0000000000..4a0fcab40f
 +        allTabs: { label: allTabs.label, tooltip: allTabs.tooltiptext || allTabs.label },
 +        newTab: { label: newTab.label, tooltip: newTab.label && (shortcut ? `${newTab.label} (${shortcut})` : newTab.label) },
 +        suggestions: value("winui-address-suggestions"),
++        addressFallback: value("winui-address-fallback"),
 +        actions: value("winui-address-actions"),
 +      });
 +    }
@@ -5294,6 +5659,9 @@ index 0000000000..4a0fcab40f
 +      command("bar-bookmark", multi ? "toolbar-context-menu-bookmark-selected-tabs" : "toolbar-context-menu-bookmark-selected-tab"),
 +      command("bar-select-all", "toolbar-context-menu-select-all-tabs", !gBrowser.allTabsSelected()),
 +      command("bar-restore", "toolbar-context-menu-reopen-closed-tabs", closed > 0), separator()];
++    items.push(command("bar-native-tabs", "winui-use-native-tab-strip",
++      !Services.prefs.prefIsLocked(this.replaceTabsPref),
++      {checked: Services.prefs.getBoolPref(this.replaceTabsPref, false)}));
 +    const menubar = document.getElementById("toolbar-menubar");
 +    if (menubar?.hasAttribute("toolbarname")) items.push({kind: "command", id: "bar-menubar",
 +      label: menubar.getAttribute("toolbarname"), accessKey: menubar.getAttribute("accesskey") || "",
@@ -5319,6 +5687,7 @@ index 0000000000..4a0fcab40f
 +        case "bar-bookmark": PlacesCommandHook.bookmarkTabs(Array.from(gBrowser.selectedTabs)); break;
 +        case "bar-select-all": gBrowser.selectAllTabs(); break;
 +        case "bar-restore": SessionWindowUI.undoCloseTab(window); break;
++        case "bar-native-tabs": this.toggleReplacement(); break;
 +        default: {
 +          const toolbarId = id === "bar-menubar" ? "toolbar-menubar" : "PersonalToolbar";
 +          const visible = id === "bar-menubar" ? document.getElementById(toolbarId).hasAttribute("autohide") :
@@ -5469,6 +5838,15 @@ index 0000000000..4a0fcab40f
 +  // Decide the smallest publication that tells the pane what changed. A quiet
 +  // window reaches this with nothing dirty and publishes nothing at all.
 +  publish(force = false) {
++    try {
++      this.publishState(force);
++    } catch (error) {
++      console.error("WinUI tab publication failed", error);
++      this.uninit();
++    }
++  },
++
++  publishState(force = false) {
 +    if (!this.element || !this.attached || this.processingAction) return;
 +    if (force || this.structuralDirty || !this.nativeRevision) {
 +      this.syncTabs();
@@ -5507,6 +5885,7 @@ index 0000000000..4a0fcab40f
 +        this.addressSession?.close();
 +        this.addressSession = null;
 +        this.addressFailed = true;
++        this.addressToolbar?.restore();
 +        try {
 +          window.windowUtils.syncWinUIAddress(
 +            JSON.stringify({ version: 1, enabled: false })
@@ -5578,6 +5957,9 @@ index 0000000000..4a0fcab40f
 +      tabs.map(tab => this.tabCommands(tab)),
 +      ids.includes(selected) ? selected : 0
 +    );
++    if (!this.nativeRevision && Services.prefs.getBoolPref(this.replaceTabsPref, false)) {
++      throw new Error("Native tab publication failed");
++    }
 +    // This snapshot is authoritative for everything recorded so far.
 +    this.dirtyTitles.clear();
 +    this.dirtySelection = false;
@@ -5617,6 +5999,10 @@ index 0000000000..4a0fcab40f
 +  },
 +
 +  observe(subject, topic, data) {
++    if (topic === "nsPref:changed" && data === "sidebar.verticalTabs") {
++      this.schedule();
++      return;
++    }
 +    if (topic === "nsPref:changed" && (data === this.containerDotPref || data === this.tabGlowsPref ||
 +                                        data === this.stripBackdropPref || data === this.groupReachPref ||
 +                                        data === this.groupHoverPref || data === this.groupHaloPref ||
@@ -5660,11 +6046,6 @@ index 0000000000..4a0fcab40f
 +      this.schedule();
 +      return;
 +    }
-+    if (data === this.stripPref) {
-+      this.uninit();
-+      this.init();
-+      return;
-+    }
 +    if (data === this.stripHeightPref) {
 +      if (this.tabStrip && this.element) {
 +        const requested = Services.prefs.getIntPref(this.stripHeightPref, 40);
@@ -5674,15 +6055,12 @@ index 0000000000..4a0fcab40f
 +      }
 +      return;
 +    }
-+    if (data === this.addressPref) {
++    if (data === this.addressPref || data === this.addressToolbarPref) {
++      if (this.addressToolbar) this.addressToolbar.failed = false;
 +      // Turning the surface on or off changes what the next publication says,
 +      // including the one that tells native to hide it.
 +      this.invalidateAddress();
 +      return;
-+    }
-+    if (!Services.prefs.getBoolPref(this.pref, false)) {
-+      this.update();
-+      this.uninit();
 +    }
 +  },
 +
@@ -5776,7 +6154,11 @@ index 0000000000..4a0fcab40f
 +
 +  update(focus = false) {
 +    if (!this.element) return;
-+    const hidden = window.fullScreen || !!document.fullscreenElement;
++    const replace = Services.prefs.getBoolPref(this.replaceTabsPref, false);
++    const hidden = window.fullScreen || !!document.fullscreenElement ||
++      (replace && (document.documentElement.hasAttribute("customizing") ||
++        Services.prefs.getBoolPref("sidebar.verticalTabs", false) || this.hasUnreplacedTabControls()));
++    if (hidden) this.setReplacementActive(false);
 +    this.element.style.display = hidden ? "none" : "";
 +    const r = this.element.getBoundingClientRect();
 +    try {
@@ -5792,7 +6174,13 @@ index 0000000000..4a0fcab40f
 +      );
 +      this.attached = ok;
 +      if (!ok) this.uninit();
-+      else this.publish();
++      else {
++        if (this.addressToolbar || Services.prefs.getBoolPref(this.addressToolbarPref, false)) {
++          this.addressDirty = true;
++        }
++        this.publish();
++        this.setReplacementActive(replace && this.attached && this.tabStrip && !hidden && !!this.nativeRevision);
++      }
 +      // Geometry/visibility work often runs right after a modal dialog closes,
 +      // which is the natural moment to tell the pane it may proceed again.
 +      if (this.blocked && !gDialogBox.isOpen && !this.processingAction)
@@ -5804,6 +6192,7 @@ index 0000000000..4a0fcab40f
 +  },
 +
 +  uninit() {
++    this.setReplacementActive(false);
 +    if (!this.element) return;
 +    if (this.unblockTimer) window.clearTimeout(this.unblockTimer);
 +    this.unblockTimer = 0;
@@ -5822,6 +6211,8 @@ index 0000000000..4a0fcab40f
 +    } catch {}
 +    this.addressSession?.close();
 +    this.addressSession = null;
++    this.addressToolbar?.close();
++    this.addressToolbar = null;
 +    this.tabMenuSession = null;
 +    this.stripSession = null;
 +    this.tabMenuL10n = null;
@@ -5856,8 +6247,7 @@ index 0000000000..4a0fcab40f
 +    for (const query of this.groupColorMedia || []) query.removeEventListener("change", this.groupColorChanged);
 +    this.groupColorMedia = null;
 +    this.groupColorChanged = null;
-+    Services.prefs.removeObserver(this.pref, this);
-+    Services.prefs.removeObserver(this.stripPref, this);
++    Services.prefs.removeObserver("sidebar.verticalTabs", this);
 +    Services.prefs.removeObserver(this.stripHeightPref, this);
 +    Services.prefs.removeObserver(this.containerDotPref, this);
 +    Services.prefs.removeObserver(this.tabGlowsPref, this);
@@ -5869,6 +6259,7 @@ index 0000000000..4a0fcab40f
 +    Services.prefs.removeObserver(this.groupGlowFadeOutPref, this);
 +    for (const pref of this.groupingPrefs) Services.prefs.removeObserver(pref, this);
 +    Services.prefs.removeObserver(this.addressPref, this);
++    Services.prefs.removeObserver(this.addressToolbarPref, this);
 +    Services.prefs.removeObserver("privacy.userContext.enabled", this);
 +    Services.prefs.removeObserver("browser.nova.enabled", this);
 +    this.element.remove();
@@ -5880,14 +6271,20 @@ index 0000000000..4a0fcab40f
 +  },
 +};
 +
-+window.addEventListener("load", () => gWinUIPane.init(), { once: true });
-+window.addEventListener("unload", () => gWinUIPane.uninit(), { once: true });
++window.addEventListener("load", () => {
++  gWinUIPane.initOptions();
++  gWinUIPane.init();
++}, { once: true });
++window.addEventListener("unload", () => {
++  gWinUIPane.uninitOptions();
++  gWinUIPane.uninit();
++}, { once: true });
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 0000000000..e189271859
+index 0000000000..36bc116c94
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,129 @@
 +#pragma once
 +#include <windows.h>
 +#include <stdint.h>
@@ -5913,7 +6310,7 @@ index 0000000000..e189271859
 +// completeRequests) and incremental tab deltas (applyTabDelta), and retired
 +// syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 +// retaining the sidebar entry point.
-+#define WINUI_PANE_ABI_VERSION 14u
++#define WINUI_PANE_ABI_VERSION 15u
 +
 +// All calls run on the browser's owning STA. Coordinates are client physical
 +// pixels. The module remains loaded until process exit, including after shutdown.
@@ -6012,5 +6409,8 @@ index 0000000000..e189271859
 +    // with one syncTabs snapshot, never with a retry loop. S_FALSE means the
 +    // delta applied but the pane wants a snapshot for an unrelated reason.
 +    HRESULT (WINAPI* applyTabDelta)(HWND, const wchar_t*, uint32_t*);
++    // v15: independent toolbar address island; the request endpoint is shared.
++    HRESULT (WINAPI* updateAddress)(HWND, const RECT*, BOOL);
++    HRESULT (WINAPI* focusAddress)(HWND, BOOL);
 +};
 +using WinUIPaneGetApiFn = HRESULT (WINAPI*)(uint32_t, uint32_t, WinUIPaneApi*);

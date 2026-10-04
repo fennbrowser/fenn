@@ -80,7 +80,9 @@ struct NativeSearchMode {
         flyout = Controls::MenuFlyout();
         button.Flyout(flyout);
         flyout.Opening([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-            if (!alive.expired()) Queue(L"mode-open");
+            if (alive.expired()) return;
+            if (button.XamlRoot()) flyout.OverlayInputPassThroughElement(button.XamlRoot().Content());
+            Queue(L"mode-open");
         });
         flyout.Opened([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (!alive.expired() && !items.empty()) items.front().Focus(FocusState::Programmatic);

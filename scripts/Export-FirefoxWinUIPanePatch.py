@@ -14,7 +14,7 @@ TRACKED = ["browser/components/tabbrowser/content/tabgroup-menu.js", "browser/lo
            "widget/windows/nsWindow.h", "widget/windows/nsWindow.cpp",
            "widget/windows/nsAppShell.cpp", "widget/windows/WinUIPrototype.cpp",
            "widget/windows/WinUIPrototype.h"]
-ADDED = ["browser/base/content/WinUITabStripSession.sys.mjs", "browser/base/content/WinUITabMenuSession.sys.mjs", "browser/base/content/WinUIUrlbarSession.sys.mjs", "browser/base/content/browser-winui-pane.js", "widget/windows/WinUIPaneApi.h"]
+ADDED = ["browser/base/content/WinUITabStripSession.sys.mjs", "browser/base/content/WinUITabMenuSession.sys.mjs", "browser/base/content/WinUIUrlbarSession.sys.mjs", "browser/base/content/WinUIAddressToolbar.sys.mjs", "browser/base/content/WinUIAddressToolbar.css", "browser/base/content/browser-winui-pane.js", "widget/windows/WinUIPaneApi.h"]
 
 
 def git(*args, **kwargs):

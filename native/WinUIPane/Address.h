@@ -21,6 +21,9 @@ struct NativeAddress {
     NativeSearchMode mode;
     SuggestionList suggestions;
     GlobalActionsPanel actions;
+    Microsoft::UI::Xaml::Controls::Primitives::Popup popup{nullptr};
+    Microsoft::UI::Xaml::Controls::StackPanel popupContent{nullptr};
+    Microsoft::UI::Xaml::Controls::Button fallback;
     NativeShellCore& shell;
     // Cached WinUI/JSON observations; lifecycle decisions and IDs live in Rust.
     winrt::hstring session, pending, visibility, observedText;
@@ -68,7 +71,7 @@ struct NativeAddress {
     double revision{}, sequence{-1}, selectionId{};
     bool syncing{}, composing{}, observedComposing{}, focusWithin{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
-    ~NativeAddress() { lifetime.reset(); }
+    ~NativeAddress() { lifetime.reset(); if (popup) popup.IsOpen(false); }
 
     static void ValidateModeImage(JObject const& item, size_t& total) {
         NativeJson::ValidateImage(item, total, NativeJson::kIconImageLimits);
@@ -172,14 +175,14 @@ struct NativeAddress {
         value.SetNamedValue(L"composing", JValue::CreateBooleanValue(composing));
         Stage(value, NativeShellCore::Edit);
     }
-    void Action(wchar_t const* kind) {
+    void Action(wchar_t const* kind, int traversal = 0, wchar_t const* clipboard = nullptr) {
         const auto incoming = IntentOf(kind);
         if (incoming == NativeShellCore::NoIntent) return;
         // Is this intent meaningful at all right now -- a question about the
         // surface, not about what is staged. Asked before Edit() below, which
         // is where the original guard sat.
         if (Decide(incoming, NativeShellCore::NoIntent) == NativeShellCore::DropIntent) return;
-        if (incoming == NativeShellCore::Activate) Edit();
+        if (incoming == NativeShellCore::Activate || incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Blur) Edit();
         const uint32_t modifiers = ((GetKeyState(VK_CONTROL) & 0x8000) ? 1u : 0u) |
                                    ((GetKeyState(VK_MENU) & 0x8000) ? 2u : 0u) |
                                    ((GetKeyState(VK_SHIFT) & 0x8000) ? 4u : 0u) |
@@ -187,6 +190,15 @@ struct NativeAddress {
         const auto action = shell.NegotiateAddress(incoming, Observed(), modifiers);
         if (action.decision == NativeShellCore::Defer || action.decision == NativeShellCore::DropIntent) return;
         auto value = Message(kind);
+        if (incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Blur) {
+            value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
+            value.SetNamedValue(L"text", JValue::CreateStringValue(field.Text()));
+            value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
+            value.SetNamedValue(L"selectionEnd", JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
+            value.SetNamedValue(L"composing", JValue::CreateBooleanValue(composing));
+            if (traversal) value.SetNamedValue(L"traverse", JValue::CreateNumberValue(traversal));
+            if (clipboard) value.SetNamedValue(L"clipboard", JValue::CreateStringValue(clipboard));
+        }
         if (incoming == NativeShellCore::Activate) {
             JObject intent;
             intent.SetNamedValue(L"ctrlKey", JValue::CreateBooleanValue((action.modifiers & 1) != 0));
@@ -201,13 +213,13 @@ struct NativeAddress {
         Stage(value, incoming);
     }
     void ObserveFocus(bool islandHasFocus) {
-        if (mode.flyout.IsOpen()) return;
+        if (mode.flyout.IsOpen() && islandHasFocus) return;
         bool inside = false;
         if (root.XamlRoot() && islandHasFocus) {
             auto focused =
                 Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(root.XamlRoot()).try_as<DependencyObject>();
             while (focused) {
-                if (focused == root) {
+                if (focused == root || (popupContent && focused == popupContent)) {
                     inside = true;
                     break;
                 }
@@ -223,7 +235,7 @@ struct NativeAddress {
                          StagedKind() == NativeShellCore::NoIntent ? L"none" : JObject::Parse(pending).GetNamedString(L"kind").c_str());
         }
     }
-    explicit NativeAddress(NativeShellCore& core) : mode(core), shell(core) {
+    explicit NativeAddress(NativeShellCore& core, bool toolbar = false) : mode(core), shell(core) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         root.Visibility(Visibility::Collapsed);
@@ -278,7 +290,7 @@ struct NativeAddress {
                              })),
                          true);
         field.GotFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-            if (!alive.expired()) Action(L"focus");
+            if (!alive.expired()) ScheduleFocusObservation();
         });
         field.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](
                                  auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
@@ -334,6 +346,9 @@ struct NativeAddress {
             [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
                 if (!alive.expired()) ScheduleVisibilityReport();
             });
+        suggestions.list.SizeChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) ScheduleVisibilityReport();
+        });
         root.SizeChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             // The global-action buttons live outside the list and are clipped
             // by the pane itself, so they answer to the pane's own size.
@@ -379,8 +394,8 @@ struct NativeAddress {
                 field.Focus(FocusState::Keyboard);
             }
         });
-        Button fallback;
         fallback.Content(winrt::box_value(L"Use Firefox address bar"));
+        Automation::AutomationProperties::SetAutomationId(fallback, L"FirefoxWinUIAddressFallback");
         fallback.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
             Action(L"fallback");
@@ -430,15 +445,79 @@ struct NativeAddress {
             }
         });
         root.Children().Append(header);
-        root.Children().Append(suggestions.list);
-        root.Children().Append(actions.panel);
-        root.Children().Append(fallback);
+        if (toolbar) {
+            field.CopyingToClipboard([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                if (alive.expired()) return;
+                e.Handled(true);
+                Action(L"fallback", 0, L"cmd_copy");
+            });
+            field.CuttingToClipboard([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                if (alive.expired()) return;
+                e.Handled(true);
+                Action(L"fallback", 0, L"cmd_cut");
+            });
+            field.Paste([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                if (alive.expired()) return;
+                e.Handled(true);
+                Action(L"fallback", 0, L"cmd_paste");
+            });
+            root.Margin({0, 0, 0, 0});
+            field.MinHeight(32);
+            field.Padding({8, 4, 8, 4});
+            popupContent = StackPanel();
+            popupContent.Spacing(4);
+            popupContent.Children().Append(suggestions.list);
+            popupContent.Children().Append(actions.panel);
+            popupContent.Children().Append(fallback);
+            auto border = Markup::XamlReader::Load(
+                LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="4"/>)").as<Border>();
+            border.Child(popupContent);
+            popup = Primitives::Popup();
+            popup.Child(border);
+            popup.ShouldConstrainToRootBounds(false);
+            popup.PlacementTarget(header);
+            popup.DesiredPlacement(Primitives::PopupPlacementMode::BottomEdgeAlignedLeft);
+            root.Children().Append(popup);
+            popup.Opened([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                if (!alive.expired()) ScheduleVisibilityReport();
+            });
+            popupContent.SizeChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                if (!alive.expired()) ScheduleVisibilityReport();
+            });
+            popupContent.GotFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                if (!alive.expired()) ScheduleFocusObservation();
+            });
+            popupContent.LostFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                if (!alive.expired()) ScheduleFocusObservation();
+            });
+            popupContent.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](
+                auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
+                if (!alive.expired() && !composing && e.Key() == winrt::Windows::System::VirtualKey::Escape) {
+                    field.Focus(FocusState::Keyboard);
+                    Action(L"dismiss");
+                    e.Handled(true);
+                }
+            });
+        } else {
+            root.Children().Append(suggestions.list);
+            root.Children().Append(actions.panel);
+            root.Children().Append(fallback);
+        }
+    }
+    void PlacePopup() {
+        if (!popup || !root.XamlRoot()) return;
+        popup.XamlRoot(root.XamlRoot());
+        popupContent.Width(std::max(240.0, root.ActualWidth() - 10));
+        popup.HorizontalOffset(0);
+        // WinUI places the popup relative to the retained editor header.
+        popup.VerticalOffset(0);
     }
     winrt::hstring Sync(JObject const& snapshot) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         if (snapshot.GetNamedNumber(L"version") != 1) winrt::throw_hresult(E_INVALIDARG);
         if (!snapshot.GetNamedBoolean(L"enabled", false)) {
+            if (popup) popup.IsOpen(false);
             mode.Disable();
             actions.Clear();
             syncing = true;
@@ -454,6 +533,7 @@ struct NativeAddress {
         auto checkedSequence = snapshot.GetNamedNumber(L"sequence", 0);
         const auto checkedEdit = snapshot.HasKey(L"editId") ? NativeJson::RequireRevision(snapshot, L"editId") : 0;
         const auto checkedComplete = snapshot.GetNamedBoolean(L"complete", false);
+        const auto checkedOpen = snapshot.GetNamedBoolean(L"open", false);
         auto checkedText = snapshot.GetNamedString(L"text", L"");
         auto checkedRows = snapshot.GetNamedArray(L"rows");
         if (nextSession.empty() || nextSession.size() > 256 || checkedText.size() > NativeJson::kMaxFieldText ||
@@ -558,6 +638,7 @@ struct NativeAddress {
                 NativeJson::RequireLength(actionsName, NativeJson::kMaxShortLabel);
                 if (!suggestionsName.empty()) Automation::AutomationProperties::SetName(suggestions.list, suggestionsName);
                 if (!actionsName.empty()) Automation::AutomationProperties::SetName(actions.panel, actionsName);
+                fallback.Content(winrt::box_value(labels.GetNamedString(L"addressFallback", L"Use Firefox address bar")));
             }
             const auto previousRevision = revision;
             revision = snapshot.GetNamedNumber(L"revision");
@@ -585,6 +666,10 @@ struct NativeAddress {
             throw;
         }
         syncing = false;
+        if (popup) {
+            PlacePopup();
+            popup.IsOpen(checkedOpen);
+        }
         mode.ShowPendingReveal();
         // The deferred commit's precondition is satisfied by a publication, so
         // this is where it is re-offered. Action() queues it if the policy now
@@ -605,11 +690,14 @@ struct NativeAddress {
     void ReportVisibility() {
         if (session.empty()) return;
         std::set<winrt::hstring> current;
-        for (auto const& id : suggestions.VisibleIds()) current.insert(id);
+        if (!popup || popup.IsOpen())
+            for (auto const& id : suggestions.VisibleIds()) current.insert(id);
         for (auto const& visual : actions.visuals) {
+            if (popup && !popup.IsOpen()) continue;
             if (!root.XamlRoot() || visual.button.ActualHeight() <= 0) continue;
-            auto origin = visual.button.TransformToVisual(nullptr).TransformPoint({0, 0});
-            auto size = root.XamlRoot().Size();
+            auto origin = visual.button.TransformToVisual(popupContent ? popupContent : root).TransformPoint({0, 0});
+            auto size = popupContent ? Windows::Foundation::Size{float(popupContent.ActualWidth()), float(popupContent.ActualHeight())}
+                                    : root.XamlRoot().Size();
             if (origin.Y < size.Height && origin.Y + visual.button.ActualHeight() > 0 && origin.X < size.Width &&
                 origin.X + visual.button.ActualWidth() > 0)
                 current.insert(visual.resultId);

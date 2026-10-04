@@ -20,6 +20,7 @@ function fixture() {
     CustomizableUI: {setToolbarVisibility: (...args) => calls.push(["toolbar", ...args])},
     BrowserUsageTelemetry: {recordToolbarVisibility() {}},
     Services: {prefs: {getBoolPref: (key, fallback) => state[key] ?? fallback,
+      prefIsLocked: () => false,
       setBoolPref: (key, value) => {state[key] = value;},
       setCharPref: (...args) => calls.push(["pref", ...args])}}};
   runInNewContext(source, context);
@@ -30,7 +31,7 @@ function fixture() {
 test("empty-space menu exposes only requested commands and authoritative checked states", () => {
   const f = fixture(), items = f.pane.describeTabBarMenu().items;
   assert.deepEqual(Array.from(items.filter(i => i.id), i => i.id),
-    ["bar-new", "bar-reload", "bar-bookmark", "bar-select-all", "bar-restore", "bar-menubar"]);
+    ["bar-new", "bar-reload", "bar-bookmark", "bar-select-all", "bar-restore", "bar-native-tabs", "bar-menubar"]);
   assert.equal(items.find(i => i.id === "bar-restore").enabled, false);
   assert.equal(items.find(i => i.id === "bar-menubar").checked, false);
   assert.deepEqual(Array.from(items.find(i => i.items).items, i => i.checked), [false, true, false]);
@@ -69,4 +70,21 @@ test("tab-bar session rejects a toolbar toggle after its displayed state changed
   assert(session.receive({...event, kind: "open"}));
   assert(session.receive({...event, kind: "activate", id: "bar-menubar"}));
   assert.deepEqual(f.calls, [["toolbar", "toolbar-menubar", false]]);
+});
+
+test("a stale native replacement toggle cannot undo another window's choice", () => {
+  const f = fixture(), target = {};
+  const session = new WinUITabMenuSession({resolveTab: () => target,
+    describe: () => f.pane.describeTabBarMenu(),
+    execute: (_tab, id) => f.pane.runTabBarCommand(id)});
+  session.update(new Map([[1, target]]));
+  const event = {session: 1, tab: 1, revision: session.revision, surface: "tab-bar"};
+  assert(session.receive({...event, kind: "open"}));
+  f.state[f.pane.replaceTabsPref] = true;
+  assert(!session.receive({...event, kind: "activate", id: "bar-native-tabs"}));
+  assert.equal(f.state[f.pane.replaceTabsPref], true);
+  event.session++;
+  assert(session.receive({...event, kind: "open"}));
+  assert(session.receive({...event, kind: "activate", id: "bar-native-tabs"}));
+  assert.equal(f.state[f.pane.replaceTabsPref], false);
 });

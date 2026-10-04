@@ -361,6 +361,109 @@ struct Pane {
     HWND parent{};
     std::unique_ptr<NativeAddress> address;
     DesktopWindowXamlSource source{nullptr};
+    DesktopWindowXamlSource addressSource{nullptr};
+    HWND addressWindow{};
+    RECT addressBounds{};
+    bool addressBoundsApplied{};
+    event_token addressTakeFocus{};
+    Microsoft::UI::Content::ContentIsland addressIsland{nullptr};
+    static bool InWindow(HWND window, HWND target) {
+        return window && target && (window == target || IsChild(window, target));
+    }
+    static bool InPopups(Microsoft::UI::Content::ContentIsland const& island, HWND target) {
+        if (island) {
+            for (auto popup : island.Popups())
+                if (InWindow(GetWindowFromWindowId(popup.WindowId()), target)) return true;
+        }
+        return false;
+    }
+    void DismissMenus() {
+        if (tabMenu.active) tabMenu.Dismiss();
+        if (strip) strip->inlineGroups.hover.Dismiss();
+        if (address && address->mode.flyout.IsOpen()) address->mode.flyout.Hide();
+    }
+    void LeaveAddress() {
+        if (!address) return;
+        if (address->mode.flyout.IsOpen()) address->mode.flyout.Hide();
+        address->ObserveFocus(false);
+        if (address->popup) address->popup.IsOpen(false);
+        address->ScheduleVisibilityReport();
+    }
+    static LRESULT CALLBACK FocusProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l,
+                                      UINT_PTR id, DWORD_PTR data) noexcept {
+        auto* pane = reinterpret_cast<Pane*>(data);
+        try {
+            if (hwnd == pane->parent && ((msg == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE &&
+                 GetAncestor(HWND(l), GA_ROOTOWNER) != GetAncestor(hwnd, GA_ROOTOWNER)) ||
+                (msg == WM_ACTIVATEAPP && !w) || msg == WM_CANCELMODE)) {
+                pane->DismissMenus();
+                pane->LeaveAddress();
+            }
+            if ((msg == WM_KILLFOCUS || msg == WM_SETFOCUS) && pane->address)
+                pane->address->ScheduleFocusObservation();
+            if (msg == WM_NCDESTROY) RemoveWindowSubclass(hwnd, FocusProc, id);
+        } catch (...) {}
+        return DefSubclassProc(hwnd, msg, w, l);
+    }
+    void OutsidePress(HWND target) {
+        const bool stripPopup = InPopups(contentIsland, target);
+        const bool addressPopup = InPopups(addressSource ? addressIsland : contentIsland, target);
+        // All submenu windows belong to the same island popup graph.
+        if (!stripPopup && tabMenu.active) tabMenu.Dismiss();
+        if (!stripPopup && strip && (strip->inlineGroups.hover.open || strip->inlineGroups.hover.showPending))
+            strip->inlineGroups.hover.Dismiss();
+        const HWND addressHost = addressSource ? addressWindow : childWindow;
+        if (!InWindow(addressHost, target) && !addressPopup) LeaveAddress();
+        else if (!addressPopup && address && address->mode.flyout.IsOpen()) address->mode.flyout.Hide();
+        if (!InWindow(childWindow, target) && !InWindow(addressWindow, target) &&
+            !stripPopup && !addressPopup &&
+            (InWindow(childWindow, GetFocus()) || InWindow(addressWindow, GetFocus()) ||
+             InPopups(contentIsland, GetFocus()) || InPopups(addressIsland, GetFocus())) &&
+            InWindow(parent, target)) SetFocus(parent);
+        if (address) address->ScheduleFocusObservation();
+    }
+    void CloseAddressHost() {
+        if (!addressSource) return;
+        if (addressWindow) RemoveWindowSubclass(addressWindow, FocusProc, reinterpret_cast<UINT_PTR>(this));
+        addressSource.TakeFocusRequested(addressTakeFocus);
+        addressSource.SiteBridge().Hide();
+        addressSource.Content(nullptr);
+        address.reset();
+        shell.ResetAddress();
+        addressIsland = nullptr;
+        addressWindow = nullptr;
+        addressBoundsApplied = false;
+        addressSource.Close();
+        addressSource = nullptr;
+    }
+    void WireAddress() {
+        address->dispatch = [this](hstring const& action) {
+            return Enqueue(NativeShellCore::AddressAction, 0, address->revision, action);
+        };
+        address->reportVisible = [this](hstring const& action) {
+            Enqueue(NativeShellCore::AddressVisibility, 0, address->revision, action);
+        };
+        address->mode.dispatch = [this](hstring const& action) {
+            Enqueue(NativeShellCore::AddressModeAction, 0, address->revision, action);
+        };
+        address->observeFocus = [this] {
+            if (!address) return;
+            bool ownsFocus = (addressSource ? addressSource : source).HasFocus();
+            auto island = addressSource ? addressIsland : contentIsland;
+            if (!ownsFocus && island) {
+                const HWND focused = GetFocus();
+                for (auto popup : island.Popups()) {
+                    const HWND popupWindow = GetWindowFromWindowId(popup.WindowId());
+                    if (focused == popupWindow || IsChild(popupWindow, focused)) {
+                        ownsFocus = true;
+                        break;
+                    }
+                }
+            }
+            address->ObserveFocus(ownsFocus &&
+                GetAncestor(GetForegroundWindow(), GA_ROOTOWNER) == GetAncestor(parent, GA_ROOTOWNER));
+        };
+    }
     SystemDrag::DragDropManager::TargetRequested_revoker externalDropRevoker;
     Controls::ListView tabs{nullptr};
     Windows::Foundation::Collections::IObservableVector<Windows::Foundation::IInspectable> items{nullptr};
@@ -478,6 +581,8 @@ struct Pane {
     ~Pane() { DisarmPresentation(); }
     NativeWindowDrag windowDrag;
     void Close() {
+        if (parent) RemoveWindowSubclass(parent, FocusProc, reinterpret_cast<UINT_PTR>(this));
+        if (childWindow) RemoveWindowSubclass(childWindow, FocusProc, reinterpret_cast<UINT_PTR>(this));
         windowDrag.Close();
         DisarmPresentation();
         if (!source) return;
@@ -493,6 +598,7 @@ struct Pane {
         // host that is already unwinding.
         notifySink = nullptr;
         notifyContext = nullptr;
+        CloseAddressHost();
         drainOpen = false;
         tabMenu.Close();
         if (shell.core) shell_core_close(shell.core);
@@ -910,6 +1016,8 @@ struct Pane {
     }
     void Create(HWND hwnd, bool tabStrip = false) {
         parent = hwnd;
+        check_bool(SetWindowSubclass(parent, FocusProc, reinterpret_cast<UINT_PTR>(this),
+                                     reinterpret_cast<DWORD_PTR>(this)));
         // Bounds for this endpoint. Zero means "the core's own default".
         // Deliberately small: these are user intents, not a data channel, and
         // an unbounded backlog of them would be a bug, not throughput.
@@ -933,6 +1041,9 @@ struct Pane {
         };
         source = DesktopWindowXamlSource();
         source.Initialize(GetWindowIdFromWindow(hwnd));
+        childWindow = GetWindowFromWindowId(source.SiteBridge().WindowId());
+        check_bool(SetWindowSubclass(childWindow, FocusProc, reinterpret_cast<UINT_PTR>(this),
+                                     reinterpret_cast<DWORD_PTR>(this)));
         if (tabStrip) {
             strip = std::make_unique<NativeTabStrip>(tabMenu);
             strip->core = shell.core;
@@ -1128,9 +1239,7 @@ struct Pane {
         // The island and the HWND live here, so the answer to "does this
         // surface hold focus" is assembled here and the address controls only
         // say when to ask.
-        address->observeFocus = [this] {
-            if (address) address->ObserveFocus(source.HasFocus() && GetForegroundWindow() == parent);
-        };
+        WireAddress();
         // Deliberately not tracked as an outstanding intent: a report is not
         // something the surface is waiting to hear back about.
         address->reportVisible = [this](hstring const& action) {
@@ -1832,12 +1941,69 @@ HRESULT WINAPI SyncAddress(HWND hwnd, const wchar_t* input) noexcept {
         if (found == state().panes.end()) return E_INVALIDARG;
         auto snapshot = NativeAddress::JObject::Parse(input);
         if (!found->second->address) return snapshot.GetNamedBoolean(L"enabled", false) ? E_NOTIMPL : S_OK;
-        found->second->address->ObserveFocus(found->second->source.HasFocus() && GetForegroundWindow() == hwnd);
+        found->second->address->observeFocus();
         found->second->address->Sync(snapshot);
         return S_OK;
     } catch (...) {
         return to_hresult();
     }
+}
+HRESULT WINAPI UpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        if (!rect || rect->right < rect->left || rect->bottom < rect->top) return E_INVALIDARG;
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end()) return visible ? E_NOT_VALID_STATE : S_OK;
+        auto& pane = *found->second;
+        if (!visible) { pane.CloseAddressHost(); return S_OK; }
+        if (!pane.strip) return E_NOTIMPL;
+        if (!pane.addressSource) {
+            pane.addressSource = DesktopWindowXamlSource();
+            pane.addressSource.Initialize(GetWindowIdFromWindow(hwnd));
+            pane.address = std::make_unique<NativeAddress>(pane.shell, true);
+            pane.WireAddress();
+            pane.addressTakeFocus = pane.addressSource.TakeFocusRequested([&pane](auto const&, auto const&) {
+                pane.address->focusWithin = false;
+                SetFocus(pane.parent);
+                pane.address->Action(L"blur", (GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
+            });
+            pane.addressSource.Content(pane.address->root);
+            pane.addressWindow = GetWindowFromWindowId(pane.addressSource.SiteBridge().WindowId());
+            check_bool(SetWindowSubclass(pane.addressWindow, Pane::FocusProc, reinterpret_cast<UINT_PTR>(&pane),
+                                         reinterpret_cast<DWORD_PTR>(&pane)));
+        }
+        if (!pane.addressIsland && pane.address->root.XamlRoot())
+            pane.addressIsland = pane.address->root.XamlRoot().ContentIsland();
+        auto site = pane.addressSource.SiteBridge();
+        if (!pane.addressBoundsApplied || !EqualRect(&pane.addressBounds, rect)) {
+            site.MoveAndResize({rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top});
+            pane.addressBounds = *rect;
+            pane.addressBoundsApplied = true;
+        }
+        if (GetWindow(pane.addressWindow, GW_HWNDPREV))
+            check_bool(SetWindowPos(pane.addressWindow, HWND_TOP, 0, 0, 0, 0,
+                                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE));
+        site.Show();
+        pane.address->PlacePopup();
+        return S_OK;
+    } catch (...) {
+        const auto error = to_hresult();
+        auto found = state().panes.find(hwnd);
+        if (found != state().panes.end()) found->second->CloseAddressHost();
+        return error;
+    }
+}
+HRESULT WINAPI FocusAddress(HWND hwnd, BOOL selectAll) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end() || !found->second->addressSource) return E_NOT_VALID_STATE;
+        auto& pane = *found->second;
+        pane.addressSource.NavigateFocus(XamlSourceFocusNavigationRequest(XamlSourceFocusNavigationReason::First));
+        if (!pane.address->field.Focus(FocusState::Programmatic)) return E_FAIL;
+        if (selectAll) pane.address->field.SelectAll();
+        return S_OK;
+    } catch (...) { return to_hresult(); }
 }
 // Publication only, since v12: nothing native travels back through this call.
 // Every native intent -- menu transitions, selection, and the strip's own
@@ -2157,9 +2323,36 @@ BOOL WINAPI Translate(MSG* message) noexcept {
                 POINT point{};
                 if (GetCursorPos(&point)) pane.strip->inlineGroups.PointerAt(pane.ScreenToStrip(point),pane.strip->view);
             }
-            if (!pane.childWindow) pane.childWindow = GetWindowFromWindowId(pane.source.SiteBridge().WindowId());
+            if (!pane.childWindow) {
+                pane.childWindow = GetWindowFromWindowId(pane.source.SiteBridge().WindowId());
+                check_bool(SetWindowSubclass(pane.childWindow, Pane::FocusProc, reinterpret_cast<UINT_PTR>(&pane),
+                                             reinterpret_cast<DWORD_PTR>(&pane)));
+            }
+            if (!pane.contentIsland && pane.source.Content().XamlRoot())
+                pane.contentIsland = pane.source.Content().XamlRoot().ContentIsland();
+            switch (message->message) {
+                case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: case WM_XBUTTONDOWN:
+                case WM_NCLBUTTONDOWN: case WM_NCRBUTTONDOWN: case WM_NCMBUTTONDOWN: case WM_NCXBUTTONDOWN:
+                case WM_POINTERDOWN: case WM_NCPOINTERDOWN:
+                    pane.OutsidePress(message->hwnd);
+                    break;
+                case WM_SETFOCUS: case WM_KILLFOCUS:
+                    if (pane.address) pane.address->ScheduleFocusObservation();
+                    break;
+            }
             HWND child = pane.childWindow;
             bool ownsMessage = message->hwnd == child || IsChild(child, message->hwnd);
+            if (!ownsMessage && pane.addressWindow)
+                ownsMessage = message->hwnd == pane.addressWindow || IsChild(pane.addressWindow, message->hwnd);
+            if (!ownsMessage && pane.addressIsland) {
+                for (auto popup : pane.addressIsland.Popups()) {
+                    HWND popupWindow = GetWindowFromWindowId(popup.WindowId());
+                    if (message->hwnd == popupWindow || IsChild(popupWindow, message->hwnd)) {
+                        ownsMessage = true;
+                        break;
+                    }
+                }
+            }
             // MenuFlyout can create a top-level popup outside the child HWND.
             // Use WinUI's explicit ownership graph, never all browser/thread HWNDs.
             if (!ownsMessage && (pane.tabMenu.active || pane.address || pane.strip)) {
@@ -2175,11 +2368,16 @@ BOOL WINAPI Translate(MSG* message) noexcept {
                 }
             }
             if (!ownsMessage) continue;
-            if (message->message == WM_KEYDOWN) {
+            if (message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN) {
                 const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-                if (control && (message->wParam == 'L' || message->wParam == 'T' || message->wParam == 'W' ||
+                const bool addressShortcut = pane.addressSource &&
+                    (message->wParam == VK_F6 || message->wParam == VK_F5 ||
+                     (control && (message->wParam == 'K' || message->wParam == 'R')) ||
+                     ((GetKeyState(VK_MENU) & 0x8000) &&
+                      (message->wParam == 'D' || message->wParam == VK_LEFT || message->wParam == VK_RIGHT)));
+                if (addressShortcut || (control && (message->wParam == 'L' || message->wParam == 'T' || message->wParam == 'W' ||
                                 (pane.strip && (message->wParam == VK_TAB || message->wParam == VK_PRIOR ||
-                                                message->wParam == VK_NEXT)))) {
+                                                message->wParam == VK_NEXT))))) {
                     SetFocus(pane.parent);
                     PostMessageW(pane.parent, message->message, message->wParam, message->lParam);
                     return TRUE;
@@ -2273,11 +2471,23 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneGetApi(uint32_t version
                SetNotifySink,
                DrainRequests,
                CompleteRequests,
-               ApplyTabDelta};
+               ApplyTabDelta,
+               UpdateAddress,
+               FocusAddress};
     return S_OK;
 }
 
 #ifdef WINUI_PANE_TESTING
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetAddressContent(HWND hwnd, void** output) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        if (!output) return E_POINTER;
+        auto& pane = *state().panes.at(hwnd);
+        if (!pane.addressSource) return E_NOT_VALID_STATE;
+        *output = detach_abi(pane.addressSource.Content());
+        return S_OK;
+    } catch (...) { return to_hresult(); }
+}
 // Test-only: make the Rust shell core panic, so the containment path can be
 // exercised from a real call rather than argued for. The core catches it,
 // marks itself poisoned and reports a status; nothing unwinds into C++ and the

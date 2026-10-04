@@ -222,6 +222,8 @@ struct NativeTabMenu {
         bool opened = false;
         if (!core || shell_core_menu_open(core, id, &opened) != SHELL_STATUS_OK || !opened) return;
         active = menu;
+        if (auto target = menu.Target(); target && target.XamlRoot())
+            menu.OverlayInputPassThroughElement(target.XamlRoot().Content());
         surface = requestedSurface;
         PopulatePending();
         // Firefox revalidates and answers with this tab's description. It also

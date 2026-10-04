@@ -4874,7 +4874,7 @@ int wmain(int argc, wchar_t** argv) {
                     return EXCEPTION_CONTINUE_SEARCH;
                 }) != nullptr,
             "install teardown exception guard");
-    Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 ||
+    Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 || wcscmp(argv[2], L"--address-host") == 0 ||
                                         wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 ||
                                         wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
                                         wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))),
@@ -4920,6 +4920,44 @@ int wmain(int argc, wchar_t** argv) {
     Require(compositor != nullptr, "compositor sibling");
     Require(api.update(first, nullptr, TRUE) == E_INVALIDARG, "reject null geometry");
     Require(SUCCEEDED(api.update(first, &rect, TRUE)), "first island");
+    if (argc == 3 && wcscmp(argv[2], L"--address-host") == 0) {
+        using namespace winrt::Microsoft::UI::Xaml;
+        RECT stripRect{0,0,640,40}, addressRect{100,44,570,76};
+        ShowWindow(first, SW_SHOW);
+        Require(SUCCEEDED(api.updateTabStrip(first,&stripRect,TRUE)), "strip host");
+        auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND,void**)>(GetProcAddress(module,"WinUIPaneTestGetAddressContent"));
+        Require(inspect != nullptr, "address host inspection");
+        for (int cycle=0; cycle<5; ++cycle) {
+            Require(SUCCEEDED(api.updateAddress(first,&addressRect,TRUE)), "independent address attach");
+            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":1,"open":false,"text":"initial","rows":[]})")), "toolbar publication");
+            UIElement content{nullptr};
+            Require(SUCCEEDED(inspect(first,winrt::put_abi(content))), "address content");
+            auto root=content.as<Controls::StackPanel>();
+            AwaitLiveTree(root);
+            auto field=root.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(1).as<Controls::TextBox>();
+            auto layoutStart = GetTickCount64();
+            while (field.ActualHeight()<32 && GetTickCount64()-layoutStart<5000) {
+                root.UpdateLayout();
+                Pump();
+                Sleep(5);
+            }
+            fwprintf(stderr,L"Toolbar field text=%s height=%.1f\n",field.Text().c_str(),field.ActualHeight());
+            Require(field.Text()==L"initial" && field.ActualHeight()>=32, "stock toolbar editor");
+            Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"sequence":2,"text":"bad","rows":[{"id":"same","title":"one"},{"id":"same","title":"two"}]})")), "reject invalid toolbar rows");
+            Require(field.Text()==L"initial", "invalid publication is atomic");
+            Require(SUCCEEDED(api.updateAddress(first,&addressRect,FALSE)), "address-only detach");
+            Require(SUCCEEDED(api.updateTabStrip(first,&stripRect,TRUE)), "strip survives address teardown");
+            Require(inspect(first,winrt::put_abi(content))==E_NOT_VALID_STATE, "detached host no longer publishes");
+            Require(SUCCEEDED(api.updateAddress(first,&addressRect,FALSE)), "idempotent address teardown");
+        }
+        Require(SUCCEEDED(api.destroy(first)), "destroy dual host");
+        DestroyWindow(first);
+        winrt::clear_factory_cache();
+        Require(SUCCEEDED(api.shutdown()), "dual host clean shutdown");
+        CoUninitialize();
+        puts("CHECKS PASSED: independent address attach/detach, stock TextBox, validation atomicity, retained strip, clean shutdown");
+        return 0;
+    }
     if (argc == 3 && (wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0)) {
         if (wcscmp(argv[2], L"--strip") == 0) {
         CheckTabStrip(module, api, first);

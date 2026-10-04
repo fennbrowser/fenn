@@ -1,4 +1,4 @@
-param([switch]$NativeAddress, [switch]$NativeTabStrip = $true, [switch]$ContainerDots = $true, [switch]$TabGlows = $true, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$CaptureCrash, [string]$DiagnosticsLog,
+param([switch]$NativeAddress, [switch]$NativeAddressBar, [switch]$NativeTabStrip = $true, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots = $true, [switch]$TabGlows = $true, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$CaptureCrash, [string]$DiagnosticsLog,
       [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight = 40,
       [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop = 'MicaAlt',
       [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach = 'None')
@@ -11,6 +11,9 @@ if (!(Test-Path $browser) -or !(Test-Path $pane)) {
 }
 $demoProfile = Join-Path $projectRoot ('artifacts/winui-demo/' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $demoProfile | Out-Null
+# Seed once in prefs.js so the toolbar option can persist changes on restart.
+"user_pref(`"widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs`", $($ReplaceFirefoxTabStrip.IsPresent.ToString().ToLowerInvariant()));" |
+    Set-Content (Join-Path $demoProfile 'prefs.js')
 @'
 user_pref("widget.windows.winui-prototype.pane.enabled", true);
 user_pref("browser.shell.checkDefaultBrowser", false);
@@ -28,6 +31,7 @@ $backdrop = @{ Mica = 'mica'; MicaAlt = 'mica-alt'; Acrylic = 'acrylic' }[$TabSt
 Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.backdrop`", `"$backdrop`");"
 Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.groupReach`", `"$($TabGroupReach.ToLowerInvariant())`");"
 if ($NativeAddress) { Add-Content (Join-Path $demoProfile 'user.js') 'user_pref("widget.windows.winui-prototype.address.enabled", true);' }
+if ($NativeAddressBar) { Add-Content (Join-Path $demoProfile 'user.js') 'user_pref("widget.windows.winui-prototype.address.toolbar.enabled", true);' }
 Write-Host "Starting the WinUI prototype with an isolated profile: $demoProfile"
 if ($CaptureCrash) {
     $debugger = Join-Path $projectRoot '.cache/mozbuild/vs/Windows Kits/10/Debuggers/x64/cdb.exe'

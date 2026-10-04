@@ -54,7 +54,10 @@ struct NativeWindowDrag {
                         static_cast<unsigned long long>(w), self->SystemButtonAt(ScreenPoint(l)));
             if (msg == WM_NCHITTEST && self->visible) {
                 if (auto button = self->SystemButtonAt(ScreenPoint(l)); button != HTNOWHERE) return button;
-                const auto normal = DefSubclassProc(hwnd, msg, w, l);
+                auto normal = DefSubclassProc(hwnd, msg, w, l);
+                // Gecko can retain hidden DOM caption-button rectangles after
+                // tab-row replacement. Only the SDK regions above own buttons.
+                if (normal == HTMINBUTTON || normal == HTMAXBUTTON || normal == HTCLOSE) normal = HTCLIENT;
                 if (normal >= HTLEFT && normal <= HTBOTTOMRIGHT) return normal;
                 POINT p = ScreenPoint(l); ScreenToClient(hwnd, &p);
                 for (auto r : self->pass) if (Contains(r, p)) return normal;
