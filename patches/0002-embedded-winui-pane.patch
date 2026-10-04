@@ -3968,10 +3968,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..3ef173b342
+index 0000000000..4a0fcab40f
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,1904 @@
+@@ -0,0 +1,1910 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4938,8 +4938,10 @@ index 0000000000..3ef173b342
 +          gBrowser.moveTabBefore(tab, beforeGroup ? group : neighbor, options);
 +        },
 +        // screenX/screenY are physical pixels (native's GetCursorPos); the
-+        // window-feature left/top Firefox expects are CSS pixels, so this
-+        // can land slightly off the actual cursor on a scaled display.
++        // window-feature left/top Firefox expects are CSS pixels in this
++        // source window's scale context. Passing physical pixels directly
++        // multiplies the destination by that scale (for example 1880 becomes
++        // 2820 when detaching from a 150% window).
 +        detach: (id, { screenX, screenY }) => {
 +          const tab = this.resolveStripTab(id);
 +          if (!tab) return false;
@@ -4952,7 +4954,11 @@ index 0000000000..3ef173b342
 +            window.focus();
 +            return false;
 +          }
-+          gBrowser.replaceTabWithWindow(tab, { left: screenX, top: screenY });
++          const scale = window.devicePixelRatio;
++          gBrowser.replaceTabWithWindow(tab, {
++            left: Math.round(screenX / scale),
++            top: Math.round(screenY / scale),
++          });
 +        },
 +        // sourceHwnd names another open window's own native HWND (as this
 +        // process's Pane.cpp sees it); see stripSourceWindow.
