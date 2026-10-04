@@ -1539,7 +1539,11 @@ struct NativeTabStrip {
     NativeTabStrip(NativeTabMenu& model) : menu(model) {
         root =
             Markup::XamlReader::Load(
-                LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="Transparent"><TabView TabWidthMode="Equal" CanDragTabs="False" CanReorderTabs="False" AllowDrop="False" VerticalAlignment="Top" AutomationProperties.AutomationId="FirefoxWinUITabStrip" AutomationProperties.Name="Tabs in this window" /></Grid>)")
+                LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="Transparent"><Grid.Resources><ResourceDictionary><ResourceDictionary.ThemeDictionaries>
+<ResourceDictionary x:Key="Default" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="{ThemeResource LayerOnMicaBaseAltFillColorDefault}"/></ResourceDictionary>
+<ResourceDictionary x:Key="Light" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="{ThemeResource LayerOnMicaBaseAltFillColorDefault}"/></ResourceDictionary>
+<ResourceDictionary x:Key="HighContrast" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="{ThemeResource SystemColorWindowColor}"/></ResourceDictionary>
+</ResourceDictionary.ThemeDictionaries></ResourceDictionary></Grid.Resources><TabView TabWidthMode="Equal" CanDragTabs="False" CanReorderTabs="False" AllowDrop="False" VerticalAlignment="Top" AutomationProperties.AutomationId="FirefoxWinUITabStrip" AutomationProperties.Name="Tabs in this window" /></Grid>)")
                 .as<Controls::Grid>();
         view = root.Children().GetAt(0).as<Controls::TabView>();
         ambient.Create(root);

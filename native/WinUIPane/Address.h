@@ -485,7 +485,7 @@ struct NativeAddress {
                 navigate(action.Stringify());
             };
             toolbarSurface = Markup::XamlReader::Load(
-                LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"/>)").as<Grid>();
+                LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}"/>)").as<Grid>();
             toolbarSurface.Visibility(Visibility::Collapsed);
             Grid::SetColumnSpan(toolbarSurface, 2);
             Grid::SetColumn(root, 1);

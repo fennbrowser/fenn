@@ -365,6 +365,17 @@ struct Pane {
     HWND addressWindow{};
     RECT addressBounds{};
     bool addressBoundsApplied{};
+    bool navigationBackdrop{};
+    static void SetBackdrop(DesktopWindowXamlSource const& target, NativeTabStrip::Backdrop kind) {
+        if (kind == NativeTabStrip::Backdrop::Acrylic) {
+            target.SystemBackdrop(Media::DesktopAcrylicBackdrop());
+        } else {
+            Media::MicaBackdrop mica;
+            mica.Kind(kind == NativeTabStrip::Backdrop::Mica ? Composition::SystemBackdrops::MicaKind::Base
+                                                          : Composition::SystemBackdrops::MicaKind::BaseAlt);
+            target.SystemBackdrop(mica);
+        }
+    }
     event_token addressTakeFocus{};
     Microsoft::UI::Content::ContentIsland addressIsland{nullptr};
     static bool InWindow(HWND window, HWND target) {
@@ -427,6 +438,8 @@ struct Pane {
         if (addressWindow) RemoveWindowSubclass(addressWindow, FocusProc, reinterpret_cast<UINT_PTR>(this));
         addressSource.TakeFocusRequested(addressTakeFocus);
         addressSource.SiteBridge().Hide();
+        addressSource.SystemBackdrop(nullptr);
+        navigationBackdrop = false;
         addressSource.Content(nullptr);
         address.reset();
         shell.ResetAddress();
@@ -1085,17 +1098,12 @@ struct Pane {
             takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(parent); });
             source.Content(strip->root);
             // The island owns the backdrop and its theme/activation/fallback
-            // handling. Keep it local to the strip, including the caption insets.
+            // handling. The toolbar's separate island follows the same choice;
+            // each host owns its backdrop instance and closes it independently.
             // Mica Alt until Firefox's first publication names its preference.
             strip->applyBackdrop = [this](NativeTabStrip::Backdrop kind) {
-                if (kind == NativeTabStrip::Backdrop::Acrylic) {
-                    source.SystemBackdrop(Media::DesktopAcrylicBackdrop());
-                    return;
-                }
-                Media::MicaBackdrop mica;
-                mica.Kind(kind == NativeTabStrip::Backdrop::Mica ? Composition::SystemBackdrops::MicaKind::Base
-                                                                  : Composition::SystemBackdrops::MicaKind::BaseAlt);
-                source.SystemBackdrop(mica);
+                SetBackdrop(source, kind);
+                if (addressSource && navigationBackdrop) SetBackdrop(addressSource, kind);
             };
             strip->applyBackdrop(strip->backdrop);
             windowDrag.Open(hwnd, strip.get());
@@ -1946,6 +1954,16 @@ HRESULT WINAPI SyncAddress(HWND hwnd, const wchar_t* input) noexcept {
         if (!found->second->address) return snapshot.GetNamedBoolean(L"enabled", false) ? E_NOTIMPL : S_OK;
         found->second->address->observeFocus();
         found->second->address->Sync(snapshot);
+        auto& pane = *found->second;
+        if (pane.addressSource) {
+            const bool backdrop = snapshot.GetNamedBoolean(L"enabled", false) &&
+                                  snapshot.GetNamedBoolean(L"navigationToolbar", false);
+            if (backdrop != pane.navigationBackdrop) {
+                if (backdrop) Pane::SetBackdrop(pane.addressSource, pane.strip->backdrop);
+                else pane.addressSource.SystemBackdrop(nullptr);
+                pane.navigationBackdrop = backdrop;
+            }
+        }
         return S_OK;
     } catch (...) {
         return to_hresult();
@@ -2615,6 +2633,18 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetBackdrop(HWND hw
     } catch (...) {
         return to_hresult();
     }
+}
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetAddressBackdrop(HWND hwnd, void** output) noexcept {
+    try {
+        if (!output) return E_POINTER;
+        *output = nullptr;
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end()) return E_INVALIDARG;
+        if (found->second->addressSource)
+            *output = detach_abi(found->second->addressSource.SystemBackdrop());
+        return S_OK;
+    } catch (...) { return to_hresult(); }
 }
 // Test-only: drive the strip's TabItems()-order-derived reorder logic
 // directly, as if a completed drag had already left TabItems() in the given

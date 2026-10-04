@@ -4927,12 +4927,20 @@ int wmain(int argc, wchar_t** argv) {
         Require(SUCCEEDED(api.updateTabStrip(first,&stripRect,TRUE)), "strip host");
         auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND,void**)>(GetProcAddress(module,"WinUIPaneTestGetAddressContent"));
         Require(inspect != nullptr, "address host inspection");
+        auto inspectBackdrop = reinterpret_cast<HRESULT(WINAPI*)(HWND,void**)>(GetProcAddress(module,"WinUIPaneTestGetAddressBackdrop"));
+        Require(inspectBackdrop != nullptr, "address backdrop inspection");
+        auto addressBackdrop = [&] {
+            Media::SystemBackdrop value{nullptr};
+            Require(SUCCEEDED(inspectBackdrop(first,winrt::put_abi(value))), "read address backdrop");
+            return value;
+        };
         for (int cycle=0; cycle<5; ++cycle) {
             Require(SUCCEEDED(api.updateAddress(first,&addressRect,TRUE)), "independent address attach");
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":1,"open":false,"text":"initial","rows":[]})")), "toolbar publication");
             UIElement content{nullptr};
             Require(SUCCEEDED(inspect(first,winrt::put_abi(content))), "address content");
             auto toolbarRoot=content.as<Controls::Grid>();
+            Require(!addressBackdrop(), "legacy input-slot has no system backdrop");
             auto root=toolbarRoot.Children().GetAt(2).as<Controls::StackPanel>();
             AwaitLiveTree(root);
             auto field=root.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(1).as<Controls::TextBox>();
@@ -4960,12 +4968,16 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":3,"text":"initial","rows":[],"navigation":{"back":{"enabled":false,"label":"Localized back"},"forward":{"enabled":true,"label":"Localized forward"},"reload":{"enabled":true,"label":"Localized reload"}}})")), "publish navigation buttons");
             auto navigation=toolbarRoot.Children().GetAt(1).as<Controls::StackPanel>();
             Require(navigation.Visibility()==Visibility::Visible && navigation.Children().Size()==3, "three native navigation buttons");
+            auto mica = addressBackdrop().try_as<Media::MicaBackdrop>();
+            Require(mica && mica.Kind()==winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::BaseAlt,
+                    "navigation toolbar shares default strip Mica Alt material");
             Require(!navigation.Children().GetAt(0).as<Controls::Button>().IsEnabled() &&
                     navigation.Children().GetAt(1).as<Controls::Button>().IsEnabled(), "Firefox controls navigation availability");
             Require(Automation::AutomationProperties::GetName(navigation.Children().GetAt(2))==L"Localized reload", "Firefox navigation label");
             Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":4,"text":"bad","rows":[],"navigation":{"back":{"enabled":"bad"}}})")), "reject malformed navigation atomically");
             Require(field.Text()==L"initial" && navigation.Children().GetAt(1).as<Controls::Button>().IsEnabled(), "malformed navigation preserves editor and buttons");
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":false})")), "disable navigation with address");
+            Require(!addressBackdrop(), "disabling navigation releases its system backdrop");
             Require(navigation.Visibility()==Visibility::Collapsed && !navigation.Children().GetAt(1).as<Controls::Button>().IsEnabled(), "disable hides and revokes navigation controls");
             Require(SUCCEEDED(api.updateAddress(first,&addressRect,FALSE)), "address-only detach");
             Require(SUCCEEDED(api.updateTabStrip(first,&stripRect,TRUE)), "strip survives address teardown");
