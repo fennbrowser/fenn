@@ -5042,10 +5042,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..a3674a7942
+index 0000000000..f45226f6b0
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2103 @@
+@@ -0,0 +1,2105 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -5325,7 +5325,8 @@ index 0000000000..a3674a7942
 +    this.modeSwitcher = this.urlbar.querySelector(".searchmode-switcher");
 +    this.mutation = new MutationObserver(records => {
 +      if (records.some(record => record.target === this.urlbar ||
-+                                 record.target === this.modeSwitcher)) {
++                                 record.target === this.modeSwitcher ||
++                                 record.target === document.documentElement)) {
 +        this.addressDirty = true;
 +      }
 +      if (this.tabStrip && records.some(record => record.target === document.documentElement)) this.stripDirty = true;
@@ -5756,6 +5757,7 @@ index 0000000000..a3674a7942
 +      version: 1,
 +      enabled: true,
 +      navigationToolbar: toolbar && this.addressToolbar.navigation,
++      rtl: document.documentElement.matches(":dir(rtl)"),
 +      ...(toolbar && this.addressToolbar.navigation ? {navigation:this.addressToolbar.navigationState()} : {}),
 +      open: !!session.nativeOpen,
 +      session: session.sessionId,

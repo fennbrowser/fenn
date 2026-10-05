@@ -718,6 +718,7 @@ struct NativeAddress {
         const auto checkedEdit = snapshot.HasKey(L"editId") ? NativeJson::RequireRevision(snapshot, L"editId") : 0;
         const auto checkedComplete = snapshot.GetNamedBoolean(L"complete", false);
         const auto checkedOpen = snapshot.GetNamedBoolean(L"open", false);
+        const auto checkedRtl = snapshot.GetNamedBoolean(L"rtl", false);
         const auto navigationToolbar = snapshot.GetNamedBoolean(L"navigationToolbar", false);
         const auto navigationState = NativeNavigationToolbar::Read(snapshot);
         const auto pinnedState = PinnedExtensionButtons::Read(snapshot);
@@ -818,6 +819,14 @@ struct NativeAddress {
             observedText = field.Text();
             observedComposing = composing;
         }
+        const auto flow = checkedRtl ? FlowDirection::RightToLeft : FlowDirection::LeftToRight;
+        root.FlowDirection(flow);
+        if (toolbarRoot) toolbarRoot.FlowDirection(flow);
+        if (popupContent) popupContent.FlowDirection(flow);
+        // Mirror the interface without reversing URL/text character order.
+        field.TextReadingOrder(TextReadingOrder::DetectFromContent);
+        // Left is the logical leading edge; WinUI mirrors it with FlowDirection.
+        field.TextAlignment(TextAlignment::Left);
         root.Visibility(Visibility::Visible);
         if (toolbarRoot) {
             navigation->Apply(navigationState, navigationToolbar && snapshot.HasKey(L"navigation"));

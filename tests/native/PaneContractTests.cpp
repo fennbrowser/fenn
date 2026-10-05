@@ -988,6 +988,15 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     auto list = address.Children().GetAt(1).as<Controls::ListView>();
     Require(address.Visibility() == Visibility::Visible && field.Text() == L"initial" && list.Items().Size() == 2,
             "real TextBox and ListView receive snapshot");
+    auto directionSnapshot = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);
+    directionSnapshot.SetNamedValue(L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
+    Require(SUCCEEDED(api.syncAddress(hwnd, directionSnapshot.Stringify().c_str())) &&
+                address.FlowDirection() == FlowDirection::RightToLeft &&
+                field.FlowDirection() == FlowDirection::RightToLeft && field.Text() == L"initial",
+            "mirror address layout without changing text");
+    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)) &&
+                address.FlowDirection() == FlowDirection::LeftToRight && field.TextAlignment() == TextAlignment::Left,
+            "restore default LTR address layout");
     auto originalRow = list.Items().GetAt(0);
     const wchar_t* imageSnapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":2,"text":"initial","selectedId":"b","rows":[{"id":"a","title":"First suggestion","sectionLabel":"Shortcuts","imageSize":32,"image":{"width":1,"height":1,"pixels":"0000ffff"}},{"id":"b","title":"Second suggestion"}]})";
