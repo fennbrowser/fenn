@@ -60,7 +60,7 @@ impl AddressState {
     // request and the new unadmitted edit independent of one another.
     pub fn stage(&mut self, request: u64, kind: IntentKind) {
         self.staged = Some((request, kind));
-        if kind == IntentKind::Edit { self.needs_dispatch = false; }
+        if matches!(kind, IntentKind::Edit | IntentKind::Clipboard) { self.needs_dispatch = false; }
     }
 
     // Queue admission owns mode lifetime: refused actions never cancel Enter.
@@ -106,6 +106,7 @@ impl AddressState {
                     self.needs_dispatch = false;
                     self.cancel_submit();
                 }
+                if incoming == IntentKind::Clipboard { self.cancel_submit(); }
                 if incoming == IntentKind::Activate {
                     result.modifiers = self.submit.take().unwrap_or(modifiers);
                     self.deferred = false;

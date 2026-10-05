@@ -34,7 +34,7 @@ struct NativeNavigationToolbar {
         trailing.Margin({0, 0, 8, 0});
         trailing.VerticalAlignment(VerticalAlignment::Center);
         trailing.Visibility(Visibility::Collapsed);
-        const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh, Symbol::Contact, Symbol::Library, Symbol::GlobalNavigationButton};
+        const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh, Symbol::Contact, Symbol::Library, Symbol::More};
         const wchar_t* names[] = {L"Back", L"Forward", L"Reload", L"Account", L"Extensions", L"Application menu"};
         const wchar_t* ids[] = {L"FirefoxWinUIBack", L"FirefoxWinUIForward", L"FirefoxWinUIReload", L"FirefoxWinUIProfile", L"FirefoxWinUIExtensions", L"FirefoxWinUIAppMenu"};
         for (size_t i = 0; i < buttons.size(); ++i) {

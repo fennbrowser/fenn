@@ -24,6 +24,7 @@ struct NativeAddress {
     std::function<void()> releaseMenuFocus;
     Microsoft::UI::Xaml::Controls::TextBox field;
     NativeSearchMode mode;
+    double clipboardSerial{};
     PinnedExtensionButtons omnibarLeft, omnibarRight;
     SuggestionList suggestions;
     GlobalActionsPanel actions;
@@ -128,6 +129,7 @@ struct NativeAddress {
         if (wcscmp(kind, L"focus") == 0) return NativeShellCore::Focus;
         if (wcscmp(kind, L"blur") == 0) return NativeShellCore::Blur;
         if (wcscmp(kind, L"dismiss") == 0) return NativeShellCore::Dismiss;
+        if (wcscmp(kind, L"clipboard") == 0) return NativeShellCore::Clipboard;
         if (wcscmp(kind, L"fallback") == 0) return NativeShellCore::Fallback;
         // Every kind Action() is called with must map to one: an unmapped kind
         // would be dropped silently, which is how the fallback button briefly
@@ -188,7 +190,7 @@ struct NativeAddress {
         // surface, not about what is staged. Asked before Edit() below, which
         // is where the original guard sat.
         if (Decide(incoming, NativeShellCore::NoIntent) == NativeShellCore::DropIntent) return;
-        if (incoming == NativeShellCore::Activate || incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Blur) Edit();
+        if (incoming == NativeShellCore::Activate || incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::Blur) Edit();
         const uint32_t modifiers = ((GetKeyState(VK_CONTROL) & 0x8000) ? 1u : 0u) |
                                    ((GetKeyState(VK_MENU) & 0x8000) ? 2u : 0u) |
                                    ((GetKeyState(VK_SHIFT) & 0x8000) ? 4u : 0u) |
@@ -196,7 +198,7 @@ struct NativeAddress {
         const auto action = shell.NegotiateAddress(incoming, Observed(), modifiers);
         if (action.decision == NativeShellCore::Defer || action.decision == NativeShellCore::DropIntent) return;
         auto value = Message(kind);
-        if (incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Blur) {
+        if (incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::Blur) {
             value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
             value.SetNamedValue(L"text", JValue::CreateStringValue(field.Text()));
             value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
@@ -528,6 +530,8 @@ struct NativeAddress {
                 buttons->panel.Spacing(0);
                 buttons->panel.VerticalAlignment(VerticalAlignment::Center);
             }
+            omnibarLeft.panel.Margin({4, 0, 0, 0});
+            omnibarRight.panel.Margin({0, 0, 4, 0});
             // The stock TextBox owns the entire surface and focus accent. Its
             // padding reserves the overlaid native controls within that border.
             header.Children().Clear();
@@ -552,24 +556,36 @@ struct NativeAddress {
             header.Children().Append(omnibarRight.panel);
             mode.button.MinWidth(0); mode.button.MinHeight(0);
             mode.button.Height(24); mode.button.Margin({4, 0, 4, 0});
+            // The stock 12-DIP arrow has internal side bearings; balance visible edge spacing.
+            mode.button.Padding({8, 0, 6, 0});
             mode.button.VerticalAlignment(VerticalAlignment::Center);
             mode.button.BorderThickness({0, 0, 0, 0});
             mode.button.CornerRadius({12, 12, 12, 12});
             auto modeContent = mode.button.Content().as<StackPanel>();
+            // Compact the stock template's arrow gap without shrinking the
+            // content presenter's layout slot (negative margins overflow it).
+            mode.button.Loaded([](auto const& sender, auto const&) {
+                auto button = sender.template as<DropDownButton>();
+                button.ApplyTemplate();
+                if (!Media::VisualTreeHelper::GetChildrenCount(button)) return;
+                auto templateRoot = Media::VisualTreeHelper::GetChild(button, 0).template try_as<FrameworkElement>();
+                auto chevron = templateRoot ? templateRoot.FindName(L"ChevronIcon").template try_as<FrameworkElement>() : nullptr;
+                if (chevron) chevron.Margin({6, 0, 0, 0});
+            });
             modeContent.Children().RemoveAt(1);
             Viewbox modeIcon;
             modeIcon.Width(16); modeIcon.Height(16);
             modeIcon.Child(mode.symbol);
-            mode.symbol.RegisterPropertyChangedCallback(UIElement::VisibilityProperty(), [icon = winrt::make_weak(modeIcon)](auto const& sender, auto const&) {
-                if (auto box = icon.get()) box.Visibility(sender.template as<UIElement>().Visibility());
-            });
+            modeIcon.Visibility(mode.symbol.Visibility());
+            mode.symbolHost = modeIcon;
             modeContent.Children().InsertAt(1, modeIcon);
             auto reserveControls = [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
                 if (alive.expired()) return;
                 auto width = [](FrameworkElement const& element) {
                     return element.Visibility() == Visibility::Visible ? element.ActualWidth() + element.Margin().Left + element.Margin().Right : 0.0;
                 };
-                field.Padding({float(8 + width(omnibarLeft.panel) + width(mode.button)), 4,
+                const float textGap = mode.button.Visibility() == Visibility::Visible ? 2.0f : 8.0f;
+                field.Padding({float(textGap + width(omnibarLeft.panel) + width(mode.button)), 4,
                     float(8 + width(mode.exit) + width(omnibarRight.panel)), 4});
             };
             for (auto element : {omnibarLeft.panel.as<FrameworkElement>(), mode.button.as<FrameworkElement>(),
@@ -592,17 +608,17 @@ struct NativeAddress {
             field.CopyingToClipboard([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
                 if (alive.expired()) return;
                 e.Handled(true);
-                Action(L"fallback", 0, L"cmd_copy");
+                Action(L"clipboard", 0, L"cmd_copy");
             });
             field.CuttingToClipboard([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
                 if (alive.expired()) return;
                 e.Handled(true);
-                Action(L"fallback", 0, L"cmd_cut");
+                Action(L"clipboard", 0, L"cmd_cut");
             });
             field.Paste([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
                 if (alive.expired()) return;
                 e.Handled(true);
-                Action(L"fallback", 0, L"cmd_paste");
+                Action(L"clipboard", 0, L"cmd_paste");
             });
             root.Margin({0, 0, 0, 0});
             // The popup floats outside layout; spacing after the header would
@@ -688,6 +704,22 @@ struct NativeAddress {
         const auto omnibarLeftState = PinnedExtensionButtons::Read(snapshot, L"omnibarLeft");
         const auto omnibarRightState = PinnedExtensionButtons::Read(snapshot, L"omnibarRight");
         auto checkedText = snapshot.GetNamedString(L"text", L"");
+        auto clipboard = snapshot.GetNamedObject(L"clipboard", JObject());
+        const auto clipboardId = clipboard.Size() ? NativeJson::RequireRevision(clipboard, L"serial") : 0;
+        const auto clipboardEdit = clipboard.Size() ? NativeJson::RequireRevision(clipboard, L"editId") : 0;
+        const auto clipboardStart = clipboard.Size() ? NativeJson::RequireRevision(clipboard, L"start") : 0;
+        const auto clipboardEnd = clipboard.Size() ? NativeJson::RequireRevision(clipboard, L"end") : 0;
+        if (clipboardStart > clipboardEnd || clipboardEnd > checkedText.size()) winrt::throw_hresult(E_INVALIDARG);
+        const auto clipboardBefore = clipboard.GetNamedString(L"before", L"");
+        const auto clipboardReplacement = clipboard.GetNamedString(L"replacement", L"");
+        const auto replaceStart = clipboard.Size() ? NativeJson::RequireRevision(clipboard, L"replaceStart") : 0;
+        const auto replaceEnd = clipboard.Size() ? NativeJson::RequireRevision(clipboard, L"replaceEnd") : 0;
+        if (clipboardId && (clipboardBefore.size() > NativeJson::kMaxFieldText ||
+            replaceStart > replaceEnd || replaceEnd > clipboardBefore.size() ||
+            clipboardReplacement.size() > NativeJson::kMaxFieldText ||
+            std::wstring(clipboardBefore).substr(0, replaceStart) + std::wstring(clipboardReplacement) +
+            std::wstring(clipboardBefore).substr(replaceEnd) != std::wstring(checkedText)))
+            winrt::throw_hresult(E_INVALIDARG);
         auto checkedRows = snapshot.GetNamedArray(L"rows");
         if (nextSession.empty() || nextSession.size() > 256 || checkedText.size() > NativeJson::kMaxFieldText ||
             checkedRows.Size() > NativeJson::kMaxListEntries)
@@ -751,6 +783,7 @@ struct NativeAddress {
         }
         if (nextSession != session) {
             mode.Reset();
+            clipboardSerial = 0;
             ResetSessionState();
             session = nextSession;
             sequence = -1;
@@ -784,6 +817,7 @@ struct NativeAddress {
         // for the same reason; it is stated here rather than implied by where
         // the old code happened to return.
         if (shell.AddressState().needs_dispatch || StagedKind() != NativeShellCore::NoIntent || shell.AddressState().mode_pending) return L"";
+        if (clipboardId && clipboardEdit != shell.AddressState().edit_id) return L"";
         syncing = true;
         try {
             auto placeholder = snapshot.GetNamedString(L"placeholder", L"Search or enter address");
@@ -808,8 +842,17 @@ struct NativeAddress {
             if (field.Text() != text) {
                 observedText = text;
                 observedComposing = composing;
-                field.Text(text);
+                if (clipboardId > clipboardSerial && field.Text() == clipboardBefore) {
+                    // Replace the selected range through the stock editor so
+                    // Cut/Paste participate in its undo history.
+                    field.Select(int(replaceStart), int(replaceEnd - replaceStart));
+                    field.SelectedText(clipboardReplacement);
+                } else field.Text(text);
                 field.Select(int(text.size()), 0);
+            }
+            if (clipboardId > clipboardSerial) {
+                field.Select(int(clipboardStart), int(clipboardEnd - clipboardStart));
+                clipboardSerial = double(clipboardId);
             }
             auto nextSequence = snapshot.GetNamedNumber(L"sequence", 0);
             if (sequence != nextSequence || previousRevision != revision) {

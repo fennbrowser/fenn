@@ -17,6 +17,7 @@ struct NativeSearchMode {
     Microsoft::UI::Xaml::Controls::Button exit;
     Microsoft::UI::Xaml::Controls::Image image;
     Microsoft::UI::Xaml::Controls::SymbolIcon symbol;
+    Microsoft::UI::Xaml::FrameworkElement symbolHost{nullptr};
     Microsoft::UI::Xaml::Controls::TextBlock label;
     std::vector<Microsoft::UI::Xaml::Controls::MenuFlyoutItem> items;
     std::vector<winrt::hstring> ids, pixels;
@@ -184,11 +185,13 @@ struct NativeSearchMode {
         }
         image.Visibility(encoded == L"null" ? Visibility::Collapsed : Visibility::Visible);
         symbol.Visibility(encoded == L"null" ? Visibility::Visible : Visibility::Collapsed);
+        if (symbolHost) symbolHost.Visibility(symbol.Visibility());
         symbol.Symbol(IconFor(modes.GetNamedString(L"symbol", L"search")));
         auto modesLabel = modes.GetNamedString(L"label");
         Automation::AutomationProperties::SetName(button, modes.GetNamedString(L"buttonLabel", modesLabel));
         Automation::AutomationProperties::SetName(exit, modes.GetNamedString(L"exitLabel", L"Exit search mode"));
         label.Text(modes.GetNamedBoolean(L"active") ? modesLabel : L"");
+        label.Visibility(label.Text().empty() ? Visibility::Collapsed : Visibility::Visible);
         label.MaxWidth(80);
         label.TextTrimming(TextTrimming::CharacterEllipsis);
         exit.Visibility(visible && snapshot.GetNamedBoolean(L"modeExitVisible", modes.GetNamedBoolean(L"active"))

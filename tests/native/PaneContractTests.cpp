@@ -4957,6 +4957,9 @@ int wmain(int argc, wchar_t** argv) {
             Require(field.Text()==L"initial" && field.ActualHeight()>=32, "stock toolbar editor");
             Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"sequence":2,"text":"bad","rows":[{"id":"same","title":"one"},{"id":"same","title":"two"}]})")), "reject invalid toolbar rows");
             Require(field.Text()==L"initial", "invalid publication is atomic");
+            Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":2,"text":"bad","rows":[],"clipboard":{"serial":1,"editId":0,"start":0,"end":99,"before":"initial","replaceStart":0,"replaceEnd":7,"replacement":"bad"}})")), "reject clipboard caret outside text");
+            Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":2,"text":"bad","rows":[],"clipboard":{"serial":1,"editId":0,"start":0,"end":0,"before":"initial","replaceStart":0,"replaceEnd":7,"replacement":"different"}})")), "reject inconsistent clipboard replacement");
+            Require(field.Text()==L"initial", "invalid clipboard publication is atomic");
             RECT navigationRect{0,40,640,88};
             Require(SUCCEEDED(api.updateAddress(first,&navigationRect,TRUE)), "full navigation row geometry");
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":2,"text":"initial","rows":[]})")), "navigation publication");

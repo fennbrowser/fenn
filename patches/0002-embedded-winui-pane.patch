@@ -3534,10 +3534,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..618c23367b
+index 0000000000..1be380ea76
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,956 @@
+@@ -0,0 +1,1007 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3985,6 +3985,55 @@ index 0000000000..618c23367b
 +    return { status: "dismissed", revision: this.revision };
 +  }
 +
++  clipboard(request) {
++    if (this.closed || request.version !== 1 || request.session !== this.sessionId ||
++        !["cmd_copy", "cmd_cut", "cmd_paste"].includes(request.clipboard) ||
++        !Number.isSafeInteger(request.editId) || request.editId < this.editId ||
++        typeof request.text !== "string" || request.text.length > 32768 || request.composing !== false ||
++        !Number.isInteger(request.selectionStart) || !Number.isInteger(request.selectionEnd) ||
++        request.selectionStart < 0 || request.selectionEnd < request.selectionStart ||
++        request.selectionEnd > request.text.length) return 2;
++    if (request.editId > this.editId) {
++      const accepted = this.acceptEdit({...request, revision:this.revision});
++      if (accepted.status !== "accepted") return 2;
++    }
++    const field = this.input.inputField;
++    if (field.value !== request.text) return 2;
++    field.setSelectionRange(request.selectionStart, request.selectionEnd);
++    // Address-specific Copy/Cut restores trimmed schemes and encodes URLs.
++    // The editor's Paste controller runs Firefox's trusted paste event and
++    // sanitization without using focus-dependent window command dispatch.
++    const controller = field.controllers.getControllerForCommand(request.clipboard);
++    if (!controller?.isCommandEnabled(request.clipboard)) return 2;
++    controller.doCommand(request.clipboard);
++    if (this.closed) return 2;
++    if (field.value !== request.text || field.selectionStart !== request.selectionStart ||
++        field.selectionEnd !== request.selectionEnd) {
++      // Reuse the normal native query adapter after the original editor action.
++      // Its input event may already have canceled the previous native query.
++      const text = field.value, start = field.selectionStart, end = field.selectionEnd;
++      if (text.length > 32768) {
++        this.window.gWinUIPane.addressFallback();
++        return 1;
++      }
++      // Preserve paste-specific provider/remote-suggestion policy too.
++      this.query(text, new this.window.InputEvent("input", {
++        inputType:request.clipboard === "cmd_paste" ? "insertFromPaste" : "deleteByCut",
++        data:request.clipboard === "cmd_paste" ? text : null,
++      })).catch(console.error);
++      field.setSelectionRange(start, end);
++      const prefix = request.text.slice(0, request.selectionStart);
++      const suffix = request.text.slice(request.selectionEnd);
++      const replacement = text.slice(prefix.length, text.length - suffix.length);
++      this.clipboardResult = {before:request.text, replaceStart:request.selectionStart,
++        replaceEnd:request.selectionEnd, replacement,
++        serial:(this.clipboardSerial = (this.clipboardSerial || 0) + 1),
++        editId:this.editId, text, start, end};
++      this.changed();
++    }
++    return 1;
++  }
++
 +  acceptEdit(request) {
 +    if (this.closed) return { status: "closed" };
 +    if (
@@ -4014,6 +4063,7 @@ index 0000000000..618c23367b
 +      selectionEnd: request.selectionEnd,
 +      composing: request.composing,
 +    };
++    this.clipboardResult = null;
 +    this.editId = state.editId;
 +    let pending;
 +    if (state.composing) {
@@ -4459,6 +4509,7 @@ index 0000000000..618c23367b
 +  }
 +
 +  cancel() {
++    this.clipboardResult = null;
 +    this.cancelImages();
 +    if (this.input?.view.nativePresentation === this) {
 +      this.nativeVisible = [];
@@ -4792,10 +4843,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..4b95509baa
+index 0000000000..eff2f86ab1
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2096 @@
+@@ -0,0 +1,2101 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -5540,6 +5591,10 @@ index 0000000000..4b95509baa
 +          image: row.image || null,
 +        })),
 +    };
++    if (session.clipboardResult?.text === state.text && session.clipboardResult.editId === state.editId) {
++      const {text, ...clipboard} = session.clipboardResult;
++      state.clipboard = clipboard;
++    }
 +    // Publication only. Intents, and the visibility of the rows, arrive
 +    // through the request queue.
 +    // This privileged publication method returns void and throws on refusal.
@@ -5554,6 +5609,7 @@ index 0000000000..4b95509baa
 +  executeAddressRequest(action) {
 +    const session = this.addressSession;
 +    if (!session || action?.version !== 1 || action.session !== session.sessionId) return 2;
++    if (action.kind === "clipboard") return session.clipboard(action);
 +    if ((action.kind === "fallback" || action.kind === "blur") && action.text !== undefined) {
 +      if (action.editId > session.editId) {
 +        session.acceptEdit({ ...action, revision: session.revision });

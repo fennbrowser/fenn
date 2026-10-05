@@ -48,6 +48,8 @@ pub enum IntentKind {
     /// It negotiates like any ordinary intent: it does not interrupt, because
     /// whatever is already staged is a thing the user did first.
     Fallback = 9,
+    /// Firefox clipboard command carrying the current text and selection.
+    Clipboard = 10,
 }
 
 impl IntentKind {
@@ -62,6 +64,7 @@ impl IntentKind {
             7 => Some(Self::Dismiss),
             8 => Some(Self::GlobalAction),
             9 => Some(Self::Fallback),
+            10 => Some(Self::Clipboard),
             _ => None,
         }
     }
@@ -203,6 +206,9 @@ pub fn decide(
         // The edit that is in flight is what the commit would commit against,
         // so wait for it rather than racing it.
         Some(IntentKind::Edit) if incoming == IntentKind::Activate => Decision::Defer,
+        // Clipboard carries the current edit/range, so it can replace those
+        // publications without waiting for suggestions.
+        Some(IntentKind::Edit | IntentKind::TextSelection) if incoming == IntentKind::Clipboard => Decision::Replace,
         // A commit or a highlight supersedes a mere caret move.
         Some(IntentKind::TextSelection)
             if matches!(incoming, IntentKind::Select | IntentKind::Activate) =>
@@ -229,7 +235,7 @@ pub fn decide(
 mod tests {
     use super::*;
 
-    const ALL: [IntentKind; 9] = [
+    const ALL: [IntentKind; 10] = [
         IntentKind::Edit,
         IntentKind::TextSelection,
         IntentKind::Select,
@@ -239,6 +245,7 @@ mod tests {
         IntentKind::Dismiss,
         IntentKind::GlobalAction,
         IntentKind::Fallback,
+        IntentKind::Clipboard,
     ];
 
     /// Everything the browser could have caught up with, so only the pairwise
@@ -276,6 +283,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn clipboard_carries_the_edit_without_waiting_for_results() {
+        let behind = Conditions { edit_acknowledged: false, query_settled: false, ..ready() };
+        for staged in [IntentKind::Edit, IntentKind::TextSelection] {
+            assert_eq!(decide(IntentKind::Clipboard, Some(staged), behind), Decision::Replace);
+        }
+        assert_eq!(decide(IntentKind::Clipboard, Some(IntentKind::Clipboard), ready()), Decision::Drop);
+        assert_eq!(decide(IntentKind::Clipboard, Some(IntentKind::Activate), ready()), Decision::Drop);
     }
 
     #[test]
@@ -445,6 +462,6 @@ mod tests {
             assert_eq!(IntentKind::from_raw(kind as u32), Some(kind));
         }
         assert_eq!(IntentKind::from_raw(0), None);
-        assert_eq!(IntentKind::from_raw(10), None, "one past the last kind");
+        assert_eq!(IntentKind::from_raw(11), None, "one past the last kind");
     }
 }

@@ -36,7 +36,7 @@ struct NativeShellCore {
     // `NoIntent` is the boundary's "nothing is staged", not a kind.
     enum Intent : uint32_t {
         NoIntent = 0, Edit = 1, TextSelection = 2, Select = 3, Activate = 4,
-        Focus = 5, Blur = 6, Dismiss = 7, GlobalAction = 8, Fallback = 9
+        Focus = 5, Blur = 6, Dismiss = 7, GlobalAction = 8, Fallback = 9, Clipboard = 10
     };
     enum Decision : uint32_t { Stage = 1, Replace = 2, Amend = 3, Defer = 4, DropIntent = 5 };
 

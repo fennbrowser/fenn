@@ -1572,11 +1572,11 @@ mod tests {
             );
             assert_eq!(decision, crate::intent::Decision::Stage as u32);
             assert_eq!(
-                shell_core_decide_intent(10, 0, &conditions, &mut decision),
+                shell_core_decide_intent(11, 0, &conditions, &mut decision),
                 ShellStatus::InvalidArgument, "unknown incoming kind"
             );
             assert_eq!(
-                shell_core_decide_intent(1, 10, &conditions, &mut decision),
+                shell_core_decide_intent(1, 11, &conditions, &mut decision),
                 ShellStatus::InvalidArgument, "unknown staged kind"
             );
             assert_eq!(
