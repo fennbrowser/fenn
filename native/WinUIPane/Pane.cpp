@@ -2393,7 +2393,7 @@ BOOL WINAPI Translate(MSG* message) noexcept {
             if (message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN) {
                 const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
                 const bool addressShortcut = pane.addressSource &&
-                    (message->wParam == VK_F6 || message->wParam == VK_F5 ||
+                    (message->wParam == VK_F6 || message->wParam == VK_F5 || message->wParam == VK_F11 ||
                      (control && (message->wParam == 'K' || message->wParam == 'R')) ||
                      ((GetKeyState(VK_MENU) & 0x8000) &&
                       (message->wParam == 'D' || message->wParam == VK_LEFT || message->wParam == VK_RIGHT)));
