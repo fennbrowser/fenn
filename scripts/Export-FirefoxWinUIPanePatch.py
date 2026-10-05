@@ -14,7 +14,7 @@ TRACKED = ["toolkit/content/editMenuOverlay.js", "browser/components/tabbrowser/
            "widget/windows/nsWindow.h", "widget/windows/nsWindow.cpp",
            "widget/windows/nsAppShell.cpp", "widget/windows/WinUIPrototype.cpp",
            "widget/windows/WinUIPrototype.h"]
-ADDED = ["browser/base/content/WinUIResultContextMenu.sys.mjs", "browser/base/content/WinUIAddressContextMenu.sys.mjs", "browser/base/content/WinUIOmnibarActions.sys.mjs", "browser/base/content/WinUIPinnedExtensions.sys.mjs", "browser/base/content/WinUITabStripSession.sys.mjs", "browser/base/content/WinUITabMenuSession.sys.mjs", "browser/base/content/WinUIUrlbarSession.sys.mjs", "browser/base/content/WinUIAddressToolbar.sys.mjs", "browser/base/content/WinUIAddressToolbar.css", "browser/base/content/browser-winui-pane.js", "widget/windows/WinUIPaneApi.h"]
+ADDED = ["browser/base/content/WinUIDismissalAcknowledgments.sys.mjs", "browser/base/content/WinUIResultContextMenu.sys.mjs", "browser/base/content/WinUIAddressContextMenu.sys.mjs", "browser/base/content/WinUIOmnibarActions.sys.mjs", "browser/base/content/WinUIPinnedExtensions.sys.mjs", "browser/base/content/WinUITabStripSession.sys.mjs", "browser/base/content/WinUITabMenuSession.sys.mjs", "browser/base/content/WinUIUrlbarSession.sys.mjs", "browser/base/content/WinUIAddressToolbar.sys.mjs", "browser/base/content/WinUIAddressToolbar.css", "browser/base/content/browser-winui-pane.js", "widget/windows/WinUIPaneApi.h"]
 
 
 def git(*args, **kwargs):

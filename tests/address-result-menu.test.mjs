@@ -83,3 +83,23 @@ test('provider result removal republishes current rows and ignores obsolete IDs'
   session.onQueryResultRemoved(9);assert.equal(published,undefined);
   session.onQueryResultRemoved(7);assert.deepEqual(published.results,[second]);
 });
+
+test('tip dropdown uses only its current Firefox button menu',async()=>{
+ const f=fixture();
+ f.session.active.results[0].payload={buttons:[{name:'choice',menu:[{name:'dismiss'}]}]};
+ const result=f.session.active.results[0];
+ f.session.active.rows[0].tipButtons=[{id:'tip',name:'choice',menu:true,enabled:true,document:1,signature:JSON.stringify(result.payload.buttons)}];
+ let names=[];
+ f.session.input.view.prepareNativeResultMenu=async (r,name)=>{names.push(name);return f.panel;};
+ await f.adapter.open({...f.request,buttonId:'missing'});assert.equal(f.session.resultMenuSnapshot,undefined);
+ f.browser.browsingContext.currentWindowGlobal.innerWindowId=2;
+ await f.adapter.open({...f.request,buttonId:'tip'});assert.equal(f.session.resultMenuSnapshot,undefined);
+ f.browser.browsingContext.currentWindowGlobal.innerWindowId=1;
+ await f.adapter.open({...f.request,buttonId:'tip'});
+ assert.deepEqual(names,['choice']);
+ assert.equal(f.adapter.execute(f.action()),1);await tick();
+ assert.deepEqual(names,['choice','choice']);assert.equal(f.invoked,1);
+ await f.adapter.open({...f.request,buttonId:'tip'});const action=f.action();
+ result.payload.buttons[0].menu=[];
+ assert.equal(f.adapter.execute(action),2);assert.equal(f.invoked,1);
+});

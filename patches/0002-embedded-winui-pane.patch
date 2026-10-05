@@ -868,22 +868,10 @@ index 995b2fc869..7add43e3b2 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 47a26fd814..cc3e6f216f 100644
+index 47a26fd814..5fec4b8b91 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -529,8 +529,9 @@ pref("browser.urlbar.weather.featureGate", false);
- // Enable clipboard suggestions feature, the pref should be removed once stable.
- pref("browser.urlbar.clipboard.featureGate", false);
- 
--// Enable context menu on the urlbar.
--pref("browser.urlbar.contextMenu.featureGate", false);
-+// Enable Firefox-owned result commands for both URL-bar presentations.
-+// An explicit user preference can still disable them.
-+pref("browser.urlbar.contextMenu.featureGate", true);
- 
- // The minimum prefix length of a weather keyword the user must type to trigger
- // the suggestion. 0 means the min length should be taken from Nimbus or remote
-@@ -3831,6 +3832,35 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3831,6 +3831,35 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -975,10 +963,10 @@ index 00da33bc11..b38767f3b3 100644
        }
      }
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..c183eb4800 100644
+index b2b5db6040..450917a7c2 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -33,6 +33,16 @@ browser.jar:
+@@ -33,6 +33,17 @@ browser.jar:
          content/browser/aboutTabCrashed.xhtml         (content/aboutTabCrashed.xhtml)
          content/browser/blanktab.html                 (content/blanktab.html)
          content/browser/browser.js                    (content/browser.js)
@@ -987,6 +975,7 @@ index b2b5db6040..c183eb4800 100644
 +        content/browser/WinUITabStripSession.sys.mjs     (content/WinUITabStripSession.sys.mjs)
 +        content/browser/WinUIUrlbarSession.sys.mjs      (content/WinUIUrlbarSession.sys.mjs)
 +        content/browser/WinUIPinnedExtensions.sys.mjs  (content/WinUIPinnedExtensions.sys.mjs)
++        content/browser/WinUIDismissalAcknowledgments.sys.mjs  (content/WinUIDismissalAcknowledgments.sys.mjs)
 +        content/browser/WinUIResultContextMenu.sys.mjs  (content/WinUIResultContextMenu.sys.mjs)
 +        content/browser/WinUIAddressContextMenu.sys.mjs  (content/WinUIAddressContextMenu.sys.mjs)
 +        content/browser/WinUIOmnibarActions.sys.mjs  (content/WinUIOmnibarActions.sys.mjs)
@@ -1806,7 +1795,7 @@ index 9596698cf9..b95f43a4b3 100644
  
      return {
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 5a562d6385..3a97c54601 100644
+index 5a562d6385..4200c809d9 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
 @@ -84,6 +84,7 @@ export class UrlbarView {
@@ -1889,7 +1878,55 @@ index 5a562d6385..3a97c54601 100644
        return "none";
      }
      if (
-@@ -669,6 +713,10 @@ export class UrlbarView {
+@@ -580,6 +624,7 @@ export class UrlbarView {
+    * @param {number} resultId
+    */
+   async acknowledgeFeedback(resultId) {
++    if (this.nativePresentation) return this.nativePresentation.acknowledgeNativeFeedback(resultId);
+     let row = this.#getRowByResultId(resultId);
+     if (!row) {
+       return;
+@@ -623,7 +668,17 @@ export class UrlbarView {
+     this.#setRowSelectable(row, false);
+ 
+     // Replace the row with a dismissal acknowledgment tip.
+-    let tip = new UrlbarResult({
++    let tip = this.createDismissalAcknowledgment(result, titleL10n);
++    this.#updateRow(row, tip);
++    this.#updateIndices();
++
++    if (isSelected) {
++      this.#selectElement(this.#getNextSelectableElement(row), { updateInput: false });
++    }
++  }
++
++  createDismissalAcknowledgment(result, titleL10n) {
++    return new UrlbarResult({
+       type: UrlbarShared.RESULT_TYPE.TIP,
+       source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
+       payload: {
+@@ -632,19 +687,10 @@ export class UrlbarView {
+         buttons: [{ l10n: { id: "urlbar-search-tips-confirm-short" } }],
+         icon: "chrome://branding/content/icon32.png",
+       },
+-      rowLabel: !result.hideRowLabel && this.#rowLabel(row),
++      rowLabel: !result.hideRowLabel && this.#rowLabel({result}),
+       hideRowLabel: result.hideRowLabel,
+       richSuggestionIconSize: 32,
+     });
+-    this.#updateRow(row, tip);
+-    this.#updateIndices();
+-
+-    // If the row was selected, move the selection to the tip button.
+-    if (isSelected) {
+-      this.#selectElement(this.#getNextSelectableElement(row), {
+-        updateInput: false,
+-      });
+-    }
+   }
+ 
+   removeAccessibleFocus() {
+@@ -669,6 +715,10 @@ export class UrlbarView {
     *   True if the Urlbar focus border should be shown after the view is closed.
     */
    close({ elementPicked = false, showFocusBorder = true } = {}) {
@@ -1900,7 +1937,7 @@ index 5a562d6385..3a97c54601 100644
      const isShowingZeroPrefix =
        this.#queryContext && !this.#queryContext.searchString;
      this.controller.cancelQuery();
-@@ -919,6 +967,10 @@ export class UrlbarView {
+@@ -919,6 +969,10 @@ export class UrlbarView {
  
    // UrlbarChildController listener methods.
    onQueryStarted(queryContext) {
@@ -1911,7 +1948,7 @@ index 5a562d6385..3a97c54601 100644
      this.#queryWasCancelled = false;
      this.#queryUpdatedResults = false;
      this.#openPanelInstance = null;
-@@ -941,6 +993,7 @@ export class UrlbarView {
+@@ -941,6 +995,7 @@ export class UrlbarView {
    }
  
    onQueryFinished(queryContext) {
@@ -1919,7 +1956,7 @@ index 5a562d6385..3a97c54601 100644
      this.#cancelRemoveStaleRowsTimer();
      if (this.#queryWasCancelled) {
        return;
-@@ -993,6 +1046,7 @@ export class UrlbarView {
+@@ -993,6 +1048,7 @@ export class UrlbarView {
    onQueryResults(queryContext) {
      this.queryContextCache.put(queryContext);
      this.#queryContext = queryContext;
@@ -1927,13 +1964,59 @@ index 5a562d6385..3a97c54601 100644
  
      if (!this.isOpen) {
        this.clear();
-@@ -1170,6 +1224,32 @@ export class UrlbarView {
+@@ -1127,6 +1183,10 @@ export class UrlbarView {
+    *   it. Undefined when the row is removed without acknowledgment.
+    */
+   onQueryResultRemoved(id, acknowledgeDismissalL10n) {
++    if (this.nativePresentation) {
++      this.nativePresentation.dismissalAcknowledgments?.remove(id);
++      return;
++    }
+     let removedIndex = -1;
+     let rowToRemove = null;
+     for (let i = 0; i < this.#rows.children.length; i++) {
+@@ -1170,6 +1230,67 @@ export class UrlbarView {
      }
    }
  
-+  async prepareNativeResultMenu(result) {
-+    if (!UrlbarPrefs.get("contextMenu.featureGate")) return null;
-+    const commands = this.#getMenuCommands(result);
++  async prepareNativeTipDescription(result) {
++    if (result.type !== UrlbarShared.RESULT_TYPE.TIP || !result.payload.descriptionLearnMoreTopic ||
++        !result.payload.descriptionL10n) return null;
++    const description = this.#createElement("div");
++    const link = this.#createElement("a");
++    link.setAttribute("data-l10n-name", "learn-more-link");
++    description.appendChild(link);
++    await this.#l10nCache.ensure(result.payload.descriptionL10n);
++    this.#l10nCache.setElementL10n(description, result.payload.descriptionL10n);
++    const element = description.querySelector('[data-l10n-name="learn-more-link"]');
++    if (!element?.textContent) return null;
++    element.dataset.url = this.window.getHelpLinkURL(result.payload.descriptionLearnMoreTopic);
++    // Localization may put the link anywhere. Never send markup or a URL to native.
++    let before = "", after = "", found = false;
++    for (const node of description.childNodes) {
++      if (node === element) found = true;
++      else if (found) after += node.textContent;
++      else before += node.textContent;
++    }
++    if (!found) return null;
++    return {before, after, label:element.textContent, element};
++  }
++
++  async prepareNativeTipButtons(result, acknowledgment = false) {
++    if (result.type !== UrlbarShared.RESULT_TYPE.TIP ||
++        (!acknowledgment && result.payload.type === "dismissalAcknowledgment") ||
++        !result.payload.buttons?.length || result.payload.buttons.length > 8) return null;
++    await this.#l10nCache.ensureAll(result.payload.buttons.map(button => button.l10n).filter(Boolean));
++    const row = this.#createRow();
++    row.result = result;
++    this.#updateRowButtons(row, null, result);
++    return result.payload.buttons.map(button => row._buttons.get(button.name));
++  }
++
++  async prepareNativeResultMenu(result, buttonName = null) {
++    if (buttonName === null && !UrlbarPrefs.get("contextMenu.featureGate")) return null;
++    const commands = buttonName === null ? this.#getMenuCommands(result) :
++      result.payload.buttons?.find(button => button.name === buttonName)?.menu;
 +    if (!commands?.length) return null;
 +    const panel = this.document.createElement("panel-list");
 +    await this.#populateResultMenu({panel, commands});
@@ -1960,7 +2043,7 @@ index 5a562d6385..3a97c54601 100644
    openResultMenu(result, anchor) {
      this.#resultMenuResult = result;
      let event = new CustomEvent("ResultMenuTriggered", {
-@@ -1191,6 +1271,11 @@ export class UrlbarView {
+@@ -1191,6 +1312,11 @@ export class UrlbarView {
     *   The UrlbarResult's new menu commands.
     */
    updateResultMenuCommands(resultId, commands) {
@@ -1972,7 +2055,7 @@ index 5a562d6385..3a97c54601 100644
      let row = this.#getRowByResultId(resultId);
      if (!row) {
        return;
-@@ -2774,7 +2859,7 @@ export class UrlbarView {
+@@ -2774,7 +2900,7 @@ export class UrlbarView {
      }
    }
  
@@ -1981,7 +2064,7 @@ index 5a562d6385..3a97c54601 100644
      if (
        result.source == UrlbarShared.RESULT_SOURCE.HISTORY &&
        (result.type == UrlbarShared.RESULT_TYPE.SEARCH ||
-@@ -2791,6 +2876,7 @@ export class UrlbarView {
+@@ -2791,6 +2917,7 @@ export class UrlbarView {
        return result.payload.icon;
      }
      if (result.payload.iconBlob) {
@@ -2885,12 +2968,104 @@ index 1e2660589b..85227d8e69 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/base/content/WinUIDismissalAcknowledgments.sys.mjs b/browser/base/content/WinUIDismissalAcknowledgments.sys.mjs
+new file mode 100644
+index 0000000000..36d8ac8e91
+--- /dev/null
++++ b/browser/base/content/WinUIDismissalAcknowledgments.sys.mjs
+@@ -0,0 +1,86 @@
++// Presentation-only Firefox dismissal tips. Never add these to query results.
++export class WinUIDismissalAcknowledgments {
++  constructor(session) {
++    this.session = session;
++    this.entries = new Map();
++    this.serial = 0;
++  }
++  clear() { this.entries.clear(); }
++  current(entry) {
++    const s = this.session;
++    return !s.closed && s.active === entry.active && s.input.view.nativePresentation === s &&
++      s.window.gBrowser.selectedBrowser === entry.active.browser &&
++      entry.active.page === entry.active.browser.currentURI.spec &&
++      entry.document && entry.document === entry.active.browser.browsingContext.currentWindowGlobal?.innerWindowId &&
++      entry.editId === s.editId && s.input.inputField.value === entry.active.inputValue;
++  }
++  async add(result, message, index) {
++    const s = this.session, active = s.active;
++    if (!active || index < 0 || this.entries.size >= 100 ||
++        !s.nativeVisible?.includes(active.rows[index]?.id)) return;
++    const originalRow = active.rows[index];
++    index = this.decorate(active.rows).findIndex(row => row.id === originalRow.id);
++    const id = `${s.sessionId}:ack:${++this.serial}`;
++    const tip = s.input.view.createDismissalAcknowledgment(result, message);
++    const entry = {id, active, tip, index, focus:s.nativeSelected === result, editId:s.editId,
++      document:active.browser.browsingContext.currentWindowGlobal?.innerWindowId};
++    this.entries.set(id, entry);
++    let title, elements;
++    try {
++      [title, elements] = await Promise.all([
++      s.window.document.l10n.formatValue(message.id, message.args),
++      s.input.view.prepareNativeTipButtons(tip, true),
++      ]);
++    } catch (error) {
++      this.entries.delete(id);
++      throw error;
++    }
++    if (this.entries.get(id) !== entry || !this.current(entry) || !elements?.length) {
++      this.entries.delete(id); return;
++    }
++    const element = elements[0];
++    entry.element = element;
++    entry.row = {id, title:title.slice(0,1024), feedback:title.slice(0,1024), symbol:"page", imageSize:32, sectionLabel:originalRow.sectionLabel || "", focusButton:entry.focus,
++      tipButtons:[{id:`${id}:confirm`,label:(element.textContent || element.getAttribute('aria-label') || '').slice(0,1024),enabled:true}]};
++    s.sequence++;
++    s.loadNativeImage?.(active, entry.row, {icon:tip.payload.icon,size:32},
++      () => this.entries.get(id) === entry && this.current(entry));
++  }
++  decorate(rows) {
++    const result = [...rows];
++    for (const entry of [...this.entries.values()].sort((a, b) => a.index - b.index)) {
++      if (!this.current(entry)) { this.entries.delete(entry.id); continue; }
++      if (entry.row) result.splice(Math.min(entry.index,result.length),0,entry.row);
++    }
++    return result.slice(0,100);
++  }
++  hasVisibleRow(id) {
++    const entry = this.entries.get(id);
++    return !!entry?.row && this.current(entry);
++  }
++  remove(resultId) {
++    for (const entry of this.entries.values()) {
++      if (entry.tip.id !== resultId) continue;
++      this.entries.delete(entry.id);
++      for (const other of this.entries.values()) if (other.index > entry.index) other.index--;
++      this.session.sequence++;
++      return true;
++    }
++    return false;
++  }
++  activate(request) {
++    const s = this.session, entry = this.entries.get(request.id);
++    if (!entry?.row || !this.current(entry) || !s.nativeOpen || s.input.readOnly || s.window.gDialogBox?.isOpen ||
++        request.version !== 1 || request.session !== s.sessionId || request.revision !== entry.active.revision ||
++        request.actionId !== entry.row.tipButtons[0].id || !s.nativeVisible?.includes(entry.id) || entry.invoking)
++      return 'stale';
++    entry.invoking = true;
++    // Firefox's existing acknowledgment branch records engagement and removes
++    // this synthetic tip through the view adapter. No URL or provider is invented.
++    try {
++      s.input.pickResult({result:entry.tip, element:entry.element,
++        event:new s.window.KeyboardEvent('keydown',{key:'Enter'}),browserId:entry.active.browser.browserId});
++    } finally { this.remove(entry.tip.id); }
++    return 'activated';
++  }
++}
 diff --git a/browser/base/content/WinUIResultContextMenu.sys.mjs b/browser/base/content/WinUIResultContextMenu.sys.mjs
 new file mode 100644
-index 0000000000..1db92b4486
+index 0000000000..a2fa7eabf7
 --- /dev/null
 +++ b/browser/base/content/WinUIResultContextMenu.sys.mjs
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,100 @@
 +// Firefox owns result-menu commands; native receives only scoped opaque IDs.
 +export class WinUIResultContextMenu {
 +  constructor(session) { this.session = session; this.generation = 0; }
@@ -2912,7 +3087,8 @@ index 0000000000..1db92b4486
 +      state.page === state.browser.currentURI?.spec &&
 +      state.editId === s.editId && state.text === s.input.inputField.value &&
 +      active.rows.some(row=>row.id===state.id) &&
-+      active.context?.results.includes(state.result);
++      active.context?.results.includes(state.result) &&
++      (!state.button || state.signature === JSON.stringify(state.result.payload.buttons));
 +  }
 +  async open(request) {
 +    this.close();
@@ -2922,13 +3098,17 @@ index 0000000000..1db92b4486
 +    const index=active.rows.findIndex(row=>row.id===request.resultId);
 +    const result=active.results[active.resultIndexes[index]];
 +    if (!result) return;
++    const button = request.buttonId ? active.rows[index].tipButtons?.find(b=>b.id===request.buttonId && b.menu && b.enabled) : null;
++    if (request.buttonId && (!button || !button.document ||
++        button.document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId ||
++        button.signature !== JSON.stringify(result.payload.buttons))) return;
 +    const generation=this.generation;
-+    const state={active,result,id:request.resultId,browser:active.browser,
++    const state={button,signature:button?.signature,active,result,id:request.resultId,browser:active.browser,
 +      document:active.browser.browsingContext.currentWindowGlobal?.innerWindowId,
 +      page:active.browser.currentURI?.spec,
 +      editId:s.editId,text:s.input.inputField.value,nodes:new Map()};
 +    if (!this.current(state)) return;
-+    const panel=await s.input.view.prepareNativeResultMenu(result);
++    const panel=await s.input.view.prepareNativeResultMenu(result, button?.name ?? null);
 +    if (generation!==this.generation || !this.current(state) || !panel) return;
 +    let count=0;
 +    const read=(parent,depth=0)=>{
@@ -2956,7 +3136,7 @@ index 0000000000..1db92b4486
 +    const key=item => JSON.stringify([item.dataset.command, item.dataset.openIn,
 +      item.dataset.usercontextid, item.getAttribute('data-l10n-id')]);
 +    const wanted=key(node);
-+    const panel=await s.input.view.prepareNativeResultMenu(state.result);
++    const panel=await s.input.view.prepareNativeResultMenu(state.result, state.button?.name ?? null);
 +    if(generation!==this.generation) return;
 +    if(!this.current(state)) {this.close();return;}
 +    const fresh=panel && [...panel.querySelectorAll('panel-item')].find(item=>
@@ -3867,10 +4047,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..d48a9ebc6d
+index 0000000000..e6d7b0b641
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1165 @@
+@@ -0,0 +1,1296 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4210,7 +4390,10 @@ index 0000000000..d48a9ebc6d
 +    const results = [];
 +    for (const id of request.ids) {
 +      const row = active.rows.findIndex(item => item.id === id);
-+      if (row < 0) return "stale";
++      if (row < 0) {
++        if (this.dismissalAcknowledgments?.hasVisibleRow(id)) continue;
++        return "stale";
++      }
 +      const index = active.resultIndexes[row];
 +      const result = active.results[index];
 +      if (active.context.results[index] !== result || result.isHiddenExposure)
@@ -4574,6 +4757,21 @@ index 0000000000..d48a9ebc6d
 +  onQueryStarted(context) {
 +    const active = this.active;
 +    if (!active) return;
++    const restart = this.tipQueryRestart;
++    if (restart && !this.closed && this.nativeOpen && !this.input.readOnly && !this.window.gDialogBox?.isOpen &&
++        restart.active === active && restart.editId === this.editId &&
++        restart.document === active.browser.browsingContext.currentWindowGlobal?.innerWindowId &&
++        active.browser === this.window.gBrowser.selectedBrowser && active.page === active.browser.currentURI.spec &&
++        this.input.view.nativePresentation === this && context.searchString === restart.text &&
++        this.input.inputField.value === restart.text) {
++      this.tipQueryRestart = null;
++      this.cancelImages();
++      this.nativeVisible = []; this.nativeSelected = null;
++      this.input.view.visibleResults = [];
++      active.context = null; active.rows = []; active.results = []; active.resultIndexes = [];
++      active.text = active.inputValue = context.searchString; active.done = false;
++      this.autofillResult = null; this.sequence++;
++    }
 +    if (active.context || (active.text !== null && context.searchString !== active.text)) {
 +      this.active = null;
 +      this.revision++;
@@ -4649,6 +4847,8 @@ index 0000000000..d48a9ebc6d
 +        const data = presentation[i];
 +        const result = active.results[active.resultIndexes[i]];
 +        this.loadNativeDetails(active, row, result).catch(console.error);
++        this.loadNativeTipButtons(active, row, result).catch(console.error);
++        this.loadNativeTipDescription(active, row, result).catch(console.error);
 +        if (result.providerName === "UrlbarProviderGlobalActions" && result.payload.dynamicType === "actions") {
 +          row.globalActions = result.payload.actionsResults.slice(0, 16).map((action, index) => {
 +            const item = {id:`${row.id}:action:${index}`, key:action.key, title:""};
@@ -4722,9 +4922,37 @@ index 0000000000..d48a9ebc6d
 +    return result;
 +  }
 +
-+  onQueryResultRemoved(id) {
++  async acknowledgeNativeFeedback(id) {
++    const active = this.active;
++    const index = active?.results?.findIndex(result => result.id === id);
++    const rowIndex = active?.resultIndexes?.indexOf(index);
++    const row = active?.rows[rowIndex];
++    if (!row) return;
++    const document = active.browser.browsingContext.currentWindowGlobal?.innerWindowId;
++    const text = await this.window.document.l10n.formatValue("urlbar-feedback-acknowledgment");
++    if (this.closed || this.active !== active || !active.rows.includes(row) ||
++        active.browser !== this.window.gBrowser.selectedBrowser ||
++        active.page !== active.browser.currentURI.spec || !document ||
++        document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId) return;
++    row.feedback = text.slice(0,1024); this.sequence++;
++  }
++
++  nativeRowsWithAcknowledgments(rows) {
++    return this.dismissalAcknowledgments?.decorate(rows) || rows;
++  }
++
++  onQueryResultRemoved(id, acknowledgeDismissalL10n) {
 +    const active = this.active;
 +    if (!active?.context || !active.results?.some(result => result.id === id)) return;
++    if (acknowledgeDismissalL10n && this.input.view.nativePresentation === this) {
++      if (!this.dismissalAcknowledgments) {
++        const {WinUIDismissalAcknowledgments} = ChromeUtils.importESModule("chrome://browser/content/WinUIDismissalAcknowledgments.sys.mjs");
++        this.dismissalAcknowledgments = new WinUIDismissalAcknowledgments(this);
++      }
++      const index = active.results.findIndex(result => result.id === id);
++      this.dismissalAcknowledgments.add(active.results[index], acknowledgeDismissalL10n,
++        active.resultIndexes.indexOf(index)).catch(console.error);
++    }
 +    // The controller owns removal. Its notification also reaches native rows,
 +    // which have no DOM row for UrlbarView to remove.
 +    active.context.results = active.context.results.filter(result => result.id !== id);
@@ -4744,6 +4972,80 @@ index 0000000000..d48a9ebc6d
 +        this.input.controller.parentController.recordZeroPrefix("exposure");
 +      }
 +    }
++  }
++
++  async loadNativeTipDescription(active, row, result) {
++    if (result.type !== UrlbarShared.RESULT_TYPE.TIP || !result.payload.descriptionLearnMoreTopic) return;
++    const document = active.browser.browsingContext.currentWindowGlobal?.innerWindowId;
++    const helpSignature = JSON.stringify([result.payload.descriptionLearnMoreTopic, result.payload.descriptionL10n]);
++    const help = await this.input.view.prepareNativeTipDescription(result);
++    if (!help || !document || this.closed || this.active !== active || !active.rows.includes(row) ||
++        active.browser !== this.window.gBrowser.selectedBrowser || active.page !== active.browser.currentURI.spec ||
++        document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId ||
++        helpSignature !== JSON.stringify([result.payload.descriptionLearnMoreTopic, result.payload.descriptionL10n])) return;
++    if ([help.before, help.after, help.label].some(value => typeof value !== "string" || value.length > 1024)) return;
++    if ((help.before + help.label + help.after).length > 1024) return;
++    row.helpLink = {...help, id:`${row.id}:help`, document, helpSignature, enabled:true,
++      signature:JSON.stringify(result.payload.buttons)};
++    row.description = help.before + help.label + help.after;
++    this.sequence++;
++  }
++
++  async loadNativeTipButtons(active, row, result) {
++    if (result.type !== UrlbarShared.RESULT_TYPE.TIP) return;
++    const document = active.browser.browsingContext.currentWindowGlobal?.innerWindowId;
++    const elements = await this.input.view.prepareNativeTipButtons(result);
++    if (!elements || !document || this.closed || this.active !== active || !active.rows.includes(row) ||
++        active.browser !== this.window.gBrowser.selectedBrowser || active.page !== active.browser.currentURI.spec ||
++        document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId) return;
++    const menuLabel = result.payload.buttons.some(button => button.menu) ?
++      await this.window.document.l10n.formatValue("urlbar-splitbutton-dropmarker") : "";
++    if (this.active !== active || !active.rows.includes(row) ||
++        document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId) return;
++    row.tipButtons = elements.map((element, index) => ({
++      id: `${row.id}:tip:${index}`, label: (element.textContent || element.getAttribute("aria-label") || "").slice(0,1024),
++      enabled: !element.hidden && !element.hasAttribute("disabled"), element, document,
++      signature: JSON.stringify(result.payload.buttons),
++      menuLabel, menu: !!result.payload.buttons[index].menu, name: result.payload.buttons[index].name,
++    })).filter(button => button.label);
++    for (const [field, message] of [["title", result.payload.titleL10n], ["description", result.payload.descriptionL10n]]) {
++      if (!message || (field === "description" && result.payload.descriptionLearnMoreTopic)) continue;
++      const value = await this.window.document.l10n.formatValue(message.id, message.args);
++      if (this.closed || this.active !== active || !active.rows.includes(row) ||
++          document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId) return;
++      row[field] = value.slice(0,1024);
++    }
++    if (!result.payload.titleL10n) row.title = String(result.payload.text || row.title).slice(0,1024);
++    this.sequence++;
++  }
++
++  activateTipButton(request) {
++    const active = this.active;
++    const row = active?.rows.find(item => item.id === request.id);
++    const button = row?.helpLink?.id === request.actionId ? row.helpLink : row?.tipButtons?.find(item => item.id === request.actionId);
++    if (request.version !== 1 || request.session !== this.sessionId || !button || !button.enabled || this.closed || !this.nativeOpen || this.input.readOnly || this.window.gDialogBox?.isOpen ||
++        this.input.view.nativePresentation !== this || request.revision !== active.revision ||
++        active.browser !== this.window.gBrowser.selectedBrowser || active.page !== active.browser.currentURI.spec ||
++        !button.document || button.document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId ||
++        !this.nativeVisible?.includes(row.id) || this.input.inputField.value !== active.inputValue) return "stale";
++    const index = active.resultIndexes[active.rows.indexOf(row)], result = active.results[index];
++    if (active.context.results[index] !== result || button.signature !== JSON.stringify(result.payload.buttons) || button.element.hidden || button.element.hasAttribute("disabled")) return "stale";
++    if (button.helpSignature && button.helpSignature !== JSON.stringify([result.payload.descriptionLearnMoreTopic, result.payload.descriptionL10n])) return "stale";
++    const intent = request.intent || {};
++    if (Object.keys(intent).some(key => !["ctrlKey","altKey","shiftKey","metaKey"].includes(key)) ||
++        Object.values(intent).some(value => typeof value !== "boolean")) return "stale";
++    // A provider may restart a query with the input carried by its button.
++    // Admit exactly that query while this edit and document remain current.
++    if (button.element.dataset?.input && button.element.dataset?.command) {
++      this.tipQueryRestart = {active, editId:this.editId, document:button.document,
++        text:button.element.dataset.input};
++    }
++    // Retain Firefox's exact button metadata for load requests and provider engagement.
++    row.tipButtons = []; row.helpLink = null;
++    this.input.pickResult({result, element:button.element, browserId:active.browser.browserId,
++      event:new this.window.KeyboardEvent("keydown", {key:"Enter", ...intent})});
++    this.changed();
++    return "activated";
 +  }
 +
 +  async loadNativeDetails(active, row, result) {
@@ -4790,6 +5092,11 @@ index 0000000000..d48a9ebc6d
 +  }
 +
 +  onQueryCancelled(context) {
++    if (this.tipQueryRestart?.active === this.active && this.tipQueryRestart.editId === this.editId &&
++        this.nativeOpen && !this.closed && this.active.browser === this.window.gBrowser.selectedBrowser &&
++        this.active.page === this.active.browser.currentURI.spec &&
++        this.tipQueryRestart.document === this.active.browser.browsingContext.currentWindowGlobal?.innerWindowId &&
++        this.input.view.nativePresentation === this && this.active?.context?.id === context?.id) return;
 +    if (this.active?.context?.id === context?.id) {
 +      this.active = null;
 +      this.revision++;
@@ -4901,6 +5208,8 @@ index 0000000000..d48a9ebc6d
 +  }
 +
 +  activateGlobalAction(request) {
++    if (request.id?.includes(":ack:")) return this.dismissalAcknowledgments?.activate(request) || "stale";
++    if (this.active?.rows.some(row => row.id === request.id && (row.tipButtons || row.helpLink))) return this.activateTipButton(request);
 +    const active=this.active;
 +    if (!active || this.closed || !this.nativeOpen || this.input.view.nativePresentation !== this ||
 +        request.revision !== active.revision || active.browser !== this.window.gBrowser.selectedBrowser ||
@@ -4995,6 +5304,8 @@ index 0000000000..d48a9ebc6d
 +  }
 +
 +  cancel() {
++    this.tipQueryRestart = null;
++    this.dismissalAcknowledgments?.clear();
 +    this.autofillResult = null;
 +    this.contextAdapter?.close();
 +    this.resultMenuAdapter?.close();
@@ -5343,10 +5654,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..b6013717e9
+index 0000000000..5f01e02a3b
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2113 @@
+@@ -0,0 +1,2117 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6083,13 +6394,17 @@ index 0000000000..b6013717e9
 +        id:action.id, resultId:row.id, title:action.title.slice(0,1024), hint:(row.actionHint||"").slice(0,1024),
 +        image:action.image || null,
 +      }))).slice(0,16),
-+      rows: (snapshot?.rows || []).filter(row=>!row.globalActions)
++      rows: session.nativeRowsWithAcknowledgments((snapshot?.rows || []).filter(row=>!row.globalActions))
 +        .slice(0, 100)
 +        .map(row => ({
 +          id: row.id,
 +          enabled: row.enabled !== false,
 +          title: (row.title || row.displayUrl || "Suggestion").slice(0, 1024),
 +          description: (row.description || "").slice(0, 1024),
++          feedback: (row.feedback || "").slice(0,1024),
++          focusButton: !!row.focusButton,
++          ...(row.helpLink ? {helpLink:{id:row.helpLink.id, before:row.helpLink.before, after:row.helpLink.after, label:row.helpLink.label}} : {}),
++          buttons: (row.tipButtons || []).map(({id,label,enabled,menu,menuLabel}) => ({id,label,enabled,menu:!!menu,menuLabel:menuLabel || ""})),
 +          displayUrl: (row.displayUrl || "").slice(0, 1024),
 +          actionLabel: (row.actionLabel || "").slice(0, 1024),
 +          sectionLabel: (row.sectionLabel || "").slice(0, 1024),

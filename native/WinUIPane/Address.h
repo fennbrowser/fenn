@@ -37,7 +37,7 @@ struct NativeAddress {
     Microsoft::UI::Xaml::Controls::TextBox field;
     NativeSearchMode mode;
     NativeAddressContextMenu context, resultMenu;
-    winrt::hstring resultMenuId;
+    winrt::hstring resultMenuId, resultMenuButtonId;
     double clipboardSerial{}, autofillSerial{}, textEpoch{};
     winrt::hstring nextInputType{L"insertReplacementText"}, observedInputType{L"insertReplacementText"};
     PinnedExtensionButtons omnibarLeft, omnibarRight;
@@ -251,6 +251,7 @@ struct NativeAddress {
         if (negotiated.decision == NativeShellCore::Defer || negotiated.decision == NativeShellCore::DropIntent) return;
         auto value = Message(kind);
         value.SetNamedValue(L"resultId", JValue::CreateStringValue(resultMenuId));
+        if (!resultMenuButtonId.empty()) value.SetNamedValue(L"buttonId", JValue::CreateStringValue(resultMenuButtonId));
         value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
         value.SetNamedValue(L"generation", JValue::CreateNumberValue(double(resultMenu.generation)));
         value.SetNamedValue(L"id", JValue::CreateStringValue(command));
@@ -490,6 +491,7 @@ struct NativeAddress {
             if (!row || !suggestions.list.Items().IndexOf(row, index) || index >= suggestions.ids.size()) return;
             e.Handled(true);
             resultMenuId = suggestions.ids[index];
+            resultMenuButtonId = L"";
             resultMenu.anchor = row;
             resultMenu.requested = true;
             resultMenu.atPointer = e.TryGetPosition(row, resultMenu.position);
@@ -499,7 +501,18 @@ struct NativeAddress {
                                             auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
             if (alive.expired()) return;
             using winrt::Windows::System::VirtualKey;
+            if (e.Key() == VirtualKey::Tab && (GetKeyState(VK_SHIFT) & 0x8000)) {
+                auto focused = Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(suggestions.list.XamlRoot());
+                if (auto help = suggestions.FirstHelp(); help && focused == help) {
+                    field.Focus(FocusState::Keyboard); e.Handled(true); return;
+                }
+            }
             if (e.Key() == VirtualKey::Enter) {
+                auto source = e.OriginalSource().try_as<DependencyObject>();
+                while (source && source != suggestions.list) {
+                    if (source.try_as<Button>() || source.try_as<Documents::Hyperlink>()) return; // Let the stock button own Enter.
+                    source = Media::VisualTreeHelper::GetParent(source);
+                }
                 Action(L"activate");
                 e.Handled(true);
             }
@@ -543,6 +556,13 @@ struct NativeAddress {
         header.Children().Append(mode.button);
         header.Children().Append(field);
         header.Children().Append(mode.exit);
+        suggestions.openButtonMenu = [this](auto const& id, auto const& resultId, auto const& anchor) {
+            resultMenuId = resultId; resultMenuButtonId = id;
+            resultMenu.anchor = anchor; resultMenu.requested = true; resultMenu.atPointer = false;
+            ResultContext(L"context-open");
+        };
+        suggestions.focusField = [this] { field.Focus(FocusState::Keyboard); };
+        suggestions.activateButton = [this](auto const& id, auto const& resultId) { TryGlobalAction(id, resultId); };
         actions.activate = [this](winrt::hstring const& id, winrt::hstring const& resultId) {
             TryGlobalAction(id, resultId);
         };
@@ -554,9 +574,15 @@ struct NativeAddress {
         field.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](
                                  auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
             if (!alive.expired() && !composing && e.Key() == winrt::Windows::System::VirtualKey::Tab &&
-                !(GetKeyState(VK_SHIFT) & 0x8000) && !actions.visuals.empty()) {
-                actions.visuals.front().button.Focus(FocusState::Keyboard);
-                e.Handled(true);
+                !(GetKeyState(VK_SHIFT) & 0x8000)) {
+                if (popup && popup.IsOpen()) {
+                    if (suggestions.FocusFirstAction()) {
+                        e.Handled(true); return;
+                    }
+                }
+                if (!actions.visuals.empty()) {
+                    actions.visuals.front().button.Focus(FocusState::Keyboard); e.Handled(true);
+                }
             }
         });
         root.Children().Append(header);
@@ -861,9 +887,28 @@ struct NativeAddress {
             if (id.empty() || id.size() > NativeJson::kMaxOpaqueId || !checkedIds.insert(id).second ||
                 row.GetNamedString(L"title").size() > 4096 ||
                 row.GetNamedString(L"description", L"").size() > 1024 ||
+                row.GetNamedString(L"feedback", L"").size() > 1024 ||
                 row.GetNamedString(L"displayUrl", L"").size() > 1024 ||
                 row.GetNamedString(L"actionLabel", L"").size() > NativeJson::kMaxShortLabel)
                 winrt::throw_hresult(E_INVALIDARG);
+            if (row.HasKey(L"helpLink")) {
+                auto help = row.GetNamedObject(L"helpLink");
+                NativeJson::RequireLength(help.GetNamedString(L"id"), NativeJson::kMaxOpaqueId);
+                for (auto key : {L"before", L"label", L"after"}) NativeJson::RequireLength(help.GetNamedString(key), 1024);
+            }
+            row.GetNamedBoolean(L"focusButton", false);
+            auto buttons = row.GetNamedArray(L"buttons", JsonArray());
+            if (buttons.Size() > 8) winrt::throw_hresult(E_INVALIDARG);
+            std::set<winrt::hstring> buttonIds;
+            for (auto item : buttons) {
+                auto button = item.GetObject(); auto id = button.GetNamedString(L"id");
+                NativeJson::RequireLength(id, NativeJson::kMaxOpaqueId);
+                NativeJson::RequireLength(button.GetNamedString(L"label"), 1024);
+                if (id.empty() || !buttonIds.insert(id).second) winrt::throw_hresult(E_INVALIDARG);
+                button.GetNamedBoolean(L"enabled");
+                button.GetNamedBoolean(L"menu", false);
+                NativeJson::RequireLength(button.GetNamedString(L"menuLabel", L""), 1024);
+            }
             const auto size = row.GetNamedNumber(L"imageSize", 16);
             if (size < 16 || size > 52 || row.GetNamedString(L"sectionLabel", L"").size() > NativeJson::kMaxShortLabel)
                 winrt::throw_hresult(E_INVALIDARG);
@@ -1035,6 +1080,7 @@ struct NativeAddress {
         if (snapshot.HasKey(L"resultMenu") && snapshot.GetNamedObject(L"resultMenu").GetNamedString(L"resultId") != resultMenuId)
             resultMenu.Reset();
         else resultMenu.Sync(snapshot, shell.AddressState().edit_id, focusWithin, field);
+        if (focusWithin && (!popup || popup.IsOpen())) suggestions.FocusPending();
         mode.ShowPendingReveal();
         // The deferred commit's precondition is satisfied by a publication, so
         // this is where it is re-offered. Action() queues it if the policy now
