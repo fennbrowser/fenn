@@ -32,9 +32,9 @@ def main():
     print(f"Evidence: {directory}", flush=True)
     with (directory / "process.log").open("wb") as log:
         process = subprocess.Popen([str(args.exe.resolve()), "--no-remote", "--profile", str(profile),
-                                    "--marionette", "--remote-allow-system-access", "about:blank"],
+                                    "--marionette", "about:blank"],
                                    stdout=log, stderr=subprocess.STDOUT,
-                                   env=dict(os.environ, FIREFOX_WINUI_PANE_DIAGNOSTICS="1"))
+                                   env=dict(os.environ, MOZ_REMOTE_ALLOW_SYSTEM_ACCESS="1", FIREFOX_WINUI_PANE_DIAGNOSTICS="1"))
         client = None
         try:
             client = bridge.Marionette(port, process)

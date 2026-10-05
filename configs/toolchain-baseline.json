@@ -3,9 +3,9 @@
   "windows": { "displayVersion": "25H2", "build": "26200.9445", "architecture": "x64" },
   "firefox": {
     "repository": "https://github.com/mozilla-firefox/firefox.git",
-    "commit": "eb8ceeebe16204dabfc82bd9673a09e3db4d0217",
+    "commit": "0b3661d556f0fd926ae1829f7e7091542c65e189",
     "version": "159.0a1",
-    "rebasedOn": "2026-09-27",
+    "rebasedOn": "2026-10-05",
     "cloneDepth": 1,
     "buildJobs": 8,
     "debugSymbols": false

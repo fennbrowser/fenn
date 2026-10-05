@@ -280,6 +280,9 @@ struct SuggestionList {
             visual.symbol.Symbol(symbol == L"search"    ? Symbol::Find
                                  : symbol == L"history" ? Symbol::Clock
                                  : symbol == L"copy"    ? Symbol::Copy
+                                 : symbol == L"bookmarks" ? Symbol::Favorite
+                                 : symbol == L"tabs"      ? Symbol::BrowsePhotos
+                                 : symbol == L"actions"   ? Symbol::AllApps
                                                         : Symbol::Document);
             const bool hasImage = row.HasKey(L"image") && row.GetNamedValue(L"image").ValueType() !=
                                                               winrt::Windows::Data::Json::JsonValueType::Null;

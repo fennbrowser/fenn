@@ -1,17 +1,3 @@
-diff --git a/browser/app/Makefile.in b/browser/app/Makefile.in
-index ad923a202d..856ca45387 100644
---- a/browser/app/Makefile.in
-+++ b/browser/app/Makefile.in
-@@ -22,3 +22,9 @@ PROGRAMS_DEST = $(DIST)/bin
- objdir = $(topobjdir)/browser/app
- 
- include $(topsrcdir)/config/rules.mk
-+
-+ifeq ($(OS_ARCH),WINNT)
-+# Manifest-only edits do not change the generated .rc text. Recompile the
-+# resource explicitly so incremental builds embed updated activation metadata.
-+$(MOZ_APP_NAME)$(BIN_SUFFIX).res: $(srcdir)/firefox.exe.manifest
-+endif
 diff --git a/browser/app/firefox.exe.manifest b/browser/app/firefox.exe.manifest
 index 995b2fc869..7add43e3b2 100644
 --- a/browser/app/firefox.exe.manifest
@@ -868,10 +854,10 @@ index 995b2fc869..7add43e3b2 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 47a26fd814..5fec4b8b91 100644
+index 7dddef4e8c..94cfe066e0 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3831,6 +3831,35 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3872,6 +3872,35 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -1049,10 +1035,10 @@ index fb77346559..d186d417cc 100644
      // Insert Fluent files when needed before notification is opened
      MozXULElement.insertFTLIfNeeded("branding/brand.ftl");
 diff --git a/browser/components/tabbrowser/Tabbrowser.sys.mjs b/browser/components/tabbrowser/Tabbrowser.sys.mjs
-index 241875edde..b6df17d82c 100644
+index 93213001f0..e4ba249cc5 100644
 --- a/browser/components/tabbrowser/Tabbrowser.sys.mjs
 +++ b/browser/components/tabbrowser/Tabbrowser.sys.mjs
-@@ -4123,7 +4123,7 @@ export class Tabbrowser {
+@@ -4168,7 +4168,7 @@ export class Tabbrowser {
        anchorElement?.localName === "toolbarbutton" &&
        anchorElement?.parentElement?.localName === "split-view-footer";
      menu.setAttribute("data-trigger-source", isFromFooter ? "footer" : "icon");
@@ -1061,8 +1047,21 @@ index 241875edde..b6df17d82c 100644
    }
  
    /**
+@@ -6545,6 +6545,12 @@ export class Tabbrowser {
+     return true;
+   }
+ 
++  // Native controls must observe Firefox's pending confirmation state without
++  // maintaining a second copy or bypassing the original unload controller.
++  isTabPendingPermitUnload(aTab) {
++    return Tabbrowser.#tabsPendingPermitUnload.has(aTab);
++  }
++
+   static #hasBeforeUnload(aTab) {
+     let browser = aTab.linkedBrowser;
+     if (browser.isRemoteBrowser && browser.frameLoader) {
 diff --git a/browser/components/tabbrowser/content/tab-context-menu.js b/browser/components/tabbrowser/content/tab-context-menu.js
-index be3252ae5f..6835234e04 100644
+index be3252ae5f..2fed4aa835 100644
 --- a/browser/components/tabbrowser/content/tab-context-menu.js
 +++ b/browser/components/tabbrowser/content/tab-context-menu.js
 @@ -5,6 +5,119 @@
@@ -1086,7 +1085,7 @@ index be3252ae5f..6835234e04 100644
 +    const multi = tab.multiselected;
 +    const count = tabs.length;
 +    const valid = !gDialogBox.isOpen && tabs.every(t => t.isConnected && !t.closing && !t.hidden &&
-+      !t._pendingPermitUnload && t.linkedBrowser);
++      !gBrowser.isTabPendingPermitUnload(t) && t.linkedBrowser);
 +    if (!count || tabs.some(t => !t.linkedBrowser)) return [];
 +    const command = (id, resource, enabled = true, tabCount = count) =>
 +      ({ kind: "command", id, resource, enabled: valid && enabled, tabCount });
@@ -1329,10 +1328,10 @@ index 1902d2d408..b8abe05e5f 100644
          gBrowser.openTabs.length == this.activeGroup?.tabs.length;
        let linkCount = this.#getGroupLinks(this.activeGroup).length;
 diff --git a/browser/components/tabbrowser/content/tabgroup.mjs b/browser/components/tabbrowser/content/tabgroup.mjs
-index 282fdbdf2e..131c08fc8d 100644
+index 3d25b8afa3..39c7484036 100644
 --- a/browser/components/tabbrowser/content/tabgroup.mjs
 +++ b/browser/components/tabbrowser/content/tabgroup.mjs
-@@ -720,22 +720,26 @@ export class MozTabbrowserTabGroup extends MozXULElement {
+@@ -728,22 +728,26 @@ export class MozTabbrowserTabGroup extends MozXULElement {
    }
  
    /**
@@ -1386,10 +1385,10 @@ index d9d7f9dd83..d262035073 100644
      let action = lazy.ActionsProviderQuickActions.getAction(result.payload.key);
      let isInactive = this.#isActionInactive(action);
 diff --git a/browser/components/urlbar/content/SearchModeSwitcher.mjs b/browser/components/urlbar/content/SearchModeSwitcher.mjs
-index 48be82749b..548f018330 100644
+index 30f5aa6556..33f65b5997 100644
 --- a/browser/components/urlbar/content/SearchModeSwitcher.mjs
 +++ b/browser/components/urlbar/content/SearchModeSwitcher.mjs
-@@ -167,6 +167,89 @@ export class SearchModeSwitcher {
+@@ -173,6 +173,89 @@ export class SearchModeSwitcher {
      );
    }
  
@@ -1479,7 +1478,7 @@ index 48be82749b..548f018330 100644
    async #onPopupShowing() {
      // Discard event to avoid recording an abandonment.
      this.#input.controller.engagementEvent.discard();
-@@ -989,9 +1072,10 @@ export class SearchModeSwitcher {
+@@ -995,9 +1078,10 @@ export class SearchModeSwitcher {
     * @param {string} restrict
     *   The restrict token
     */
@@ -1491,7 +1490,7 @@ index 48be82749b..548f018330 100644
      });
  
      if (this.#input.sapName == "urlbar") {
-@@ -1008,7 +1092,7 @@ export class SearchModeSwitcher {
+@@ -1014,7 +1098,7 @@ export class SearchModeSwitcher {
     * @param {KeyboardEvent|MouseEvent} event
     *   The event that triggered the search.
     */
@@ -1500,7 +1499,7 @@ index 48be82749b..548f018330 100644
      let whereToOpenSerp = this.#whereToOpenSerp(event);
      let searchString = this.#getSearchString();
      if (!event.shiftKey && whereToOpenSerp == "current") {
-@@ -1017,6 +1101,7 @@ export class SearchModeSwitcher {
+@@ -1023,6 +1107,7 @@ export class SearchModeSwitcher {
        this.#input.search(searchString, {
          searchEngine,
          searchModeEntry: "searchbutton",
@@ -1508,7 +1507,7 @@ index 48be82749b..548f018330 100644
        });
      } else {
        // Go directly to SERP.
-@@ -1162,12 +1247,14 @@ export class SearchModeSwitcher {
+@@ -1168,12 +1253,14 @@ export class SearchModeSwitcher {
     * @param {OpenSearchData} engine
     *   The engine to install.
     */
@@ -1524,7 +1523,7 @@ index 48be82749b..548f018330 100644
        });
  
        this.#input.controller.engineStore.removeObserver(observer);
-@@ -1177,10 +1264,12 @@ export class SearchModeSwitcher {
+@@ -1183,10 +1270,12 @@ export class SearchModeSwitcher {
        Glean.urlbarUnifiedsearchbutton.picked.addon_search.add(1);
      }
  
@@ -1539,10 +1538,10 @@ index 48be82749b..548f018330 100644
    }
  }
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index 7e3a12b42c..346a3b2e57 100644
+index 01a22f6fe1..12e379d531 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
-@@ -1713,7 +1713,15 @@ ${
+@@ -1720,7 +1720,15 @@ ${
     *   Defaults to the parent resolving the selected browser at load time.
     */
    // eslint-disable-next-line complexity
@@ -1559,7 +1558,7 @@ index 7e3a12b42c..346a3b2e57 100644
      if (element?.classList.contains("urlbarView-button-menu")) {
        this.view.openResultMenu(result, element);
        return;
-@@ -2090,6 +2098,7 @@ ${
+@@ -2097,6 +2105,7 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -1567,7 +1566,7 @@ index 7e3a12b42c..346a3b2e57 100644
              searchMode,
              searchString: this._lastSearchString,
              selType: this.view.telemetryTypeFromElement(result, element),
-@@ -2470,6 +2479,7 @@ ${
+@@ -2477,6 +2486,7 @@ ${
        })
      ) {
        // Search mode restarts the query, so these results are obsolete.
@@ -1575,7 +1574,7 @@ index 7e3a12b42c..346a3b2e57 100644
        this.controller.discardResults(queryContext);
        return;
      }
-@@ -3236,6 +3246,7 @@ ${
+@@ -3243,6 +3253,7 @@ ${
      result = this._resultForCurrentValue,
      checkValue = true,
      startQuery = true,
@@ -1583,7 +1582,7 @@ index 7e3a12b42c..346a3b2e57 100644
    }) {
      if (
        !result ||
-@@ -3246,12 +3257,12 @@ ${
+@@ -3253,12 +3264,12 @@ ${
        return false;
      }
  
@@ -1598,7 +1597,7 @@ index 7e3a12b42c..346a3b2e57 100644
        // Closing the view discards a previewed search mode, so the mode has to
        // be confirmed before the query below gets a chance to run.
        searchMode.isPreview = false;
-@@ -3261,13 +3272,13 @@ ${
+@@ -3268,13 +3279,13 @@ ${
      let value = result.payload.query?.trimStart() || "";
      this.setValue(value);
  
@@ -1614,7 +1613,7 @@ index 7e3a12b42c..346a3b2e57 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -4470,7 +4481,7 @@ ${
+@@ -4477,7 +4488,7 @@ ${
        return;
      }
      let controller =
@@ -1623,7 +1622,7 @@ index 7e3a12b42c..346a3b2e57 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4501,8 +4512,13 @@ ${
+@@ -4508,8 +4519,13 @@ ${
          pasteAndGo.addEventListener("command", () => {
            this._suppressStartQuery = true;
  
@@ -1639,7 +1638,7 @@ index 7e3a12b42c..346a3b2e57 100644
            this.setResultForCurrentValue(null);
            this.handleCommand();
            this.parentController.clearLastQueryContextCache();
-@@ -4537,7 +4553,7 @@ ${
+@@ -4544,7 +4560,7 @@ ${
          );
  
          let controller =
@@ -1648,7 +1647,7 @@ index 7e3a12b42c..346a3b2e57 100644
          let enabled = controller.isCommandEnabled("cmd_paste");
          if (enabled) {
            pasteAndGo.removeAttribute("disabled");
-@@ -4738,12 +4754,13 @@ ${
+@@ -4745,12 +4761,13 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -1664,7 +1663,7 @@ index 7e3a12b42c..346a3b2e57 100644
      ) {
        return null;
      }
-@@ -4758,8 +4775,8 @@ ${
+@@ -4765,8 +4782,8 @@ ${
          result.payload.engine == result.payload.originalEngine)
      ) {
        searchMode = { engineName: result.payload.engine };
@@ -1675,7 +1674,7 @@ index 7e3a12b42c..346a3b2e57 100644
      }
  
      if (searchMode) {
-@@ -5468,6 +5485,57 @@ ${
+@@ -5475,6 +5492,57 @@ ${
      }
    }
  
@@ -1733,7 +1732,7 @@ index 7e3a12b42c..346a3b2e57 100644
    _on_input(event) {
      // A new input starts a fresh search; bump the epoch so a pending
      // deferred-Enter's async keyup won't reset this search's caret.
-@@ -5496,17 +5564,7 @@ ${
+@@ -5503,17 +5571,7 @@ ${
      }
  
      let value = this.value;
@@ -1752,7 +1751,7 @@ index 7e3a12b42c..346a3b2e57 100644
  
      let compositionState = this.#compositionState;
      let compositionClosedPopup = this.#compositionClosedPopup;
-@@ -5521,27 +5579,7 @@ ${
+@@ -5528,27 +5586,7 @@ ${
        this.#compositionHadText = true;
      }
  
@@ -1795,10 +1794,10 @@ index 9596698cf9..b95f43a4b3 100644
  
      return {
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 5a562d6385..4200c809d9 100644
+index ff1c607e68..2bbf5a5afb 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
-@@ -84,6 +84,7 @@ export class UrlbarView {
+@@ -85,6 +85,7 @@ export class UrlbarView {
    }
  
    get oneOffSearchButtons() {
@@ -1806,7 +1805,7 @@ index 5a562d6385..4200c809d9 100644
      if (this.input.sapName != "urlbar") {
        return null;
      }
-@@ -139,7 +140,46 @@ export class UrlbarView {
+@@ -140,7 +141,54 @@ export class UrlbarView {
     *
     * @returns {boolean}
     */
@@ -1821,6 +1820,14 @@ index 5a562d6385..4200c809d9 100644
 +      span += UrlbarShared.getSpanForResult(result);
 +      return span <= context.maxResults;
 +    });
++  }
++
++  async prepareNativeSearchModeTitle(result) {
++    if (!result.payload.providesSearchMode) return "";
++    const title = this.document.createElementNS("http://www.w3.org/1999/xhtml", "span");
++    this.#setResultTitle(result, title);
++    await this.document.l10n.translateElements([title]);
++    return title.textContent;
 +  }
 +
 +  nativeResultPresentation(results) {
@@ -1853,7 +1860,7 @@ index 5a562d6385..4200c809d9 100644
      return this.input.hasAttribute("open");
    }
  
-@@ -212,6 +252,8 @@ export class UrlbarView {
+@@ -213,6 +261,8 @@ export class UrlbarView {
     *   The currently selected result.
     */
    get selectedResult() {
@@ -1862,7 +1869,7 @@ index 5a562d6385..4200c809d9 100644
      if (!this.isOpen) {
        return null;
      }
-@@ -224,6 +266,7 @@ export class UrlbarView {
+@@ -225,6 +275,7 @@ export class UrlbarView {
     *   The currently selected element.
     */
    get selectedElement() {
@@ -1870,7 +1877,7 @@ index 5a562d6385..4200c809d9 100644
      if (!this.isOpen) {
        return null;
      }
-@@ -302,6 +345,7 @@ export class UrlbarView {
+@@ -303,6 +354,7 @@ export class UrlbarView {
     */
    telemetryTypeFromElement(result, element) {
      if (!element) {
@@ -1878,7 +1885,15 @@ index 5a562d6385..4200c809d9 100644
        return "none";
      }
      if (
-@@ -580,6 +624,7 @@ export class UrlbarView {
+@@ -447,6 +499,7 @@ export class UrlbarView {
+    * @returns {boolean} True if the given result is selected.
+    */
+   resultIsSelected(result) {
++    if (this.nativePresentation) return this.isOpen && this.nativePresentation.nativeSelected === result;
+     if (this.selectedRowIndex < 0) {
+       return false;
+     }
+@@ -581,6 +634,7 @@ export class UrlbarView {
     * @param {number} resultId
     */
    async acknowledgeFeedback(resultId) {
@@ -1886,7 +1901,7 @@ index 5a562d6385..4200c809d9 100644
      let row = this.#getRowByResultId(resultId);
      if (!row) {
        return;
-@@ -623,7 +668,17 @@ export class UrlbarView {
+@@ -624,7 +678,17 @@ export class UrlbarView {
      this.#setRowSelectable(row, false);
  
      // Replace the row with a dismissal acknowledgment tip.
@@ -1905,7 +1920,7 @@ index 5a562d6385..4200c809d9 100644
        type: UrlbarShared.RESULT_TYPE.TIP,
        source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
        payload: {
-@@ -632,19 +687,10 @@ export class UrlbarView {
+@@ -633,19 +697,10 @@ export class UrlbarView {
          buttons: [{ l10n: { id: "urlbar-search-tips-confirm-short" } }],
          icon: "chrome://branding/content/icon32.png",
        },
@@ -1926,7 +1941,7 @@ index 5a562d6385..4200c809d9 100644
    }
  
    removeAccessibleFocus() {
-@@ -669,6 +715,10 @@ export class UrlbarView {
+@@ -670,6 +725,10 @@ export class UrlbarView {
     *   True if the Urlbar focus border should be shown after the view is closed.
     */
    close({ elementPicked = false, showFocusBorder = true } = {}) {
@@ -1937,7 +1952,7 @@ index 5a562d6385..4200c809d9 100644
      const isShowingZeroPrefix =
        this.#queryContext && !this.#queryContext.searchString;
      this.controller.cancelQuery();
-@@ -919,6 +969,10 @@ export class UrlbarView {
+@@ -920,6 +979,10 @@ export class UrlbarView {
  
    // UrlbarChildController listener methods.
    onQueryStarted(queryContext) {
@@ -1948,7 +1963,7 @@ index 5a562d6385..4200c809d9 100644
      this.#queryWasCancelled = false;
      this.#queryUpdatedResults = false;
      this.#openPanelInstance = null;
-@@ -941,6 +995,7 @@ export class UrlbarView {
+@@ -942,6 +1005,7 @@ export class UrlbarView {
    }
  
    onQueryFinished(queryContext) {
@@ -1956,7 +1971,7 @@ index 5a562d6385..4200c809d9 100644
      this.#cancelRemoveStaleRowsTimer();
      if (this.#queryWasCancelled) {
        return;
-@@ -993,6 +1048,7 @@ export class UrlbarView {
+@@ -994,6 +1058,7 @@ export class UrlbarView {
    onQueryResults(queryContext) {
      this.queryContextCache.put(queryContext);
      this.#queryContext = queryContext;
@@ -1964,7 +1979,7 @@ index 5a562d6385..4200c809d9 100644
  
      if (!this.isOpen) {
        this.clear();
-@@ -1127,6 +1183,10 @@ export class UrlbarView {
+@@ -1128,6 +1193,10 @@ export class UrlbarView {
     *   it. Undefined when the row is removed without acknowledgment.
     */
    onQueryResultRemoved(id, acknowledgeDismissalL10n) {
@@ -1975,7 +1990,7 @@ index 5a562d6385..4200c809d9 100644
      let removedIndex = -1;
      let rowToRemove = null;
      for (let i = 0; i < this.#rows.children.length; i++) {
-@@ -1170,6 +1230,67 @@ export class UrlbarView {
+@@ -1171,6 +1240,67 @@ export class UrlbarView {
      }
    }
  
@@ -2043,7 +2058,7 @@ index 5a562d6385..4200c809d9 100644
    openResultMenu(result, anchor) {
      this.#resultMenuResult = result;
      let event = new CustomEvent("ResultMenuTriggered", {
-@@ -1191,6 +1312,11 @@ export class UrlbarView {
+@@ -1192,6 +1322,11 @@ export class UrlbarView {
     *   The UrlbarResult's new menu commands.
     */
    updateResultMenuCommands(resultId, commands) {
@@ -2055,7 +2070,7 @@ index 5a562d6385..4200c809d9 100644
      let row = this.#getRowByResultId(resultId);
      if (!row) {
        return;
-@@ -2774,7 +2900,7 @@ export class UrlbarView {
+@@ -2775,7 +2910,7 @@ export class UrlbarView {
      }
    }
  
@@ -2064,7 +2079,7 @@ index 5a562d6385..4200c809d9 100644
      if (
        result.source == UrlbarShared.RESULT_SOURCE.HISTORY &&
        (result.type == UrlbarShared.RESULT_TYPE.SEARCH ||
-@@ -2791,6 +2917,7 @@ export class UrlbarView {
+@@ -2792,6 +2927,7 @@ export class UrlbarView {
        return result.payload.icon;
      }
      if (result.payload.iconBlob) {
@@ -2073,10 +2088,10 @@ index 5a562d6385..4200c809d9 100644
        if (blobUrl) {
          return blobUrl;
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index c59e443d11..b3228392bc 100644
+index 4f28e62c7b..f7c54ccacc 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -523,3 +523,19 @@ split-view-menuitem-close-both-tabs =
+@@ -518,3 +518,19 @@ split-view-menuitem-close-both-tabs =
      .label = Close Both Tabs
  
  ##
@@ -2349,7 +2364,7 @@ index f529d1136f..20668aa91f 100644
  
    _ensurePopup() {
 diff --git a/toolkit/modules/PopupNotifications.sys.mjs b/toolkit/modules/PopupNotifications.sys.mjs
-index 49ccea6285..0362ff9ad3 100644
+index 38490ae2ab..ddfc21ae36 100644
 --- a/toolkit/modules/PopupNotifications.sys.mjs
 +++ b/toolkit/modules/PopupNotifications.sys.mjs
 @@ -1467,9 +1467,9 @@ PopupNotifications.prototype = {
@@ -2832,7 +2847,7 @@ index d4aff8c47e..a34a1a2dfc 100644
              IMEHandler::ProcessRawKeyMessage(msg)) {
            continue;  // the message is consumed.
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index c3f2902636..c5930c560c 100644
+index ee075a9625..b7c5554adb 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -53,7 +53,6 @@
@@ -2851,7 +2866,7 @@ index c3f2902636..c5930c560c 100644
  #include "WinWindowOcclusionTracker.h"
  #include "gfx2DGlue.h"
  #include "gfxConfig.h"
-@@ -1262,6 +1262,51 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+@@ -1263,6 +1263,51 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
    return NS_OK;
  }
  
@@ -2903,7 +2918,7 @@ index c3f2902636..c5930c560c 100644
  void nsWindow::LocalesChanged() {
    bool isRTL = intl::LocaleService::GetInstance()->IsAppLocaleRTL();
    if (mIsRTL != isRTL) {
-@@ -1286,6 +1331,7 @@ void nsWindow::Destroy() {
+@@ -1287,6 +1332,7 @@ void nsWindow::Destroy() {
    // deleted.
    nsCOMPtr<nsIWidget> kungFuDeathGrip(this);
  
@@ -2911,7 +2926,7 @@ index c3f2902636..c5930c560c 100644
    DestroyDirectManipulation();
  
    // Before destroying the native window, we need to clean up the resource
-@@ -5640,7 +5686,8 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5641,7 +5687,8 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
          mDraggingWindowWithMouse = true;
        }
  
@@ -2921,7 +2936,7 @@ index c3f2902636..c5930c560c 100644
          DispatchMouseEvent(eMouseDown, wParamFromGlobalMouseState(),
                             lParamToClient(lParam), false, MouseButton::ePrimary,
                             MOUSE_INPUT_SOURCE(), nullptr, IsNonclient::Yes);
-@@ -5651,7 +5698,9 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5652,7 +5699,9 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
      }
  
      case WM_NCLBUTTONUP: {
@@ -2932,7 +2947,7 @@ index c3f2902636..c5930c560c 100644
          result = DispatchMouseEvent(eMouseUp, wParamFromGlobalMouseState(),
                                      lParamToClient(lParam), false,
                                      MouseButton::ePrimary, MOUSE_INPUT_SOURCE(),
-@@ -6944,6 +6993,7 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+@@ -6947,6 +6996,7 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
  
  // WM_DESTROY event handler
  void nsWindow::OnDestroy() {
@@ -2968,6 +2983,23 @@ index 1e2660589b..85227d8e69 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/app/Makefile.in b/browser/app/Makefile.in
+new file mode 100644
+index 0000000000..5af03d4b24
+--- /dev/null
++++ b/browser/app/Makefile.in
+@@ -0,0 +1,11 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++include $(topsrcdir)/config/rules.mk
++
++ifeq ($(OS_ARCH),WINNT)
++# Manifest-only edits do not change the generated .rc text. Recompile the
++# resource explicitly so incremental builds embed updated activation metadata.
++$(MOZ_APP_NAME)$(BIN_SUFFIX).res: $(srcdir)/firefox.exe.manifest
++endif
 diff --git a/browser/base/content/WinUIDismissalAcknowledgments.sys.mjs b/browser/base/content/WinUIDismissalAcknowledgments.sys.mjs
 new file mode 100644
 index 0000000000..36d8ac8e91
@@ -3062,10 +3094,10 @@ index 0000000000..36d8ac8e91
 +}
 diff --git a/browser/base/content/WinUIResultContextMenu.sys.mjs b/browser/base/content/WinUIResultContextMenu.sys.mjs
 new file mode 100644
-index 0000000000..a2fa7eabf7
+index 0000000000..22dbfe9aaf
 --- /dev/null
 +++ b/browser/base/content/WinUIResultContextMenu.sys.mjs
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,101 @@
 +// Firefox owns result-menu commands; native receives only scoped opaque IDs.
 +export class WinUIResultContextMenu {
 +  constructor(session) { this.session = session; this.generation = 0; }
@@ -3121,6 +3153,7 @@ index 0000000000..a2fa7eabf7
 +        const child=node.querySelector('panel-list');
 +        const label=(child ? node.querySelector('span')?.textContent : node.textContent) || '';
 +        const item={id,label:label.trim().slice(0,4096),enabled:!node.disabled,
++          checkable:node.type === 'checkbox', checked:node.checked === true,
 +          accessKey:(node.getAttribute('accesskey') || '').slice(0,16)};
 +        if(child) item.children=read(child,depth+1);
 +        return item;
@@ -4047,10 +4080,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..358b2fcc82
+index 0000000000..f29313fd7e
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1336 @@
+@@ -0,0 +1,1407 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4240,6 +4273,13 @@ index 0000000000..358b2fcc82
 +
 +  suspendNativePresentation() {
 +    if (this.input.view.nativePresentation !== this) return;
++    // Match UrlbarView.close: a dismissed row no longer previews a mode.
++    if (this.input.searchMode?.isPreview) {
++      this.input.searchMode = null;
++      this.input.userTypedValue = null;
++      this.nativeSelected = null;
++      this.modeQueryRestart = null;
++    }
 +    this.nativeOpen = false;
 +    this.nativeVisible = [];
 +    this.input.view.visibleResults = [];
@@ -4757,7 +4797,7 @@ index 0000000000..358b2fcc82
 +  onQueryStarted(context) {
 +    const active = this.active;
 +    if (!active) return;
-+    const restart = this.tipQueryRestart;
++    const restart = this.tipQueryRestart || this.modeQueryRestart;
 +    if (restart && !this.closed && this.nativeOpen && !this.input.readOnly && !this.window.gDialogBox?.isOpen &&
 +        restart.active === active && restart.editId === this.editId &&
 +        restart.document === active.browser.browsingContext.currentWindowGlobal?.innerWindowId &&
@@ -4765,6 +4805,7 @@ index 0000000000..358b2fcc82
 +        this.input.view.nativePresentation === this && context.searchString === restart.text &&
 +        this.input.inputField.value === restart.text) {
 +      this.tipQueryRestart = null;
++      this.modeQueryRestart = null;
 +      this.cancelImages();
 +      this.nativeVisible = []; this.nativeSelected = null;
 +      this.input.view.visibleResults = [];
@@ -4848,6 +4889,7 @@ index 0000000000..358b2fcc82
 +        const result = active.results[active.resultIndexes[i]];
 +        this.loadNativeDetails(active, row, result).catch(console.error);
 +        this.loadNativeCopyResult(active, row, result).catch(console.error);
++        this.loadNativeModeResult(active, row, result).catch(console.error);
 +        this.loadNativeTipButtons(active, row, result).catch(console.error);
 +        this.loadNativeTipDescription(active, row, result).catch(console.error);
 +        if (result.providerName === "UrlbarProviderGlobalActions" && result.payload.dynamicType === "actions") {
@@ -4881,6 +4923,13 @@ index 0000000000..358b2fcc82
 +        if (this.nativeCopyProvider(result)) {
 +          data.icon = null;
 +          data.symbol = "copy";
++        } else if (this.nativeModeResult(result) && result.type === UrlbarShared.RESULT_TYPE.RESTRICT) {
++          // Local-mode SVGs use context fill, which is lost when rasterized.
++          // Use the same themed symbols as the native search-mode selector.
++          data.icon = null;
++          const tokens = UrlbarShared.RESTRICT_TOKENS;
++          data.symbol = {[tokens.BOOKMARK]:"bookmarks", [tokens.OPENPAGE]:"tabs",
++            [tokens.HISTORY]:"history", [tokens.ACTION]:"actions"}[result.payload.keyword] || "search";
 +        }
 +        row.imageSize = data.size;
 +        row.symbol = data.symbol;
@@ -5097,10 +5146,11 @@ index 0000000000..358b2fcc82
 +  }
 +
 +  onQueryCancelled(context) {
-+    if (this.tipQueryRestart?.active === this.active && this.tipQueryRestart.editId === this.editId &&
++    const restart = this.tipQueryRestart || this.modeQueryRestart;
++    if (restart?.active === this.active && restart.editId === this.editId &&
 +        this.nativeOpen && !this.closed && this.active.browser === this.window.gBrowser.selectedBrowser &&
 +        this.active.page === this.active.browser.currentURI.spec &&
-+        this.tipQueryRestart.document === this.active.browser.browsingContext.currentWindowGlobal?.innerWindowId &&
++        restart.document === this.active.browser.browsingContext.currentWindowGlobal?.innerWindowId &&
 +        this.input.view.nativePresentation === this && this.active?.context?.id === context?.id) return;
 +    if (this.active?.context?.id === context?.id) {
 +      this.active = null;
@@ -5177,7 +5227,17 @@ index 0000000000..358b2fcc82
 +        !this.canActivate(result)
 +      )
 +        return { status: "firefox-fallback" };
++      if (this.nativeModeResult(result)) {
++        if (!active.rows[rowIndex].modeDocument || active.rows[rowIndex].modeDocument !==
++            active.browser.browsingContext.currentWindowGlobal?.innerWindowId) return {status:"stale"};
++        this.prepareNativeModeRestart(active, result);
++      } else {
++        this.modeQueryRestart = null;
++      }
 +      this.input.controller.parentController.onBeforeSelection(result, null);
++      // Match UrlbarView: selection is visible to setValueFromResult so Firefox
++      // can preview the engine/local mode instead of treating it as plain text.
++      this.nativeSelected = result;
 +      this.input.setValueFromResult({ result, element: null });
 +      this.input.controller.parentController.onSelection(result);
 +      if (this.active !== active) return { status: "stale" };
@@ -5268,6 +5328,34 @@ index 0000000000..358b2fcc82
 +    this.sequence++;
 +  }
 +
++  nativeModeResult(result) {
++    return result.payload.providesSearchMode === true &&
++      ((result.type === UrlbarShared.RESULT_TYPE.SEARCH && result.providerName === "UrlbarProviderTokenAliasEngines") ||
++       (result.type === UrlbarShared.RESULT_TYPE.RESTRICT &&
++        ["UrlbarProviderRestrictKeywords", "UrlbarProviderRestrictKeywordsAutofill"].includes(result.providerName)));
++  }
++
++  async loadNativeModeResult(active, row, result) {
++    if (!this.nativeModeResult(result)) return;
++    const document = active.browser.browsingContext.currentWindowGlobal?.innerWindowId;
++    const title = await this.input.view.prepareNativeSearchModeTitle(result);
++    if (!document || this.closed || this.active !== active || !active.rows.includes(row) ||
++        active.browser !== this.window.gBrowser.selectedBrowser || active.page !== active.browser.currentURI.spec ||
++        document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId ||
++        typeof title !== "string" || !title || title.length > 1024) return;
++    row.title = title;
++    row.modeDocument = document;
++    this.sequence++;
++  }
++
++  prepareNativeModeRestart(active, result) {
++    // Firefox confirms modes asynchronously, after applying the engine. Admit
++    // only its query for this same edit/document; newer native edits cancel it.
++    this.modeQueryRestart = {active, editId:this.editId,
++      document:active.browser.browsingContext.currentWindowGlobal?.innerWindowId,
++      text:result.payload.query?.trimStart() || ""};
++  }
++
 +  nativeActionPresentation(result) {
 +    if (result.type !== UrlbarShared.RESULT_TYPE.DYNAMIC || result.payload.dynamicType !== "actions" ||
 +        result.providerName !== "UrlbarProviderActionsSearchMode") return null;
@@ -5281,6 +5369,7 @@ index 0000000000..358b2fcc82
 +      (result.type === UrlbarShared.RESULT_TYPE.URL ||
 +        (result.type === UrlbarShared.RESULT_TYPE.TAB_SWITCH &&
 +          !Services.prefs.getBoolPref("browser.urlbar.secondaryActions.switchToTab", false)) ||
++        this.nativeModeResult(result) ||
 +        !!this.nativeCopyProvider(result) ||
 +        this.nativeActionPresentation(result)?.enabled ||
 +        (result.type === UrlbarShared.RESULT_TYPE.SEARCH &&
@@ -5335,6 +5424,20 @@ index 0000000000..358b2fcc82
 +      ...intent,
 +    });
 +    const browserId = active.browser.browserId;
++    if (this.nativeModeResult(result)) {
++      const row = active.rows[rowIndex];
++      if (this.input.readOnly || this.window.gDialogBox?.isOpen || !this.nativeVisible?.includes(id) ||
++          !row.modeDocument || row.modeDocument !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId) return "stale";
++      this.prepareNativeModeRestart(active, result);
++      // Revoke activation immediately while retaining the Firefox query until
++      // its confirmed-mode replacement arrives through onQueryStarted.
++      this.nativeVisible = [];
++      this.input.pickResult({result, event, browserId});
++      if (this.active === active) active.inputValue = this.input.inputField.value;
++      this.modeApplied++;
++      this.sequence++;
++      return "activated";
++    }
 +    // Consume before Firefox can run a nested event loop. Keep the controller's
 +    // query alive for pickResult's engagement and provider handling.
 +    this.active = null;
@@ -5345,6 +5448,7 @@ index 0000000000..358b2fcc82
 +
 +  cancel() {
 +    this.tipQueryRestart = null;
++    this.modeQueryRestart = null;
 +    this.dismissalAcknowledgments?.clear();
 +    this.autofillResult = null;
 +    this.contextAdapter?.close();
@@ -5694,10 +5798,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..b9be74d0cc
+index 0000000000..4c356143b0
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2118 @@
+@@ -0,0 +1,2122 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6114,6 +6218,10 @@ index 0000000000..b9be74d0cc
 +        }
 +      }
 +    }
++    // Native input defers snapshots until its pending request completes,
++    // including rejected requests that do not otherwise mutate Firefox state.
++    if (batch?.requests?.some(request => request.kind === 6 || request.kind === 7))
++      this.addressDirty = true;
 +    // Reflect whatever the executed commands changed, in the same turn.
 +    this.publish();
 +    if (this.optionsRefreshDeferred) {
@@ -6725,7 +6833,7 @@ index 0000000000..b9be74d0cc
 +              sourceStrip.windowDragSession !== sourceSession) return false;
 +          const group = sourceStrip.targets?.get(id);
 +          if (!group?.isConnected || !sourceWindow.gBrowser.tabGroups.includes(group) || !group.tabs.length ||
-+              group.tabs.some(t => t.closing || t._pendingPermitUnload)) return false;
++              group.tabs.some(t => t.closing || sourceWindow.gBrowser.isTabPendingPermitUnload(t))) return false;
 +          const target = beforeGroup || (beforeTab ? this.resolveStripTab(beforeTab) : null);
 +          if ((beforeGroup || beforeTab) && (!target?.isConnected || target.group || target.pinned)) return false;
 +          if (target?.splitview && target.splitview.tabs[0] !== target) return false;
@@ -6992,7 +7100,7 @@ index 0000000000..b9be74d0cc
 +    // Split wrappers and multi-tab gestures retain ordinary drag behavior until
 +    // the native gesture contract can represent their complete moving set.
 +    return !!tab && tab.isConnected && !tab.closing && tab.visible &&
-+      !tab.pinned && !tab.splitview && !tab._pendingPermitUnload &&
++      !tab.pinned && !tab.splitview && !gBrowser.isTabPendingPermitUnload(tab) &&
 +      gBrowser.selectedTabs.length <= 1 &&
 +      Services.prefs.getBoolPref("browser.tabs.groups.enabled", false) &&
 +      (!creating || Services.prefs.getBoolPref("browser.tabs.dragDrop.createGroup.enabled", false));
@@ -7243,7 +7351,7 @@ index 0000000000..b9be74d0cc
 +
 +  describeContainerMenu(tab) {
 +    const enabled = !gDialogBox.isOpen && (!tab || TabContextMenu.getCommandTabs(tab).every(t =>
-+      t.isConnected && !t.closing && !t.hidden && !t._pendingPermitUnload && t.linkedBrowser));
++      t.isConnected && !t.closing && !t.hidden && !gBrowser.isTabPendingPermitUnload(t) && t.linkedBrowser));
 +    const command = (id, label, color = 0) => ({ kind: "command", id, label: label.slice(0, 1024),
 +      accessKey: "", enabled, color });
 +    const label = id => ContextualIdentityService.formatContextLabel(id);
@@ -7347,7 +7455,7 @@ index 0000000000..b9be74d0cc
 +      !tab?.isConnected ||
 +      tab.closing ||
 +      tab.hidden ||
-+      tab._pendingPermitUnload ||
++      gBrowser.isTabPendingPermitUnload(tab) ||
 +      !tab.linkedBrowser
 +    )
 +      return pinned;
@@ -7515,7 +7623,7 @@ index 0000000000..b9be74d0cc
 +    this.structuralDirty = true;
 +    // permitUnload spins a nested event loop. A repeated native request must
 +    // not reenter removeTab and bypass the confirmation already in progress.
-+    if (tab._pendingPermitUnload) return 2;
++    if (gBrowser.isTabPendingPermitUnload(tab)) return 2;
 +    this.processingAction = true;
 +    try {
 +      gBrowser.removeTab(tab, { animate: true });

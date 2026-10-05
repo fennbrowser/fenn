@@ -103,3 +103,15 @@ test('tip dropdown uses only its current Firefox button menu',async()=>{
  result.payload.buttons[0].menu=[];
  assert.equal(f.adapter.execute(action),2);assert.equal(f.invoked,1);
 });
+
+test('result menu preserves Firefox checkbox state and delegates its command',async()=>{
+  const f=fixture();
+  f.item.type='checkbox';f.item.checked=true;
+  f.item.dataset={command:'toggle-keyboard-accessible'};
+  await f.adapter.open(f.request);
+  assert.equal(f.session.resultMenuSnapshot.items[0].checkable,true);
+  assert.equal(f.session.resultMenuSnapshot.items[0].checked,true);
+  assert.equal(f.adapter.execute(f.action()),1);await tick();assert.equal(f.invoked,1);
+  f.item.checked=false;await f.adapter.open(f.request);
+  assert.equal(f.session.resultMenuSnapshot.items[0].checked,false);
+});

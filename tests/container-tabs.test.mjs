@@ -10,6 +10,7 @@ function fixture() {
   const calls = [], state = {enabled: true, private: false};
   const context = {
     window: {addEventListener() {}}, gDialogBox: {isOpen: false}, BROWSER_NEW_TAB_URL: "about:newtab",
+    gBrowser: {isTabPendingPermitUnload: () => false},
     Services: {prefs: {getBoolPref: () => state.enabled}},
     PrivateBrowsingUtils: {isWindowPrivate: () => state.private},
     ContextualIdentityService: {getPublicIdentities: () => identities,

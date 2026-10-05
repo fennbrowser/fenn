@@ -17,7 +17,7 @@ function fixture(requests) {
       completeWinUIRequests: text => completions.push(JSON.parse(text)),
     } },
     gDialogBox: dialog,
-    gBrowser: {removeTab() { throw new Error("controlled Firefox command failure"); }},
+    gBrowser: {isTabPendingPermitUnload: () => false, removeTab() { throw new Error("controlled Firefox command failure"); }},
     Services: { tm: { dispatchToMainThread: callback => posted.push(callback) } },
     console: { error: (...args) => errors.push(args) },
   };
@@ -134,7 +134,7 @@ test("collapsed-member title changes refresh group previews without changing str
 
 test("multiselection republishes grouping eligibility as row deltas without rebuilding layout", () => {
   const tabs = [1, 2].map(() => ({isConnected:true, visible:true, hasAttribute:() => false}));
-  const browser = {tabs, selectedTabs:[tabs[0]], tabGroups:[], getIcon:() => ""};
+  const browser = {isTabPendingPermitUnload: () => false, tabs, selectedTabs:[tabs[0]], tabGroups:[], getIcon:() => ""};
   const context = {
     window:{addEventListener() {}},
     PrivateBrowsingUtils:{isWindowPrivate:() => false},
@@ -343,4 +343,41 @@ test("Alt search reveal publishes even when Firefox availability is already true
   }
   assert.equal(f.pane.addressSession.modeReveal,2);
   assert.equal(invalidations,2);
+});
+
+test("native close rejects Firefox's pending unload state without a tab property", () => {
+  const f = fixture([]), tab = {};
+  let closes = 0;
+  f.pane.resolveStripTab = () => tab;
+  f.context.gBrowser.isTabPendingPermitUnload = value => value === tab;
+  f.context.gBrowser.removeTab = () => closes++;
+  assert.equal(f.pane.executeCloseRequest({tab:9}), 2);
+  assert.equal(closes, 0);
+  f.context.gBrowser.isTabPendingPermitUnload = () => false;
+  assert.equal(f.pane.executeCloseRequest({tab:9}), 1);
+  assert.equal(closes, 1);
+});
+
+
+test("address request completion republishes state skipped while native input was pending", () => {
+  for (const kind of [6, 7, 8]) {
+    for (const outcome of [1, 2]) {
+      const f = fixture([{id: 1, kind, action: {}}]);
+      f.pane.addressDirty = false;
+      f.pane.executeRequest = () => {
+        // A publication during execution can be deferred by native input.
+        f.pane.addressDirty = false;
+        return outcome;
+      };
+      let afterCompletion;
+      f.pane.publish = () => {
+        assert.equal(f.completions.length, 1);
+        afterCompletion = f.pane.addressDirty;
+      };
+      f.pane.drain();
+      assert.equal(afterCompletion, kind !== 8,
+        "editor/mode outcomes must republish; visibility reports must not loop");
+      assert.equal(f.pane.structuralDirty, false);
+    }
+  }
 });

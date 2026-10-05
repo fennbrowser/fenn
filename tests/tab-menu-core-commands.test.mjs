@@ -14,6 +14,8 @@ function fixture() {
   const selectedTabs = [];
   const browser = {
     selectedTabs,
+    pendingUnload: new WeakSet(),
+    isTabPendingPermitUnload(tab) { return this.pendingUnload.has(tab); },
     TabMetrics: {
       METRIC_SOURCE: { TAB_MENU: "tab-menu" },
       userTriggeredContext: source => ({ source }),
@@ -254,10 +256,10 @@ test("core execution rechecks live state and preserves Firefox target operations
   assert.equal(f.menu.executeCoreCommand(f.tabs[1], "r"), true);
   assert.equal(f.calls.at(-1)[0], "reload-selected");
   const count = f.calls.length;
-  f.tabs[0]._pendingPermitUnload = true;
+  f.browser.pendingUnload.add(f.tabs[0]);
   assert.equal(f.menu.executeCoreCommand(f.tabs[1], "close"), false);
   assert.equal(f.calls.length, count);
-  f.tabs[0]._pendingPermitUnload = false;
+  f.browser.pendingUnload.delete(f.tabs[0]);
   assert.equal(f.menu.executeCoreCommand(f.tabs[1], "not-a-command"), false);
   f.tabs[1].isConnected = false;
   assert.equal(f.menu.executeCoreCommand(f.tabs[1], "close"), false);

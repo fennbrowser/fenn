@@ -57,6 +57,7 @@ struct NativeAddress {
     std::set<winrt::hstring> reportedVisible;
     double reportedSequence{-1};
     bool visibilityQueued{}, visibilityLayoutPending{};
+    Microsoft::UI::Xaml::Controls::ScrollViewer::ViewChanged_revoker visibilityScroll;
     bool focusObservationQueued{};
     // Hands an intent to the owning pane's request queue. Its notification
     // only posts host work, so the admitted ID is registered with Rust before
@@ -210,6 +211,13 @@ struct NativeAddress {
         // surface, not about what is staged. Asked before Edit() below, which
         // is where the original guard sat.
         if (Decide(incoming, NativeShellCore::NoIntent) == NativeShellCore::DropIntent) return;
+        if (incoming == NativeShellCore::Select && suggestions.list.SelectedItem()) {
+            // Keyboard selection can arrive before the stock list's deferred
+            // bring-into-view. Finish that layout before publishing the action.
+            suggestions.list.ScrollIntoView(suggestions.list.SelectedItem());
+            suggestions.list.UpdateLayout();
+        }
+        if (incoming == NativeShellCore::Select || incoming == NativeShellCore::Activate) ReportVisibility();
         if (incoming == NativeShellCore::Activate || incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::ContextMenu || incoming == NativeShellCore::Blur) Edit();
         const uint32_t modifiers = ((GetKeyState(VK_CONTROL) & 0x8000) ? 1u : 0u) |
                                    ((GetKeyState(VK_MENU) & 0x8000) ? 2u : 0u) |
@@ -421,11 +429,26 @@ struct NativeAddress {
         root.LostFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (!alive.expired()) ScheduleFocusObservation();
         });
-        // What is on screen changes when the list scrolls, when it is resized,
-        // and when rows are realized. EffectiveViewportChanged is raised for
-        // exactly those, which is what lets the visibility report stop being
-        // sampled on a timer: it fires on the scroll that changed the answer,
-        // immediately, and not otherwise.
+        // The list's own effective viewport stays fixed while its internal
+        // ScrollViewer moves rows. Observe that scroll as well as layout, so
+        // newly revealed rows get exposure/activation IDs without polling.
+        suggestions.list.Loaded([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (alive.expired()) return;
+            visibilityScroll.revoke();
+            auto list = suggestions.list;
+            list.ApplyTemplate();
+            if (!Media::VisualTreeHelper::GetChildrenCount(list)) return;
+            auto templateRoot = Media::VisualTreeHelper::GetChild(list, 0).try_as<FrameworkElement>();
+            auto scroll = templateRoot ? templateRoot.FindName(L"ScrollViewer").try_as<ScrollViewer>() : nullptr;
+            if (scroll) visibilityScroll = scroll.ViewChanged(winrt::auto_revoke,
+                [this, alive](auto const&, auto const&) {
+                    if (!alive.expired()) ScheduleVisibilityReport();
+                });
+            ScheduleVisibilityReport();
+        });
+        suggestions.list.Unloaded([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) visibilityScroll.revoke();
+        });
         suggestions.list.EffectiveViewportChanged(
             [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
                 if (!alive.expired()) ScheduleVisibilityReport();
