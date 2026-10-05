@@ -26,7 +26,7 @@ struct NativeAddress {
     Microsoft::UI::Xaml::Controls::TextBox field;
     NativeSearchMode mode;
     NativeAddressContextMenu context;
-    double clipboardSerial{}, autofillSerial{};
+    double clipboardSerial{}, autofillSerial{}, textEpoch{};
     winrt::hstring nextInputType{L"insertReplacementText"}, observedInputType{L"insertReplacementText"};
     PinnedExtensionButtons omnibarLeft, omnibarRight;
     SuggestionList suggestions;
@@ -184,6 +184,7 @@ struct NativeAddress {
         value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(state.edit_id)));
         value.SetNamedValue(L"text", JValue::CreateStringValue(observedText));
         value.SetNamedValue(L"inputType", JValue::CreateStringValue(observedInputType));
+        value.SetNamedValue(L"textEpoch", JValue::CreateNumberValue(textEpoch));
         value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
         value.SetNamedValue(L"selectionEnd",
                             JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
@@ -209,6 +210,7 @@ struct NativeAddress {
             value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
             value.SetNamedValue(L"text", JValue::CreateStringValue(field.Text()));
             value.SetNamedValue(L"inputType", JValue::CreateStringValue(observedInputType));
+            value.SetNamedValue(L"textEpoch", JValue::CreateNumberValue(textEpoch));
             value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
             value.SetNamedValue(L"selectionEnd", JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
             value.SetNamedValue(L"composing", JValue::CreateBooleanValue(composing));
@@ -744,6 +746,7 @@ struct NativeAddress {
         const auto checkedComplete = snapshot.GetNamedBoolean(L"complete", false);
         const auto checkedOpen = snapshot.GetNamedBoolean(L"open", false);
         const auto checkedRtl = snapshot.GetNamedBoolean(L"rtl", false);
+        const auto checkedTextEpoch = snapshot.HasKey(L"textEpoch") ? NativeJson::RequireRevision(snapshot, L"textEpoch") : 0;
         const auto navigationToolbar = snapshot.GetNamedBoolean(L"navigationToolbar", false);
         const auto navigationState = NativeNavigationToolbar::Read(snapshot);
         const auto pinnedState = PinnedExtensionButtons::Read(snapshot);
@@ -849,6 +852,7 @@ struct NativeAddress {
             mode.Reset();
             clipboardSerial = 0;
             autofillSerial = 0;
+            textEpoch = 0;
             ResetSessionState();
             session = nextSession;
             sequence = -1;
@@ -911,6 +915,7 @@ struct NativeAddress {
             }
             const auto previousRevision = revision;
             revision = snapshot.GetNamedNumber(L"revision");
+            textEpoch = double(checkedTextEpoch);
             auto text = snapshot.GetNamedString(L"text", L"");
             if (text.size() > NativeJson::kMaxFieldText) winrt::throw_hresult(E_INVALIDARG);
             if (field.Text() != text) {

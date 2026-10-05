@@ -1537,7 +1537,7 @@ index 48be82749b..548f018330 100644
    }
  }
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index 7e3a12b42c..99bfa5302f 100644
+index 7e3a12b42c..346a3b2e57 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -1713,7 +1713,15 @@ ${
@@ -1565,7 +1565,15 @@ index 7e3a12b42c..99bfa5302f 100644
              searchMode,
              searchString: this._lastSearchString,
              selType: this.view.telemetryTypeFromElement(result, element),
-@@ -3236,6 +3245,7 @@ ${
+@@ -2470,6 +2479,7 @@ ${
+       })
+     ) {
+       // Search mode restarts the query, so these results are obsolete.
++      this.view.nativePresentation?.onSearchModeFromResult(queryContext);
+       this.controller.discardResults(queryContext);
+       return;
+     }
+@@ -3236,6 +3246,7 @@ ${
      result = this._resultForCurrentValue,
      checkValue = true,
      startQuery = true,
@@ -1573,7 +1581,7 @@ index 7e3a12b42c..99bfa5302f 100644
    }) {
      if (
        !result ||
-@@ -3246,12 +3256,12 @@ ${
+@@ -3246,12 +3257,12 @@ ${
        return false;
      }
  
@@ -1588,7 +1596,7 @@ index 7e3a12b42c..99bfa5302f 100644
        // Closing the view discards a previewed search mode, so the mode has to
        // be confirmed before the query below gets a chance to run.
        searchMode.isPreview = false;
-@@ -3261,13 +3271,13 @@ ${
+@@ -3261,13 +3272,13 @@ ${
      let value = result.payload.query?.trimStart() || "";
      this.setValue(value);
  
@@ -1604,7 +1612,7 @@ index 7e3a12b42c..99bfa5302f 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -4470,7 +4480,7 @@ ${
+@@ -4470,7 +4481,7 @@ ${
        return;
      }
      let controller =
@@ -1613,7 +1621,7 @@ index 7e3a12b42c..99bfa5302f 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4501,8 +4511,13 @@ ${
+@@ -4501,8 +4512,13 @@ ${
          pasteAndGo.addEventListener("command", () => {
            this._suppressStartQuery = true;
  
@@ -1629,7 +1637,7 @@ index 7e3a12b42c..99bfa5302f 100644
            this.setResultForCurrentValue(null);
            this.handleCommand();
            this.parentController.clearLastQueryContextCache();
-@@ -4537,7 +4552,7 @@ ${
+@@ -4537,7 +4553,7 @@ ${
          );
  
          let controller =
@@ -1638,7 +1646,7 @@ index 7e3a12b42c..99bfa5302f 100644
          let enabled = controller.isCommandEnabled("cmd_paste");
          if (enabled) {
            pasteAndGo.removeAttribute("disabled");
-@@ -4738,12 +4753,13 @@ ${
+@@ -4738,12 +4754,13 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -1654,7 +1662,7 @@ index 7e3a12b42c..99bfa5302f 100644
      ) {
        return null;
      }
-@@ -4758,8 +4774,8 @@ ${
+@@ -4758,8 +4775,8 @@ ${
          result.payload.engine == result.payload.originalEngine)
      ) {
        searchMode = { engineName: result.payload.engine };
@@ -1665,7 +1673,7 @@ index 7e3a12b42c..99bfa5302f 100644
      }
  
      if (searchMode) {
-@@ -5468,6 +5484,57 @@ ${
+@@ -5468,6 +5485,57 @@ ${
      }
    }
  
@@ -1723,7 +1731,7 @@ index 7e3a12b42c..99bfa5302f 100644
    _on_input(event) {
      // A new input starts a fresh search; bump the epoch so a pending
      // deferred-Enter's async keyup won't reset this search's caret.
-@@ -5496,17 +5563,7 @@ ${
+@@ -5496,17 +5564,7 @@ ${
      }
  
      let value = this.value;
@@ -1742,7 +1750,7 @@ index 7e3a12b42c..99bfa5302f 100644
  
      let compositionState = this.#compositionState;
      let compositionClosedPopup = this.#compositionClosedPopup;
-@@ -5521,27 +5578,7 @@ ${
+@@ -5521,27 +5579,7 @@ ${
        this.#compositionHadText = true;
      }
  
@@ -3700,10 +3708,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..fb5e13bb71
+index 0000000000..05049704ce
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1072 @@
+@@ -0,0 +1,1118 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4226,6 +4234,9 @@ index 0000000000..fb5e13bb71
 +
 +  acceptEdit(request) {
 +    if (this.closed) return { status: "closed" };
++    if (request?.textEpoch !== undefined &&
++        (!Number.isSafeInteger(request.textEpoch) || request.textEpoch < 0))
++      return { status: "invalid-edit" };
 +    if (
 +      !request ||
 +      request.version !== 1 ||
@@ -4243,6 +4254,20 @@ index 0000000000..fb5e13bb71
 +      typeof request.composing !== "boolean"
 +    ) {
 +      return { status: "invalid-edit" };
++    }
++    const rewrite = this.nativeTextRewrite;
++    if (rewrite && request?.session === this.sessionId &&
++        (request.textEpoch ?? 0) < rewrite.epoch &&
++        rewrite.browser === this.window.gBrowser.selectedBrowser &&
++        rewrite.page === rewrite.browser.currentURI.spec &&
++        this.input.searchMode?.engineName === rewrite.engine &&
++        typeof request.text === "string" && request.text.startsWith(rewrite.prefix) &&
++        request.selectionStart >= rewrite.prefix.length && request.selectionEnd <= request.text.length) {
++      // The native editor may still contain the alias while Firefox's removal
++      // is in flight. Rebase only edits made against that older presentation.
++      request = {...request, text:request.text.slice(rewrite.prefix.length),
++        selectionStart:request.selectionStart - rewrite.prefix.length,
++        selectionEnd:request.selectionEnd - rewrite.prefix.length};
 +    }
 +    if (request.revision !== this.revision || request.editId <= this.editId) {
 +      return { status: "stale", revision: this.revision };
@@ -4529,6 +4554,35 @@ index 0000000000..fb5e13bb71
 +        this.input.controller.parentController.recordZeroPrefix("exposure");
 +      }
 +    }
++  }
++
++  onSearchModeFromResult(context) {
++    const active = this.active;
++    if (!active || active.context?.id !== context.id || this.closed ||
++        this.input.view.nativePresentation !== this ||
++        active.browser !== this.window.gBrowser.selectedBrowser ||
++        active.page !== active.browser.currentURI.spec) return;
++    // Firefox has removed the alias and will restart this same edit in search
++    // mode. Revoke the old rows, but retain ownership of the transformed text.
++    const value = this.input.inputField.value;
++    const before = active.inputValue;
++    if (before.length > value.length && before.endsWith(value)) {
++      this.nativeTextRewrite = {epoch:(this.textEpoch = (this.textEpoch || 0) + 1),
++        prefix:before.slice(0, before.length - value.length),
++        browser:active.browser, page:active.page, engine:context.results[0].payload.engine};
++    }
++    this.cancelImages();
++    this.nativeVisible = [];
++    this.nativeSelected = null;
++    this.input.view.visibleResults = [];
++    this.autofillResult = null;
++    active.context = null;
++    active.text = active.inputValue = this.input.inputField.value;
++    active.rows = [];
++    active.results = [];
++    active.resultIndexes = [];
++    active.done = false;
++    this.sequence++;
 +  }
 +
 +  onQueryCancelled(context) {
@@ -5083,10 +5137,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..5ec6460ac3
+index 0000000000..e4712aae9d
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2109 @@
+@@ -0,0 +1,2110 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -5804,13 +5858,14 @@ index 0000000000..5ec6460ac3
 +      session: session.sessionId,
 +      revision: session.revision,
 +      editId: session.editId,
++      textEpoch: session.textEpoch || 0,
 +      ...(session.contextSnapshot ? {contextMenu:session.contextSnapshot} : {}),
 +      selectedId: snapshot?.selectedId || "",
 +      sequence: snapshot ? snapshot.sequence : -session.revision - 1,
 +      complete: !!session.active?.done || snapshot?.complete || session.editState?.status === "failed",
 +      text:
-+        session.active?.inputValue ||
-+        session.editState?.text ||
++        session.active?.inputValue ??
++        session.editState?.text ??
 +        gURLBar.inputField.value,
 +      placeholder: gURLBar.inputField.getAttribute("placeholder") || "",
 +      labels: this.nativeLabels(),

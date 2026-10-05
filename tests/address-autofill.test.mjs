@@ -54,3 +54,49 @@ test("Firefox input handling that starts no query settles the edit",async()=>{
   await s.query("",{inputType:"deleteContentBackward"},{inputType:"deleteContentBackward",selectionStart:0,selectionEnd:0});
   assert.equal(s.active.done,true);
 });
+
+
+test("Firefox alias transition revokes old rows and retains the transformed edit",()=>{
+  const {s,field}=fixture();
+  const browser={currentURI:{spec:"about:blank"}};
+  s.window={gBrowser:{selectedBrowser:browser}};
+  Object.assign(s.active,{browser,page:"about:blank",rows:[{id:"old"}],results:[{}],resultIndexes:[0],done:true});
+  s.input.view={nativePresentation:s,visibleResults:[{}]};
+  s.nativeVisible=["old"];s.nativeSelected={};s.cancelImages=()=>{};
+  field.value="";
+  const active=s.active;
+  s.onSearchModeFromResult({id:99});assert.equal(active.rows.length,1);
+  s.onSearchModeFromResult({id:1,results:[{payload:{engine:"test"}}]});
+  assert.equal(s.active,active);assert.equal(active.inputValue,"");
+  assert.equal(active.done,false);assert.equal(active.rows.length,0);
+  assert.equal(s.nativeVisible.length,0);assert.equal(s.nativeSelected,null);
+  s.onQueryCancelled({id:1});assert.equal(s.active,active);
+  s.onQueryStarted({id:2,searchString:""});assert.equal(active.context.id,2);
+  s.onQueryCancelled({id:2});assert.equal(s.active,null);
+});
+
+test("alias transition cannot transfer another document's query",()=>{
+  const {s,field}=fixture();
+  const browser={currentURI:{spec:"about:newtab"}};
+  s.window={gBrowser:{selectedBrowser:browser}};
+  s.active.browser=browser;s.active.page="about:blank";
+  s.input.view={nativePresentation:s};field.value="";
+  s.onSearchModeFromResult({id:1});
+  assert.equal(s.active.context.id,1);assert.equal(s.active.inputValue,"exa");
+});
+
+
+test("pending alias edits rebase only against the presentation that still showed the alias",()=>{
+  for (const [epoch,page,expected] of [[0,"about:blank","parity"],[1,"about:blank","@test parity"],[0,"about:newtab","@test parity"]]) {
+    const {s}=fixture();
+    const browser={currentURI:{spec:page}};
+    s.window={gBrowser:{selectedBrowser:browser},InputEvent:class {}};
+    s.input.searchMode={engineName:"test"};
+    s.nativeTextRewrite={epoch:1,prefix:"@test ",engine:"test",browser,page:"about:blank"};
+    let text;s.query=value=>{text=value;return Promise.resolve(null);};
+    const result=s.acceptEdit({version:1,session:"s",revision:2,editId:2,textEpoch:epoch,
+      text:"@test parity",selectionStart:12,selectionEnd:12,composing:false,inputType:"insertText"});
+    assert.equal(result.status,"accepted");assert.equal(text,expected);
+    assert.equal(s.editState.selectionStart,expected.length);
+  }
+});
