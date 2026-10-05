@@ -266,6 +266,8 @@ struct SuggestionList {
             visual.description.Visibility(description.empty() ? Visibility::Collapsed : Visibility::Visible);
             visual.url.Text(url == titles[i] ? L"" : url);
             visual.url.Visibility(visual.url.Text().empty() ? Visibility::Collapsed : Visibility::Visible);
+            visual.title.FlowDirection(row.GetNamedBoolean(L"titleLtr", false)
+                                           ? FlowDirection::LeftToRight : list.FlowDirection());
             const auto section = row.GetNamedString(L"sectionLabel", L"");
             visual.section.Text(section);
             visual.section.Visibility(section.empty() ? Visibility::Collapsed : Visibility::Visible);
@@ -277,6 +279,7 @@ struct SuggestionList {
             const auto symbol = row.GetNamedString(L"symbol", L"page");
             visual.symbol.Symbol(symbol == L"search"    ? Symbol::Find
                                  : symbol == L"history" ? Symbol::Clock
+                                 : symbol == L"copy"    ? Symbol::Copy
                                                         : Symbol::Document);
             const bool hasImage = row.HasKey(L"image") && row.GetNamedValue(L"image").ValueType() !=
                                                               winrt::Windows::Data::Json::JsonValueType::Null;

@@ -4047,10 +4047,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..e6d7b0b641
+index 0000000000..358b2fcc82
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1296 @@
+@@ -0,0 +1,1336 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4847,6 +4847,7 @@ index 0000000000..e6d7b0b641
 +        const data = presentation[i];
 +        const result = active.results[active.resultIndexes[i]];
 +        this.loadNativeDetails(active, row, result).catch(console.error);
++        this.loadNativeCopyResult(active, row, result).catch(console.error);
 +        this.loadNativeTipButtons(active, row, result).catch(console.error);
 +        this.loadNativeTipDescription(active, row, result).catch(console.error);
 +        if (result.providerName === "UrlbarProviderGlobalActions" && result.payload.dynamicType === "actions") {
@@ -4876,6 +4877,10 @@ index 0000000000..e6d7b0b641
 +            if (this.closed || this.active !== active || !active.rows.includes(row)) return;
 +            row.title = label; this.sequence++;
 +          }).catch(() => {});
++        }
++        if (this.nativeCopyProvider(result)) {
++          data.icon = null;
++          data.symbol = "copy";
 +        }
 +        row.imageSize = data.size;
 +        row.symbol = data.symbol;
@@ -5232,6 +5237,37 @@ index 0000000000..e6d7b0b641
 +    return "activated";
 +  }
 +
++  // Only these Firefox-owned dynamic templates have whole-row Copy semantics.
++  // Other dynamic providers retain their own controls and fallback behavior.
++  nativeCopyProvider(result) {
++    if (result.type !== UrlbarShared.RESULT_TYPE.DYNAMIC) return null;
++    const name = {calculator:"UrlbarProviderCalculator", unitConversion:"UrlbarProviderUnitConversion"}[result.payload.dynamicType];
++    if (!name || result.providerName !== name) return null;
++    return this.input.controller.parentController.manager?.getProvider(name) || null;
++  }
++
++  async loadNativeCopyResult(active, row, result) {
++    const provider = this.nativeCopyProvider(result);
++    if (!provider) return;
++    const document = active.browser.browsingContext.currentWindowGlobal?.innerWindowId;
++    const update = await provider.getViewUpdate(result);
++    const value = result.payload.dynamicType === "calculator" ? update.input : update.output;
++    const text = async item => item?.l10n
++      ? this.window.document.l10n.formatValue(item.l10n.id, item.l10n.args)
++      : item?.textContent;
++    const [title, actionLabel] = await Promise.all([text(value), text(update.action)]);
++    if (!document || this.closed || this.active !== active || !active.rows.includes(row) ||
++        active.browser !== this.window.gBrowser.selectedBrowser || active.page !== active.browser.currentURI.spec ||
++        document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId ||
++        typeof title !== "string" || !title || title.length > 1024 ||
++        typeof actionLabel !== "string" || !actionLabel || actionLabel.length > 1024) return;
++    row.title = title;
++    row.titleLtr = value.attributes?.dir === "ltr" || result.payload.dynamicType === "unitConversion";
++    row.actionLabel = actionLabel;
++    row.copyDocument = document;
++    this.sequence++;
++  }
++
 +  nativeActionPresentation(result) {
 +    if (result.type !== UrlbarShared.RESULT_TYPE.DYNAMIC || result.payload.dynamicType !== "actions" ||
 +        result.providerName !== "UrlbarProviderActionsSearchMode") return null;
@@ -5245,6 +5281,7 @@ index 0000000000..e6d7b0b641
 +      (result.type === UrlbarShared.RESULT_TYPE.URL ||
 +        (result.type === UrlbarShared.RESULT_TYPE.TAB_SWITCH &&
 +          !Services.prefs.getBoolPref("browser.urlbar.secondaryActions.switchToTab", false)) ||
++        !!this.nativeCopyProvider(result) ||
 +        this.nativeActionPresentation(result)?.enabled ||
 +        (result.type === UrlbarShared.RESULT_TYPE.SEARCH &&
 +          !result.payload.providesSearchMode))
@@ -5286,6 +5323,9 @@ index 0000000000..e6d7b0b641
 +    )
 +      return "stale";
 +    const result = active.results[index];
++    if (this.nativeCopyProvider(result) &&
++        (!this.nativeVisible?.includes(id) || !active.rows[rowIndex].copyDocument ||
++         active.rows[rowIndex].copyDocument !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId)) return "stale";
 +    if (!this.canActivate(result)) {
 +      this.input.focus();
 +      return "firefox-fallback";
@@ -5654,10 +5694,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..5f01e02a3b
+index 0000000000..b9be74d0cc
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2117 @@
+@@ -0,0 +1,2118 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6407,6 +6447,7 @@ index 0000000000..5f01e02a3b
 +          buttons: (row.tipButtons || []).map(({id,label,enabled,menu,menuLabel}) => ({id,label,enabled,menu:!!menu,menuLabel:menuLabel || ""})),
 +          displayUrl: (row.displayUrl || "").slice(0, 1024),
 +          actionLabel: (row.actionLabel || "").slice(0, 1024),
++          titleLtr: row.titleLtr === true,
 +          sectionLabel: (row.sectionLabel || "").slice(0, 1024),
 +          imageSize: row.imageSize || 16,
 +          symbol: row.symbol || "page",
