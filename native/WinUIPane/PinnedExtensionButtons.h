@@ -8,7 +8,7 @@ struct PinnedExtensionButtons {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using Button = Microsoft::UI::Xaml::Controls::Button;
     struct State {
-        winrt::hstring id, label, badge;
+        winrt::hstring id, label, badge, text;
         bool enabled{};
         JObject image{nullptr};
         winrt::Windows::UI::Color background{}, foreground{};
@@ -24,6 +24,8 @@ struct PinnedExtensionButtons {
     Microsoft::UI::Xaml::Controls::StackPanel panel;
     std::map<winrt::hstring, Row> rows;
     std::function<void(wchar_t const*, uint32_t, Button const&)> activate;
+    winrt::hstring commandPrefix{L"extension:"}, contextPrefix{L"extension-menu:"}, automationPrefix{L"FirefoxWinUIExtension-"};
+    double buttonSize{32};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     PinnedExtensionButtons() {
         using namespace Microsoft::UI::Xaml;
@@ -32,12 +34,12 @@ struct PinnedExtensionButtons {
         panel.Visibility(Visibility::Collapsed);
     }
     ~PinnedExtensionButtons() { lifetime.reset(); }
-    static std::vector<State> Read(JObject const& snapshot) {
+    static std::vector<State> Read(JObject const& snapshot, wchar_t const* key = L"pinned") {
         std::vector<State> result;
         if (!snapshot.HasKey(L"navigation")) return result;
         auto navigation = snapshot.GetNamedObject(L"navigation");
-        if (!navigation.HasKey(L"pinned")) return result;
-        auto items = navigation.GetNamedArray(L"pinned");
+        if (!navigation.HasKey(key)) return result;
+        auto items = navigation.GetNamedArray(key);
         if (items.Size() > 32) throw winrt::hresult_invalid_argument();
         size_t pixels = 0;
         std::set<winrt::hstring> ids;
@@ -58,8 +60,9 @@ struct PinnedExtensionButtons {
             next.id = item.GetNamedString(L"id");
             next.label = item.GetNamedString(L"label");
             next.badge = item.GetNamedString(L"badge", L"");
+            next.text = item.GetNamedString(L"text", L"");
             if (next.id.empty() || next.id.size() > 64 || !ids.insert(next.id).second ||
-                next.label.size() > 4096 || next.badge.size() > 4096) throw winrt::hresult_invalid_argument();
+                next.label.size() > 4096 || next.badge.size() > 4096 || next.text.size() > 16) throw winrt::hresult_invalid_argument();
             next.enabled = item.GetNamedBoolean(L"enabled");
             next.background = color(item, L"background");
             next.foreground = color(item, L"foreground");
@@ -80,20 +83,23 @@ struct PinnedExtensionButtons {
             auto [it, added] = rows.try_emplace(item.id);
             auto& row = it->second;
             if (added) {
-                row.button = Markup::XamlReader::Load(LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" Width="32" Height="32" MinWidth="0" MinHeight="0" Padding="0"><Grid Width="32" Height="32"><Grid.Resources><ResourceDictionary><ResourceDictionary.ThemeDictionaries><ResourceDictionary x:Key="Default" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="BadgeBackground" Color="Transparent"/><SolidColorBrush x:Key="BadgeForeground" Color="Transparent"/></ResourceDictionary><ResourceDictionary x:Key="HighContrast" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="BadgeBackground" Color="{ThemeResource SystemColorHighlightColor}"/><SolidColorBrush x:Key="BadgeForeground" Color="{ThemeResource SystemColorHighlightTextColor}"/></ResourceDictionary></ResourceDictionary.ThemeDictionaries></ResourceDictionary></Grid.Resources><Image Width="16" Height="16" Stretch="Uniform"/><Border Background="{ThemeResource BadgeBackground}" CornerRadius="3" HorizontalAlignment="Right" VerticalAlignment="Top" MaxWidth="30"><TextBlock Foreground="{ThemeResource BadgeForeground}" FontSize="9" Padding="2,0" TextTrimming="CharacterEllipsis"/></Border></Grid></Button>)").as<Button>();
+                row.button = Markup::XamlReader::Load(LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" Width="32" Height="32" MinWidth="0" MinHeight="0" Padding="0" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"><Grid><Grid.Resources><ResourceDictionary><ResourceDictionary.ThemeDictionaries><ResourceDictionary x:Key="Default" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="BadgeBackground" Color="Transparent"/><SolidColorBrush x:Key="BadgeForeground" Color="Transparent"/></ResourceDictionary><ResourceDictionary x:Key="HighContrast" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="BadgeBackground" Color="{ThemeResource SystemColorHighlightColor}"/><SolidColorBrush x:Key="BadgeForeground" Color="{ThemeResource SystemColorHighlightTextColor}"/></ResourceDictionary></ResourceDictionary.ThemeDictionaries></ResourceDictionary></Grid.Resources><Image Width="16" Height="16" Stretch="Uniform"/><Border Background="{ThemeResource BadgeBackground}" CornerRadius="3" HorizontalAlignment="Right" VerticalAlignment="Top" MaxWidth="30"><TextBlock Foreground="{ThemeResource BadgeForeground}" FontSize="9" Padding="2,0" TextTrimming="CharacterEllipsis"/></Border></Grid></Button>)").as<Button>();
+                row.button.Width(buttonSize);
+                row.button.Height(buttonSize);
                 auto grid = row.button.Content().as<Grid>();
+                // Fit inside the stock button border instead of overflowing its inset.
                 row.image = grid.Children().GetAt(0).as<Image>();
                 row.badgeBorder = grid.Children().GetAt(1).as<Border>();
                 row.badge = row.badgeBorder.Child().as<TextBlock>();
                 auto resources = grid.Resources().ThemeDictionaries().Lookup(winrt::box_value(L"Default")).as<ResourceDictionary>();
                 row.background = resources.Lookup(winrt::box_value(L"BadgeBackground")).as<Media::SolidColorBrush>();
                 row.foreground = resources.Lookup(winrt::box_value(L"BadgeForeground")).as<Media::SolidColorBrush>();
-                Automation::AutomationProperties::SetAutomationId(row.button, L"FirefoxWinUIExtension-" + item.id);
+                Automation::AutomationProperties::SetAutomationId(row.button, automationPrefix + item.id);
                 auto invoke = [this, id = item.id, alive = std::weak_ptr<int>(lifetime)](bool context) {
                     if (alive.expired() || !activate || !rows.contains(id) || panel.Visibility() != Visibility::Visible) return;
                     auto button = rows.at(id).button;
                     if (!context && !button.IsEnabled()) return;
-                    auto command = winrt::hstring(context ? L"extension-menu:" : L"extension:") + id;
+                    auto command = (context ? contextPrefix : commandPrefix) + id;
                     uint32_t modifiers = ((GetKeyState(VK_CONTROL) & 0x8000) ? 1u : 0u) |
                         ((GetKeyState(VK_MENU) & 0x8000) ? 2u : 0u) | ((GetKeyState(VK_SHIFT) & 0x8000) ? 4u : 0u);
                     activate(command.c_str(), modifiers, button);
@@ -110,8 +116,15 @@ struct PinnedExtensionButtons {
             Automation::AutomationProperties::SetName(row.button, item.label);
             Automation::AutomationProperties::SetItemStatus(row.button, item.badge);
             ToolTipService::SetToolTip(row.button, winrt::box_value(item.label));
-            row.badge.Text(item.badge);
-            row.badgeBorder.Visibility(item.badge.empty() ? Visibility::Collapsed : Visibility::Visible);
+            row.badge.Text(item.text.empty() ? item.badge : item.text);
+            const auto width = item.text.empty() ? buttonSize : std::max(buttonSize, double(item.text.size() * 7 + 12));
+            row.button.Width(width);
+            row.image.Visibility(item.text.empty() ? Visibility::Visible : Visibility::Collapsed);
+            row.badge.FontSize(item.text.empty() ? 9 : 12);
+            row.badgeBorder.MaxWidth(item.text.empty() ? 30 : width);
+            row.badgeBorder.HorizontalAlignment(item.text.empty() ? HorizontalAlignment::Right : HorizontalAlignment::Center);
+            row.badgeBorder.VerticalAlignment(item.text.empty() ? VerticalAlignment::Top : VerticalAlignment::Center);
+            row.badgeBorder.Visibility((item.badge.empty() && item.text.empty()) ? Visibility::Collapsed : Visibility::Visible);
             row.background.Color(item.background); row.foreground.Color(item.foreground);
             auto imageKey = item.image ? item.image.GetNamedString(L"pixels") : winrt::hstring{};
             if (imageKey != row.imageKey) {

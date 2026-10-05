@@ -24,6 +24,7 @@ struct NativeAddress {
     std::function<void()> releaseMenuFocus;
     Microsoft::UI::Xaml::Controls::TextBox field;
     NativeSearchMode mode;
+    PinnedExtensionButtons omnibarLeft, omnibarRight;
     SuggestionList suggestions;
     GlobalActionsPanel actions;
     Microsoft::UI::Xaml::Controls::Primitives::Popup popup{nullptr};
@@ -224,6 +225,9 @@ struct NativeAddress {
             auto focused =
                 Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(root.XamlRoot()).try_as<DependencyObject>();
             while (focused) {
+                // Site/page buttons live inside the editor's visual border,
+                // but focusing them must not start or restore an address query.
+                if (focused == omnibarLeft.panel || focused == omnibarRight.panel) break;
                 if (focused == root || (popupContent && focused == popupContent)) {
                     inside = true;
                     break;
@@ -502,7 +506,7 @@ struct NativeAddress {
                 auto action = Message(L"navigation");
                 action.SetNamedValue(L"command", JValue::CreateStringValue(command));
                 action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
-                if (wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcsncmp(command, L"extension", 9) == 0) {
+                if (wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcsncmp(command, L"extension", 9) == 0 || wcsncmp(command, L"omni", 4) == 0) {
                     auto local = button.TransformToVisual(nullptr).TransformBounds(
                         {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
                     auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
@@ -514,6 +518,65 @@ struct NativeAddress {
                 }
                 navigate(action.Stringify());
             };
+            omnibarLeft.activate = navigation->activate;
+            omnibarRight.activate = navigation->activate;
+            for (auto* buttons : {&omnibarLeft, &omnibarRight}) {
+                buttons->commandPrefix = L"omni:";
+                buttons->contextPrefix = L"omni-menu:";
+                buttons->automationPrefix = L"FirefoxWinUIOmnibar-";
+                buttons->buttonSize = 28;
+                buttons->panel.Spacing(0);
+                buttons->panel.VerticalAlignment(VerticalAlignment::Center);
+            }
+            // The stock TextBox owns the entire surface and focus accent. Its
+            // padding reserves the overlaid native controls within that border.
+            header.Children().Clear();
+            header.ColumnDefinitions().Clear();
+            for (int i = 0; i < 5; ++i) {
+                ColumnDefinition column;
+                column.Width(i == 2 ? GridLengthHelper::FromValueAndType(1, GridUnitType::Star) : GridLengthHelper::Auto());
+                header.ColumnDefinitions().Append(column);
+            }
+            Grid::SetColumn(field, 0); Grid::SetColumnSpan(field, 5);
+            Grid::SetColumn(omnibarLeft.panel, 0);
+            Grid::SetColumn(mode.button, 1);
+            Grid::SetColumn(mode.exit, 3);
+            Grid::SetColumn(omnibarRight.panel, 4);
+            // Keep logical tab order left-to-right while painting the editor
+            // behind the embedded controls.
+            Canvas::SetZIndex(field, -1);
+            header.Children().Append(omnibarLeft.panel);
+            header.Children().Append(mode.button);
+            header.Children().Append(field);
+            header.Children().Append(mode.exit);
+            header.Children().Append(omnibarRight.panel);
+            mode.button.MinWidth(0); mode.button.MinHeight(0);
+            mode.button.Height(24); mode.button.Margin({4, 0, 4, 0});
+            mode.button.VerticalAlignment(VerticalAlignment::Center);
+            mode.button.BorderThickness({0, 0, 0, 0});
+            mode.button.CornerRadius({12, 12, 12, 12});
+            auto modeContent = mode.button.Content().as<StackPanel>();
+            modeContent.Children().RemoveAt(1);
+            Viewbox modeIcon;
+            modeIcon.Width(16); modeIcon.Height(16);
+            modeIcon.Child(mode.symbol);
+            mode.symbol.RegisterPropertyChangedCallback(UIElement::VisibilityProperty(), [icon = winrt::make_weak(modeIcon)](auto const& sender, auto const&) {
+                if (auto box = icon.get()) box.Visibility(sender.template as<UIElement>().Visibility());
+            });
+            modeContent.Children().InsertAt(1, modeIcon);
+            auto reserveControls = [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                if (alive.expired()) return;
+                auto width = [](FrameworkElement const& element) {
+                    return element.Visibility() == Visibility::Visible ? element.ActualWidth() + element.Margin().Left + element.Margin().Right : 0.0;
+                };
+                field.Padding({float(8 + width(omnibarLeft.panel) + width(mode.button)), 4,
+                    float(8 + width(mode.exit) + width(omnibarRight.panel)), 4});
+            };
+            for (auto element : {omnibarLeft.panel.as<FrameworkElement>(), mode.button.as<FrameworkElement>(),
+                                 mode.exit.as<FrameworkElement>(), omnibarRight.panel.as<FrameworkElement>()}) {
+                element.SizeChanged(reserveControls);
+                element.RegisterPropertyChangedCallback(UIElement::VisibilityProperty(), reserveControls);
+            }
             toolbarSurface = Markup::XamlReader::Load(
                 LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}"/>)").as<Grid>();
             toolbarSurface.Visibility(Visibility::Collapsed);
@@ -601,6 +664,7 @@ struct NativeAddress {
         if (snapshot.GetNamedNumber(L"version") != 1) winrt::throw_hresult(E_INVALIDARG);
         if (!snapshot.GetNamedBoolean(L"enabled", false)) {
             if (navigation) navigation->Apply({}, false);
+            omnibarLeft.Apply({}, false); omnibarRight.Apply({}, false);
             if (popup) popup.IsOpen(false);
             mode.Disable();
             actions.Clear();
@@ -621,6 +685,8 @@ struct NativeAddress {
         const auto navigationToolbar = snapshot.GetNamedBoolean(L"navigationToolbar", false);
         const auto navigationState = NativeNavigationToolbar::Read(snapshot);
         const auto pinnedState = PinnedExtensionButtons::Read(snapshot);
+        const auto omnibarLeftState = PinnedExtensionButtons::Read(snapshot, L"omnibarLeft");
+        const auto omnibarRightState = PinnedExtensionButtons::Read(snapshot, L"omnibarRight");
         auto checkedText = snapshot.GetNamedString(L"text", L"");
         auto checkedRows = snapshot.GetNamedArray(L"rows");
         if (nextSession.empty() || nextSession.size() > 256 || checkedText.size() > NativeJson::kMaxFieldText ||
@@ -697,6 +763,8 @@ struct NativeAddress {
         if (toolbarRoot) {
             navigation->Apply(navigationState, navigationToolbar && snapshot.HasKey(L"navigation"));
             navigation->pinned.Apply(pinnedState, navigationToolbar);
+            omnibarLeft.Apply(omnibarLeftState, navigationToolbar);
+            omnibarRight.Apply(omnibarRightState, navigationToolbar);
             toolbarSurface.Visibility(navigationToolbar ? Visibility::Visible : Visibility::Collapsed);
             root.Margin(navigationToolbar ? Thickness{8, 8, 8, 8} : Thickness{0, 0, 0, 0});
         }

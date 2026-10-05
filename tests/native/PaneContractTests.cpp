@@ -4943,7 +4943,10 @@ int wmain(int argc, wchar_t** argv) {
             Require(!addressBackdrop(), "legacy input-slot has no system backdrop");
             auto root=toolbarRoot.Children().GetAt(2).as<Controls::StackPanel>();
             AwaitLiveTree(root);
-            auto field=root.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(1).as<Controls::TextBox>();
+            auto header=root.Children().GetAt(0).as<Controls::Grid>();
+            auto field=header.Children().GetAt(2).as<Controls::TextBox>();
+            Require(Controls::Grid::GetColumnSpan(field)==5, "stock editor spans embedded omnibar controls");
+            Require(header.Children().GetAt(1).as<Controls::DropDownButton>().Height()==24, "embedded search selector is compact");
             auto layoutStart = GetTickCount64();
             while (field.ActualHeight()<32 && GetTickCount64()-layoutStart<5000) {
                 root.UpdateLayout();
@@ -4965,7 +4968,9 @@ int wmain(int argc, wchar_t** argv) {
                     "navigation surface owns its background");
             Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":"invalid","session":"toolbar-contract","revision":1,"sequence":3,"text":"bad","rows":[]})")), "reject invalid navigation presentation");
             Require(field.Text()==L"initial" && root.Margin().Left == 8, "invalid presentation preserves native state");
-            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":3,"text":"initial","rows":[],"navigation":{"back":{"enabled":false,"label":"Localized back"},"forward":{"enabled":true,"label":"Localized forward"},"reload":{"enabled":true,"label":"Localized reload"},"profile":{"enabled":true,"label":"Localized account"},"extensions":{"enabled":true,"label":"Localized extensions"},"appmenu":{"enabled":true,"label":"Localized menu"},"pinned":[{"id":"pinned-contract","label":"Localized extension","enabled":true,"badge":"7","background":[180,0,0,255],"foreground":[255,255,255,255],"image":{"width":1,"height":1,"pixels":"0000ffff"}}]}})")), "publish navigation buttons");
+            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":3,"text":"initial","rows":[],"navigation":{"back":{"enabled":false,"label":"Localized back"},"forward":{"enabled":true,"label":"Localized forward"},"reload":{"enabled":true,"label":"Localized reload"},"profile":{"enabled":true,"label":"Localized account"},"extensions":{"enabled":true,"label":"Localized extensions"},"appmenu":{"enabled":true,"label":"Localized menu"},"omnibarLeft":[{"id":"action-contract","label":"Site information","enabled":true,"background":[0,0,0,0],"foreground":[0,0,0,255]}],"pinned":[{"id":"pinned-contract","label":"Localized extension","enabled":true,"badge":"7","background":[180,0,0,255],"foreground":[255,255,255,255],"image":{"width":1,"height":1,"pixels":"0000ffff"}}]}})")), "publish navigation buttons");
+            auto embedded=header.Children().GetAt(0).as<Controls::StackPanel>();
+            Require(embedded.Children().Size()==1 && embedded.Children().GetAt(0).as<Controls::Button>().Width()==28, "embedded site button published");
             auto navigation=toolbarRoot.Children().GetAt(1).as<Controls::StackPanel>();
             auto menus=toolbarRoot.Children().GetAt(3).as<Controls::StackPanel>();
             Require(menus.Children().Size()==4 && Controls::Grid::GetColumn(menus)==2, "menu buttons and pinned slot follow the address field");
@@ -4990,7 +4995,7 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":false})")), "disable navigation with address");
             Require(!addressBackdrop(), "disabling navigation releases its system backdrop");
             Require(menus.Visibility()==Visibility::Collapsed && !menus.Children().GetAt(0).as<Controls::Button>().IsEnabled(), "disable revokes trailing menu buttons");
-            Require(pinned.Children().Size()==0, "disable revokes pinned controls");
+            Require(pinned.Children().Size()==0 && embedded.Children().Size()==0, "disable revokes pinned and embedded controls");
             Require(navigation.Visibility()==Visibility::Collapsed && !navigation.Children().GetAt(1).as<Controls::Button>().IsEnabled(), "disable hides and revokes navigation controls");
             Require(SUCCEEDED(api.updateAddress(first,&addressRect,FALSE)), "address-only detach");
             Require(SUCCEEDED(api.updateTabStrip(first,&stripRect,TRUE)), "strip survives address teardown");

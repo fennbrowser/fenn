@@ -28,7 +28,7 @@ function fixture() {
   const owner = {attached:true,tabStrip:true,element:element(),schedule() {},invalidateAddress() {},
     addressSession:{releaseNativePresentation() {calls.push(["release"]);}},
     addressFallback() {calls.push(["fallback"]); toolbar.restore();}};
-  const window = {document:{documentElement:root,createElementNS:element,getElementById:id=>elements.get(id)},
+  const window = {document:{documentElement:root,querySelectorAll:()=>[...elements.values()],createElementNS:element,getElementById:id=>elements.get(id)},
     gURLBar:{inputField:input,querySelector:()=>switcher,focus() {calls.push(["firefox-focus"]);}},
     gBrowser:{addTabsProgressListener() {},removeTabsProgressListener() {}},
     windowUtils:{updateWinUIAddress(...args) {calls.push(["host",...args]); return window.acceptHost;}},

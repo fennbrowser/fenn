@@ -28,7 +28,7 @@ function fixture(requests) {
   pane.structuralDirty = false;
   let publications = 0;
   pane.publish = () => { publications++; };
-  return {pane, completions, errors, posted, dialog, publications: () => publications};
+  return {context, pane, completions, errors, posted, dialog, publications: () => publications};
 }
 
 for (const failedId of [1, 2, 3]) {
@@ -329,4 +329,18 @@ test("a hover-card request is answered with the registrable domain, then one bou
   assert.equal(pane.previewTab(11, 8, 1), true);
   assert.equal(answers().at(-1).thumbnail, false, "Firefox's thumbnail preference is honoured");
   assert.equal(captures.length, 3);
+});
+
+
+test("Alt search reveal publishes even when Firefox availability is already true", () => {
+  const f = fixture([]);
+  let invalidations = 0;
+  f.context.gURLBar = {setUnifiedSearchButtonAvailability() {}};
+  f.pane.addressSession = {sessionId:"reveal-test", modeReveal:0};
+  f.pane.invalidateAddress = () => invalidations++;
+  for (let i = 0; i < 2; ++i) {
+    assert.equal(f.pane.executeAddressRequest({version:1,session:"reveal-test",kind:"mode-reveal"}),1);
+  }
+  assert.equal(f.pane.addressSession.modeReveal,2);
+  assert.equal(invalidations,2);
 });

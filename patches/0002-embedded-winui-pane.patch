@@ -949,11 +949,24 @@ index 89ebf87426..eeffb8e367 100644
    Services.scriptloader.loadSubScript("chrome://global/content/contentAreaUtils.js", this);
    Services.scriptloader.loadSubScript("chrome://browser/content/browser-captivePortal.js", this);
    if (AppConstants.MOZ_DATA_REPORTING) {
+diff --git a/browser/base/content/browser-pageActions.js b/browser/base/content/browser-pageActions.js
+index 00da33bc11..b38767f3b3 100644
+--- a/browser/base/content/browser-pageActions.js
++++ b/browser/base/content/browser-pageActions.js
+@@ -456,7 +456,7 @@ var BrowserPageActions = {
+       if (node && !node.hidden) {
+         let bounds = window.windowUtils.getBoundsWithoutFlushing(node);
+         if (bounds.height > 0 && bounds.width > 0) {
+-          return node;
++          return window.gWinUIPane?.addressToolbar?.omnibar?.anchorFor(node) || node;
+         }
+       }
+     }
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..8485f6abed 100644
+index b2b5db6040..ffcbd7eebc 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -33,6 +33,13 @@ browser.jar:
+@@ -33,6 +33,14 @@ browser.jar:
          content/browser/aboutTabCrashed.xhtml         (content/aboutTabCrashed.xhtml)
          content/browser/blanktab.html                 (content/blanktab.html)
          content/browser/browser.js                    (content/browser.js)
@@ -962,6 +975,7 @@ index b2b5db6040..8485f6abed 100644
 +        content/browser/WinUITabStripSession.sys.mjs     (content/WinUITabStripSession.sys.mjs)
 +        content/browser/WinUIUrlbarSession.sys.mjs      (content/WinUIUrlbarSession.sys.mjs)
 +        content/browser/WinUIPinnedExtensions.sys.mjs  (content/WinUIPinnedExtensions.sys.mjs)
++        content/browser/WinUIOmnibarActions.sys.mjs  (content/WinUIOmnibarActions.sys.mjs)
 +        content/browser/WinUIAddressToolbar.sys.mjs     (content/WinUIAddressToolbar.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
@@ -981,6 +995,19 @@ index 76cab7f8e4..5717e00a61 100644
      ownerWindow.PanelUI.showSubView(aWidget.viewId, anchor, aEvent);
    },
  
+diff --git a/browser/components/customizableui/PanelMultiView.sys.mjs b/browser/components/customizableui/PanelMultiView.sys.mjs
+index 122165dba9..d9fff8f218 100644
+--- a/browser/components/customizableui/PanelMultiView.sys.mjs
++++ b/browser/components/customizableui/PanelMultiView.sys.mjs
+@@ -391,6 +391,8 @@ export var PanelMultiView = class extends AssociatedToNode {
+    *   immediately if the panel does not contain a <panelmultiview>.
+    */
+   static async openPopup(panelNode, ...args) {
++    // Retained Firefox controllers can anchor an admitted native omnibar action.
++    args[0] = panelNode.ownerDocument.defaultView.gWinUIPane?.addressToolbar?.omnibar?.anchorFor(args[0]) || args[0];
+     let panelMultiViewNode = panelNode.querySelector("panelmultiview");
+     if (panelMultiViewNode) {
+       return this.forNode(panelMultiViewNode).openPopup(...args);
 diff --git a/browser/components/customizableui/content/panelUI.js b/browser/components/customizableui/content/panelUI.js
 index fb77346559..d186d417cc 100644
 --- a/browser/components/customizableui/content/panelUI.js
@@ -1018,6 +1045,19 @@ index fb77346559..d186d417cc 100644
  
      // Insert Fluent files when needed before notification is opened
      MozXULElement.insertFTLIfNeeded("branding/brand.ftl");
+diff --git a/browser/components/tabbrowser/Tabbrowser.sys.mjs b/browser/components/tabbrowser/Tabbrowser.sys.mjs
+index 241875edde..b6df17d82c 100644
+--- a/browser/components/tabbrowser/Tabbrowser.sys.mjs
++++ b/browser/components/tabbrowser/Tabbrowser.sys.mjs
+@@ -4123,7 +4123,7 @@ export class Tabbrowser {
+       anchorElement?.localName === "toolbarbutton" &&
+       anchorElement?.parentElement?.localName === "split-view-footer";
+     menu.setAttribute("data-trigger-source", isFromFooter ? "footer" : "icon");
+-    menu.openPopup(anchorElement, "after_start");
++    menu.openPopup(this.document.defaultView.gWinUIPane?.addressToolbar?.omnibar?.anchorFor(anchorElement) || anchorElement, "after_start");
+   }
+ 
+   /**
 diff --git a/browser/components/tabbrowser/content/tab-context-menu.js b/browser/components/tabbrowser/content/tab-context-menu.js
 index be3252ae5f..6835234e04 100644
 --- a/browser/components/tabbrowser/content/tab-context-menu.js
@@ -2086,6 +2126,22 @@ index d8f67f31da..13145e7a16 100644
    /**
     * Image animation mode of the window. When this attribute's value
     * is changed, the implementation should set all images in the window
+diff --git a/toolkit/modules/PopupNotifications.sys.mjs b/toolkit/modules/PopupNotifications.sys.mjs
+index 49ccea6285..0362ff9ad3 100644
+--- a/toolkit/modules/PopupNotifications.sys.mjs
++++ b/toolkit/modules/PopupNotifications.sys.mjs
+@@ -1467,9 +1467,9 @@ PopupNotifications.prototype = {
+         n => n.options?.popupOptions
+       )?.options?.popupOptions;
+       if (popupOptions) {
+-        this.panel.openPopup(anchorElement, popupOptions);
++        this.panel.openPopup(this.window.gWinUIPane?.addressToolbar?.omnibar?.anchorFor(anchorElement) || anchorElement, popupOptions);
+       } else {
+-        this.panel.openPopup(anchorElement, "bottomleft topleft", 0, 0);
++        this.panel.openPopup(this.window.gWinUIPane?.addressToolbar?.omnibar?.anchorFor(anchorElement) || anchorElement, "bottomleft topleft", 0, 0);
+       }
+     });
+   },
 diff --git a/widget/nsIWidget.h b/widget/nsIWidget.h
 index 2d06d7b7dd..3925f8d967 100644
 --- a/widget/nsIWidget.h
@@ -2690,6 +2746,184 @@ index 1e2660589b..85227d8e69 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/base/content/WinUIOmnibarActions.sys.mjs b/browser/base/content/WinUIOmnibarActions.sys.mjs
+new file mode 100644
+index 0000000000..bf0194e762
+--- /dev/null
++++ b/browser/base/content/WinUIOmnibarActions.sys.mjs
+@@ -0,0 +1,172 @@
++// Presentation adapter for Firefox-owned address-bar controls. No browser policy lives here.
++export class WinUIOmnibarActions {
++  constructor(toolbar) {
++    this.toolbar = toolbar;
++    this.window = toolbar.window;
++    this.entries = new Map();
++    this.images = new Map();
++    this.loads = new Set();
++    this.nextId = 0;
++    this.events = new WeakSet();
++    this.closed = false;
++    this.invalidate = () => { if (!this.closed) toolbar.owner.invalidateAddress(); };
++    this.observer = new this.window.MutationObserver(this.invalidate);
++    this.observer.observe(this.window.gURLBar, {subtree:true, childList:true, characterData:true, attributes:true});
++    this.theme = this.window.matchMedia('(prefers-color-scheme: dark)');
++    this.theme.addEventListener('change', this.invalidate);
++    this.contrast = this.window.matchMedia('(forced-colors: active)');
++    this.contrast.addEventListener('change', this.invalidate);
++    this.window.addEventListener('resize', this.invalidate);
++    this.originalInput = event => this.onOriginalInput(event);
++    this.window.addEventListener('click', this.originalInput, true);
++    this.window.addEventListener('keydown', this.originalInput, true);
++    this.observer.observe(this.window.document.documentElement, {attributes:true,attributeFilter:['lwtheme','lwt-textcolor','style']});
++  }
++  onOriginalInput(event) {
++    if (event.isTrusted && !this.events.has(event)) {
++      for (const entry of this.entries.values()) entry.pending = false;
++    }
++  }
++  context() {
++    return this.window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId;
++  }
++  visible(node) {
++    if (!node?.isConnected) return false;
++    for (let parent = node; parent && parent !== this.window.gURLBar.parentNode; parent = parent.parentElement) {
++      if (parent.hidden || parent.collapsed) return false;
++      const style = this.window.getComputedStyle(parent);
++      if (style.display === 'none' || style.visibility !== 'visible') return false;
++    }
++    return true;
++  }
++  snapshot() {
++    const document = this.window.document;
++    const left = ['trust-icon-container', 'tracking-protection-icon-container', 'identity-icon-box', 'identity-permission-box']
++      .map(id => document.getElementById(id));
++    // Notification indicators and extension page actions are dynamic Firefox children.
++    left.push(...document.querySelectorAll('#identity-permission-box .sharing-icon, #identity-permission-box .blocked-permission-icon, #notification-popup-box > [role="button"]'));
++    const right = [...document.querySelectorAll('#page-action-buttons > [role="button"], #page-action-buttons > toolbarbutton')];
++    const keep = new Set();
++    const output = {omnibarLeft:[], omnibarRight:[]};
++    for (const [nodes, key] of [[left,'omnibarLeft'],[right,'omnibarRight']]) {
++      for (const node of nodes) {
++        if (!this.visible(node) || output[key].length >= 32) continue;
++        if (node.matches('.sharing-icon, .blocked-permission-icon') &&
++            [...document.querySelectorAll('#identity-permission-box image')].find(child=>this.visible(child)) === node) continue;
++        let entry = this.entries.get(node);
++        if (!entry) {
++          entry = {id:`action-${++this.nextId}`, node};
++          this.entries.set(node, entry);
++        }
++        keep.add(node);
++        const imageNode = [...node.querySelectorAll('image, img, .urlbar-icon')].find(child => this.visible(child)) || node;
++        const style = this.window.getComputedStyle(imageNode);
++        const url = imageNode.getAttribute('src') || /^url\(["']?(.*?)["']?\)$/.exec(style.listStyleImage)?.[1];
++        const color = style.fill === 'currentcolor' || style.fill === 'currentColor' ? style.color : style.fill;
++        const imageKey = JSON.stringify([url, color, style.stroke, style.filter]);
++        if (url && !this.images.has(imageKey)) this.loadImage(imageKey, url, color, style.stroke, style.filter);
++        const tooltip = document.getElementById(node.getAttribute('tooltip'));
++        const label = node.getAttribute('aria-label') || node.getAttribute('tooltiptext') || node.getAttribute('label') ||
++          imageNode.getAttribute('tooltiptext') || tooltip?.textContent?.trim() || node.textContent.trim();
++        output[key].push({id:entry.id, label:(label || '').slice(0,4096), enabled:node.getAttribute('disabled') !== 'true',
++          text:(node.id === 'urlbar-zoom-button' ? node.getAttribute('label') : '').slice(0,16),
++          badge:(node.querySelector('#translations-button-locale')?.textContent || '').slice(0,4096),
++          background:[0,0,0,0], foreground:(style.color.match(/[\d.]+/g)?.slice(0,3).map(value=>Math.round(Math.max(0,Math.min(255,Number(value)*(style.color.startsWith('color(srgb') ? 255 : 1))))) || [128,128,128]).concat(255), image:this.images.get(imageKey) || null});
++      }
++    }
++    for (const [node, entry] of this.entries) if (!keep.has(node)) {
++      this.toolbar.menuAnchors?.get(`omni:${entry.id}`)?.remove();
++      this.toolbar.menuAnchors?.delete(`omni:${entry.id}`);
++      this.entries.delete(node);
++    }
++    return output;
++  }
++  async loadImage(key, url, fill, stroke, filter) {
++    if (this.closed || this.loads.has(key) || this.loads.size >= 32) return;
++    this.loads.add(key);
++    const image = new this.window.Image();
++    let pixels = null;
++    try {
++      if (/\.svg(?:[?#]|$)/i.test(url)) {
++        const response = await this.window.fetch(url);
++        let svg = await response.text();
++        // Firefox's context-painted SVGs need their original computed colors.
++        svg = svg.replace(/context-fill-opacity/g, '1').replace(/context-stroke-opacity/g, '1')
++          .replace(/context-fill/g, fill || 'currentColor').replace(/context-stroke/g, stroke || 'none')
++          .replace(/currentColor/g, fill || '#808080');
++        url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
++      }
++      image.src = url;
++      await image.decode();
++      if (!this.closed) {
++        const canvas = this.window.document.createElementNS('http://www.w3.org/1999/xhtml','canvas');
++        canvas.width = canvas.height = 32;
++        const context = canvas.getContext('2d');
++        if (filter && filter !== 'none') context.filter = filter;
++        context.drawImage(image,0,0,32,32);
++        pixels = this.toolbar.owner.encodePixels(context.getImageData(0,0,32,32));
++      }
++    } catch (_) {} finally {
++      image.src = '';
++      this.loads.delete(key);
++      if (!this.closed) {
++        this.images.set(key,pixels);
++        while (this.images.size > 128) this.images.delete(this.images.keys().next().value);
++        this.invalidate();
++      }
++    }
++  }
++  activate(command, bounds, event) {
++    const contextMenu = command.startsWith('omni-menu:');
++    const id = command.slice(command.indexOf(':')+1);
++    const state = this.snapshot();
++    const live = [...state.omnibarLeft,...state.omnibarRight].find(item=>item.id === id);
++    const entry = [...this.entries.values()].find(item=>item.id === id);
++    if (!live?.enabled || !entry || !this.visible(entry.node)) return 2;
++    const anchor = this.toolbar.menuAnchor(`omni:${id}`, bounds);
++    if (!anchor) return 2;
++    entry.pending = true;
++    entry.document = this.context();
++    entry.tab = this.window.gBrowser.selectedTab;
++    if (contextMenu) {
++      const menuId = entry.node.closest('[context]')?.getAttribute('context');
++      const menu = this.window.document.getElementById(menuId);
++      if (!menu) { entry.pending = false; return 2; }
++      const trigger = new this.window.MouseEvent('winui-page-action-context',{bubbles:true});
++      entry.node.dispatchEvent(trigger);
++      menu.openPopupAtScreen(bounds.x/this.window.devicePixelRatio,(bounds.y+bounds.height)/this.window.devicePixelRatio,true,trigger);
++    } else {
++      // Real original target retains each controller's event delegation, policy,
++      // modifiers, telemetry and extension page-action semantics.
++      const trigger = new this.window.MouseEvent('click',{bubbles:true,cancelable:true,view:this.window,
++        button:0,ctrlKey:event.ctrlKey,altKey:event.altKey,shiftKey:event.shiftKey,metaKey:event.metaKey});
++      this.events.add(trigger);
++      try { entry.node.dispatchEvent(trigger); }
++      finally { this.events.delete(trigger); }
++    }
++    return 1;
++  }
++  anchorFor(node) {
++    if (!node?.nodeType) return node;
++    if (!this.toolbar.active || !this.toolbar.navigation || !this.toolbar.supported()) return node;
++    for (const entry of this.entries.values()) {
++      if (!entry.pending || entry.document !== this.context() || entry.tab !== this.window.gBrowser.selectedTab || !this.visible(entry.node)) continue;
++      if (entry.node === node || entry.node.contains(node) ||
++          (['identity-permission-box','notification-popup-box','identity-box'].includes(node.id) && node.contains(entry.node))) {
++        return this.toolbar.menuAnchors?.get(`omni:${entry.id}`) || node;
++      }
++    }
++    return node;
++  }
++  close() {
++    this.closed = true;
++    this.observer.disconnect();
++    this.theme.removeEventListener('change',this.invalidate);
++    this.contrast.removeEventListener('change',this.invalidate);
++    this.window.removeEventListener('resize',this.invalidate);
++    this.window.removeEventListener('click',this.originalInput,true);
++    this.window.removeEventListener('keydown',this.originalInput,true);
++    this.entries.clear();
++    this.images.clear();
++  }
++}
 diff --git a/browser/base/content/WinUIPinnedExtensions.sys.mjs b/browser/base/content/WinUIPinnedExtensions.sys.mjs
 new file mode 100644
 index 0000000000..987b6fb980
@@ -4262,10 +4496,10 @@ index 0000000000..618c23367b
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..f4b32e1181
+index 0000000000..fb3f6e5e03
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,258 @@
+@@ -0,0 +1,263 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -4323,6 +4557,8 @@ index 0000000000..f4b32e1181
 +    if (window.gUnifiedExtensions) {
 +      const { WinUIPinnedExtensions } = ChromeUtils.importESModule("chrome://browser/content/WinUIPinnedExtensions.sys.mjs");
 +      this.pinned = new WinUIPinnedExtensions(this);
++      const { WinUIOmnibarActions } = ChromeUtils.importESModule("chrome://browser/content/WinUIOmnibarActions.sys.mjs");
++      this.omnibar = new WinUIOmnibarActions(this);
 +    }
 +    this.progress = {
 +      onLocationChange: browser => {
@@ -4360,25 +4596,28 @@ index 0000000000..f4b32e1181
 +        label:label || button?.getAttribute("tooltiptext") || "", tooltip:button?.getAttribute("tooltiptext") || label}];
 +    }));
 +    state.pinned = this.pinned?.snapshot() || [];
++    Object.assign(state, this.omnibar?.snapshot() || {});
 +    return state;
 +  }
 +  executeNavigation(action) {
 +    const {window, owner} = this;
 +    const extension = typeof action?.command === "string" && /^(extension|extension-menu):pinned-[0-9]+$/.test(action.command);
-+    const item = extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === action?.command);
++    const omnibar = typeof action?.command === "string" && /^(omni|omni-menu):action-[0-9]+$/.test(action.command);
++    const item = omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === action?.command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!extension && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!extension && !omnibar && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
 +    // Use the actual Firefox command handler, including its modifier policy.
 +    const event = new window.MouseEvent("click", {view:window, button:0,
 +      ctrlKey:!!(action.modifiers & 1), altKey:!!(action.modifiers & 2),
 +      shiftKey:!!(action.modifiers & 4), metaKey:!!(action.modifiers & 8)});
++    if (omnibar) return this.omnibar?.activate(action.command, action, event) || 2;
 +    if (extension) return this.pinned?.activate(action.command, action, event) || 2;
 +    if (item.menu) return this.openMenu(item.id, action, event);
 +    window.BrowserCommands[item.method](event);
@@ -4487,8 +4726,7 @@ index 0000000000..f4b32e1181
 +  restore() {
 +    if (this.activationFrame) this.window.cancelAnimationFrame(this.activationFrame);
 +    this.activationFrame = 0;
-+    for (const id of ["appMenu-popup", "unified-extensions-panel", "customizationui-widget-panel"]) {
-+      const panel = this.window.document.getElementById(id);
++    for (const panel of this.window.document.querySelectorAll("panel, menupopup")) {
 +      if (panel?.anchorNode && [...(this.menuAnchors?.values() || [])].includes(panel.anchorNode)) panel.hidePopup();
 +    }
 +    const hadFocus = this.active && this.focusOwned;
@@ -4515,6 +4753,7 @@ index 0000000000..f4b32e1181
 +    this.resize.disconnect();
 +    this.navigationObserver.disconnect();
 +    this.pinned?.close();
++    this.omnibar?.close();
 +    this.window.gBrowser.removeTabsProgressListener(this.progress);
 +    this.input.removeEventListener("beforefocus", this.beforeFocus);
 +    this.input.removeEventListener("beforeselect", this.beforeFocus);
@@ -4553,10 +4792,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..a4b78c7e62
+index 0000000000..4b95509baa
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2095 @@
+@@ -0,0 +1,2096 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -5327,6 +5566,7 @@ index 0000000000..a4b78c7e62
 +    if (action.kind === "mode-reveal") {
 +      gURLBar.setUnifiedSearchButtonAvailability(true);
 +      session.modeReveal = (session.modeReveal || 0) + 1;
++      this.invalidateAddress(); // Reveal also needs publication when the switcher was already visible.
 +    } else if (action.kind === "mode-open") {
 +      gURLBar.searchModeSwitcher.nativeOpened();
 +    } else if (action.kind === "mode-pick" || action.kind === "mode-exit") {
