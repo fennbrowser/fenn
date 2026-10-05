@@ -36,7 +36,8 @@ struct NativeAddress {
     std::function<void()> releaseMenuFocus;
     Microsoft::UI::Xaml::Controls::TextBox field;
     NativeSearchMode mode;
-    NativeAddressContextMenu context;
+    NativeAddressContextMenu context, resultMenu;
+    winrt::hstring resultMenuId;
     double clipboardSerial{}, autofillSerial{}, textEpoch{};
     winrt::hstring nextInputType{L"insertReplacementText"}, observedInputType{L"insertReplacementText"};
     PinnedExtensionButtons omnibarLeft, omnibarRight;
@@ -55,7 +56,7 @@ struct NativeAddress {
     // message, plus the sequence it was computed against.
     std::set<winrt::hstring> reportedVisible;
     double reportedSequence{-1};
-    bool visibilityQueued{};
+    bool visibilityQueued{}, visibilityLayoutPending{};
     bool focusObservationQueued{};
     // Hands an intent to the owning pane's request queue. Its notification
     // only posts host work, so the admitted ID is registered with Rust before
@@ -244,8 +245,19 @@ struct NativeAddress {
             value.SetNamedValue(L"id", JValue::CreateStringValue(suggestions.ids[index]));
         Stage(value, incoming);
     }
+    void ResultContext(wchar_t const* kind, winrt::hstring const& command = L"") {
+        Edit();
+        const auto negotiated = shell.NegotiateAddress(NativeShellCore::ContextMenu, Observed(), 0);
+        if (negotiated.decision == NativeShellCore::Defer || negotiated.decision == NativeShellCore::DropIntent) return;
+        auto value = Message(kind);
+        value.SetNamedValue(L"resultId", JValue::CreateStringValue(resultMenuId));
+        value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
+        value.SetNamedValue(L"generation", JValue::CreateNumberValue(double(resultMenu.generation)));
+        value.SetNamedValue(L"id", JValue::CreateStringValue(command));
+        Stage(value, NativeShellCore::ContextMenu);
+    }
     void ObserveFocus(bool islandHasFocus) {
-        if ((mode.flyout.IsOpen() || context.IsOpen()) && islandHasFocus) return;
+        if ((mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen()) && islandHasFocus) return;
         bool inside = false;
         if (root.XamlRoot() && islandHasFocus) {
             auto focused =
@@ -264,7 +276,7 @@ struct NativeAddress {
         // XAML retains logical focus when Win32 focus leaves the island.
         if (inside != focusWithin) {
             focusWithin = inside;
-            if (!inside) context.requested = false;
+            if (!inside) { context.requested = false; resultMenu.requested = false; }
             Action(inside ? L"focus" : L"blur");
             if (GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0))
                 fwprintf(stderr, L"Native address focus inside=%d island=%d pending=%s\n", inside, islandHasFocus,
@@ -417,6 +429,11 @@ struct NativeAddress {
             [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
                 if (!alive.expired()) ScheduleVisibilityReport();
             });
+        suggestions.list.LayoutUpdated([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (alive.expired() || !visibilityLayoutPending) return;
+            visibilityLayoutPending = false;
+            ReportVisibility();
+        });
         suggestions.list.SizeChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (!alive.expired()) ScheduleVisibilityReport();
         });
@@ -451,6 +468,33 @@ struct NativeAddress {
                     Action(L"activate");
                 }
             });
+        resultMenu.snapshotKey = L"resultMenu";
+        resultMenu.automationPrefix = L"FirefoxWinUIResultContext-";
+        resultMenu.focusEditor = false;
+        resultMenu.action = [this, alive = std::weak_ptr<int>(lifetime)](auto kind, auto const& id) {
+            if (!alive.expired()) ResultContext(kind, id);
+        };
+        suggestions.list.ContextRequested([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+            if (alive.expired()) return;
+            auto source = e.OriginalSource().template try_as<DependencyObject>();
+            ListViewItem row{nullptr};
+            while (source && source != suggestions.list) {
+                row = source.try_as<ListViewItem>();
+                if (row) break;
+                source = Media::VisualTreeHelper::GetParent(source);
+            }
+            winrt::Windows::Foundation::Point point{};
+            const bool pointer = e.TryGetPosition(suggestions.list, point);
+            if (!row && !pointer) row = suggestions.list.SelectedItem().try_as<ListViewItem>();
+            uint32_t index{};
+            if (!row || !suggestions.list.Items().IndexOf(row, index) || index >= suggestions.ids.size()) return;
+            e.Handled(true);
+            resultMenuId = suggestions.ids[index];
+            resultMenu.anchor = row;
+            resultMenu.requested = true;
+            resultMenu.atPointer = e.TryGetPosition(row, resultMenu.position);
+            ResultContext(L"context-open");
+        });
         suggestions.list.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](
                                             auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
             if (alive.expired()) return;
@@ -739,6 +783,7 @@ struct NativeAddress {
         if (!snapshot.GetNamedBoolean(L"enabled", false)) {
             if (navigation) navigation->Apply({}, false);
             context.Reset();
+            resultMenu.Reset();
             omnibarLeft.Apply({}, false); omnibarRight.Apply({}, false);
             if (popup) popup.IsOpen(false);
             mode.Disable();
@@ -786,6 +831,12 @@ struct NativeAddress {
             NativeJson::RequireRevision(menu, L"generation"); NativeJson::RequireRevision(menu, L"editId");
             size_t count = 0; NativeAddressContextMenu::Validate(menu.GetNamedArray(L"items"), count);
         }
+        if (snapshot.HasKey(L"resultMenu")) {
+            auto menu = snapshot.GetNamedObject(L"resultMenu");
+            NativeJson::RequireRevision(menu, L"generation"); NativeJson::RequireRevision(menu, L"editId");
+            NativeJson::RequireLength(menu.GetNamedString(L"resultId"), 64);
+            size_t count = 0; NativeAddressContextMenu::Validate(menu.GetNamedArray(L"items"), count);
+        }
         double completionSerial = 0, completionEdit = 0, completionStart = 0, completionEnd = 0;
         winrt::hstring completionBefore;
         if (snapshot.HasKey(L"autofill")) {
@@ -809,6 +860,8 @@ struct NativeAddress {
             auto id = row.GetNamedString(L"id");
             if (id.empty() || id.size() > NativeJson::kMaxOpaqueId || !checkedIds.insert(id).second ||
                 row.GetNamedString(L"title").size() > 4096 ||
+                row.GetNamedString(L"description", L"").size() > 1024 ||
+                row.GetNamedString(L"displayUrl", L"").size() > 1024 ||
                 row.GetNamedString(L"actionLabel", L"").size() > NativeJson::kMaxShortLabel)
                 winrt::throw_hresult(E_INVALIDARG);
             const auto size = row.GetNamedNumber(L"imageSize", 16);
@@ -861,6 +914,7 @@ struct NativeAddress {
         }
         if (nextSession != session) {
             context.Reset();
+            resultMenu.Reset();
             mode.Reset();
             clipboardSerial = 0;
             autofillSerial = 0;
@@ -956,6 +1010,10 @@ struct NativeAddress {
             auto nextSequence = snapshot.GetNamedNumber(L"sequence", 0);
             if (sequence != nextSequence || previousRevision != revision) {
                 sequence = nextSequence;
+                // New containers can have no bounds until layout even when the
+                // list's viewport and size are unchanged. Report after layout,
+                // not just through size/viewport events or this synchronous pass.
+                visibilityLayoutPending = true;
                 suggestions.SyncRows(snapshot.GetNamedArray(L"rows"));
                 visibility = L"";
             }
@@ -974,6 +1032,9 @@ struct NativeAddress {
             popup.IsOpen(checkedOpen);
         }
         context.Sync(snapshot, shell.AddressState().edit_id, focusWithin, field);
+        if (snapshot.HasKey(L"resultMenu") && snapshot.GetNamedObject(L"resultMenu").GetNamedString(L"resultId") != resultMenuId)
+            resultMenu.Reset();
+        else resultMenu.Sync(snapshot, shell.AddressState().edit_id, focusWithin, field);
         mode.ShowPendingReveal();
         // The deferred commit's precondition is satisfied by a publication, so
         // this is where it is re-offered. Action() queues it if the policy now

@@ -868,10 +868,22 @@ index 995b2fc869..7add43e3b2 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 47a26fd814..5fec4b8b91 100644
+index 47a26fd814..cc3e6f216f 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3831,6 +3831,35 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -529,8 +529,9 @@ pref("browser.urlbar.weather.featureGate", false);
+ // Enable clipboard suggestions feature, the pref should be removed once stable.
+ pref("browser.urlbar.clipboard.featureGate", false);
+ 
+-// Enable context menu on the urlbar.
+-pref("browser.urlbar.contextMenu.featureGate", false);
++// Enable Firefox-owned result commands for both URL-bar presentations.
++// An explicit user preference can still disable them.
++pref("browser.urlbar.contextMenu.featureGate", true);
+ 
+ // The minimum prefix length of a weather keyword the user must type to trigger
+ // the suggestion. 0 means the min length should be taken from Nimbus or remote
+@@ -3831,6 +3832,35 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -963,10 +975,10 @@ index 00da33bc11..b38767f3b3 100644
        }
      }
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..b7bd6796fe 100644
+index b2b5db6040..c183eb4800 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -33,6 +33,15 @@ browser.jar:
+@@ -33,6 +33,16 @@ browser.jar:
          content/browser/aboutTabCrashed.xhtml         (content/aboutTabCrashed.xhtml)
          content/browser/blanktab.html                 (content/blanktab.html)
          content/browser/browser.js                    (content/browser.js)
@@ -975,6 +987,7 @@ index b2b5db6040..b7bd6796fe 100644
 +        content/browser/WinUITabStripSession.sys.mjs     (content/WinUITabStripSession.sys.mjs)
 +        content/browser/WinUIUrlbarSession.sys.mjs      (content/WinUIUrlbarSession.sys.mjs)
 +        content/browser/WinUIPinnedExtensions.sys.mjs  (content/WinUIPinnedExtensions.sys.mjs)
++        content/browser/WinUIResultContextMenu.sys.mjs  (content/WinUIResultContextMenu.sys.mjs)
 +        content/browser/WinUIAddressContextMenu.sys.mjs  (content/WinUIAddressContextMenu.sys.mjs)
 +        content/browser/WinUIOmnibarActions.sys.mjs  (content/WinUIOmnibarActions.sys.mjs)
 +        content/browser/WinUIAddressToolbar.sys.mjs     (content/WinUIAddressToolbar.sys.mjs)
@@ -1793,7 +1806,7 @@ index 9596698cf9..b95f43a4b3 100644
  
      return {
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 5a562d6385..38efc61bb6 100644
+index 5a562d6385..3a97c54601 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
 @@ -84,6 +84,7 @@ export class UrlbarView {
@@ -1914,7 +1927,52 @@ index 5a562d6385..38efc61bb6 100644
  
      if (!this.isOpen) {
        this.clear();
-@@ -2774,7 +2828,7 @@ export class UrlbarView {
+@@ -1170,6 +1224,32 @@ export class UrlbarView {
+     }
+   }
+ 
++  async prepareNativeResultMenu(result) {
++    if (!UrlbarPrefs.get("contextMenu.featureGate")) return null;
++    const commands = this.#getMenuCommands(result);
++    if (!commands?.length) return null;
++    const panel = this.document.createElement("panel-list");
++    await this.#populateResultMenu({panel, commands});
++    for (const item of panel.children) {
++      if (item.dataset.openIn === "container-tab")
++        await this.#populateContainerSubmenu(item.querySelector("panel-list"));
++    }
++    await this.document.l10n.translateElements([...panel.querySelectorAll("[data-l10n-id]")]);
++    return panel;
++  }
++
++  activateNativeResultMenu(result, item, event) {
++    // Reuse the original item handlers, including container management items.
++    const previous = this.#resultMenuResult;
++    this.#resultMenuResult = result;
++    try {
++      const listener = e => this.on_click(e);
++      item.addEventListener("click", listener);
++      try { item.dispatchEvent(event); }
++      finally { item.removeEventListener("click", listener); }
++    } finally { this.#resultMenuResult = previous; }
++  }
++
+   openResultMenu(result, anchor) {
+     this.#resultMenuResult = result;
+     let event = new CustomEvent("ResultMenuTriggered", {
+@@ -1191,6 +1271,11 @@ export class UrlbarView {
+    *   The UrlbarResult's new menu commands.
+    */
+   updateResultMenuCommands(resultId, commands) {
++    if (this.nativePresentation) {
++      const result = this.nativePresentation.updateResultMenuCommands(resultId, commands);
++      if (result) this.#resultMenuCommands.delete(result);
++      return;
++    }
+     let row = this.#getRowByResultId(resultId);
+     if (!row) {
+       return;
+@@ -2774,7 +2859,7 @@ export class UrlbarView {
      }
    }
  
@@ -1923,7 +1981,7 @@ index 5a562d6385..38efc61bb6 100644
      if (
        result.source == UrlbarShared.RESULT_SOURCE.HISTORY &&
        (result.type == UrlbarShared.RESULT_TYPE.SEARCH ||
-@@ -2791,6 +2845,7 @@ export class UrlbarView {
+@@ -2791,6 +2876,7 @@ export class UrlbarView {
        return result.payload.icon;
      }
      if (result.payload.iconBlob) {
@@ -2827,6 +2885,107 @@ index 1e2660589b..85227d8e69 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/base/content/WinUIResultContextMenu.sys.mjs b/browser/base/content/WinUIResultContextMenu.sys.mjs
+new file mode 100644
+index 0000000000..1db92b4486
+--- /dev/null
++++ b/browser/base/content/WinUIResultContextMenu.sys.mjs
+@@ -0,0 +1,95 @@
++// Firefox owns result-menu commands; native receives only scoped opaque IDs.
++export class WinUIResultContextMenu {
++  constructor(session) { this.session = session; this.generation = 0; }
++  close() {
++    this.generation++;
++    this.state = null;
++    if (this.session.resultMenuSnapshot) {
++      this.session.resultMenuSnapshot = null;
++      this.session.changed();
++    }
++  }
++  current(state) {
++    const s=this.session, active=s.active, win=s.window;
++    return !s.closed && !win.gDialogBox?.isOpen && active && active === state.active &&
++      s.input.view.nativePresentation === s && s.nativeOpen &&
++      s.nativeVisible?.includes(state.id) &&
++      win.gBrowser.selectedBrowser === state.browser &&
++      state.document && state.document === state.browser.browsingContext.currentWindowGlobal?.innerWindowId &&
++      state.page === state.browser.currentURI?.spec &&
++      state.editId === s.editId && state.text === s.input.inputField.value &&
++      active.rows.some(row=>row.id===state.id) &&
++      active.context?.results.includes(state.result);
++  }
++  async open(request) {
++    this.close();
++    const s=this.session, active=s.active;
++    if (request.version !== 1 || request.session !== s.sessionId || !active || request.editId !== s.editId || request.revision !== active.revision ||
++        !s.nativeVisible?.includes(request.resultId)) return;
++    const index=active.rows.findIndex(row=>row.id===request.resultId);
++    const result=active.results[active.resultIndexes[index]];
++    if (!result) return;
++    const generation=this.generation;
++    const state={active,result,id:request.resultId,browser:active.browser,
++      document:active.browser.browsingContext.currentWindowGlobal?.innerWindowId,
++      page:active.browser.currentURI?.spec,
++      editId:s.editId,text:s.input.inputField.value,nodes:new Map()};
++    if (!this.current(state)) return;
++    const panel=await s.input.view.prepareNativeResultMenu(result);
++    if (generation!==this.generation || !this.current(state) || !panel) return;
++    let count=0;
++    const read=(parent,depth=0)=>{
++      if(depth>4) throw new Error("Result menu too deep");
++      return [...parent.children].map(node=>{
++        if(++count>128) throw new Error("Result menu too large");
++        if(node.localName==='hr') return {separator:true};
++        const id=`${generation}:${count}`;
++        state.nodes.set(id,node);
++        const child=node.querySelector('panel-list');
++        const label=(child ? node.querySelector('span')?.textContent : node.textContent) || '';
++        const item={id,label:label.trim().slice(0,4096),enabled:!node.disabled,
++          accessKey:(node.getAttribute('accesskey') || '').slice(0,16)};
++        if(child) item.children=read(child,depth+1);
++        return item;
++      }).filter(item=>item.separator || item.label);
++    };
++    const items=read(panel);
++    this.state=state;
++    s.resultMenuSnapshot={generation,editId:s.editId,resultId:state.id,items};
++    s.changed();
++  }
++  async activate(state, node, generation) {
++    const s=this.session;
++    const key=item => JSON.stringify([item.dataset.command, item.dataset.openIn,
++      item.dataset.usercontextid, item.getAttribute('data-l10n-id')]);
++    const wanted=key(node);
++    const panel=await s.input.view.prepareNativeResultMenu(state.result);
++    if(generation!==this.generation) return;
++    if(!this.current(state)) {this.close();return;}
++    const fresh=panel && [...panel.querySelectorAll('panel-item')].find(item=>
++      !item.disabled && !item.hidden && !item.querySelector('panel-list') && key(item)===wanted);
++    try {
++      if(fresh) s.input.view.activateNativeResultMenu(state.result,fresh,
++        new s.window.MouseEvent('click',{bubbles:true,view:s.window,button:0}));
++    } finally {this.close();}
++  }
++  execute(request) {
++    const s=this.session, state=this.state;
++    if (request.version !== 1 || request.session !== s.sessionId || !state || request.generation!==this.generation || request.resultId!==state.id ||
++        !this.current(state)) { this.close(); return 2; }
++    if(request.kind==='context-close') {if(!state.invoking)this.close();return 1;}
++    if(request.kind!=='context-action') return 2;
++    const node=state.nodes.get(request.id);
++    if(!node || node.disabled || node.hidden || node.querySelector('panel-list')) return 2;
++    // Rebuild through Firefox immediately before dispatch. Container and policy
++    // changes while the flyout was open must revoke commands as well.
++    if(state.invoking) return 2;
++    state.invoking=true;
++    const generation=this.generation;
++    this.activate(state,node,generation).catch(error=>{
++      if(generation===this.generation)this.close();
++      console.error(error);
++    });
++    return 1;
++  }
++}
 diff --git a/browser/base/content/WinUIAddressContextMenu.sys.mjs b/browser/base/content/WinUIAddressContextMenu.sys.mjs
 new file mode 100644
 index 0000000000..b10e3c1439
@@ -3708,10 +3867,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..05049704ce
+index 0000000000..d48a9ebc6d
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1118 @@
+@@ -0,0 +1,1165 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4166,6 +4325,17 @@ index 0000000000..05049704ce
 +  }
 +
 +  contextMenu(request) {
++    if (request.resultId !== undefined) {
++      if (!this.resultMenuAdapter) {
++        const {WinUIResultContextMenu} = ChromeUtils.importESModule("chrome://browser/content/WinUIResultContextMenu.sys.mjs");
++        this.resultMenuAdapter = new WinUIResultContextMenu(this);
++      }
++      if (request.kind === "context-open") {
++        this.resultMenuAdapter.open(request).catch(console.error);
++        return 1;
++      }
++      return this.resultMenuAdapter.execute(request);
++    }
 +    if (!this.contextAdapter) {
 +      const {WinUIAddressContextMenu} = ChromeUtils.importESModule("chrome://browser/content/WinUIAddressContextMenu.sys.mjs");
 +      this.contextAdapter = new WinUIAddressContextMenu(this);
@@ -4281,6 +4451,7 @@ index 0000000000..05049704ce
 +      inputType: request.inputType || "insertReplacementText",
 +    };
 +    this.contextAdapter?.close();
++    this.resultMenuAdapter?.close();
 +    this.clipboardResult = null;
 +    this.editId = state.editId;
 +    let pending;
@@ -4421,6 +4592,7 @@ index 0000000000..05049704ce
 +      active.page !== active.browser.currentURI.spec
 +    )
 +      return;
++    this.resultMenuAdapter?.close();
 +    this.captureAutofill(active);
 +    this.cancelImages();
 +    active.imagePixels = 0;
@@ -4476,6 +4648,7 @@ index 0000000000..05049704ce
 +      for (const [i, row] of active.rows.entries()) {
 +        const data = presentation[i];
 +        const result = active.results[active.resultIndexes[i]];
++        this.loadNativeDetails(active, row, result).catch(console.error);
 +        if (result.providerName === "UrlbarProviderGlobalActions" && result.payload.dynamicType === "actions") {
 +          row.globalActions = result.payload.actionsResults.slice(0, 16).map((action, index) => {
 +            const item = {id:`${row.id}:action:${index}`, key:action.key, title:""};
@@ -4541,6 +4714,23 @@ index 0000000000..05049704ce
 +    }
 +  }
 +
++  updateResultMenuCommands(resultId, commands) {
++    const result = this.active?.context?.results.find(item => item.id === resultId);
++    if (!result) return null;
++    result.commands = commands;
++    this.resultMenuAdapter?.close();
++    return result;
++  }
++
++  onQueryResultRemoved(id) {
++    const active = this.active;
++    if (!active?.context || !active.results?.some(result => result.id === id)) return;
++    // The controller owns removal. Its notification also reaches native rows,
++    // which have no DOM row for UrlbarView to remove.
++    active.context.results = active.context.results.filter(result => result.id !== id);
++    this.onQueryResults(active.context);
++  }
++
 +  onQueryFinished(context) {
 +    if (this.active?.context?.id === context.id) {
 +      this.active.done = true;
@@ -4553,6 +4743,20 @@ index 0000000000..05049704ce
 +        this.active.zeroPrefixRecorded = true;
 +        this.input.controller.parentController.recordZeroPrefix("exposure");
 +      }
++    }
++  }
++
++  async loadNativeDetails(active, row, result) {
++    // Text-only presentation; custom controls and their commands retain fallback.
++    if (!this.canActivate(result)) return;
++    row.description = String(result.payload.description || "").slice(0, 1024);
++    for (const [field, message] of [["description", result.payload.descriptionL10n],
++                                  ["title", result.payload.titleL10n]]) {
++      if (!message?.id) continue;
++      const value = await this.window.document.l10n.formatValue(message.id, message.args);
++      if (this.closed || this.active !== active || !active.rows.includes(row)) return;
++      row[field] = value.slice(0, 1024);
++      this.sequence++;
 +    }
 +  }
 +
@@ -4793,6 +4997,7 @@ index 0000000000..05049704ce
 +  cancel() {
 +    this.autofillResult = null;
 +    this.contextAdapter?.close();
++    this.resultMenuAdapter?.close();
 +    this.clipboardResult = null;
 +    this.cancelImages();
 +    if (this.input?.view.nativePresentation === this) {
@@ -4810,6 +5015,7 @@ index 0000000000..05049704ce
 +  close() {
 +    if (this.closed) return;
 +    this.contextAdapter?.close();
++    this.resultMenuAdapter?.close();
 +    this.releaseNativePresentation();
 +    this.cancel();
 +    this.modeChanged();
@@ -5137,10 +5343,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..e4712aae9d
+index 0000000000..b6013717e9
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2110 @@
+@@ -0,0 +1,2113 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -5860,6 +6066,7 @@ index 0000000000..e4712aae9d
 +      editId: session.editId,
 +      textEpoch: session.textEpoch || 0,
 +      ...(session.contextSnapshot ? {contextMenu:session.contextSnapshot} : {}),
++      ...(session.resultMenuSnapshot ? {resultMenu:session.resultMenuSnapshot} : {}),
 +      selectedId: snapshot?.selectedId || "",
 +      sequence: snapshot ? snapshot.sequence : -session.revision - 1,
 +      complete: !!session.active?.done || snapshot?.complete || session.editState?.status === "failed",
@@ -5882,6 +6089,8 @@ index 0000000000..e4712aae9d
 +          id: row.id,
 +          enabled: row.enabled !== false,
 +          title: (row.title || row.displayUrl || "Suggestion").slice(0, 1024),
++          description: (row.description || "").slice(0, 1024),
++          displayUrl: (row.displayUrl || "").slice(0, 1024),
 +          actionLabel: (row.actionLabel || "").slice(0, 1024),
 +          sectionLabel: (row.sectionLabel || "").slice(0, 1024),
 +          imageSize: row.imageSize || 16,

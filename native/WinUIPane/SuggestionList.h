@@ -13,7 +13,7 @@ struct SuggestionList {
     Microsoft::UI::Xaml::Controls::ListView list;
     std::vector<winrt::hstring> ids, titles, actionLabels;
     struct RowVisual {
-        Microsoft::UI::Xaml::Controls::TextBlock title, section;
+        Microsoft::UI::Xaml::Controls::TextBlock title, section, description, url;
         Microsoft::UI::Xaml::Controls::Image image;
         Microsoft::UI::Xaml::Controls::SymbolIcon symbol;
         winrt::hstring pixels;
@@ -42,8 +42,10 @@ struct SuggestionList {
             auto title = titles[i];
             if (int(i) == list.SelectedIndex() && !actionLabels[i].empty()) title = title + L" · " + actionLabels[i];
             visuals[i].title.Text(title);
-            Automation::AutomationProperties::SetName(
-                container, visuals[i].section.Text().empty() ? title : visuals[i].section.Text() + L". " + title);
+            auto name = visuals[i].section.Text().empty() ? title : visuals[i].section.Text() + L". " + title;
+            if (!visuals[i].description.Text().empty()) name = name + L". " + visuals[i].description.Text();
+            if (!visuals[i].url.Text().empty()) name = name + L". " + visuals[i].url.Text();
+            Automation::AutomationProperties::SetName(container, name);
         }
     }
 
@@ -91,7 +93,16 @@ struct SuggestionList {
                 titleColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
                 line.ColumnDefinitions().Append(iconColumn);
                 line.ColumnDefinitions().Append(titleColumn);
-                Grid::SetColumn(visual.title, 1);
+                StackPanel text;
+                text.Spacing(2);
+                text.Children().Append(visual.title);
+                visual.description.TextWrapping(TextWrapping::Wrap);
+                visual.description.MaxLines(2);
+                visual.description.TextTrimming(TextTrimming::CharacterEllipsis);
+                visual.url.TextTrimming(TextTrimming::CharacterEllipsis);
+                text.Children().Append(visual.description);
+                text.Children().Append(visual.url);
+                Grid::SetColumn(text, 1);
                 Grid icon;
                 icon.Children().Append(visual.symbol);
                 icon.Children().Append(visual.image);
@@ -101,7 +112,7 @@ struct SuggestionList {
                 Automation::AutomationProperties::SetAccessibilityView(visual.symbol,
                                                                        Automation::Peers::AccessibilityView::Raw);
                 line.Children().Append(icon);
-                line.Children().Append(visual.title);
+                line.Children().Append(text);
                 content.Children().Append(visual.section);
                 content.Children().Append(line);
                 container.HorizontalContentAlignment(HorizontalAlignment::Stretch);
@@ -115,6 +126,12 @@ struct SuggestionList {
             auto row = rows.GetAt(i).GetObject();
             list.Items().GetAt(i).as<ListViewItem>().IsEnabled(row.GetNamedBoolean(L"enabled", true));
             auto& visual = visuals[i];
+            const auto description = row.GetNamedString(L"description", L"");
+            const auto url = row.GetNamedString(L"displayUrl", L"");
+            visual.description.Text(description);
+            visual.description.Visibility(description.empty() ? Visibility::Collapsed : Visibility::Visible);
+            visual.url.Text(url == titles[i] ? L"" : url);
+            visual.url.Visibility(visual.url.Text().empty() ? Visibility::Collapsed : Visibility::Visible);
             const auto section = row.GetNamedString(L"sectionLabel", L"");
             visual.section.Text(section);
             visual.section.Visibility(section.empty() ? Visibility::Collapsed : Visibility::Visible);

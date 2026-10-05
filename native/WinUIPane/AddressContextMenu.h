@@ -9,6 +9,9 @@ struct NativeAddressContextMenu {
     std::function<void(wchar_t const*, winrt::hstring const&)> action;
     std::function<void(wchar_t const*)> editType;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
+    winrt::hstring snapshotKey = L"contextMenu", automationPrefix = L"FirefoxWinUIAddressContext-";
+    Microsoft::UI::Xaml::FrameworkElement anchor{nullptr};
+    bool focusEditor = true;
     uint64_t generation{};
     bool requested{}, invoking{}, atPointer{};
     winrt::Windows::Foundation::Point position{};
@@ -48,11 +51,11 @@ struct NativeAddressContextMenu {
                 if (id == L"cmd_redo") enabled = field.CanRedo();
                 if (id == L"cmd_delete") enabled = field.SelectionLength() > 0;
                 button.IsEnabled(enabled);
-                Automation::AutomationProperties::SetAutomationId(button, L"FirefoxWinUIAddressContext-" + id);
+                Automation::AutomationProperties::SetAutomationId(button, automationPrefix + id);
                 button.Click([this, field, id, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
                     if (alive.expired()) return;
                     invoking = true;
-                    field.Focus(FocusState::Programmatic);
+                    if (focusEditor) field.Focus(FocusState::Programmatic);
                     if (editType) {
                         if (id == L"cmd_undo") editType(L"historyUndo");
                         else if (id == L"cmd_redo") editType(L"historyRedo");
@@ -79,11 +82,11 @@ struct NativeAddressContextMenu {
     }
     void Sync(Object const& snapshot, uint64_t editId, bool ownsFocus,
               Microsoft::UI::Xaml::Controls::TextBox const& field) {
-        if (!snapshot.HasKey(L"contextMenu")) {
+        if (!snapshot.HasKey(snapshotKey)) {
             if (!requested && !invoking && IsOpen()) Reset();
             return;
         }
-        auto menu = snapshot.GetNamedObject(L"contextMenu");
+        auto menu = snapshot.GetNamedObject(snapshotKey);
         auto next = uint64_t(NativeJson::RequireRevision(menu, L"generation"));
         if (next == generation || !requested || !ownsFocus || NativeJson::RequireRevision(menu, L"editId") != editId) return;
         requested = false;
@@ -94,10 +97,11 @@ struct NativeAddressContextMenu {
         flyout.Closed([this, next, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (!alive.expired() && next == generation && !invoking && action) action(L"context-close", L"");
         });
+        auto target = anchor ? anchor : field.as<Microsoft::UI::Xaml::FrameworkElement>();
         if (atPointer) {
             Microsoft::UI::Xaml::Controls::Primitives::FlyoutShowOptions options;
             options.Position(position);
-            flyout.ShowAt(field, options);
-        } else flyout.ShowAt(field);
+            flyout.ShowAt(target, options);
+        } else flyout.ShowAt(target);
     }
 };

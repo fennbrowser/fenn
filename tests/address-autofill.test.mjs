@@ -116,3 +116,14 @@ test("composition updates never query; committed Unicode starts one Firefox quer
   s.acceptEdit({...request,editId:4,text:"\u65e5\u672c",selectionStart:2,selectionEnd:2,composing:false});
   assert.deepEqual(queries,[["\u65e5\u672c","insertCompositionText"]]);
 });
+
+
+test("native rich text uses Firefox localization and rejects late row updates",async()=>{
+  const {s}=fixture();const row={};s.active.rows=[row];s.canActivate=()=>true;
+  s.window={document:{l10n:{formatValue:async id=>"localized "+id}}};
+  await s.loadNativeDetails(s.active,row,{payload:{descriptionL10n:{id:"detail"},titleL10n:{id:"title"}}});
+  assert.equal(row.description,"localized detail");assert.equal(row.title,"localized title");
+  let resolve;s.window.document.l10n.formatValue=()=>new Promise(r=>resolve=r);
+  const pending=s.loadNativeDetails(s.active,row,{payload:{descriptionL10n:{id:"old"}}});
+  s.active={};resolve("obsolete");await pending;assert.notEqual(row.description,"obsolete");
+});
