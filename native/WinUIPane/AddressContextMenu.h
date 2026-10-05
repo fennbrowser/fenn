@@ -7,6 +7,7 @@ struct NativeAddressContextMenu {
     using Array = winrt::Windows::Data::Json::JsonArray;
     Microsoft::UI::Xaml::Controls::MenuFlyout flyout{nullptr};
     std::function<void(wchar_t const*, winrt::hstring const&)> action;
+    std::function<void(wchar_t const*)> editType;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     uint64_t generation{};
     bool requested{}, invoking{}, atPointer{};
@@ -52,6 +53,11 @@ struct NativeAddressContextMenu {
                     if (alive.expired()) return;
                     invoking = true;
                     field.Focus(FocusState::Programmatic);
+                    if (editType) {
+                        if (id == L"cmd_undo") editType(L"historyUndo");
+                        else if (id == L"cmd_redo") editType(L"historyRedo");
+                        else if (id == L"cmd_delete") editType(L"deleteContentForward");
+                    }
                     if (id == L"cmd_undo") field.Undo();
                     else if (id == L"cmd_redo") field.Redo();
                     else if (id == L"cmd_cut") field.CutSelectionToClipboard();

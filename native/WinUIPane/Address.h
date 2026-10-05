@@ -26,7 +26,8 @@ struct NativeAddress {
     Microsoft::UI::Xaml::Controls::TextBox field;
     NativeSearchMode mode;
     NativeAddressContextMenu context;
-    double clipboardSerial{};
+    double clipboardSerial{}, autofillSerial{};
+    winrt::hstring nextInputType{L"insertReplacementText"}, observedInputType{L"insertReplacementText"};
     PinnedExtensionButtons omnibarLeft, omnibarRight;
     SuggestionList suggestions;
     GlobalActionsPanel actions;
@@ -170,6 +171,8 @@ struct NativeAddress {
         if (!shell.AddressEdit()) return;
         observedText = field.Text();
         observedComposing = composing;
+        observedInputType = nextInputType;
+        nextInputType = L"insertReplacementText";
         RetryEdit();
     }
     // Capacity becomes available at request completion. Retry only an edit
@@ -180,6 +183,7 @@ struct NativeAddress {
         auto value = Message(L"edit");
         value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(state.edit_id)));
         value.SetNamedValue(L"text", JValue::CreateStringValue(observedText));
+        value.SetNamedValue(L"inputType", JValue::CreateStringValue(observedInputType));
         value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
         value.SetNamedValue(L"selectionEnd",
                             JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
@@ -204,6 +208,7 @@ struct NativeAddress {
         if (incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::ContextMenu || incoming == NativeShellCore::Blur) {
             value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
             value.SetNamedValue(L"text", JValue::CreateStringValue(field.Text()));
+            value.SetNamedValue(L"inputType", JValue::CreateStringValue(observedInputType));
             value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
             value.SetNamedValue(L"selectionEnd", JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
             value.SetNamedValue(L"composing", JValue::CreateBooleanValue(composing));
@@ -301,6 +306,8 @@ struct NativeAddress {
             }
             if (decision != NativeShellCore::Stage && decision != NativeShellCore::Replace) return;
             auto value = Message(L"text-selection");
+            value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
+            value.SetNamedValue(L"text", JValue::CreateStringValue(field.Text()));
             value.SetNamedValue(L"selectionId", JValue::CreateNumberValue(++selectionId));
             value.SetNamedValue(L"start", JValue::CreateNumberValue(field.SelectionStart()));
             value.SetNamedValue(L"end", JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
@@ -314,6 +321,7 @@ struct NativeAddress {
         field.TextCompositionEnded([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
             composing = false;
+            nextInputType = L"insertCompositionText";
             Edit();
         });
         // TextBox handles pointer presses internally; observe without handling
@@ -326,6 +334,20 @@ struct NativeAddress {
                          true);
         field.GotFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (!alive.expired()) ScheduleFocusObservation();
+        });
+        field.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+            if (alive.expired()) return;
+            nextInputType = L"insertReplacementText";
+            const auto key = uint32_t(e.Key());
+            const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+            if (key == VK_BACK) nextInputType = ctrl ? L"deleteWordBackward" : L"deleteContentBackward";
+            else if (key == VK_DELETE) nextInputType = ctrl ? L"deleteWordForward" : L"deleteContentForward";
+            else if (ctrl && key == 'Z') nextInputType = (GetKeyState(VK_SHIFT) & 0x8000) ? L"historyRedo" : L"historyUndo";
+            else if (ctrl && key == 'Y') nextInputType = L"historyRedo";
+            else if (!ctrl && !alt && ((key >= '0' && key <= 'Z') || key == VK_SPACE ||
+                     (key >= VK_NUMPAD0 && key <= VK_DIVIDE) || (key >= VK_OEM_1 && key <= VK_OEM_3) ||
+                     (key >= VK_OEM_4 && key <= VK_OEM_8) || key == VK_OEM_102)) nextInputType = L"insertText";
         });
         field.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](
                                  auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
@@ -614,6 +636,9 @@ struct NativeAddress {
             Automation::AutomationProperties::SetAutomationId(toolbarRoot, L"FirefoxWinUINavigationToolbar");
             field.ContextFlyout(nullptr);
             field.SelectionFlyout(nullptr);
+            context.editType = [this, alive = std::weak_ptr<int>(lifetime)](auto type) {
+                if (!alive.expired()) nextInputType = type;
+            };
             context.action = [this, alive = std::weak_ptr<int>(lifetime)](auto kind, auto const& id) {
                 if (!alive.expired()) Action(kind, 0, id.c_str());
             };
@@ -746,6 +771,18 @@ struct NativeAddress {
             NativeJson::RequireRevision(menu, L"generation"); NativeJson::RequireRevision(menu, L"editId");
             size_t count = 0; NativeAddressContextMenu::Validate(menu.GetNamedArray(L"items"), count);
         }
+        double completionSerial = 0, completionEdit = 0, completionStart = 0, completionEnd = 0;
+        winrt::hstring completionBefore;
+        if (snapshot.HasKey(L"autofill")) {
+            const auto completion = snapshot.GetNamedObject(L"autofill");
+            completionSerial = NativeJson::RequireRevision(completion, L"serial");
+            completionEdit = NativeJson::RequireRevision(completion, L"editId");
+            completionStart = NativeJson::RequireRevision(completion, L"start");
+            completionEnd = NativeJson::RequireRevision(completion, L"end");
+            completionBefore = completion.GetNamedString(L"before");
+            if (completionBefore.size() > NativeJson::kMaxFieldText || completionEdit != checkedEdit ||
+                completionStart > completionEnd || completionEnd > checkedText.size()) winrt::throw_hresult(E_INVALIDARG);
+        }
         auto checkedRows = snapshot.GetNamedArray(L"rows");
         if (nextSession.empty() || nextSession.size() > 256 || checkedText.size() > NativeJson::kMaxFieldText ||
             checkedRows.Size() > NativeJson::kMaxListEntries)
@@ -811,6 +848,7 @@ struct NativeAddress {
             context.Reset();
             mode.Reset();
             clipboardSerial = 0;
+            autofillSerial = 0;
             ResetSessionState();
             session = nextSession;
             sequence = -1;
@@ -853,6 +891,7 @@ struct NativeAddress {
         // the old code happened to return.
         if (shell.AddressState().needs_dispatch || StagedKind() != NativeShellCore::NoIntent || shell.AddressState().mode_pending) return L"";
         if (clipboardId && clipboardEdit != shell.AddressState().edit_id) return L"";
+        if (completionSerial && completionEdit != shell.AddressState().edit_id) return L"";
         syncing = true;
         try {
             auto placeholder = snapshot.GetNamedString(L"placeholder", L"Search or enter address");
@@ -882,12 +921,20 @@ struct NativeAddress {
                     // Cut/Paste participate in its undo history.
                     field.Select(int(replaceStart), int(replaceEnd - replaceStart));
                     field.SelectedText(clipboardReplacement);
+                } else if (completionSerial > autofillSerial && completionEdit == shell.AddressState().edit_id &&
+                           field.Text() == completionBefore && std::wstring(text).starts_with(std::wstring(completionBefore))) {
+                    field.Select(int(completionBefore.size()), 0);
+                    field.SelectedText(winrt::hstring(std::wstring(text).substr(completionBefore.size())));
                 } else field.Text(text);
                 field.Select(int(text.size()), 0);
             }
             if (clipboardId > clipboardSerial) {
                 field.Select(int(clipboardStart), int(clipboardEnd - clipboardStart));
                 clipboardSerial = double(clipboardId);
+            }
+            if (completionSerial > autofillSerial && completionEdit == shell.AddressState().edit_id) {
+                field.Select(int(completionStart), int(completionEnd - completionStart));
+                autofillSerial = completionSerial;
             }
             auto nextSequence = snapshot.GetNamedNumber(L"sequence", 0);
             if (sequence != nextSequence || previousRevision != revision) {

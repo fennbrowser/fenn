@@ -997,6 +997,11 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)) &&
                 address.FlowDirection() == FlowDirection::LeftToRight && field.TextAlignment() == TextAlignment::Left,
             "restore default LTR address layout");
+    auto invalidCompletion = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);
+    invalidCompletion.SetNamedValue(L"autofill", winrt::Windows::Data::Json::JsonObject::Parse(
+        LR"({"serial":1,"editId":0,"before":"ini","start":3,"end":999})"));
+    Require(FAILED(api.syncAddress(hwnd, invalidCompletion.Stringify().c_str())) && field.Text() == L"initial",
+            "reject out-of-bounds completion before native editor mutation");
     auto originalRow = list.Items().GetAt(0);
     const wchar_t* imageSnapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":2,"text":"initial","selectedId":"b","rows":[{"id":"a","title":"First suggestion","sectionLabel":"Shortcuts","imageSize":32,"image":{"width":1,"height":1,"pixels":"0000ffff"}},{"id":"b","title":"Second suggestion"}]})";

@@ -3700,10 +3700,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..a75312e881
+index 0000000000..fb5e13bb71
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1031 @@
+@@ -0,0 +1,1072 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4118,16 +4118,19 @@ index 0000000000..a75312e881
 +      request.revision !== this.revision ||
 +      request.editId !== edit.editId ||
 +      request.selectionId <= this.selectionId ||
-+      this.input.inputField.value !== edit.text
++      this.input.inputField.value !== (this.active?.inputValue ?? edit.text) ||
++      (request.text !== undefined && request.text !== this.input.inputField.value)
 +    )
 +      return { status: "stale" };
-+    if (request.end > edit.text.length) return { status: "invalid-selection" };
++    if (request.end > this.input.inputField.value.length) return { status: "invalid-selection" };
 +    if (edit.composing) return { status: "composition-owned" };
 +    this.input.inputField.setSelectionRange(
 +      request.start,
 +      request.end,
 +      request.direction
 +    );
++    this.input._on_selectionchange?.();
++    this.autofillResult = null;
 +    this.selectionId = request.selectionId;
 +    edit.selectionStart = request.start;
 +    edit.selectionEnd = request.end;
@@ -4236,6 +4239,7 @@ index 0000000000..a75312e881
 +      request.selectionStart < 0 ||
 +      request.selectionEnd < request.selectionStart ||
 +      request.selectionEnd > request.text.length ||
++      (request.inputType !== undefined && !["insertText", "insertCompositionText", "deleteContentBackward", "deleteContentForward", "deleteWordBackward", "deleteWordForward", "historyUndo", "historyRedo", "insertReplacementText"].includes(request.inputType)) ||
 +      typeof request.composing !== "boolean"
 +    ) {
 +      return { status: "invalid-edit" };
@@ -4249,6 +4253,7 @@ index 0000000000..a75312e881
 +      selectionStart: request.selectionStart,
 +      selectionEnd: request.selectionEnd,
 +      composing: request.composing,
++      inputType: request.inputType || "insertReplacementText",
 +    };
 +    this.contextAdapter?.close();
 +    this.clipboardResult = null;
@@ -4260,13 +4265,10 @@ index 0000000000..a75312e881
 +        this.input.setNativeInputValue(state.text);
 +      else this.input.inputField.value = state.text;
 +    } else {
-+      pending = this.query(state.text);
++      pending = this.query(state.text, new this.window.InputEvent("input", {inputType:state.inputType}), state);
 +    }
 +    this.editState = state;
-+    this.input.inputField.setSelectionRange(
-+      state.selectionStart,
-+      state.selectionEnd
-+    );
++    if (state.composing) this.input.inputField.setSelectionRange(state.selectionStart, state.selectionEnd);
 +    const revision = this.revision;
 +    state.revision = revision;
 +    state.status = state.composing ? "composing" : "querying";
@@ -4311,7 +4313,7 @@ index 0000000000..a75312e881
 +    };
 +  }
 +
-+  async query(text, event = null) {
++  async query(text, event = null, edit = null) {
 +    if (this.closed) throw new Error("Session is closed");
 +    if (typeof text !== "string" || text.length > 32768)
 +      throw new TypeError("Invalid query text");
@@ -4320,20 +4322,57 @@ index 0000000000..a75312e881
 +      revision: this.revision,
 +      text,
 +      inputValue: text,
++      nativeEdit: !!edit && edit.inputType !== "insertReplacementText",
 +      browser: this.window.gBrowser.selectedBrowser,
 +      page: this.window.gBrowser.selectedBrowser.currentURI.spec,
 +      context: null,
 +      rows: [],
 +      done: false,
 +    });
-+    // Edit text, not the formatted display-value setter (which trims URLs).
-+    if (this.input.view.nativePresentation === this)
-+      this.input.setNativeInputValue(text);
-+    else this.input.inputField.value = text;
-+    this.input.startQuery({ searchString: text, allowAutofill: false,
-+      event: event || new this.window.InputEvent("input", {inputType:"insertText"}) });
++    if (edit && edit.inputType !== "insertReplacementText" && this.input.view.nativePresentation === this) {
++      // Firefox owns placeholder prediction, deletion/paste/history policy,
++      // typed identity, telemetry and provider query options.
++      this.input.inputField.value = text;
++      this.input.inputField.setSelectionRange(edit.selectionStart, edit.selectionEnd);
++      const previousQuery = this.input.lastQueryContextPromise;
++      this.input._on_input(event);
++      // Firefox may close an empty view without starting a query (for example
++      // with top sites disabled). That is a completed edit, not pending results.
++      if (this.input.lastQueryContextPromise === previousQuery && !active.context) active.done = true;
++      this.captureAutofill(active);
++    } else {
++      // Unknown/programmatic edits and focus queries retain non-autofill policy.
++      if (this.input.view.nativePresentation === this) this.input.setNativeInputValue(text);
++      else this.input.inputField.value = text;
++      if (edit) this.input.inputField.setSelectionRange(edit.selectionStart, edit.selectionEnd);
++      this.input.startQuery({searchString:text, allowAutofill:false,
++        event:event || new this.window.InputEvent("input", {inputType:"insertText"})});
++    }
 +    await this.input.lastQueryContextPromise;
 +    return this.active === active ? this.snapshot() : null;
++  }
++
++  captureAutofill(active = this.active) {
++    if (!active || this.closed || this.active !== active) return;
++    const field = this.input.inputField;
++    active.inputValue = field.value;
++    const placeholder = this.input._autofillPlaceholder;
++    if (!active.nativeEdit || !placeholder || placeholder.value !== field.value || field.selectionStart === field.selectionEnd) {
++      this.autofillResult = null;
++      return;
++    }
++    const previous = this.autofillResult;
++    if (previous?.editId === this.editId && previous.text === field.value &&
++        previous.start === field.selectionStart && previous.end === field.selectionEnd) return;
++    this.autofillResult = {serial:(this.autofillSerial = (this.autofillSerial || 0) + 1),
++      editId:this.editId, before:active.text, text:field.value,
++      start:field.selectionStart, end:field.selectionEnd};
++  }
++
++  onFirstResult(context) {
++    if (this.active?.context?.id !== context.id) return;
++    this.captureAutofill();
++    this.sequence++;
 +  }
 +
 +  onQueryStarted(context) {
@@ -4357,6 +4396,7 @@ index 0000000000..a75312e881
 +      active.page !== active.browser.currentURI.spec
 +    )
 +      return;
++    this.captureAutofill(active);
 +    this.cancelImages();
 +    active.imagePixels = 0;
 +    this.sequence++;
@@ -4697,6 +4737,7 @@ index 0000000000..a75312e881
 +  }
 +
 +  cancel() {
++    this.autofillResult = null;
 +    this.contextAdapter?.close();
 +    this.clipboardResult = null;
 +    this.cancelImages();
@@ -5042,10 +5083,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..f45226f6b0
+index 0000000000..5ec6460ac3
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2105 @@
+@@ -0,0 +1,2109 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -5766,7 +5807,7 @@ index 0000000000..f45226f6b0
 +      ...(session.contextSnapshot ? {contextMenu:session.contextSnapshot} : {}),
 +      selectedId: snapshot?.selectedId || "",
 +      sequence: snapshot ? snapshot.sequence : -session.revision - 1,
-+      complete: snapshot?.complete || session.editState?.status === "failed",
++      complete: !!session.active?.done || snapshot?.complete || session.editState?.status === "failed",
 +      text:
 +        session.active?.inputValue ||
 +        session.editState?.text ||
@@ -5793,6 +5834,10 @@ index 0000000000..f45226f6b0
 +          image: row.image || null,
 +        })),
 +    };
++    if (session.autofillResult?.text === state.text && session.autofillResult.editId === state.editId) {
++      const {text, ...autofill} = session.autofillResult;
++      state.autofill = autofill;
++    }
 +    if (session.clipboardResult?.text === state.text && session.clipboardResult.editId === state.editId) {
 +      const {text, ...clipboard} = session.clipboardResult;
 +      state.clipboard = clipboard;
@@ -5851,7 +5896,7 @@ index 0000000000..f45226f6b0
 +    } else if (action.kind === "text-selection") {
 +      session.updateSelection({
 +        ...action,
-+        editId: session.editId,
++        editId: action.editId ?? session.editId,
 +        direction: "none",
 +      });
 +    } else if (action.kind === "visibility") {
