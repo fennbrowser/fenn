@@ -2390,7 +2390,8 @@ BOOL WINAPI Translate(MSG* message) noexcept {
                 }
             }
             if (!ownsMessage) continue;
-            if (message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN) {
+            if ((message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN) &&
+                !(pane.address && pane.address->composing) && !NativeAltGrTextKey(UINT(message->wParam))) {
                 const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
                 const bool addressShortcut = pane.addressSource &&
                     (message->wParam == VK_F6 || message->wParam == VK_F5 || message->wParam == VK_F11 ||

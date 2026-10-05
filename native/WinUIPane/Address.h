@@ -10,6 +10,17 @@
 #include "NavigationToolbar.h"
 #include "AddressContextMenu.h"
 
+// Win32 owns keyboard-layout translation. Probe without consuming dead-key state.
+inline bool NativeAltGrTextKey(UINT key) {
+    BYTE state[256]{};
+    if (!GetKeyboardState(state) || !(state[VK_CONTROL] & 0x80) || !(state[VK_MENU] & 0x80)) return false;
+    const auto layout = GetKeyboardLayout(0);
+    wchar_t text[8]{};
+    const auto count = ToUnicodeEx(key, MapVirtualKeyExW(key, MAPVK_VK_TO_VSC, layout),
+                                   state, text, 8, 4, layout);
+    return count < 0 || (count > 0 && text[0] >= L' ');
+}
+
 struct NativeAddress {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using JValue = winrt::Windows::Data::Json::JsonValue;
@@ -343,7 +354,8 @@ struct NativeAddress {
             const auto key = uint32_t(e.Key());
             const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-            if (key == VK_BACK) nextInputType = ctrl ? L"deleteWordBackward" : L"deleteContentBackward";
+            if (NativeAltGrTextKey(key)) nextInputType = L"insertText";
+            else if (key == VK_BACK) nextInputType = ctrl ? L"deleteWordBackward" : L"deleteContentBackward";
             else if (key == VK_DELETE) nextInputType = ctrl ? L"deleteWordForward" : L"deleteContentForward";
             else if (ctrl && key == 'Z') nextInputType = (GetKeyState(VK_SHIFT) & 0x8000) ? L"historyRedo" : L"historyUndo";
             else if (ctrl && key == 'Y') nextInputType = L"historyRedo";
@@ -477,7 +489,7 @@ struct NativeAddress {
         mode.busy = [this] { return syncing || composing || session.empty(); };
         field.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](
                                  auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
-            if (!alive.expired() && (GetKeyState(VK_MENU) & 0x8000) &&
+            if (!alive.expired() && !composing && (GetKeyState(VK_MENU) & 0x8000) &&
                 (e.Key() == winrt::Windows::System::VirtualKey::Down ||
                  e.Key() == winrt::Windows::System::VirtualKey::Up)) {
                 mode.Queue(L"mode-reveal");

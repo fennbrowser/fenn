@@ -100,3 +100,19 @@ test("pending alias edits rebase only against the presentation that still showed
     assert.equal(s.editState.selectionStart,expected.length);
   }
 });
+
+
+test("composition updates never query; committed Unicode starts one Firefox query",()=>{
+  const {s,field}=fixture();
+  s.window={InputEvent:class {constructor(type,init){Object.assign(this,init);}}};
+  s.input.view={nativePresentation:s};s.input.setNativeInputValue=value=>{field.value=value;};
+  s.cancel=()=>{s.active=null;s.editState=null;};
+  const queries=[];s.query=(text,event)=>{queries.push([text,event.inputType]);return Promise.resolve(null);};
+  const request={version:1,session:"s",revision:2,editId:2,text:"\u306b",selectionStart:1,selectionEnd:1,composing:true,inputType:"insertCompositionText"};
+  assert.equal(s.acceptEdit(request).status,"accepted");
+  assert.equal(field.value,"\u306b");assert.equal(queries.length,0);
+  s.acceptEdit({...request,editId:3,text:"\u65e5\u672c",selectionStart:2,selectionEnd:2});
+  assert.equal(queries.length,0);
+  s.acceptEdit({...request,editId:4,text:"\u65e5\u672c",selectionStart:2,selectionEnd:2,composing:false});
+  assert.deepEqual(queries,[["\u65e5\u672c","insertCompositionText"]]);
+});
