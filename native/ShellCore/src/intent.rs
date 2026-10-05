@@ -50,6 +50,8 @@ pub enum IntentKind {
     Fallback = 9,
     /// Firefox clipboard command carrying the current text and selection.
     Clipboard = 10,
+    /// Address context-menu preparation or an item from its current opening.
+    ContextMenu = 11,
 }
 
 impl IntentKind {
@@ -65,6 +67,7 @@ impl IntentKind {
             8 => Some(Self::GlobalAction),
             9 => Some(Self::Fallback),
             10 => Some(Self::Clipboard),
+            11 => Some(Self::ContextMenu),
             _ => None,
         }
     }
@@ -206,9 +209,11 @@ pub fn decide(
         // The edit that is in flight is what the commit would commit against,
         // so wait for it rather than racing it.
         Some(IntentKind::Edit) if incoming == IntentKind::Activate => Decision::Defer,
-        // Clipboard carries the current edit/range, so it can replace those
+        // Clipboard and context menus carry the current edit/range and replace those
         // publications without waiting for suggestions.
-        Some(IntentKind::Edit | IntentKind::TextSelection) if incoming == IntentKind::Clipboard => Decision::Replace,
+        Some(IntentKind::Edit | IntentKind::TextSelection) if matches!(incoming, IntentKind::Clipboard | IntentKind::ContextMenu) => Decision::Replace,
+        // Opening a context menu replaces a focus query, not an edit or submit.
+        Some(IntentKind::Focus) if incoming == IntentKind::ContextMenu => Decision::Replace,
         // A commit or a highlight supersedes a mere caret move.
         Some(IntentKind::TextSelection)
             if matches!(incoming, IntentKind::Select | IntentKind::Activate) =>
@@ -235,7 +240,7 @@ pub fn decide(
 mod tests {
     use super::*;
 
-    const ALL: [IntentKind; 10] = [
+    const ALL: [IntentKind; 11] = [
         IntentKind::Edit,
         IntentKind::TextSelection,
         IntentKind::Select,
@@ -246,6 +251,7 @@ mod tests {
         IntentKind::GlobalAction,
         IntentKind::Fallback,
         IntentKind::Clipboard,
+        IntentKind::ContextMenu,
     ];
 
     /// Everything the browser could have caught up with, so only the pairwise
@@ -259,6 +265,16 @@ mod tests {
             edit_acknowledged: true,
             query_settled: true,
         }
+    }
+
+    #[test]
+    fn context_menu_carries_latest_edit_without_replaying_navigation() {
+        let mut behind = ready();
+        behind.edit_acknowledged = false;
+        for staged in [IntentKind::Edit, IntentKind::TextSelection] {
+            assert_eq!(decide(IntentKind::ContextMenu, Some(staged), behind), Decision::Replace);
+        }
+        assert_eq!(decide(IntentKind::ContextMenu, Some(IntentKind::Activate), ready()), Decision::Drop);
     }
 
     #[test]
@@ -462,6 +478,6 @@ mod tests {
             assert_eq!(IntentKind::from_raw(kind as u32), Some(kind));
         }
         assert_eq!(IntentKind::from_raw(0), None);
-        assert_eq!(IntentKind::from_raw(11), None, "one past the last kind");
+        assert_eq!(IntentKind::from_raw(12), None, "one past the last kind");
     }
 }

@@ -963,10 +963,10 @@ index 00da33bc11..b38767f3b3 100644
        }
      }
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..ffcbd7eebc 100644
+index b2b5db6040..b7bd6796fe 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -33,6 +33,14 @@ browser.jar:
+@@ -33,6 +33,15 @@ browser.jar:
          content/browser/aboutTabCrashed.xhtml         (content/aboutTabCrashed.xhtml)
          content/browser/blanktab.html                 (content/blanktab.html)
          content/browser/browser.js                    (content/browser.js)
@@ -975,6 +975,7 @@ index b2b5db6040..ffcbd7eebc 100644
 +        content/browser/WinUITabStripSession.sys.mjs     (content/WinUITabStripSession.sys.mjs)
 +        content/browser/WinUIUrlbarSession.sys.mjs      (content/WinUIUrlbarSession.sys.mjs)
 +        content/browser/WinUIPinnedExtensions.sys.mjs  (content/WinUIPinnedExtensions.sys.mjs)
++        content/browser/WinUIAddressContextMenu.sys.mjs  (content/WinUIAddressContextMenu.sys.mjs)
 +        content/browser/WinUIOmnibarActions.sys.mjs  (content/WinUIOmnibarActions.sys.mjs)
 +        content/browser/WinUIAddressToolbar.sys.mjs     (content/WinUIAddressToolbar.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
@@ -1536,7 +1537,7 @@ index 48be82749b..548f018330 100644
    }
  }
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index 7e3a12b42c..e48d62d6e2 100644
+index 7e3a12b42c..99bfa5302f 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -1713,7 +1713,15 @@ ${
@@ -1603,7 +1604,41 @@ index 7e3a12b42c..e48d62d6e2 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -4738,12 +4748,13 @@ ${
+@@ -4470,7 +4480,7 @@ ${
+       return;
+     }
+     let controller =
+-      this.document.commandDispatcher.getControllerForCommand("cmd_copy");
++      this.inputField.controllers.getControllerForCommand("cmd_copy");
+     if (
+       !controller.isCommandEnabled("cmd_copy") ||
+       !this.#isClipboardURIValid()
+@@ -4501,8 +4511,13 @@ ${
+         pasteAndGo.addEventListener("command", () => {
+           this._suppressStartQuery = true;
+ 
+-          this.select();
+-          this.window.goDoCommand("cmd_paste");
++          if (this.view.nativePresentation) {
++            this.inputField.setSelectionRange(0, this.inputField.value.length);
++            this.inputField.controllers.getControllerForCommand("cmd_paste").doCommand("cmd_paste");
++          } else {
++            this.select();
++            this.window.goDoCommand("cmd_paste");
++          }
+           this.setResultForCurrentValue(null);
+           this.handleCommand();
+           this.parentController.clearLastQueryContextCache();
+@@ -4537,7 +4552,7 @@ ${
+         );
+ 
+         let controller =
+-          this.document.commandDispatcher.getControllerForCommand("cmd_paste");
++          this.inputField.controllers.getControllerForCommand("cmd_paste");
+         let enabled = controller.isCommandEnabled("cmd_paste");
+         if (enabled) {
+           pasteAndGo.removeAttribute("disabled");
+@@ -4738,12 +4753,13 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -1619,7 +1654,7 @@ index 7e3a12b42c..e48d62d6e2 100644
      ) {
        return null;
      }
-@@ -4758,8 +4769,8 @@ ${
+@@ -4758,8 +4774,8 @@ ${
          result.payload.engine == result.payload.originalEngine)
      ) {
        searchMode = { engineName: result.payload.engine };
@@ -1630,7 +1665,7 @@ index 7e3a12b42c..e48d62d6e2 100644
      }
  
      if (searchMode) {
-@@ -5468,6 +5479,57 @@ ${
+@@ -5468,6 +5484,57 @@ ${
      }
    }
  
@@ -1688,7 +1723,7 @@ index 7e3a12b42c..e48d62d6e2 100644
    _on_input(event) {
      // A new input starts a fresh search; bump the epoch so a pending
      // deferred-Enter's async keyup won't reset this search's caret.
-@@ -5496,17 +5558,7 @@ ${
+@@ -5496,17 +5563,7 @@ ${
      }
  
      let value = this.value;
@@ -1707,7 +1742,7 @@ index 7e3a12b42c..e48d62d6e2 100644
  
      let compositionState = this.#compositionState;
      let compositionClosedPopup = this.#compositionClosedPopup;
-@@ -5521,27 +5573,7 @@ ${
+@@ -5521,27 +5578,7 @@ ${
        this.#compositionHadText = true;
      }
  
@@ -2126,6 +2161,44 @@ index d8f67f31da..13145e7a16 100644
    /**
     * Image animation mode of the window. When this attribute's value
     * is changed, the implementation should set all images in the window
+diff --git a/toolkit/content/editMenuOverlay.js b/toolkit/content/editMenuOverlay.js
+index f529d1136f..20668aa91f 100644
+--- a/toolkit/content/editMenuOverlay.js
++++ b/toolkit/content/editMenuOverlay.js
+@@ -186,6 +186,20 @@ var EditContextMenu = {
+     }
+ 
+     goUpdateGlobalEditMenuItems(true);
++    this.prepare(input, event);
++
++    if (anchor) {
++      popup.openPopup(anchor, "after_start", 0, 0, true, false, event);
++    } else {
++      popup.openPopupAtScreen(event.screenX, event.screenY, true, event);
++    }
++  },
++
++  // Prepare Firefox-owned items without moving focus or opening a DOM popup.
++  // Native editor hosts retain their own standard editing controller.
++  prepare(input, event) {
++    const popup = this._ensurePopup();
++    this.input = input;
+     for (let itemSet of this._itemSets) {
+       let matches = itemSet.matches(input);
+       for (let item of itemSet.items) {
+@@ -196,11 +210,7 @@ var EditContextMenu = {
+       }
+     }
+ 
+-    if (anchor) {
+-      popup.openPopup(anchor, "after_start", 0, 0, true, false, event);
+-    } else {
+-      popup.openPopupAtScreen(event.screenX, event.screenY, true, event);
+-    }
++    return popup;
+   },
+ 
+   _ensurePopup() {
 diff --git a/toolkit/modules/PopupNotifications.sys.mjs b/toolkit/modules/PopupNotifications.sys.mjs
 index 49ccea6285..0362ff9ad3 100644
 --- a/toolkit/modules/PopupNotifications.sys.mjs
@@ -2746,6 +2819,83 @@ index 1e2660589b..85227d8e69 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/base/content/WinUIAddressContextMenu.sys.mjs b/browser/base/content/WinUIAddressContextMenu.sys.mjs
+new file mode 100644
+index 0000000000..546f4f1e3c
+--- /dev/null
++++ b/browser/base/content/WinUIAddressContextMenu.sys.mjs
+@@ -0,0 +1,71 @@
++// Firefox owns context item eligibility, localization and browser actions.
++export class WinUIAddressContextMenu {
++  constructor(session) { this.session = session; this.generation = 0; }
++  close() {
++    this.generation++;
++    this.state = null;
++    this.nodes = null;
++    this.session.contextSnapshot = null;
++    const popup = this.popup;
++    this.popup = null;
++    if (popup) popup.dispatchEvent(new this.session.window.Event("popuphidden"));
++  }
++  async open(request) {
++    this.close();
++    const session = this.session, win = session.window;
++    if (session.syncNativeSelection(request) !== 1 || session.closed) return;
++    const generation = this.generation;
++    const tab = win.gBrowser.selectedTab;
++    const document = tab.linkedBrowser.browsingContext.currentWindowGlobal?.innerWindowId;
++    const event = new win.MouseEvent("contextmenu", {view:win});
++    const popup = win.EditContextMenu.prepare(session.input.inputField, event);
++    this.popup = popup;
++    await win.document.l10n.translateElements([...popup.querySelectorAll("[data-l10n-id]")]);
++    if (generation !== this.generation || session.closed || request.editId !== session.editId ||
++        request.text !== session.input.inputField.value || win.gBrowser.selectedTab !== tab ||
++        document !== tab.linkedBrowser.browsingContext.currentWindowGlobal?.innerWindowId) return;
++    const nodes = new Map(); let count = 0;
++    const standard = new Set(["cmd_undo", "cmd_redo", "cmd_cut", "cmd_copy", "cmd_paste", "cmd_delete", "cmd_selectAll"]);
++    const read = (parent, depth=0) => {
++      if (depth > 4) throw new Error("Context menu too deep");
++      return [...parent.children].filter(node => !node.hidden && !node.collapsed && node.getAttribute("hidden") !== "true" && node.getAttribute("collapsed") !== "true").map(node => {
++        if (++count > 128) throw new Error("Context menu too large");
++        if (node.localName === "menuseparator") return {separator:true};
++        const command = node.getAttribute("command");
++        const id = standard.has(command) ? command : `${generation}:${count}`;
++        nodes.set(id, node);
++        const item = {id, label:(node.getAttribute("label") || "").slice(0,4096),
++          accessKey:node.getAttribute("accesskey") || "", enabled:node.getAttribute("disabled") !== "true",
++          checked:node.getAttribute("checked") === "true", checkable:node.getAttribute("type") === "checkbox"};
++        if (standard.has(command)) item.enabled = !!session.input.inputField.controllers.getControllerForCommand(command)?.isCommandEnabled(command);
++        if (node.localName === "menu") item.children = read(node.menupopup || node.querySelector("menupopup"), depth+1);
++        return item;
++      }).filter(item => item.separator || item.label);
++    };
++    const items = read(popup);
++    this.nodes = nodes;
++    this.state = {generation, tab, document, text:request.text, editId:request.editId};
++    session.contextSnapshot = {generation, editId:request.editId, items};
++    session.changed();
++  }
++  execute(request) {
++    const s = this.session, state = this.state, win = s.window;
++    if (request.generation !== this.generation || !state || request.session !== s.sessionId) return 2;
++    if (request.kind === "context-close") {
++      // Closing can overtake TextChanged (Undo/Redo/Delete). The request carries
++      // that edit, so acknowledge it before revoking this menu opening.
++      const result = s.syncNativeSelection(request);
++      this.close();
++      return result;
++    }
++    const node = this.nodes?.get(request.id);
++    if (!node || s.closed || s.editId !== state.editId || s.input.inputField.value !== state.text ||
++        win.gBrowser.selectedTab !== state.tab || state.document !== state.tab.linkedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
++        !node.isConnected || node.hidden || node.collapsed || node.getAttribute("disabled") === "true") { this.close(); return 2; }
++    // The exact original node owns the handler, including search offers and
++    // autofill dismissal. Never reconstruct their navigation/policy logic.
++    try { node.dispatchEvent(new win.Event("command", {bubbles:true})); }
++    finally { this.close(); }
++    return 1;
++  }
++}
 diff --git a/browser/base/content/WinUIOmnibarActions.sys.mjs b/browser/base/content/WinUIOmnibarActions.sys.mjs
 new file mode 100644
 index 0000000000..bf0194e762
@@ -3534,10 +3684,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..1be380ea76
+index 0000000000..a07e074f3a
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1007 @@
+@@ -0,0 +1,1028 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3985,9 +4135,20 @@ index 0000000000..1be380ea76
 +    return { status: "dismissed", revision: this.revision };
 +  }
 +
-+  clipboard(request) {
++  contextMenu(request) {
++    if (!this.contextAdapter) {
++      const {WinUIAddressContextMenu} = ChromeUtils.importESModule("chrome://browser/content/WinUIAddressContextMenu.sys.mjs");
++      this.contextAdapter = new WinUIAddressContextMenu(this);
++    }
++    if (request.kind === "context-open") {
++      this.contextAdapter.open(request).catch(console.error);
++      return 1;
++    }
++    return this.contextAdapter.execute(request);
++  }
++
++  syncNativeSelection(request) {
 +    if (this.closed || request.version !== 1 || request.session !== this.sessionId ||
-+        !["cmd_copy", "cmd_cut", "cmd_paste"].includes(request.clipboard) ||
 +        !Number.isSafeInteger(request.editId) || request.editId < this.editId ||
 +        typeof request.text !== "string" || request.text.length > 32768 || request.composing !== false ||
 +        !Number.isInteger(request.selectionStart) || !Number.isInteger(request.selectionEnd) ||
@@ -4000,6 +4161,13 @@ index 0000000000..1be380ea76
 +    const field = this.input.inputField;
 +    if (field.value !== request.text) return 2;
 +    field.setSelectionRange(request.selectionStart, request.selectionEnd);
++    return 1;
++  }
++
++  clipboard(request) {
++    if (!["cmd_copy", "cmd_cut", "cmd_paste"].includes(request.clipboard) ||
++        this.syncNativeSelection(request) !== 1) return 2;
++    const field = this.input.inputField;
 +    // Address-specific Copy/Cut restores trimmed schemes and encodes URLs.
 +    // The editor's Paste controller runs Firefox's trusted paste event and
 +    // sanitization without using focus-dependent window command dispatch.
@@ -4063,6 +4231,7 @@ index 0000000000..1be380ea76
 +      selectionEnd: request.selectionEnd,
 +      composing: request.composing,
 +    };
++    this.contextAdapter?.close();
 +    this.clipboardResult = null;
 +    this.editId = state.editId;
 +    let pending;
@@ -4509,6 +4678,7 @@ index 0000000000..1be380ea76
 +  }
 +
 +  cancel() {
++    this.contextAdapter?.close();
 +    this.clipboardResult = null;
 +    this.cancelImages();
 +    if (this.input?.view.nativePresentation === this) {
@@ -4525,6 +4695,7 @@ index 0000000000..1be380ea76
 +
 +  close() {
 +    if (this.closed) return;
++    this.contextAdapter?.close();
 +    this.releaseNativePresentation();
 +    this.cancel();
 +    this.modeChanged();
@@ -4547,10 +4718,10 @@ index 0000000000..1be380ea76
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..fb3f6e5e03
+index 0000000000..45e6d12868
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,263 @@
+@@ -0,0 +1,272 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -4654,7 +4825,9 @@ index 0000000000..fb3f6e5e03
 +    const {window, owner} = this;
 +    const extension = typeof action?.command === "string" && /^(extension|extension-menu):pinned-[0-9]+$/.test(action.command);
 +    const omnibar = typeof action?.command === "string" && /^(omni|omni-menu):action-[0-9]+$/.test(action.command);
-+    const item = omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === action?.command);
++    const history = ["back-history", "forward-history"].includes(action?.command);
++    const command = history ? action.command.replace("-history", "") : action?.command;
++    const item = omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
@@ -4670,6 +4843,13 @@ index 0000000000..fb3f6e5e03
 +      shiftKey:!!(action.modifiers & 4), metaKey:!!(action.modifiers & 8)});
 +    if (omnibar) return this.omnibar?.activate(action.command, action, event) || 2;
 +    if (extension) return this.pinned?.activate(action.command, action, event) || 2;
++    if (history) {
++      const anchor = this.menuAnchor(action.command, action);
++      if (!anchor) return 2;
++      const popup = window.document.getElementById("backForwardMenu");
++      popup.openPopup(anchor, "after_start", 0, 0, true, false, event);
++      return 1;
++    }
 +    if (item.menu) return this.openMenu(item.id, action, event);
 +    window.BrowserCommands[item.method](event);
 +    return 1;
@@ -4843,10 +5023,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..eff2f86ab1
+index 0000000000..a3674a7942
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2101 @@
+@@ -0,0 +1,2103 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -5562,6 +5742,7 @@ index 0000000000..eff2f86ab1
 +      session: session.sessionId,
 +      revision: session.revision,
 +      editId: session.editId,
++      ...(session.contextSnapshot ? {contextMenu:session.contextSnapshot} : {}),
 +      selectedId: snapshot?.selectedId || "",
 +      sequence: snapshot ? snapshot.sequence : -session.revision - 1,
 +      complete: snapshot?.complete || session.editState?.status === "failed",
@@ -5609,6 +5790,7 @@ index 0000000000..eff2f86ab1
 +  executeAddressRequest(action) {
 +    const session = this.addressSession;
 +    if (!session || action?.version !== 1 || action.session !== session.sessionId) return 2;
++    if (["context-open", "context-action", "context-close"].includes(action.kind)) return session.contextMenu(action);
 +    if (action.kind === "clipboard") return session.clipboard(action);
 +    if ((action.kind === "fallback" || action.kind === "blur") && action.text !== undefined) {
 +      if (action.editId > session.editId) {

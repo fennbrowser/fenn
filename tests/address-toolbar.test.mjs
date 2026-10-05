@@ -276,3 +276,20 @@ test("native trailing buttons open Firefox controllers at validated screen ancho
   assert.equal(f.toolbar.executeNavigation({...f.action,command:"appmenu",x:1,y:1,width:32,height:32}),2);
   assert.equal(opened.length,3);
 });
+
+test("Back/Forward history use the original popup with validated native anchors", () => {
+  const f=navigationCommandsFixture(), opened=[];
+  f.window.devicePixelRatio=1;f.window.mozInnerScreenX=0;f.window.mozInnerScreenY=0;
+  f.elements.set("backForwardMenu",{openPopup(...args){opened.push(args);}});
+  for(const command of ["back-history","forward-history"]){
+    const action={...f.action,command,x:20,y:40,width:32,height:32};
+    assert.equal(f.toolbar.executeNavigation({...action,width:0}),2);
+    assert.equal(f.toolbar.executeNavigation({...action,session:"stale"}),2);
+    assert.equal(f.toolbar.executeNavigation(action),1);
+    assert.equal(opened.at(-1)[0].style.left,"20px");
+  }
+  assert.equal(opened.length,2);
+  assert.equal(f.calls.filter(c=>c[0]==="command").length,0,"opening history never navigates");
+  f.elements.get("Browser:Back").setAttribute("disabled","true");
+  assert.equal(f.toolbar.executeNavigation({...f.action,command:"back-history",x:20,y:40,width:32,height:32}),2);
+});

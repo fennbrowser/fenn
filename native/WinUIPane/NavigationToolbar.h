@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <winrt/Microsoft.UI.Dispatching.h>
 #include <functional>
 #include "JsonValidation.h"
 #include "PinnedExtensionButtons.h"
@@ -16,6 +17,8 @@ struct NativeNavigationToolbar {
     std::array<Microsoft::UI::Xaml::Controls::SymbolIcon, 6> icons;
     PinnedExtensionButtons pinned;
     bool stopping{};
+    std::array<Microsoft::UI::Dispatching::DispatcherQueueTimer, 2> historyTimers{nullptr, nullptr};
+    std::array<bool, 2> historyHeld{};
     std::array<uint32_t, 6> inputModifiers{};
     std::function<void(wchar_t const*, uint32_t, Button const&)> activate;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
@@ -60,16 +63,25 @@ struct NativeNavigationToolbar {
             // instead of sampling keys after an asynchronously delivered click.
             button.AddHandler(UIElement::PointerPressedEvent(), winrt::box_value(
                 Microsoft::UI::Xaml::Input::PointerEventHandler([this, i, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
-                    if (!alive.expired()) inputModifiers[i] = uint32_t(args.KeyModifiers()) & 15u;
+                    if (alive.expired()) return;
+                    inputModifiers[i] = uint32_t(args.KeyModifiers()) & 15u;
+                    if (i < 2) {
+                        historyHeld[i] = false;
+                        if (args.GetCurrentPoint(buttons[i]).Properties().IsLeftButtonPressed()) historyTimers[i].Start();
+                    }
                 })), true);
             for (auto event : {UIElement::PointerReleasedEvent(), UIElement::PointerCanceledEvent(), UIElement::PointerCaptureLostEvent()}) {
                 button.AddHandler(event, winrt::box_value(
                     Microsoft::UI::Xaml::Input::PointerEventHandler([this, i, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-                        if (!alive.expired()) inputModifiers[i] = 0;
+                        if (!alive.expired()) {
+                            inputModifiers[i] = 0;
+                            if (i < 2) historyTimers[i].Stop();
+                        }
                     })), true);
             }
             button.PreviewKeyDown([this, i, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
                 if (alive.expired()) return;
+                if (i < 2) { historyHeld[i] = false; historyTimers[i].Stop(); }
                 inputModifiers[i] = ((GetKeyState(VK_CONTROL) & 0x8000) ? 1u : 0u) |
                     ((GetKeyState(VK_MENU) & 0x8000) ? 2u : 0u) |
                     ((GetKeyState(VK_SHIFT) & 0x8000) ? 4u : 0u) |
@@ -77,16 +89,35 @@ struct NativeNavigationToolbar {
             });
             button.Click([this, i, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
                 if (alive.expired() || !activate || !buttons[i].IsEnabled() || panel.Visibility() != Visibility::Visible) return;
+                if (i < 2 && historyHeld[i]) { historyHeld[i] = false; return; }
                 const uint32_t modifiers = inputModifiers[i];
                 inputModifiers[i] = 0;
                 activate(i == 2 && stopping ? L"stop" : commands[i], modifiers, buttons[i]);
             });
             buttons[i] = button;
+            if (i < 2) {
+                historyTimers[i] = Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().CreateTimer();
+                historyTimers[i].IsRepeating(false);
+                historyTimers[i].Interval(std::chrono::milliseconds(500));
+                auto history = [this, i, alive = std::weak_ptr<int>(lifetime)] {
+                    if (!alive.expired() && activate && buttons[i].IsEnabled() && panel.Visibility() == Visibility::Visible)
+                        activate(i == 0 ? L"back-history" : L"forward-history", 0, buttons[i]);
+                };
+                historyTimers[i].Tick([this, i, history, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                    if (alive.expired() || !(GetKeyState(VK_LBUTTON) & 0x8000)) return;
+                    historyHeld[i] = true;
+                    history();
+                });
+                button.ContextRequested([history](auto const&, auto const& args) { args.Handled(true); history(); });
+                button.PointerExited([this, i, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                    if (!alive.expired()) historyTimers[i].Stop();
+                });
+            }
             (i < 3 ? panel : trailing).Children().Append(button);
             if (i == 4) trailing.Children().Append(pinned.panel);
         }
     }
-    ~NativeNavigationToolbar() { lifetime.reset(); }
+    ~NativeNavigationToolbar() { lifetime.reset(); for (auto timer : historyTimers) if (timer) timer.Stop(); }
     static States Read(JObject const& snapshot) {
         States result{};
         if (!snapshot.HasKey(L"navigation")) return result;

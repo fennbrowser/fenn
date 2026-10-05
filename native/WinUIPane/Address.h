@@ -8,6 +8,7 @@
 #include "GlobalActions.h"
 #include "SuggestionList.h"
 #include "NavigationToolbar.h"
+#include "AddressContextMenu.h"
 
 struct NativeAddress {
     using JObject = winrt::Windows::Data::Json::JsonObject;
@@ -24,6 +25,7 @@ struct NativeAddress {
     std::function<void()> releaseMenuFocus;
     Microsoft::UI::Xaml::Controls::TextBox field;
     NativeSearchMode mode;
+    NativeAddressContextMenu context;
     double clipboardSerial{};
     PinnedExtensionButtons omnibarLeft, omnibarRight;
     SuggestionList suggestions;
@@ -129,6 +131,7 @@ struct NativeAddress {
         if (wcscmp(kind, L"focus") == 0) return NativeShellCore::Focus;
         if (wcscmp(kind, L"blur") == 0) return NativeShellCore::Blur;
         if (wcscmp(kind, L"dismiss") == 0) return NativeShellCore::Dismiss;
+        if (wcsncmp(kind, L"context-", 8) == 0) return NativeShellCore::ContextMenu;
         if (wcscmp(kind, L"clipboard") == 0) return NativeShellCore::Clipboard;
         if (wcscmp(kind, L"fallback") == 0) return NativeShellCore::Fallback;
         // Every kind Action() is called with must map to one: an unmapped kind
@@ -190,7 +193,7 @@ struct NativeAddress {
         // surface, not about what is staged. Asked before Edit() below, which
         // is where the original guard sat.
         if (Decide(incoming, NativeShellCore::NoIntent) == NativeShellCore::DropIntent) return;
-        if (incoming == NativeShellCore::Activate || incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::Blur) Edit();
+        if (incoming == NativeShellCore::Activate || incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::ContextMenu || incoming == NativeShellCore::Blur) Edit();
         const uint32_t modifiers = ((GetKeyState(VK_CONTROL) & 0x8000) ? 1u : 0u) |
                                    ((GetKeyState(VK_MENU) & 0x8000) ? 2u : 0u) |
                                    ((GetKeyState(VK_SHIFT) & 0x8000) ? 4u : 0u) |
@@ -198,14 +201,17 @@ struct NativeAddress {
         const auto action = shell.NegotiateAddress(incoming, Observed(), modifiers);
         if (action.decision == NativeShellCore::Defer || action.decision == NativeShellCore::DropIntent) return;
         auto value = Message(kind);
-        if (incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::Blur) {
+        if (incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::ContextMenu || incoming == NativeShellCore::Blur) {
             value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
             value.SetNamedValue(L"text", JValue::CreateStringValue(field.Text()));
             value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
             value.SetNamedValue(L"selectionEnd", JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
             value.SetNamedValue(L"composing", JValue::CreateBooleanValue(composing));
             if (traversal) value.SetNamedValue(L"traverse", JValue::CreateNumberValue(traversal));
-            if (clipboard) value.SetNamedValue(L"clipboard", JValue::CreateStringValue(clipboard));
+            if (incoming == NativeShellCore::ContextMenu) {
+                value.SetNamedValue(L"generation", JValue::CreateNumberValue(double(context.generation)));
+                if (clipboard) value.SetNamedValue(L"id", JValue::CreateStringValue(clipboard));
+            } else if (clipboard) value.SetNamedValue(L"clipboard", JValue::CreateStringValue(clipboard));
         }
         if (incoming == NativeShellCore::Activate) {
             JObject intent;
@@ -216,12 +222,12 @@ struct NativeAddress {
             value.SetNamedValue(L"intent", intent);
         }
         int index = suggestions.list.SelectedIndex();
-        if (index >= 0 && size_t(index) < suggestions.ids.size())
+        if (incoming != NativeShellCore::ContextMenu && index >= 0 && size_t(index) < suggestions.ids.size())
             value.SetNamedValue(L"id", JValue::CreateStringValue(suggestions.ids[index]));
         Stage(value, incoming);
     }
     void ObserveFocus(bool islandHasFocus) {
-        if (mode.flyout.IsOpen() && islandHasFocus) return;
+        if ((mode.flyout.IsOpen() || context.IsOpen()) && islandHasFocus) return;
         bool inside = false;
         if (root.XamlRoot() && islandHasFocus) {
             auto focused =
@@ -240,6 +246,7 @@ struct NativeAddress {
         // XAML retains logical focus when Win32 focus leaves the island.
         if (inside != focusWithin) {
             focusWithin = inside;
+            if (!inside) context.requested = false;
             Action(inside ? L"focus" : L"blur");
             if (GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0))
                 fwprintf(stderr, L"Native address focus inside=%d island=%d pending=%s\n", inside, islandHasFocus,
@@ -313,8 +320,8 @@ struct NativeAddress {
         // them again so native caret placement and selection remain standard.
         field.AddHandler(UIElement::PointerPressedEvent(),
                          winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                             [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-                                 if (!alive.expired()) Action(L"focus");
+                             [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                                 if (!alive.expired() && !e.GetCurrentPoint(field).Properties().IsRightButtonPressed()) Action(L"focus");
                              })),
                          true);
         field.GotFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
@@ -508,7 +515,7 @@ struct NativeAddress {
                 auto action = Message(L"navigation");
                 action.SetNamedValue(L"command", JValue::CreateStringValue(command));
                 action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
-                if (wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcsncmp(command, L"extension", 9) == 0 || wcsncmp(command, L"omni", 4) == 0) {
+                if (wcscmp(command, L"back-history") == 0 || wcscmp(command, L"forward-history") == 0 || wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcsncmp(command, L"extension", 9) == 0 || wcsncmp(command, L"omni", 4) == 0) {
                     auto local = button.TransformToVisual(nullptr).TransformBounds(
                         {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
                     auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
@@ -605,6 +612,18 @@ struct NativeAddress {
             toolbarRoot.Children().Append(navigation->trailing);
             root.VerticalAlignment(VerticalAlignment::Center);
             Automation::AutomationProperties::SetAutomationId(toolbarRoot, L"FirefoxWinUINavigationToolbar");
+            field.ContextFlyout(nullptr);
+            field.SelectionFlyout(nullptr);
+            context.action = [this, alive = std::weak_ptr<int>(lifetime)](auto kind, auto const& id) {
+                if (!alive.expired()) Action(kind, 0, id.c_str());
+            };
+            field.ContextRequested([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                if (alive.expired()) return;
+                e.Handled(true);
+                context.requested = true;
+                context.atPointer = e.TryGetPosition(field, context.position);
+                Action(L"context-open");
+            });
             field.CopyingToClipboard([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
                 if (alive.expired()) return;
                 e.Handled(true);
@@ -680,6 +699,7 @@ struct NativeAddress {
         if (snapshot.GetNamedNumber(L"version") != 1) winrt::throw_hresult(E_INVALIDARG);
         if (!snapshot.GetNamedBoolean(L"enabled", false)) {
             if (navigation) navigation->Apply({}, false);
+            context.Reset();
             omnibarLeft.Apply({}, false); omnibarRight.Apply({}, false);
             if (popup) popup.IsOpen(false);
             mode.Disable();
@@ -720,6 +740,11 @@ struct NativeAddress {
             std::wstring(clipboardBefore).substr(0, replaceStart) + std::wstring(clipboardReplacement) +
             std::wstring(clipboardBefore).substr(replaceEnd) != std::wstring(checkedText)))
             winrt::throw_hresult(E_INVALIDARG);
+        if (snapshot.HasKey(L"contextMenu")) {
+            auto menu = snapshot.GetNamedObject(L"contextMenu");
+            NativeJson::RequireRevision(menu, L"generation"); NativeJson::RequireRevision(menu, L"editId");
+            size_t count = 0; NativeAddressContextMenu::Validate(menu.GetNamedArray(L"items"), count);
+        }
         auto checkedRows = snapshot.GetNamedArray(L"rows");
         if (nextSession.empty() || nextSession.size() > 256 || checkedText.size() > NativeJson::kMaxFieldText ||
             checkedRows.Size() > NativeJson::kMaxListEntries)
@@ -782,6 +807,7 @@ struct NativeAddress {
             }
         }
         if (nextSession != session) {
+            context.Reset();
             mode.Reset();
             clipboardSerial = 0;
             ResetSessionState();
@@ -874,6 +900,7 @@ struct NativeAddress {
             PlacePopup();
             popup.IsOpen(checkedOpen);
         }
+        context.Sync(snapshot, shell.AddressState().edit_id, focusWithin, field);
         mode.ShowPendingReveal();
         // The deferred commit's precondition is satisfied by a publication, so
         // this is where it is re-offered. Action() queues it if the policy now
