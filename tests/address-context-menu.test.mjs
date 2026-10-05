@@ -7,15 +7,15 @@ function fixture() {
     getAttribute:key=>attributes[key] || '',dispatchEvent:()=>invoked++});
   const copy=node({command:'cmd_copy',label:'Localized copy'}), extra=node({label:'Localized browser action'});
   const hidden=node({label:'Hidden',hidden:'true'}), disabled=node({label:'Unavailable',disabled:'true'});
-  const popup={children:[copy,extra,hidden,node({label:'Collapsed',collapsed:'true'}),disabled],querySelectorAll:()=>[],dispatchEvent:()=>cleaned++};
+  const popup={state:'closed',children:[copy,extra,hidden,node({label:'Collapsed',collapsed:'true'}),disabled],querySelectorAll:()=>[],dispatchEvent:()=>cleaned++};
   const tab={linkedBrowser:{browsingContext:{currentWindowGlobal:{innerWindowId:7}}}};
   const input={inputField:{value:'current text',controllers:{getControllerForCommand:()=>({isCommandEnabled:()=>true})}}};
   const session={sessionId:'s',editId:3,input,changed(){published++;},syncNativeSelection:()=>1,
     window:{gBrowser:{selectedTab:tab},MouseEvent:class{},Event:class{},
-      document:{l10n:{translateElements:async()=>{}}},EditContextMenu:{prepare:()=>popup}}};
+      document:{l10n:{translateElements:async()=>{}}},EditContextMenu:{prepare(){this.input=input.inputField;return popup;}}}};
   const adapter=new WinUIAddressContextMenu(session);
   const request={version:1,session:'s',editId:3,text:'current text'};
-  return {session,adapter,request,extra,disabled,tab,get invoked(){return invoked;},get published(){return published;},get cleaned(){return cleaned;}};
+  return {session,adapter,request,extra,disabled,tab,popup,get invoked(){return invoked;},get published(){return published;},get cleaned(){return cleaned;}};
 }
 test('native context descriptors retain Firefox order, labels and eligibility',async()=>{
   const f=fixture();await f.adapter.open(f.request);
@@ -59,5 +59,45 @@ test('disabled native action and wrong generation cannot reach the original cont
   const f=fixture();await f.adapter.open(f.request);const menu=f.session.contextSnapshot;
   assert.equal(f.adapter.execute({...f.request,kind:'context-action',generation:menu.generation+1,id:menu.items[1].id}),2);
   assert.equal(f.adapter.execute({...f.request,kind:'context-action',generation:menu.generation,id:menu.items[2].id}),2);
+  assert.equal(f.invoked,0);
+});
+
+
+test('context close cannot apply carried edits to a different tab or document',async()=>{
+  for (const change of [f=>f.session.window.gBrowser.selectedTab={},
+    f=>f.tab.linkedBrowser.browsingContext.currentWindowGlobal.innerWindowId++]) {
+    const f=fixture();await f.adapter.open(f.request);const generation=f.session.contextSnapshot.generation;
+    let edited=false;f.session.syncNativeSelection=()=>{edited=true;return 1;};change(f);
+    assert.equal(f.adapter.execute({...f.request,kind:'context-close',generation,editId:4,text:'old page edit'}),2);
+    assert.equal(edited,false);
+  }
+});
+test('context adapter rejects an unknown action kind or protocol version',async()=>{
+  for (const patch of [{kind:'unexpected'},{version:2}]) {
+    const f=fixture();await f.adapter.open(f.request);const menu=f.session.contextSnapshot;
+    assert.equal(f.adapter.execute({...f.request,kind:'context-action',generation:menu.generation,id:menu.items[1].id,...patch}),2);
+    assert.equal(f.invoked,0);
+  }
+});
+
+test('a reused Firefox edit menu cannot run a prior native input action',async()=>{
+  const f=fixture();await f.adapter.open(f.request);const menu=f.session.contextSnapshot;
+  f.session.window.EditContextMenu.input={};f.popup.state='open';
+  assert.equal(f.adapter.execute({...f.request,kind:'context-action',generation:menu.generation,id:menu.items[1].id}),2);
+  assert.equal(f.invoked,0);assert.equal(f.cleaned,0,'do not synthesize closure of another input popup');
+});
+test('hidden or disabled submenu parents revoke their child actions',async()=>{
+  for(const property of ['hidden','collapsed','disabled']) {
+    const f=fixture();await f.adapter.open(f.request);const menu=f.session.contextSnapshot;
+    f.extra.parentElement={getAttribute:key=>key===property?'true':'',parentElement:f.popup};
+    assert.equal(f.adapter.execute({...f.request,kind:'context-action',generation:menu.generation,id:menu.items[1].id}),2);
+    assert.equal(f.invoked,0);
+  }
+});
+
+test('an intervening dialog blocks a previously prepared browser action',async()=>{
+  const f=fixture();await f.adapter.open(f.request);const menu=f.session.contextSnapshot;
+  f.session.window.gDialogBox={isOpen:true};
+  assert.equal(f.adapter.execute({...f.request,kind:'context-action',generation:menu.generation,id:menu.items[1].id}),2);
   assert.equal(f.invoked,0);
 });

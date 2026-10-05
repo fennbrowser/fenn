@@ -50,3 +50,14 @@ test('latest carried edit is accepted before invoking clipboard controller',()=>
  assert.equal(f.session.clipboard({...f.request,editId:4,text:'new typing'}),1);
  assert.equal(f.commands.length,1);assert.equal(f.session.editId,4);
 });
+
+test('presentation release detaches before cancellation can close the session',()=>{
+  const s=Object.create(context.Session.prototype);
+  const view={nativePresentation:s,visibleResults:['old']};
+  s.input={view};s.nativeOpen=true;s.nativeSelected='old';s.nativeVisible=['old'];
+  s.cancel=()=>{assert.equal(view.nativePresentation,null);s.input=null;};
+  assert.doesNotThrow(()=>s.releaseNativePresentation());
+  assert.equal(view.visibleResults.length,0);
+  assert.equal(s.nativeOpen,false);
+  assert.doesNotThrow(()=>s.releaseNativePresentation());
+});

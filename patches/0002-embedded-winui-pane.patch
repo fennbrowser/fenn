@@ -2821,10 +2821,10 @@ index 1e2660589b..85227d8e69 100644
    /*
 diff --git a/browser/base/content/WinUIAddressContextMenu.sys.mjs b/browser/base/content/WinUIAddressContextMenu.sys.mjs
 new file mode 100644
-index 0000000000..546f4f1e3c
+index 0000000000..b10e3c1439
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressContextMenu.sys.mjs
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,87 @@
 +// Firefox owns context item eligibility, localization and browser actions.
 +export class WinUIAddressContextMenu {
 +  constructor(session) { this.session = session; this.generation = 0; }
@@ -2835,12 +2835,12 @@ index 0000000000..546f4f1e3c
 +    this.session.contextSnapshot = null;
 +    const popup = this.popup;
 +    this.popup = null;
-+    if (popup) popup.dispatchEvent(new this.session.window.Event("popuphidden"));
++    if (popup?.state === "closed") popup.dispatchEvent(new this.session.window.Event("popuphidden"));
 +  }
 +  async open(request) {
 +    this.close();
 +    const session = this.session, win = session.window;
-+    if (session.syncNativeSelection(request) !== 1 || session.closed) return;
++    if (win.gDialogBox?.isOpen || session.syncNativeSelection(request) !== 1 || session.closed) return;
 +    const generation = this.generation;
 +    const tab = win.gBrowser.selectedTab;
 +    const document = tab.linkedBrowser.browsingContext.currentWindowGlobal?.innerWindowId;
@@ -2848,7 +2848,7 @@ index 0000000000..546f4f1e3c
 +    const popup = win.EditContextMenu.prepare(session.input.inputField, event);
 +    this.popup = popup;
 +    await win.document.l10n.translateElements([...popup.querySelectorAll("[data-l10n-id]")]);
-+    if (generation !== this.generation || session.closed || request.editId !== session.editId ||
++    if (generation !== this.generation || session.closed || win.gDialogBox?.isOpen || request.editId !== session.editId ||
 +        request.text !== session.input.inputField.value || win.gBrowser.selectedTab !== tab ||
 +        document !== tab.linkedBrowser.browsingContext.currentWindowGlobal?.innerWindowId) return;
 +    const nodes = new Map(); let count = 0;
@@ -2877,7 +2877,15 @@ index 0000000000..546f4f1e3c
 +  }
 +  execute(request) {
 +    const s = this.session, state = this.state, win = s.window;
++    if (!request || request.version !== 1 || !["context-action", "context-close"].includes(request.kind)) return 2;
 +    if (request.generation !== this.generation || !state || request.session !== s.sessionId) return 2;
++    // A close request can carry an edit just like activation. Validate its
++    // document before accepting text, even if outer session teardown is late.
++    if (s.closed || win.EditContextMenu.input !== s.input.inputField || win.gBrowser.selectedTab !== state.tab ||
++        state.document !== state.tab.linkedBrowser.browsingContext.currentWindowGlobal?.innerWindowId) {
++      this.close();
++      return 2;
++    }
 +    if (request.kind === "context-close") {
 +      // Closing can overtake TextChanged (Undo/Redo/Delete). The request carries
 +      // that edit, so acknowledge it before revoking this menu opening.
@@ -2886,9 +2894,17 @@ index 0000000000..546f4f1e3c
 +      return result;
 +    }
 +    const node = this.nodes?.get(request.id);
-+    if (!node || s.closed || s.editId !== state.editId || s.input.inputField.value !== state.text ||
++    if (!node || win.gDialogBox?.isOpen || s.editId !== state.editId || s.input.inputField.value !== state.text ||
 +        win.gBrowser.selectedTab !== state.tab || state.document !== state.tab.linkedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !node.isConnected || node.hidden || node.collapsed || node.getAttribute("disabled") === "true") { this.close(); return 2; }
++    // Children remain connected when a conditional submenu is hidden/disabled.
++    // Recheck that ancestry rather than treating connection alone as eligibility.
++    for (let parent = node; parent && parent !== this.popup; parent = parent.parentElement) {
++      if (["hidden", "collapsed", "disabled"].some(name => parent.getAttribute(name) === "true")) {
++        this.close();
++        return 2;
++      }
++    }
 +    // The exact original node owns the handler, including search offers and
 +    // autofill dismissal. Never reconstruct their navigation/policy logic.
 +    try { node.dispatchEvent(new win.Event("command", {bubbles:true})); }
@@ -3684,10 +3700,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..a07e074f3a
+index 0000000000..a75312e881
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1028 @@
+@@ -0,0 +1,1031 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3987,11 +4003,14 @@ index 0000000000..a07e074f3a
 +
 +  releaseNativePresentation() {
 +    if (this.input?.view.nativePresentation !== this) return;
-+    this.cancel();
++    // Cancellation can synchronously close this session through Firefox focus
++    // and query callbacks. Detach presentation before making that call.
 +    this.input.view.nativePresentation = null;
 +    this.input.view.visibleResults = [];
++    this.nativeVisible = [];
 +    this.nativeOpen = false;
 +    this.nativeSelected = null;
++    this.cancel();
 +  }
 +
 +  onNativeViewClosed(elementPicked = false) {
@@ -4718,7 +4737,7 @@ index 0000000000..a07e074f3a
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..45e6d12868
+index 0000000000..02b8db73c8
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
 @@ -0,0 +1,272 @@
@@ -4754,7 +4773,7 @@ index 0000000000..45e6d12868
 +    this.input.addEventListener("beforefocus", this.beforeFocus);
 +    this.input.addEventListener("beforeselect", this.beforeFocus);
 +    this.proxy.addEventListener("focus", this.proxyFocus);
-+    this.resize = new window.ResizeObserver(() => owner.schedule());
++    this.resize = new window.ResizeObserver(() => owner.invalidateAddress());
 +    this.resize.observe(this.slot);
 +    this.resize.observe(this.row);
 +    // Observe Firefox's command authority and live localized button labels.

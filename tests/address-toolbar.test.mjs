@@ -33,7 +33,7 @@ function fixture() {
     gBrowser:{addTabsProgressListener() {},removeTabsProgressListener() {}},
     windowUtils:{updateWinUIAddress(...args) {calls.push(["host",...args]); return window.acceptHost;}},
     acceptHost:true,requestAnimationFrame(callback) {callback(); return 0;},cancelAnimationFrame() {},
-    PrivateBrowsingUtils:{isWindowPrivate:()=>false},ResizeObserver:class {observe() {} disconnect() {}},
+    PrivateBrowsingUtils:{isWindowPrivate:()=>false},ResizeObserver:class {constructor(callback) {this.callback=callback;} observe() {} disconnect() {}},
     MutationObserver:class {observe() {} disconnect() {}},
     MouseEvent:class {constructor(type, args) {this.type=type;Object.assign(this,args);}}};
   root.hasAttribute = k => root.attributes.has(k);
@@ -292,4 +292,12 @@ test("Back/Forward history use the original popup with validated native anchors"
   assert.equal(f.calls.filter(c=>c[0]==="command").length,0,"opening history never navigates");
   f.elements.get("Browser:Back").setAttribute("disabled","true");
   assert.equal(f.toolbar.executeNavigation({...f.action,command:"back-history",x:20,y:40,width:32,height:32}),2);
+});
+
+// A queued frame without address dirtiness cannot restore a widened toolbar.
+test("address geometry changes invalidate publication", () => {
+  const f=fixture(); let invalidated=0;
+  f.owner.invalidateAddress=()=>invalidated++;
+  f.toolbar.resize.callback();
+  assert.equal(invalidated,1);
 });
