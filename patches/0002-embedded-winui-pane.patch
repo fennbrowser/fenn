@@ -854,10 +854,10 @@ index 995b2fc869..7add43e3b2 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 7dddef4e8c..94cfe066e0 100644
+index d56594d91c..73565e3a16 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3872,6 +3872,35 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3875,6 +3875,35 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -1155,10 +1155,10 @@ index 311e0d736c..130388d39e 100644
          this.panel,
          anchor,
 diff --git a/browser/components/tabbrowser/Tabbrowser.sys.mjs b/browser/components/tabbrowser/Tabbrowser.sys.mjs
-index 93213001f0..e4ba249cc5 100644
+index 430e1137a1..6dbf75a454 100644
 --- a/browser/components/tabbrowser/Tabbrowser.sys.mjs
 +++ b/browser/components/tabbrowser/Tabbrowser.sys.mjs
-@@ -4168,7 +4168,7 @@ export class Tabbrowser {
+@@ -4265,7 +4265,7 @@ export class Tabbrowser {
        anchorElement?.localName === "toolbarbutton" &&
        anchorElement?.parentElement?.localName === "split-view-footer";
      menu.setAttribute("data-trigger-source", isFromFooter ? "footer" : "icon");
@@ -1167,7 +1167,7 @@ index 93213001f0..e4ba249cc5 100644
    }
  
    /**
-@@ -6545,6 +6545,12 @@ export class Tabbrowser {
+@@ -6642,6 +6642,12 @@ export class Tabbrowser {
      return true;
    }
  
@@ -1658,10 +1658,10 @@ index 30f5aa6556..33f65b5997 100644
    }
  }
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index 01a22f6fe1..12e379d531 100644
+index a077de625f..858355036c 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
-@@ -1720,7 +1720,15 @@ ${
+@@ -1722,7 +1722,15 @@ ${
     *   Defaults to the parent resolving the selected browser at load time.
     */
    // eslint-disable-next-line complexity
@@ -1678,7 +1678,7 @@ index 01a22f6fe1..12e379d531 100644
      if (element?.classList.contains("urlbarView-button-menu")) {
        this.view.openResultMenu(result, element);
        return;
-@@ -2097,6 +2105,7 @@ ${
+@@ -2099,6 +2107,7 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -1686,7 +1686,7 @@ index 01a22f6fe1..12e379d531 100644
              searchMode,
              searchString: this._lastSearchString,
              selType: this.view.telemetryTypeFromElement(result, element),
-@@ -2477,6 +2486,7 @@ ${
+@@ -2479,6 +2488,7 @@ ${
        })
      ) {
        // Search mode restarts the query, so these results are obsolete.
@@ -1694,7 +1694,7 @@ index 01a22f6fe1..12e379d531 100644
        this.controller.discardResults(queryContext);
        return;
      }
-@@ -3243,6 +3253,7 @@ ${
+@@ -3245,6 +3255,7 @@ ${
      result = this._resultForCurrentValue,
      checkValue = true,
      startQuery = true,
@@ -1702,7 +1702,7 @@ index 01a22f6fe1..12e379d531 100644
    }) {
      if (
        !result ||
-@@ -3253,12 +3264,12 @@ ${
+@@ -3255,12 +3266,12 @@ ${
        return false;
      }
  
@@ -1717,7 +1717,7 @@ index 01a22f6fe1..12e379d531 100644
        // Closing the view discards a previewed search mode, so the mode has to
        // be confirmed before the query below gets a chance to run.
        searchMode.isPreview = false;
-@@ -3268,13 +3279,13 @@ ${
+@@ -3270,13 +3281,13 @@ ${
      let value = result.payload.query?.trimStart() || "";
      this.setValue(value);
  
@@ -1733,7 +1733,7 @@ index 01a22f6fe1..12e379d531 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -4477,7 +4488,7 @@ ${
+@@ -4479,7 +4490,7 @@ ${
        return;
      }
      let controller =
@@ -1742,7 +1742,7 @@ index 01a22f6fe1..12e379d531 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4508,8 +4519,13 @@ ${
+@@ -4510,8 +4521,13 @@ ${
          pasteAndGo.addEventListener("command", () => {
            this._suppressStartQuery = true;
  
@@ -1758,7 +1758,7 @@ index 01a22f6fe1..12e379d531 100644
            this.setResultForCurrentValue(null);
            this.handleCommand();
            this.parentController.clearLastQueryContextCache();
-@@ -4544,7 +4560,7 @@ ${
+@@ -4546,7 +4562,7 @@ ${
          );
  
          let controller =
@@ -1767,7 +1767,7 @@ index 01a22f6fe1..12e379d531 100644
          let enabled = controller.isCommandEnabled("cmd_paste");
          if (enabled) {
            pasteAndGo.removeAttribute("disabled");
-@@ -4745,12 +4761,13 @@ ${
+@@ -4747,12 +4763,13 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -1783,7 +1783,7 @@ index 01a22f6fe1..12e379d531 100644
      ) {
        return null;
      }
-@@ -4765,8 +4782,8 @@ ${
+@@ -4767,8 +4784,8 @@ ${
          result.payload.engine == result.payload.originalEngine)
      ) {
        searchMode = { engineName: result.payload.engine };
@@ -1794,7 +1794,7 @@ index 01a22f6fe1..12e379d531 100644
      }
  
      if (searchMode) {
-@@ -5475,6 +5492,57 @@ ${
+@@ -5477,6 +5494,57 @@ ${
      }
    }
  
@@ -1852,7 +1852,7 @@ index 01a22f6fe1..12e379d531 100644
    _on_input(event) {
      // A new input starts a fresh search; bump the epoch so a pending
      // deferred-Enter's async keyup won't reset this search's caret.
-@@ -5503,17 +5571,7 @@ ${
+@@ -5505,17 +5573,7 @@ ${
      }
  
      let value = this.value;
@@ -1871,7 +1871,7 @@ index 01a22f6fe1..12e379d531 100644
  
      let compositionState = this.#compositionState;
      let compositionClosedPopup = this.#compositionClosedPopup;
-@@ -5528,27 +5586,7 @@ ${
+@@ -5530,27 +5588,7 @@ ${
        this.#compositionHadText = true;
      }
  
@@ -1914,7 +1914,7 @@ index 9596698cf9..b95f43a4b3 100644
  
      return {
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index ff1c607e68..2bbf5a5afb 100644
+index 278cb5ca71..0ccd6546ca 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
 @@ -85,6 +85,7 @@ export class UrlbarView {
@@ -2072,9 +2072,9 @@ index ff1c607e68..2bbf5a5afb 100644
      const isShowingZeroPrefix =
        this.#queryContext && !this.#queryContext.searchString;
      this.controller.cancelQuery();
-@@ -920,6 +979,10 @@ export class UrlbarView {
- 
-   // UrlbarChildController listener methods.
+@@ -929,6 +988,10 @@ export class UrlbarView {
+    *   The context of the query.
+    */
    onQueryStarted(queryContext) {
 +    if (this.nativePresentation) {
 +      this.#cancelRemoveStaleRowsTimer();
@@ -2083,15 +2083,15 @@ index ff1c607e68..2bbf5a5afb 100644
      this.#queryWasCancelled = false;
      this.#queryUpdatedResults = false;
      this.#openPanelInstance = null;
-@@ -942,6 +1005,7 @@ export class UrlbarView {
-   }
- 
+@@ -960,6 +1023,7 @@ export class UrlbarView {
+    *   The context of the query.
+    */
    onQueryFinished(queryContext) {
 +    if (this.nativePresentation) return;
      this.#cancelRemoveStaleRowsTimer();
      if (this.#queryWasCancelled) {
        return;
-@@ -994,6 +1058,7 @@ export class UrlbarView {
+@@ -1018,6 +1082,7 @@ export class UrlbarView {
    onQueryResults(queryContext) {
      this.queryContextCache.put(queryContext);
      this.#queryContext = queryContext;
@@ -2099,7 +2099,7 @@ index ff1c607e68..2bbf5a5afb 100644
  
      if (!this.isOpen) {
        this.clear();
-@@ -1128,6 +1193,10 @@ export class UrlbarView {
+@@ -1152,6 +1217,10 @@ export class UrlbarView {
     *   it. Undefined when the row is removed without acknowledgment.
     */
    onQueryResultRemoved(id, acknowledgeDismissalL10n) {
@@ -2110,7 +2110,7 @@ index ff1c607e68..2bbf5a5afb 100644
      let removedIndex = -1;
      let rowToRemove = null;
      for (let i = 0; i < this.#rows.children.length; i++) {
-@@ -1171,6 +1240,67 @@ export class UrlbarView {
+@@ -1195,6 +1264,67 @@ export class UrlbarView {
      }
    }
  
@@ -2178,7 +2178,7 @@ index ff1c607e68..2bbf5a5afb 100644
    openResultMenu(result, anchor) {
      this.#resultMenuResult = result;
      let event = new CustomEvent("ResultMenuTriggered", {
-@@ -1192,6 +1322,11 @@ export class UrlbarView {
+@@ -1216,6 +1346,11 @@ export class UrlbarView {
     *   The UrlbarResult's new menu commands.
     */
    updateResultMenuCommands(resultId, commands) {
@@ -2190,7 +2190,7 @@ index ff1c607e68..2bbf5a5afb 100644
      let row = this.#getRowByResultId(resultId);
      if (!row) {
        return;
-@@ -2775,7 +2910,7 @@ export class UrlbarView {
+@@ -2799,7 +2934,7 @@ export class UrlbarView {
      }
    }
  
@@ -2199,7 +2199,7 @@ index ff1c607e68..2bbf5a5afb 100644
      if (
        result.source == UrlbarShared.RESULT_SOURCE.HISTORY &&
        (result.type == UrlbarShared.RESULT_TYPE.SEARCH ||
-@@ -2792,6 +2927,7 @@ export class UrlbarView {
+@@ -2816,6 +2951,7 @@ export class UrlbarView {
        return result.payload.icon;
      }
      if (result.payload.iconBlob) {
@@ -2313,10 +2313,10 @@ index 4f28e62c7b..8946afd136 100644
 +winui-history-open-firefox = Open full Firefox history menu
 +winui-history-empty = No recent history
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
-index ae5a803893..4d9f2e69e3 100644
+index 994aac6c3a..b59b2757d2 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
 +++ b/dom/base/nsDOMWindowUtils.cpp
-@@ -151,6 +151,163 @@ using namespace mozilla::layers;
+@@ -152,6 +152,163 @@ using namespace mozilla::layers;
  using namespace mozilla::widget;
  using namespace mozilla::gfx;
  
@@ -2481,7 +2481,7 @@ index ae5a803893..4d9f2e69e3 100644
  #define APZZTFI_LOG(...) \
    MOZ_LOG(sApzZoomToFocusedInputLog, LogLevel::Debug, (__VA_ARGS__))
 diff --git a/dom/interfaces/base/nsIDOMWindowUtils.idl b/dom/interfaces/base/nsIDOMWindowUtils.idl
-index d8f67f31da..13145e7a16 100644
+index c14d1de114..d933190509 100644
 --- a/dom/interfaces/base/nsIDOMWindowUtils.idl
 +++ b/dom/interfaces/base/nsIDOMWindowUtils.idl
 @@ -61,6 +61,41 @@ interface nsISynthesizedEventCallback : nsISupports {
@@ -2527,7 +2527,7 @@ index d8f67f31da..13145e7a16 100644
     * Image animation mode of the window. When this attribute's value
     * is changed, the implementation should set all images in the window
 diff --git a/toolkit/content/editMenuOverlay.js b/toolkit/content/editMenuOverlay.js
-index f529d1136f..20668aa91f 100644
+index c890692674..5ef1dd2e0b 100644
 --- a/toolkit/content/editMenuOverlay.js
 +++ b/toolkit/content/editMenuOverlay.js
 @@ -186,6 +186,20 @@ var EditContextMenu = {
@@ -6389,7 +6389,7 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..4c356143b0
+index 0000000000..50190252bd
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,2122 @@
@@ -7679,7 +7679,7 @@ index 0000000000..4c356143b0
 +        addressFallback: value("winui-address-fallback"),
 +        actions: value("winui-address-actions"),
 +        navigation: Object.fromEntries(["back", "forward", "reload", "stop"].map(id => {
-+          const label = attributes(`toolbar-button-${id}${["reload", "stop"].includes(id) ? "" : "-2"}`).label;
++          const label = attributes(`toolbar-button-${id}-${id === "back" || id === "forward" ? 3 : 2}`).label;
 +          return [id, {label, tooltip:label}];
 +        })),
 +      });

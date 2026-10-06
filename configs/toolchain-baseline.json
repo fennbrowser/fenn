@@ -1,11 +1,15 @@
 {
   "recordedOn": "2026-09-13",
-  "windows": { "displayVersion": "25H2", "build": "26200.9445", "architecture": "x64" },
+  "windows": {
+    "displayVersion": "25H2",
+    "build": "26200.9445",
+    "architecture": "x64"
+  },
   "firefox": {
     "repository": "https://github.com/mozilla-firefox/firefox.git",
-    "commit": "0b3661d556f0fd926ae1829f7e7091542c65e189",
+    "commit": "0a663c2511915210918dc86255360d7d28220c1c",
     "version": "159.0a1",
-    "rebasedOn": "2026-10-05",
+    "rebasedOn": "2026-10-06",
     "cloneDepth": 1,
     "buildJobs": 8,
     "debugSymbols": false
