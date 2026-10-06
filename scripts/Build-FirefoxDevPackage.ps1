@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory = $true)]
+    # Default: one build step past the installed and newest built versions.
     [ValidatePattern('^\d+\.\d+\.\d+\.0$')]
     [string]$Version,
     [switch]$SkipFirefoxPackage,
@@ -13,7 +13,8 @@ if (-not $SkipFirefoxPackage) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $mach package
     if ($LASTEXITCODE) { throw "Firefox packaging failed: $LASTEXITCODE" }
 }
-$packageArgs = @((Join-Path $PSScriptRoot 'Package-FirefoxDev.py'), '--version', $Version, '--sdk-bin', $SdkBin)
+$packageArgs = @((Join-Path $PSScriptRoot 'Package-FirefoxDev.py'), '--sdk-bin', $SdkBin)
+if ($Version) { $packageArgs += '--version', $Version }
 if ($KeepIntermediates) { $packageArgs += '--keep-intermediates' }
 & powershell -NoProfile -ExecutionPolicy Bypass -File $mach python --virtualenv build @packageArgs
 if ($LASTEXITCODE) { throw "Development MSIX generation failed: $LASTEXITCODE" }

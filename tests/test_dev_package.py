@@ -55,6 +55,25 @@ class DevPackageTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(argparse.ArgumentTypeError):
                 package.version_string(value)
 
+    def test_next_version_steps_past_installed_and_built(self):
+        self.assertEqual(package.next_version(None), "0.1.0.0")
+        self.assertEqual(package.next_version("0.2.0.0", "0.2.1.0", "0.1.1.0"), "0.2.2.0")
+        self.assertEqual(package.next_version("0.10.0.0", "0.9.5.0"), "0.10.1.0")  # Numeric, not lexical.
+        with self.assertRaisesRegex(ValueError, "pass --version"):
+            package.next_version("0.1.65535.0")
+        self.assertEqual(package.version_string(package.next_version("0.1.65534.0")), "0.1.65535.0")
+
+    def test_built_versions_come_from_finished_packages(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runs = Path(temp)
+            for run, name in (("0.2.0.0-a", f"{package.IDENTITY}_0.2.0.0_x64.msix"),
+                              ("0.3.0.0-b", "upstream.msix"),
+                              ("0.4.0.0-c", f"{package.IDENTITY}Probe_0.4.0.0_x64.msix")):
+                (runs / run).mkdir()
+                (runs / run / name).write_bytes(b"")
+            (runs / "0.5.0.0-d").mkdir()  # Failed run: no package.
+            self.assertEqual(package.built_versions(runs), ["0.2.0.0"])
+
     def test_runtime_mismatch_does_not_overwrite_existing_files(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

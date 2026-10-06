@@ -48,6 +48,31 @@ def version_string(value):
     return value
 
 
+def next_version(*known):
+    """One build step past every installed or previously built version."""
+    known = [value for value in known if value]
+    if not known:
+        return "0.1.0.0"
+    major, minor, build = max(known, key=version_key).split(".")[:3]
+    if int(build) >= 65535:
+        raise ValueError(f"No build number left after {major}.{minor}.{build}; pass --version")
+    return f"{major}.{minor}.{int(build) + 1}.0"
+
+
+def installed_version():
+    query = (f"Get-AppxPackage -Name {IDENTITY} | Where-Object {{ $_.Architecture -eq 'X64' -and "
+             f"$_.Publisher -eq '{PUBLISHER}' }} | ForEach-Object {{ $_.Version }}")
+    output = subprocess.run(["powershell", "-NoProfile", "-Command", query],
+                            check=True, capture_output=True, text=True).stdout.split()
+    return max(output, key=version_key) if output else None
+
+
+def built_versions(runs_dir):
+    pattern = re.compile(rf"{re.escape(IDENTITY)}_(\d+\.\d+\.\d+\.\d+)_x64\.msix")
+    return [match[1] for path in runs_dir.glob(f"*/{IDENTITY}_*_x64.msix")
+            if (match := pattern.fullmatch(path.name))]
+
+
 def sha256(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -263,7 +288,8 @@ def take_layout(staged, layout):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", required=True, type=version_string)
+    parser.add_argument("--version", type=version_string,
+                        help="default: one build step past the installed and newest built versions")
     parser.add_argument("--sdk-bin", required=True, type=Path)
     parser.add_argument("--keep-intermediates", action="store_true",
                         help="keep payload/ and layout/ after a successful build")
@@ -282,6 +308,15 @@ def main():
     min_version = runtime_min_version()
     framework = installed_framework(min_version)
     record = framework_record(framework, clean, pane_runtime, pane_dir, staging.image_digest)
+    installed = installed_version()
+    built = built_versions(ROOT / "artifacts/msix-dev")
+    if args.version is None:
+        args.version = next_version(installed, *built)
+        newest = max(built, key=version_key) if built else "none"
+        print(f"Version {args.version}: next after installed {installed or 'none'}, newest built {newest}")
+    elif installed and version_key(args.version) <= version_key(installed):
+        print(f"Warning: {args.version} is not newer than installed {installed}; "
+              "Install-FirefoxDevPackage.ps1 cannot update to it")
 
     run = ROOT / "artifacts/msix-dev" / f"{args.version}-{uuid.uuid4().hex[:8]}"
     run.mkdir(parents=True)
