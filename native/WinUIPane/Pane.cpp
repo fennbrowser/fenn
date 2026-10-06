@@ -2334,6 +2334,9 @@ BOOL WINAPI Translate(MSG* message) noexcept {
         TickDragSession();
         for (auto const& entry : state().panes) {
             auto& pane = *entry.second;
+            if (pane.address && pane.address->navigation && message->message == WM_KEYDOWN &&
+                message->wParam == VK_ESCAPE && GetForegroundWindow() == pane.parent &&
+                pane.address->navigation->customization.CancelDrag()) return TRUE;
             if (pane.strip && pane.strip->inlineGroups.hover.open &&
                 message->message == WM_KEYDOWN && message->wParam == VK_ESCAPE &&
                 GetForegroundWindow() == pane.parent) {

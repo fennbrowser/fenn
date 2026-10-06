@@ -949,10 +949,10 @@ index 00da33bc11..b38767f3b3 100644
        }
      }
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..450917a7c2 100644
+index b2b5db6040..4fdb597a08 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -33,6 +33,17 @@ browser.jar:
+@@ -33,6 +33,18 @@ browser.jar:
          content/browser/aboutTabCrashed.xhtml         (content/aboutTabCrashed.xhtml)
          content/browser/blanktab.html                 (content/blanktab.html)
          content/browser/browser.js                    (content/browser.js)
@@ -960,6 +960,7 @@ index b2b5db6040..450917a7c2 100644
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
 +        content/browser/WinUITabStripSession.sys.mjs     (content/WinUITabStripSession.sys.mjs)
 +        content/browser/WinUIUrlbarSession.sys.mjs      (content/WinUIUrlbarSession.sys.mjs)
++        content/browser/WinUIToolbarCustomization.sys.mjs (content/WinUIToolbarCustomization.sys.mjs)
 +        content/browser/WinUIPinnedExtensions.sys.mjs  (content/WinUIPinnedExtensions.sys.mjs)
 +        content/browser/WinUIDismissalAcknowledgments.sys.mjs  (content/WinUIDismissalAcknowledgments.sys.mjs)
 +        content/browser/WinUIResultContextMenu.sys.mjs  (content/WinUIResultContextMenu.sys.mjs)
@@ -2088,10 +2089,10 @@ index ff1c607e68..2bbf5a5afb 100644
        if (blobUrl) {
          return blobUrl;
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b..f7c54ccacc 100644
+index 4f28e62c7b..855a6261c0 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -518,3 +518,19 @@ split-view-menuitem-close-both-tabs =
+@@ -518,3 +518,29 @@ split-view-menuitem-close-both-tabs =
      .label = Close Both Tabs
  
  ##
@@ -2111,6 +2112,16 @@ index 4f28e62c7b..f7c54ccacc 100644
 +winui-address-suggestions = Address suggestions
 +winui-address-actions = Search actions
 +winui-address-fallback = Use Firefox address bar
++
++winui-toolbar-address = Address bar
++winui-toolbar-customize-title = Customize native toolbar
++winui-toolbar-customize-available = Available items
++winui-toolbar-customize-earlier = Move earlier
++winui-toolbar-customize-later = Move later
++winui-toolbar-customize-add = Add to toolbar
++winui-toolbar-customize-remove = Remove from toolbar
++winui-toolbar-customize-done = Done
++winui-toolbar-customize-hint = Drag to reorder, or select an item and use the buttons. Changes are saved immediately. Other items remain available in Firefox customization.
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
 index ae5a803893..4d9f2e69e3 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
@@ -2983,6 +2994,94 @@ index 1e2660589b..85227d8e69 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
+new file mode 100644
+index 0000000000..bcaca76ab7
+--- /dev/null
++++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
+@@ -0,0 +1,82 @@
++// Firefox owns widget eligibility and durable placement; native owns the editor.
++export class WinUIToolbarCustomization {
++  constructor(toolbar) {
++    this.toolbar = toolbar;
++    this.ui = ChromeUtils.importESModule('moz-src:///browser/components/customizableui/CustomizableUI.sys.mjs').CustomizableUI;
++    this.entries = new Map(); this.nextId = 0; this.revision = 0; this.signature = '';
++    this.invalidate = () => toolbar.owner.invalidateAddress();
++    this.listener = Object.fromEntries(['onWidgetAdded','onWidgetRemoved','onWidgetMoved','onWidgetDestroyed','onWidgetAfterDOMChange','onAreaReset'].map(k=>[k,this.invalidate]));
++    this.ui.addListener(this.listener);
++  }
++  snapshot(navigation) {
++    const {ui,toolbar} = this, {window} = toolbar;
++    const fixed = new Map([['back-button','back'],['forward-button','forward'],['stop-reload-button','reload'],
++      ['urlbar-container','address'],['fxa-toolbar-menu-button','profile'],['unified-extensions-button','extensions']]);
++    const placements = ui.getWidgetIdsInArea(ui.AREA_NAVBAR);
++    const candidates = [...new Set([...placements,...fixed.keys(),...ui.getWidgetIdsInArea(ui.AREA_ADDONS)])];
++    const items = [], keep = new Set();
++    for (const widget of candidates) {
++      let control = fixed.get(widget), label;
++      const wrapper = ui.getWidget(widget), node = wrapper?.forWindow(window)?.node;
++      if (!control) {
++        const button = node?.querySelector('.webextension-browser-action');
++        const policy = button && window.WebExtensionPolicy.getByID(button.dataset.extensionid);
++        if (!policy || !policy.extension.canAccessWindow(window) || !window.gUnifiedExtensions.browserActionFor(policy)) continue;
++        const pinned = toolbar.pinned?.entries.get(widget);
++        control = pinned?.id || '';
++        label = button.getAttribute('tooltiptext') || policy.extension.name;
++      } else {
++        label = navigation[control]?.label || node?.getAttribute('label') || wrapper?.label || '';
++        if (control === 'address') label = toolbar.owner.localization().formatValueSync('winui-toolbar-address');
++      }
++      if (!label || items.length >= 38) continue;
++      const placement = ui.getPlacementOfWidget(widget);
++      const placed = placement?.area === ui.AREA_NAVBAR;
++      // Overflowed extensions stay in Firefox until native overflow is implemented.
++      if (placed && !control) continue;
++      keep.add(widget);
++      let entry = this.entries.get(widget);
++      if (!entry || entry.node !== node) { entry={id:`widget-${++this.nextId}`,widget,node};this.entries.set(widget,entry); }
++      items.push({id:entry.id,control,label:String(label).slice(0,4096),placed,
++        movable:ui.canWidgetMoveToArea(widget,ui.AREA_NAVBAR),
++        removable:control !== 'address' && ui.isWidgetRemovable(widget),
++        position:placed ? placements.indexOf(widget) : -1});
++    }
++    for (const key of this.entries.keys()) if (!keep.has(key)) this.entries.delete(key);
++    const signature=JSON.stringify([placements,items]);
++    if (signature !== this.signature) {this.signature=signature;this.revision++;}
++    const labels=Object.fromEntries(['title','available','earlier','later','add','remove','done','hint'].map(k=>[k,toolbar.owner.localization().formatValueSync('winui-toolbar-customize-'+k)]));
++    this.current={revision:this.revision,items,labels};
++    return this.current;
++  }
++  execute(command) {
++    const match=/^customize:([0-9]+):(widget-[0-9]+):(before|end|remove|add)(?::(widget-[0-9]+))?$/.exec(command);
++    if (!match || this.toolbar.window.gDialogBox?.isOpen) return 2;
++    this.toolbar.navigationState();
++    const [,revision,id,verb,targetId]=match, state=this.current;
++    if (+revision !== state.revision) return 2;
++    const item=state.items.find(i=>i.id===id), entry=[...this.entries.values()].find(i=>i.id===id);
++    if (!item || !entry || !item.movable) return 2;
++    const {ui}=this;
++    if (verb==='remove') {
++      if (!item.placed || !item.removable || targetId) return 2;
++      ui.removeWidgetFromArea(entry.widget);
++    } else if (verb==='add') {
++      if (item.placed || targetId) return 2;
++      ui.addWidgetToArea(entry.widget,ui.AREA_NAVBAR);
++    } else {
++      if (!item.placed) return 2;
++      let position=ui.getWidgetIdsInArea(ui.AREA_NAVBAR).length;
++      if (verb==='before') {
++        const target=state.items.find(i=>i.id===targetId && i.placed);
++        if (!target || target.id===id) return 2;
++        position=target.position;
++      } else if (targetId) return 2;
++      if (item.position < position) position--;
++      ui.moveWidgetWithinArea(entry.widget,position);
++    }
++    this.invalidate();
++    return 1;
++  }
++  close() {this.ui.removeListener(this.listener);this.entries.clear();}
++}
 diff --git a/browser/app/Makefile.in b/browser/app/Makefile.in
 new file mode 100644
 index 0000000000..5af03d4b24
@@ -5520,10 +5619,10 @@ index 0000000000..a8fae4db53
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..02b8db73c8
+index 0000000000..7579f49372
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,280 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -5584,6 +5683,10 @@ index 0000000000..02b8db73c8
 +      const { WinUIOmnibarActions } = ChromeUtils.importESModule("chrome://browser/content/WinUIOmnibarActions.sys.mjs");
 +      this.omnibar = new WinUIOmnibarActions(this);
 +    }
++    if (window.gUnifiedExtensions) {
++    const {WinUIToolbarCustomization} = ChromeUtils.importESModule("chrome://browser/content/WinUIToolbarCustomization.sys.mjs");
++    this.customization = new WinUIToolbarCustomization(this);
++    }
 +    this.progress = {
 +      onLocationChange: browser => {
 +        if (browser === window.gBrowser.selectedBrowser) owner.invalidateAddress();
@@ -5621,24 +5724,27 @@ index 0000000000..02b8db73c8
 +    }));
 +    state.pinned = this.pinned?.snapshot() || [];
 +    Object.assign(state, this.omnibar?.snapshot() || {});
++    state.customization = this.customization?.snapshot(state);
 +    return state;
 +  }
 +  executeNavigation(action) {
 +    const {window, owner} = this;
++    const customization = typeof action?.command === "string" && action.command.startsWith("customize:");
 +    const extension = typeof action?.command === "string" && /^(extension|extension-menu):pinned-[0-9]+$/.test(action.command);
 +    const omnibar = typeof action?.command === "string" && /^(omni|omni-menu):action-[0-9]+$/.test(action.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = history ? action.command.replace("-history", "") : action?.command;
-+    const item = omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = customization ? {customization:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!extension && !omnibar && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!customization && !extension && !omnibar && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
++    if (customization) return this.customization.execute(action.command);
 +    // Use the actual Firefox command handler, including its modifier policy.
 +    const event = new window.MouseEvent("click", {view:window, button:0,
 +      ctrlKey:!!(action.modifiers & 1), altKey:!!(action.modifiers & 2),
@@ -5785,6 +5891,7 @@ index 0000000000..02b8db73c8
 +    this.restore();
 +    this.resize.disconnect();
 +    this.navigationObserver.disconnect();
++    this.customization?.close();
 +    this.pinned?.close();
 +    this.omnibar?.close();
 +    this.window.gBrowser.removeTabsProgressListener(this.progress);

@@ -26,6 +26,7 @@ struct PinnedExtensionButtons {
     std::function<void(wchar_t const*, uint32_t, Button const&)> activate;
     winrt::hstring commandPrefix{L"extension:"}, contextPrefix{L"extension-menu:"}, automationPrefix{L"FirefoxWinUIExtension-"};
     double buttonSize{32};
+    bool externalLayout{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     PinnedExtensionButtons() {
         using namespace Microsoft::UI::Xaml;
@@ -107,11 +108,13 @@ struct PinnedExtensionButtons {
                 row.button.Click([invoke](auto const&, auto const&) { invoke(false); });
                 row.button.ContextRequested([invoke](auto const&, auto const& args) { args.Handled(true); invoke(true); });
             }
+            if (!externalLayout) {
             uint32_t oldIndex;
             if (panel.Children().IndexOf(row.button, oldIndex)) {
                 if (oldIndex != index) { panel.Children().RemoveAt(oldIndex); panel.Children().InsertAt(index, row.button); }
             } else panel.Children().InsertAt(index, row.button);
             ++index;
+            }
             row.button.IsEnabled(visible && item.enabled);
             Automation::AutomationProperties::SetName(row.button, item.label);
             Automation::AutomationProperties::SetItemStatus(row.button, item.badge);

@@ -4,6 +4,7 @@
 #include <functional>
 #include "JsonValidation.h"
 #include "PinnedExtensionButtons.h"
+#include "ToolbarCustomization.h"
 
 // WinUI presentation only. Firefox owns eligibility, labels and commands.
 struct NativeNavigationToolbar {
@@ -16,6 +17,7 @@ struct NativeNavigationToolbar {
     std::array<Button, 6> buttons;
     std::array<Microsoft::UI::Xaml::Controls::SymbolIcon, 6> icons;
     PinnedExtensionButtons pinned;
+    NativeToolbarCustomization customization;
     bool stopping{};
     std::array<Microsoft::UI::Dispatching::DispatcherQueueTimer, 2> historyTimers{nullptr, nullptr};
     std::array<bool, 2> historyHeld{};
@@ -26,6 +28,7 @@ struct NativeNavigationToolbar {
     NativeNavigationToolbar() {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
+        customization.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         pinned.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         panel.Orientation(Orientation::Horizontal);
         panel.Spacing(4);
@@ -95,6 +98,7 @@ struct NativeNavigationToolbar {
                 activate(i == 2 && stopping ? L"stop" : commands[i], modifiers, buttons[i]);
             });
             buttons[i] = button;
+            if (i == 5) button.ContextRequested([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) { if (!alive.expired()) {args.Handled(true);customization.Open(buttons[5]);} });
             if (i < 2) {
                 historyTimers[i] = Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().CreateTimer();
                 historyTimers[i].IsRepeating(false);
@@ -116,6 +120,34 @@ struct NativeNavigationToolbar {
             (i < 3 ? panel : trailing).Children().Append(button);
             if (i == 4) trailing.Children().Append(pinned.panel);
         }
+    }
+    void Layout(NativeToolbarCustomization::State const& state) {
+        if(!state.revision) return;
+        std::vector<Microsoft::UI::Xaml::UIElement> left, right;
+        bool after=false;
+        for(auto const& item:state.items) {
+            if(!item.placed) continue;
+            if(item.control==L"address") {after=true;continue;}
+            Microsoft::UI::Xaml::UIElement control{nullptr};
+            for(size_t i=0;i<5;i++) if(item.control==commands[i]) control=buttons[i];
+            if(auto it=pinned.rows.find(item.control);it!=pinned.rows.end()) control=it->second.button;
+            if(control) (after?right:left).push_back(control);
+        }
+        right.push_back(buttons[5]);
+        auto same=[](auto const& panel,auto const& controls){if(panel.Children().Size()!=controls.size())return false;for(uint32_t i=0;i<controls.size();i++)if(panel.Children().GetAt(i)!=controls[i])return false;return true;};
+        if(same(panel,left)&&same(trailing,right))return;
+        auto prune=[](auto const& host,auto const& desired) {
+            for(uint32_t i=host.Children().Size();i>0;i--) if(std::find(desired.begin(),desired.end(),host.Children().GetAt(i-1))==desired.end()) host.Children().RemoveAt(i-1);
+        };
+        prune(panel,left);prune(trailing,right);
+        auto arrange=[](auto const& host,auto const& desired) {
+            for(uint32_t i=0;i<desired.size();i++) {
+                uint32_t old;
+                if(host.Children().IndexOf(desired[i],old)) {if(old==i)continue;host.Children().RemoveAt(old);}
+                host.Children().InsertAt(i,desired[i]);
+            }
+        };
+        arrange(panel,left);arrange(trailing,right);
     }
     ~NativeNavigationToolbar() { lifetime.reset(); for (auto timer : historyTimers) if (timer) timer.Stop(); }
     static States Read(JObject const& snapshot) {
@@ -139,7 +171,7 @@ struct NativeNavigationToolbar {
         using namespace Microsoft::UI::Xaml;
         panel.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
         trailing.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
-        if (!visible) pinned.Apply({}, false);
+        if (!visible) { pinned.Apply({}, false); customization.Apply({}, false); }
         stopping = visible && state[2].stopping;
         icons[2].Symbol(stopping ? Controls::Symbol::Cancel : Controls::Symbol::Refresh);
         for (size_t i = 0; i < buttons.size(); ++i) {

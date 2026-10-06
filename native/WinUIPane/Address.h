@@ -857,6 +857,7 @@ struct NativeAddress {
         const auto checkedRtl = snapshot.GetNamedBoolean(L"rtl", false);
         const auto checkedTextEpoch = snapshot.HasKey(L"textEpoch") ? NativeJson::RequireRevision(snapshot, L"textEpoch") : 0;
         const auto navigationToolbar = snapshot.GetNamedBoolean(L"navigationToolbar", false);
+        const auto customizationState = NativeToolbarCustomization::Read(snapshot);
         const auto navigationState = NativeNavigationToolbar::Read(snapshot);
         const auto pinnedState = PinnedExtensionButtons::Read(snapshot);
         const auto omnibarLeftState = PinnedExtensionButtons::Read(snapshot, L"omnibarLeft");
@@ -1009,7 +1010,10 @@ struct NativeAddress {
         root.Visibility(Visibility::Visible);
         if (toolbarRoot) {
             navigation->Apply(navigationState, navigationToolbar && snapshot.HasKey(L"navigation"));
+            navigation->pinned.externalLayout = customizationState.revision != 0;
             navigation->pinned.Apply(pinnedState, navigationToolbar);
+            navigation->Layout(customizationState);
+            navigation->customization.Apply(customizationState, navigationToolbar);
             omnibarLeft.Apply(omnibarLeftState, navigationToolbar);
             omnibarRight.Apply(omnibarRightState, navigationToolbar);
             toolbarSurface.Visibility(navigationToolbar ? Visibility::Visible : Visibility::Collapsed);
