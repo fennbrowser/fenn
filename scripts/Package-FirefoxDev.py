@@ -214,10 +214,59 @@ def validate_package(path, version, expected_hashes, min_version, runtime_files=
                 "dependencies": dependencies}
 
 
+DEFERRED_MAKEAPPX = "deferred-makeappx"
+
+
+def stage_upstream_layout(msix_module, **kwargs):
+    """Run upstream's repackager up to its pack step and return the staged layout.
+
+    Upstream packs its staged directory immediately. This package still edits the
+    manifest afterwards, so packing there would mean a second unpack and pack of
+    the whole payload. Its makeappx calls go through a stand-in that records the
+    staged directory instead; every other subprocess call is unchanged.
+    """
+    real = msix_module.subprocess
+    staged = []
+
+    def run(args, *rest, **options):
+        if args == [DEFERRED_MAKEAPPX]:  # Upstream's MakeAppx flavor probe.
+            return subprocess.CompletedProcess(args, 0, stdout="MakeAppx Tool (deferred)", stderr="")
+        return real.run(args, *rest, **options)
+
+    def check_output(args, *rest, **options):
+        if args[:2] == [DEFERRED_MAKEAPPX, "pack"]:
+            staged.append(Path(args[args.index("/d") + 1]))
+            return ""
+        return real.check_output(args, *rest, **options)
+
+    shim = type(real)("deferred_subprocess")
+    shim.__dict__.update(real.__dict__)
+    shim.run, shim.check_output = run, check_output
+    msix_module.subprocess = shim
+    try:
+        msix_module.repackage_msix(makeappx=DEFERRED_MAKEAPPX, **kwargs)
+    finally:
+        msix_module.subprocess = real
+    if len(staged) != 1 or not (staged[0] / "AppxManifest.xml").is_file():
+        raise RuntimeError("Upstream repackager no longer packs its staged layout through makeappx; "
+                           "update stage_upstream_layout")
+    return staged[0]
+
+
+def take_layout(staged, layout):
+    """Move upstream's staging directory into the run; it is rebuilt in full next time."""
+    try:
+        staged.rename(layout)
+    except OSError:  # Different volume.
+        shutil.move(staged, layout)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True, type=version_string)
     parser.add_argument("--sdk-bin", required=True, type=Path)
+    parser.add_argument("--keep-intermediates", action="store_true",
+                        help="keep payload/ and layout/ after a successful build")
     args = parser.parse_args()
     makeappx, mt = (args.sdk_bin / name for name in ("makeappx.exe", "mt.exe"))
     clean = ROOT / "build/firefox/dist/firefox"
@@ -252,21 +301,22 @@ def main():
     expected_hashes = {p.relative_to(payload).as_posix(): sha256(p)
                        for p in sorted(payload.rglob("*")) if p.is_file()}
 
-    from mozbuild.repackaging.msix import repackage_msix
+    from mozbuild.repackaging import msix
 
     def log(level, action, params, message):
         print(message.format(**params), flush=True)
 
-    base = run / "upstream.msix"
-    repackage_msix(str(payload), str(ROOT / "upstream/firefox"), channel="unofficial",
-                   distribution_dirs=[], version=args.version, vendor="FirefoxWinUI",
-                   displayname=DISPLAY_NAME, identity=IDENTITY, publisher=PUBLISHER,
-                   publisher_display_name="Firefox WinUI Development", arch="x86_64",
-                   output=str(base), force=True, log=log, makeappx=str(makeappx))
-    layout = run / "layout"
-    subprocess.run([str(makeappx), "unpack", "/p", str(base), "/d", str(layout)], check=True)
-    customize_manifest(layout / "AppxManifest.xml", min_version)
     output = run / f"{IDENTITY}_{args.version}_x64.msix"
+    staged = stage_upstream_layout(
+        msix, dir_or_package=str(payload), topsrcdir=str(ROOT / "upstream/firefox"),
+        channel="unofficial", distribution_dirs=[], version=args.version, vendor="FirefoxWinUI",
+        displayname=DISPLAY_NAME, identity=IDENTITY, publisher=PUBLISHER,
+        publisher_display_name="Firefox WinUI Development", arch="x86_64",
+        output=str(output), force=True, log=log)
+    layout = run / "layout"
+    take_layout(staged, layout)
+    customize_manifest(layout / "AppxManifest.xml", min_version)
+    shutil.copyfile(layout / "AppxManifest.xml", run / "AppxManifest.xml")
     subprocess.run([str(makeappx), "pack", "/d", str(layout), "/p", str(output)], check=True)
     runtime_names = [entry["file"] for entry in record["files"]]
     result = validate_package(output, args.version, expected_hashes, min_version, runtime_names)
@@ -276,6 +326,11 @@ def main():
                    "removedExeWinRTServers": removed_registrations,
                    "payloadSha256": expected_hashes})
     (run / "package-report.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    # Validation compared the archive with payload hashes; the intermediates are
+    # regenerable and several hundred MB each. A failed build keeps them.
+    if not args.keep_intermediates:
+        for directory in (payload, layout):
+            shutil.rmtree(directory)
     print(f"Validated development MSIX: {output}")
     print(f"SHA-256: {result['sha256']}")
 

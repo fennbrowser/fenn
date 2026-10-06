@@ -3,7 +3,10 @@ import argparse
 import hashlib
 import importlib.util
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import types
 import unittest
 import xml.etree.ElementTree as ET
 import zipfile
@@ -20,6 +23,28 @@ def load(name):
 
 package = load("Package-FirefoxDev")
 staging = load("Stage-WinUIPane")
+prune = load("Prune-FirefoxDevPackages")
+
+
+def fake_repackager(staging_dir, pack=True):
+    """Mimics upstream's makeappx probe and pack calls, plus an unrelated subprocess."""
+    module = types.ModuleType("fake_msix")
+    module.subprocess = subprocess
+
+    def repackage_msix(makeappx, output, **_):
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        (staging_dir / "AppxManifest.xml").write_text("<Package/>")
+        module.calls.append(module.subprocess.run([sys.executable, "-c", "print(1)"],
+                                                  capture_output=True, text=True).stdout.strip())
+        stdout = module.subprocess.run([makeappx], check=False, capture_output=True, text=True).stdout
+        if pack and "MakeAppx Tool" in stdout:
+            module.subprocess.check_output([makeappx, "pack", "/d", str(staging_dir), "/p", output,
+                                            "/overwrite"], universal_newlines=True)
+        return output
+
+    module.calls = []
+    module.repackage_msix = repackage_msix
+    return module
 RUNTIME = ["Microsoft.UI.Xaml.dll", "resources.pri"]
 
 
@@ -97,6 +122,43 @@ class DevPackageTests(unittest.TestCase):
             package.strip_winrt_registrations(text, set())
         with self.assertRaisesRegex(ValueError, "no WinUI registrations"):
             package.strip_winrt_registrations(stripped, {"coremessagingxp.dll"})
+
+    def test_upstream_layout_is_staged_without_packing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            staging_dir = Path(temp) / "msix-temp"
+            module = fake_repackager(staging_dir)
+            staged = package.stage_upstream_layout(module, output=str(Path(temp) / "out.msix"))
+            self.assertEqual(staged, staging_dir)
+            self.assertFalse((Path(temp) / "out.msix").exists())
+            self.assertEqual(module.calls, ["1"])  # Other subprocess calls still run.
+            self.assertIs(module.subprocess, subprocess)
+
+    def test_upstream_pack_contract_change_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            module = fake_repackager(Path(temp) / "msix-temp", pack=False)
+            with self.assertRaisesRegex(RuntimeError, "no longer packs"):
+                package.stage_upstream_layout(module, output=str(Path(temp) / "out.msix"))
+            self.assertIs(module.subprocess, subprocess)
+
+    def test_prune_keeps_packages_evidence_and_unfinished_runs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runs = Path(temp)
+            done, failed = runs / "0.1.0.0-done", runs / "0.2.0.0-failed"
+            for run in (done, failed):
+                for directory in ("payload", "layout"):
+                    (run / directory).mkdir(parents=True)
+                    (run / directory / "xul.dll").write_bytes(b"x" * 10)
+            for name in ("FirefoxWinUI.Dev_0.1.0.0_x64.msix", "upstream.msix", "package-report.json",
+                         "root-pri.xml", "AppxManifest.xml"):
+                (done / name).write_bytes(b"keep")
+            listed = prune.prune(runs)
+            self.assertEqual(sorted(p.name for p, _ in listed), ["layout", "payload", "upstream.msix"])
+            self.assertTrue((done / "payload").exists())  # Listing alone deletes nothing.
+            prune.prune(runs, apply=True)
+            self.assertEqual(sorted(p.name for p in done.iterdir()),
+                             ["AppxManifest.xml", "FirefoxWinUI.Dev_0.1.0.0_x64.msix",
+                              "package-report.json", "root-pri.xml"])
+            self.assertTrue((failed / "payload").exists())
 
     def fixture(self, root, *, missing=False, tampered=False, alias="firefox-winui-dev.exe",
                 dependency=True, private_runtime=False):

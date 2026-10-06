@@ -3,6 +3,7 @@ param(
     [ValidatePattern('^\d+\.\d+\.\d+\.0$')]
     [string]$Version,
     [switch]$SkipFirefoxPackage,
+    [switch]$KeepIntermediates,
     [string]$SdkBin = 'C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64'
 )
 $ErrorActionPreference = 'Stop'
@@ -12,6 +13,7 @@ if (-not $SkipFirefoxPackage) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $mach package
     if ($LASTEXITCODE) { throw "Firefox packaging failed: $LASTEXITCODE" }
 }
-& powershell -NoProfile -ExecutionPolicy Bypass -File $mach python --virtualenv build `
-    (Join-Path $PSScriptRoot 'Package-FirefoxDev.py') --version $Version --sdk-bin $SdkBin
+$packageArgs = @((Join-Path $PSScriptRoot 'Package-FirefoxDev.py'), '--version', $Version, '--sdk-bin', $SdkBin)
+if ($KeepIntermediates) { $packageArgs += '--keep-intermediates' }
+& powershell -NoProfile -ExecutionPolicy Bypass -File $mach python --virtualenv build @packageArgs
 if ($LASTEXITCODE) { throw "Development MSIX generation failed: $LASTEXITCODE" }
