@@ -1,4 +1,8 @@
-"""Smoke a packaged payload with its defaults and the shared Marionette/UIA harness."""
+"""Smoke an installed development package with its defaults and the shared Marionette/UIA harness.
+
+The package carries no Windows App SDK runtime, so it runs only with package
+identity and its framework dependency; an extracted payload cannot attach the pane.
+"""
 import argparse
 import ctypes
 from ctypes import wintypes as W
@@ -12,12 +16,55 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+FRAMEWORK_PREFIX = "Microsoft.WindowsAppRuntime.2_"
+
+
+def loaded_modules(pid):
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.restype = W.HANDLE
+    kernel.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
+    psapi.EnumProcessModulesEx.argtypes = [W.HANDLE, ctypes.POINTER(W.HMODULE), W.DWORD,
+                                           ctypes.POINTER(W.DWORD), W.DWORD]
+    psapi.GetModuleFileNameExW.argtypes = [W.HANDLE, W.HMODULE, W.LPWSTR, W.DWORD]
+    handle = kernel.OpenProcess(0x0410, False, pid)  # QUERY_INFORMATION | VM_READ
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        modules = (W.HMODULE * 4096)()
+        needed = W.DWORD()
+        if not psapi.EnumProcessModulesEx(handle, modules, ctypes.sizeof(modules), ctypes.byref(needed), 3):
+            raise ctypes.WinError(ctypes.get_last_error())
+        paths = []
+        for module in modules[:needed.value // ctypes.sizeof(W.HMODULE)]:
+            buffer = ctypes.create_unicode_buffer(32768)
+            if psapi.GetModuleFileNameExW(handle, module, buffer, len(buffer)):
+                paths.append(Path(buffer.value))
+        return paths
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def runtime_modules(pid):
+    """Every module the framework supplies must load from that framework: one runtime per process."""
+    paths = loaded_modules(pid)
+    xaml = [p for p in paths if p.name.lower() == "microsoft.ui.xaml.dll"]
+    if len(xaml) != 1 or not xaml[0].parent.name.startswith(FRAMEWORK_PREFIX):
+        raise AssertionError(f"WinUI did not load from the {FRAMEWORK_PREFIX} framework: {xaml}")
+    framework = xaml[0].parent
+    supplied = {p.name.lower() for p in framework.iterdir() if p.is_file()}
+    runtime = [p for p in paths if p.name.lower() in supplied]
+    stray = [str(p) for p in runtime if p.parent != framework]
+    if stray:
+        raise AssertionError(f"Windows App SDK modules loaded outside {framework}: {stray}")
+    return {"framework": str(framework), "modules": sorted(p.name for p in runtime)}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exe", required=True, type=Path)
-    parser.add_argument("--require-package", action="store_true")
+    parser.add_argument("--package-name", default="FirefoxWinUI.Dev",
+                        help="identity name the running browser must report")
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location("bridge", ROOT / "scripts/Test-FirefoxInertBridge.py")
     bridge = importlib.util.module_from_spec(spec)
@@ -80,8 +127,9 @@ def main():
                     raise OSError(result, "GetPackageFullName")
             finally:
                 kernel.CloseHandle(handle)
-            if args.require_package and not (package and package.startswith("FirefoxWinUI.Dev_")):
+            if not (package and package.startswith(f"{args.package_name}_")):
                 raise AssertionError(f"Browser lacks expected package identity: {package}")
+            runtime = runtime_modules(state["pid"])
             command = ["powershell", "-NoProfile", "-Mta", "-File",
                        str(ROOT / "tests/native/SelectPaneTab.ps1"), "-BrowserProcessId", str(state["pid"]),
                        "-WindowHandle", str(int(state["hwnd"], 16)), "-TabStrip"]
@@ -103,9 +151,10 @@ def main():
             if code != 0 or shutdown.get("forced"):
                 raise AssertionError((code, shutdown))
             (directory / "result.json").write_text(json.dumps({
-                "packageFullName": package, "state": state, "rows": json.loads(rows), "exitCode": code,
-                "scope": "installed identity" if package else "unregistered payload only"}, indent=2), encoding="utf-8")
-            print(f"PASS: default native strip, UIA new tab, page JavaScript, clean exit; package={package}")
+                "packageFullName": package, "runtime": runtime, "state": state, "rows": json.loads(rows),
+                "exitCode": code, "scope": "installed identity"}, indent=2), encoding="utf-8")
+            print(f"PASS: default native strip, framework-only runtime ({len(runtime['modules'])} modules), "
+                  f"UIA new tab, page JavaScript, clean exit; package={package}")
         finally:
             if client:
                 client.sock.close()

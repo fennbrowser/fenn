@@ -30,7 +30,8 @@ def image_digest(path):
     return hashlib.sha256(data).hexdigest()
 
 
-def stage(source_dir=SOURCE, dest_dir=DEST, manifest=None):
+def runtime_files(source_dir=SOURCE):
+    """The self-contained Windows App SDK runtime and resources beside the pane build."""
     names = {
         "coremessagingxp.dll", "marshal.dll", "dcompi.dll", "dwmcorei.dll",
         "dwmscenei.dll", "dwritecore.dll", "mrm.dll", "wuceffectsi.dll", "winuiedit.dll",
@@ -46,6 +47,11 @@ def stage(source_dir=SOURCE, dest_dir=DEST, manifest=None):
               p.relative_to(source_dir).parts[0] == "Microsoft.UI.Xaml")]
     if not (source_dir / "Microsoft.ui.xaml.dll").is_file():
         raise RuntimeError("Build the pane and its self-contained runtime first")
+    return files
+
+
+def stage(source_dir=SOURCE, dest_dir=DEST, manifest=None):
+    files = runtime_files(source_dir)
     records = []
     for source in files:
         target = dest_dir / source.relative_to(source_dir)

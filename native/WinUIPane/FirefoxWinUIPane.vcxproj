@@ -121,7 +121,13 @@
            x86_64-pc-windows-msvc. The crate is built with +crt-static, so it
            requests libcmt, matching this project's /MT RuntimeLibrary in every
            configuration: one CRT, not two. -->
-      <AdditionalDependencies>gdi32.lib;Ole32.lib;$(ShellCoreLib);ntdll.lib;userenv.lib;ws2_32.lib;dbghelp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>gdi32.lib;Ole32.lib;$(ShellCoreLib);ntdll.lib;userenv.lib;ws2_32.lib;dbghelp.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- Firefox loads this DLL with LOAD_LIBRARY_SEARCH_* flags, which skip a
+           packaged process's dependency graph. Delay-loading the only static
+           Windows App SDK import resolves it on first use through the standard
+           search: the framework package when packaged, the app-local runtime
+           otherwise. -->
+      <DelayLoadDLLs>Microsoft.UI.Windowing.Core.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
     <ClCompile>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\..\bridge\v2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>

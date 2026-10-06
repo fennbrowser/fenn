@@ -20,6 +20,7 @@ def load(name):
 
 package = load("Package-FirefoxDev")
 staging = load("Stage-WinUIPane")
+RUNTIME = ["Microsoft.UI.Xaml.dll", "resources.pri"]
 
 
 class DevPackageTests(unittest.TestCase):
@@ -44,21 +45,70 @@ class DevPackageTests(unittest.TestCase):
             self.assertFalse((dest / "FirefoxWinUIPane.dll").exists())
             self.assertFalse((root / "report.json").exists())
 
-    def test_pri_file_references_must_resolve_at_package_root(self):
+    def test_framework_must_supply_every_omitted_runtime_file(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            dump = root / "pri.xml"
-            dump.write_text('<PriInfo><Candidate type="Path"><Value>asset.png</Value></Candidate></PriInfo>')
-            with self.assertRaisesRegex(ValueError, "package-root resource"):
-                package.validate_pri_layout(root, dump)
-            (root / "asset.png").write_bytes(b"asset")
-            package.validate_pri_layout(root, dump)
+            framework, firefox, pane = root / "framework", root / "firefox", root / "pane"
+            for directory in (framework, firefox, pane / "Microsoft.UI.Xaml"):
+                directory.mkdir(parents=True)
+            for name in package.FIREFOX_RUNTIME:
+                (firefox / name).write_bytes(b"runtime")
+                (framework / name).write_bytes(b"runtime")
+            asset = pane / "Microsoft.UI.Xaml/asset.xbf"
+            asset.write_bytes(b"asset")
+            info = {"PackageFullName": "Framework", "InstallLocation": str(framework)}
+            with self.assertRaisesRegex(ValueError, "lacks runtime file: Microsoft.UI.Xaml/asset.xbf"):
+                package.framework_record(info, firefox, [asset], pane, staging.image_digest)
+            (framework / "Microsoft.UI.Xaml").mkdir()
+            (framework / "Microsoft.UI.Xaml/asset.xbf").write_bytes(b"asset")
+            record = package.framework_record(info, firefox, [asset], pane, staging.image_digest)
+            self.assertEqual(len(record["files"]), len(package.FIREFOX_RUNTIME) + 1)
 
-    def fixture(self, root, *, missing=False, tampered=False, alias="firefox-winui-dev.exe"):
+    def test_manifest_gains_framework_dependency(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "AppxManifest.xml"
+            path.write_text(f"""<Package xmlns="{package.NS['f']}" xmlns:desktop="{package.NS['desktop']}">
+  <Properties><DisplayName>x</DisplayName><Description>x</Description></Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0"/>
+  </Dependencies>
+  <Applications><Application><desktop:ExecutionAlias Alias="firefox.exe"/></Application></Applications>
+</Package>""", encoding="utf-8")
+            package.customize_manifest(path, "2.5.1.0")
+            dependencies = ET.parse(path).getroot().findall("f:Dependencies/f:PackageDependency", package.NS)
+            self.assertEqual([entry.attrib for entry in dependencies],
+                             [{"Name": package.RUNTIME_FRAMEWORK, "MinVersion": "2.5.1.0",
+                               "Publisher": package.RUNTIME_PUBLISHER}])
+            with self.assertRaisesRegex(ValueError, "dependency contract"):
+                package.customize_manifest(path, "2.5.1.0")
+
+    def test_exe_winrt_registrations_are_replaced_only_when_supplied(self):
+        text = """<assembly xmlns="urn:schemas-microsoft-com:asm.v1">
+<dependency><dependentAssembly><assemblyIdentity name="mozglue"/></dependentAssembly></dependency>
+<asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" xmlns:winrtv1="urn:schemas-microsoft-com:winrt.v1" name="CoreMessagingXP.dll">
+    <winrtv1:activatableClass name="Microsoft.UI.Dispatching.DispatcherQueue" threadingModel="both" />
+  </asmv3:file>
+</assembly>"""
+        stripped, removed = package.strip_winrt_registrations(text, {"coremessagingxp.dll"})
+        self.assertEqual(removed, ["CoreMessagingXP.dll"])
+        self.assertNotIn("activatableClass", stripped)
+        self.assertIn("mozglue", stripped)
+        with self.assertRaisesRegex(ValueError, "does not supply"):
+            package.strip_winrt_registrations(text, set())
+        with self.assertRaisesRegex(ValueError, "no WinUI registrations"):
+            package.strip_winrt_registrations(stripped, {"coremessagingxp.dll"})
+
+    def fixture(self, root, *, missing=False, tampered=False, alias="firefox-winui-dev.exe",
+                dependency=True, private_runtime=False):
         manifest = ET.Element(f"{{{package.NS['f']}}}Package")
         ET.SubElement(manifest, f"{{{package.NS['f']}}}Identity", {
             "Name": package.IDENTITY, "Publisher": package.PUBLISHER,
             "Version": "0.1.0.0", "ProcessorArchitecture": "x64"})
+        dependencies = ET.SubElement(manifest, f"{{{package.NS['f']}}}Dependencies")
+        if dependency:
+            ET.SubElement(dependencies, f"{{{package.NS['f']}}}PackageDependency", {
+                "Name": package.RUNTIME_FRAMEWORK, "MinVersion": "2.5.1.0",
+                "Publisher": package.RUNTIME_PUBLISHER})
         apps = ET.SubElement(manifest, f"{{{package.NS['f']}}}Applications")
         app = ET.SubElement(apps, f"{{{package.NS['f']}}}Application", {
             "Id": "App", "Executable": "VFS/ProgramFiles/Dev Root/firefox.exe"})
@@ -66,33 +116,52 @@ class DevPackageTests(unittest.TestCase):
         path = root / "test.msix"
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("AppxManifest.xml", ET.tostring(manifest))
+            # Firefox's own package-root PRI must not be mistaken for the runtime's.
+            archive.writestr("Resources.pri", b"firefox resources")
             if not missing:
                 archive.writestr("VFS/ProgramFiles/Dev%20Root/firefox.exe", b"bad" if tampered else b"exe")
+            if private_runtime:
+                archive.writestr("VFS/ProgramFiles/Dev%20Root/Microsoft.UI.Xaml.dll", b"runtime")
         return path, {"firefox.exe": hashlib.sha256(b"exe").hexdigest()}
+
+    def validate(self, path, hashes):
+        return package.validate_package(path, "0.1.0.0", hashes, "2.5.1.0", RUNTIME)
 
     def test_url_encoded_msix_paths(self):
         with tempfile.TemporaryDirectory() as temp:
             path, hashes = self.fixture(Path(temp))
-            result = package.validate_package(path, "0.1.0.0", hashes)
+            result = self.validate(path, hashes)
             self.assertEqual(result["identity"]["Name"], package.IDENTITY)
 
     def test_missing_manifest_executable_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             path, hashes = self.fixture(Path(temp), missing=True)
             with self.assertRaisesRegex(ValueError, "missing payload"):
-                package.validate_package(path, "0.1.0.0", hashes)
+                self.validate(path, hashes)
 
     def test_payload_tampering_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             path, hashes = self.fixture(Path(temp), tampered=True)
             with self.assertRaisesRegex(ValueError, "differs"):
-                package.validate_package(path, "0.1.0.0", hashes)
+                self.validate(path, hashes)
 
     def test_firefox_alias_collision_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             path, hashes = self.fixture(Path(temp), alias="firefox.exe")
             with self.assertRaisesRegex(ValueError, "must not claim"):
-                package.validate_package(path, "0.1.0.0", hashes)
+                self.validate(path, hashes)
+
+    def test_missing_framework_dependency_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path, hashes = self.fixture(Path(temp), dependency=False)
+            with self.assertRaisesRegex(ValueError, "must depend only on"):
+                self.validate(path, hashes)
+
+    def test_private_runtime_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path, hashes = self.fixture(Path(temp), private_runtime=True)
+            with self.assertRaisesRegex(ValueError, "Private Windows App SDK runtime"):
+                self.validate(path, hashes)
 
 
 if __name__ == "__main__":

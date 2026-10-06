@@ -1,6 +1,8 @@
 """Build a Windows 11 unsigned development MSIX from a clean Firefox package.
 
-Run via Build-FirefoxDevPackage.ps1, which selects Mach's build Python environment.
+The package depends on the shared Windows App SDK framework package and carries
+no private copy of its runtime. Run via Build-FirefoxDevPackage.ps1, which selects
+Mach's build Python environment.
 """
 
 import argparse
@@ -21,6 +23,16 @@ IDENTITY = "FirefoxWinUI.Dev"
 DISPLAY_NAME = "WinUI Browser Dev"
 PUBLISHER = ("CN=Firefox WinUI Development, "
              "OID.2.25.311729368913984317654407730594956997722=1")
+RUNTIME_FRAMEWORK = "Microsoft.WindowsAppRuntime.2"
+RUNTIME_PUBLISHER = "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+# Stock Firefox ships these app-local (widget/windows/moz.build). Packaged, the
+# framework supplies them, so one runtime copy can load per process.
+FIREFOX_RUNTIME = (
+    "CoreMessagingXP.dll", "marshal.dll", "Microsoft.InputStateManager.dll",
+    "Microsoft.Internal.FrameworkUdk.dll", "Microsoft.UI.Composition.OSSupport.dll",
+    "Microsoft.UI.Input.dll", "Microsoft.UI.Windowing.Core.dll", "Microsoft.UI.Windowing.dll",
+    "Microsoft.WindowsAppRuntime.dll", "Microsoft.WindowsAppRuntime.Insights.Resource.dll",
+)
 NS = {
     "f": "http://schemas.microsoft.com/appx/manifest/foundation/windows10",
     "uap": "http://schemas.microsoft.com/appx/manifest/uap/windows10",
@@ -41,14 +53,114 @@ def sha256(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def customize_manifest(path):
+def load_script(name):
+    spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def runtime_min_version():
+    """The framework floor is the Windows App SDK the pane is built against."""
+    config = ET.parse(ROOT / "native/WinUIPane/packages.config")
+    version = config.find("package[@id='Microsoft.WindowsAppSDK']").get("version")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise ValueError(f"Unexpected Windows App SDK version: {version}")
+    return f"{version}.0"
+
+
+def version_key(value):
+    return tuple(int(part) for part in value.split("."))
+
+
+def installed_framework(min_version):
+    """The newest installed x64 framework at or above the floor, for validation."""
+    query = (f"Get-AppxPackage -Name {RUNTIME_FRAMEWORK} | Where-Object Architecture -eq X64 | "
+             "Select-Object PackageFullName,Version,Publisher,InstallLocation | ConvertTo-Json")
+    output = subprocess.run(["powershell", "-NoProfile", "-Command", query],
+                            check=True, capture_output=True, text=True).stdout.strip()
+    packages = json.loads(output) if output else []
+    packages = [packages] if isinstance(packages, dict) else packages
+    usable = [p for p in packages if p["Publisher"] == RUNTIME_PUBLISHER
+              and version_key(p["Version"]) >= version_key(min_version)]
+    if not usable:
+        raise FileNotFoundError(f"Install the x64 {RUNTIME_FRAMEWORK} framework >= {min_version} "
+                                "(Windows App Runtime) to build and run this package")
+    return max(usable, key=lambda p: version_key(p["Version"]))
+
+
+def framework_record(framework, firefox_dir, pane_files, pane_dir, image_digest):
+    """Prove the framework supplies every runtime file the package no longer carries."""
+    location = Path(framework["InstallLocation"])
+    available = {p.relative_to(location).as_posix().lower(): p
+                 for p in location.rglob("*") if p.is_file()}
+    sources = [(name, firefox_dir / name) for name in FIREFOX_RUNTIME]
+    sources += [(p.relative_to(pane_dir).as_posix(), p) for p in pane_files]
+    records = {}
+    for relative, local in sources:
+        if relative.lower() in records:
+            continue
+        supplied = available.get(relative.lower())
+        if not supplied:
+            raise ValueError(f"{framework['PackageFullName']} lacks runtime file: {relative}")
+        records[relative.lower()] = {
+            "file": relative,
+            "imageMatch": local.suffix.lower() != ".dll" or image_digest(local) == image_digest(supplied)}
+    return {"framework": framework, "files": sorted(records.values(), key=lambda r: r["file"].lower())}
+
+
+WINRT_FILE = re.compile(r"<asmv3:file\b[^>]*\bname=\"([^\"]+)\"[^>]*>(?:(?!</asmv3:file>).)*?"
+                        r"winrtv1:activatableClass.*?</asmv3:file>\s*", re.S)
+
+
+def strip_winrt_registrations(text, supplied):
+    """Drop executable reg-free WinRT entries for framework-supplied servers.
+
+    The unpackaged firefox.exe registers WinUI classes against app-local DLLs.
+    Those entries take precedence over the package graph, so the packaged
+    executable must not carry them; the framework registers the same classes
+    process-wide, including for incoming COM/UIA calls.
+    """
+    removed = WINRT_FILE.findall(text)
+    if not removed:
+        raise ValueError("firefox.exe manifest has no WinUI registrations to replace")
+    unsupplied = sorted(name for name in removed if name.lower() not in supplied)
+    if unsupplied:
+        raise ValueError(f"Framework does not supply registered WinRT servers: {unsupplied}")
+    stripped = WINRT_FILE.sub("", text)
+    if "activatableClass" in stripped:
+        raise ValueError("Unrecognized WinRT registration left in firefox.exe manifest")
+    ET.fromstring(stripped.encode("utf-8"))
+    return stripped, removed
+
+
+def replace_exe_manifest(mt, exe, work, supplied):
+    extracted, replacement = work / "firefox.exe.manifest", work / "firefox.exe.packaged.manifest"
+    subprocess.run([str(mt), "-nologo", f"-inputresource:{exe};#1", f"-out:{extracted}"], check=True)
+    stripped, removed = strip_winrt_registrations(extracted.read_text(encoding="utf-8-sig"), supplied)
+    replacement.write_text(stripped, encoding="utf-8")
+    subprocess.run([str(mt), "-nologo", "-manifest", str(replacement), f"-outputresource:{exe};#1"], check=True)
+    subprocess.run([str(mt), "-nologo", f"-inputresource:{exe};#1", f"-out:{extracted}"], check=True)
+    if "activatableClass" in extracted.read_text(encoding="utf-8-sig"):
+        raise ValueError("Packaged firefox.exe still registers WinRT classes")
+    return removed
+
+
+def customize_manifest(path, min_version):
     for _, (prefix, uri) in ET.iterparse(path, events=["start-ns"]):
         ET.register_namespace(prefix, uri)
     tree = ET.parse(path)
     manifest = tree.getroot()
     for name in ("DisplayName", "Description"):
         manifest.find(f"f:Properties/f:{name}", NS).text = DISPLAY_NAME
-    manifest.find("f:Dependencies/f:TargetDeviceFamily", NS).set("MinVersion", "10.0.22000.0")
+    dependencies = manifest.find("f:Dependencies", NS)
+    dependencies.find("f:TargetDeviceFamily", NS).set("MinVersion", "10.0.22000.0")
+    if dependencies.find("f:PackageDependency", NS) is not None:
+        raise ValueError("Upstream package dependency contract changed")
+    dependency = ET.SubElement(dependencies, f"{{{NS['f']}}}PackageDependency", {
+        "Name": RUNTIME_FRAMEWORK, "MinVersion": min_version, "Publisher": RUNTIME_PUBLISHER})
+    dependency.tail = dependencies[-2].tail
+    dependencies[-2].tail = dependencies.text
     aliases = manifest.findall(".//desktop:ExecutionAlias", NS)
     if len(aliases) != 1:
         raise ValueError("Upstream execution alias contract changed")
@@ -56,14 +168,7 @@ def customize_manifest(path):
     tree.write(path, encoding="utf-8", xml_declaration=True)
 
 
-def validate_pri_layout(layout, dump):
-    for candidate in ET.parse(dump).findall(".//Candidate[@type='Path']/Value"):
-        relative = PurePosixPath(candidate.text.replace("\\", "/"))
-        if relative.is_absolute() or ".." in relative.parts or not (layout / relative).is_file():
-            raise ValueError(f"PRI references missing package-root resource: {candidate.text}")
-
-
-def validate_package(path, version, expected_hashes, root_hashes=None):
+def validate_package(path, version, expected_hashes, min_version, runtime_files=()):
     with zipfile.ZipFile(path) as archive:
         names = {unquote(name).replace("\\", "/"): name for name in archive.namelist()}
         manifest = ET.fromstring(archive.read(names["AppxManifest.xml"]))
@@ -72,6 +177,10 @@ def validate_package(path, version, expected_hashes, root_hashes=None):
                     "Version": version, "ProcessorArchitecture": "x64"}
         if any(identity.get(key) != value for key, value in expected.items()):
             raise ValueError(f"Unexpected package identity: {identity}")
+        dependencies = [d.attrib for d in manifest.findall("f:Dependencies/f:PackageDependency", NS)]
+        if dependencies != [{"Name": RUNTIME_FRAMEWORK, "MinVersion": min_version,
+                             "Publisher": RUNTIME_PUBLISHER}]:
+            raise ValueError(f"Package must depend only on {RUNTIME_FRAMEWORK} {min_version}: {dependencies}")
         aliases = manifest.findall(".//desktop:ExecutionAlias", NS)
         if [entry.get("Alias") for entry in aliases] != ["firefox-winui-dev.exe"]:
             raise ValueError("Development package must not claim the firefox.exe alias")
@@ -88,15 +197,21 @@ def validate_package(path, version, expected_hashes, root_hashes=None):
         for relative, digest in expected_hashes.items():
             if hashlib.sha256(archive.read(names[f"{base}/{relative}"])).hexdigest() != digest:
                 raise ValueError(f"Packaged file differs from staged payload: {relative}")
-        for relative, digest in (root_hashes or {}).items():
-            if hashlib.sha256(archive.read(names[relative])).hexdigest() != digest:
-                raise ValueError(f"Packaged resource differs from layout: {relative}")
+        # The package root keeps Firefox's own Resources.pri; only the former
+        # root copy of the WinUI loose assets would duplicate the framework there.
+        lowered = {name.lower() for name in names}
+        candidates = [f"{base}/{relative}" for relative in runtime_files]
+        candidates += [name for name in names if name.lower().startswith("microsoft.ui.xaml/")]
+        for candidate in candidates:
+            if candidate.lower() in lowered:
+                raise ValueError(f"Private Windows App SDK runtime file in package: {candidate}")
         forbidden = {"firefoxwinuipanetest.dll", "panecontracttests.exe", "user.js"}
         if any(PurePosixPath(name).name.lower() in forbidden for name in names):
             raise ValueError("Test binary or developer profile leaked into package")
         if "AppxSignature.p7x" in names:
             raise ValueError("This development lane must remain unsigned")
-        return {"identity": identity, "applicationId": "App", "payloadFiles": len(expected_hashes)}
+        return {"identity": identity, "applicationId": "App", "payloadFiles": len(expected_hashes),
+                "dependencies": dependencies}
 
 
 def main():
@@ -104,24 +219,33 @@ def main():
     parser.add_argument("--version", required=True, type=version_string)
     parser.add_argument("--sdk-bin", required=True, type=Path)
     args = parser.parse_args()
-    makeappx, makepri = (args.sdk_bin / name for name in ("makeappx.exe", "makepri.exe"))
+    makeappx, mt = (args.sdk_bin / name for name in ("makeappx.exe", "mt.exe"))
     clean = ROOT / "build/firefox/dist/firefox"
     msix_server = ROOT / "build/firefox/dist/bin/msixcomserver.dll"
-    for required in (makeappx, makepri, clean / "firefox.exe", clean / "omni.ja",
-                     msix_server,
-                     ROOT / "build/winui-pane/x64/Release/FirefoxWinUIPane.dll"):
+    pane_dir = ROOT / "build/winui-pane/x64/Release"
+    for required in (makeappx, mt, clean / "firefox.exe", clean / "omni.ja", msix_server,
+                     pane_dir / "FirefoxWinUIPane.dll",
+                     *(clean / name for name in FIREFOX_RUNTIME)):
         if not required.is_file():
             raise FileNotFoundError(f"Missing build prerequisite: {required}")
+    staging = load_script("Stage-WinUIPane")
+    pane_runtime = staging.runtime_files(pane_dir)
+    min_version = runtime_min_version()
+    framework = installed_framework(min_version)
+    record = framework_record(framework, clean, pane_runtime, pane_dir, staging.image_digest)
+
     run = ROOT / "artifacts/msix-dev" / f"{args.version}-{uuid.uuid4().hex[:8]}"
     run.mkdir(parents=True)
+    (run / "runtime-framework.json").write_text(
+        json.dumps({"minVersion": min_version, **record}, indent=2) + "\n", encoding="utf-8")
     payload = run / "payload"
-    shutil.copytree(clean, payload)
+    shutil.copytree(clean, payload, ignore=lambda directory, names: [
+        name for name in names if Path(directory) == clean and name in FIREFOX_RUNTIME])
     # This pinned Firefox ZIP manifest omits the MSIX-only background COM server.
     shutil.copyfile(msix_server, payload / msix_server.name)
-    spec = importlib.util.spec_from_file_location("pane_staging", ROOT / "scripts/Stage-WinUIPane.py")
-    staging = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(staging)
-    staging.stage(dest_dir=payload, manifest=run / "runtime-staging.json")
+    shutil.copyfile(pane_dir / "FirefoxWinUIPane.dll", payload / "FirefoxWinUIPane.dll")
+    supplied = {p.name.lower() for p in Path(framework["InstallLocation"]).iterdir() if p.is_file()}
+    removed_registrations = replace_exe_manifest(mt, payload / "firefox.exe", run, supplied)
     defaults = payload / "browser/defaults/preferences/firefox-winui-dev.js"
     defaults.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / "packaging/dev/defaults.js", defaults)
@@ -141,31 +265,16 @@ def main():
                    output=str(base), force=True, log=log, makeappx=str(makeappx))
     layout = run / "layout"
     subprocess.run([str(makeappx), "unpack", "/p", str(base), "/d", str(layout)], check=True)
-    customize_manifest(layout / "AppxManifest.xml")
-
-    # Packaged XAML resolves resources from the package root, not just the EXE directory.
-    pri_input = run / "pri-input"
-    pri_input.mkdir()
-    shutil.copyfile(layout / "AppxManifest.xml", pri_input / "AppxManifest.xml")
-    shutil.copyfile(layout / "Resources.pri", pri_input / "firefox.pri")
-    shutil.copyfile(payload / "resources.pri", pri_input / "winui.pri")
-    subprocess.run([str(makepri), "new", "/pr", str(pri_input), "/cf",
-                    str(ROOT / "configs/winui-pane-pri.xml"), "/of",
-                    str(layout / "Resources.pri"), "/o"], check=True)
-    shutil.copytree(payload / "Microsoft.UI.Xaml", layout / "Microsoft.UI.Xaml")
-    pri_dump = run / "root-pri.xml"
-    subprocess.run([str(makepri), "dump", "/if", str(layout / "Resources.pri"),
-                    "/of", str(pri_dump)], check=True)
-    validate_pri_layout(layout, pri_dump)
-    root_hashes = {p.relative_to(layout).as_posix(): sha256(p)
-                   for p in sorted((layout / "Microsoft.UI.Xaml").rglob("*")) if p.is_file()}
-    root_hashes["Resources.pri"] = sha256(layout / "Resources.pri")
+    customize_manifest(layout / "AppxManifest.xml", min_version)
     output = run / f"{IDENTITY}_{args.version}_x64.msix"
     subprocess.run([str(makeappx), "pack", "/d", str(layout), "/p", str(output)], check=True)
-    result = validate_package(output, args.version, expected_hashes, root_hashes)
+    runtime_names = [entry["file"] for entry in record["files"]]
+    result = validate_package(output, args.version, expected_hashes, min_version, runtime_names)
     result.update({"package": str(output), "sha256": sha256(output),
                    "bytes": output.stat().st_size, "signing": "Windows 11 AllowUnsigned development only",
-                   "payloadSha256": expected_hashes, "rootResourceSha256": root_hashes})
+                   "runtimeFramework": framework["PackageFullName"],
+                   "removedExeWinRTServers": removed_registrations,
+                   "payloadSha256": expected_hashes})
     (run / "package-report.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(f"Validated development MSIX: {output}")
     print(f"SHA-256: {result['sha256']}")
