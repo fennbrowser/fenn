@@ -7,7 +7,7 @@ struct NativeToolbarCustomization {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using Map = winrt::Windows::Foundation::Collections::IObservableMap<winrt::hstring,winrt::Windows::Foundation::IInspectable>;
     using Button = Microsoft::UI::Xaml::Controls::Button;
-    struct Item { winrt::hstring id, control, label; bool placed{}, movable{}, removable{}, spring{}, canOverflow{}; };
+    struct Item { winrt::hstring id, control, label; bool placed{}, movable{}, removable{}, spring{}, canOverflow{}, canAutoOverflow{}, extension{}; };
     struct State { uint64_t revision{}; bool canReset{}, canUndoReset{}; std::vector<Item> items; std::map<winrt::hstring,winrt::hstring> labels; };
     State state;
     winrt::Windows::Foundation::Collections::IObservableVector<winrt::Windows::Foundation::IInspectable> placedItems = winrt::single_threaded_observable_vector<winrt::Windows::Foundation::IInspectable>();
@@ -38,7 +38,7 @@ struct NativeToolbarCustomization {
         for(auto value:items) {
             auto row=value.GetObject();
             Item item{row.GetNamedString(L"id"),row.GetNamedString(L"control"),row.GetNamedString(L"displayLabel",row.GetNamedString(L"label")),
-                row.GetNamedBoolean(L"placed"),row.GetNamedBoolean(L"movable"),row.GetNamedBoolean(L"removable"),row.GetNamedString(L"kind",L"button")==L"spring",row.GetNamedBoolean(L"canOverflow",false)};
+                row.GetNamedBoolean(L"placed"),row.GetNamedBoolean(L"movable"),row.GetNamedBoolean(L"removable"),row.GetNamedString(L"kind",L"button")==L"spring",row.GetNamedBoolean(L"canOverflow",false),row.GetNamedBoolean(L"canAutoOverflow",false),row.GetNamedBoolean(L"extension",false)};
             if(item.id.empty() || item.id.size()>64 || item.control.size()>64 || item.label.size()>4096 || !ids.insert(item.id).second ||
                 (item.placed && (item.control.empty() || !controls.insert(item.control).second))) throw winrt::hresult_invalid_argument();
             if(item.spring && item.placed && ++springs>16) throw winrt::hresult_invalid_argument();

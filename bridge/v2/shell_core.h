@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 27
+#define SHELL_CORE_ABI_VERSION 28
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -600,6 +600,17 @@ typedef struct {
    */
   uint32_t result;
 } ShellForeignGroup;
+
+typedef struct {
+  /*
+   0 button, 1 address, 2 flexible space.
+   */
+  uint32_t kind;
+  /*
+   0 retained, 1 general overflow, 2 Firefox Extensions panel.
+   */
+  uint32_t overflow;
+} ShellToolbarSlot;
 
 #ifdef __cplusplus
 extern "C" {
@@ -1513,6 +1524,16 @@ ShellStatus shell_core_group_drag_wait(ShellCore *core,
 ShellStatus shell_core_group_drag_publish(ShellCore *core,
                                           const ShellStripSlot *slots,
                                           uintptr_t len);
+
+/*
+ Pure bounded toolbar layout; no retained pointers or allocations. On rejection
+ the output is untouched. Callers supply at most 55 readable slots.
+ */
+ShellStatus shell_core_toolbar_overflow(const ShellToolbarSlot *slots,
+                                        uintptr_t len,
+                                        double width,
+                                        bool required_menu,
+                                        uint64_t *out_mask);
 
 #ifdef __cplusplus
 }  // extern "C"

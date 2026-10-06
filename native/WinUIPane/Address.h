@@ -975,6 +975,7 @@ struct NativeAddress {
             }
         }
         if (nextSession != session) {
+            if (navigation) navigation->sentOverflow.clear();
             context.Reset();
             resultMenu.Reset();
             mode.Reset();

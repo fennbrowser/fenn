@@ -972,7 +972,7 @@ index b2b5db6040..4fdb597a08 100644
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
 diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
-index 76cab7f8e4..88eaf85747 100644
+index 76cab7f8e4..ac11827449 100644
 --- a/browser/components/customizableui/CustomizableUI.sys.mjs
 +++ b/browser/components/customizableui/CustomizableUI.sys.mjs
 @@ -3070,6 +3070,9 @@ var CustomizableUIInternal = {
@@ -985,7 +985,24 @@ index 76cab7f8e4..88eaf85747 100644
      ownerWindow.PanelUI.showSubView(aWidget.viewId, anchor, aEvent);
    },
  
-@@ -7856,7 +7859,7 @@ class OverflowableToolbar {
+@@ -7849,6 +7852,16 @@ class OverflowableToolbar {
+     CustomizableUIInternal.removePanelCloseListeners(this.#defaultListPanel);
+   }
+ 
++  #nativeOverflow = null;
++
++  // Transient native presentation only: never changes CustomizableUI placements.
++  setNativeOverflow(ids) {
++    const next = ids ? new Set(ids) : null;
++    if (JSON.stringify([...(next || [])]) === JSON.stringify([...(this.#nativeOverflow || [])])) return;
++    this.#nativeOverflow = next;
++    this.#checkOverflow();
++  }
++
+   /**
+    * Opens the overflow #defaultListPanel if it's not already open. If the panel is in
+    * the midst of hiding when this is called, the panel will be re-opened.
+@@ -7856,7 +7869,7 @@ class OverflowableToolbar {
     * @returns {Promise<undefined>}
     *  Resolves once the panel is open.
     */
@@ -994,7 +1011,7 @@ index 76cab7f8e4..88eaf85747 100644
      if (this.#defaultListPanel.state == "open") {
        return Promise.resolve();
      }
-@@ -7871,7 +7874,8 @@ class OverflowableToolbar {
+@@ -7871,7 +7884,8 @@ class OverflowableToolbar {
          capture: true,
          mozSystemGroup: true,
        });
@@ -1004,6 +1021,55 @@ index 76cab7f8e4..88eaf85747 100644
  
        let popupshown = false;
        this.#defaultListPanel.addEventListener(
+@@ -8064,11 +8078,11 @@ class OverflowableToolbar {
+     let webExtList = this.#webExtList;
+ 
+     let child = this.#target.lastElementChild;
+-    while (child && isOverflowing) {
++    while (child && (isOverflowing || this.#nativeOverflow?.size)) {
+       let prevChild = child.previousElementSibling;
+ 
+-      if (child.getAttribute("overflows") != "false") {
+-        this.#overflowedInfo.set(child.id, targetContentWidth);
++      if ((isOverflowing || this.#nativeOverflow?.has(child.id)) && child.getAttribute("overflows") != "false") {
++        this.#overflowedInfo.set(child.id, isOverflowing ? targetContentWidth : 0);
+         let { width: childWidth } =
+           win.windowUtils.getBoundsWithoutFlushing(child);
+         if (!childWidth) {
+@@ -8102,6 +8116,7 @@ class OverflowableToolbar {
+         }
+       }
+       child = prevChild;
++      if (!isOverflowing && ![...this.#target.children].some(node => this.#nativeOverflow?.has(node.id) && node.getAttribute("overflows") != "false")) break;
+       ({ isOverflowing, targetContentWidth } = await this.#getOverflowInfo());
+       // Stop if the window has closed or if we re-enter while waiting for
+       // layout.
+@@ -8225,6 +8240,7 @@ class OverflowableToolbar {
+ 
+     for (let i = overflowedItemStack.length - 1; i >= 0; --i) {
+       let [childID, minSize] = overflowedItemStack[i];
++      if (!shouldMoveAllItems && this.#nativeOverflow?.has(childID)) continue;
+ 
+       // The item may have been placed inside of a <xul:panel> that is lazily
+       // loaded and still in the view cache. PanelMultiView.getViewNode will
+@@ -8348,8 +8364,16 @@ class OverflowableToolbar {
+       return;
+     }
+ 
+-    if (isOverflowing) {
++    const needsNativeOverflow = this.#nativeOverflow?.size &&
++      [...this.#target.children].some(child => this.#nativeOverflow.has(child.id) && child.getAttribute("overflows") != "false");
++    if (isOverflowing || needsNativeOverflow) {
+       await this.#onOverflow();
++      if (this.#nativeOverflow?.size) {
++        if (this.#checkOverflowHandle !== checkOverflowHandle) return;
++        ({ totalAvailWidth } = await this.#getOverflowInfo());
++        if (this.#checkOverflowHandle !== checkOverflowHandle) return;
++        await this.#moveItemsBackToTheirOrigin(false, totalAvailWidth);
++      }
+     } else {
+       await this.#moveItemsBackToTheirOrigin(false, totalAvailWidth);
+     }
 diff --git a/browser/components/customizableui/PanelMultiView.sys.mjs b/browser/components/customizableui/PanelMultiView.sys.mjs
 index 122165dba9..d9fff8f218 100644
 --- a/browser/components/customizableui/PanelMultiView.sys.mjs
@@ -3081,10 +3147,10 @@ index 1e2660589b..85227d8e69 100644
    /*
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 0000000000..1b043128aa
+index 0000000000..7f36f6fff3
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,166 @@
 +// Firefox owns widget eligibility and durable placement; native owns the editor.
 +export class WinUIToolbarCustomization {
 +  constructor(toolbar) {
@@ -3092,9 +3158,10 @@ index 0000000000..1b043128aa
 +    this.ui = ChromeUtils.importESModule('moz-src:///browser/components/customizableui/CustomizableUI.sys.mjs').CustomizableUI;
 +    this.widgetStrings = Services.strings.createBundle('chrome://browser/locale/customizableui/customizableWidgets.properties');
 +    this.editorOpen = false; this.ownsReset = false; this.resetting = false;
++    this.nativeOverflow = new Set();
 +    this.entries = new Map(); this.nextId = 0; this.revision = 0; this.signature = '';
 +    this.invalidate = () => toolbar.owner.invalidateAddress();
-+    this.listener = Object.fromEntries(['onWidgetAdded','onWidgetRemoved','onWidgetMoved','onWidgetDestroyed','onWidgetAfterDOMChange','onAreaReset'].map(k=>[k,this.invalidate]));
++    this.listener = Object.fromEntries(['onWidgetAdded','onWidgetRemoved','onWidgetMoved','onWidgetDestroyed','onWidgetAfterDOMChange','onWidgetOverflow','onWidgetUnderflow','onAreaReset'].map(k=>[k,this.invalidate]));
 +    this.listener.onAreaReset = () => {
 +      if (!this.resetting) this.ownsReset = false;
 +      this.invalidate();
@@ -3147,6 +3214,8 @@ index 0000000000..1b043128aa
 +      if (!entry || entry.node !== node) { entry={id:`widget-${++this.nextId}`,widget,node};this.entries.set(widget,entry); }
 +      items.push({id:entry.id,control,kind:spring ? 'spring' : 'button',label:String(label).slice(0,4096),placed,overflow,
 +        displayLabel:overflow ? toolbar.owner.localization().formatValueSync('winui-toolbar-customize-overflow-item',{label:String(label)}).slice(0,4096) : String(label).slice(0,4096),
++        canAutoOverflow:placed && !!node && !spring && control !== 'address' && node?.getAttribute('overflows') !== 'false',
++        extension:!spring && !fixed.has(widget),
 +        canOverflow:placed && control !== 'address' && ui.canWidgetMoveToArea(widget,ui.AREA_FIXED_OVERFLOW_PANEL),
 +        movable:(widget !== 'spring' || springs < 16) && ui.canWidgetMoveToArea(widget,ui.AREA_NAVBAR),
 +        removable:control !== 'address' && ui.isWidgetRemovable(widget),
@@ -3179,6 +3248,24 @@ index 0000000000..1b043128aa
 +    if (this.toolbar.window.gDialogBox?.isOpen) return 2;
 +    if (command === 'customize:editor:open') {
 +      this.editorOpen = true; this.ownsReset = false; this.invalidate(); return 1;
++    }
++    const layout = /^customize:([0-9]+):overflow-layout:(none|widget-[0-9]+(?:,widget-[0-9]+)*)$/.exec(command);
++    if (layout) {
++      this.toolbar.navigationState();
++      if (+layout[1] !== this.current.revision) return 2;
++      const ids = layout[2] === 'none' ? [] : layout[2].split(',');
++      if (ids.length > 55 || new Set(ids).size !== ids.length) return 2;
++      const widgets = [];
++      for (const id of ids) {
++        const item = this.current.items.find(item => item.id === id && item.canAutoOverflow);
++        const entry = [...this.entries.values()].find(entry => entry.id === id);
++        if (!item || !entry) return 2;
++        widgets.push(entry.widget);
++      }
++      this.nativeOverflow = new Set(widgets);
++      this.toolbar.window.document.getElementById('nav-bar').overflowable.setNativeOverflow(widgets);
++      this.invalidate();
++      return 1;
 +    }
 +    const global = /^customize:([0-9]+):(reset|undo-reset)$/.exec(command);
 +    if (global) {
@@ -3719,10 +3806,10 @@ index 0000000000..bf0194e762
 +}
 diff --git a/browser/base/content/WinUIPinnedExtensions.sys.mjs b/browser/base/content/WinUIPinnedExtensions.sys.mjs
 new file mode 100644
-index 0000000000..987b6fb980
+index 0000000000..1230c69c01
 --- /dev/null
 +++ b/browser/base/content/WinUIPinnedExtensions.sys.mjs
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,133 @@
 +// Firefox owns extension placement, action policy, icons and command execution.
 +export class WinUIPinnedExtensions {
 +  constructor(toolbar) {
@@ -3758,7 +3845,7 @@ index 0000000000..987b6fb980
 +    for (const widgetId of ui.getWidgetIdsInArea(ui.AREA_NAVBAR)) {
 +      const node = ui.getWidget(widgetId)?.forWindow(window)?.node;
 +      const button = node?.querySelector(".webextension-browser-action");
-+      if (!button || node.hidden || button.hidden || node.hasAttribute("overflowedItem")) continue;
++      if (!button || node.hidden || button.hidden) continue;
 +      const policy = window.WebExtensionPolicy.getByID(button.dataset.extensionid);
 +      const action = window.gUnifiedExtensions.browserActionFor(policy);
 +      if (!action || !policy.extension.canAccessWindow(window)) continue;
@@ -3773,12 +3860,13 @@ index 0000000000..987b6fb980
 +      const data = action.action.getContextData(window.gBrowser.selectedTab);
 +      let icon = this.iconDetails.getPreferredIcon(data.icon, action.extension, 32).icon;
 +      if (typeof icon === "object") icon = icon[node.closest("toolbar")?.hasAttribute("brighttext") ? "dark" : "light"];
-+      if (icon && !this.images.has(icon)) this.loadImage(icon);
++      const genericIcon = icon === this.iconDetails.DEFAULT_ICON;
++      if (icon && !genericIcon && !this.images.has(icon)) this.loadImage(icon);
 +      const color = values => values.map(value => Math.max(0, Math.min(255, Math.round(value))));
 +      result.push({id:entry.id, label:(button.getAttribute("tooltiptext") || data.title || action.extension.name).slice(0,4096),
 +        enabled:!button.hasAttribute("disabled"), badge:(data.badgeText || "").slice(0,4096),
 +        background:color(data.badgeBackgroundColor), foreground:color(action.action.getTextColor(data)),
-+        image:this.images.get(icon) || null});
++        genericIcon, image:genericIcon ? null : this.images.get(icon) || null});
 +    }
 +    for (const [key, entry] of this.entries) if (!keep.has(key)) {
 +      for (const command of [`extension:${entry.id}`, `extension-menu:${entry.id}`]) {
@@ -3823,6 +3911,7 @@ index 0000000000..987b6fb980
 +    const live = this.snapshot().find(item => item.id === id);
 +    const entry = [...this.entries.values()].find(item => item.id === id);
 +    if (!live || (!context && !live.enabled) || !entry?.button.isConnected) return 2;
++    if (this.toolbar.customization?.nativeOverflow.has(entry.widgetId)) return 2;
 +    const anchor = this.toolbar.menuAnchor(command, bounds);
 +    if (!anchor || this.window.gDialogBox?.isOpen) return 2;
 +    if (context) {
@@ -5767,10 +5856,10 @@ index 0000000000..a8fae4db53
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..45a76798dd
+index 0000000000..bcfbf0a7a7
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,300 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -5880,6 +5969,11 @@ index 0000000000..45a76798dd
 +    state.pinned = this.pinned?.snapshot() || [];
 +    Object.assign(state, this.omnibar?.snapshot() || {});
 +    state.customization = this.customization?.snapshot(state);
++    const represented = new Set([...(this.customization?.entries?.values() || [])].map(entry => entry.widget));
++    state.overflow.required = !!document.getElementById("widget-overflow-fixed-list")?.childElementCount ||
++      [...(document.getElementById("widget-overflow-list")?.children || [])].some(node => !node.hidden && !represented.has(node.id));
++    if (state.customization) state.overflow.enabled = state.overflow.required ||
++      [...(document.getElementById("widget-overflow-list")?.children || [])].some(node => !node.hidden && this.customization.nativeOverflow.has(node.id));
 +    return state;
 +  }
 +  executeNavigation(action) {
@@ -5900,6 +5994,7 @@ index 0000000000..45a76798dd
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
 +    if (customization) return this.customization.execute(action.command);
++    if (this.customization?.nativeOverflow.has(item.element)) return 2;
 +    // Use the actual Firefox command handler, including its modifier policy.
 +    const event = new window.MouseEvent("click", {view:window, button:0,
 +      ctrlKey:!!(action.modifiers & 1), altKey:!!(action.modifiers & 2),
@@ -6027,6 +6122,8 @@ index 0000000000..45a76798dd
 +    for (const panel of this.window.document.querySelectorAll("panel, menupopup")) {
 +      if (panel?.anchorNode && [...(this.menuAnchors?.values() || [])].includes(panel.anchorNode)) panel.hidePopup();
 +    }
++    this.customization?.nativeOverflow.clear();
++    this.window.document.getElementById("nav-bar")?.overflowable?.setNativeOverflow(null);
 +    const hadFocus = this.active && this.focusOwned;
 +    this.active = false;
 +    this.customization?.endEditor();

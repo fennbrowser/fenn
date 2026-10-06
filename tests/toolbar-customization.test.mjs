@@ -17,7 +17,7 @@ function fixture() {
   moveWidgetWithinArea(id,position){saved=null;calls.push(['move',id,position]);if(order.indexOf(id)<position)position--;order=order.filter(x=>x!==id);order.splice(position,0,id);}};
  const context=vm.createContext({Services:{strings:{createBundle:()=>({GetStringFromName:()=> 'Flexible Space'})},prefs:{addObserver(){},removeObserver(){},getPrefType(p){return prefs.has(p)?64:0;},getIntPref(p){return prefs.get(p);},prefHasUserValue(p){return prefs.has(p);}}},ChromeUtils:{importESModule:()=>({CustomizableUI:ui})}});
  vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIToolbarCustomization.sys.mjs',import.meta.url),'utf8').replace('export class WinUIToolbarCustomization','this.Customization = class WinUIToolbarCustomization'),context);
- const toolbar={window:{addEventListener(){},removeEventListener(){}},owner:{invalidateAddress(){revision++;},localization:()=>({formatValueSync:k=>k})}};
+ const toolbar={window:{addEventListener(){},removeEventListener(){},document:{getElementById:()=>({overflowable:{setNativeOverflow:ids=>calls.push(["transient",...ids])}})}},owner:{invalidateAddress(){revision++;},localization:()=>({formatValueSync:k=>k})}};
  const c=new context.Customization(toolbar);toolbar.navigationState=()=>c.snapshot({});
  const state=()=>c.snapshot({});
  const command=(control,verb,target)=>{const s=state();return `customize:${s.revision}:${s.items.find(i=>i.control===control).id}:${verb}`+(target?':'+s.items.find(i=>i.control===target).id:'');};
@@ -104,4 +104,20 @@ test('overflow delegates eligibility and placement to Firefox, with stale action
  assert.equal(f.c.execute(f.command('profile','add')),1);assert.deepEqual(f.overflow,[]);
  const stale=f.command('profile','overflow');f.overflow.push('unsupported-firefox-widget');
  assert.equal(f.c.execute(stale),2);
+});
+
+
+test('native overflow is transient, bounded, revision-scoped and revalidates eligibility',()=>{
+ const f=fixture(),s=f.state(),id=s.items.find(i=>i.control==='profile').id;
+ assert.equal(f.c.execute(`customize:${s.revision}:overflow-layout:${id}`),1);
+ assert.deepEqual(f.calls.at(-1),['transient','fxa-toolbar-menu-button']);
+ assert.equal(f.state().items.find(i=>i.id===id).placed,true);
+ assert.equal(f.c.execute(`customize:${s.revision}:overflow-layout:${id},${id}`),2);
+ assert.equal(f.c.execute(`customize:${s.revision}:overflow-layout:widget-999`),2);
+ const spring=s.items.find(i=>i.control==='new-spring').id;
+ assert.equal(f.c.execute(`customize:${s.revision}:overflow-layout:${spring}`),2);
+ f.ui.moveWidgetWithinArea('fxa-toolbar-menu-button',0);
+ assert.equal(f.c.execute(`customize:${s.revision}:overflow-layout:none`),2);
+ assert.equal(f.c.execute(`customize:${f.state().revision}:overflow-layout:none`),1);
+ assert.equal(f.c.nativeOverflow.size,0);
 });

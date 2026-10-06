@@ -3,6 +3,7 @@
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include <functional>
 #include "JsonValidation.h"
+#include "shell_core.h"
 #include "PinnedExtensionButtons.h"
 #include "ToolbarCustomization.h"
 
@@ -10,7 +11,7 @@
 struct NativeNavigationToolbar {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using Button = Microsoft::UI::Xaml::Controls::Button;
-    struct State { bool enabled{}, stopping{}; winrt::hstring label, tooltip; };
+    struct State { bool enabled{}, stopping{}, required{}; winrt::hstring label, tooltip; };
     using States = std::array<State, 7>;
     static constexpr wchar_t const* commands[] = {L"back", L"forward", L"reload", L"profile", L"extensions", L"appmenu", L"overflow"};
     Microsoft::UI::Xaml::Controls::Grid host{nullptr}, surface{nullptr};
@@ -22,7 +23,9 @@ struct NativeNavigationToolbar {
     std::array<Microsoft::UI::Xaml::Controls::SymbolIcon, 7> icons;
     PinnedExtensionButtons pinned;
     NativeToolbarCustomization customization;
-    bool stopping{}, hasOverflow{};
+    bool stopping{}, hasOverflow{}, requiredOverflow{}, overflowQueued{}, rootObserved{};
+    NativeToolbarCustomization::State layoutState;
+    std::wstring pendingOverflow, sentOverflow;
     std::array<Microsoft::UI::Dispatching::DispatcherQueueTimer, 2> historyTimers{nullptr, nullptr};
     std::array<bool, 2> historyHeld{};
     std::array<uint32_t, 7> inputModifiers{};
@@ -123,16 +126,53 @@ struct NativeNavigationToolbar {
                 Microsoft::UI::Xaml::FrameworkElement const& editor,
                 Microsoft::UI::Xaml::Controls::Grid const& background) {
         host=grid;address=editor;surface=background;
+        host.SizeChanged([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const&){if(!alive.expired())Layout(layoutState);});
+        host.Loaded([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const&) {
+            if(alive.expired() || rootObserved || !host.XamlRoot())return;
+            rootObserved=true;
+            host.XamlRoot().Changed([this,alive](auto const&,auto const&){if(!alive.expired())Layout(layoutState);});
+            Layout(layoutState);
+        });
     }
     void Layout(NativeToolbarCustomization::State const& state) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         if(!host)return;
+        if(layoutState.revision!=state.revision)layoutState=state;
+        const double availableWidth=host.XamlRoot()?host.XamlRoot().Size().Width:0;
+        std::set<winrt::hstring> overflowed;
+        if(visible && state.revision && availableWidth>0) {
+            std::vector<ShellToolbarSlot> slots;
+            std::vector<NativeToolbarCustomization::Item const*> items;
+            for(auto const& item:state.items)if(item.placed) {
+                slots.push_back({item.spring?2u:item.control==L"address"?1u:0u,item.canAutoOverflow?(item.extension?2u:1u):0u});
+                items.push_back(&item);
+            }
+            uint64_t mask=0;
+            if(shell_core_toolbar_overflow(slots.data(),slots.size(),availableWidth,requiredOverflow,&mask)==SHELL_STATUS_OK) {
+                std::wstring ids;
+                for(size_t i=0;i<items.size();i++)if(mask&(uint64_t(1)<<i)) {
+                    overflowed.insert(items[i]->id);
+                    if(!ids.empty())ids+=L",";ids+=items[i]->id.c_str();
+                }
+                pendingOverflow=L"customize:"+std::to_wstring(state.revision)+L":overflow-layout:"+(ids.empty()?L"none":ids);
+                if(!overflowQueued && pendingOverflow!=sentOverflow) {
+                    overflowQueued=true;
+                    if(!host.DispatcherQueue().TryEnqueue([this,alive=std::weak_ptr<int>(lifetime)] {
+                        if(alive.expired())return;
+                        overflowQueued=false;
+                        if(!visible || pendingOverflow==sentOverflow || !activate)return;
+                        sentOverflow=pendingOverflow;
+                        activate(sentOverflow.c_str(),0,buttons[5]);
+                    }))overflowQueued=false;
+                }
+            }
+        }
         std::vector<UIElement> desired;
         std::set<winrt::hstring> keep;
         if(visible && state.revision) {
             for(auto const& item:state.items) {
-                if(!item.placed)continue;
+                if(!item.placed || overflowed.contains(item.id))continue;
                 UIElement control{nullptr};
                 if(item.control==L"address")control=address;
                 else if(item.spring) {
@@ -176,7 +216,7 @@ struct NativeNavigationToolbar {
             auto child=desired[i];bool spring=false;
             for(auto const& [id,grid]:spacers)if(child==grid){spring=true;break;}
             Grid::SetColumn(child.as<FrameworkElement>(),int(host.ColumnDefinitions().Size()));
-            if(child==address)column(GridLengthHelper::FromValueAndType(5,GridUnitType::Star),visible?240:0);
+            if(child==address)column(GridLengthHelper::FromValueAndType(5,GridUnitType::Star),visible?256:0);
             else if(spring)column(GridLengthHelper::FromValueAndType(1,GridUnitType::Star),1,112);
             else column(GridLengthHelper::Auto());
             if(visible && i+1<desired.size() && child!=address && desired[i+1]!=address && !spring) {
@@ -199,6 +239,7 @@ struct NativeNavigationToolbar {
             auto entry = navigation.GetNamedObject(commands[i]);
             auto& item = result[i];
             item.enabled = entry.GetNamedBoolean(L"enabled");
+            item.required = entry.GetNamedBoolean(L"required",item.enabled);
             if (i == 2) item.stopping = entry.GetNamedBoolean(L"stopping", false);
             item.label = entry.GetNamedString(L"label", L"");
             item.tooltip = entry.GetNamedString(L"tooltip", L"");
@@ -210,8 +251,9 @@ struct NativeNavigationToolbar {
     void Apply(States const& state, bool visible) {
         using namespace Microsoft::UI::Xaml;
         this->visible=visible;
-        if (!visible) { pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
+        if (!visible) { sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
         hasOverflow = visible && state[6].enabled;
+        requiredOverflow = visible && state[6].required;
         stopping = visible && state[2].stopping;
         icons[2].Symbol(stopping ? Controls::Symbol::Cancel : Controls::Symbol::Refresh);
         for (size_t i = 0; i < buttons.size(); ++i) {

@@ -9,13 +9,14 @@ struct PinnedExtensionButtons {
     using Button = Microsoft::UI::Xaml::Controls::Button;
     struct State {
         winrt::hstring id, label, badge, text;
-        bool enabled{};
+        bool enabled{}, genericIcon{};
         JObject image{nullptr};
         winrt::Windows::UI::Color background{}, foreground{};
     };
     struct Row {
         Button button{nullptr};
         Microsoft::UI::Xaml::Controls::Image image{nullptr};
+        Microsoft::UI::Xaml::Controls::FontIcon genericIcon{nullptr};
         Microsoft::UI::Xaml::Controls::TextBlock badge{nullptr};
         Microsoft::UI::Xaml::Controls::Border badgeBorder{nullptr};
         Microsoft::UI::Xaml::Media::SolidColorBrush background{nullptr}, foreground{nullptr};
@@ -65,6 +66,7 @@ struct PinnedExtensionButtons {
             if (next.id.empty() || next.id.size() > 64 || !ids.insert(next.id).second ||
                 next.label.size() > 4096 || next.badge.size() > 4096 || next.text.size() > 16) throw winrt::hresult_invalid_argument();
             next.enabled = item.GetNamedBoolean(L"enabled");
+            next.genericIcon = item.GetNamedBoolean(L"genericIcon",false);
             next.background = color(item, L"background");
             next.foreground = color(item, L"foreground");
             NativeJson::ValidateImage(item, pixels, {32, 32768});
@@ -92,6 +94,9 @@ struct PinnedExtensionButtons {
                 row.image = grid.Children().GetAt(0).as<Image>();
                 row.badgeBorder = grid.Children().GetAt(1).as<Border>();
                 row.badge = row.badgeBorder.Child().as<TextBlock>();
+                row.genericIcon = Markup::XamlReader::Load(LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xEA86;" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>)").as<FontIcon>();
+                grid.Children().Append(row.genericIcon);
+                Canvas::SetZIndex(row.badgeBorder,1);
                 auto resources = grid.Resources().ThemeDictionaries().Lookup(winrt::box_value(L"Default")).as<ResourceDictionary>();
                 row.background = resources.Lookup(winrt::box_value(L"BadgeBackground")).as<Media::SolidColorBrush>();
                 row.foreground = resources.Lookup(winrt::box_value(L"BadgeForeground")).as<Media::SolidColorBrush>();
@@ -122,7 +127,8 @@ struct PinnedExtensionButtons {
             row.badge.Text(item.text.empty() ? item.badge : item.text);
             const auto width = item.text.empty() ? buttonSize : std::max(buttonSize, double(item.text.size() * 7 + 12));
             row.button.Width(width);
-            row.image.Visibility(item.text.empty() ? Visibility::Visible : Visibility::Collapsed);
+            row.image.Visibility(item.text.empty() && !item.genericIcon ? Visibility::Visible : Visibility::Collapsed);
+            row.genericIcon.Visibility(item.text.empty() && item.genericIcon ? Visibility::Visible : Visibility::Collapsed);
             row.badge.FontSize(item.text.empty() ? 9 : 12);
             row.badgeBorder.MaxWidth(item.text.empty() ? 30 : width);
             row.badgeBorder.HorizontalAlignment(item.text.empty() ? HorizontalAlignment::Right : HorizontalAlignment::Center);

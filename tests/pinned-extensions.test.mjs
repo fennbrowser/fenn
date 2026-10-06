@@ -34,17 +34,20 @@ function fixture() {
   return {pinned,order,add,toolbar};
 }
 
-test("pinned order and stable identities follow Firefox, while overflow revokes native actions", () => {
+test("pinned order and stable identities follow Firefox, while native overflow revokes actions without losing identities", () => {
   const f=fixture(); const first=f.add("first"); f.add("second");
   const initial=f.pinned.snapshot();
   assert.deepEqual(Array.from(initial,p=>p.label),["first","second"]);
   f.order.reverse();
   assert.equal(f.pinned.snapshot()[1].id,initial[0].id);
   first.attrs.set("overflowedItem","true");
-  assert.equal(f.pinned.snapshot().length,1);
+  assert.equal(f.pinned.snapshot().length,2);
+  f.toolbar.customization={nativeOverflow:new Set(["first"])};
   assert.equal(f.pinned.activate(`extension:${initial[0].id}`,{},{}),2);
   first.attrs.delete("overflowedItem");
-  assert.notEqual(f.pinned.snapshot()[1].id,initial[0].id);
+  f.toolbar.customization.nativeOverflow.clear();
+  assert.equal(f.pinned.snapshot()[1].id,initial[0].id);
+  assert.equal(f.pinned.activate(`extension:${initial[0].id}`,{},{}),1);
 });
 
 test("Firefox disabled state and title/badge updates are reflected without replacing identity", () => {
@@ -70,4 +73,17 @@ test("removal revokes anchors and bounds native publications", () => {
   f.order.length=0;assert.equal(f.pinned.snapshot().length,0);assert.ok(removed);
   for(let i=0;i<40;i++)f.add(`extension-${i}`);
   assert.equal(f.pinned.snapshot().length,32);
+});
+
+
+test('Firefox generic extension artwork uses a themed native fallback only for its default icon',()=>{
+ const f=fixture();f.add('extension');
+ f.pinned.iconDetails.DEFAULT_ICON='default-icon';
+ f.pinned.iconDetails.getPreferredIcon=()=>({icon:'default-icon'});
+ f.pinned.loadImage=()=>{throw new Error('generic icon must not rasterize');};
+ assert.equal(f.pinned.snapshot()[0].genericIcon,true);
+ assert.equal(f.pinned.snapshot()[0].image,null);
+ f.pinned.iconDetails.getPreferredIcon=()=>({icon:'custom-icon'});
+ f.pinned.loadImage=()=>{};
+ assert.equal(f.pinned.snapshot()[0].genericIcon,false);
 });

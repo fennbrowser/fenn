@@ -2681,3 +2681,33 @@ pub unsafe extern "C" fn shell_core_group_drag_publish(core:*mut ShellCore,slots
     if len>20000 || (slots.is_null() && len!=0) { return ShellStatus::InvalidArgument; }
     queue_guard(core,|q| { q.group_drag.publish(if len==0 { &[] } else { std::slice::from_raw_parts(slots,len) }); ShellStatus::Ok })
 }
+
+
+/// Pure bounded toolbar layout; no retained pointers or allocations. On rejection
+/// the output is untouched. Callers supply at most 55 readable slots.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_toolbar_overflow(
+    slots: *const crate::toolbar::ShellToolbarSlot, len: usize, width: f64,
+    required_menu: bool, out_mask: *mut u64,
+) -> ShellStatus {
+    if out_mask.is_null() || len > 55 || (len != 0 && slots.is_null()) { return ShellStatus::InvalidArgument; }
+    let rows = if len == 0 { &[] } else { std::slice::from_raw_parts(slots,len) };
+    match crate::toolbar::plan(rows,width,required_menu) {
+        Some(mask) => { *out_mask=mask; ShellStatus::Ok },
+        None => ShellStatus::InvalidArgument,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn toolbar_overflow_ffi_rejects_invalid_buffers_without_mutation() {
+    unsafe {
+        let mut mask=99;
+        assert_eq!(shell_core_toolbar_overflow(std::ptr::null(),1,500.0,false,&mut mask),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_toolbar_overflow(std::ptr::null(),0,f64::NAN,false,&mut mask),ShellStatus::InvalidArgument);
+        assert_eq!(mask,99);
+        assert_eq!(shell_core_toolbar_overflow(std::ptr::null(),0,500.0,false,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_toolbar_overflow(std::ptr::null(),0,500.0,false,&mut mask),ShellStatus::Ok);
+        assert_eq!(mask,0);
+    }
+}
