@@ -2174,7 +2174,7 @@ index ff1c607e68..2bbf5a5afb 100644
        if (blobUrl) {
          return blobUrl;
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b..afccf60e4b 100644
+index 4f28e62c7b..5de3bbe0f5 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
 @@ -19,7 +19,7 @@ tabbrowser-tab-tooltip-container = { $containerName }
@@ -2237,7 +2237,7 @@ index 4f28e62c7b..afccf60e4b 100644
  tab-groups-list-empty-button = Create a tab group
  
  ## Open/saved tab group context menu
-@@ -518,3 +518,35 @@ split-view-menuitem-close-both-tabs =
+@@ -518,3 +518,37 @@ split-view-menuitem-close-both-tabs =
      .label = Close Both Tabs
  
  ##
@@ -2273,6 +2273,8 @@ index 4f28e62c7b..afccf60e4b 100644
 +winui-toolbar-customize-reset = Restore Firefox defaults
 +winui-toolbar-customize-undo-reset = Undo restore
 +winui-toolbar-customize-reset-hint = Restores Firefox’s toolbar layout, theme, density, and related customization settings.
++
++winui-toolbar-customize-drop = Place here
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
 index ae5a803893..4d9f2e69e3 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
@@ -3147,10 +3149,10 @@ index 1e2660589b..85227d8e69 100644
    /*
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 0000000000..7f36f6fff3
+index 0000000000..6ba7c93b36
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,175 @@
 +// Firefox owns widget eligibility and durable placement; native owns the editor.
 +export class WinUIToolbarCustomization {
 +  constructor(toolbar) {
@@ -3233,7 +3235,7 @@ index 0000000000..7f36f6fff3
 +    const areas = this.editorOpen ? ui.areas.map(area => [area,ui.getWidgetIdsInArea(area)]) : [[ui.AREA_NAVBAR,placements],[ui.AREA_FIXED_OVERFLOW_PANEL,ui.getWidgetIdsInArea(ui.AREA_FIXED_OVERFLOW_PANEL)]];
 +    const signature=JSON.stringify([areas,items,settings,canReset,canUndoReset]);
 +    if (signature !== this.signature) {this.signature=signature;this.revision++;}
-+    const labels=Object.fromEntries(['title','available','earlier','later','add','remove','done','hint','reset','undo-reset','reset-hint','overflow'].map(k=>[k,toolbar.owner.localization().formatValueSync('winui-toolbar-customize-'+k)]));
++    const labels=Object.fromEntries(['title','available','earlier','later','add','remove','done','hint','reset','undo-reset','reset-hint','overflow','drop'].map(k=>[k,toolbar.owner.localization().formatValueSync('winui-toolbar-customize-'+k)]));
 +    this.current={revision:this.revision,items,labels,canReset,canUndoReset};
 +    return this.current;
 +  }
@@ -3280,7 +3282,7 @@ index 0000000000..7f36f6fff3
 +      } finally { this.resetting = false; this.invalidate(); }
 +      return 1;
 +    }
-+    const match=/^customize:([0-9]+):(widget-[0-9]+):(before|end|remove|add|overflow)(?::(widget-[0-9]+))?$/.exec(command);
++    const match=/^customize:([0-9]+):(widget-[0-9]+):(before|end|remove|add|overflow|insert)(?::(widget-[0-9]+))?$/.exec(command);
 +    if (!match || this.toolbar.window.gDialogBox?.isOpen) return 2;
 +    this.toolbar.navigationState();
 +    const [,revision,id,verb,targetId]=match, state=this.current;
@@ -3288,7 +3290,16 @@ index 0000000000..7f36f6fff3
 +    const item=state.items.find(i=>i.id===id), entry=[...this.entries.values()].find(i=>i.id===id);
 +    if (!item || !entry || !item.movable) return 2;
 +    const {ui}=this;
-+    if (verb==='overflow') {
++    if (verb==='insert') {
++      if (!this.editorOpen || item.placed) return 2;
++      let position=ui.getWidgetIdsInArea(ui.AREA_NAVBAR).length;
++      if (targetId) {
++        const target=state.items.find(i=>i.id===targetId && i.placed);
++        if (!target || target.id===id) return 2;
++        position=target.position;
++      }
++      ui.addWidgetToArea(entry.widget,ui.AREA_NAVBAR,position);
++    } else if (verb==='overflow') {
 +      if (!item.canOverflow || targetId) return 2;
 +      ui.addWidgetToArea(entry.widget,ui.AREA_FIXED_OVERFLOW_PANEL);
 +    } else if (verb==='remove') {

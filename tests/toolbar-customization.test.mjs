@@ -13,7 +13,7 @@ function fixture() {
   get inDefaultState(){return JSON.stringify(order)===JSON.stringify(defaults);},get canUndoReset(){return saved!==null;},
   reset(){calls.push(['reset']);saved=[...order];order=[...defaults];for(const l of listeners)l.onAreaReset?.();},
   undoReset(){calls.push(['undo-reset']);order=saved;saved=null;for(const l of listeners)l.onAreaReset?.();},
-  removeWidgetFromArea(id){calls.push(['remove',id]);order=order.filter(x=>x!==id);},addWidgetToArea(id,area){calls.push(['add',id]);order=order.filter(x=>x!==id);const old=overflow.indexOf(id);if(old>=0)overflow.splice(old,1);if(area==='overflow'){overflow.push(id);return;}if(id==='spring'){id=`customizableui-special-spring${++nextSpring}`;nodes.set(id,{getAttribute:()=>id});}order.push(id);},
+  removeWidgetFromArea(id){calls.push(['remove',id]);order=order.filter(x=>x!==id);},addWidgetToArea(id,area,position=order.length){calls.push(['add',id]);order=order.filter(x=>x!==id);const old=overflow.indexOf(id);if(old>=0)overflow.splice(old,1);if(area==='overflow'){overflow.push(id);return;}if(id==='spring'){id=`customizableui-special-spring${++nextSpring}`;nodes.set(id,{getAttribute:()=>id});}order.splice(position,0,id);},
   moveWidgetWithinArea(id,position){saved=null;calls.push(['move',id,position]);if(order.indexOf(id)<position)position--;order=order.filter(x=>x!==id);order.splice(position,0,id);}};
  const context=vm.createContext({Services:{strings:{createBundle:()=>({GetStringFromName:()=> 'Flexible Space'})},prefs:{addObserver(){},removeObserver(){},getPrefType(p){return prefs.has(p)?64:0;},getIntPref(p){return prefs.get(p);},prefHasUserValue(p){return prefs.has(p);}}},ChromeUtils:{importESModule:()=>({CustomizableUI:ui})}});
  vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIToolbarCustomization.sys.mjs',import.meta.url),'utf8').replace('export class WinUIToolbarCustomization','this.Customization = class WinUIToolbarCustomization'),context);
@@ -120,4 +120,20 @@ test('native overflow is transient, bounded, revision-scoped and revalidates eli
  assert.equal(f.c.execute(`customize:${s.revision}:overflow-layout:none`),2);
  assert.equal(f.c.execute(`customize:${f.state().revision}:overflow-layout:none`),1);
  assert.equal(f.c.nativeOverflow.size,0);
+});
+
+
+test('palette drops insert through Firefox only while editing, at a live target',()=>{
+ const f=fixture();f.c.execute(f.command('profile','remove'));
+ assert.equal(f.c.execute(f.command('profile','insert','back')),2);
+ f.c.execute('customize:editor:open');
+ const captured=f.command('profile','insert','back');
+ assert.equal(f.c.execute(captured),1);assert.equal(f.order()[0],'fxa-toolbar-menu-button');
+ assert.equal(f.c.execute(captured),2);
+ assert.equal(f.c.execute(f.command('new-spring','insert','address')),1);
+ const s=f.state(),spring=s.items.find(i=>i.kind==='spring' && i.placed);
+ assert.equal(f.order()[f.order().indexOf('urlbar-container')-1],spring.control);
+ const bad=f.command('new-spring','insert')+':widget-999';const n=f.calls.length;
+ assert.equal(f.c.execute(bad),2);assert.equal(f.calls.length,n);
+ f.c.execute('customize:editor:close');assert.equal(f.c.execute(f.command('new-spring','insert','back')),2);
 });

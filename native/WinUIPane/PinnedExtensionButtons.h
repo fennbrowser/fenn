@@ -14,6 +14,7 @@ struct PinnedExtensionButtons {
         winrt::Windows::UI::Color background{}, foreground{};
     };
     struct Row {
+        bool enabled{};
         Button button{nullptr};
         Microsoft::UI::Xaml::Controls::Image image{nullptr};
         Microsoft::UI::Xaml::Controls::FontIcon genericIcon{nullptr};
@@ -120,7 +121,7 @@ struct PinnedExtensionButtons {
             } else panel.Children().InsertAt(index, row.button);
             ++index;
             }
-            row.button.IsEnabled(visible && item.enabled);
+            row.enabled=item.enabled;row.button.IsEnabled(visible && item.enabled);
             Automation::AutomationProperties::SetName(row.button, item.label);
             Automation::AutomationProperties::SetItemStatus(row.button, item.badge);
             ToolTipService::SetToolTip(row.button, winrt::box_value(item.label));

@@ -637,6 +637,7 @@ struct NativeAddress {
             navigation = std::make_unique<NativeNavigationToolbar>();
             navigation->activate = [this](wchar_t const* command, uint32_t modifiers, Controls::Button const& button) {
                 if (syncing || session.empty() || !navigate) return;
+                if (navigation->customization.editing && wcsncmp(command,L"customize:",10)!=0) return;
                 auto action = Message(L"navigation");
                 action.SetNamedValue(L"command", JValue::CreateStringValue(command));
                 action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));

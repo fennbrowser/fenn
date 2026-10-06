@@ -2711,3 +2711,29 @@ fn toolbar_overflow_ffi_rejects_invalid_buffers_without_mutation() {
         assert_eq!(mask,0);
     }
 }
+
+/// Bounded pure hit testing for native customization. Output is unchanged on failure.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_toolbar_drop_target(slots:*const crate::toolbar::ShellToolbarDropSlot,len:usize,x:f64,rtl:bool,out_index:*mut u32)->ShellStatus {
+    if out_index.is_null() || len>55 || (len!=0 && slots.is_null()) { return ShellStatus::InvalidArgument; }
+    let rows=if len==0 {&[]} else {std::slice::from_raw_parts(slots,len)};
+    match crate::toolbar::drop_target(rows,x,rtl) {
+        Some(index)=>{*out_index=index as u32;ShellStatus::Ok},
+        None=>ShellStatus::InvalidArgument,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn toolbar_drop_ffi_rejects_invalid_buffers_without_mutation() {
+    unsafe {
+        let mut index=77;
+        assert_eq!(shell_core_toolbar_drop_target(std::ptr::null(),1,0.0,false,&mut index),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_toolbar_drop_target(std::ptr::null(),0,f64::NAN,false,&mut index),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_toolbar_drop_target(std::ptr::null(),56,0.0,false,&mut index),ShellStatus::InvalidArgument);
+        assert_eq!(index,77);
+        assert_eq!(shell_core_toolbar_drop_target(std::ptr::null(),0,0.0,false,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_toolbar_drop_target(std::ptr::null(),0,0.0,false,&mut index),ShellStatus::Ok);
+        assert_eq!(index,0);
+    }
+}

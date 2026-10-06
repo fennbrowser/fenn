@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 28
+#define SHELL_CORE_ABI_VERSION 29
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -611,6 +611,11 @@ typedef struct {
    */
   uint32_t overflow;
 } ShellToolbarSlot;
+
+typedef struct {
+  double left;
+  double width;
+} ShellToolbarDropSlot;
 
 #ifdef __cplusplus
 extern "C" {
@@ -1534,6 +1539,15 @@ ShellStatus shell_core_toolbar_overflow(const ShellToolbarSlot *slots,
                                         double width,
                                         bool required_menu,
                                         uint64_t *out_mask);
+
+/*
+ Bounded pure hit testing for native customization. Output is unchanged on failure.
+ */
+ShellStatus shell_core_toolbar_drop_target(const ShellToolbarDropSlot *slots,
+                                           uintptr_t len,
+                                           double x,
+                                           bool rtl,
+                                           uint32_t *out_index);
 
 #ifdef __cplusplus
 }  // extern "C"

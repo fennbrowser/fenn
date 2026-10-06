@@ -13,10 +13,12 @@ struct NativeNavigationToolbar {
     using Button = Microsoft::UI::Xaml::Controls::Button;
     struct State { bool enabled{}, stopping{}, required{}; winrt::hstring label, tooltip; };
     using States = std::array<State, 7>;
+    States commandState{};
+    std::vector<std::pair<winrt::hstring,Microsoft::UI::Xaml::FrameworkElement>> dropSlots;
     static constexpr wchar_t const* commands[] = {L"back", L"forward", L"reload", L"profile", L"extensions", L"appmenu", L"overflow"};
     Microsoft::UI::Xaml::Controls::Grid host{nullptr}, surface{nullptr};
     Microsoft::UI::Xaml::FrameworkElement address{nullptr};
-    std::map<winrt::hstring,Microsoft::UI::Xaml::Controls::Grid> spacers;
+    std::map<winrt::hstring,Microsoft::UI::Xaml::Controls::Grid> spacers, dragHosts;
     std::vector<Microsoft::UI::Xaml::UIElement> ordered;
     bool visible{};
     std::array<Button, 7> buttons;
@@ -126,6 +128,20 @@ struct NativeNavigationToolbar {
                 Microsoft::UI::Xaml::FrameworkElement const& editor,
                 Microsoft::UI::Xaml::Controls::Grid const& background) {
         host=grid;address=editor;surface=background;
+        customization.editorChanged=[this]{Layout(layoutState);};
+        host.AllowDrop(true);
+        host.DragOver([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const& args){if(!alive.expired() && customization.Accept(args))args.Handled(true);});
+        host.Drop([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const& args){
+            if(alive.expired() || !customization.OwnDrag(args))return;
+            std::vector<ShellToolbarDropSlot> slots;
+            for(auto const& [id,control]:dropSlots) {
+                auto r=control.TransformToVisual(host).TransformBounds({0,0,float(control.ActualWidth()),float(control.ActualHeight())});
+                slots.push_back({r.X,r.Width});
+            }
+            uint32_t index=0;
+            if(shell_core_toolbar_drop_target(slots.data(),slots.size(),args.GetPosition(host).X,host.FlowDirection()==Microsoft::UI::Xaml::FlowDirection::RightToLeft,&index)==SHELL_STATUS_OK)
+                customization.DropAt(args,index<dropSlots.size()?dropSlots[index].first:winrt::hstring{});
+        });
         host.SizeChanged([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const&){if(!alive.expired())Layout(layoutState);});
         host.Loaded([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const&) {
             if(alive.expired() || rootObserved || !host.XamlRoot())return;
@@ -168,8 +184,14 @@ struct NativeNavigationToolbar {
                 }
             }
         }
+        for(size_t i=0;i<buttons.size();i++)buttons[i].IsEnabled(visible && (customization.editing || commandState[i].enabled));
+        dropSlots.clear();
         std::vector<UIElement> desired;
-        std::set<winrt::hstring> keep;
+        std::set<winrt::hstring> keep, keepDrag;
+        if(!visible || !state.revision) {
+            for(auto const& [id,grid]:dragHosts){if(grid.Children().Size())grid.Children().GetAt(0).IsHitTestVisible(true);grid.Children().Clear();}
+            dragHosts.clear();
+        }
         if(visible && state.revision) {
             for(auto const& item:state.items) {
                 if(!item.placed || overflowed.contains(item.id))continue;
@@ -182,9 +204,27 @@ struct NativeNavigationToolbar {
                     control=it->second;
                 } else {
                     for(size_t i=0;i<5;i++)if(item.control==commands[i])control=buttons[i];
-                    if(auto it=pinned.rows.find(item.control);it!=pinned.rows.end())control=it->second.button;
+                    if(auto it=pinned.rows.find(item.control);it!=pinned.rows.end()){control=it->second.button;it->second.button.IsEnabled(visible && (customization.editing || it->second.enabled));}
                 }
-                if(control)desired.push_back(control);
+                if(control) {
+                    if(item.control!=L"address" && !item.spring) {
+                        keepDrag.insert(item.id);
+                        auto [it,inserted]=dragHosts.try_emplace(item.id);
+                        auto grid=it->second;
+                        if(inserted) {
+                            grid.Background(Media::SolidColorBrush(winrt::Windows::UI::Colors::Transparent()));
+                            grid.VerticalAlignment(VerticalAlignment::Center);
+                            auto element=control.as<FrameworkElement>();
+                            if(auto parent=element.Parent().try_as<Panel>()){uint32_t index;if(parent.Children().IndexOf(control,index))parent.Children().RemoveAt(index);}
+                            Grid::SetColumn(element,0);grid.Children().Append(control);
+                        }
+                        control.IsHitTestVisible(!customization.editing);
+                        control=grid;
+                    }
+                    auto element=control.as<FrameworkElement>();
+                    customization.BindToolbarControl(element,item);dropSlots.emplace_back(item.id,element);
+                    desired.push_back(control);
+                }
             }
             if(hasOverflow)desired.push_back(buttons[6]);
             desired.push_back(buttons[5]);
@@ -193,6 +233,9 @@ struct NativeNavigationToolbar {
             desired.push_back(address);desired.push_back(buttons[3]);desired.push_back(buttons[4]);
             desired.push_back(pinned.panel);if(hasOverflow)desired.push_back(buttons[6]);desired.push_back(buttons[5]);
         } else desired.push_back(address);
+        for(auto it=dragHosts.begin();it!=dragHosts.end();) {
+            if(!keepDrag.contains(it->first)){if(it->second.Children().Size())it->second.Children().GetAt(0).IsHitTestVisible(true);it->second.Children().Clear();it=dragHosts.erase(it);}else ++it;
+        }
         if(desired==ordered)return;
         // Retain the editor and flyout anchor while changing placement columns.
         for(uint32_t i=host.Children().Size();i>0;i--) {
@@ -250,7 +293,7 @@ struct NativeNavigationToolbar {
     }
     void Apply(States const& state, bool visible) {
         using namespace Microsoft::UI::Xaml;
-        this->visible=visible;
+        this->visible=visible;commandState=state;
         if (!visible) { sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
         hasOverflow = visible && state[6].enabled;
         requiredOverflow = visible && state[6].required;
