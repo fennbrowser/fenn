@@ -634,13 +634,6 @@ struct NativeAddress {
                     </ResourceDictionary.ThemeDictionaries>
                 </ResourceDictionary>)").as<ResourceDictionary>());
             toolbarRoot = Grid();
-            ColumnDefinition navigationColumn, addressColumn, menuColumn;
-            menuColumn.Width(GridLengthHelper::Auto());
-            navigationColumn.Width(GridLengthHelper::Auto());
-            addressColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
-            toolbarRoot.ColumnDefinitions().Append(navigationColumn);
-            toolbarRoot.ColumnDefinitions().Append(addressColumn);
-            toolbarRoot.ColumnDefinitions().Append(menuColumn);
             navigation = std::make_unique<NativeNavigationToolbar>();
             navigation->activate = [this](wchar_t const* command, uint32_t modifiers, Controls::Button const& button) {
                 if (syncing || session.empty() || !navigate) return;
@@ -735,13 +728,10 @@ struct NativeAddress {
             toolbarSurface = Markup::XamlReader::Load(
                 LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}"/>)").as<Grid>();
             toolbarSurface.Visibility(Visibility::Collapsed);
-            Grid::SetColumnSpan(toolbarSurface, 3);
-            Grid::SetColumn(root, 1);
+
             toolbarRoot.Children().Append(toolbarSurface);
-            toolbarRoot.Children().Append(navigation->panel);
             toolbarRoot.Children().Append(root);
-            Grid::SetColumn(navigation->trailing, 2);
-            toolbarRoot.Children().Append(navigation->trailing);
+            navigation->Attach(toolbarRoot,root,toolbarSurface);
             root.VerticalAlignment(VerticalAlignment::Center);
             Automation::AutomationProperties::SetAutomationId(toolbarRoot, L"FirefoxWinUINavigationToolbar");
             field.ContextFlyout(nullptr);

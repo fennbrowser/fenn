@@ -13,7 +13,11 @@ struct NativeNavigationToolbar {
     struct State { bool enabled{}, stopping{}; winrt::hstring label, tooltip; };
     using States = std::array<State, 6>;
     static constexpr wchar_t const* commands[] = {L"back", L"forward", L"reload", L"profile", L"extensions", L"appmenu"};
-    Microsoft::UI::Xaml::Controls::StackPanel panel, trailing;
+    Microsoft::UI::Xaml::Controls::Grid host{nullptr}, surface{nullptr};
+    Microsoft::UI::Xaml::FrameworkElement address{nullptr};
+    std::map<winrt::hstring,Microsoft::UI::Xaml::Controls::Grid> spacers;
+    std::vector<Microsoft::UI::Xaml::UIElement> ordered;
+    bool visible{};
     std::array<Button, 6> buttons;
     std::array<Microsoft::UI::Xaml::Controls::SymbolIcon, 6> icons;
     PinnedExtensionButtons pinned;
@@ -30,16 +34,6 @@ struct NativeNavigationToolbar {
         using namespace Microsoft::UI::Xaml::Controls;
         customization.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         pinned.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
-        panel.Orientation(Orientation::Horizontal);
-        panel.Spacing(4);
-        panel.Margin({8, 0, 0, 0});
-        panel.VerticalAlignment(VerticalAlignment::Center);
-        panel.Visibility(Visibility::Collapsed);
-        trailing.Orientation(Orientation::Horizontal);
-        trailing.Spacing(4);
-        trailing.Margin({0, 0, 8, 0});
-        trailing.VerticalAlignment(VerticalAlignment::Center);
-        trailing.Visibility(Visibility::Collapsed);
         const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh, Symbol::Contact, Symbol::Library, Symbol::More};
         const wchar_t* names[] = {L"Back", L"Forward", L"Reload", L"Account", L"Extensions", L"Application menu"};
         const wchar_t* ids[] = {L"FirefoxWinUIBack", L"FirefoxWinUIForward", L"FirefoxWinUIReload", L"FirefoxWinUIProfile", L"FirefoxWinUIExtensions", L"FirefoxWinUIAppMenu"};
@@ -91,12 +85,13 @@ struct NativeNavigationToolbar {
                     ((GetKeyState(VK_LWIN) & 0x8000) ? 8u : 0u);
             });
             button.Click([this, i, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-                if (alive.expired() || !activate || !buttons[i].IsEnabled() || panel.Visibility() != Visibility::Visible) return;
+                if (alive.expired() || !activate || !buttons[i].IsEnabled() || !visible) return;
                 if (i < 2 && historyHeld[i]) { historyHeld[i] = false; return; }
                 const uint32_t modifiers = inputModifiers[i];
                 inputModifiers[i] = 0;
                 activate(i == 2 && stopping ? L"stop" : commands[i], modifiers, buttons[i]);
             });
+            button.VerticalAlignment(VerticalAlignment::Center);
             buttons[i] = button;
             if (i == 5) button.ContextRequested([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) { if (!alive.expired()) {args.Handled(true);customization.Open(buttons[5]);} });
             if (i < 2) {
@@ -104,7 +99,7 @@ struct NativeNavigationToolbar {
                 historyTimers[i].IsRepeating(false);
                 historyTimers[i].Interval(std::chrono::milliseconds(500));
                 auto history = [this, i, alive = std::weak_ptr<int>(lifetime)] {
-                    if (!alive.expired() && activate && buttons[i].IsEnabled() && panel.Visibility() == Visibility::Visible)
+                    if (!alive.expired() && activate && buttons[i].IsEnabled() && visible)
                         activate(i == 0 ? L"back-history" : L"forward-history", 0, buttons[i]);
                 };
                 historyTimers[i].Tick([this, i, history, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
@@ -117,37 +112,77 @@ struct NativeNavigationToolbar {
                     if (!alive.expired()) historyTimers[i].Stop();
                 });
             }
-            (i < 3 ? panel : trailing).Children().Append(button);
-            if (i == 4) trailing.Children().Append(pinned.panel);
+
         }
     }
+    void Attach(Microsoft::UI::Xaml::Controls::Grid const& grid,
+                Microsoft::UI::Xaml::FrameworkElement const& editor,
+                Microsoft::UI::Xaml::Controls::Grid const& background) {
+        host=grid;address=editor;surface=background;
+    }
     void Layout(NativeToolbarCustomization::State const& state) {
-        if(!state.revision) return;
-        std::vector<Microsoft::UI::Xaml::UIElement> left, right;
-        bool after=false;
-        for(auto const& item:state.items) {
-            if(!item.placed) continue;
-            if(item.control==L"address") {after=true;continue;}
-            Microsoft::UI::Xaml::UIElement control{nullptr};
-            for(size_t i=0;i<5;i++) if(item.control==commands[i]) control=buttons[i];
-            if(auto it=pinned.rows.find(item.control);it!=pinned.rows.end()) control=it->second.button;
-            if(control) (after?right:left).push_back(control);
-        }
-        right.push_back(buttons[5]);
-        auto same=[](auto const& panel,auto const& controls){if(panel.Children().Size()!=controls.size())return false;for(uint32_t i=0;i<controls.size();i++)if(panel.Children().GetAt(i)!=controls[i])return false;return true;};
-        if(same(panel,left)&&same(trailing,right))return;
-        auto prune=[](auto const& host,auto const& desired) {
-            for(uint32_t i=host.Children().Size();i>0;i--) if(std::find(desired.begin(),desired.end(),host.Children().GetAt(i-1))==desired.end()) host.Children().RemoveAt(i-1);
-        };
-        prune(panel,left);prune(trailing,right);
-        auto arrange=[](auto const& host,auto const& desired) {
-            for(uint32_t i=0;i<desired.size();i++) {
-                uint32_t old;
-                if(host.Children().IndexOf(desired[i],old)) {if(old==i)continue;host.Children().RemoveAt(old);}
-                host.Children().InsertAt(i,desired[i]);
+        using namespace Microsoft::UI::Xaml;
+        using namespace Microsoft::UI::Xaml::Controls;
+        if(!host)return;
+        std::vector<UIElement> desired;
+        std::set<winrt::hstring> keep;
+        if(visible && state.revision) {
+            for(auto const& item:state.items) {
+                if(!item.placed)continue;
+                UIElement control{nullptr};
+                if(item.control==L"address")control=address;
+                else if(item.spring) {
+                    keep.insert(item.id);
+                    auto [it,inserted]=spacers.try_emplace(item.id);
+                    if(inserted)it->second.IsHitTestVisible(false);
+                    control=it->second;
+                } else {
+                    for(size_t i=0;i<5;i++)if(item.control==commands[i])control=buttons[i];
+                    if(auto it=pinned.rows.find(item.control);it!=pinned.rows.end())control=it->second.button;
+                }
+                if(control)desired.push_back(control);
             }
+            desired.push_back(buttons[5]);
+        } else if(visible) {
+            for(size_t i=0;i<3;i++)desired.push_back(buttons[i]);
+            desired.push_back(address);desired.push_back(buttons[3]);desired.push_back(buttons[4]);
+            desired.push_back(pinned.panel);desired.push_back(buttons[5]);
+        } else desired.push_back(address);
+        if(desired==ordered)return;
+        // Retain the editor and flyout anchor while changing placement columns.
+        for(uint32_t i=host.Children().Size();i>0;i--) {
+            auto child=host.Children().GetAt(i-1);
+            if(child!=surface && std::find(desired.begin(),desired.end(),child)==desired.end())host.Children().RemoveAt(i-1);
+        }
+        for(auto const& child:desired) {uint32_t index;if(!host.Children().IndexOf(child,index))host.Children().Append(child);}
+        for(uint32_t i=0;i<desired.size();i++) {
+            auto child=desired[i];
+            if(child==address || child==buttons[5])continue;
+            uint32_t index;host.Children().IndexOf(child,index);
+            if(index!=i+1){host.Children().RemoveAt(index);host.Children().InsertAt(i+1,child);}
+        }
+        for(auto it=spacers.begin();it!=spacers.end();) {if(!keep.contains(it->first))it=spacers.erase(it);else ++it;}
+        host.ColumnDefinitions().Clear();
+        auto column=[&](GridLength width,double min=0,double max=INFINITY) {
+            ColumnDefinition c;c.Width(width);c.MinWidth(min);c.MaxWidth(max);host.ColumnDefinitions().Append(c);
         };
-        arrange(panel,left);arrange(trailing,right);
+        if(visible)column(GridLengthHelper::FromPixels(8));
+        for(size_t i=0;i<desired.size();i++) {
+            auto child=desired[i];bool spring=false;
+            for(auto const& [id,grid]:spacers)if(child==grid){spring=true;break;}
+            Grid::SetColumn(child.as<FrameworkElement>(),int(host.ColumnDefinitions().Size()));
+            if(child==address)column(GridLengthHelper::FromValueAndType(5,GridUnitType::Star),visible?240:0);
+            else if(spring)column(GridLengthHelper::FromValueAndType(1,GridUnitType::Star),1,112);
+            else column(GridLengthHelper::Auto());
+            if(visible && i+1<desired.size() && child!=address && desired[i+1]!=address && !spring) {
+                bool nextSpring=false;
+                for(auto const& [id,grid]:spacers)if(desired[i+1]==grid){nextSpring=true;break;}
+                if(!nextSpring)column(GridLengthHelper::FromPixels(4));
+            }
+        }
+        if(visible)column(GridLengthHelper::FromPixels(8));
+        Grid::SetColumn(surface,0);Grid::SetColumnSpan(surface,int(host.ColumnDefinitions().Size()));
+        ordered=std::move(desired);
     }
     ~NativeNavigationToolbar() { lifetime.reset(); for (auto timer : historyTimers) if (timer) timer.Stop(); }
     static States Read(JObject const& snapshot) {
@@ -169,9 +204,8 @@ struct NativeNavigationToolbar {
     }
     void Apply(States const& state, bool visible) {
         using namespace Microsoft::UI::Xaml;
-        panel.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
-        trailing.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
-        if (!visible) { pinned.Apply({}, false); customization.Apply({}, false); }
+        this->visible=visible;
+        if (!visible) { pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
         stopping = visible && state[2].stopping;
         icons[2].Symbol(stopping ? Controls::Symbol::Cancel : Controls::Symbol::Refresh);
         for (size_t i = 0; i < buttons.size(); ++i) {

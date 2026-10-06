@@ -3060,15 +3060,16 @@ index 1e2660589b..85227d8e69 100644
    /*
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 0000000000..a66b596069
+index 0000000000..d27a14cec4
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,139 @@
 +// Firefox owns widget eligibility and durable placement; native owns the editor.
 +export class WinUIToolbarCustomization {
 +  constructor(toolbar) {
 +    this.toolbar = toolbar;
 +    this.ui = ChromeUtils.importESModule('moz-src:///browser/components/customizableui/CustomizableUI.sys.mjs').CustomizableUI;
++    this.widgetStrings = Services.strings.createBundle('chrome://browser/locale/customizableui/customizableWidgets.properties');
 +    this.editorOpen = false; this.ownsReset = false; this.resetting = false;
 +    this.entries = new Map(); this.nextId = 0; this.revision = 0; this.signature = '';
 +    this.invalidate = () => toolbar.owner.invalidateAddress();
@@ -3091,12 +3092,18 @@ index 0000000000..a66b596069
 +    const fixed = new Map([['back-button','back'],['forward-button','forward'],['stop-reload-button','reload'],
 +      ['urlbar-container','address'],['fxa-toolbar-menu-button','profile'],['unified-extensions-button','extensions']]);
 +    const placements = ui.getWidgetIdsInArea(ui.AREA_NAVBAR);
-+    const candidates = [...new Set([...placements,...fixed.keys(),...ui.getWidgetIdsInArea(ui.AREA_ADDONS)])];
++    const candidates = [...new Set([...placements,...fixed.keys(),...ui.getWidgetIdsInArea(ui.AREA_ADDONS),'spring'])];
 +    const items = [], keep = new Set();
++    let springs = 0, extensions = 0;
 +    for (const widget of candidates) {
 +      let control = fixed.get(widget), label;
-+      const wrapper = ui.getWidget(widget), node = wrapper?.forWindow(window)?.node;
-+      if (!control) {
++      const spring = widget === 'spring' || /^customizableui-special-spring[0-9]+$/.test(widget);
++      if (spring && widget !== 'spring' && springs++ >= 16) continue;
++      const wrapper = widget === 'spring' ? null : ui.getWidget(widget), node = wrapper?.forWindow(window)?.node;
++      if (spring) {
++        control = widget === 'spring' ? 'new-spring' : widget;
++        label = this.widgetStrings.GetStringFromName('toolbarspring.label');
++      } else if (!control) {
 +        const button = node?.querySelector('.webextension-browser-action');
 +        const policy = button && window.WebExtensionPolicy.getByID(button.dataset.extensionid);
 +        if (!policy || !policy.extension.canAccessWindow(window) || !window.gUnifiedExtensions.browserActionFor(policy)) continue;
@@ -3107,16 +3114,17 @@ index 0000000000..a66b596069
 +        label = navigation[control]?.label || node?.getAttribute('label') || wrapper?.label || '';
 +        if (control === 'address') label = toolbar.owner.localization().formatValueSync('winui-toolbar-address');
 +      }
-+      if (!label || items.length >= 38) continue;
++      if (!label || items.length >= 55) continue;
 +      const placement = ui.getPlacementOfWidget(widget);
 +      const placed = placement?.area === ui.AREA_NAVBAR;
 +      // Overflowed extensions stay in Firefox until native overflow is implemented.
 +      if (placed && !control) continue;
++      if (!spring && !fixed.has(widget) && extensions++ >= 32) continue;
 +      keep.add(widget);
 +      let entry = this.entries.get(widget);
 +      if (!entry || entry.node !== node) { entry={id:`widget-${++this.nextId}`,widget,node};this.entries.set(widget,entry); }
-+      items.push({id:entry.id,control,label:String(label).slice(0,4096),placed,
-+        movable:ui.canWidgetMoveToArea(widget,ui.AREA_NAVBAR),
++      items.push({id:entry.id,control,kind:spring ? 'spring' : 'button',label:String(label).slice(0,4096),placed,
++        movable:(widget !== 'spring' || springs < 16) && ui.canWidgetMoveToArea(widget,ui.AREA_NAVBAR),
 +        removable:control !== 'address' && ui.isWidgetRemovable(widget),
 +        position:placed ? placements.indexOf(widget) : -1});
 +    }
@@ -3183,7 +3191,7 @@ index 0000000000..a66b596069
 +        if (!target || target.id===id) return 2;
 +        position=target.position;
 +      } else if (targetId) return 2;
-+      if (item.position < position) position--;
++      // CustomizableUI adjusts the insertion index when removing the source.
 +      ui.moveWidgetWithinArea(entry.widget,position);
 +    }
 +    this.invalidate();

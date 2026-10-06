@@ -7,7 +7,7 @@ struct NativeToolbarCustomization {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using Map = winrt::Windows::Foundation::Collections::IObservableMap<winrt::hstring,winrt::Windows::Foundation::IInspectable>;
     using Button = Microsoft::UI::Xaml::Controls::Button;
-    struct Item { winrt::hstring id, control, label; bool placed{}, movable{}, removable{}; };
+    struct Item { winrt::hstring id, control, label; bool placed{}, movable{}, removable{}, spring{}; };
     struct State { uint64_t revision{}; bool canReset{}, canUndoReset{}; std::vector<Item> items; std::map<winrt::hstring,winrt::hstring> labels; };
     State state;
     winrt::Windows::Foundation::Collections::IObservableVector<winrt::Windows::Foundation::IInspectable> placedItems = winrt::single_threaded_observable_vector<winrt::Windows::Foundation::IInspectable>();
@@ -32,15 +32,16 @@ struct NativeToolbarCustomization {
         state.revision=NativeJson::RequireRevision(obj,L"revision");
         state.canReset=obj.GetNamedBoolean(L"canReset",false);state.canUndoReset=obj.GetNamedBoolean(L"canUndoReset",false);
         auto items=obj.GetNamedArray(L"items");
-        if(items.Size()>38) throw winrt::hresult_invalid_argument();
+        if(items.Size()>55) throw winrt::hresult_invalid_argument();
         std::set<winrt::hstring> ids,controls;
-        bool address=false;
+        bool address=false;size_t springs=0;
         for(auto value:items) {
             auto row=value.GetObject();
             Item item{row.GetNamedString(L"id"),row.GetNamedString(L"control"),row.GetNamedString(L"label"),
-                row.GetNamedBoolean(L"placed"),row.GetNamedBoolean(L"movable"),row.GetNamedBoolean(L"removable")};
+                row.GetNamedBoolean(L"placed"),row.GetNamedBoolean(L"movable"),row.GetNamedBoolean(L"removable"),row.GetNamedString(L"kind",L"button")==L"spring"};
             if(item.id.empty() || item.id.size()>64 || item.control.size()>64 || item.label.size()>4096 || !ids.insert(item.id).second ||
                 (item.placed && (item.control.empty() || !controls.insert(item.control).second))) throw winrt::hresult_invalid_argument();
+            if(item.spring && item.placed && ++springs>16) throw winrt::hresult_invalid_argument();
             address |= item.placed && item.control==L"address";
             state.items.push_back(std::move(item));
         }
