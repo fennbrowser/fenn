@@ -2089,10 +2089,70 @@ index ff1c607e68..2bbf5a5afb 100644
        if (blobUrl) {
          return blobUrl;
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b..855a6261c0 100644
+index 4f28e62c7b..f3d21ad445 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -518,3 +518,29 @@ split-view-menuitem-close-both-tabs =
+@@ -19,7 +19,7 @@ tabbrowser-tab-tooltip-container = { $containerName }
+ # Variables:
+ #   $tabGroupName (String): the user-defined name of the current tab group.
+ #   $containerName (String): the name of the current container.
+-tabbrowser-tab-tooltip-tab-group-container = { $tabGroupName } — { $containerName }
++tabbrowser-tab-tooltip-tab-group-container = { $tabGroupName } â€” { $containerName }
+ 
+ # This text serves as an on-screen tooltip as well as an accessible name for
+ # the "X" button that is shown on the active tab or, when multiple tabs are
+@@ -152,7 +152,7 @@ tabbrowser-confirm-caretbrowsing-checkbox = Do not show me this dialog box again
+ ## Confirmation dialog for closing all duplicate tabs
+ 
+ tabbrowser-confirm-close-all-duplicate-tabs-title = Close duplicate tabs?
+-tabbrowser-confirm-close-all-duplicate-tabs-text = We’ll close duplicate tabs in this window. The last active
++tabbrowser-confirm-close-all-duplicate-tabs-text = Weâ€™ll close duplicate tabs in this window. The last active
+  tab will stay open.
+ tabbrowser-confirm-close-all-duplicate-tabs-button-closetabs = Close tabs
+ 
+@@ -216,10 +216,10 @@ tabbrowser-manager-close-tab =
+ # not include "deleted" tab groups (see tab-group-editor-action-delete).
+ tabbrowser-manager-closed-tab-group =
+   .label = { $tabGroupName }
+-  .tooltiptext = { $tabGroupName } — Closed
++  .tooltiptext = { $tabGroupName } â€” Closed
+ tabbrowser-manager-current-window-tab-group =
+   .label = { $tabGroupName }
+-  .tooltiptext = { $tabGroupName } — Current window
++  .tooltiptext = { $tabGroupName } â€” Current window
+ 
+ ## Tab Groups
+ ## Variables:
+@@ -262,15 +262,15 @@ tab-group-editor-color-selector2-red = Red
+ 
+ tab-group-menu-closed-tab-group =
+   .label = { $tabGroupName }
+-  .title = { $tabGroupName } — Closed
++  .title = { $tabGroupName } â€” Closed
+ 
+ ## Variables:
+ ##  $tabGroupName (String): The name of the tab group. Defaults to the value
+ ##                          of tab-group-name-default.
+ 
+-tab-group-description = { $tabGroupName } — Tab Group
+-tab-group-label-tooltip-collapsed = { $tabGroupName } — Collapsed
+-tab-group-label-tooltip-expanded = { $tabGroupName } — Expanded
++tab-group-description = { $tabGroupName } â€” Tab Group
++tab-group-label-tooltip-collapsed = { $tabGroupName } â€” Collapsed
++tab-group-label-tooltip-expanded = { $tabGroupName } â€” Expanded
+ tab-group-preview-name =
+   .aria-label = Tabs in a collapsed group
+ 
+@@ -383,7 +383,7 @@ tab-context-ungroup-tab =
+ tab-groups-list-create-group-button = New Group
+ 
+ tab-groups-list-empty-header = Tidy up your tabs
+-tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. We’ll save your groups here so they’re easy to find later.
++tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. Weâ€™ll save your groups here so theyâ€™re easy to find later.
+ tab-groups-list-empty-button = Create a tab group
+ 
+ ## Open/saved tab group context menu
+@@ -518,3 +518,33 @@ split-view-menuitem-close-both-tabs =
      .label = Close Both Tabs
  
  ##
@@ -2122,6 +2182,10 @@ index 4f28e62c7b..855a6261c0 100644
 +winui-toolbar-customize-remove = Remove from toolbar
 +winui-toolbar-customize-done = Done
 +winui-toolbar-customize-hint = Drag to reorder, or select an item and use the buttons. Changes are saved immediately. Other items remain available in Firefox customization.
++
++winui-toolbar-customize-reset = Restore Firefox defaults
++winui-toolbar-customize-undo-reset = Undo restore
++winui-toolbar-customize-reset-hint = Restores Firefox’s toolbar layout, theme, density, and related customization settings.
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
 index ae5a803893..4d9f2e69e3 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
@@ -2996,19 +3060,31 @@ index 1e2660589b..85227d8e69 100644
    /*
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 0000000000..bcaca76ab7
+index 0000000000..a66b596069
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,131 @@
 +// Firefox owns widget eligibility and durable placement; native owns the editor.
 +export class WinUIToolbarCustomization {
 +  constructor(toolbar) {
 +    this.toolbar = toolbar;
 +    this.ui = ChromeUtils.importESModule('moz-src:///browser/components/customizableui/CustomizableUI.sys.mjs').CustomizableUI;
++    this.editorOpen = false; this.ownsReset = false; this.resetting = false;
 +    this.entries = new Map(); this.nextId = 0; this.revision = 0; this.signature = '';
 +    this.invalidate = () => toolbar.owner.invalidateAddress();
 +    this.listener = Object.fromEntries(['onWidgetAdded','onWidgetRemoved','onWidgetMoved','onWidgetDestroyed','onWidgetAfterDOMChange','onAreaReset'].map(k=>[k,this.invalidate]));
++    this.listener.onAreaReset = () => {
++      if (!this.resetting) this.ownsReset = false;
++      this.invalidate();
++    };
 +    this.ui.addListener(this.listener);
++    this.preferences = ['browser.uiCustomization.state','browser.tabs.inTitlebar',
++      'browser.uidensity','browser.touchmode.auto','browser.download.autohideButton',
++      'sidebar.position_start','sidebar.verticalTabs','extensions.activeThemeID',
++      'browser.toolbars.bookmarks.visibility'];
++    for (const pref of this.preferences) Services.prefs.addObserver(pref,this.invalidate);
++    toolbar.window.addEventListener('toolbarvisibilitychange',this.invalidate);
++
 +  }
 +  snapshot(navigation) {
 +    const {ui,toolbar} = this, {window} = toolbar;
@@ -3045,13 +3121,46 @@ index 0000000000..bcaca76ab7
 +        position:placed ? placements.indexOf(widget) : -1});
 +    }
 +    for (const key of this.entries.keys()) if (!keep.has(key)) this.entries.delete(key);
-+    const signature=JSON.stringify([placements,items]);
++    const canReset = this.editorOpen && !ui.inDefaultState;
++    const canUndoReset = this.editorOpen && this.ownsReset && ui.canUndoReset;
++    const settings = this.editorOpen ? this.preferences.map(pref => {
++      const type = Services.prefs.getPrefType(pref);
++      const value = type === 128 ? Services.prefs.getBoolPref(pref) :
++        type === 64 ? Services.prefs.getIntPref(pref) : type === 32 ? Services.prefs.getStringPref(pref) : null;
++      return [pref,value,Services.prefs.prefHasUserValue(pref)];
++    }) : [];
++    const areas = this.editorOpen ? ui.areas.map(area => [area,ui.getWidgetIdsInArea(area)]) : [[ui.AREA_NAVBAR,placements]];
++    const signature=JSON.stringify([areas,items,settings,canReset,canUndoReset]);
 +    if (signature !== this.signature) {this.signature=signature;this.revision++;}
-+    const labels=Object.fromEntries(['title','available','earlier','later','add','remove','done','hint'].map(k=>[k,toolbar.owner.localization().formatValueSync('winui-toolbar-customize-'+k)]));
-+    this.current={revision:this.revision,items,labels};
++    const labels=Object.fromEntries(['title','available','earlier','later','add','remove','done','hint','reset','undo-reset','reset-hint'].map(k=>[k,toolbar.owner.localization().formatValueSync('winui-toolbar-customize-'+k)]));
++    this.current={revision:this.revision,items,labels,canReset,canUndoReset};
 +    return this.current;
 +  }
++  endEditor() {
++    if (!this.editorOpen && !this.ownsReset) return;
++    this.editorOpen = false;
++    this.ownsReset = false;
++    this.invalidate();
++  }
 +  execute(command) {
++    if (command === 'customize:editor:close') { this.endEditor(); return 1; }
++    if (this.toolbar.window.gDialogBox?.isOpen) return 2;
++    if (command === 'customize:editor:open') {
++      this.editorOpen = true; this.ownsReset = false; this.invalidate(); return 1;
++    }
++    const global = /^customize:([0-9]+):(reset|undo-reset)$/.exec(command);
++    if (global) {
++      this.toolbar.navigationState();
++      const [,revision,verb] = global;
++      if (+revision !== this.current.revision || !this.editorOpen ||
++          !(verb === 'reset' ? this.current.canReset : this.current.canUndoReset)) return 2;
++      this.resetting = true;
++      try {
++        if (verb === 'reset') { this.ui.reset(); this.ownsReset = true; }
++        else { this.ui.undoReset(); this.ownsReset = false; }
++      } finally { this.resetting = false; this.invalidate(); }
++      return 1;
++    }
 +    const match=/^customize:([0-9]+):(widget-[0-9]+):(before|end|remove|add)(?::(widget-[0-9]+))?$/.exec(command);
 +    if (!match || this.toolbar.window.gDialogBox?.isOpen) return 2;
 +    this.toolbar.navigationState();
@@ -3080,7 +3189,11 @@ index 0000000000..bcaca76ab7
 +    this.invalidate();
 +    return 1;
 +  }
-+  close() {this.ui.removeListener(this.listener);this.entries.clear();}
++  close() {
++    this.endEditor();this.ui.removeListener(this.listener);this.entries.clear();
++    for (const pref of this.preferences) Services.prefs.removeObserver(pref,this.invalidate);
++    this.toolbar.window.removeEventListener('toolbarvisibilitychange',this.invalidate);
++  }
 +}
 diff --git a/browser/app/Makefile.in b/browser/app/Makefile.in
 new file mode 100644
@@ -5619,10 +5732,10 @@ index 0000000000..a8fae4db53
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..7579f49372
+index 0000000000..7d8119f4e3
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,281 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -5870,6 +5983,7 @@ index 0000000000..7579f49372
 +    }
 +    const hadFocus = this.active && this.focusOwned;
 +    this.active = false;
++    this.customization?.endEditor();
 +    this.row.hidden = true;
 +    this.window.document.documentElement.removeAttribute("winui-address-active");
 +    this.input.removeAttribute("aria-hidden");

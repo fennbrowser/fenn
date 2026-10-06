@@ -8,14 +8,14 @@ struct NativeToolbarCustomization {
     using Map = winrt::Windows::Foundation::Collections::IObservableMap<winrt::hstring,winrt::Windows::Foundation::IInspectable>;
     using Button = Microsoft::UI::Xaml::Controls::Button;
     struct Item { winrt::hstring id, control, label; bool placed{}, movable{}, removable{}; };
-    struct State { uint64_t revision{}; std::vector<Item> items; std::map<winrt::hstring,winrt::hstring> labels; };
+    struct State { uint64_t revision{}; bool canReset{}, canUndoReset{}; std::vector<Item> items; std::map<winrt::hstring,winrt::hstring> labels; };
     State state;
     winrt::Windows::Foundation::Collections::IObservableVector<winrt::Windows::Foundation::IInspectable> placedItems = winrt::single_threaded_observable_vector<winrt::Windows::Foundation::IInspectable>();
     winrt::Windows::Foundation::Collections::IObservableVector<winrt::Windows::Foundation::IInspectable> availableItems = winrt::single_threaded_observable_vector<winrt::Windows::Foundation::IInspectable>();
     Microsoft::UI::Xaml::Controls::Flyout flyout{nullptr};
     Microsoft::UI::Xaml::Controls::ListView list{nullptr}, available{nullptr};
     std::map<winrt::hstring,Microsoft::UI::Xaml::Controls::TextBlock> textBlocks;
-    Button earlier{nullptr}, later{nullptr}, remove{nullptr}, add{nullptr}, done{nullptr};
+    Button earlier{nullptr}, later{nullptr}, remove{nullptr}, add{nullptr}, done{nullptr}, reset{nullptr}, undoReset{nullptr};
     Button anchor{nullptr};
     bool updating{}, dragging{}, dragCancelled{};
     uint64_t dragRevision{};
@@ -30,6 +30,7 @@ struct NativeToolbarCustomization {
         if (!nav.HasKey(L"customization")) return state;
         auto obj=nav.GetNamedObject(L"customization");
         state.revision=NativeJson::RequireRevision(obj,L"revision");
+        state.canReset=obj.GetNamedBoolean(L"canReset",false);state.canUndoReset=obj.GetNamedBoolean(L"canUndoReset",false);
         auto items=obj.GetNamedArray(L"items");
         if(items.Size()>38) throw winrt::hresult_invalid_argument();
         std::set<winrt::hstring> ids,controls;
@@ -45,7 +46,7 @@ struct NativeToolbarCustomization {
         }
         if(!address) return {};
         auto labels=obj.GetNamedObject(L"labels");
-        for(auto key:{L"title",L"available",L"earlier",L"later",L"add",L"remove",L"done",L"hint"}) {
+        for(auto key:{L"title",L"available",L"earlier",L"later",L"add",L"remove",L"done",L"hint",L"reset",L"undo-reset",L"reset-hint"}) {
             auto value=labels.GetNamedString(key);NativeJson::RequireLength(value,4096);state.labels[key]=value;
         }
         return state;
@@ -72,7 +73,13 @@ struct NativeToolbarCustomization {
         for(auto const& item:state.items) if(item.placed) ids.push_back(item.id);
         return ids;
     }
+    void SendGlobal(wchar_t const* verb, bool editor=false) {
+        if(!activate || !state.revision)return;
+        auto command=std::wstring(L"customize:")+(editor?std::wstring(L"editor"):std::to_wstring(state.revision))+L":"+verb;
+        activate(command.c_str(),0,anchor);
+    }
     void Buttons() {
+        reset.IsEnabled(state.canReset);undoReset.IsEnabled(state.canUndoReset);
         auto id=Selected(list), free=Selected(available);
         auto ids=Placed();auto it=std::find(ids.begin(),ids.end(),id);
         auto row=std::find_if(state.items.begin(),state.items.end(),[&](auto const& item){return item.id==id;});
@@ -101,7 +108,7 @@ struct NativeToolbarCustomization {
         if(!visible || !state.revision) {if(flyout) flyout.Hide();return;}
         if(list) {
             for(auto const& [key,block]:textBlocks) block.Text(state.labels.at(key));
-            for(auto const& [key,control]:std::initializer_list<std::pair<wchar_t const*,Button>>{{L"earlier",earlier},{L"later",later},{L"remove",remove},{L"add",add},{L"done",done}}) control.Content(winrt::box_value(state.labels.at(key)));
+            for(auto const& [key,control]:std::initializer_list<std::pair<wchar_t const*,Button>>{{L"earlier",earlier},{L"later",later},{L"remove",remove},{L"add",add},{L"done",done},{L"reset",reset},{L"undo-reset",undoReset}}) control.Content(winrt::box_value(state.labels.at(key)));
         }
         if(changed && !dragging) Refresh();
     }
@@ -125,7 +132,14 @@ struct NativeToolbarCustomization {
             Automation::AutomationProperties::SetName(available,state.labels.at(L"available"));content.Children().Append(available);
             StackPanel bottom;bottom.Orientation(Orientation::Horizontal);bottom.Spacing(8);content.Children().Append(bottom);
             add=make(L"add",bottom);done=make(L"done",bottom);
+            text(L"reset-hint");
+            StackPanel defaults;defaults.Orientation(Orientation::Horizontal);defaults.Spacing(8);content.Children().Append(defaults);
+            reset=make(L"reset",defaults);undoReset=make(L"undo-reset",defaults);
             auto alive=std::weak_ptr<int>(lifetime);
+            flyout.Opened([this,alive](auto const&,auto const&){if(!alive.expired())SendGlobal(L"open",true);});
+            flyout.Closed([this,alive](auto const&,auto const&){if(!alive.expired())SendGlobal(L"close",true);});
+            reset.Click([this,alive](auto const&,auto const&){if(!alive.expired())SendGlobal(L"reset");});
+            undoReset.Click([this,alive](auto const&,auto const&){if(!alive.expired())SendGlobal(L"undo-reset");});
             auto prepare=[this,alive](auto const&,ContainerContentChangingEventArgs const& args) {
                 if(alive.expired() || args.InRecycleQueue())return;
                 auto id=Id(args.Item());
