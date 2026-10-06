@@ -46,7 +46,7 @@ struct NativeToolbarCustomization {
         state.revision=NativeJson::RequireRevision(obj,L"revision");
         state.canReset=obj.GetNamedBoolean(L"canReset",false);state.canUndoReset=obj.GetNamedBoolean(L"canUndoReset",false);
         auto items=obj.GetNamedArray(L"items");
-        if(items.Size()>57) throw winrt::hresult_invalid_argument();
+        if(items.Size()>59) throw winrt::hresult_invalid_argument();
         std::set<winrt::hstring> ids,controls;
         bool address=false;size_t springs=0;
         for(auto value:items) {

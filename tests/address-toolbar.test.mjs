@@ -346,3 +346,25 @@ test("deferred Downloads anchors reject changed documents, sessions and hidden b
   assert.ok(resolve());change(f);assert.equal(resolve(),null);
  }
 });
+
+for (const command of ["history","bookmarks"]) test(`${command} uses Firefox's original menu with an activation-scoped anchor`, () => {
+ const f=navigationCommandsFixture();let opened;
+ f.window.devicePixelRatio=1;f.window.mozInnerScreenX=0;f.window.mozInnerScreenY=0;
+ f.window.KeyboardEvent=f.window.MouseEvent;
+ f.window.PanelUI={showSubView:(...args)=>opened=args};
+ const popup={state:"closed",getAttribute:()=>"bottomright topright",openPopup:(...args)=>opened=args};f.elements.set("BMB_bookmarksPopup",popup);
+ const action={...f.action,command,keyboard:true,x:20,y:40,width:32,height:32};
+ assert.equal(f.toolbar.executeNavigation(action),1);
+ const anchor=f.toolbar.menuAnchors.get(command);
+ assert.equal(opened[command==="history"?1:0],anchor);
+ assert.equal(anchor.getAttribute("aria-label"),`Localized ${command}`);
+ if(command==="history")assert.equal(opened[0],"PanelUI-history");
+ if(command==="bookmarks")assert.equal(opened[1],"bottomright topright");
+ assert.equal(opened.at(-1).type,"keypress");assert.equal(opened.at(-1).key,"Enter");
+ let closed=false;
+ if(command==="history") {anchor.open=true;f.elements.set("customizationui-widget-panel",{hidePopup:()=>closed=true});}
+ else {popup.state="open";popup.hidePopup=()=>closed=true;}
+ assert.equal(f.toolbar.executeNavigation(action),1);assert.equal(closed,true);
+ opened=null;f.owner.addressDocument++;
+ assert.equal(f.toolbar.executeNavigation(action),2);assert.equal(opened,null);
+});

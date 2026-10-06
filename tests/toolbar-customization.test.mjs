@@ -142,3 +142,11 @@ test('address is fixed and rejects direct reorder commands',()=>{
  const f=fixture();assert.equal(f.state().items.find(i=>i.control==='address').movable,false);
  for(const verb of ['end','before','remove'])assert.equal(f.c.execute(f.command('address',verb,verb==='before'?'back':undefined)),2);
 });
+
+for(const [widget,control] of [['history-panelmenu','history'],['bookmarks-menu-button','bookmarks']]) test(`${control} is an optional Firefox-owned customization widget`,()=>{
+ const f=fixture();f.nodes.set(widget,{getAttribute:key=>key==='label'?'Localized '+control:''});
+ const item=f.state().items.find(i=>i.control===control);
+ assert.equal(item.placed,false);assert.equal(item.extension,false);assert.equal(item.label,'Localized '+control);
+ assert.equal(f.c.execute(f.command(control,'add')),1);
+ assert.equal(f.order().at(-1),widget);assert.equal(f.state().items.find(i=>i.control===control).placed,true);
+});

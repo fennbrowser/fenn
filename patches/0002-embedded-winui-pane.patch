@@ -3182,7 +3182,7 @@ index 1e2660589b..85227d8e69 100644
    /*
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 0000000000..a767e8aef8
+index 0000000000..6b082161e8
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 @@ -0,0 +1,177 @@
@@ -3213,7 +3213,7 @@ index 0000000000..a767e8aef8
 +  snapshot(navigation) {
 +    const {ui,toolbar} = this, {window} = toolbar;
 +    const fixed = new Map([['back-button','back'],['forward-button','forward'],['stop-reload-button','reload'],
-+      ['urlbar-container','address'],['fxa-toolbar-menu-button','profile'],['unified-extensions-button','extensions'],['home-button','home'],['downloads-button','downloads']]);
++      ['urlbar-container','address'],['fxa-toolbar-menu-button','profile'],['unified-extensions-button','extensions'],['home-button','home'],['downloads-button','downloads'],['history-panelmenu','history'],['bookmarks-menu-button','bookmarks']]);
 +    const placements = ui.getWidgetIdsInArea(ui.AREA_NAVBAR);
 +    const candidates = [...new Set([...placements,...ui.getWidgetIdsInArea(ui.AREA_FIXED_OVERFLOW_PANEL),...fixed.keys(),...ui.getWidgetIdsInArea(ui.AREA_ADDONS),'spring'])];
 +    const items = [], keep = new Set();
@@ -3237,7 +3237,7 @@ index 0000000000..a767e8aef8
 +        label = navigation[control]?.label || node?.getAttribute('label') || wrapper?.label || '';
 +        if (control === 'address') label = toolbar.owner.localization().formatValueSync('winui-toolbar-address');
 +      }
-+      if (!label || items.length >= 57) continue;
++      if (!label || items.length >= 59) continue;
 +      const placement = ui.getPlacementOfWidget(widget);
 +      const placed = placement?.area === ui.AREA_NAVBAR;
 +      const overflow = placement?.area === ui.AREA_FIXED_OVERFLOW_PANEL;
@@ -5915,10 +5915,10 @@ index 0000000000..a8fae4db53
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..ebab0b9953
+index 0000000000..48ef82767d
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,340 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -5959,6 +5959,8 @@ index 0000000000..ebab0b9953
 +    this.navigationCommands = [
 +      {id:"home", element:"home-button", method:"home"},
 +      {id:"downloads", element:"downloads-button", menu:true},
++      {id:"history", element:"history-panelmenu", menu:true},
++      {id:"bookmarks", element:"bookmarks-menu-button", menu:true},
 +      {id:"back", command:"Browser:Back", element:"back-button", method:"back"},
 +      {id:"forward", command:"Browser:Forward", element:"forward-button", method:"forward"},
 +      {id:"reload", command:"Browser:Reload", element:"reload-button", method:"reloadOrDuplicate"},
@@ -6115,12 +6117,28 @@ index 0000000000..ebab0b9953
 +    const document = window.document;
 +    const anchor = this.menuAnchor(id, bounds);
 +    if (!anchor) return 2;
++    if (id === "history" || id === "bookmarks") {
++      // PanelUI derives the popup's accessible name from its anchor.
++      anchor.setAttribute("aria-label", this.navigationState()[id].label);
++    }
++    if ((id === "history" || id === "bookmarks") && bounds.keyboard) {
++      event = new window.KeyboardEvent("keypress", {key:"Enter", ctrlKey:event.ctrlKey,
++        altKey:event.altKey, shiftKey:event.shiftKey, metaKey:event.metaKey});
++    }
 +    // Keep each menu's Firefox controller, initialization, policy and telemetry.
 +    if (id === "downloads") {
 +      const session=this.owner.addressSession, tab=window.gBrowser.selectedTab, documentId=this.owner.addressDocument;
 +      window.DownloadsPanel.showPanel(true, !!bounds.keyboard, () => this.active && this.navigation && this.supported() &&
 +        this.owner.addressSession===session && window.gBrowser.selectedTab===tab && this.owner.addressDocument===documentId && window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId===documentId &&
 +        this.navigationState().downloads.shown && !this.customization?.nativeOverflow.has("downloads-button") ? anchor : null);
++    } else if (id === "history") {
++      if (anchor.open) document.getElementById("customizationui-widget-panel")?.hidePopup();
++      else window.PanelUI.showSubView("PanelUI-history", anchor, event);
++    } else if (id === "bookmarks") {
++      const popup = document.getElementById("BMB_bookmarksPopup");
++      if (!popup) return 2;
++      if (["open", "showing"].includes(popup.state)) popup.hidePopup();
++      else popup.openPopup(anchor, popup.getAttribute("position") || "bottomright topright", 0, 0, false, false, event);
 +    } else if (id === "profile") {
 +      if (anchor.hasAttribute("open")) document.getElementById("customizationui-widget-panel")?.hidePopup();
 +      else window.gSync.toggleAccountPanel(anchor, event).catch(console.error);
