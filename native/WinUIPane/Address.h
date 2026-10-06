@@ -640,8 +640,9 @@ struct NativeAddress {
                 if (navigation->customization.editing && wcsncmp(command,L"customize:",10)!=0) return;
                 auto action = Message(L"navigation");
                 action.SetNamedValue(L"command", JValue::CreateStringValue(command));
+                action.SetNamedValue(L"keyboard", JValue::CreateBooleanValue(navigation->keyboardActivation));
                 action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
-                if (wcscmp(command, L"back-history") == 0 || wcscmp(command, L"forward-history") == 0 || wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcscmp(command, L"overflow") == 0 || wcsncmp(command, L"extension", 9) == 0 || wcsncmp(command, L"omni", 4) == 0) {
+                if (wcscmp(command, L"back-history") == 0 || wcscmp(command, L"forward-history") == 0 || wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcscmp(command, L"overflow") == 0 || wcscmp(command, L"downloads") == 0 || wcsncmp(command, L"extension", 9) == 0 || wcsncmp(command,L"widget-menu:",12)==0 || wcsncmp(command, L"omni", 4) == 0) {
                     auto local = button.TransformToVisual(nullptr).TransformBounds(
                         {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
                     auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);

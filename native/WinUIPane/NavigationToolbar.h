@@ -1,5 +1,7 @@
 #pragma once
 #include <array>
+#include <cmath>
+#include <winrt/Microsoft.UI.Xaml.Shapes.h>
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include <functional>
 #include "JsonValidation.h"
@@ -12,27 +14,33 @@
 struct NativeNavigationToolbar {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using Button = Microsoft::UI::Xaml::Controls::Button;
-    struct State { bool enabled{}, stopping{}, required{}; winrt::hstring label, tooltip; };
-    using States = std::array<State, 7>;
+    struct State { bool enabled{}, stopping{}, required{}, shown{true}; double progress{-1}; winrt::hstring label, tooltip, attention; };
+    using States = std::array<State, 9>;
     States commandState{};
     std::vector<std::pair<winrt::hstring,Microsoft::UI::Xaml::FrameworkElement>> dropSlots;
-    static constexpr wchar_t const* commands[] = {L"back", L"forward", L"reload", L"profile", L"extensions", L"appmenu", L"overflow"};
+    static constexpr wchar_t const* commands[] = {L"back", L"forward", L"reload", L"profile", L"extensions", L"appmenu", L"overflow", L"home", L"downloads"};
     Microsoft::UI::Xaml::Controls::Grid host{nullptr}, surface{nullptr};
     Microsoft::UI::Xaml::FrameworkElement address{nullptr};
     std::map<winrt::hstring,Microsoft::UI::Xaml::Controls::Grid> spacers, dragHosts;
     std::vector<Microsoft::UI::Xaml::UIElement> ordered;
     bool visible{};
-    std::array<Button, 7> buttons;
-    std::array<Microsoft::UI::Xaml::Controls::SymbolIcon, 7> icons;
+    std::array<Button, 9> buttons;
+    std::array<Microsoft::UI::Xaml::Controls::SymbolIcon, 9> icons;
+    Microsoft::UI::Xaml::Controls::Grid downloadProgress{nullptr};
+    Microsoft::UI::Xaml::Shapes::Path downloadPie{nullptr};
+    std::array<Microsoft::UI::Xaml::Media::ArcSegment,2> downloadArcs{nullptr,nullptr};
+    Microsoft::UI::Xaml::Controls::Viewbox downloadIcon{nullptr};
+    std::array<Microsoft::UI::Xaml::Controls::Border,3> downloadAttention;
     PinnedExtensionButtons pinned;
     NativeToolbarCustomization customization;
     ToolbarDragPreview preview;
+    bool keyboardActivation{};
     bool stopping{}, hasOverflow{}, requiredOverflow{}, overflowQueued{}, rootObserved{};
     NativeToolbarCustomization::State layoutState;
     std::wstring pendingOverflow, sentOverflow;
     std::array<Microsoft::UI::Dispatching::DispatcherQueueTimer, 2> historyTimers{nullptr, nullptr};
     std::array<bool, 2> historyHeld{};
-    std::array<uint32_t, 7> inputModifiers{};
+    std::array<uint32_t, 9> inputModifiers{};
     std::function<void(wchar_t const*, uint32_t, Button const&)> activate;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
@@ -61,7 +69,7 @@ struct NativeNavigationToolbar {
     std::map<winrt::hstring,std::shared_ptr<PinnedExtensionButtons>> paletteRenderers;
     Microsoft::UI::Xaml::FrameworkElement PaletteControl(NativeToolbarCustomization::Item const& item) {
         using namespace Microsoft::UI::Xaml;using namespace Microsoft::UI::Xaml::Controls;
-        for(size_t i=0;i<5;i++)if(item.control==commands[i])return CreateButton(i,i==4?Symbol::Library:icons[i].Symbol());
+        for(size_t i=0;i<buttons.size();i++)if(i!=5 && i!=6 && item.control==commands[i])return CreateButton(i,i==4?Symbol::Library:icons[i].Symbol());
         for(auto const& state:paletteState)if(state.id==item.palette) {
             auto renderer=std::make_shared<PinnedExtensionButtons>();renderer->externalLayout=true;renderer->Apply({state},true);
             auto button=renderer->rows.at(state.id).button;renderer->panel.Children().Clear();button.IsEnabled(true);
@@ -83,12 +91,32 @@ struct NativeNavigationToolbar {
         customization.clearPreviews=[this]{paletteRenderers.clear();};
         customization.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         pinned.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
-        const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh, Symbol::Contact, Symbol::Library, Symbol::More, Symbol::Forward};
-        const wchar_t* names[] = {L"Back", L"Forward", L"Reload", L"Account", L"Extensions", L"Application menu", L"More tools"};
-        const wchar_t* ids[] = {L"FirefoxWinUIBack", L"FirefoxWinUIForward", L"FirefoxWinUIReload", L"FirefoxWinUIProfile", L"FirefoxWinUIExtensions", L"FirefoxWinUIAppMenu", L"FirefoxWinUIOverflow"};
+        const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh, Symbol::Contact, Symbol::Library, Symbol::More, Symbol::Forward, Symbol::Home, Symbol::Download};
+        const wchar_t* names[] = {L"Back", L"Forward", L"Reload", L"Account", L"Extensions", L"Application menu", L"More tools", L"Home", L"Downloads"};
+        const wchar_t* ids[] = {L"FirefoxWinUIBack", L"FirefoxWinUIForward", L"FirefoxWinUIReload", L"FirefoxWinUIProfile", L"FirefoxWinUIExtensions", L"FirefoxWinUIAppMenu", L"FirefoxWinUIOverflow", L"FirefoxWinUIHome", L"FirefoxWinUIDownloads"};
         for (size_t i = 0; i < buttons.size(); ++i) {
             auto button = CreateButton(i,symbols[i]);
             icons[i]=button.Content().as<Viewbox>().Child().try_as<SymbolIcon>();
+            if(i==8) {
+                // Firefox owns the percentage; XAML supplies a persistent outline and a filled pie.
+                // Badge placement is relative to the button interior, independent of the progress graphic.
+                Grid contents;contents.Width(28);contents.Height(28);downloadIcon=button.Content().as<Viewbox>();button.Content(nullptr);downloadIcon.HorizontalAlignment(HorizontalAlignment::Center);downloadIcon.VerticalAlignment(VerticalAlignment::Center);contents.Children().Append(downloadIcon);
+                downloadProgress=Markup::XamlReader::Load(LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="16" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"><Path Fill="{ThemeResource TextFillColorPrimaryBrush}"><Path.Data><PathGeometry><PathFigure StartPoint="8,8" IsClosed="True"><LineSegment Point="8,1.5"/><ArcSegment Point="8,1.5" Size="6.5,6.5" SweepDirection="Clockwise"/><ArcSegment Point="8,1.5" Size="6.5,6.5" SweepDirection="Clockwise"/></PathFigure></PathGeometry></Path.Data></Path><Ellipse Width="16" Height="16" StrokeThickness="1" Stroke="{ThemeResource TextFillColorPrimaryBrush}"/></Grid>)").as<Grid>();contents.Children().Append(downloadProgress);
+                downloadPie=downloadProgress.Children().GetAt(0).as<Shapes::Path>();
+                auto segments=downloadPie.Data().as<Media::PathGeometry>().Figures().GetAt(0).Segments();
+                for(size_t j=0;j<downloadArcs.size();j++)downloadArcs[j]=segments.GetAt(uint32_t(j+1)).as<Media::ArcSegment>();
+                const wchar_t* brushes[]={L"SystemFillColorAttentionBrush",L"SystemFillColorCautionBrush",L"SystemFillColorCriticalBrush"};
+                for(size_t j=0;j<downloadAttention.size();j++) {
+                    auto xaml=std::wstring(L"<Border xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Width=\"5\" Height=\"5\" CornerRadius=\"2.5\" HorizontalAlignment=\"Right\" VerticalAlignment=\"Top\" Margin=\"0,4,4,0\" IsHitTestVisible=\"False\" Background=\"{ThemeResource ")+brushes[j]+L"}\"/>";
+                    downloadAttention[j]=Markup::XamlReader::Load(xaml).as<Border>();downloadAttention[j].Visibility(Visibility::Collapsed);contents.Children().Append(downloadAttention[j]);
+                }
+                button.Content(contents);
+            }
+            if(i==7)button.AddHandler(UIElement::PointerReleasedEvent(),winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const& args){
+                if(alive.expired() || !visible || customization.editing || !activate)return;
+                if(args.GetCurrentPoint(buttons[7]).Properties().PointerUpdateKind()==winrt::Microsoft::UI::Input::PointerUpdateKind::MiddleButtonReleased)
+                    activate(L"home-middle",uint32_t(args.KeyModifiers())&15u,buttons[7]);
+            })),true);
             button.IsEnabled(false);
             Automation::AutomationProperties::SetAutomationId(button, ids[i]);
             Automation::AutomationProperties::SetName(button, names[i]);
@@ -98,7 +126,7 @@ struct NativeNavigationToolbar {
             button.AddHandler(UIElement::PointerPressedEvent(), winrt::box_value(
                 Microsoft::UI::Xaml::Input::PointerEventHandler([this, i, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
                     if (alive.expired()) return;
-                    inputModifiers[i] = uint32_t(args.KeyModifiers()) & 15u;
+                    keyboardActivation=false;inputModifiers[i] = uint32_t(args.KeyModifiers()) & 15u;
                     if (i < 2) {
                         historyHeld[i] = false;
                         if (args.GetCurrentPoint(buttons[i]).Properties().IsLeftButtonPressed()) historyTimers[i].Start();
@@ -113,10 +141,13 @@ struct NativeNavigationToolbar {
                         }
                     })), true);
             }
-            button.PreviewKeyDown([this, i, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            button.PreviewKeyDown([this, i, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
                 if (alive.expired()) return;
+                if(i==5 && customization.editing && args.Key()==winrt::Windows::System::VirtualKey::Tab && !(GetKeyState(VK_SHIFT)&0x8000)) {
+                    customization.available.Focus(FocusState::Keyboard);args.Handled(true);return;
+                }
                 if (i < 2) { historyHeld[i] = false; historyTimers[i].Stop(); }
-                inputModifiers[i] = ((GetKeyState(VK_CONTROL) & 0x8000) ? 1u : 0u) |
+                keyboardActivation=true;inputModifiers[i] = ((GetKeyState(VK_CONTROL) & 0x8000) ? 1u : 0u) |
                     ((GetKeyState(VK_MENU) & 0x8000) ? 2u : 0u) |
                     ((GetKeyState(VK_SHIFT) & 0x8000) ? 4u : 0u) |
                     ((GetKeyState(VK_LWIN) & 0x8000) ? 8u : 0u);
@@ -129,6 +160,7 @@ struct NativeNavigationToolbar {
                 inputModifiers[i] = 0;
                 activate(i == 2 && stopping ? L"stop" : commands[i], modifiers, buttons[i]);
             });
+            if(i==7 || i==8)button.ContextRequested([this,i,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const& args){if(alive.expired() || !visible || customization.editing || !activate)return;args.Handled(true);activate(i==7?L"widget-menu:home":L"widget-menu:downloads",0,buttons[i]);});
             button.VerticalAlignment(VerticalAlignment::Center);
             buttons[i] = button;
             if (i == 5) button.ContextRequested([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) { if (!alive.expired()) {args.Handled(true);customization.Open(buttons[5]);} });
@@ -201,7 +233,7 @@ struct NativeNavigationToolbar {
         if(visible && state.revision && availableWidth>0) {
             std::vector<ShellToolbarSlot> slots;
             std::vector<NativeToolbarCustomization::Item const*> items;
-            for(auto const& item:state.items)if(item.placed) {
+            for(auto const& item:state.items)if(item.placed && (item.control!=L"downloads" || commandState[8].shown || customization.editing)) {
                 slots.push_back({item.spring?2u:item.control==L"address"?1u:0u,item.canAutoOverflow?(item.extension?2u:1u):0u});
                 items.push_back(&item);
             }
@@ -226,7 +258,7 @@ struct NativeNavigationToolbar {
             }
         }
         for(size_t i=0;i<buttons.size();i++)buttons[i].IsEnabled(visible && (customization.editing || commandState[i].enabled));
-        dropSlots.clear();
+        dropSlots.clear();customization.placedControls.clear();
         std::vector<UIElement> desired;
         std::set<winrt::hstring> keep, keepDrag;
         if(!visible || !state.revision) {
@@ -235,7 +267,7 @@ struct NativeNavigationToolbar {
         }
         if(visible && state.revision) {
             for(auto const& item:state.items) {
-                if(!item.placed || overflowed.contains(item.id))continue;
+                if(!item.placed || overflowed.contains(item.id) || (item.control==L"downloads" && !commandState[8].shown && !customization.editing))continue;
                 UIElement control{nullptr};
                 if(item.control==L"address")control=address;
                 else if(item.spring) {
@@ -245,11 +277,18 @@ struct NativeNavigationToolbar {
                         it->second.IsHitTestVisible(false);
                         auto outline=Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Height="24" Margin="4,0,4,0" VerticalAlignment="Center" BorderThickness="1" BorderBrush="{ThemeResource TextFillColorSecondaryBrush}" IsHitTestVisible="False"/>)").as<Border>();
                         it->second.Children().Append(outline);
+                        auto keyboardTarget=Markup::XamlReader::Load(LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" Height="24" MinWidth="0" MinHeight="0" Padding="0" Margin="4,0,4,0" HorizontalAlignment="Stretch" VerticalAlignment="Center" IsHitTestVisible="False"/>)").as<Button>();
+                        it->second.Children().Append(keyboardTarget);
                     }
                     it->second.Children().GetAt(0).Visibility(customization.editing?Visibility::Visible:Visibility::Collapsed);
+                    auto keyboardTarget=it->second.Children().GetAt(1).as<Button>();
+                    keyboardTarget.Visibility(customization.editing?Visibility::Visible:Visibility::Collapsed);
+                    keyboardTarget.IsTabStop(customization.editing);
+                    Automation::AutomationProperties::SetName(keyboardTarget,item.label);
+                    Automation::AutomationProperties::SetAutomationId(keyboardTarget,L"FirefoxWinUICustomizePlaced-"+item.control);
                     control=it->second;
                 } else {
-                    for(size_t i=0;i<5;i++)if(item.control==commands[i])control=buttons[i];
+                    for(size_t i=0;i<buttons.size();i++)if(i!=5 && i!=6 && item.control==commands[i])control=buttons[i];
                     if(auto it=pinned.rows.find(item.control);it!=pinned.rows.end()){control=it->second.button;it->second.button.IsEnabled(visible && (customization.editing || it->second.enabled));}
                 }
                 if(control) {
@@ -333,6 +372,8 @@ struct NativeNavigationToolbar {
             auto entry = navigation.GetNamedObject(commands[i]);
             auto& item = result[i];
             item.enabled = entry.GetNamedBoolean(L"enabled");
+            item.shown=entry.GetNamedBoolean(L"shown",true);
+            if(i==8){item.progress=entry.GetNamedNumber(L"progress",-1);if(!std::isfinite(item.progress)||item.progress< -1||item.progress>100)throw winrt::hresult_invalid_argument();item.attention=entry.GetNamedString(L"attention",L"");NativeJson::RequireLength(item.attention,32);}
             item.required = entry.GetNamedBoolean(L"required",item.enabled);
             if (i == 2) item.stopping = entry.GetNamedBoolean(L"stopping", false);
             item.label = entry.GetNamedString(L"label", L"");
@@ -348,6 +389,18 @@ struct NativeNavigationToolbar {
         if (!visible) { sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
         hasOverflow = visible && state[6].enabled;
         requiredOverflow = visible && state[6].required;
+        const bool downloading=visible && state[8].progress>=0 && !customization.editing;
+        downloadProgress.Visibility(downloading?Visibility::Visible:Visibility::Collapsed);
+        downloadIcon.Visibility(downloading?Visibility::Collapsed:Visibility::Visible);
+        downloadPie.Visibility(state[8].progress>0?Visibility::Visible:Visibility::Collapsed);
+        // Two arcs also represent exactly 100% without a coincident-endpoint full-circle ambiguity.
+        const double sweep=std::clamp(state[8].progress,0.0,100.0)*6.283185307179586/100.0;
+        for(size_t j=0;j<downloadArcs.size();j++) {
+            const double angle=sweep*double(j+1)/2;
+            downloadArcs[j].Point({float(8+6.5*std::sin(angle)),float(8-6.5*std::cos(angle))});
+        }
+        size_t attention=state[8].attention==L"severe"?2:state[8].attention==L"warning"?1:0;
+        for(size_t j=0;j<downloadAttention.size();j++)downloadAttention[j].Visibility(visible && !state[8].attention.empty() && !customization.editing && j==attention?Visibility::Visible:Visibility::Collapsed);
         stopping = visible && state[2].stopping;
         icons[2].Symbol(stopping ? Controls::Symbol::Cancel : Controls::Symbol::Refresh);
         for (size_t i = 0; i < buttons.size(); ++i) {

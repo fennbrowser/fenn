@@ -19,6 +19,12 @@ struct NativeToolbarCustomization {
     std::map<winrt::hstring,Microsoft::UI::Xaml::Controls::TextBlock> textBlocks;
     Button reset{nullptr}, undoReset{nullptr};
     Button anchor{nullptr};
+    Microsoft::UI::Xaml::Controls::MenuFlyout itemMenu{nullptr};
+    bool itemMenuOpen{};
+    std::map<winrt::hstring,Microsoft::UI::Xaml::FrameworkElement> placedControls;
+    winrt::hstring focusAfterChange;
+    uint64_t focusRevision{};
+
     std::function<void()> editorChanged,dragEnded,clearPreviews;
     std::function<Microsoft::UI::Xaml::FrameworkElement(Item const&)> createPreview;
     std::map<winrt::hstring,Microsoft::UI::Xaml::FrameworkElement> previews;
@@ -30,7 +36,7 @@ struct NativeToolbarCustomization {
     winrt::hstring dragId;
     std::function<void(wchar_t const*, uint32_t, Button const&)> activate;
     std::shared_ptr<int> lifetime=std::make_shared<int>(0);
-    ~NativeToolbarCustomization() { lifetime.reset(); if(popup) popup.IsOpen(false); }
+    ~NativeToolbarCustomization() { lifetime.reset(); if(itemMenu)itemMenu.Hide(); if(popup) popup.IsOpen(false); }
     static State Read(JObject const& snapshot) {
         State state;
         if (!snapshot.HasKey(L"navigation")) return state;
@@ -40,7 +46,7 @@ struct NativeToolbarCustomization {
         state.revision=NativeJson::RequireRevision(obj,L"revision");
         state.canReset=obj.GetNamedBoolean(L"canReset",false);state.canUndoReset=obj.GetNamedBoolean(L"canUndoReset",false);
         auto items=obj.GetNamedArray(L"items");
-        if(items.Size()>55) throw winrt::hresult_invalid_argument();
+        if(items.Size()>57) throw winrt::hresult_invalid_argument();
         std::set<winrt::hstring> ids,controls;
         bool address=false;size_t springs=0;
         for(auto value:items) {
@@ -64,7 +70,7 @@ struct NativeToolbarCustomization {
     static winrt::hstring Id(winrt::Windows::Foundation::IInspectable const& item) {
         return item ? winrt::unbox_value<winrt::hstring>(item.as<Map>().Lookup(L"Id")) : winrt::hstring{};
     }
-    void Hide() { if(dragEnded)dragEnded();dragCancelled=true;if(popup)popup.IsOpen(false); }
+    void Hide() { focusAfterChange=L"";if(itemMenu)itemMenu.Hide();if(dragEnded)dragEnded();dragCancelled=true;if(popup)popup.IsOpen(false); }
     bool BeginDrag(winrt::hstring const& id, winrt::Windows::ApplicationModel::DataTransfer::DataPackage const& data) {
         auto item=std::find_if(state.items.begin(),state.items.end(),[&](auto const& row){return row.id==id;});
         if(!editing || item==state.items.end() || !item->movable)return false;
@@ -117,8 +123,66 @@ struct NativeToolbarCustomization {
         } catch (...) {args.Cancel(true);}
         deferral.Complete();
     }
+    static Microsoft::UI::Xaml::Controls::Control FocusControl(Microsoft::UI::Xaml::FrameworkElement const& element) {
+        using namespace Microsoft::UI::Xaml::Controls;
+        if(auto control=element.try_as<Control>())return control;
+        if(auto panel=element.try_as<Panel>())for(auto child:panel.Children())if(auto control=child.try_as<Control>())return control;
+        return nullptr;
+    }
+    bool FocusFirstPlaced() {
+        for(auto const& item:state.items)if(item.placed) {
+            auto found=placedControls.find(item.id);if(found==placedControls.end())continue;
+            if(auto control=FocusControl(found->second);control && control.IsEnabled())return control.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+        }
+        return false;
+    }
+    void RestoreKeyboardFocus() {
+        if(focusAfterChange.empty() || state.revision==focusRevision)return;
+        auto id=focusAfterChange;focusAfterChange=L"";auto revision=state.revision;auto alive=std::weak_ptr<int>(lifetime);
+        anchor.DispatcherQueue().TryEnqueue([this,alive,id,revision]{
+            if(alive.expired() || !editing || state.revision!=revision)return;
+            if(auto found=placedControls.find(id);found!=placedControls.end()) {
+                if(auto control=FocusControl(found->second))control.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+            } else if(available) {
+                for(auto value:availableItems)if(Id(value)==id){available.SelectedItem(value);available.ScrollIntoView(value);break;}
+                if(!available.SelectedItem())for(auto const& item:state.items)if(item.control==L"new-spring") {
+                    for(auto value:availableItems)if(Id(value)==item.id){available.SelectedItem(value);available.ScrollIntoView(value);break;}
+                    break;
+                }
+                available.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+                if(auto selected=available.SelectedItem())if(auto row=available.ContainerFromItem(selected).try_as<Microsoft::UI::Xaml::Controls::Control>())row.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+            }
+        });
+    }
+    void OpenItemMenu(Microsoft::UI::Xaml::FrameworkElement const& control) {
+        using namespace Microsoft::UI::Xaml;using namespace Microsoft::UI::Xaml::Controls;
+        if(!editing || dragging || !control.Tag())return;
+        auto id=winrt::unbox_value<winrt::hstring>(control.Tag());
+        std::vector<Item> placed;for(auto const& item:state.items)if(item.placed)placed.push_back(item);
+        auto found=std::find_if(placed.begin(),placed.end(),[&](auto const& item){return item.id==id;});
+        if(found==placed.end() || !found->movable || found->control==L"address")return;
+        const auto index=size_t(found-placed.begin());auto revision=state.revision;auto alive=std::weak_ptr<int>(lifetime);
+        if(itemMenu)itemMenu.Hide();itemMenu=MenuFlyout();auto menu=itemMenu;
+        menu.Opened([this,alive](auto const&,auto const&){if(!alive.expired())itemMenuOpen=true;});
+        menu.Closed([this,alive,weak=winrt::make_weak(menu)](auto const&,auto const&){if(!alive.expired() && itemMenu==weak.get())itemMenuOpen=false;});
+        auto add=[&](wchar_t const* label,wchar_t const* verb,winrt::hstring const& target,bool enabled) {
+            MenuFlyoutItem action;action.Text(state.labels.at(label));action.IsEnabled(enabled);
+            Automation::AutomationProperties::SetAutomationId(action,winrt::hstring(L"FirefoxWinUICustomizeAction-")+label);
+            action.Click([this,alive,id,revision,verb=std::wstring(verb),target](auto const&,auto const&){
+                if(alive.expired() || !editing || revision!=state.revision)return;
+                focusAfterChange=id;focusRevision=revision;Send(id,verb.c_str(),target,revision);
+            });
+            menu.Items().Append(action);
+        };
+        add(L"earlier",L"before",index?placed[index-1].id:winrt::hstring{},index>0);
+        add(L"later",index+2<placed.size()?L"before":L"end",index+2<placed.size()?placed[index+2].id:winrt::hstring{},index+1<placed.size());
+        add(L"remove",L"remove",{},found->removable);
+        add(L"overflow",L"overflow",{},found->canOverflow);
+        menu.ShowAt(control);
+    }
     void BindToolbarControl(Microsoft::UI::Xaml::FrameworkElement const& control,Item const& item) {
         if(item.control==L"address")return;
+        placedControls.insert_or_assign(item.id,control);
         if(!control.Tag()) {
             auto alive=std::weak_ptr<int>(lifetime);
             control.DragStarting([this,alive](auto const& sender,auto const& args){
@@ -126,13 +190,34 @@ struct NativeToolbarCustomization {
                 auto element=sender.template as<Microsoft::UI::Xaml::FrameworkElement>();auto id=winrt::unbox_value<winrt::hstring>(element.Tag());
                 if(!BeginDrag(id,args.Data())){args.Cancel(true);return;}CaptureDrag(args,element,id);
             });
+            control.PreviewKeyDown([this,alive](auto const& sender,auto const& args){
+                if(alive.expired() || !editing)return;
+                if(args.Key()==winrt::Windows::System::VirtualKey::Tab && (GetKeyState(VK_SHIFT)&0x8000)) {
+                    auto id=winrt::unbox_value<winrt::hstring>(sender.template as<Microsoft::UI::Xaml::FrameworkElement>().Tag());
+                    auto first=std::find_if(state.items.begin(),state.items.end(),[](auto const& item){return item.placed;});
+                    if(first!=state.items.end() && first->id==id) {
+                        if(undoReset.IsEnabled())undoReset.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+                        else if(reset.IsEnabled())reset.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+                        else available.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+                        args.Handled(true);return;
+                    }
+                }
+                if(args.Key()==winrt::Windows::System::VirtualKey::Application ||
+                    (args.Key()==winrt::Windows::System::VirtualKey::F10 && (GetKeyState(VK_SHIFT)&0x8000))) {
+                    args.Handled(true);OpenItemMenu(sender.template as<Microsoft::UI::Xaml::FrameworkElement>());
+                }
+            });
+            control.ContextRequested([this,alive](auto const& sender,auto const& args){
+                if(alive.expired() || !editing)return;args.Handled(true);OpenItemMenu(sender.template as<Microsoft::UI::Xaml::FrameworkElement>());
+            });
             control.DropCompleted([this,alive](auto const&,auto const&){if(!alive.expired())EndDrag();});
         }
         control.Tag(winrt::box_value(item.id));control.CanDrag(editing && item.movable);
         if(item.spring){control.IsHitTestVisible(editing);control.as<Microsoft::UI::Xaml::Controls::Grid>().Background(winrt::Microsoft::UI::Xaml::Media::SolidColorBrush(winrt::Windows::UI::Colors::Transparent()));}
     }
-    bool CancelDrag() {
-        if(!dragging)return false;
+    bool DismissOnEscape() {
+        if(itemMenuOpen){itemMenu.Hide();return true;}
+        if(!dragging && !editing)return false;
         dragCancelled=true;Hide();return true;
     }
     void Send(winrt::hstring const& id,wchar_t const* verb,winrt::hstring const& target={},uint64_t revision=0) {
@@ -182,7 +267,16 @@ struct NativeToolbarCustomization {
             for(auto const& [key,block]:textBlocks) block.Text(state.labels.at(key));
             for(auto const& [key,control]:std::initializer_list<std::pair<wchar_t const*,Button>>{{L"reset",reset},{L"undo-reset",undoReset}}) control.Content(winrt::box_value(state.labels.at(key)));
         }
-        if(changed && !dragging) Refresh();
+        int position=0,total=0;for(auto const& item:state.items)if(item.placed)total++;
+        for(auto const& item:state.items)if(item.placed) {
+            position++;auto entry=placedControls.find(item.id);if(entry==placedControls.end())continue;
+            if(auto control=FocusControl(entry->second)) {
+                Microsoft::UI::Xaml::Automation::AutomationProperties::SetPositionInSet(control,position);
+                Microsoft::UI::Xaml::Automation::AutomationProperties::SetSizeOfSet(control,total);
+            }
+        }
+        if(changed && !dragging) {if(itemMenu)itemMenu.Hide();Refresh();}
+        RestoreKeyboardFocus();
     }
     void Open(Button const& button) {
         using namespace Microsoft::UI::Xaml;
@@ -200,6 +294,10 @@ struct NativeToolbarCustomization {
             auto make=[&](wchar_t const* key){Button b;b.Content(winrt::box_value(state.labels.at(key)));Automation::AutomationProperties::SetAutomationId(b,winrt::hstring(L"FirefoxWinUICustomize-")+key);defaults.Children().Append(b);return b;};
             reset=make(L"reset");undoReset=make(L"undo-reset");
             auto alive=std::weak_ptr<int>(lifetime);
+            for(auto button:{reset,undoReset})button.PreviewKeyDown([this,alive](auto const& sender,auto const& args){
+                if(alive.expired() || args.Key()!=winrt::Windows::System::VirtualKey::Tab || (GetKeyState(VK_SHIFT)&0x8000))return;
+                if(sender==undoReset || !undoReset.IsEnabled())args.Handled(FocusFirstPlaced());
+            });
             popup.Opened([this,alive](auto const&,auto const&){if(!alive.expired()){editing=true;SendGlobal(L"open",true);if(editorChanged)editorChanged();available.Focus(FocusState::Keyboard);}});
             popup.Closed([this,alive](auto const&,auto const&){if(!alive.expired()){editing=false;dragCancelled=true;SendGlobal(L"close",true);if(editorChanged)editorChanged();}});
             reset.Click([this,alive](auto const&,auto const&){if(!alive.expired())SendGlobal(L"reset");});
@@ -230,7 +328,13 @@ struct NativeToolbarCustomization {
                 if(!alive.expired() && args.Key()==winrt::Windows::System::VirtualKey::Escape){dragCancelled=true;Hide();anchor.Focus(FocusState::Keyboard);args.Handled(true);}
             });
             available.PreviewKeyDown([this,alive](auto const&,auto const& args){
-                if(alive.expired() || args.Key()!=winrt::Windows::System::VirtualKey::Enter)return;
+                if(alive.expired())return;
+                if(args.Key()==winrt::Windows::System::VirtualKey::Tab) {
+                    if(GetKeyState(VK_SHIFT)&0x8000){anchor.Focus(FocusState::Keyboard);args.Handled(true);}
+                    else if(!reset.IsEnabled() && !undoReset.IsEnabled())args.Handled(FocusFirstPlaced());
+                    return;
+                }
+                if(args.Key()!=winrt::Windows::System::VirtualKey::Enter)return;
                 auto id=Id(available.SelectedItem());if(!id.empty()){Send(id,L"add");args.Handled(true);}
             });
             available.DragItemsStarting([this,alive](auto const&,auto const& args){

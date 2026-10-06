@@ -2336,7 +2336,7 @@ BOOL WINAPI Translate(MSG* message) noexcept {
             auto& pane = *entry.second;
             if (pane.address && pane.address->navigation && message->message == WM_KEYDOWN &&
                 message->wParam == VK_ESCAPE && GetForegroundWindow() == pane.parent &&
-                pane.address->navigation->customization.CancelDrag()) return TRUE;
+                pane.address->navigation->customization.DismissOnEscape()) return TRUE;
             if (pane.strip && pane.strip->inlineGroups.hover.open &&
                 message->message == WM_KEYDOWN && message->wParam == VK_ESCAPE &&
                 GetForegroundWindow() == pane.parent) {

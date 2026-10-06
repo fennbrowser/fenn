@@ -318,3 +318,31 @@ test("overflow requires live contents and uses a validated per-call native ancho
  f.elements.get('widget-overflow-fixed-list').children=[];
  assert.equal(f.toolbar.executeNavigation(action),2);
 });
+
+
+test("Home preserves Firefox modifier and middle-button semantics",()=>{
+ const f=navigationCommandsFixture();
+ for(const [command,modifiers] of [["home",0],["home",4],["home-middle",1]]) assert.equal(f.toolbar.executeNavigation({...f.action,command,modifiers}),1);
+ const events=f.calls.filter(c=>c[0]==="command").map(c=>c[2]);
+ assert.equal(events[1].shiftKey,true);assert.equal(events[2].button,1);assert.equal(events[2].ctrlKey,true);
+});
+test("Downloads mirrors Firefox hidden/progress/attention state and rejects hidden activation",()=>{
+ const f=navigationCommandsFixture(),button=f.elements.get("downloads-button");
+ button.hidden=true;assert.equal(f.toolbar.navigationState().downloads.shown,false);
+ assert.equal(f.toolbar.executeNavigation({...f.action,command:"downloads"}),2);
+ button.hidden=false;button.setAttribute("progress","true");button.setAttribute("attention","warning");
+ f.window.DownloadsIndicatorView={_percentComplete:37};
+ const state=f.toolbar.navigationState().downloads;
+ assert.equal(state.shown,true);assert.equal(state.progress,37);assert.equal(state.attention,"warning");
+ button.removeAttribute("progress");assert.equal(f.toolbar.navigationState().downloads.progress,-1);
+});
+
+test("deferred Downloads anchors reject changed documents, sessions and hidden buttons",()=>{
+ for(const change of [f=>f.window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal.innerWindowId++,f=>f.owner.addressSession={},f=>f.elements.get("downloads-button").hidden=true,f=>f.toolbar.active=false]) {
+  const f=navigationCommandsFixture();let resolve;
+  f.window.devicePixelRatio=1;f.window.mozInnerScreenX=0;f.window.mozInnerScreenY=0;
+  f.window.DownloadsPanel={showPanel(manual,keyboard,callback){assert.equal(manual,true);assert.equal(keyboard,true);resolve=callback;}};
+  assert.equal(f.toolbar.executeNavigation({...f.action,command:"downloads",keyboard:true,x:20,y:40,width:32,height:32}),1);
+  assert.ok(resolve());change(f);assert.equal(resolve(),null);
+ }
+});

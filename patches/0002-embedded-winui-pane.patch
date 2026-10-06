@@ -1120,6 +1120,39 @@ index fb77346559..d186d417cc 100644
  
      // Insert Fluent files when needed before notification is opened
      MozXULElement.insertFTLIfNeeded("branding/brand.ftl");
+diff --git a/browser/components/downloads/content/downloads.js b/browser/components/downloads/content/downloads.js
+index 311e0d736c..130388d39e 100644
+--- a/browser/components/downloads/content/downloads.js
++++ b/browser/components/downloads/content/downloads.js
+@@ -182,7 +182,8 @@ var DownloadsPanel = {
+    * initialized the first time this method is called, and the panel is shown
+    * only when data is ready.
+    */
+-  showPanel(openedManually = false, isKeyPress = false) {
++  showPanel(openedManually = false, isKeyPress = false, nativeAnchor = null) {
++    this._nativeAnchor = nativeAnchor;
+     Glean.downloads.panelShown.add(1);
+ 
+     DownloadsCommon.log("Opening the downloads panel.");
+@@ -668,7 +669,9 @@ var DownloadsPanel = {
+ 
+     // Ensure the anchor is visible.  If that is not possible, show the panel
+     // anchored to the top area of the window, near the default anchor position.
+-    let anchor = DownloadsButton.getAnchor();
++    const nativeAnchor = this._nativeAnchor;
++    this._nativeAnchor = null;
++    let anchor = nativeAnchor ? nativeAnchor() : DownloadsButton.getAnchor();
+ 
+     if (!anchor) {
+       DownloadsCommon.error("Downloads button cannot be found.");
+@@ -693,6 +696,7 @@ var DownloadsPanel = {
+     // whether to save or open the file), and that would cause the panel to
+     // close immediately.
+     setTimeout(() => {
++      if (nativeAnchor && nativeAnchor() !== anchor) return;
+       PanelMultiView.openPopup(
+         this.panel,
+         anchor,
 diff --git a/browser/components/tabbrowser/Tabbrowser.sys.mjs b/browser/components/tabbrowser/Tabbrowser.sys.mjs
 index 93213001f0..e4ba249cc5 100644
 --- a/browser/components/tabbrowser/Tabbrowser.sys.mjs
@@ -3149,7 +3182,7 @@ index 1e2660589b..85227d8e69 100644
    /*
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 0000000000..fa0e6ea4a2
+index 0000000000..a767e8aef8
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 @@ -0,0 +1,177 @@
@@ -3180,7 +3213,7 @@ index 0000000000..fa0e6ea4a2
 +  snapshot(navigation) {
 +    const {ui,toolbar} = this, {window} = toolbar;
 +    const fixed = new Map([['back-button','back'],['forward-button','forward'],['stop-reload-button','reload'],
-+      ['urlbar-container','address'],['fxa-toolbar-menu-button','profile'],['unified-extensions-button','extensions']]);
++      ['urlbar-container','address'],['fxa-toolbar-menu-button','profile'],['unified-extensions-button','extensions'],['home-button','home'],['downloads-button','downloads']]);
 +    const placements = ui.getWidgetIdsInArea(ui.AREA_NAVBAR);
 +    const candidates = [...new Set([...placements,...ui.getWidgetIdsInArea(ui.AREA_FIXED_OVERFLOW_PANEL),...fixed.keys(),...ui.getWidgetIdsInArea(ui.AREA_ADDONS),'spring'])];
 +    const items = [], keep = new Set();
@@ -3204,7 +3237,7 @@ index 0000000000..fa0e6ea4a2
 +        label = navigation[control]?.label || node?.getAttribute('label') || wrapper?.label || '';
 +        if (control === 'address') label = toolbar.owner.localization().formatValueSync('winui-toolbar-address');
 +      }
-+      if (!label || items.length >= 55) continue;
++      if (!label || items.length >= 57) continue;
 +      const placement = ui.getPlacementOfWidget(widget);
 +      const placed = placement?.area === ui.AREA_NAVBAR;
 +      const overflow = placement?.area === ui.AREA_FIXED_OVERFLOW_PANEL;
@@ -5882,10 +5915,10 @@ index 0000000000..a8fae4db53
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..71446201fa
+index 0000000000..ebab0b9953
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,322 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -5924,6 +5957,8 @@ index 0000000000..71446201fa
 +    // Observe Firefox's command authority and live localized button labels.
 +    // Progress alone can fire before command disabled states are updated.
 +    this.navigationCommands = [
++      {id:"home", element:"home-button", method:"home"},
++      {id:"downloads", element:"downloads-button", menu:true},
 +      {id:"back", command:"Browser:Back", element:"back-button", method:"back"},
 +      {id:"forward", command:"Browser:Forward", element:"forward-button", method:"forward"},
 +      {id:"reload", command:"Browser:Reload", element:"reload-button", method:"reloadOrDuplicate"},
@@ -5938,9 +5973,10 @@ index 0000000000..71446201fa
 +      for (const id of [item.command, item.element].filter(Boolean)) {
 +        const element = document.getElementById(id);
 +        if (element) this.navigationObserver.observe(element,
-+          {attributes:true,attributeFilter:["disabled","label","tooltiptext","aria-label"]});
++          {attributes:true,attributeFilter:["disabled","label","tooltiptext","aria-label","hidden","progress","attention","style"]});
 +      }
 +    }
++    this.navigationObserver.observe(document.getElementById("nav-bar"), {subtree:true,childList:true,attributes:true,attributeFilter:["hidden","progress","attention","style","label","tooltiptext"]});
 +    for (const id of ["widget-overflow-list", "widget-overflow-fixed-list"]) {
 +      const list = document.getElementById(id);
 +      if (list) this.navigationObserver.observe(list, {childList:true,subtree:true,attributes:true,attributeFilter:["hidden"]});
@@ -5990,6 +6026,10 @@ index 0000000000..71446201fa
 +      return [slot.id, {...(slot.id === "reload" ? {stopping} : {}), enabled:!!command && command.getAttribute("disabled") !== "true",
 +        label:label || button?.getAttribute("tooltiptext") || "", tooltip:button?.getAttribute("tooltiptext") || label}];
 +    }));
++    const downloads=document.getElementById("downloads-button");
++    if(state.downloads) Object.assign(state.downloads, {shown:!!downloads && !downloads.hidden,
++      progress:downloads?.hasAttribute("progress") ? Math.max(0,Math.min(100,this.window.DownloadsIndicatorView._percentComplete)) : -1,
++      attention:downloads?.getAttribute("attention") || ""});
 +    const overflowLists = ["widget-overflow-list", "widget-overflow-fixed-list"];
 +    state.overflow.enabled = overflowLists.some(id => [...(document.getElementById(id)?.children || [])].some(node => !node.hidden));
 +    state.pinned = this.pinned?.snapshot() || [];
@@ -6008,8 +6048,9 @@ index 0000000000..71446201fa
 +    const customization = typeof action?.command === "string" && action.command.startsWith("customize:");
 +    const extension = typeof action?.command === "string" && /^(extension|extension-menu):pinned-[0-9]+$/.test(action.command);
 +    const omnibar = typeof action?.command === "string" && /^(omni|omni-menu):action-[0-9]+$/.test(action.command);
++    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
-+    const command = history ? action.command.replace("-history", "") : action?.command;
++    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
 +    const item = customization ? {customization:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
@@ -6021,13 +6062,21 @@ index 0000000000..71446201fa
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
 +    if (customization) return this.customization.execute(action.command);
++    if(item.id === "downloads" && !this.navigationState().downloads.shown)return 2;
 +    if (this.customization?.nativeOverflow.has(item.element)) return 2;
 +    // Use the actual Firefox command handler, including its modifier policy.
-+    const event = new window.MouseEvent("click", {view:window, button:0,
++    const event = new window.MouseEvent("click", {view:window, button:action.command === "home-middle" ? 1 : 0,
 +      ctrlKey:!!(action.modifiers & 1), altKey:!!(action.modifiers & 2),
 +      shiftKey:!!(action.modifiers & 4), metaKey:!!(action.modifiers & 8)});
 +    if (omnibar) return this.omnibar?.activate(action.command, action, event) || 2;
 +    if (extension) return this.pinned?.activate(action.command, action, event) || 2;
++    if(widgetMenu) {
++      const node=window.document.getElementById(item.element), anchor=this.menuAnchor(action.command,action);
++      if(!node || !anchor)return 2;
++      const trigger=new window.MouseEvent("winui-widget-context",{bubbles:true});node.dispatchEvent(trigger);
++      window.document.getElementById("toolbar-context-menu").openPopupAtScreen(action.x/window.devicePixelRatio,(action.y+action.height)/window.devicePixelRatio,true,trigger);
++      return 1;
++    }
 +    if (history) {
 +      const anchor = this.menuAnchor(action.command, action);
 +      if (!anchor) return 2;
@@ -6067,7 +6116,12 @@ index 0000000000..71446201fa
 +    const anchor = this.menuAnchor(id, bounds);
 +    if (!anchor) return 2;
 +    // Keep each menu's Firefox controller, initialization, policy and telemetry.
-+    if (id === "profile") {
++    if (id === "downloads") {
++      const session=this.owner.addressSession, tab=window.gBrowser.selectedTab, documentId=this.owner.addressDocument;
++      window.DownloadsPanel.showPanel(true, !!bounds.keyboard, () => this.active && this.navigation && this.supported() &&
++        this.owner.addressSession===session && window.gBrowser.selectedTab===tab && this.owner.addressDocument===documentId && window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId===documentId &&
++        this.navigationState().downloads.shown && !this.customization?.nativeOverflow.has("downloads-button") ? anchor : null);
++    } else if (id === "profile") {
 +      if (anchor.hasAttribute("open")) document.getElementById("customizationui-widget-panel")?.hidePopup();
 +      else window.gSync.toggleAccountPanel(anchor, event).catch(console.error);
 +    } else if (id === "extensions") {
