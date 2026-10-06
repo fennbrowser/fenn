@@ -851,6 +851,7 @@ struct NativeAddress {
         const auto customizationState = NativeToolbarCustomization::Read(snapshot);
         const auto navigationState = NativeNavigationToolbar::Read(snapshot);
         const auto pinnedState = PinnedExtensionButtons::Read(snapshot);
+        const auto paletteState = PinnedExtensionButtons::Read(snapshot,L"palette");
         const auto omnibarLeftState = PinnedExtensionButtons::Read(snapshot, L"omnibarLeft");
         const auto omnibarRightState = PinnedExtensionButtons::Read(snapshot, L"omnibarRight");
         auto checkedText = snapshot.GetNamedString(L"text", L"");
@@ -1005,6 +1006,7 @@ struct NativeAddress {
             navigation->pinned.externalLayout = customizationState.revision != 0;
             navigation->pinned.Apply(pinnedState, navigationToolbar);
             navigation->Layout(customizationState);
+            navigation->UpdatePalette(paletteState);
             navigation->customization.Apply(customizationState, navigationToolbar);
             omnibarLeft.Apply(omnibarLeftState, navigationToolbar);
             omnibarRight.Apply(omnibarRightState, navigationToolbar);

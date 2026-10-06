@@ -3149,10 +3149,10 @@ index 1e2660589b..85227d8e69 100644
    /*
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 0000000000..6ba7c93b36
+index 0000000000..93edc17984
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,177 @@
 +// Firefox owns widget eligibility and durable placement; native owns the editor.
 +export class WinUIToolbarCustomization {
 +  constructor(toolbar) {
@@ -3198,7 +3198,7 @@ index 0000000000..6ba7c93b36
 +        const policy = button && window.WebExtensionPolicy.getByID(button.dataset.extensionid);
 +        if (!policy || !policy.extension.canAccessWindow(window) || !window.gUnifiedExtensions.browserActionFor(policy)) continue;
 +        const pinned = toolbar.pinned?.entries.get(widget);
-+        control = pinned?.id || '';
++        control = pinned?.id || toolbar.pinned?.paletteEntries?.get(widget)?.id || '';
 +        label = button.getAttribute('tooltiptext') || policy.extension.name;
 +      } else {
 +        label = navigation[control]?.label || node?.getAttribute('label') || wrapper?.label || '';
@@ -3214,7 +3214,7 @@ index 0000000000..6ba7c93b36
 +      keep.add(widget);
 +      let entry = this.entries.get(widget);
 +      if (!entry || entry.node !== node) { entry={id:`widget-${++this.nextId}`,widget,node};this.entries.set(widget,entry); }
-+      items.push({id:entry.id,control,kind:spring ? 'spring' : 'button',label:String(label).slice(0,4096),placed,overflow,
++      items.push({id:entry.id,control,palette:toolbar.pinned?.paletteEntries?.get(widget)?.id || '',kind:spring ? 'spring' : 'button',label:String(label).slice(0,4096),placed,overflow,
 +        displayLabel:overflow ? toolbar.owner.localization().formatValueSync('winui-toolbar-customize-overflow-item',{label:String(label)}).slice(0,4096) : String(label).slice(0,4096),
 +        canAutoOverflow:placed && !!node && !spring && control !== 'address' && node?.getAttribute('overflows') !== 'false',
 +        extension:!spring && !fixed.has(widget),
@@ -3304,7 +3304,9 @@ index 0000000000..6ba7c93b36
 +      ui.addWidgetToArea(entry.widget,ui.AREA_FIXED_OVERFLOW_PANEL);
 +    } else if (verb==='remove') {
 +      if (!item.placed || !item.removable || targetId) return 2;
-+      ui.removeWidgetFromArea(entry.widget);
++      // Match Firefox's pin/unpin controller: extensions return to the panel.
++      if (item.extension) ui.addWidgetToArea(entry.widget,ui.AREA_ADDONS);
++      else ui.removeWidgetFromArea(entry.widget);
 +    } else if (verb==='add') {
 +      if (item.placed || targetId) return 2;
 +      ui.addWidgetToArea(entry.widget,ui.AREA_NAVBAR);
@@ -3817,10 +3819,10 @@ index 0000000000..bf0194e762
 +}
 diff --git a/browser/base/content/WinUIPinnedExtensions.sys.mjs b/browser/base/content/WinUIPinnedExtensions.sys.mjs
 new file mode 100644
-index 0000000000..1230c69c01
+index 0000000000..c2927f9a1d
 --- /dev/null
 +++ b/browser/base/content/WinUIPinnedExtensions.sys.mjs
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,146 @@
 +// Firefox owns extension placement, action policy, icons and command execution.
 +export class WinUIPinnedExtensions {
 +  constructor(toolbar) {
@@ -3842,18 +3844,29 @@ index 0000000000..1230c69c01
 +      onWidgetMoved:this.invalidate, onWidgetAfterDOMChange:this.invalidate};
 +    this.ui.addListener(this.listener);
 +    this.observer = new this.window.MutationObserver(this.invalidate);
-+    this.observer.observe(this.window.document.getElementById("nav-bar"), {
-+      subtree:true, childList:true, attributes:true,
-+      attributeFilter:["label", "tooltiptext", "disabled", "badge", "badgeStyle", "style", "hidden", "brighttext"],
-+    });
++    // Palette actions can live in Firefox's lazily populated extension/overflow panels.
++    this.observed = new WeakSet();
++    this.observeWidgets();
 +    this.theme = this.window.matchMedia("(prefers-color-scheme: dark)");
 +    this.theme.addEventListener("change", this.invalidate);
 +  }
-+  snapshot() {
++  observeWidgets() {
++    for (const id of ["nav-bar", "unified-extensions-area", "widget-overflow-fixed-list"]) {
++      const node = this.window.document.getElementById(id);
++      if (!node || this.observed.has(node)) continue;
++      this.observer.observe(node, {subtree:true, childList:true, attributes:true,
++        attributeFilter:["label", "tooltiptext", "disabled", "badge", "badgeStyle", "style", "hidden", "brighttext"]});
++      this.observed.add(node);
++    }
++  }
++  snapshot(palette = false) {
++    if (this.observer) this.observeWidgets();
 +    const {window, ui} = this;
 +    const keep = new Set();
 +    const result = [];
-+    for (const widgetId of ui.getWidgetIdsInArea(ui.AREA_NAVBAR)) {
++    const entries = palette ? (this.paletteEntries ||= new Map()) : this.entries;
++    const widgets = palette ? [...new Set([ui.AREA_NAVBAR,ui.AREA_FIXED_OVERFLOW_PANEL,ui.AREA_ADDONS].flatMap(area=>ui.getWidgetIdsInArea(area)))] : ui.getWidgetIdsInArea(ui.AREA_NAVBAR);
++    for (const widgetId of widgets) {
 +      const node = ui.getWidget(widgetId)?.forWindow(window)?.node;
 +      const button = node?.querySelector(".webextension-browser-action");
 +      if (!button || node.hidden || button.hidden) continue;
@@ -3863,10 +3876,10 @@ index 0000000000..1230c69c01
 +      // Bound the native publication. Excess widgets remain in Firefox's toolbar.
 +      if (result.length === 32) break;
 +      keep.add(widgetId);
-+      let entry = this.entries.get(widgetId);
++      let entry = entries.get(widgetId);
 +      if (!entry || entry.button !== button) {
-+        entry = {id:`pinned-${++this.nextId}`, widgetId, button};
-+        this.entries.set(widgetId, entry);
++        entry = {id:`${palette ? "palette" : "pinned"}-${++this.nextId}`, widgetId, button};
++        entries.set(widgetId, entry);
 +      }
 +      const data = action.action.getContextData(window.gBrowser.selectedTab);
 +      let icon = this.iconDetails.getPreferredIcon(data.icon, action.extension, 32).icon;
@@ -3879,7 +3892,8 @@ index 0000000000..1230c69c01
 +        background:color(data.badgeBackgroundColor), foreground:color(action.action.getTextColor(data)),
 +        genericIcon, image:genericIcon ? null : this.images.get(icon) || null});
 +    }
-+    for (const [key, entry] of this.entries) if (!keep.has(key)) {
++    for (const [key, entry] of entries) if (!keep.has(key)) {
++      if (palette) { entries.delete(key); continue; }
 +      for (const command of [`extension:${entry.id}`, `extension-menu:${entry.id}`]) {
 +        const anchor = this.toolbar.menuAnchors?.get(command);
 +        const panel = this.window.document.getElementById("customizationui-widget-panel");
@@ -3951,6 +3965,7 @@ index 0000000000..1230c69c01
 +    this.observer.disconnect();
 +    this.theme.removeEventListener("change", this.invalidate);
 +    this.entries.clear();
++    this.paletteEntries?.clear();
 +    this.images.clear();
 +  }
 +}
@@ -5867,10 +5882,10 @@ index 0000000000..a8fae4db53
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..bcfbf0a7a7
+index 0000000000..71446201fa
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,300 @@
+@@ -0,0 +1,301 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -5979,6 +5994,7 @@ index 0000000000..bcfbf0a7a7
 +    state.overflow.enabled = overflowLists.some(id => [...(document.getElementById(id)?.children || [])].some(node => !node.hidden));
 +    state.pinned = this.pinned?.snapshot() || [];
 +    Object.assign(state, this.omnibar?.snapshot() || {});
++    state.palette = this.pinned?.snapshot(true) || [];
 +    state.customization = this.customization?.snapshot(state);
 +    const represented = new Set([...(this.customization?.entries?.values() || [])].map(entry => entry.widget));
 +    state.overflow.required = !!document.getElementById("widget-overflow-fixed-list")?.childElementCount ||

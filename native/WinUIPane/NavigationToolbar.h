@@ -6,6 +6,7 @@
 #include "shell_core.h"
 #include "PinnedExtensionButtons.h"
 #include "ToolbarCustomization.h"
+#include "ToolbarDragPreview.h"
 
 // WinUI presentation only. Firefox owns eligibility, labels and commands.
 struct NativeNavigationToolbar {
@@ -25,6 +26,7 @@ struct NativeNavigationToolbar {
     std::array<Microsoft::UI::Xaml::Controls::SymbolIcon, 7> icons;
     PinnedExtensionButtons pinned;
     NativeToolbarCustomization customization;
+    ToolbarDragPreview preview;
     bool stopping{}, hasOverflow{}, requiredOverflow{}, overflowQueued{}, rootObserved{};
     NativeToolbarCustomization::State layoutState;
     std::wstring pendingOverflow, sentOverflow;
@@ -34,33 +36,62 @@ struct NativeNavigationToolbar {
     std::function<void(wchar_t const*, uint32_t, Button const&)> activate;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
+    static Button CreateButton(size_t i,Microsoft::UI::Xaml::Controls::Symbol symbol) {
+        using namespace Microsoft::UI::Xaml;using namespace Microsoft::UI::Xaml::Controls;
+        auto button = Markup::XamlReader::Load(
+            LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" Width="32" Height="32" MinWidth="0" MinHeight="0" Padding="0"/>)").as<Button>();
+        SymbolIcon icon(symbol);
+        // Firefox-like density with stock icons and generous button targets.
+        Viewbox iconHost;
+        iconHost.Width(16);
+        iconHost.Height(16);
+        iconHost.Child(icon);
+        if (i == 6) {
+            iconHost.Child(Markup::XamlReader::Load(
+                LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE974;"/>)").as<FontIcon>());
+        }
+        if (i == 4) {
+            iconHost.Child(Markup::XamlReader::Load(
+                LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xEA86;"/>)").as<FontIcon>());
+        }
+        button.Content(iconHost);
+        return button;
+    }
+    std::vector<PinnedExtensionButtons::State> paletteState;
+    std::map<winrt::hstring,std::shared_ptr<PinnedExtensionButtons>> paletteRenderers;
+    Microsoft::UI::Xaml::FrameworkElement PaletteControl(NativeToolbarCustomization::Item const& item) {
+        using namespace Microsoft::UI::Xaml;using namespace Microsoft::UI::Xaml::Controls;
+        for(size_t i=0;i<5;i++)if(item.control==commands[i])return CreateButton(i,i==4?Symbol::Library:icons[i].Symbol());
+        for(auto const& state:paletteState)if(state.id==item.palette) {
+            auto renderer=std::make_shared<PinnedExtensionButtons>();renderer->externalLayout=true;renderer->Apply({state},true);
+            auto button=renderer->rows.at(state.id).button;renderer->panel.Children().Clear();button.IsEnabled(true);
+            paletteRenderers[item.id]=renderer;return button;
+        }
+        if(item.control==L"address") {
+            TextBox field;field.Text(item.label);field.IsReadOnly(true);field.Width(160);field.Height(32);return field;
+        }
+        auto spacer=Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="32" Height="32" BorderThickness="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" CornerRadius="4"><SymbolIcon Symbol="More"/></Border>)").as<Border>();return spacer;
+    }
+    void UpdatePalette(std::vector<PinnedExtensionButtons::State> const& next) {
+        paletteState=next;
+        for(auto const& item:customization.state.items) {
+            auto r=paletteRenderers.find(item.id);if(r==paletteRenderers.end())continue;
+            for(auto const& entry:next)if(entry.id==item.palette){r->second->Apply({entry},true);r->second->panel.Children().Clear();r->second->rows.at(entry.id).button.IsEnabled(true);}
+        }
+    }
     NativeNavigationToolbar() {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
+        customization.createPreview=[this](auto const& item){return PaletteControl(item);};
+        customization.clearPreviews=[this]{paletteRenderers.clear();};
         customization.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         pinned.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh, Symbol::Contact, Symbol::Library, Symbol::More, Symbol::Forward};
         const wchar_t* names[] = {L"Back", L"Forward", L"Reload", L"Account", L"Extensions", L"Application menu", L"More tools"};
         const wchar_t* ids[] = {L"FirefoxWinUIBack", L"FirefoxWinUIForward", L"FirefoxWinUIReload", L"FirefoxWinUIProfile", L"FirefoxWinUIExtensions", L"FirefoxWinUIAppMenu", L"FirefoxWinUIOverflow"};
         for (size_t i = 0; i < buttons.size(); ++i) {
-            auto button = Markup::XamlReader::Load(
-                LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" Width="32" Height="32" MinWidth="0" MinHeight="0" Padding="0"/>)").as<Button>();
-            SymbolIcon icon(symbols[i]);
-            icons[i] = icon;
-            // Firefox-like density with stock icons and generous button targets.
-            Viewbox iconHost;
-            iconHost.Width(16);
-            iconHost.Height(16);
-            iconHost.Child(icon);
-            if (i == 6) {
-                iconHost.Child(Markup::XamlReader::Load(
-                    LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE974;"/>)").as<FontIcon>());
-            }
-            if (i == 4) {
-                iconHost.Child(Markup::XamlReader::Load(
-                    LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xEA86;"/>)").as<FontIcon>());
-            }
-            button.Content(iconHost);
+            auto button = CreateButton(i,symbols[i]);
+            icons[i]=button.Content().as<Viewbox>().Child().try_as<SymbolIcon>();
             button.IsEnabled(false);
             Automation::AutomationProperties::SetAutomationId(button, ids[i]);
             Automation::AutomationProperties::SetName(button, names[i]);
@@ -129,18 +160,25 @@ struct NativeNavigationToolbar {
                 Microsoft::UI::Xaml::Controls::Grid const& background) {
         host=grid;address=editor;surface=background;
         customization.editorChanged=[this]{Layout(layoutState);};
+        customization.dragEnded=[this]{preview.Reset();};
+        preview.arrange=[this](auto const& order,bool extra){Arrange(order,extra);};
         host.AllowDrop(true);
-        host.DragOver([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const& args){if(!alive.expired() && customization.Accept(args))args.Handled(true);});
-        host.Drop([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const& args){
-            if(alive.expired() || !customization.OwnDrag(args))return;
-            std::vector<ShellToolbarDropSlot> slots;
-            for(auto const& [id,control]:dropSlots) {
-                auto r=control.TransformToVisual(host).TransformBounds({0,0,float(control.ActualWidth()),float(control.ActualHeight())});
-                slots.push_back({r.X,r.Width});
-            }
-            uint32_t index=0;
-            if(shell_core_toolbar_drop_target(slots.data(),slots.size(),args.GetPosition(host).X,host.FlowDirection()==Microsoft::UI::Xaml::FlowDirection::RightToLeft,&index)==SHELL_STATUS_OK)
-                customization.DropAt(args,index<dropSlots.size()?dropSlots[index].first:winrt::hstring{});
+        auto updatePreview=[this](auto const& args) {
+            if(!customization.Accept(args)){preview.Reset();return false;}
+            preview.Begin(host,ordered,dropSlots,customization.dragId,customization.dragRevision);
+            uint32_t index;
+            if(!preview.Hit(args.GetPosition(host).X,host.FlowDirection()==Microsoft::UI::Xaml::FlowDirection::RightToLeft,index))return false;
+            preview.Show(index);return true;
+        };
+        host.DragOver([this,updatePreview,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const& args){if(!alive.expired() && updatePreview(args))args.Handled(true);});
+        host.DragLeave([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const& args){
+            if(alive.expired())return;auto p=args.GetPosition(host);
+            if(p.X<0 || p.Y<0 || p.X>=host.ActualWidth() || p.Y>=host.ActualHeight())preview.Reset();
+        });
+        host.Drop([this,updatePreview,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const& args){
+            if(alive.expired() || !updatePreview(args))return;
+            auto target=preview.target<preview.slots.size()?preview.slots[preview.target].first:winrt::hstring{};
+            preview.Reset(false);customization.DropAt(args,target);
         });
         host.SizeChanged([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const&){if(!alive.expired())Layout(layoutState);});
         host.Loaded([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const&) {
@@ -153,7 +191,12 @@ struct NativeNavigationToolbar {
     void Layout(NativeToolbarCustomization::State const& state) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
-        if(!host)return;
+        if(!host || preview.changing)return;
+        if(preview.active) {
+            if(visible && customization.dragging && customization.editing && state.revision==preview.revision &&
+                host.XamlRoot().Size().Width==preview.width)return;
+            preview.Reset(false);
+        }
         if(layoutState.revision!=state.revision)layoutState=state;
         const double availableWidth=host.XamlRoot()?host.XamlRoot().Size().Width:0;
         std::set<winrt::hstring> overflowed;
@@ -250,6 +293,12 @@ struct NativeNavigationToolbar {
             if(index!=i+1){host.Children().RemoveAt(index);host.Children().InsertAt(i+1,child);}
         }
         for(auto it=spacers.begin();it!=spacers.end();) {if(!keep.contains(it->first))it=spacers.erase(it);else ++it;}
+        Arrange(desired,false);
+        ordered=std::move(desired);
+    }
+    void Arrange(std::vector<Microsoft::UI::Xaml::UIElement> const& desired,bool extra) {
+        using namespace Microsoft::UI::Xaml;
+        using namespace Microsoft::UI::Xaml::Controls;
         host.ColumnDefinitions().Clear();
         auto column=[&](GridLength width,double min=0,double max=INFINITY) {
             ColumnDefinition c;c.Width(width);c.MinWidth(min);c.MaxWidth(max);host.ColumnDefinitions().Append(c);
@@ -259,7 +308,7 @@ struct NativeNavigationToolbar {
             auto child=desired[i];bool spring=false;
             for(auto const& [id,grid]:spacers)if(child==grid){spring=true;break;}
             Grid::SetColumn(child.as<FrameworkElement>(),int(host.ColumnDefinitions().Size()));
-            if(child==address)column(GridLengthHelper::FromValueAndType(5,GridUnitType::Star),visible?256:0);
+            if(child==address)column(GridLengthHelper::FromValueAndType(5,GridUnitType::Star),visible?(extra?220:256):0);
             else if(spring)column(GridLengthHelper::FromValueAndType(1,GridUnitType::Star),1,112);
             else column(GridLengthHelper::Auto());
             if(visible && i+1<desired.size() && child!=address && desired[i+1]!=address && !spring) {
@@ -270,7 +319,6 @@ struct NativeNavigationToolbar {
         }
         if(visible)column(GridLengthHelper::FromPixels(8));
         Grid::SetColumn(surface,0);Grid::SetColumnSpan(surface,int(host.ColumnDefinitions().Size()));
-        ordered=std::move(desired);
     }
     ~NativeNavigationToolbar() { lifetime.reset(); for (auto timer : historyTimers) if (timer) timer.Stop(); }
     static States Read(JObject const& snapshot) {

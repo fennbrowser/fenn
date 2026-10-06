@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 29
+#define SHELL_CORE_ABI_VERSION 30
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -616,6 +616,11 @@ typedef struct {
   double left;
   double width;
 } ShellToolbarDropSlot;
+
+typedef struct {
+  uint32_t order[56];
+  uint32_t len;
+} ShellToolbarPreview;
 
 #ifdef __cplusplus
 extern "C" {
@@ -1548,6 +1553,14 @@ ShellStatus shell_core_toolbar_drop_target(const ShellToolbarDropSlot *slots,
                                            double x,
                                            bool rtl,
                                            uint32_t *out_index);
+
+/*
+ Plan a bounded preview permutation without changing persistent toolbar state.
+ */
+ShellStatus shell_core_toolbar_preview(uintptr_t len,
+                                       uintptr_t source,
+                                       uintptr_t target,
+                                       ShellToolbarPreview *out);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -87,3 +87,15 @@ test('Firefox generic extension artwork uses a themed native fallback only for i
  f.pinned.loadImage=()=>{};
  assert.equal(f.pinned.snapshot()[0].genericIcon,false);
 });
+
+test("palette publishes unplaced artwork without authorizing toolbar activation",()=>{
+ const f=fixture();f.add("available");f.add("placed");
+ f.pinned.ui.AREA_ADDONS="addons";f.pinned.ui.AREA_FIXED_OVERFLOW_PANEL="overflow";
+ f.pinned.ui.getWidgetIdsInArea=area=>area==="navbar"?["placed"]:area==="addons"?["available"]:[];
+ const live=f.pinned.snapshot();const palette=f.pinned.snapshot(true);
+ assert.equal(live.length,1);assert.equal(palette.length,2);
+ const available=palette.find(i=>i.label==="available");
+ assert.equal(available.badge,"3");assert.match(available.id,/^palette-/);
+ assert.equal(f.pinned.activate(`extension:${available.id}`,{},{}),2);
+ assert.equal(f.pinned.snapshot()[0].id,live[0].id);
+});

@@ -1,6 +1,8 @@
 #pragma once
 #include "JsonValidation.h"
 #include "shell_core.h"
+#include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
+#include <winrt/Windows.Graphics.Imaging.h>
 #include <map>
 #include <set>
 
@@ -8,17 +10,20 @@ struct NativeToolbarCustomization {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using Map = winrt::Windows::Foundation::Collections::IObservableMap<winrt::hstring,winrt::Windows::Foundation::IInspectable>;
     using Button = Microsoft::UI::Xaml::Controls::Button;
-    struct Item { winrt::hstring id, control, label; bool placed{}, movable{}, removable{}, spring{}, canOverflow{}, canAutoOverflow{}, extension{}; };
+    struct Item { winrt::hstring id, control, label; bool placed{}, movable{}, removable{}, spring{}, canOverflow{}, canAutoOverflow{}, extension{}; winrt::hstring palette; };
     struct State { uint64_t revision{}; bool canReset{}, canUndoReset{}; std::vector<Item> items; std::map<winrt::hstring,winrt::hstring> labels; };
     State state;
     winrt::Windows::Foundation::Collections::IObservableVector<winrt::Windows::Foundation::IInspectable> placedItems = winrt::single_threaded_observable_vector<winrt::Windows::Foundation::IInspectable>();
     winrt::Windows::Foundation::Collections::IObservableVector<winrt::Windows::Foundation::IInspectable> availableItems = winrt::single_threaded_observable_vector<winrt::Windows::Foundation::IInspectable>();
     Microsoft::UI::Xaml::Controls::Primitives::Popup popup{nullptr};
-    Microsoft::UI::Xaml::Controls::ListView list{nullptr}, available{nullptr};
+    Microsoft::UI::Xaml::Controls::ListViewBase list{nullptr}, available{nullptr};
     std::map<winrt::hstring,Microsoft::UI::Xaml::Controls::TextBlock> textBlocks;
     Button overflow{nullptr}, earlier{nullptr}, later{nullptr}, remove{nullptr}, add{nullptr}, done{nullptr}, reset{nullptr}, undoReset{nullptr};
     Button anchor{nullptr};
-    std::function<void()> editorChanged;
+    std::function<void()> editorChanged,dragEnded,clearPreviews;
+    std::function<Microsoft::UI::Xaml::FrameworkElement(Item const&)> createPreview;
+    std::map<winrt::hstring,Microsoft::UI::Xaml::FrameworkElement> previews;
+    winrt::Windows::Graphics::Imaging::SoftwareBitmap dragBitmap{nullptr};
     bool editing{}, externalDrop{}, reorderDrag{};
     winrt::hstring dragToken;
     bool updating{}, dragging{}, dragCancelled{};
@@ -43,6 +48,7 @@ struct NativeToolbarCustomization {
             auto row=value.GetObject();
             Item item{row.GetNamedString(L"id"),row.GetNamedString(L"control"),row.GetNamedString(L"displayLabel",row.GetNamedString(L"label")),
                 row.GetNamedBoolean(L"placed"),row.GetNamedBoolean(L"movable"),row.GetNamedBoolean(L"removable"),row.GetNamedString(L"kind",L"button")==L"spring",row.GetNamedBoolean(L"canOverflow",false),row.GetNamedBoolean(L"canAutoOverflow",false),row.GetNamedBoolean(L"extension",false)};
+            item.palette=row.GetNamedString(L"palette",L"");NativeJson::RequireLength(item.palette,64);
             if(item.id.empty() || item.id.size()>64 || item.control.size()>64 || item.label.size()>4096 || !ids.insert(item.id).second ||
                 (item.placed && (item.control.empty() || !controls.insert(item.control).second))) throw winrt::hresult_invalid_argument();
             if(item.spring && item.placed && ++springs>16) throw winrt::hresult_invalid_argument();
@@ -59,11 +65,11 @@ struct NativeToolbarCustomization {
     static winrt::hstring Id(winrt::Windows::Foundation::IInspectable const& item) {
         return item ? winrt::unbox_value<winrt::hstring>(item.as<Map>().Lookup(L"Id")) : winrt::hstring{};
     }
-    void Hide() { dragCancelled=true;if(popup)popup.IsOpen(false); }
+    void Hide() { if(dragEnded)dragEnded();dragCancelled=true;if(popup)popup.IsOpen(false); }
     bool BeginDrag(winrt::hstring const& id, winrt::Windows::ApplicationModel::DataTransfer::DataPackage const& data, bool reorder=false) {
         auto item=std::find_if(state.items.begin(),state.items.end(),[&](auto const& row){return row.id==id;});
         if(!editing || item==state.items.end() || !item->movable)return false;
-        dragId=id;dragRevision=state.revision;dragging=true;dragCancelled=false;externalDrop=false;reorderDrag=reorder;
+        dragBitmap=nullptr;dragId=id;dragRevision=state.revision;dragging=true;dragCancelled=false;externalDrop=false;reorderDrag=reorder;
         GUID token;winrt::check_hresult(CoCreateGuid(&token));dragToken=winrt::to_hstring(winrt::guid(token));
         data.Properties().Insert(L"FirefoxWinUIToolbarDrag",winrt::box_value(dragToken));
         data.RequestedOperation(winrt::Windows::ApplicationModel::DataTransfer::DataPackageOperation::Move);
@@ -79,7 +85,9 @@ struct NativeToolbarCustomization {
         auto row=std::find_if(state.items.begin(),state.items.end(),[&](auto const& item){return item.id==dragId;});
         if(row==state.items.end() || (removing && (!row->placed || !row->removable)))return false;
         args.AcceptedOperation(winrt::Windows::ApplicationModel::DataTransfer::DataPackageOperation::Move);
-        args.DragUIOverride().Caption(state.labels.at(L"drop"));args.DragUIOverride().IsCaptionVisible(true);
+        args.DragUIOverride().IsContentVisible(bool(dragBitmap));
+        args.DragUIOverride().IsCaptionVisible(false);args.DragUIOverride().IsGlyphVisible(false);
+        if(dragBitmap)args.DragUIOverride().SetContentFromSoftwareBitmap(dragBitmap,{float(dragBitmap.PixelWidth())/2,float(dragBitmap.PixelHeight())/2});
         return true;
     }
     void DropAt(Microsoft::UI::Xaml::DragEventArgs const& args,winrt::hstring const& target={},bool removing=false) {
@@ -89,13 +97,32 @@ struct NativeToolbarCustomization {
         auto row=std::find_if(state.items.begin(),state.items.end(),[&](auto const& item){return item.id==dragId;});
         Send(dragId,removing?L"remove":!row->placed?L"insert":target.empty()?L"end":L"before",target,dragRevision);
     }
-    void EndDrag() {dragging=false;dragToken=L"";Refresh();}
+    void EndDrag() {if(dragEnded)dragEnded();dragging=false;dragToken=L"";Refresh();}
+    winrt::fire_and_forget CaptureDrag(Microsoft::UI::Xaml::DragStartingEventArgs args,
+        Microsoft::UI::Xaml::FrameworkElement element,winrt::hstring id) {
+        auto deferral=args.GetDeferral();auto alive=std::weak_ptr<int>(lifetime);auto revision=state.revision;auto token=dragToken;
+        try {
+            Microsoft::UI::Xaml::Media::Imaging::RenderTargetBitmap bitmap;
+            co_await bitmap.RenderAsync(element);
+            auto pixels=co_await bitmap.GetPixelsAsync();
+            if(alive.expired() || !editing || !dragging || dragCancelled || dragId!=id || dragToken!=token || state.revision!=revision){args.Cancel(true);}
+            else if(bitmap.PixelWidth()>0 && bitmap.PixelHeight()>0 && bitmap.PixelWidth()<=1024 && bitmap.PixelHeight()<=256) {
+                dragBitmap=winrt::Windows::Graphics::Imaging::SoftwareBitmap::CreateCopyFromBuffer(pixels,
+                    winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8,bitmap.PixelWidth(),bitmap.PixelHeight(),
+                    winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Premultiplied);
+                args.DragUI().SetContentFromSoftwareBitmap(dragBitmap,{float(bitmap.PixelWidth())/2,float(bitmap.PixelHeight())/2});
+            } else args.Cancel(true);
+        } catch (...) {args.Cancel(true);}
+        deferral.Complete();
+    }
     void BindToolbarControl(Microsoft::UI::Xaml::FrameworkElement const& control,Item const& item) {
         if(item.control==L"address")return;
         if(!control.Tag()) {
             auto alive=std::weak_ptr<int>(lifetime);
             control.DragStarting([this,alive](auto const& sender,auto const& args){
-                if(alive.expired() || !BeginDrag(winrt::unbox_value<winrt::hstring>(sender.template as<Microsoft::UI::Xaml::FrameworkElement>().Tag()),args.Data()))args.Cancel(true);
+                if(alive.expired()){args.Cancel(true);return;}
+                auto element=sender.template as<Microsoft::UI::Xaml::FrameworkElement>();auto id=winrt::unbox_value<winrt::hstring>(element.Tag());
+                if(!BeginDrag(id,args.Data())){args.Cancel(true);return;}CaptureDrag(args,element,id);
             });
             control.DropCompleted([this,alive](auto const&,auto const&){if(!alive.expired())EndDrag();});
         }
@@ -106,7 +133,7 @@ struct NativeToolbarCustomization {
         if(!dragging)return false;
         dragCancelled=true;Hide();return true;
     }
-    winrt::hstring Selected(Microsoft::UI::Xaml::Controls::ListView const& source) {
+    winrt::hstring Selected(Microsoft::UI::Xaml::Controls::ListViewBase const& source) {
         auto item=source.SelectedItem();
         return Id(item);
     }
@@ -139,10 +166,26 @@ struct NativeToolbarCustomization {
         auto unused=std::find_if(state.items.begin(),state.items.end(),[&](auto const& item){return item.id==free;});
         add.IsEnabled(unused!=state.items.end() && unused->movable);
     }
+    void PopulatePreview(Microsoft::UI::Xaml::Controls::ContainerContentChangingEventArgs const& args) {
+        if(args.InRecycleQueue() || !createPreview)return;
+        auto id=Id(args.Item());
+        auto found=std::find_if(state.items.begin(),state.items.end(),[&](auto const& item){return item.id==id;});
+        if(found==state.items.end())return;
+        auto const& item=*found;
+        auto presenter=args.ItemContainer().ContentTemplateRoot().try_as<Microsoft::UI::Xaml::Controls::ContentPresenter>();
+        if(!presenter)return;
+        auto preview=createPreview(item);preview.IsHitTestVisible(false);
+        if(auto control=preview.try_as<Microsoft::UI::Xaml::Controls::Control>())control.IsTabStop(false);
+        Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(preview,item.label);
+        Microsoft::UI::Xaml::Automation::AutomationProperties::SetAutomationId(preview,L"FirefoxWinUICustomizePreview-"+(item.control.empty()?item.id:item.control));
+        Microsoft::UI::Xaml::Automation::AutomationProperties::SetAccessibilityView(preview,Microsoft::UI::Xaml::Automation::Peers::AccessibilityView::Content);
+        Microsoft::UI::Xaml::Controls::ToolTipService::SetToolTip(preview,winrt::box_value(item.label));
+        previews.insert_or_assign(item.id,preview);presenter.Content(preview);
+    }
     void Refresh() {
         if(!list) return;
         auto selected=Selected(list), free=Selected(available);
-        updating=true;placedItems.Clear();availableItems.Clear();
+        updating=true;placedItems.Clear();availableItems.Clear();previews.clear();if(clearPreviews)clearPreviews();
         for(auto const& item:state.items) {
             auto value=winrt::single_threaded_observable_map<winrt::hstring,winrt::Windows::Foundation::IInspectable>();
             value.Insert(L"Id",winrt::box_value(item.id));value.Insert(L"Label",winrt::box_value(item.label));
@@ -170,14 +213,16 @@ struct NativeToolbarCustomization {
             popup=Primitives::Popup();popup.ShouldConstrainToRootBounds(false);popup.IsLightDismissEnabled(false);StackPanel content;content.Width(420);content.Spacing(8);
             auto text=[&](wchar_t const* key){TextBlock t;textBlocks[key]=t;t.Text(state.labels.at(key));t.TextWrapping(TextWrapping::Wrap);content.Children().Append(t);};
             text(L"title");text(L"hint");
-            list=ListView();list.ItemsSource(placedItems);list.MaxHeight(280);list.CanDragItems(true);list.CanReorderItems(true);list.AllowDrop(true);
+            list=ListView();list.ItemsSource(placedItems);list.MaxHeight(80);
+            list.ItemsPanel(Markup::XamlReader::Load(LR"(<ItemsPanelTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><ItemsStackPanel Orientation="Horizontal"/></ItemsPanelTemplate>)").as<ItemsPanelTemplate>());
+            ScrollViewer::SetHorizontalScrollBarVisibility(list,ScrollBarVisibility::Auto);ScrollViewer::SetHorizontalScrollMode(list,ScrollMode::Enabled);ScrollViewer::SetVerticalScrollMode(list,ScrollMode::Disabled);list.CanDragItems(true);list.CanReorderItems(true);list.AllowDrop(true);
             Automation::AutomationProperties::SetAutomationId(list,L"FirefoxWinUICustomizeList");
             Automation::AutomationProperties::SetName(list,state.labels.at(L"title"));content.Children().Append(list);
             StackPanel actions;actions.Orientation(Orientation::Horizontal);actions.Spacing(4);content.Children().Append(actions);
             auto make=[&](wchar_t const* key,StackPanel const& parent){Button b;b.Content(winrt::box_value(state.labels.at(key)));Automation::AutomationProperties::SetAutomationId(b,winrt::hstring(L"FirefoxWinUICustomize-")+key);parent.Children().Append(b);return b;};
             earlier=make(L"earlier",actions);later=make(L"later",actions);remove=make(L"remove",actions);
             StackPanel destinations;content.Children().Append(destinations);overflow=make(L"overflow",destinations);
-            text(L"available");available=ListView();available.ItemsSource(availableItems);available.MaxHeight(120);available.CanDragItems(true);available.AllowDrop(true);
+            text(L"available");available=GridView();available.ItemsSource(availableItems);available.MaxHeight(120);available.CanDragItems(true);available.AllowDrop(true);
             Automation::AutomationProperties::SetAutomationId(available,L"FirefoxWinUICustomizeAvailable");
             Automation::AutomationProperties::SetName(available,state.labels.at(L"available"));content.Children().Append(available);
             StackPanel bottom;bottom.Orientation(Orientation::Horizontal);bottom.Spacing(8);content.Children().Append(bottom);
@@ -198,8 +243,18 @@ struct NativeToolbarCustomization {
                 auto row=args.ItemContainer();
                 Automation::AutomationProperties::SetAutomationId(row,L"FirefoxWinUICustomize-"+(found->control.empty()?found->id:found->control));
                 Automation::AutomationProperties::SetName(row,found->label);
+                ToolTipService::SetToolTip(row,winrt::box_value(found->label));
+                row.Padding({0,0,0,0});row.Margin({2,2,2,2});row.MinWidth(32);row.MinHeight(32);
+                if(!row.Tag())row.DragStarting([this,alive](auto const& sender,auto const& args){
+                    if(alive.expired())return;auto id=winrt::unbox_value<winrt::hstring>(sender.template as<FrameworkElement>().Tag());
+                    if(previews.contains(id))CaptureDrag(args,previews.at(id),id);
+                });
+                row.Tag(winrt::box_value(id));
+                // A reordered data item may briefly have two containers. Give each its
+                // own WinUI element instead of binding one UIElement into both trees.
+                args.RegisterUpdateCallback([this,alive](auto const&,auto const& phase){if(!alive.expired())PopulatePreview(phase);});
             };
-            auto itemTemplate=Markup::XamlReader::Load(LR"(<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><TextBlock Text="{Binding [Label]}" TextTrimming="CharacterEllipsis"/></DataTemplate>)").as<DataTemplate>();
+            auto itemTemplate=Markup::XamlReader::Load(LR"(<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><ContentPresenter/></DataTemplate>)").as<DataTemplate>();
             list.ItemTemplate(itemTemplate);available.ItemTemplate(itemTemplate);
             list.ContainerContentChanging(prepare);available.ContainerContentChanging(prepare);
             content.PreviewKeyDown([this,alive](auto const&,auto const& args){
@@ -219,7 +274,7 @@ struct NativeToolbarCustomization {
                 if(!BeginDrag(Id(args.Items().GetAt(0)),args.Data(),true))args.Cancel(true);
             });
             list.DragItemsCompleted([this,alive](auto const&,auto const& args){
-                if(alive.expired())return;dragging=false;
+                if(alive.expired())return;if(dragEnded)dragEnded();dragging=false;
                 if(args.DropResult()==winrt::Windows::ApplicationModel::DataTransfer::DataPackageOperation::Move && !dragCancelled && !externalDrop && dragRevision==state.revision){
                     for(uint32_t i=0;i<list.Items().Size();i++) {
                         if(Id(list.Items().GetAt(i))!=dragId)continue;
@@ -242,11 +297,11 @@ struct NativeToolbarCustomization {
                 std::vector<ShellToolbarDropSlot> slots;std::vector<winrt::hstring> ids;
                 for(uint32_t i=0;i<list.Items().Size();i++) {
                     auto row=list.ContainerFromIndex(i).try_as<FrameworkElement>();if(!row)continue;
-                    slots.push_back({row.TransformToVisual(list).TransformPoint({0,0}).Y,row.ActualHeight()});
+                    slots.push_back({row.TransformToVisual(list).TransformPoint({0,0}).X,row.ActualWidth()});
                     ids.push_back(Id(list.Items().GetAt(i)));
                 }
                 uint32_t index=0;
-                if(shell_core_toolbar_drop_target(slots.data(),slots.size(),args.GetPosition(list).Y,false,&index)==SHELL_STATUS_OK)
+                if(shell_core_toolbar_drop_target(slots.data(),slots.size(),args.GetPosition(list).X,list.FlowDirection()==FlowDirection::RightToLeft,&index)==SHELL_STATUS_OK)
                     DropAt(args,index<ids.size()?ids[index]:winrt::hstring{});
             });
             FlyoutPresenter presenter;presenter.Content(content);popup.Child(presenter);

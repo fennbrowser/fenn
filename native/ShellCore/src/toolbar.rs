@@ -97,3 +97,33 @@ fn toolbar_drop_positions_cover_edges_gaps_and_rtl() {
     assert_eq!(drop_target(&[ShellToolbarDropSlot{left:0.0,width:-1.0}],1.0,false),None);
     assert_eq!(drop_target(&vec![rows[0];56],1.0,false),None);
 }
+
+#[repr(C)]
+pub struct ShellToolbarPreview { pub order: [u32;56], pub len: u32 }
+/// Stable logical insertion: source == len denotes a new palette item.
+pub fn preview(len:usize,source:usize,target:usize)->Option<ShellToolbarPreview> {
+    if len>55 || source>len || target>len {return None;}
+    let mut result=ShellToolbarPreview{order:[0;56],len:0};
+    for i in 0..=len {
+        if i==target {result.order[result.len as usize]=source as u32;result.len+=1;}
+        if i<len && i!=source {result.order[result.len as usize]=i as u32;result.len+=1;}
+    }
+    Some(result)
+}
+#[cfg(test)]
+#[test]
+fn preview_orders_cover_palette_moves_and_noops() {
+    let order=|n,s,t|{let p=preview(n,s,t).unwrap();p.order[..p.len as usize].to_vec()};
+    assert_eq!(order(4,0,3),vec![1,2,0,3]);
+    assert_eq!(order(4,3,0),vec![3,0,1,2]);
+    assert_eq!(order(4,1,2),vec![0,1,2,3]);
+    assert_eq!(order(4,1,1),vec![0,1,2,3]);
+    assert_eq!(order(4,4,2),vec![0,1,4,2,3]);
+    assert_eq!(order(0,0,0),vec![0]);
+    assert_eq!(order(55,55,55).len(),56);
+    assert!(preview(56,0,0).is_none());assert!(preview(4,5,0).is_none());assert!(preview(4,0,5).is_none());
+    for n in 1..=55 {for s in 0..=n {for t in 0..=n {
+        let mut actual=order(n,s,t);actual.sort_unstable();
+        assert_eq!(actual,(0..(n+usize::from(s==n)) as u32).collect::<Vec<_>>());
+    }}}
+}

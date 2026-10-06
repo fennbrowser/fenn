@@ -2737,3 +2737,26 @@ fn toolbar_drop_ffi_rejects_invalid_buffers_without_mutation() {
         assert_eq!(index,0);
     }
 }
+
+/// Plan a bounded preview permutation without changing persistent toolbar state.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_toolbar_preview(len:usize,source:usize,target:usize,out:*mut crate::toolbar::ShellToolbarPreview)->ShellStatus {
+    if out.is_null(){return ShellStatus::InvalidArgument;}
+    match crate::toolbar::preview(len,source,target) {
+        Some(plan)=>{*out=plan;ShellStatus::Ok},None=>ShellStatus::InvalidArgument,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn toolbar_preview_ffi_checks_bounds_without_mutating_output() {
+    unsafe {
+        let mut out=crate::toolbar::ShellToolbarPreview{order:[99;56],len:99};
+        assert_eq!(shell_core_toolbar_preview(3,0,0,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        for (n,s,t) in [(56,0,0),(3,4,0),(3,0,4)] {
+            assert_eq!(shell_core_toolbar_preview(n,s,t,&mut out),ShellStatus::InvalidArgument);
+            assert_eq!(out.len,99);assert_eq!(out.order,[99;56]);
+        }
+        assert_eq!(shell_core_toolbar_preview(55,55,55,&mut out),ShellStatus::Ok);assert_eq!(out.len,56);
+    }
+}
