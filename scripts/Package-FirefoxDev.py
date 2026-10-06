@@ -6,6 +6,7 @@ Mach's build Python environment.
 """
 
 import argparse
+import configparser
 import hashlib
 import importlib.util
 import json
@@ -48,15 +49,34 @@ def version_string(value):
     return value
 
 
-def next_version(*known):
-    """One build step past every installed or previously built version."""
-    known = [value for value in known if value]
-    if not known:
-        return "0.1.0.0"
-    major, minor, build = max(known, key=version_key).split(".")[:3]
-    if int(build) >= 65535:
-        raise ValueError(f"No build number left after {major}.{minor}.{build}; pass --version")
-    return f"{major}.{minor}.{int(build) + 1}.0"
+def firefox_version(app_dir):
+    """The packaged Firefox's display version, such as 159.0a1."""
+    config = configparser.ConfigParser()
+    if not config.read(app_dir / "application.ini", encoding="utf-8"):
+        raise FileNotFoundError(app_dir / "application.ini")
+    return config["App"]["Version"]
+
+
+def firefox_series(version):
+    """Firefox's major and minor numbers: 159.0a1, 159.0b3 and 159.0.1 are all (159, 0)."""
+    match = re.fullmatch(r"(\d+)\.(\d+)(?:\.\d+)?(?:(?:a|b|rc)\d+|esr)?", version)
+    if not match or any(int(part) > 65535 for part in match.groups()):
+        raise ValueError(f"Unrecognized Firefox version: {version}")
+    return tuple(int(part) for part in match.groups())
+
+
+def next_version(series, *known):
+    """The next package of this Firefox series: <major>.<minor>.<build>.0.
+
+    The build number continues past every installed or built package of the same
+    series and restarts at 1 for a new one. The fourth part stays 0, as upstream
+    requires for MSIX tooling.
+    """
+    builds = [version_key(value)[2] for value in known if value and version_key(value)[:2] == series]
+    build = max(builds, default=0) + 1
+    if build > 65535:
+        raise ValueError(f"No build number left for Firefox {series[0]}.{series[1]}; pass --version")
+    return f"{series[0]}.{series[1]}.{build}.0"
 
 
 def installed_version():
@@ -171,13 +191,13 @@ def replace_exe_manifest(mt, exe, work, supplied):
     return removed
 
 
-def customize_manifest(path, min_version):
+def customize_manifest(path, min_version, description=DISPLAY_NAME):
     for _, (prefix, uri) in ET.iterparse(path, events=["start-ns"]):
         ET.register_namespace(prefix, uri)
     tree = ET.parse(path)
     manifest = tree.getroot()
-    for name in ("DisplayName", "Description"):
-        manifest.find(f"f:Properties/f:{name}", NS).text = DISPLAY_NAME
+    manifest.find("f:Properties/f:DisplayName", NS).text = DISPLAY_NAME
+    manifest.find("f:Properties/f:Description", NS).text = description
     dependencies = manifest.find("f:Dependencies", NS)
     dependencies.find("f:TargetDeviceFamily", NS).set("MinVersion", "10.0.22000.0")
     if dependencies.find("f:PackageDependency", NS) is not None:
@@ -308,13 +328,14 @@ def main():
     min_version = runtime_min_version()
     framework = installed_framework(min_version)
     record = framework_record(framework, clean, pane_runtime, pane_dir, staging.image_digest)
+    browser_version = firefox_version(clean)
     installed = installed_version()
-    built = built_versions(ROOT / "artifacts/msix-dev")
     if args.version is None:
-        args.version = next_version(installed, *built)
-        newest = max(built, key=version_key) if built else "none"
-        print(f"Version {args.version}: next after installed {installed or 'none'}, newest built {newest}")
-    elif installed and version_key(args.version) <= version_key(installed):
+        args.version = next_version(firefox_series(browser_version), installed,
+                                    *built_versions(ROOT / "artifacts/msix-dev"))
+        print(f"Version {args.version}: Firefox {browser_version} package build "
+              f"{version_key(args.version)[2]}; installed {installed or 'none'}")
+    if installed and version_key(args.version) <= version_key(installed):
         print(f"Warning: {args.version} is not newer than installed {installed}; "
               "Install-FirefoxDevPackage.ps1 cannot update to it")
 
@@ -350,13 +371,15 @@ def main():
         output=str(output), force=True, log=log)
     layout = run / "layout"
     take_layout(staged, layout)
-    customize_manifest(layout / "AppxManifest.xml", min_version)
+    customize_manifest(layout / "AppxManifest.xml", min_version,
+                       f"{DISPLAY_NAME} (Firefox {browser_version}, package {args.version})")
     shutil.copyfile(layout / "AppxManifest.xml", run / "AppxManifest.xml")
     subprocess.run([str(makeappx), "pack", "/d", str(layout), "/p", str(output)], check=True)
     runtime_names = [entry["file"] for entry in record["files"]]
     result = validate_package(output, args.version, expected_hashes, min_version, runtime_names)
     result.update({"package": str(output), "sha256": sha256(output),
                    "bytes": output.stat().st_size, "signing": "Windows 11 AllowUnsigned development only",
+                   "firefoxVersion": browser_version,
                    "runtimeFramework": framework["PackageFullName"],
                    "removedExeWinRTServers": removed_registrations,
                    "payloadSha256": expected_hashes})

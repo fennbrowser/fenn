@@ -55,13 +55,28 @@ class DevPackageTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(argparse.ArgumentTypeError):
                 package.version_string(value)
 
-    def test_next_version_steps_past_installed_and_built(self):
-        self.assertEqual(package.next_version(None), "0.1.0.0")
-        self.assertEqual(package.next_version("0.2.0.0", "0.2.1.0", "0.1.1.0"), "0.2.2.0")
-        self.assertEqual(package.next_version("0.10.0.0", "0.9.5.0"), "0.10.1.0")  # Numeric, not lexical.
+    def test_firefox_series_ignores_channel_and_patch(self):
+        for version in ("159.0a1", "159.0b3", "159.0rc2", "159.0", "159.0.1", "159.0esr", "159.0.1esr"):
+            with self.subTest(version=version):
+                self.assertEqual(package.firefox_series(version), (159, 0))
+        for version in ("159", "159.0a", "159.0-dev", "65536.0"):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                package.firefox_series(version)
+
+    def test_firefox_version_reads_packaged_application_ini(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (Path(temp) / "application.ini").write_text("[App]\nName=Firefox\nVersion=159.0a1\n")
+            self.assertEqual(package.firefox_version(Path(temp)), "159.0a1")
+
+    def test_next_version_counts_within_the_firefox_series(self):
+        self.assertEqual(package.next_version((159, 0), "0.2.0.0", "0.2.2.0"), "159.0.1.0")
+        self.assertEqual(package.next_version((159, 0), "159.0.2.0", "159.0.10.0", "158.0.40.0"),
+                         "159.0.11.0")  # Numeric, not lexical; other series ignored.
+        self.assertEqual(package.next_version((160, 0), "159.0.11.0"), "160.0.1.0")
         with self.assertRaisesRegex(ValueError, "pass --version"):
-            package.next_version("0.1.65535.0")
-        self.assertEqual(package.version_string(package.next_version("0.1.65534.0")), "0.1.65535.0")
+            package.next_version((159, 0), "159.0.65535.0")
+        self.assertEqual(package.version_string(package.next_version((159, 0), "159.0.65534.0")),
+                         "159.0.65535.0")
 
     def test_built_versions_come_from_finished_packages(self):
         with tempfile.TemporaryDirectory() as temp:
