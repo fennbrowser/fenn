@@ -67,9 +67,6 @@ struct NativeNavigationToolbar {
             auto button=renderer->rows.at(state.id).button;renderer->panel.Children().Clear();button.IsEnabled(true);
             paletteRenderers[item.id]=renderer;return button;
         }
-        if(item.control==L"address") {
-            TextBox field;field.Text(item.label);field.IsReadOnly(true);field.Width(160);field.Height(32);return field;
-        }
         auto spacer=Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="32" Height="32" BorderThickness="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" CornerRadius="4"><SymbolIcon Symbol="More"/></Border>)").as<Border>();return spacer;
     }
     void UpdatePalette(std::vector<PinnedExtensionButtons::State> const& next) {
@@ -126,6 +123,7 @@ struct NativeNavigationToolbar {
             });
             button.Click([this, i, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
                 if (alive.expired() || !activate || !buttons[i].IsEnabled() || !visible) return;
+                if(i==5 && customization.editing){customization.Hide();return;}
                 if (i < 2 && historyHeld[i]) { historyHeld[i] = false; return; }
                 const uint32_t modifiers = inputModifiers[i];
                 inputModifiers[i] = 0;
@@ -243,7 +241,12 @@ struct NativeNavigationToolbar {
                 else if(item.spring) {
                     keep.insert(item.id);
                     auto [it,inserted]=spacers.try_emplace(item.id);
-                    if(inserted)it->second.IsHitTestVisible(false);
+                    if(inserted) {
+                        it->second.IsHitTestVisible(false);
+                        auto outline=Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Height="24" Margin="4,0,4,0" VerticalAlignment="Center" BorderThickness="1" BorderBrush="{ThemeResource TextFillColorSecondaryBrush}" IsHitTestVisible="False"/>)").as<Border>();
+                        it->second.Children().Append(outline);
+                    }
+                    it->second.Children().GetAt(0).Visibility(customization.editing?Visibility::Visible:Visibility::Collapsed);
                     control=it->second;
                 } else {
                     for(size_t i=0;i<5;i++)if(item.control==commands[i])control=buttons[i];

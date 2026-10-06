@@ -2174,7 +2174,7 @@ index ff1c607e68..2bbf5a5afb 100644
        if (blobUrl) {
          return blobUrl;
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b..5de3bbe0f5 100644
+index 4f28e62c7b..aa22accd0e 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
 @@ -19,7 +19,7 @@ tabbrowser-tab-tooltip-container = { $containerName }
@@ -2270,8 +2270,8 @@ index 4f28e62c7b..5de3bbe0f5 100644
 +winui-toolbar-customize-overflow-item = { $label } (overflow menu)
 +winui-toolbar-customize-hint = Drag to reorder, or select an item and use the buttons. Changes are saved immediately. Other items remain available in Firefox customization.
 +
-+winui-toolbar-customize-reset = Restore Firefox defaults
-+winui-toolbar-customize-undo-reset = Undo restore
++winui-toolbar-customize-reset = Restore defaults
++winui-toolbar-customize-undo-reset = Undo
 +winui-toolbar-customize-reset-hint = Restores Firefox’s toolbar layout, theme, density, and related customization settings.
 +
 +winui-toolbar-customize-drop = Place here
@@ -3149,7 +3149,7 @@ index 1e2660589b..85227d8e69 100644
    /*
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 0000000000..93edc17984
+index 0000000000..fa0e6ea4a2
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 @@ -0,0 +1,177 @@
@@ -3219,7 +3219,7 @@ index 0000000000..93edc17984
 +        canAutoOverflow:placed && !!node && !spring && control !== 'address' && node?.getAttribute('overflows') !== 'false',
 +        extension:!spring && !fixed.has(widget),
 +        canOverflow:placed && control !== 'address' && ui.canWidgetMoveToArea(widget,ui.AREA_FIXED_OVERFLOW_PANEL),
-+        movable:(widget !== 'spring' || springs < 16) && ui.canWidgetMoveToArea(widget,ui.AREA_NAVBAR),
++        movable:control !== 'address' && (widget !== 'spring' || springs < 16) && ui.canWidgetMoveToArea(widget,ui.AREA_NAVBAR),
 +        removable:control !== 'address' && ui.isWidgetRemovable(widget),
 +        position:placed ? placements.indexOf(widget) : -1});
 +    }

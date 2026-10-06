@@ -137,3 +137,8 @@ test('palette drops insert through Firefox only while editing, at a live target'
  assert.equal(f.c.execute(bad),2);assert.equal(f.calls.length,n);
  f.c.execute('customize:editor:close');assert.equal(f.c.execute(f.command('new-spring','insert','back')),2);
 });
+
+test('address is fixed and rejects direct reorder commands',()=>{
+ const f=fixture();assert.equal(f.state().items.find(i=>i.control==='address').movable,false);
+ for(const verb of ['end','before','remove'])assert.equal(f.c.execute(f.command('address',verb,verb==='before'?'back':undefined)),2);
+});
