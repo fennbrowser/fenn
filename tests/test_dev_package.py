@@ -8,6 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
+from urllib.parse import unquote
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -246,6 +247,53 @@ class DevPackageTests(unittest.TestCase):
             path, hashes = self.fixture(Path(temp), alias="firefox.exe")
             with self.assertRaisesRegex(ValueError, "must not claim"):
                 self.validate(path, hashes)
+
+    def test_loose_lane_is_a_separate_registrable_identity(self):
+        self.assertNotEqual(package.LOOSE.identity, package.DEV.identity)
+        self.assertNotIn("OID.", package.LOOSE.publisher)  # Windows refuses the unsigned OID loose.
+        self.assertNotEqual(package.LOOSE.alias, package.DEV.alias)
+        self.assertNotEqual(package.LOOSE.runs_dir, package.DEV.runs_dir)
+
+    def test_layout_validation_matches_archive_validation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path, hashes = self.fixture(Path(temp))
+            layout = Path(temp) / "layout"
+            with zipfile.ZipFile(path) as archive:
+                for name in archive.namelist():
+                    target = layout / unquote(name)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(archive.read(name))
+            result = package.validate_layout(layout, "0.1.0.0", hashes, "2.5.1.0", RUNTIME)
+            self.assertEqual(result["identity"]["Name"], package.IDENTITY)
+            with self.assertRaisesRegex(ValueError, "Unexpected package identity"):
+                package.validate_layout(layout, "0.1.0.0", hashes, "2.5.1.0", RUNTIME, package.LOOSE)
+            (layout / "VFS/ProgramFiles/Dev Root/firefox.exe").write_bytes(b"bad")
+            with self.assertRaisesRegex(ValueError, "differs"):
+                package.validate_layout(layout, "0.1.0.0", hashes, "2.5.1.0", RUNTIME)
+
+    def test_manifest_takes_the_lane_name_and_alias(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "AppxManifest.xml"
+            path.write_text(f"""<Package xmlns="{package.NS['f']}" xmlns:desktop="{package.NS['desktop']}">
+  <Properties><DisplayName>x</DisplayName><Description>x</Description></Properties>
+  <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0"/></Dependencies>
+  <Applications><Application><desktop:ExecutionAlias Alias="firefox.exe"/></Application></Applications>
+</Package>""", encoding="utf-8")
+            package.customize_manifest(path, "2.5.1.0", "described", package.LOOSE)
+            manifest = ET.parse(path).getroot()
+            self.assertEqual(manifest.find("f:Properties/f:DisplayName", package.NS).text,
+                             package.LOOSE.display_name)
+            self.assertEqual(manifest.find(".//desktop:ExecutionAlias", package.NS).get("Alias"),
+                             package.LOOSE.alias)
+
+    def test_superseded_loose_runs_are_removed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            lane = package.Lane("Id", "CN=Id", "Id", "id.exe", Path(temp))
+            old, current = Path(temp) / "159.0.1.0-a", Path(temp) / "159.0.2.0-b"
+            for run in (old, current):
+                (run / "layout").mkdir(parents=True)
+            package.remove_superseded_runs(lane, current)
+            self.assertEqual([p.name for p in Path(temp).iterdir()], [current.name])
 
     def test_missing_framework_dependency_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:

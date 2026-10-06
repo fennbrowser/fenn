@@ -4,6 +4,8 @@ param(
     [string]$Version,
     [switch]$SkipFirefoxPackage,
     [switch]$KeepIntermediates,
+    # Register the layout as FirefoxWinUI.DevLoose under Developer Mode instead of packing.
+    [switch]$Loose,
     [string]$SdkBin = 'C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64'
 )
 $ErrorActionPreference = 'Stop'
@@ -16,5 +18,6 @@ if (-not $SkipFirefoxPackage) {
 $packageArgs = @((Join-Path $PSScriptRoot 'Package-FirefoxDev.py'), '--sdk-bin', $SdkBin)
 if ($Version) { $packageArgs += '--version', $Version }
 if ($KeepIntermediates) { $packageArgs += '--keep-intermediates' }
+if ($Loose) { $packageArgs += '--loose' }
 & powershell -NoProfile -ExecutionPolicy Bypass -File $mach python --virtualenv build @packageArgs
 if ($LASTEXITCODE) { throw "Development MSIX generation failed: $LASTEXITCODE" }

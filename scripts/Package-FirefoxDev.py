@@ -1,12 +1,14 @@
 """Build a Windows 11 unsigned development MSIX from a clean Firefox package.
 
 The package depends on the shared Windows App SDK framework package and carries
-no private copy of its runtime. Run via Build-FirefoxDevPackage.ps1, which selects
-Mach's build Python environment.
+no private copy of its runtime. With --loose, the same layout is registered in
+place under Developer Mode instead of packed, as a separate identity. Run via
+Build-FirefoxDevPackage.ps1, which selects Mach's build Python environment.
 """
 
 import argparse
 import configparser
+from dataclasses import dataclass
 import hashlib
 import importlib.util
 import json
@@ -39,6 +41,25 @@ NS = {
     "uap": "http://schemas.microsoft.com/appx/manifest/uap/windows10",
     "desktop": "http://schemas.microsoft.com/appx/manifest/desktop/windows10",
 }
+
+
+@dataclass(frozen=True)
+class Lane:
+    identity: str
+    publisher: str
+    display_name: str
+    alias: str
+    runs_dir: Path
+
+
+# Packed, unsigned, and installed elevated with Install-FirefoxDevPackage.ps1.
+DEV = Lane(IDENTITY, PUBLISHER, DISPLAY_NAME, "firefox-winui-dev.exe", ROOT / "artifacts/msix-dev")
+# Registered in place from its layout under Developer Mode: no pack, signature or
+# elevation. Windows refuses loose registration for the unsigned publisher OID,
+# so this lane has an ordinary publisher, and with it its own identity, alias,
+# Start entry and profile.
+LOOSE = Lane("FirefoxWinUI.DevLoose", "CN=Firefox WinUI Development", "WinUI Browser Dev (Loose)",
+             "firefox-winui-loose.exe", ROOT / "artifacts/msix-loose")
 
 
 def version_string(value):
@@ -79,9 +100,9 @@ def next_version(series, *known):
     return f"{series[0]}.{series[1]}.{build}.0"
 
 
-def installed_version():
-    query = (f"Get-AppxPackage -Name {IDENTITY} | Where-Object {{ $_.Architecture -eq 'X64' -and "
-             f"$_.Publisher -eq '{PUBLISHER}' }} | ForEach-Object {{ $_.Version }}")
+def installed_version(lane=DEV):
+    query = (f"Get-AppxPackage -Name {lane.identity} | Where-Object {{ $_.Architecture -eq 'X64' -and "
+             f"$_.Publisher -eq '{lane.publisher}' }} | ForEach-Object {{ $_.Version }}")
     output = subprocess.run(["powershell", "-NoProfile", "-Command", query],
                             check=True, capture_output=True, text=True).stdout.split()
     return max(output, key=version_key) if output else None
@@ -191,12 +212,12 @@ def replace_exe_manifest(mt, exe, work, supplied):
     return removed
 
 
-def customize_manifest(path, min_version, description=DISPLAY_NAME):
+def customize_manifest(path, min_version, description=DISPLAY_NAME, lane=DEV):
     for _, (prefix, uri) in ET.iterparse(path, events=["start-ns"]):
         ET.register_namespace(prefix, uri)
     tree = ET.parse(path)
     manifest = tree.getroot()
-    manifest.find("f:Properties/f:DisplayName", NS).text = DISPLAY_NAME
+    manifest.find("f:Properties/f:DisplayName", NS).text = lane.display_name
     manifest.find("f:Properties/f:Description", NS).text = description
     dependencies = manifest.find("f:Dependencies", NS)
     dependencies.find("f:TargetDeviceFamily", NS).set("MinVersion", "10.0.22000.0")
@@ -209,54 +230,66 @@ def customize_manifest(path, min_version, description=DISPLAY_NAME):
     aliases = manifest.findall(".//desktop:ExecutionAlias", NS)
     if len(aliases) != 1:
         raise ValueError("Upstream execution alias contract changed")
-    aliases[0].set("Alias", "firefox-winui-dev.exe")
+    aliases[0].set("Alias", lane.alias)
     tree.write(path, encoding="utf-8", xml_declaration=True)
 
 
-def validate_package(path, version, expected_hashes, min_version, runtime_files=()):
+def validate_package(path, version, expected_hashes, min_version, runtime_files=(), lane=DEV):
     with zipfile.ZipFile(path) as archive:
         names = {unquote(name).replace("\\", "/"): name for name in archive.namelist()}
-        manifest = ET.fromstring(archive.read(names["AppxManifest.xml"]))
-        identity = manifest.find("f:Identity", NS).attrib
-        expected = {"Name": IDENTITY, "Publisher": PUBLISHER,
-                    "Version": version, "ProcessorArchitecture": "x64"}
-        if any(identity.get(key) != value for key, value in expected.items()):
-            raise ValueError(f"Unexpected package identity: {identity}")
-        dependencies = [d.attrib for d in manifest.findall("f:Dependencies/f:PackageDependency", NS)]
-        if dependencies != [{"Name": RUNTIME_FRAMEWORK, "MinVersion": min_version,
-                             "Publisher": RUNTIME_PUBLISHER}]:
-            raise ValueError(f"Package must depend only on {RUNTIME_FRAMEWORK} {min_version}: {dependencies}")
-        aliases = manifest.findall(".//desktop:ExecutionAlias", NS)
-        if [entry.get("Alias") for entry in aliases] != ["firefox-winui-dev.exe"]:
-            raise ValueError("Development package must not claim the firefox.exe alias")
-        for element in manifest.iter():
-            for key in ("Executable", "Path"):
-                value = element.get(key)
-                if value and value.replace("\\", "/") not in names:
-                    raise ValueError(f"Manifest references missing payload: {value}")
-            if element.tag.endswith("}Path") and element.text:
-                if element.text.replace("\\", "/") not in names:
-                    raise ValueError(f"Manifest references missing payload: {element.text}")
-        app = manifest.find("f:Applications/f:Application", NS)
-        base = str(PurePosixPath(app.get("Executable").replace("\\", "/")).parent)
-        for relative, digest in expected_hashes.items():
-            if hashlib.sha256(archive.read(names[f"{base}/{relative}"])).hexdigest() != digest:
-                raise ValueError(f"Packaged file differs from staged payload: {relative}")
-        # The package root keeps Firefox's own Resources.pri; only the former
-        # root copy of the WinUI loose assets would duplicate the framework there.
-        lowered = {name.lower() for name in names}
-        candidates = [f"{base}/{relative}" for relative in runtime_files]
-        candidates += [name for name in names if name.lower().startswith("microsoft.ui.xaml/")]
-        for candidate in candidates:
-            if candidate.lower() in lowered:
-                raise ValueError(f"Private Windows App SDK runtime file in package: {candidate}")
-        forbidden = {"firefoxwinuipanetest.dll", "panecontracttests.exe", "user.js"}
-        if any(PurePosixPath(name).name.lower() in forbidden for name in names):
-            raise ValueError("Test binary or developer profile leaked into package")
-        if "AppxSignature.p7x" in names:
-            raise ValueError("This development lane must remain unsigned")
-        return {"identity": identity, "applicationId": "App", "payloadFiles": len(expected_hashes),
-                "dependencies": dependencies}
+        return validate_contents(names, archive.read, version, expected_hashes, min_version,
+                                 runtime_files, lane)
+
+
+def validate_layout(layout, version, expected_hashes, min_version, runtime_files=(), lane=DEV):
+    names = {p.relative_to(layout).as_posix(): p for p in layout.rglob("*") if p.is_file()}
+    return validate_contents(names, Path.read_bytes, version, expected_hashes, min_version,
+                             runtime_files, lane)
+
+
+def validate_contents(names, read, version, expected_hashes, min_version, runtime_files, lane):
+    """Check a package archive or registrable layout; names maps member paths to read() keys."""
+    manifest = ET.fromstring(read(names["AppxManifest.xml"]))
+    identity = manifest.find("f:Identity", NS).attrib
+    expected = {"Name": lane.identity, "Publisher": lane.publisher,
+                "Version": version, "ProcessorArchitecture": "x64"}
+    if any(identity.get(key) != value for key, value in expected.items()):
+        raise ValueError(f"Unexpected package identity: {identity}")
+    dependencies = [d.attrib for d in manifest.findall("f:Dependencies/f:PackageDependency", NS)]
+    if dependencies != [{"Name": RUNTIME_FRAMEWORK, "MinVersion": min_version,
+                         "Publisher": RUNTIME_PUBLISHER}]:
+        raise ValueError(f"Package must depend only on {RUNTIME_FRAMEWORK} {min_version}: {dependencies}")
+    aliases = manifest.findall(".//desktop:ExecutionAlias", NS)
+    if [entry.get("Alias") for entry in aliases] != [lane.alias]:
+        raise ValueError(f"Development package must not claim the firefox.exe alias; expected {lane.alias}")
+    for element in manifest.iter():
+        for key in ("Executable", "Path"):
+            value = element.get(key)
+            if value and value.replace("\\", "/") not in names:
+                raise ValueError(f"Manifest references missing payload: {value}")
+        if element.tag.endswith("}Path") and element.text:
+            if element.text.replace("\\", "/") not in names:
+                raise ValueError(f"Manifest references missing payload: {element.text}")
+    app = manifest.find("f:Applications/f:Application", NS)
+    base = str(PurePosixPath(app.get("Executable").replace("\\", "/")).parent)
+    for relative, digest in expected_hashes.items():
+        if hashlib.sha256(read(names[f"{base}/{relative}"])).hexdigest() != digest:
+            raise ValueError(f"Packaged file differs from staged payload: {relative}")
+    # The package root keeps Firefox's own Resources.pri; only the former
+    # root copy of the WinUI loose assets would duplicate the framework there.
+    lowered = {name.lower() for name in names}
+    candidates = [f"{base}/{relative}" for relative in runtime_files]
+    candidates += [name for name in names if name.lower().startswith("microsoft.ui.xaml/")]
+    for candidate in candidates:
+        if candidate.lower() in lowered:
+            raise ValueError(f"Private Windows App SDK runtime file in package: {candidate}")
+    forbidden = {"firefoxwinuipanetest.dll", "panecontracttests.exe", "user.js"}
+    if any(PurePosixPath(name).name.lower() in forbidden for name in names):
+        raise ValueError("Test binary or developer profile leaked into package")
+    if "AppxSignature.p7x" in names:
+        raise ValueError("This development lane must remain unsigned")
+    return {"identity": identity, "applicationId": "App", "payloadFiles": len(expected_hashes),
+            "dependencies": dependencies}
 
 
 DEFERRED_MAKEAPPX = "deferred-makeappx"
@@ -306,14 +339,70 @@ def take_layout(staged, layout):
         shutil.move(staged, layout)
 
 
+def developer_mode_enabled():
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock") as key:
+            return winreg.QueryValueEx(key, "AllowDevelopmentWithoutDevLicense")[0] == 1
+    except OSError:
+        return False
+
+
+def registration(lane):
+    """The lane's registered package: version, location and processes running from it."""
+    script = f"""
+$p = Get-AppxPackage -Name {lane.identity} | Where-Object Publisher -eq '{lane.publisher}' | Select-Object -First 1
+if ($p) {{
+    $root = $p.InstallLocation.TrimEnd('\\') + '\\'
+    $running = @(Get-Process | Where-Object {{ $_.Path -and
+        $_.Path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) }} | ForEach-Object Id)
+    ConvertTo-Json -Compress @{{ Version = $p.Version; InstallLocation = $p.InstallLocation; Running = $running }}
+}}"""
+    output = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                            check=True, capture_output=True, text=True).stdout.strip()
+    return json.loads(output) if output else None
+
+
+def register_layout(layout, lane):
+    """Register the layout in place. A newer version from a new directory is an
+    update, so package data and the browser profile carry over."""
+    manifest = layout / "AppxManifest.xml"
+    subprocess.run(["powershell", "-NoProfile", "-Command",
+                    f"Add-AppxPackage -Register '{manifest}' -ErrorAction Stop"], check=True)
+    state = registration(lane)
+    if not state or Path(state["InstallLocation"]).resolve() != layout.resolve():
+        raise RuntimeError(f"{lane.identity} is not registered from {layout}: {state}")
+    return state
+
+
+def remove_superseded_runs(lane, current):
+    """Earlier loose layouts are no longer referenced once the update registers."""
+    for run in lane.runs_dir.iterdir():
+        if run.is_dir() and run != current:
+            try:
+                shutil.rmtree(run)
+            except OSError as error:
+                print(f"Warning: could not remove superseded layout {run}: {error}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", type=version_string,
                         help="default: one build step past the installed and newest built versions")
     parser.add_argument("--sdk-bin", required=True, type=Path)
+    parser.add_argument("--loose", action="store_true",
+                        help=f"register the layout as {LOOSE.identity} under Developer Mode instead of packing")
     parser.add_argument("--keep-intermediates", action="store_true",
-                        help="keep payload/ and layout/ after a successful build")
+                        help="keep payload/ (and, when packing, layout/) after a successful build")
     args = parser.parse_args()
+    lane = LOOSE if args.loose else DEV
+    if args.loose:
+        if not developer_mode_enabled():
+            raise RuntimeError("The loose lane needs Windows Developer Mode (Settings > System > For developers)")
+        state = registration(LOOSE)
+        if state and state["Running"]:
+            raise RuntimeError(f"Close {LOOSE.display_name} first; running process IDs: {state['Running']}")
     makeappx, mt = (args.sdk_bin / name for name in ("makeappx.exe", "mt.exe"))
     clean = ROOT / "build/firefox/dist/firefox"
     msix_server = ROOT / "build/firefox/dist/bin/msixcomserver.dll"
@@ -329,17 +418,18 @@ def main():
     framework = installed_framework(min_version)
     record = framework_record(framework, clean, pane_runtime, pane_dir, staging.image_digest)
     browser_version = firefox_version(clean)
-    installed = installed_version()
+    installed = installed_version(lane)
     if args.version is None:
-        args.version = next_version(firefox_series(browser_version), installed,
-                                    *built_versions(ROOT / "artifacts/msix-dev"))
+        # The loose lane's registration is its only record; its runs are superseded.
+        built = [] if args.loose else built_versions(DEV.runs_dir)
+        args.version = next_version(firefox_series(browser_version), installed, *built)
         print(f"Version {args.version}: Firefox {browser_version} package build "
               f"{version_key(args.version)[2]}; installed {installed or 'none'}")
     if installed and version_key(args.version) <= version_key(installed):
         print(f"Warning: {args.version} is not newer than installed {installed}; "
-              "Install-FirefoxDevPackage.ps1 cannot update to it")
+              "Windows cannot update to it")
 
-    run = ROOT / "artifacts/msix-dev" / f"{args.version}-{uuid.uuid4().hex[:8]}"
+    run = lane.runs_dir / f"{args.version}-{uuid.uuid4().hex[:8]}"
     run.mkdir(parents=True)
     (run / "runtime-framework.json").write_text(
         json.dumps({"minVersion": min_version, **record}, indent=2) + "\n", encoding="utf-8")
@@ -362,27 +452,41 @@ def main():
     def log(level, action, params, message):
         print(message.format(**params), flush=True)
 
-    output = run / f"{IDENTITY}_{args.version}_x64.msix"
+    output = run / f"{lane.identity}_{args.version}_x64.msix"
+    # Upstream names the VFS install directory after displayname; keep it the same
+    # in both lanes and set each lane's Start display name in the manifest.
     staged = stage_upstream_layout(
         msix, dir_or_package=str(payload), topsrcdir=str(ROOT / "upstream/firefox"),
         channel="unofficial", distribution_dirs=[], version=args.version, vendor="FirefoxWinUI",
-        displayname=DISPLAY_NAME, identity=IDENTITY, publisher=PUBLISHER,
+        displayname=DISPLAY_NAME, identity=lane.identity, publisher=lane.publisher,
         publisher_display_name="Firefox WinUI Development", arch="x86_64",
         output=str(output), force=True, log=log)
     layout = run / "layout"
     take_layout(staged, layout)
     customize_manifest(layout / "AppxManifest.xml", min_version,
-                       f"{DISPLAY_NAME} (Firefox {browser_version}, package {args.version})")
+                       f"{lane.display_name} (Firefox {browser_version}, package {args.version})", lane)
     shutil.copyfile(layout / "AppxManifest.xml", run / "AppxManifest.xml")
-    subprocess.run([str(makeappx), "pack", "/d", str(layout), "/p", str(output)], check=True)
     runtime_names = [entry["file"] for entry in record["files"]]
+    common = {"firefoxVersion": browser_version, "runtimeFramework": framework["PackageFullName"],
+              "removedExeWinRTServers": removed_registrations, "payloadSha256": expected_hashes}
+
+    if args.loose:
+        result = validate_layout(layout, args.version, expected_hashes, min_version, runtime_names, lane)
+        register_layout(layout, lane)
+        result.update({"layout": str(layout), "registration": "Developer Mode loose layout", **common})
+        (run / "package-report.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        if not args.keep_intermediates:
+            shutil.rmtree(payload)
+        remove_superseded_runs(lane, run)
+        print(f"Registered {lane.display_name} {args.version} from {layout}")
+        print(f"Launch it from Start or with {lane.alias}")
+        return
+
+    subprocess.run([str(makeappx), "pack", "/d", str(layout), "/p", str(output)], check=True)
     result = validate_package(output, args.version, expected_hashes, min_version, runtime_names)
     result.update({"package": str(output), "sha256": sha256(output),
                    "bytes": output.stat().st_size, "signing": "Windows 11 AllowUnsigned development only",
-                   "firefoxVersion": browser_version,
-                   "runtimeFramework": framework["PackageFullName"],
-                   "removedExeWinRTServers": removed_registrations,
-                   "payloadSha256": expected_hashes})
+                   **common})
     (run / "package-report.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     # Validation compared the archive with payload hashes; the intermediates are
     # regenerable and several hundred MB each. A failed build keeps them.
