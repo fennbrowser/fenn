@@ -7,7 +7,7 @@ struct NativeToolbarCustomization {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using Map = winrt::Windows::Foundation::Collections::IObservableMap<winrt::hstring,winrt::Windows::Foundation::IInspectable>;
     using Button = Microsoft::UI::Xaml::Controls::Button;
-    struct Item { winrt::hstring id, control, label; bool placed{}, movable{}, removable{}, spring{}; };
+    struct Item { winrt::hstring id, control, label; bool placed{}, movable{}, removable{}, spring{}, canOverflow{}; };
     struct State { uint64_t revision{}; bool canReset{}, canUndoReset{}; std::vector<Item> items; std::map<winrt::hstring,winrt::hstring> labels; };
     State state;
     winrt::Windows::Foundation::Collections::IObservableVector<winrt::Windows::Foundation::IInspectable> placedItems = winrt::single_threaded_observable_vector<winrt::Windows::Foundation::IInspectable>();
@@ -15,7 +15,7 @@ struct NativeToolbarCustomization {
     Microsoft::UI::Xaml::Controls::Flyout flyout{nullptr};
     Microsoft::UI::Xaml::Controls::ListView list{nullptr}, available{nullptr};
     std::map<winrt::hstring,Microsoft::UI::Xaml::Controls::TextBlock> textBlocks;
-    Button earlier{nullptr}, later{nullptr}, remove{nullptr}, add{nullptr}, done{nullptr}, reset{nullptr}, undoReset{nullptr};
+    Button overflow{nullptr}, earlier{nullptr}, later{nullptr}, remove{nullptr}, add{nullptr}, done{nullptr}, reset{nullptr}, undoReset{nullptr};
     Button anchor{nullptr};
     bool updating{}, dragging{}, dragCancelled{};
     uint64_t dragRevision{};
@@ -37,8 +37,8 @@ struct NativeToolbarCustomization {
         bool address=false;size_t springs=0;
         for(auto value:items) {
             auto row=value.GetObject();
-            Item item{row.GetNamedString(L"id"),row.GetNamedString(L"control"),row.GetNamedString(L"label"),
-                row.GetNamedBoolean(L"placed"),row.GetNamedBoolean(L"movable"),row.GetNamedBoolean(L"removable"),row.GetNamedString(L"kind",L"button")==L"spring"};
+            Item item{row.GetNamedString(L"id"),row.GetNamedString(L"control"),row.GetNamedString(L"displayLabel",row.GetNamedString(L"label")),
+                row.GetNamedBoolean(L"placed"),row.GetNamedBoolean(L"movable"),row.GetNamedBoolean(L"removable"),row.GetNamedString(L"kind",L"button")==L"spring",row.GetNamedBoolean(L"canOverflow",false)};
             if(item.id.empty() || item.id.size()>64 || item.control.size()>64 || item.label.size()>4096 || !ids.insert(item.id).second ||
                 (item.placed && (item.control.empty() || !controls.insert(item.control).second))) throw winrt::hresult_invalid_argument();
             if(item.spring && item.placed && ++springs>16) throw winrt::hresult_invalid_argument();
@@ -47,7 +47,7 @@ struct NativeToolbarCustomization {
         }
         if(!address) return {};
         auto labels=obj.GetNamedObject(L"labels");
-        for(auto key:{L"title",L"available",L"earlier",L"later",L"add",L"remove",L"done",L"hint",L"reset",L"undo-reset",L"reset-hint"}) {
+        for(auto key:{L"title",L"available",L"earlier",L"later",L"add",L"remove",L"done",L"hint",L"reset",L"undo-reset",L"reset-hint",L"overflow"}) {
             auto value=labels.GetNamedString(key);NativeJson::RequireLength(value,4096);state.labels[key]=value;
         }
         return state;
@@ -87,6 +87,7 @@ struct NativeToolbarCustomization {
         bool movable=row!=state.items.end() && row->movable;
         earlier.IsEnabled(movable && it!=ids.end() && it!=ids.begin());
         later.IsEnabled(movable && it!=ids.end() && it+1!=ids.end());
+        overflow.IsEnabled(row!=state.items.end() && row->canOverflow);
         remove.IsEnabled(row!=state.items.end() && row->removable);
         auto unused=std::find_if(state.items.begin(),state.items.end(),[&](auto const& item){return item.id==free;});
         add.IsEnabled(unused!=state.items.end() && unused->movable);
@@ -109,7 +110,7 @@ struct NativeToolbarCustomization {
         if(!visible || !state.revision) {if(flyout) flyout.Hide();return;}
         if(list) {
             for(auto const& [key,block]:textBlocks) block.Text(state.labels.at(key));
-            for(auto const& [key,control]:std::initializer_list<std::pair<wchar_t const*,Button>>{{L"earlier",earlier},{L"later",later},{L"remove",remove},{L"add",add},{L"done",done},{L"reset",reset},{L"undo-reset",undoReset}}) control.Content(winrt::box_value(state.labels.at(key)));
+            for(auto const& [key,control]:std::initializer_list<std::pair<wchar_t const*,Button>>{{L"overflow",overflow},{L"earlier",earlier},{L"later",later},{L"remove",remove},{L"add",add},{L"done",done},{L"reset",reset},{L"undo-reset",undoReset}}) control.Content(winrt::box_value(state.labels.at(key)));
         }
         if(changed && !dragging) Refresh();
     }
@@ -128,6 +129,7 @@ struct NativeToolbarCustomization {
             StackPanel actions;actions.Orientation(Orientation::Horizontal);actions.Spacing(4);content.Children().Append(actions);
             auto make=[&](wchar_t const* key,StackPanel const& parent){Button b;b.Content(winrt::box_value(state.labels.at(key)));Automation::AutomationProperties::SetAutomationId(b,winrt::hstring(L"FirefoxWinUICustomize-")+key);parent.Children().Append(b);return b;};
             earlier=make(L"earlier",actions);later=make(L"later",actions);remove=make(L"remove",actions);
+            StackPanel destinations;content.Children().Append(destinations);overflow=make(L"overflow",destinations);
             text(L"available");available=ListView();available.ItemsSource(availableItems);available.MaxHeight(120);
             Automation::AutomationProperties::SetAutomationId(available,L"FirefoxWinUICustomizeAvailable");
             Automation::AutomationProperties::SetName(available,state.labels.at(L"available"));content.Children().Append(available);
@@ -161,6 +163,7 @@ struct NativeToolbarCustomization {
             available.SelectionChanged([this,alive](auto const&,auto const&){if(!alive.expired()&&!updating)Buttons();});
             earlier.Click([this,alive](auto const&,auto const&){if(alive.expired())return;auto ids=Placed();auto id=Selected(list);auto it=std::find(ids.begin(),ids.end(),id);if(it!=ids.end()&&it!=ids.begin())Send(id,L"before",*(it-1));});
             later.Click([this,alive](auto const&,auto const&){if(alive.expired())return;auto ids=Placed();auto id=Selected(list);auto it=std::find(ids.begin(),ids.end(),id);if(it!=ids.end()&&it+1!=ids.end())Send(id,it+2==ids.end()?L"end":L"before",it+2==ids.end()?winrt::hstring{}:*(it+2));});
+            overflow.Click([this,alive](auto const&,auto const&){if(!alive.expired())Send(Selected(list),L"overflow");});
             remove.Click([this,alive](auto const&,auto const&){if(!alive.expired())Send(Selected(list),L"remove");});
             add.Click([this,alive](auto const&,auto const&){if(!alive.expired())Send(Selected(available),L"add");});
             done.Click([this,alive](auto const&,auto const&){if(!alive.expired())flyout.Hide();});

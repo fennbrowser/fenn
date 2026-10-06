@@ -11,21 +11,21 @@ struct NativeNavigationToolbar {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using Button = Microsoft::UI::Xaml::Controls::Button;
     struct State { bool enabled{}, stopping{}; winrt::hstring label, tooltip; };
-    using States = std::array<State, 6>;
-    static constexpr wchar_t const* commands[] = {L"back", L"forward", L"reload", L"profile", L"extensions", L"appmenu"};
+    using States = std::array<State, 7>;
+    static constexpr wchar_t const* commands[] = {L"back", L"forward", L"reload", L"profile", L"extensions", L"appmenu", L"overflow"};
     Microsoft::UI::Xaml::Controls::Grid host{nullptr}, surface{nullptr};
     Microsoft::UI::Xaml::FrameworkElement address{nullptr};
     std::map<winrt::hstring,Microsoft::UI::Xaml::Controls::Grid> spacers;
     std::vector<Microsoft::UI::Xaml::UIElement> ordered;
     bool visible{};
-    std::array<Button, 6> buttons;
-    std::array<Microsoft::UI::Xaml::Controls::SymbolIcon, 6> icons;
+    std::array<Button, 7> buttons;
+    std::array<Microsoft::UI::Xaml::Controls::SymbolIcon, 7> icons;
     PinnedExtensionButtons pinned;
     NativeToolbarCustomization customization;
-    bool stopping{};
+    bool stopping{}, hasOverflow{};
     std::array<Microsoft::UI::Dispatching::DispatcherQueueTimer, 2> historyTimers{nullptr, nullptr};
     std::array<bool, 2> historyHeld{};
-    std::array<uint32_t, 6> inputModifiers{};
+    std::array<uint32_t, 7> inputModifiers{};
     std::function<void(wchar_t const*, uint32_t, Button const&)> activate;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
@@ -34,9 +34,9 @@ struct NativeNavigationToolbar {
         using namespace Microsoft::UI::Xaml::Controls;
         customization.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         pinned.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
-        const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh, Symbol::Contact, Symbol::Library, Symbol::More};
-        const wchar_t* names[] = {L"Back", L"Forward", L"Reload", L"Account", L"Extensions", L"Application menu"};
-        const wchar_t* ids[] = {L"FirefoxWinUIBack", L"FirefoxWinUIForward", L"FirefoxWinUIReload", L"FirefoxWinUIProfile", L"FirefoxWinUIExtensions", L"FirefoxWinUIAppMenu"};
+        const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh, Symbol::Contact, Symbol::Library, Symbol::More, Symbol::Forward};
+        const wchar_t* names[] = {L"Back", L"Forward", L"Reload", L"Account", L"Extensions", L"Application menu", L"More tools"};
+        const wchar_t* ids[] = {L"FirefoxWinUIBack", L"FirefoxWinUIForward", L"FirefoxWinUIReload", L"FirefoxWinUIProfile", L"FirefoxWinUIExtensions", L"FirefoxWinUIAppMenu", L"FirefoxWinUIOverflow"};
         for (size_t i = 0; i < buttons.size(); ++i) {
             auto button = Markup::XamlReader::Load(
                 LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" Width="32" Height="32" MinWidth="0" MinHeight="0" Padding="0"/>)").as<Button>();
@@ -47,6 +47,10 @@ struct NativeNavigationToolbar {
             iconHost.Width(16);
             iconHost.Height(16);
             iconHost.Child(icon);
+            if (i == 6) {
+                iconHost.Child(Markup::XamlReader::Load(
+                    LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE974;"/>)").as<FontIcon>());
+            }
             if (i == 4) {
                 iconHost.Child(Markup::XamlReader::Load(
                     LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xEA86;"/>)").as<FontIcon>());
@@ -142,11 +146,12 @@ struct NativeNavigationToolbar {
                 }
                 if(control)desired.push_back(control);
             }
+            if(hasOverflow)desired.push_back(buttons[6]);
             desired.push_back(buttons[5]);
         } else if(visible) {
             for(size_t i=0;i<3;i++)desired.push_back(buttons[i]);
             desired.push_back(address);desired.push_back(buttons[3]);desired.push_back(buttons[4]);
-            desired.push_back(pinned.panel);desired.push_back(buttons[5]);
+            desired.push_back(pinned.panel);if(hasOverflow)desired.push_back(buttons[6]);desired.push_back(buttons[5]);
         } else desired.push_back(address);
         if(desired==ordered)return;
         // Retain the editor and flyout anchor while changing placement columns.
@@ -206,6 +211,7 @@ struct NativeNavigationToolbar {
         using namespace Microsoft::UI::Xaml;
         this->visible=visible;
         if (!visible) { pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
+        hasOverflow = visible && state[6].enabled;
         stopping = visible && state[2].stopping;
         icons[2].Symbol(stopping ? Controls::Symbol::Cancel : Controls::Symbol::Refresh);
         for (size_t i = 0; i < buttons.size(); ++i) {

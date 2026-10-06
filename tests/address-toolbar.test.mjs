@@ -301,3 +301,20 @@ test("address geometry changes invalidate publication", () => {
   f.toolbar.resize.callback();
   assert.equal(invalidated,1);
 });
+
+
+test("overflow requires live contents and uses a validated per-call native anchor",()=>{
+ const f=navigationCommandsFixture(),opened=[];
+ f.window.devicePixelRatio=1;f.window.mozInnerScreenX=0;f.window.mozInnerScreenY=0;
+ f.elements.set('widget-overflow-fixed-list',{children:[{hidden:false}]});
+ const panel={state:'closed'};f.elements.set('widget-overflow',panel);
+ f.elements.set('nav-bar',{overflowable:{show:(event,anchor)=>{opened.push(anchor);return Promise.resolve();}}});
+ f.window.PanelMultiView={hidePopup:p=>{assert.equal(p,panel);panel.state='closed';}};
+ const action={...f.action,command:'overflow',x:20,y:40,width:32,height:32};
+ assert.equal(f.toolbar.executeNavigation({...action,session:'old'}),2);
+ assert.equal(f.toolbar.executeNavigation({...action,width:0}),2);
+ assert.equal(f.toolbar.executeNavigation(action),1);assert.equal(opened[0].style.left,'20px');
+ panel.state='open';assert.equal(f.toolbar.executeNavigation(action),1);assert.equal(panel.state,'closed');assert.equal(opened.length,1);
+ f.elements.get('widget-overflow-fixed-list').children=[];
+ assert.equal(f.toolbar.executeNavigation(action),2);
+});

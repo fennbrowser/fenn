@@ -5,15 +5,15 @@ import {readFileSync} from 'node:fs';
 function fixture() {
  let order=['back-button','urlbar-container','stop-reload-button','fxa-toolbar-menu-button'],revision=0;
  let nextSpring=0; let saved=null; const listeners=new Set();
- const defaults=[...order], extras=[], prefs=new Map();
+ const defaults=[...order], extras=[], overflow=[], prefs=new Map();
  const calls=[],nodes=new Map(order.map(id=>[id,{getAttribute:()=>id}]));
- const ui={areas:['nav','addons','other'],AREA_NAVBAR:'nav',AREA_ADDONS:'addons',getWidgetIdsInArea:area=>area==='nav'?[...order]:area==='other'?[...extras]:[],getWidget:id=>nodes.has(id)?{forWindow:()=>({node:nodes.get(id)})}:null,
-  getPlacementOfWidget:id=>order.includes(id)?{area:'nav',position:order.indexOf(id)}:null,
-  canWidgetMoveToArea:id=>id==='spring'||nodes.has(id),isWidgetRemovable:id=>id.includes('spring')||id==='fxa-toolbar-menu-button',addListener(l){listeners.add(l);},removeListener(l){listeners.delete(l);},
+ const ui={areas:['nav','addons','other','overflow'],AREA_FIXED_OVERFLOW_PANEL:'overflow',AREA_NAVBAR:'nav',AREA_ADDONS:'addons',getWidgetIdsInArea:area=>area==='nav'?[...order]:area==='other'?[...extras]:area==='overflow'?[...overflow]:[],getWidget:id=>nodes.has(id)?{forWindow:()=>({node:nodes.get(id)})}:null,
+  getPlacementOfWidget:id=>order.includes(id)?{area:'nav',position:order.indexOf(id)}:overflow.includes(id)?{area:'overflow',position:overflow.indexOf(id)}:null,
+  canWidgetMoveToArea:(id,area)=>area==='overflow' ? id==='fxa-toolbar-menu-button' : id==='spring'||nodes.has(id),isWidgetRemovable:id=>id.includes('spring')||id==='fxa-toolbar-menu-button',addListener(l){listeners.add(l);},removeListener(l){listeners.delete(l);},
   get inDefaultState(){return JSON.stringify(order)===JSON.stringify(defaults);},get canUndoReset(){return saved!==null;},
   reset(){calls.push(['reset']);saved=[...order];order=[...defaults];for(const l of listeners)l.onAreaReset?.();},
   undoReset(){calls.push(['undo-reset']);order=saved;saved=null;for(const l of listeners)l.onAreaReset?.();},
-  removeWidgetFromArea(id){calls.push(['remove',id]);order=order.filter(x=>x!==id);},addWidgetToArea(id){calls.push(['add',id]);if(id==='spring'){id=`customizableui-special-spring${++nextSpring}`;nodes.set(id,{getAttribute:()=>id});}order.push(id);},
+  removeWidgetFromArea(id){calls.push(['remove',id]);order=order.filter(x=>x!==id);},addWidgetToArea(id,area){calls.push(['add',id]);order=order.filter(x=>x!==id);const old=overflow.indexOf(id);if(old>=0)overflow.splice(old,1);if(area==='overflow'){overflow.push(id);return;}if(id==='spring'){id=`customizableui-special-spring${++nextSpring}`;nodes.set(id,{getAttribute:()=>id});}order.push(id);},
   moveWidgetWithinArea(id,position){saved=null;calls.push(['move',id,position]);if(order.indexOf(id)<position)position--;order=order.filter(x=>x!==id);order.splice(position,0,id);}};
  const context=vm.createContext({Services:{strings:{createBundle:()=>({GetStringFromName:()=> 'Flexible Space'})},prefs:{addObserver(){},removeObserver(){},getPrefType(p){return prefs.has(p)?64:0;},getIntPref(p){return prefs.get(p);},prefHasUserValue(p){return prefs.has(p);}}},ChromeUtils:{importESModule:()=>({CustomizableUI:ui})}});
  vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIToolbarCustomization.sys.mjs',import.meta.url),'utf8').replace('export class WinUIToolbarCustomization','this.Customization = class WinUIToolbarCustomization'),context);
@@ -21,7 +21,7 @@ function fixture() {
  const c=new context.Customization(toolbar);toolbar.navigationState=()=>c.snapshot({});
  const state=()=>c.snapshot({});
  const command=(control,verb,target)=>{const s=state();return `customize:${s.revision}:${s.items.find(i=>i.control===control).id}:${verb}`+(target?':'+s.items.find(i=>i.control===target).id:'');};
- return {c,state,command,calls,ui,nodes,prefs,extras,order:()=>order};
+ return {c,state,command,calls,ui,nodes,prefs,extras,overflow,order:()=>order};
 }
 test('placement projection keeps stable identities and revisions until Firefox state changes',()=>{
  const f=fixture(),a=f.state(),b=f.state();assert.equal(a.revision,b.revision);assert.deepEqual(a.items,b.items);
@@ -91,4 +91,17 @@ test('forward moves use Firefox pre-removal insertion indexes exactly once',()=>
  assert.equal(f.order().at(-1),'back-button');
  assert.equal(f.c.execute(f.command('back','before','address')),1);
  assert.equal(f.order()[0],'back-button');
+});
+
+
+test('overflow delegates eligibility and placement to Firefox, with stale actions rejected',()=>{
+ const f=fixture();
+ for(const id of ['address','back','reload','new-spring'])assert.equal(f.c.execute(f.command(id,'overflow')),2);
+ const move=f.command('profile','overflow');assert.equal(f.c.execute(move),1);
+ assert.equal(f.c.execute(move),2);assert.deepEqual(f.overflow,['fxa-toolbar-menu-button']);
+ const item=f.state().items.find(i=>i.control==='profile');assert.equal(item.overflow,true);assert.equal(item.placed,false);
+ assert.equal(f.c.execute(f.command('profile','remove')),2);
+ assert.equal(f.c.execute(f.command('profile','add')),1);assert.deepEqual(f.overflow,[]);
+ const stale=f.command('profile','overflow');f.overflow.push('unsupported-firefox-widget');
+ assert.equal(f.c.execute(stale),2);
 });
