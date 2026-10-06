@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {readFileSync} from "node:fs";
 import vm from "node:vm";
-const context=vm.createContext({console});
+const context=vm.createContext({console,UrlbarShared:{RESULT_TYPE:{KEYWORD:5}}});
 vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIUrlbarSession.sys.mjs",import.meta.url),"utf8")
   .replace(/^import .*;$/m,"").replace("export class WinUIUrlbarSession","this.Session = class WinUIUrlbarSession"),context);
 function fixture() {

@@ -217,6 +217,9 @@ struct NativeAddress {
             suggestions.list.ScrollIntoView(suggestions.list.SelectedItem());
             suggestions.list.UpdateLayout();
         }
+        // Deferred Enter can run in the same publication that creates its row.
+        // Finish layout before reporting the row's actual viewport visibility.
+        if (incoming == NativeShellCore::Activate) suggestions.list.UpdateLayout();
         if (incoming == NativeShellCore::Select || incoming == NativeShellCore::Activate) ReportVisibility();
         if (incoming == NativeShellCore::Activate || incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::ContextMenu || incoming == NativeShellCore::Blur) Edit();
         const uint32_t modifiers = ((GetKeyState(VK_CONTROL) & 0x8000) ? 1u : 0u) |
