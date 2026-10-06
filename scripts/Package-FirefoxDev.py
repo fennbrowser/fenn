@@ -1,9 +1,12 @@
-"""Build a Windows 11 unsigned development MSIX from a clean Firefox package.
+"""Build a Windows 11 development MSIX from a clean Firefox package.
 
 The package depends on the shared Windows App SDK framework package and carries
-no private copy of its runtime. With --loose, the same layout is registered in
-place under Developer Mode instead of packed, as a separate identity. Run via
-Build-FirefoxDevPackage.ps1, which selects Mach's build Python environment.
+no private copy of its runtime. It is signed with the self-signed certificate
+that Initialize-DevSigning.ps1 creates and trusts once; --unsigned builds the
+elevation-only unsigned fallback instead. With --loose, the same layout is
+registered in place under Developer Mode instead of packed, as a separate
+identity. Run via Build-FirefoxDevPackage.ps1, which selects Mach's build
+Python environment.
 """
 
 import argparse
@@ -24,8 +27,12 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 IDENTITY = "FirefoxWinUI.Dev"
 DISPLAY_NAME = "WinUI Browser Dev"
-PUBLISHER = ("CN=Firefox WinUI Development, "
-             "OID.2.25.311729368913984317654407730594956997722=1")
+# A signed package's publisher must equal its certificate subject.
+SIGNED_PUBLISHER = "CN=Firefox WinUI Development"
+# Microsoft's unsigned-developer namespace: installable only with -AllowUnsigned.
+UNSIGNED_PUBLISHER = ("CN=Firefox WinUI Development, "
+                      "OID.2.25.311729368913984317654407730594956997722=1")
+CODE_SIGNING_EKU = "1.3.6.1.5.5.7.3.3"
 RUNTIME_FRAMEWORK = "Microsoft.WindowsAppRuntime.2"
 RUNTIME_PUBLISHER = "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
 # Stock Firefox ships these app-local (widget/windows/moz.build). Packaged, the
@@ -50,15 +57,23 @@ class Lane:
     display_name: str
     alias: str
     runs_dir: Path
+    signed: bool = False
 
 
-# Packed, unsigned, and installed elevated with Install-FirefoxDevPackage.ps1.
-DEV = Lane(IDENTITY, PUBLISHER, DISPLAY_NAME, "firefox-winui-dev.exe", ROOT / "artifacts/msix-dev")
+# Packed, signed with the trusted development certificate, and installed or
+# updated without elevation by Install-FirefoxDevPackage.ps1.
+DEV = Lane(IDENTITY, SIGNED_PUBLISHER, DISPLAY_NAME, "firefox-winui-dev.exe",
+           ROOT / "artifacts/msix-dev", signed=True)
+# Fallback for machines without the certificate, such as a fresh test guest:
+# packed unsigned and installed elevated with -AllowUnsigned. Its publisher makes
+# it a different package family from DEV, so only one of the two can be installed.
+UNSIGNED = Lane(IDENTITY, UNSIGNED_PUBLISHER, DISPLAY_NAME, "firefox-winui-dev.exe",
+                ROOT / "artifacts/msix-dev")
 # Registered in place from its layout under Developer Mode: no pack, signature or
 # elevation. Windows refuses loose registration for the unsigned publisher OID,
 # so this lane has an ordinary publisher, and with it its own identity, alias,
 # Start entry and profile.
-LOOSE = Lane("FirefoxWinUI.DevLoose", "CN=Firefox WinUI Development", "WinUI Browser Dev (Loose)",
+LOOSE = Lane("FirefoxWinUI.DevLoose", SIGNED_PUBLISHER, "WinUI Browser Dev (Loose)",
              "firefox-winui-loose.exe", ROOT / "artifacts/msix-loose")
 
 
@@ -286,8 +301,9 @@ def validate_contents(names, read, version, expected_hashes, min_version, runtim
     forbidden = {"firefoxwinuipanetest.dll", "panecontracttests.exe", "user.js"}
     if any(PurePosixPath(name).name.lower() in forbidden for name in names):
         raise ValueError("Test binary or developer profile leaked into package")
-    if "AppxSignature.p7x" in names:
-        raise ValueError("This development lane must remain unsigned")
+    if ("AppxSignature.p7x" in names) != lane.signed:
+        raise ValueError("This lane's package must be signed" if lane.signed
+                         else "This development lane must remain unsigned")
     return {"identity": identity, "applicationId": "App", "payloadFiles": len(expected_hashes),
             "dependencies": dependencies}
 
@@ -337,6 +353,29 @@ def take_layout(staged, layout):
         staged.rename(layout)
     except OSError:  # Different volume.
         shutil.move(staged, layout)
+
+
+def signing_certificate(publisher):
+    """The newest valid code-signing certificate for publisher in CurrentUser\\My,
+    and whether its public certificate is trusted in LocalMachine\\TrustedPeople."""
+    script = (f"Get-ChildItem Cert:\\CurrentUser\\My | Where-Object {{ $_.Subject -eq '{publisher}' -and "
+              f"$_.HasPrivateKey -and $_.NotAfter -gt (Get-Date) -and "
+              f"$_.EnhancedKeyUsageList.ObjectId -contains '{CODE_SIGNING_EKU}' }} | "
+              "Sort-Object NotAfter -Descending | Select-Object -First 1 | ForEach-Object { "
+              "ConvertTo-Json -Compress @{ Thumbprint = $_.Thumbprint; NotAfter = $_.NotAfter.ToString('o'); "
+              "Trusted = Test-Path ('Cert:\\LocalMachine\\TrustedPeople\\' + $_.Thumbprint) } }")
+    output = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                            check=True, capture_output=True, text=True).stdout.strip()
+    if not output:
+        raise FileNotFoundError(f"No code-signing certificate for {publisher} in CurrentUser\\My. Run "
+                                "scripts\\Initialize-DevSigning.ps1 once from an elevated PowerShell, "
+                                "or build with -Unsigned")
+    return json.loads(output)
+
+
+def sign_package(signtool, package, thumbprint):
+    subprocess.run([str(signtool), "sign", "/q", "/fd", "SHA256", "/s", "My", "/sha1", thumbprint,
+                    str(package)], check=True)
 
 
 def developer_mode_enabled():
@@ -391,23 +430,31 @@ def main():
     parser.add_argument("--version", type=version_string,
                         help="default: one build step past the installed and newest built versions")
     parser.add_argument("--sdk-bin", required=True, type=Path)
-    parser.add_argument("--loose", action="store_true",
-                        help=f"register the layout as {LOOSE.identity} under Developer Mode instead of packing")
+    lanes = parser.add_mutually_exclusive_group()
+    lanes.add_argument("--loose", action="store_true",
+                       help=f"register the layout as {LOOSE.identity} under Developer Mode instead of packing")
+    lanes.add_argument("--unsigned", action="store_true",
+                       help="build the unsigned fallback, installable only elevated with -AllowUnsigned")
     parser.add_argument("--keep-intermediates", action="store_true",
                         help="keep payload/ (and, when packing, layout/) after a successful build")
     args = parser.parse_args()
-    lane = LOOSE if args.loose else DEV
+    lane = LOOSE if args.loose else UNSIGNED if args.unsigned else DEV
+    if lane.signed:
+        certificate = signing_certificate(lane.publisher)
+        if not certificate["Trusted"]:
+            print(f"Warning: certificate {certificate['Thumbprint']} is not in LocalMachine\\TrustedPeople; "
+                  "installing will fail until Initialize-DevSigning.ps1 trusts it")
     if args.loose:
         if not developer_mode_enabled():
             raise RuntimeError("The loose lane needs Windows Developer Mode (Settings > System > For developers)")
         state = registration(LOOSE)
         if state and state["Running"]:
             raise RuntimeError(f"Close {LOOSE.display_name} first; running process IDs: {state['Running']}")
-    makeappx, mt = (args.sdk_bin / name for name in ("makeappx.exe", "mt.exe"))
+    makeappx, mt, signtool = (args.sdk_bin / name for name in ("makeappx.exe", "mt.exe", "signtool.exe"))
     clean = ROOT / "build/firefox/dist/firefox"
     msix_server = ROOT / "build/firefox/dist/bin/msixcomserver.dll"
     pane_dir = ROOT / "build/winui-pane/x64/Release"
-    for required in (makeappx, mt, clean / "firefox.exe", clean / "omni.ja", msix_server,
+    for required in (makeappx, mt, signtool, clean / "firefox.exe", clean / "omni.ja", msix_server,
                      pane_dir / "FirefoxWinUIPane.dll",
                      *(clean / name for name in FIREFOX_RUNTIME)):
         if not required.is_file():
@@ -483,10 +530,14 @@ def main():
         return
 
     subprocess.run([str(makeappx), "pack", "/d", str(layout), "/p", str(output)], check=True)
-    result = validate_package(output, args.version, expected_hashes, min_version, runtime_names)
+    if lane.signed:
+        sign_package(signtool, output, certificate["Thumbprint"])
+        signing = {"signing": "self-signed development certificate", "certificate": certificate}
+    else:
+        signing = {"signing": "Windows 11 AllowUnsigned development only"}
+    result = validate_package(output, args.version, expected_hashes, min_version, runtime_names, lane)
     result.update({"package": str(output), "sha256": sha256(output),
-                   "bytes": output.stat().st_size, "signing": "Windows 11 AllowUnsigned development only",
-                   **common})
+                   "bytes": output.stat().st_size, **signing, **common})
     (run / "package-report.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     # Validation compared the archive with payload hashes; the intermediates are
     # regenerable and several hundred MB each. A failed build keeps them.

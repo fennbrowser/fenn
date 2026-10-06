@@ -196,10 +196,10 @@ class DevPackageTests(unittest.TestCase):
             self.assertTrue((failed / "payload").exists())
 
     def fixture(self, root, *, missing=False, tampered=False, alias="firefox-winui-dev.exe",
-                dependency=True, private_runtime=False):
+                dependency=True, private_runtime=False, lane=package.DEV, signed=None):
         manifest = ET.Element(f"{{{package.NS['f']}}}Package")
         ET.SubElement(manifest, f"{{{package.NS['f']}}}Identity", {
-            "Name": package.IDENTITY, "Publisher": package.PUBLISHER,
+            "Name": lane.identity, "Publisher": lane.publisher,
             "Version": "0.1.0.0", "ProcessorArchitecture": "x64"})
         dependencies = ET.SubElement(manifest, f"{{{package.NS['f']}}}Dependencies")
         if dependency:
@@ -219,10 +219,28 @@ class DevPackageTests(unittest.TestCase):
                 archive.writestr("VFS/ProgramFiles/Dev%20Root/firefox.exe", b"bad" if tampered else b"exe")
             if private_runtime:
                 archive.writestr("VFS/ProgramFiles/Dev%20Root/Microsoft.UI.Xaml.dll", b"runtime")
+            if lane.signed if signed is None else signed:
+                archive.writestr("AppxSignature.p7x", b"signature")
         return path, {"firefox.exe": hashlib.sha256(b"exe").hexdigest()}
 
-    def validate(self, path, hashes):
-        return package.validate_package(path, "0.1.0.0", hashes, "2.5.1.0", RUNTIME)
+    def validate(self, path, hashes, lane=package.DEV):
+        return package.validate_package(path, "0.1.0.0", hashes, "2.5.1.0", RUNTIME, lane)
+
+    def test_signature_must_match_the_lane(self):
+        with tempfile.TemporaryDirectory() as temp:
+            for lane in (package.DEV, package.UNSIGNED):
+                with self.subTest(lane=lane.publisher):
+                    path, hashes = self.fixture(Path(temp), lane=lane)
+                    self.assertEqual(self.validate(path, hashes, lane)["identity"]["Publisher"], lane.publisher)
+            path, hashes = self.fixture(Path(temp), signed=False)
+            with self.assertRaisesRegex(ValueError, "must be signed"):
+                self.validate(path, hashes)
+            path, hashes = self.fixture(Path(temp), lane=package.UNSIGNED, signed=True)
+            with self.assertRaisesRegex(ValueError, "must remain unsigned"):
+                self.validate(path, hashes, package.UNSIGNED)
+            path, hashes = self.fixture(Path(temp), lane=package.UNSIGNED)
+            with self.assertRaisesRegex(ValueError, "Unexpected package identity"):
+                self.validate(path, hashes)  # Same name, other publisher: another package family.
 
     def test_url_encoded_msix_paths(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -247,6 +265,14 @@ class DevPackageTests(unittest.TestCase):
             path, hashes = self.fixture(Path(temp), alias="firefox.exe")
             with self.assertRaisesRegex(ValueError, "must not claim"):
                 self.validate(path, hashes)
+
+    def test_signed_and_unsigned_lanes_share_name_but_not_publisher(self):
+        self.assertEqual(package.DEV.identity, package.UNSIGNED.identity)
+        self.assertEqual(package.DEV.alias, package.UNSIGNED.alias)
+        self.assertTrue(package.DEV.signed)
+        self.assertFalse(package.UNSIGNED.signed or package.LOOSE.signed)
+        self.assertNotIn("OID.", package.DEV.publisher)  # Must equal the certificate subject.
+        self.assertIn("OID.2.25.311729368913984317654407730594956997722=1", package.UNSIGNED.publisher)
 
     def test_loose_lane_is_a_separate_registrable_identity(self):
         self.assertNotEqual(package.LOOSE.identity, package.DEV.identity)
