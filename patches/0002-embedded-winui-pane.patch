@@ -4080,10 +4080,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..651de41541
+index 0000000000..a8fae4db53
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1424 @@
+@@ -0,0 +1,1434 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4877,7 +4877,7 @@ index 0000000000..651de41541
 +            result.payload.displayUrl || result.payload.url || ""
 +          ),
 +          provider: String(result.providerName || ""),
-+          ...(this.nativeKeywordResult(result) ? {keywordDocument:
++          ...((this.nativeKeywordResult(result) || this.nativeOmniboxResult(result)) ? {keywordDocument:
 +            active.browser.browsingContext.currentWindowGlobal?.innerWindowId} : {}),
 +          actions: this.canActivate(result) ? ["activate"] : [],
 +          fallback: "firefox",
@@ -5107,6 +5107,10 @@ index 0000000000..651de41541
 +  async loadNativeDetails(active, row, result) {
 +    // Text-only presentation; custom controls and their commands retain fallback.
 +    if (!this.canActivate(result)) return;
++    if (this.nativeOmniboxResult(result)) {
++      row.actionLabel = result.payload.content;
++      this.sequence++;
++    }
 +    if (this.nativeKeywordResult(result) && result.payload.input.trim() === result.payload.keyword) {
 +      const label = await this.window.document.l10n.formatValue("urlbar-result-action-visit");
 +      if (this.closed || this.active !== active || !active.rows.includes(row)) return;
@@ -5369,6 +5373,11 @@ index 0000000000..651de41541
 +    return this.input.controller.parentController.manager?.getProvider(result.providerName)?.getNativePresentation(result);
 +  }
 +
++  nativeOmniboxResult(result) {
++    return result.type === UrlbarShared.RESULT_TYPE.OMNIBOX &&
++      result.providerName === "UrlbarProviderOmnibox";
++  }
++
 +  nativeKeywordResult(result) {
 +    return result.type === UrlbarShared.RESULT_TYPE.KEYWORD &&
 +      result.providerName === "UrlbarProviderBookmarkKeywords";
@@ -5383,6 +5392,7 @@ index 0000000000..651de41541
 +          !Services.prefs.getBoolPref("browser.urlbar.secondaryActions.switchToTab", false)) ||
 +        this.nativeModeResult(result) ||
 +        this.nativeKeywordResult(result) ||
++        this.nativeOmniboxResult(result) ||
 +        !!this.nativeCopyProvider(result) ||
 +        this.nativeActionPresentation(result)?.enabled ||
 +        (result.type === UrlbarShared.RESULT_TYPE.SEARCH &&
@@ -5425,7 +5435,7 @@ index 0000000000..651de41541
 +    )
 +      return "stale";
 +    const result = active.results[index];
-+    if (this.nativeKeywordResult(result) &&
++    if ((this.nativeKeywordResult(result) || this.nativeOmniboxResult(result)) &&
 +        (this.input.readOnly || this.window.gDialogBox?.isOpen || !this.nativeVisible?.includes(id) ||
 +         !active.rows[rowIndex].keywordDocument || active.rows[rowIndex].keywordDocument !==
 +           active.browser.browsingContext.currentWindowGlobal?.innerWindowId)) return "stale";

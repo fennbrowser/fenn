@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-const context=vm.createContext({console,UrlbarShared:{RESULT_TYPE:{URL:3,TAB_SWITCH:4,KEYWORD:5,SEARCH:2,DYNAMIC:6}}});
+const context=vm.createContext({console,UrlbarShared:{RESULT_TYPE:{URL:3,TAB_SWITCH:4,KEYWORD:5,OMNIBOX:9,SEARCH:2,DYNAMIC:6}}});
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIUrlbarSession.sys.mjs',import.meta.url),'utf8')
  .replace(/^import .*;$/m,'').replace('export class WinUIUrlbarSession','this.Session = class WinUIUrlbarSession'),context);
 function fixture() {
@@ -38,4 +38,22 @@ test('bare keyword uses Firefox localized Visit and stale localization cannot al
  f.s.window.document={l10n:{formatValue(id){assert.equal(id,'urlbar-result-action-visit');return new Promise(r=>finish=r);}}};
  const pending=f.s.loadNativeDetails(f.s.active,f.row,f.result);finish('Localized Visit');await pending;assert.equal(f.row.actionLabel,'Localized Visit');
  delete f.row.actionLabel;const stale=f.s.loadNativeDetails(f.s.active,f.row,f.result);f.s.active=null;finish('stale');await stale;assert.equal(f.row.actionLabel,undefined);
+});
+
+test('omnibox commands preserve Firefox result identity, modifiers, and content label',async()=>{
+ const f=fixture();f.result.type=9;f.result.providerName='UrlbarProviderOmnibox';
+ f.result.payload={title:'Extension command',content:'ext non-url command',keyword:'ext'};
+ assert.equal(f.s.canActivate(f.result),true);
+ await f.s.loadNativeDetails(f.s.active,f.row,f.result);
+ assert.equal(f.row.actionLabel,'ext non-url command');
+ assert.equal(f.s.activate(2,'r',{altKey:true}),'activated');
+ assert.equal(f.calls[0].result,f.result);assert.equal(f.calls[0].event.altKey,true);
+ assert.equal(f.s.activate(2,'r'),'stale');
+ f.result.providerName='Other';assert.equal(f.s.canActivate(f.result),false);
+});
+test('omnibox rejects invisible, replaced-document and readonly results',()=>{
+ for(const change of [f=>f.s.nativeVisible=[],f=>f.browser.browsingContext.currentWindowGlobal.innerWindowId++,f=>f.s.input.readOnly=true]) {
+  const f=fixture();f.result.type=9;f.result.providerName='UrlbarProviderOmnibox';change(f);
+  assert.equal(f.s.activate(2,'r'),'stale');assert.equal(f.calls.length,0);
+ }
 });
