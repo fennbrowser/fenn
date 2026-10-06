@@ -196,6 +196,7 @@ pub struct ShellCore {
     strip: StripState,
     group_hover: crate::group_hover::GroupHover,
     menu: crate::menu::MenuState,
+    surface_menu: crate::surface_menu::SurfaceMenu,
     /// Identity of this core among every core in the process; transfers name it.
     endpoint: u64,
     snapshot: Option<SnapshotBuilder>,
@@ -410,6 +411,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         strip: StripState::default(),
         group_hover: crate::group_hover::GroupHover::default(),
         menu: Default::default(),
+        surface_menu: Default::default(),
         endpoint: NEXT_ENDPOINT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         snapshot: None,
         stats: Counters::default(),
@@ -732,6 +734,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
         core.queue.cancel_all();
         core.group_hover = Default::default();
         core.menu.close();
+        core.surface_menu.dismiss();
         core.snapshot = None;
         ShellStatus::Ok
     })
@@ -747,6 +750,7 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
         core.queue.close();
         core.group_hover = Default::default();
         core.menu.close();
+        core.surface_menu.dismiss();
         core.snapshot = None;
         ShellStatus::Ok
     })
@@ -2759,4 +2763,58 @@ fn toolbar_preview_ffi_checks_bounds_without_mutating_output() {
         }
         assert_eq!(shell_core_toolbar_preview(55,55,55,&mut out),ShellStatus::Ok);assert_eq!(out.len,56);
     }
+}
+
+/// Allocate a window-scoped menu opening. Zero means identity exhaustion.
+/// # Safety
+/// Live core and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_surface_menu_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
+ let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.surface_menu.open();ShellStatus::Ok})
+}
+/// Revoke a window-scoped menu, preserving its identity high-water mark.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_surface_menu_dismiss(core:*mut ShellCore)->ShellStatus {
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.surface_menu.dismiss();ShellStatus::Ok})
+}
+/// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
+/// # Safety
+/// Live core, readable arrays (null only for zero length), writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_surface_menu_accept(core:*mut ShellCore,session:u32,revision:u32,
+ actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
+ let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
+ if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
+ guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.surface_menu.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+/// Consume one current enabled action; dismissal and late updates cannot resurrect it.
+/// # Safety
+/// Live core and writable accepted.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_surface_menu_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,accepted:*mut bool)->ShellStatus {
+ let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=c.surface_menu.activate(session,revision,action);ShellStatus::Ok})
+}
+
+#[cfg(test)]
+mod surface_menu_ffi_tests {
+ use super::*;
+ #[test] fn bounded_surface_menu_boundary_and_cancellation() {unsafe {
+  let core=shell_core_create(&std::mem::zeroed());let mut session=0;let mut accepted=false;
+  assert_eq!(shell_core_surface_menu_open(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+  assert_eq!(shell_core_surface_menu_open(core,&mut session),ShellStatus::Ok);assert_ne!(session,0);
+  assert_eq!(shell_core_surface_menu_accept(core,session,1,std::ptr::null(),1,std::ptr::null(),0,&mut accepted),ShellStatus::InvalidArgument);
+  assert_eq!(shell_core_surface_menu_accept(core,session,1,[7].as_ptr(),1,[9].as_ptr(),1,&mut accepted),ShellStatus::Ok);assert!(accepted);
+  assert_eq!(shell_core_surface_menu_activate(core,session,1,7,&mut accepted),ShellStatus::Ok);assert!(accepted);
+  assert_eq!(shell_core_surface_menu_activate(core,session,1,7,&mut accepted),ShellStatus::Ok);assert!(!accepted);
+  let old=session;shell_core_surface_menu_open(core,&mut session);assert!(session>old);shell_core_cancel_all(core);
+  shell_core_surface_menu_accept(core,session,2,[7].as_ptr(),1,[9].as_ptr(),1,&mut accepted);assert!(!accepted);
+  shell_core_close(core);assert_eq!(shell_core_surface_menu_open(core,&mut session),ShellStatus::Closed);assert_eq!(session,0);
+  shell_core_destroy(core);
+ }}
 }

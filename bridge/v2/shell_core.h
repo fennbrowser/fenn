@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 30
+#define SHELL_CORE_ABI_VERSION 31
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -41,6 +41,10 @@
 #define MAX_ID 64
 
 #define MAX_FINGERPRINT ((6 * 1024) * 1024)
+
+#define MAX_ACTIONS 256
+
+#define MAX_DESCRIPTION 65536
 
 /*
  Result of every entry point. `Ok` is zero so the host can test it directly.
@@ -1561,6 +1565,45 @@ ShellStatus shell_core_toolbar_preview(uintptr_t len,
                                        uintptr_t source,
                                        uintptr_t target,
                                        ShellToolbarPreview *out);
+
+/*
+ Allocate a window-scoped menu opening. Zero means identity exhaustion.
+ # Safety
+ Live core and writable out.
+ */
+ShellStatus shell_core_surface_menu_open(ShellCore *core, uint32_t *out);
+
+/*
+ Revoke a window-scoped menu, preserving its identity high-water mark.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_surface_menu_dismiss(ShellCore *core);
+
+/*
+ Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
+ # Safety
+ Live core, readable arrays (null only for zero length), writable changed.
+ */
+ShellStatus shell_core_surface_menu_accept(ShellCore *core,
+                                           uint32_t session,
+                                           uint32_t revision,
+                                           const uint32_t *actions,
+                                           uintptr_t count,
+                                           const uint16_t *fingerprint,
+                                           uintptr_t units,
+                                           bool *changed);
+
+/*
+ Consume one current enabled action; dismissal and late updates cannot resurrect it.
+ # Safety
+ Live core and writable accepted.
+ */
+ShellStatus shell_core_surface_menu_activate(ShellCore *core,
+                                             uint32_t session,
+                                             uint32_t revision,
+                                             uint32_t action,
+                                             bool *accepted);
 
 #ifdef __cplusplus
 }  // extern "C"

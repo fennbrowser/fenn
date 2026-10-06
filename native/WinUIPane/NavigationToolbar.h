@@ -9,6 +9,7 @@
 #include "PinnedExtensionButtons.h"
 #include "ToolbarCustomization.h"
 #include "ToolbarDragPreview.h"
+#include "HistoryMenu.h"
 
 // WinUI presentation only. Firefox owns eligibility, labels and commands.
 struct NativeNavigationToolbar {
@@ -33,6 +34,7 @@ struct NativeNavigationToolbar {
     std::array<Microsoft::UI::Xaml::Controls::Border,3> downloadAttention;
     PinnedExtensionButtons pinned;
     NativeToolbarCustomization customization;
+    NativeHistoryMenu historyMenu;
     ToolbarDragPreview preview;
     bool keyboardActivation{};
     bool stopping{}, hasOverflow{}, requiredOverflow{}, overflowQueued{}, rootObserved{};
@@ -158,6 +160,7 @@ struct NativeNavigationToolbar {
                 if (i < 2 && historyHeld[i]) { historyHeld[i] = false; return; }
                 const uint32_t modifiers = inputModifiers[i];
                 inputModifiers[i] = 0;
+                if(i==9 && historyMenu.enabled && !customization.editing){historyMenu.Open(buttons[i]);return;}
                 activate(i == 2 && stopping ? L"stop" : commands[i], modifiers, buttons[i]);
             });
             if(i==7 || i==8)button.ContextRequested([this,i,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const& args){if(alive.expired() || !visible || customization.editing || !activate)return;args.Handled(true);activate(i==7?L"widget-menu:home":L"widget-menu:downloads",0,buttons[i]);});
@@ -386,7 +389,7 @@ struct NativeNavigationToolbar {
     void Apply(States const& state, bool visible) {
         using namespace Microsoft::UI::Xaml;
         this->visible=visible;commandState=state;
-        if (!visible) { sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
+        if (!visible) { historyMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
         hasOverflow = visible && state[6].enabled;
         requiredOverflow = visible && state[6].required;
         const bool downloading=visible && state[8].progress>=0 && !customization.editing;

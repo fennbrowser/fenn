@@ -37,7 +37,9 @@ function fixture() {
     MutationObserver:class {observe() {} disconnect() {}},
     MouseEvent:class {constructor(type, args) {this.type=type;Object.assign(this,args);}}};
   root.hasAttribute = k => root.attributes.has(k);
-  const context = vm.createContext({Services:{prefs:{getBoolPref:(k,fallback)=>prefs.get(k) ?? fallback}},console});
+  const context = vm.createContext({Services:{prefs:{getBoolPref:(k,fallback)=>prefs.get(k) ?? fallback,addObserver(){},removeObserver(){}}},console});
+  vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIHistoryMenu.sys.mjs",import.meta.url),"utf8").replace("export class WinUIHistoryMenu","this.WinUIHistoryMenu=class WinUIHistoryMenu"),context);
+  context.ChromeUtils={importESModule:()=>({WinUIHistoryMenu:context.WinUIHistoryMenu})};
   vm.runInContext(source, context);
   const toolbar = new context.WinUIAddressToolbar(window, owner);
   calls.length = 0;

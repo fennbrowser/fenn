@@ -949,10 +949,10 @@ index 00da33bc11..b38767f3b3 100644
        }
      }
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..4fdb597a08 100644
+index b2b5db6040..b4c7c30b49 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -33,6 +33,18 @@ browser.jar:
+@@ -33,6 +33,19 @@ browser.jar:
          content/browser/aboutTabCrashed.xhtml         (content/aboutTabCrashed.xhtml)
          content/browser/blanktab.html                 (content/blanktab.html)
          content/browser/browser.js                    (content/browser.js)
@@ -966,6 +966,7 @@ index b2b5db6040..4fdb597a08 100644
 +        content/browser/WinUIResultContextMenu.sys.mjs  (content/WinUIResultContextMenu.sys.mjs)
 +        content/browser/WinUIAddressContextMenu.sys.mjs  (content/WinUIAddressContextMenu.sys.mjs)
 +        content/browser/WinUIOmnibarActions.sys.mjs  (content/WinUIOmnibarActions.sys.mjs)
++        content/browser/WinUIHistoryMenu.sys.mjs     (content/WinUIHistoryMenu.sys.mjs)
 +        content/browser/WinUIAddressToolbar.sys.mjs     (content/WinUIAddressToolbar.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
@@ -2207,7 +2208,7 @@ index ff1c607e68..2bbf5a5afb 100644
        if (blobUrl) {
          return blobUrl;
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b..aa22accd0e 100644
+index 4f28e62c7b..8946afd136 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
 @@ -19,7 +19,7 @@ tabbrowser-tab-tooltip-container = { $containerName }
@@ -2270,7 +2271,7 @@ index 4f28e62c7b..aa22accd0e 100644
  tab-groups-list-empty-button = Create a tab group
  
  ## Open/saved tab group context menu
-@@ -518,3 +518,37 @@ split-view-menuitem-close-both-tabs =
+@@ -518,3 +518,40 @@ split-view-menuitem-close-both-tabs =
      .label = Close Both Tabs
  
  ##
@@ -2308,6 +2309,9 @@ index 4f28e62c7b..aa22accd0e 100644
 +winui-toolbar-customize-reset-hint = Restores Firefox’s toolbar layout, theme, density, and related customization settings.
 +
 +winui-toolbar-customize-drop = Place here
++
++winui-history-open-firefox = Open full Firefox history menu
++winui-history-empty = No recent history
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
 index ae5a803893..4d9f2e69e3 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
@@ -3180,6 +3184,96 @@ index 1e2660589b..85227d8e69 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/base/content/WinUIHistoryMenu.sys.mjs b/browser/base/content/WinUIHistoryMenu.sys.mjs
+new file mode 100644
+index 0000000000..c4e76c29d5
+--- /dev/null
++++ b/browser/base/content/WinUIHistoryMenu.sys.mjs
+@@ -0,0 +1,84 @@
++// Opt-in History root. Firefox owns data, navigation policy and commands.
++export class WinUIHistoryMenu {
++  constructor(toolbar) {
++    this.toolbar=toolbar;this.session=0;this.lastSession=0;this.actions=new Map();
++    this.preferenceChanged=()=>{if(!this.enabled && this.session)this.dismiss();else toolbar.owner.invalidateAddress();};
++    Services.prefs.addObserver("widget.windows.winui-prototype.navigation.history.menu.enabled",this.preferenceChanged);
++  }
++  close() {this.dismiss();Services.prefs.removeObserver("widget.windows.winui-prototype.navigation.history.menu.enabled",this.preferenceChanged);}
++  get enabled() { return Services.prefs.getBoolPref("widget.windows.winui-prototype.navigation.history.menu.enabled",false); }
++  snapshot() {
++    if(this.session && (!this.enabled || !this.toolbar.active || this.toolbar.customization?.editorOpen ||
++       this.context?.tab!==this.toolbar.owner.addressTab || this.context?.document!==this.toolbar.owner.addressDocument))this.dismiss();
++    return {enabled:this.enabled,closed:this.closed || 0,...(this.description || {})};
++  }
++  dismiss() {
++    if(this.session)this.closed=this.session;
++    this.session=0;this.description=null;this.actions.clear();
++    if(this.root){this.root.containerOpen=false;this.root=null;}this.result=null;
++    this.toolbar.owner.invalidateAddress();
++  }
++  async open(session,bounds) {
++    this.dismiss();this.session=session;this.bounds=bounds;
++    this.context={tab:this.toolbar.owner.addressTab,document:this.toolbar.owner.addressDocument};
++    const {window,owner}=this.toolbar;
++    const messages=await window.document.l10n.formatMessages([
++      {id:"appmenu-search-history"},{id:"appmenu-clear-history"},{id:"appmenu-manage-history"}]);
++    if(this.session!==session || !this.enabled || !this.toolbar.active)return;
++    const label=m=>m.attributes?.find(a=>a.name==="label")?.value || m.value;
++    const labels=messages.map(label);
++    if(labels.some(v=>!v))throw new Error("Missing History menu localization");
++    const {PlacesUtils}=ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");
++    const query=PlacesUtils.history.getNewQuery(), options=PlacesUtils.history.getNewQueryOptions();
++    options.queryType=Ci.nsINavHistoryQueryOptions.QUERY_TYPE_HISTORY;
++    options.sortingMode=Ci.nsINavHistoryQueryOptions.SORT_BY_DATE_DESCENDING;
++    options.maxResults=42;options.excludeQueries=true;
++    this.result=PlacesUtils.history.executeQuery(query,options);this.root=this.result.root;this.root.containerOpen=true;
++    const items=[];let id=0;
++    const add=(text,action)=>{const key=++id;this.actions.set(key,action);items.push({id:key,label:String(text).slice(0,128),enabled:true,navigable:action.kind==="visit"});};
++    add(labels[0],{kind:"search"});add(labels[1],{kind:"clear"});
++    items.push({separator:true});
++    for(let i=0;i<this.root.childCount;i++) {const node=this.root.getChild(i);add(node.title || node.uri,{kind:"visit",node,uri:node.uri});}
++    if(!this.root.childCount)items.push({id:++id,label:owner.localization().formatValueSync("winui-history-empty"),enabled:false});
++    items.push({separator:true});add(labels[2],{kind:"manage"});
++    add(owner.localization().formatValueSync("winui-history-open-firefox"),{kind:"original"});
++    this.description={session,revision:1,items};owner.invalidateAddress();
++  }
++  execute(action) {
++    const m=/^history-menu:(open|dismiss|invoke|middle):([1-9][0-9]*)(?::([1-9][0-9]*):([1-9][0-9]*))?$/.exec(action.command);
++    if(!m || !this.enabled)return 2;
++    const session=Number(m[2]);if(!Number.isSafeInteger(session) || session>0xffffffff)return 2;
++    if(m[1]==="open") {
++      if(session<=this.lastSession || m[3] || !this.toolbar.menuAnchor("history",action))return 2;
++      this.lastSession=session;
++      this.open(session,action).catch(error=>{
++        if(this.session===session){
++          if(this.root){this.root.containerOpen=false;this.root=null;}this.result=null;
++          this.actions.clear();this.actions.set(1,{kind:"original"});
++          this.description={session,revision:1,items:[{id:1,label:this.toolbar.owner.localization().formatValueSync("winui-history-open-firefox"),enabled:true}]};
++          this.toolbar.owner.invalidateAddress();
++        }
++        console.error(error);
++      });return 1;
++    }
++    if(session!==this.session)return 2;
++    if(m[1]==="dismiss"){if(m[3])return 2;this.dismiss();return 1;}
++    if(Number(m[3])!==this.description?.revision)return 2;
++    const entry=this.actions.get(Number(m[4]));if(!entry || (m[1]==="middle" && entry.kind!=="visit"))return 2;
++    const {window}=this.toolbar, bounds=this.bounds;
++    const event=new window.MouseEvent("click",{view:window,button:m[1]==="middle"?1:0,ctrlKey:!!(action.modifiers&1),altKey:!!(action.modifiers&2),shiftKey:!!(action.modifiers&4),metaKey:!!(action.modifiers&8)});
++    if(entry.kind==="visit") {
++      // Retained result nodes are live. Deletion or replacement invalidates the action.
++      if(!this.root || entry.node.parent!==this.root || entry.node.uri!==entry.uri){this.dismiss();return 2;}
++      const {BrowserUtils}=ChromeUtils.importESModule("resource://gre/modules/BrowserUtils.sys.mjs");
++      window.PlacesUIUtils.openNodeIn(entry.node,BrowserUtils.whereToOpenLink(event,false,true),{ownerWindow:window});
++      this.dismiss();return 1;
++    }
++    this.dismiss();
++    if(entry.kind==="search")window.PlacesCommandHook.searchHistory();
++    else if(entry.kind==="clear")window.Sanitizer.showUI(window);
++    else if(entry.kind==="manage")window.PlacesCommandHook.showPlacesOrganizer("History");
++    else if(entry.kind==="original")this.toolbar.openMenu("history",bounds,event);
++    return 1;
++  }
++}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
 index 0000000000..6b082161e8
@@ -5915,10 +6009,10 @@ index 0000000000..a8fae4db53
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..48ef82767d
+index 0000000000..1baaae48a9
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,347 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -5956,6 +6050,8 @@ index 0000000000..48ef82767d
 +    this.resize.observe(this.row);
 +    // Observe Firefox's command authority and live localized button labels.
 +    // Progress alone can fire before command disabled states are updated.
++    const {WinUIHistoryMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIHistoryMenu.sys.mjs");
++    this.historyMenu=new WinUIHistoryMenu(this);
 +    this.navigationCommands = [
 +      {id:"home", element:"home-button", method:"home"},
 +      {id:"downloads", element:"downloads-button", menu:true},
@@ -6034,6 +6130,7 @@ index 0000000000..48ef82767d
 +      attention:downloads?.getAttribute("attention") || ""});
 +    const overflowLists = ["widget-overflow-list", "widget-overflow-fixed-list"];
 +    state.overflow.enabled = overflowLists.some(id => [...(document.getElementById(id)?.children || [])].some(node => !node.hidden));
++    state.historyMenu=this.historyMenu.snapshot();
 +    state.pinned = this.pinned?.snapshot() || [];
 +    Object.assign(state, this.omnibar?.snapshot() || {});
 +    state.palette = this.pinned?.snapshot(true) || [];
@@ -6047,22 +6144,24 @@ index 0000000000..48ef82767d
 +  }
 +  executeNavigation(action) {
 +    const {window, owner} = this;
++    const nativeHistory=typeof action?.command === "string" && action.command.startsWith("history-menu:");
 +    const customization = typeof action?.command === "string" && action.command.startsWith("customize:");
 +    const extension = typeof action?.command === "string" && /^(extension|extension-menu):pinned-[0-9]+$/.test(action.command);
 +    const omnibar = typeof action?.command === "string" && /^(omni|omni-menu):action-[0-9]+$/.test(action.command);
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = customization ? {customization:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!customization && !extension && !omnibar && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!nativeHistory && !customization && !extension && !omnibar && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
++    if (nativeHistory) return this.navigationState().history.enabled && !this.customization?.nativeOverflow.has("history-panelmenu") ? this.historyMenu.execute(action) : 2;
 +    if (customization) return this.customization.execute(action.command);
 +    if(item.id === "downloads" && !this.navigationState().downloads.shown)return 2;
 +    if (this.customization?.nativeOverflow.has(item.element)) return 2;
@@ -6216,6 +6315,7 @@ index 0000000000..48ef82767d
 +    return false;
 +  }
 +  restore() {
++    if(this.historyMenu?.session)this.historyMenu.dismiss();
 +    if (this.activationFrame) this.window.cancelAnimationFrame(this.activationFrame);
 +    this.activationFrame = 0;
 +    for (const panel of this.window.document.querySelectorAll("panel, menupopup")) {
@@ -6245,6 +6345,7 @@ index 0000000000..48ef82767d
 +  }
 +  close() {
 +    this.restore();
++    this.historyMenu.close();
 +    this.resize.disconnect();
 +    this.navigationObserver.disconnect();
 +    this.customization?.close();
