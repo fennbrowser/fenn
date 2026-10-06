@@ -147,6 +147,8 @@ test("preference changes retain the live native session when the effective prese
 
 test("a preference notification delivered inside a nested native drain waits for the outer drain", () => {
   const f = fixture();
+  // Replacement is the only thing enabling the pane, so clearing it tears down.
+  f.prefs.set(f.pane.pref, false);
   f.pane.initOptions();
   const original = f.pane.element;
   f.pane.draining = true;

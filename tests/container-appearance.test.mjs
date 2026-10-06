@@ -4,7 +4,7 @@ import {test} from "node:test";
 import {runInNewContext} from "node:vm";
 import {WinUITabStripSession} from "../upstream/firefox/browser/base/content/WinUITabStripSession.sys.mjs";
 
-test("glows are opt-in and both appearance preferences publish live deltas", () => {
+test("dots and glows default on, dots suppress container glow, and both publish live deltas", () => {
   let dots, glows;
   const key = "widget.windows.winui-prototype.tabstrip.containerDot";
   const glowKey = "widget.windows.winui-prototype.tabstrip.glows";
@@ -26,10 +26,10 @@ test("glows are opt-in and both appearance preferences publish live deltas", () 
   pane.schedule = () => scheduled++;
   const session = new WinUITabStripSession({read:() => pane.describeStrip()});
   session.update();
-  assert.equal(session.state.containerDot, false);
+  assert.equal(session.state.containerDot, true);
   assert.equal(session.state.containerGlow, false);
-  assert.equal(session.state.groupGlow, false);
-  for (const [enabled, value, changed] of [[true, false, glowKey], [true, true, key], [false, true, glowKey], [false, false, key], [true, false, glowKey]]) {
+  assert.equal(session.state.groupGlow, true);
+  for (const [enabled, value, changed] of [[false, true, glowKey], [false, false, key], [true, false, glowKey], [true, true, key], [false, true, glowKey]]) {
     dots = value;
     glows = enabled;
     pane.stripDirty = false;
@@ -100,8 +100,8 @@ test("group reach preference is validated and publishes a live delta", () => {
   pane.visibleTabs = () => [];
   pane.schedule = () => {};
   const session = new WinUITabStripSession({read:() => pane.describeStrip()});
-  assert.equal(session.update().strip.groupReach, "large");
-  for (const [value, expected] of [["medium", "medium"], ["none", "none"], ["Small", "large"], ["small", "small"], ["huge", "large"]]) {
+  assert.equal(session.update().strip.groupReach, "none");
+  for (const [value, expected] of [["medium", "medium"], ["large", "large"], ["Small", "none"], ["small", "small"], ["huge", "none"]]) {
     const previous = session.state.groupReach;
     reach = value;
     pane.stripDirty = false;

@@ -854,28 +854,30 @@ index 995b2fc869..7add43e3b2 100644
 +<!-- END generated WinUI activation metadata -->
  </assembly>
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index d56594d91c..73565e3a16 100644
+index d56594d91c..33eac17ad6 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3875,6 +3875,35 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3875,6 +3875,37 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
-+pref("widget.windows.winui-prototype.pane.enabled", false);
++// The native pane and its strip presentation are on by default in every lane
++// (unpackaged launcher and MSIX alike); turn either off to fall back to Firefox.
++pref("widget.windows.winui-prototype.pane.enabled", true);
 +// Strip-only presentation; Firefox keeps its original tab and navigation UI.
-+pref("widget.windows.winui-prototype.tabstrip.enabled", false);
++pref("widget.windows.winui-prototype.tabstrip.enabled", true);
 +// Replace the horizontal Firefox tab row after native attachment succeeds.
 +pref("widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs", false);
 +// Native top-bar height: 32 compact, 40 current design, 48 tall.
 +pref("widget.windows.winui-prototype.tabstrip.height", 40);
-+// Container dots suppress container glow; group and container glows are opt-in.
-+pref("widget.windows.winui-prototype.tabstrip.containerDot", false);
-+pref("widget.windows.winui-prototype.tabstrip.glows", false);
++// Container dots suppress container glow, so with both on only groups glow.
++pref("widget.windows.winui-prototype.tabstrip.containerDot", true);
++pref("widget.windows.winui-prototype.tabstrip.glows", true);
 +// Strip backdrop: "mica", "mica-alt" or "acrylic".
 +pref("widget.windows.winui-prototype.tabstrip.backdrop", "mica-alt");
 +// Group outline reach past outer members: "none", "small", "medium" or "large";
 +// "large" also moves the native New Tab button by that reach.
-+pref("widget.windows.winui-prototype.tabstrip.groupReach", "large");
++pref("widget.windows.winui-prototype.tabstrip.groupReach", "none");
 +// Opt-in: hovering a group header washes the whole group, not only the header.
 +pref("widget.windows.winui-prototype.tabstrip.groupHover", false);
 +// Opt-in: with group glow, a soft halo extends past each group's outline.
@@ -6389,7 +6391,7 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..50190252bd
+index 0000000000..6e251805fc
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,2122 @@
@@ -6537,8 +6539,8 @@ index 0000000000..50190252bd
 +            return;
 +          }
 +          const replace = Services.prefs.getBoolPref(this.replaceTabsPref, false);
-+          const enabled = replace || Services.prefs.getBoolPref(this.pref, false);
-+          const strip = replace || Services.prefs.getBoolPref(this.stripPref, false);
++          const enabled = replace || Services.prefs.getBoolPref(this.pref, true);
++          const strip = replace || Services.prefs.getBoolPref(this.stripPref, true);
 +          if (this.element && enabled && this.tabStrip === strip) {
 +            this.schedule();
 +            return;
@@ -6619,13 +6621,13 @@ index 0000000000..50190252bd
 +
 +  init() {
 +    if (
-+      !(Services.prefs.getBoolPref(this.pref, false) ||
++      !(Services.prefs.getBoolPref(this.pref, true) ||
 +        Services.prefs.getBoolPref(this.replaceTabsPref, false)) ||
 +      !window.toolbar.visible
 +    ) {
 +      return;
 +    }
-+    this.tabStrip = Services.prefs.getBoolPref(this.stripPref, false) ||
++    this.tabStrip = Services.prefs.getBoolPref(this.stripPref, true) ||
 +      Services.prefs.getBoolPref(this.replaceTabsPref, false);
 +    // This window's native endpoint, formatted exactly as nsIBaseWindow does,
 +    // so the pane's drain notification can be matched to this window. An HWND
@@ -7698,14 +7700,14 @@ index 0000000000..50190252bd
 +  },
 +
 +  containerDotsEnabled() {
-+    return Services.prefs.getBoolPref(this.containerDotPref, false);
++    return Services.prefs.getBoolPref(this.containerDotPref, true);
 +  },
 +
 +  // How far native group outlines and lighting reach past their outer
 +  // members. Unsupported values use the default.
 +  groupReach() {
-+    const requested = Services.prefs.getStringPref(this.groupReachPref, "large");
-+    return ["none", "small", "medium", "large"].includes(requested) ? requested : "large";
++    const requested = Services.prefs.getStringPref(this.groupReachPref, "none");
++    return ["none", "small", "medium", "large"].includes(requested) ? requested : "none";
 +  },
 +
 +  // The strip island's system backdrop. Unsupported values use the default.
@@ -7821,8 +7823,8 @@ index 0000000000..50190252bd
 +        containerColor: container ? this.containerColor(container) : 0 };
 +    });
 +    return { groupingDelay: Math.max(0, Math.min(60000, Services.prefs.getIntPref("browser.tabs.dragDrop.createGroup.delayMS", 240))),
-+      groupGlow: Services.prefs.getBoolPref(this.tabGlowsPref, false),
-+      containerGlow: Services.prefs.getBoolPref(this.tabGlowsPref, false) && !this.containerDotsEnabled(),
++      groupGlow: Services.prefs.getBoolPref(this.tabGlowsPref, true),
++      containerGlow: Services.prefs.getBoolPref(this.tabGlowsPref, true) && !this.containerDotsEnabled(),
 +      containerDot: this.containerDotsEnabled(),
 +      backdrop: this.stripBackdrop(),
 +      groupReach: this.groupReach(),

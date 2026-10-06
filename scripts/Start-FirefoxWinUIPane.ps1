@@ -1,7 +1,7 @@
-param([switch]$NativeAddress, [switch]$NativeAddressBar, [switch]$NativeNavigationToolbar, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip = $true, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots = $true, [switch]$TabGlows = $true, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$CaptureCrash, [string]$DiagnosticsLog,
-      [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight = 40,
-      [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop = 'MicaAlt',
-      [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach = 'None')
+param([switch]$NativeAddress, [switch]$NativeAddressBar, [switch]$NativeNavigationToolbar, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$CaptureCrash, [string]$DiagnosticsLog,
+      [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight,
+      [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop,
+      [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $browser = Join-Path $projectRoot 'build/firefox/dist/bin/firefox.exe'
@@ -11,29 +11,45 @@ if (!(Test-Path $browser) -or !(Test-Path $pane)) {
 }
 $demoProfile = Join-Path $projectRoot ('artifacts/winui-demo/' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $demoProfile | Out-Null
-# Seed once in prefs.js so the toolbar option can persist changes on restart.
-"user_pref(`"widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs`", $($ReplaceFirefoxTabStrip.IsPresent.ToString().ToLowerInvariant()));" |
-    Set-Content (Join-Path $demoProfile 'prefs.js')
-@'
-user_pref("widget.windows.winui-prototype.pane.enabled", true);
-user_pref("browser.shell.checkDefaultBrowser", false);
-user_pref("browser.startup.homepage_override.mstone", "ignore");
-'@ | Set-Content (Join-Path $demoProfile 'user.js')
-Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.enabled`", $($NativeTabStrip.IsPresent.ToString().ToLowerInvariant()));"
-Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.height`", $NativeTabStripHeight);"
-Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.glows`", $($TabGlows.IsPresent.ToString().ToLowerInvariant()));"
-Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.containerDot`", $($ContainerDots.IsPresent.ToString().ToLowerInvariant()));"
-Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.groupHover`", $($GroupHover.IsPresent.ToString().ToLowerInvariant()));"
-Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.groupHalo`", $($GroupHalo.IsPresent.ToString().ToLowerInvariant()));"
-Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.groupGlowAnimations`", $($GroupGlowAnimations.IsPresent.ToString().ToLowerInvariant()));"
-Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.groupGlowFadeOut`", $($GroupGlowFadeOut.IsPresent.ToString().ToLowerInvariant()));"
-$backdrop = @{ Mica = 'mica'; MicaAlt = 'mica-alt'; Acrylic = 'acrylic' }[$TabStripBackdrop]
-Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.backdrop`", `"$backdrop`");"
-Add-Content (Join-Path $demoProfile 'user.js') "user_pref(`"widget.windows.winui-prototype.tabstrip.groupReach`", `"$($TabGroupReach.ToLowerInvariant())`");"
-if ($NativeAddress) { Add-Content (Join-Path $demoProfile 'user.js') 'user_pref("widget.windows.winui-prototype.address.enabled", true);' }
-if ($NativeAddressBar) { Add-Content (Join-Path $demoProfile 'user.js') 'user_pref("widget.windows.winui-prototype.address.toolbar.enabled", true);' }
-if ($NativeHistoryMenu) { $NativeNavigationToolbar=$true; Add-Content (Join-Path $demoProfile 'user.js') 'user_pref("widget.windows.winui-prototype.navigation.history.menu.enabled", true);' }
-if ($NativeNavigationToolbar) { Add-Content (Join-Path $demoProfile 'user.js') 'user_pref("widget.windows.winui-prototype.navigation.toolbar.enabled", true);' }
+# Firefox's own defaults (browser/app/profile/firefox.js) are the project's
+# defaults in every lane. Write a preference only for a flag that was passed,
+# so -X:$false opts out and an omitted flag keeps the shared default.
+if ($PSBoundParameters.ContainsKey('ReplaceFirefoxTabStrip')) {
+    # Seed once in prefs.js so the toolbar option can persist changes on restart.
+    "user_pref(`"widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs`", $($ReplaceFirefoxTabStrip.IsPresent.ToString().ToLowerInvariant()));" |
+        Set-Content (Join-Path $demoProfile 'prefs.js')
+}
+$userPrefs = @(
+    'user_pref("browser.shell.checkDefaultBrowser", false);',
+    'user_pref("browser.startup.homepage_override.mstone", "ignore");')
+$switchPrefs = [ordered]@{
+    NativeTabStrip = 'tabstrip.enabled'; ContainerDots = 'tabstrip.containerDot'; TabGlows = 'tabstrip.glows'
+    GroupHover = 'tabstrip.groupHover'; GroupHalo = 'tabstrip.groupHalo'
+    GroupGlowAnimations = 'tabstrip.groupGlowAnimations'; GroupGlowFadeOut = 'tabstrip.groupGlowFadeOut'
+    NativeAddress = 'address.enabled'; NativeAddressBar = 'address.toolbar.enabled'
+    NativeHistoryMenu = 'navigation.history.menu.enabled'; NativeNavigationToolbar = 'navigation.toolbar.enabled'
+}
+# The native History menu lives on the native navigation toolbar.
+if ($NativeHistoryMenu -and -not $PSBoundParameters.ContainsKey('NativeNavigationToolbar')) {
+    $PSBoundParameters['NativeNavigationToolbar'] = [switch]$true
+}
+foreach ($flag in $switchPrefs.Keys) {
+    if ($PSBoundParameters.ContainsKey($flag)) {
+        $value = ([bool]$PSBoundParameters[$flag]).ToString().ToLowerInvariant()
+        $userPrefs += "user_pref(`"widget.windows.winui-prototype.$($switchPrefs[$flag])`", $value);"
+    }
+}
+if ($PSBoundParameters.ContainsKey('NativeTabStripHeight')) {
+    $userPrefs += "user_pref(`"widget.windows.winui-prototype.tabstrip.height`", $NativeTabStripHeight);"
+}
+if ($PSBoundParameters.ContainsKey('TabStripBackdrop')) {
+    $backdrop = @{ Mica = 'mica'; MicaAlt = 'mica-alt'; Acrylic = 'acrylic' }[$TabStripBackdrop]
+    $userPrefs += "user_pref(`"widget.windows.winui-prototype.tabstrip.backdrop`", `"$backdrop`");"
+}
+if ($PSBoundParameters.ContainsKey('TabGroupReach')) {
+    $userPrefs += "user_pref(`"widget.windows.winui-prototype.tabstrip.groupReach`", `"$($TabGroupReach.ToLowerInvariant())`");"
+}
+$userPrefs | Set-Content (Join-Path $demoProfile 'user.js')
 Write-Host "Starting the WinUI prototype with an isolated profile: $demoProfile"
 if ($CaptureCrash) {
     $debugger = Join-Path $projectRoot '.cache/mozbuild/vs/Windows Kits/10/Debuggers/x64/cdb.exe'
