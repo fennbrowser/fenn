@@ -1,15 +1,15 @@
-"""Generate Fenn's placeholder icon set into branding/fenn.
+"""Generate neutral placeholder images for branding/fenn.
 
-Fenn is short for Fennec. The owner's artwork has not started, so this draws a
-simple stand-in: a front-facing fennec fox face, with its oversized ears, in
-sand tones on a dusk-blue rounded square, and a purple variant for private
-browsing. It is deliberately unlike Firefox's logo (no orange fox wrapped
-around a globe). It writes every image Firefox's Windows branding uses, at the
-sizes upstream's directory uses, plus matching SVGs. Pure Python (no Pillow),
-deterministic output.
+The owner has not provided Fenn's brand assets yet, and placeholder art must not
+invent branding. So every image is a plain neutral grey rounded square with no
+motif, lettering or brand colour (a darker grey for private browsing, so the two
+stay distinguishable). Document icons are a plain page, and the jump-list
+glyphs are generic window and new-tab outlines. The about dialog's wordmark is
+the product name in the system font.
 
-Replace the generated files with real artwork when it exists; this script is only
-for the placeholder. See the rebrand plan.
+It writes every image Firefox's Windows branding uses, at the sizes upstream's
+directory uses. Pure Python (no Pillow), deterministic output. Replace the
+generated files with the final brand assets when they are provided.
 """
 import math
 from pathlib import Path
@@ -19,28 +19,9 @@ import zlib
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "branding/fenn"
 
-DUSK = ((0x3a, 0x5f, 0x8f), (0x12, 0x22, 0x3d))     # top, bottom of the plate
-PURPLE = ((0x7a, 0x52, 0xb3), (0x2b, 0x1b, 0x4d))
-SAND = (0xe6, 0xb9, 0x7a)
-CREAM = (0xf8, 0xea, 0xd2)
-EAR = (0xf2, 0xc9, 0xb4)
-DARK = (0x2a, 0x1e, 0x1a)
-
+NEUTRAL = (0x8a, 0x8a, 0x8a)
+PRIVATE = (0x5c, 0x5c, 0x5c)
 PLATE = (0.06, 0.06, 0.94, 0.94, 0.22)
-# Shapes in a 0..1 square, painted in order: polygons (with a rounding radius),
-# circles and capsules (segments with a radius).
-FOX = [
-    ("poly", [(0.22, 0.17), (0.47, 0.44), (0.26, 0.60)], 0.03, SAND),     # left ear
-    ("poly", [(0.78, 0.17), (0.53, 0.44), (0.74, 0.60)], 0.03, SAND),     # right ear
-    ("poly", [(0.26, 0.26), (0.41, 0.44), (0.29, 0.53)], 0.015, EAR),
-    ("poly", [(0.74, 0.26), (0.59, 0.44), (0.71, 0.53)], 0.015, EAR),
-    ("circle", (0.50, 0.58, 0.19), SAND),                                  # head
-    ("poly", [(0.28, 0.58), (0.72, 0.58), (0.50, 0.84)], 0.05, SAND),     # jaw
-    ("poly", [(0.39, 0.66), (0.61, 0.66), (0.50, 0.83)], 0.035, CREAM),   # muzzle
-    ("circle", (0.41, 0.58, 0.028), DARK),                                 # eyes
-    ("circle", (0.59, 0.58, 0.028), DARK),
-    ("circle", (0.50, 0.80, 0.03), DARK),                                  # nose
-]
 
 
 def sd_round_rect(x, y, rect):
@@ -48,8 +29,7 @@ def sd_round_rect(x, y, rect):
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     hx, hy = (x1 - x0) / 2 - r, (y1 - y0) / 2 - r
     dx, dy = abs(x - cx) - hx, abs(y - cy) - hy
-    outside = math.hypot(max(dx, 0), max(dy, 0))
-    return outside + min(max(dx, dy), 0) - r
+    return math.hypot(max(dx, 0), max(dy, 0)) + min(max(dx, dy), 0) - r
 
 
 def sd_capsule(x, y, seg, min_radius=0.0):
@@ -60,30 +40,8 @@ def sd_capsule(x, y, seg, min_radius=0.0):
     return math.hypot(px - vx * t, py - vy * t) - r
 
 
-def sd_polygon(x, y, points):
-    """Signed distance to a polygon (negative inside)."""
-    d = float("inf")
-    sign = 1.0
-    n = len(points)
-    for i in range(n):
-        (ax, ay), (bx, by) = points[i], points[i - 1]
-        ex, ey, wx, wy = bx - ax, by - ay, x - ax, y - ay
-        t = max(0.0, min(1.0, (wx * ex + wy * ey) / (ex * ex + ey * ey)))
-        d = min(d, math.hypot(wx - ex * t, wy - ey * t))
-        c1, c2, c3 = y >= ay, y < by, ex * wy > ey * wx
-        if (c1 and c2 and c3) or (not c1 and not c2 and not c3):
-            sign = -sign
-    return sign * d
-
-
-def sd_shape(x, y, shape, min_radius):
-    kind = shape[0]
-    if kind == "poly":
-        return sd_polygon(x, y, shape[1]) - shape[2]
-    if kind == "circle":
-        cx, cy, r = shape[1]
-        return math.hypot(x - cx, y - cy) - max(r, min_radius)
-    return sd_capsule(x, y, shape[1], min_radius)
+def coverage(d, px):
+    return max(0.0, min(1.0, 0.5 - d / px))
 
 
 def over(dst, color, alpha):
@@ -91,48 +49,29 @@ def over(dst, color, alpha):
         return dst
     r, g, b, a = dst
     out_a = alpha + a * (1 - alpha)
-    if out_a == 0:
-        return (0, 0, 0, 0)
     mix = lambda c, d: (c * alpha + d * a * (1 - alpha)) / out_a
     return (mix(color[0], r), mix(color[1], g), mix(color[2], b), out_a)
 
 
-def coverage(d, px):
-    return max(0.0, min(1.0, 0.5 - d / px))
-
-
-def paint_fox(pixel, x, y, px, clip=1.0):
-    min_radius = 0.6 * px              # keep small features visible at 16 px
-    for shape in FOX:
-        pixel = over(pixel, shape[-1], coverage(sd_shape(x, y, shape, min_radius), px) * clip)
-    return pixel
-
-
-def render(size, plate=DUSK, scale=1.0, width=None, height=None, background=None):
-    """RGBA rows of the icon, `scale` of the shorter side, centred on a canvas."""
+def render(size, color=NEUTRAL, scale=1.0, width=None, height=None, background=None):
+    """RGBA rows of a plain rounded square, `scale` of the shorter side, centred."""
     width, height = width or size, height or size
     side = min(width, height) * scale
     ox, oy = (width - side) / 2, (height - side) / 2
-    px = 1 / side                      # one pixel in icon units
+    px = 1 / side
     rows = []
     for j in range(height):
         row = []
         for i in range(width):
             x, y = (i + 0.5 - ox) / side, (j + 0.5 - oy) / side
             pixel = (*background, 1.0) if background else (0, 0, 0, 0)
-            cover = coverage(sd_round_rect(x, y, PLATE), px)
-            if cover > 0:
-                t = max(0.0, min(1.0, (y - PLATE[1]) / (PLATE[3] - PLATE[1])))
-                top, bottom = plate
-                pixel = over(pixel, tuple(top[k] + (bottom[k] - top[k]) * t for k in range(3)), cover)
-                pixel = paint_fox(pixel, x, y, px, cover)
-            row.append(pixel)
+            row.append(over(pixel, color, coverage(sd_round_rect(x, y, PLATE), px)))
         rows.append(row)
     return rows
 
 
-def document(size, pdf=False):
-    """A page with a folded corner and a small fox, for file associations."""
+def document(size):
+    """A plain page with a folded corner."""
     page = (0.20, 0.08, 0.80, 0.92)
     px = 1 / size
     rows = []
@@ -141,22 +80,16 @@ def document(size, pdf=False):
         for i in range(size):
             x, y = (i + 0.5) / size, (j + 0.5) / size
             d = sd_round_rect(x, y, (*page, 0.04))
-            fold = (x - y - 0.54) / math.sqrt(2)    # cut the top-right corner along (0.62, 0.08)-(0.80, 0.26)
-            pixel = over((0, 0, 0, 0), (0x9a, 0xa5, 0xa8), coverage(d, px) * coverage(fold, px * 1.4))
-            inner = coverage(d + 0.02, px) * coverage(fold + 0.02, px)
-            pixel = over(pixel, (0xfb, 0xfb, 0xfb), inner)
-            if pdf and 0.70 < y < 0.84:
-                pixel = over(pixel, (0xc6, 0x28, 0x28), inner)
-            # The fox at 45% of the page, centred in its upper part.
-            fx, fy, s = (x - 0.275) / 0.45, (y - 0.20) / 0.45, 0.45
-            pixel = paint_fox(pixel, fx, fy, px / s, inner)
+            fold = (x - y - 0.54) / math.sqrt(2)    # cut the top-right corner
+            pixel = over((0, 0, 0, 0), (0x9a, 0x9a, 0x9a), coverage(d, px) * coverage(fold, px * 1.4))
+            pixel = over(pixel, (0xfb, 0xfb, 0xfb), coverage(d + 0.02, px) * coverage(fold + 0.02, px))
             row.append(pixel)
         rows.append(row)
     return rows
 
 
 def glyph(size, kind):
-    """Jump-list glyphs: a window outline, or a tab outline with a plus."""
+    """Generic jump-list glyphs: a window outline, or a tab outline with a plus."""
     rows = []
     px = 1 / size
     for j in range(size):
@@ -171,7 +104,7 @@ def glyph(size, kind):
                 plus = min(sd_capsule(x, y, (0.5, 0.42, 0.5, 0.70, 0.04), 0.6 * px),
                            sd_capsule(x, y, (0.36, 0.56, 0.64, 0.56, 0.04), 0.6 * px))
                 c = max(c, coverage(plus, px))
-            row.append((0x20, 0x2a, 0x2c, c))
+            row.append((0x20, 0x20, 0x20, c))
         rows.append(row)
     return rows
 
@@ -223,46 +156,25 @@ def bmp_bytes(rows, background):
     return header + info + body
 
 
-def logo_svg(plate=DUSK):
-    hexc = lambda c: "#%02x%02x%02x" % c
-    u = lambda v: f"{v * 512:g}"
+def logo_svg(color=NEUTRAL):
     x0, y0, x1, y1, r = PLATE
-    parts = []
-    for shape in FOX:
-        kind, color = shape[0], hexc(shape[-1])
-        if kind == "poly":
-            points = " ".join(f"{u(px)},{u(py)}" for px, py in shape[1])
-            # A round-joined stroke of twice the radius reproduces the rounded corners.
-            parts.append(f'<polygon points="{points}" fill="{color}" stroke="{color}" '
-                         f'stroke-width="{u(shape[2] * 2)}" stroke-linejoin="round"/>')
-        elif kind == "circle":
-            cx, cy, rad = shape[1]
-            parts.append(f'<circle cx="{u(cx)}" cy="{u(cy)}" r="{u(rad)}" fill="{color}"/>')
-        else:
-            ax, ay, bx, by, rad = shape[1]
-            parts.append(f'<line x1="{u(ax)}" y1="{u(ay)}" x2="{u(bx)}" y2="{u(by)}" stroke="{color}" '
-                         f'stroke-width="{u(rad * 2)}" stroke-linecap="round"/>')
-    return ("<!-- Placeholder Fenn logo generated by scripts/New-FennPlaceholderArt.py. -->\n"
+    u = lambda v: f"{v * 512:g}"
+    return ("<!-- Neutral placeholder generated by scripts/New-FennPlaceholderArt.py; not brand art. -->\n"
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">\n'
-            f'  <defs><linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">'
-            f'<stop offset="0" stop-color="{hexc(plate[0])}"/><stop offset="1" stop-color="{hexc(plate[1])}"/>'
-            "</linearGradient></defs>\n"
             f'  <rect x="{u(x0)}" y="{u(y0)}" width="{u(x1 - x0)}" height="{u(y1 - y0)}" rx="{u(r)}" '
-            'fill="url(#plate)"/>\n'
-            + "".join(f"  {p}\n" for p in parts) + "</svg>\n")
+            f'fill="#%02x%02x%02x"/>\n</svg>\n' % color)
 
 
-WORDMARK = """<!-- Placeholder Fenn wordmark generated by scripts/New-FennPlaceholderArt.py. -->
+WORDMARK = """<!-- Neutral placeholder generated by scripts/New-FennPlaceholderArt.py: the product
+     name in the system font, not a brand wordmark. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 372 99">
-  <text x="0" y="80" fill="context-fill" font-family="Segoe UI Variable Display, Segoe UI, sans-serif"
-        font-size="96" font-weight="600" letter-spacing="-2">Fenn</text>
+  <text x="0" y="80" fill="context-fill" font-family="sans-serif" font-size="96">Fenn</text>
 </svg>
 """
 
-DOCUMENT_PDF_SVG = """<!-- Placeholder Fenn PDF document icon generated by scripts/New-FennPlaceholderArt.py. -->
+DOCUMENT_PDF_SVG = """<!-- Neutral placeholder generated by scripts/New-FennPlaceholderArt.py. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
-  <path fill="#fbfbfb" stroke="#9aa5a8" d="M3.5 1.5h6l3 3v10h-9z"/>
-  <rect x="3.5" y="10" width="9" height="3" fill="#c62828"/>
+  <path fill="#fbfbfb" stroke="#9a9a9a" d="M3.5 1.5h6l3 3v10h-9z"/>
 </svg>
 """
 
@@ -277,30 +189,29 @@ def write(relative, data):
 def main():
     cache = {}
 
-    def icon(size, plate=DUSK, scale=1.0, width=None, height=None, background=None):
-        key = (size, plate, scale, width, height, background)
+    def icon(size, color=NEUTRAL, scale=1.0, width=None, height=None, background=None):
+        key = (size, color, scale, width, height, background)
         if key not in cache:
-            cache[key] = render(size, plate, scale, width, height, background)
+            cache[key] = render(size, color, scale, width, height, background)
         return cache[key]
 
     for size in (16, 22, 24, 32, 48, 64, 128, 256):
         write(f"default{size}.png", png_bytes(icon(size)))
     write("firefox.ico", ico_bytes([icon(s) for s in (16, 32, 48, 256)]))
     write("firefox64.ico", ico_bytes([icon(s) for s in (16, 32, 48, 64)]))
-    write("pbmode.ico", ico_bytes([icon(s, PURPLE) for s in (16, 32, 48, 256)]))
+    write("pbmode.ico", ico_bytes([icon(s, PRIVATE) for s in (16, 32, 48, 256)]))
     write("document.ico", ico_bytes([document(s) for s in (16, 32, 48, 256)]))
-    write("document_pdf.ico", ico_bytes([document(256, pdf=True)]))
+    write("document_pdf.ico", ico_bytes([document(256)]))
     write("newwindow.ico", ico_bytes([glyph(s, "window") for s in (16, 32)]))
     write("newtab.ico", ico_bytes([glyph(s, "tab") for s in (16, 32)]))
-    # Start tiles show the logo on the tile colour from the VisualElements manifests.
     write("VisualElements_150.png", png_bytes(icon(300, scale=0.6)))
     write("VisualElements_70.png", png_bytes(icon(142, scale=0.6)))
-    write("PrivateBrowsing_150.png", png_bytes(icon(300, PURPLE, scale=0.6)))
-    write("PrivateBrowsing_70.png", png_bytes(icon(142, PURPLE, scale=0.6)))
+    write("PrivateBrowsing_150.png", png_bytes(icon(300, PRIVATE, scale=0.6)))
+    write("PrivateBrowsing_70.png", png_bytes(icon(142, PRIVATE, scale=0.6)))
     write("content/about-logo.png", png_bytes(icon(192)))
     write("content/about-logo@2x.png", png_bytes(icon(384)))
-    write("content/about-logo-private.png", png_bytes(icon(192, PURPLE)))
-    write("content/about-logo-private@2x.png", png_bytes(icon(384, PURPLE)))
+    write("content/about-logo-private.png", png_bytes(icon(192, PRIVATE)))
+    write("content/about-logo-private@2x.png", png_bytes(icon(384, PRIVATE)))
     write("content/about.png", png_bytes(icon(236, width=300, height=236, scale=0.9)))
     write("content/about-logo.svg", logo_svg())
     write("content/about-wordmark.svg", WORDMARK)
@@ -324,7 +235,7 @@ def main():
     white = (0xff, 0xff, 0xff)
     write("wizHeader.bmp", bmp_bytes(icon(57, width=150, height=57, scale=0.85, background=white), white))
     write("wizHeaderRTL.bmp", bmp_bytes(icon(57, width=150, height=57, scale=0.85, background=white), white))
-    write("wizWatermark.bmp", bmp_bytes(icon(164, width=164, height=314, scale=0.8, background=DUSK[1]), DUSK[1]))
+    write("wizWatermark.bmp", bmp_bytes(icon(164, width=164, height=314, scale=0.8, background=white), white))
 
 
 if __name__ == "__main__":
