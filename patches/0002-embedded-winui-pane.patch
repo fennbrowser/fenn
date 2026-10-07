@@ -1481,6 +1481,25 @@ index 4f28e62c7b..6eef850525 100644
 +
 +winui-history-open-firefox = Open full history menu
 +winui-history-empty = No recent history
+diff --git a/browser/moz.configure b/browser/moz.configure
+index 8979a2e4e8..e9835799cc 100644
+--- a/browser/moz.configure
++++ b/browser/moz.configure
+@@ -11,7 +11,13 @@ imply_option("MOZ_NORMANDY", True)
+ imply_option("MOZ_PROFILE_MIGRATOR", True)
+ 
+ 
+-imply_option("MOZ_APP_VENDOR", "Mozilla")
++# Fenn (firefox-winui): its own vendor, which separates its profile folder
++# (%APPDATA%\Fenn\Firefox), registry keys, scheduled and background tasks from
++# Mozilla's. The application name stays Firefox (search configuration, add-on
++# URLs, automation, Safe Browsing), and so does the user agent, for privacy and
++# web compatibility. These are project flags, which a mozconfig cannot set.
++imply_option("MOZ_APP_VENDOR", "Fenn")
++imply_option("MOZ_APP_UA_NAME", "Firefox")
+ imply_option("MOZ_APP_ID", "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}")
+ # Include the DevTools client, not just the server (which is the default)
+ imply_option("MOZ_DEVTOOLS", "all")
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
 index 994aac6c3a..b59b2757d2 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
