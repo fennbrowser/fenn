@@ -414,6 +414,29 @@ class DevPackageTests(unittest.TestCase):
             self.assertEqual((family.get("MinVersion"), family.get("MaxVersionTested")),
                              ("10.0.22000.0", package.MAX_VERSION_TESTED))
 
+    def test_identity_exe_manifest_names_the_identity_package(self):
+        identity = load("Register-FirefoxDevIdentity")
+        text = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+<assemblyIdentity version="1.0.0.0" name="Firefox" type="win32"></assemblyIdentity>
+</assembly>"""
+        self.assertIsNone(identity.msix_element(text))
+        marked = identity.with_msix_element(text, package.SIGNED_PUBLISHER)
+        self.assertEqual(identity.msix_element("﻿" + marked),
+                         {"publisher": package.SIGNED_PUBLISHER, "packageName": identity.NAME,
+                          "applicationId": identity.APP_ID})
+        with self.assertRaisesRegex(ValueError, "already names a package"):
+            identity.with_msix_element(marked, package.SIGNED_PUBLISHER)
+        manifest = identity.package_manifest(package.SIGNED_PUBLISHER, package.MAX_VERSION_TESTED)
+        self.assertIn('Executable="firefox-identity.exe"', manifest)
+        self.assertIn("<uap10:AllowExternalContent>true</uap10:AllowExternalContent>", manifest)
+        # No framework dependency: dist/bin carries the app-local runtime.
+        self.assertNotIn("PackageDependency", manifest)
+        # Windows returns the registered manifest without whitespace between elements.
+        registered = " ".join(manifest.split("?>", 1)[1].split()).replace("> <", "><")
+        self.assertTrue(identity.same_manifest(registered, manifest))
+        self.assertFalse(identity.same_manifest(registered.replace("1.0.0.0", "1.0.1.0"), manifest))
+
     def test_superseded_loose_runs_are_removed(self):
         with tempfile.TemporaryDirectory() as temp:
             lane = package.Lane("Id", "CN=Id", "Id", "id.exe", Path(temp))

@@ -45,24 +45,42 @@ def loaded_modules(pid):
         kernel.CloseHandle(handle)
 
 
-def runtime_modules(pid):
-    """Every module the framework supplies must load from that framework: one runtime per process."""
+def framework_file_names():
+    """Names of every file in the installed Windows App SDK 2 frameworks."""
+    output = subprocess.run(["powershell", "-NoProfile", "-Command",
+        "Get-AppxPackage -Name 'Microsoft.WindowsAppRuntime.2' | ForEach-Object InstallLocation"],
+        check=True, capture_output=True, text=True).stdout.splitlines()
+    return {p.name.lower() for location in output if location.strip()
+            for p in Path(location.strip()).iterdir() if p.is_file()}
+
+
+def runtime_modules(pid, app_local=None):
+    """One runtime per process. By default every module the framework supplies must
+    load from that framework; with app_local, every such module must load from that
+    directory and none from a framework."""
     paths = loaded_modules(pid)
     xaml = [p for p in paths if p.name.lower() == "microsoft.ui.xaml.dll"]
-    if len(xaml) != 1 or not xaml[0].parent.name.startswith(FRAMEWORK_PREFIX):
-        raise AssertionError(f"WinUI did not load from the {FRAMEWORK_PREFIX} framework: {xaml}")
-    framework = xaml[0].parent
-    supplied = {p.name.lower() for p in framework.iterdir() if p.is_file()}
+    if app_local:
+        if len(xaml) != 1 or xaml[0].parent != app_local:
+            raise AssertionError(f"WinUI did not load from {app_local}: {xaml}")
+        home, supplied = app_local, framework_file_names()
+    else:
+        if len(xaml) != 1 or not xaml[0].parent.name.startswith(FRAMEWORK_PREFIX):
+            raise AssertionError(f"WinUI did not load from the {FRAMEWORK_PREFIX} framework: {xaml}")
+        home = xaml[0].parent
+        supplied = {p.name.lower() for p in home.iterdir() if p.is_file()}
     runtime = [p for p in paths if p.name.lower() in supplied]
-    stray = [str(p) for p in runtime if p.parent != framework]
+    stray = [str(p) for p in runtime if p.parent != home]
     if stray:
-        raise AssertionError(f"Windows App SDK modules loaded outside {framework}: {stray}")
-    return {"framework": str(framework), "modules": sorted(p.name for p in runtime)}
+        raise AssertionError(f"Windows App SDK modules loaded outside {home}: {stray}")
+    return {"framework" if not app_local else "appLocal": str(home), "modules": sorted(p.name for p in runtime)}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exe", required=True, type=Path)
+    parser.add_argument("--app-local-runtime", action="store_true",
+                        help="expect the runtime beside --exe (the identity lane), not from the framework")
     parser.add_argument("--package-name", default="FirefoxWinUI.Dev",
                         help="identity name the running browser must report")
     args = parser.parse_args()
@@ -129,7 +147,7 @@ def main():
                 kernel.CloseHandle(handle)
             if not (package and package.startswith(f"{args.package_name}_")):
                 raise AssertionError(f"Browser lacks expected package identity: {package}")
-            runtime = runtime_modules(state["pid"])
+            runtime = runtime_modules(state["pid"], args.exe.resolve().parent if args.app_local_runtime else None)
             command = ["powershell", "-NoProfile", "-Mta", "-File",
                        str(ROOT / "tests/native/SelectPaneTab.ps1"), "-BrowserProcessId", str(state["pid"]),
                        "-WindowHandle", str(int(state["hwnd"], 16)), "-TabStrip"]
@@ -153,7 +171,7 @@ def main():
             (directory / "result.json").write_text(json.dumps({
                 "packageFullName": package, "runtime": runtime, "state": state, "rows": json.loads(rows),
                 "exitCode": code, "scope": "installed identity"}, indent=2), encoding="utf-8")
-            print(f"PASS: default native strip, framework-only runtime ({len(runtime['modules'])} modules), "
+            print(f"PASS: default native strip, {'app-local' if args.app_local_runtime else 'framework-only'} runtime ({len(runtime['modules'])} modules), "
                   f"UIA new tab, page JavaScript, clean exit; package={package}")
         finally:
             if client:
