@@ -548,7 +548,7 @@ struct NativeAddress {
                 field.Focus(FocusState::Keyboard);
             }
         });
-        fallback.Content(winrt::box_value(L"Use Firefox address bar"));
+        fallback.Content(winrt::box_value(L"Use classic address bar"));
         Automation::AutomationProperties::SetAutomationId(fallback, L"FirefoxWinUIAddressFallback");
         fallback.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
@@ -1051,7 +1051,7 @@ struct NativeAddress {
                 NativeJson::RequireLength(actionsName, NativeJson::kMaxShortLabel);
                 if (!suggestionsName.empty()) Automation::AutomationProperties::SetName(suggestions.list, suggestionsName);
                 if (!actionsName.empty()) Automation::AutomationProperties::SetName(actions.panel, actionsName);
-                fallback.Content(winrt::box_value(labels.GetNamedString(L"addressFallback", L"Use Firefox address bar")));
+                fallback.Content(winrt::box_value(labels.GetNamedString(L"addressFallback", L"Use classic address bar")));
             }
             const auto previousRevision = revision;
             revision = snapshot.GetNamedNumber(L"revision");

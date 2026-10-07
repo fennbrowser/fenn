@@ -3,6 +3,9 @@
 mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/../../build/firefox
 mk_add_options MOZ_MAKE_FLAGS=-j16
 ac_add_options --enable-application=browser
+# Fenn's branding (names, icons, tiles): branding/fenn, mirrored into the checkout
+# by scripts/Stage-FennBranding.py, which mach.sh runs first.
+ac_add_options --with-branding=browser/branding/fenn
 ac_add_options --enable-optimize
 # Keep this initial baseline small enough for the 100 GB Dev Drive.
 # Re-enable full debug symbols for native debugging when storage permits.

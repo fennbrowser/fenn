@@ -10,5 +10,7 @@ export PIP_CACHE_DIR="$(cygpath -m "$shared_cache/pip")"
 export SCCACHE_DIR="$(cygpath -m "$project_root/.cache/sccache")"
 export MOZCONFIG="$(cygpath -m "$project_root/configs/mozconfig")"
 export PATH="$(cygpath -u "$CARGO_HOME")/bin:$PATH"
+# configs/mozconfig builds with the project-owned Fenn branding; mirror it first.
+python3 "$project_root/scripts/Stage-FennBranding.py"
 cd -- "$project_root/upstream/firefox"
 exec python3 mach "$@"

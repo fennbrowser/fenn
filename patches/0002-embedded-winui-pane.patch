@@ -1377,7 +1377,7 @@ index ae503c243c..fe10f80b9a 100644
  #ifdef MOZ_GTK
  ; This is a standalone binary launched by Firefox on Linux to verify
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b..8946afd136 100644
+index 4f28e62c7b..6eef850525 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
 @@ -19,7 +19,7 @@ tabbrowser-tab-tooltip-container = { $containerName }
@@ -1459,7 +1459,7 @@ index 4f28e62c7b..8946afd136 100644
 +winui-tab-strip-selected = Selected tab
 +winui-address-suggestions = Address suggestions
 +winui-address-actions = Search actions
-+winui-address-fallback = Use Firefox address bar
++winui-address-fallback = Use classic address bar
 +
 +winui-toolbar-address = Address bar
 +winui-toolbar-customize-title = Customize native toolbar
@@ -1471,15 +1471,15 @@ index 4f28e62c7b..8946afd136 100644
 +winui-toolbar-customize-done = Done
 +winui-toolbar-customize-overflow = Move to overflow
 +winui-toolbar-customize-overflow-item = { $label } (overflow menu)
-+winui-toolbar-customize-hint = Drag to reorder, or select an item and use the buttons. Changes are saved immediately. Other items remain available in Firefox customization.
++winui-toolbar-customize-hint = Drag to reorder, or select an item and use the buttons. Changes are saved immediately. Other items remain available in Customize Toolbar.
 +
 +winui-toolbar-customize-reset = Restore defaults
 +winui-toolbar-customize-undo-reset = Undo
-+winui-toolbar-customize-reset-hint = Restores Firefox’s toolbar layout, theme, density, and related customization settings.
++winui-toolbar-customize-reset-hint = Restores { -brand-short-name }’s toolbar layout, theme, density, and related customization settings.
 +
 +winui-toolbar-customize-drop = Place here
 +
-+winui-history-open-firefox = Open full Firefox history menu
++winui-history-open-firefox = Open full history menu
 +winui-history-empty = No recent history
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
 index 994aac6c3a..b59b2757d2 100644
