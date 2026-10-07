@@ -349,6 +349,45 @@ class DevPackageTests(unittest.TestCase):
             self.assertEqual(record, {"identity": "Id", "alias": "id.exe", "loose": False,
                                       "version": "159.0.1.0", "package": "x.msix"})
 
+    def test_feed_points_at_the_newest_package_and_keeps_one_previous(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            feed_dir, runs = root / "feed", root / "runs"
+            runs.mkdir()
+            ns = {"a": package.APPINSTALLER_NS}
+            for version in ("159.0.8.0", "159.0.9.0", "159.0.10.0"):
+                built = runs / f"{package.IDENTITY}_{version}_x64.msix"
+                built.write_bytes(version.encode())
+                feed = package.publish_feed(built, package.DEV, version, feed_dir)
+            xml = ET.parse(feed).getroot()
+            self.assertEqual(xml.get("Version"), "159.0.10.0")
+            self.assertEqual(xml.get("Uri"), feed.resolve().as_uri())
+            main = xml.find("a:MainPackage", ns)
+            self.assertEqual((main.get("Name"), main.get("Publisher"), main.get("Version")),
+                             (package.IDENTITY, package.SIGNED_PUBLISHER, "159.0.10.0"))
+            self.assertEqual(main.get("Uri"), (feed_dir / f"{package.IDENTITY}_159.0.10.0_x64.msix").resolve().as_uri())
+            launch = xml.find("a:UpdateSettings/a:OnLaunch", ns)
+            self.assertEqual(launch.get("ShowPrompt"), "false")  # Never block an automated launch.
+            self.assertIsNotNone(xml.find("a:UpdateSettings/a:AutomaticBackgroundTask", ns))
+            # Numeric ordering: 159.0.10.0 is newest and 159.0.9.0 stays as the previous package.
+            self.assertEqual(sorted(p.name for p in feed_dir.glob("*.msix")),
+                             [f"{package.IDENTITY}_159.0.10.0_x64.msix", f"{package.IDENTITY}_159.0.9.0_x64.msix"])
+            with self.assertRaisesRegex(ValueError, "signed lane"):
+                package.publish_feed(built, package.UNSIGNED, "159.0.10.0", feed_dir)
+
+    def test_manifest_claims_the_tested_windows_version(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "AppxManifest.xml"
+            path.write_text(f"""<Package xmlns="{package.NS['f']}" xmlns:desktop="{package.NS['desktop']}">
+  <Properties><DisplayName>x</DisplayName><Description>x</Description></Properties>
+  <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.1555"/></Dependencies>
+  <Applications><Application><desktop:ExecutionAlias Alias="firefox.exe"/></Application></Applications>
+</Package>""", encoding="utf-8")
+            package.customize_manifest(path, "2.5.1.0")
+            family = ET.parse(path).getroot().find("f:Dependencies/f:TargetDeviceFamily", package.NS)
+            self.assertEqual((family.get("MinVersion"), family.get("MaxVersionTested")),
+                             ("10.0.22000.0", package.MAX_VERSION_TESTED))
+
     def test_superseded_loose_runs_are_removed(self):
         with tempfile.TemporaryDirectory() as temp:
             lane = package.Lane("Id", "CN=Id", "Id", "id.exe", Path(temp))

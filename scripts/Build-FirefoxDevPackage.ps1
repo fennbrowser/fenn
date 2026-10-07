@@ -12,7 +12,11 @@ param(
     [switch]$Loose,
     # Build the unsigned fallback (elevated -AllowUnsigned install) instead of signing.
     [switch]$Unsigned,
+    # Publish the signed package to the local App Installer feed (artifacts/msix-feed);
+    # an installation made from the feed then updates itself from it.
+    [switch]$Publish,
     # Install the new package (the loose lane registers itself), then smoke-test it.
+    # With -Publish, -Install installs through the feed.
     [switch]$Install,
     [switch]$Smoke,
     [string]$SdkBin = 'C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64'
@@ -40,6 +44,7 @@ if ($Version) { $packageArgs += '--version', $Version }
 if ($KeepIntermediates) { $packageArgs += '--keep-intermediates' }
 if ($Loose) { $packageArgs += '--loose' }
 if ($Unsigned) { $packageArgs += '--unsigned' }
+if ($Publish) { $packageArgs += '--publish' }
 & powershell -NoProfile -ExecutionPolicy Bypass -File $mach python --virtualenv build @packageArgs
 if ($LASTEXITCODE) { throw "Development MSIX generation failed: $LASTEXITCODE" }
 if (-not ($Install -or $Smoke)) { return }
@@ -51,7 +56,7 @@ if ($record.LastWriteTime -lt $started) { throw "No new build record in $runs" }
 $latest = Get-Content $record.FullName -Raw | ConvertFrom-Json
 if ($Install -and -not $latest.loose) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Install-FirefoxDevPackage.ps1') `
-        -PackagePath $latest.package
+        -PackagePath $(if ($latest.feed) { $latest.feed } else { $latest.package })
     if ($LASTEXITCODE) { throw "Installing $($latest.package) failed: $LASTEXITCODE" }
 }
 if ($Smoke) {

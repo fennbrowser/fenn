@@ -34,6 +34,11 @@ SIGNED_PUBLISHER = "CN=Firefox WinUI Development"
 UNSIGNED_PUBLISHER = ("CN=Firefox WinUI Development, "
                       "OID.2.25.311729368913984317654407730594956997722=1")
 CODE_SIGNING_EKU = "1.3.6.1.5.5.7.3.3"
+# Upstream's template still names Windows 11 22H2. Claim the SDK this package is
+# built and tested with, so Windows applies current packaged-app behaviour.
+MAX_VERSION_TESTED = "10.0.26100.0"
+FEED_DIR = ROOT / "artifacts/msix-feed"
+APPINSTALLER_NS = "http://schemas.microsoft.com/appx/appinstaller/2021"
 RUNTIME_FRAMEWORK = "Microsoft.WindowsAppRuntime.2"
 RUNTIME_PUBLISHER = "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
 # Stock Firefox ships these app-local (widget/windows/moz.build). Packaged, the
@@ -236,7 +241,9 @@ def customize_manifest(path, min_version, description=DISPLAY_NAME, lane=DEV):
     manifest.find("f:Properties/f:DisplayName", NS).text = lane.display_name
     manifest.find("f:Properties/f:Description", NS).text = description
     dependencies = manifest.find("f:Dependencies", NS)
-    dependencies.find("f:TargetDeviceFamily", NS).set("MinVersion", "10.0.22000.0")
+    family = dependencies.find("f:TargetDeviceFamily", NS)
+    family.set("MinVersion", "10.0.22000.0")
+    family.set("MaxVersionTested", MAX_VERSION_TESTED)
     if dependencies.find("f:PackageDependency", NS) is not None:
         raise ValueError("Upstream package dependency contract changed")
     dependency = ET.SubElement(dependencies, f"{{{NS['f']}}}PackageDependency", {
@@ -466,6 +473,44 @@ def staged_pane_names(staging, pane_dir):
             | {"firefoxwinuipane.dll"})
 
 
+def appinstaller_xml(feed_uri, package_uri, lane, version):
+    """An App Installer feed for one package. Windows checks it on every launch and
+    in the background, and installs a newer package without a prompt once the
+    browser is closed; the dependency is not listed, so the Windows App Runtime
+    must already be installed."""
+    ET.register_namespace("", APPINSTALLER_NS)
+    root = ET.Element(f"{{{APPINSTALLER_NS}}}AppInstaller", {"Version": version, "Uri": feed_uri})
+    ET.SubElement(root, f"{{{APPINSTALLER_NS}}}MainPackage", {
+        "Name": lane.identity, "Publisher": lane.publisher, "Version": version,
+        "ProcessorArchitecture": "x64", "Uri": package_uri})
+    settings = ET.SubElement(root, f"{{{APPINSTALLER_NS}}}UpdateSettings")
+    ET.SubElement(settings, f"{{{APPINSTALLER_NS}}}OnLaunch", {
+        "HoursBetweenUpdateChecks": "0", "ShowPrompt": "false", "UpdateBlocksActivation": "false"})
+    ET.SubElement(settings, f"{{{APPINSTALLER_NS}}}AutomaticBackgroundTask")
+    ET.indent(root)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True) + b"\n"
+
+
+def publish_feed(package, lane, version, feed_dir=FEED_DIR):
+    """Copy the package into the feed and point the feed at it. The previous
+    package stays for an install that may still be reading it."""
+    if not lane.signed:
+        raise ValueError("App Installer feeds need the signed lane")
+    feed_dir.mkdir(parents=True, exist_ok=True)
+    published = feed_dir / package.name
+    shutil.copyfile(package, published)
+    feed = feed_dir / f"{lane.identity}.appinstaller"
+    staging = feed.with_suffix(".appinstaller.tmp")
+    staging.write_bytes(appinstaller_xml(feed.resolve().as_uri(), published.resolve().as_uri(), lane, version))
+    staging.replace(feed)
+    keep = {published.name}
+    older = sorted((p for p in feed_dir.glob(f"{lane.identity}_*_x64.msix") if p.name not in keep),
+                   key=lambda p: version_key(p.name.split("_")[1]), reverse=True)
+    for stale in older[1:]:
+        stale.unlink()
+    return feed
+
+
 def write_latest(lane, entry):
     """What the last successful build produced, for Build-FirefoxDevPackage.ps1."""
     (lane.runs_dir / "latest.json").write_text(json.dumps(
@@ -485,6 +530,8 @@ def main():
                        help=f"register the layout as {LOOSE.identity} under Developer Mode instead of packing")
     lanes.add_argument("--unsigned", action="store_true",
                        help="build the unsigned fallback, installable only elevated with -AllowUnsigned")
+    parser.add_argument("--publish", action="store_true",
+                        help=f"also publish the signed package to the App Installer feed in {FEED_DIR.name}")
     parser.add_argument("--keep-intermediates", action="store_true",
                         help="keep payload/ (and, when packing, layout/) after a successful build")
     args = parser.parse_args()
@@ -496,6 +543,8 @@ def main():
     if args.sdk_bin is None:
         parser.error("--sdk-bin is required")
     lane = LOOSE if args.loose else UNSIGNED if args.unsigned else DEV
+    if args.publish and lane is not DEV:
+        parser.error("--publish needs the signed lane (no --loose or --unsigned)")
     if lane.signed:
         certificate = signing_certificate(lane.publisher)
         if not certificate["Trusted"]:
@@ -602,7 +651,11 @@ def main():
     if not args.keep_intermediates:
         for directory in (payload, layout):
             shutil.rmtree(directory)
-    write_latest(lane, {"version": args.version, "package": str(output)})
+    latest = {"version": args.version, "package": str(output)}
+    if args.publish:
+        latest["feed"] = str(publish_feed(output, lane, args.version))
+        print(f"Published to App Installer feed: {latest['feed']}")
+    write_latest(lane, latest)
     print(f"Validated development MSIX: {output}")
     print(f"SHA-256: {result['sha256']}")
 
