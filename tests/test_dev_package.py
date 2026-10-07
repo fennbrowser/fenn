@@ -2,6 +2,8 @@
 import argparse
 import hashlib
 import importlib.util
+import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -311,6 +313,41 @@ class DevPackageTests(unittest.TestCase):
                              package.LOOSE.display_name)
             self.assertEqual(manifest.find(".//desktop:ExecutionAlias", package.NS).get("Alias"),
                              package.LOOSE.alias)
+
+    def test_payload_is_stale_only_when_packaged_inputs_change(self):
+        with tempfile.TemporaryDirectory() as temp:
+            dist = Path(temp)
+            (dist / "bin/browser").mkdir(parents=True)
+            (dist / "firefox").mkdir()
+            self.assertEqual(package.payload_status(dist, set()), (False, "no clean Firefox package yet"))
+            (dist / "firefox/firefox.exe").write_bytes(b"exe")
+            source, pane = dist / "bin/browser/omni-source.js", dist / "bin/FirefoxWinUIPane.dll"
+            for path in (source, pane):
+                path.write_bytes(b"old")
+                os.utime(path, (1000, 1000))
+            archive = dist / "firefox-159.0a1.en-US.win64.zip"
+            archive.write_bytes(b"zip")
+            os.utime(archive, (2000, 2000))
+            other = dist / "firefox-159.0a1.en-US.win64.xpt_artifacts.zip"  # Not the package.
+            other.write_bytes(b"zip")
+            os.utime(other, (5000, 5000))
+            staged = {"firefoxwinuipane.dll"}
+            self.assertTrue(package.payload_status(dist, staged)[0])
+            os.utime(pane, (3000, 3000))  # Pane-only change: the package takes the pane from its build.
+            self.assertTrue(package.payload_status(dist, staged)[0])
+            os.utime(source, (3000, 3000))
+            self.assertEqual(package.payload_status(dist, staged),
+                             (False, "dist/bin/browser/omni-source.js changed after the last mach package"))
+            os.utime(archive, (4000, 4000))  # A later mach package covers it.
+            self.assertTrue(package.payload_status(dist, staged)[0])
+
+    def test_latest_record_names_the_lane_and_build(self):
+        with tempfile.TemporaryDirectory() as temp:
+            lane = package.Lane("Id", "CN=Id", "Id", "id.exe", Path(temp))
+            package.write_latest(lane, {"version": "159.0.1.0", "package": "x.msix"})
+            record = json.loads((Path(temp) / "latest.json").read_text(encoding="utf-8"))
+            self.assertEqual(record, {"identity": "Id", "alias": "id.exe", "loose": False,
+                                      "version": "159.0.1.0", "package": "x.msix"})
 
     def test_superseded_loose_runs_are_removed(self):
         with tempfile.TemporaryDirectory() as temp:

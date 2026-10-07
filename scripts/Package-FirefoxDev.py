@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -425,11 +426,60 @@ def remove_superseded_runs(lane, current):
                 print(f"Warning: could not remove superseded layout {run}: {error}")
 
 
+FIREFOX_ZIP = re.compile(r"firefox-[^-]+\.[A-Za-z-]+\.win(32|64|64-aarch64)\.zip")
+
+
+def payload_status(dist, staged_names):
+    """Whether `mach package` must refresh dist/firefox before packaging.
+
+    `mach package` writes the Firefox ZIP as its last step, so the clean payload
+    is current when no dist/bin file (following its symlinks into the source
+    tree) is newer than that ZIP. Staged pane files are ignored: the package
+    takes the pane from its own build output, so pane-only changes never need
+    a repackage. Returns (current, reason).
+    """
+    zips = [p for p in dist.glob("firefox-*.zip") if FIREFOX_ZIP.fullmatch(p.name)]
+    if not zips or not (dist / "firefox/firefox.exe").is_file():
+        return False, "no clean Firefox package yet"
+    packaged = max(p.stat().st_mtime for p in zips)
+    newest, newest_name = packaged, None
+    root = dist / "bin"
+    for directory, _, files in os.walk(root, followlinks=True):
+        for name in files:
+            path = os.path.join(directory, name)
+            relative = os.path.relpath(path, root).replace("\\", "/").lower()
+            if relative in staged_names:
+                continue
+            try:
+                modified = os.stat(path).st_mtime
+            except OSError:  # Dangling link: not packaged either.
+                continue
+            if modified > newest:
+                newest, newest_name = modified, relative
+    if newest_name:
+        return False, f"dist/bin/{newest_name} changed after the last mach package"
+    return True, "dist/firefox is current"
+
+
+def staged_pane_names(staging, pane_dir):
+    return ({p.relative_to(pane_dir).as_posix().lower() for p in staging.runtime_files(pane_dir)}
+            | {"firefoxwinuipane.dll"})
+
+
+def write_latest(lane, entry):
+    """What the last successful build produced, for Build-FirefoxDevPackage.ps1."""
+    (lane.runs_dir / "latest.json").write_text(json.dumps(
+        {"identity": lane.identity, "alias": lane.alias, "loose": lane is LOOSE, **entry}, indent=2) + "\n",
+        encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--payload-status", action="store_true",
+                        help="only report whether dist/firefox needs `mach package` (exit 0 current, 10 stale)")
     parser.add_argument("--version", type=version_string,
                         help="default: one build step past the installed and newest built versions")
-    parser.add_argument("--sdk-bin", required=True, type=Path)
+    parser.add_argument("--sdk-bin", type=Path)
     lanes = parser.add_mutually_exclusive_group()
     lanes.add_argument("--loose", action="store_true",
                        help=f"register the layout as {LOOSE.identity} under Developer Mode instead of packing")
@@ -438,6 +488,13 @@ def main():
     parser.add_argument("--keep-intermediates", action="store_true",
                         help="keep payload/ (and, when packing, layout/) after a successful build")
     args = parser.parse_args()
+    if args.payload_status:
+        current, reason = payload_status(ROOT / "build/firefox/dist", staged_pane_names(
+            load_script("Stage-WinUIPane"), ROOT / "build/winui-pane/x64/Release"))
+        print(f"Firefox payload {'current' if current else 'stale'}: {reason}")
+        raise SystemExit(0 if current else 10)
+    if args.sdk_bin is None:
+        parser.error("--sdk-bin is required")
     lane = LOOSE if args.loose else UNSIGNED if args.unsigned else DEV
     if lane.signed:
         certificate = signing_certificate(lane.publisher)
@@ -525,6 +582,7 @@ def main():
         if not args.keep_intermediates:
             shutil.rmtree(payload)
         remove_superseded_runs(lane, run)
+        write_latest(lane, {"version": args.version, "layout": str(layout)})
         print(f"Registered {lane.display_name} {args.version} from {layout}")
         print(f"Launch it from Start or with {lane.alias}")
         return
@@ -544,6 +602,7 @@ def main():
     if not args.keep_intermediates:
         for directory in (payload, layout):
             shutil.rmtree(directory)
+    write_latest(lane, {"version": args.version, "package": str(output)})
     print(f"Validated development MSIX: {output}")
     print(f"SHA-256: {result['sha256']}")
 
