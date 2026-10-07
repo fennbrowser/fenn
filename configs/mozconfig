@@ -11,6 +11,10 @@ ac_add_options --with-branding=browser/branding/fenn
 # flags set in browser/moz.configure by patch 2. The application name,
 # executable and application ID stay Firefox's.
 ac_add_options MOZ_APP_REMOTINGNAME=fenn
+# Fenn's services (rebrand phase 3): MSIX (the Store or the App Installer feed)
+# is the only update path, and crash reports must not go to Mozilla's server.
+ac_add_options --disable-updater
+ac_add_options --disable-crashreporter
 ac_add_options --enable-optimize
 # Keep this initial baseline small enough for the 100 GB Dev Drive.
 # Re-enable full debug symbols for native debugging when storage permits.

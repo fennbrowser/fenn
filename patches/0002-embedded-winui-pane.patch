@@ -1,8 +1,45 @@
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index d56594d91c..33eac17ad6 100644
+index d56594d91c..af2a6efac2 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -3875,6 +3875,37 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -2299,8 +2299,8 @@ pref("nimbus.profilesdatastoreservice.sync.enabled", true);
+   pref("nimbus.telemetry.targetingContextEnabled", true);
+ #endif
+ 
+-// Enable Rollouts by default.
+-pref("nimbus.rollouts.enabled", true);
++// Fenn (firefox-winui): no Nimbus rollouts; Mozilla delivers them to Firefox.
++pref("nimbus.rollouts.enabled", false);
+ 
+ // Nimbus QA prefs. Used to monitor pref-setting test experiments.
+ pref("nimbus.qa.pref-1", "default");
+@@ -3085,18 +3085,19 @@ pref("network.trr_ui.fallback_was_checked", true);
+ // Normandy client preferences
+ pref("app.normandy.api_url", "https://normandy.cdn.mozilla.net/api/v1");
+ pref("app.normandy.dev_mode", false);
+-pref("app.normandy.enabled", true);
++// Fenn (firefox-winui): no Normandy recipes; Mozilla targets them at Firefox.
++// Disable it here, not with MOZ_NORMANDY: that build flag does not stop the
++// runtime and also changes first-startup initialization.
++pref("app.normandy.enabled", false);
+ pref("app.normandy.first_run", true);
+ pref("app.normandy.logging.level", 50); // Warn
+ pref("app.normandy.run_interval_seconds", 21600); // 6 hours
+ pref("app.normandy.shieldLearnMoreUrl", "https://support.mozilla.org/1/firefox/%VERSION%/%OS%/%LOCALE%/shield");
+ pref("app.normandy.last_seen_buildid", "");
+ pref("app.normandy.onsync_skew_sec", 600);
+-#ifdef MOZ_DATA_REPORTING
+-  pref("app.shield.optoutstudies.enabled", true);
+-#else
+-  pref("app.shield.optoutstudies.enabled", false);
+-#endif
++// Fenn (firefox-winui): no studies or remote experiments; Mozilla targets them at
++// Firefox.
++pref("app.shield.optoutstudies.enabled", false);
+ 
+ // Multi-lingual preferences:
+ //  *.enabled - Are langpacks available for the build of Firefox?
+@@ -3875,6 +3876,37 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -1714,6 +1751,20 @@ index c14d1de114..d933190509 100644
    /**
     * Image animation mode of the window. When this attribute's value
     * is changed, the implementation should set all images in the window
+diff --git a/python/mozbuild/mozbuild/repackaging/msix.py b/python/mozbuild/mozbuild/repackaging/msix.py
+index 47a067c4c1..b88749f7d5 100644
+--- a/python/mozbuild/mozbuild/repackaging/msix.py
++++ b/python/mozbuild/mozbuild/repackaging/msix.py
+@@ -710,7 +710,8 @@ def repackage_msix(
+         "MOZ_APP_DISPLAYNAME": displayname,
+         "MOZ_APP_NAME": app_name,
+         # Keep synchronized with `toolkit\mozapps\notificationserver\NotificationComServer.cpp`.
+-        "MOZ_INOTIFICATIONACTIVATION_CLSID": "916f9b5d-b5b2-4d36-b047-03c7a52f81c8",
++        # Fenn (firefox-winui): its own CLSID, distinct from Firefox's.
++        "MOZ_INOTIFICATIONACTIVATION_CLSID": "db7a9c5e-7f97-415f-945b-dbfc48829a95",
+         "MOZ_BACKGROUNDTASK_ACTIVATABLE_CLASS_ID": background_task_class_id,
+     }
+ 
 diff --git a/toolkit/content/editMenuOverlay.js b/toolkit/content/editMenuOverlay.js
 index c890692674..5ef1dd2e0b 100644
 --- a/toolkit/content/editMenuOverlay.js
@@ -1768,6 +1819,28 @@ index 38490ae2ab..ddfc21ae36 100644
        }
      });
    },
+diff --git a/toolkit/mozapps/notificationserver/NotificationComServer.cpp b/toolkit/mozapps/notificationserver/NotificationComServer.cpp
+index 6bef7f9779..80ef6a4512 100644
+--- a/toolkit/mozapps/notificationserver/NotificationComServer.cpp
++++ b/toolkit/mozapps/notificationserver/NotificationComServer.cpp
+@@ -45,11 +45,13 @@ bool CheckRuntimeClsid(REFCLSID rclsid) {
+   // identical across installs/channels.
+   if (mozilla::HasPackageIdentity()) {
+     // Keep synchronized with `python\mozbuild\mozbuild\repackaging\msix.py`.
++    // Fenn (firefox-winui) has its own CLSID, so Windows never routes a Firefox
++    // notification to Fenn or the reverse.
+     constexpr CLSID MOZ_INOTIFICATIONACTIVATION_CLSID = {
+-        0x916f9b5d,
+-        0xb5b2,
+-        0x4d36,
+-        {0xb0, 0x47, 0x03, 0xc7, 0xa5, 0x2f, 0x81, 0xc8}};
++        0xdb7a9c5e,
++        0x7f97,
++        0x415f,
++        {0x94, 0x5b, 0xdb, 0xfc, 0x48, 0x82, 0x9a, 0x95}};
+ 
+     return IsEqualCLSID(rclsid, MOZ_INOTIFICATIONACTIVATION_CLSID);
+   }
 diff --git a/widget/nsIWidget.h b/widget/nsIWidget.h
 index 2d06d7b7dd..3925f8d967 100644
 --- a/widget/nsIWidget.h

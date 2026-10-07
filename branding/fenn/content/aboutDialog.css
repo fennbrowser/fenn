@@ -2,6 +2,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/* Fenn: hide Mozilla's own community, donation and feedback items, and the
+   links to Mozilla's Firefox Terms of Use and Privacy Notice, which do not govern
+   Fenn. The licensing link (about:license) stays. */
+#communityExperimentalDesc,
+#communityDesc,
+#contributeDesc,
+#contributeDescReferrals,
+#submit-feedback,
+.bottom-link[href^="https://www.mozilla.org/"] {
+  display: none !important;
+}
+
 #rightBox {
   background-size: auto 44px;
   margin-inline: 30px;
