@@ -375,6 +375,25 @@ class DevPackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "signed lane"):
                 package.publish_feed(built, package.UNSIGNED, "159.0.10.0", feed_dir)
 
+    def test_package_pri_must_be_named_for_the_package_and_resolve(self):
+        with tempfile.TemporaryDirectory() as temp:
+            layout, dump = Path(temp) / "layout", Path(temp) / "dump.xml"
+            (layout / "Assets").mkdir(parents=True)
+
+            def write(name):
+                dump.write_text(f"""<PriInfo><ResourceMap name="{name}" primary="true">
+  <NamedResource name="Square44x44Logo.png"><Candidate type="Path"><Value>Assets\\Square44x44Logo.png</Value></Candidate></NamedResource>
+</ResourceMap></PriInfo>""", encoding="utf-8")
+
+            write("firefox")  # Upstream's prebuilt map name.
+            with self.assertRaisesRegex(ValueError, "resource map is \\['firefox'\\]"):
+                package.check_package_pri(dump, layout, package.IDENTITY)
+            write(package.IDENTITY)
+            with self.assertRaisesRegex(ValueError, "missing file"):
+                package.check_package_pri(dump, layout, package.IDENTITY)
+            (layout / "Assets/Square44x44Logo.png").write_bytes(b"png")
+            package.check_package_pri(dump, layout, package.IDENTITY)
+
     def test_manifest_claims_the_tested_windows_version(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "AppxManifest.xml"

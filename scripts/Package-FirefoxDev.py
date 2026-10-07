@@ -233,6 +233,36 @@ def replace_exe_manifest(mt, exe, work, supplied):
     return removed
 
 
+def check_package_pri(dump, layout, identity):
+    """The package PRI must be this package's resource map, and every file it
+    names must exist in the layout (MakePri itself checks neither)."""
+    root = ET.parse(dump).getroot()
+    maps = [m.get("name") for m in root.iter("ResourceMap")]
+    if maps[:1] != [identity]:
+        raise ValueError(f"Package PRI resource map is {maps}, expected {identity}")
+    for candidate in root.findall(".//Candidate[@type='Path']/Value"):
+        relative = PurePosixPath(candidate.text.replace("\\", "/"))
+        if relative.is_absolute() or ".." in relative.parts or not (layout / relative).is_file():
+            raise ValueError(f"Package PRI references a missing file: {candidate.text}")
+
+
+def reindex_package_pri(makepri, layout, work, identity):
+    """Upstream ships a prebuilt Resources.pri whose map is named "firefox". Windows
+    resolves the manifest's assets through the map named after the package, so
+    re-index it under this package's identity."""
+    source = work / "pri-input"
+    source.mkdir()
+    shutil.copyfile(layout / "AppxManifest.xml", source / "AppxManifest.xml")
+    shutil.copyfile(layout / "Resources.pri", source / "upstream.pri")
+    subprocess.run([str(makepri), "new", "/pr", str(source), "/cf", str(ROOT / "configs/msix-package-pri.xml"),
+                    "/of", str(layout / "Resources.pri"), "/o"], check=True, stdout=subprocess.DEVNULL)
+    dump = work / "package-pri.xml"
+    subprocess.run([str(makepri), "dump", "/if", str(layout / "Resources.pri"), "/of", str(dump), "/o"],
+                   check=True, stdout=subprocess.DEVNULL)
+    check_package_pri(dump, layout, identity)
+    shutil.rmtree(source)
+
+
 def customize_manifest(path, min_version, description=DISPLAY_NAME, lane=DEV):
     for _, (prefix, uri) in ET.iterparse(path, events=["start-ns"]):
         ET.register_namespace(prefix, uri)
@@ -556,11 +586,12 @@ def main():
         state = registration(LOOSE)
         if state and state["Running"]:
             raise RuntimeError(f"Close {LOOSE.display_name} first; running process IDs: {state['Running']}")
-    makeappx, mt, signtool = (args.sdk_bin / name for name in ("makeappx.exe", "mt.exe", "signtool.exe"))
+    makeappx, mt, signtool, makepri = (args.sdk_bin / name for name in
+                                        ("makeappx.exe", "mt.exe", "signtool.exe", "makepri.exe"))
     clean = ROOT / "build/firefox/dist/firefox"
     msix_server = ROOT / "build/firefox/dist/bin/msixcomserver.dll"
     pane_dir = ROOT / "build/winui-pane/x64/Release"
-    for required in (makeappx, mt, signtool, clean / "firefox.exe", clean / "omni.ja", msix_server,
+    for required in (makeappx, mt, signtool, makepri, clean / "firefox.exe", clean / "omni.ja", msix_server,
                      pane_dir / "FirefoxWinUIPane.dll",
                      *(clean / name for name in FIREFOX_RUNTIME)):
         if not required.is_file():
@@ -619,6 +650,7 @@ def main():
     customize_manifest(layout / "AppxManifest.xml", min_version,
                        f"{lane.display_name} (Firefox {browser_version}, package {args.version})", lane)
     shutil.copyfile(layout / "AppxManifest.xml", run / "AppxManifest.xml")
+    reindex_package_pri(makepri, layout, run, lane.identity)
     runtime_names = [entry["file"] for entry in record["files"]]
     common = {"firefoxVersion": browser_version, "runtimeFramework": framework["PackageFullName"],
               "removedExeWinRTServers": removed_registrations, "payloadSha256": expected_hashes}

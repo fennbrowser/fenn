@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Re-indexes upstream's prebuilt MSIX Resources.pri under this package's identity
+     (makepri takes the map name from AppxManifest.xml in the project root). Only
+     the PRI indexer: the package carries no other resources. -->
+<resources targetOsVersion="10.0.0" majorVersion="1">
+  <index root="\" startIndexAt="\">
+    <default><qualifier name="Language" value="en-US"/></default>
+    <indexer-config type="PRI"/>
+  </index>
+</resources>
