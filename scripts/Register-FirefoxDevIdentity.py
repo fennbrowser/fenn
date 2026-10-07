@@ -7,6 +7,11 @@ manifest names the package, so the lane runs dist/bin/firefox-identity.exe: a
 copy of firefox.exe carrying that msix element. Plain firefox.exe, and every
 suite that launches it, stays unpackaged.
 
+It reuses Firefox's MSIX declarations that its identity-dependent code needs
+(notifications, background tasks, launch on login, accessibility proxy stubs)
+from the newest MSIX build, rewritten for dist/bin. Protocols, file
+associations and the execution alias stay with the installed MSIX.
+
 The package declares no Windows App SDK framework dependency: dist/bin carries
 the app-local runtime that firefox.exe's manifest registers, and a framework in
 the package graph would let a second runtime copy load. Use the MSIX lanes to
@@ -43,7 +48,74 @@ def load_packager():
     return module
 
 
-def package_manifest(publisher, max_version_tested):
+FOUNDATION = "http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+# Firefox's MSIX declarations that its identity-dependent code uses: notification
+# activation, the background-task timer and its host, launch on login, and the
+# accessibility proxy stubs. Protocols, file associations and the execution alias
+# are left out: they would list a second browser in Default Apps and collide with
+# the installed MSIX's alias.
+APPLICATION_EXTENSIONS = ("windows.comServer", "windows.toastNotificationActivation",
+                          "windows.backgroundTasks", "windows.startupTask")
+PACKAGE_EXTENSIONS = ("windows.activatableClass.inProcessServer", "windows.comInterface")
+
+
+def newest_msix_manifest():
+    """The substituted manifest of the newest FirefoxWinUI.Dev build; upstream's
+    template needs build-time values (install directory, background-task class)."""
+    for path in sorted((ROOT / "artifacts/msix-dev").glob("*/AppxManifest.xml"),
+                       key=lambda p: p.stat().st_mtime, reverse=True):
+        identity = ET.parse(path).getroot().find(f"{{{FOUNDATION}}}Identity")
+        if identity is not None and identity.get("Name") == "FirefoxWinUI.Dev":
+            return path
+    raise FileNotFoundError("Build the MSIX once (Build-FirefoxDevPackage.ps1) so its Firefox "
+                            "declarations can be reused")
+
+
+def firefox_declarations(source, bin_dir=BIN):
+    """Firefox's MSIX extensions, rewritten for an external location of dist/bin.
+    Returns (application extensions XML, package extensions XML)."""
+    for _, (prefix, uri) in ET.iterparse(source, events=["start-ns"]):
+        ET.register_namespace(prefix, uri)
+    root = ET.parse(source).getroot()
+    application = root.find(f"{{{FOUNDATION}}}Applications/{{{FOUNDATION}}}Application")
+    executable = application.get("Executable")
+    install_dir = executable.rsplit("\\", 1)[0] + "\\"
+    kept = {"application": [], "package": []}
+    for scope, parent, categories in (
+            ("application", application.find(f"{{{FOUNDATION}}}Extensions"), APPLICATION_EXTENSIONS),
+            ("package", root.find(f"{{{FOUNDATION}}}Extensions"), PACKAGE_EXTENSIONS)):
+        for extension in list(parent):
+            if extension.get("Category") in categories:
+                kept[scope].append(extension)
+    found = {e.get("Category") for scope in kept.values() for e in scope}
+    missing = set(APPLICATION_EXTENSIONS + PACKAGE_EXTENSIONS) - found
+    if missing:
+        raise ValueError(f"Upstream MSIX manifest no longer declares {sorted(missing)}")
+    referenced = set()
+    for element in (node for scope in kept.values() for extension in scope for node in extension.iter()):
+        for key, value in element.attrib.items():
+            if key == "Executable" and value == executable:
+                element.set(key, EXE)
+                referenced.add(EXE)
+            elif key in ("Executable", "Path") and value.startswith(install_dir):
+                element.set(key, value[len(install_dir):])
+                referenced.add(element.get(key))
+        if element.tag == f"{{{FOUNDATION}}}Path" and element.text and element.text.startswith(install_dir):
+            element.text = element.text[len(install_dir):]
+            referenced.add(element.text)
+        if element.tag.endswith("}StartupTask"):
+            element.set("DisplayName", DISPLAY_NAME)
+    absent = sorted(name for name in referenced if name != EXE and not (bin_dir / name).is_file())
+    if absent:
+        raise FileNotFoundError(f"dist/bin lacks files the declarations reference: {absent}")
+
+    def serialize(elements):
+        return "".join(ET.tostring(element, encoding="unicode") for element in elements)
+    return serialize(kept["application"]), serialize(kept["package"])
+
+
+def package_manifest(publisher, max_version_tested, declarations=("", "")):
+    application_extensions, package_extensions = declarations
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <Package IgnorableNamespaces="uap uap10"
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -71,8 +143,10 @@ def package_manifest(publisher, max_version_tested):
     <Application Id="{APP_ID}" Executable="{EXE}" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
       <uap:VisualElements AppListEntry="none" DisplayName="{DISPLAY_NAME}" Description="{DISPLAY_NAME}"
         BackgroundColor="transparent" Square150x150Logo="{LOGO}\\icon128.png" Square44x44Logo="{LOGO}\\icon48.png" />
+      {f"<Extensions>{application_extensions}</Extensions>" if application_extensions else ""}
     </Application>
   </Applications>
+  {f"<Extensions>{package_extensions}</Extensions>" if package_extensions else ""}
 </Package>
 """
 
@@ -158,7 +232,8 @@ def register(packager, sdk_bin):
     if not certificate["Trusted"]:
         raise RuntimeError("The signing certificate is not trusted; run Initialize-DevSigning.ps1 (elevated) once")
     exe, refreshed = refresh_identity_exe(mt, packager.SIGNED_PUBLISHER)
-    manifest = package_manifest(packager.SIGNED_PUBLISHER, packager.MAX_VERSION_TESTED)
+    manifest = package_manifest(packager.SIGNED_PUBLISHER, packager.MAX_VERSION_TESTED,
+                                firefox_declarations(newest_msix_manifest()))
     state = registration()
     if (state and Path(state["ExternalLocation"]).resolve() == BIN.resolve()
             and same_manifest(state["Manifest"], manifest)):

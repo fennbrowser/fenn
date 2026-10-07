@@ -437,6 +437,57 @@ class DevPackageTests(unittest.TestCase):
         self.assertTrue(identity.same_manifest(registered, manifest))
         self.assertFalse(identity.same_manifest(registered.replace("1.0.0.0", "1.0.1.0"), manifest))
 
+    def test_identity_package_reuses_firefox_declarations_for_dist_bin(self):
+        identity = load("Register-FirefoxDevIdentity")
+        root = "VFS\\ProgramFiles\\Dev Root\\"
+        source_text = f"""<Package xmlns="{identity.FOUNDATION}"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10">
+  <Identity Name="FirefoxWinUI.Dev" Publisher="CN=x" Version="1.0.0.0" ProcessorArchitecture="x64" />
+  <Applications><Application Id="App" Executable="{root}firefox.exe"><Extensions>
+    <uap3:Extension Category="windows.protocol"><uap3:Protocol Name="https" /></uap3:Extension>
+    <uap3:Extension Category="windows.appExecutionAlias" Executable="{root}firefox.exe" />
+    <com:Extension Category="windows.comServer"><com:ComServer><com:SurrogateServer AppId="1">
+      <com:Class Id="1" Path="{root}notificationserver.dll" /></com:SurrogateServer></com:ComServer></com:Extension>
+    <Extension Category="windows.backgroundTasks" EntryPoint="Host"><BackgroundTasks><Task Type="timer" /></BackgroundTasks></Extension>
+    <uap5:Extension Category="windows.startupTask" Executable="{root}firefox.exe" uap10:Parameters="-os-autostart">
+      <uap5:StartupTask TaskId="LaunchOnLogin" Enabled="false" DisplayName="WinUI Browser Dev" /></uap5:Extension>
+    <desktop:Extension Category="windows.toastNotificationActivation"><desktop:ToastNotificationActivation ToastActivatorCLSID="1" /></desktop:Extension>
+  </Extensions></Application></Applications>
+  <Extensions>
+    <Extension Category="windows.activatableClass.inProcessServer"><InProcessServer><Path>{root}msixcomserver.dll</Path>
+      <ActivatableClass ActivatableClassId="Host" /></InProcessServer></Extension>
+    <com:Extension Category="windows.comInterface"><com:ComInterface>
+      <com:ProxyStub Id="2" Path="{root}AccessibleMarshal.dll" /></com:ComInterface></com:Extension>
+  </Extensions>
+</Package>"""
+        with tempfile.TemporaryDirectory() as temp:
+            source, bin_dir = Path(temp) / "AppxManifest.xml", Path(temp) / "bin"
+            source.write_text(source_text, encoding="utf-8")
+            bin_dir.mkdir()
+            for name in ("notificationserver.dll", "msixcomserver.dll"):
+                (bin_dir / name).write_bytes(b"dll")
+            with self.assertRaisesRegex(FileNotFoundError, "AccessibleMarshal.dll"):
+                identity.firefox_declarations(source, bin_dir)
+            (bin_dir / "AccessibleMarshal.dll").write_bytes(b"dll")
+            declarations = identity.firefox_declarations(source, bin_dir)
+            manifest = identity.package_manifest(package.SIGNED_PUBLISHER, package.MAX_VERSION_TESTED, declarations)
+            xml = ET.fromstring(manifest.split("?>", 1)[1])
+            categories = {e.get("Category") for e in xml.iter() if e.get("Category")}
+            self.assertEqual(categories, set(identity.APPLICATION_EXTENSIONS + identity.PACKAGE_EXTENSIONS))
+            self.assertNotIn("VFS", manifest)
+            self.assertIn('Path="notificationserver.dll"', manifest)
+            self.assertIn("<Path>msixcomserver.dll</Path>", manifest)
+            startup = next(e for e in xml.iter() if e.get("Category") == "windows.startupTask")
+            self.assertEqual(startup.get("Executable"), identity.EXE)
+            self.assertEqual(next(iter(startup)).get("DisplayName"), identity.DISPLAY_NAME)
+            source.write_text(source_text.replace("windows.backgroundTasks", "windows.other"), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "no longer declares"):
+                identity.firefox_declarations(source, bin_dir)
+
     def test_superseded_loose_runs_are_removed(self):
         with tempfile.TemporaryDirectory() as temp:
             lane = package.Lane("Id", "CN=Id", "Id", "id.exe", Path(temp))
