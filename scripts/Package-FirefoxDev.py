@@ -41,14 +41,10 @@ FEED_DIR = ROOT / "artifacts/msix-feed"
 APPINSTALLER_NS = "http://schemas.microsoft.com/appx/appinstaller/2021"
 RUNTIME_FRAMEWORK = "Microsoft.WindowsAppRuntime.2"
 RUNTIME_PUBLISHER = "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
-# Stock Firefox ships these app-local (widget/windows/moz.build). Packaged, the
-# framework supplies them, so one runtime copy can load per process.
-FIREFOX_RUNTIME = (
-    "CoreMessagingXP.dll", "marshal.dll", "Microsoft.InputStateManager.dll",
-    "Microsoft.Internal.FrameworkUdk.dll", "Microsoft.UI.Composition.OSSupport.dll",
-    "Microsoft.UI.Input.dll", "Microsoft.UI.Windowing.Core.dll", "Microsoft.UI.Windowing.dll",
-    "Microsoft.WindowsAppRuntime.dll", "Microsoft.WindowsAppRuntime.Insights.Resource.dll",
-)
+# Firefox DLLs that share a file name with a framework DLL but are not the
+# Windows App SDK runtime. Firefox loads them by full path, so the framework's
+# copy cannot stand in: onnxruntime.dll (dom/onnx/InferenceSession.cpp, beside xul).
+FIREFOX_SAME_NAME_DLLS = {"onnxruntime.dll"}
 NS = {
     "f": "http://schemas.microsoft.com/appx/manifest/foundation/windows10",
     "uap": "http://schemas.microsoft.com/appx/manifest/uap/windows10",
@@ -176,61 +172,26 @@ def installed_framework(min_version):
     return max(usable, key=lambda p: version_key(p["Version"]))
 
 
-def framework_record(framework, firefox_dir, pane_files, pane_dir, image_digest):
-    """Prove the framework supplies every runtime file the package no longer carries."""
+def framework_record(framework):
+    """The framework the package depends on, and the runtime DLLs it supplies. None
+    of them may appear in the package: patch 2 stops Firefox shipping its own
+    app-local copies, and the pane is framework-dependent, so only the
+    framework's copy can load."""
     location = Path(framework["InstallLocation"])
-    available = {p.relative_to(location).as_posix().lower(): p
-                 for p in location.rglob("*") if p.is_file()}
-    sources = [(name, firefox_dir / name) for name in FIREFOX_RUNTIME]
-    sources += [(p.relative_to(pane_dir).as_posix(), p) for p in pane_files]
-    records = {}
-    for relative, local in sources:
-        if relative.lower() in records:
-            continue
-        supplied = available.get(relative.lower())
-        if not supplied:
-            raise ValueError(f"{framework['PackageFullName']} lacks runtime file: {relative}")
-        records[relative.lower()] = {
-            "file": relative,
-            "imageMatch": local.suffix.lower() != ".dll" or image_digest(local) == image_digest(supplied)}
-    return {"framework": framework, "files": sorted(records.values(), key=lambda r: r["file"].lower())}
+    return {"framework": framework,
+            "files": sorted(p.name for p in location.iterdir() if p.is_file() and p.suffix.lower() == ".dll"
+                            and p.name.lower() not in FIREFOX_SAME_NAME_DLLS)}
 
 
-WINRT_FILE = re.compile(r"<asmv3:file\b[^>]*\bname=\"([^\"]+)\"[^>]*>(?:(?!</asmv3:file>).)*?"
-                        r"winrtv1:activatableClass.*?</asmv3:file>\s*", re.S)
-
-
-def strip_winrt_registrations(text, supplied):
-    """Drop executable reg-free WinRT entries for framework-supplied servers.
-
-    The unpackaged firefox.exe registers WinUI classes against app-local DLLs.
-    Those entries take precedence over the package graph, so the packaged
-    executable must not carry them; the framework registers the same classes
-    process-wide, including for incoming COM/UIA calls.
-    """
-    removed = WINRT_FILE.findall(text)
-    if not removed:
-        raise ValueError("firefox.exe manifest has no WinUI registrations to replace")
-    unsupplied = sorted(name for name in removed if name.lower() not in supplied)
-    if unsupplied:
-        raise ValueError(f"Framework does not supply registered WinRT servers: {unsupplied}")
-    stripped = WINRT_FILE.sub("", text)
-    if "activatableClass" in stripped:
-        raise ValueError("Unrecognized WinRT registration left in firefox.exe manifest")
-    ET.fromstring(stripped.encode("utf-8"))
-    return stripped, removed
-
-
-def replace_exe_manifest(mt, exe, work, supplied):
-    extracted, replacement = work / "firefox.exe.manifest", work / "firefox.exe.packaged.manifest"
-    subprocess.run([str(mt), "-nologo", f"-inputresource:{exe};#1", f"-out:{extracted}"], check=True)
-    stripped, removed = strip_winrt_registrations(extracted.read_text(encoding="utf-8-sig"), supplied)
-    replacement.write_text(stripped, encoding="utf-8")
-    subprocess.run([str(mt), "-nologo", "-manifest", str(replacement), f"-outputresource:{exe};#1"], check=True)
-    subprocess.run([str(mt), "-nologo", f"-inputresource:{exe};#1", f"-out:{extracted}"], check=True)
+def check_exe_manifest(mt, exe, work):
+    """firefox.exe must register no WinRT classes: in a package they would take
+    precedence over the framework in the package graph (WinUI activation then
+    fails with 0x8007007E). Firefox's build no longer adds any."""
+    extracted = work / "firefox.exe.manifest"
+    subprocess.run([str(mt), "-nologo", f"-inputresource:{exe};#1", f"-out:{extracted}"],
+                   check=True, stdout=subprocess.DEVNULL)
     if "activatableClass" in extracted.read_text(encoding="utf-8-sig"):
-        raise ValueError("Packaged firefox.exe still registers WinRT classes")
-    return removed
+        raise ValueError(f"{exe} registers WinRT classes; rebuild Firefox from the current patch")
 
 
 def pri_candidates(dump):
@@ -513,9 +474,9 @@ def payload_status(dist, staged_names):
     return True, "dist/firefox is current"
 
 
-def staged_pane_names(staging, pane_dir):
-    return ({p.relative_to(pane_dir).as_posix().lower() for p in staging.runtime_files(pane_dir)}
-            | {"firefoxwinuipane.dll"})
+def staged_pane_names(staging):
+    """Files Stage-WinUIPane.py puts in dist/bin; the package takes the pane from its build."""
+    return {name.lower() for name in staging.STAGED}
 
 
 def appinstaller_xml(feed_uri, package_uri, lane, version):
@@ -581,8 +542,8 @@ def main():
                         help="keep payload/ (and, when packing, layout/) after a successful build")
     args = parser.parse_args()
     if args.payload_status:
-        current, reason = payload_status(ROOT / "build/firefox/dist", staged_pane_names(
-            load_script("Stage-WinUIPane"), ROOT / "build/winui-pane/x64/Release"))
+        current, reason = payload_status(ROOT / "build/firefox/dist",
+                                         staged_pane_names(load_script("Stage-WinUIPane")))
         print(f"Firefox payload {'current' if current else 'stale'}: {reason}")
         raise SystemExit(0 if current else 10)
     if args.sdk_bin is None:
@@ -607,15 +568,12 @@ def main():
     msix_server = ROOT / "build/firefox/dist/bin/msixcomserver.dll"
     pane_dir = ROOT / "build/winui-pane/x64/Release"
     for required in (makeappx, mt, signtool, makepri, clean / "firefox.exe", clean / "omni.ja", msix_server,
-                     pane_dir / "FirefoxWinUIPane.dll",
-                     *(clean / name for name in FIREFOX_RUNTIME)):
+                     pane_dir / "FirefoxWinUIPane.dll"):
         if not required.is_file():
             raise FileNotFoundError(f"Missing build prerequisite: {required}")
-    staging = load_script("Stage-WinUIPane")
-    pane_runtime = staging.runtime_files(pane_dir)
     min_version = runtime_min_version()
     framework = installed_framework(min_version)
-    record = framework_record(framework, clean, pane_runtime, pane_dir, staging.image_digest)
+    record = framework_record(framework)
     browser_version = firefox_version(clean)
     installed = installed_version(lane)
     if args.version is None:
@@ -633,13 +591,11 @@ def main():
     (run / "runtime-framework.json").write_text(
         json.dumps({"minVersion": min_version, **record}, indent=2) + "\n", encoding="utf-8")
     payload = run / "payload"
-    shutil.copytree(clean, payload, ignore=lambda directory, names: [
-        name for name in names if Path(directory) == clean and name in FIREFOX_RUNTIME])
+    shutil.copytree(clean, payload)
     # This pinned Firefox ZIP manifest omits the MSIX-only background COM server.
     shutil.copyfile(msix_server, payload / msix_server.name)
     shutil.copyfile(pane_dir / "FirefoxWinUIPane.dll", payload / "FirefoxWinUIPane.dll")
-    supplied = {p.name.lower() for p in Path(framework["InstallLocation"]).iterdir() if p.is_file()}
-    removed_registrations = replace_exe_manifest(mt, payload / "firefox.exe", run, supplied)
+    check_exe_manifest(mt, payload / "firefox.exe", run)
     defaults = payload / "browser/defaults/preferences/firefox-winui-dev.js"
     defaults.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / "packaging/dev/defaults.js", defaults)
@@ -666,9 +622,9 @@ def main():
                        f"{lane.display_name} (Firefox {browser_version}, package {args.version})", lane)
     shutil.copyfile(layout / "AppxManifest.xml", run / "AppxManifest.xml")
     reindex_package_pri(makepri, layout, run, lane.identity)
-    runtime_names = [entry["file"] for entry in record["files"]]
+    runtime_names = record["files"]
     common = {"firefoxVersion": browser_version, "runtimeFramework": framework["PackageFullName"],
-              "removedExeWinRTServers": removed_registrations, "payloadSha256": expected_hashes}
+              "payloadSha256": expected_hashes}
 
     if args.loose:
         result = validate_layout(layout, args.version, expected_hashes, min_version, runtime_names, lane)

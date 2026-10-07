@@ -18,7 +18,6 @@
 #include <vector>
 #include <memory>
 #include <objbase.h>
-#include <appmodel.h>
 #include <cstdio>
 
 using namespace winrt;
@@ -1286,8 +1285,6 @@ struct State {
     bool stopped{};
     bool attempted{};
     HRESULT initialization{E_PENDING};
-    HANDLE activation{INVALID_HANDLE_VALUE};
-    ULONG_PTR activationCookie{};
     Dispatching::DispatcherQueueController dispatcher{nullptr};
     Application app{nullptr};
     WindowsXamlManager manager{nullptr};
@@ -1743,22 +1740,6 @@ HRESULT Check(HWND hwnd = nullptr) {
     return S_OK;
 }
 
-// A packaged host that depends on the shared Windows App SDK framework resolves
-// WinUI classes through its package graph. Only a self-contained host needs this
-// DLL's activation context, whose classes name app-local runtime files.
-bool HostHasWindowsAppRuntimeFramework() {
-    UINT32 length{}, count{};
-    if (GetCurrentPackageInfo(PACKAGE_FILTER_DIRECT, &length, nullptr, &count) != ERROR_INSUFFICIENT_BUFFER)
-        return false;  // APPMODEL_ERROR_NO_PACKAGE: unpackaged host.
-    std::vector<BYTE> buffer(length);
-    check_win32(GetCurrentPackageInfo(PACKAGE_FILTER_DIRECT, &length, buffer.data(), &count));
-    const auto* packages = reinterpret_cast<const PACKAGE_INFO*>(buffer.data());
-    return std::any_of(packages, packages + count, [](const PACKAGE_INFO& package) {
-        return CompareStringOrdinal(package.packageFamilyName, -1,
-                                    L"Microsoft.WindowsAppRuntime.2_8wekyb3d8bbwe", -1, TRUE) == CSTR_EQUAL;
-    });
-}
-
 void Initialize() {
     auto& s = state();
     if (s.attempted) {
@@ -1774,20 +1755,8 @@ void Initialize() {
         APTTYPEQUALIFIER qualifier;
         check_hresult(CoGetApartmentType(&apartment, &qualifier));
         check_bool(apartment == APTTYPE_STA || apartment == APTTYPE_MAINSTA);
-        phase = "activation-context";
-        if (!HostHasWindowsAppRuntimeFramework()) {
-            HMODULE module{};
-            check_bool(GetModuleHandleExW(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCWSTR>(&Initialize), &module));
-            ACTCTXW context{sizeof(context)};
-            context.dwFlags = ACTCTX_FLAG_HMODULE_VALID | ACTCTX_FLAG_RESOURCE_NAME_VALID;
-            context.hModule = module;
-            context.lpResourceName = MAKEINTRESOURCEW(2);
-            s.activation = CreateActCtxW(&context);
-            check_bool(s.activation != INVALID_HANDLE_VALUE);
-            check_bool(ActivateActCtx(s.activation, &s.activationCookie));
-        }
+        // WinUI classes resolve through the host's package graph, which holds
+        // the shared runtime (package dependency or bootstrapper).
         // Never take shutdown ownership of a dispatcher created by another host.
         phase = "dispatcher";
         if (Dispatching::DispatcherQueue::GetForCurrentThread()) throw_hresult(E_UNEXPECTED);
@@ -2482,14 +2451,6 @@ HRESULT WINAPI Shutdown() noexcept {
         }
         s.app = nullptr;
         clear_factory_cache();
-        if (s.activationCookie) {
-            check_bool(DeactivateActCtx(0, s.activationCookie));
-            s.activationCookie = 0;
-        }
-        if (s.activation != INVALID_HANDLE_VALUE) {
-            ReleaseActCtx(s.activation);
-            s.activation = INVALID_HANDLE_VALUE;
-        }
         return S_OK;
     } catch (...) {
         return to_hresult();

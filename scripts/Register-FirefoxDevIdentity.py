@@ -12,11 +12,11 @@ It reuses Firefox's MSIX declarations that its identity-dependent code needs
 from the newest MSIX build, rewritten for dist/bin. Protocols, file
 associations and the execution alias stay with the installed MSIX.
 
-The package declares no Windows App SDK framework dependency: dist/bin carries
-the app-local runtime that firefox.exe's manifest registers, and a framework in
-the package graph would let a second runtime copy load. Use the MSIX lanes to
-test the shared runtime. Needs the trusted signing certificate from
-Initialize-DevSigning.ps1; no elevation or Developer Mode.
+The package depends on the shared Microsoft.WindowsAppRuntime.2 framework, as
+the MSIX does, so the identity process gets the runtime from its package graph
+(Firefox's startup bootstrap is a no-op for packaged processes). Needs the
+trusted signing certificate from Initialize-DevSigning.ps1; no elevation or
+Developer Mode.
 """
 import argparse
 import importlib.util
@@ -114,7 +114,8 @@ def firefox_declarations(source, bin_dir=BIN):
     return serialize(kept["application"]), serialize(kept["package"])
 
 
-def package_manifest(publisher, max_version_tested, declarations=("", "")):
+def package_manifest(publisher, max_version_tested, declarations=("", ""), runtime=None):
+    """runtime: (name, minimum version, publisher) of the framework dependency."""
     application_extensions, package_extensions = declarations
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <Package IgnorableNamespaces="uap uap10"
@@ -134,6 +135,7 @@ def package_manifest(publisher, max_version_tested, declarations=("", "")):
   </Resources>
   <Dependencies>
     <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="{max_version_tested}" />
+    {f'<PackageDependency Name="{runtime[0]}" MinVersion="{runtime[1]}" Publisher="{runtime[2]}" />' if runtime else ""}
   </Dependencies>
   <Capabilities>
     <rescap:Capability Name="runFullTrust" />
@@ -233,7 +235,9 @@ def register(packager, sdk_bin):
         raise RuntimeError("The signing certificate is not trusted; run Initialize-DevSigning.ps1 (elevated) once")
     exe, refreshed = refresh_identity_exe(mt, packager.SIGNED_PUBLISHER)
     manifest = package_manifest(packager.SIGNED_PUBLISHER, packager.MAX_VERSION_TESTED,
-                                firefox_declarations(newest_msix_manifest()))
+                                firefox_declarations(newest_msix_manifest()),
+                                (packager.RUNTIME_FRAMEWORK, packager.runtime_min_version(),
+                                 packager.RUNTIME_PUBLISHER))
     state = registration()
     if (state and Path(state["ExternalLocation"]).resolve() == BIN.resolve()
             and same_manifest(state["Manifest"], manifest)):

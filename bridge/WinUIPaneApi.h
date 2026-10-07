@@ -25,6 +25,16 @@
 // retaining the sidebar entry point.
 #define WINUI_PANE_ABI_VERSION 15u
 
+// The pane is built framework-dependent on the shared Windows App SDK runtime
+// (Microsoft.WindowsAppRuntime.2, at least 2.5.1.0). A packaged host declares it
+// as a package dependency; an unpackaged host joins it with the bootstrapper
+// (MddBootstrapInitialize2, which ignores the minor version from 2.0) before
+// loading the pane or any other Windows App SDK DLL. Keep the minimum in step
+// with native/WinUIPane/packages.config.
+#define WINUI_PANE_RUNTIME_MAJOR_MINOR 0x00020000u
+#define WINUI_PANE_RUNTIME_MIN_VERSION 0x0002000500010000ull
+#define WINUI_PANE_RUNTIME_BOOTSTRAP_DLL L"Microsoft.WindowsAppRuntime.Bootstrap.dll"
+
 // All calls run on the browser's owning STA. Coordinates are client physical
 // pixels. The module remains loaded until process exit, including after shutdown.
 // Legacy availability bits for tab snapshots and invalidation. Menu action IDs

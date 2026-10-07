@@ -9,28 +9,13 @@ if ($Restore) {
 }
 & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'native/WinUIPane/FirefoxWinUIPane.vcxproj') /m:2 /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
-$manifestArgs = @('--check')
-$firefoxManifest = Join-Path $projectRoot 'upstream/firefox/browser/app/firefox.exe.manifest'
-if ($ContractTest -and -not (Test-Path $firefoxManifest)) {
-    # A source-only hosted checkout can still verify the generated canonical
-    # activation manifest. Local Firefox checkouts retain the full comparison.
-    $manifestArgs += '--canonical-only'
-}
-& python (Join-Path $PSScriptRoot 'Export-WinUIPaneManifest.py') @manifestArgs
-if ($LASTEXITCODE) { exit $LASTEXITCODE }
 $output = Join-Path $projectRoot 'build/winui-pane/x64/Release'
-$priInput = Join-Path $projectRoot 'build/winui-pane/pri-input'
-New-Item -ItemType Directory -Force $priInput | Out-Null
-foreach ($name in @('Microsoft.UI.Xaml.Controls.pri', 'Microsoft.UI.pri', 'Microsoft.WindowsAppRuntime.pri')) {
-    Copy-Item (Join-Path $output $name) $priInput -Force
+# Framework-dependent on Microsoft.WindowsAppRuntime.2: hosts join the shared
+# runtime before loading the pane (the WinUI activation decision),
+# so the build needs no activation manifests, app-local runtime or merged PRI.
+if (-not (Test-Path (Join-Path $output 'Microsoft.WindowsAppRuntime.Bootstrap.dll'))) {
+    throw 'The build did not produce Microsoft.WindowsAppRuntime.Bootstrap.dll, which unpackaged hosts load.'
 }
-$priLog = Join-Path $projectRoot 'build/winui-pane/makepri.log'
-& 'C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/makepri.exe' new /pr $priInput /cf (Join-Path $projectRoot 'configs/winui-pane-pri.xml') /of (Join-Path $output 'resources.pri') /o > $priLog
-if ($LASTEXITCODE) {
-    Get-Content $priLog -Encoding Unicode
-    exit $LASTEXITCODE
-}
-Write-Host "Merged native theme resources: $output/resources.pri"
 if ($Test -or $ContractTest -or $AddressTest -or $MenuTest -or $TabStripTest) {
     if ($TabStripTest) {
         & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'tests/native/ExternalDragSource.vcxproj') /p:Configuration=Release /p:Platform=x64 /verbosity:minimal

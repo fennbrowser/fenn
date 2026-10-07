@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "../../bridge/WinUIPaneApi.h"
+#include <appmodel.h>
 #include <objbase.h>
 #include <cstdio>
 #include <cstring>
@@ -4860,6 +4861,25 @@ static int RecordFrames(wchar_t** argv) {
     printf("Recorded %zu frames\n", samples.size());
     return 0;
 }
+// The pane is framework-dependent: join the shared Windows App SDK runtime
+// before loading it, exactly as an unpackaged Firefox does at startup.
+static void JoinWindowsAppRuntime(const wchar_t* paneDll) {
+    wchar_t full[32768];
+    wchar_t* name = nullptr;
+    const DWORD length = GetFullPathNameW(paneDll, static_cast<DWORD>(std::size(full)), full, &name);
+    Require(length && length < std::size(full) && name, "resolve the pane directory");
+    *name = L'\0';
+    const std::wstring path = std::wstring(full) + WINUI_PANE_RUNTIME_BOOTSTRAP_DLL;
+    HMODULE bootstrap = LoadLibraryExW(path.c_str(), nullptr,
+                                       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    Require(bootstrap != nullptr, "load the Windows App SDK bootstrapper beside the pane");
+    using InitializeFn = HRESULT(WINAPI*)(UINT32, PCWSTR, PACKAGE_VERSION, UINT32);
+    const auto initialize = reinterpret_cast<InitializeFn>(GetProcAddress(bootstrap, "MddBootstrapInitialize2"));
+    PACKAGE_VERSION minimum{};
+    minimum.Version = WINUI_PANE_RUNTIME_MIN_VERSION;
+    Require(initialize && SUCCEEDED(initialize(WINUI_PANE_RUNTIME_MAJOR_MINOR, L"", minimum, 0x0010)),
+            "join the shared Windows App SDK runtime (needs its Main and DDLM packages)");
+}
 int wmain(int argc, wchar_t** argv) {
     if (argc == 5 && wcscmp(argv[1], L"--record-frames") == 0) return RecordFrames(argv);
     Require(AddVectoredExceptionHandler(
@@ -4898,6 +4918,7 @@ int wmain(int argc, wchar_t** argv) {
     // below would be asserting on a switched-off instrument.
     Require(SetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_WORK", L"1"), "enable native work accounting");
     Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "STA initialization");
+    JoinWindowsAppRuntime(argv[1]);
     HMODULE module = LoadLibraryExW(
         argv[1], nullptr,
         LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);

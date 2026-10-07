@@ -3,8 +3,7 @@
 
 The checked-in header is what the native pane compiles against, so the build
 does not need cbindgen. This script regenerates it and, with --check, fails if
-the checked-in copy has drifted from the Rust source -- the same pattern as
-Export-WinUIPaneManifest.py.
+the checked-in copy has drifted from the Rust source.
 
 cbindgen comes from the pinned mozbuild toolchain (the same binary Firefox's own
 build uses), not from a separate install, so the generator version moves only

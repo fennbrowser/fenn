@@ -13,9 +13,9 @@ TRACKED = ["browser/components/downloads/content/downloads.js", "toolkit/content
            "dom/interfaces/base/nsIDOMWindowUtils.idl", "widget/nsIWidget.h",
            "widget/windows/nsWindow.h", "widget/windows/nsWindow.cpp",
            "widget/windows/nsAppShell.cpp", "widget/windows/WinUIPrototype.cpp",
-           "widget/windows/WinUIPrototype.h"]
-# Upstream removed Makefile.in; only our manifest dependency rule remains.
-ADDED = ["browser/base/content/WinUIHistoryMenu.sys.mjs", "browser/base/content/WinUIToolbarCustomization.sys.mjs", "browser/app/Makefile.in", "browser/base/content/WinUIDismissalAcknowledgments.sys.mjs", "browser/base/content/WinUIResultContextMenu.sys.mjs", "browser/base/content/WinUIAddressContextMenu.sys.mjs", "browser/base/content/WinUIOmnibarActions.sys.mjs", "browser/base/content/WinUIPinnedExtensions.sys.mjs", "browser/base/content/WinUITabStripSession.sys.mjs", "browser/base/content/WinUITabMenuSession.sys.mjs", "browser/base/content/WinUIUrlbarSession.sys.mjs", "browser/base/content/WinUIAddressToolbar.sys.mjs", "browser/base/content/WinUIAddressToolbar.css", "browser/base/content/browser-winui-pane.js", "widget/windows/WinUIPaneApi.h"]
+           "widget/windows/WinUIPrototype.h",
+           "widget/windows/moz.build", "browser/installer/package-manifest.in"]
+ADDED = ["browser/base/content/WinUIHistoryMenu.sys.mjs", "browser/base/content/WinUIToolbarCustomization.sys.mjs", "browser/base/content/WinUIDismissalAcknowledgments.sys.mjs", "browser/base/content/WinUIResultContextMenu.sys.mjs", "browser/base/content/WinUIAddressContextMenu.sys.mjs", "browser/base/content/WinUIOmnibarActions.sys.mjs", "browser/base/content/WinUIPinnedExtensions.sys.mjs", "browser/base/content/WinUITabStripSession.sys.mjs", "browser/base/content/WinUITabMenuSession.sys.mjs", "browser/base/content/WinUIUrlbarSession.sys.mjs", "browser/base/content/WinUIAddressToolbar.sys.mjs", "browser/base/content/WinUIAddressToolbar.css", "browser/base/content/browser-winui-pane.js", "widget/windows/WinUIPaneApi.h"]
 
 
 def git(*args, **kwargs):

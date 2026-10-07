@@ -1,4 +1,12 @@
-"""Stage the 2.5.1 pane without replacing Firefox's existing runtime files."""
+"""Stage the framework-dependent pane into Firefox's dist/bin.
+
+The pane runs on the shared Microsoft.WindowsAppRuntime.2 framework, which an
+unpackaged Firefox joins at startup through the bootstrapper. Staging therefore
+copies only the pane and the bootstrapper DLL. It also removes the runtime files
+an earlier, self-contained staging recorded, so no second runtime copy is left
+beside firefox.exe. Patch 2 also
+stops Firefox's build from shipping its own app-local Windows App SDK DLLs.
+"""
 import hashlib
 import json
 from pathlib import Path
@@ -8,9 +16,12 @@ import struct
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "build/winui-pane/x64/Release"
 DEST = ROOT / "build/firefox/dist/bin"
+RECORD = ROOT / "artifacts/setup/winui-pane-staging.json"
+STAGED = ("FirefoxWinUIPane.dll", "Microsoft.WindowsAppRuntime.Bootstrap.dll")
 
 
 def image_digest(path):
+    """SHA-256 of a PE image without its certificate, its directory entry and checksum."""
     data = bytearray(path.read_bytes())
     if path.suffix.lower() == ".dll" and data[:2] == b"MZ":
         pe = struct.unpack_from("<I", data, 0x3C)[0]
@@ -30,46 +41,43 @@ def image_digest(path):
     return hashlib.sha256(data).hexdigest()
 
 
-def runtime_files(source_dir=SOURCE):
-    """The self-contained Windows App SDK runtime and resources beside the pane build."""
-    names = {
-        "coremessagingxp.dll", "marshal.dll", "dcompi.dll", "dwmcorei.dll",
-        "dwmscenei.dll", "dwritecore.dll", "mrm.dll", "wuceffectsi.dll", "winuiedit.dll",
-        "microsoft.directmanipulation.dll", "microsoft.graphics.display.dll",
-        "microsoft.inputstatemanager.dll", "microsoft.internal.frameworkudk.dll",
-        "microsoft.windowsappruntime.dll", "microsoft.windowsappruntime.pri",
-        "microsoft.windows.applicationmodel.resources.dll",
-        "resources.pri",
-    }
-    files = [p for p in source_dir.rglob("*") if p.is_file() and
-             ((p.name.lower() in names or p.name.lower().startswith("microsoft.ui")) and
-              p.suffix.lower() in {".dll", ".pri", ".winmd", ".mui"} or
-              p.relative_to(source_dir).parts[0] == "Microsoft.UI.Xaml")]
-    if not (source_dir / "Microsoft.ui.xaml.dll").is_file():
-        raise RuntimeError("Build the pane and its self-contained runtime first")
-    return files
+def remove_self_contained_staging(dest_dir, record):
+    """Delete the runtime files a self-contained staging copied into dest_dir.
+
+    Its record lists the pane's whole runtime. ("preserved" only meant that a
+    file already existed, which re-staging made true for all of them.)"""
+    if not record.is_file():
+        return 0
+    previous = json.loads(record.read_text(encoding="utf-8"))
+    removed = 0
+    for entry in previous.get("files", []):
+        if "imageSha256" not in entry:
+            continue  # A framework-dependent record.
+        target = dest_dir / entry["file"]
+        if target.is_file():
+            target.unlink()
+            removed += 1
+            parent = target.parent
+            while parent != dest_dir and parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+                parent = parent.parent
+    return removed
 
 
-def stage(source_dir=SOURCE, dest_dir=DEST, manifest=None):
-    files = runtime_files(source_dir)
-    records = []
-    for source in files:
-        target = dest_dir / source.relative_to(source_dir)
-        if target.exists() and image_digest(source) != image_digest(target):
-            raise RuntimeError(f"Runtime image mismatch: {target}. Nothing staged.")
-        records.append({"file": source.relative_to(source_dir).as_posix(),
-                        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-                        "imageSha256": image_digest(source), "preserved": target.exists()})
-    for source in files:
-        target = dest_dir / source.relative_to(source_dir)
-        if not target.exists():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
-    shutil.copyfile(source_dir / "FirefoxWinUIPane.dll", dest_dir / "FirefoxWinUIPane.dll")
-    manifest = manifest or ROOT / "artifacts/setup/winui-pane-staging.json"
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(json.dumps({"appSdk": "2.5.1", "files": records}, indent=2))
-    print(f"Staged pane and {len(files)} runtime/resource files; manifest: {manifest}")
+def stage(source_dir=SOURCE, dest_dir=DEST, record=RECORD):
+    sources = [source_dir / name for name in STAGED]
+    missing = [str(p) for p in sources if not p.is_file()]
+    if missing:
+        raise RuntimeError(f"Build the pane first (Build-WinUIPane.ps1); missing {missing}")
+    removed = remove_self_contained_staging(dest_dir, record)
+    for source in sources:
+        shutil.copyfile(source, dest_dir / source.name)
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps({
+        "runtime": "Microsoft.WindowsAppRuntime.2 framework (bootstrapped when unpackaged)",
+        "files": [{"file": p.name, "sha256": hashlib.sha256(p.read_bytes()).hexdigest()} for p in sources],
+    }, indent=2), encoding="utf-8")
+    print(f"Staged {', '.join(STAGED)}; removed {removed} self-contained runtime files; record: {record}")
 
 
 if __name__ == "__main__":

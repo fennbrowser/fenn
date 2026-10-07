@@ -92,39 +92,45 @@ class DevPackageTests(unittest.TestCase):
             (runs / "0.5.0.0-d").mkdir()  # Failed run: no package.
             self.assertEqual(package.built_versions(runs), ["0.2.0.0"])
 
-    def test_runtime_mismatch_does_not_overwrite_existing_files(self):
+    def test_staging_copies_the_pane_and_retires_a_self_contained_runtime(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            source, dest = root / "source", root / "dest"
+            source, dest, record = root / "source", root / "dest", root / "record.json"
+            (dest / "en-us").mkdir(parents=True)
             source.mkdir()
-            dest.mkdir()
-            (source / "Microsoft.ui.xaml.dll").write_bytes(b"new runtime")
-            (source / "FirefoxWinUIPane.dll").write_bytes(b"new pane")
-            (dest / "Microsoft.ui.xaml.dll").write_bytes(b"existing runtime")
-            with self.assertRaisesRegex(RuntimeError, "Runtime image mismatch"):
-                staging.stage(source, dest, root / "report.json")
-            self.assertEqual((dest / "Microsoft.ui.xaml.dll").read_bytes(), b"existing runtime")
-            self.assertFalse((dest / "FirefoxWinUIPane.dll").exists())
-            self.assertFalse((root / "report.json").exists())
+            with self.assertRaisesRegex(RuntimeError, "Build the pane first"):
+                staging.stage(source, dest, record)
+            for name in staging.STAGED:
+                (source / name).write_bytes(name.encode())
+            # A self-contained staging left the pane runtime beside firefox.exe.
+            for name in ("Microsoft.UI.Xaml.dll", "en-us/Microsoft.ui.xaml.dll.mui", "unrelated.dll"):
+                (dest / name).write_bytes(b"runtime")
+            record.write_text(json.dumps({"files": [
+                {"file": name, "sha256": "x", "imageSha256": "x", "preserved": True}
+                for name in ("Microsoft.UI.Xaml.dll", "en-us/Microsoft.ui.xaml.dll.mui")]}))
+            staging.stage(source, dest, record)
+            self.assertEqual(sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*")),
+                             sorted(["unrelated.dll", *staging.STAGED]))  # Unrecorded files stay.
+            self.assertNotIn("imageSha256", record.read_text())
+            staging.stage(source, dest, record)  # A framework-dependent record removes nothing.
+            self.assertTrue((dest / "unrelated.dll").exists())
 
-    def test_framework_must_supply_every_omitted_runtime_file(self):
+    def test_header_runtime_minimum_matches_the_pane_sdk(self):
+        header = (ROOT / "bridge/WinUIPaneApi.h").read_text(encoding="utf-8")
+        value = int(header.split("#define WINUI_PANE_RUNTIME_MIN_VERSION ")[1].split("ull")[0], 16)
+        parts = [(value >> shift) & 0xFFFF for shift in (48, 32, 16, 0)]
+        self.assertEqual(".".join(map(str, parts)), package.runtime_min_version())
+        firefox = ROOT / "upstream/firefox/widget/windows/WinUIPaneApi.h"
+        if firefox.exists():
+            self.assertEqual(firefox.read_bytes(), (ROOT / "bridge/WinUIPaneApi.h").read_bytes())
+
+    def test_framework_record_names_the_runtime_dlls_the_package_must_not_carry(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            framework, firefox, pane = root / "framework", root / "firefox", root / "pane"
-            for directory in (framework, firefox, pane / "Microsoft.UI.Xaml"):
-                directory.mkdir(parents=True)
-            for name in package.FIREFOX_RUNTIME:
-                (firefox / name).write_bytes(b"runtime")
-                (framework / name).write_bytes(b"runtime")
-            asset = pane / "Microsoft.UI.Xaml/asset.xbf"
-            asset.write_bytes(b"asset")
+            framework = Path(temp)
+            for name in ("Microsoft.UI.Xaml.dll", "CoreMessagingXP.dll", "resources.pri", "AppxManifest.xml"):
+                (framework / name).write_bytes(b"x")
             info = {"PackageFullName": "Framework", "InstallLocation": str(framework)}
-            with self.assertRaisesRegex(ValueError, "lacks runtime file: Microsoft.UI.Xaml/asset.xbf"):
-                package.framework_record(info, firefox, [asset], pane, staging.image_digest)
-            (framework / "Microsoft.UI.Xaml").mkdir()
-            (framework / "Microsoft.UI.Xaml/asset.xbf").write_bytes(b"asset")
-            record = package.framework_record(info, firefox, [asset], pane, staging.image_digest)
-            self.assertEqual(len(record["files"]), len(package.FIREFOX_RUNTIME) + 1)
+            self.assertEqual(package.framework_record(info)["files"], ["CoreMessagingXP.dll", "Microsoft.UI.Xaml.dll"])
 
     def test_manifest_gains_framework_dependency(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -143,22 +149,6 @@ class DevPackageTests(unittest.TestCase):
                                "Publisher": package.RUNTIME_PUBLISHER}])
             with self.assertRaisesRegex(ValueError, "dependency contract"):
                 package.customize_manifest(path, "2.5.1.0")
-
-    def test_exe_winrt_registrations_are_replaced_only_when_supplied(self):
-        text = """<assembly xmlns="urn:schemas-microsoft-com:asm.v1">
-<dependency><dependentAssembly><assemblyIdentity name="mozglue"/></dependentAssembly></dependency>
-<asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" xmlns:winrtv1="urn:schemas-microsoft-com:winrt.v1" name="CoreMessagingXP.dll">
-    <winrtv1:activatableClass name="Microsoft.UI.Dispatching.DispatcherQueue" threadingModel="both" />
-  </asmv3:file>
-</assembly>"""
-        stripped, removed = package.strip_winrt_registrations(text, {"coremessagingxp.dll"})
-        self.assertEqual(removed, ["CoreMessagingXP.dll"])
-        self.assertNotIn("activatableClass", stripped)
-        self.assertIn("mozglue", stripped)
-        with self.assertRaisesRegex(ValueError, "does not supply"):
-            package.strip_winrt_registrations(text, set())
-        with self.assertRaisesRegex(ValueError, "no WinUI registrations"):
-            package.strip_winrt_registrations(stripped, {"coremessagingxp.dll"})
 
     def test_upstream_layout_is_staged_without_packing(self):
         with tempfile.TemporaryDirectory() as temp:

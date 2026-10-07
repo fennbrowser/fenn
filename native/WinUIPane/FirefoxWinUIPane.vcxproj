@@ -95,10 +95,11 @@
     <IntDir Condition="'$(WinUIPaneTesting)'=='true'">$(MSBuildThisFileDirectory)..\..\build\winui-pane\obj-test\$(Platform)\$(Configuration)\</IntDir>
     <AppxPackageDir>$(MSBuildThisFileDirectory)..\..\artifacts\winui-packages\</AppxPackageDir>
     <AppxPackageSigningEnabled>false</AppxPackageSigningEnabled>
-    <!-- Collect a runtime payload for the external Firefox host. Its adapter
-         owns activation; this DLL must not initialize WinUI under loader lock. -->
-    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
-    <WindowsAppSDKSelfContainedAudit>false</WindowsAppSDKSelfContainedAudit>
+    <!-- Framework-dependent on Microsoft.WindowsAppRuntime.2: hosts put the
+         framework in their package graph (MSIX dependency, or the bootstrapper
+         when unpackaged) before loading this DLL. It must not initialize WinUI
+         under loader lock. See the WinUI activation decision. -->
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
   </PropertyGroup>
   <!-- The project-owned Rust shell core (native/ShellCore) links in as a static
        library. Its C boundary is the checked-in, cbindgen-generated
