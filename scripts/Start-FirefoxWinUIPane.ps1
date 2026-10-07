@@ -3,7 +3,7 @@ param([switch]$NativeAddress, [switch]$NativeAddressBar, [switch]$NativeNavigati
       [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop,
       [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach,
       # Run the build with package identity (Fenn.DevIdentity) through
-      # dist/bin/firefox-identity.exe; see the packaging notes.
+      # dist/bin/firefox-identity.exe (scripts/Register-FirefoxDevIdentity.py).
       [switch]$PackageIdentity)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot

@@ -11,7 +11,7 @@ if ($Restore) {
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 $output = Join-Path $projectRoot 'build/winui-pane/x64/Release'
 # Framework-dependent on Microsoft.WindowsAppRuntime.2: hosts join the shared
-# runtime before loading the pane (the WinUI activation decision),
+# runtime before loading the pane (the bootstrapper or a package dependency),
 # so the build needs no activation manifests, app-local runtime or merged PRI.
 if (-not (Test-Path (Join-Path $output 'Microsoft.WindowsAppRuntime.Bootstrap.dll'))) {
     throw 'The build did not produce Microsoft.WindowsAppRuntime.Bootstrap.dll, which unpackaged hosts load.'

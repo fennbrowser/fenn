@@ -3331,9 +3331,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
 
 // A real OS drag gesture, via SendInput, against the same island-hosted
 // TabView every other strip check uses. Originally added to reproduce the
-// WinUI native-drag crash in isolation (see the tab strip layout notes)
-// -- now that reordering is driven by Pane.cpp's own process-wide
-// TabDragSession (the tab drag redesign), this doubles as
+// WinUI native-drag crash in isolation -- now that reordering is driven by
+// Pane.cpp's own process-wide TabDragSession, this doubles as
 // the one real end-to-end exercise of the actual gesture, which no other
 // test can drive (the WinUIPaneTestCompleteReorder*/WinUIPaneTestSetDragging
 // hooks only drive the logic directly, never a real pointer sequence). Kept
@@ -4449,8 +4448,8 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
 
 // Detach-to-new-window. Releasing well outside every open pane's own strip
 // bounds entirely (Pane.cpp's TickDragSession hit-tests screen points
-// against each pane's own StripScreenBounds(), the tab drag
-// redesign) means release resolves as "no pane's strip is under the
+// against each pane's own StripScreenBounds()) means release resolves as
+// "no pane's strip is under the
 // cursor" -- CommitDetach queues strip-detach at the real release point,
 // same as before.
 static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false, int horizontal = 0) {
@@ -4559,8 +4558,8 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
 
 // Cross-window adopt. A second, independent pane/strip in a real second
 // HWND: Pane.cpp's TickDragSession hit-tests the real cursor position
-// against every open pane's own StripScreenBounds() (the tab drag
-// redesign), precisely so a drop landing on a DIFFERENT window's
+// against every open pane's own StripScreenBounds(), precisely so a drop
+// landing on a DIFFERENT window's
 // strip resolves there. Same real-pointer-gesture technique as
 // CheckTabStripDrag above.
 enum class AdoptScenario { Drop, RejectDrop, CloseAfterDrop, CloseSourceAfterDrop, CloseTarget, CloseSource, ChangeThenClose, ChangeThenDrop, Offset };

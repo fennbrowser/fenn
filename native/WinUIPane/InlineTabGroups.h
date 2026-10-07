@@ -71,7 +71,7 @@ struct InlineTabGroups {
     // in a deferred release that can run inside ShutdownQueue, after
     // WindowsXamlManager.Close. A TabViewItem or header released there faults
     // in XAML. Empty the collections now, so what XAML still holds owns no
-    // XAML object; see the implementation lessons.
+    // XAML object.
     void Release(Controls::TabView const& view) noexcept {
         lifetime.reset();
         realized = nullptr;
