@@ -34,7 +34,7 @@ def run_version(run):
         return None
 
 
-def installed_version(name="FirefoxWinUI.Dev"):
+def installed_version(name="Fenn.Dev"):
     result = subprocess.run(["powershell", "-NoProfile", "-Command",
                              f"(Get-AppxPackage -Name {name}).Version | Select-Object -First 1"],
                             capture_output=True, text=True)

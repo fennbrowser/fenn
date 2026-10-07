@@ -140,9 +140,11 @@ class DevPackageTests(unittest.TestCase):
   <Dependencies>
     <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0"/>
   </Dependencies>
-  <Applications><Application><desktop:ExecutionAlias Alias="firefox.exe"/></Application></Applications>
+  <Applications><Application><uap:VisualElements xmlns:uap="{package.NS['uap']}" BackgroundColor="#20123A"/><desktop:ExecutionAlias Alias="firefox.exe"/></Application></Applications>
 </Package>""", encoding="utf-8")
             package.customize_manifest(path, "2.5.1.0")
+            visuals = ET.parse(path).getroot().find(".//uap:VisualElements", package.NS)
+            self.assertEqual(visuals.get("BackgroundColor"), "transparent")
             dependencies = ET.parse(path).getroot().findall("f:Dependencies/f:PackageDependency", package.NS)
             self.assertEqual([entry.attrib for entry in dependencies],
                              [{"Name": package.RUNTIME_FRAMEWORK, "MinVersion": "2.5.1.0",
@@ -175,7 +177,7 @@ class DevPackageTests(unittest.TestCase):
                 for directory in ("payload", "layout"):
                     (run / directory).mkdir(parents=True)
                     (run / directory / "xul.dll").write_bytes(b"x" * 10)
-            for name in ("FirefoxWinUI.Dev_0.1.0.0_x64.msix", "upstream.msix", "package-report.json",
+            for name in ("Fenn.Dev_0.1.0.0_x64.msix", "upstream.msix", "package-report.json",
                          "root-pri.xml", "AppxManifest.xml"):
                 (done / name).write_bytes(b"keep")
             listed = prune.prune(runs)
@@ -183,7 +185,7 @@ class DevPackageTests(unittest.TestCase):
             self.assertTrue((done / "payload").exists())  # Listing alone deletes nothing.
             prune.prune(runs, apply=True)
             self.assertEqual(sorted(p.name for p in done.iterdir()),
-                             ["AppxManifest.xml", "FirefoxWinUI.Dev_0.1.0.0_x64.msix",
+                             ["AppxManifest.xml", "Fenn.Dev_0.1.0.0_x64.msix",
                               "package-report.json", "root-pri.xml"])
             self.assertTrue((failed / "payload").exists())
 
@@ -195,9 +197,9 @@ class DevPackageTests(unittest.TestCase):
                 (runs / name / "payload").mkdir(parents=True)
                 (runs / name / "build.log").write_text("keep")
                 if "failed" not in name:
-                    (runs / name / f"FirefoxWinUI.Dev_{name.split('-')[0]}_x64.msix").write_bytes(b"m")
+                    (runs / name / f"Fenn.Dev_{name.split('-')[0]}_x64.msix").write_bytes(b"m")
             (runs / "latest.json").write_text(json.dumps(
-                {"package": str(runs / "159.0.12.0-c" / "FirefoxWinUI.Dev_159.0.12.0_x64.msix")}))
+                {"package": str(runs / "159.0.12.0-c" / "Fenn.Dev_159.0.12.0_x64.msix")}))
             listed = {p.relative_to(runs).as_posix() for p, _ in prune.prune(runs)}
             # A failure older than the newest finished run loses its intermediates; the newest failure keeps them.
             self.assertIn("159.0.11.0-failed/payload", listed)
@@ -225,12 +227,16 @@ class DevPackageTests(unittest.TestCase):
                              [False, False, True, True])
             self.assertTrue(all((smoke / f"run{i}" / "result.json").exists() for i in range(4)))
 
-    def fixture(self, root, *, missing=False, tampered=False, alias="firefox-winui-dev.exe",
-                dependency=True, private_runtime=False, lane=package.DEV, signed=None):
+    def fixture(self, root, *, missing=False, tampered=False, alias=None, dependency=True,
+                private_runtime=False, lane=package.DEV, signed=None, publisher_display_name=None,
+                extra=()):
         manifest = ET.Element(f"{{{package.NS['f']}}}Package")
         ET.SubElement(manifest, f"{{{package.NS['f']}}}Identity", {
             "Name": lane.identity, "Publisher": lane.publisher,
             "Version": "0.1.0.0", "ProcessorArchitecture": "x64"})
+        properties = ET.SubElement(manifest, f"{{{package.NS['f']}}}Properties")
+        ET.SubElement(properties, f"{{{package.NS['f']}}}PublisherDisplayName").text = (
+            publisher_display_name or lane.publisher_display_name)
         dependencies = ET.SubElement(manifest, f"{{{package.NS['f']}}}Dependencies")
         if dependency:
             ET.SubElement(dependencies, f"{{{package.NS['f']}}}PackageDependency", {
@@ -239,7 +245,7 @@ class DevPackageTests(unittest.TestCase):
         apps = ET.SubElement(manifest, f"{{{package.NS['f']}}}Applications")
         app = ET.SubElement(apps, f"{{{package.NS['f']}}}Application", {
             "Id": "App", "Executable": "VFS/ProgramFiles/Dev Root/firefox.exe"})
-        ET.SubElement(app, f"{{{package.NS['desktop']}}}ExecutionAlias", {"Alias": alias})
+        ET.SubElement(app, f"{{{package.NS['desktop']}}}ExecutionAlias", {"Alias": alias or lane.alias})
         path = root / "test.msix"
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("AppxManifest.xml", ET.tostring(manifest))
@@ -251,7 +257,37 @@ class DevPackageTests(unittest.TestCase):
                 archive.writestr("VFS/ProgramFiles/Dev%20Root/Microsoft.UI.Xaml.dll", b"runtime")
             if lane.signed if signed is None else signed:
                 archive.writestr("AppxSignature.p7x", b"signature")
+            for name in extra:
+                archive.writestr(name, b"extra")
         return path, {"firefox.exe": hashlib.sha256(b"exe").hexdigest()}
+
+    def test_store_lane_is_the_partner_center_identity_unsigned(self):
+        store = package.STORE
+        self.assertEqual((store.identity, store.publisher, store.publisher_display_name),
+                         ("FennBrowser.FennBrowser", "CN=4EE000D9-3774-42FF-AC7F-E77E790B3C25", "Fenn Browser"))
+        self.assertEqual((store.display_name, store.alias, store.signed, store.dev_defaults),
+                         ("Fenn", "fenn.exe", False, False))
+        with tempfile.TemporaryDirectory() as temp:
+            path, hashes = self.fixture(Path(temp), lane=store)
+            self.assertEqual(self.validate(path, hashes, store)["identity"]["Name"], store.identity)
+            path, hashes = self.fixture(Path(temp), lane=store, signed=True)
+            with self.assertRaisesRegex(ValueError, "must remain unsigned"):
+                self.validate(path, hashes, store)
+            path, hashes = self.fixture(Path(temp), lane=store, extra=[
+                "VFS/ProgramFiles/Dev%20Root/browser/defaults/preferences/firefox-winui-dev.js"])
+            with self.assertRaisesRegex(ValueError, "development defaults"):
+                self.validate(path, hashes, store)
+            path, hashes = self.fixture(Path(temp), lane=store, publisher_display_name="Fenn Development")
+            with self.assertRaisesRegex(ValueError, "PublisherDisplayName"):
+                self.validate(path, hashes, store)
+
+    def test_development_lanes_use_the_fenn_identities(self):
+        self.assertEqual((package.DEV.identity, package.DEV.publisher, package.DEV.alias),
+                         ("Fenn.Dev", "CN=Fenn Development", "fenn-dev.exe"))
+        self.assertEqual(package.UNSIGNED.identity, package.DEV.identity)
+        self.assertNotEqual(package.UNSIGNED.publisher, package.DEV.publisher)
+        self.assertEqual((package.LOOSE.identity, package.LOOSE.alias), ("Fenn.DevLoose", "fenn-loose.exe"))
+        self.assertTrue(all(lane.dev_defaults for lane in (package.DEV, package.UNSIGNED, package.LOOSE)))
 
     def validate(self, path, hashes, lane=package.DEV):
         return package.validate_package(path, "0.1.0.0", hashes, "2.5.1.0", RUNTIME, lane)
@@ -293,7 +329,7 @@ class DevPackageTests(unittest.TestCase):
     def test_firefox_alias_collision_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             path, hashes = self.fixture(Path(temp), alias="firefox.exe")
-            with self.assertRaisesRegex(ValueError, "must not claim"):
+            with self.assertRaisesRegex(ValueError, "never firefox.exe"):
                 self.validate(path, hashes)
 
     def test_signed_and_unsigned_lanes_share_name_but_not_publisher(self):
@@ -333,7 +369,7 @@ class DevPackageTests(unittest.TestCase):
             path.write_text(f"""<Package xmlns="{package.NS['f']}" xmlns:desktop="{package.NS['desktop']}">
   <Properties><DisplayName>x</DisplayName><Description>x</Description></Properties>
   <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0"/></Dependencies>
-  <Applications><Application><desktop:ExecutionAlias Alias="firefox.exe"/></Application></Applications>
+  <Applications><Application><uap:VisualElements xmlns:uap="{package.NS['uap']}" BackgroundColor="#20123A"/><desktop:ExecutionAlias Alias="firefox.exe"/></Application></Applications>
 </Package>""", encoding="utf-8")
             package.customize_manifest(path, "2.5.1.0", "described", package.LOOSE)
             manifest = ET.parse(path).getroot()
@@ -374,7 +410,7 @@ class DevPackageTests(unittest.TestCase):
             lane = package.Lane("Id", "CN=Id", "Id", "id.exe", Path(temp))
             package.write_latest(lane, {"version": "159.0.1.0", "package": "x.msix"})
             record = json.loads((Path(temp) / "latest.json").read_text(encoding="utf-8"))
-            self.assertEqual(record, {"identity": "Id", "alias": "id.exe", "loose": False,
+            self.assertEqual(record, {"identity": "Id", "alias": "id.exe", "loose": False, "store": False,
                                       "version": "159.0.1.0", "package": "x.msix"})
 
     def test_feed_points_at_the_newest_package_and_keeps_one_previous(self):
@@ -435,7 +471,7 @@ class DevPackageTests(unittest.TestCase):
             path.write_text(f"""<Package xmlns="{package.NS['f']}" xmlns:desktop="{package.NS['desktop']}">
   <Properties><DisplayName>x</DisplayName><Description>x</Description></Properties>
   <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.1555"/></Dependencies>
-  <Applications><Application><desktop:ExecutionAlias Alias="firefox.exe"/></Application></Applications>
+  <Applications><Application><uap:VisualElements xmlns:uap="{package.NS['uap']}" BackgroundColor="#20123A"/><desktop:ExecutionAlias Alias="firefox.exe"/></Application></Applications>
 </Package>""", encoding="utf-8")
             package.customize_manifest(path, "2.5.1.0")
             family = ET.parse(path).getroot().find("f:Dependencies/f:TargetDeviceFamily", package.NS)
@@ -474,7 +510,7 @@ class DevPackageTests(unittest.TestCase):
   xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
   xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10">
-  <Identity Name="FirefoxWinUI.Dev" Publisher="CN=x" Version="1.0.0.0" ProcessorArchitecture="x64" />
+  <Identity Name="Fenn.Dev" Publisher="CN=x" Version="1.0.0.0" ProcessorArchitecture="x64" />
   <Applications><Application Id="App" Executable="{root}firefox.exe"><Extensions>
     <uap3:Extension Category="windows.protocol"><uap3:Protocol Name="https" /></uap3:Extension>
     <uap3:Extension Category="windows.appExecutionAlias" Executable="{root}firefox.exe" />
@@ -482,7 +518,7 @@ class DevPackageTests(unittest.TestCase):
       <com:Class Id="1" Path="{root}notificationserver.dll" /></com:SurrogateServer></com:ComServer></com:Extension>
     <Extension Category="windows.backgroundTasks" EntryPoint="Host"><BackgroundTasks><Task Type="timer" /></BackgroundTasks></Extension>
     <uap5:Extension Category="windows.startupTask" Executable="{root}firefox.exe" uap10:Parameters="-os-autostart">
-      <uap5:StartupTask TaskId="LaunchOnLogin" Enabled="false" DisplayName="WinUI Browser Dev" /></uap5:Extension>
+      <uap5:StartupTask TaskId="LaunchOnLogin" Enabled="false" DisplayName="Fenn Dev" /></uap5:Extension>
     <desktop:Extension Category="windows.toastNotificationActivation"><desktop:ToastNotificationActivation ToastActivatorCLSID="1" /></desktop:Extension>
   </Extensions></Application></Applications>
   <Extensions>

@@ -8,10 +8,13 @@ param(
     [switch]$SkipFirefoxPackage,
     [switch]$RepackageFirefox,
     [switch]$KeepIntermediates,
-    # Register the layout as FirefoxWinUI.DevLoose under Developer Mode instead of packing.
+    # Register the layout as Fenn.DevLoose under Developer Mode instead of packing.
     [switch]$Loose,
     # Build the unsigned fallback (elevated -AllowUnsigned install) instead of signing.
     [switch]$Unsigned,
+    # Build the unsigned release package (FennBrowser.FennBrowser) for upload to
+    # Partner Center, in artifacts/msix-store. The Store signs it; it is not installable here.
+    [switch]$Store,
     # Publish the signed package to the local App Installer feed (artifacts/msix-feed);
     # an installation made from the feed then updates itself from it.
     [switch]$Publish,
@@ -23,6 +26,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if ($SkipFirefoxPackage -and $RepackageFirefox) { throw 'Use -SkipFirefoxPackage or -RepackageFirefox, not both.' }
+if ($Store -and ($Loose -or $Unsigned -or $Publish -or $Install -or $Smoke)) {
+    throw '-Store builds an upload package only; it cannot be combined with -Loose, -Unsigned, -Publish, -Install or -Smoke.'
+}
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $mach = Join-Path $PSScriptRoot 'Invoke-Mach.ps1'
 $python = 'C:\mozilla-build\python3\python.exe'
@@ -44,9 +50,10 @@ if ($Version) { $packageArgs += '--version', $Version }
 if ($KeepIntermediates) { $packageArgs += '--keep-intermediates' }
 if ($Loose) { $packageArgs += '--loose' }
 if ($Unsigned) { $packageArgs += '--unsigned' }
+if ($Store) { $packageArgs += '--store' }
 if ($Publish) { $packageArgs += '--publish' }
 & powershell -NoProfile -ExecutionPolicy Bypass -File $mach python --virtualenv build @packageArgs
-if ($LASTEXITCODE) { throw "Development MSIX generation failed: $LASTEXITCODE" }
+if ($LASTEXITCODE) { throw "MSIX generation failed: $LASTEXITCODE" }
 if (-not ($Install -or $Smoke)) { return }
 
 # The packager records what it just produced; never act on an older build's record.

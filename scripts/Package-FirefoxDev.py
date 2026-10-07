@@ -26,13 +26,19 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-IDENTITY = "FirefoxWinUI.Dev"
-DISPLAY_NAME = "WinUI Browser Dev"
+IDENTITY = "Fenn.Dev"
+DISPLAY_NAME = "Fenn Dev"
 # A signed package's publisher must equal its certificate subject.
-SIGNED_PUBLISHER = "CN=Firefox WinUI Development"
+SIGNED_PUBLISHER = "CN=Fenn Development"
+DEV_PUBLISHER_DISPLAY_NAME = "Fenn Development"
 # Microsoft's unsigned-developer namespace: installable only with -AllowUnsigned.
-UNSIGNED_PUBLISHER = ("CN=Firefox WinUI Development, "
+UNSIGNED_PUBLISHER = ("CN=Fenn Development, "
                       "OID.2.25.311729368913984317654407730594956997722=1")
+# The Store product's identity from Partner Center (Product identity page). The
+# Store signs the package after certification, so this lane packs it unsigned.
+STORE_IDENTITY = "FennBrowser.FennBrowser"
+STORE_PUBLISHER = "CN=4EE000D9-3774-42FF-AC7F-E77E790B3C25"
+STORE_PUBLISHER_DISPLAY_NAME = "Fenn Browser"
 CODE_SIGNING_EKU = "1.3.6.1.5.5.7.3.3"
 # Upstream's template still names Windows 11 22H2. Claim the SDK this package is
 # built and tested with, so Windows applies current packaged-app behaviour.
@@ -60,23 +66,35 @@ class Lane:
     alias: str
     runs_dir: Path
     signed: bool = False
+    publisher_display_name: str = DEV_PUBLISHER_DISPLAY_NAME
+    # Upstream names the VFS install directory "<install_name> Package Root".
+    install_name: str = DISPLAY_NAME
+    # packaging/dev/defaults.js: development conveniences, never in a release.
+    dev_defaults: bool = True
+    store: bool = False
 
 
 # Packed, signed with the trusted development certificate, and installed or
 # updated without elevation by Install-FirefoxDevPackage.ps1.
-DEV = Lane(IDENTITY, SIGNED_PUBLISHER, DISPLAY_NAME, "firefox-winui-dev.exe",
+DEV = Lane(IDENTITY, SIGNED_PUBLISHER, DISPLAY_NAME, "fenn-dev.exe",
            ROOT / "artifacts/msix-dev", signed=True)
 # Fallback for machines without the certificate, such as a fresh test guest:
 # packed unsigned and installed elevated with -AllowUnsigned. Its publisher makes
 # it a different package family from DEV, so only one of the two can be installed.
-UNSIGNED = Lane(IDENTITY, UNSIGNED_PUBLISHER, DISPLAY_NAME, "firefox-winui-dev.exe",
+UNSIGNED = Lane(IDENTITY, UNSIGNED_PUBLISHER, DISPLAY_NAME, "fenn-dev.exe",
                 ROOT / "artifacts/msix-dev")
 # Registered in place from its layout under Developer Mode: no pack, signature or
 # elevation. Windows refuses loose registration for the unsigned publisher OID,
 # so this lane has an ordinary publisher, and with it its own identity, alias,
 # Start entry and profile.
-LOOSE = Lane("FirefoxWinUI.DevLoose", SIGNED_PUBLISHER, "WinUI Browser Dev (Loose)",
-             "firefox-winui-loose.exe", ROOT / "artifacts/msix-loose")
+LOOSE = Lane("Fenn.DevLoose", SIGNED_PUBLISHER, "Fenn Dev (Loose)",
+             "fenn-loose.exe", ROOT / "artifacts/msix-loose")
+# The release package for upload to Partner Center. Its display name is "Fenn",
+# one of the product's reserved names, as the Store requires. It claims the
+# fenn.exe alias, and carries no development defaults.
+STORE = Lane(STORE_IDENTITY, STORE_PUBLISHER, "Fenn", "fenn.exe", ROOT / "artifacts/msix-store",
+             publisher_display_name=STORE_PUBLISHER_DISPLAY_NAME, install_name="Fenn",
+             dev_defaults=False, store=True)
 
 
 def version_string(value):
@@ -125,9 +143,9 @@ def installed_version(lane=DEV):
     return max(output, key=version_key) if output else None
 
 
-def built_versions(runs_dir):
-    pattern = re.compile(rf"{re.escape(IDENTITY)}_(\d+\.\d+\.\d+\.\d+)_x64\.msix")
-    return [match[1] for path in runs_dir.glob(f"*/{IDENTITY}_*_x64.msix")
+def built_versions(runs_dir, identity=IDENTITY):
+    pattern = re.compile(rf"{re.escape(identity)}_(\d+\.\d+\.\d+\.\d+)_x64\.msix")
+    return [match[1] for path in runs_dir.glob(f"*/{identity}_*_x64.msix")
             if (match := pattern.fullmatch(path.name))]
 
 
@@ -246,6 +264,9 @@ def customize_manifest(path, min_version, description=DISPLAY_NAME, lane=DEV):
     manifest = tree.getroot()
     manifest.find("f:Properties/f:DisplayName", NS).text = lane.display_name
     manifest.find("f:Properties/f:Description", NS).text = description
+    # Upstream's template paints tiles in Firefox's purple. Until Fenn has brand
+    # assets, let Windows choose the tile colour.
+    manifest.find(".//uap:VisualElements", NS).set("BackgroundColor", "transparent")
     dependencies = manifest.find("f:Dependencies", NS)
     family = dependencies.find("f:TargetDeviceFamily", NS)
     family.set("MinVersion", "10.0.22000.0")
@@ -290,7 +311,10 @@ def validate_contents(names, read, version, expected_hashes, min_version, runtim
         raise ValueError(f"Package must depend only on {RUNTIME_FRAMEWORK} {min_version}: {dependencies}")
     aliases = manifest.findall(".//desktop:ExecutionAlias", NS)
     if [entry.get("Alias") for entry in aliases] != [lane.alias]:
-        raise ValueError(f"Development package must not claim the firefox.exe alias; expected {lane.alias}")
+        raise ValueError(f"Package must claim only its own alias {lane.alias}, never firefox.exe")
+    publisher_name = manifest.find("f:Properties/f:PublisherDisplayName", NS).text
+    if publisher_name != lane.publisher_display_name:
+        raise ValueError(f"PublisherDisplayName is {publisher_name!r}, expected {lane.publisher_display_name!r}")
     for element in manifest.iter():
         for key in ("Executable", "Path"):
             value = element.get(key)
@@ -313,11 +337,13 @@ def validate_contents(names, read, version, expected_hashes, min_version, runtim
         if candidate.lower() in lowered:
             raise ValueError(f"Private Windows App SDK runtime file in package: {candidate}")
     forbidden = {"firefoxwinuipanetest.dll", "panecontracttests.exe", "user.js"}
+    if not lane.dev_defaults:
+        forbidden.add("firefox-winui-dev.js")
     if any(PurePosixPath(name).name.lower() in forbidden for name in names):
-        raise ValueError("Test binary or developer profile leaked into package")
+        raise ValueError("Test binary, developer profile or development defaults leaked into package")
     if ("AppxSignature.p7x" in names) != lane.signed:
         raise ValueError("This lane's package must be signed" if lane.signed
-                         else "This development lane must remain unsigned")
+                         else "This lane's package must remain unsigned")
     return {"identity": identity, "applicationId": "App", "payloadFiles": len(expected_hashes),
             "dependencies": dependencies}
 
@@ -520,7 +546,8 @@ def publish_feed(package, lane, version, feed_dir=FEED_DIR):
 def write_latest(lane, entry):
     """What the last successful build produced, for Build-FirefoxDevPackage.ps1."""
     (lane.runs_dir / "latest.json").write_text(json.dumps(
-        {"identity": lane.identity, "alias": lane.alias, "loose": lane is LOOSE, **entry}, indent=2) + "\n",
+        {"identity": lane.identity, "alias": lane.alias, "loose": lane is LOOSE, "store": lane.store, **entry},
+        indent=2) + "\n",
         encoding="utf-8")
 
 
@@ -536,6 +563,8 @@ def main():
                        help=f"register the layout as {LOOSE.identity} under Developer Mode instead of packing")
     lanes.add_argument("--unsigned", action="store_true",
                        help="build the unsigned fallback, installable only elevated with -AllowUnsigned")
+    lanes.add_argument("--store", action="store_true",
+                       help=f"build the unsigned {STORE.identity} release package for Partner Center upload")
     parser.add_argument("--publish", action="store_true",
                         help=f"also publish the signed package to the App Installer feed in {FEED_DIR.name}")
     parser.add_argument("--keep-intermediates", action="store_true",
@@ -548,9 +577,9 @@ def main():
         raise SystemExit(0 if current else 10)
     if args.sdk_bin is None:
         parser.error("--sdk-bin is required")
-    lane = LOOSE if args.loose else UNSIGNED if args.unsigned else DEV
+    lane = LOOSE if args.loose else UNSIGNED if args.unsigned else STORE if args.store else DEV
     if args.publish and lane is not DEV:
-        parser.error("--publish needs the signed lane (no --loose or --unsigned)")
+        parser.error("--publish needs the signed development lane (no --loose, --unsigned or --store)")
     if lane.signed:
         certificate = signing_certificate(lane.publisher)
         if not certificate["Trusted"]:
@@ -578,7 +607,7 @@ def main():
     installed = installed_version(lane)
     if args.version is None:
         # The loose lane's registration is its only record; its runs are superseded.
-        built = [] if args.loose else built_versions(DEV.runs_dir)
+        built = [] if args.loose else built_versions(lane.runs_dir, lane.identity)
         args.version = next_version(firefox_series(browser_version), installed, *built)
         print(f"Version {args.version}: Firefox {browser_version} package build "
               f"{version_key(args.version)[2]}; installed {installed or 'none'}")
@@ -596,9 +625,10 @@ def main():
     shutil.copyfile(msix_server, payload / msix_server.name)
     shutil.copyfile(pane_dir / "FirefoxWinUIPane.dll", payload / "FirefoxWinUIPane.dll")
     check_exe_manifest(mt, payload / "firefox.exe", run)
-    defaults = payload / "browser/defaults/preferences/firefox-winui-dev.js"
-    defaults.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(ROOT / "packaging/dev/defaults.js", defaults)
+    if lane.dev_defaults:
+        defaults = payload / "browser/defaults/preferences/firefox-winui-dev.js"
+        defaults.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / "packaging/dev/defaults.js", defaults)
     expected_hashes = {p.relative_to(payload).as_posix(): sha256(p)
                        for p in sorted(payload.rglob("*")) if p.is_file()}
 
@@ -608,18 +638,19 @@ def main():
         print(message.format(**params), flush=True)
 
     output = run / f"{lane.identity}_{args.version}_x64.msix"
-    # Upstream names the VFS install directory after displayname; keep it the same
-    # in both lanes and set each lane's Start display name in the manifest.
+    # Upstream names the VFS install directory after displayname; the development
+    # lanes share one, and each lane's Start display name is set in the manifest.
     staged = stage_upstream_layout(
         msix, dir_or_package=str(payload), topsrcdir=str(ROOT / "upstream/firefox"),
-        channel="unofficial", distribution_dirs=[], version=args.version, vendor="FirefoxWinUI",
-        displayname=DISPLAY_NAME, identity=lane.identity, publisher=lane.publisher,
-        publisher_display_name="Firefox WinUI Development", arch="x86_64",
+        channel="unofficial", distribution_dirs=[], version=args.version, vendor="Fenn",
+        displayname=lane.install_name, identity=lane.identity, publisher=lane.publisher,
+        publisher_display_name=lane.publisher_display_name, arch="x86_64",
         output=str(output), force=True, log=log)
     layout = run / "layout"
     take_layout(staged, layout)
-    customize_manifest(layout / "AppxManifest.xml", min_version,
-                       f"{lane.display_name} (Firefox {browser_version}, package {args.version})", lane)
+    description = ("Fenn Browser" if lane.store
+                   else f"{lane.display_name} (Firefox {browser_version}, package {args.version})")
+    customize_manifest(layout / "AppxManifest.xml", min_version, description, lane)
     shutil.copyfile(layout / "AppxManifest.xml", run / "AppxManifest.xml")
     reindex_package_pri(makepri, layout, run, lane.identity)
     runtime_names = record["files"]
@@ -643,6 +674,8 @@ def main():
     if lane.signed:
         sign_package(signtool, output, certificate["Thumbprint"])
         signing = {"signing": "self-signed development certificate", "certificate": certificate}
+    elif lane.store:
+        signing = {"signing": "unsigned upload; the Microsoft Store signs it after certification"}
     else:
         signing = {"signing": "Windows 11 AllowUnsigned development only"}
     result = validate_package(output, args.version, expected_hashes, min_version, runtime_names, lane)
@@ -659,7 +692,7 @@ def main():
         latest["feed"] = str(publish_feed(output, lane, args.version))
         print(f"Published to App Installer feed: {latest['feed']}")
     write_latest(lane, latest)
-    print(f"Validated development MSIX: {output}")
+    print(f"Validated {'Store upload' if lane.store else 'development'} MSIX: {output}")
     print(f"SHA-256: {result['sha256']}")
 
 

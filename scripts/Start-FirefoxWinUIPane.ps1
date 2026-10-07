@@ -2,7 +2,7 @@ param([switch]$NativeAddress, [switch]$NativeAddressBar, [switch]$NativeNavigati
       [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight,
       [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop,
       [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach,
-      # Run the build with package identity (FirefoxWinUI.DevIdentity) through
+      # Run the build with package identity (Fenn.DevIdentity) through
       # dist/bin/firefox-identity.exe; see the packaging notes.
       [switch]$PackageIdentity)
 $ErrorActionPreference = 'Stop'

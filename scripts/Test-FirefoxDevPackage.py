@@ -92,7 +92,7 @@ def main():
     parser.add_argument("--exe", required=True, type=Path)
     parser.add_argument("--unpackaged", action="store_true",
                         help="expect no package identity (dist/bin firefox.exe, bootstrapped onto the framework)")
-    parser.add_argument("--package-name", default="FirefoxWinUI.Dev",
+    parser.add_argument("--package-name", default="Fenn.Dev",
                         help="identity name the running browser must report")
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location("bridge", ROOT / "scripts/Test-FirefoxInertBridge.py")

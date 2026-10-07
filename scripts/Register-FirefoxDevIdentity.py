@@ -29,10 +29,10 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / "build/firefox/dist/bin"
 WORK = ROOT / "artifacts/msix-identity"
-NAME = "FirefoxWinUI.DevIdentity"
+NAME = "Fenn.DevIdentity"
 APP_ID = "App"
 EXE = "firefox-identity.exe"
-DISPLAY_NAME = "WinUI Browser Dev (Identity)"
+DISPLAY_NAME = "Fenn Dev (Identity)"
 # The same version cannot be registered twice, so a changed manifest is
 # re-registered by removing the old registration first; the version stays fixed.
 VERSION = "1.0.0.0"
@@ -60,12 +60,12 @@ PACKAGE_EXTENSIONS = ("windows.activatableClass.inProcessServer", "windows.comIn
 
 
 def newest_msix_manifest():
-    """The substituted manifest of the newest FirefoxWinUI.Dev build; upstream's
+    """The substituted manifest of the newest Fenn.Dev build; upstream's
     template needs build-time values (install directory, background-task class)."""
     for path in sorted((ROOT / "artifacts/msix-dev").glob("*/AppxManifest.xml"),
                        key=lambda p: p.stat().st_mtime, reverse=True):
         identity = ET.parse(path).getroot().find(f"{{{FOUNDATION}}}Identity")
-        if identity is not None and identity.get("Name") == "FirefoxWinUI.Dev":
+        if identity is not None and identity.get("Name") == "Fenn.Dev":
             return path
     raise FileNotFoundError("Build the MSIX once (Build-FirefoxDevPackage.ps1) so its Firefox "
                             "declarations can be reused")
@@ -126,7 +126,7 @@ def package_manifest(publisher, max_version_tested, declarations=("", ""), runti
   <Identity Name="{NAME}" Publisher="{publisher}" Version="{VERSION}" ProcessorArchitecture="neutral" />
   <Properties>
     <DisplayName>{DISPLAY_NAME}</DisplayName>
-    <PublisherDisplayName>Firefox WinUI Development</PublisherDisplayName>
+    <PublisherDisplayName>Fenn Development</PublisherDisplayName>
     <Logo>{LOGO}\\icon48.png</Logo>
     <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
   </Properties>

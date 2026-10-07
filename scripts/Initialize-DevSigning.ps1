@@ -10,8 +10,8 @@
 [CmdletBinding(SupportsShouldProcess)]
 param([switch]$Remove, [int]$ValidYears = 2)
 $ErrorActionPreference = 'Stop'
-$subject = 'CN=Firefox WinUI Development'
-$friendlyName = 'Firefox WinUI development package signing'
+$subject = 'CN=Fenn Development'
+$friendlyName = 'Fenn development package signing'
 $codeSigning = '1.3.6.1.5.5.7.3.3'
 
 $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())

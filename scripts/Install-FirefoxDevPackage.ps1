@@ -4,8 +4,8 @@
 # update source.
 param([Parameter(Mandatory = $true)][string]$PackagePath)
 $ErrorActionPreference = 'Stop'
-$signedPublisher = 'CN=Firefox WinUI Development'
-$unsignedPublisher = 'CN=Firefox WinUI Development, OID.2.25.311729368913984317654407730594956997722=1'
+$signedPublisher = 'CN=Fenn Development'
+$unsignedPublisher = 'CN=Fenn Development, OID.2.25.311729368913984317654407730594956997722=1'
 $package = (Resolve-Path -LiteralPath $PackagePath).Path
 $feed = $null
 if ([IO.Path]::GetExtension($package) -eq '.appinstaller') {
@@ -13,8 +13,8 @@ if ([IO.Path]::GetExtension($package) -eq '.appinstaller') {
     [xml]$feedXml = Get-Content -LiteralPath $feed -Raw
     $main = $feedXml.AppInstaller.MainPackage
     $package = ([Uri]$main.Uri).LocalPath
-    if ($main.Name -ne 'FirefoxWinUI.Dev' -or $main.Publisher -ne $signedPublisher) {
-        throw 'This feed is not for the signed FirefoxWinUI.Dev package.'
+    if ($main.Name -ne 'Fenn.Dev' -or $main.Publisher -ne $signedPublisher) {
+        throw 'This feed is not for the signed Fenn.Dev package.'
     }
 }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -26,7 +26,7 @@ try {
 } finally { $archive.Dispose() }
 $identity = $manifest.Package.Identity
 $expectedPublisher = if ($signed) { $signedPublisher } else { $unsignedPublisher }
-if ($identity.Name -ne 'FirefoxWinUI.Dev' -or $identity.Publisher -ne $expectedPublisher -or
+if ($identity.Name -ne 'Fenn.Dev' -or $identity.Publisher -ne $expectedPublisher -or
     $identity.ProcessorArchitecture -ne 'x64') {
     throw 'This installer only accepts this project''s x64 development identity, signed or unsigned.'
 }
@@ -37,13 +37,13 @@ if ($feed -and $main.Version -ne $identity.Version) {
 # Replacing one with the other is an uninstall, which deletes that package's data;
 # the other family also has another Firefox install hash, so another profile.
 $otherPublisher = if ($signed) { $unsignedPublisher } else { $signedPublisher }
-$other = Get-AppxPackage -Name FirefoxWinUI.Dev | Where-Object Publisher -eq $otherPublisher
+$other = Get-AppxPackage -Name Fenn.Dev | Where-Object Publisher -eq $otherPublisher
 if ($other) {
     $kind = if ($signed) { 'unsigned' } else { 'signed' }
-    throw ("The $kind FirefoxWinUI.Dev $($other.Version) is installed and shares this package's name and alias. " +
+    throw ("The $kind Fenn.Dev $($other.Version) is installed and shares this package's name and alias. " +
         'Removing it deletes its package data, and this package starts in a different browser profile; ' +
         'copy anything you need first. ' +
-        "Then run: Get-AppxPackage -Name FirefoxWinUI.Dev | Where-Object Publisher -eq '$otherPublisher' | Remove-AppxPackage")
+        "Then run: Get-AppxPackage -Name Fenn.Dev | Where-Object Publisher -eq '$otherPublisher' | Remove-AppxPackage")
 }
 # The package carries no Windows App SDK runtime. Sideloading does not fetch the
 # framework, so name the missing dependency instead of failing deep in deployment.
@@ -73,5 +73,5 @@ if ($PSCmdlet.ShouldProcess("$($identity.Name) $($identity.Version)", 'Install d
         }
         Add-AppxPackage -Path $package -AllowUnsigned
     }
-    Get-AppxPackage -Name FirefoxWinUI.Dev | Select-Object Name, Version, Publisher, PackageFamilyName, InstallLocation
+    Get-AppxPackage -Name Fenn.Dev | Select-Object Name, Version, Publisher, PackageFamilyName, InstallLocation
 }
