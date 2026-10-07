@@ -34,13 +34,15 @@ if ($feed -and $main.Version -ne $identity.Version) {
     throw "Feed names version $($main.Version) but its package is $($identity.Version)."
 }
 # Signed and unsigned share the name and alias but are different package families.
-# Replacing one with the other is an uninstall, which deletes that package's data.
+# Replacing one with the other is an uninstall, which deletes that package's data;
+# the other family also has another Firefox install hash, so another profile.
 $otherPublisher = if ($signed) { $unsignedPublisher } else { $signedPublisher }
 $other = Get-AppxPackage -Name FirefoxWinUI.Dev | Where-Object Publisher -eq $otherPublisher
 if ($other) {
     $kind = if ($signed) { 'unsigned' } else { 'signed' }
     throw ("The $kind FirefoxWinUI.Dev $($other.Version) is installed and shares this package's name and alias. " +
-        'Removing it deletes its app data, including its browser profile; copy anything you need first. ' +
+        'Removing it deletes its package data, and this package starts in a different browser profile; ' +
+        'copy anything you need first. ' +
         "Then run: Get-AppxPackage -Name FirefoxWinUI.Dev | Where-Object Publisher -eq '$otherPublisher' | Remove-AppxPackage")
 }
 # The package carries no Windows App SDK runtime. Sideloading does not fetch the

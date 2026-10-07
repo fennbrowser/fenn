@@ -187,6 +187,44 @@ class DevPackageTests(unittest.TestCase):
                               "package-report.json", "root-pri.xml"])
             self.assertTrue((failed / "payload").exists())
 
+    def test_prune_superseded_failures_and_old_runs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runs = Path(temp)
+            names = ["159.0.9.0-a", "159.0.10.0-b", "159.0.11.0-failed", "159.0.12.0-c", "159.0.13.0-failed"]
+            for name in names:
+                (runs / name / "payload").mkdir(parents=True)
+                (runs / name / "build.log").write_text("keep")
+                if "failed" not in name:
+                    (runs / name / f"FirefoxWinUI.Dev_{name.split('-')[0]}_x64.msix").write_bytes(b"m")
+            (runs / "latest.json").write_text(json.dumps(
+                {"package": str(runs / "159.0.12.0-c" / "FirefoxWinUI.Dev_159.0.12.0_x64.msix")}))
+            listed = {p.relative_to(runs).as_posix() for p, _ in prune.prune(runs)}
+            # A failure older than the newest finished run loses its intermediates; the newest failure keeps them.
+            self.assertIn("159.0.11.0-failed/payload", listed)
+            self.assertNotIn("159.0.13.0-failed/payload", listed)
+            listed = {p.relative_to(runs).as_posix()
+                      for p, _ in prune.prune(runs, keep_runs=1, installed=(159, 0, 9, 0))}
+            # Whole old runs go, except the newest, latest.json's and the installed version's.
+            self.assertEqual({p for p in listed if "/" not in p}, {"159.0.10.0-b", "159.0.11.0-failed"})
+            prune.prune(runs, apply=True, keep_runs=1, installed=(159, 0, 9, 0))
+            self.assertEqual(sorted(p.name for p in runs.iterdir() if p.is_dir()),
+                             ["159.0.12.0-c", "159.0.13.0-failed", "159.0.9.0-a"])
+            self.assertTrue((runs / "159.0.12.0-c" / "build.log").exists())
+
+    def test_prune_smoke_profiles_keeps_newest_and_results(self):
+        with tempfile.TemporaryDirectory() as temp:
+            smoke = Path(temp)
+            for index in range(4):
+                run = smoke / f"run{index}"
+                (run / "profile").mkdir(parents=True)
+                (run / "profile" / "prefs.js").write_text("x")
+                (run / "result.json").write_text("{}")
+                os.utime(run, (1000 + index, 1000 + index))
+            prune.prune_smoke_profiles(smoke, apply=True, keep=2)
+            self.assertEqual([(smoke / f"run{i}" / "profile").exists() for i in range(4)],
+                             [False, False, True, True])
+            self.assertTrue(all((smoke / f"run{i}" / "result.json").exists() for i in range(4)))
+
     def fixture(self, root, *, missing=False, tampered=False, alias="firefox-winui-dev.exe",
                 dependency=True, private_runtime=False, lane=package.DEV, signed=None):
         manifest = ET.Element(f"{{{package.NS['f']}}}Package")

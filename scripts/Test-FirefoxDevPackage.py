@@ -61,6 +61,32 @@ def runtime_modules(pid):
     return {"framework": str(framework), "modules": sorted(p.name for p in runtime)}
 
 
+def package_full_name(pid):
+    """The process's package full name, or None when it has no package identity."""
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
+    kernel.OpenProcess.restype = W.HANDLE
+    kernel.CloseHandle.argtypes = [W.HANDLE]
+    kernel.GetPackageFullName.argtypes = [W.HANDLE, ctypes.POINTER(W.UINT), W.LPWSTR]
+    handle = kernel.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        size = W.UINT(0)
+        result = kernel.GetPackageFullName(handle, ctypes.byref(size), None)
+        if result == 15700:  # APPMODEL_ERROR_NO_PACKAGE
+            return None
+        if result != 122:
+            raise OSError(result, "GetPackageFullName")
+        buffer = ctypes.create_unicode_buffer(size.value)
+        result = kernel.GetPackageFullName(handle, ctypes.byref(size), buffer)
+        if result:
+            raise OSError(result, "GetPackageFullName")
+        return buffer.value
+    finally:
+        kernel.CloseHandle(handle)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exe", required=True, type=Path)
@@ -107,29 +133,7 @@ def main():
                 hwnd: window.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow).nativeHandle,
                 profile: Services.dirsvc.get('ProfD', Ci.nsIFile).path,
                 tabs: gBrowser.tabs.length};""")
-            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-            kernel.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
-            kernel.OpenProcess.restype = W.HANDLE
-            kernel.CloseHandle.argtypes = [W.HANDLE]
-            kernel.GetPackageFullName.argtypes = [W.HANDLE, ctypes.POINTER(W.UINT), W.LPWSTR]
-            handle = kernel.OpenProcess(0x1000, False, state["pid"])
-            if not handle:
-                raise ctypes.WinError(ctypes.get_last_error())
-            try:
-                size = W.UINT(0)
-                result = kernel.GetPackageFullName(handle, ctypes.byref(size), None)
-                if result == 15700:  # APPMODEL_ERROR_NO_PACKAGE
-                    package = None
-                elif result == 122:
-                    buffer = ctypes.create_unicode_buffer(size.value)
-                    result = kernel.GetPackageFullName(handle, ctypes.byref(size), buffer)
-                    if result:
-                        raise OSError(result, "GetPackageFullName")
-                    package = buffer.value
-                else:
-                    raise OSError(result, "GetPackageFullName")
-            finally:
-                kernel.CloseHandle(handle)
+            package = package_full_name(state["pid"])
             if args.unpackaged:
                 if package:
                     raise AssertionError(f"Unpackaged browser unexpectedly has package identity: {package}")
