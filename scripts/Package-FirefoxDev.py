@@ -233,33 +233,48 @@ def replace_exe_manifest(mt, exe, work, supplied):
     return removed
 
 
-def check_package_pri(dump, layout, identity):
-    """The package PRI must be this package's resource map, and every file it
-    names must exist in the layout (MakePri itself checks neither)."""
-    root = ET.parse(dump).getroot()
-    maps = [m.get("name") for m in root.iter("ResourceMap")]
+def pri_candidates(dump):
+    """(resource, qualifiers, value) for every file candidate in a MakePri dump."""
+    return {(resource.get("name"), candidate.get("qualifiers", ""), candidate.findtext("Value"))
+            for resource in ET.parse(dump).getroot().iter("NamedResource")
+            for candidate in resource.findall("Candidate[@type='Path']")}
+
+
+def check_package_pri(dump, layout, identity, expected):
+    """The package PRI must be this package's resource map, carry exactly the
+    expected candidates, and every file it names must exist in the layout.
+    MakePri reports success even when it merged nothing."""
+    maps = [m.get("name") for m in ET.parse(dump).getroot().iter("ResourceMap")]
     if maps[:1] != [identity]:
         raise ValueError(f"Package PRI resource map is {maps}, expected {identity}")
-    for candidate in root.findall(".//Candidate[@type='Path']/Value"):
-        relative = PurePosixPath(candidate.text.replace("\\", "/"))
+    candidates = pri_candidates(dump)
+    if not expected or candidates != expected:
+        raise ValueError(f"Package PRI candidates differ from upstream: missing {sorted(expected - candidates)}, "
+                         f"extra {sorted(candidates - expected)}")
+    for _, _, value in candidates:
+        relative = PurePosixPath(value.replace("\\", "/"))
         if relative.is_absolute() or ".." in relative.parts or not (layout / relative).is_file():
-            raise ValueError(f"Package PRI references a missing file: {candidate.text}")
+            raise ValueError(f"Package PRI references a missing file: {value}")
 
 
 def reindex_package_pri(makepri, layout, work, identity):
     """Upstream ships a prebuilt Resources.pri whose map is named "firefox". Windows
     resolves the manifest's assets through the map named after the package, so
-    re-index it under this package's identity."""
+    re-index it under this package's identity, keeping every candidate."""
+    def dump(pri, name):
+        target = work / name
+        subprocess.run([str(makepri), "dump", "/if", str(pri), "/of", str(target), "/o"],
+                       check=True, stdout=subprocess.DEVNULL)
+        return target
+
+    expected = pri_candidates(dump(layout / "Resources.pri", "upstream-pri.xml"))
     source = work / "pri-input"
     source.mkdir()
-    shutil.copyfile(layout / "AppxManifest.xml", source / "AppxManifest.xml")
     shutil.copyfile(layout / "Resources.pri", source / "upstream.pri")
     subprocess.run([str(makepri), "new", "/pr", str(source), "/cf", str(ROOT / "configs/msix-package-pri.xml"),
-                    "/of", str(layout / "Resources.pri"), "/o"], check=True, stdout=subprocess.DEVNULL)
-    dump = work / "package-pri.xml"
-    subprocess.run([str(makepri), "dump", "/if", str(layout / "Resources.pri"), "/of", str(dump), "/o"],
+                    "/mn", str(layout / "AppxManifest.xml"), "/of", str(layout / "Resources.pri"), "/o"],
                    check=True, stdout=subprocess.DEVNULL)
-    check_package_pri(dump, layout, identity)
+    check_package_pri(dump(layout / "Resources.pri", "package-pri.xml"), layout, identity, expected)
     shutil.rmtree(source)
 
 

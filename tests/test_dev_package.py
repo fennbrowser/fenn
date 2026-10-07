@@ -385,14 +385,21 @@ class DevPackageTests(unittest.TestCase):
   <NamedResource name="Square44x44Logo.png"><Candidate type="Path"><Value>Assets\\Square44x44Logo.png</Value></Candidate></NamedResource>
 </ResourceMap></PriInfo>""", encoding="utf-8")
 
+            expected = {("Square44x44Logo.png", "", "Assets\\Square44x44Logo.png")}
             write("firefox")  # Upstream's prebuilt map name.
             with self.assertRaisesRegex(ValueError, "resource map is \\['firefox'\\]"):
-                package.check_package_pri(dump, layout, package.IDENTITY)
+                package.check_package_pri(dump, layout, package.IDENTITY, expected)
             write(package.IDENTITY)
+            self.assertEqual(package.pri_candidates(dump), expected)
             with self.assertRaisesRegex(ValueError, "missing file"):
-                package.check_package_pri(dump, layout, package.IDENTITY)
+                package.check_package_pri(dump, layout, package.IDENTITY, expected)
             (layout / "Assets/Square44x44Logo.png").write_bytes(b"png")
-            package.check_package_pri(dump, layout, package.IDENTITY)
+            package.check_package_pri(dump, layout, package.IDENTITY, expected)
+            # MakePri succeeds even when it merged nothing; that blanked the Start icons once.
+            dump.write_text(f'<PriInfo><ResourceMap name="{package.IDENTITY}" primary="true"/></PriInfo>',
+                            encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "differ from upstream"):
+                package.check_package_pri(dump, layout, package.IDENTITY, expected)
 
     def test_manifest_claims_the_tested_windows_version(self):
         with tempfile.TemporaryDirectory() as temp:
