@@ -95,7 +95,7 @@ struct NativeNavigationToolbar {
         pinned.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh, Symbol::Contact, Symbol::Library, Symbol::More, Symbol::Forward, Symbol::Home, Symbol::Download, Symbol::Clock, Symbol::OutlineStar};
         const wchar_t* names[] = {L"Back", L"Forward", L"Reload", L"Account", L"Extensions", L"Application menu", L"More tools", L"Home", L"Downloads", L"History", L"Bookmarks"};
-        const wchar_t* ids[] = {L"FirefoxWinUIBack", L"FirefoxWinUIForward", L"FirefoxWinUIReload", L"FirefoxWinUIProfile", L"FirefoxWinUIExtensions", L"FirefoxWinUIAppMenu", L"FirefoxWinUIOverflow", L"FirefoxWinUIHome", L"FirefoxWinUIDownloads", L"FirefoxWinUIHistory", L"FirefoxWinUIBookmarks"};
+        const wchar_t* ids[] = {L"FennBack", L"FennForward", L"FennReload", L"FennProfile", L"FennExtensions", L"FennAppMenu", L"FennOverflow", L"FennHome", L"FennDownloads", L"FennHistory", L"FennBookmarks"};
         for (size_t i = 0; i < buttons.size(); ++i) {
             auto button = CreateButton(i,symbols[i]);
             icons[i]=button.Content().as<Viewbox>().Child().try_as<SymbolIcon>();
@@ -288,7 +288,7 @@ struct NativeNavigationToolbar {
                     keyboardTarget.Visibility(customization.editing?Visibility::Visible:Visibility::Collapsed);
                     keyboardTarget.IsTabStop(customization.editing);
                     Automation::AutomationProperties::SetName(keyboardTarget,item.label);
-                    Automation::AutomationProperties::SetAutomationId(keyboardTarget,L"FirefoxWinUICustomizePlaced-"+item.control);
+                    Automation::AutomationProperties::SetAutomationId(keyboardTarget,L"FennCustomizePlaced-"+item.control);
                     control=it->second;
                 } else {
                     for(size_t i=0;i<buttons.size();i++)if(i!=5 && i!=6 && item.control==commands[i])control=buttons[i];

@@ -76,10 +76,10 @@ struct TabGlowIgnition {
 
     bool Active(uint32_t id) const { return active.count(id) != 0; }
 
-    // FIREFOX_WINUI_PANE_DIAGNOSTICS: reveal timing on stderr, with QPC
+    // FENN_PANE_DIAGNOSTICS: reveal timing on stderr, with QPC
     // milliseconds comparable to frame capture times.
     static bool Diagnostics() {
-        static const bool enabled = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;
+        static const bool enabled = GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0) != 0;
         return enabled;
     }
     static double Now() {

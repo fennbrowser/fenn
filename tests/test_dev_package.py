@@ -24,9 +24,9 @@ def load(name):
     return module
 
 
-package = load("Package-FirefoxDev")
+package = load("Package-FennDev")
 staging = load("Stage-WinUIPane")
-prune = load("Prune-FirefoxDevPackages")
+prune = load("Prune-FennDevPackages")
 
 
 def fake_repackager(staging_dir, pack=True):
@@ -274,7 +274,7 @@ class DevPackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must remain unsigned"):
                 self.validate(path, hashes, store)
             path, hashes = self.fixture(Path(temp), lane=store, extra=[
-                "VFS/ProgramFiles/Dev%20Root/browser/defaults/preferences/firefox-winui-dev.js"])
+                "VFS/ProgramFiles/Dev%20Root/browser/defaults/preferences/fenn-dev.js"])
             with self.assertRaisesRegex(ValueError, "development defaults"):
                 self.validate(path, hashes, store)
             path, hashes = self.fixture(Path(temp), lane=store, publisher_display_name="Fenn Development")
@@ -385,7 +385,7 @@ class DevPackageTests(unittest.TestCase):
             (dist / package.APP_NAME).mkdir()
             self.assertEqual(package.payload_status(dist, set()), (False, "no clean Firefox package yet"))
             (dist / package.APP_NAME / f"{package.APP_NAME}.exe").write_bytes(b"exe")
-            source, pane = dist / "bin/browser/omni-source.js", dist / "bin/FirefoxWinUIPane.dll"
+            source, pane = dist / "bin/browser/omni-source.js", dist / "bin/FennPane.dll"
             for path in (source, pane):
                 path.write_bytes(b"old")
                 os.utime(path, (1000, 1000))
@@ -395,7 +395,7 @@ class DevPackageTests(unittest.TestCase):
             other = dist / f"{package.APP_NAME}-159.0a1.en-US.win64.xpt_artifacts.zip"  # Not the package.
             other.write_bytes(b"zip")
             os.utime(other, (5000, 5000))
-            staged = {"firefoxwinuipane.dll"}
+            staged = {"fennpane.dll"}
             self.assertTrue(package.payload_status(dist, staged)[0])
             os.utime(pane, (3000, 3000))  # Pane-only change: the package takes the pane from its build.
             self.assertTrue(package.payload_status(dist, staged)[0])
@@ -479,7 +479,7 @@ class DevPackageTests(unittest.TestCase):
                              ("10.0.22000.0", package.MAX_VERSION_TESTED))
 
     def test_identity_exe_manifest_names_the_identity_package(self):
-        identity = load("Register-FirefoxDevIdentity")
+        identity = load("Register-FennDevIdentity")
         text = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
 <assemblyIdentity version="1.0.0.0" name="Firefox" type="win32"></assemblyIdentity>
@@ -502,7 +502,7 @@ class DevPackageTests(unittest.TestCase):
         self.assertFalse(identity.same_manifest(registered.replace("1.0.0.0", "1.0.1.0"), manifest))
 
     def test_identity_package_reuses_firefox_declarations_for_dist_bin(self):
-        identity = load("Register-FirefoxDevIdentity")
+        identity = load("Register-FennDevIdentity")
         root = "VFS\\ProgramFiles\\Dev Root\\"
         source_text = f"""<Package xmlns="{identity.FOUNDATION}"
   xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"

@@ -61,7 +61,7 @@ struct NativeHistoryMenu {
         for(auto v:entries){auto entry=v.GetObject();if(entry.GetNamedBoolean(L"separator",false)){flyout.Items().Append(MenuFlyoutSeparator());continue;}
             MenuFlyoutItem item;item.Text(entry.GetNamedString(L"label"));item.IsEnabled(entry.GetNamedBoolean(L"enabled"));
             auto id=uint32_t(entry.GetNamedNumber(L"id"));
-            Automation::AutomationProperties::SetAutomationId(item,L"FirefoxWinUIHistoryMenu-"+winrt::to_hstring(id));
+            Automation::AutomationProperties::SetAutomationId(item,L"FennHistoryMenu-"+winrt::to_hstring(id));
             auto invoke=[this,button,session,revision,id,alive=std::weak_ptr<int>(lifetime)](bool middle){
                 if(alive.expired())return;bool accepted{};
                 if(shell_core_surface_menu_activate(core,session,revision,id,&accepted)!=SHELL_STATUS_OK || !accepted)return;

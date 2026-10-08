@@ -7,7 +7,7 @@ if ($Restore) {
     & (Join-Path $projectRoot 'artifacts/setup/nuget.exe') restore (Join-Path $projectRoot 'native/WinUIPane/packages.config') -PackagesDirectory (Join-Path $projectRoot '.cache/nuget/native') -Source https://api.nuget.org/v3/index.json -NonInteractive
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
 }
-& (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'native/WinUIPane/FirefoxWinUIPane.vcxproj') /m:2 /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
+& (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'native/WinUIPane/FennPane.vcxproj') /m:2 /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 $output = Join-Path $projectRoot 'build/winui-pane/x64/Release'
 # Framework-dependent on Microsoft.WindowsAppRuntime.2: hosts join the shared
@@ -27,26 +27,26 @@ if ($Test -or $ContractTest -or $AddressTest -or $MenuTest -or $TabStripTest) {
         # Hosted CI has no interactive desktop. This production-DLL lane uses
         # programmatic ABI/lifecycle/accessibility contracts only; physical
         # SendInput suites continue to run through Invoke-UiaTestVM.ps1.
-        $productionDll = (Resolve-Path (Join-Path $output 'FirefoxWinUIPane.dll')).Path
+        $productionDll = (Resolve-Path (Join-Path $output 'FennPane.dll')).Path
         & (Join-Path $output 'PaneContractTests.exe') $productionDll
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
     }
 }
 if ($Test -or $AddressTest -or $MenuTest -or $TabStripTest) {
     if ($Test) {
-        & (Join-Path $output 'PaneContractTests.exe') (Join-Path $output 'FirefoxWinUIPane.dll')
+        & (Join-Path $output 'PaneContractTests.exe') (Join-Path $output 'FennPane.dll')
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
     }
     # Inspect live XAML only in a separate test DLL; never stage test exports.
-    & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'native/WinUIPane/FirefoxWinUIPane.vcxproj') /m:2 /p:Configuration=Release /p:Platform=x64 /p:WinUIPaneTesting=true /verbosity:minimal
+    & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'native/WinUIPane/FennPane.vcxproj') /m:2 /p:Configuration=Release /p:Platform=x64 /p:WinUIPaneTesting=true /verbosity:minimal
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     $testMode = if ($TabStripTest) { '--strip' } elseif ($MenuTest) { '--menu' } elseif ($AddressTest) { '--address' } else { '--inspect' }
-    & (Join-Path $output 'PaneContractTests.exe') (Join-Path $output 'FirefoxWinUIPaneTest.dll') $testMode
+    & (Join-Path $output 'PaneContractTests.exe') (Join-Path $output 'FennPaneTest.dll') $testMode
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     if ($TabStripTest) {
         # Motion needs loaded visuals. Run this in a fresh process: the earlier
         # hide/show/teardown fixture can leave recreated rows measured but unloaded.
-        & (Join-Path $output 'PaneContractTests.exe') (Join-Path $output 'FirefoxWinUIPaneTest.dll') --inline
+        & (Join-Path $output 'PaneContractTests.exe') (Join-Path $output 'FennPaneTest.dll') --inline
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
     }
 }

@@ -32,7 +32,7 @@ if ($Store -and ($Loose -or $Unsigned -or $Publish -or $Install -or $Smoke)) {
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $mach = Join-Path $PSScriptRoot 'Invoke-Mach.ps1'
 $python = 'C:\mozilla-build\python3\python.exe'
-$packager = Join-Path $PSScriptRoot 'Package-FirefoxDev.py'
+$packager = Join-Path $PSScriptRoot 'Package-FennDev.py'
 $started = Get-Date
 
 $repackage = [bool]$RepackageFirefox
@@ -62,14 +62,14 @@ $record = Get-Item (Join-Path $runs 'latest.json')
 if ($record.LastWriteTime -lt $started) { throw "No new build record in $runs" }
 $latest = Get-Content $record.FullName -Raw | ConvertFrom-Json
 if ($Install -and -not $latest.loose) {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Install-FirefoxDevPackage.ps1') `
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Install-FennDevPackage.ps1') `
         -PackagePath $(if ($latest.feed) { $latest.feed } else { $latest.package })
     if ($LASTEXITCODE) { throw "Installing $($latest.package) failed: $LASTEXITCODE" }
 }
 if ($Smoke) {
     $installed = @(Get-AppxPackage -Name $latest.identity | Where-Object Version -eq $latest.version)
     if (-not $installed) { throw "$($latest.identity) $($latest.version) is not installed; add -Install." }
-    & $python (Join-Path $PSScriptRoot 'Test-FirefoxDevPackage.py') `
+    & $python (Join-Path $PSScriptRoot 'Test-FennDevPackage.py') `
         --exe (Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\$($latest.alias)") --package-name $latest.identity
     if ($LASTEXITCODE) { throw "Smoke test of $($latest.identity) $($latest.version) failed: $LASTEXITCODE" }
 }

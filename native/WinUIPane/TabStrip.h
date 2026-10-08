@@ -1543,7 +1543,7 @@ struct NativeTabStrip {
 <ResourceDictionary x:Key="Default" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="{ThemeResource LayerOnMicaBaseAltFillColorDefault}"/></ResourceDictionary>
 <ResourceDictionary x:Key="Light" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="{ThemeResource LayerOnMicaBaseAltFillColorDefault}"/></ResourceDictionary>
 <ResourceDictionary x:Key="HighContrast" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="{ThemeResource SystemColorWindowColor}"/></ResourceDictionary>
-</ResourceDictionary.ThemeDictionaries></ResourceDictionary></Grid.Resources><TabView TabWidthMode="Equal" CanDragTabs="False" CanReorderTabs="False" AllowDrop="False" VerticalAlignment="Top" AutomationProperties.AutomationId="FirefoxWinUITabStrip" AutomationProperties.Name="Tabs in this window" /></Grid>)")
+</ResourceDictionary.ThemeDictionaries></ResourceDictionary></Grid.Resources><TabView TabWidthMode="Equal" CanDragTabs="False" CanReorderTabs="False" AllowDrop="False" VerticalAlignment="Top" AutomationProperties.AutomationId="FennTabStrip" AutomationProperties.Name="Tabs in this window" /></Grid>)")
                 .as<Controls::Grid>();
         view = root.Children().GetAt(0).as<Controls::TabView>();
         ambient.Create(root);
@@ -1735,7 +1735,7 @@ struct NativeTabStrip {
         return nullptr;
     }
     void AttachAddMenu(Controls::Button const& button) {
-        Automation::AutomationProperties::SetAutomationId(button, L"FirefoxWinUIStripNewTab");
+        Automation::AutomationProperties::SetAutomationId(button, L"FennStripNewTab");
         Controls::MenuFlyout flyout;
         flyout.Items().Append(NativeTabMenu::Placeholder());
         auto alive = std::weak_ptr<int>(lifetime);
@@ -2055,9 +2055,9 @@ struct NativeTabStrip {
     // right-edge anchor tried first was wrong.
     struct Neighbor { Controls::TabViewItem row{nullptr}; float dx{}, sx{}; };
 
-    // Opt-in (FIREFOX_WINUI_PANE_DIAGNOSTICS) trace of the new-tab entry motion.
+    // Opt-in (FENN_PANE_DIAGNOSTICS) trace of the new-tab entry motion.
     template <typename... Args> static void EntryLog(char const* format, Args... args) {
-        static const bool enabled = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;
+        static const bool enabled = GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0) != 0;
         if (!enabled) return;
         fprintf(stderr, format, args...);
         fflush(stderr);
@@ -3618,7 +3618,7 @@ struct NativeTabStrip {
                     row.RenderTransform(Media::TranslateTransform{});
                     row.Header(Markup::XamlReader::Load(
                         LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid Width="16" Height="16"><Image Stretch="Uniform" AutomationProperties.AccessibilityView="Raw"/><ProgressRing Width="16" Height="16" IsActive="False" AutomationProperties.AccessibilityView="Raw"/></Grid><Viewbox Grid.Column="1" Width="16" Height="16" AutomationProperties.AccessibilityView="Raw"><SymbolIcon Symbol="Globe"/></Viewbox><StackPanel Grid.Column="2" MaxWidth="220" VerticalAlignment="Center"><TextBlock TextTrimming="CharacterEllipsis"/></StackPanel><Viewbox Grid.Column="3" Width="16" Height="16"><SymbolIcon Symbol="Volume"/></Viewbox><Border Grid.Column="4" Width="8" Height="8" CornerRadius="4" VerticalAlignment="Center" Visibility="Collapsed" Background="{ThemeResource TextFillColorPrimaryBrush}" AutomationProperties.AccessibilityView="Raw"/></Grid>)"));
-                    Automation::AutomationProperties::SetAutomationId(row, L"FirefoxWinUITab-" + to_hstring(id));
+                    Automation::AutomationProperties::SetAutomationId(row, L"FennTab-" + to_hstring(id));
                     // A pinned row's width depends on its own laid-out chrome.
                     row.SizeChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const& sender, auto&&) {
                         if (alive.expired()) return;

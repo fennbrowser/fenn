@@ -49,7 +49,7 @@ struct NativeWindowDrag {
         auto self = reinterpret_cast<NativeWindowDrag*>(data);
         try {
             if ((msg == WM_NCLBUTTONDOWN || msg == WM_NCLBUTTONUP || msg == WM_SYSCOMMAND) &&
-                GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0))
+                GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0))
                 fprintf(stderr, "WinUIPane system-caption msg=%x hit=%llu region=%d\n", msg,
                         static_cast<unsigned long long>(w), self->SystemButtonAt(ScreenPoint(l)));
             if (msg == WM_NCHITTEST && self->visible) {

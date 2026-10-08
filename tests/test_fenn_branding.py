@@ -66,9 +66,9 @@ class FennBrandingTests(unittest.TestCase):
             spec.loader.exec_module(module)
             return module
 
-        self.assertEqual(load("Package-FirefoxDev").APP_NAME, "fenn")
+        self.assertEqual(load("Package-FennDev").APP_NAME, "fenn")
         self.assertEqual(load("Test-FirefoxInertBridge").EXE.name, "fenn.exe")
-        identity = load("Register-FirefoxDevIdentity")
+        identity = load("Register-FennDevIdentity")
         self.assertEqual((identity.APP_EXE, identity.EXE), ("fenn.exe", "fenn-identity.exe"))
 
     def test_app_manifest_tracks_firefoxs(self):

@@ -290,7 +290,7 @@ struct NativeAddress {
             focusWithin = inside;
             if (!inside) { context.requested = false; resultMenu.requested = false; }
             Action(inside ? L"focus" : L"blur");
-            if (GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0))
+            if (GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0))
                 fwprintf(stderr, L"Native address focus inside=%d island=%d pending=%s\n", inside, islandHasFocus,
                          StagedKind() == NativeShellCore::NoIntent ? L"none" : JObject::Parse(pending).GetNamedString(L"kind").c_str());
         }
@@ -321,7 +321,7 @@ struct NativeAddress {
             clear.IsEnabled(false);
         });
         Automation::AutomationProperties::SetName(field, L"Search or enter address");
-        Automation::AutomationProperties::SetAutomationId(field, L"FirefoxWinUIAddress");
+        Automation::AutomationProperties::SetAutomationId(field, L"FennAddress");
         field.TextChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
             Edit();
@@ -496,7 +496,7 @@ struct NativeAddress {
                 }
             });
         resultMenu.snapshotKey = L"resultMenu";
-        resultMenu.automationPrefix = L"FirefoxWinUIResultContext-";
+        resultMenu.automationPrefix = L"FennResultContext-";
         resultMenu.focusEditor = false;
         resultMenu.action = [this, alive = std::weak_ptr<int>(lifetime)](auto kind, auto const& id) {
             if (!alive.expired()) ResultContext(kind, id);
@@ -549,7 +549,7 @@ struct NativeAddress {
             }
         });
         fallback.Content(winrt::box_value(L"Use classic address bar"));
-        Automation::AutomationProperties::SetAutomationId(fallback, L"FirefoxWinUIAddressFallback");
+        Automation::AutomationProperties::SetAutomationId(fallback, L"FennAddressFallback");
         fallback.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
             Action(L"fallback");
@@ -661,7 +661,7 @@ struct NativeAddress {
             for (auto* buttons : {&omnibarLeft, &omnibarRight}) {
                 buttons->commandPrefix = L"omni:";
                 buttons->contextPrefix = L"omni-menu:";
-                buttons->automationPrefix = L"FirefoxWinUIOmnibar-";
+                buttons->automationPrefix = L"FennOmnibar-";
                 buttons->buttonSize = 28;
                 buttons->panel.Spacing(0);
                 buttons->panel.VerticalAlignment(VerticalAlignment::Center);
@@ -737,7 +737,7 @@ struct NativeAddress {
             toolbarRoot.Children().Append(root);
             navigation->Attach(toolbarRoot,root,toolbarSurface);
             root.VerticalAlignment(VerticalAlignment::Center);
-            Automation::AutomationProperties::SetAutomationId(toolbarRoot, L"FirefoxWinUINavigationToolbar");
+            Automation::AutomationProperties::SetAutomationId(toolbarRoot, L"FennNavigationToolbar");
             field.ContextFlyout(nullptr);
             field.SelectionFlyout(nullptr);
             context.editType = [this, alive = std::weak_ptr<int>(lifetime)](auto type) {

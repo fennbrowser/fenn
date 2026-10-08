@@ -36,7 +36,7 @@ struct SuggestionList {
     SuggestionList() {
         using namespace Microsoft::UI::Xaml::Controls;
         Automation::AutomationProperties::SetName(list, L"Address suggestions");
-        Automation::AutomationProperties::SetAutomationId(list, L"FirefoxWinUISuggestions");
+        Automation::AutomationProperties::SetAutomationId(list, L"FennSuggestions");
         list.MaxHeight(160);
         list.SelectionMode(ListViewSelectionMode::Single);
     }
@@ -188,7 +188,7 @@ struct SuggestionList {
                     const auto id = value.GetObject().GetNamedString(L"id"), resultId = ids[i];
                     Button button; button.HorizontalAlignment(HorizontalAlignment::Left);
                     TextBlock label; label.TextWrapping(TextWrapping::Wrap); label.MaxWidth(220); button.Content(label);
-                    Automation::AutomationProperties::SetAutomationId(button, L"FirefoxWinUITip-" + id);
+                    Automation::AutomationProperties::SetAutomationId(button, L"FennTip-" + id);
                     button.Click([this, id, resultId, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
                         if (!alive.expired() && activateButton) activateButton(id, resultId);
                     });
@@ -202,7 +202,7 @@ struct SuggestionList {
                     group.Children().Append(button);
                     Button menuButton; menuButton.VerticalAlignment(VerticalAlignment::Stretch);
                     FontIcon chevron; chevron.Glyph(L"\uE70D"); chevron.FontSize(10); menuButton.Content(chevron);
-                    Automation::AutomationProperties::SetAutomationId(menuButton, L"FirefoxWinUITipMenu-" + id);
+                    Automation::AutomationProperties::SetAutomationId(menuButton, L"FennTipMenu-" + id);
                     menuButton.Click([this, id, resultId, alive = std::weak_ptr<int>(lifetime)](auto const& sender, auto const&) {
                         if (!alive.expired() && openButtonMenu) openButtonMenu(id, resultId, sender.template as<FrameworkElement>());
                     });
@@ -250,7 +250,7 @@ struct SuggestionList {
                     visual.help = Documents::Hyperlink();
                     visual.help.Inlines().Append(label);
                     const auto id = help.GetNamedString(L"id"), resultId = ids[i];
-                    Automation::AutomationProperties::SetAutomationId(visual.help, L"FirefoxWinUIHelp-" + id);
+                    Automation::AutomationProperties::SetAutomationId(visual.help, L"FennHelp-" + id);
                     Automation::AutomationProperties::SetName(visual.help, help.GetNamedString(L"label"));
                     visual.help.Click([this, id, resultId, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
                         if (!alive.expired() && activateButton) activateButton(id, resultId);

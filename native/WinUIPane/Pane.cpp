@@ -57,7 +57,7 @@ struct RejectExternalDrop : implements<RejectExternalDrop, SystemDrag::IDropOper
 // How much of what update() and clip() are asked to do turns out to repeat
 // what the island already has. Process-wide; read by the contract test through
 // WinUIPaneTestGetGeometryWork and reported at shutdown under
-// FIREFOX_WINUI_PANE_DIAGNOSTICS.
+// FENN_PANE_DIAGNOSTICS.
 // Native cost per ABI entry point. Until this existed the only measured
 // numbers in the project were Firefox-side: the adapter's shims wrap each call
 // and so include the time spent in here, but nothing attributed it, and work
@@ -120,13 +120,13 @@ inline double NowMs() {
 bool DiagnosticsEnabled();
 // Timing and the shutdown report, without the per-call diagnostic lines.
 // The two are separate flags because a measurement run needs the first and is
-// distorted by the second: with FIREFOX_WINUI_PANE_DIAGNOSTICS on, every
+// distorted by the second: with FENN_PANE_DIAGNOSTICS on, every
 // update() writes a line to a redirected stderr, which cost 20.5ms across 105
 // calls -- a fifth of what update() itself was reported to cost. The perf
 // harness turns diagnostics off for exactly that reason, so it sets this.
 inline bool WorkAccountingEnabled() {
     static const bool enabled =
-        GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_WORK", nullptr, 0) != 0 || DiagnosticsEnabled();
+        GetEnvironmentVariableW(L"FENN_PANE_WORK", nullptr, 0) != 0 || DiagnosticsEnabled();
     return enabled;
 }
 // Counts on construction, charges elapsed time on destruction, so an entry
@@ -300,7 +300,7 @@ inline GeometryWork& geometryWork() {
     return value;
 }
 bool DiagnosticsEnabled() {
-    static const bool enabled = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;
+    static const bool enabled = GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0) != 0;
     return enabled;
 }
 
@@ -1152,7 +1152,7 @@ struct Pane {
         tabs.ItemsSource(items);
         tabs.ItemTemplate(
             Markup::XamlReader::Load(
-                LR"(<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis" /><Button Grid.Column="1" Width="32" Height="32" MinWidth="0" Padding="0" Margin="8,0,0,0" ToolTipService.ToolTip="Close tab" AutomationProperties.AutomationId="FirefoxWinUICloseTab"><SymbolIcon Symbol="Cancel" /></Button></Grid></DataTemplate>)")
+                LR"(<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis" /><Button Grid.Column="1" Width="32" Height="32" MinWidth="0" Padding="0" Margin="8,0,0,0" ToolTipService.ToolTip="Close tab" AutomationProperties.AutomationId="FennCloseTab"><SymbolIcon Symbol="Cancel" /></Button></Grid></DataTemplate>)")
                 .as<DataTemplate>());
         tabs.ItemContainerStyle(
             Markup::XamlReader::Load(
@@ -1200,7 +1200,7 @@ struct Pane {
                 } catch (...) {}
             });
         tabs.SelectionMode(Controls::ListViewSelectionMode::Single);
-        Automation::AutomationProperties::SetAutomationId(tabs, L"FirefoxWinUITabs");
+        Automation::AutomationProperties::SetAutomationId(tabs, L"FennTabs");
         Automation::AutomationProperties::SetName(tabs, L"Tabs in this window");
         Controls::Grid::SetRow(tabs, 1);
         selection = tabs.SelectionChanged([this](auto const&, Controls::SelectionChangedEventArgs const& args) {
@@ -1234,7 +1234,7 @@ struct Pane {
         panel.Children().Append(tabs);
         auto newTab =
             Markup::XamlReader::Load(
-                LR"x(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="32" Height="32" MinWidth="0" Padding="0" HorizontalAlignment="Left" Margin="0,12,0,0" ToolTipService.ToolTip="New tab (Ctrl+T)" AutomationProperties.Name="New tab" AutomationProperties.AutomationId="FirefoxWinUINewTab"><SymbolIcon Symbol="Add" /></Button>)x")
+                LR"x(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="32" Height="32" MinWidth="0" Padding="0" HorizontalAlignment="Left" Margin="0,12,0,0" ToolTipService.ToolTip="New tab (Ctrl+T)" AutomationProperties.Name="New tab" AutomationProperties.AutomationId="FennNewTab"><SymbolIcon Symbol="Add" /></Button>)x")
                 .as<Controls::Button>();
         Controls::Grid::SetRow(newTab, 2);
         newTab.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
@@ -1353,7 +1353,7 @@ void AbortDragSession() noexcept {
     }
 }
 
-constexpr wchar_t kTearoffClassName[] = L"FirefoxWinUITabTearoff";
+constexpr wchar_t kTearoffClassName[] = L"FennTabTearoff";
 
 void EnsureTearoffClassRegistered() {
     static const ATOM atom = [] {

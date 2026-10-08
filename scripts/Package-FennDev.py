@@ -5,7 +5,7 @@ no private copy of its runtime. It is signed with the self-signed certificate
 that Initialize-DevSigning.ps1 creates and trusts once; --unsigned builds the
 elevation-only unsigned fallback instead. With --loose, the same layout is
 registered in place under Developer Mode instead of packed, as a separate
-identity. Run via Build-FirefoxDevPackage.ps1, which selects Mach's build
+identity. Run via Build-FennDevPackage.ps1, which selects Mach's build
 Python environment.
 """
 
@@ -78,7 +78,7 @@ class Lane:
 
 
 # Packed, signed with the trusted development certificate, and installed or
-# updated without elevation by Install-FirefoxDevPackage.ps1.
+# updated without elevation by Install-FennDevPackage.ps1.
 DEV = Lane(IDENTITY, SIGNED_PUBLISHER, DISPLAY_NAME, "fenn-dev.exe",
            ROOT / "artifacts/msix-dev", signed=True)
 # Fallback for machines without the certificate, such as a fresh test guest:
@@ -339,9 +339,9 @@ def validate_contents(names, read, version, expected_hashes, min_version, runtim
     for candidate in candidates:
         if candidate.lower() in lowered:
             raise ValueError(f"Private Windows App SDK runtime file in package: {candidate}")
-    forbidden = {"firefoxwinuipanetest.dll", "panecontracttests.exe", "user.js"}
+    forbidden = {"fennpanetest.dll", "panecontracttests.exe", "user.js"}
     if not lane.dev_defaults:
-        forbidden.add("firefox-winui-dev.js")
+        forbidden.add("fenn-dev.js")
     if any(PurePosixPath(name).name.lower() in forbidden for name in names):
         raise ValueError("Test binary, developer profile or development defaults leaked into package")
     if ("AppxSignature.p7x" in names) != lane.signed:
@@ -547,7 +547,7 @@ def publish_feed(package, lane, version, feed_dir=FEED_DIR):
 
 
 def write_latest(lane, entry):
-    """What the last successful build produced, for Build-FirefoxDevPackage.ps1."""
+    """What the last successful build produced, for Build-FennDevPackage.ps1."""
     (lane.runs_dir / "latest.json").write_text(json.dumps(
         {"identity": lane.identity, "alias": lane.alias, "loose": lane is LOOSE, "store": lane.store, **entry},
         indent=2) + "\n",
@@ -600,7 +600,7 @@ def main():
     msix_server = ROOT / "build/firefox/dist/bin/msixcomserver.dll"
     pane_dir = ROOT / "build/winui-pane/x64/Release"
     for required in (makeappx, mt, signtool, makepri, clean / f"{APP_NAME}.exe", clean / "omni.ja", msix_server,
-                     pane_dir / "FirefoxWinUIPane.dll"):
+                     pane_dir / "FennPane.dll"):
         if not required.is_file():
             raise FileNotFoundError(f"Missing build prerequisite: {required}")
     min_version = runtime_min_version()
@@ -626,10 +626,10 @@ def main():
     shutil.copytree(clean, payload)
     # This pinned Firefox ZIP manifest omits the MSIX-only background COM server.
     shutil.copyfile(msix_server, payload / msix_server.name)
-    shutil.copyfile(pane_dir / "FirefoxWinUIPane.dll", payload / "FirefoxWinUIPane.dll")
+    shutil.copyfile(pane_dir / "FennPane.dll", payload / "FennPane.dll")
     check_exe_manifest(mt, payload / f"{APP_NAME}.exe", run)
     if lane.dev_defaults:
-        defaults = payload / "browser/defaults/preferences/firefox-winui-dev.js"
+        defaults = payload / "browser/defaults/preferences/fenn-dev.js"
         defaults.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / "packaging/dev/defaults.js", defaults)
     expected_hashes = {p.relative_to(payload).as_posix(): sha256(p)

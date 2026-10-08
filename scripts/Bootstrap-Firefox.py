@@ -137,7 +137,7 @@ def verify(root, destination, reference=None):
         report["source"] = prepare(destination, reference)
         report_path.parent.mkdir(parents=True, exist_ok=True)
         env = git_env()
-        env["FIREFOX_WINUI_SHARED_CACHE"] = os.environ.get("FIREFOX_WINUI_SHARED_CACHE") or str(root / ".cache")
+        env["FENN_SHARED_CACHE"] = os.environ.get("FENN_SHARED_CACHE") or str(root / ".cache")
         env["CARGO_TARGET_DIR"] = str(destination / "build/shell-core-tests")
         # All transient test files also stay in the disposable checkout.
         temporary = destination / "artifacts/tmp"

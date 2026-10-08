@@ -311,7 +311,7 @@ struct InlineTabGroups {
             scroller.DirectManipulationStarted([this, alive](auto&&...) { if (!alive.expired()) NoteUserScroll(); });
             scroller.AddHandler(UIElement::PointerWheelChangedEvent(),
                 box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive](auto&&...) { if (!alive.expired()) NoteUserScroll(); })), true);
-            static const bool diagnostics = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;
+            static const bool diagnostics = GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0) != 0;
             presenter.BringIntoViewRequested([this, alive](auto const&, BringIntoViewRequestedEventArgs const& args) {
                 if (alive.expired()) return;
                 auto tab = args.TargetElement().try_as<Controls::TabViewItem>();
@@ -338,7 +338,7 @@ struct InlineTabGroups {
                             rect.Height, tab.ActualWidth(), stale, int(args.AnimationDesired()));
             });
         }
-        if (GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0)) {
+        if (GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0)) {
             // Diagnostics only: who moves the stock scroller.
             scroller.ViewChanged([scroll = make_weak(scroller), weakList = make_weak(list)](auto const&, auto const& args) {
                 auto scroller = scroll.get();
@@ -427,7 +427,7 @@ struct InlineTabGroups {
         return true;
     }
 
-    // Opt-in (FIREFOX_WINUI_PANE_DIAGNOSTICS) record of what decides the stock
+    // Opt-in (FENN_PANE_DIAGNOSTICS) record of what decides the stock
     // arrows, written only when it changes. Identifies whether the configured
     // ScrollViewer is still the templated one and still holds its local Auto.
     std::string lastScrollLog;
@@ -446,7 +446,7 @@ struct InlineTabGroups {
     void NoteUserScroll() { userScrollEpoch = ++scrollEpoch; }
     void LogScroller(Controls::ListViewBase const& list, Controls::ScrollViewer const& scroller,
                      Controls::Grid const& grid, double available) {
-        static const bool enabled = GetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_DIAGNOSTICS", nullptr, 0) != 0;
+        static const bool enabled = GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0) != 0;
         if (!enabled) return;
         Controls::ScrollViewer current{nullptr};
         if (Media::VisualTreeHelper::GetChildrenCount(list))
@@ -689,7 +689,7 @@ struct InlineTabGroups {
                 // session, and suppress Click after crossing its drag threshold.
                 // Do not enable CanDrag: this host deliberately avoids OLE.
                 run.button.Tag(box_value(uint32_t(id)));
-                Automation::AutomationProperties::SetAutomationId(run.button, L"FirefoxWinUIInlineGroup-" + to_hstring(id));
+                Automation::AutomationProperties::SetAutomationId(run.button, L"FennInlineGroup-" + to_hstring(id));
                 auto alive = std::weak_ptr<int>(lifetime);
                 run.button.AddHandler(UIElement::PointerPressedEvent(),
                     box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive, id](auto&&, auto const& args) {

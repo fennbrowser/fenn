@@ -27,7 +27,7 @@ test("native search-mode snapshot only requests messages present in pinned Firef
 });
 
 test("synthetic native action labels exist in pinned Firefox", () => {
-  const fixture = readFileSync(new URL("../scripts/Test-FirefoxWinUIPane.py", import.meta.url), "utf8");
+  const fixture = readFileSync(new URL("../scripts/Test-FennPane.py", import.meta.url), "utf8");
   const ids = [...fixture.matchAll(/label:\s*"(urlbar-[a-z0-9-]+)"/g)]
     .map(match => match[1]);
   assert(ids.length > 0, "integration fixture supplies a localized action");

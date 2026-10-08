@@ -246,7 +246,7 @@ struct TabGroupSurface {
  <Border Background="{ThemeResource TabViewItemHeaderBackgroundPointerOver}" CornerRadius="7" Opacity="0"
   IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>
 </Border>)").as<Controls::Border>();
-                Automation::AutomationProperties::SetAutomationId(border, L"FirefoxWinUIGroupSurface-" + to_hstring(id));
+                Automation::AutomationProperties::SetAutomationId(border, L"FennGroupSurface-" + to_hstring(id));
                 layer.Children().Append(border);
                 ApplyHover(id, border);
             }

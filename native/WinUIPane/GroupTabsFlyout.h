@@ -122,7 +122,7 @@ struct GroupTabsFlyout {
         menu = Controls::MenuFlyout();
         menu.MenuFlyoutPresenterStyle(Markup::XamlReader::Load(LR"(
 <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="MenuFlyoutPresenter">
- <Setter Property="AutomationProperties.AutomationId" Value="FirefoxWinUIGroupTabs"/>
+ <Setter Property="AutomationProperties.AutomationId" Value="FennGroupTabs"/>
  <Setter Property="MaxHeight" Value="320"/><Setter Property="MaxWidth" Value="360"/>
  <Setter Property="MinWidth" Value="220"/>
 </Style>)").as<Style>());
@@ -136,7 +136,7 @@ struct GroupTabsFlyout {
             ids.push_back(id);
             Controls::MenuFlyoutItem item;
             Paint(item,tab);
-            Automation::AutomationProperties::SetAutomationId(item,L"FirefoxWinUIGroupTab-" + to_hstring(id));
+            Automation::AutomationProperties::SetAutomationId(item,L"FennGroupTab-" + to_hstring(id));
             item.Click([this,alive,current,id,token](auto&&,auto&&) {
                 if (alive.expired() || token != generation || !open || closing || group != current || (allowed && !allowed())) return;
                 Hide();

@@ -9,7 +9,7 @@ struct NativeAddressContextMenu {
     std::function<void(wchar_t const*, winrt::hstring const&)> action;
     std::function<void(wchar_t const*)> editType;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
-    winrt::hstring snapshotKey = L"contextMenu", automationPrefix = L"FirefoxWinUIAddressContext-";
+    winrt::hstring snapshotKey = L"contextMenu", automationPrefix = L"FennAddressContext-";
     Microsoft::UI::Xaml::FrameworkElement anchor{nullptr};
     bool focusEditor = true;
     uint64_t generation{};

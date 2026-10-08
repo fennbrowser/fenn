@@ -62,7 +62,7 @@ static std::vector<HWND> DragPreviewWindows() {
     EnumThreadWindows(GetCurrentThreadId(), [](HWND hwnd, LPARAM data) -> BOOL {
         wchar_t name[128]{};
         GetClassNameW(hwnd, name, 128);
-        if (wcscmp(name, L"FirefoxWinUITabTearoff") == 0)
+        if (wcscmp(name, L"FennTabTearoff") == 0)
             reinterpret_cast<std::vector<HWND>*>(data)->push_back(hwnd);
         return TRUE;
     }, reinterpret_cast<LPARAM>(&windows));
@@ -73,7 +73,7 @@ static LRESULT CALLBACK DragCreateProbe(int code, WPARAM w, LPARAM l) {
     if (code == HCBT_CREATEWND && !nestedDragCreateObserved) {
         wchar_t name[128]{};
         GetClassNameW(HWND(w), name, 128);
-        if (wcscmp(name, L"FirefoxWinUITabTearoff") == 0) {
+        if (wcscmp(name, L"FennTabTearoff") == 0) {
             nestedDragCreateObserved = true;
             // Simulate message-hook reentry before CreateWindowEx has returned
             // its HWND to the session, as native callbacks are allowed to do.
@@ -103,7 +103,7 @@ static void WithTab(HWND hwnd, const wchar_t* id, const wchar_t* title, bool sel
                     "UIA client");
             ComPtr<IUIAutomationElement> root;
             Require(SUCCEEDED(automation->ElementFromHandle(hwnd, &root)), "UIA host");
-            bool newTab = wcscmp(id, L"FirefoxWinUINewTab") == 0;
+            bool newTab = wcscmp(id, L"FennNewTab") == 0;
             VARIANT value{};
             value.vt = VT_BSTR;
             value.bstrVal = SysAllocString(id);
@@ -1233,7 +1233,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
                 allTabs.Width() == 46 && allTabs.VerticalAlignment() == VerticalAlignment::Top &&
                 allTabs.Content().try_as<Controls::FontIcon>() &&
                 allTabs.Content().as<Controls::FontIcon>().HorizontalAlignment() == HorizontalAlignment::Center &&
-                winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::GetAutomationId(allTabs) == L"FirefoxWinUIAllTabs" &&
+                winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::GetAutomationId(allTabs) == L"FennAllTabs" &&
                 root.ColumnDefinitions().GetAt(2).Width().Value >= 46,
             "list-all-tabs button sits in the caption column beside the system buttons");
     Require(systemCaption.ExtendsContentIntoTitleBar() &&
@@ -1955,9 +1955,9 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     };
     for (int i=0;i<1500 && !root.IsLoaded();++i) { Pump(); Sleep(10); }
     Require(root.IsLoaded(), "recreated inline island has loaded");
-    for (int i=0;i<500 && !find(view,L"FirefoxWinUIInlineGroup-9");++i) { Pump(); Sleep(10); }
+    for (int i=0;i<500 && !find(view,L"FennInlineGroup-9");++i) { Pump(); Sleep(10); }
     settle();
-    auto header = find(view,L"FirefoxWinUIInlineGroup-7");
+    auto header = find(view,L"FennInlineGroup-7");
     auto ambientLayer = root.Children().GetAt(1).as<Controls::Canvas>();
     Require(!ambientLayer.IsHitTestVisible() && Automation::AutomationProperties::GetAccessibilityView(ambientLayer) ==
             Automation::Peers::AccessibilityView::Raw, "ambient decoration cannot capture input or enter the control tree");
@@ -2188,9 +2188,9 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     };
     checkHeaderFocus(view);
     printf("Inline layout: items=%u width=%.1f height=%.1f header=%d empty=%d\n", view.TabItems().Size(),
-           view.ActualWidth(), view.ActualHeight(), bool(header), bool(find(view,L"FirefoxWinUIInlineGroup-9")));
+           view.ActualWidth(), view.ActualHeight(), bool(header), bool(find(view,L"FennInlineGroup-9")));
     fflush(stdout);
-    Require(bool(header) && bool(find(view,L"FirefoxWinUIInlineGroup-9")), "inline and empty group headers exist");
+    Require(bool(header) && bool(find(view,L"FennInlineGroup-9")), "inline and empty group headers exist");
     auto capsule = header.Content().as<Controls::Grid>();
     auto marker = capsule.Children().GetAt(0).as<Shapes::Rectangle>();
     Require(!capsule.IsHitTestVisible() && unbox_value<uint32_t>(header.Tag()) == 7,
@@ -2206,7 +2206,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "activate group member for indicator");
     settle();
     Require(awaitIndicator(16.0), "active group has a long color indicator");
-    Require(find(view,L"FirefoxWinUIInlineGroup-7") == header, "selection retains group input target");
+    Require(find(view,L"FennInlineGroup-7") == header, "selection retains group input target");
     Require(SUCCEEDED(api.syncTabs(host,tabs,2,41,&selected)), "leave active group for indicator");
     // Retarget before settling to cover reversal from the displayed width.
     Pump(); Sleep(30); Pump();
@@ -2223,11 +2223,11 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     for (auto theme : {ElementTheme::Light, ElementTheme::Dark, ElementTheme::Light}) {
         root.RequestedTheme(theme);
         settle();
-        Require(find(view,L"FirefoxWinUIInlineGroup-7") == header, "theme retains inline header");
+        Require(find(view,L"FennInlineGroup-7") == header, "theme retains inline header");
         Controls::Border surface{nullptr};
         for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children()) {
             auto border = child.as<Controls::Border>();
-            if (Automation::AutomationProperties::GetAutomationId(border) == L"FirefoxWinUIGroupSurface-7") surface = border;
+            if (Automation::AutomationProperties::GetAutomationId(border) == L"FennGroupSurface-7") surface = border;
         }
         if (checkMotion) {
             // The fresh inline fixture has loaded rows; the recreated strip
@@ -2241,8 +2241,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             // margin: both surfaces reach into it and keep a 1-DIP separation.
             Controls::Border empty{nullptr};
             for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
-                if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-9") empty = child.as<Controls::Border>();
-            auto emptyHeader = find(view,L"FirefoxWinUIInlineGroup-9");
+                if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-9") empty = child.as<Controls::Border>();
+            auto emptyHeader = find(view,L"FennInlineGroup-9");
             auto groupHeader = header.TransformToVisual(root).TransformBounds({0,0,float(header.ActualWidth()),float(header.ActualHeight())});
             auto nextHeader = emptyHeader.TransformToVisual(root).TransformBounds({0,0,float(emptyHeader.ActualWidth()),float(emptyHeader.ActualHeight())});
             const auto groupLeft = float(Controls::Canvas::GetLeft(surface)), groupRight = groupLeft + float(surface.Width());
@@ -2319,7 +2319,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             "long name retains its text target in LTR and RTL");
     }
     Require(view.TabItems().Size() == 1 && view.TabItems().GetAt(0) == first && view.SelectedItem() == first, "collapse retains real active tab");
-    Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
+    Require(find(view,L"FennInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
     Require(backdrop().try_as<Media::DesktopAcrylicBackdrop>() != nullptr, "strip backdrop delta applies desktop acrylic");
     // ShellCore owns replay identity: the accepted revision repeated exactly is
     // a no-op, and different content under that revision is refused.
@@ -2329,7 +2329,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     Require(backdrop().try_as<Media::DesktopAcrylicBackdrop>() != nullptr, "refused replay leaves the backdrop unchanged");
     MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"labels":{"tabs":"Registerkarten in diesem Fenster","active":"Aktiver Tab","selected":"AusgewÃ¤hlter Tab","allTabs":{"label":"Alle Tabs auflisten","tooltip":"Alle Tabs auflisten, Hinweis"},"newTab":{"label":"Neuer Tab","tooltip":"Neuer Tab, Strg+T"}},"backdrop":"mica","rtl":true,"rows":[],"removed":[],"groups":[{"id":7,"name":"Unnamed group","headerText":"","label":"Expand unnamed group","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}]}})");
     settle();
-    Require(find(view,L"FirefoxWinUIInlineGroup-7") == header && header.ActualWidth() == 32 &&
+    Require(find(view,L"FennInlineGroup-7") == header && header.ActualWidth() == 32 &&
         groupText.Visibility() == Visibility::Collapsed && capsule.Children().GetAt(1).Visibility() == Visibility::Visible,
         "clearing the name restores the arrow on the retained button");
     Require(root.FlowDirection() == FlowDirection::RightToLeft, "inline groups inherit RTL");
@@ -2337,8 +2337,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         auto tip = [](FrameworkElement const& element) {
             return unbox_value<winrt::hstring>(Controls::ToolTipService::GetToolTip(element));
         };
-        auto allTabsButton = find(root, L"FirefoxWinUIAllTabs").as<Controls::Button>();
-        auto stockAdd = find(view, L"FirefoxWinUIStripNewTab").as<Controls::Button>();
+        auto allTabsButton = find(root, L"FennAllTabs").as<Controls::Button>();
+        auto stockAdd = find(view, L"FennStripNewTab").as<Controls::Button>();
         Require(Automation::AutomationProperties::GetName(view) == L"Registerkarten in diesem Fenster",
                 "published label names the tab strip");
         Require(Automation::AutomationProperties::GetName(allTabsButton) == L"Alle Tabs auflisten" &&
@@ -2402,7 +2402,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         motionState(9,false); settle();
         auto hasGroupSurface = [&] {
             for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
-                if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-7") return true;
+                if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7") return true;
             return false;
         };
         Require(hasGroupSurface(), "expanded group has its shared background");
@@ -2424,14 +2424,14 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(SUCCEEDED(motion(host,2,&ghosts)), "simulate reduced-motion preference");
         motionState(12,true);
         Require(SUCCEEDED(motion(host,0,&ghosts)) && ghosts == 0, "reduced motion installs final layout without visual copies");
-        auto reducedArrow = find(view,L"FirefoxWinUIInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(1).as<Controls::Grid>();
+        auto reducedArrow = find(view,L"FennInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(1).as<Controls::Grid>();
         auto reducedIcon = reducedArrow.Children().GetAt(0).as<Controls::FontIcon>();
         Require(reducedIcon.Glyph() == L"\uE70D" && reducedArrow.RenderTransform().as<Media::RotateTransform>().Angle() == 0,
             "reduced motion installs the final arrow direction immediately");
         Require(SUCCEEDED(motion(host,3,&ghosts)), "restore normal motion policy");
         settle();
         Require(hasGroupSurface(), "collapsed group retains its decorative surface");
-        auto collapsedButton = find(view,L"FirefoxWinUIInlineGroup-7");
+        auto collapsedButton = find(view,L"FennInlineGroup-7");
         auto retainedTab = view.SelectedItem().as<Controls::TabViewItem>();
         auto buttonBounds = collapsedButton.TransformToVisual(root).TransformBounds(
             {0,0,float(collapsedButton.ActualWidth()),float(collapsedButton.ActualHeight())});
@@ -2440,7 +2440,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         const auto connectedWidth = std::max(buttonBounds.X + buttonBounds.Width, retainedBounds.X + retainedBounds.Width) -
             std::min(buttonBounds.X, retainedBounds.X);
         for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children()) {
-            if (Automation::AutomationProperties::GetAutomationId(child) != L"FirefoxWinUIGroupSurface-7") continue;
+            if (Automation::AutomationProperties::GetAutomationId(child) != L"FennGroupSurface-7") continue;
             auto surface = child.as<Controls::Border>();
             Require(!surface.Background() && std::abs(surface.Width() - (connectedWidth + 10)) < 1 &&
                 std::abs(float(Controls::Canvas::GetLeft(surface)) - (std::min(buttonBounds.X, retainedBounds.X) - 5)) < 1,
@@ -2470,7 +2470,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         turned=false;
         for (int i=0;i<12;++i) {
             Pump(); Sleep(5);
-            auto button=find(view,L"FirefoxWinUIInlineGroup-7");
+            auto button=find(view,L"FennInlineGroup-7");
             if (!button || !button.IsLoaded()) continue;
             auto rotor=button.Content().as<Controls::Grid>().Children().GetAt(1).as<Controls::Grid>();
             const auto angle=rotor.RenderTransform().as<Media::RotateTransform>().Angle();
@@ -2579,7 +2579,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             faceFill.ColorStops().GetAt(2).Color().A < 32 && faceFill.ColorStops().GetAt(5).Color().A == 255 &&
             std::abs(faceFill.StartPoint().y - ar.Y) < 1 && std::abs(faceFill.EndPoint().y - ar.Y - ar.Height) < 1,
             "post-blur face mask preserves edge light and attenuates the title region in tab coordinates");
-        auto glowHeader = find(view,L"FirefoxWinUIInlineGroup-7");
+        auto glowHeader = find(view,L"FennInlineGroup-7");
         auto hr = glowHeader.TransformToVisual(ambientLayer).TransformBounds(
             {0,0,float(glowHeader.ActualWidth()),float(glowHeader.ActualHeight())});
         winrt::Windows::Foundation::Numerics::float4 joinedFace{};
@@ -2655,7 +2655,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             "group light no longer draws on individual tab contours or divider seams");
         Controls::Border outlineSurface{nullptr};
         for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
-            if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-7")
+            if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7")
                 outlineSurface = child.as<Controls::Border>();
         Require(bool(outlineSurface), "lit group has an actual outline surface");
         auto outlineLight = Hosting::ElementCompositionPreview::GetElementChildVisual(outlineSurface)
@@ -2861,7 +2861,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(!rim(L"active-container-reflection").IsVisible() && !rim(L"active-group-reflection"),
             "clearing glow sources also hides their surface reflections");
         Require(SUCCEEDED(motion(host,2,&ghosts)), "disable motion for indicator selection checks");
-        auto reducedMarker = find(view,L"FirefoxWinUIInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
+        auto reducedMarker = find(view,L"FennInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
         Require(SUCCEEDED(api.syncTabs(host,tabs,2,0,&selected)), "clear active group with reduced motion");
         Require(reducedMarker.Width() == 6.0,
             "reduced motion immediately shortens group indicator");
@@ -2891,7 +2891,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             Require(bottomGlow.Children().Count() == 1 && halo.Children().Count() == 1, "trailing active group is lit");
             auto litGroup = bottomGlow.Children().First().Current();
             auto litHalo = halo.Children().First().Current();
-            auto openMarker = find(view,L"FirefoxWinUIInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
+            auto openMarker = find(view,L"FennInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
             Require(openMarker.Width() == 16.0, "active trailing group has a long indicator");
             uint32_t reachRevisionStart = 28;
             int frames = 0, unlit = 0, replaced = 0, reversals = 0;
@@ -2970,10 +2970,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             }
             // Firefox's groupReach option sets how far the lone group reaches
             // past its outer members; live deltas resize it in place.
-            auto groupHeader = find(view,L"FirefoxWinUIInlineGroup-7");
+            auto groupHeader = find(view,L"FennInlineGroup-7");
             auto reachSurface = [&] {
                 for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
-                    if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-7") return child.as<Controls::Border>();
+                    if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7") return child.as<Controls::Border>();
                 return Controls::Border{nullptr};
             };
             auto reachOf = [&] {
@@ -3292,11 +3292,11 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     return nullptr;
                 };
                 std::vector<FrameworkElement> loose;
-                for (auto id : {L"FirefoxWinUITab-41", L"FirefoxWinUITab-42", L"FirefoxWinUITab-43"}) {
+                for (auto id : {L"FennTab-41", L"FennTab-42", L"FennTab-43"}) {
                     loose.push_back(findTab(view, id));
                     Require(loose.back() != nullptr, "find the crowded fixture's ungrouped tabs");
                 }
-                auto crowdHeader = find(view,L"FirefoxWinUIInlineGroup-7").as<FrameworkElement>();
+                auto crowdHeader = find(view,L"FennInlineGroup-7").as<FrameworkElement>();
                 const double wide = loose[0].ActualWidth(), headerBefore = left(crowdHeader);
                 crowd(false);
                 uint32_t resizing{}, paused{};
@@ -3523,7 +3523,7 @@ static void CheckGroupNeighbors(WinUIPaneApi& api, HWND host) {
         settle();
         for (int pass=0;pass<3;++pass) {
             fprintf(stderr,"Start neighbor rtl=%d pass=%d\n",rtl,pass);
-            auto source=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-7");
+            auto source=TabScreenBounds(host,L"FennInlineGroup-7");
             const auto y=(source.top+source.bottom)/2;
             SetCursorPos((source.left+source.right)/2,y);
             INPUT mouse{}; mouse.type=INPUT_MOUSE; mouse.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
@@ -3535,9 +3535,9 @@ static void CheckGroupNeighbors(WinUIPaneApi& api, HWND host) {
             // Take the baseline once two consecutive reads agree.
             RECT header{},first{},last{};
             for (int attempt=0;attempt<40;++attempt) {
-                const auto h=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-8");
-                const auto a=TabScreenBounds(host,L"FirefoxWinUITab-33");
-                const auto b=TabScreenBounds(host,L"FirefoxWinUITab-44");
+                const auto h=TabScreenBounds(host,L"FennInlineGroup-8");
+                const auto a=TabScreenBounds(host,L"FennTab-33");
+                const auto b=TabScreenBounds(host,L"FennTab-44");
                 const bool same=h.left==header.left && a.left==first.left && b.left==last.left;
                 header=h; first=a; last=b;
                 if (same) break;
@@ -3547,30 +3547,30 @@ static void CheckGroupNeighbors(WinUIPaneApi& api, HWND host) {
                 const auto midpoint=rtl ? (last.left+header.right)/2 : (header.left+last.right)/2;
                 auto x=midpoint+(sweep%2 ? -8 : 8)*(rtl ? -1 : 1);
                 SetCursorPos(x,y);
-                LONG previous=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-8").left;
+                LONG previous=TabScreenBounds(host,L"FennInlineGroup-8").left;
                 for (int frame=0;frame<20;++frame) {
                     Pump(); Sleep(16);
-                    auto current=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-8").left;
+                    auto current=TabScreenBounds(host,L"FennInlineGroup-8").left;
                     const auto direction=(sweep%2 ? 1 : -1)*(rtl ? -1 : 1);
                     if ((current-previous)*direction < -2) fprintf(stderr,"Reversed while held: rtl=%d sweep=%d previous=%ld current=%ld\n",rtl,sweep,previous,current);
                     Require((current-previous)*direction>=-2,"neighbor preview never reverses while pointer is stationary near midpoint");
                     previous=current;
                 }
                 settle();
-                auto h=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-8");
-                auto a=TabScreenBounds(host,L"FirefoxWinUITab-33");
-                auto b=TabScreenBounds(host,L"FirefoxWinUITab-44");
+                auto h=TabScreenBounds(host,L"FennInlineGroup-8");
+                auto a=TabScreenBounds(host,L"FennTab-33");
+                auto b=TabScreenBounds(host,L"FennTab-44");
                 fprintf(stderr,"Neighbor rtl=%d pass=%d sweep=%d offsets=%ld,%ld,%ld\n",rtl,pass,sweep,h.left-header.left,a.left-first.left,b.left-last.left);
                 Require(std::abs((h.left-header.left)-(a.left-first.left))<=2 && std::abs((a.left-first.left)-(b.left-last.left))<=2,"neighbor header and both members move as one block");
                 settle();
-                auto held=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-8");
+                auto held=TabScreenBounds(host,L"FennInlineGroup-8");
                 Require(std::abs(held.left-h.left)<=2,"stationary group target stays stable");
             }
             INPUT escape[2]{}; escape[0].type=escape[1].type=INPUT_KEYBOARD;
             escape[0].ki.wVk=escape[1].ki.wVk=VK_ESCAPE; escape[1].ki.dwFlags=KEYEVENTF_KEYUP;
             SendInput(1,escape,sizeof(INPUT)); settle(); SendInput(1,escape+1,sizeof(INPUT));
             mouse.mi.dwFlags=MOUSEEVENTF_LEFTUP; SendInput(1,&mouse,sizeof(mouse)); settle();
-            auto restored=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-7");
+            auto restored=TabScreenBounds(host,L"FennInlineGroup-7");
             Require(std::abs(restored.left-source.left)<=2,"source disclosure restored after repeated group crossings");
         }
         for (int move=0;move<12;++move) {
@@ -3584,7 +3584,7 @@ static void CheckGroupNeighbors(WinUIPaneApi& api, HWND host) {
             Require(SUCCEEDED(api.syncTabs(host,reverse ? reversed : tabs,4,33,&selected)),"acknowledge neighbor reorder");
             settle();
             fprintf(stderr,"Check disclosures rtl=%d move=%d\n",rtl,move);
-            for (auto id : {L"FirefoxWinUIInlineGroup-7",L"FirefoxWinUIInlineGroup-8"}) {
+            for (auto id : {L"FennInlineGroup-7",L"FennInlineGroup-8"}) {
                 auto header=TabScreenBounds(host,id);
                 Require(header.right-header.left>=32,"both retained disclosures remain visible after reorder");
             }
@@ -3618,9 +3618,9 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
         Require(SUCCEEDED(api.syncTabs(host,tabs,4,11,&selected)), "group gap tabs");
         settle();
         for (bool backward : {false,true}) {
-            auto source=TabScreenBounds(host,backward ? L"FirefoxWinUITab-33" : L"FirefoxWinUITab-11");
-            auto member=TabScreenBounds(host,L"FirefoxWinUITab-22");
-            auto header=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-7");
+            auto source=TabScreenBounds(host,backward ? L"FennTab-33" : L"FennTab-11");
+            auto member=TabScreenBounds(host,L"FennTab-22");
+            auto header=TabScreenBounds(host,L"FennInlineGroup-7");
             SetCursorPos((source.left+source.right)/2,(source.top+source.bottom)/2);
             settle();
             INPUT mouse{}; mouse.type=INPUT_MOUSE; mouse.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
@@ -3633,8 +3633,8 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
                 * content.XamlRoot().RasterizationScale();
             LONG headerDelta{},memberDelta{};
             for (int attempt=0;attempt<20;++attempt) {
-                auto shiftedHeader=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-7");
-                auto shiftedMember=TabScreenBounds(host,L"FirefoxWinUITab-22");
+                auto shiftedHeader=TabScreenBounds(host,L"FennInlineGroup-7");
+                auto shiftedMember=TabScreenBounds(host,L"FennTab-22");
                 headerDelta=shiftedHeader.left-header.left;
                 memberDelta=shiftedMember.left-member.left;
                 const auto expectedHeader = joining && backward ? 0 : memberDelta;
@@ -3647,7 +3647,7 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
             Require(std::abs(std::abs(memberDelta)-sourceWidth)<=2,
                 "group gap transfers tab width without consuming header space");
             settle();
-            auto held=TabScreenBounds(host,L"FirefoxWinUITab-22");
+            auto held=TabScreenBounds(host,L"FennTab-22");
             Require(std::abs((held.left-member.left)-memberDelta)<=2,
                 "stationary direct group hover retains the open insertion gap");
             Require(content.as<Controls::Grid>().Children().GetAt(2).as<Controls::Border>().Visibility() == Visibility::Collapsed,
@@ -3661,24 +3661,24 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
                 };
                 pointAt(16);
                 pointAt(sourceWidth*.75);
-                auto firstSlot=TabScreenBounds(host,L"FirefoxWinUITab-22");
+                auto firstSlot=TabScreenBounds(host,L"FennTab-22");
                 Require(std::abs(firstSlot.left-member.left-(backward ? direction*sourceWidth : 0))<=2,
                     "the full first insertion gap retains slot one, including beyond its former midpoint");
                 pointAt(sourceWidth*1.6);
-                auto secondSlot=TabScreenBounds(host,L"FirefoxWinUITab-22");
+                auto secondSlot=TabScreenBounds(host,L"FennTab-22");
                 Require(std::abs(secondSlot.left-member.left-(backward ? 0 : -direction*sourceWidth))<=2,
                     "crossing the preview member midpoint advances to slot two");
                 pointAt(sourceWidth*.25);
-                firstSlot=TabScreenBounds(host,L"FirefoxWinUITab-22");
+                firstSlot=TabScreenBounds(host,L"FennTab-22");
                 Require(std::abs(firstSlot.left-member.left-(backward ? direction*sourceWidth : 0))<=2,
                     "reverse movement returns to slot one at the preview midpoint");
-                const auto secondBefore=TabScreenBounds(host,L"FirefoxWinUITab-44");
+                const auto secondBefore=TabScreenBounds(host,L"FennTab-44");
                 for (int crossing=0;crossing<3;++crossing) {
-                    const auto disclosure=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-7");
+                    const auto disclosure=TabScreenBounds(host,L"FennInlineGroup-7");
                     SetCursorPos((disclosure.left+disclosure.right)/2,(member.top+member.bottom)/2);
                     settle();
-                    auto overHeader=TabScreenBounds(host,L"FirefoxWinUITab-22");
-                    auto secondAfter=TabScreenBounds(host,L"FirefoxWinUITab-44");
+                    auto overHeader=TabScreenBounds(host,L"FennTab-22");
+                    auto secondAfter=TabScreenBounds(host,L"FennTab-44");
                     Require(std::abs(overHeader.left-firstSlot.left)<=2 && std::abs(secondAfter.left-secondBefore.left)<=2,
                         "crossing the disclosure retains the first gap without jumping past either member");
                     pointAt(sourceWidth*.25);
@@ -3690,7 +3690,7 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
                 auto overhang=[&] {
                     Controls::Border surface{nullptr};
                     for (auto child : layer.Children())
-                        if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-7") surface = child.as<Controls::Border>();
+                        if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7") surface = child.as<Controls::Border>();
                     Require(surface != nullptr, "the joined group keeps its shared surface");
                     const float left=float(Controls::Canvas::GetLeft(surface)), right=left+float(surface.Width());
                     const auto at=lastMember.TransformToVisual(layer).TransformBounds({0,0,float(lastMember.ActualWidth()),float(lastMember.ActualHeight())});
@@ -3702,10 +3702,10 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
                 // light there matches the neighboring faces.
                 auto glowMotion=reinterpret_cast<HRESULT(WINAPI*)(HWND,uint32_t,uint32_t,uint32_t*)>(GetProcAddress(module,"WinUIPaneTestGlowMotion"));
                 auto slotWidth=[&] { uint32_t width{}; Require(SUCCEEDED(glowMotion(host,4,0,&width)),"inspect drag slot faces"); return float(width); };
-                const auto dragged=TabScreenBounds(host,L"FirefoxWinUITab-22");
+                const auto dragged=TabScreenBounds(host,L"FennTab-22");
                 fprintf(stderr,"Slot faces interior rtl=%d backward=%d width=%.1f gap=%.1f dragged=%ld..%ld\n",rtl,backward,slotWidth(),gapWidth,dragged.left,dragged.right);
                 Require(slotWidth()>=gapWidth-2.f,"an interior insertion gap gets a stand-in tab face");
-                auto tail=TabScreenBounds(host,L"FirefoxWinUITab-44");
+                auto tail=TabScreenBounds(host,L"FennTab-44");
                 SetCursorPos(rtl ? tail.left+8 : tail.right-8,(tail.top+tail.bottom)/2);
                 settle();
                 fprintf(stderr,"Join tail rtl=%d backward=%d overhang=%.1f gap=%.1f slot faces=%.1f\n",rtl,backward,overhang(),gapWidth,slotWidth());
@@ -3720,7 +3720,7 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
                 Require(overhang()>=gapWidth-2.f,"the surface reopens before the drop");
                 auto surfaceNow=[&] {
                     for (auto child : layer.Children())
-                        if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-7")
+                        if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7")
                             return std::pair{float(Controls::Canvas::GetLeft(child)),float(child.as<Controls::Border>().Width())};
                     return std::pair{0.f,0.f};
                 };
@@ -3743,9 +3743,9 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
             SendInput(1,escape+1,sizeof(INPUT));
             mouse.mi.dwFlags=MOUSEEVENTF_LEFTUP; SendInput(1,&mouse,sizeof(mouse));
             settle();
-            auto restored=TabScreenBounds(host,L"FirefoxWinUIInlineGroup-7");
+            auto restored=TabScreenBounds(host,L"FennInlineGroup-7");
             Require(std::abs(restored.left-header.left)<=2,"Escape restores group header geometry");
-            restored=TabScreenBounds(host,L"FirefoxWinUITab-22");
+            restored=TabScreenBounds(host,L"FennTab-22");
             Require(std::abs(restored.left-member.left)<=2,"Escape restores group member geometry");
         }
     }
@@ -3754,14 +3754,14 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
     auto layer=content.as<Controls::Grid>().Children().GetAt(3).as<Controls::Canvas>();
     auto surfaceSpan=[&] {
         for (auto child : layer.Children())
-            if (Automation::AutomationProperties::GetAutomationId(child) == L"FirefoxWinUIGroupSurface-7")
+            if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7")
                 return std::pair{float(Controls::Canvas::GetLeft(child)),float(child.as<Controls::Border>().Width())};
         return std::pair{0.f,0.f};
     };
     settle();
     const auto restingSpan=surfaceSpan();
-    auto lifted=TabScreenBounds(host,L"FirefoxWinUITab-44");
-    auto inner=TabScreenBounds(host,L"FirefoxWinUITab-22");
+    auto lifted=TabScreenBounds(host,L"FennTab-44");
+    auto inner=TabScreenBounds(host,L"FennTab-22");
     SetCursorPos((lifted.left+lifted.right)/2,(lifted.top+lifted.bottom)/2);
     settle();
     INPUT press{}; press.type=INPUT_MOUSE; press.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
@@ -3811,8 +3811,8 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
         root.UpdateLayout();
         Sleep(10);
     }
-    auto firstBounds = TabScreenBounds(host, L"FirefoxWinUITab-11");
-    auto lastBounds = TabScreenBounds(host, L"FirefoxWinUITab-22");
+    auto firstBounds = TabScreenBounds(host, L"FennTab-11");
+    auto lastBounds = TabScreenBounds(host, L"FennTab-22");
     POINT client{(firstBounds.left + firstBounds.right) / 2, (firstBounds.top + firstBounds.bottom) / 2};
     fprintf(stderr, "Drag test: dragging first tab from screen point (%ld,%ld)\n", client.x, client.y);
     // A single Pump()+Sleep() pair can race SendInput's delivery -- the
@@ -3916,7 +3916,7 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
         settle(100);
         // Raw capture can deprive TabViewItem of PointerReleased. Re-enter the
         // retained source after grouping, without another press or selection.
-        auto groupedBounds = TabScreenBounds(host, L"FirefoxWinUITab-11");
+        auto groupedBounds = TabScreenBounds(host, L"FennTab-11");
         moveTo(groupedBounds.left + 16, (groupedBounds.top + groupedBounds.bottom) / 2);
         settle();
         moveTo(groupedBounds.right - 48, (groupedBounds.top + groupedBounds.bottom) / 2);
@@ -3985,7 +3985,7 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
     Require(scroller && scroller.ScrollableWidth() > 0, "overflowing strip has a scroller with room to scroll");
     scroller.ChangeView(box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
     settle();
-    auto firstBounds = TabScreenBounds(host, L"FirefoxWinUITab-11");
+    auto firstBounds = TabScreenBounds(host, L"FennTab-11");
     const POINT client{(firstBounds.left + firstBounds.right) / 2, (firstBounds.top + firstBounds.bottom) / 2};
     const LONG viewLeft = firstBounds.left - LONG(first.TransformToVisual(view).TransformPoint({0, 0}).X);
     const LONG endX = viewLeft + LONG(view.ActualWidth()) - 8;
@@ -4162,14 +4162,14 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         Require(element != nullptr, "destination element realized");
         return double(element.TransformToVisual(view2).TransformPoint({0, 0}).X);
     };
-    const double ninthLeft = leftOf(L"FirefoxWinUIInlineGroup-9"), memberLeft = leftOf(L"FirefoxWinUITab-203"), firstLeft = leftOf(L"FirefoxWinUITab-201");
+    const double ninthLeft = leftOf(L"FennInlineGroup-9"), memberLeft = leftOf(L"FennTab-203"), firstLeft = leftOf(L"FennTab-201");
     UIElement content1{nullptr};
     Require(SUCCEEDED(inspect(host, put_abi(content1))), "inspect source strip");
     auto view1 = content1.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
     auto loaded = [&] {
         for (uint32_t i = 0; i < view1.TabItems().Size(); ++i)
             if (!view1.TabItems().GetAt(i).as<Controls::TabViewItem>().IsLoaded()) return false;
-        return view1.TabItems().Size() == 3 && inList(view1, L"FirefoxWinUIInlineGroup-7");
+        return view1.TabItems().Size() == 3 && inList(view1, L"FennInlineGroup-7");
     };
     for (int i = 0; i < 300 && !loaded(); ++i) settle(1);
     Require(loaded(), "source rows and group header realized before the group drag");
@@ -4195,14 +4195,14 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         if (auto scroller = scrollerOf(view))
             scroller.ChangeView(winrt::box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
     settle(30);
-    const POINT start = screenAt(host, view1, L"FirefoxWinUIInlineGroup-7", .5);
+    const POINT start = screenAt(host, view1, L"FennInlineGroup-7", .5);
     {
         POINT origin{rect.left, rect.top};
         ClientToScreen(host, &origin);
         Require(start.x > origin.x && start.x < origin.x + rect.right, "the source group header is inside its strip");
     }
     // Left quarter of the destination group's header: before the whole group.
-    const POINT drop = screenAt(host2, view2, L"FirefoxWinUIInlineGroup-9", .25);
+    const POINT drop = screenAt(host2, view2, L"FennInlineGroup-9", .25);
     if (covered)
         Require(GetAncestor(WindowFromPoint(drop), GA_ROOTOWNER) == host2,
                 "the overlapping fixture exposes the intended visible destination");
@@ -4228,10 +4228,10 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         Require(shown.top < drop.y && shown.bottom > drop.y && shown.left <= drop.x && shown.right >= drop.x,
                 "the floating group sits in the destination strip's row band under the cursor");
     settle(20); // the gap eases in
-    const double gap = leftOf(L"FirefoxWinUIInlineGroup-9") - ninthLeft;
-    Require(gap > 8 && std::abs(leftOf(L"FirefoxWinUITab-203") - memberLeft - gap) < .5,
+    const double gap = leftOf(L"FennInlineGroup-9") - ninthLeft;
+    Require(gap > 8 && std::abs(leftOf(L"FennTab-203") - memberLeft - gap) < .5,
             "the destination opens a gap before its whole group, moving header and member together");
-    Require(std::abs(leftOf(L"FirefoxWinUITab-201") - firstLeft) < .5, "blocks before the insertion point stay put");
+    Require(std::abs(leftOf(L"FennTab-201") - firstLeft) < .5, "blocks before the insertion point stay put");
     send(MOUSEEVENTF_LEFTUP); settle();
     Require(DragPreviewWindows().empty(), "release over another strip destroys the floating group");
     auto event = NextRequest(api, host2, 5, L"strip-group-adopt", 40, accept ? 1 : 2).GetNamedObject(L"action", nullptr);
@@ -4246,34 +4246,34 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
                 "the covered pane never receives the overlapping group drop");
     settle();
     if (accept) {
-        Require(GroupHiddenWhileLeaving(view1, L"FirefoxWinUIInlineGroup-7", {11, 22}),
+        Require(GroupHiddenWhileLeaving(view1, L"FennInlineGroup-7", {11, 22}),
                 "the source keeps the group hidden while the other window adopts it");
     } else {
-        auto button = inList(view1, L"FirefoxWinUIInlineGroup-7");
-        Require(button && button.Opacity() == 1 && button.IsHitTestVisible() && !GroupHiddenWhileLeaving(view1, L"FirefoxWinUIInlineGroup-7", {11, 22}),
+        auto button = inList(view1, L"FennInlineGroup-7");
+        Require(button && button.Opacity() == 1 && button.IsHitTestVisible() && !GroupHiddenWhileLeaving(view1, L"FennInlineGroup-7", {11, 22}),
                 "a refused adopt shows the group in its own window again");
         for (uint32_t i = 0; i < view1.TabItems().Size(); ++i)
             Require(view1.TabItems().GetAt(i).as<Controls::TabViewItem>().Visibility() == Visibility::Visible,
                     "a refused adopt restores the group's tabs");
     }
     settle();
-    const double held = leftOf(L"FirefoxWinUIInlineGroup-9") - ninthLeft;
+    const double held = leftOf(L"FennInlineGroup-9") - ninthLeft;
     if (accept) {
         Require(std::abs(held - gap) < .5, "an accepted adopt keeps the gap until Firefox publishes the group");
         // Firefox's adoption arrives as a new layout with the group in place.
         publish2(101, L",{\"id\":12,\"name\":\"First\",\"label\":\"First\",\"collapsed\":true}", L",{\"group\":12,\"tab\":0}");
         settle(40);
-        auto landed = inList(view2, L"FirefoxWinUIInlineGroup-12");
+        auto landed = inList(view2, L"FennInlineGroup-12");
         Require(landed && landed.ActualWidth() > 0 &&
-                leftOf(L"FirefoxWinUIInlineGroup-12") + landed.ActualWidth() <= leftOf(L"FirefoxWinUIInlineGroup-9") + .5,
+                leftOf(L"FennInlineGroup-12") + landed.ActualWidth() <= leftOf(L"FennInlineGroup-9") + .5,
                 "the published group replaces the held gap");
-        Require(GroupHiddenWhileLeaving(view1, L"FirefoxWinUIInlineGroup-7", {11, 22}),
+        Require(GroupHiddenWhileLeaving(view1, L"FennInlineGroup-7", {11, 22}),
                 "the source group stays hidden until its own window publishes without it");
         WinUITab rest[]{{101, L"Loose"}};
         MenuPublish(api, host, LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":2,"rtl":false,"windowDragSession":5,"groupsLabel":"Groups","groups":[],"rows":[{"id":101,"detail":"","flags":0}],"layout":[{"group":0,"tab":101}]}})");
         Require(SUCCEEDED(api.syncTabs(host, rest, 1, 101, &selected)), "the group's tabs leave the source");
         settle();
-        Require(!inList(view1, L"FirefoxWinUIInlineGroup-7"), "the source's publication removes the departed group");
+        Require(!inList(view1, L"FennInlineGroup-7"), "the source's publication removes the departed group");
         puts(overlap ? "CHECKS PASSED: an overlapping group drop selects only the visible destination"
                      : "CHECKS PASSED: a group dropped on another window is adopted there");
     } else {
@@ -4335,7 +4335,7 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
     auto scroller = find(view);
     scroller.ChangeView(winrt::box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
     settle();
-    auto header = TabScreenBounds(host, L"FirefoxWinUIInlineGroup-7");
+    auto header = TabScreenBounds(host, L"FennInlineGroup-7");
     const auto vp = scroller.TransformToVisual(view).TransformBounds({0, 0, float(scroller.ActualWidth()), float(scroller.ActualHeight())});
     Require(scroller.ScrollableWidth() > 0 && vp.X + vp.Width < view.ActualWidth() - 4,
             "overflowing strip has trailing controls beyond the scroller viewport");
@@ -4383,14 +4383,14 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
                     "releasing a torn-off group asks Firefox to move it to a new window at the release point");
             settle();
             if (detach == GroupDetach::Sole) {
-                auto button = FindInTabList(view, L"FirefoxWinUIInlineGroup-7");
+                auto button = FindInTabList(view, L"FennInlineGroup-7");
                 Require(button && button.Opacity() == 1 && button.IsHitTestVisible(),
                         "a group filling its window stays in the strip while Firefox moves the window");
                 for (uint32_t i = 0; i < view.TabItems().Size(); ++i)
                     Require(view.TabItems().GetAt(i).as<Controls::TabViewItem>().Visibility() == Visibility::Visible,
                             "a group filling its window keeps its tabs shown while Firefox moves the window");
             } else {
-                Require(GroupHiddenWhileLeaving(view, L"FirefoxWinUIInlineGroup-7", {11, 22}),
+                Require(GroupHiddenWhileLeaving(view, L"FennInlineGroup-7", {11, 22}),
                         "an accepted tear-off keeps the group hidden while the new window opens");
             }
             if (detach == GroupDetach::Release) {
@@ -4406,7 +4406,7 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
                     restRows + L"],\"layout\":[" + restLayout + L"]}}").c_str());
                 Require(SUCCEEDED(api.syncTabs(host, rest.data(), uint32_t(rest.size()), rest[0].id, &selected)), "the group's tabs leave");
                 settle();
-                Require(!FindInTabList(view, L"FirefoxWinUIInlineGroup-7"), "the published layout removes the departed group");
+                Require(!FindInTabList(view, L"FennInlineGroup-7"), "the published layout removes the departed group");
                 for (uint32_t i = 0; i < view.TabItems().Size(); ++i)
                     Require(view.TabItems().GetAt(i).as<Controls::TabViewItem>().Visibility() == Visibility::Visible,
                             "no remaining row stays hidden after the group leaves");
@@ -4499,7 +4499,7 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
     SetForegroundWindow(host);
     settle();
 
-    auto rowBounds = TabScreenBounds(host, L"FirefoxWinUITab-55");
+    auto rowBounds = TabScreenBounds(host, L"FennTab-55");
     POINT client{(rowBounds.left + rowBounds.right) / 2, (rowBounds.top + rowBounds.bottom) / 2};
     RECT hostRect{};
     Require(GetWindowRect(host, &hostRect) != 0, "resolve host window rect for detach test");
@@ -4529,7 +4529,7 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
     if (horizontal) {
         RECT popup{};
         POINT cursor{};
-        Require(GetWindowRect(FindWindowW(L"FirefoxWinUITabTearoff", nullptr), &popup) && GetCursorPos(&cursor),
+        Require(GetWindowRect(FindWindowW(L"FennTabTearoff", nullptr), &popup) && GetCursorPos(&cursor),
                 "read live floating tab and pointer bounds");
         Require(std::abs((popup.left + popup.right) / 2 - cursor.x) <= 2,
                 "horizontal exit releases the visual clamp and follows the pointer");
@@ -4617,7 +4617,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     // independently reported physical press target first, while UIA still
     // represents that real desktop coordinate system, then change only the
     // island scale exercised by the drag routing below.
-    auto sourceBounds = TabScreenBounds(host, L"FirefoxWinUITab-33");
+    auto sourceBounds = TabScreenBounds(host, L"FennTab-33");
     setScale(host, sourceScale);
     settle(30);
 
@@ -4655,7 +4655,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     // the logical landing result.
     POINT sourceClient{(sourceBounds.left + sourceBounds.right) / 2, (sourceBounds.top + sourceBounds.bottom) / 2};
     auto destBounds = scaled ? ElementScreenBounds(destTab)
-                             : TabScreenBounds(host2, L"FirefoxWinUITab-44");
+                             : TabScreenBounds(host2, L"FennTab-44");
     if (scaled) {
         fprintf(stderr, "Island scales source=%.2f target=%.2f\n", view.XamlRoot().RasterizationScale(), view2.XamlRoot().RasterizationScale());
         Require(std::abs(view.XamlRoot().RasterizationScale() - sourceScale) < .01 &&
@@ -4687,7 +4687,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         Require(SUCCEEDED(api.updateTabStrip(host2, &rect2, TRUE)), "move target island during drag");
         settle();
         destBounds = scaled ? ElementScreenBounds(destTab)
-                            : TabScreenBounds(host2, L"FirefoxWinUITab-55");
+                            : TabScreenBounds(host2, L"FennTab-55");
         destPoint = {(destBounds.left * 3 + destBounds.right * 2) / 5,
                      (destBounds.top + destBounds.bottom) / 2};
     }
@@ -4915,7 +4915,7 @@ int wmain(int argc, wchar_t** argv) {
     // Before the DLL loads, because the pane reads this once. Without it the
     // request path's stages are counted but never timed, and the assertions
     // below would be asserting on a switched-off instrument.
-    Require(SetEnvironmentVariableW(L"FIREFOX_WINUI_PANE_WORK", L"1"), "enable native work accounting");
+    Require(SetEnvironmentVariableW(L"FENN_PANE_WORK", L"1"), "enable native work accounting");
     Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "STA initialization");
     JoinWindowsAppRuntime(argv[1]);
     HMODULE module = LoadLibraryExW(
@@ -5405,15 +5405,15 @@ int wmain(int argc, wchar_t** argv) {
     }
     Require(api.syncTabs(first, tabs, 2, 11, nullptr) == E_POINTER, "reject null revision output");
     for (int input : {0, 2, 3}) {
-        WithTab(first, L"FirefoxWinUINewTab", L"New tab", false, false, input);
+        WithTab(first, L"FennNewTab", L"New tab", false, false, input);
         Require(NextRequest(api, first, 4, nullptr).Size(),
                 "UIA/Space/Enter requests a new tab without inventing rows");
         Require(!NextRequest(api, first, 4, nullptr, 3).Size(),
                 "new-tab request delivered exactly once");
         Require(noSelectionRequest(first), "requesting a new tab does not select a row");
     }
-    WithTab(first, L"FirefoxWinUINewTab", L"New tab");
-    WithTab(first, L"FirefoxWinUINewTab", L"New tab");
+    WithTab(first, L"FennNewTab", L"New tab");
+    WithTab(first, L"FennNewTab", L"New tab");
     // New tab is never superseded either: two clicks are two tabs.
     int newTabs = 0;
     for (int attempt = 0; attempt < 40 && newTabs < 2; ++attempt) {
@@ -5442,7 +5442,7 @@ int wmain(int argc, wchar_t** argv) {
             return value;
         };
         auto stalledBefore = stalledWakeups();
-        WithTab(first, L"FirefoxWinUINewTab", L"New tab");
+        WithTab(first, L"FennNewTab", L"New tab");
         Sleep(300);  // no Pump: from the pane's side the message pump has stopped
         // The gap is observed by the next message to reach the pane's hook, so
         // post one rather than hoping something else arrives. Without this the
@@ -5646,7 +5646,7 @@ int wmain(int argc, wchar_t** argv) {
         if (cycle == 0) {
             ShowWindow(second, SW_SHOWNOACTIVATE);
             Pump();
-            WithTab(second, L"FirefoxWinUINewTab", L"New tab");
+            WithTab(second, L"FennNewTab", L"New tab");
             Require(!NextRequest(api, first, 4, nullptr, 3).Size(),
                     "second-window new-tab action cannot leak to first window");
             Require(NextRequest(api, second, 4, nullptr).Size(),

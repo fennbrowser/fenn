@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "build/winui-pane/x64/Release"
 DEST = ROOT / "build/firefox/dist/bin"
 RECORD = ROOT / "artifacts/setup/winui-pane-staging.json"
-STAGED = ("FirefoxWinUIPane.dll", "Microsoft.WindowsAppRuntime.Bootstrap.dll")
+STAGED = ("FennPane.dll", "Microsoft.WindowsAppRuntime.Bootstrap.dll")
 
 
 def image_digest(path):

@@ -7,8 +7,8 @@
  * The checked-in copy is what the native build compiles against; the script's
  * --check mode fails if this file and native/ShellCore/src/ffi.rs disagree. */
 
-#ifndef FIREFOX_WINUI_SHELL_CORE_H
-#define FIREFOX_WINUI_SHELL_CORE_H
+#ifndef FENN_SHELL_CORE_H
+#define FENN_SHELL_CORE_H
 
 
 
@@ -1609,4 +1609,4 @@ ShellStatus shell_core_surface_menu_activate(ShellCore *core,
 }  // extern "C"
 #endif  // __cplusplus
 
-#endif  /* FIREFOX_WINUI_SHELL_CORE_H */
+#endif  /* FENN_SHELL_CORE_H */

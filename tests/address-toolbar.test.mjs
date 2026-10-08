@@ -24,7 +24,7 @@ function fixture() {
   const slot = element(), input = element(), switcher = element(), root = element();
   input.closest = () => slot;
   input.setAttribute("placeholder", "Localized address");
-  const prefs = new Map([["widget.windows.winui-prototype.address.toolbar.enabled",true]]);
+  const prefs = new Map([["fenn.winui.address.toolbar.enabled",true]]);
   const owner = {attached:true,tabStrip:true,element:element(),schedule() {},invalidateAddress() {},
     addressSession:{releaseNativePresentation() {calls.push(["release"]);}},
     addressFallback() {calls.push(["fallback"]); toolbar.restore();}};
@@ -65,7 +65,7 @@ test("a cancelled startup frame cannot hide the restored Firefox editor", () => 
   f.window.cancelAnimationFrame = id => {cancelled=id;};
   f.toolbar.update(); f.toolbar.activate();
   assert.equal(f.input.attributes.has("aria-hidden"),false);
-  f.prefs.set("widget.windows.winui-prototype.address.toolbar.enabled",false);
+  f.prefs.set("fenn.winui.address.toolbar.enabled",false);
   f.toolbar.restore();
   assert.equal(cancelled,17);
   frame();
@@ -87,7 +87,7 @@ test("layout and preference fallback detach only the address host", () => {
     f=>f.root.setAttribute("customizing",""),
     f=>f.window.PrivateBrowsingUtils.isWindowPrivate=()=>true,
     f=>f.prefs.set("sidebar.verticalTabs",true),
-    f=>f.prefs.set("widget.windows.winui-prototype.address.toolbar.enabled",false)]) {
+    f=>f.prefs.set("fenn.winui.address.toolbar.enabled",false)]) {
     const f=fixture(); f.toolbar.update(); f.toolbar.activate(); unsupported(f);
     assert.equal(f.toolbar.update(),false);
     assert.equal(f.owner.attached,true);
@@ -143,8 +143,8 @@ test("restoring Gecko widget focus does not reenter an already owned native fiel
 
 function navigationFixture() {
   const f = fixture();
-  f.prefs.set("widget.windows.winui-prototype.address.toolbar.enabled", false);
-  f.prefs.set("widget.windows.winui-prototype.navigation.toolbar.enabled", true);
+  f.prefs.set("fenn.winui.address.toolbar.enabled", false);
+  f.prefs.set("fenn.winui.navigation.toolbar.enabled", true);
   f.toolbar.row.getBoundingClientRect = () => ({x:0,y:40,width:1000,height:48});
   return f;
 }
@@ -180,8 +180,8 @@ test("navigation refusal and unsupported contexts release reserved space", () =>
 test("changing presentation releases old geometry and retains the strip", () => {
   const f = navigationFixture();
   f.toolbar.update(); f.toolbar.activate();
-  f.prefs.set("widget.windows.winui-prototype.navigation.toolbar.enabled", false);
-  f.prefs.set("widget.windows.winui-prototype.address.toolbar.enabled", true);
+  f.prefs.set("fenn.winui.navigation.toolbar.enabled", false);
+  f.prefs.set("fenn.winui.address.toolbar.enabled", true);
   assert.equal(f.toolbar.update(), true);
   assert.equal(f.toolbar.row.hidden, true);
   assert.equal(f.toolbar.bounds().width, 600);

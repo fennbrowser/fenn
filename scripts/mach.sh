@@ -3,7 +3,7 @@ set -euo pipefail
 project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 export MOZBUILD_STATE_PATH="$(cygpath -m "$project_root/.cache/mozbuild")"
 # Read-mostly toolchains may be shared between checkouts; see Enter-DevEnvironment.ps1.
-shared_cache="${FIREFOX_WINUI_SHARED_CACHE:-$project_root/.cache}"
+shared_cache="${FENN_SHARED_CACHE:-$project_root/.cache}"
 export CARGO_HOME="$(cygpath -m "$shared_cache/cargo")"
 export RUSTUP_HOME="$(cygpath -m "$shared_cache/rustup")"
 export PIP_CACHE_DIR="$(cygpath -m "$shared_cache/pip")"

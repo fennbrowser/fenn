@@ -110,7 +110,7 @@ def main():
         process = subprocess.Popen([str(args.exe.resolve()), "--no-remote", "--profile", str(profile),
                                     "--marionette", "about:blank"],
                                    stdout=log, stderr=subprocess.STDOUT,
-                                   env=dict(os.environ, MOZ_REMOTE_ALLOW_SYSTEM_ACCESS="1", FIREFOX_WINUI_PANE_DIAGNOSTICS="1"))
+                                   env=dict(os.environ, MOZ_REMOTE_ALLOW_SYSTEM_ACCESS="1", FENN_PANE_DIAGNOSTICS="1"))
         client = None
         try:
             client = bridge.Marionette(port, process)
@@ -124,8 +124,8 @@ def main():
             while not chrome("return !!window.gWinUIPane?.attached && gWinUIPane.tabStrip;"):
                 if time.monotonic() > deadline:
                     details = chrome("""return {
-                        enabled: Services.prefs.getBoolPref('widget.windows.winui-prototype.pane.enabled'),
-                        strip: Services.prefs.getBoolPref('widget.windows.winui-prototype.tabstrip.enabled'),
+                        enabled: Services.prefs.getBoolPref('fenn.winui.pane.enabled'),
+                        strip: Services.prefs.getBoolPref('fenn.winui.tabstrip.enabled'),
                         attached: window.gWinUIPane?.attached};""")
                     raise AssertionError(f"Packaged defaults did not attach the native strip: {details}")
                 time.sleep(.1)

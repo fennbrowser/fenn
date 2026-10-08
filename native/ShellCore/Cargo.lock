@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "firefox-winui-shell-core"
+name = "fenn-shell-core"
 version = "0.1.0"

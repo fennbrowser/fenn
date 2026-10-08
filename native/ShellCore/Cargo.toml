@@ -1,5 +1,5 @@
 [package]
-name = "firefox-winui-shell-core"
+name = "fenn-shell-core"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
@@ -7,7 +7,7 @@ publish = false
 description = "Framework-independent shell logic for the native Firefox/WinUI shell: bounded request queue, drain scheduling, explicit outcomes, and an incremental tab presentation model."
 
 [lib]
-name = "firefox_winui_shell_core"
+name = "fenn_shell_core"
 crate-type = ["staticlib", "rlib"]
 
 [profile.release]

@@ -5,14 +5,14 @@
     <CppWinRTRootNamespaceAutoMerge>true</CppWinRTRootNamespaceAutoMerge>
     <MinimalCoreWin>true</MinimalCoreWin>
     <ProjectGuid>{B7634349-4DF5-4DA4-8D0D-1587E2706B44}</ProjectGuid>
-    <ProjectName>FirefoxWinUIPane</ProjectName>
-    <RootNamespace>FirefoxWinUIPane</RootNamespace>
+    <ProjectName>FennPane</ProjectName>
+    <RootNamespace>FennPane</RootNamespace>
     <!--
       $(TargetName) should be same as $(RootNamespace) so that the produced binaries (.exe/.pri/etc.)
       have a name that matches the .winmd
     -->
     <TargetName>$(RootNamespace)</TargetName>
-    <TargetName Condition="'$(WinUIPaneTesting)'=='true'">FirefoxWinUIPaneTest</TargetName>
+    <TargetName Condition="'$(WinUIPaneTesting)'=='true'">FennPaneTest</TargetName>
     <DefaultLanguage>en-US</DefaultLanguage>
     <MinimumVisualStudioVersion>16.0</MinimumVisualStudioVersion>
     <AppContainerApplication>false</AppContainerApplication>
@@ -113,7 +113,7 @@
     <ShellCoreTriple Condition="'$(Platform)'=='x64'">x86_64-pc-windows-msvc</ShellCoreTriple>
     <ShellCoreTriple Condition="'$(Platform)'=='Win32'">i686-pc-windows-msvc</ShellCoreTriple>
     <ShellCoreTriple Condition="'$(Platform)'=='ARM64'">aarch64-pc-windows-msvc</ShellCoreTriple>
-    <ShellCoreLib>$(ShellCoreTargetDir)$(ShellCoreTriple)\$(ShellCoreProfile)\firefox_winui_shell_core.lib</ShellCoreLib>
+    <ShellCoreLib>$(ShellCoreTargetDir)$(ShellCoreTriple)\$(ShellCoreProfile)\fenn_shell_core.lib</ShellCoreLib>
     <CargoExe Condition="'$(CargoExe)'==''">cargo</CargoExe>
   </PropertyGroup>
   <ItemDefinitionGroup>

@@ -1,5 +1,5 @@
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index d56594d91c..af2a6efac2 100644
+index d56594d91c..4dcfba56ff 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -2299,8 +2299,8 @@ pref("nimbus.profilesdatastoreservice.sync.enabled", true);
@@ -39,40 +39,49 @@ index d56594d91c..af2a6efac2 100644
  
  // Multi-lingual preferences:
  //  *.enabled - Are langpacks available for the build of Firefox?
+@@ -3860,7 +3861,7 @@ pref("browser.contentsharing.enabled", false);
+ 
+ #ifdef XP_WIN
+ // Development-only inert native bridge. Restart with an isolated profile.
+-pref("widget.windows.winui-prototype.enabled", false);
++pref("fenn.winui.enabled", false);
+ #endif
+ 
+ // Preferences for the Firefox Referral program #2051647).
 @@ -3875,6 +3876,37 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
 +// The native pane and its strip presentation are on by default in every lane
 +// (unpackaged launcher and MSIX alike); turn either off to fall back to Firefox.
-+pref("widget.windows.winui-prototype.pane.enabled", true);
++pref("fenn.winui.pane.enabled", true);
 +// Strip-only presentation; Firefox keeps its original tab and navigation UI.
-+pref("widget.windows.winui-prototype.tabstrip.enabled", true);
++pref("fenn.winui.tabstrip.enabled", true);
 +// Replace the horizontal Firefox tab row after native attachment succeeds.
-+pref("widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs", false);
++pref("fenn.winui.tabstrip.replaceFirefoxTabs", false);
 +// Native top-bar height: 32 compact, 40 current design, 48 tall.
-+pref("widget.windows.winui-prototype.tabstrip.height", 40);
++pref("fenn.winui.tabstrip.height", 40);
 +// Container dots suppress container glow, so with both on only groups glow.
-+pref("widget.windows.winui-prototype.tabstrip.containerDot", true);
-+pref("widget.windows.winui-prototype.tabstrip.glows", true);
++pref("fenn.winui.tabstrip.containerDot", true);
++pref("fenn.winui.tabstrip.glows", true);
 +// Strip backdrop: "mica", "mica-alt" or "acrylic".
-+pref("widget.windows.winui-prototype.tabstrip.backdrop", "mica-alt");
++pref("fenn.winui.tabstrip.backdrop", "mica-alt");
 +// Group outline reach past outer members: "none", "small", "medium" or "large";
 +// "large" also moves the native New Tab button by that reach.
-+pref("widget.windows.winui-prototype.tabstrip.groupReach", "none");
++pref("fenn.winui.tabstrip.groupReach", "none");
 +// Opt-in: hovering a group header washes the whole group, not only the header.
-+pref("widget.windows.winui-prototype.tabstrip.groupHover", false);
++pref("fenn.winui.tabstrip.groupHover", false);
 +// Opt-in: with group glow, a soft halo extends past each group's outline.
-+pref("widget.windows.winui-prototype.tabstrip.groupHalo", false);
++pref("fenn.winui.tabstrip.groupHalo", false);
 +// Opt-in: group glow lights up gradually where it appears or moves, and dims
 +// when it goes out.
-+pref("widget.windows.winui-prototype.tabstrip.groupGlowAnimations", false);
++pref("fenn.winui.tabstrip.groupGlowAnimations", false);
 +// Opt-in: with glow animations, extinguished glow dims out instead of
 +// disappearing at once.
-+pref("widget.windows.winui-prototype.tabstrip.groupGlowFadeOut", false);
-+pref("widget.windows.winui-prototype.address.enabled", false);
-+pref("widget.windows.winui-prototype.address.toolbar.enabled", false);
-+pref("widget.windows.winui-prototype.navigation.toolbar.enabled", false);
++pref("fenn.winui.tabstrip.groupGlowFadeOut", false);
++pref("fenn.winui.address.enabled", false);
++pref("fenn.winui.address.toolbar.enabled", false);
++pref("fenn.winui.navigation.toolbar.enabled", false);
 +
  #ifdef XP_MACOSX
    pref("browser.macAppMenu.setAsDefaultShown", false);
@@ -1875,7 +1884,7 @@ index 2d06d7b7dd..3925f8d967 100644
    nsIWidget();
    virtual ~nsIWidget();
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
-index c6e02a8696..7d7c77cf3d 100644
+index c6e02a8696..d11779734f 100644
 --- a/widget/windows/WinUIPrototype.cpp
 +++ b/widget/windows/WinUIPrototype.cpp
 @@ -2,17 +2,318 @@
@@ -1922,7 +1931,7 @@ index c6e02a8696..7d7c77cf3d 100644
 +  DWORD length = GetModuleFileNameW(nullptr, path, std::size(path));
 +  if (!length || length >= std::size(path)) return false;
 +  wchar_t* separator = wcsrchr(path, L'\\');
-+  constexpr wchar_t suffix[] = L"FirefoxWinUIPane.dll";
++  constexpr wchar_t suffix[] = L"FennPane.dll";
 +  if (!separator ||
 +      size_t(separator + 1 - path) + std::size(suffix) > std::size(path))
 +    return false;
@@ -2022,10 +2031,10 @@ index c6e02a8696..7d7c77cf3d 100644
 +}
 +
 +static bool PaneEnabled() {
-+  return Preferences::GetBool("widget.windows.winui-prototype.pane.enabled",
++  return Preferences::GetBool("fenn.winui.pane.enabled",
 +                              false) ||
 +         Preferences::GetBool(
-+             "widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs",
++             "fenn.winui.tabstrip.replaceFirefoxTabs",
 +             false);
 +}
 +
@@ -2041,10 +2050,10 @@ index c6e02a8696..7d7c77cf3d 100644
 +  sTraceEnabled = true;
 +  if (!LoadPane()) return false;
 +  auto update =
-+      Preferences::GetBool("widget.windows.winui-prototype.tabstrip.enabled",
++      Preferences::GetBool("fenn.winui.tabstrip.enabled",
 +                           false) ||
 +              Preferences::GetBool(
-+                  "widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs",
++                  "fenn.winui.tabstrip.replaceFirefoxTabs",
 +                  false)
 +          ? sPaneApi.updateTabStrip
 +          : sPaneApi.update;
@@ -2104,9 +2113,9 @@ index c6e02a8696..7d7c77cf3d 100644
 +  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
 +      !sPaneApi.updateAddress || !PaneEnabled()) return false;
 +  if (aVisible && !Preferences::GetBool(
-+          "widget.windows.winui-prototype.address.toolbar.enabled", false) &&
++          "fenn.winui.address.toolbar.enabled", false) &&
 +      !Preferences::GetBool(
-+          "widget.windows.winui-prototype.navigation.toolbar.enabled", false)) return false;
++          "fenn.winui.navigation.toolbar.enabled", false)) return false;
 +  HRESULT hr = sPaneApi.updateAddress(aWindow, &aRect, aVisible);
 +  if (SUCCEEDED(hr) && aVisible && aFocus)
 +    hr = sPaneApi.focusAddress(aWindow, aSelectAll);
@@ -2224,7 +2233,7 @@ index c6e02a8696..7d7c77cf3d 100644
  void ProbeWinUIPrototype(HWND aWindow) {
    if (!XRE_IsParentProcess() || !NS_IsMainThread() ||
 -      !Preferences::GetBool("widget.windows.winui-prototype.enabled", false)) return;
-+      !Preferences::GetBool("widget.windows.winui-prototype.enabled", false))
++      !Preferences::GetBool("fenn.winui.enabled", false))
 +    return;
    sTraceEnabled = true;
    TraceWinUIPrototype("window-created", aWindow);
@@ -2537,7 +2546,7 @@ index 1e2660589b..85227d8e69 100644
    /*
 diff --git a/browser/base/content/WinUIHistoryMenu.sys.mjs b/browser/base/content/WinUIHistoryMenu.sys.mjs
 new file mode 100644
-index 0000000000..c4e76c29d5
+index 0000000000..cb9f21cfd3
 --- /dev/null
 +++ b/browser/base/content/WinUIHistoryMenu.sys.mjs
 @@ -0,0 +1,84 @@
@@ -2546,10 +2555,10 @@ index 0000000000..c4e76c29d5
 +  constructor(toolbar) {
 +    this.toolbar=toolbar;this.session=0;this.lastSession=0;this.actions=new Map();
 +    this.preferenceChanged=()=>{if(!this.enabled && this.session)this.dismiss();else toolbar.owner.invalidateAddress();};
-+    Services.prefs.addObserver("widget.windows.winui-prototype.navigation.history.menu.enabled",this.preferenceChanged);
++    Services.prefs.addObserver("fenn.winui.navigation.history.menu.enabled",this.preferenceChanged);
 +  }
-+  close() {this.dismiss();Services.prefs.removeObserver("widget.windows.winui-prototype.navigation.history.menu.enabled",this.preferenceChanged);}
-+  get enabled() { return Services.prefs.getBoolPref("widget.windows.winui-prototype.navigation.history.menu.enabled",false); }
++  close() {this.dismiss();Services.prefs.removeObserver("fenn.winui.navigation.history.menu.enabled",this.preferenceChanged);}
++  get enabled() { return Services.prefs.getBoolPref("fenn.winui.navigation.history.menu.enabled",false); }
 +  snapshot() {
 +    if(this.session && (!this.enabled || !this.toolbar.active || this.toolbar.customization?.editorOpen ||
 +       this.context?.tab!==this.toolbar.owner.addressTab || this.context?.document!==this.toolbar.owner.addressDocument))this.dismiss();
@@ -5343,7 +5352,7 @@ index 0000000000..a8fae4db53
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..1baaae48a9
+index 0000000000..afb3ab9d75
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
 @@ -0,0 +1,347 @@
@@ -5437,7 +5446,7 @@ index 0000000000..1baaae48a9
 +  supported() {
 +    const { window, owner } = this;
 +    return owner.attached && owner.tabStrip && !this.failed &&
-+      (Services.prefs.getBoolPref("widget.windows.winui-prototype.address.toolbar.enabled", false) ||
++      (Services.prefs.getBoolPref("fenn.winui.address.toolbar.enabled", false) ||
 +       this.navigationRequested) &&
 +      !window.fullScreen && !window.document.fullscreenElement &&
 +      !window.document.documentElement.hasAttribute("customizing") &&
@@ -5611,7 +5620,7 @@ index 0000000000..1baaae48a9
 +    return true;
 +  }
 +  get navigationRequested() {
-+    return Services.prefs.getBoolPref("widget.windows.winui-prototype.navigation.toolbar.enabled", false);
++    return Services.prefs.getBoolPref("fenn.winui.navigation.toolbar.enabled", false);
 +  }
 +  activate() {
 +    if (this.active || this.activationFrame) return;
@@ -5723,7 +5732,7 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..6e251805fc
+index 0000000000..71c3aef4d1
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,2122 @@
@@ -5732,21 +5741,21 @@ index 0000000000..6e251805fc
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +var gWinUIPane = {
-+  pref: "widget.windows.winui-prototype.pane.enabled",
-+  addressPref: "widget.windows.winui-prototype.address.enabled",
-+  addressToolbarPref: "widget.windows.winui-prototype.address.toolbar.enabled",
-+  navigationToolbarPref: "widget.windows.winui-prototype.navigation.toolbar.enabled",
-+  stripPref: "widget.windows.winui-prototype.tabstrip.enabled",
-+  replaceTabsPref: "widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs",
-+  containerDotPref: "widget.windows.winui-prototype.tabstrip.containerDot",
-+  tabGlowsPref: "widget.windows.winui-prototype.tabstrip.glows",
-+  stripBackdropPref: "widget.windows.winui-prototype.tabstrip.backdrop",
-+  groupReachPref: "widget.windows.winui-prototype.tabstrip.groupReach",
-+  groupHoverPref: "widget.windows.winui-prototype.tabstrip.groupHover",
-+  groupHaloPref: "widget.windows.winui-prototype.tabstrip.groupHalo",
-+  groupGlowAnimationsPref: "widget.windows.winui-prototype.tabstrip.groupGlowAnimations",
-+  groupGlowFadeOutPref: "widget.windows.winui-prototype.tabstrip.groupGlowFadeOut",
-+  stripHeightPref: "widget.windows.winui-prototype.tabstrip.height",
++  pref: "fenn.winui.pane.enabled",
++  addressPref: "fenn.winui.address.enabled",
++  addressToolbarPref: "fenn.winui.address.toolbar.enabled",
++  navigationToolbarPref: "fenn.winui.navigation.toolbar.enabled",
++  stripPref: "fenn.winui.tabstrip.enabled",
++  replaceTabsPref: "fenn.winui.tabstrip.replaceFirefoxTabs",
++  containerDotPref: "fenn.winui.tabstrip.containerDot",
++  tabGlowsPref: "fenn.winui.tabstrip.glows",
++  stripBackdropPref: "fenn.winui.tabstrip.backdrop",
++  groupReachPref: "fenn.winui.tabstrip.groupReach",
++  groupHoverPref: "fenn.winui.tabstrip.groupHover",
++  groupHaloPref: "fenn.winui.tabstrip.groupHalo",
++  groupGlowAnimationsPref: "fenn.winui.tabstrip.groupGlowAnimations",
++  groupGlowFadeOutPref: "fenn.winui.tabstrip.groupGlowFadeOut",
++  stripHeightPref: "fenn.winui.tabstrip.height",
 +  groupingPrefs: ["browser.tabs.groups.enabled", "browser.tabs.dragDrop.createGroup.enabled",
 +    "browser.tabs.dragDrop.createGroup.delayMS"],
 +  element: null,
@@ -6396,7 +6405,7 @@ index 0000000000..6e251805fc
 +    }
 +    const toolbar = this.addressToolbar?.update() || false;
 +    const requested = toolbarRequested || Services.prefs.getBoolPref(
-+      "widget.windows.winui-prototype.address.enabled",
++      "fenn.winui.address.enabled",
 +      false
 +    );
 +    if (!requested) this.addressFailed = false;
@@ -7851,7 +7860,7 @@ index 0000000000..6e251805fc
 +}, { once: true });
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 0000000000..42721d1035
+index 0000000000..8f974ef3c1
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
 @@ -0,0 +1,139 @@
@@ -7861,7 +7870,7 @@ index 0000000000..42721d1035
 +
 +// Owning-thread HWND marker: while present, Windows App SDK owns caption
 +// button input and Gecko must not redirect non-client presses to DOM buttons.
-+#define WINUI_PANE_SYSTEM_CAPTION_PROPERTY L"FirefoxWinUIPane.SystemCaption.1"
++#define WINUI_PANE_SYSTEM_CAPTION_PROPERTY L"FennPane.SystemCaption.1"
 +
 +// v14 puts the last two commands -- close and new tab -- on the v11 request
 +// path. syncTabs therefore drains nothing: it loses its close/new-tab

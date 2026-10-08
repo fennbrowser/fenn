@@ -2,9 +2,9 @@
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $env:MOZBUILD_STATE_PATH = Join-Path $projectRoot '.cache/mozbuild'
 # Installed toolchains and package caches are read-mostly and safe to share between
-# checkouts: set FIREFOX_WINUI_SHARED_CACHE to another checkout's .cache to reuse them.
+# checkouts: set FENN_SHARED_CACHE to another checkout's .cache to reuse them.
 # mozbuild state and sccache stay per-checkout so builds cannot interfere.
-$sharedCache = if ($env:FIREFOX_WINUI_SHARED_CACHE) { $env:FIREFOX_WINUI_SHARED_CACHE } else { Join-Path $projectRoot '.cache' }
+$sharedCache = if ($env:FENN_SHARED_CACHE) { $env:FENN_SHARED_CACHE } else { Join-Path $projectRoot '.cache' }
 $env:CARGO_HOME = Join-Path $sharedCache 'cargo'
 $env:RUSTUP_HOME = Join-Path $sharedCache 'rustup'
 $env:NUGET_PACKAGES = Join-Path $sharedCache 'nuget/packages'

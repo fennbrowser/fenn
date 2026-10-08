@@ -6,8 +6,8 @@ import {WinUITabStripSession} from "../upstream/firefox/browser/base/content/Win
 
 test("dots and glows default on, dots suppress container glow, and both publish live deltas", () => {
   let dots, glows;
-  const key = "widget.windows.winui-prototype.tabstrip.containerDot";
-  const glowKey = "widget.windows.winui-prototype.tabstrip.glows";
+  const key = "fenn.winui.tabstrip.containerDot";
+  const glowKey = "fenn.winui.tabstrip.glows";
   const context = {
     window:{addEventListener() {}},
     PrivateBrowsingUtils:{isWindowPrivate:() => false},
@@ -47,7 +47,7 @@ test("dots and glows default on, dots suppress container glow, and both publish 
 
 test("strip backdrop preference is validated and publishes a live delta", () => {
   let backdrop;
-  const key = "widget.windows.winui-prototype.tabstrip.backdrop";
+  const key = "fenn.winui.tabstrip.backdrop";
   const context = {
     window:{addEventListener() {}},
     PrivateBrowsingUtils:{isWindowPrivate:() => false},
@@ -83,7 +83,7 @@ test("strip backdrop preference is validated and publishes a live delta", () => 
 
 test("group reach preference is validated and publishes a live delta", () => {
   let reach;
-  const key = "widget.windows.winui-prototype.tabstrip.groupReach";
+  const key = "fenn.winui.tabstrip.groupReach";
   const context = {
     window:{addEventListener() {}},
     PrivateBrowsingUtils:{isWindowPrivate:() => false},
@@ -119,7 +119,7 @@ test("group reach preference is validated and publishes a live delta", () => {
 
 test("group halo is opt-in and its preference publishes a live delta", () => {
   let halo;
-  const key = "widget.windows.winui-prototype.tabstrip.groupHalo";
+  const key = "fenn.winui.tabstrip.groupHalo";
   const context = {
     window:{addEventListener() {}},
     PrivateBrowsingUtils:{isWindowPrivate:() => false},
@@ -151,7 +151,7 @@ test("group halo is opt-in and its preference publishes a live delta", () => {
 
 test("group glow animations are opt-in and their preference publishes a live delta", () => {
   let animations;
-  const key = "widget.windows.winui-prototype.tabstrip.groupGlowAnimations";
+  const key = "fenn.winui.tabstrip.groupGlowAnimations";
   const context = {
     window:{addEventListener() {}},
     PrivateBrowsingUtils:{isWindowPrivate:() => false},
@@ -183,7 +183,7 @@ test("group glow animations are opt-in and their preference publishes a live del
 
 test("group glow fade-out is opt-in and its preference publishes a live delta", () => {
   let fadeOut;
-  const key = "widget.windows.winui-prototype.tabstrip.groupGlowFadeOut";
+  const key = "fenn.winui.tabstrip.groupGlowFadeOut";
   const context = {
     window:{addEventListener() {}},
     PrivateBrowsingUtils:{isWindowPrivate:() => false},

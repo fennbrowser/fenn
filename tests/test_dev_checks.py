@@ -48,7 +48,7 @@ class DevChecksTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             shared = root / "missing shared cache"
-            with patch.dict(dev.os.environ, {"FIREFOX_WINUI_SHARED_CACHE": str(shared)}):
+            with patch.dict(dev.os.environ, {"FENN_SHARED_CACHE": str(shared)}):
                 env, resolved = dev.environment(root)
             self.assertEqual(resolved, shared)
             self.assertEqual(env["CARGO_HOME"], str(shared / "cargo"))

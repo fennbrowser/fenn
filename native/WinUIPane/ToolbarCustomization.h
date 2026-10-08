@@ -76,14 +76,14 @@ struct NativeToolbarCustomization {
         if(!editing || item==state.items.end() || !item->movable)return false;
         dragBitmap=nullptr;dragId=id;dragRevision=state.revision;dragging=true;dragCancelled=false;externalDrop=false;
         GUID token;winrt::check_hresult(CoCreateGuid(&token));dragToken=winrt::to_hstring(winrt::guid(token));
-        data.Properties().Insert(L"FirefoxWinUIToolbarDrag",winrt::box_value(dragToken));
+        data.Properties().Insert(L"FennToolbarDrag",winrt::box_value(dragToken));
         data.RequestedOperation(winrt::Windows::ApplicationModel::DataTransfer::DataPackageOperation::Move);
         return true;
     }
     bool OwnDrag(Microsoft::UI::Xaml::DragEventArgs const& args) {
         if(!editing || !dragging || dragCancelled || externalDrop || dragRevision!=state.revision)return false;
         auto values=args.DataView().Properties();
-        return values.HasKey(L"FirefoxWinUIToolbarDrag") && winrt::unbox_value_or<winrt::hstring>(values.Lookup(L"FirefoxWinUIToolbarDrag"),L"")==dragToken;
+        return values.HasKey(L"FennToolbarDrag") && winrt::unbox_value_or<winrt::hstring>(values.Lookup(L"FennToolbarDrag"),L"")==dragToken;
     }
     bool Accept(Microsoft::UI::Xaml::DragEventArgs const& args, bool removing=false) {
         if(!OwnDrag(args))return false;
@@ -167,7 +167,7 @@ struct NativeToolbarCustomization {
         menu.Closed([this,alive,weak=winrt::make_weak(menu)](auto const&,auto const&){if(!alive.expired() && itemMenu==weak.get())itemMenuOpen=false;});
         auto add=[&](wchar_t const* label,wchar_t const* verb,winrt::hstring const& target,bool enabled) {
             MenuFlyoutItem action;action.Text(state.labels.at(label));action.IsEnabled(enabled);
-            Automation::AutomationProperties::SetAutomationId(action,winrt::hstring(L"FirefoxWinUICustomizeAction-")+label);
+            Automation::AutomationProperties::SetAutomationId(action,winrt::hstring(L"FennCustomizeAction-")+label);
             action.Click([this,alive,id,revision,verb=std::wstring(verb),target](auto const&,auto const&){
                 if(alive.expired() || !editing || revision!=state.revision)return;
                 focusAfterChange=id;focusRevision=revision;Send(id,verb.c_str(),target,revision);
@@ -243,7 +243,7 @@ struct NativeToolbarCustomization {
         auto preview=createPreview(item);preview.IsHitTestVisible(false);
         if(auto control=preview.try_as<Microsoft::UI::Xaml::Controls::Control>())control.IsTabStop(false);
         Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(preview,item.label);
-        Microsoft::UI::Xaml::Automation::AutomationProperties::SetAutomationId(preview,L"FirefoxWinUICustomizePreview-"+(item.control.empty()?item.id:item.control));
+        Microsoft::UI::Xaml::Automation::AutomationProperties::SetAutomationId(preview,L"FennCustomizePreview-"+(item.control.empty()?item.id:item.control));
         Microsoft::UI::Xaml::Automation::AutomationProperties::SetAccessibilityView(preview,Microsoft::UI::Xaml::Automation::Peers::AccessibilityView::Content);
         Microsoft::UI::Xaml::Controls::ToolTipService::SetToolTip(preview,winrt::box_value(item.label));
         previews.insert_or_assign(item.id,preview);presenter.Content(preview);
@@ -288,10 +288,10 @@ struct NativeToolbarCustomization {
             auto text=[&](wchar_t const* key){TextBlock t;textBlocks[key]=t;t.Text(state.labels.at(key));t.TextWrapping(TextWrapping::Wrap);content.Children().Append(t);};
             text(L"title");
             available=GridView();available.ItemsSource(availableItems);available.MaxHeight(240);available.MinHeight(40);available.CanDragItems(true);available.AllowDrop(true);
-            Automation::AutomationProperties::SetAutomationId(available,L"FirefoxWinUICustomizeAvailable");
+            Automation::AutomationProperties::SetAutomationId(available,L"FennCustomizeAvailable");
             Automation::AutomationProperties::SetName(available,state.labels.at(L"available"));content.Children().Append(available);
             StackPanel defaults;defaults.Orientation(Orientation::Horizontal);defaults.Spacing(8);content.Children().Append(defaults);
-            auto make=[&](wchar_t const* key){Button b;b.Content(winrt::box_value(state.labels.at(key)));Automation::AutomationProperties::SetAutomationId(b,winrt::hstring(L"FirefoxWinUICustomize-")+key);defaults.Children().Append(b);return b;};
+            auto make=[&](wchar_t const* key){Button b;b.Content(winrt::box_value(state.labels.at(key)));Automation::AutomationProperties::SetAutomationId(b,winrt::hstring(L"FennCustomize-")+key);defaults.Children().Append(b);return b;};
             reset=make(L"reset");undoReset=make(L"undo-reset");
             auto alive=std::weak_ptr<int>(lifetime);
             for(auto button:{reset,undoReset})button.PreviewKeyDown([this,alive](auto const& sender,auto const& args){
@@ -308,7 +308,7 @@ struct NativeToolbarCustomization {
                 auto found=std::find_if(state.items.begin(),state.items.end(),[&](auto const& item){return item.id==id;});
                 if(found==state.items.end())return;
                 auto row=args.ItemContainer();
-                Automation::AutomationProperties::SetAutomationId(row,L"FirefoxWinUICustomize-"+(found->control.empty()?found->id:found->control));
+                Automation::AutomationProperties::SetAutomationId(row,L"FennCustomize-"+(found->control.empty()?found->id:found->control));
                 Automation::AutomationProperties::SetName(row,found->label);
                 ToolTipService::SetToolTip(row,winrt::box_value(found->label));
                 row.Padding({0,0,0,0});row.Margin({2,2,2,2});row.MinWidth(32);row.MinHeight(32);

@@ -43,7 +43,7 @@ LOGO = r"browser\chrome\browser\content\branding"
 
 
 def load_packager():
-    spec = importlib.util.spec_from_file_location("packager", ROOT / "scripts/Package-FirefoxDev.py")
+    spec = importlib.util.spec_from_file_location("packager", ROOT / "scripts/Package-FennDev.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -68,7 +68,7 @@ def newest_msix_manifest():
         identity = ET.parse(path).getroot().find(f"{{{FOUNDATION}}}Identity")
         if identity is not None and identity.get("Name") == "Fenn.Dev":
             return path
-    raise FileNotFoundError("Build the MSIX once (Build-FirefoxDevPackage.ps1) so its Firefox "
+    raise FileNotFoundError("Build the MSIX once (Build-FennDevPackage.ps1) so its Firefox "
                             "declarations can be reused")
 
 

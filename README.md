@@ -32,7 +32,7 @@ App SDK runtime (`scripts/Install-WindowsAppRuntime.ps1`). In outline:
 2. `scripts/Build-WinUIPane.ps1` builds the native pane.
 3. `scripts/Invoke-Mach.ps1 build` builds Firefox with Fenn's branding
    (`configs/mozconfig`).
-4. `scripts/Build-FirefoxDevPackage.ps1` builds a development MSIX package.
+4. `scripts/Build-FennDevPackage.ps1` builds a development MSIX package.
 
 ## License
 

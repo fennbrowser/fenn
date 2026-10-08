@@ -29,7 +29,7 @@ def find_cbindgen():
     if override:
         return pathlib.Path(override)
     candidates = []
-    shared = os.environ.get("FIREFOX_WINUI_SHARED_CACHE")
+    shared = os.environ.get("FENN_SHARED_CACHE")
     if shared:
         candidates.append(pathlib.Path(shared) / "mozbuild" / "cbindgen" / "cbindgen.exe")
     candidates.append(ROOT / ".cache" / "mozbuild" / "cbindgen" / "cbindgen.exe")

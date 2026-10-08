@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def environment(root):
     """Match the build wrappers without creating caches or changing user settings."""
     env = os.environ.copy()
-    shared = Path(env.get("FIREFOX_WINUI_SHARED_CACHE") or root / ".cache")
+    shared = Path(env.get("FENN_SHARED_CACHE") or root / ".cache")
     env.update(CARGO_HOME=str(shared / "cargo"), RUSTUP_HOME=str(shared / "rustup"),
                MOZBUILD_STATE_PATH=str(root / ".cache/mozbuild"),
                RUSTUP_AUTO_INSTALL="0", CARGO_NET_OFFLINE="true")

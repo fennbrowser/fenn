@@ -4,7 +4,7 @@
 
 // Owning-thread HWND marker: while present, Windows App SDK owns caption
 // button input and Gecko must not redirect non-client presses to DOM buttons.
-#define WINUI_PANE_SYSTEM_CAPTION_PROPERTY L"FirefoxWinUIPane.SystemCaption.1"
+#define WINUI_PANE_SYSTEM_CAPTION_PROPERTY L"FennPane.SystemCaption.1"
 
 // v14 puts the last two commands -- close and new tab -- on the v11 request
 // path. syncTabs therefore drains nothing: it loses its close/new-tab

@@ -7,7 +7,7 @@ header = """/* This Source Code Form is subject to the terms of the Mozilla Publ
  * Regenerate with scripts/Export-ShellCoreHeader.py (cbindgen 0.29.4).
  * The checked-in copy is what the native build compiles against; the script's
  * --check mode fails if this file and native/ShellCore/src/ffi.rs disagree. */"""
-include_guard = "FIREFOX_WINUI_SHELL_CORE_H"
+include_guard = "FENN_SHELL_CORE_H"
 autogen_warning = ""
 cpp_compat = true
 documentation = true

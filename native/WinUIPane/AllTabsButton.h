@@ -21,7 +21,7 @@ struct AllTabsButton {
 
     AllTabsButton() {
         button = Markup::XamlReader::Load(
-            LR"x(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Width="46" Height="32" MinWidth="0" Padding="0" CornerRadius="0" BorderThickness="0" VerticalAlignment="Top" HorizontalAlignment="Left" Visibility="Collapsed" ToolTipService.ToolTip="List all tabs" AutomationProperties.Name="List all tabs" AutomationProperties.AutomationId="FirefoxWinUIAllTabs">
+            LR"x(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Width="46" Height="32" MinWidth="0" Padding="0" CornerRadius="0" BorderThickness="0" VerticalAlignment="Top" HorizontalAlignment="Left" Visibility="Collapsed" ToolTipService.ToolTip="List all tabs" AutomationProperties.Name="List all tabs" AutomationProperties.AutomationId="FennAllTabs">
   <Button.Resources>
     <ResourceDictionary>
       <ResourceDictionary.ThemeDictionaries>

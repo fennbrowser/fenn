@@ -29,7 +29,7 @@ struct TabGroupsButton {
         button.Visibility(Visibility::Collapsed);
         button.Margin({4, 0, 4, 0});
         button.VerticalAlignment(VerticalAlignment::Center);
-        Automation::AutomationProperties::SetAutomationId(button, L"FirefoxWinUITabGroups");
+        Automation::AutomationProperties::SetAutomationId(button, L"FennTabGroups");
     }
     ~TabGroupsButton() { lifetime.reset(); }
 
@@ -50,7 +50,7 @@ struct TabGroupsButton {
                 item.Text(group.GetNamedString(L"name"));
                 item.IsChecked(!collapsed);
                 Automation::AutomationProperties::SetName(item, group.GetNamedString(L"label"));
-                Automation::AutomationProperties::SetAutomationId(item, L"FirefoxWinUIGroup-" + to_hstring(id));
+                Automation::AutomationProperties::SetAutomationId(item, L"FennGroup-" + to_hstring(id));
                 item.Click([this, alive = std::weak_ptr<int>(lifetime), id, collapsed, groupState](auto const& sender,
                                                                                                    auto const&) {
                     if (alive.expired() || groupState != fingerprint) return;

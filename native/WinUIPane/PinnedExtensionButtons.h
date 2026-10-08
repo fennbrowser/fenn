@@ -26,7 +26,7 @@ struct PinnedExtensionButtons {
     Microsoft::UI::Xaml::Controls::StackPanel panel;
     std::map<winrt::hstring, Row> rows;
     std::function<void(wchar_t const*, uint32_t, Button const&)> activate;
-    winrt::hstring commandPrefix{L"extension:"}, contextPrefix{L"extension-menu:"}, automationPrefix{L"FirefoxWinUIExtension-"};
+    winrt::hstring commandPrefix{L"extension:"}, contextPrefix{L"extension-menu:"}, automationPrefix{L"FennExtension-"};
     double buttonSize{32};
     bool externalLayout{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);

@@ -221,7 +221,7 @@ struct NativeSearchMode {
         NewFlyout();
         button.IsEnabled(false);
         button.Padding({4, 0, 4, 0});
-        Automation::AutomationProperties::SetAutomationId(button, L"FirefoxWinUISearchMode");
+        Automation::AutomationProperties::SetAutomationId(button, L"FennSearchMode");
         StackPanel buttonContent;
         buttonContent.Orientation(Orientation::Horizontal);
         buttonContent.Spacing(4);
@@ -239,7 +239,7 @@ struct NativeSearchMode {
         exit.Padding({4, 0, 4, 0});
         exit.MinWidth(24);
         Automation::AutomationProperties::SetName(exit, L"Exit search mode");
-        Automation::AutomationProperties::SetAutomationId(exit, L"FirefoxWinUIExitSearchMode");
+        Automation::AutomationProperties::SetAutomationId(exit, L"FennExitSearchMode");
         exit.Visibility(Visibility::Collapsed);
         exit.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (!alive.expired()) Queue(L"mode-exit");

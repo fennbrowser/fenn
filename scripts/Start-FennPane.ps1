@@ -3,18 +3,18 @@ param([switch]$NativeAddress, [switch]$NativeAddressBar, [switch]$NativeNavigati
       [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop,
       [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach,
       # Run the build with package identity (Fenn.DevIdentity) through
-      # dist/bin/fenn-identity.exe (scripts/Register-FirefoxDevIdentity.py).
+      # dist/bin/fenn-identity.exe (scripts/Register-FennDevIdentity.py).
       [switch]$PackageIdentity)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $browser = Join-Path $projectRoot 'build/firefox/dist/bin/fenn.exe'
-$pane = Join-Path (Split-Path $browser) 'FirefoxWinUIPane.dll'
+$pane = Join-Path (Split-Path $browser) 'FennPane.dll'
 if (!(Test-Path $browser) -or !(Test-Path $pane)) {
     throw 'Build Firefox and run Build-WinUIPane.ps1 -Stage first.'
 }
 if ($PackageIdentity) {
     # Registers the identity package once and refreshes the marked executable after builds.
-    & 'C:\mozilla-build\python3\python.exe' (Join-Path $PSScriptRoot 'Register-FirefoxDevIdentity.py')
+    & 'C:\mozilla-build\python3\python.exe' (Join-Path $PSScriptRoot 'Register-FennDevIdentity.py')
     if ($LASTEXITCODE) { throw "Package identity setup failed: $LASTEXITCODE" }
     $browser = Join-Path (Split-Path $browser) 'fenn-identity.exe'
 }
@@ -25,7 +25,7 @@ New-Item -ItemType Directory -Force $demoProfile | Out-Null
 # so -X:$false opts out and an omitted flag keeps the shared default.
 if ($PSBoundParameters.ContainsKey('ReplaceFirefoxTabStrip')) {
     # Seed once in prefs.js so the toolbar option can persist changes on restart.
-    "user_pref(`"widget.windows.winui-prototype.tabstrip.replaceFirefoxTabs`", $($ReplaceFirefoxTabStrip.IsPresent.ToString().ToLowerInvariant()));" |
+    "user_pref(`"fenn.winui.tabstrip.replaceFirefoxTabs`", $($ReplaceFirefoxTabStrip.IsPresent.ToString().ToLowerInvariant()));" |
         Set-Content (Join-Path $demoProfile 'prefs.js')
 }
 $userPrefs = @(
@@ -45,18 +45,18 @@ if ($NativeHistoryMenu -and -not $PSBoundParameters.ContainsKey('NativeNavigatio
 foreach ($flag in $switchPrefs.Keys) {
     if ($PSBoundParameters.ContainsKey($flag)) {
         $value = ([bool]$PSBoundParameters[$flag]).ToString().ToLowerInvariant()
-        $userPrefs += "user_pref(`"widget.windows.winui-prototype.$($switchPrefs[$flag])`", $value);"
+        $userPrefs += "user_pref(`"fenn.winui.$($switchPrefs[$flag])`", $value);"
     }
 }
 if ($PSBoundParameters.ContainsKey('NativeTabStripHeight')) {
-    $userPrefs += "user_pref(`"widget.windows.winui-prototype.tabstrip.height`", $NativeTabStripHeight);"
+    $userPrefs += "user_pref(`"fenn.winui.tabstrip.height`", $NativeTabStripHeight);"
 }
 if ($PSBoundParameters.ContainsKey('TabStripBackdrop')) {
     $backdrop = @{ Mica = 'mica'; MicaAlt = 'mica-alt'; Acrylic = 'acrylic' }[$TabStripBackdrop]
-    $userPrefs += "user_pref(`"widget.windows.winui-prototype.tabstrip.backdrop`", `"$backdrop`");"
+    $userPrefs += "user_pref(`"fenn.winui.tabstrip.backdrop`", `"$backdrop`");"
 }
 if ($PSBoundParameters.ContainsKey('TabGroupReach')) {
-    $userPrefs += "user_pref(`"widget.windows.winui-prototype.tabstrip.groupReach`", `"$($TabGroupReach.ToLowerInvariant())`");"
+    $userPrefs += "user_pref(`"fenn.winui.tabstrip.groupReach`", `"$($TabGroupReach.ToLowerInvariant())`");"
 }
 $userPrefs | Set-Content (Join-Path $demoProfile 'user.js')
 Write-Host "Starting the WinUI prototype with an isolated profile: $demoProfile"
@@ -79,14 +79,14 @@ if ($CaptureCrash) {
 if ($DiagnosticsLog) {
     # Pane diagnostics go to stderr; the browser inherits the redirected handle.
     # Scoped to the browser process: the script runs in the caller's session.
-    $previous = $env:FIREFOX_WINUI_PANE_DIAGNOSTICS
-    $env:FIREFOX_WINUI_PANE_DIAGNOSTICS = '1'
+    $previous = $env:FENN_PANE_DIAGNOSTICS
+    $env:FENN_PANE_DIAGNOSTICS = '1'
     $log = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DiagnosticsLog)
     Write-Host "Pane diagnostics: $log"
     try {
         Start-Process -FilePath $browser -NoNewWindow -Wait -RedirectStandardError $log -ArgumentList @(
             '--no-remote', '--profile', "`"$demoProfile`"", "`"$(Join-Path $projectRoot 'tests/smoke/browser.html')`"")
-    } finally { $env:FIREFOX_WINUI_PANE_DIAGNOSTICS = $previous }
+    } finally { $env:FENN_PANE_DIAGNOSTICS = $previous }
     exit
 }
 & $browser --no-remote --profile $demoProfile (Join-Path $projectRoot 'tests/smoke/browser.html')
