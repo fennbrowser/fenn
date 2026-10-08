@@ -10,7 +10,13 @@ export PIP_CACHE_DIR="$(cygpath -m "$shared_cache/pip")"
 export SCCACHE_DIR="$(cygpath -m "$project_root/.cache/sccache")"
 export MOZCONFIG="$(cygpath -m "$project_root/configs/mozconfig")"
 export PATH="$(cygpath -u "$CARGO_HOME")/bin:$PATH"
+# Always run mach with MozillaBuild's Python. mach's virtualenvs record the
+# interpreter that built them and are rebuilt when another one runs mach; if a
+# process still holds a venv DLL (glean_ffi.dll), that rebuild stops half done
+# and later commands hang. Git Bash and an inherited PATH resolve python3 elsewhere.
+python="/c/mozilla-build/python3/python3.exe"
+[ -x "$python" ] || python=python3
 # configs/mozconfig builds with the project-owned Fenn branding; mirror it first.
-python3 "$project_root/scripts/Stage-FennBranding.py"
+"$python" "$project_root/scripts/Stage-FennBranding.py"
 cd -- "$project_root/upstream/firefox"
-exec python3 mach "$@"
+exec "$python" mach "$@"
