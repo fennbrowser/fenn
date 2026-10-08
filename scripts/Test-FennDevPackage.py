@@ -9,6 +9,7 @@ from ctypes import wintypes as W
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import subprocess
@@ -139,6 +140,28 @@ def main():
                     raise AssertionError(f"Unpackaged browser unexpectedly has package identity: {package}")
             elif not (package and package.startswith(f"{args.package_name}_")):
                 raise AssertionError(f"Browser lacks expected package identity: {package}")
+            identity = chrome("""return (async () => {
+                let { SearchService } = ChromeUtils.importESModule(
+                    "moz-src:///toolkit/components/search/SearchService.sys.mjs");
+                await SearchService.init();
+                let urls = [];
+                for (let engine of await SearchService.getAppProvidedEngines()) {
+                    for (let type of ["text/html", "application/x-suggestions+json"]) {
+                        for (let source of ["default", "newtab_search_widget"]) {
+                            let spec = engine.getSubmission("fenn", type, source)?.uri.spec;
+                            if (spec) urls.push(spec);
+                        }
+                    }
+                }
+                let [view] = await new Localization(["toolkit/branding/brandings.ftl", "browser/browser.ftl"]).formatValues(["quickactions-firefoxview"]);
+                return {urls, view, customIcons: Services.prefs.getBoolPref("browser.shell.customIcon.enabled")};
+            })();""")
+            attributed = [u for u in identity["urls"]
+                          if re.search(r"firefox-b|[?&](pc|form|channel|campid|mkrid|fr|t|tt|segment)=|MOZ[A-Z]|mozff", u)]
+            if not identity["urls"] or attributed:
+                raise AssertionError(f"Search URLs carry Mozilla attribution: {attributed or 'no engines'}")
+            if identity["view"] != "Open Fenn View" or identity["customIcons"]:
+                raise AssertionError(f"Firefox-branded feature names or launcher icons remain: {identity}")
             runtime = runtime_modules(state["pid"])
             command = ["powershell", "-NoProfile", "-Mta", "-File",
                        str(ROOT / "tests/native/SelectPaneTab.ps1"), "-BrowserProcessId", str(state["pid"]),
@@ -162,9 +185,10 @@ def main():
                 raise AssertionError((code, shutdown))
             (directory / "result.json").write_text(json.dumps({
                 "packageFullName": package, "runtime": runtime, "state": state, "rows": json.loads(rows),
-                "exitCode": code, "scope": "unpackaged" if args.unpackaged else "installed identity"}, indent=2), encoding="utf-8")
+                "searchUrls": identity["urls"], "exitCode": code, "scope": "unpackaged" if args.unpackaged else "installed identity"}, indent=2), encoding="utf-8")
             print(f"PASS: default native strip, framework-only runtime ({len(runtime['modules'])} modules), "
-                  f"UIA new tab, page JavaScript, clean exit; package={package}")
+                  f"UIA new tab, page JavaScript, no Mozilla search attribution ({len(identity['urls'])} URLs), "
+                  f"Fenn feature names, clean exit; package={package}")
         finally:
             if client:
                 client.sock.close()

@@ -1,8 +1,36 @@
+diff --git a/browser/app/moz.build b/browser/app/moz.build
+index 934bad0d61..81cd6e7ab6 100644
+--- a/browser/app/moz.build
++++ b/browser/app/moz.build
+@@ -298,9 +298,11 @@ for icon in (
+     # Hyphens aren't valid in the C macro name, so map e.g. minimal-dark ->
+     # CUSTOM_MINIMAL_DARK_ICO.
+     macro = "CUSTOM_" + icon.upper().replace("-", "_") + "_ICO"
+-    DEFINES[macro] = '"%s/browser/components/shell/icons/%s.ico"' % (
++    # Fenn (firefox-winui): these are Firefox logo artwork; embed Fenn's own
++    # icon under every catalog resource ID instead.
++    DEFINES[macro] = '"%s/%s/firefox.ico"' % (
+         TOPSRCDIR,
+-        icon,
++        CONFIG["MOZ_BRANDING_DIRECTORY"],
+     )
+ 
+ if CONFIG["MOZ_ASAN"] or CONFIG["MOZ_DEBUG"]:
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index d56594d91c..4dcfba56ff 100644
+index d56594d91c..175dc8dbd8 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
-@@ -2299,8 +2299,8 @@ pref("nimbus.profilesdatastoreservice.sync.enabled", true);
+@@ -320,7 +320,8 @@ pref("browser.shell.focusSetDefaultBrowserButton", false);
+ // - "animated": Display an animated image.
+ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
+ 
+-pref("browser.shell.customIcon.enabled", true);
++// Fenn (firefox-winui): the selectable icons are Firefox logo artwork.
++pref("browser.shell.customIcon.enabled", false);
+ 
+ // After a failed UserChoice attempt, show the OS "Open with" picker via the
+ // undocumented IOpenWithLauncher API so the user can pick Firefox themselves.
+@@ -2299,8 +2300,8 @@ pref("nimbus.profilesdatastoreservice.sync.enabled", true);
    pref("nimbus.telemetry.targetingContextEnabled", true);
  #endif
  
@@ -13,7 +41,7 @@ index d56594d91c..4dcfba56ff 100644
  
  // Nimbus QA prefs. Used to monitor pref-setting test experiments.
  pref("nimbus.qa.pref-1", "default");
-@@ -3085,18 +3085,19 @@ pref("network.trr_ui.fallback_was_checked", true);
+@@ -3085,18 +3086,19 @@ pref("network.trr_ui.fallback_was_checked", true);
  // Normandy client preferences
  pref("app.normandy.api_url", "https://normandy.cdn.mozilla.net/api/v1");
  pref("app.normandy.dev_mode", false);
@@ -39,7 +67,7 @@ index d56594d91c..4dcfba56ff 100644
  
  // Multi-lingual preferences:
  //  *.enabled - Are langpacks available for the build of Firefox?
-@@ -3860,7 +3861,7 @@ pref("browser.contentsharing.enabled", false);
+@@ -3860,7 +3862,7 @@ pref("browser.contentsharing.enabled", false);
  
  #ifdef XP_WIN
  // Development-only inert native bridge. Restart with an isolated profile.
@@ -48,7 +76,7 @@ index d56594d91c..4dcfba56ff 100644
  #endif
  
  // Preferences for the Firefox Referral program #2051647).
-@@ -3875,6 +3876,37 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3875,6 +3877,37 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -141,6 +169,45 @@ index 00da33bc11..b38767f3b3 100644
          }
        }
      }
+diff --git a/browser/base/content/default-bookmarks.html b/browser/base/content/default-bookmarks.html
+index a182468fce..428407c54a 100644
+--- a/browser/base/content/default-bookmarks.html
++++ b/browser/base/content/default-bookmarks.html
+@@ -2,7 +2,6 @@
+ 
+ #define mozilla_icon data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E %3Cpath d='M0 0h16v16H0z'/%3E %3Cpath d='M13.994 10.356H15V12h-3.171V7.741c0-1.308-.435-1.81-1.29-1.81-1.04 0-1.46.737-1.46 1.8v2.63h1.006V12H6.918V7.741c0-1.308-.435-1.81-1.291-1.81-1.039 0-1.459.737-1.459 1.8v2.63h1.441V12H1v-1.644h1.006V6.079H1V4.435h3.168v1.139a2.507 2.507 0 0 1 2.3-1.29A2.452 2.452 0 0 1 8.931 5.91 2.535 2.535 0 0 1 11.4 4.284 2.448 2.448 0 0 1 14 6.9v3.458z' fill='%23fff'/%3E %3C/svg%3E
+ 
+-#define firefox_icon data:image/png;base64,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
+ 
+ #define bugzilla_icon data:image/x-icon;base64,AAABAAEAEBAAAAEAIABoBAAAFgAAACgAAAAQAAAAIAAAAAEAIAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAnYCL7J0pY9wwETY9kYEM9AAAAAEBAYAhVVVUDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1bjTOS1Vb/wAA2/8JEqT/Q0g8kQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJnMqoiJtJ/0haST/NEkp/yQnW/8AAPD8AAHY/RsgP/JZUI+GKitih4ObUEAAAAAAAAAAAAAAAAAAAAAAKnouwip5Lv9ooW//a6Jz/y9GIv8JBXb/AADO/gEBvf8AAK7/FRJp/z9BfP8iLGj1AAAAAAAAAAAAAAAAL4YzwiB0I/+UwJ3/bK+C/02eZ/9CTjz/DBa1/wABxf8BAOj/AACp/w8Oc/sJCv//EhCN9AAAAAAAAAAANJA6iC2MMv93tYL/TZ5U/3mzjP9NoWr/NEss/wYIU/8CBOn/ARCX/wwNqP0TD6X/Cgyex5qacDAAAAAAAAAAADKUN/ZirWj/d76R/0SgXf9Ln1P/eLSM/1mda/8rOkb/CQiD/wMQvf8UEnT/MTAt4P//MwUhZyN8AAAAAAAAAAAznDf5UqlZ/228jP9NqnD/Qp9c/0yiVP+Dv5b/VaVw/0VxXf9PZXD/S3pQ/y54Nf8jcCf/I2wn/wAAAAA0ozjIM6E4/zOeOP+Uz6z/XLR+/06scv9BoV3/TqZX/4XBmP9XqHP/hr6Z/yp+Lf8leSr1JXUqbQAAAAA3rTz7Nqo7/zWmOqM3oz7rUK1W/43Mpf9etYD/T61z/0KjXf9Rqln/msup/46/lf8pgy7/JFg6sAAAAAAAAAAAOK8+8jqvOiMAAAAAAAAAADSlOv85pT//kM6o/2K5hP9Ysnv/YLJ2/ziXPv8piS3/V6Ri/yZQQ9wAAAAAAAAAAAAAAAAAAAAAAAAAADetP0E2qzz/OKg98UWsS/+e1K3/pNe4/4XDjv8ojy3/T7df/5fIqv8sjTH/K4kw/yqFLv8AAAAAAAAAAAAAAAA4sT3xN7A8+QAAAAA4qz3yNag6/zSlOf80oTn/csJ+/6/jwv9fjHj/MmRMdQAAAAAAAAAAAAAAAAAAAAAAAAAAOrdA/zm0QHQAAAAAAAAAADasO/k2qTvuRX5lpjqGT/gznDr/O3FXigAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADq9QiMAAAAAAAAAAAAAAAA4sj7/Nq09s0uOaSI1qTplM6U68wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOrc//zu0P0EAAAAAOK4+UjWsPPgAAAAAAAAAAAAAAAAAAAAA/48AAP8HAAD4AQAA8AAAAOAAAADAAQAAwAMAAMAAAACAAwAAAAMAAHADAADwAAAA5AcAAO4HAAD+bwAA/u8AAA==
+ 
+@@ -28,26 +27,6 @@
+ <h1 data-l10n-id="default-bookmarks-heading">default-bookmarks-heading</h1>
+ 
+ <dl><p>
+-#ifndef NIGHTLY_BUILD
+-    <dt><h3 data-l10n-id="default-bookmarks-firefox-heading">default-bookmarks-firefox-heading</h3></dt>
+-        <dl><p>
+-            <dt><a href="https://support.mozilla.org/products/firefox" icon="@firefox_icon@" data-l10n-id="default-bookmarks-firefox-get-help">default-bookmarks-firefox-get-help</a></dt>
+-            <dt><a href="https://support.mozilla.org/kb/customize-firefox-controls-buttons-and-toolbars?utm_source=firefox-browser&utm_medium=default-bookmarks&utm_campaign=customize" icon="@firefox_icon@" data-l10n-id="default-bookmarks-firefox-customize">default-bookmarks-firefox-customize</a></dt>
+-            <dt><a href="https://www.mozilla.org/contribute/" icon="@mozilla_icon@" data-l10n-id="default-bookmarks-firefox-community">default-bookmarks-firefox-community</a></dt>
+-            <dt><a href="https://www.mozilla.org/about/" icon="@mozilla_icon@" data-l10n-id="default-bookmarks-firefox-about">default-bookmarks-firefox-about</a></dt>
+-        </dl><p>
+-#else
+-    <dt><h3 data-l10n-id="default-bookmarks-nightly-heading">default-bookmarks-nightly-heading</h3></dt>
+-        <dl><p>
+-            <dt><a href="https://www.mozilla.org/contribute/?utm_medium=firefox-desktop&utm_source=bookmarks-toolbar&utm_campaign=new-users-nightly&utm_content=-global" icon="@mozilla_icon@" data-l10n-id="default-bookmarks-firefox-community">default-bookmarks-firefox-community</a></dt>
+-            <dt><a href="https://blog.nightly.mozilla.org/" icon="@mozilla_icon@" data-l10n-id="default-bookmarks-nightly-blog">default-bookmarks-nightly-blog</a></dt>
+-            <dt><a href="https://bugzilla.mozilla.org/" icon="@bugzilla_icon@" shortcuturl="bz" data-l10n-id="default-bookmarks-bugzilla">default-bookmarks-bugzilla</a></dt>
+-            <dt><a href="https://developer.mozilla.org/" icon="@mdn_icon@" shortcuturl="mdn" data-l10n-id="default-bookmarks-mdn">default-bookmarks-mdn</a></dt>
+-            <dt><a href="https://addons.mozilla.org/firefox/addon/nightly-tester-tools/" icon="@addon_icon@" data-l10n-id="default-bookmarks-nightly-tester-tools">default-bookmarks-nightly-tester-tools</a></dt>
+-            <dt><a href="about:crashes" icon="@mozilla_icon@" data-l10n-id="default-bookmarks-crashes">default-bookmarks-crashes</a></dt>
+-            <dt><a href="https://planet.mozilla.org/" icon="@mozilla_icon@" data-l10n-id="default-bookmarks-planet">default-bookmarks-planet</a></dt>
+-        </dl><p>
+-#endif
+ </dl>
+ </body>
+ </html>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 index b2b5db6040..b4c7c30b49 100644
 --- a/browser/base/jar.mn
@@ -347,6 +414,22 @@ index 311e0d736c..130388d39e 100644
        PanelMultiView.openPopup(
          this.panel,
          anchor,
+diff --git a/browser/components/shell/jar.mn b/browser/components/shell/jar.mn
+index 920dbda4df..0816cddd68 100644
+--- a/browser/components/shell/jar.mn
++++ b/browser/components/shell/jar.mn
+@@ -5,11 +5,3 @@
+ browser.jar:
+ *       content/browser/setDesktopBackground.xhtml            (content/setDesktopBackground.xhtml)
+         content/browser/setDesktopBackground.js               (content/setDesktopBackground.js)
+-        content/browser/icons/retro2004.ico                   (icons/retro2004.ico)
+-        content/browser/icons/retro2017.ico                   (icons/retro2017.ico)
+-        content/browser/icons/pride.ico                       (icons/pride.ico)
+-        content/browser/icons/minimal-dark.ico                (icons/minimal-dark.ico)
+-        content/browser/icons/minimal-light.ico               (icons/minimal-light.ico)
+-        content/browser/icons/pixelated.ico                   (icons/pixelated.ico)
+-        content/browser/icons/momo.ico                        (icons/momo.ico)
+-        content/browser/icons/kit.ico                         (icons/kit.ico)
 diff --git a/browser/components/tabbrowser/Tabbrowser.sys.mjs b/browser/components/tabbrowser/Tabbrowser.sys.mjs
 index 430e1137a1..6dbf75a454 100644
 --- a/browser/components/tabbrowser/Tabbrowser.sys.mjs
@@ -1422,6 +1505,19 @@ index ae503c243c..fe10f80b9a 100644
  #endif
  #ifdef MOZ_GTK
  ; This is a standalone binary launched by Firefox on Linux to verify
+diff --git a/browser/locales/en-US/browser/appExtensionFields.ftl b/browser/locales/en-US/browser/appExtensionFields.ftl
+index 4962ed6d29..093ac1782d 100644
+--- a/browser/locales/en-US/browser/appExtensionFields.ftl
++++ b/browser/locales/en-US/browser/appExtensionFields.ftl
+@@ -14,7 +14,7 @@ extension-firefox-compact-light-description=A theme with a light color scheme.
+ extension-firefox-compact-dark-name=Dark
+ extension-firefox-compact-dark-description=A theme with a dark color scheme.
+ 
+-extension-firefox-alpenglow-name=Firefox Alpenglow
++extension-firefox-alpenglow-name=Alpenglow
+ extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
+ 
+ ## Theme names shown in the Firefox Themes picker in about:addons and theme add-on card,
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
 index 4f28e62c7b..6eef850525 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
@@ -1527,6 +1623,62 @@ index 4f28e62c7b..6eef850525 100644
 +
 +winui-history-open-firefox = Open full history menu
 +winui-history-empty = No recent history
+diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
+index 13464a72e8..7c92cbb182 100644
+--- a/browser/locales/en-US/chrome/overrides/appstrings.properties
++++ b/browser/locales/en-US/chrome/overrides/appstrings.properties
+@@ -3,29 +3,29 @@
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+ malformedURI2=Please check that the URL is correct and try again.
+-fileNotFound=Firefox can’t find the file at %S.
++fileNotFound=Fenn can’t find the file at %S.
+ fileAccessDenied=The file at %S is not readable.
+ # %S is replaced by the uri host
+ httpErrorPage=%S sent back an error.
+ serverError=%S might have a temporary problem or it could have moved.
+ dnsNotFound2=We can’t connect to the server at %S.
+ basicHttpAuthDisabled=Someone pretending to be the site could try to steal things like your username, password, or email.
+-unknownProtocolFound=Firefox doesn’t know how to open this address, because one of the following protocols (%S) isn’t associated with any program or is not allowed in this context.
+-connectionFailure=Firefox can’t establish a connection to the server at %S.
++unknownProtocolFound=Fenn doesn’t know how to open this address, because one of the following protocols (%S) isn’t associated with any program or is not allowed in this context.
++connectionFailure=Fenn can’t establish a connection to the server at %S.
+ netInterrupt=The connection to %S was interrupted while the page was loading.
+ netTimeout=The server at %S is taking too long to respond.
+-redirectLoop=Firefox has detected that the server is redirecting the request for this address in a way that will never complete.
++redirectLoop=Fenn has detected that the server is redirecting the request for this address in a way that will never complete.
+ ## LOCALIZATION NOTE (confirmRepostPrompt): In this item, don’t translate "%S"
+ confirmRepostPrompt=To display this page, %S must send information that will repeat any action (such as a search or order confirmation) that was performed earlier.
+ resendButton.label=Resend
+-clientSocketMisconfiguration=Firefox doesn’t know how to communicate with the server.
++clientSocketMisconfiguration=Fenn doesn’t know how to communicate with the server.
+ netReset=The connection to the server was reset while the page was loading.
+ notCached=This document is no longer available.
+-netOffline=Firefox is currently in offline mode and can’t browse the Web.
++netOffline=Fenn is currently in offline mode and can’t browse the Web.
+ isprinting=The document cannot change while Printing or in Print Preview.
+-deniedPortAccess=This address uses a network port which is normally used for purposes other than Web browsing. Firefox has canceled the request for your protection.
+-proxyResolveFailure=Firefox is configured to use a proxy server that can’t be found.
+-proxyConnectFailure=Firefox is configured to use a proxy server that is refusing connections.
++deniedPortAccess=This address uses a network port which is normally used for purposes other than Web browsing. Fenn has canceled the request for your protection.
++proxyResolveFailure=Fenn is configured to use a proxy server that can’t be found.
++proxyConnectFailure=Fenn is configured to use a proxy server that is refusing connections.
+ contentEncodingError=The page you are trying to view cannot be shown because it uses an invalid or unsupported form of compression.
+ unsafeContentType=The page you are trying to view cannot be shown because it is contained in a file type that may not be safe to open. Please contact the website owners to inform them of this problem.
+ externalProtocolTitle=External Protocol Request
+@@ -43,9 +43,9 @@ cspBlocked=This page has a content security policy that prevents it from being l
+ xfoBlocked=This page has an X-Frame-Options policy that prevents it from being loaded in this context.
+ corruptedContentErrorv2=The site at %S has experienced a network protocol violation that cannot be repaired.
+ ## LOCALIZATION NOTE (sslv3Used) - Do not translate "%S".
+-sslv3Used=Firefox cannot guarantee the safety of your data on %S because it uses SSLv3, a broken security protocol.
++sslv3Used=Fenn cannot guarantee the safety of your data on %S because it uses SSLv3, a broken security protocol.
+ inadequateSecurityError=The website tried to negotiate an inadequate level of security.
+ blockedByPolicy=Your organization has blocked access to this page or website.
+-blockedByCORP=Firefox didn’t load this page because it looks like the security configuration doesn’t match the previous page.
++blockedByCORP=Fenn didn’t load this page because it looks like the security configuration doesn’t match the previous page.
+ invalidHeaderValue=%S sent back a header with empty characters not allowed by web security standards.
+-networkProtocolError=Firefox has experienced a network protocol violation that cannot be repaired.
++networkProtocolError=Fenn has experienced a network protocol violation that cannot be repaired.
 diff --git a/browser/moz.configure b/browser/moz.configure
 index 8979a2e4e8..e9835799cc 100644
 --- a/browser/moz.configure
@@ -1774,6 +1926,62 @@ index 47a067c4c1..b88749f7d5 100644
          "MOZ_BACKGROUNDTASK_ACTIVATABLE_CLASS_ID": background_task_class_id,
      }
  
+diff --git a/toolkit/components/search/ConfigSearchEngine.sys.mjs b/toolkit/components/search/ConfigSearchEngine.sys.mjs
+index 2186215520..dc5f1740a7 100644
+--- a/toolkit/components/search/ConfigSearchEngine.sys.mjs
++++ b/toolkit/components/search/ConfigSearchEngine.sys.mjs
+@@ -43,6 +43,19 @@ const HAS_BEEN_USED = "hasBeenUsed";
+ // After the user has been idle for 30s, we'll update icons if we need to.
+ const ICON_UPDATE_ON_IDLE_DELAY = 30;
+ 
++// Fenn (firefox-winui): searches carry no Mozilla attribution. Partner codes
++// are dropped, and so are these fixed parameters, whose values are Mozilla's
++// codes under its search and affiliate agreements.
++const FENN_ATTRIBUTION_PARAMS = [
++  [id => id == "google", ["channel"]],
++  [id => id == "bing", ["form"]],
++  [
++    id => id == "ebay" || id.startsWith("ebay-"),
++    ["mkcid", "mkevt", "mkrid", "toolid"],
++  ],
++  [id => id == "yahoo-jp-auctions", ["fr"]],
++];
++
+ /**
+  * Handles loading config search engine icons from remote settings.
+  */
+@@ -685,7 +698,7 @@ export class ConfigSearchEngine extends SearchEngine {
+     this._name = engineConfig.name.trim();
+     this._definedAliases =
+       engineConfig.aliases?.map(alias => `@${alias}`) ?? [];
+-    this.#partnerCode = engineConfig.partnerCode ?? "";
++    this.#partnerCode = "";
+     /** @type {string} */
+     this.isNewUntil = engineConfig.isNewUntil ?? "";
+ 
+@@ -725,7 +738,7 @@ export class ConfigSearchEngine extends SearchEngine {
+         });
+       }
+       partnerCodeMap.set("newtab_search_widget", {
+-        partnerCode: "firefox-b-exp1",
++        partnerCode: "",
+         telemetryId: "google-b-exp1",
+       });
+     }
+@@ -738,6 +751,13 @@ export class ConfigSearchEngine extends SearchEngine {
+     });
+ 
+     if (urlData.params) {
++      let attribution = FENN_ATTRIBUTION_PARAMS.filter(([matches]) =>
++        matches(this.id)
++      ).flatMap(([, names]) => names);
++      urlData = {
++        ...urlData,
++        params: urlData.params.filter(p => !attribution.includes(p.name)),
++      };
+       let isEnterprise = Services.policies.isEnterprise;
+       let enterpriseParams = urlData.params
+         .filter(p => p.enterpriseValue != undefined)
 diff --git a/toolkit/content/editMenuOverlay.js b/toolkit/content/editMenuOverlay.js
 index c890692674..5ef1dd2e0b 100644
 --- a/toolkit/content/editMenuOverlay.js
@@ -1812,6 +2020,49 @@ index c890692674..5ef1dd2e0b 100644
    },
  
    _ensurePopup() {
+diff --git a/toolkit/locales/en-US/toolkit/branding/brandings.ftl b/toolkit/locales/en-US/toolkit/branding/brandings.ftl
+index a7cd6c416c..d121aa1068 100644
+--- a/toolkit/locales/en-US/toolkit/branding/brandings.ftl
++++ b/toolkit/locales/en-US/toolkit/branding/brandings.ftl
+@@ -20,10 +20,10 @@
+ -mozmonitor-brand-name = Mozilla Monitor
+ -pocket-brand-name = Pocket
+ -send-brand-name = Firefox Send
+--screenshots-brand-name = Firefox Screenshots
++-screenshots-brand-name = Fenn Screenshots
+ -mozilla-vpn-brand-name = Mozilla VPN
+ -profiler-brand-name = Firefox Profiler
+--translations-brand-name = Firefox Translations
++-translations-brand-name = Fenn Translations
+ -relay-brand-name = Firefox Relay
+ -relay-brand-short-name = Relay
+ -fakespot-brand-name = Fakespot
+@@ -43,21 +43,21 @@
+ 
+ # “Suggest” can be localized, “Firefox” must be treated as a brand
+ # and kept in English.
+--firefox-suggest-brand-name = Firefox Suggest
++-firefox-suggest-brand-name = Fenn Suggest
+ 
+ # ”Home" can be localized, “Firefox” must be treated as a brand
+ # and kept in English.
+--firefox-home-brand-name = Firefox Home
++-firefox-home-brand-name = Fenn Home
+ 
+ # View" can be localized, “Firefox” must be treated as a brand
+ # and kept in English.
+--firefoxview-brand-name = Firefox View
++-firefoxview-brand-name = Fenn View
+ 
+ # Firefox Labs is the name for a page in Settings to allow users to learn about
+ # experimental and in-development features, and turn those features on and off.
+ # The "Labs" portion can be localized, “Firefox” must be treated as a brand
+ # and kept in English.
+--firefoxlabs-brand-name = Firefox Labs
++-firefoxlabs-brand-name = Fenn Labs
+ 
+ -smart-window-brand-name =
+     { $plural-form ->
 diff --git a/toolkit/modules/PopupNotifications.sys.mjs b/toolkit/modules/PopupNotifications.sys.mjs
 index 38490ae2ab..ddfc21ae36 100644
 --- a/toolkit/modules/PopupNotifications.sys.mjs
