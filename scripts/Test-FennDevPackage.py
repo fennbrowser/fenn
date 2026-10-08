@@ -154,7 +154,20 @@ def main():
                     }
                 }
                 let [view] = await new Localization(["toolkit/branding/brandings.ftl", "browser/browser.ftl"]).formatValues(["quickactions-firefoxview"]);
-                return {urls, view, customIcons: Services.prefs.getBoolPref("browser.shell.customIcon.enabled")};
+                let { QuickSuggest } = ChromeUtils.importESModule(
+                    "moz-src:///browser/components/urlbar/QuickSuggest.sys.mjs");
+                let suggest = QuickSuggest.intendedDefaultPrefs("US", "en-US");
+                let newtab = "browser.newtabpage.activity-stream.";
+                let sponsored = {
+                    suggest: suggest["suggest.quicksuggest.sponsored"],
+                    amp: suggest["amp.featureGate"],
+                    ...Object.fromEntries(["showSponsored", "system.showSponsored", "showSponsoredTopSites",
+                        "feeds.section.topstories", "feeds.system.topstories"].map(
+                        name => [name, Services.prefs.getBoolPref(newtab + name, null)])),
+                    contile: Services.prefs.getBoolPref("browser.topsites.contile.enabled"),
+                };
+                return {urls, view, sponsored,
+                        customIcons: Services.prefs.getBoolPref("browser.shell.customIcon.enabled")};
             })();""")
             attributed = [u for u in identity["urls"]
                           if re.search(r"firefox-b|[?&](pc|form|channel|campid|mkrid|fr|t|tt|segment)=|MOZ[A-Z]|mozff", u)]
@@ -162,6 +175,8 @@ def main():
                 raise AssertionError(f"Search URLs carry Mozilla attribution: {attributed or 'no engines'}")
             if identity["view"] != "Open Fenn View" or identity["customIcons"]:
                 raise AssertionError(f"Firefox-branded feature names or launcher icons remain: {identity}")
+            if any(value is not False for value in identity["sponsored"].values()):
+                raise AssertionError(f"Sponsored content or stories are on by default: {identity['sponsored']}")
             runtime = runtime_modules(state["pid"])
             command = ["powershell", "-NoProfile", "-Mta", "-File",
                        str(ROOT / "tests/native/SelectPaneTab.ps1"), "-BrowserProcessId", str(state["pid"]),
@@ -188,7 +203,7 @@ def main():
                 "searchUrls": identity["urls"], "exitCode": code, "scope": "unpackaged" if args.unpackaged else "installed identity"}, indent=2), encoding="utf-8")
             print(f"PASS: default native strip, framework-only runtime ({len(runtime['modules'])} modules), "
                   f"UIA new tab, page JavaScript, no Mozilla search attribution ({len(identity['urls'])} URLs), "
-                  f"Fenn feature names, clean exit; package={package}")
+                  f"Fenn feature names, no sponsored content or stories, clean exit; package={package}")
         finally:
             if client:
                 client.sock.close()

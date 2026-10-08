@@ -17,7 +17,7 @@ index 934bad0d61..81cd6e7ab6 100644
  
  if CONFIG["MOZ_ASAN"] or CONFIG["MOZ_DEBUG"]:
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index d56594d91c..175dc8dbd8 100644
+index d56594d91c..9a34c210ca 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -320,7 +320,8 @@ pref("browser.shell.focusSetDefaultBrowserButton", false);
@@ -30,6 +30,15 @@ index d56594d91c..175dc8dbd8 100644
  
  // After a failed UserChoice attempt, show the OS "Open with" picker via the
  // undocumented IOpenWithLauncher API so the user can pick Firefox themselves.
+@@ -1945,7 +1946,7 @@ pref("browser.topsites.component.enabled", false);
+ 
+ pref("browser.topsites.useRemoteSetting", true);
+ // Fetch sponsored Top Sites from Mozilla Tiles Service (Contile)
+-pref("browser.topsites.contile.enabled", true);
++pref("browser.topsites.contile.enabled", false);
+ pref("browser.topsites.contile.endpoint", "https://contile.services.mozilla.com/v1/tiles");
+ 
+ // Activates preloading of the new tab url.
 @@ -2299,8 +2300,8 @@ pref("nimbus.profilesdatastoreservice.sync.enabled", true);
    pref("nimbus.telemetry.targetingContextEnabled", true);
  #endif
@@ -76,7 +85,7 @@ index d56594d91c..175dc8dbd8 100644
  #endif
  
  // Preferences for the Firefox Referral program #2051647).
-@@ -3875,6 +3877,37 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3875,6 +3877,46 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -110,6 +119,15 @@ index d56594d91c..175dc8dbd8 100644
 +pref("fenn.winui.address.enabled", false);
 +pref("fenn.winui.address.toolbar.enabled", false);
 +pref("fenn.winui.navigation.toolbar.enabled", false);
++
++// Fenn (firefox-winui): no sponsored content or stories. Sponsored suggestions,
++// shortcuts and stories come from Mozilla's advertising partners, and New Tab
++// keeps these defaults over its regional ones.
++pref("browser.newtabpage.activity-stream.showSponsored", false);
++pref("browser.newtabpage.activity-stream.system.showSponsored", false);
++pref("browser.newtabpage.activity-stream.showSponsoredTopSites", false);
++pref("browser.newtabpage.activity-stream.feeds.section.topstories", false);
++pref("browser.newtabpage.activity-stream.feeds.system.topstories", false);
 +
  #ifdef XP_MACOSX
    pref("browser.macAppMenu.setAsDefaultShown", false);
@@ -763,6 +781,50 @@ index 3d25b8afa3..39c7484036 100644
      }
    }
  
+diff --git a/browser/components/urlbar/QuickSuggest.sys.mjs b/browser/components/urlbar/QuickSuggest.sys.mjs
+index ce4dc0f5e3..dbaa9db04a 100644
+--- a/browser/components/urlbar/QuickSuggest.sys.mjs
++++ b/browser/components/urlbar/QuickSuggest.sys.mjs
+@@ -161,17 +161,8 @@ const SUGGEST_PREFS = Object.freeze({
+   },
+   "suggest.quicksuggest.sponsored": {
+     nimbusVariableIfExposedInUi: "quickSuggestSponsoredEnabled",
+-    defaultValues: {
+-      // US, GB, and EU 3 (DE, FR, IT)
+-      DE: [["de"], true],
+-      FR: [["fr"], true],
+-      GB: [EN_LOCALES, true],
+-      IT: [["it"], true],
+-      US: [EN_LOCALES, true],
+-
+-      // EU expansion in 157 (bug 2066294)
+-      ...REGION_LOCALE_DEFAULTS_EU_157_BOOLEAN,
+-    },
++    // Fenn (firefox-winui): no sponsored suggestions in any region.
++    defaultValues: {},
+   },
+ 
+   // Prefs related to individual features
+@@ -183,17 +174,8 @@ const SUGGEST_PREFS = Object.freeze({
+     },
+   },
+   "amp.featureGate": {
+-    defaultValues: {
+-      // US, GB, and EU 3 (DE, FR, IT)
+-      DE: [["de"], true],
+-      FR: [["fr"], true],
+-      GB: [EN_LOCALES, true],
+-      IT: [["it"], true],
+-      US: [EN_LOCALES, true],
+-
+-      // EU expansion in 157 (bug 2066294)
+-      ...REGION_LOCALE_DEFAULTS_EU_157_BOOLEAN,
+-    },
++    // Fenn (firefox-winui): no sponsored suggestions in any region.
++    defaultValues: {},
+   },
+   "flightStatus.featureGate": {
+     defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarProviderActionsSearchMode.sys.mjs b/browser/components/urlbar/UrlbarProviderActionsSearchMode.sys.mjs
 index d9d7f9dd83..d262035073 100644
 --- a/browser/components/urlbar/UrlbarProviderActionsSearchMode.sys.mjs
