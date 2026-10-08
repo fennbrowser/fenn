@@ -56,6 +56,36 @@ class FennBrandingTests(unittest.TestCase):
             header = (BRANDING / name).read_bytes()[16:24]
             self.assertEqual(struct.unpack(">II", header), size, name)
 
+    def test_executable_name_matches_the_mozconfig(self):
+        mozconfig = (ROOT / "configs/mozconfig").read_text(encoding="utf-8")
+        self.assertIn("ac_add_options --with-app-name=fenn\n", mozconfig)
+
+        def load(name):
+            spec = importlib.util.spec_from_file_location(name, ROOT / f"scripts/{name}.py")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+
+        self.assertEqual(load("Package-FirefoxDev").APP_NAME, "fenn")
+        self.assertEqual(load("Test-FirefoxInertBridge").EXE.name, "fenn.exe")
+        identity = load("Register-FirefoxDevIdentity")
+        self.assertEqual((identity.APP_EXE, identity.EXE), ("fenn.exe", "fenn-identity.exe"))
+
+    def test_app_manifest_tracks_firefoxs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            checkout = Path(temp)
+            (checkout / ".git/info").mkdir(parents=True)
+            (checkout / "browser/app").mkdir(parents=True)
+            source = checkout / "browser/app/firefox.exe.manifest"
+            source.write_bytes(b"<assembly>one</assembly>")
+            self.assertEqual(stage.stage_app_manifest(checkout), ["updated browser/app/fenn.exe.manifest"])
+            self.assertEqual(stage.stage_app_manifest(checkout), [])  # Unchanged stays untouched.
+            source.write_bytes(b"<assembly>two</assembly>")  # An upstream change carries over.
+            stage.stage_app_manifest(checkout)
+            self.assertEqual((checkout / "browser/app/fenn.exe.manifest").read_bytes(), b"<assembly>two</assembly>")
+            exclude = (checkout / ".git/info/exclude").read_text(encoding="utf-8")
+            self.assertEqual(exclude.count("/browser/app/fenn.exe.manifest"), 1)
+
     def test_stage_mirrors_and_prunes(self):
         with tempfile.TemporaryDirectory() as temp:
             source, checkout = Path(temp) / "source", Path(temp) / "checkout"

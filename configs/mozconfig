@@ -11,6 +11,9 @@ ac_add_options --with-branding=browser/branding/fenn
 # flags set in browser/moz.configure by patch 2. The application name,
 # executable and application ID stay Firefox's.
 ac_add_options MOZ_APP_REMOTINGNAME=fenn
+# The executable is fenn.exe (rebrand phase 5). Project scripts name it through
+# one constant each (APP_NAME / EXE); tests/test_fenn_branding.py keeps them in step.
+ac_add_options --with-app-name=fenn
 # Fenn's services (rebrand phase 3): MSIX (the Store or the App Installer feed)
 # is the only update path, and crash reports must not go to Mozilla's server.
 ac_add_options --disable-updater

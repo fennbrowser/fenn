@@ -91,7 +91,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exe", required=True, type=Path)
     parser.add_argument("--unpackaged", action="store_true",
-                        help="expect no package identity (dist/bin firefox.exe, bootstrapped onto the framework)")
+                        help="expect no package identity (dist/bin fenn.exe, bootstrapped onto the framework)")
     parser.add_argument("--package-name", default="Fenn.Dev",
                         help="identity name the running browser must report")
     args = parser.parse_args()

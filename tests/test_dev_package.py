@@ -382,17 +382,17 @@ class DevPackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             dist = Path(temp)
             (dist / "bin/browser").mkdir(parents=True)
-            (dist / "firefox").mkdir()
+            (dist / package.APP_NAME).mkdir()
             self.assertEqual(package.payload_status(dist, set()), (False, "no clean Firefox package yet"))
-            (dist / "firefox/firefox.exe").write_bytes(b"exe")
+            (dist / package.APP_NAME / f"{package.APP_NAME}.exe").write_bytes(b"exe")
             source, pane = dist / "bin/browser/omni-source.js", dist / "bin/FirefoxWinUIPane.dll"
             for path in (source, pane):
                 path.write_bytes(b"old")
                 os.utime(path, (1000, 1000))
-            archive = dist / "firefox-159.0a1.en-US.win64.zip"
+            archive = dist / f"{package.APP_NAME}-159.0a1.en-US.win64.zip"
             archive.write_bytes(b"zip")
             os.utime(archive, (2000, 2000))
-            other = dist / "firefox-159.0a1.en-US.win64.xpt_artifacts.zip"  # Not the package.
+            other = dist / f"{package.APP_NAME}-159.0a1.en-US.win64.xpt_artifacts.zip"  # Not the package.
             other.write_bytes(b"zip")
             os.utime(other, (5000, 5000))
             staged = {"firefoxwinuipane.dll"}
@@ -492,7 +492,7 @@ class DevPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already names a package"):
             identity.with_msix_element(marked, package.SIGNED_PUBLISHER)
         manifest = identity.package_manifest(package.SIGNED_PUBLISHER, package.MAX_VERSION_TESTED)
-        self.assertIn('Executable="firefox-identity.exe"', manifest)
+        self.assertIn('Executable="fenn-identity.exe"', manifest)
         self.assertIn("<uap10:AllowExternalContent>true</uap10:AllowExternalContent>", manifest)
         # No framework dependency: dist/bin carries the app-local runtime.
         self.assertNotIn("PackageDependency", manifest)

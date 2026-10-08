@@ -3,11 +3,11 @@ param([switch]$NativeAddress, [switch]$NativeAddressBar, [switch]$NativeNavigati
       [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop,
       [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach,
       # Run the build with package identity (Fenn.DevIdentity) through
-      # dist/bin/firefox-identity.exe (scripts/Register-FirefoxDevIdentity.py).
+      # dist/bin/fenn-identity.exe (scripts/Register-FirefoxDevIdentity.py).
       [switch]$PackageIdentity)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$browser = Join-Path $projectRoot 'build/firefox/dist/bin/firefox.exe'
+$browser = Join-Path $projectRoot 'build/firefox/dist/bin/fenn.exe'
 $pane = Join-Path (Split-Path $browser) 'FirefoxWinUIPane.dll'
 if (!(Test-Path $browser) -or !(Test-Path $pane)) {
     throw 'Build Firefox and run Build-WinUIPane.ps1 -Stage first.'
@@ -16,7 +16,7 @@ if ($PackageIdentity) {
     # Registers the identity package once and refreshes the marked executable after builds.
     & 'C:\mozilla-build\python3\python.exe' (Join-Path $PSScriptRoot 'Register-FirefoxDevIdentity.py')
     if ($LASTEXITCODE) { throw "Package identity setup failed: $LASTEXITCODE" }
-    $browser = Join-Path (Split-Path $browser) 'firefox-identity.exe'
+    $browser = Join-Path (Split-Path $browser) 'fenn-identity.exe'
 }
 $demoProfile = Join-Path $projectRoot ('artifacts/winui-demo/' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $demoProfile | Out-Null

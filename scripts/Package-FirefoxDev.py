@@ -26,6 +26,9 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+# The browser executable is <APP_NAME>.exe, and `mach package` writes its clean
+# payload to dist/<APP_NAME>; configs/mozconfig sets it (--with-app-name).
+APP_NAME = "fenn"
 IDENTITY = "Fenn.Dev"
 DISPLAY_NAME = "Fenn Dev"
 # A signed package's publisher must equal its certificate subject.
@@ -202,10 +205,10 @@ def framework_record(framework):
 
 
 def check_exe_manifest(mt, exe, work):
-    """firefox.exe must register no WinRT classes: in a package they would take
+    """The browser executable must register no WinRT classes: in a package they would take
     precedence over the framework in the package graph (WinUI activation then
     fails with 0x8007007E). Firefox's build no longer adds any."""
-    extracted = work / "firefox.exe.manifest"
+    extracted = work / f"{APP_NAME}.exe.manifest"
     subprocess.run([str(mt), "-nologo", f"-inputresource:{exe};#1", f"-out:{extracted}"],
                    check=True, stdout=subprocess.DEVNULL)
     if "activatableClass" in extracted.read_text(encoding="utf-8-sig"):
@@ -311,7 +314,7 @@ def validate_contents(names, read, version, expected_hashes, min_version, runtim
         raise ValueError(f"Package must depend only on {RUNTIME_FRAMEWORK} {min_version}: {dependencies}")
     aliases = manifest.findall(".//desktop:ExecutionAlias", NS)
     if [entry.get("Alias") for entry in aliases] != [lane.alias]:
-        raise ValueError(f"Package must claim only its own alias {lane.alias}, never firefox.exe")
+        raise ValueError(f"Package must claim only its own alias {lane.alias}, never firefox.exe or {APP_NAME}.exe")
     publisher_name = manifest.find("f:Properties/f:PublisherDisplayName", NS).text
     if publisher_name != lane.publisher_display_name:
         raise ValueError(f"PublisherDisplayName is {publisher_name!r}, expected {lane.publisher_display_name!r}")
@@ -465,11 +468,11 @@ def remove_superseded_runs(lane, current):
                 print(f"Warning: could not remove superseded layout {run}: {error}")
 
 
-FIREFOX_ZIP = re.compile(r"firefox-[^-]+\.[A-Za-z-]+\.win(32|64|64-aarch64)\.zip")
+FIREFOX_ZIP = re.compile(rf"{APP_NAME}-[^-]+\.[A-Za-z-]+\.win(32|64|64-aarch64)\.zip")
 
 
 def payload_status(dist, staged_names):
-    """Whether `mach package` must refresh dist/firefox before packaging.
+    """Whether `mach package` must refresh dist/<APP_NAME> before packaging.
 
     `mach package` writes the Firefox ZIP as its last step, so the clean payload
     is current when no dist/bin file (following its symlinks into the source
@@ -477,8 +480,8 @@ def payload_status(dist, staged_names):
     takes the pane from its own build output, so pane-only changes never need
     a repackage. Returns (current, reason).
     """
-    zips = [p for p in dist.glob("firefox-*.zip") if FIREFOX_ZIP.fullmatch(p.name)]
-    if not zips or not (dist / "firefox/firefox.exe").is_file():
+    zips = [p for p in dist.glob(f"{APP_NAME}-*.zip") if FIREFOX_ZIP.fullmatch(p.name)]
+    if not zips or not (dist / APP_NAME / f"{APP_NAME}.exe").is_file():
         return False, "no clean Firefox package yet"
     packaged = max(p.stat().st_mtime for p in zips)
     newest, newest_name = packaged, None
@@ -497,7 +500,7 @@ def payload_status(dist, staged_names):
                 newest, newest_name = modified, relative
     if newest_name:
         return False, f"dist/bin/{newest_name} changed after the last mach package"
-    return True, "dist/firefox is current"
+    return True, f"dist/{APP_NAME} is current"
 
 
 def staged_pane_names(staging):
@@ -554,7 +557,7 @@ def write_latest(lane, entry):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--payload-status", action="store_true",
-                        help="only report whether dist/firefox needs `mach package` (exit 0 current, 10 stale)")
+                        help="only report whether the clean payload needs `mach package` (exit 0 current, 10 stale)")
     parser.add_argument("--version", type=version_string,
                         help="default: one build step past the installed and newest built versions")
     parser.add_argument("--sdk-bin", type=Path)
@@ -593,10 +596,10 @@ def main():
             raise RuntimeError(f"Close {LOOSE.display_name} first; running process IDs: {state['Running']}")
     makeappx, mt, signtool, makepri = (args.sdk_bin / name for name in
                                         ("makeappx.exe", "mt.exe", "signtool.exe", "makepri.exe"))
-    clean = ROOT / "build/firefox/dist/firefox"
+    clean = ROOT / "build/firefox/dist" / APP_NAME
     msix_server = ROOT / "build/firefox/dist/bin/msixcomserver.dll"
     pane_dir = ROOT / "build/winui-pane/x64/Release"
-    for required in (makeappx, mt, signtool, makepri, clean / "firefox.exe", clean / "omni.ja", msix_server,
+    for required in (makeappx, mt, signtool, makepri, clean / f"{APP_NAME}.exe", clean / "omni.ja", msix_server,
                      pane_dir / "FirefoxWinUIPane.dll"):
         if not required.is_file():
             raise FileNotFoundError(f"Missing build prerequisite: {required}")
@@ -624,7 +627,7 @@ def main():
     # This pinned Firefox ZIP manifest omits the MSIX-only background COM server.
     shutil.copyfile(msix_server, payload / msix_server.name)
     shutil.copyfile(pane_dir / "FirefoxWinUIPane.dll", payload / "FirefoxWinUIPane.dll")
-    check_exe_manifest(mt, payload / "firefox.exe", run)
+    check_exe_manifest(mt, payload / f"{APP_NAME}.exe", run)
     if lane.dev_defaults:
         defaults = payload / "browser/defaults/preferences/firefox-winui-dev.js"
         defaults.parent.mkdir(parents=True, exist_ok=True)

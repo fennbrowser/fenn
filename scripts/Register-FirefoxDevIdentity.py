@@ -3,8 +3,8 @@
 Registers a signed identity package (packaging with external location, a
 "sparse" package) whose content is build/firefox/dist/bin itself, so nothing is
 copied or packed. Windows grants identity only to executables whose embedded
-manifest names the package, so the lane runs dist/bin/firefox-identity.exe: a
-copy of firefox.exe carrying that msix element. Plain firefox.exe, and every
+manifest names the package, so the lane runs dist/bin/fenn-identity.exe: a
+copy of fenn.exe carrying that msix element. Plain fenn.exe, and every
 suite that launches it, stays unpackaged.
 
 It reuses Firefox's MSIX declarations that its identity-dependent code needs
@@ -31,7 +31,8 @@ BIN = ROOT / "build/firefox/dist/bin"
 WORK = ROOT / "artifacts/msix-identity"
 NAME = "Fenn.DevIdentity"
 APP_ID = "App"
-EXE = "firefox-identity.exe"
+APP_EXE = "fenn.exe"
+EXE = "fenn-identity.exe"
 DISPLAY_NAME = "Fenn Dev (Identity)"
 # The same version cannot be registered twice, so a changed manifest is
 # re-registered by removing the old registration first; the version stays fixed.
@@ -156,11 +157,11 @@ def package_manifest(publisher, max_version_tested, declarations=("", ""), runti
 def with_msix_element(text, publisher):
     """Add the element that ties an executable to the identity package."""
     if f'xmlns="{MSIX}"' in text or f"{{{MSIX}}}msix" in text:
-        raise ValueError("firefox.exe already names a package")
+        raise ValueError(f"{APP_EXE} already names a package")
     element = (f'<msix xmlns="{MSIX}" publisher="{publisher}" packageName="{NAME}" '
                f'applicationId="{APP_ID}" />\n')
     if text.count("</assembly>") != 1:
-        raise ValueError("Unexpected firefox.exe manifest layout")
+        raise ValueError(f"Unexpected {APP_EXE} manifest layout")
     marked = text.replace("</assembly>", element + "</assembly>")
     ET.fromstring(marked.encode("utf-8"))
     return marked
@@ -172,10 +173,10 @@ def msix_element(manifest_text):
 
 
 def refresh_identity_exe(mt, publisher):
-    """Copy firefox.exe to firefox-identity.exe and mark it, when the build changed."""
-    source, target = BIN / "firefox.exe", BIN / EXE
+    """Copy the browser executable to the identity copy and mark it, when the build changed."""
+    source, target = BIN / APP_EXE, BIN / EXE
     WORK.mkdir(parents=True, exist_ok=True)
-    extracted = WORK / "firefox-identity.manifest"
+    extracted = WORK / "fenn-identity.manifest"
 
     def read_manifest(exe):
         subprocess.run([str(mt), "-nologo", f"-inputresource:{exe};#1", f"-out:{extracted}"],
@@ -188,12 +189,12 @@ def refresh_identity_exe(mt, publisher):
         return target, False
     staging = WORK / EXE
     shutil.copyfile(source, staging)
-    marked = WORK / "firefox-identity.marked.manifest"
+    marked = WORK / "fenn-identity.marked.manifest"
     marked.write_text(with_msix_element(read_manifest(staging), publisher), encoding="utf-8")
     subprocess.run([str(mt), "-nologo", "-manifest", str(marked), f"-outputresource:{staging};#1"],
                    check=True, stdout=subprocess.DEVNULL)
     if msix_element(read_manifest(staging)) != expected:
-        raise ValueError("firefox-identity.exe does not carry the expected msix element")
+        raise ValueError(f"{EXE} does not carry the expected msix element")
     shutil.copyfile(staging, target)
     return target, True
 
@@ -279,7 +280,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sdk-bin", type=Path,
                         default=Path(r"C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64"))
-    parser.add_argument("--remove", action="store_true", help="unregister and delete firefox-identity.exe")
+    parser.add_argument("--remove", action="store_true", help=f"unregister and delete {EXE}")
     args = parser.parse_args()
     if args.remove:
         unregister()

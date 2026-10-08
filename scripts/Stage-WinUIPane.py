@@ -4,7 +4,7 @@ The pane runs on the shared Microsoft.WindowsAppRuntime.2 framework, which an
 unpackaged Firefox joins at startup through the bootstrapper. Staging therefore
 copies only the pane and the bootstrapper DLL. It also removes the runtime files
 an earlier, self-contained staging recorded, so no second runtime copy is left
-beside firefox.exe. Patch 2 also
+beside fenn.exe. Patch 2 also
 stops Firefox's build from shipping its own app-local Windows App SDK DLLs.
 """
 import hashlib
