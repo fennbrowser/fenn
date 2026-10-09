@@ -24,11 +24,21 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 31
+#define SHELL_CORE_ABI_VERSION 32
 
 #define MAX_EDIT_ID 9007199254740991
 
 #define MAX_ROWS 10000
+
+/*
+ Ease-out duration shared with the sliding tabs.
+ */
+#define EASE_MS 135.0
+
+/*
+ Bound on surfaces and layout slots per frame.
+ */
+#define MAX_ENTRIES 10000
 
 #define MAX_TRANSFERS 256
 
@@ -465,6 +475,69 @@ typedef struct {
   uintptr_t len;
   void *handle;
 } ShellChangeBatch;
+
+/*
+ One refresh's inputs. `frame_ms` is sampled once per rendered frame, so
+ layout passes inside one frame see the same extension; `wall_ms` is
+ current time, so a held join still expires when no frames render.
+ */
+typedef struct {
+  double frame_ms;
+  double wall_ms;
+  /*
+   Group whose last visible member the drag gap lies past, and the gap's
+   width; zero otherwise.
+   */
+  uint32_t tail_group;
+  float tail_width;
+  /*
+   The dragged tab's own expanded group while it is a member; zero otherwise.
+   */
+  uint32_t source_group;
+  /*
+   The dragged tab's held slot, in surface coordinates.
+   */
+  float drag_slot_x;
+  float drag_slot_width;
+  /*
+   The pointer, in surface coordinates.
+   */
+  float pointer_x;
+  /*
+   The drag is detaching or targeting a join, so it cannot be returning
+   into its source group.
+   */
+  bool source_released;
+  bool dragging;
+  uint32_t join_group;
+  bool animate;
+  bool right_to_left;
+  /*
+   How far surfaces reach past their outer members, and the separation
+   kept between neighboring groups.
+   */
+  float reach;
+  float separation;
+} ShellGroupSurfaceFrame;
+
+typedef struct {
+  uint32_t group;
+  float x;
+  float y;
+  float width;
+  float height;
+} ShellGroupSurface;
+
+typedef struct {
+  /*
+   A held or easing surface still moves on its own.
+   */
+  bool following;
+  /*
+   A surface holds an empty drag slot that needs a face.
+   */
+  bool holding;
+} ShellGroupSurfaceResult;
 
 typedef struct {
   uint64_t edit_id;
@@ -1000,6 +1073,35 @@ ShellStatus shell_core_group_hover(ShellCore *core,
                                    uint64_t now_ms,
                                    uint32_t delay_ms,
                                    bool *armed);
+
+/*
+ Apply this refresh's group surface motion to measured `surfaces` in place.
+ `layout` is the accepted strip layout, read to tell when a held join has
+ been published.
+
+ # Safety
+ See [`guard`]. `frame` and `out` are valid; `layout` and `surfaces` point
+ to `layout_len` and `surfaces_len` elements (either may be null when empty).
+ */
+ShellStatus shell_core_group_surface_frame(ShellCore *core,
+                                           const ShellGroupSurfaceFrame *frame,
+                                           const ShellStripSlot *layout,
+                                           uintptr_t layout_len,
+                                           ShellGroupSurface *surfaces,
+                                           uintptr_t surfaces_len,
+                                           ShellGroupSurfaceResult *out);
+
+/*
+ A drop asked Firefox to join `tab` to `group`: hold the group's last
+ dragged surface until the join is published or `until_ms` passes.
+
+ # Safety
+ See [`guard`].
+ */
+ShellStatus shell_core_group_surface_join(ShellCore *core,
+                                          uint32_t group,
+                                          uint32_t tab,
+                                          double until_ms);
 
 /*
  Read address coordination state; no WinUI objects or borrowed data escape.

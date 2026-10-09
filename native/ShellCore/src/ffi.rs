@@ -195,6 +195,7 @@ pub struct ShellCore {
     model: TabModel,
     strip: StripState,
     group_hover: crate::group_hover::GroupHover,
+    group_surface: crate::group_surface::GroupSurfaceMotion,
     menu: crate::menu::MenuState,
     surface_menu: crate::surface_menu::SurfaceMenu,
     /// Identity of this core among every core in the process; transfers name it.
@@ -410,6 +411,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         model: TabModel::new(model_limits),
         strip: StripState::default(),
         group_hover: crate::group_hover::GroupHover::default(),
+        group_surface: Default::default(),
         menu: Default::default(),
         surface_menu: Default::default(),
         endpoint: NEXT_ENDPOINT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -733,6 +735,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
     guard(core, |core| {
         core.queue.cancel_all();
         core.group_hover = Default::default();
+        core.group_surface = Default::default();
         core.menu.close();
         core.surface_menu.dismiss();
         core.snapshot = None;
@@ -749,6 +752,7 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
     guard(core, |core| {
         core.queue.close();
         core.group_hover = Default::default();
+        core.group_surface = Default::default();
         core.menu.close();
         core.surface_menu.dismiss();
         core.snapshot = None;
@@ -1434,6 +1438,31 @@ mod tests {
     }
 
     #[test]
+    fn group_surface_hold_is_bounded_and_revoked_by_cancellation() {
+        use crate::group_surface::{ShellGroupSurface, ShellGroupSurfaceFrame, ShellGroupSurfaceResult};
+        unsafe {
+            let core = core();
+            let mut out = ShellGroupSurfaceResult::default();
+            let mut surfaces = [ShellGroupSurface { group: 5, x: 0.0, y: 0.0, width: 300.0, height: 32.0 }];
+            let dragged = ShellGroupSurfaceFrame { dragging: true, join_group: 5, ..Default::default() };
+            assert_eq!(shell_core_group_surface_frame(core, &dragged, std::ptr::null(), 0, surfaces.as_mut_ptr(), 1, &mut out), ShellStatus::Ok);
+            assert_eq!(shell_core_group_surface_join(core, 5, 9, 1500.0), ShellStatus::Ok);
+            let released = ShellGroupSurfaceFrame { frame_ms: 10.0, wall_ms: 10.0, ..Default::default() };
+            surfaces[0].width = 200.0;
+            assert_eq!(shell_core_group_surface_frame(core, &released, std::ptr::null(), 0, surfaces.as_mut_ptr(), 1, &mut out), ShellStatus::Ok);
+            assert!(out.holding && surfaces[0].width == 300.0);
+            assert_eq!(shell_core_cancel_all(core), ShellStatus::Ok);
+            surfaces[0].width = 200.0;
+            assert_eq!(shell_core_group_surface_frame(core, &released, std::ptr::null(), 0, surfaces.as_mut_ptr(), 1, &mut out), ShellStatus::Ok);
+            assert!(!out.holding && surfaces[0].width == 200.0);
+            assert_eq!(shell_core_group_surface_frame(core, &released, std::ptr::null(), 1, surfaces.as_mut_ptr(), 1, &mut out), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_group_surface_frame(core, &released, std::ptr::null(), 0, surfaces.as_mut_ptr(), crate::group_surface::MAX_ENTRIES + 1, &mut out), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_group_surface_frame(core, &released, std::ptr::null(), 0, std::ptr::null_mut(), 0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            shell_core_destroy(core);
+        }
+    }
+
+    #[test]
     fn group_dwell_is_revoked_by_endpoint_cancellation() {
         unsafe {
             let core = core();
@@ -1850,6 +1879,45 @@ pub unsafe extern "C" fn shell_core_group_hover(
         *armed = core.group_hover.observe(source, target, now_ms, delay_ms);
         ShellStatus::Ok
     })
+}
+
+
+/// Apply this refresh's group surface motion to measured `surfaces` in place.
+/// `layout` is the accepted strip layout, read to tell when a held join has
+/// been published.
+///
+/// # Safety
+/// See [`guard`]. `frame` and `out` are valid; `layout` and `surfaces` point
+/// to `layout_len` and `surfaces_len` elements (either may be null when empty).
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_surface_frame(
+    core: *mut ShellCore, frame: *const crate::group_surface::ShellGroupSurfaceFrame,
+    layout: *const crate::strip::ShellStripSlot, layout_len: usize,
+    surfaces: *mut crate::group_surface::ShellGroupSurface, surfaces_len: usize,
+    out: *mut crate::group_surface::ShellGroupSurfaceResult,
+) -> ShellStatus {
+    use crate::group_surface::MAX_ENTRIES;
+    guard(core, |core| {
+        let (Some(frame), Some(out)) = (frame.as_ref(), out.as_mut()) else { return ShellStatus::InvalidArgument; };
+        if layout_len > MAX_ENTRIES || surfaces_len > MAX_ENTRIES ||
+           (layout.is_null() && layout_len != 0) || (surfaces.is_null() && surfaces_len != 0) {
+            return ShellStatus::InvalidArgument;
+        }
+        let layout = if layout_len == 0 { &[][..] } else { std::slice::from_raw_parts(layout, layout_len) };
+        let surfaces = if surfaces_len == 0 { &mut [][..] } else { std::slice::from_raw_parts_mut(surfaces, surfaces_len) };
+        *out = core.group_surface.frame(frame, layout, surfaces);
+        ShellStatus::Ok
+    })
+}
+
+/// A drop asked Firefox to join `tab` to `group`: hold the group's last
+/// dragged surface until the join is published or `until_ms` passes.
+///
+/// # Safety
+/// See [`guard`].
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_surface_join(core: *mut ShellCore, group: u32, tab: u32, until_ms: f64) -> ShellStatus {
+    guard(core, |core| { core.group_surface.join(group, tab, until_ms); ShellStatus::Ok })
 }
 
 

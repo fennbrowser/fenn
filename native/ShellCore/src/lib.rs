@@ -27,6 +27,7 @@ pub mod toolbar;
 pub mod tab_drag;
 pub mod group_drag;
 pub mod group_hover;
+pub mod group_surface;
 pub mod group_motion;
 pub mod group_drop;
 pub mod foreign_drag;
@@ -46,4 +47,4 @@ pub mod ffi;
 /// Version of the C boundary in `bridge/v2/shell_core.h`. Bumped whenever the
 /// layout or meaning of anything in [`ffi`] changes; the native host refuses to
 /// use a core whose version it was not compiled against.
-pub const SHELL_CORE_ABI_VERSION: u32 = 31;
+pub const SHELL_CORE_ABI_VERSION: u32 = 32;
