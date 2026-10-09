@@ -96,7 +96,7 @@ def main():
     parser.add_argument("--package-name", default="Fenn.Dev",
                         help="identity name the running browser must report")
     args = parser.parse_args()
-    spec = importlib.util.spec_from_file_location("bridge", ROOT / "scripts/Test-FirefoxInertBridge.py")
+    spec = importlib.util.spec_from_file_location("bridge", ROOT / "scripts/FennMarionette.py")
     bridge = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bridge)
     directory = ROOT / "artifacts/msix-dev-smoke" / uuid.uuid4().hex

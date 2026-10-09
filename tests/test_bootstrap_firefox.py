@@ -30,9 +30,8 @@ class BootstrapTests(unittest.TestCase):
         (self.project / "patches").mkdir()
         (self.project / "configs/toolchain-baseline.json").write_text(json.dumps({"firefox": {
             "commit": self.base, "repository": self.source.as_uri()}}))
-        for name, before, after in zip(bootstrap.PATCHES, ("base", "first"), ("first", "second")):
-            (self.project / "patches" / name).write_bytes(
-                f"diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-{before}\n+{after}\n".encode())
+        (self.project / "patches" / bootstrap.PATCHES[0]).write_bytes(
+            b"diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-base\n+second\n")
         self.output = contextlib.redirect_stdout(io.StringIO())
         self.output.__enter__()
         self.addCleanup(self.output.__exit__, None, None, None)
@@ -75,11 +74,11 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(marker.read_bytes(), b"precious")
         self.assertEqual(list(target.iterdir()), [marker])
 
-    def test_second_patch_failure_retains_first_patch_and_refuses_retry(self):
-        (self.project / "patches" / bootstrap.PATCHES[1]).write_text("broken patch")
+    def test_patch_failure_retains_checkout_and_refuses_retry(self):
+        (self.project / "patches" / bootstrap.PATCHES[0]).write_text("broken patch")
         with self.assertRaisesRegex(RuntimeError, "Partial checkout retained"):
             bootstrap.prepare(self.project, self.source)
-        self.assertEqual((self.project / "upstream/firefox/sample.txt").read_bytes(), b"first\n")
+        self.assertEqual((self.project / "upstream/firefox/sample.txt").read_bytes(), b"base\n")
         with self.assertRaisesRegex(RuntimeError, "Refusing existing"):
             bootstrap.prepare(self.project, self.source)
 

@@ -84,12 +84,12 @@ def resolve(root, env, shared):
 def source_problem(root):
     firefox = root / "upstream/firefox"
     if not (firefox / ".git").exists():
-        return "Prepare the pinned Firefox checkout and apply both patches; see CONTRIBUTING.md."
+        return "Prepare the pinned Firefox checkout and apply the project patch; see CONTRIBUTING.md."
     # All patch-added source files must exist, not just one representative adapter.
     for patch in sorted((root / "patches").glob("*.patch")):
         for line in patch.read_text(encoding="utf-8").splitlines():
             if line.startswith("+++ b/") and not (firefox / line[6:]).is_file():
-                return f"Missing patched source {line[6:]}; apply the ordered patches."
+                return f"Missing patched source {line[6:]}; apply the project patch."
     return None
 
 

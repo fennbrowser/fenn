@@ -11,7 +11,7 @@ import sys
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-PATCHES = ("0001-inert-winui-bridge.patch", "0002-embedded-winui-pane.patch")
+PATCHES = ("0001-fenn-winui-pane.patch",)
 
 
 def git_env():

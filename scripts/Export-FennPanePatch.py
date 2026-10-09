@@ -1,4 +1,4 @@
-"""Export the pane as patch 2, relative to patch 1, using a disposable index."""
+"""Export Fenn's single Firefox patch against the pinned base, using a disposable index."""
 from pathlib import Path
 import os
 import json
@@ -12,10 +12,9 @@ TRACKED = ["browser/components/downloads/content/downloads.js", "toolkit/content
            "browser/base/content/browser-main.js", "dom/base/nsDOMWindowUtils.cpp",
            "dom/interfaces/base/nsIDOMWindowUtils.idl", "widget/nsIWidget.h",
            "widget/windows/nsWindow.h", "widget/windows/nsWindow.cpp",
-           "widget/windows/nsAppShell.cpp", "widget/windows/WinUIPrototype.cpp",
-           "widget/windows/WinUIPrototype.h",
+           "widget/windows/nsAppShell.cpp",
            "widget/windows/moz.build", "browser/installer/package-manifest.in"]
-ADDED = ["browser/base/content/WinUIHistoryMenu.sys.mjs", "browser/base/content/WinUIToolbarCustomization.sys.mjs", "browser/base/content/WinUIDismissalAcknowledgments.sys.mjs", "browser/base/content/WinUIResultContextMenu.sys.mjs", "browser/base/content/WinUIAddressContextMenu.sys.mjs", "browser/base/content/WinUIOmnibarActions.sys.mjs", "browser/base/content/WinUIPinnedExtensions.sys.mjs", "browser/base/content/WinUITabStripSession.sys.mjs", "browser/base/content/WinUITabMenuSession.sys.mjs", "browser/base/content/WinUIUrlbarSession.sys.mjs", "browser/base/content/WinUIAddressToolbar.sys.mjs", "browser/base/content/WinUIAddressToolbar.css", "browser/base/content/browser-winui-pane.js", "widget/windows/WinUIPaneApi.h"]
+ADDED = ["browser/base/content/WinUIHistoryMenu.sys.mjs", "browser/base/content/WinUIToolbarCustomization.sys.mjs", "browser/base/content/WinUIDismissalAcknowledgments.sys.mjs", "browser/base/content/WinUIResultContextMenu.sys.mjs", "browser/base/content/WinUIAddressContextMenu.sys.mjs", "browser/base/content/WinUIOmnibarActions.sys.mjs", "browser/base/content/WinUIPinnedExtensions.sys.mjs", "browser/base/content/WinUITabStripSession.sys.mjs", "browser/base/content/WinUITabMenuSession.sys.mjs", "browser/base/content/WinUIUrlbarSession.sys.mjs", "browser/base/content/WinUIAddressToolbar.sys.mjs", "browser/base/content/WinUIAddressToolbar.css", "browser/base/content/browser-winui-pane.js", "widget/windows/WinUIPrototype.cpp", "widget/windows/WinUIPrototype.h", "widget/windows/WinUIPaneApi.h"]
 
 
 def git(*args, **kwargs):
@@ -31,7 +30,6 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="pane-index-", dir=ROOT / "artifacts") as temporary:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / "index"))
         git("read-tree", BASE, env=env)
-        git("apply", "--cached", str(ROOT / "patches/0001-inert-winui-bridge.patch"), env=env)
         patch = git("diff", "--binary", "--", *TRACKED, env=env)
         for path in ADDED:
             result = subprocess.run(["git", "diff", "--no-index", "--binary", "--", "/dev/null", path],
@@ -40,7 +38,7 @@ if __name__ == "__main__":
                 raise SystemExit(f"Could not export {path}")
             patch += result.stdout
         git("apply", "--cached", "--check", "-", input=patch, env=env)
-    destination = ROOT / "patches/0002-embedded-winui-pane.patch"
+    destination = ROOT / "patches/0001-fenn-winui-pane.patch"
     destination.write_bytes(patch)
     git("apply", "--reverse", "--check", str(destination))
-    print(f"Exported, forward-checked after patch 1, and reverse-checked {destination}")
+    print(f"Exported, forward-checked against the pinned base, and reverse-checked {destination}")

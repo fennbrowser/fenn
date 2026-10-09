@@ -17,7 +17,7 @@ index 934bad0d61..81cd6e7ab6 100644
  
  if CONFIG["MOZ_ASAN"] or CONFIG["MOZ_DEBUG"]:
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index d56594d91c..6f2288a349 100644
+index 4f50c25976..0427b93b33 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -320,7 +320,8 @@ pref("browser.shell.focusSetDefaultBrowserButton", false);
@@ -76,16 +76,7 @@ index d56594d91c..6f2288a349 100644
  
  // Multi-lingual preferences:
  //  *.enabled - Are langpacks available for the build of Firefox?
-@@ -3860,7 +3862,7 @@ pref("browser.contentsharing.enabled", false);
- 
- #ifdef XP_WIN
- // Development-only inert native bridge. Restart with an isolated profile.
--pref("widget.windows.winui-prototype.enabled", false);
-+pref("fenn.winui.enabled", false);
- #endif
- 
- // Preferences for the Firefox Referral program #2051647).
-@@ -3875,6 +3877,44 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3870,6 +3872,44 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -2194,451 +2185,19 @@ index 2d06d7b7dd..3925f8d967 100644
   protected:
    nsIWidget();
    virtual ~nsIWidget();
-diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
-index c6e02a8696..93458b8252 100644
---- a/widget/windows/WinUIPrototype.cpp
-+++ b/widget/windows/WinUIPrototype.cpp
-@@ -2,17 +2,310 @@
-  * License, v. 2.0. If a copy of the MPL was not distributed with this
-  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
- #include "WinUIPrototype.h"
--#include "WinUIBridgeApi.h"
-+
-+#include <appmodel.h>
- #include <objbase.h>
-+
- #include <iterator>
-+
-+#include "WinUIBridgeApi.h"
-+#include "WinUIPaneApi.h"
- #include "mozilla/Logging.h"
-+#include "mozilla/CycleCollectedJSContext.h"
- #include "mozilla/Preferences.h"
-+#include "mozilla/Services.h"
-+#include "nsIObserverService.h"
-+#include "nsPrintfCString.h"
- #include "nsThreadUtils.h"
-+#include "mozilla/UniquePtr.h"
- #include "nsXULAppAPI.h"
- 
-+namespace mozilla::widget {
-+bool HasWinUISystemCaption(HWND aWindow) {
-+  return GetPropW(aWindow, WINUI_PANE_SYSTEM_CAPTION_PROPERTY) != nullptr;
-+}
-+}  // namespace mozilla::widget
-+
- namespace mozilla::widget {
- static LazyLogModule sWinUIPrototypeLog("WinUIPrototype");
- static bool sTraceEnabled = false;  // Main-thread only; inert after enablement.
-+static HMODULE sPaneModule = nullptr;
-+static WinUIPaneApi sPaneApi{};
-+static bool sPaneAttempted = false;
-+static bool sPaneStopped = false;
-+
-+static bool LoadPane() {
-+  if (sPaneAttempted) return sPaneApi.updateTabStrip != nullptr;
-+  sPaneAttempted = true;
-+  wchar_t path[32768];
-+  DWORD length = GetModuleFileNameW(nullptr, path, std::size(path));
-+  if (!length || length >= std::size(path)) return false;
-+  wchar_t* separator = wcsrchr(path, L'\\');
-+  constexpr wchar_t suffix[] = L"FennPane.dll";
-+  if (!separator ||
-+      size_t(separator + 1 - path) + std::size(suffix) > std::size(path))
-+    return false;
-+  wcscpy(separator + 1, suffix);
-+  sPaneModule = LoadLibraryExW(path, nullptr,
-+                               LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
-+                                   LOAD_LIBRARY_SEARCH_APPLICATION_DIR |
-+                                   LOAD_LIBRARY_SEARCH_SYSTEM32);
-+  if (!sPaneModule) {
-+    MOZ_LOG(sWinUIPrototypeLog, LogLevel::Warning,
-+            ("pane=unavailable win32Error=%lu", GetLastError()));
-+    return false;
-+  }
-+  auto getApi = reinterpret_cast<WinUIPaneGetApiFn>(
-+      GetProcAddress(sPaneModule, "WinUIPaneGetApi"));
-+  WinUIPaneApi api{};
-+  HRESULT hr = getApi ? getApi(WINUI_PANE_ABI_VERSION, sizeof(api), &api)
-+                      : E_NOINTERFACE;
-+  if (FAILED(hr) || api.size != sizeof(api) ||
-+      api.version != WINUI_PANE_ABI_VERSION || !api.focus ||
-+      !api.destroy || !api.translate || !api.shutdown || !api.clip || !api.syncTabs || !api.syncAddress || !api.syncTabMenu || !api.updateTabStrip ||
-+      !api.setNotifySink || !api.drainRequests || !api.completeRequests || !api.applyTabDelta ||
-+      !api.updateAddress || !api.focusAddress) {
-+    MOZ_LOG(sWinUIPrototypeLog, LogLevel::Warning,
-+            ("pane=incompatible hr=0x%08lx", hr));
-+    return false;
-+  }
-+  sPaneApi = api;
-+  return true;
-+}
-+
-+// The endpoint's identity as chrome JavaScript sees it: the same formatting
-+// nsIBaseWindow::nativeHandle uses, so a window can match the notification to
-+// its own HWND without a new interface.
-+static nsPrintfCString EndpointName(HWND aWindow) {
-+  return nsPrintfCString("0x%p", aWindow);
-+}
-+
-+// The pane's wakeup. Called on the main thread, usually from inside a XAML
-+// callback, so it may only *post*: entering browser JavaScript from this stack
-+// is exactly the reentrancy the request path exists to avoid. Returning false
-+// tells the pane the wakeup did not happen, so a later request schedules a
-+// fresh one instead of waiting for one that will never arrive.
-+static BOOL WINAPI NotifyWinUIPaneDrain(void* aContext) {
-+  if (!NS_IsMainThread() || sPaneStopped) return FALSE;
-+  HWND window = static_cast<HWND>(aContext);
-+  nsresult rv = NS_DispatchToMainThread(NS_NewRunnableFunction(
-+      "mozilla::widget::WinUIPaneDrain", [window]() {
-+        if (sPaneStopped) return;
-+        nsCOMPtr<nsIObserverService> observers = services::GetObserverService();
-+        if (!observers) return;
-+        // Keep custom-element reactions and mutation observers inside one
-+        // browser command turn (an empty new group must survive until filled).
-+        nsAutoMicroTask microtask;
-+        observers->NotifyObservers(
-+            nullptr, "winui-pane-drain",
-+            NS_ConvertUTF8toUTF16(EndpointName(window)).get());
-+      }));
-+  return NS_SUCCEEDED(rv) ? TRUE : FALSE;
-+}
-+
-+bool DrainWinUIRequests(HWND aWindow, nsAString& aBatch) {
-+  aBatch.Truncate();
-+  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
-+      !sPaneApi.drainRequests)
-+    return false;
-+  auto output = mozilla::MakeUnique<wchar_t[]>(262144);
-+  output[0] = 0;
-+  HRESULT hr = sPaneApi.drainRequests(aWindow, output.get(), 262144);
-+  if (FAILED(hr)) return false;
-+  aBatch.Assign(reinterpret_cast<const char16_t*>(output.get()));
-+  return true;
-+}
-+
-+bool CompleteWinUIRequests(HWND aWindow, const nsAString& aOutcomes) {
-+  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
-+      !sPaneApi.completeRequests || aOutcomes.Length() > 1048576)
-+    return false;
-+  nsAutoString outcomes(aOutcomes);
-+  return SUCCEEDED(sPaneApi.completeRequests(aWindow, outcomes.get()));
-+}
-+
-+uint32_t ApplyWinUITabDelta(HWND aWindow, const nsAString& aDelta) {
-+  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
-+      !sPaneApi.applyTabDelta || aDelta.Length() > 1048576)
-+    return 0;
-+  nsAutoString delta(aDelta);
-+  uint32_t revision = 0;
-+  // A zero revision is the caller's signal to send one full snapshot; it is
-+  // never a reason to retry the same delta.
-+  HRESULT hr = sPaneApi.applyTabDelta(aWindow, delta.get(), &revision);
-+  if (FAILED(hr)) return 0;
-+  // S_FALSE means the delta applied but the pane has fallen behind and wants a
-+  // snapshot. Reporting no revision is how that reaches the producer, which
-+  // sends exactly one -- the documented bounded recovery.
-+  return hr == S_FALSE ? 0 : revision;
-+}
-+
-+static bool PaneEnabled() {
-+  return Preferences::GetBool("fenn.winui.pane.enabled",
-+                              false) ||
-+         Preferences::GetBool(
-+             "fenn.winui.tabstrip.replaceFirefoxTabs",
-+             false);
-+}
-+
-+bool UpdateWinUIPane(HWND aWindow, const RECT& aRect, bool aVisible,
-+                     bool aFocus, bool aBackwards,
-+                     const nsTArray<LayoutDeviceIntRect>& aOcclusions) {
-+  if (!XRE_IsParentProcess() || !NS_IsMainThread() || sPaneStopped)
-+    return false;
-+  if (!PaneEnabled()) {
-+    DestroyWinUIPane(aWindow);
-+    return false;
-+  }
-+  sTraceEnabled = true;
-+  if (!LoadPane()) return false;
-+  HRESULT hr = sPaneApi.updateTabStrip(aWindow, &aRect, aVisible);
-+  if (SUCCEEDED(hr) && sPaneApi.setNotifySink) {
-+    // Registered by the widget, not by chrome script, so the request path
-+    // cannot end up with a queue and no wakeup because script failed to set
-+    // one up. The context is the endpoint's own HWND.
-+    hr = sPaneApi.setNotifySink(aWindow, NotifyWinUIPaneDrain, aWindow);
-+  }
-+  if (SUCCEEDED(hr)) {
-+    nsTArray<RECT> occlusions;
-+    for (const auto& r : aOcclusions) {
-+      occlusions.AppendElement(RECT{r.x - aRect.left, r.y - aRect.top,
-+                                    r.XMost() - aRect.left,
-+                                    r.YMost() - aRect.top});
-+    }
-+    hr = sPaneApi.clip(aWindow, occlusions.Elements(), occlusions.Length());
-+  }
-+  if (SUCCEEDED(hr) && aVisible && aFocus)
-+    hr = sPaneApi.focus(aWindow, aBackwards);
-+  MOZ_LOG(sWinUIPrototypeLog, LogLevel::Info,
-+          ("pane=update hwnd=%p visible=%d rect=%ld,%ld,%ld,%ld hr=0x%08lx",
-+           aWindow, aVisible, aRect.left, aRect.top, aRect.right, aRect.bottom,
-+           hr));
-+  TraceWinUIPrototype("pane-update", aWindow);
-+  if (FAILED(hr)) DestroyWinUIPane(aWindow);
-+  return SUCCEEDED(hr);
-+}
-+
-+uint32_t SyncWinUITabs(HWND aWindow, const nsTArray<uint32_t>& aIds,
-+                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected) {
-+  if (!XRE_IsParentProcess() || !NS_IsMainThread() || sPaneStopped ||
-+      !sPaneApi.syncTabs || aIds.Length() != aTitles.Length() || aIds.Length() != aCommands.Length() ||
-+      !PaneEnabled())
-+    return 0;
-+  nsTArray<WinUITab> tabs;
-+  for (size_t i = 0; i < aIds.Length(); ++i) {
-+    tabs.AppendElement(WinUITab{aIds[i], aTitles[i].get(), aCommands[i]});
-+  }
-+  uint32_t requested = 0;
-+  if (FAILED(sPaneApi.syncTabs(aWindow, tabs.Elements(), tabs.Length(), aSelected, &requested)))
-+    return 0;
-+  return requested;
-+}
-+
-+bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot) {
-+  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
-+      !sPaneApi.syncAddress || aSnapshot.Length() > 1048576 ||
-+      !PaneEnabled()) return false;
-+  nsAutoString snapshot(aSnapshot);
-+  return SUCCEEDED(sPaneApi.syncAddress(aWindow, snapshot.get()));
-+}
-+
-+bool UpdateWinUIAddress(HWND aWindow, const RECT& aRect, bool aVisible,
-+                       bool aFocus, bool aSelectAll) {
-+  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
-+      !sPaneApi.updateAddress || !PaneEnabled()) return false;
-+  if (aVisible && !Preferences::GetBool(
-+          "fenn.winui.address.toolbar.enabled", false) &&
-+      !Preferences::GetBool(
-+          "fenn.winui.navigation.toolbar.enabled", false)) return false;
-+  HRESULT hr = sPaneApi.updateAddress(aWindow, &aRect, aVisible);
-+  if (SUCCEEDED(hr) && aVisible && aFocus)
-+    hr = sPaneApi.focusAddress(aWindow, aSelectAll);
-+  return SUCCEEDED(hr);
-+}
-+
-+// Publication only: since ABI v12 the pane returns nothing here, so there is
-+// no output buffer to allocate on every call either.
-+bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot) {
-+  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
-+      !sPaneApi.syncTabMenu || aSnapshot.Length() > 1048576 ||
-+      !PaneEnabled()) return false;
-+  nsAutoString snapshot(aSnapshot);
-+  return SUCCEEDED(sPaneApi.syncTabMenu(aWindow, snapshot.get()));
-+}
-+
-+void DestroyWinUIPane(HWND aWindow) {
-+  if (!NS_IsMainThread() || !sPaneApi.destroy || sPaneStopped) return;
-+  // Drop the wakeup before the endpoint goes away, so nothing can be posted
-+  // for a pane that is already being torn down.
-+  if (sPaneApi.setNotifySink) sPaneApi.setNotifySink(aWindow, nullptr, nullptr);
-+  HRESULT hr = sPaneApi.destroy(aWindow);
-+  MOZ_LOG(sWinUIPrototypeLog, LogLevel::Info,
-+          ("pane=destroy hwnd=%p hr=0x%08lx", aWindow, hr));
-+}
-+
-+void InitializeWinUIRuntime() {
-+  // Every lane uses the shared Microsoft.WindowsAppRuntime.2 framework. A
-+  // packaged Firefox has it in its package graph; an unpackaged one joins it
-+  // here, before the pane or WindowsUIUtils loads any Windows App SDK DLL, so
-+  // that every such DLL comes from one runtime. On failure the pane cannot
-+  // start and Firefox keeps its own UI.
-+  static bool sAttempted = false;
-+  if (sAttempted || !XRE_IsParentProcess()) return;
-+  sAttempted = true;
-+  UINT32 length = 0;
-+  if (GetCurrentPackageFullName(&length, nullptr) != APPMODEL_ERROR_NO_PACKAGE) {
-+    return;
-+  }
-+  wchar_t path[32768];
-+  DWORD pathLength = GetModuleFileNameW(nullptr, path, std::size(path));
-+  wchar_t* separator = pathLength && pathLength < std::size(path)
-+                           ? wcsrchr(path, L'\\')
-+                           : nullptr;
-+  constexpr wchar_t bootstrap[] = WINUI_PANE_RUNTIME_BOOTSTRAP_DLL;
-+  if (!separator || size_t(separator + 1 - path) + std::size(bootstrap) >
-+                        std::size(path)) {
-+    return;
-+  }
-+  wcscpy(separator + 1, bootstrap);
-+  // Fixed executable-relative location, as for the pane itself.
-+  HMODULE module = LoadLibraryExW(path, nullptr,
-+                                  LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
-+                                      LOAD_LIBRARY_SEARCH_SYSTEM32);
-+  if (!module) {
-+    MOZ_LOG(sWinUIPrototypeLog, LogLevel::Warning,
-+            ("runtime=unavailable bootstrapWin32Error=%lu", GetLastError()));
-+    return;
-+  }
-+  using InitializeFn = HRESULT(WINAPI*)(UINT32, PCWSTR, PACKAGE_VERSION, UINT32);
-+  auto initialize = reinterpret_cast<InitializeFn>(
-+      GetProcAddress(module, "MddBootstrapInitialize2"));
-+  PACKAGE_VERSION minimum{};
-+  minimum.Version = WINUI_PANE_RUNTIME_MIN_VERSION;
-+  // MddBootstrapInitializeOptions_OnPackageIdentity_NOOP.
-+  constexpr UINT32 kNoopWhenPackaged = 0x0010;
-+  HRESULT hr = initialize ? initialize(WINUI_PANE_RUNTIME_MAJOR_MINOR, L"",
-+                                       minimum, kNoopWhenPackaged)
-+                          : E_NOINTERFACE;
-+  MOZ_LOG(sWinUIPrototypeLog,
-+          SUCCEEDED(hr) ? LogLevel::Info : LogLevel::Warning,
-+          ("runtime=bootstrap hr=0x%08lx", static_cast<unsigned long>(hr)));
-+}
-+
-+bool TranslateWinUIPane(MSG& aMessage) {
-+  return NS_IsMainThread() && !sPaneStopped && sPaneApi.translate &&
-+         sPaneApi.translate(&aMessage);
-+}
-+
-+void ShutdownWinUIPane() {
-+  if (!NS_IsMainThread() || sPaneStopped) return;
-+  sPaneStopped = true;
-+  if (sPaneApi.shutdown) {
-+    HRESULT hr = sPaneApi.shutdown();
-+    MOZ_LOG(sWinUIPrototypeLog, LogLevel::Info,
-+            ("pane=shutdown hr=0x%08lx", hr));
-+  }
-+}
- 
- void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
-   if (!XRE_IsParentProcess() || !NS_IsMainThread() || !sTraceEnabled) return;
-@@ -20,51 +313,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
-   APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
-   const HRESULT hr = CoGetApartmentType(&apartment, &qualifier);
-   DWORD ownerProcess = 0;
--  DWORD ownerThread = aWindow ? GetWindowThreadProcessId(aWindow, &ownerProcess) : 0;
-+  DWORD ownerThread =
-+      aWindow ? GetWindowThreadProcessId(aWindow, &ownerProcess) : 0;
-   MOZ_LOG(sWinUIPrototypeLog, LogLevel::Info,
-           ("phase=%s pid=%lu tid=%lu hwnd=%p ownerPid=%lu ownerTid=%lu "
-            "apartmentHr=0x%08lx apartment=%d qualifier=%d "
--           "windowing=%p frameworkUdk=%p xaml=%p", aPhase,
--           GetCurrentProcessId(), GetCurrentThreadId(), aWindow, ownerProcess,
--           ownerThread, static_cast<unsigned long>(hr), static_cast<int>(apartment),
--           static_cast<int>(qualifier), GetModuleHandleW(L"Microsoft.UI.Windowing.dll"),
-+           "windowing=%p frameworkUdk=%p xaml=%p",
-+           aPhase, GetCurrentProcessId(), GetCurrentThreadId(), aWindow,
-+           ownerProcess, ownerThread, static_cast<unsigned long>(hr),
-+           static_cast<int>(apartment), static_cast<int>(qualifier),
-+           GetModuleHandleW(L"Microsoft.UI.Windowing.dll"),
-            GetModuleHandleW(L"Microsoft.Internal.FrameworkUdk.dll"),
-            GetModuleHandleW(L"Microsoft.UI.Xaml.dll")));
- }
- 
- void ProbeWinUIPrototype(HWND aWindow) {
-   if (!XRE_IsParentProcess() || !NS_IsMainThread() ||
--      !Preferences::GetBool("widget.windows.winui-prototype.enabled", false)) return;
-+      !Preferences::GetBool("fenn.winui.enabled", false))
-+    return;
-   sTraceEnabled = true;
-   TraceWinUIPrototype("window-created", aWindow);
-   // Fixed executable-relative location. Never use cwd, PATH, or a preference
--  // supplied DLL path. The bridge has only system dependencies and a static CRT.
-+  // supplied DLL path. The bridge has only system dependencies and a static
-+  // CRT.
-   wchar_t path[32768];
-   const DWORD length = GetModuleFileNameW(nullptr, path, std::size(path));
-   if (!length || length >= std::size(path)) return;
-   wchar_t* separator = wcsrchr(path, L'\\');
-   constexpr wchar_t suffix[] = L"native\\FirefoxWinUIBridge.dll";
--  if (!separator || size_t(separator + 1 - path) + std::size(suffix) > std::size(path)) return;
-+  if (!separator ||
-+      size_t(separator + 1 - path) + std::size(suffix) > std::size(path))
-+    return;
-   wcscpy(separator + 1, suffix);
--  HMODULE module = LoadLibraryExW(path, nullptr,
-+  HMODULE module = LoadLibraryExW(
-+      path, nullptr,
-       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
-   if (!module) {
-     MOZ_LOG(sWinUIPrototypeLog, LogLevel::Warning,
--            ("bridge=unavailable win32Error=%lu; ordinary Firefox continues", GetLastError()));
-+            ("bridge=unavailable win32Error=%lu; ordinary Firefox continues",
-+             GetLastError()));
-     return;
-   }
-   const auto probe = reinterpret_cast<WinUIBridgeProbeFn>(
-       GetProcAddress(module, "WinUIBridgeProbe"));
-   WinUIBridgeInfo info{};
--  HRESULT hr = probe ? probe(aWindow, WINUI_BRIDGE_ABI_VERSION, sizeof(info), &info) : E_NOINTERFACE;
-+  HRESULT hr =
-+      probe ? probe(aWindow, WINUI_BRIDGE_ABI_VERSION, sizeof(info), &info)
-+            : E_NOINTERFACE;
-   const bool valid = SUCCEEDED(hr) && info.size == sizeof(info) &&
--      info.abiVersion == WINUI_BRIDGE_ABI_VERSION &&
--      info.processId == GetCurrentProcessId() && info.threadId == GetCurrentThreadId();
--  MOZ_LOG(sWinUIPrototypeLog, valid ? LogLevel::Info : LogLevel::Warning,
--          ("bridge=%s hr=0x%08lx abi=%u pid=%u tid=%u apartment=%d qualifier=%d",
--           valid ? "ok" : "incompatible", static_cast<unsigned long>(hr),
--           info.abiVersion, info.processId, info.threadId, info.apartmentType,
--           info.apartmentQualifier));
-+                     info.abiVersion == WINUI_BRIDGE_ABI_VERSION &&
-+                     info.processId == GetCurrentProcessId() &&
-+                     info.threadId == GetCurrentThreadId();
-+  MOZ_LOG(
-+      sWinUIPrototypeLog, valid ? LogLevel::Info : LogLevel::Warning,
-+      ("bridge=%s hr=0x%08lx abi=%u pid=%u tid=%u apartment=%d qualifier=%d",
-+       valid ? "ok" : "incompatible", static_cast<unsigned long>(hr),
-+       info.abiVersion, info.processId, info.threadId, info.apartmentType,
-+       info.apartmentQualifier));
-   // ABI v1 retains nothing and starts no work, so immediate unloading is safe.
-   FreeLibrary(module);
-   TraceWinUIPrototype("probe-complete", aWindow);
-diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
-index 418c5d791d..d4950c9e0e 100644
---- a/widget/windows/WinUIPrototype.h
-+++ b/widget/windows/WinUIPrototype.h
-@@ -4,8 +4,37 @@
- #ifndef widget_windows_WinUIPrototype_h
- #define widget_windows_WinUIPrototype_h
- #include <windows.h>
-+
-+#include "Units.h"
-+#include "nsTArray.h"
-+#include "nsString.h"
- namespace mozilla::widget {
- void ProbeWinUIPrototype(HWND aWindow);
- void TraceWinUIPrototype(const char* aPhase, HWND aWindow = nullptr);
-+bool UpdateWinUIPane(HWND aWindow, const RECT& aRect, bool aVisible,
-+                     bool aFocus, bool aBackwards,
-+                     const nsTArray<LayoutDeviceIntRect>& aOcclusions);
-+uint32_t SyncWinUITabs(HWND aWindow, const nsTArray<uint32_t>& aIds,
-+                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected);
-+bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot);
-+bool UpdateWinUIAddress(HWND aWindow, const RECT& aRect, bool aVisible,
-+                       bool aFocus, bool aSelectAll);
-+bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot);
-+// ABI v11 request path. The pane wakes the browser through a sink registered
-+// here, which only posts a task to this thread's event queue; these are the
-+// host side of that exchange. The notification topic is
-+// "winui-pane-drain", whose data is the endpoint's HWND formatted the same way
-+// nsIBaseWindow::nativeHandle formats it, so a chrome window can recognise its
-+// own endpoint.
-+bool DrainWinUIRequests(HWND aWindow, nsAString& aBatch);
-+bool CompleteWinUIRequests(HWND aWindow, const nsAString& aOutcomes);
-+uint32_t ApplyWinUITabDelta(HWND aWindow, const nsAString& aDelta);
-+void DestroyWinUIPane(HWND aWindow);
-+bool TranslateWinUIPane(MSG& aMessage);
-+bool HasWinUISystemCaption(HWND aWindow);
-+void ShutdownWinUIPane();
-+// Parent process, before any window: joins an unpackaged Firefox to the shared
-+// Windows App SDK runtime the pane is built against. No-op when packaged.
-+void InitializeWinUIRuntime();
- }  // namespace mozilla::widget
- #endif
 diff --git a/widget/windows/moz.build b/widget/windows/moz.build
-index 29dce981cf..f8af28881f 100644
+index 29d86baad4..f8af28881f 100644
 --- a/widget/windows/moz.build
 +++ b/widget/windows/moz.build
-@@ -221,25 +221,6 @@ if CONFIG["CC_TYPE"] == "clang-cl":
+@@ -145,6 +145,7 @@ SOURCES += [
+     "WinCompositorWidget.cpp",
+     "WindowsSMTCProvider.cpp",
+     "WindowsUIUtils.cpp",
++    "WinUIPrototype.cpp",
+ ]
+ 
+ # Needs INITGUID and we don't allow INITGUID in unified sources since bug 970429.
+@@ -220,25 +221,6 @@ if CONFIG["CC_TYPE"] == "clang-cl":
  
  SPHINX_TREES["/widget/windows"] = "docs"
  
@@ -2665,18 +2224,10 @@ index 29dce981cf..f8af28881f 100644
  LICENSED_UNDER["chromium"].paths = [
      "nsWindow.cpp",
 diff --git a/widget/windows/nsAppShell.cpp b/widget/windows/nsAppShell.cpp
-index d4aff8c47e..46a8434081 100644
+index f5d293a068..46a8434081 100644
 --- a/widget/windows/nsAppShell.cpp
 +++ b/widget/windows/nsAppShell.cpp
-@@ -3,7 +3,6 @@
-  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
- 
- #include "nsAppShell.h"
--#include "WinUIPrototype.h"
- 
- #include <winternl.h>
- 
-@@ -12,6 +11,7 @@
+@@ -11,6 +11,7 @@
  #include "WinIMEHandler.h"
  #include "WinMouseScrollHandler.h"
  #include "WinTaskbar.h"
@@ -2684,15 +2235,26 @@ index d4aff8c47e..46a8434081 100644
  #include "WinUtils.h"
  #include "mozilla/Atomics.h"
  #include "mozilla/Attributes.h"
-@@ -317,6 +317,7 @@ nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
+@@ -297,6 +298,7 @@ static Atomic<size_t, ReleaseAcquire> sOutstandingNativeEventCallbacks;
+ }
+ 
+ nsAppShell::~nsAppShell() {
++  mozilla::widget::TraceWinUIPrototype("app-shell-destroy");
+   hal::Shutdown();
+ 
+   if (mEventWnd) {
+@@ -313,6 +315,10 @@ nsAppShell::~nsAppShell() {
+ NS_IMETHODIMP
+ nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
                      const char16_t* aData) {
-   if (!strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) {
-     mozilla::widget::TraceWinUIPrototype("app-shell-xpcom-shutdown");
++  if (!strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) {
++    mozilla::widget::TraceWinUIPrototype("app-shell-xpcom-shutdown");
 +    mozilla::widget::ShutdownWinUIPane();
-   }
++  }
    if (XRE_IsParentProcess()) {
      nsCOMPtr<nsIObserverService> obsServ(
-@@ -581,6 +582,7 @@ nsresult nsAppShell::Init() {
+         mozilla::services::GetObserverService());
+@@ -576,6 +582,7 @@ nsresult nsAppShell::Init() {
    hal::Init();
  
    if (XRE_IsParentProcess()) {
@@ -2700,7 +2262,7 @@ index d4aff8c47e..46a8434081 100644
      LSPAnnotate();
      sTaskbarButtonCreatedMsg = ::RegisterWindowMessageW(kTaskbarButtonEventId);
      NS_ASSERTION(sTaskbarButtonCreatedMsg,
-@@ -713,6 +715,9 @@ bool nsAppShell::ProcessNextNativeEvent(bool mayWait) {
+@@ -708,6 +715,9 @@ bool nsAppShell::ProcessNextNativeEvent(bool mayWait) {
          // have either kUIActivity or kActivityNoUIAVail.
          mozilla::BackgroundHangMonitor().NotifyActivity();
  
@@ -2711,18 +2273,10 @@ index d4aff8c47e..46a8434081 100644
              IMEHandler::ProcessRawKeyMessage(msg)) {
            continue;  // the message is consumed.
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index ee075a9625..b7c5554adb 100644
+index b8d139b22a..4ac2d9f458 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
-@@ -53,7 +53,6 @@
-  **************************************************************/
- 
- #include "nsWindow.h"
--#include "WinUIPrototype.h"
- 
- #include <appmodel.h>
- #include <commctrl.h>
-@@ -80,6 +79,7 @@
+@@ -79,6 +79,7 @@
  #include "WidgetUtils.h"
  #include "WinMouseScrollHandler.h"
  #include "WinTaskbar.h"
@@ -2730,7 +2284,7 @@ index ee075a9625..b7c5554adb 100644
  #include "WinWindowOcclusionTracker.h"
  #include "gfx2DGlue.h"
  #include "gfxConfig.h"
-@@ -1263,6 +1263,51 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+@@ -1259,6 +1260,51 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
    return NS_OK;
  }
  
@@ -2782,7 +2336,7 @@ index ee075a9625..b7c5554adb 100644
  void nsWindow::LocalesChanged() {
    bool isRTL = intl::LocaleService::GetInstance()->IsAppLocaleRTL();
    if (mIsRTL != isRTL) {
-@@ -1287,6 +1332,7 @@ void nsWindow::Destroy() {
+@@ -1283,6 +1329,7 @@ void nsWindow::Destroy() {
    // deleted.
    nsCOMPtr<nsIWidget> kungFuDeathGrip(this);
  
@@ -2790,7 +2344,7 @@ index ee075a9625..b7c5554adb 100644
    DestroyDirectManipulation();
  
    // Before destroying the native window, we need to clean up the resource
-@@ -5641,7 +5687,8 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5637,7 +5684,8 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
          mDraggingWindowWithMouse = true;
        }
  
@@ -2800,7 +2354,7 @@ index ee075a9625..b7c5554adb 100644
          DispatchMouseEvent(eMouseDown, wParamFromGlobalMouseState(),
                             lParamToClient(lParam), false, MouseButton::ePrimary,
                             MOUSE_INPUT_SOURCE(), nullptr, IsNonclient::Yes);
-@@ -5652,7 +5699,9 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5648,7 +5696,9 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
      }
  
      case WM_NCLBUTTONUP: {
@@ -2811,14 +2365,17 @@ index ee075a9625..b7c5554adb 100644
          result = DispatchMouseEvent(eMouseUp, wParamFromGlobalMouseState(),
                                      lParamToClient(lParam), false,
                                      MouseButton::ePrimary, MOUSE_INPUT_SOURCE(),
-@@ -6947,6 +6996,7 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+@@ -6943,6 +6993,10 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
  
  // WM_DESTROY event handler
  void nsWindow::OnDestroy() {
 +  mozilla::widget::DestroyWinUIPane(mWnd);
-   if (mWindowType == WindowType::TopLevel) {
-     mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
-   }
++  if (mWindowType == WindowType::TopLevel) {
++    mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
++  }
+   mOnDestroyCalled = true;
+ 
+   // If this is a toplevel window, notify the taskbar concealer to clean up any
 diff --git a/widget/windows/nsWindow.h b/widget/windows/nsWindow.h
 index 1e2660589b..85227d8e69 100644
 --- a/widget/windows/nsWindow.h
@@ -8135,6 +7692,385 @@ index 0000000000..c0cb77ef7e
 +  gWinUIPane.uninitOptions();
 +  gWinUIPane.uninit();
 +}, { once: true });
+diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
+new file mode 100644
+index 0000000000..ca9d87b930
+--- /dev/null
++++ b/widget/windows/WinUIPrototype.cpp
+@@ -0,0 +1,328 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#include "WinUIPrototype.h"
++
++#include <appmodel.h>
++#include <objbase.h>
++
++#include <iterator>
++
++#include "WinUIPaneApi.h"
++#include "mozilla/Logging.h"
++#include "mozilla/CycleCollectedJSContext.h"
++#include "mozilla/Preferences.h"
++#include "mozilla/Services.h"
++#include "nsIObserverService.h"
++#include "nsPrintfCString.h"
++#include "nsThreadUtils.h"
++#include "mozilla/UniquePtr.h"
++#include "nsXULAppAPI.h"
++
++namespace mozilla::widget {
++bool HasWinUISystemCaption(HWND aWindow) {
++  return GetPropW(aWindow, WINUI_PANE_SYSTEM_CAPTION_PROPERTY) != nullptr;
++}
++}  // namespace mozilla::widget
++
++namespace mozilla::widget {
++static LazyLogModule sWinUIPrototypeLog("WinUIPrototype");
++static bool sTraceEnabled = false;  // Main-thread only; set once a pane updates.
++static HMODULE sPaneModule = nullptr;
++static WinUIPaneApi sPaneApi{};
++static bool sPaneAttempted = false;
++static bool sPaneStopped = false;
++
++static bool LoadPane() {
++  if (sPaneAttempted) return sPaneApi.updateTabStrip != nullptr;
++  sPaneAttempted = true;
++  wchar_t path[32768];
++  DWORD length = GetModuleFileNameW(nullptr, path, std::size(path));
++  if (!length || length >= std::size(path)) return false;
++  wchar_t* separator = wcsrchr(path, L'\\');
++  constexpr wchar_t suffix[] = L"FennPane.dll";
++  if (!separator ||
++      size_t(separator + 1 - path) + std::size(suffix) > std::size(path))
++    return false;
++  wcscpy(separator + 1, suffix);
++  sPaneModule = LoadLibraryExW(path, nullptr,
++                               LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
++                                   LOAD_LIBRARY_SEARCH_APPLICATION_DIR |
++                                   LOAD_LIBRARY_SEARCH_SYSTEM32);
++  if (!sPaneModule) {
++    MOZ_LOG(sWinUIPrototypeLog, LogLevel::Warning,
++            ("pane=unavailable win32Error=%lu", GetLastError()));
++    return false;
++  }
++  auto getApi = reinterpret_cast<WinUIPaneGetApiFn>(
++      GetProcAddress(sPaneModule, "WinUIPaneGetApi"));
++  WinUIPaneApi api{};
++  HRESULT hr = getApi ? getApi(WINUI_PANE_ABI_VERSION, sizeof(api), &api)
++                      : E_NOINTERFACE;
++  if (FAILED(hr) || api.size != sizeof(api) ||
++      api.version != WINUI_PANE_ABI_VERSION || !api.focus ||
++      !api.destroy || !api.translate || !api.shutdown || !api.clip || !api.syncTabs || !api.syncAddress || !api.syncTabMenu || !api.updateTabStrip ||
++      !api.setNotifySink || !api.drainRequests || !api.completeRequests || !api.applyTabDelta ||
++      !api.updateAddress || !api.focusAddress) {
++    MOZ_LOG(sWinUIPrototypeLog, LogLevel::Warning,
++            ("pane=incompatible hr=0x%08lx", hr));
++    return false;
++  }
++  sPaneApi = api;
++  return true;
++}
++
++// The endpoint's identity as chrome JavaScript sees it: the same formatting
++// nsIBaseWindow::nativeHandle uses, so a window can match the notification to
++// its own HWND without a new interface.
++static nsPrintfCString EndpointName(HWND aWindow) {
++  return nsPrintfCString("0x%p", aWindow);
++}
++
++// The pane's wakeup. Called on the main thread, usually from inside a XAML
++// callback, so it may only *post*: entering browser JavaScript from this stack
++// is exactly the reentrancy the request path exists to avoid. Returning false
++// tells the pane the wakeup did not happen, so a later request schedules a
++// fresh one instead of waiting for one that will never arrive.
++static BOOL WINAPI NotifyWinUIPaneDrain(void* aContext) {
++  if (!NS_IsMainThread() || sPaneStopped) return FALSE;
++  HWND window = static_cast<HWND>(aContext);
++  nsresult rv = NS_DispatchToMainThread(NS_NewRunnableFunction(
++      "mozilla::widget::WinUIPaneDrain", [window]() {
++        if (sPaneStopped) return;
++        nsCOMPtr<nsIObserverService> observers = services::GetObserverService();
++        if (!observers) return;
++        // Keep custom-element reactions and mutation observers inside one
++        // browser command turn (an empty new group must survive until filled).
++        nsAutoMicroTask microtask;
++        observers->NotifyObservers(
++            nullptr, "winui-pane-drain",
++            NS_ConvertUTF8toUTF16(EndpointName(window)).get());
++      }));
++  return NS_SUCCEEDED(rv) ? TRUE : FALSE;
++}
++
++bool DrainWinUIRequests(HWND aWindow, nsAString& aBatch) {
++  aBatch.Truncate();
++  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
++      !sPaneApi.drainRequests)
++    return false;
++  auto output = mozilla::MakeUnique<wchar_t[]>(262144);
++  output[0] = 0;
++  HRESULT hr = sPaneApi.drainRequests(aWindow, output.get(), 262144);
++  if (FAILED(hr)) return false;
++  aBatch.Assign(reinterpret_cast<const char16_t*>(output.get()));
++  return true;
++}
++
++bool CompleteWinUIRequests(HWND aWindow, const nsAString& aOutcomes) {
++  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
++      !sPaneApi.completeRequests || aOutcomes.Length() > 1048576)
++    return false;
++  nsAutoString outcomes(aOutcomes);
++  return SUCCEEDED(sPaneApi.completeRequests(aWindow, outcomes.get()));
++}
++
++uint32_t ApplyWinUITabDelta(HWND aWindow, const nsAString& aDelta) {
++  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
++      !sPaneApi.applyTabDelta || aDelta.Length() > 1048576)
++    return 0;
++  nsAutoString delta(aDelta);
++  uint32_t revision = 0;
++  // A zero revision is the caller's signal to send one full snapshot; it is
++  // never a reason to retry the same delta.
++  HRESULT hr = sPaneApi.applyTabDelta(aWindow, delta.get(), &revision);
++  if (FAILED(hr)) return 0;
++  // S_FALSE means the delta applied but the pane has fallen behind and wants a
++  // snapshot. Reporting no revision is how that reaches the producer, which
++  // sends exactly one -- the documented bounded recovery.
++  return hr == S_FALSE ? 0 : revision;
++}
++
++static bool PaneEnabled() {
++  return Preferences::GetBool("fenn.winui.pane.enabled",
++                              false) ||
++         Preferences::GetBool(
++             "fenn.winui.tabstrip.replaceFirefoxTabs",
++             false);
++}
++
++bool UpdateWinUIPane(HWND aWindow, const RECT& aRect, bool aVisible,
++                     bool aFocus, bool aBackwards,
++                     const nsTArray<LayoutDeviceIntRect>& aOcclusions) {
++  if (!XRE_IsParentProcess() || !NS_IsMainThread() || sPaneStopped)
++    return false;
++  if (!PaneEnabled()) {
++    DestroyWinUIPane(aWindow);
++    return false;
++  }
++  sTraceEnabled = true;
++  if (!LoadPane()) return false;
++  HRESULT hr = sPaneApi.updateTabStrip(aWindow, &aRect, aVisible);
++  if (SUCCEEDED(hr) && sPaneApi.setNotifySink) {
++    // Registered by the widget, not by chrome script, so the request path
++    // cannot end up with a queue and no wakeup because script failed to set
++    // one up. The context is the endpoint's own HWND.
++    hr = sPaneApi.setNotifySink(aWindow, NotifyWinUIPaneDrain, aWindow);
++  }
++  if (SUCCEEDED(hr)) {
++    nsTArray<RECT> occlusions;
++    for (const auto& r : aOcclusions) {
++      occlusions.AppendElement(RECT{r.x - aRect.left, r.y - aRect.top,
++                                    r.XMost() - aRect.left,
++                                    r.YMost() - aRect.top});
++    }
++    hr = sPaneApi.clip(aWindow, occlusions.Elements(), occlusions.Length());
++  }
++  if (SUCCEEDED(hr) && aVisible && aFocus)
++    hr = sPaneApi.focus(aWindow, aBackwards);
++  MOZ_LOG(sWinUIPrototypeLog, LogLevel::Info,
++          ("pane=update hwnd=%p visible=%d rect=%ld,%ld,%ld,%ld hr=0x%08lx",
++           aWindow, aVisible, aRect.left, aRect.top, aRect.right, aRect.bottom,
++           hr));
++  TraceWinUIPrototype("pane-update", aWindow);
++  if (FAILED(hr)) DestroyWinUIPane(aWindow);
++  return SUCCEEDED(hr);
++}
++
++uint32_t SyncWinUITabs(HWND aWindow, const nsTArray<uint32_t>& aIds,
++                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected) {
++  if (!XRE_IsParentProcess() || !NS_IsMainThread() || sPaneStopped ||
++      !sPaneApi.syncTabs || aIds.Length() != aTitles.Length() || aIds.Length() != aCommands.Length() ||
++      !PaneEnabled())
++    return 0;
++  nsTArray<WinUITab> tabs;
++  for (size_t i = 0; i < aIds.Length(); ++i) {
++    tabs.AppendElement(WinUITab{aIds[i], aTitles[i].get(), aCommands[i]});
++  }
++  uint32_t requested = 0;
++  if (FAILED(sPaneApi.syncTabs(aWindow, tabs.Elements(), tabs.Length(), aSelected, &requested)))
++    return 0;
++  return requested;
++}
++
++bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot) {
++  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
++      !sPaneApi.syncAddress || aSnapshot.Length() > 1048576 ||
++      !PaneEnabled()) return false;
++  nsAutoString snapshot(aSnapshot);
++  return SUCCEEDED(sPaneApi.syncAddress(aWindow, snapshot.get()));
++}
++
++bool UpdateWinUIAddress(HWND aWindow, const RECT& aRect, bool aVisible,
++                       bool aFocus, bool aSelectAll) {
++  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
++      !sPaneApi.updateAddress || !PaneEnabled()) return false;
++  if (aVisible && !Preferences::GetBool(
++          "fenn.winui.address.toolbar.enabled", false) &&
++      !Preferences::GetBool(
++          "fenn.winui.navigation.toolbar.enabled", false)) return false;
++  HRESULT hr = sPaneApi.updateAddress(aWindow, &aRect, aVisible);
++  if (SUCCEEDED(hr) && aVisible && aFocus)
++    hr = sPaneApi.focusAddress(aWindow, aSelectAll);
++  return SUCCEEDED(hr);
++}
++
++// Publication only: since ABI v12 the pane returns nothing here, so there is
++// no output buffer to allocate on every call either.
++bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot) {
++  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
++      !sPaneApi.syncTabMenu || aSnapshot.Length() > 1048576 ||
++      !PaneEnabled()) return false;
++  nsAutoString snapshot(aSnapshot);
++  return SUCCEEDED(sPaneApi.syncTabMenu(aWindow, snapshot.get()));
++}
++
++void DestroyWinUIPane(HWND aWindow) {
++  if (!NS_IsMainThread() || !sPaneApi.destroy || sPaneStopped) return;
++  // Drop the wakeup before the endpoint goes away, so nothing can be posted
++  // for a pane that is already being torn down.
++  if (sPaneApi.setNotifySink) sPaneApi.setNotifySink(aWindow, nullptr, nullptr);
++  HRESULT hr = sPaneApi.destroy(aWindow);
++  MOZ_LOG(sWinUIPrototypeLog, LogLevel::Info,
++          ("pane=destroy hwnd=%p hr=0x%08lx", aWindow, hr));
++}
++
++void InitializeWinUIRuntime() {
++  // Every lane uses the shared Microsoft.WindowsAppRuntime.2 framework. A
++  // packaged Firefox has it in its package graph; an unpackaged one joins it
++  // here, before the pane or WindowsUIUtils loads any Windows App SDK DLL, so
++  // that every such DLL comes from one runtime. On failure the pane cannot
++  // start and Firefox keeps its own UI.
++  static bool sAttempted = false;
++  if (sAttempted || !XRE_IsParentProcess()) return;
++  sAttempted = true;
++  UINT32 length = 0;
++  if (GetCurrentPackageFullName(&length, nullptr) != APPMODEL_ERROR_NO_PACKAGE) {
++    return;
++  }
++  wchar_t path[32768];
++  DWORD pathLength = GetModuleFileNameW(nullptr, path, std::size(path));
++  wchar_t* separator = pathLength && pathLength < std::size(path)
++                           ? wcsrchr(path, L'\\')
++                           : nullptr;
++  constexpr wchar_t bootstrap[] = WINUI_PANE_RUNTIME_BOOTSTRAP_DLL;
++  if (!separator || size_t(separator + 1 - path) + std::size(bootstrap) >
++                        std::size(path)) {
++    return;
++  }
++  wcscpy(separator + 1, bootstrap);
++  // Fixed executable-relative location, as for the pane itself.
++  HMODULE module = LoadLibraryExW(path, nullptr,
++                                  LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
++                                      LOAD_LIBRARY_SEARCH_SYSTEM32);
++  if (!module) {
++    MOZ_LOG(sWinUIPrototypeLog, LogLevel::Warning,
++            ("runtime=unavailable bootstrapWin32Error=%lu", GetLastError()));
++    return;
++  }
++  using InitializeFn = HRESULT(WINAPI*)(UINT32, PCWSTR, PACKAGE_VERSION, UINT32);
++  auto initialize = reinterpret_cast<InitializeFn>(
++      GetProcAddress(module, "MddBootstrapInitialize2"));
++  PACKAGE_VERSION minimum{};
++  minimum.Version = WINUI_PANE_RUNTIME_MIN_VERSION;
++  // MddBootstrapInitializeOptions_OnPackageIdentity_NOOP.
++  constexpr UINT32 kNoopWhenPackaged = 0x0010;
++  HRESULT hr = initialize ? initialize(WINUI_PANE_RUNTIME_MAJOR_MINOR, L"",
++                                       minimum, kNoopWhenPackaged)
++                          : E_NOINTERFACE;
++  MOZ_LOG(sWinUIPrototypeLog,
++          SUCCEEDED(hr) ? LogLevel::Info : LogLevel::Warning,
++          ("runtime=bootstrap hr=0x%08lx", static_cast<unsigned long>(hr)));
++}
++
++bool TranslateWinUIPane(MSG& aMessage) {
++  return NS_IsMainThread() && !sPaneStopped && sPaneApi.translate &&
++         sPaneApi.translate(&aMessage);
++}
++
++void ShutdownWinUIPane() {
++  if (!NS_IsMainThread() || sPaneStopped) return;
++  sPaneStopped = true;
++  if (sPaneApi.shutdown) {
++    HRESULT hr = sPaneApi.shutdown();
++    MOZ_LOG(sWinUIPrototypeLog, LogLevel::Info,
++            ("pane=shutdown hr=0x%08lx", hr));
++  }
++}
++
++void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
++  if (!XRE_IsParentProcess() || !NS_IsMainThread() || !sTraceEnabled) return;
++  APTTYPE apartment = APTTYPE_CURRENT;
++  APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
++  const HRESULT hr = CoGetApartmentType(&apartment, &qualifier);
++  DWORD ownerProcess = 0;
++  DWORD ownerThread =
++      aWindow ? GetWindowThreadProcessId(aWindow, &ownerProcess) : 0;
++  MOZ_LOG(sWinUIPrototypeLog, LogLevel::Info,
++          ("phase=%s pid=%lu tid=%lu hwnd=%p ownerPid=%lu ownerTid=%lu "
++           "apartmentHr=0x%08lx apartment=%d qualifier=%d "
++           "windowing=%p frameworkUdk=%p xaml=%p",
++           aPhase, GetCurrentProcessId(), GetCurrentThreadId(), aWindow,
++           ownerProcess, ownerThread, static_cast<unsigned long>(hr),
++           static_cast<int>(apartment), static_cast<int>(qualifier),
++           GetModuleHandleW(L"Microsoft.UI.Windowing.dll"),
++           GetModuleHandleW(L"Microsoft.Internal.FrameworkUdk.dll"),
++           GetModuleHandleW(L"Microsoft.UI.Xaml.dll")));
++}
++}  // namespace mozilla::widget
+diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
+new file mode 100644
+index 0000000000..8b7d8a3ba1
+--- /dev/null
++++ b/widget/windows/WinUIPrototype.h
+@@ -0,0 +1,39 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#ifndef widget_windows_WinUIPrototype_h
++#define widget_windows_WinUIPrototype_h
++#include <windows.h>
++
++#include "Units.h"
++#include "nsTArray.h"
++#include "nsString.h"
++namespace mozilla::widget {
++void TraceWinUIPrototype(const char* aPhase, HWND aWindow = nullptr);
++bool UpdateWinUIPane(HWND aWindow, const RECT& aRect, bool aVisible,
++                     bool aFocus, bool aBackwards,
++                     const nsTArray<LayoutDeviceIntRect>& aOcclusions);
++uint32_t SyncWinUITabs(HWND aWindow, const nsTArray<uint32_t>& aIds,
++                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected);
++bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot);
++bool UpdateWinUIAddress(HWND aWindow, const RECT& aRect, bool aVisible,
++                       bool aFocus, bool aSelectAll);
++bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot);
++// ABI v11 request path. The pane wakes the browser through a sink registered
++// here, which only posts a task to this thread's event queue; these are the
++// host side of that exchange. The notification topic is
++// "winui-pane-drain", whose data is the endpoint's HWND formatted the same way
++// nsIBaseWindow::nativeHandle formats it, so a chrome window can recognise its
++// own endpoint.
++bool DrainWinUIRequests(HWND aWindow, nsAString& aBatch);
++bool CompleteWinUIRequests(HWND aWindow, const nsAString& aOutcomes);
++uint32_t ApplyWinUITabDelta(HWND aWindow, const nsAString& aDelta);
++void DestroyWinUIPane(HWND aWindow);
++bool TranslateWinUIPane(MSG& aMessage);
++bool HasWinUISystemCaption(HWND aWindow);
++void ShutdownWinUIPane();
++// Parent process, before any window: joins an unpackaged Firefox to the shared
++// Windows App SDK runtime the pane is built against. No-op when packaged.
++void InitializeWinUIRuntime();
++}  // namespace mozilla::widget
++#endif
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
 index 0000000000..1d5b0d9558
