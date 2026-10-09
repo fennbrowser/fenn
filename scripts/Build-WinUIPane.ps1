@@ -23,6 +23,10 @@ if ($Test -or $ContractTest -or $AddressTest -or $MenuTest -or $TabStripTest) {
     }
     & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'tests/native/PaneContractTests.vcxproj') /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    # A pane that refuses every handshake, for Test-FennPane.py --matrix's
+    # incompatible-pane fallback scenario.
+    & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'tests/native/PaneIncompatibleFixture.vcxproj') /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
     if ($ContractTest) {
         # Hosted CI has no interactive desktop. This production-DLL lane uses
         # programmatic ABI/lifecycle/accessibility contracts only; physical

@@ -84,7 +84,7 @@ inline EntryWork* nativeWork() {
     // against a measured 3.5us per call, the instrument costs about 1.4% of
     // what it reports, which is worth knowing rather than guessing at.
     static EntryWork entries[]{
-        {L"update", 0, 0, 0},       {L"updateTabStrip", 0, 0, 0}, {L"clip", 0, 0, 0},
+        {L"updateTabStrip", 0, 0, 0}, {L"clip", 0, 0, 0},
         {L"syncTabs", 0, 0, 0},     {L"syncAddress", 0, 0, 0},    {L"syncTabMenu", 0, 0, 0},
         {L"drainRequests", 0, 0, 0},{L"completeRequests", 0, 0, 0}, {L"applyTabDelta", 0, 0, 0},
         {L"focus", 0, 0, 0},        {L"destroy", 0, 0, 0},        {L"translate", 0, 0, 0},
@@ -275,7 +275,6 @@ inline void RecordStage(size_t stage, double elapsed, uint32_t excluded = NotExc
     ++record.buckets[bucket];
 }
 enum Entry : size_t {
-    EntryUpdate,
     EntryUpdateTabStrip,
     EntryClip,
     EntrySyncTabs,
@@ -482,14 +481,10 @@ struct Pane {
         };
     }
     SystemDrag::DragDropManager::TargetRequested_revoker externalDropRevoker;
-    Controls::ListView tabs{nullptr};
-    Windows::Foundation::Collections::IObservableVector<Windows::Foundation::IInspectable> items{nullptr};
-    std::vector<uint32_t> tabIds;
     std::map<uint32_t, hstring> tabTitles;
-    std::map<uint32_t, uint32_t> tabCommands;
     NativeTabMenu tabMenu;
     std::unique_ptr<NativeTabStrip> strip;
-    event_token selection{}, takeFocus{}, containers{};
+    event_token takeFocus{};
     WinUIPaneNotifyFn notifySink{};
     void* notifyContext{};
     // True between drainRequests and completeRequests. The host must close
@@ -620,10 +615,6 @@ struct Pane {
         tabMenu.Close();
         if (shell.core) shell_core_close(shell.core);
         lifetime.reset();
-        if (tabs) {
-            tabs.SelectionChanged(selection);
-            tabs.ContainerContentChanging(containers);
-        }
         source.TakeFocusRequested(takeFocus);
         externalDropRevoker.revoke();
         source.SystemBackdrop(nullptr);
@@ -631,64 +622,9 @@ struct Pane {
         address.reset();
         strip.reset();
         shell.Close();
-        tabs = nullptr;
-        items = nullptr;
-        tabIds.clear();
         tabTitles.clear();
         source.Close();
         source = nullptr;
-    }
-    void UpdateRow(Controls::Primitives::SelectorItem const& row) {
-        auto index = tabs.IndexFromContainer(row);
-        if (index < 0 || size_t(index) >= tabIds.size()) return;
-        auto found = tabTitles.find(tabIds[index]);
-        if (found == tabTitles.end()) return;
-        auto const& title = found->second;
-        Automation::AutomationProperties::SetName(row, title);
-        Automation::AutomationProperties::SetItemStatus(row, tabIds[index] == browserSelection ? L"Active tab" : L"");
-        if (auto root = row.ContentTemplateRoot()) {
-            auto grid = root.as<Controls::Grid>();
-            auto label = grid.Children().GetAt(0).as<Controls::TextBlock>();
-            label.Text(title);
-            label.FontWeight(Windows::UI::Text::FontWeight{uint16_t(tabIds[index] == browserSelection ? 600 : 400)});
-            Controls::ToolTipService::SetToolTip(label, box_value(title));
-            Automation::AutomationProperties::SetName(grid.Children().GetAt(1), L"Close tab: " + title);
-        }
-    }
-    void AttachMenu(Controls::Primitives::SelectorItem const& row, bool replace = false, uint32_t itemId = 0) {
-        auto index = tabs.IndexFromContainer(row);
-        auto id = itemId ? itemId : index >= 0 && size_t(index) < tabIds.size() ? tabIds[index] : 0;
-        if (!id || !tabMenu.HasTab(id)) {
-            row.ContextFlyout(nullptr);
-            return;
-        }
-        if (!replace && row.ContextFlyout()) return;
-        Controls::MenuFlyout menu;
-        menu.Items().Append(NativeTabMenu::Placeholder());
-        menu.Opening([this, alive = std::weak_ptr<int>(lifetime), weakRow = make_weak(row), weakMenu = make_weak(menu)](
-                         auto const&, auto const&) {
-            if (alive.expired()) return;
-            auto row = weakRow.get();
-            auto menu = weakMenu.get();
-            if (!row || !menu) return;
-            auto index = tabs.IndexFromContainer(row);
-            auto id = index >= 0 && size_t(index) < tabIds.size() ? tabIds[index] : 0;
-            tabMenu.Open(menu, id);
-        });
-        menu.Opened([this, alive = std::weak_ptr<int>(lifetime), weak = make_weak(menu)](auto const&, auto const&) {
-            if (alive.expired()) return;
-            // Focus the first enabled item after its presenter is loaded.
-            if (weak.get() == tabMenu.active) tabMenu.FocusFirst();
-        });
-        menu.Closed([this, alive = std::weak_ptr<int>(lifetime), weakRow = make_weak(row), weak = make_weak(menu)](
-                        auto const&, auto const&) {
-            if (alive.expired()) return;
-            if (weak.get() == tabMenu.active) tabMenu.Dismiss();
-            // Keep fresh WinUI input state; the next opening synchronously
-            // renders the current Firefox state without another browser exchange.
-            if (auto row = weakRow.get(); row && row.ContextFlyout() == weak.get()) AttachMenu(row, true);
-        });
-        row.ContextFlyout(menu);
     }
     // Hand one native intent to the Rust queue and, only when the queue says a
     // wakeup is now needed, ask the host to schedule exactly one. This runs on
@@ -730,30 +666,6 @@ struct Pane {
         action.SetNamedValue(L"kind", NativeTabMenu::Value::CreateStringValue(L"new-tab"));
         Enqueue(NativeShellCore::NewTab, 0, tabMenu.StateRevision(), action.Stringify());
     }
-    void QueueTabSelection(uint32_t activate = 0) {
-        NativeTabMenu::Array selected;
-        uint32_t active = activate;
-        std::set<uint32_t> members;
-        for (auto item : tabs.SelectedItems()) {
-            auto id = unbox_value<uint32_t>(item);
-            if (!members.insert(id).second) continue;
-            selected.Append(NativeTabMenu::Value::CreateNumberValue(id));
-            if (!active || (!activate && id == browserSelection)) active = id;
-        }
-        if (!active) return;
-        // In single-selection mode SelectedItems() can be empty, and Firefox
-        // requires the active tab to be a member of the requested set.
-        if (!members.count(active)) selected.Append(NativeTabMenu::Value::CreateNumberValue(active));
-        NativeTabMenu::Object event;
-        event.SetNamedValue(L"kind", NativeTabMenu::Value::CreateStringValue(L"selection"));
-        event.SetNamedValue(L"revision", NativeTabMenu::Value::CreateNumberValue(tabMenu.StateRevision()));
-        event.SetNamedValue(L"tab", NativeTabMenu::Value::CreateNumberValue(active));
-        event.SetNamedValue(L"tabs", selected);
-        event.SetNamedValue(L"control",
-                            NativeTabMenu::Value::CreateBooleanValue((GetKeyState(VK_CONTROL) & 0x8000) != 0));
-        event.SetNamedValue(L"shift", NativeTabMenu::Value::CreateBooleanValue((GetKeyState(VK_SHIFT) & 0x8000) != 0));
-        Enqueue(NativeShellCore::SelectTab, active, tabMenu.StateRevision(), event.Stringify());
-    }
     // ShellCore has already reconciled tab/address/mode bookkeeping when each
     // outcome was recorded. Deliver the remaining surface-specific effects.
     void ReconcileOutcomes() {
@@ -781,85 +693,9 @@ struct Pane {
     }
     void Sync(const WinUITab* snapshot, uint32_t count, uint32_t selected) {
         SeedModel(snapshot, count, selected);
-        if (strip) {
-            browserSelection = selected;
-            shell.SelectionPending(tabMenu.StateRevision());
-            strip->Sync(snapshot, count, selected);
-            return;
-        }
-        syncing = true;
         browserSelection = selected;
-        try {
-            std::map<uint32_t, hstring> titles;
-            std::map<uint32_t, uint32_t> commands;
-            bool reordered = count != tabIds.size();
-            for (uint32_t i = 0; i < count; ++i) {
-                titles.emplace(snapshot[i].id, snapshot[i].title);
-                commands.emplace(snapshot[i].id, snapshot[i].commands);
-                if (i >= tabIds.size() || tabIds[i] != snapshot[i].id) reordered = true;
-            }
-            std::vector<uint32_t> retainedIds;
-            for (auto const& [id, command] : commands) retainedIds.push_back(id);
-            tabMenu.RetainTabs(retainedIds);
-            // Revoke the open menu when its target, ordering or eligibility changes.
-            if (tabMenu.State().tab &&
-                (reordered || !commands.count(tabMenu.State().tab) || commands[tabMenu.State().tab] != tabCommands[tabMenu.State().tab]))
-                tabMenu.Dismiss(true);
-            tabCommands.swap(commands);
-            tabTitles.swap(titles);
-            // Let ListView generate and recycle its own containers. Keep unchanged
-            // data items so ordinary title/selection updates preserve scroll and focus.
-            for (uint32_t i = 0; i < count; ++i) {
-                uint32_t match = i;
-                while (match < tabIds.size() && tabIds[match] != snapshot[i].id) ++match;
-                if (match != i || match == tabIds.size()) {
-                    if (match < tabIds.size()) {
-                        items.RemoveAt(match);
-                        tabIds.erase(tabIds.begin() + match);
-                    }
-                    tabIds.insert(tabIds.begin() + i, snapshot[i].id);
-                    // Data-item equality must use stable IDs, not possibly identical
-                    // titles. Boxed duplicate strings break UIA peer enumeration.
-                    items.InsertAt(i, box_value(snapshot[i].id));
-                }
-            }
-            while (tabIds.size() > count) {
-                items.RemoveAtEnd();
-                tabIds.pop_back();
-            }
-            for (uint32_t i = 0; i < count; ++i) {
-                if (auto row = tabs.ContainerFromIndex(i).try_as<Controls::ListViewItem>()) {
-                    AttachMenu(row);
-                    UpdateRow(row);
-                }
-            }
-            if (tabMenu.hasSelection) {
-                tabs.SelectionMode(Controls::ListViewSelectionMode::Extended);
-                if (!shell.SelectionPending(tabMenu.StateRevision())) {
-                    for (uint32_t i = 0; i < count; ++i) {
-                        auto item = items.GetAt(i);
-                        uint32_t existing;
-                        bool wanted = tabMenu.selectedTabs.count(snapshot[i].id) != 0;
-                        bool present = tabs.SelectedItems().IndexOf(item, existing);
-                        if (wanted && !present) tabs.SelectedItems().Append(item);
-                        if (!wanted && present) tabs.SelectedItems().RemoveAt(existing);
-                    }
-                }
-            } else {
-                tabs.SelectionMode(Controls::ListViewSelectionMode::Single);
-                int index = -1;
-                for (uint32_t i = 0; i < count; ++i)
-                    if (snapshot[i].id == selected) index = int(i);
-                if (tabs.SelectedIndex() != index) {
-                    tabs.SelectedIndex(index);
-                    if (index >= 0) tabs.ScrollIntoView(items.GetAt(index));
-                }
-            }
-        } catch (...) {
-            syncing = false;
-            throw;
-        }
-        syncing = false;
+        shell.SelectionPending(tabMenu.StateRevision());
+        strip->Sync(snapshot, count, selected);
     }
     void QueueStripSelection(uint32_t id) {
         if (!tabMenu.HasTab(id)) return;
@@ -948,23 +784,16 @@ struct Pane {
         // Same guard as ApplyPublishedSelection: a pane that is not presenting
         // has nothing to apply to, and the model catches up at the next
         // snapshot.
-        if (!changes.size() || (!strip && (!tabs || !items))) return;
+        if (!changes.size() || !strip) return;
         syncing = true;
         try {
             for (size_t i = 0; i < changes.size(); ++i) {
                 auto const& change = changes[i];
                 if (change.kind == NativeShellCore::TitleChanged) {
-                    if (strip)
-                        strip->UpdateTitle(change.tab, tabTitles.count(change.tab) ? tabTitles[change.tab] : L"");
-                    else if (change.to != SHELL_NO_INDEX)
-                        if (auto row = tabs.ContainerFromIndex(int(change.to)).try_as<Controls::ListViewItem>())
-                            UpdateRow(row);
+                    strip->UpdateTitle(change.tab, tabTitles.count(change.tab) ? tabTitles[change.tab] : L"");
                 } else if (change.kind == NativeShellCore::SelectionChanged) {
                     // `from`/`to` are the previous and new active tab ids.
-                    if (strip)
-                        strip->ApplySelection(change.from, change.to);
-                    else
-                        ApplySidebarSelection(change.from, change.to);
+                    strip->ApplySelection(change.from, change.to);
                 }
             }
         } catch (...) {
@@ -982,56 +811,9 @@ struct Pane {
         // A native selection is still awaiting its authoritative result; its
         // optimistic feedback stands until the outcome or a newer publication.
         if (shell.SelectionPending(tabMenu.StateRevision())) return;
-        auto const& current = tabMenu.selectedTabs;
-        if (strip) {
-            strip->ApplySelectedSet(previous, current);
-            return;
-        }
-        if (!tabs || !items) return;
-        syncing = true;
-        try {
-            tabs.SelectionMode(tabMenu.hasSelection ? Controls::ListViewSelectionMode::Extended
-                                                    : Controls::ListViewSelectionMode::Single);
-            if (tabMenu.hasSelection) {
-                for (auto id : previous) {
-                    if (current.count(id)) continue;
-                    auto index = shell.IndexOf(id);
-                    if (index == SHELL_NO_INDEX) continue;
-                    uint32_t at{};
-                    if (tabs.SelectedItems().IndexOf(items.GetAt(index), at)) tabs.SelectedItems().RemoveAt(at);
-                }
-                for (auto id : current) {
-                    if (previous.count(id)) continue;
-                    auto index = shell.IndexOf(id);
-                    if (index == SHELL_NO_INDEX) continue;
-                    uint32_t at{};
-                    if (!tabs.SelectedItems().IndexOf(items.GetAt(index), at))
-                        tabs.SelectedItems().Append(items.GetAt(index));
-                }
-            }
-        } catch (...) {
-            syncing = false;
-            throw;
-        }
-        syncing = false;
+        if (strip) strip->ApplySelectedSet(previous, tabMenu.selectedTabs);
     }
-    void ApplySidebarSelection(uint32_t previous, uint32_t current) {
-        auto index = shell.IndexOf(current);
-        if (!tabMenu.hasSelection) {
-            if (index != SHELL_NO_INDEX && tabs.SelectedIndex() != int(index)) {
-                tabs.SelectedIndex(int(index));
-                tabs.ScrollIntoView(items.GetAt(index));
-            }
-        }
-        // The active-tab emphasis lives on the row itself, so refresh exactly
-        // the two rows whose emphasis can have changed.
-        for (auto id : {previous, current}) {
-            auto at = shell.IndexOf(id);
-            if (at == SHELL_NO_INDEX) continue;
-            if (auto row = tabs.ContainerFromIndex(int(at)).try_as<Controls::ListViewItem>()) UpdateRow(row);
-        }
-    }
-    void Create(HWND hwnd, bool tabStrip = false) {
+    void Create(HWND hwnd) {
         parent = hwnd;
         check_bool(SetWindowSubclass(parent, FocusProc, reinterpret_cast<UINT_PTR>(this),
                                      reinterpret_cast<DWORD_PTR>(this)));
@@ -1061,208 +843,66 @@ struct Pane {
         childWindow = GetWindowFromWindowId(source.SiteBridge().WindowId());
         check_bool(SetWindowSubclass(childWindow, FocusProc, reinterpret_cast<UINT_PTR>(this),
                                      reinterpret_cast<DWORD_PTR>(this)));
-        if (tabStrip) {
-            strip = std::make_unique<NativeTabStrip>(tabMenu);
-            strip->core = shell.core;
-            strip->ownerHwnd = hwnd;
-            // The strip's own completed gestures ride the same queue as menu
-            // transitions and selection, in the order the user made them. Each
-            // carries the presentation revision it was formed against, so one
-            // formed against a superseded presentation is refused by Firefox
-            // rather than silently dropped here.
-            if (WorkAccountingEnabled()) {
-                strip->dropCommitted = [] {
-                    dropCommittedAt() = NowMs();
-                    dropStallAtCommit() = pumpStallTotal();
-                };
-                strip->dropLanded = [] {
-                    if (dropCommittedAt() <= 0.0) return;
-                    RecordStage(StageDrop, NowMs() - dropCommittedAt(), NotExcluded,
-                                pumpStallTotal() - dropStallAtCommit());
-                    dropCommittedAt() = 0.0;
-                };
-            }
-            strip->dispatch = [this](uint32_t id, hstring const& action) {
-                return Enqueue(NativeShellCore::StripAction, id, strip->presentationRevision, action);
+        strip = std::make_unique<NativeTabStrip>(tabMenu);
+        strip->core = shell.core;
+        strip->ownerHwnd = hwnd;
+        // The strip's own completed gestures ride the same queue as menu
+        // transitions and selection, in the order the user made them. Each
+        // carries the presentation revision it was formed against, so one
+        // formed against a superseded presentation is refused by Firefox
+        // rather than silently dropped here.
+        if (WorkAccountingEnabled()) {
+            strip->dropCommitted = [] {
+                dropCommittedAt() = NowMs();
+                dropStallAtCommit() = pumpStallTotal();
             };
-            strip->groupsButton.dispatch = [this](hstring const& action) {
-                Enqueue(NativeShellCore::StripAction, 0, strip->presentationRevision, action);
+            strip->dropLanded = [] {
+                if (dropCommittedAt() <= 0.0) return;
+                RecordStage(StageDrop, NowMs() - dropCommittedAt(), NotExcluded,
+                            pumpStallTotal() - dropStallAtCommit());
+                dropCommittedAt() = 0.0;
             };
-            // Hover-card requests coalesce: only the newest hover matters, and
-            // it must never displace a gesture queued before it.
-            strip->preview = [this](hstring const& action) {
-                Enqueue(NativeShellCore::StripPreview, 0, strip->presentationRevision, action);
-            };
-            strip->select = [this](uint32_t id) { QueueStripSelection(id); };
-            strip->close = [this](uint32_t id) { QueueClose(id); };
-            strip->add = [this] { QueueNewTab(); };
-            takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(parent); });
-            source.Content(strip->root);
-            // The island owns the backdrop and its theme/activation/fallback
-            // handling. The toolbar's separate island follows the same choice;
-            // each host owns its backdrop instance and closes it independently.
-            // Mica Alt until Firefox's first publication names its preference.
-            strip->applyBackdrop = [this](NativeTabStrip::Backdrop kind) {
-                SetBackdrop(source, kind);
-                if (addressSource && navigationBackdrop) SetBackdrop(addressSource, kind);
-            };
-            strip->applyBackdrop(strip->backdrop);
-            windowDrag.Open(hwnd, strip.get());
-            // Subscribe after XAML installs its default target, before showing
-            // the island. SetTarget substitutes a rejecting target at the system
-            // boundary, before XAML drag event creation (which can fail-fast in
-            // embedded Firefox). Do not Close this shared, WinUI-owned manager
-            // or replace Firefox's HWND/OLE registration. Native tab gestures
-            // use our independent pointer session and never enter this path.
-            auto dropManager = SystemDrag::DragDropManager::GetForIsland(strip->root.XamlRoot().ContentIsland());
-            externalDropRevoker = dropManager.TargetRequested(auto_revoke,
-                [](auto const&, SystemDrag::DropOperationTargetRequestedEventArgs const& args) {
-                    args.SetTarget(make<RejectExternalDrop>());
-                });
-            strip->armDragSession = [this](uint32_t id) { ArmDragSession(*this, id); };
-            strip->armGroupDragSession = [this](uint32_t id) { ArmDragSession(*this,id); dragSession().groupSource=true; };
-            strip->tickDragSession = TickDragSession;
-            return;
         }
-        auto panel = Markup::XamlReader::Load(
-                         LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions></Grid>)")
-                         .as<Controls::Grid>();
-        panel.Padding({16, 16, 16, 16});
-
-        panel.Loaded([](auto const& sender, auto const&) {
-            if (!DiagnosticsEnabled()) return;
-            auto element = sender.template as<FrameworkElement>();
-            fprintf(stderr, "WinUIPane loaded width=%.1f height=%.1f rootWidth=%.1f rootHeight=%.1f\n",
-                    element.ActualWidth(), element.ActualHeight(), element.XamlRoot().Size().Width,
-                    element.XamlRoot().Size().Height);
-            auto panel = element.as<Controls::Grid>();
-            auto background = panel.Background().as<Media::SolidColorBrush>().Color();
-            auto foreground =
-                panel.Children().GetAt(0).as<Controls::TextBlock>().Foreground().as<Media::SolidColorBrush>().Color();
-            fprintf(stderr, "WinUIPane theme=%d background=%u,%u,%u,%u foreground=%u,%u,%u,%u\n",
-                    int(panel.ActualTheme()), background.A, background.R, background.G, background.B, foreground.A,
-                    foreground.R, foreground.G, foreground.B);
-        });
-        Controls::TextBlock title;
-        title.Text(L"Tabs");
-        title.Margin({0, 0, 0, 12});
-        tabs = Controls::ListView();
-        items = single_threaded_observable_vector<Windows::Foundation::IInspectable>();
-        tabs.ItemsSource(items);
-        tabs.ItemTemplate(
-            Markup::XamlReader::Load(
-                LR"(<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis" /><Button Grid.Column="1" Width="32" Height="32" MinWidth="0" Padding="0" Margin="8,0,0,0" ToolTipService.ToolTip="Close tab" AutomationProperties.AutomationId="FennCloseTab"><SymbolIcon Symbol="Cancel" /></Button></Grid></DataTemplate>)")
-                .as<DataTemplate>());
-        tabs.ItemContainerStyle(
-            Markup::XamlReader::Load(
-                LR"(<Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="ListViewItem"><Setter Property="HorizontalContentAlignment" Value="Stretch"/></Style>)")
-                .as<Style>());
-        containers =
-            tabs.ContainerContentChanging([this](auto const&, Controls::ContainerContentChangingEventArgs const& args) {
-                if (args.InRecycleQueue()) return;
-                auto row = args.ItemContainer();
-                // The container may not have an index yet during realization.
-                // The data item already carries its stable Firefox ID.
-                AttachMenu(row, false, unbox_value<uint32_t>(args.Item()));
-                UpdateRow(row);
-                args.RegisterUpdateCallback([this, alive = std::weak_ptr<int>(lifetime)](
-                                                auto const&, Controls::ContainerContentChangingEventArgs const& ready) {
-                    if (alive.expired() || ready.InRecycleQueue()) return;
-                    auto row = ready.ItemContainer();
-                    auto grid = row.ContentTemplateRoot().as<Controls::Grid>();
-                    // Resolve deferred work from the current snapshot, including
-                    // title changes that do not replace the stable ListView item.
-                    UpdateRow(row);
-                    auto button = grid.Children().GetAt(1).as<Controls::Button>();
-                    if (button.Tag()) return;
-                    button.Tag(box_value(true));
-                    button.Click([this, alive = std::weak_ptr<int>(lifetime), weak = make_weak(row)](auto const&,
-                                                                                                     auto const&) {
-                        if (alive.expired() || syncing) return;
-                        if (auto row = weak.get()) {
-                            auto index = tabs.IndexFromContainer(row);
-                            if (index >= 0 && size_t(index) < tabIds.size()) {
-                                // Clicking a background close button must not select its row,
-                                // which QueueClose also takes care of.
-                                QueueClose(tabIds[index]);
-                            }
-                        }
-                    });
-                });
-            });
-        tabs.IsItemClickEnabled(true);
-        tabs.ItemClick(
-            [this, alive = std::weak_ptr<int>(lifetime)](auto const&, Controls::ItemClickEventArgs const& args) {
-                if (alive.expired() || syncing || !tabMenu.hasSelection) return;
-                try {
-                    QueueTabSelection(unbox_value<uint32_t>(args.ClickedItem()));
-                } catch (...) {}
-            });
-        tabs.SelectionMode(Controls::ListViewSelectionMode::Single);
-        Automation::AutomationProperties::SetAutomationId(tabs, L"FennTabs");
-        Automation::AutomationProperties::SetName(tabs, L"Tabs in this window");
-        Controls::Grid::SetRow(tabs, 1);
-        selection = tabs.SelectionChanged([this](auto const&, Controls::SelectionChangedEventArgs const& args) {
-            if (syncing) return;
-            try {
-                if (tabMenu.hasSelection) {
-                    uint32_t endpoint = 0;
-                    if (GetKeyState(VK_SHIFT) & 0x8000) {
-                        if (args.AddedItems().Size())
-                            endpoint = unbox_value<uint32_t>(args.AddedItems().GetAt(args.AddedItems().Size() - 1));
-                        else if (auto focused =
-                                     Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(tabs.XamlRoot())
-                                         .try_as<Controls::ListViewItem>()) {
-                            auto index = tabs.IndexFromContainer(focused);
-                            if (index >= 0 && size_t(index) < tabIds.size()) endpoint = tabIds[index];
-                        }
-                    }
-                    QueueTabSelection(endpoint);
-                } else {
-                    // Single-selection mode: the same request path, with the
-                    // clicked row as the only member of the set. Selection
-                    // never travels through syncTabs any more, so no command
-                    // can reach Firefox through two executors.
-                    auto index = tabs.SelectedIndex();
-                    if (index >= 0 && size_t(index) < tabIds.size()) QueueTabSelection(tabIds[index]);
-                }
-            } catch (...) {}
-        });
+        strip->dispatch = [this](uint32_t id, hstring const& action) {
+            return Enqueue(NativeShellCore::StripAction, id, strip->presentationRevision, action);
+        };
+        strip->groupsButton.dispatch = [this](hstring const& action) {
+            Enqueue(NativeShellCore::StripAction, 0, strip->presentationRevision, action);
+        };
+        // Hover-card requests coalesce: only the newest hover matters, and
+        // it must never displace a gesture queued before it.
+        strip->preview = [this](hstring const& action) {
+            Enqueue(NativeShellCore::StripPreview, 0, strip->presentationRevision, action);
+        };
+        strip->select = [this](uint32_t id) { QueueStripSelection(id); };
+        strip->close = [this](uint32_t id) { QueueClose(id); };
+        strip->add = [this] { QueueNewTab(); };
         takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(parent); });
-        panel.Children().Append(title);
-        panel.Children().Append(tabs);
-        auto newTab =
-            Markup::XamlReader::Load(
-                LR"x(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="32" Height="32" MinWidth="0" Padding="0" HorizontalAlignment="Left" Margin="0,12,0,0" ToolTipService.ToolTip="New tab (Ctrl+T)" AutomationProperties.Name="New tab" AutomationProperties.AutomationId="FennNewTab"><SymbolIcon Symbol="Add" /></Button>)x")
-                .as<Controls::Button>();
-        Controls::Grid::SetRow(newTab, 2);
-        newTab.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-            if (alive.expired() || syncing) return;
-            QueueNewTab();
-        });
-        panel.Children().Append(newTab);
-        address = std::make_unique<NativeAddress>(shell);
-        // Rust records the admitted request/intent and clears it on matching
-        // completion, including when bounded outcome reports are evicted.
-        address->dispatch = [this](hstring const& action) {
-            return Enqueue(NativeShellCore::AddressAction, 0, address->revision, action);
+        source.Content(strip->root);
+        // The island owns the backdrop and its theme/activation/fallback
+        // handling. The toolbar's separate island follows the same choice;
+        // each host owns its backdrop instance and closes it independently.
+        // Mica Alt until Firefox's first publication names its preference.
+        strip->applyBackdrop = [this](NativeTabStrip::Backdrop kind) {
+            SetBackdrop(source, kind);
+            if (addressSource && navigationBackdrop) SetBackdrop(addressSource, kind);
         };
-        // The island and the HWND live here, so the answer to "does this
-        // surface hold focus" is assembled here and the address controls only
-        // say when to ask.
-        WireAddress();
-        // Deliberately not tracked as an outstanding intent: a report is not
-        // something the surface is waiting to hear back about.
-        address->reportVisible = [this](hstring const& action) {
-            Enqueue(NativeShellCore::AddressVisibility, 0, address->revision, action);
-        };
-        address->mode.dispatch = [this](hstring const& action) {
-            Enqueue(NativeShellCore::AddressModeAction, 0, address->revision, action);
-        };
-        Controls::Grid::SetRow(address->root, 3);
-        panel.Children().Append(address->root);
-        source.Content(panel);
+        strip->applyBackdrop(strip->backdrop);
+        windowDrag.Open(hwnd, strip.get());
+        // Subscribe after XAML installs its default target, before showing
+        // the island. SetTarget substitutes a rejecting target at the system
+        // boundary, before XAML drag event creation (which can fail-fast in
+        // embedded Firefox). Do not Close this shared, WinUI-owned manager
+        // or replace Firefox's HWND/OLE registration. Native tab gestures
+        // use our independent pointer session and never enter this path.
+        auto dropManager = SystemDrag::DragDropManager::GetForIsland(strip->root.XamlRoot().ContentIsland());
+        externalDropRevoker = dropManager.TargetRequested(auto_revoke,
+            [](auto const&, SystemDrag::DropOperationTargetRequestedEventArgs const& args) {
+                args.SetTarget(make<RejectExternalDrop>());
+            });
+        strip->armDragSession = [this](uint32_t id) { ArmDragSession(*this, id); };
+        strip->armGroupDragSession = [this](uint32_t id) { ArmDragSession(*this,id); dragSession().groupSource=true; };
+        strip->tickDragSession = TickDragSession;
     }
 };
 
@@ -1772,6 +1412,12 @@ void Initialize() {
         s.manager = WindowsXamlManager::InitializeForCurrentThread();
         phase = "resources";
         s.app.Resources().MergedDictionaries().Append(Controls::XamlControlsResources());
+        // The same holds for the controls module these resources (and TabView)
+        // live in: unloaded by COM teardown, its static destructors fault.
+        phase = "controls-module-lifetime";
+        HMODULE controls{};
+        if (GetModuleHandleW(L"Microsoft.UI.Xaml.Controls.dll"))
+            check_bool(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, L"Microsoft.UI.Xaml.Controls.dll", &controls));
         // Firefox caps a tab at 225 CSS px; the stock TabView default is 240.
         s.app.Resources().Insert(box_value(L"TabViewItemMaxWidth"), box_value(225.0));
         s.initialization = S_OK;
@@ -1782,26 +1428,20 @@ void Initialize() {
     }
 }
 
-HRESULT UpdateImpl(HWND hwnd, const RECT* rect, BOOL visible, bool strip) noexcept {
-    WorkScope scope{strip ? EntryUpdateTabStrip : EntryUpdate};
+HRESULT WINAPI UpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
+    WorkScope scope{EntryUpdateTabStrip};
     try {
         check_hresult(Check(hwnd));
         if (!hwnd || !rect || rect->right < rect->left || rect->bottom < rect->top) return E_INVALIDARG;
         auto& s = state();
         auto found = s.panes.find(hwnd);
         if (!visible && found == s.panes.end()) return S_OK;
-        if (found != s.panes.end() && bool(found->second->strip) != strip) {
-            found->second->Close();
-            s.panes.erase(found);
-            found = s.panes.end();
-            if (!visible) return S_OK;
-        }
         if (found == s.panes.end()) {
             Initialize();
             auto pane = std::make_unique<Pane>();
             try {
                 WorkScope create{EntryPaneCreate};
-                pane->Create(hwnd, strip);
+                pane->Create(hwnd);
             } catch (...) {
                 auto error = to_hresult();
                 if (DiagnosticsEnabled()) {
@@ -1830,12 +1470,7 @@ HRESULT UpdateImpl(HWND hwnd, const RECT* rect, BOOL visible, bool strip) noexce
             // Firefox's compositor is a sibling HWND covering the client area.
             // Ask the window where it actually is rather than remembering where
             // it was last put: a restack by anything else still has to be undone.
-            if (pane.strip) {
-                NativeWindowDrag::Restack(child);
-            } else if (GetWindow(child, GW_HWNDPREV) != nullptr) {
-                check_bool(SetWindowPos(child, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE));
-                ++work.restacks;
-            }
+            if (NativeWindowDrag::Restack(child)) ++work.restacks;
         }
         if (pane.appliedVisible != int(bool(visible))) {
             if (visible)
@@ -1845,7 +1480,7 @@ HRESULT UpdateImpl(HWND hwnd, const RECT* rect, BOOL visible, bool strip) noexce
             pane.appliedVisible = int(bool(visible));
             ++work.visibilityApplied;
         }
-        if (pane.strip) pane.windowDrag.SetVisible(bool(visible));
+        pane.windowDrag.SetVisible(bool(visible));
         scope.Stop();
         if (DiagnosticsEnabled()) {
             RECT actual{};
@@ -1861,12 +1496,6 @@ HRESULT UpdateImpl(HWND hwnd, const RECT* rect, BOOL visible, bool strip) noexce
     } catch (...) {
         return to_hresult();
     }
-}
-HRESULT WINAPI Update(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
-    return UpdateImpl(hwnd, rect, visible, false);
-}
-HRESULT WINAPI UpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
-    return UpdateImpl(hwnd, rect, visible, true);
 }
 HRESULT WINAPI Clip(HWND hwnd, const RECT* exclusions, uint32_t count) noexcept {
     WorkScope scope{EntryClip};
@@ -1920,7 +1549,7 @@ HRESULT WINAPI Clip(HWND hwnd, const RECT* exclusions, uint32_t count) noexcept 
         pane.appliedExclusions.assign(exclusions, exclusions + count);
         pane.appliedClipClient = bounds;
         pane.clipApplied = true;
-        if (pane.strip) pane.windowDrag.SetClip(child, pane.appliedExclusions);
+        pane.windowDrag.SetClip(child, pane.appliedExclusions);
         ++work.clipsApplied;
         scope.Stop();
         if (DiagnosticsEnabled())
@@ -1970,7 +1599,7 @@ HRESULT WINAPI UpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept
         if (!pane.addressSource) {
             pane.addressSource = DesktopWindowXamlSource();
             pane.addressSource.Initialize(GetWindowIdFromWindow(hwnd));
-            pane.address = std::make_unique<NativeAddress>(pane.shell, true);
+            pane.address = std::make_unique<NativeAddress>(pane.shell);
             pane.WireAddress();
             pane.addressTakeFocus = pane.addressSource.TakeFocusRequested([&pane](auto const&, auto const&) {
                 pane.address->focusWithin = false;
@@ -2464,7 +2093,6 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneGetApi(uint32_t version
     if (version != WINUI_PANE_ABI_VERSION || size != sizeof(WinUIPaneApi)) return E_NOINTERFACE;
     *output = {sizeof(WinUIPaneApi),
                WINUI_PANE_ABI_VERSION,
-               Update,
                Focus,
                Destroy,
                Translate,

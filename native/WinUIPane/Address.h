@@ -295,7 +295,7 @@ struct NativeAddress {
                          StagedKind() == NativeShellCore::NoIntent ? L"none" : JObject::Parse(pending).GetNamedString(L"kind").c_str());
         }
     }
-    explicit NativeAddress(NativeShellCore& core, bool toolbar = false) : mode(core), shell(core) {
+    explicit NativeAddress(NativeShellCore& core) : mode(core), shell(core) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         root.Visibility(Visibility::Collapsed);
@@ -612,207 +612,201 @@ struct NativeAddress {
             }
         });
         root.Children().Append(header);
-        if (toolbar) {
-            // Flatten the unfocused/hover border; leave the stock focused accent
-            // and thickness intact. High contrast keeps its system borders.
-            field.Resources(Markup::XamlReader::Load(LR"(
-                <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-                    <ResourceDictionary.ThemeDictionaries>
-                        <ResourceDictionary x:Key="Default">
-                            <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource ControlStrokeColorDefault}"/>
-                            <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource ControlStrokeColorDefault}"/>
-                        </ResourceDictionary>
-                        <ResourceDictionary x:Key="Light">
-                            <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource ControlStrokeColorDefault}"/>
-                            <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource ControlStrokeColorDefault}"/>
-                        </ResourceDictionary>
-                        <ResourceDictionary x:Key="HighContrast">
-                            <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource SystemColorButtonTextColor}"/>
-                            <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource SystemColorHighlightColor}"/>
-                        </ResourceDictionary>
-                    </ResourceDictionary.ThemeDictionaries>
-                </ResourceDictionary>)").as<ResourceDictionary>());
-            toolbarRoot = Grid();
-            navigation = std::make_unique<NativeNavigationToolbar>();
-            navigation->activate = [this](wchar_t const* command, uint32_t modifiers, Controls::Button const& button) {
-                if (syncing || session.empty() || !navigate) return;
-                if (navigation->customization.editing && wcsncmp(command,L"customize:",10)!=0) return;
-                auto action = Message(L"navigation");
-                action.SetNamedValue(L"command", JValue::CreateStringValue(command));
-                action.SetNamedValue(L"keyboard", JValue::CreateBooleanValue(navigation->keyboardActivation));
-                action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
-                if (wcscmp(command, L"back-history") == 0 || wcscmp(command, L"forward-history") == 0 || wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcscmp(command, L"overflow") == 0 || wcscmp(command, L"downloads") == 0 || wcscmp(command, L"history") == 0 || wcsncmp(command,L"history-menu:open:",18)==0 || wcscmp(command, L"bookmarks") == 0 || wcsncmp(command, L"extension", 9) == 0 || wcsncmp(command,L"widget-menu:",12)==0 || wcsncmp(command, L"omni", 4) == 0) {
-                    auto local = button.TransformToVisual(nullptr).TransformBounds(
-                        {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
-                    auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-                    action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
-                    action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
-                    action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
-                    action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
-                    if (releaseMenuFocus && wcsncmp(command,L"history-menu:",13)!=0) releaseMenuFocus();
-                }
-                navigate(action.Stringify());
-            };
-            navigation->historyMenu.core=shell.core;
-            navigation->historyMenu.dispatch=navigation->activate;
-            omnibarLeft.activate = navigation->activate;
-            omnibarRight.activate = navigation->activate;
-            for (auto* buttons : {&omnibarLeft, &omnibarRight}) {
-                buttons->commandPrefix = L"omni:";
-                buttons->contextPrefix = L"omni-menu:";
-                buttons->automationPrefix = L"FennOmnibar-";
-                buttons->buttonSize = 28;
-                buttons->panel.Spacing(0);
-                buttons->panel.VerticalAlignment(VerticalAlignment::Center);
+        // Flatten the unfocused/hover border; leave the stock focused accent
+        // and thickness intact. High contrast keeps its system borders.
+        field.Resources(Markup::XamlReader::Load(LR"(
+            <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                                xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                <ResourceDictionary.ThemeDictionaries>
+                    <ResourceDictionary x:Key="Default">
+                        <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource ControlStrokeColorDefault}"/>
+                        <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource ControlStrokeColorDefault}"/>
+                    </ResourceDictionary>
+                    <ResourceDictionary x:Key="Light">
+                        <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource ControlStrokeColorDefault}"/>
+                        <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource ControlStrokeColorDefault}"/>
+                    </ResourceDictionary>
+                    <ResourceDictionary x:Key="HighContrast">
+                        <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource SystemColorButtonTextColor}"/>
+                        <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource SystemColorHighlightColor}"/>
+                    </ResourceDictionary>
+                </ResourceDictionary.ThemeDictionaries>
+            </ResourceDictionary>)").as<ResourceDictionary>());
+        toolbarRoot = Grid();
+        navigation = std::make_unique<NativeNavigationToolbar>();
+        navigation->activate = [this](wchar_t const* command, uint32_t modifiers, Controls::Button const& button) {
+            if (syncing || session.empty() || !navigate) return;
+            if (navigation->customization.editing && wcsncmp(command,L"customize:",10)!=0) return;
+            auto action = Message(L"navigation");
+            action.SetNamedValue(L"command", JValue::CreateStringValue(command));
+            action.SetNamedValue(L"keyboard", JValue::CreateBooleanValue(navigation->keyboardActivation));
+            action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
+            if (wcscmp(command, L"back-history") == 0 || wcscmp(command, L"forward-history") == 0 || wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcscmp(command, L"overflow") == 0 || wcscmp(command, L"downloads") == 0 || wcscmp(command, L"history") == 0 || wcsncmp(command,L"history-menu:open:",18)==0 || wcscmp(command, L"bookmarks") == 0 || wcsncmp(command, L"extension", 9) == 0 || wcsncmp(command,L"widget-menu:",12)==0 || wcsncmp(command, L"omni", 4) == 0) {
+                auto local = button.TransformToVisual(nullptr).TransformBounds(
+                    {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
+                auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+                action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
+                action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
+                action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
+                action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
+                if (releaseMenuFocus && wcsncmp(command,L"history-menu:",13)!=0) releaseMenuFocus();
             }
-            omnibarLeft.panel.Margin({4, 0, 0, 0});
-            omnibarRight.panel.Margin({0, 0, 4, 0});
-            // The stock TextBox owns the entire surface and focus accent. Its
-            // padding reserves the overlaid native controls within that border.
-            header.Children().Clear();
-            header.ColumnDefinitions().Clear();
-            for (int i = 0; i < 5; ++i) {
-                ColumnDefinition column;
-                column.Width(i == 2 ? GridLengthHelper::FromValueAndType(1, GridUnitType::Star) : GridLengthHelper::Auto());
-                header.ColumnDefinitions().Append(column);
-            }
-            Grid::SetColumn(field, 0); Grid::SetColumnSpan(field, 5);
-            Grid::SetColumn(omnibarLeft.panel, 0);
-            Grid::SetColumn(mode.button, 1);
-            Grid::SetColumn(mode.exit, 3);
-            Grid::SetColumn(omnibarRight.panel, 4);
-            // Keep logical tab order left-to-right while painting the editor
-            // behind the embedded controls.
-            Canvas::SetZIndex(field, -1);
-            header.Children().Append(omnibarLeft.panel);
-            header.Children().Append(mode.button);
-            header.Children().Append(field);
-            header.Children().Append(mode.exit);
-            header.Children().Append(omnibarRight.panel);
-            mode.button.MinWidth(0); mode.button.MinHeight(0);
-            mode.button.Height(24); mode.button.Margin({4, 0, 4, 0});
-            // The stock 12-DIP arrow has internal side bearings; balance visible edge spacing.
-            mode.button.Padding({8, 0, 6, 0});
-            mode.button.VerticalAlignment(VerticalAlignment::Center);
-            mode.button.BorderThickness({0, 0, 0, 0});
-            mode.button.CornerRadius({12, 12, 12, 12});
-            auto modeContent = mode.button.Content().as<StackPanel>();
-            // Compact the stock template's arrow gap without shrinking the
-            // content presenter's layout slot (negative margins overflow it).
-            mode.button.Loaded([](auto const& sender, auto const&) {
-                auto button = sender.template as<DropDownButton>();
-                button.ApplyTemplate();
-                if (!Media::VisualTreeHelper::GetChildrenCount(button)) return;
-                auto templateRoot = Media::VisualTreeHelper::GetChild(button, 0).template try_as<FrameworkElement>();
-                auto chevron = templateRoot ? templateRoot.FindName(L"ChevronIcon").template try_as<FrameworkElement>() : nullptr;
-                if (chevron) chevron.Margin({6, 0, 0, 0});
-            });
-            modeContent.Children().RemoveAt(1);
-            Viewbox modeIcon;
-            modeIcon.Width(16); modeIcon.Height(16);
-            modeIcon.Child(mode.symbol);
-            modeIcon.Visibility(mode.symbol.Visibility());
-            mode.symbolHost = modeIcon;
-            modeContent.Children().InsertAt(1, modeIcon);
-            auto reserveControls = [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-                if (alive.expired()) return;
-                auto width = [](FrameworkElement const& element) {
-                    return element.Visibility() == Visibility::Visible ? element.ActualWidth() + element.Margin().Left + element.Margin().Right : 0.0;
-                };
-                const float textGap = mode.button.Visibility() == Visibility::Visible ? 2.0f : 8.0f;
-                field.Padding({float(textGap + width(omnibarLeft.panel) + width(mode.button)), 4,
-                    float(8 + width(mode.exit) + width(omnibarRight.panel)), 4});
-            };
-            for (auto element : {omnibarLeft.panel.as<FrameworkElement>(), mode.button.as<FrameworkElement>(),
-                                 mode.exit.as<FrameworkElement>(), omnibarRight.panel.as<FrameworkElement>()}) {
-                element.SizeChanged(reserveControls);
-                element.RegisterPropertyChangedCallback(UIElement::VisibilityProperty(), reserveControls);
-            }
-            toolbarSurface = Markup::XamlReader::Load(
-                LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}"/>)").as<Grid>();
-            toolbarSurface.Visibility(Visibility::Collapsed);
-
-            toolbarRoot.Children().Append(toolbarSurface);
-            toolbarRoot.Children().Append(root);
-            navigation->Attach(toolbarRoot,root,toolbarSurface);
-            root.VerticalAlignment(VerticalAlignment::Center);
-            Automation::AutomationProperties::SetAutomationId(toolbarRoot, L"FennNavigationToolbar");
-            field.ContextFlyout(nullptr);
-            field.SelectionFlyout(nullptr);
-            context.editType = [this, alive = std::weak_ptr<int>(lifetime)](auto type) {
-                if (!alive.expired()) nextInputType = type;
-            };
-            context.action = [this, alive = std::weak_ptr<int>(lifetime)](auto kind, auto const& id) {
-                if (!alive.expired()) Action(kind, 0, id.c_str());
-            };
-            field.ContextRequested([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
-                if (alive.expired()) return;
-                e.Handled(true);
-                context.requested = true;
-                context.atPointer = e.TryGetPosition(field, context.position);
-                Action(L"context-open");
-            });
-            field.CopyingToClipboard([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
-                if (alive.expired()) return;
-                e.Handled(true);
-                Action(L"clipboard", 0, L"cmd_copy");
-            });
-            field.CuttingToClipboard([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
-                if (alive.expired()) return;
-                e.Handled(true);
-                Action(L"clipboard", 0, L"cmd_cut");
-            });
-            field.Paste([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
-                if (alive.expired()) return;
-                e.Handled(true);
-                Action(L"clipboard", 0, L"cmd_paste");
-            });
-            root.Margin({0, 0, 0, 0});
-            // The popup floats outside layout; spacing after the header would
-            // shift the visible editor above the navigation buttons' center.
-            root.Spacing(0);
-            field.MinHeight(32);
-            field.Padding({8, 4, 8, 4});
-            popupContent = StackPanel();
-            popupContent.Spacing(4);
-            popupContent.Children().Append(suggestions.list);
-            popupContent.Children().Append(actions.panel);
-            popupContent.Children().Append(fallback);
-            auto border = Markup::XamlReader::Load(
-                LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="4"/>)").as<Border>();
-            border.Child(popupContent);
-            popup = Primitives::Popup();
-            popup.Child(border);
-            popup.ShouldConstrainToRootBounds(false);
-            popup.PlacementTarget(header);
-            popup.DesiredPlacement(Primitives::PopupPlacementMode::BottomEdgeAlignedLeft);
-            root.Children().Append(popup);
-            popup.Opened([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-                if (!alive.expired()) ScheduleVisibilityReport();
-            });
-            popupContent.SizeChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-                if (!alive.expired()) ScheduleVisibilityReport();
-            });
-            popupContent.GotFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-                if (!alive.expired()) ScheduleFocusObservation();
-            });
-            popupContent.LostFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-                if (!alive.expired()) ScheduleFocusObservation();
-            });
-            popupContent.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](
-                auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
-                if (!alive.expired() && !composing && e.Key() == winrt::Windows::System::VirtualKey::Escape) {
-                    field.Focus(FocusState::Keyboard);
-                    Action(L"dismiss");
-                    e.Handled(true);
-                }
-            });
-        } else {
-            root.Children().Append(suggestions.list);
-            root.Children().Append(actions.panel);
-            root.Children().Append(fallback);
+            navigate(action.Stringify());
+        };
+        navigation->historyMenu.core=shell.core;
+        navigation->historyMenu.dispatch=navigation->activate;
+        omnibarLeft.activate = navigation->activate;
+        omnibarRight.activate = navigation->activate;
+        for (auto* buttons : {&omnibarLeft, &omnibarRight}) {
+            buttons->commandPrefix = L"omni:";
+            buttons->contextPrefix = L"omni-menu:";
+            buttons->automationPrefix = L"FennOmnibar-";
+            buttons->buttonSize = 28;
+            buttons->panel.Spacing(0);
+            buttons->panel.VerticalAlignment(VerticalAlignment::Center);
         }
+        omnibarLeft.panel.Margin({4, 0, 0, 0});
+        omnibarRight.panel.Margin({0, 0, 4, 0});
+        // The stock TextBox owns the entire surface and focus accent. Its
+        // padding reserves the overlaid native controls within that border.
+        header.Children().Clear();
+        header.ColumnDefinitions().Clear();
+        for (int i = 0; i < 5; ++i) {
+            ColumnDefinition column;
+            column.Width(i == 2 ? GridLengthHelper::FromValueAndType(1, GridUnitType::Star) : GridLengthHelper::Auto());
+            header.ColumnDefinitions().Append(column);
+        }
+        Grid::SetColumn(field, 0); Grid::SetColumnSpan(field, 5);
+        Grid::SetColumn(omnibarLeft.panel, 0);
+        Grid::SetColumn(mode.button, 1);
+        Grid::SetColumn(mode.exit, 3);
+        Grid::SetColumn(omnibarRight.panel, 4);
+        // Keep logical tab order left-to-right while painting the editor
+        // behind the embedded controls.
+        Canvas::SetZIndex(field, -1);
+        header.Children().Append(omnibarLeft.panel);
+        header.Children().Append(mode.button);
+        header.Children().Append(field);
+        header.Children().Append(mode.exit);
+        header.Children().Append(omnibarRight.panel);
+        mode.button.MinWidth(0); mode.button.MinHeight(0);
+        mode.button.Height(24); mode.button.Margin({4, 0, 4, 0});
+        // The stock 12-DIP arrow has internal side bearings; balance visible edge spacing.
+        mode.button.Padding({8, 0, 6, 0});
+        mode.button.VerticalAlignment(VerticalAlignment::Center);
+        mode.button.BorderThickness({0, 0, 0, 0});
+        mode.button.CornerRadius({12, 12, 12, 12});
+        auto modeContent = mode.button.Content().as<StackPanel>();
+        // Compact the stock template's arrow gap without shrinking the
+        // content presenter's layout slot (negative margins overflow it).
+        mode.button.Loaded([](auto const& sender, auto const&) {
+            auto button = sender.template as<DropDownButton>();
+            button.ApplyTemplate();
+            if (!Media::VisualTreeHelper::GetChildrenCount(button)) return;
+            auto templateRoot = Media::VisualTreeHelper::GetChild(button, 0).template try_as<FrameworkElement>();
+            auto chevron = templateRoot ? templateRoot.FindName(L"ChevronIcon").template try_as<FrameworkElement>() : nullptr;
+            if (chevron) chevron.Margin({6, 0, 0, 0});
+        });
+        modeContent.Children().RemoveAt(1);
+        Viewbox modeIcon;
+        modeIcon.Width(16); modeIcon.Height(16);
+        modeIcon.Child(mode.symbol);
+        modeIcon.Visibility(mode.symbol.Visibility());
+        mode.symbolHost = modeIcon;
+        modeContent.Children().InsertAt(1, modeIcon);
+        auto reserveControls = [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (alive.expired()) return;
+            auto width = [](FrameworkElement const& element) {
+                return element.Visibility() == Visibility::Visible ? element.ActualWidth() + element.Margin().Left + element.Margin().Right : 0.0;
+            };
+            const float textGap = mode.button.Visibility() == Visibility::Visible ? 2.0f : 8.0f;
+            field.Padding({float(textGap + width(omnibarLeft.panel) + width(mode.button)), 4,
+                float(8 + width(mode.exit) + width(omnibarRight.panel)), 4});
+        };
+        for (auto element : {omnibarLeft.panel.as<FrameworkElement>(), mode.button.as<FrameworkElement>(),
+                             mode.exit.as<FrameworkElement>(), omnibarRight.panel.as<FrameworkElement>()}) {
+            element.SizeChanged(reserveControls);
+            element.RegisterPropertyChangedCallback(UIElement::VisibilityProperty(), reserveControls);
+        }
+        toolbarSurface = Markup::XamlReader::Load(
+            LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}"/>)").as<Grid>();
+        toolbarSurface.Visibility(Visibility::Collapsed);
+
+        toolbarRoot.Children().Append(toolbarSurface);
+        toolbarRoot.Children().Append(root);
+        navigation->Attach(toolbarRoot,root,toolbarSurface);
+        root.VerticalAlignment(VerticalAlignment::Center);
+        Automation::AutomationProperties::SetAutomationId(toolbarRoot, L"FennNavigationToolbar");
+        field.ContextFlyout(nullptr);
+        field.SelectionFlyout(nullptr);
+        context.editType = [this, alive = std::weak_ptr<int>(lifetime)](auto type) {
+            if (!alive.expired()) nextInputType = type;
+        };
+        context.action = [this, alive = std::weak_ptr<int>(lifetime)](auto kind, auto const& id) {
+            if (!alive.expired()) Action(kind, 0, id.c_str());
+        };
+        field.ContextRequested([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+            if (alive.expired()) return;
+            e.Handled(true);
+            context.requested = true;
+            context.atPointer = e.TryGetPosition(field, context.position);
+            Action(L"context-open");
+        });
+        field.CopyingToClipboard([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+            if (alive.expired()) return;
+            e.Handled(true);
+            Action(L"clipboard", 0, L"cmd_copy");
+        });
+        field.CuttingToClipboard([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+            if (alive.expired()) return;
+            e.Handled(true);
+            Action(L"clipboard", 0, L"cmd_cut");
+        });
+        field.Paste([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+            if (alive.expired()) return;
+            e.Handled(true);
+            Action(L"clipboard", 0, L"cmd_paste");
+        });
+        root.Margin({0, 0, 0, 0});
+        // The popup floats outside layout; spacing after the header would
+        // shift the visible editor above the navigation buttons' center.
+        root.Spacing(0);
+        field.MinHeight(32);
+        field.Padding({8, 4, 8, 4});
+        popupContent = StackPanel();
+        popupContent.Spacing(4);
+        popupContent.Children().Append(suggestions.list);
+        popupContent.Children().Append(actions.panel);
+        popupContent.Children().Append(fallback);
+        auto border = Markup::XamlReader::Load(
+            LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="4"/>)").as<Border>();
+        border.Child(popupContent);
+        popup = Primitives::Popup();
+        popup.Child(border);
+        popup.ShouldConstrainToRootBounds(false);
+        popup.PlacementTarget(header);
+        popup.DesiredPlacement(Primitives::PopupPlacementMode::BottomEdgeAlignedLeft);
+        root.Children().Append(popup);
+        popup.Opened([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) ScheduleVisibilityReport();
+        });
+        popupContent.SizeChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) ScheduleVisibilityReport();
+        });
+        popupContent.GotFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) ScheduleFocusObservation();
+        });
+        popupContent.LostFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) ScheduleFocusObservation();
+        });
+        popupContent.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](
+            auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
+            if (!alive.expired() && !composing && e.Key() == winrt::Windows::System::VirtualKey::Escape) {
+                field.Focus(FocusState::Keyboard);
+                Action(L"dismiss");
+                e.Handled(true);
+            }
+        });
     }
     void PlacePopup() {
         if (!popup || !root.XamlRoot()) return;

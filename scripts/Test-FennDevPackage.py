@@ -122,11 +122,10 @@ def main():
                 return client.command("WebDriver:ExecuteScript", {"script": script, "args": []})["value"]
 
             deadline = time.monotonic() + 15
-            while not chrome("return !!window.gWinUIPane?.attached && gWinUIPane.tabStrip;"):
+            while not chrome("return !!window.gWinUIPane?.attached;"):
                 if time.monotonic() > deadline:
                     details = chrome("""return {
                         enabled: Services.prefs.getBoolPref('fenn.winui.pane.enabled'),
-                        strip: Services.prefs.getBoolPref('fenn.winui.tabstrip.enabled'),
                         attached: window.gWinUIPane?.attached};""")
                     raise AssertionError(f"Packaged defaults did not attach the native strip: {details}")
                 time.sleep(.1)
@@ -180,7 +179,7 @@ def main():
             runtime = runtime_modules(state["pid"])
             command = ["powershell", "-NoProfile", "-Mta", "-File",
                        str(ROOT / "tests/native/SelectPaneTab.ps1"), "-BrowserProcessId", str(state["pid"]),
-                       "-WindowHandle", str(int(state["hwnd"], 16)), "-TabStrip"]
+                       "-WindowHandle", str(int(state["hwnd"], 16))]
             rows = subprocess.check_output(command + ["-Mode", "Inspect"], timeout=30).decode("utf-8-sig")
             subprocess.run(command + ["-Mode", "Add"], check=True, timeout=30)
             deadline = time.monotonic() + 10

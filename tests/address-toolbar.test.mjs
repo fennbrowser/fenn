@@ -25,7 +25,7 @@ function fixture() {
   input.closest = () => slot;
   input.setAttribute("placeholder", "Localized address");
   const prefs = new Map([["fenn.winui.address.toolbar.enabled",true]]);
-  const owner = {attached:true,tabStrip:true,element:element(),schedule() {},invalidateAddress() {},
+  const owner = {attached:true,element:element(),schedule() {},invalidateAddress() {},
     addressSession:{releaseNativePresentation() {calls.push(["release"]);}},
     addressFallback() {calls.push(["fallback"]); toolbar.restore();}};
   const window = {document:{documentElement:root,querySelectorAll:()=>[...elements.values()],createElementNS:element,getElementById:id=>elements.get(id)},
@@ -71,7 +71,7 @@ test("a cancelled startup frame cannot hide the restored Firefox editor", () => 
   frame();
   assert.equal(f.toolbar.active,false);
   assert.equal(f.input.attributes.has("aria-hidden"),false);
-  assert.equal(f.owner.tabStrip,true);
+  assert.equal(f.owner.attached,true);
 });
 
 test("host refusal preserves original editable presentation", () => {
@@ -91,7 +91,6 @@ test("layout and preference fallback detach only the address host", () => {
     const f=fixture(); f.toolbar.update(); f.toolbar.activate(); unsupported(f);
     assert.equal(f.toolbar.update(),false);
     assert.equal(f.owner.attached,true);
-    assert.equal(f.owner.tabStrip,true);
     assert.equal(f.input.attributes.has("aria-hidden"),false);
     assert.equal(f.switcher.inert,false);
     assert.ok(f.calls.some(c=>c[0]==="host" && c[5]===false));
@@ -188,7 +187,7 @@ test("changing presentation releases old geometry and retains the strip", () => 
   assert.equal(f.toolbar.active, false);
   f.toolbar.activate();
   assert.equal(f.toolbar.active, true);
-  assert.equal(f.owner.tabStrip, true);
+  assert.equal(f.owner.attached, true);
 });
 
 function navigationCommandsFixture() {

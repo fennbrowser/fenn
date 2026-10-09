@@ -17,7 +17,7 @@ index 934bad0d61..81cd6e7ab6 100644
  
  if CONFIG["MOZ_ASAN"] or CONFIG["MOZ_DEBUG"]:
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index d56594d91c..9a34c210ca 100644
+index d56594d91c..6f2288a349 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -320,7 +320,8 @@ pref("browser.shell.focusSetDefaultBrowserButton", false);
@@ -85,15 +85,14 @@ index d56594d91c..9a34c210ca 100644
  #endif
  
  // Preferences for the Firefox Referral program #2051647).
-@@ -3875,6 +3877,46 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3875,6 +3877,44 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
-+// The native pane and its strip presentation are on by default in every lane
-+// (unpackaged launcher and MSIX alike); turn either off to fall back to Firefox.
++// The native tab strip is on by default in every lane (unpackaged launcher and
++// MSIX alike); turn it off to fall back to Firefox's own UI. Firefox keeps its
++// original tab and navigation UI beside the strip unless replaceFirefoxTabs is set.
 +pref("fenn.winui.pane.enabled", true);
-+// Strip-only presentation; Firefox keeps its original tab and navigation UI.
-+pref("fenn.winui.tabstrip.enabled", true);
 +// Replace the horizontal Firefox tab row after native attachment succeeds.
 +pref("fenn.winui.tabstrip.replaceFirefoxTabs", false);
 +// Native top-bar height: 32 compact, 40 current design, 48 tall.
@@ -116,7 +115,6 @@ index d56594d91c..9a34c210ca 100644
 +// Opt-in: with glow animations, extinguished glow dims out instead of
 +// disappearing at once.
 +pref("fenn.winui.tabstrip.groupGlowFadeOut", false);
-+pref("fenn.winui.address.enabled", false);
 +pref("fenn.winui.address.toolbar.enabled", false);
 +pref("fenn.winui.navigation.toolbar.enabled", false);
 +
@@ -2197,10 +2195,10 @@ index 2d06d7b7dd..3925f8d967 100644
    nsIWidget();
    virtual ~nsIWidget();
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
-index c6e02a8696..d11779734f 100644
+index c6e02a8696..93458b8252 100644
 --- a/widget/windows/WinUIPrototype.cpp
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -2,17 +2,318 @@
+@@ -2,17 +2,310 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  #include "WinUIPrototype.h"
@@ -2238,7 +2236,7 @@ index c6e02a8696..d11779734f 100644
 +static bool sPaneStopped = false;
 +
 +static bool LoadPane() {
-+  if (sPaneAttempted) return sPaneApi.update != nullptr;
++  if (sPaneAttempted) return sPaneApi.updateTabStrip != nullptr;
 +  sPaneAttempted = true;
 +  wchar_t path[32768];
 +  DWORD length = GetModuleFileNameW(nullptr, path, std::size(path));
@@ -2264,7 +2262,7 @@ index c6e02a8696..d11779734f 100644
 +  HRESULT hr = getApi ? getApi(WINUI_PANE_ABI_VERSION, sizeof(api), &api)
 +                      : E_NOINTERFACE;
 +  if (FAILED(hr) || api.size != sizeof(api) ||
-+      api.version != WINUI_PANE_ABI_VERSION || !api.update || !api.focus ||
++      api.version != WINUI_PANE_ABI_VERSION || !api.focus ||
 +      !api.destroy || !api.translate || !api.shutdown || !api.clip || !api.syncTabs || !api.syncAddress || !api.syncTabMenu || !api.updateTabStrip ||
 +      !api.setNotifySink || !api.drainRequests || !api.completeRequests || !api.applyTabDelta ||
 +      !api.updateAddress || !api.focusAddress) {
@@ -2362,15 +2360,7 @@ index c6e02a8696..d11779734f 100644
 +  }
 +  sTraceEnabled = true;
 +  if (!LoadPane()) return false;
-+  auto update =
-+      Preferences::GetBool("fenn.winui.tabstrip.enabled",
-+                           false) ||
-+              Preferences::GetBool(
-+                  "fenn.winui.tabstrip.replaceFirefoxTabs",
-+                  false)
-+          ? sPaneApi.updateTabStrip
-+          : sPaneApi.update;
-+  HRESULT hr = update(aWindow, &aRect, aVisible);
++  HRESULT hr = sPaneApi.updateTabStrip(aWindow, &aRect, aVisible);
 +  if (SUCCEEDED(hr) && sPaneApi.setNotifySink) {
 +    // Registered by the widget, not by chrome script, so the request path
 +    // cannot end up with a queue and no wakeup because script failed to set
@@ -2520,7 +2510,7 @@ index c6e02a8696..d11779734f 100644
  
  void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    if (!XRE_IsParentProcess() || !NS_IsMainThread() || !sTraceEnabled) return;
-@@ -20,51 +321,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
+@@ -20,51 +313,63 @@ void TraceWinUIPrototype(const char* aPhase, HWND aWindow) {
    APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
    const HRESULT hr = CoGetApartmentType(&apartment, &qualifier);
    DWORD ownerProcess = 0;
@@ -5665,7 +5655,7 @@ index 0000000000..a8fae4db53
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..afb3ab9d75
+index 0000000000..2cc6cea02a
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
 @@ -0,0 +1,347 @@
@@ -5758,7 +5748,7 @@ index 0000000000..afb3ab9d75
 +  }
 +  supported() {
 +    const { window, owner } = this;
-+    return owner.attached && owner.tabStrip && !this.failed &&
++    return owner.attached && !this.failed &&
 +      (Services.prefs.getBoolPref("fenn.winui.address.toolbar.enabled", false) ||
 +       this.navigationRequested) &&
 +      !window.fullScreen && !window.document.fullscreenElement &&
@@ -6045,20 +6035,18 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..71c3aef4d1
+index 0000000000..c0cb77ef7e
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2122 @@
+@@ -0,0 +1,2096 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +var gWinUIPane = {
 +  pref: "fenn.winui.pane.enabled",
-+  addressPref: "fenn.winui.address.enabled",
 +  addressToolbarPref: "fenn.winui.address.toolbar.enabled",
 +  navigationToolbarPref: "fenn.winui.navigation.toolbar.enabled",
-+  stripPref: "fenn.winui.tabstrip.enabled",
 +  replaceTabsPref: "fenn.winui.tabstrip.replaceFirefoxTabs",
 +  containerDotPref: "fenn.winui.tabstrip.containerDot",
 +  tabGlowsPref: "fenn.winui.tabstrip.glows",
@@ -6194,8 +6182,7 @@ index 0000000000..71c3aef4d1
 +          }
 +          const replace = Services.prefs.getBoolPref(this.replaceTabsPref, false);
 +          const enabled = replace || Services.prefs.getBoolPref(this.pref, true);
-+          const strip = replace || Services.prefs.getBoolPref(this.stripPref, true);
-+          if (this.element && enabled && this.tabStrip === strip) {
++          if (this.element && enabled) {
 +            this.schedule();
 +            return;
 +          }
@@ -6204,7 +6191,7 @@ index 0000000000..71c3aef4d1
 +        });
 +      },
 +    };
-+    for (const pref of [this.pref, this.stripPref, this.replaceTabsPref]) {
++    for (const pref of [this.pref, this.replaceTabsPref]) {
 +      Services.prefs.addObserver(pref, this.optionsObserver);
 +    }
 +    this.replacementStyle = document.createElementNS("http://www.w3.org/1999/xhtml", "style");
@@ -6243,7 +6230,7 @@ index 0000000000..71c3aef4d1
 +
 +  uninitOptions() {
 +    if (!this.optionsObserver) return;
-+    for (const pref of [this.pref, this.stripPref, this.replaceTabsPref]) {
++    for (const pref of [this.pref, this.replaceTabsPref]) {
 +      Services.prefs.removeObserver(pref, this.optionsObserver);
 +    }
 +    this.optionsObserver = null;
@@ -6281,8 +6268,6 @@ index 0000000000..71c3aef4d1
 +    ) {
 +      return;
 +    }
-+    this.tabStrip = Services.prefs.getBoolPref(this.stripPref, true) ||
-+      Services.prefs.getBoolPref(this.replaceTabsPref, false);
 +    // This window's native endpoint, formatted exactly as nsIBaseWindow does,
 +    // so the pane's drain notification can be matched to this window. An HWND
 +    // alone is not a lifetime identity; the request path carries its own
@@ -6300,20 +6285,13 @@ index 0000000000..71c3aef4d1
 +    this.element.id = "winui-prototype-pane";
 +    this.element.tabIndex = 0;
 +    this.element.setAttribute("aria-label", this.nativeLabels().tabs);
++    // The native header follows this reservation: 32-DIP tabs with 0, 8,
++    // or 16 DIPs of top padding. Unsupported preferences use the default.
++    const requested = Services.prefs.getIntPref(this.stripHeightPref, 40);
++    const height = [32, 40, 48].includes(requested) ? requested : 40;
 +    this.element.style.cssText =
-+      "width:240px;min-width:0;max-width:35vw;flex-shrink:0;background:var(--toolbar-bgcolor, Canvas);";
-+    if (this.tabStrip) {
-+      // The native header follows this reservation: 32-DIP tabs with 0, 8,
-+      // or 16 DIPs of top padding. Unsupported preferences use the default.
-+      const requested = Services.prefs.getIntPref(this.stripHeightPref, 40);
-+      const height = [32, 40, 48].includes(requested) ? requested : 40;
-+      this.element.style.cssText =
-+        `height:${height}px;min-height:${height}px;flex-shrink:0;-moz-window-dragging:no-drag;`;
-+      const toolbar = document.getElementById("TabsToolbar");
-+      toolbar.before(this.element);
-+    } else {
-+      document.getElementById("browser").appendChild(this.element);
-+    }
++      `height:${height}px;min-height:${height}px;flex-shrink:0;-moz-window-dragging:no-drag;`;
++    document.getElementById("TabsToolbar").before(this.element);
 +    this.element.addEventListener("focus", () => this.update(true));
 +    this.observer = new ResizeObserver(() => this.schedule());
 +    this.observer.observe(document.getElementById("browser"));
@@ -6332,14 +6310,12 @@ index 0000000000..71c3aef4d1
 +                                 record.target === document.documentElement)) {
 +        this.addressDirty = true;
 +      }
-+      if (this.tabStrip && records.some(record => record.target === document.documentElement)) this.stripDirty = true;
++      if (records.some(record => record.target === document.documentElement)) this.stripDirty = true;
 +      this.schedule();
 +    });
 +    this.mutation.observe(document.documentElement, { attributes: true });
-+    if (this.tabStrip) {
-+      this.mutation.observe(document.getElementById("TabsToolbar-customization-target"),
-+        {childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "collapsed", "class", "style"]});
-+    }
++    this.mutation.observe(document.getElementById("TabsToolbar-customization-target"),
++      {childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "collapsed", "class", "style"]});
 +    this.mutation.observe(this.urlbar, { attributes: true });
 +    if (this.modeSwitcher) {
 +      this.mutation.observe(this.modeSwitcher, { attributes: true });
@@ -6359,12 +6335,8 @@ index 0000000000..71c3aef4d1
 +    }
 +    for (const type of this.tabEvents)
 +      gBrowser.tabContainer.addEventListener(type, this);
-+    // Only the strip presents groups and split views; the sidebar's row set is
-+    // filtered on `hidden` alone, so nothing here would change it.
-+    if (this.tabStrip) {
-+      for (const type of this.stripStateEvents)
-+        gBrowser.tabContainer.addEventListener(type, this);
-+    }
++    for (const type of this.stripStateEvents)
++      gBrowser.tabContainer.addEventListener(type, this);
 +    this.groupColorMedia = ["(prefers-color-scheme: dark)", "(forced-colors: active)"].map(query => matchMedia(query));
 +    this.groupColorChanged = () => { this.stripDirty = true; this.schedule(); };
 +    for (const query of this.groupColorMedia) query.addEventListener("change", this.groupColorChanged);
@@ -6387,7 +6359,6 @@ index 0000000000..71c3aef4d1
 +    Services.prefs.addObserver(this.groupGlowAnimationsPref, this);
 +    Services.prefs.addObserver(this.groupGlowFadeOutPref, this);
 +    for (const pref of this.groupingPrefs) Services.prefs.addObserver(pref, this);
-+    Services.prefs.addObserver(this.addressPref, this);
 +    Services.prefs.addObserver(this.addressToolbarPref, this);
 +    Services.prefs.addObserver(this.navigationToolbarPref, this);
 +    this.schedule();
@@ -6710,21 +6681,16 @@ index 0000000000..71c3aef4d1
 +    if (!this.attached || this.processingAction) return;
 +    const toolbarRequested = Services.prefs.getBoolPref(this.addressToolbarPref, false) ||
 +      Services.prefs.getBoolPref(this.navigationToolbarPref, false);
-+    if (toolbarRequested && this.tabStrip && !this.addressToolbar) {
++    if (toolbarRequested && !this.addressToolbar) {
 +      const { WinUIAddressToolbar } = ChromeUtils.importESModule(
 +        "chrome://browser/content/WinUIAddressToolbar.sys.mjs"
 +      );
 +      this.addressToolbar = new WinUIAddressToolbar(window, this);
 +    }
 +    const toolbar = this.addressToolbar?.update() || false;
-+    const requested = toolbarRequested || Services.prefs.getBoolPref(
-+      "fenn.winui.address.enabled",
-+      false
-+    );
-+    if (!requested) this.addressFailed = false;
++    if (!toolbarRequested) this.addressFailed = false;
 +    const enabled =
-+      requested &&
-+      (toolbar || (!toolbarRequested && !this.tabStrip)) &&
++      toolbar &&
 +      !this.addressFailed &&
 +      !window.fullScreen &&
 +      !document.fullscreenElement;
@@ -6944,8 +6910,7 @@ index 0000000000..71c3aef4d1
 +
 +  resolveStripTab(id) {
 +    return Array.from(gBrowser.tabs).find(tab =>
-+      this.tabIds.get(tab) === id && tab.isConnected && !tab.closing && !tab.hidden &&
-+      (!this.tabStrip || tab.visible));
++      this.tabIds.get(tab) === id && tab.isConnected && !tab.closing && !tab.hidden && tab.visible);
 +  },
 +
 +  // Publishes tab identities, order and the selected set -- the state the list
@@ -7758,7 +7723,7 @@ index 0000000000..71c3aef4d1
 +      this.contextDirty = false;
 +      this.publishTabContext(tabs, ids);
 +    }
-+    if (this.tabStrip && this.stripDirty) {
++    if (this.stripDirty) {
 +      this.stripDirty = false;
 +      this.publishStrip();
 +    }
@@ -7795,7 +7760,7 @@ index 0000000000..71c3aef4d1
 +
 +  visibleTabs() {
 +    return Array.from(gBrowser.tabs).filter(
-+      tab => !tab.closing && !tab.hidden && (!this.tabStrip || tab.visible)
++      tab => !tab.closing && !tab.hidden && tab.visible
 +    );
 +  },
 +
@@ -7835,7 +7800,7 @@ index 0000000000..71c3aef4d1
 +    this.publishedIds = new Set(ids);
 +    // Publish identities before syncWinUITabs can expose a new native row.
 +    this.publishTabContext(tabs, ids);
-+    if (this.tabStrip) this.publishStrip();
++    this.publishStrip();
 +    this.stripDirty = false;
 +    const titles = tabs.map(tab => (tab.label || "New tab").slice(0, 32768));
 +    const selected = this.tabIds.get(gBrowser.selectedTab) || 0;
@@ -7937,7 +7902,7 @@ index 0000000000..71c3aef4d1
 +      return;
 +    }
 +    if (data === this.stripHeightPref) {
-+      if (this.tabStrip && this.element) {
++      if (this.element) {
 +        const requested = Services.prefs.getIntPref(this.stripHeightPref, 40);
 +        const height = [32, 40, 48].includes(requested) ? requested : 40;
 +        this.element.style.height = this.element.style.minHeight = `${height}px`;
@@ -7945,7 +7910,7 @@ index 0000000000..71c3aef4d1
 +      }
 +      return;
 +    }
-+    if (data === this.addressPref || data === this.addressToolbarPref || data === this.navigationToolbarPref) {
++    if (data === this.addressToolbarPref || data === this.navigationToolbarPref) {
 +      if (this.addressToolbar) this.addressToolbar.failed = false;
 +      // Turning the surface on or off changes what the next publication says,
 +      // including the one that tells native to hide it.
@@ -8070,7 +8035,7 @@ index 0000000000..71c3aef4d1
 +          this.addressDirty = true;
 +        }
 +        this.publish();
-+        this.setReplacementActive(replace && this.attached && this.tabStrip && !hidden && !!this.nativeRevision);
++        this.setReplacementActive(replace && this.attached && !hidden && !!this.nativeRevision);
 +      }
 +      // Geometry/visibility work often runs right after a modal dialog closes,
 +      // which is the natural moment to tell the pane it may proceed again.
@@ -8149,7 +8114,6 @@ index 0000000000..71c3aef4d1
 +    Services.prefs.removeObserver(this.groupGlowAnimationsPref, this);
 +    Services.prefs.removeObserver(this.groupGlowFadeOutPref, this);
 +    for (const pref of this.groupingPrefs) Services.prefs.removeObserver(pref, this);
-+    Services.prefs.removeObserver(this.addressPref, this);
 +    Services.prefs.removeObserver(this.addressToolbarPref, this);
 +    Services.prefs.removeObserver(this.navigationToolbarPref, this);
 +    Services.prefs.removeObserver("privacy.userContext.enabled", this);
@@ -8173,10 +8137,10 @@ index 0000000000..71c3aef4d1
 +}, { once: true });
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 0000000000..8f974ef3c1
+index 0000000000..1d5b0d9558
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,141 @@
 +#pragma once
 +#include <windows.h>
 +#include <stdint.h>
@@ -8185,6 +8149,8 @@ index 0000000000..8f974ef3c1
 +// button input and Gecko must not redirect non-client presses to DOM buttons.
 +#define WINUI_PANE_SYSTEM_CAPTION_PROPERTY L"FennPane.SystemCaption.1"
 +
++// v16 retires the 240-px sidebar presentation and its `update` entry point:
++// every pane is the TabView strip, created and positioned by updateTabStrip.
 +// v14 puts the last two commands -- close and new tab -- on the v11 request
 +// path. syncTabs therefore drains nothing: it loses its close/new-tab
 +// out-parameters and the reserved context/command pair with them, keeping only
@@ -8202,7 +8168,7 @@ index 0000000000..8f974ef3c1
 +// completeRequests) and incremental tab deltas (applyTabDelta), and retired
 +// syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 +// retaining the sidebar entry point.
-+#define WINUI_PANE_ABI_VERSION 15u
++#define WINUI_PANE_ABI_VERSION 16u
 +
 +// The pane is built framework-dependent on the shared Windows App SDK runtime
 +// (Microsoft.WindowsAppRuntime.2, at least 2.5.1.0). A packaged host declares it
@@ -8248,7 +8214,6 @@ index 0000000000..8f974ef3c1
 +struct WinUIPaneApi {
 +    uint32_t size;
 +    uint32_t version;
-+    HRESULT (WINAPI* update)(HWND, const RECT*, BOOL);
 +    HRESULT (WINAPI* focus)(HWND, BOOL);
 +    HRESULT (WINAPI* destroy)(HWND);
 +    BOOL (WINAPI* translate)(MSG*);
@@ -8277,7 +8242,8 @@ index 0000000000..8f974ef3c1
 +    // intent, including the strip's own gestures, arrives through
 +    // drainRequests.
 +    HRESULT (WINAPI* syncTabMenu)(HWND, const wchar_t*);
-+    // Same lifetime/geometry contract as update; one presentation per HWND.
++    // Creates, positions, shows or hides the HWND's strip island. Client
++    // physical pixels; hiding a window that has no island creates nothing.
 +    HRESULT (WINAPI* updateTabStrip)(HWND, const RECT*, BOOL);
 +
 +    // --- v11: event-driven requests -------------------------------------

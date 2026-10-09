@@ -1,4 +1,4 @@
-param([switch]$NativeAddress, [switch]$NativeAddressBar, [switch]$NativeNavigationToolbar, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$CaptureCrash, [string]$DiagnosticsLog,
+param([switch]$NativeAddressBar, [switch]$NativeNavigationToolbar, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$CaptureCrash, [string]$DiagnosticsLog,
       [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight,
       [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop,
       [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach,
@@ -32,10 +32,10 @@ $userPrefs = @(
     'user_pref("browser.shell.checkDefaultBrowser", false);',
     'user_pref("browser.startup.homepage_override.mstone", "ignore");')
 $switchPrefs = [ordered]@{
-    NativeTabStrip = 'tabstrip.enabled'; ContainerDots = 'tabstrip.containerDot'; TabGlows = 'tabstrip.glows'
+    NativeTabStrip = 'pane.enabled'; ContainerDots = 'tabstrip.containerDot'; TabGlows = 'tabstrip.glows'
     GroupHover = 'tabstrip.groupHover'; GroupHalo = 'tabstrip.groupHalo'
     GroupGlowAnimations = 'tabstrip.groupGlowAnimations'; GroupGlowFadeOut = 'tabstrip.groupGlowFadeOut'
-    NativeAddress = 'address.enabled'; NativeAddressBar = 'address.toolbar.enabled'
+    NativeAddressBar = 'address.toolbar.enabled'
     NativeHistoryMenu = 'navigation.history.menu.enabled'; NativeNavigationToolbar = 'navigation.toolbar.enabled'
 }
 # The native History menu lives on the native navigation toolbar.

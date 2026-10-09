@@ -139,7 +139,8 @@ struct NativeWindowDrag {
         } catch (...) {}
         return DefSubclassProc(hwnd, msg, w, l);
     }
-    static void Restack(HWND island) {
+    // Returns whether the compositor had to be moved below the island.
+    static bool Restack(HWND island) {
         // Relative ordering is sufficient. HWND_TOP hides the SDK caption input
         // window and breaks native dragging. Never depend on SDK HWND class names.
         for (HWND sibling = GetWindow(island, GW_HWNDPREV); sibling; sibling = GetWindow(sibling, GW_HWNDPREV)) {
@@ -147,9 +148,10 @@ struct NativeWindowDrag {
             GetClassNameW(sibling, name, 128);
             if (wcscmp(name, L"MozillaCompositorWindowClass") == 0) {
                 check_bool(SetWindowPos(sibling, island, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE));
-                break;
+                return true;
             }
         }
+        return false;
     }
     Rect Bounds(FrameworkElement const& element) const {
         auto local = element.TransformToVisual(nullptr).TransformBounds(

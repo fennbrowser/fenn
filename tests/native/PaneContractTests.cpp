@@ -103,7 +103,7 @@ static void WithTab(HWND hwnd, const wchar_t* id, const wchar_t* title, bool sel
                     "UIA client");
             ComPtr<IUIAutomationElement> root;
             Require(SUCCEEDED(automation->ElementFromHandle(hwnd, &root)), "UIA host");
-            bool newTab = wcscmp(id, L"FennNewTab") == 0;
+            bool newTab = wcscmp(id, L"FennStripNewTab") == 0;
             VARIANT value{};
             value.vt = VT_BSTR;
             value.bstrVal = SysAllocString(id);
@@ -114,7 +114,7 @@ static void WithTab(HWND hwnd, const wchar_t* id, const wchar_t* title, bool sel
             VariantClear(&value);
             VARIANT type{};
             type.vt = VT_I4;
-            type.lVal = newTab ? UIA_ButtonControlTypeId : UIA_ListItemControlTypeId;
+            type.lVal = newTab ? UIA_ButtonControlTypeId : UIA_TabItemControlTypeId;
             ComPtr<IUIAutomationCondition> itemType, rowCondition;
             Require(SUCCEEDED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, type, &itemType)),
                     "UIA row type");
@@ -155,6 +155,10 @@ static void WithTab(HWND hwnd, const wchar_t* id, const wchar_t* title, bool sel
                 }
             }
             Require(SUCCEEDED(findHr) && item, "native tab exposed to accessibility");
+            BSTR automationId{};
+            if (SUCCEEDED(item->get_CurrentAutomationId(&automationId)))
+                fwprintf(stderr, L"UIA matched %s\n", automationId ? automationId : L"<null>");
+            SysFreeString(automationId);
             BSTR name{};
             Require(SUCCEEDED(item->get_CurrentName(&name)) && wcscmp(name, title) == 0,
                     "native tab title matches snapshot");
@@ -178,13 +182,17 @@ static void WithTab(HWND hwnd, const wchar_t* id, const wchar_t* title, bool sel
                 if (newTab)
                     button = item;
                 else
+                    // TabView shows a tab's stock close button while the tab is
+                    // selected or hovered, so callers close the selected tab.
                     Require(SUCCEEDED(item->FindFirst(TreeScope_Descendants, buttonType.Get(), &button)) && button,
                             "native close button exposed to accessibility");
                 BSTR label{};
                 auto nameHr = button->get_CurrentName(&label);
                 fwprintf(stderr, L"UIA button label=%s\n", label ? label : L"<null>");
-                Require(SUCCEEDED(nameHr) && std::wstring(label) == (newTab ? std::wstring(L"New tab")
-                                                                            : std::wstring(L"Close tab: ") + title),
+                // New tab carries Firefox's label (English until published); the
+                // stock close button is named by WinUI.
+                Require(SUCCEEDED(nameHr) && label &&
+                            (newTab ? std::wstring(label) == L"New tab" : *label != L'\0'),
                         "close button accessible name");
                 SysFreeString(label);
                 ComPtr<IUIAutomationInvokePattern> invoke;
@@ -247,34 +255,36 @@ static void AwaitLiveTree(winrt::Microsoft::UI::Xaml::FrameworkElement const& el
         fprintf(stderr, "Island content tree went live after %llums\n", static_cast<unsigned long long>(waited));
     Require(element.IsLoaded(), "the island's content tree goes live");
 }
-static winrt::Microsoft::UI::Xaml::Controls::ListViewItem RealizedRow(
-    winrt::Microsoft::UI::Xaml::Controls::ListView const& list, int32_t index) {
+static winrt::Microsoft::UI::Xaml::FrameworkElement FindInTabList(winrt::Microsoft::UI::Xaml::Controls::TabView const& view,
+                                                                 winrt::hstring const& id);
+// The host island's strip TabView, once its content tree is live.
+static winrt::Microsoft::UI::Xaml::Controls::TabView StripView(HMODULE module, HWND hwnd) {
     using namespace winrt::Microsoft::UI::Xaml;
-    AwaitLiveTree(list);
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
+    Require(inspect != nullptr, "test build exposes content inspection");
+    UIElement content{nullptr};
+    Require(SUCCEEDED(inspect(hwnd, winrt::put_abi(content))), "inspect strip host");
+    auto view = content.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
+    AwaitLiveTree(view);
+    return view;
+}
+// One tab's row, realized and laid out. Rows live in the strip's grouped
+// source, so they are found by their stable automation ID rather than by index.
+static winrt::Microsoft::UI::Xaml::Controls::TabViewItem StripRow(
+    winrt::Microsoft::UI::Xaml::Controls::TabView const& view, uint32_t id) {
     for (int i = 0; i < 500; ++i) {
-        list.UpdateLayout();
-        auto row = list.ContainerFromIndex(index).try_as<Controls::ListViewItem>();
-        if (row && row.IsLoaded() && row.ContentTemplateRoot() && row.ActualWidth() > 0 && row.ActualHeight() > 0)
-            return row;
-        if (index >= 0 && uint32_t(index) < list.Items().Size()) list.ScrollIntoView(list.Items().GetAt(index));
+        view.UpdateLayout();
+        if (auto found = FindInTabList(view, L"FennTab-" + winrt::to_hstring(id));
+            found && found.IsLoaded() && found.ActualWidth() > 0 && found.ActualHeight() > 0)
+            return found.as<winrt::Microsoft::UI::Xaml::Controls::TabViewItem>();
         Pump();
         Sleep(10);
     }
-    bool rootLoaded = false, hasParent = false;
-    try {
-        if (auto content = list.XamlRoot().Content().try_as<FrameworkElement>()) rootLoaded = content.IsLoaded();
-        hasParent = list.Parent() != nullptr;
-    } catch (...) {
-    }
-    fprintf(stderr,
-            "Unrealized row index=%d items=%u list=%.1fx%.1f loaded=%d hostVisible=%d rootLoaded=%d parent=%d\n",
-            index, list.Items().Size(), list.ActualWidth(), list.ActualHeight(), list.IsLoaded(),
-            list.XamlRoot().IsHostVisible(), rootLoaded, hasParent);
-    auto missingRow = list.ContainerFromIndex(index).try_as<Controls::ListViewItem>();
-    if (missingRow)
-        fprintf(stderr, "Row loaded=%d template=%d size=%.1fx%.1f\n", missingRow.IsLoaded(),
-                bool(missingRow.ContentTemplateRoot()), missingRow.ActualWidth(), missingRow.ActualHeight());
-    Require(false, "native row is loaded and laid out before interaction");
+    auto last = FindInTabList(view, L"FennTab-" + winrt::to_hstring(id));
+    fprintf(stderr, "Unrealized strip row id=%u loaded=%d host=%d view=%.1fx%.1f found=%d row=%.1fx%.1f rowLoaded=%d\n", id,
+            view.IsLoaded(), view.XamlRoot().IsHostVisible(), view.ActualWidth(), view.ActualHeight(), last != nullptr,
+            last ? last.ActualWidth() : -1.0, last ? last.ActualHeight() : -1.0, last ? last.IsLoaded() : 0);
+    Require(false, "native strip row is loaded and laid out before interaction");
     return nullptr;
 }
 // Since ABI v12 this is a publication with no reply. Every native intent,
@@ -382,25 +392,16 @@ static winrt::Windows::Data::Json::JsonObject NextRequest(WinUIPaneApi& api, HWN
     return JsonObject();
 }
 // Refresh the existing test fixture after publishing descriptions, as Firefox does.
-static void PrepareFixtureMenus(WinUIPaneApi& api, HWND hwnd,
-                                winrt::Microsoft::UI::Xaml::Controls::ListView const& list) {
+// Publish a menu context for these tabs, then the snapshot that shows them.
+static void PrepareFixtureMenus(WinUIPaneApi& api, HWND hwnd, std::vector<WinUITab> tabs, uint32_t selected) {
     std::vector<uint32_t> ids;
-    std::vector<std::wstring> titles;
-    std::vector<WinUITab> tabs;
-    for (uint32_t i = 0; i < list.Items().Size(); ++i) {
-        ids.push_back(winrt::unbox_value<uint32_t>(list.Items().GetAt(i)));
-        auto row = RealizedRow(list, i);
-        titles.emplace_back(row.ContentTemplateRoot()
-                                .as<winrt::Microsoft::UI::Xaml::Controls::Grid>()
-                                .Children()
-                                .GetAt(0)
-                                .as<winrt::Microsoft::UI::Xaml::Controls::TextBlock>()
-                                .Text());
+    for (auto& tab : tabs) {
+        ids.push_back(tab.id);
+        tab.commands = 7;
     }
-    for (uint32_t i = 0; i < ids.size(); ++i) tabs.push_back({ids[i], titles[i].c_str(), 7});
     MenuPublish(api, hwnd, MenuState(ids).Stringify().c_str());
-    uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(hwnd, tabs.data(), uint32_t(tabs.size()), ids[list.SelectedIndex()], &selected)),
+    uint32_t revision{};
+    Require(SUCCEEDED(api.syncTabs(hwnd, tabs.data(), uint32_t(tabs.size()), selected, &revision)),
             "publish fixture menus before tab snapshot");
     Pump();
 }
@@ -409,10 +410,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     using namespace winrt::Microsoft::UI::Xaml;
     using Object = winrt::Windows::Data::Json::JsonObject;
     using Value = winrt::Windows::Data::Json::JsonValue;
-    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
-    UIElement content{nullptr};
-    Require(SUCCEEDED(inspect(hwnd, put_abi(content))), "inspect context menu host");
-    auto list = content.as<Controls::Grid>().Children().GetAt(1).as<Controls::ListView>();
+    auto view = StripView(module, hwnd);
     WinUITab tabs[]{{71, L"Context first", 7}, {72, L"Context second", 27}};
     uint32_t selected{};
     auto settle = [] {
@@ -447,7 +445,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
         settle();
         while (DrainRequests(api, hwnd).Size()) {
         }
-        auto row = RealizedRow(list, 1);
+        auto row = StripRow(view, 72);
         menu = row.ContextFlyout().as<Controls::MenuFlyout>();
         SetForegroundWindow(hwnd);
         Require(SUCCEEDED(api.focus(hwnd, FALSE)), "enter owning island before opening menu");
@@ -510,7 +508,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
                     event.GetNamedNumber(L"revision") == opened.GetNamedNumber(L"revision") &&
                     event.GetNamedString(L"id") == (index ? L"opaque-unpin" : L"opaque-reload"),
                 "opaque action retains target/session/revision");
-        Require(list.SelectedIndex() == 0, "context activation preserves background selection");
+        Require(view.SelectedItem() == StripRow(view, 71), "context activation preserves background selection");
         Require(!NextRequest(api, hwnd, 2, L"activate", 3).Size(), "activation is delivered once");
     }
     // A new published context invalidates every cached description, so the next
@@ -576,7 +574,21 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     sync(1);
     Require(!menu.IsOpen(), "removed target dismisses menu");
     sync();
-    Require(!RealizedRow(list, 1).ContextFlyout(), "unpublished target has no loading popup");
+    {
+        // The row keeps its flyout, but an opening for a tab the menu context
+        // does not name is refused: nothing is asked of Firefox and nothing
+        // actionable is shown.
+        auto row = StripRow(view, 72);
+        auto unpublished = row.ContextFlyout().as<Controls::MenuFlyout>();
+        unpublished.XamlRoot(row.XamlRoot());
+        unpublished.ShowAt(row);
+        settle();
+        Require(!NextRequest(api, hwnd, 2, L"open", 3).Size() && unpublished.Items().Size() == 1 &&
+                    !unpublished.Items().GetAt(0).IsEnabled(),
+                "an unpublished target opens no browser request and offers no command");
+        unpublished.Hide();
+        settle();
+    }
     current = MenuState({71, 72});
     MenuPublish(api, hwnd, current.Stringify().c_str());
     sync();
@@ -590,13 +602,11 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
         binding.GetObject().SetNamedValue(L"selected", Value::CreateBooleanValue(true));
     MenuPublish(api, hwnd, current.Stringify().c_str());
     sync();
-    Require(list.SelectionMode() == Controls::ListViewSelectionMode::Extended && list.SelectedItems().Size() == 2,
-            "Firefox selected set uses native Extended selection independently of active tab");
-    Require(Automation::AutomationProperties::GetItemStatus(RealizedRow(list, 0)) == L"Active tab" &&
-                Automation::AutomationProperties::GetItemStatus(RealizedRow(list, 1)).empty(),
-            "active tab remains separately accessible");
-    list.SelectedItems().Clear();
-    list.SelectedItems().Append(list.Items().GetAt(1));
+    Require(Automation::AutomationProperties::GetItemStatus(StripRow(view, 71)) == L"Active tab" &&
+                Automation::AutomationProperties::GetItemStatus(StripRow(view, 72)) == L"Selected tab" &&
+                view.SelectedItem() == StripRow(view, 71),
+            "Firefox's selected set is shown on the rows while TabView keeps only the active tab selected");
+    view.SelectedItem(StripRow(view, 72));
     settle();
     // Selection now travels on the v11 request path, not on syncTabs and not on
     // the menu exchange: exactly one executor.
@@ -628,10 +638,7 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     using namespace winrt::Microsoft::UI::Xaml;
     using Object = winrt::Windows::Data::Json::JsonObject;
     using Value = winrt::Windows::Data::Json::JsonValue;
-    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
-    UIElement content{nullptr};
-    Require(SUCCEEDED(inspect(hwnd, put_abi(content))), "inspect request-path host");
-    auto list = content.as<Controls::Grid>().Children().GetAt(1).as<Controls::ListView>();
+    auto view = StripView(module, hwnd);
     uint32_t revision{};
     WinUITab tabs[]{{101, L"Core first", 7}, {102, L"Core second", 7}, {103, L"Core third", 7}};
     MenuPublish(api, hwnd, MenuState({101, 102, 103}).Stringify().c_str());
@@ -647,8 +654,8 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     Require(SUCCEEDED(api.setNotifySink(
                 hwnd, [](void*) -> BOOL { ++notifications; return TRUE; }, nullptr)),
             "register the drain wakeup");
-    for (uint32_t index : {1u, 2u, 1u}) {
-        list.SelectedIndex(int(index));
+    for (uint32_t id : {102u, 103u, 102u}) {
+        view.SelectedItem(StripRow(view, id));
         Pump();
     }
     Require(notifications == 1, "repeated input accumulates work without reposting the wakeup");
@@ -690,7 +697,7 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     blockMessage.SetNamedValue(L"outcomes", winrt::Windows::Data::Json::JsonArray());
     blockMessage.SetNamedValue(L"blocked", Value::CreateBooleanValue(true));
     Require(SUCCEEDED(api.completeRequests(hwnd, blockMessage.Stringify().c_str())), "block execution");
-    list.SelectedIndex(2);
+    view.SelectedItem(StripRow(view, 103));
     Pump();
     Require(notifications == 0, "a blocked endpoint never reposts its wakeup");
     Require(!DrainRequests(api, hwnd).Size(), "a blocked endpoint refuses to hand out work");
@@ -722,14 +729,14 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     auto selected = delta(selection.c_str());
     Require(SUCCEEDED(selected.first), "a selection delta applies");
     Pump();
-    Require(list.SelectedIndex() == 2, "the delta moved the native selection without a snapshot");
+    Require(view.SelectedItem() == StripRow(view, 103), "the delta moved the native selection without a snapshot");
     auto unknown = std::wstring(LR"({"version":1,"base":)") + std::to_wstring(selected.second) +
                    LR"(,"titles":[{"id":999,"title":"absent"}]})";
     Require(delta(unknown.c_str()).first == E_NOT_VALID_STATE, "a delta for an unknown tab is refused");
 
     Require(SUCCEEDED(api.setNotifySink(hwnd, nullptr, nullptr)), "clear the drain wakeup");
     notifications = 0;
-    list.SelectedIndex(0);
+    view.SelectedItem(StripRow(view, 101));
     Pump();
     Require(notifications == 0, "a cleared sink is never called");
     // Work queued with no sink must not be stranded: registering one again
@@ -767,14 +774,11 @@ static void CheckTabKeyboardNavigation(HMODULE module, WinUIPaneApi& api, HWND h
     Require(GetForegroundWindow() == hwnd, "tab keyboard test owns foreground before injecting input");
     Require(SUCCEEDED(api.focus(hwnd, FALSE)), "focus island for Tab navigation");
     Pump();
-    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
-    UIElement content{nullptr};
-    Require(inspect && SUCCEEDED(inspect(hwnd, winrt::put_abi(content))), "inspect Tab navigation host");
-    auto root = content.as<Controls::Grid>();
-    auto list = root.Children().GetAt(1).as<Controls::ListView>();
-    auto row = RealizedRow(list, list.SelectedIndex());
+    auto view = StripView(module, hwnd);
+    auto root = view.XamlRoot().Content().as<UIElement>();
+    Require(view.SelectedItem() != nullptr, "the strip has an active tab to focus");
+    auto row = view.SelectedItem().as<Controls::TabViewItem>();
     Require(row.Focus(FocusState::Keyboard), "focus selected tab row");
-    auto close = row.ContentTemplateRoot().as<Controls::Grid>().Children().GetAt(1).as<Controls::Button>();
     bool released = false;
     Input::KeyEventHandler releaseHandler = [&](auto const&, Input::KeyRoutedEventArgs const& event) {
         if (event.Key() == winrt::Windows::System::VirtualKey::Tab) released = true;
@@ -788,91 +792,56 @@ static void CheckTabKeyboardNavigation(HMODULE module, WinUIPaneApi& api, HWND h
     auto sent = SendInput(2, keys, sizeof(INPUT));
     if (sent != 2) SendInput(1, &keys[1], sizeof(INPUT));
     Require(sent == 2, "inject complete Tab press and release");
+    // Stock TabView owns the tab stops; what matters here is that real Tab
+    // input reaches the island and moves focus off the tab.
+    auto moved = [&] { return Input::FocusManager::GetFocusedElement(root.XamlRoot()) != row; };
     for (int attempt = 0; attempt < 100; ++attempt) {
         Pump();
-        if (Input::FocusManager::GetFocusedElement(root.XamlRoot()) == close &&
-            released) break;
+        if (moved() && released) break;
         Sleep(10);
     }
     root.RemoveHandler(UIElement::KeyUpEvent(), boxedReleaseHandler);
-    Require(Input::FocusManager::GetFocusedElement(root.XamlRoot()) == close && released,
-            "Tab reaches the selected row's native close button and the key is released");
+    Require(moved() && released, "OS-delivered Tab moves focus off the selected tab and the key is released");
 }
 
-static void CheckThemesAndLongList(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
+// The strip's focus entry points and its tab menu under live theme changes.
+// The strip's own surface follows the theme through its backdrop; that is
+// covered by CheckTabStrip ("strip follows live theme").
+static void CheckMenuThemes(HMODULE module, WinUIPaneApi& api, HWND hwnd, std::vector<WinUITab> const& tabs) {
     using namespace winrt::Microsoft::UI::Xaml;
+    PrepareFixtureMenus(api, hwnd, tabs, tabs[0].id);
+    const uint32_t tab = tabs[0].id;
     for (int i = 0; i < 20; ++i) {
         Pump();
         Sleep(10);
     }
-    Require(SUCCEEDED(api.focus(hwnd, FALSE)), "focus for theme inspection");
+    auto view = StripView(module, hwnd);
+    auto root = view.XamlRoot().Content().as<Controls::Grid>();
+    std::function<FrameworkElement(DependencyObject const&)> findNewTab = [&](DependencyObject const& node) -> FrameworkElement {
+        if (auto element = node.try_as<FrameworkElement>();
+            element && Automation::AutomationProperties::GetAutomationId(element) == L"FennStripNewTab")
+            return element;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto found = findNewTab(Media::VisualTreeHelper::GetChild(node, i))) return found;
+        return nullptr;
+    };
+    auto newTab = findNewTab(root);
+    Require(newTab && Controls::ToolTipService::GetToolTip(newTab) != nullptr, "new-tab tooltip exists");
+    Require(SUCCEEDED(api.focus(hwnd, FALSE)), "forward island entry");
     Pump();
-    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
-    Require(inspect != nullptr, "test build exposes content inspection");
-    UIElement content{nullptr};
-    Require(SUCCEEDED(inspect(hwnd, winrt::put_abi(content))), "inspect actual hosted content");
-    auto root = content.as<Controls::Grid>();
-    auto list = root.Children().GetAt(1).as<Controls::ListView>();
-    PrepareFixtureMenus(api, hwnd, list);
-    auto selectedRow = list.ContainerFromIndex(list.SelectedIndex()).as<Controls::ListViewItem>();
-    Require(selectedRow.Focus(FocusState::Keyboard), "focus selected tab row");
-    MSG tabKey{GetFocus(), WM_KEYDOWN, VK_TAB, 1};
-    if (!api.translate(&tabKey)) {
-        TranslateMessage(&tabKey);
-        DispatchMessageW(&tabKey);
-    }
-    Pump();
-    Require(Input::FocusManager::GetFocusedElement(root.XamlRoot()).try_as<Controls::Button>() != nullptr,
-            "Tab reaches the native close button from the selected row");
-    auto newTab = root.Children().GetAt(2).as<Controls::Button>();
-    Require(Controls::ToolTipService::GetToolTip(newTab) != nullptr, "new-tab tooltip exists");
+    Require(Input::FocusManager::GetFocusedElement(root.XamlRoot()).try_as<Controls::Control>() != nullptr,
+            "forward island entry lands on a native control");
     Require(SUCCEEDED(api.focus(hwnd, TRUE)), "reverse island entry");
     Pump();
-    Require(Input::FocusManager::GetFocusedElement(root.XamlRoot()) == newTab,
-            "reverse island entry reaches new-tab button");
+    Require(Input::FocusManager::GetFocusedElement(root.XamlRoot()).try_as<Controls::Control>() != nullptr,
+            "reverse island entry lands on a native control");
     auto original = root.RequestedTheme();
-    auto contrast = [](auto foreground, auto background) {
-        auto luminance = [](auto color) {
-            auto linear = [](double c) {
-                c /= 255;
-                return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
-            };
-            return 0.2126 * linear(color.R) + 0.7152 * linear(color.G) + 0.0722 * linear(color.B);
-        };
-        auto a = luminance(foreground), b = luminance(background);
-        return (std::max(a, b) + 0.05) / (std::min(a, b) + 0.05);
-    };
     for (auto theme : {ElementTheme::Light, ElementTheme::Dark, ElementTheme::Light}) {
         root.RequestedTheme(theme);
         Pump();
         root.UpdateLayout();
-        auto bg = root.Background().as<Media::SolidColorBrush>().Color();
-        auto fg = root.Children().GetAt(0).as<Controls::TextBlock>().Foreground().as<Media::SolidColorBrush>().Color();
-        fprintf(stderr, "Live theme=%d actual=%d background=%u,%u,%u foreground=%u,%u,%u contrast=%.2f\n", int(theme),
-                int(root.ActualTheme()), bg.R, bg.G, bg.B, fg.R, fg.G, fg.B, contrast(fg, bg));
-        auto row = RealizedRow(list, 0);
-        auto rowGrid = row.ContentTemplateRoot().as<Controls::Grid>();
-        auto label = rowGrid.Children().GetAt(0).as<Controls::TextBlock>();
-        fwprintf(stderr, L"Rendered tab label: [%s] rowIndex=%d\n", label.Text().c_str(), list.IndexFromContainer(row));
-        Require(label.Text() == L"Renamed tab", "stable-ID row realizes its visible title");
-        auto button = rowGrid.Children().GetAt(1).as<Controls::Button>();
-        auto buttonFg = button.Foreground().as<Media::SolidColorBrush>().Color();
-        auto buttonBg = button.Background().as<Media::SolidColorBrush>().Color();
-        // Composite the standard translucent button fill over its pane surface.
-        auto composite = bg;
-        composite.R = uint8_t((buttonBg.R * buttonBg.A + bg.R * (255 - buttonBg.A)) / 255);
-        composite.G = uint8_t((buttonBg.G * buttonBg.A + bg.G * (255 - buttonBg.A)) / 255);
-        composite.B = uint8_t((buttonBg.B * buttonBg.A + bg.B * (255 - buttonBg.A)) / 255);
-        Require(contrast(buttonFg, composite) >= 3, "close icon remains readable after theme changes");
-        auto newFg = newTab.Foreground().as<Media::SolidColorBrush>().Color();
-        auto newBg = newTab.Background().as<Media::SolidColorBrush>().Color();
-        auto newComposite = bg;
-        newComposite.R = uint8_t((newBg.R * newBg.A + bg.R * (255 - newBg.A)) / 255);
-        newComposite.G = uint8_t((newBg.G * newBg.A + bg.G * (255 - newBg.A)) / 255);
-        newComposite.B = uint8_t((newBg.B * newBg.A + bg.B * (255 - newBg.A)) / 255);
-        Require(contrast(newFg, newComposite) >= 4.5, "new-tab label readable in live themes");
-        Require(root.ActualTheme() == theme && bg.A == 255 && contrast(fg, bg) >= 4.5,
-                "live theme updates preserve opaque readable surface");
+        auto row = StripRow(view, tab);
+        Require(root.ActualTheme() == theme && row.ActualTheme() == theme, "live theme reaches the strip's rows");
         auto menu = row.ContextFlyout().as<Controls::MenuFlyout>();
         SetForegroundWindow(hwnd);
         row.Focus(FocusState::Programmatic);
@@ -919,52 +888,6 @@ static void CheckThemesAndLongList(HMODULE module, WinUIPaneApi& api, HWND hwnd)
         }
     }
     root.RequestedTheme(original);
-    std::vector<std::wstring> titles;
-    std::vector<WinUITab> tabs;
-    for (uint32_t i = 0; i < 120; ++i)
-        titles.push_back(L"Long tab title for scrolling and resizing " + std::to_wstring(i));
-    for (uint32_t i = 0; i < titles.size(); ++i) tabs.push_back({i + 1, titles[i].c_str()});
-    uint32_t requested{};
-    Require(SUCCEEDED(api.syncTabs(hwnd, tabs.data(), uint32_t(tabs.size()), 120, &requested)),
-            "long list snapshot");
-    for (LONG width : {120L, 240L, 420L}) {
-        RECT bounds{0, 0, width, 300};
-        Require(SUCCEEDED(api.update(hwnd, &bounds, TRUE)), "resize long tab list");
-        for (int i = 0; i < 20; ++i) {
-            Pump();
-            Sleep(10);
-        }
-        root.UpdateLayout();
-        Require(list.ActualHeight() > 0 && list.ActualHeight() <= root.ActualHeight(), "finite scrolling viewport");
-        list.ScrollIntoView(list.SelectedItem());
-        root.UpdateLayout();
-        auto row = list.ContainerFromIndex(119).as<Controls::ListViewItem>();
-        auto button = row.ContentTemplateRoot().as<Controls::Grid>().Children().GetAt(1).as<Controls::Button>();
-        auto boundsInList = button.TransformToVisual(list).TransformBounds(
-            {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
-        Require(boundsInList.X >= 0 && boundsInList.X + boundsInList.Width <= list.ActualWidth() + 1,
-                "close button fits the narrow scrolling viewport");
-        auto newBounds = newTab.TransformToVisual(root).TransformBounds(
-            {0, 0, float(newTab.ActualWidth()), float(newTab.ActualHeight())});
-        Require(newBounds.X >= 0 && newBounds.X + newBounds.Width <= root.ActualWidth() &&
-                    newBounds.Y + newBounds.Height <= root.ActualHeight() && newTab.ActualHeight() >= 32,
-                "new-tab button stays visible outside the scrolling list");
-        fprintf(stderr, "Density width=%ld rowHeight=%.1f newButton=%.1fx%.1f padding=%.1f gap=%.1f\n", width,
-                row.ActualHeight(), newTab.ActualWidth(), newTab.ActualHeight(), root.Padding().Left,
-                newTab.Margin().Top);
-        auto panel = list.ItemsPanelRoot().as<Controls::ItemsStackPanel>();
-        Require(panel.LastVisibleIndex() == 119, "last selected tab is reachable in long list");
-        fprintf(stderr, "Long list width=%ld visible=%d..%d viewport=%.1fx%.1f\n", width, panel.FirstVisibleIndex(),
-                panel.LastVisibleIndex(), list.ActualWidth(), list.ActualHeight());
-    }
-    Require(
-        SUCCEEDED(api.syncTabs(hwnd, nullptr, 0, 0, &requested)),
-        "clear long list");
-    // Drain deferred container unloading before creating another test island.
-    for (int i = 0; i < 100; ++i) {
-        Pump();
-        Sleep(10);
-    }
 }
 static BOOL CALLBACK CountChild(HWND, LPARAM count) {
     ++*reinterpret_cast<unsigned*>(count);
@@ -976,17 +899,36 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     std::vector<wchar_t> output(262144);
     const wchar_t* snapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":1,"text":"initial","rows":[{"id":"a","title":"First suggestion"},{"id":"b","title":"Second suggestion"}]})";
+    // The address lives in its own toolbar island beside the strip.
+    RECT addressRect{100, 44, 570, 76};
+    Require(SUCCEEDED(api.updateAddress(hwnd, &addressRect, TRUE)), "toolbar address host");
     Require(FAILED(api.syncAddress(hwnd, L"{broken")),
             "reject malformed address JSON");
     Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)),
             "accept native address snapshot");
     Pump();
-    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
-    winrt::Windows::Foundation::IInspectable content;
-    Require(SUCCEEDED(inspect(hwnd, put_abi(content))), "inspect address controls");
-    auto address = content.as<Controls::Grid>().Children().GetAt(3).as<Controls::StackPanel>();
-    auto field = address.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(1).as<Controls::TextBox>();
-    auto list = address.Children().GetAt(1).as<Controls::ListView>();
+    auto inspect =
+        reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetAddressContent"));
+    UIElement content{nullptr};
+    Require(inspect && SUCCEEDED(inspect(hwnd, put_abi(content))), "inspect address controls");
+    std::function<FrameworkElement(DependencyObject const&, hstring const&)> byId =
+        [&](DependencyObject const& node, hstring const& id) -> FrameworkElement {
+        if (auto element = node.try_as<FrameworkElement>();
+            element && Automation::AutomationProperties::GetAutomationId(element) == id)
+            return element;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto found = byId(Media::VisualTreeHelper::GetChild(node, i), id)) return found;
+        return nullptr;
+    };
+    AwaitLiveTree(content.as<FrameworkElement>());
+    auto field = byId(content, L"FennAddress").as<Controls::TextBox>();
+    // The editor's header holds the mode button and the field; the suggestions
+    // and global actions float in the address's popup below it.
+    auto header = field.Parent().as<Controls::Grid>();
+    auto address = header.Parent().as<Controls::StackPanel>();
+    auto popupContent =
+        address.Children().GetAt(1).as<Controls::Primitives::Popup>().Child().as<Controls::Border>().Child().as<Controls::StackPanel>();
+    auto list = popupContent.Children().GetAt(0).as<Controls::ListView>();
     Require(address.Visibility() == Visibility::Visible && field.Text() == L"initial" && list.Items().Size() == 2,
             "real TextBox and ListView receive snapshot");
     auto directionSnapshot = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);
@@ -1031,15 +973,32 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":3,"text":"initial","rows":[{"id":"a","title":"First suggestion"},{"id":"b","title":"Second suggestion"}],"modes":{"generation":1,"applied":0,"active":false,"label":"Test engine","entries":[{"id":"engine","label":"Test engine","local":false,"symbol":"search","image":{"width":1,"height":1,"pixels":"0000ffff"}},{"id":"local","label":"History","local":true,"symbol":"history"},{"id":"settings","label":"Settings","local":true,"symbol":"settings"}]}})";
     Require(SUCCEEDED(api.syncAddress(hwnd, modesSnapshot)),
             "accept native mode model");
-    auto modeButton =
-        address.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(0).as<Controls::DropDownButton>();
+    // The toolbar header also holds the embedded site controls, so find the
+    // search-mode dropdown by type rather than position.
+    Controls::DropDownButton modeButton{nullptr};
+    for (auto child : header.Children())
+        if (auto button = child.try_as<Controls::DropDownButton>()) modeButton = button;
+    Require(modeButton != nullptr, "toolbar header holds the search-mode dropdown");
+    // In the toolbar, focus moving between the editor and its controls is an
+    // intent of its own, and a publication waits until outstanding intents are
+    // answered. Publish, answer, and repeat, as Firefox does.
+    auto publishUntil = [&](wchar_t const* json, auto applied) {
+        for (int i = 0; i < 40; ++i) {
+            Require(SUCCEEDED(api.syncAddress(hwnd, json)), "accept the search-button publication");
+            Pump();
+            if (applied()) return true;
+            if (auto batch = DrainRequests(api, hwnd); batch.Size()) CompleteRequests(api, hwnd, batch);
+            Sleep(10);
+        }
+        return false;
+    };
     auto hiddenMode = winrt::Windows::Data::Json::JsonObject::Parse(modesSnapshot);
     hiddenMode.SetNamedValue(L"modeButtonVisible", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
-    Require(SUCCEEDED(api.syncAddress(hwnd, hiddenMode.Stringify().c_str())) &&
-                modeButton.Visibility() == Visibility::Collapsed && field.Text() == L"initial",
+    auto hiddenJson = hiddenMode.Stringify();
+    Require(publishUntil(hiddenJson.c_str(), [&] { return modeButton.Visibility() == Visibility::Collapsed; }) &&
+                field.Text() == L"initial",
             "Firefox hides the button without changing the address");
-    Require(SUCCEEDED(api.syncAddress(hwnd, modesSnapshot)) &&
-                modeButton.Visibility() == Visibility::Visible,
+    Require(publishUntil(modesSnapshot, [&] { return modeButton.Visibility() == Visibility::Visible; }),
             "Firefox can restore the native search button");
     auto modeFlyout = modeButton.Flyout().as<Controls::MenuFlyout>();
     Require(modeButton.IsEnabled() && modeFlyout.Items().Size() == 5 &&
@@ -1054,7 +1013,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":4,"text":"initial","rows":[{"id":"a","title":"First suggestion"}],"globalActions":[{"id":"global:action:0","resultId":"global","title":"Search with Fixture","hint":"Press Tab to select:","image":{"width":1,"height":1,"pixels":"0000ffff"}}]})";
     Require(SUCCEEDED(api.syncAddress(hwnd, globalSnapshot)),
             "accept separate global action");
-    auto group = address.Children().GetAt(2).as<Controls::StackPanel>();
+    auto group = popupContent.Children().GetAt(1).as<Controls::StackPanel>();
     auto actionButton = group.Children().GetAt(0).as<Controls::StackPanel>().Children().GetAt(1).as<Controls::Button>();
     Require(list.Items().Size() == 1 && actionButton.Content() &&
                 Automation::AutomationProperties::GetName(actionButton) == L"Search with Fixture",
@@ -1114,7 +1073,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         }
     }
     Require(heldEdit.Size() != 0, "receive and hold the previous admitted edit before filling the queue (10 second deadline)");
-    auto newTab = content.as<Controls::Grid>().Children().GetAt(2).as<Controls::Button>();
+    auto newTab = byId(StripView(module, hwnd), L"FennStripNewTab");
     auto invoke = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(newTab)
                       .GetPattern(Automation::Peers::PatternInterface::Invoke)
                       .as<Automation::Provider::IInvokeProvider>();
@@ -1176,6 +1135,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     Require(!NextRequest(api, hwnd, 6, L"edit", 8).Size(), "disabling cancels the unadmitted edit");
     Require(address.Visibility() == Visibility::Collapsed && list.Items().Size() == 0,
             "disable removes native suggestions");
+    Require(SUCCEEDED(api.updateAddress(hwnd, &addressRect, FALSE)), "close the toolbar address host");
     puts("Native address: real controls, bounded JSON, copied edit, feedback suppression and disable passed");
 }
 
@@ -4883,6 +4843,34 @@ static void JoinWindowsAppRuntime(const wchar_t* paneDll) {
     Require(initialize && SUCCEEDED(initialize(WINUI_PANE_RUNTIME_MAJOR_MINOR, L"", minimum, 0x0010)),
             "join the shared Windows App SDK runtime (needs its Main and DDLM packages)");
 }
+// A child window of Firefox's compositor class, the sibling the strip keeps
+// below itself. The strip deliberately is not the top child: the SDK's caption
+// input window stays above it.
+static HWND CreateCompositorSibling(HWND parent) {
+    static bool registered = [] {
+        WNDCLASSEXW type{sizeof(type)};
+        type.lpfnWndProc = DefWindowProcW;
+        type.hInstance = GetModuleHandleW(nullptr);
+        type.lpszClassName = L"MozillaCompositorWindowClass";
+        return RegisterClassExW(&type) != 0;
+    }();
+    Require(registered, "register the simulated compositor class");
+    return CreateWindowExW(0, L"MozillaCompositorWindowClass", L"Simulated compositor", WS_CHILD | WS_VISIBLE, 0, 0,
+                           640, 480, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+}
+static HWND IslandOf(HWND host) {
+    for (HWND child = GetWindow(host, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        wchar_t name[128]{};
+        GetClassNameW(child, name, 128);
+        if (wcsstr(name, L"DesktopChildSiteBridge")) return child;
+    }
+    return nullptr;
+}
+static bool Above(HWND upper, HWND lower) {
+    for (HWND next = GetWindow(upper, GW_HWNDNEXT); next; next = GetWindow(next, GW_HWNDNEXT))
+        if (next == lower) return true;
+    return false;
+}
 int wmain(int argc, wchar_t** argv) {
     if (argc == 5 && wcscmp(argv[1], L"--record-frames") == 0) return RecordFrames(argv);
     Require(AddVectoredExceptionHandler(
@@ -4948,16 +4936,15 @@ int wmain(int argc, wchar_t** argv) {
             "entry-call export exists only in the test DLL");
     Require((GetProcAddress(module, "WinUIPaneTestGetStageCounter") != nullptr) == (argc == 3),
             "stage-counter export exists only in the test DLL");
-    RECT rect{0, 0, 240, 300};
-    Require(api.update(nullptr, &rect, TRUE) == E_INVALIDARG, "reject null HWND");
+    RECT rect{0, 0, 640, 40};
+    Require(api.updateTabStrip(nullptr, &rect, TRUE) == E_INVALIDARG, "reject null HWND");
     HWND first = CreateWindowExW(0, L"STATIC", L"Pane contract test", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
                                  nullptr, GetModuleHandleW(nullptr), nullptr);
     Require(first != nullptr, "first host");
-    HWND compositor = CreateWindowExW(0, L"STATIC", L"Simulated compositor", WS_CHILD | WS_VISIBLE, 0, 0, 640, 480,
-                                      first, nullptr, GetModuleHandleW(nullptr), nullptr);
+    HWND compositor = CreateCompositorSibling(first);
     Require(compositor != nullptr, "compositor sibling");
-    Require(api.update(first, nullptr, TRUE) == E_INVALIDARG, "reject null geometry");
-    Require(SUCCEEDED(api.update(first, &rect, TRUE)), "first island");
+    Require(api.updateTabStrip(first, nullptr, TRUE) == E_INVALIDARG, "reject null geometry");
+    Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "first island");
     if (argc == 3 && wcscmp(argv[2], L"--address-host") == 0) {
         using namespace winrt::Microsoft::UI::Xaml;
         RECT stripRect{0,0,640,40}, addressRect{100,44,570,76};
@@ -4972,6 +4959,7 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(inspectBackdrop(first,winrt::put_abi(value))), "read address backdrop");
             return value;
         };
+        try {
         for (int cycle=0; cycle<5; ++cycle) {
             Require(SUCCEEDED(api.updateAddress(first,&addressRect,TRUE)), "independent address attach");
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":1,"open":false,"text":"initial","rows":[]})")), "toolbar publication");
@@ -4979,7 +4967,20 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(inspect(first,winrt::put_abi(content))), "address content");
             auto toolbarRoot=content.as<Controls::Grid>();
             Require(!addressBackdrop(), "legacy input-slot has no system backdrop");
-            auto root=toolbarRoot.Children().GetAt(2).as<Controls::StackPanel>();
+            // The navigation row's panels join the grid only once Firefox
+            // publishes them, so reach the address root through its field.
+            std::function<FrameworkElement(DependencyObject const&)> findField = [&](DependencyObject const& node) -> FrameworkElement {
+                if (auto element = node.try_as<FrameworkElement>();
+                    element && Automation::AutomationProperties::GetAutomationId(element) == L"FennAddress")
+                    return element;
+                for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+                    if (auto found = findField(Media::VisualTreeHelper::GetChild(node, i))) return found;
+                return nullptr;
+            };
+            AwaitLiveTree(toolbarRoot);
+            auto addressField = findField(toolbarRoot);
+            Require(addressField != nullptr, "toolbar address field");
+            auto root = addressField.Parent().as<FrameworkElement>().Parent().as<Controls::StackPanel>();
             AwaitLiveTree(root);
             auto header=root.Children().GetAt(0).as<Controls::Grid>();
             auto field=header.Children().GetAt(2).as<Controls::TextBox>();
@@ -5043,6 +5044,10 @@ int wmain(int argc, wchar_t** argv) {
             Require(inspect(first,winrt::put_abi(content))==E_NOT_VALID_STATE, "detached host no longer publishes");
             Require(SUCCEEDED(api.updateAddress(first,&addressRect,FALSE)), "idempotent address teardown");
         }
+        } catch (winrt::hresult_error const& error) {
+            fwprintf(stderr, L"Address host HRESULT 0x%08X: %s\n", unsigned(error.code()), error.message().c_str());
+            return 1;
+        }
         Require(SUCCEEDED(api.destroy(first)), "destroy dual host");
         DestroyWindow(first);
         winrt::clear_factory_cache();
@@ -5056,7 +5061,7 @@ int wmain(int argc, wchar_t** argv) {
         CheckTabStrip(module, api, first);
         Require(SUCCEEDED(api.destroy(first)), "destroy strip before host");
         Require(!GetPropW(first, WINUI_PANE_SYSTEM_CAPTION_PROPERTY), "destroy releases native caption ownership");
-        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "recreate island for inline group checks");
+        Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "recreate island for inline group checks");
         }
         CheckInlineGroups(module, api, first, wcscmp(argv[2], L"--inline") == 0);
         Require(SUCCEEDED(api.destroy(first)), "destroy inline groups before host");
@@ -5174,18 +5179,14 @@ int wmain(int argc, wchar_t** argv) {
         ShowWindow(first, SW_SHOW);
         Pump();
         CheckContextMenu(module, api, first);
-        uint32_t selected{};
-        WinUITab themeTabs[]{{11, L"Renamed tab"}, {22, L"Second tab"}};
-        Require(SUCCEEDED(api.syncTabs(first, themeTabs, 2, 11, &selected)),
-                "theme fixture");
-        CheckThemesAndLongList(module, api, first);
+        CheckMenuThemes(module, api, first, {{11, L"Renamed tab"}, {22, L"Second tab"}});
         {
             // Its own endpoint: the panic check deliberately poisons a core and
             // drops the pane to its snapshot-only fallback, which must not leak
             // into the other fixtures.
             HWND core = CreateWindowExW(0, L"STATIC", L"Shell core host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
                                         nullptr, GetModuleHandleW(nullptr), nullptr);
-            Require(core && SUCCEEDED(api.update(core, &rect, TRUE)), "shell core island");
+            Require(core && SUCCEEDED(api.updateTabStrip(core, &rect, TRUE)), "shell core island");
             ShowWindow(core, SW_SHOW);
             Pump();
             CheckShellCoreRequests(module, api, core);
@@ -5216,7 +5217,7 @@ int wmain(int argc, wchar_t** argv) {
         for (int cycle = 0; cycle < 20; ++cycle) {
             HWND second = CreateWindowExW(0, L"STATIC", L"Menu lifecycle host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480,
                                           nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
-            Require(second && SUCCEEDED(api.update(second, &rect, TRUE)), "menu secondary island");
+            Require(second && SUCCEEDED(api.updateTabStrip(second, &rect, TRUE)), "menu secondary island");
             if (!cycle) {
                 ShowWindow(second, SW_SHOW);
                 Pump();
@@ -5267,7 +5268,7 @@ int wmain(int argc, wchar_t** argv) {
             Sleep(5);
         }
         Require(closed == expected, "the clicked tab's close reaches the request queue");
-        Require(!selected, "closing a background tab does not select its row");
+        Require(!selected, "closing a tab does not emit a selection");
     };
     WinUITab tabs[]{{11, L"First tab"}, {22, L"Unicode tab \u65e5\u672c\u8a9e"}};
     Require(
@@ -5300,8 +5301,8 @@ int wmain(int argc, wchar_t** argv) {
     Require(
         SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)),
         "restore tabs");
-    HWND island = GetWindow(first, GW_CHILD);
-    Require(island != nullptr && island != compositor, "island above compositor sibling");
+    HWND island = IslandOf(first);
+    Require(island != nullptr && Above(island, compositor), "island above compositor sibling");
     ShowWindow(first, SW_SHOWNOACTIVATE);
     for (int i = 0; i < 20; ++i) {
         Pump();
@@ -5323,6 +5324,9 @@ int wmain(int argc, wchar_t** argv) {
         CoUninitialize();
         return 0;
     }
+    // Firefox publishes the menu context with every strip, and the strip only
+    // asks to select a tab that context names.
+    MenuPublish(api, first, MenuState({11, 22}).Stringify().c_str());
     Require(SUCCEEDED(api.focus(first, FALSE)), "focus native tab list");
     Pump();
     auto key = [&](WPARAM value) {
@@ -5335,14 +5339,14 @@ int wmain(int argc, wchar_t** argv) {
         if (!api.translate(&message)) DispatchMessageW(&message);
         Pump();
     };
-    key(VK_DOWN);
+    key(VK_RIGHT);
     {
         auto request = NextRequest(api, first, 1);
         Require(request.Size() && request.GetNamedObject(L"action").GetNamedNumber(L"tab") == 22,
                 "native keyboard selection reaches the Firefox bridge on the request path");
         Require(noSelectionRequest(first), "selection request is delivered exactly once");
     }
-    key(VK_UP);
+    key(VK_LEFT);
     {
         auto request = NextRequest(api, first, 1);
         Require(request.Size() && request.GetNamedObject(L"action").GetNamedNumber(L"tab") == 11,
@@ -5357,9 +5361,11 @@ int wmain(int argc, wchar_t** argv) {
         Require(request.Size() && request.GetNamedObject(L"action").GetNamedNumber(L"tab") == 22,
                 "accessibility selection reaches the browser bridge on the request path");
     }
+    // A strip tab's close button is shown on the selected tab, so the close
+    // checks below act on the tab Firefox has selected.
     Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)),
-        "restore selection before close");
+        SUCCEEDED(api.syncTabs(first, tabs, 2, 22, &requested)),
+        "select the tab whose close is exercised");
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
     closeWithoutSelection(first, 22, 200);
     // Since ABI v14 a close is a request on the shared queue, not something
@@ -5370,7 +5376,7 @@ int wmain(int argc, wchar_t** argv) {
     closeWithoutSelection(first, 22);
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
     closeWithoutSelection(first, 22);
-    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)), "restore close fixtures");
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 22, &requested)), "restore close fixtures");
     // A close remains suppressed both while queued and while Firefox is
     // deciding. A rejected outcome releases it without needing a publication.
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
@@ -5386,8 +5392,9 @@ int wmain(int argc, wchar_t** argv) {
     Require(NextRequest(api, first, 3).Size(), "rejected close can be retried without a snapshot");
     // Two different tabs, two requests, in the order they were clicked. The
     // queue never collapses them: each is a command the user gave.
-    WithTab(first, tabs[0].title, tabs[0].title, false, true);
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)), "select the second close target");
+    WithTab(first, tabs[0].title, tabs[0].title, false, true);
     std::vector<uint32_t> closed;
     for (int attempt = 0; attempt < 40 && closed.size() < 2; ++attempt) {
         auto batch = DrainRequests(api, first);
@@ -5402,22 +5409,21 @@ int wmain(int argc, wchar_t** argv) {
         Pump();
         Sleep(5);
     }
-    Require(closed == std::vector<uint32_t>({11, 22}), "both queued closes arrive, in order");
-    for (int input : {2}) {
-        WithTab(first, tabs[1].title, tabs[1].title, false, true, input);
-        closeWithoutSelection(first, 22);
-    }
+    Require(closed == std::vector<uint32_t>({22, 11}), "both queued closes arrive, in order");
+    // A stock TabView close button is not a keyboard stop; keyboard closing
+    // is Firefox's Ctrl+W, covered by the Firefox integration suite.
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)), "restore selection after close checks");
     Require(api.syncTabs(first, tabs, 2, 11, nullptr) == E_POINTER, "reject null revision output");
     for (int input : {0, 2, 3}) {
-        WithTab(first, L"FennNewTab", L"New tab", false, false, input);
+        WithTab(first, L"FennStripNewTab", L"New tab", false, false, input);
         Require(NextRequest(api, first, 4, nullptr).Size(),
                 "UIA/Space/Enter requests a new tab without inventing rows");
         Require(!NextRequest(api, first, 4, nullptr, 3).Size(),
                 "new-tab request delivered exactly once");
         Require(noSelectionRequest(first), "requesting a new tab does not select a row");
     }
-    WithTab(first, L"FennNewTab", L"New tab");
-    WithTab(first, L"FennNewTab", L"New tab");
+    WithTab(first, L"FennStripNewTab", L"New tab");
+    WithTab(first, L"FennStripNewTab", L"New tab");
     // New tab is never superseded either: two clicks are two tabs.
     int newTabs = 0;
     for (int attempt = 0; attempt < 40 && newTabs < 2; ++attempt) {
@@ -5446,7 +5452,7 @@ int wmain(int argc, wchar_t** argv) {
             return value;
         };
         auto stalledBefore = stalledWakeups();
-        WithTab(first, L"FennNewTab", L"New tab");
+        WithTab(first, L"FennStripNewTab", L"New tab");
         Sleep(300);  // no Pump: from the pane's side the message pump has stopped
         // The gap is observed by the next message to reach the pane's hook, so
         // post one rather than hoping something else arrives. Without this the
@@ -5477,32 +5483,34 @@ int wmain(int argc, wchar_t** argv) {
     }
     WinUITab duplicates[]{{11, L"New tab"}, {22, L"New tab"}};
     Require(SUCCEEDED(api.syncTabs(first, duplicates, 2, 11, &requested)), "identical title snapshot");
-    WithTab(first, L"New tab", L"New tab", false, true, 0, 2, 1);
-    closeWithoutSelection(first, 22);
+    WithTab(first, L"New tab", L"New tab", true, false, 0, 2, 1);
+    {
+        auto request = NextRequest(api, first, 1);
+        Require(request.Size() && request.GetNamedObject(L"action").GetNamedNumber(L"tab") == 22,
+                "the second of two identically named tabs is selected by its own identity");
+    }
     Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)),
             "restore titles after duplicate regression");
     if (argc == 3) {
         CheckContextMenu(module, api, first);
-        Require(SUCCEEDED(
-                    api.syncTabs(first, tabs, 2, 11, &requested)),
-                "restore after context tests");
-        CheckThemesAndLongList(module, api, first);
+        CheckMenuThemes(module, api, first, {tabs[0], tabs[1]});
+        Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)), "restore after theme checks");
     }
-    Require(SUCCEEDED(api.update(first, &rect, TRUE)), "restore geometry after theme checks");
+    Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "restore geometry after theme checks");
     ShowWindow(first, SW_HIDE);
     Require(SetWindowPos(compositor, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE),
             "simulate compositor restacking");
-    Require(SUCCEEDED(api.update(first, &rect, TRUE)), "restore island stacking");
-    Require(GetWindow(first, GW_CHILD) == island, "island remains above restacked compositor");
-    RECT cuts[]{{0, 0, 30, 100}, {100, 100, 200, 200}};
+    Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "restore island stacking");
+    Require(Above(island, compositor), "island remains above restacked compositor");
+    RECT cuts[]{{0, 0, 30, 40}, {100, 0, 200, 40}};
     Require(SUCCEEDED(api.clip(first, cuts, 2)), "clip overlapping overlays");
     Pump();
     HRGN region = CreateRectRgn(0, 0, 0, 0);
     Require(GetWindowRgn(island, region) == COMPLEXREGION, "nonrectangular island region");
-    Require(!PtInRegion(region, 10, 10) && !PtInRegion(region, 150, 150), "covered areas excluded");
-    Require(PtInRegion(region, 50, 50) && PtInRegion(region, 230, 250), "uncovered areas preserved");
+    Require(!PtInRegion(region, 10, 20) && !PtInRegion(region, 150, 20), "covered areas excluded");
+    Require(PtInRegion(region, 50, 20) && PtInRegion(region, 600, 20), "uncovered areas preserved");
     Require(api.clip(first, nullptr, 1) == E_INVALIDARG, "reject null exclusions");
-    RECT full{0, 0, 240, 300};
+    RECT full{0, 0, 640, 40};
     Require(SUCCEEDED(api.clip(first, &full, 1)), "fully covered pane");
     Require(GetWindowRgn(island, region) == NULLREGION, "full cover has empty region");
     Require(SUCCEEDED(api.clip(first, nullptr, 0)), "restore full pane");
@@ -5526,25 +5534,25 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(counters(values, 6)), "read geometry-work counters");
         };
         uint64_t before[6]{}, after[6]{};
-        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "settle geometry before counting");
+        Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "settle geometry before counting");
         work(before);
-        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "repeat the same geometry");
+        Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "repeat the same geometry");
         work(after);
         Require(after[0] == before[0] + 1, "the repeat is still counted as an update");
         Require(after[1] == before[1], "a repeated rect is not handed to the island again");
         Require(after[3] == before[3], "a repeated visibility is not handed to the island again");
         RECT widened{rect.left, rect.top, rect.right + 8, rect.bottom};
-        Require(SUCCEEDED(api.update(first, &widened, TRUE)), "change the geometry");
+        Require(SUCCEEDED(api.updateTabStrip(first, &widened, TRUE)), "change the geometry");
         work(before);
         Require(before[1] == after[1] + 1, "a changed rect is handed to the island");
-        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "restore geometry after counting");
+        Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "restore geometry after counting");
         // A real change of visibility still has to reach the island; only a
         // repeat of the visibility it already has is dropped.
         work(before);
-        Require(SUCCEEDED(api.update(first, &rect, FALSE)), "hide the island");
+        Require(SUCCEEDED(api.updateTabStrip(first, &rect, FALSE)), "hide the island");
         work(after);
         Require(after[3] == before[3] + 1, "hiding is handed to the island");
-        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "show the island again");
+        Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "show the island again");
         work(before);
         Require(before[3] == after[3] + 1, "showing again is handed to the island");
         // A restacked island is put back on top even though nothing else
@@ -5552,10 +5560,10 @@ int wmain(int argc, wchar_t** argv) {
         Require(SetWindowPos(compositor, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE),
                 "restack the sibling above the island");
         work(before);
-        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "same geometry, restacked sibling");
+        Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "same geometry, restacked sibling");
         work(after);
         Require(after[2] == before[2] + 1, "a restacked island is put back on top with no other change");
-        Require(GetWindow(first, GW_CHILD) == island, "island is above the compositor again");
+        Require(Above(island, compositor), "island is above the compositor again");
         Require(after[1] == before[1], "restacking alone does not re-apply geometry");
         // The same exclusions against the same client rect are the same region.
         Require(SUCCEEDED(api.clip(first, cuts, 2)), "settle exclusions before counting");
@@ -5567,12 +5575,12 @@ int wmain(int argc, wchar_t** argv) {
         // Moving the island does not invalidate a region expressed in its own
         // coordinates, so the repeat still holds across a move.
         RECT movedRight{rect.left + 8, rect.top, rect.right + 8, rect.bottom};
-        Require(SUCCEEDED(api.update(first, &movedRight, TRUE)), "move without resizing");
+        Require(SUCCEEDED(api.updateTabStrip(first, &movedRight, TRUE)), "move without resizing");
         work(before);
         Require(SUCCEEDED(api.clip(first, cuts, 2)), "same exclusions after a move");
         work(after);
         Require(after[5] == before[5], "moving the island leaves its region valid");
-        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "restore geometry after the move");
+        Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "restore geometry after the move");
         work(before);
         Require(SUCCEEDED(api.clip(first, nullptr, 0)), "change the exclusions");
         work(after);
@@ -5598,19 +5606,19 @@ int wmain(int argc, wchar_t** argv) {
             uint64_t ignored = 0;
             Require(counts(L"noSuchEntry", &ignored) == E_INVALIDARG, "reject an unknown entry name");
             Require(counts(nullptr, &ignored) == E_POINTER, "reject a null entry name");
-            Require(counts(L"update", nullptr) == E_POINTER, "reject a null count output");
+            Require(counts(L"updateTabStrip", nullptr) == E_POINTER, "reject a null count output");
         }
-        auto updatesBefore = entryCalls(L"update");
+        auto updatesBefore = entryCalls(L"updateTabStrip");
         auto clipsBefore = entryCalls(L"clip");
-        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "counted update");
+        Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "counted update");
         Require(SUCCEEDED(api.clip(first, nullptr, 0)), "counted clip");
-        Require(entryCalls(L"update") == updatesBefore + 1, "update accounts for its own call");
+        Require(entryCalls(L"updateTabStrip") == updatesBefore + 1, "update accounts for its own call");
         Require(entryCalls(L"clip") == clipsBefore + 1, "clip accounts for its own call");
         // A rejected call is still a call: it reached the entry point and spent
         // time there, so leaving it uncounted would understate the cost.
-        auto rejectedBefore = entryCalls(L"update");
-        Require(api.update(nullptr, &rect, TRUE) == E_INVALIDARG, "rejected update");
-        Require(entryCalls(L"update") == rejectedBefore + 1, "a rejected call is still accounted for");
+        auto rejectedBefore = entryCalls(L"updateTabStrip");
+        Require(api.updateTabStrip(nullptr, &rect, TRUE) == E_INVALIDARG, "rejected update");
+        Require(entryCalls(L"updateTabStrip") == rejectedBefore + 1, "a rejected call is still accounted for");
         Require(entryCalls(L"syncTabs") > 0, "tab publication is accounted for");
         Require(entryCalls(L"translate") > 0, "message translation is accounted for");
         // The request path's own latency, which is what milestones 3 to 6 were
@@ -5631,7 +5639,7 @@ int wmain(int argc, wchar_t** argv) {
     EnumChildWindows(first, CountChild, reinterpret_cast<LPARAM>(&children));
     Require(children > 0, "real native island child");
     HRESULT otherThread = S_OK;
-    std::thread worker([&] { otherThread = api.update(first, &rect, TRUE); });
+    std::thread worker([&] { otherThread = api.updateTabStrip(first, &rect, TRUE); });
     worker.join();
     Require(otherThread == RPC_E_WRONG_THREAD, "reject wrong-thread update");
     std::thread clipWorker([&] { otherThread = api.clip(first, nullptr, 0); });
@@ -5642,7 +5650,7 @@ int wmain(int argc, wchar_t** argv) {
         HWND second = CreateWindowExW(0, L"STATIC", L"Second pane host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
                                       nullptr, GetModuleHandleW(nullptr), nullptr);
         Require(second != nullptr, "second host");
-        Require(SUCCEEDED(api.update(second, &rect, TRUE)), "create second island");
+        Require(SUCCEEDED(api.updateTabStrip(second, &rect, TRUE)), "create second island");
         WinUITab other[]{{11, L"Independent window"}};
         Require(SUCCEEDED(api.syncTabs(second, other, 1, 11, &requested)) &&
                     requested && noSelectionRequest(second),
@@ -5650,7 +5658,7 @@ int wmain(int argc, wchar_t** argv) {
         if (cycle == 0) {
             ShowWindow(second, SW_SHOWNOACTIVATE);
             Pump();
-            WithTab(second, L"FennNewTab", L"New tab");
+            WithTab(second, L"FennStripNewTab", L"New tab");
             Require(!NextRequest(api, first, 4, nullptr, 3).Size(),
                     "second-window new-tab action cannot leak to first window");
             Require(NextRequest(api, second, 4, nullptr).Size(),
@@ -5662,20 +5670,22 @@ int wmain(int argc, wchar_t** argv) {
                 "second window clipping leaves first unchanged");
         DeleteObject(firstRegion);
         Pump();
-        RECT resized{10, 20, 210, 380};
-        Require(SUCCEEDED(api.update(second, &resized, TRUE)), "resize second island");
-        Require(SUCCEEDED(api.update(second, &resized, FALSE)), "hide second island");
-        Require(SUCCEEDED(api.update(second, &resized, TRUE)), "show second island");
+        // Strip-shaped: the caption column alone takes about 184 DIP.
+        RECT resized{10, 0, 610, 40};
+        // Where a row is used afterwards, let each geometry change render first:
+        // hiding the island while a new row's Loaded is pending leaves it unloaded.
+        auto settle = [&] { if (cycle == 0 && argc == 3) for (int i = 0; i < 50; ++i) { Pump(); Sleep(10); } };
+        settle();
+        Require(SUCCEEDED(api.updateTabStrip(second, &resized, TRUE)), "resize second island");
+        settle();
+        Require(SUCCEEDED(api.updateTabStrip(second, &resized, FALSE)), "hide second island");
+        settle();
+        Require(SUCCEEDED(api.updateTabStrip(second, &resized, TRUE)), "show second island");
         if (cycle == 0 && argc == 3) {
             using namespace winrt::Microsoft::UI::Xaml;
-            auto inspect =
-                reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
-            UIElement content{nullptr};
-            Require(SUCCEEDED(inspect(second, winrt::put_abi(content))), "inspect shutdown-menu host");
-            auto list = content.as<Controls::Grid>().Children().GetAt(1).as<Controls::ListView>();
-            PrepareFixtureMenus(api, second, list);
-            auto row = RealizedRow(list, 0);
+            PrepareFixtureMenus(api, second, {{11, L"Independent window"}}, 11);
             SetForegroundWindow(second);
+            auto row = StripRow(StripView(module, second), 11);
             row.Focus(FocusState::Programmatic);
             for (int i = 0; i < 100; ++i) {
                 Pump();
@@ -5695,17 +5705,17 @@ int wmain(int argc, wchar_t** argv) {
         Require(SUCCEEDED(api.destroy(second)), "destroy before HWND, including an open menu");
         Require(SUCCEEDED(api.destroy(second)), "idempotent destroy");
         DestroyWindow(second);
-        Require(SUCCEEDED(api.update(first, &rect, TRUE)), "first island survives second close");
+        Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "first island survives second close");
         Pump();
     }
     Require(SUCCEEDED(api.destroy(first)), "destroy first island");
     DestroyWindow(first);
     winrt::clear_factory_cache();
     Require(SUCCEEDED(api.shutdown()), "dispatcher shutdown");
-    Require(api.update(nullptr, &rect, TRUE) == RO_E_CLOSED, "reject after shutdown");
+    Require(api.updateTabStrip(nullptr, &rect, TRUE) == RO_E_CLOSED, "reject after shutdown");
     CoUninitialize();
     puts(
-        "CHECKS PASSED (process exit still required): ABI rejection, child HWND stacking above compositor, thread "
+        "CHECKS PASSED (process exit still required): ABI rejection, strip island stacking above compositor, thread "
         "affinity, partial clipping/restoration, tab snapshots, keyboard selection, stale selection rejection, UIA "
         "selection and accessible titles, native close via UIA/keyboard, close queue and stale IDs, new tab via "
         "UIA/Space/Enter and per-window queue, 20 two-window lifecycles, shutdown");

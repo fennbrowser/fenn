@@ -31,7 +31,6 @@ function fixture() {
   const pane = context.gWinUIPane;
   pane.localization = () => ({formatMessagesSync: () => [{attributes: [{name: "label", value: "Localized native tabs"}]}]});
   pane.element = element();
-  pane.tabStrip = true;
   pane.occlusions = () => [];
   pane.publishState = () => {state.published++; pane.nativeRevision = state.revision;};
   pane.uninit = () => {pane.setReplacementActive(false); pane.element = null; pane.attached = false; pane.nativeRevision = 0;};
@@ -135,14 +134,10 @@ test("preference changes retain the live native session when the effective prese
   const original = f.pane.element;
   let scheduled = 0;
   f.pane.schedule = () => scheduled++;
-  f.context.Services.prefs.setBoolPref(f.pane.stripPref, false);
-  f.posted.shift()();
-  assert.equal(f.pane.element, original);
-  assert.equal(scheduled, 1);
   f.context.Services.prefs.setBoolPref(f.pane.pref, false);
   f.posted.shift()();
   assert.equal(f.pane.element, original);
-  assert.equal(scheduled, 2);
+  assert.equal(scheduled, 1);
 });
 
 test("a preference notification delivered inside a nested native drain waits for the outer drain", () => {

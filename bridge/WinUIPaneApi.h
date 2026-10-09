@@ -6,6 +6,8 @@
 // button input and Gecko must not redirect non-client presses to DOM buttons.
 #define WINUI_PANE_SYSTEM_CAPTION_PROPERTY L"FennPane.SystemCaption.1"
 
+// v16 retires the 240-px sidebar presentation and its `update` entry point:
+// every pane is the TabView strip, created and positioned by updateTabStrip.
 // v14 puts the last two commands -- close and new tab -- on the v11 request
 // path. syncTabs therefore drains nothing: it loses its close/new-tab
 // out-parameters and the reserved context/command pair with them, keeping only
@@ -23,7 +25,7 @@
 // completeRequests) and incremental tab deltas (applyTabDelta), and retired
 // syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 // retaining the sidebar entry point.
-#define WINUI_PANE_ABI_VERSION 15u
+#define WINUI_PANE_ABI_VERSION 16u
 
 // The pane is built framework-dependent on the shared Windows App SDK runtime
 // (Microsoft.WindowsAppRuntime.2, at least 2.5.1.0). A packaged host declares it
@@ -69,7 +71,6 @@ using WinUIPaneNotifyFn = BOOL (WINAPI*)(void* context);
 struct WinUIPaneApi {
     uint32_t size;
     uint32_t version;
-    HRESULT (WINAPI* update)(HWND, const RECT*, BOOL);
     HRESULT (WINAPI* focus)(HWND, BOOL);
     HRESULT (WINAPI* destroy)(HWND);
     BOOL (WINAPI* translate)(MSG*);
@@ -98,7 +99,8 @@ struct WinUIPaneApi {
     // intent, including the strip's own gestures, arrives through
     // drainRequests.
     HRESULT (WINAPI* syncTabMenu)(HWND, const wchar_t*);
-    // Same lifetime/geometry contract as update; one presentation per HWND.
+    // Creates, positions, shows or hides the HWND's strip island. Client
+    // physical pixels; hiding a window that has no island creates nothing.
     HRESULT (WINAPI* updateTabStrip)(HWND, const RECT*, BOOL);
 
     // --- v11: event-driven requests -------------------------------------
