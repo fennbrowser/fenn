@@ -160,6 +160,8 @@ struct NativeTabStrip {
     TabGroupsButton groupsButton;
     AllTabsButton allTabs;
     InlineTabGroups inlineGroups;
+    // The tab order of the last full Sync.
+    std::vector<uint32_t> publishedOrder;
     GroupSlide groupSlide;
     GroupDragVisual groupDragVisual;
     GroupDragShift groupDragShift;
@@ -1550,7 +1552,15 @@ struct NativeTabStrip {
         separatorTheme = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource TabViewItemSeparator}" Visibility="Collapsed" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         ambient.layer.Children().Append(separatorTheme);
         ambient.refresh = [this] { RefreshAmbient(); };
-        hoverCard.suppressed = [this] { return IsDragging() || GroupDrag().phase; };
+        // Firefox opens its preview only in the active window and never while
+        // tabs move (tab-hover-preview.mjs, shouldActivate). A card is a windowed
+        // popup: one opened from a background window's visible strip edge floats
+        // over the window in front and takes its input.
+        hoverCard.suppressed = [this] {
+            return IsDragging() || GroupDrag().phase || groupSlide.pending || groupSlide.storyboard ||
+                   !rowAnimations.empty() || !foreignGroupShift.entries.empty() ||
+                   (ownerHwnd && GetAncestor(ownerHwnd, GA_ROOT) != GetForegroundWindow());
+        };
         hoverCard.Bind(root);
         hoverCard.send = [this](uint32_t tab, uint64_t request, double scale) {
             if (!preview) return;
@@ -1662,6 +1672,9 @@ struct NativeTabStrip {
             if (key==Key::Left || key==Key::Right || key==Key::Up || key==Key::Down ||
                 key==Key::Home || key==Key::End || key==Key::Tab || key==Key::Space || key==Key::Enter)
                 groupSelectionGuard=false;
+            if ((key==Key::Left || key==Key::Right || key==Key::Home || key==Key::End) && !args.Handled() &&
+                !IsDragging() && Navigate(args.OriginalSource(), key))
+                args.Handled(true);
         });
         view.SelectionChanged([this, alive](auto const&, auto const&) {
             if (alive.expired() || syncing || GroupDrag().phase || !view.SelectedItem()) return;
@@ -3151,6 +3164,8 @@ struct NativeTabStrip {
                 throw hresult_invalid_argument();
             groupLayout = std::move(layout);
             hasGroupLayout = true;
+            // Reorders within the strip arrive here rather than through Sync.
+            hoverCard.Moved();
             if (CanApplyGroupLayout()) {
                 const bool previous = syncing;
                 auto selected = view.SelectedItem();
@@ -3424,6 +3439,50 @@ struct NativeTabStrip {
             row, meta.containerName + L" " + meta.detail + L" " + meta.status);
     }
 
+    // Tabs and inline group headers in visual order. The grouped source hosts
+    // tabs in a ListView whose stock arrow handling does not cross them, so the
+    // strip navigates itself.
+    std::vector<Controls::Control> FocusOrder() const {
+        std::vector<Controls::Control> order;
+        if (inlineGroups.active) {
+            for (auto id : inlineGroups.order) {
+                auto found = inlineGroups.runs.find(id);
+                if (found == inlineGroups.runs.end()) continue;
+                auto const& run = found->second;
+                if (run.button && run.button.IsLoaded()) order.push_back(run.button);
+                for (auto item : run.items) order.push_back(item.as<Controls::Control>());
+            }
+        } else {
+            for (auto item : view.TabItems())
+                if (auto row = item.try_as<Controls::TabViewItem>()) order.push_back(row);
+        }
+        return order;
+    }
+
+    // Firefox's tab strip keys: Left/Right select the adjacent tab, wrapping at
+    // the ends, and only move focus with Ctrl; Home/End go to the first and
+    // last item. Shift and Alt combinations stay Firefox's (tab moving).
+    bool Navigate(Windows::Foundation::IInspectable const& source, Windows::System::VirtualKey key) {
+        using Key = Windows::System::VirtualKey;
+        if (GetKeyState(VK_SHIFT) & 0x8000 || GetKeyState(VK_MENU) & 0x8000) return false;
+        const bool focusOnly = GetKeyState(VK_CONTROL) & 0x8000;
+        auto order = FocusOrder();
+        auto current = std::find(order.begin(), order.end(), source.try_as<Controls::Control>());
+        if (current == order.end()) return false;
+        const auto count = order.size();
+        size_t index = current - order.begin();
+        const bool rtl = view.FlowDirection() == FlowDirection::RightToLeft;
+        if (key == Key::Home) index = 0;
+        else if (key == Key::End) index = count - 1;
+        else if ((key == Key::Right) != rtl) index = (index + 1) % count;
+        else index = (index + count - 1) % count;
+        auto target = order[index];
+        if (auto row = target.try_as<Controls::TabViewItem>(); row && !focusOnly)
+            select(unbox_value<uint32_t>(row.Tag()));
+        target.Focus(FocusState::Keyboard);
+        return true;
+    }
+
     void AttachMenu(Controls::TabViewItem const& row, uint32_t id) {
         Controls::MenuFlyout flyout;
         flyout.Items().Append(NativeTabMenu::Placeholder());
@@ -3489,6 +3548,14 @@ struct NativeTabStrip {
         bool refreshForeignPreview = false;
         std::vector<uint32_t> createdRows;
         const size_t priorRowCount = rows.size();
+        {
+            std::vector<uint32_t> order(count);
+            for (uint32_t i = 0; i < count; ++i) order[i] = tabs[i].id;
+            if (order != publishedOrder) {
+                hoverCard.Moved();
+                publishedOrder = std::move(order);
+            }
+        }
         ClosingTab closing;
         double addBefore = std::numeric_limits<double>::quiet_NaN();
         std::map<uint32_t, std::pair<float, float>> rowsBefore;

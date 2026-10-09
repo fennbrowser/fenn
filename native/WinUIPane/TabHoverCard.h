@@ -65,6 +65,9 @@ struct TabHoverCard {
     bool open{};
     // The row whose card is showing, and the one waiting out the hover delay.
     uint32_t shown{}, waiting{};
+    // A pressed row shows no card until the pointer really leaves it, as
+    // Firefox's preview does after a click.
+    uint32_t pressed{};
     std::chrono::steady_clock::time_point closedAt{};
     Microsoft::UI::Dispatching::DispatcherQueueTimer timer{nullptr};
     Style presenterStyle{nullptr};
@@ -196,7 +199,7 @@ struct TabHoverCard {
     // The pointer arrived on a row: open its card after
     // the system hover delay, or at once if a card is open or just closed.
     void Enter(uint32_t id, Controls::TabViewItem const& row) {
-        if (!cards.count(id) || (suppressed && suppressed())) return;
+        if (!cards.count(id) || pressed == id || (suppressed && suppressed())) return;
         // Ask before the delay runs out, so the answer is usually here by the
         // time the card appears.
         if (tab != id) Request(id, row);
@@ -227,12 +230,28 @@ struct TabHoverCard {
         row.PointerEntered([this, alive, id](auto const& sender, auto&&) {
             if (!alive.expired()) Enter(id, sender.template as<Controls::TabViewItem>());
         });
-        row.PointerExited(leave);
+        // A menu's or card's dismissal layer also raises PointerExited while
+        // the pointer stays on the row; only a real departure ends the press.
+        row.PointerExited([this, alive, id](auto const& sender, auto const& args) {
+            if (alive.expired()) return;
+            Hide(id);
+            auto element = sender.template as<FrameworkElement>();
+            auto at = args.GetCurrentPoint(element).Position();
+            if (pressed == id && (at.X < 0 || at.Y < 0 || at.X >= element.ActualWidth() || at.Y >= element.ActualHeight()))
+                pressed = 0;
+        });
         row.PointerCanceled(leave);
         row.PointerCaptureLost(leave);
-        // A press starts a selection or a drag; the card gets out of the way.
+        // A press starts a selection, a drag or a context menu; the card gets
+        // out of the way and stays away. Reopening it at once here (the press
+        // closed it within the reshow window) raced the row's context flyout,
+        // whose opening the reopened card then light-dismissed.
         row.AddHandler(UIElement::PointerPressedEvent(),
-            box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(leave)), true);
+            box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive, id](auto&&, auto&&) {
+                if (alive.expired()) return;
+                pressed = id;
+                Hide(id);
+            })), true);
         card.flyout.Opened([this, alive, id](auto const&, auto const&) {
             if (!alive.expired() && cards.count(id)) open = true;
         });
@@ -261,8 +280,16 @@ struct TabHoverCard {
         if (retitled && open && tab == id) Request(id, row);
     }
 
+    // The strip reordered or replaced rows: an open or pending card was placed
+    // for the old layout. Firefox likewise keeps previews away while tabs move.
+    void Moved() {
+        if (waiting) Hide(waiting);
+        if (shown) Hide(shown);
+    }
+
     void Forget(uint32_t id) {
         Hide(id);
+        if (pressed == id) pressed = 0;
         cards.erase(id);
         if (tab == id) { tab = 0; open = false; }
     }

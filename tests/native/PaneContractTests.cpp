@@ -1616,6 +1616,10 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     {
         // The hover card: a transient Flyout opened by hovering, centered
         // under its tab, and filled by Firefox's answer to the newest request.
+        // Like Firefox's preview it opens only in the active window.
+        SetForegroundWindow(host);
+        for (int i = 0; i < 10; ++i) { Pump(); Sleep(10); }
+        Require(GetForegroundWindow() == host, "the strip's window is active for hover-card checks");
         auto hoverCard = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, BOOL, void**)>(
             GetProcAddress(module, "WinUIPaneTestHoverCard"));
         Require(hoverCard != nullptr, "hover-card test hook exists");
