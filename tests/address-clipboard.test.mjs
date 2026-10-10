@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
+import {planUrlbarCut} from '../upstream/firefox/browser/components/urlbar/content/UrlbarClipboardText.mjs';
 const context=vm.createContext({console});
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIUrlbarSession.sys.mjs',import.meta.url),'utf8')
  .replace(/^import .*;$/m,'').replace('export class WinUIUrlbarSession','this.Session = class WinUIUrlbarSession'),context);
@@ -15,8 +16,10 @@ function fixture() {
   if(command==='cmd_cut'){field.value=field.value.slice(0,field.selectionStart)+field.value.slice(field.selectionEnd);field.selectionEnd=field.selectionStart;}
  }})};
  Object.assign(session,{sessionId:'s',editId:3,input:{inputField:field,
+ getCutEdit(selection){return planUrlbarCut({...selection,readOnly:this.readOnly});},
  _getSelectedValueForClipboard:({text,start,end})=>text.slice(start,end)},window:{InputEvent:class{constructor(type,init){Object.assign(this,init);}}},
- changed(){},query(text,event){queries.push({text,event});return Promise.resolve();}});
+ changed(){},query(text,event,edit){queries.push({text,event,edit});field.value=text;
+ if(edit)field.setSelectionRange(edit.selectionStart,edit.selectionEnd);return Promise.resolve();}});
  const request={version:1,session:'s',editId:3,text:'alpha beta',selectionStart:0,selectionEnd:5,composing:false,clipboard:'cmd_copy'};
  return {session,field,request,commands,queries,copies};
 }
@@ -30,11 +33,35 @@ test('copy formats the native selection without a DOM command controller or quer
  assert.deepEqual(f.copies,['Firefox formatted selection']);
  assert.equal(f.field.value,'alpha beta');assert.equal(f.queries.length,0);
 });
-test('cut publishes caret scoped to the accepted edit',()=>{
- const f=fixture();assert.equal(f.session.clipboard({...f.request,clipboard:'cmd_cut'}),1);
+test('cut bypasses the DOM controller and publishes one replacement scoped to the accepted edit',()=>{
+ const f=fixture();f.field.controllers={getControllerForCommand(){throw new Error('DOM controller forbidden');}};
+ assert.equal(f.session.clipboard({...f.request,clipboard:'cmd_cut'}),1);
  assert.equal(f.field.value,' beta');assert.equal(f.session.clipboardResult.editId,3);
  assert.equal(f.session.clipboardResult.start,0);assert.equal(f.session.clipboardResult.end,0);
  assert.equal(f.queries[0].event.inputType,'deleteByCut');
+ assert.equal(f.queries.length,1);assert.equal(f.queries[0].edit.selectionStart,0);
+ assert.deepEqual(f.copies,['alpha']);assert.equal(f.session.clipboardResult.replacement,'');
+ assert.equal(f.session.clipboardResult.before,'alpha beta');
+});
+
+test('read-only and empty native cuts do not mutate text, clipboard or query',()=>{
+ for(const readOnly of [true,false]) {
+  const f=fixture();f.session.input.readOnly=readOnly;
+  assert.equal(f.session.clipboard({...f.request,clipboard:'cmd_cut',selectionEnd:readOnly?5:0}),2);
+  assert.equal(f.field.value,'alpha beta');assert.deepEqual(f.copies,[]);assert.deepEqual(f.queries,[]);
+ }
+});
+
+test('cut copies Firefox-formatted text but removes only the selected display range',()=>{
+ const f=fixture();f.session.input._getSelectedValueForClipboard=()=> 'https://alpha/';
+ assert.equal(f.session.clipboard({...f.request,clipboard:'cmd_cut'}),1);
+ assert.deepEqual(f.copies,['https://alpha/']);assert.equal(f.field.value,' beta');
+});
+
+test('clipboard write failure cannot delete the native selection',()=>{
+ const f=fixture();context.Cc['@mozilla.org/widget/clipboardhelper;1'].getService=()=>({copyString(){throw Error('clipboard busy');}});
+ assert.throws(()=>f.session.clipboard({...f.request,clipboard:'cmd_cut'}),/clipboard busy/);
+ assert.equal(f.field.value,'alpha beta');assert.deepEqual(f.queries,[]);
 });
 test('stale sessions, edits, malformed ranges and arbitrary commands are refused',()=>{
  for(const patch of [{session:'old'},{editId:2},{selectionStart:-1},{selectionEnd:999},{text:'different'},

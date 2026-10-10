@@ -1190,7 +1190,7 @@ index 30f5aa6556..2e0a135eb2 100644
 +
  }
 diff --git a/browser/components/urlbar/content/SmartbarInput.mjs b/browser/components/urlbar/content/SmartbarInput.mjs
-index e5dcc2c923..86b86ff90d 100644
+index e5dcc2c923..bde1d6de06 100644
 --- a/browser/components/urlbar/content/SmartbarInput.mjs
 +++ b/browser/components/urlbar/content/SmartbarInput.mjs
 @@ -2,6 +2,9 @@
@@ -1478,15 +1478,99 @@ index e5dcc2c923..86b86ff90d 100644
        // Open help links in a new tab.
        where = "tab";
      }
+@@ -5246,6 +5285,15 @@ ${
+     this.view.close({ showFocusBorder: false });
+   }
+ 
++  getCutEdit(selection = null) {
++    return planUrlbarCut({
++      text: selection?.text ?? this.inputField.value,
++      start: selection?.start ?? this.selectionStart,
++      end: selection?.end ?? this.selectionEnd,
++      readOnly: this.readOnly,
++    });
++  }
++
+   _initCopyCutController() {
+     // Clipboard handling is managed by the multiline editor in smartbar mode.
+     if (this.#isSmartbarMode) {
+@@ -6665,33 +6713,20 @@ ${
+   }
+ 
+   _on_paste(event) {
+-    let originalPasteData = event.clipboardData.getData("text/plain");
+-    if (!originalPasteData) {
+-      return;
+-    }
+-
+-    let oldValue = this.value;
+-    let oldStart = oldValue.substring(0, this.selectionStart);
+-    // If there is already non-whitespace content in the URL bar
+-    // preceding the pasted content, it's not necessary to check
+-    // protocols used by the pasted content:
+-    if (oldStart.trim()) {
+-      return;
+-    }
+-    let oldEnd = oldValue.substring(this.selectionEnd);
+-
+-    const pasteData = UrlbarShared.sanitizeTextFromClipboard(
+-      originalPasteData,
+-      UrlbarContentUtils.getFixupPrimitives(originalPasteData, this.isPrivate)
+-    );
++    const edit = planUrlbarPaste({text: this.value, start: this.selectionStart,
++      end: this.selectionEnd, isPrivate: this.isPrivate},
++      event.clipboardData.getData("text/plain"), {
++        sanitize: (text, fixup) => UrlbarShared.sanitizeTextFromClipboard(text, fixup),
++        fixup: (text, isPrivate) => UrlbarContentUtils.getFixupPrimitives(text, isPrivate),
++      });
+ 
+-    if (originalPasteData != pasteData) {
++    if (edit) {
+       // Unfortunately we're not allowed to set the bits being pasted
+       // so cancel this event:
+       event.preventDefault();
+       event.stopImmediatePropagation();
+ 
+-      const value = oldStart + pasteData + oldEnd;
++      const value = edit.text;
+       this.setValue(value, { valueIsTyped: true });
+       this.userTypedValue = value;
+ 
+@@ -6705,7 +6740,7 @@ ${
+       this.toggleAttribute("usertyping", this._untrimmedValue);
+ 
+       // Fix up cursor/selection:
+-      let newCursorPos = oldStart.length + pasteData.length;
++      let newCursorPos = edit.start;
+       this.setSelectionRange(newCursorPos, newCursorPos);
+ 
+       this.startQuery({
+@@ -7771,12 +7806,10 @@ class CopyCutController {
+     }
+ 
+     if (command == "cmd_cut" && this.isCommandEnabled(command)) {
+-      let start = urlbar.selectionStart;
+-      let end = urlbar.selectionEnd;
+-      urlbar.inputField.value =
+-        urlbar.inputField.value.substring(0, start) +
+-        urlbar.inputField.value.substring(end);
+-      urlbar.inputField.setSelectionRange(start, start);
++      const edit = urlbar.getCutEdit();
++      if (!edit) return;
++      urlbar.inputField.value = edit.text;
++      urlbar.inputField.setSelectionRange(edit.start, edit.end);
+ 
+       let event = new UIEvent("input", {
+         bubbles: true,
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..71a950fa08 100644
+index a077de625f..902fe5ecdd 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,6 +2,10 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  
-+import { formatUrlbarClipboardText } from "chrome://browser/content/urlbar/UrlbarClipboardText.mjs";
++import { formatUrlbarClipboardText, planUrlbarCut, planUrlbarPaste } from "chrome://browser/content/urlbar/UrlbarClipboardText.mjs";
 +import { UrlbarResultPresentation } from "chrome://browser/content/urlbar/UrlbarResultPresentation.mjs";
 +import { UrlbarResultActions } from "chrome://browser/content/urlbar/UrlbarResultActions.mjs";
 +import { bindSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeBinding.mjs";
@@ -1953,7 +2037,23 @@ index a077de625f..71a950fa08 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -4479,7 +4456,7 @@ ${
+@@ -4267,6 +4244,15 @@ ${
+     }
+   }
+ 
++  getCutEdit(selection = null) {
++    return planUrlbarCut({
++      text: selection?.text ?? this.inputField.value,
++      start: selection?.start ?? this.selectionStart,
++      end: selection?.end ?? this.selectionEnd,
++      readOnly: this.readOnly,
++    });
++  }
++
+   _initCopyCutController() {
+     // This exists to put an untrimmed URL on the clipboard, and only the address
+     // bar trims. Every other input keeps its native copy/cut.
+@@ -4479,7 +4465,7 @@ ${
        return;
      }
      let controller =
@@ -1962,7 +2062,7 @@ index a077de625f..71a950fa08 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4510,8 +4487,13 @@ ${
+@@ -4510,8 +4496,13 @@ ${
          pasteAndGo.addEventListener("command", () => {
            this._suppressStartQuery = true;
  
@@ -1978,7 +2078,7 @@ index a077de625f..71a950fa08 100644
            this.setResultForCurrentValue(null);
            this.handleCommand();
            this.parentController.clearLastQueryContextCache();
-@@ -4546,7 +4528,7 @@ ${
+@@ -4546,7 +4537,7 @@ ${
          );
  
          let controller =
@@ -1987,7 +2087,7 @@ index a077de625f..71a950fa08 100644
          let enabled = controller.isCommandEnabled("cmd_paste");
          if (enabled) {
            pasteAndGo.removeAttribute("disabled");
-@@ -4747,12 +4729,13 @@ ${
+@@ -4747,12 +4738,13 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -2003,7 +2103,7 @@ index a077de625f..71a950fa08 100644
      ) {
        return null;
      }
-@@ -4767,8 +4750,8 @@ ${
+@@ -4767,8 +4759,8 @@ ${
          result.payload.engine == result.payload.originalEngine)
      ) {
        searchMode = { engineName: result.payload.engine };
@@ -2014,7 +2114,7 @@ index a077de625f..71a950fa08 100644
      }
  
      if (searchMode) {
-@@ -5477,6 +5460,57 @@ ${
+@@ -5477,6 +5469,57 @@ ${
      }
    }
  
@@ -2072,7 +2172,7 @@ index a077de625f..71a950fa08 100644
    _on_input(event) {
      // A new input starts a fresh search; bump the epoch so a pending
      // deferred-Enter's async keyup won't reset this search's caret.
-@@ -5505,17 +5539,7 @@ ${
+@@ -5505,17 +5548,7 @@ ${
      }
  
      let value = this.value;
@@ -2091,7 +2191,7 @@ index a077de625f..71a950fa08 100644
  
      let compositionState = this.#compositionState;
      let compositionClosedPopup = this.#compositionClosedPopup;
-@@ -5530,27 +5554,7 @@ ${
+@@ -5530,27 +5563,7 @@ ${
        this.#compositionHadText = true;
      }
  
@@ -2120,6 +2220,74 @@ index a077de625f..71a950fa08 100644
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
+@@ -5669,33 +5682,20 @@ ${
+   }
+ 
+   _on_paste(event) {
+-    let originalPasteData = event.clipboardData.getData("text/plain");
+-    if (!originalPasteData) {
+-      return;
+-    }
+-
+-    let oldValue = this.value;
+-    let oldStart = oldValue.substring(0, this.selectionStart);
+-    // If there is already non-whitespace content in the URL bar
+-    // preceding the pasted content, it's not necessary to check
+-    // protocols used by the pasted content:
+-    if (oldStart.trim()) {
+-      return;
+-    }
+-    let oldEnd = oldValue.substring(this.selectionEnd);
+-
+-    const pasteData = UrlbarShared.sanitizeTextFromClipboard(
+-      originalPasteData,
+-      UrlbarContentUtils.getFixupPrimitives(originalPasteData, this.isPrivate)
+-    );
++    const edit = planUrlbarPaste({text: this.value, start: this.selectionStart,
++      end: this.selectionEnd, isPrivate: this.isPrivate},
++      event.clipboardData.getData("text/plain"), {
++        sanitize: (text, fixup) => UrlbarShared.sanitizeTextFromClipboard(text, fixup),
++        fixup: (text, isPrivate) => UrlbarContentUtils.getFixupPrimitives(text, isPrivate),
++      });
+ 
+-    if (originalPasteData != pasteData) {
++    if (edit) {
+       // Unfortunately we're not allowed to set the bits being pasted
+       // so cancel this event:
+       event.preventDefault();
+       event.stopImmediatePropagation();
+ 
+-      const value = oldStart + pasteData + oldEnd;
++      const value = edit.text;
+       this.setValue(value, { valueIsTyped: true });
+       this.userTypedValue = value;
+ 
+@@ -5709,7 +5709,7 @@ ${
+       this.toggleAttribute("usertyping", this._untrimmedValue);
+ 
+       // Fix up cursor/selection:
+-      let newCursorPos = oldStart.length + pasteData.length;
++      let newCursorPos = edit.start;
+       this.inputField.setSelectionRange(newCursorPos, newCursorPos);
+ 
+       this.startQuery({
+@@ -6440,12 +6440,10 @@ class CopyCutController {
+     }
+ 
+     if (command == "cmd_cut" && this.isCommandEnabled(command)) {
+-      let start = urlbar.selectionStart;
+-      let end = urlbar.selectionEnd;
+-      urlbar.inputField.value =
+-        urlbar.inputField.value.substring(0, start) +
+-        urlbar.inputField.value.substring(end);
+-      urlbar.inputField.setSelectionRange(start, start);
++      const edit = urlbar.getCutEdit();
++      if (!edit) return;
++      urlbar.inputField.value = edit.text;
++      urlbar.inputField.setSelectionRange(edit.start, edit.end);
+ 
+       let event = new UIEvent("input", {
+         bubbles: true,
 diff --git a/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs b/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
 index 9596698cf9..2f35cd41c4 100644
 --- a/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
@@ -4162,10 +4330,10 @@ index 0000000000..e3ee46ce03
 +}
 diff --git a/browser/components/urlbar/content/UrlbarClipboardText.mjs b/browser/components/urlbar/content/UrlbarClipboardText.mjs
 new file mode 100644
-index 0000000000..d7bf8f6313
+index 0000000000..b6fb66d6af
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarClipboardText.mjs
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,137 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4270,6 +4438,38 @@ index 0000000000..d7bf8f6313
 +  }
 +
 +  return selectedVal;
++}
++
++// A semantic edit, not an editor transaction. The active presenter applies the
++// replacement and owns undo. Offsets use the editor's UTF-16 convention.
++function selectionReplacement(state, replacement) {
++  const {text, start, end} = state;
++  if (typeof text != "string" || !Number.isInteger(start) ||
++      !Number.isInteger(end) || start < 0 || end < start || end > text.length) {
++    return null;
++  }
++  const caret = start + replacement.length;
++  return {before: text, replaceStart: start, replaceEnd: end, replacement,
++    text: text.slice(0, start) + replacement + text.slice(end),
++    start: caret, end: caret};
++}
++
++export function planUrlbarCut(state) {
++  if (state.readOnly || state.start === state.end) return null;
++  return selectionReplacement(state, "");
++}
++
++/**
++ * Firefox's URL-specific paste override. Null means leave the trusted editor
++ * paste unchanged, including its newline, undo and event handling. It does not
++ * mean reject a paste. The caller supplies Firefox fixup and sanitizer services.
++ */
++export function planUrlbarPaste(state, originalPasteData, services) {
++  if (!originalPasteData || !selectionReplacement(state, "") ||
++      state.text.slice(0, state.start).trim()) return null;
++  const pasteData = services.sanitize(originalPasteData,
++    services.fixup(originalPasteData, state.isPrivate));
++  return originalPasteData === pasteData ? null : selectionReplacement(state, pasteData);
 +}
 diff --git a/browser/components/urlbar/content/UrlbarResultPresentation.mjs b/browser/components/urlbar/content/UrlbarResultPresentation.mjs
 new file mode 100644
@@ -6148,10 +6348,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..8fd595301c
+index 0000000000..e0fc13606a
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1486 @@
+@@ -0,0 +1,1501 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6674,16 +6874,31 @@ index 0000000000..8fd595301c
 +    if (!["cmd_copy", "cmd_cut", "cmd_paste"].includes(request.clipboard) ||
 +        this.syncNativeSelection(request) !== 1) return 2;
 +    const field = this.input.inputField;
-+    if (request.clipboard === "cmd_copy") {
++    if (request.clipboard === "cmd_copy" || request.clipboard === "cmd_cut") {
 +      if (request.selectionStart === request.selectionEnd) return 2;
++      const selection = {text:request.text, start:request.selectionStart, end:request.selectionEnd};
++      const cut = request.clipboard === "cmd_cut";
++      const edit = cut ? this.input.getCutEdit(selection) : null;
++      if (cut && !edit) return 2;
 +      const value = this.input._getSelectedValueForClipboard({text:request.text,
 +        start:request.selectionStart, end:request.selectionEnd});
-+      if (value) Cc["@mozilla.org/widget/clipboardhelper;1"]
++      if (!value) return 2;
++      Cc["@mozilla.org/widget/clipboardhelper;1"]
 +        .getService(Ci.nsIClipboardHelper).copyString(value);
++      if (cut) {
++        // Apply browser edit/query policy once. The native editor consumes the
++        // exact replacement publication and records its own undo transaction.
++        const event = new this.window.InputEvent("input", {inputType:"deleteByCut", data:null});
++        this.query(edit.text, event, {inputType:"deleteByCut",
++          selectionStart:edit.start, selectionEnd:edit.end}).catch(console.error);
++        if (this.closed) return 2;
++        this.clipboardResult = {...edit,
++          serial:(this.clipboardSerial = (this.clipboardSerial || 0) + 1), editId:this.editId};
++        this.changed();
++      }
 +      return 1;
 +    }
-+    // Cut still uses the original editor mutation. Both presenters now share
-+    // copy formatting; paste and context-menu extraction remain R2 work.
++    // Paste and context-menu extraction remain R2 work.
 +    // The editor's Paste controller runs Firefox's trusted paste event and
 +    // sanitization without using focus-dependent window command dispatch.
 +    const controller = field.controllers.getControllerForCommand(request.clipboard);
