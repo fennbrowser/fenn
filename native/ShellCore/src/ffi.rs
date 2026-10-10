@@ -3209,6 +3209,21 @@ pub unsafe extern "C" fn shell_core_surface_menu_open(core:*mut ShellCore,out:*m
 pub unsafe extern "C" fn shell_core_surface_menu_dismiss(core:*mut ShellCore)->ShellStatus {
  guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.surface_menu.dismiss();ShellStatus::Ok})
 }
+/// Resolve a validated session description before mutating the host container.
+/// Accepted work is committed and counted by shell_core_surface_menu_accept;
+/// ignored/refused work ends here, without changing menu or action identity.
+/// # Safety
+/// Live core, readable arrays (null only for zero length), writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_surface_menu_resolve(core:*mut ShellCore,session:u32,revision:u32,
+ actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
+ let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
+ if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
+ guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.surface_menu.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
@@ -3233,6 +3248,24 @@ pub unsafe extern "C" fn shell_core_surface_menu_activate(core:*mut ShellCore,se
 #[cfg(test)]
 mod surface_menu_ffi_tests {
  use super::*;
+ #[test] fn resolution_checks_boundary_and_never_commits() {unsafe {
+  let core=shell_core_create(&std::mem::zeroed());let mut session=0;let mut changed=true;
+  shell_core_surface_menu_open(core,&mut session);
+  assert_eq!(shell_core_surface_menu_resolve(core,session,1,[7].as_ptr(),1,[9].as_ptr(),1,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+  assert_eq!(shell_core_surface_menu_resolve(core,session,1,std::ptr::null(),1,[9].as_ptr(),1,&mut changed),ShellStatus::InvalidArgument);assert!(!changed);
+  assert_eq!(shell_core_surface_menu_resolve(core,session,1,[7].as_ptr(),1,std::ptr::null(),1,&mut changed),ShellStatus::InvalidArgument);
+  assert_eq!(shell_core_surface_menu_resolve(core,session,1,std::ptr::null(),257,std::ptr::null(),0,&mut changed),ShellStatus::InvalidArgument);
+  assert_eq!(shell_core_surface_menu_resolve(core,session,1,std::ptr::null(),0,std::ptr::null(),65537,&mut changed),ShellStatus::InvalidArgument);
+  assert_eq!(shell_core_surface_menu_resolve(std::ptr::null_mut(),session,1,std::ptr::null(),0,std::ptr::null(),0,&mut changed),ShellStatus::InvalidArgument);
+  assert_eq!(shell_core_surface_menu_resolve(core,session,1,[7].as_ptr(),1,[9].as_ptr(),1,&mut changed),ShellStatus::Ok);assert!(changed);
+  shell_core_surface_menu_activate(core,session,1,7,&mut changed);assert!(!changed);
+  shell_core_surface_menu_accept(core,session,1,[7].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
+  assert_eq!(shell_core_surface_menu_resolve(core,session,1,[8].as_ptr(),1,[9].as_ptr(),1,&mut changed),ShellStatus::InvalidArgument);assert!(!changed);
+  shell_core_surface_menu_activate(core,session,1,7,&mut changed);assert!(changed);
+  shell_core_close(core);
+  assert_eq!(shell_core_surface_menu_resolve(core,session,2,[7].as_ptr(),1,[9].as_ptr(),1,&mut changed),ShellStatus::Closed);assert!(!changed);
+  shell_core_destroy(core);
+ }}
  #[test] fn bounded_surface_menu_boundary_and_cancellation() {unsafe {
   let core=shell_core_create(&std::mem::zeroed());let mut session=0;let mut accepted=false;
   assert_eq!(shell_core_surface_menu_open(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);

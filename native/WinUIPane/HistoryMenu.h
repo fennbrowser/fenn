@@ -29,6 +29,19 @@ struct NativeHistoryMenu {
             NativeJson::RequireLength(item.GetNamedString(L"label"),4096);item.GetNamedBoolean(L"enabled");item.GetNamedBoolean(L"navigable",false);}
         if(model.Stringify().size()>65536)winrt::throw_hresult(E_INVALIDARG);return model;
     }
+    bool Resolve(Object const& model) {
+        if(!model.HasKey(L"session"))return false;
+        std::vector<uint32_t> ids;
+        for(auto value:model.GetNamedArray(L"items")) {
+            auto item=value.GetObject();
+            if(!item.GetNamedBoolean(L"separator",false) && item.GetNamedBoolean(L"enabled"))ids.push_back(uint32_t(item.GetNamedNumber(L"id")));
+        }
+        auto fingerprint=model.Stringify();bool changed{};
+        winrt::check_hresult(shell_core_surface_menu_resolve(core,uint32_t(model.GetNamedNumber(L"session")),
+            uint32_t(model.GetNamedNumber(L"revision")),ids.data(),ids.size(),
+            reinterpret_cast<uint16_t const*>(fingerprint.c_str()),fingerprint.size(),&changed)==SHELL_STATUS_OK?S_OK:E_INVALIDARG);
+        return changed;
+    }
     void Close(){opening=0;if(core)shell_core_surface_menu_dismiss(core);if(flyout)flyout.Hide();flyout=nullptr;}
     void Open(Button const& button) {
         using namespace Microsoft::UI::Xaml::Controls;
@@ -45,18 +58,19 @@ struct NativeHistoryMenu {
         flyout.ShowAt(button);
         if(dispatch)dispatch((L"history-menu:open:"+std::to_wstring(session)).c_str(),0,button);
     }
-    void Apply(Object const& model,bool visible,Button const& button) {
+    void Apply(Object const& model,bool visible,Button const& button,bool publish) {
         using namespace Microsoft::UI::Xaml;using namespace Microsoft::UI::Xaml::Controls;
         enabled=visible && model.GetNamedBoolean(L"enabled",false);
         if(!enabled){if(opening || flyout)Close();return;}
         if(opening && model.GetNamedNumber(L"closed",0)==opening){Close();return;}
         if(!model.HasKey(L"session")){if(opening && flyout && flyout.Items().Size()>1)Close();return;}
         const auto session=uint32_t(model.GetNamedNumber(L"session")),revision=uint32_t(model.GetNamedNumber(L"revision"));
-        if(!opening || opening!=session || !flyout || !flyout.IsOpen())return;
+        if(!publish || !opening || opening!=session || !flyout || !flyout.IsOpen())return;
         std::vector<uint32_t> ids;auto entries=model.GetNamedArray(L"items");
         for(auto v:entries){auto i=v.GetObject();if(!i.GetNamedBoolean(L"separator",false) && i.GetNamedBoolean(L"enabled"))ids.push_back(uint32_t(i.GetNamedNumber(L"id")));}
         const auto fingerprint=model.Stringify();bool changed{};
-        if(shell_core_surface_menu_accept(core,session,revision,ids.data(),ids.size(),reinterpret_cast<uint16_t const*>(fingerprint.c_str()),fingerprint.size(),&changed)!=SHELL_STATUS_OK || !changed)return;
+        winrt::check_hresult(shell_core_surface_menu_accept(core,session,revision,ids.data(),ids.size(),reinterpret_cast<uint16_t const*>(fingerprint.c_str()),fingerprint.size(),&changed)==SHELL_STATUS_OK?S_OK:E_INVALIDARG);
+        if(!changed)return;
         flyout.Items().Clear();
         for(auto v:entries){auto entry=v.GetObject();if(entry.GetNamedBoolean(L"separator",false)){flyout.Items().Append(MenuFlyoutSeparator());continue;}
             MenuFlyoutItem item;item.Text(entry.GetNamedString(L"label"));item.IsEnabled(entry.GetNamedBoolean(L"enabled"));

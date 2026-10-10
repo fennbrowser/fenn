@@ -1004,6 +1004,7 @@ struct NativeAddress {
         auto addressFingerprint = addressSection.Stringify();
         const bool applyAddress = shell.AddressPublication(nextSession, uint64_t(checkedSequence),
             uint64_t(checkedRevision), addressFingerprint, false);
+        const bool applyHistory = navigation && navigation->historyMenu.Resolve(historyMenuState);
         if (applyAddress && nextSession != session) {
             if (navigation) navigation->sentOverflow.clear();
             context.Reset();
@@ -1034,7 +1035,7 @@ struct NativeAddress {
             navigation->Apply(navigationState, navigationToolbar && snapshot.HasKey(L"navigation"));
             navigation->pinned.externalLayout = customizationState.revision != 0;
             navigation->pinned.Apply(pinnedState, navigationToolbar);
-            navigation->historyMenu.Apply(historyMenuState,navigationToolbar && !navigation->customization.editing,navigation->buttons[9]);
+            navigation->historyMenu.Apply(historyMenuState,navigationToolbar && !navigation->customization.editing,navigation->buttons[9],applyHistory);
             navigation->Layout(customizationState);
             navigation->UpdatePalette(paletteState);
             navigation->customization.Apply(customizationState, navigationToolbar);

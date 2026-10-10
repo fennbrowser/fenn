@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
 import {readFileSync} from "node:fs";
-const source=readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIHistoryMenu.sys.mjs",import.meta.url),"utf8").replace("export class WinUIHistoryMenu","this.HistoryMenu=class WinUIHistoryMenu");
+import {readActionStamp,actionStampMatches} from "../upstream/firefox/browser/base/content/WinUIActionStamp.sys.mjs";
+const source=readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIHistoryMenu.sys.mjs",import.meta.url),"utf8").replace(/^import .*;$/m,"").replace("export class WinUIHistoryMenu","this.HistoryMenu=class WinUIHistoryMenu");
 function fixture(){
  const calls=[];let enabled=true,options;
  const root={containerOpen:false,childCount:1,getChild:()=>node};const node={title:"Example",uri:"https://example.test",parent:root};
@@ -10,6 +11,7 @@ function fixture(){
  PlacesUIUtils:{openNodeIn:(...args)=>calls.push(["visit",...args])},PlacesCommandHook:{searchHistory:()=>calls.push(["search"]),showPlacesOrganizer:value=>calls.push(["manage",value])},Sanitizer:{showUI:()=>calls.push(["clear"])}};
  const toolbar={window,active:true,owner:{invalidateAddress(){},localization:()=>({formatValueSync:id=>id})},menuAnchor:()=>({}),openMenu:()=>calls.push(["original"])};
  const context=vm.createContext({console:{error(){}},Services:{prefs:{getBoolPref:()=>enabled,addObserver(){},removeObserver(){}}},Ci:{nsINavHistoryQueryOptions:{QUERY_TYPE_HISTORY:0,SORT_BY_DATE_DESCENDING:4}},ChromeUtils:{importESModule:()=>({BrowserUtils:{whereToOpenLink:event=>{calls.push(["modifiers",event]);return "tab";}},PlacesUtils:{history:{getNewQuery:()=>({}),getNewQueryOptions:()=>options={},executeQuery:()=>({root})}}})}});
+ Object.assign(context,{readActionStamp,actionStampMatches});
  vm.runInContext(source,context);const menu=new context.HistoryMenu(toolbar);
  return {menu,window,toolbar,root,node,calls,disable:()=>enabled=false,options:()=>options};
 }
@@ -52,4 +54,14 @@ test("customization and navigation context changes close retained query results"
   const f=fixture();f.menu.execute({command:"history-menu:open:1"});await settle();assert.equal(f.root.containerOpen,true);
   change(f);assert.equal(f.menu.snapshot().session,undefined);assert.equal(f.root.containerOpen,false);
  }
+});
+
+test("shared stamps retain History grammar, opening lifetime and bounded revisions",async()=>{
+ const f=fixture();
+ for(const command of ["history-menu:open:01","history-menu:open:4294967296","history-menu:open:9007199254740992"])assert.equal(f.menu.execute({command}),2);
+ assert.equal(f.menu.execute({command:"history-menu:open:1"}),1);await settle();
+ for(const command of ["history-menu:invoke:2:1:1","history-menu:invoke:1:2:1","history-menu:invoke:1:4294967296:1","history-menu:invoke:1:01:1"])assert.equal(f.menu.execute({command}),2);
+ assert.equal(f.calls.length,0);assert.equal(f.root.containerOpen,true);
+ assert.equal(f.menu.execute({command:"history-menu:invoke:1:1:1"}),1);
+ assert.deepEqual(f.calls,[["search"]]);
 });

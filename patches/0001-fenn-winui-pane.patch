@@ -216,10 +216,10 @@ index a182468fce..428407c54a 100644
  </body>
  </html>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..b4c7c30b49 100644
+index b2b5db6040..95fc5bf01c 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -33,6 +33,19 @@ browser.jar:
+@@ -33,6 +33,20 @@ browser.jar:
          content/browser/aboutTabCrashed.xhtml         (content/aboutTabCrashed.xhtml)
          content/browser/blanktab.html                 (content/blanktab.html)
          content/browser/browser.js                    (content/browser.js)
@@ -234,6 +234,7 @@ index b2b5db6040..b4c7c30b49 100644
 +        content/browser/WinUIAddressContextMenu.sys.mjs  (content/WinUIAddressContextMenu.sys.mjs)
 +        content/browser/WinUIOmnibarActions.sys.mjs  (content/WinUIOmnibarActions.sys.mjs)
 +        content/browser/WinUIHistoryMenu.sys.mjs     (content/WinUIHistoryMenu.sys.mjs)
++        content/browser/WinUIActionStamp.sys.mjs     (content/WinUIActionStamp.sys.mjs)
 +        content/browser/WinUIAddressToolbar.sys.mjs     (content/WinUIAddressToolbar.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
@@ -2404,13 +2405,42 @@ index 1e2660589b..85227d8e69 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/base/content/WinUIActionStamp.sys.mjs b/browser/base/content/WinUIActionStamp.sys.mjs
+new file mode 100644
+index 0000000000..6db39b4aab
+--- /dev/null
++++ b/browser/base/content/WinUIActionStamp.sys.mjs
+@@ -0,0 +1,22 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Identity only. Each surface still parses its command grammar and revalidates
++// Firefox's live prerequisites before invoking the original controller.
++export function readActionStamp(revision, session = null, maximum = Number.MAX_SAFE_INTEGER) {
++  const read = value => {
++    if (typeof value !== "number" && (typeof value !== "string" || !/^[0-9]+$/.test(value))) return null;
++    const number = Number(value);
++    return Number.isSafeInteger(number) && number >= 0 && number <= maximum ? number : null;
++  };
++  const structure = read(revision);
++  const opening = session === null ? null : read(session);
++  if (structure === null || (session !== null && (opening === null || opening === 0))) return null;
++  return {revision: structure, session: opening};
++}
++
++export function actionStampMatches(stamp, revision, session = null) {
++  return !!stamp && Number.isSafeInteger(revision) && revision >= 0 &&
++    stamp.revision === revision && stamp.session === session;
++}
 diff --git a/browser/base/content/WinUIHistoryMenu.sys.mjs b/browser/base/content/WinUIHistoryMenu.sys.mjs
 new file mode 100644
-index 0000000000..cb9f21cfd3
+index 0000000000..e4be8e911d
 --- /dev/null
 +++ b/browser/base/content/WinUIHistoryMenu.sys.mjs
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,86 @@
 +// Opt-in History root. Firefox owns data, navigation policy and commands.
++import { readActionStamp, actionStampMatches } from "chrome://browser/content/WinUIActionStamp.sys.mjs";
 +export class WinUIHistoryMenu {
 +  constructor(toolbar) {
 +    this.toolbar=toolbar;this.session=0;this.lastSession=0;this.actions=new Map();
@@ -2459,7 +2489,8 @@ index 0000000000..cb9f21cfd3
 +  execute(action) {
 +    const m=/^history-menu:(open|dismiss|invoke|middle):([1-9][0-9]*)(?::([1-9][0-9]*):([1-9][0-9]*))?$/.exec(action.command);
 +    if(!m || !this.enabled)return 2;
-+    const session=Number(m[2]);if(!Number.isSafeInteger(session) || session>0xffffffff)return 2;
++    const stamp=readActionStamp(m[3] ?? 0,m[2],0xffffffff);if(!stamp)return 2;
++    const session=stamp.session;
 +    if(m[1]==="open") {
 +      if(session<=this.lastSession || m[3] || !this.toolbar.menuAnchor("history",action))return 2;
 +      this.lastSession=session;
@@ -2475,7 +2506,7 @@ index 0000000000..cb9f21cfd3
 +    }
 +    if(session!==this.session)return 2;
 +    if(m[1]==="dismiss"){if(m[3])return 2;this.dismiss();return 1;}
-+    if(Number(m[3])!==this.description?.revision)return 2;
++    if(!actionStampMatches(stamp,this.description?.revision,this.session))return 2;
 +    const entry=this.actions.get(Number(m[4]));if(!entry || (m[1]==="middle" && entry.kind!=="visit"))return 2;
 +    const {window}=this.toolbar, bounds=this.bounds;
 +    const event=new window.MouseEvent("click",{view:window,button:m[1]==="middle"?1:0,ctrlKey:!!(action.modifiers&1),altKey:!!(action.modifiers&2),shiftKey:!!(action.modifiers&4),metaKey:!!(action.modifiers&8)});
@@ -2496,11 +2527,12 @@ index 0000000000..cb9f21cfd3
 +}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 0000000000..6b082161e8
+index 0000000000..8eb1307b8c
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,178 @@
 +// Firefox owns widget eligibility and durable placement; native owns the editor.
++import { readActionStamp, actionStampMatches } from "chrome://browser/content/WinUIActionStamp.sys.mjs";
 +export class WinUIToolbarCustomization {
 +  constructor(toolbar) {
 +    this.toolbar = toolbar;
@@ -2601,7 +2633,7 @@ index 0000000000..6b082161e8
 +    const layout = /^customize:([0-9]+):overflow-layout:(none|widget-[0-9]+(?:,widget-[0-9]+)*)$/.exec(command);
 +    if (layout) {
 +      this.toolbar.navigationState();
-+      if (+layout[1] !== this.current.revision) return 2;
++      if (!actionStampMatches(readActionStamp(layout[1]), this.current.revision)) return 2;
 +      const ids = layout[2] === 'none' ? [] : layout[2].split(',');
 +      if (ids.length > 55 || new Set(ids).size !== ids.length) return 2;
 +      const widgets = [];
@@ -2620,7 +2652,7 @@ index 0000000000..6b082161e8
 +    if (global) {
 +      this.toolbar.navigationState();
 +      const [,revision,verb] = global;
-+      if (+revision !== this.current.revision || !this.editorOpen ||
++      if (!actionStampMatches(readActionStamp(revision), this.current.revision) || !this.editorOpen ||
 +          !(verb === 'reset' ? this.current.canReset : this.current.canUndoReset)) return 2;
 +      this.resetting = true;
 +      try {
@@ -2633,7 +2665,7 @@ index 0000000000..6b082161e8
 +    if (!match || this.toolbar.window.gDialogBox?.isOpen) return 2;
 +    this.toolbar.navigationState();
 +    const [,revision,id,verb,targetId]=match, state=this.current;
-+    if (+revision !== state.revision) return 2;
++    if (!actionStampMatches(readActionStamp(revision), state.revision)) return 2;
 +    const item=state.items.find(i=>i.id===id), entry=[...this.entries.values()].find(i=>i.id===id);
 +    if (!item || !entry || !item.movable) return 2;
 +    const {ui}=this;

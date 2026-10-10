@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
+import {readActionStamp,actionStampMatches} from '../upstream/firefox/browser/base/content/WinUIActionStamp.sys.mjs';
 function fixture() {
  let order=['back-button','urlbar-container','stop-reload-button','fxa-toolbar-menu-button'],revision=0;
  let nextSpring=0; let saved=null; const listeners=new Set();
@@ -16,7 +17,8 @@ function fixture() {
   removeWidgetFromArea(id){calls.push(['remove',id]);order=order.filter(x=>x!==id);},addWidgetToArea(id,area,position=order.length){calls.push(['add',id]);order=order.filter(x=>x!==id);const old=overflow.indexOf(id);if(old>=0)overflow.splice(old,1);if(area==='overflow'){overflow.push(id);return;}if(id==='spring'){id=`customizableui-special-spring${++nextSpring}`;nodes.set(id,{getAttribute:()=>id});}order.splice(position,0,id);},
   moveWidgetWithinArea(id,position){saved=null;calls.push(['move',id,position]);if(order.indexOf(id)<position)position--;order=order.filter(x=>x!==id);order.splice(position,0,id);}};
  const context=vm.createContext({Services:{strings:{createBundle:()=>({GetStringFromName:()=> 'Flexible Space'})},prefs:{addObserver(){},removeObserver(){},getPrefType(p){return prefs.has(p)?64:0;},getIntPref(p){return prefs.get(p);},prefHasUserValue(p){return prefs.has(p);}}},ChromeUtils:{importESModule:()=>({CustomizableUI:ui})}});
- vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIToolbarCustomization.sys.mjs',import.meta.url),'utf8').replace('export class WinUIToolbarCustomization','this.Customization = class WinUIToolbarCustomization'),context);
+ Object.assign(context,{readActionStamp,actionStampMatches});
+ vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIToolbarCustomization.sys.mjs',import.meta.url),'utf8').replace(/^import .*;$/m,'').replace('export class WinUIToolbarCustomization','this.Customization = class WinUIToolbarCustomization'),context);
  const toolbar={window:{addEventListener(){},removeEventListener(){},document:{getElementById:()=>({overflowable:{setNativeOverflow:ids=>calls.push(["transient",...ids])}})}},owner:{invalidateAddress(){revision++;},localization:()=>({formatValueSync:k=>k})}};
  const c=new context.Customization(toolbar);toolbar.navigationState=()=>c.snapshot({});
  const state=()=>c.snapshot({});
@@ -149,4 +151,14 @@ for(const [widget,control] of [['history-panelmenu','history'],['bookmarks-menu-
  assert.equal(item.placed,false);assert.equal(item.extension,false);assert.equal(item.label,'Localized '+control);
  assert.equal(f.c.execute(f.command(control,'add')),1);
  assert.equal(f.order().at(-1),widget);assert.equal(f.state().items.find(i=>i.control===control).placed,true);
+});
+
+test('shared stamp preserves digit grammar and rejects unsafe revisions before commands',()=>{
+ const f=fixture(),command=f.command('profile','remove');
+ assert.equal(f.c.execute(command.replace(/^customize:/,'customize:00')),1);
+ const n=f.calls.length;
+ assert.equal(f.c.execute('customize:9007199254740992:reset'),2);
+ assert.equal(f.c.execute('customize:9007199254740992:overflow-layout:none'),2);
+ assert.equal(f.c.execute(command.replace(/^customize:[0-9]+:/,'customize:9007199254740992:')),2);
+ assert.equal(f.calls.length,n);
 });

@@ -23,21 +23,30 @@ impl SurfaceMenu {
     }
     pub fn counts(&self) -> ShellPublicationCounts {self.stream.counts()}
     pub fn dismiss(&mut self) {self.session=0;self.stream.reset();self.actions.clear();}
-    pub fn accept(&mut self, session:u32, revision:u32, actions:&[u32], fingerprint:&[u16]) -> Result<bool,()> {
-        let refuse=|stream:&mut Stream|{stream.record(Classification::Invalid);Err(())};
-        if session==0 || revision==0 || actions.len()>MAX_ACTIONS || fingerprint.len()>MAX_DESCRIPTION {return refuse(&mut self.stream);}
+    fn classify(&self, session:u32, revision:u32, actions:&[u32], fingerprint:&[u16]) -> Classification {
+        if session==0 || revision==0 || actions.len()>MAX_ACTIONS || fingerprint.len()>MAX_DESCRIPTION {return Classification::Invalid;}
         let ids:BTreeSet<_>=actions.iter().copied().collect();
-        if ids.contains(&0) || ids.len()!=actions.len(){return refuse(&mut self.stream);}
+        if ids.contains(&0) || ids.len()!=actions.len(){return Classification::Invalid;}
         // An answer to a superseded opening is late, not wrong.
-        if session!=self.session {self.stream.record(Classification::Stale);return Ok(false);}
+        if session!=self.session {return Classification::Stale;}
         // A replay must repeat the action set as well as the description.
-        let class=match self.stream.classify(0,revision,fingerprint) {
+        match self.stream.classify(0,revision,fingerprint) {
             Classification::Unchanged if ids!=self.actions => Classification::Conflict,
             class => class,
-        };
+        }
+    }
+    /// Resolve before the host mutates any section of a containing publication.
+    /// Accepted work is counted by accept; ignored/refused work ends here.
+    pub fn resolve(&mut self, session:u32, revision:u32, actions:&[u32], fingerprint:&[u16]) -> Result<bool,()> {
+        let class=self.classify(session,revision,actions,fingerprint);
+        if class!=Classification::Accepted {self.stream.record(class);}
+        class.outcome(self.stream.kind())
+    }
+    pub fn accept(&mut self, session:u32, revision:u32, actions:&[u32], fingerprint:&[u16]) -> Result<bool,()> {
+        let class=self.classify(session,revision,actions,fingerprint);
         self.stream.record(class);
         if !class.outcome(self.stream.kind())? {return Ok(false);}
-        self.stream.commit(revision,fingerprint);self.actions=ids;Ok(true)
+        self.stream.commit(revision,fingerprint);self.actions=actions.iter().copied().collect();Ok(true)
     }
     pub fn activate(&mut self,session:u32,revision:u32,action:u32)->bool {
         if session==0 || session!=self.session || revision!=self.stream.revision() || !self.actions.contains(&action){return false;}
@@ -47,6 +56,19 @@ impl SurfaceMenu {
 #[cfg(test)]
 mod tests {
  use super::*;
+ #[test] fn resolution_does_not_publish_or_replace_live_actions() {
+  let mut m=SurfaceMenu::default();let s=m.open();
+  assert_eq!(m.resolve(s,1,&[7],&[9]),Ok(true));assert!(!m.activate(s,1,7));
+  assert_eq!(m.counts().accepted,0);
+  assert_eq!(m.accept(s,1,&[7],&[9]),Ok(true));
+  assert_eq!(m.resolve(s,1,&[7],&[9]),Ok(false));
+  assert_eq!(m.resolve(s,1,&[8],&[9]),Err(()));
+  assert_eq!(m.resolve(s,2,&[8,8],&[10]),Err(()));
+  assert_eq!(m.resolve(s+1,2,&[8],&[10]),Ok(false));
+  assert_eq!(m.resolve(s,2,&[8],&[10]),Ok(true));
+  assert_eq!(m.counts().accepted,1);assert!(m.activate(s,1,7));
+  assert_eq!(m.accept(s,2,&[8],&[10]),Ok(false));
+ }
  #[test] fn stale_and_duplicate_activation() {
   let mut m=SurfaceMenu::default();let a=m.open();assert_eq!(m.accept(a,1,&[1,2],&[7]),Ok(true));
   assert!(!m.activate(a,2,1));assert!(!m.activate(a,1,3));assert!(m.activate(a,1,2));assert!(!m.activate(a,1,2));
