@@ -442,6 +442,7 @@ struct Pane {
         addressSource.Content(nullptr);
         address.reset();
         shell.ResetAddress();
+        shell.ResetAddressPublication();
         addressIsland = nullptr;
         addressWindow = nullptr;
         addressBoundsApplied = false;
@@ -620,6 +621,7 @@ struct Pane {
                 {SHELL_PUBLICATION_CHANNEL_STRIP, L"strip"},
                 {SHELL_PUBLICATION_CHANNEL_TAB_MENU_STATE, L"tab-menu-state"},
                 {SHELL_PUBLICATION_CHANNEL_SURFACE_MENU, L"surface-menu"},
+                {SHELL_PUBLICATION_CHANNEL_ADDRESS_SESSION, L"address-session"},
             };
             for (auto const& entry : channels) {
                 const auto counts = shell.PublicationCounts(entry.channel);

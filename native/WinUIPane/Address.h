@@ -821,6 +821,7 @@ struct NativeAddress {
         using namespace Microsoft::UI::Xaml::Controls;
         if (snapshot.GetNamedNumber(L"version") != 1) winrt::throw_hresult(E_INVALIDARG);
         if (!snapshot.GetNamedBoolean(L"enabled", false)) {
+            shell.ResetAddressPublication();
             if (navigation) navigation->Apply({}, false);
             context.Reset();
             resultMenu.Reset();
@@ -837,8 +838,8 @@ struct NativeAddress {
             return L"";
         }
         auto nextSession = snapshot.GetNamedString(L"session");
-        NativeJson::RequireRevision(snapshot, L"revision");
-        auto checkedSequence = snapshot.GetNamedNumber(L"sequence", 0);
+        auto checkedRevision = NativeJson::RequireRevision(snapshot, L"revision");
+        auto checkedSequence = NativeJson::RequireRevision(snapshot, L"sequence");
         const auto checkedEdit = snapshot.HasKey(L"editId") ? NativeJson::RequireRevision(snapshot, L"editId") : 0;
         const auto checkedComplete = snapshot.GetNamedBoolean(L"complete", false);
         const auto checkedOpen = snapshot.GetNamedBoolean(L"open", false);
@@ -914,6 +915,9 @@ struct NativeAddress {
                 for (auto key : {L"before", L"label", L"after"}) NativeJson::RequireLength(help.GetNamedString(key), 1024);
             }
             row.GetNamedBoolean(L"focusButton", false);
+            row.GetNamedBoolean(L"enabled", true);
+            row.GetNamedBoolean(L"titleLtr", false);
+            NativeJson::RequireLength(row.GetNamedString(L"symbol", L"page"), NativeJson::kMaxShortLabel);
             auto buttons = row.GetNamedArray(L"buttons", JsonArray());
             if (buttons.Size() > 8) winrt::throw_hresult(E_INVALIDARG);
             std::set<winrt::hstring> buttonIds;
@@ -956,6 +960,9 @@ struct NativeAddress {
                 modes.GetNamedString(L"exitLabel", L"").size() > NativeJson::kMaxShortLabel)
                 winrt::throw_hresult(E_INVALIDARG);
             NativeJson::RequireRevision(modes, L"generation");
+            modes.GetNamedBoolean(L"active");
+            modes.GetNamedNumber(L"applied", 0);
+            NativeJson::RequireLength(modes.GetNamedString(L"symbol", L"search"), NativeJson::kMaxShortLabel);
             if (nextSession == session && modes.GetNamedNumber(L"generation") == mode.generation) {
                 if (entries.Size() != mode.ids.size()) winrt::throw_hresult(E_INVALIDARG);
                 for (uint32_t i = 0; i < entries.Size(); ++i)
@@ -972,9 +979,32 @@ struct NativeAddress {
                     entry.GetNamedString(L"label").size() > NativeJson::kMaxShortLabel)
                     winrt::throw_hresult(E_INVALIDARG);
                 ValidateModeImage(entry, pixels);
+                entry.GetNamedBoolean(L"local", false);
+                NativeJson::RequireLength(entry.GetNamedString(L"symbol", L"search"), NativeJson::kMaxShortLabel);
             }
         }
-        if (nextSession != session) {
+        // Validate the remaining presentation fields before classification or
+        // any XAML mutation, including a replay or a late publication.
+        NativeJson::RequireLength(snapshot.GetNamedString(L"placeholder", L"Search or enter address"), NativeJson::kMaxShortLabel);
+        auto checkedLabels = snapshot.GetNamedObject(L"labels", JObject());
+        for (auto key : {L"suggestions", L"actions", L"addressFallback"})
+            NativeJson::RequireLength(checkedLabels.GetNamedString(key, L""), NativeJson::kMaxShortLabel);
+        snapshot.GetNamedString(L"selectedId", L"");
+        snapshot.GetNamedBoolean(L"modeButtonVisible", true);
+        snapshot.GetNamedBoolean(L"modeExitVisible", false);
+        snapshot.GetNamedNumber(L"modeReveal", 0);
+        // The address entry point is a container: navigation/customization and
+        // pinned state have independent identities. Fingerprint only this section.
+        JObject addressSection;
+        for (auto const& item : snapshot) {
+            auto key = item.Key();
+            if (key != L"navigation" && key != L"navigationToolbar" && key != L"version" && key != L"enabled")
+                addressSection.SetNamedValue(key, item.Value());
+        }
+        auto addressFingerprint = addressSection.Stringify();
+        const bool applyAddress = shell.AddressPublication(nextSession, uint64_t(checkedSequence),
+            uint64_t(checkedRevision), addressFingerprint, false);
+        if (applyAddress && nextSession != session) {
             if (navigation) navigation->sentOverflow.clear();
             context.Reset();
             resultMenu.Reset();
@@ -990,15 +1020,16 @@ struct NativeAddress {
             observedText = field.Text();
             observedComposing = composing;
         }
-        const auto flow = checkedRtl ? FlowDirection::RightToLeft : FlowDirection::LeftToRight;
-        root.FlowDirection(flow);
-        if (toolbarRoot) toolbarRoot.FlowDirection(flow);
-        if (popupContent) popupContent.FlowDirection(flow);
-        // Mirror the interface without reversing URL/text character order.
-        field.TextReadingOrder(TextReadingOrder::DetectFromContent);
-        // Left is the logical leading edge; WinUI mirrors it with FlowDirection.
-        field.TextAlignment(TextAlignment::Left);
-        root.Visibility(Visibility::Visible);
+        if (applyAddress) {
+            const auto flow = checkedRtl ? FlowDirection::RightToLeft : FlowDirection::LeftToRight;
+            root.FlowDirection(flow);
+            if (toolbarRoot) toolbarRoot.FlowDirection(flow);
+            if (popupContent) popupContent.FlowDirection(flow);
+            // Mirror the interface without reversing URL/text character order.
+            field.TextReadingOrder(TextReadingOrder::DetectFromContent);
+            field.TextAlignment(TextAlignment::Left);
+            root.Visibility(Visibility::Visible);
+        }
         if (toolbarRoot) {
             navigation->Apply(navigationState, navigationToolbar && snapshot.HasKey(L"navigation"));
             navigation->pinned.externalLayout = customizationState.revision != 0;
@@ -1012,6 +1043,7 @@ struct NativeAddress {
             toolbarSurface.Visibility(navigationToolbar ? Visibility::Visible : Visibility::Collapsed);
             root.Margin(navigationToolbar ? Thickness{8, 8, 8, 8} : Thickness{0, 0, 0, 0});
         }
+        if (!applyAddress) return L"";
         Edit();  // Observe text synchronously before an older snapshot can replace it.
         RetryEdit();
         // Intents are no longer collected here: Stage() and NativeSearchMode::Queue()
@@ -1030,6 +1062,7 @@ struct NativeAddress {
         if (shell.AddressState().needs_dispatch || StagedKind() != NativeShellCore::NoIntent || shell.AddressState().mode_pending) return L"";
         if (clipboardId && clipboardEdit != shell.AddressState().edit_id) return L"";
         if (completionSerial && completionEdit != shell.AddressState().edit_id) return L"";
+        shell.AddressPublication(nextSession, uint64_t(checkedSequence), uint64_t(checkedRevision), addressFingerprint, true);
         syncing = true;
         try {
             auto placeholder = snapshot.GetNamedString(L"placeholder", L"Search or enter address");

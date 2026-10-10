@@ -201,6 +201,7 @@ pub struct ShellCore {
     settle: crate::settle::Settle,
     menu: crate::menu::MenuState,
     surface_menu: crate::surface_menu::SurfaceMenu,
+    address_publication: crate::address_publication::AddressPublication,
     /// Identity of this core among every core in the process; transfers name it.
     endpoint: u64,
     snapshot: Option<SnapshotBuilder>,
@@ -419,6 +420,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         settle: Default::default(),
         menu: Default::default(),
         surface_menu: Default::default(),
+        address_publication: Default::default(),
         endpoint: NEXT_ENDPOINT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         snapshot: None,
         stats: Counters::default(),
@@ -743,6 +745,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
         core.group_surface = Default::default();
         core.menu.close();
         core.surface_menu.dismiss();
+        core.address_publication.reset();
         core.snapshot = None;
         ShellStatus::Ok
     })
@@ -760,6 +763,7 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
         core.group_surface = Default::default();
         core.menu.close();
         core.surface_menu.dismiss();
+        core.address_publication.reset();
         core.snapshot = None;
         ShellStatus::Ok
     })
@@ -804,6 +808,7 @@ pub enum ShellPublicationChannel {
     Strip = 0,
     TabMenuState = 1,
     SurfaceMenu = 2,
+    AddressSession = 3,
 }
 
 /// What one channel did with the publications it received, for diagnostics.
@@ -825,6 +830,7 @@ pub unsafe extern "C" fn shell_core_publication_stats(
             c if c == ShellPublicationChannel::Strip as u32 => core.strip.counts(),
             c if c == ShellPublicationChannel::TabMenuState as u32 => core.menu.counts(),
             c if c == ShellPublicationChannel::SurfaceMenu as u32 => core.surface_menu.counts(),
+            c if c == ShellPublicationChannel::AddressSession as u32 => core.address_publication.counts(),
             _ => return ShellStatus::InvalidArgument,
         };
         ShellStatus::Ok
@@ -1441,7 +1447,7 @@ mod tests {
             let mut counts = ShellPublicationCounts::default();
             assert_eq!(shell_core_publication_stats(core, ShellPublicationChannel::Strip as u32, &mut counts), ShellStatus::Ok);
             assert_eq!(counts, ShellPublicationCounts { accepted: 2, unchanged: 1, ignored: 0, refused: 1 });
-            assert_eq!(shell_core_publication_stats(core, 3, &mut counts), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_publication_stats(core, 4, &mut counts), ShellStatus::InvalidArgument);
             assert_eq!(counts, ShellPublicationCounts::default(), "an unknown channel reports nothing");
             assert_eq!(shell_core_publication_stats(core, 0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
             shell_core_destroy(core);
@@ -2186,6 +2192,43 @@ unsafe fn queue_guard(core: *mut ShellCore, body: impl FnOnce(&mut RequestQueue)
     })
 }
 
+/// Classify the validated address section (not the surrounding container).
+/// `sequence` orders publications; `revision` is query structure. Both retain
+/// JavaScript safe-integer width. Resolve with `commit=false` before mutation;
+/// commit only once application can proceed. Pending edits must not consume it.
+/// Session replacement resets identity; callers publish synchronously in order.
+///
+/// # Safety
+/// See [`guard`]. Session and fingerprint must be readable for their lengths
+/// (null only for zero); `apply` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_publication(core: *mut ShellCore,
+    session: *const u16, session_units: usize, sequence: u64, revision: u64,
+    fingerprint: *const u16, units: usize, commit: bool, apply: *mut bool) -> ShellStatus {
+    let Some(apply) = apply.as_mut() else { return ShellStatus::InvalidArgument; };
+    *apply = false;
+    if session_units > 256 || units > crate::address_publication::MAX_FINGERPRINT { return ShellStatus::InvalidArgument; }
+    let (Some(session), Some(fingerprint)) = (slice(session, session_units), slice(fingerprint, units)) else {
+        return ShellStatus::InvalidArgument;
+    };
+    guard(core, |core| {
+        if core.queue.is_closed() { return ShellStatus::Closed; }
+        match core.address_publication.resolve(session, sequence, revision, fingerprint, commit) {
+            Ok(value) => { *apply = value; ShellStatus::Ok }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
+}
+
+/// Reset address publication identity on disable or island recreation.
+/// Request coordination has a separate lifetime and reset entry point.
+/// # Safety
+/// See [`guard`].
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_publication_reset(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |core| { core.address_publication.reset(); ShellStatus::Ok })
+}
+
 /// Read address coordination state; no WinUI objects or borrowed data escape.
 /// # Safety
 /// `core` is a live handle and `out` is writable.
@@ -2284,6 +2327,30 @@ pub unsafe extern "C" fn shell_core_address_take_deferred(core: *mut ShellCore, 
 mod address_ffi_tests {
     use super::*;
     use crate::address::{ShellAddressAction, ShellAddressState};
+    #[test]
+    fn publication_identity_lifetime_and_boundary() { unsafe {
+        let core = shell_core_create(std::ptr::null());
+        let mut apply = true;
+        let session = [1u16]; let fingerprint = [2u16];
+        let publish = |sequence, revision, commit, out: &mut bool| shell_core_address_publication(core,
+            session.as_ptr(), 1, sequence, revision, fingerprint.as_ptr(), 1, commit, out);
+        assert_eq!(publish(1, 0, false, &mut apply), ShellStatus::Ok); assert!(apply);
+        assert_eq!(publish(1, 0, true, &mut apply), ShellStatus::Ok); assert!(apply);
+        assert_eq!(publish(1, 0, false, &mut apply), ShellStatus::Ok); assert!(!apply);
+        assert_eq!(publish(0, 0, true, &mut apply), ShellStatus::InvalidArgument); assert!(!apply);
+        assert_eq!(shell_core_address_publication(core, std::ptr::null(), 1, 1, 0,
+            fingerprint.as_ptr(), 1, false, &mut apply), ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_cancel_all(core), ShellStatus::Ok);
+        assert_eq!(publish(1, 0, true, &mut apply), ShellStatus::Ok); assert!(apply);
+        assert_eq!(shell_core_address_publication_reset(core), ShellStatus::Ok);
+        assert_eq!(publish(1, 0, true, &mut apply), ShellStatus::Ok); assert!(apply);
+        let mut counts = ShellPublicationCounts::default();
+        assert_eq!(shell_core_publication_stats(core, 3, &mut counts), ShellStatus::Ok);
+        assert_eq!(counts.accepted, 3); assert_eq!(counts.unchanged, 1); assert_eq!(counts.refused, 1);
+        assert_eq!(shell_core_close(core), ShellStatus::Ok);
+        assert_eq!(publish(2, 0, true, &mut apply), ShellStatus::Closed); assert!(!apply);
+        shell_core_destroy(core);
+    }}
 
     #[test]
     fn lifecycle_boundary_checks_and_publication_gated_enter() {

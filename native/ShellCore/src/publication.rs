@@ -81,19 +81,19 @@ pub struct ShellPublicationCounts {
 /// One publication stream's accepted identity. Revision zero means nothing has
 /// been accepted; a complete publication carries base zero.
 #[derive(Debug, Default)]
-pub struct Stream {
+pub struct Stream<R = u32> {
     kind: StreamKind,
-    revision: u32,
+    revision: R,
     /// Exact serialized form of the accepted revision: a replay must match it.
     fingerprint: Vec<u16>,
     counts: ShellPublicationCounts,
 }
 
-impl Stream {
-    pub const fn new(kind: StreamKind) -> Self {
+impl<R: Copy + Ord + From<u8>> Stream<R> {
+    pub fn new(kind: StreamKind) -> Self {
         Self {
             kind,
-            revision: 0,
+            revision: R::from(0),
             fingerprint: Vec::new(),
             counts: ShellPublicationCounts { accepted: 0, unchanged: 0, ignored: 0, refused: 0 },
         }
@@ -119,14 +119,14 @@ impl Stream {
         self.kind
     }
 
-    pub fn revision(&self) -> u32 {
+    pub fn revision(&self) -> R {
         self.revision
     }
 
     /// Classify a publication without mutating anything. `base` is zero for a
     /// complete publication and must be zero outside delta streams.
-    pub fn classify(&self, base: u32, revision: u32, fingerprint: &[u16]) -> Classification {
-        if revision == 0 || (base != 0 && self.kind != StreamKind::Delta) {
+    pub fn classify(&self, base: R, revision: R, fingerprint: &[u16]) -> Classification {
+        if revision == R::from(0) || (base != R::from(0) && self.kind != StreamKind::Delta) {
             return Classification::Invalid;
         }
         if revision < self.revision {
@@ -139,21 +139,21 @@ impl Stream {
                 Classification::Conflict
             };
         }
-        if base != 0 && base != self.revision {
+        if base != R::from(0) && base != self.revision {
             return Classification::Gap;
         }
         Classification::Accepted
     }
 
     /// Classify and apply the kind's policy in one step.
-    pub fn check(&self, base: u32, revision: u32, fingerprint: &[u16]) -> Result<bool, ()> {
+    pub fn check(&self, base: R, revision: R, fingerprint: &[u16]) -> Result<bool, ()> {
         self.classify(base, revision, fingerprint).outcome(self.kind)
     }
 
     /// Record an accepted publication. Call only after the caller has applied
     /// (or is certain to apply) its body, so a refused body leaves the stream
     /// exactly where it was.
-    pub fn commit(&mut self, revision: u32, fingerprint: &[u16]) {
+    pub fn commit(&mut self, revision: R, fingerprint: &[u16]) {
         self.revision = revision;
         self.fingerprint.clear();
         self.fingerprint.extend_from_slice(fingerprint);
@@ -162,7 +162,7 @@ impl Stream {
     /// Forget everything accepted: a new session or endpoint generation. The
     /// next publication must be complete.
     pub fn reset(&mut self) {
-        self.revision = 0;
+        self.revision = R::from(0);
         self.fingerprint.clear();
     }
 }

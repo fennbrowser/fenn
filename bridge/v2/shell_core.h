@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 35
+#define SHELL_CORE_ABI_VERSION 36
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -232,6 +232,7 @@ enum ShellPublicationChannel
   SHELL_PUBLICATION_CHANNEL_STRIP = 0,
   SHELL_PUBLICATION_CHANNEL_TAB_MENU_STATE = 1,
   SHELL_PUBLICATION_CHANNEL_SURFACE_MENU = 2,
+  SHELL_PUBLICATION_CHANNEL_ADDRESS_SESSION = 3,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -1323,6 +1324,35 @@ ShellStatus shell_core_settle_sample(ShellCore *core,
  See [`guard`]. `active` must be writable.
  */
 ShellStatus shell_core_settle_advance(ShellCore *core, double now_ms, bool clear, bool *active);
+
+/*
+ Classify the validated address section (not the surrounding container).
+ `sequence` orders publications; `revision` is query structure. Both retain
+ JavaScript safe-integer width. Resolve with `commit=false` before mutation;
+ commit only once application can proceed. Pending edits must not consume it.
+ Session replacement resets identity; callers publish synchronously in order.
+
+ # Safety
+ See [`guard`]. Session and fingerprint must be readable for their lengths
+ (null only for zero); `apply` must be writable.
+ */
+ShellStatus shell_core_address_publication(ShellCore *core,
+                                           const uint16_t *session,
+                                           uintptr_t session_units,
+                                           uint64_t sequence,
+                                           uint64_t revision,
+                                           const uint16_t *fingerprint,
+                                           uintptr_t units,
+                                           bool commit,
+                                           bool *apply);
+
+/*
+ Reset address publication identity on disable or island recreation.
+ Request coordination has a separate lifetime and reset entry point.
+ # Safety
+ See [`guard`].
+ */
+ShellStatus shell_core_address_publication_reset(ShellCore *core);
 
 /*
  Read address coordination state; no WinUI objects or borrowed data escape.

@@ -3807,10 +3807,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..a8fae4db53
+index 0000000000..22f276a0f4
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1434 @@
+@@ -0,0 +1,1449 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3888,6 +3888,21 @@ index 0000000000..a8fae4db53
 +  }
 +
 +  get sequence() { return this._sequence; }
++  // Keep the existing wire field, but cover the entire address section rather
++  // than just result rows. Other container sections have independent identities.
++  preparePublication(state) {
++    const signature = JSON.stringify(Object.fromEntries(Object.keys(state).sort()
++      .filter(key => !["sequence", "navigation", "navigationToolbar", "version", "enabled"].includes(key))
++      .map(key => [key, state[key]])));
++    const previous = this.publicationSequence || 0;
++    const next = Math.max(this.sequence, previous + (signature !== this.publicationSignature ? 1 : 0));
++    if (!Number.isSafeInteger(next) || next < 1) throw new Error("Address publication sequence exhausted");
++    this.sequence = next;
++    this.publicationSequence = next;
++    this.publicationSignature = signature;
++    state.sequence = this.publicationSequence;
++    return state;
++  }
 +  set sequence(value) {
 +    const changed = value !== this._sequence;
 +    this._sequence = value;
@@ -5627,7 +5642,7 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..a68f4ad69b
+index 0000000000..4222a97edd
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,2112 @@
@@ -6334,7 +6349,7 @@ index 0000000000..a68f4ad69b
 +      ...(session.contextSnapshot ? {contextMenu:session.contextSnapshot} : {}),
 +      ...(session.resultMenuSnapshot ? {resultMenu:session.resultMenuSnapshot} : {}),
 +      selectedId: snapshot?.selectedId || "",
-+      sequence: snapshot ? snapshot.sequence : -session.revision - 1,
++      sequence: session.sequence,
 +      complete: !!session.active?.done || snapshot?.complete || session.editState?.status === "failed",
 +      text:
 +        session.active?.inputValue ??
@@ -6380,7 +6395,7 @@ index 0000000000..a68f4ad69b
 +    // Publication only. Intents, and the visibility of the rows, arrive
 +    // through the request queue.
 +    // This privileged publication method returns void and throws on refusal.
-+    window.windowUtils.syncWinUIAddress(JSON.stringify(state));
++    window.windowUtils.syncWinUIAddress(JSON.stringify(session.preparePublication(state)));
 +    if (toolbar) this.addressToolbar.activate();
 +  },
 +

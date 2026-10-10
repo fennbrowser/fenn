@@ -61,6 +61,16 @@ struct NativeShellCore {
     }
     void ResetAddressMode() { if (core) shell_core_address_reset_mode(core); }
     void ResetAddress() { if (core) shell_core_address_reset(core); }
+    void ResetAddressPublication() { if (core) shell_core_address_publication_reset(core); }
+    bool AddressPublication(std::wstring_view session, uint64_t sequence, uint64_t revision,
+                            std::wstring_view fingerprint, bool commit) {
+        bool apply = false;
+        winrt::check_hresult(shell_core_address_publication(core,
+            reinterpret_cast<uint16_t const*>(session.data()), session.size(), sequence, revision,
+            reinterpret_cast<uint16_t const*>(fingerprint.data()), fingerprint.size(), commit, &apply)
+            == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
+        return apply;
+    }
     bool AddressEdit() { return core && shell_core_address_edit(core) == SHELL_STATUS_OK; }
     bool StageAddress(uint64_t request, Intent kind) {
         return core && shell_core_address_stage(core, request, kind) == SHELL_STATUS_OK;

@@ -897,14 +897,23 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     std::vector<wchar_t> output(262144);
+    // State fixtures receive fresh publication sequences, as Firefox now sends.
+    uint64_t addressSequence = 0;
+    auto publishAddress = [&](wchar_t const* json) -> HRESULT {
+        try {
+            auto value = winrt::Windows::Data::Json::JsonObject::Parse(json);
+            value.SetNamedValue(L"sequence", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(double(++addressSequence)));
+            return api.syncAddress(hwnd, value.Stringify().c_str());
+        } catch (...) { return E_INVALIDARG; }
+    };
     const wchar_t* snapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":1,"text":"initial","rows":[{"id":"a","title":"First suggestion"},{"id":"b","title":"Second suggestion"}]})";
     // The address lives in its own toolbar island beside the strip.
     RECT addressRect{100, 44, 570, 76};
     Require(SUCCEEDED(api.updateAddress(hwnd, &addressRect, TRUE)), "toolbar address host");
-    Require(FAILED(api.syncAddress(hwnd, L"{broken")),
+    Require(FAILED(publishAddress(L"{broken")),
             "reject malformed address JSON");
-    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)),
+    Require(SUCCEEDED(publishAddress(snapshot)),
             "accept native address snapshot");
     Pump();
     auto inspect =
@@ -931,24 +940,37 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     auto list = popupContent.Children().GetAt(0).as<Controls::ListView>();
     Require(address.Visibility() == Visibility::Visible && field.Text() == L"initial" && list.Items().Size() == 2,
             "real TextBox and ListView receive snapshot");
+    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "exact address replay is harmless");
+    auto conflict = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);
+    conflict.SetNamedValue(L"text", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"conflict"));
+    Require(FAILED(api.syncAddress(hwnd, conflict.Stringify().c_str())) && field.Text() == L"initial",
+            "same address sequence with different content refuses before editor mutation");
     auto directionSnapshot = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);
     directionSnapshot.SetNamedValue(L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
-    Require(SUCCEEDED(api.syncAddress(hwnd, directionSnapshot.Stringify().c_str())) &&
+    Require(SUCCEEDED(publishAddress(directionSnapshot.Stringify().c_str())) &&
                 address.FlowDirection() == FlowDirection::RightToLeft &&
                 field.FlowDirection() == FlowDirection::RightToLeft && field.Text() == L"initial",
             "mirror address layout without changing text");
-    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)) &&
+    Require(SUCCEEDED(publishAddress(snapshot)) &&
                 address.FlowDirection() == FlowDirection::LeftToRight && field.TextAlignment() == TextAlignment::Left,
             "restore default LTR address layout");
+    auto stale = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);
+    stale.SetNamedValue(L"text", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"stale"));
+    stale.SetNamedValue(L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
+    Require(SUCCEEDED(api.syncAddress(hwnd, stale.Stringify().c_str())) && field.Text() == L"initial" &&
+                address.FlowDirection() == FlowDirection::LeftToRight,
+            "stale address publication leaves editor and direction untouched");
+    stale.SetNamedValue(L"placeholder", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(5));
+    Require(FAILED(api.syncAddress(hwnd, stale.Stringify().c_str())), "malformed stale address body is refused");
     auto invalidCompletion = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);
     invalidCompletion.SetNamedValue(L"autofill", winrt::Windows::Data::Json::JsonObject::Parse(
         LR"({"serial":1,"editId":0,"before":"ini","start":3,"end":999})"));
-    Require(FAILED(api.syncAddress(hwnd, invalidCompletion.Stringify().c_str())) && field.Text() == L"initial",
+    Require(FAILED(publishAddress(invalidCompletion.Stringify().c_str())) && field.Text() == L"initial",
             "reject out-of-bounds completion before native editor mutation");
     auto originalRow = list.Items().GetAt(0);
     const wchar_t* imageSnapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":2,"text":"initial","selectedId":"b","rows":[{"id":"a","title":"First suggestion","sectionLabel":"Shortcuts","imageSize":32,"image":{"width":1,"height":1,"pixels":"0000ffff"}},{"id":"b","title":"Second suggestion"}]})";
-    Require(SUCCEEDED(api.syncAddress(hwnd, imageSnapshot)),
+    Require(SUCCEEDED(publishAddress(imageSnapshot)),
             "accept decoded image");
     auto rowContent = originalRow.as<Controls::ListViewItem>().Content().as<Controls::StackPanel>();
     auto image = rowContent.Children()
@@ -964,14 +986,13 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
                 rowContent.Children().GetAt(0).as<Controls::TextBlock>().Text() == L"Shortcuts",
             "image and section update in place with selection intact");
     Require(
-        FAILED(api.syncAddress(
-            hwnd,
+        FAILED(publishAddress(
             LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"text":"initial","rows":[{"id":"a","title":"bad","image":{"width":105,"height":1,"pixels":"00"}}]})")),
         "reject oversized image before mutation");
     Require(list.Items().GetAt(0) == originalRow && image.Source(), "malformed image leaves controls intact");
     const wchar_t* modesSnapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":3,"text":"initial","rows":[{"id":"a","title":"First suggestion"},{"id":"b","title":"Second suggestion"}],"modes":{"generation":1,"applied":0,"active":false,"label":"Test engine","entries":[{"id":"engine","label":"Test engine","local":false,"symbol":"search","image":{"width":1,"height":1,"pixels":"0000ffff"}},{"id":"local","label":"History","local":true,"symbol":"history"},{"id":"settings","label":"Settings","local":true,"symbol":"settings"}]}})";
-    Require(SUCCEEDED(api.syncAddress(hwnd, modesSnapshot)),
+    Require(SUCCEEDED(publishAddress(modesSnapshot)),
             "accept native mode model");
     // The toolbar header also holds the embedded site controls, so find the
     // search-mode dropdown by type rather than position.
@@ -984,7 +1005,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     // answered. Publish, answer, and repeat, as Firefox does.
     auto publishUntil = [&](wchar_t const* json, auto applied) {
         for (int i = 0; i < 40; ++i) {
-            Require(SUCCEEDED(api.syncAddress(hwnd, json)), "accept the search-button publication");
+            Require(SUCCEEDED(publishAddress(json)), "accept the search-button publication");
             Pump();
             if (applied()) return true;
             if (auto batch = DrainRequests(api, hwnd); batch.Size()) CompleteRequests(api, hwnd, batch);
@@ -1005,20 +1026,19 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
                 modeFlyout.Items().GetAt(0).as<Controls::MenuFlyoutItem>().Icon().try_as<Controls::ImageIcon>(),
             "real dropdown, menu separators and decoded engine icon");
     Require(
-        FAILED(api.syncAddress(
-            hwnd,
+        FAILED(publishAddress(
             LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"rows":[],"modes":{"generation":1,"active":false,"label":"Test","entries":[]}})")),
         "reject changed menu identities without new generation");
     const wchar_t* globalSnapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":4,"text":"initial","rows":[{"id":"a","title":"First suggestion"}],"globalActions":[{"id":"global:action:0","resultId":"global","title":"Search with Fixture","hint":"Press Tab to select:","image":{"width":1,"height":1,"pixels":"0000ffff"}}]})";
-    Require(SUCCEEDED(api.syncAddress(hwnd, globalSnapshot)),
+    Require(SUCCEEDED(publishAddress(globalSnapshot)),
             "accept separate global action");
     auto group = popupContent.Children().GetAt(1).as<Controls::StackPanel>();
     auto actionButton = group.Children().GetAt(0).as<Controls::StackPanel>().Children().GetAt(1).as<Controls::Button>();
     Require(list.Items().Size() == 1 && actionButton.Content() &&
                 Automation::AutomationProperties::GetName(actionButton) == L"Search with Fixture",
             "global action is a labeled Button outside the ListView");
-    Require(SUCCEEDED(api.syncAddress(hwnd, globalSnapshot)) &&
+    Require(SUCCEEDED(publishAddress(globalSnapshot)) &&
                 group.Children().GetAt(0).as<Controls::StackPanel>().Children().GetAt(1) == actionButton,
             "global action updates preserve button identity");
     field.Text(L"changed");
@@ -1026,7 +1046,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     // A publication produced before the edit predates it, so while the edit is
     // still outstanding it must not be applied -- otherwise the field snaps
     // back to the text the browser knew about when it published.
-    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)),
+    Require(SUCCEEDED(publishAddress(snapshot)),
             "an older publication is accepted while an edit is outstanding");
     Require(field.Text() == L"changed", "old snapshot does not overwrite an outstanding edit");
     // Since the address intents joined the request path, the edit wakes the
@@ -1039,12 +1059,12 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
             "native edit is copied and session scoped");
     // Once the host has answered it, publications apply again: the browser is
     // now the authority on what the field should say.
-    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)),
+    Require(SUCCEEDED(publishAddress(snapshot)),
             "publications apply again once the edit has been answered");
     Require(field.Text() == L"initial", "an answered edit stops holding off publications");
     // Fill the real pane queue with non-coalescing UIA button invocations.
     // A rejected edit must survive until completion frees queue capacity.
-    Require(SUCCEEDED(api.syncAddress(hwnd, modesSnapshot)), "restore modes before queue saturation");
+    Require(SUCCEEDED(publishAddress(modesSnapshot)), "restore modes before queue saturation");
     NextRequest(api, hwnd, 6, nullptr, 2);
     field.Text(L"previous admitted edit");
     // TextChanged is asynchronous. Tab navigation can leave a chain of
@@ -1087,10 +1107,10 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     Pump();
     field.Text(L"edit while full");
     Pump();
-    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "publish while edit admission is refused");
+    Require(SUCCEEDED(publishAddress(snapshot)), "publish while edit admission is refused");
     Require(field.Text() == L"edit while full", "queue refusal cannot overwrite visible input");
     CompleteRequests(api, hwnd, heldEdit);
-    Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "publish after the previous edit completes");
+    Require(SUCCEEDED(publishAddress(snapshot)), "publish after the previous edit completes");
     Require(field.Text() == L"edit while full", "old completion preserves the newer unadmitted edit");
     auto firstFullBatch = DrainRequests(api, hwnd);
     Require(firstFullBatch.Size() && firstFullBatch.GetNamedArray(L"requests").Size() == 16, "full queue yields a bounded batch");
@@ -1107,7 +1127,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     for (int i = 0; i < 10 && field.Text() != L"initial"; ++i) {
         auto batch = DrainRequests(api, hwnd);
         if (batch.Size()) CompleteRequests(api, hwnd, batch);
-        Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "publish after admission recovery");
+        Require(SUCCEEDED(publishAddress(snapshot)), "publish after admission recovery");
         Pump();
     }
     Require(field.Text() == L"initial", "rejected mode and recovered edit leave no phantom staging slot");
@@ -1116,13 +1136,13 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         field.Text(text);
         Pump();
         Require(field.Text() == text, "real TextBox retains the maximum-length input");
-        Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "publish while maximum edit is outstanding");
+        Require(SUCCEEDED(publishAddress(snapshot)), "publish while maximum edit is outstanding");
         Require(field.Text() == text, "old publication preserves maximum-length input");
         auto request = NextRequest(api, hwnd, 6, L"edit");
         Require(request.Size(), "maximum-length native edit reaches the queue");
         Require(request.GetNamedObject(L"action").GetNamedString(L"text") == text,
                 "maximum-length edit survives JSON encoding and the drain buffer intact");
-        Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "publish after maximum edit completion");
+        Require(SUCCEEDED(publishAddress(snapshot)), "publish after maximum edit completion");
         Require(field.Text() == L"initial", "maximum-length completion releases staged state");
     }
     for (int i = 0; i < 64; ++i) invoke.Invoke();
@@ -1130,7 +1150,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     field.Text(L"cancelled before admission");
     Pump();
     Require(
-        SUCCEEDED(api.syncAddress(hwnd, LR"({"version":1,"enabled":false})")),
+        SUCCEEDED(publishAddress(LR"({"version":1,"enabled":false})")),
         "disable address controls with an unadmitted edit");
     Require(!NextRequest(api, hwnd, 6, L"edit", 8).Size(), "disabling cancels the unadmitted edit");
     Require(address.Visibility() == Visibility::Collapsed && list.Items().Size() == 0,
