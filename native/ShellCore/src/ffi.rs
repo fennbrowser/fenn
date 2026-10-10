@@ -196,6 +196,7 @@ pub struct ShellCore {
     strip: StripState,
     group_hover: crate::group_hover::GroupHover,
     group_surface: crate::group_surface::GroupSurfaceMotion,
+    group_glow: crate::group_glow::GroupGlow,
     menu: crate::menu::MenuState,
     surface_menu: crate::surface_menu::SurfaceMenu,
     /// Identity of this core among every core in the process; transfers name it.
@@ -412,6 +413,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         strip: StripState::default(),
         group_hover: crate::group_hover::GroupHover::default(),
         group_surface: Default::default(),
+        group_glow: Default::default(),
         menu: Default::default(),
         surface_menu: Default::default(),
         endpoint: NEXT_ENDPOINT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -1463,6 +1465,31 @@ mod tests {
     }
 
     #[test]
+    fn glow_advance_commits_only_when_its_changes_fit() {
+        use crate::group_glow::{ShellGlowChange, ShellGlowGroup, SHELL_GLOW_LIT};
+        unsafe {
+            let core = core();
+            let (mut count, mut disabled, mut lit) = (0usize, false, false);
+            let groups = [ShellGlowGroup { group: 1, shown: true }];
+            assert_eq!(shell_core_glow_advance(core, true, false, groups.as_ptr(), 1, std::ptr::null_mut(), 0, &mut count, &mut disabled), ShellStatus::Ok);
+            assert_eq!(count, 0);
+            let two = [groups[0], ShellGlowGroup { group: 2, shown: true }];
+            assert_eq!(shell_core_glow_advance(core, true, false, two.as_ptr(), 2, std::ptr::null_mut(), 0, &mut count, &mut disabled), ShellStatus::TooLarge);
+            assert_eq!(count, 1);
+            assert_eq!(shell_core_glow_is_lit(core, 2, &mut lit), ShellStatus::Ok);
+            assert!(!lit);
+            let mut out = [ShellGlowChange::default(); 1];
+            assert_eq!(shell_core_glow_advance(core, true, false, two.as_ptr(), 2, out.as_mut_ptr(), 1, &mut count, &mut disabled), ShellStatus::Ok);
+            assert_eq!(out[0], ShellGlowChange { group: 2, flags: SHELL_GLOW_LIT });
+            assert_eq!(shell_core_glow_is_lit(core, 2, &mut lit), ShellStatus::Ok);
+            assert!(lit);
+            assert_eq!(shell_core_glow_advance(core, true, false, std::ptr::null(), 1, std::ptr::null_mut(), 0, &mut count, &mut disabled), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_glow_settle(core, false, std::ptr::null(), 0, std::ptr::null_mut(), std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            shell_core_destroy(core);
+        }
+    }
+
+    #[test]
     fn group_dwell_is_revoked_by_endpoint_cancellation() {
         unsafe {
             let core = core();
@@ -1918,6 +1945,89 @@ pub unsafe extern "C" fn shell_core_group_surface_frame(
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_group_surface_join(core: *mut ShellCore, group: u32, tab: u32, until_ms: f64) -> ShellStatus {
     guard(core, |core| { core.group_surface.join(group, tab, until_ms); ShellStatus::Ok })
+}
+
+
+/// The next glow refresh shows its groups already lit (a full snapshot).
+///
+/// # Safety
+/// See [`guard`].
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_glow_seed(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |core| { core.group_glow.seed(); ShellStatus::Ok })
+}
+
+/// Whether `group`'s glow is lit as of the last refresh.
+///
+/// # Safety
+/// See [`guard`]. `lit` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_glow_is_lit(core: *mut ShellCore, group: u32, lit: *mut bool) -> ShellStatus {
+    guard(core, |core| {
+        let Some(lit) = lit.as_mut() else { return ShellStatus::InvalidArgument; };
+        *lit = core.group_glow.is_lit(group);
+        ShellStatus::Ok
+    })
+}
+
+/// Advance glow lighting by one refresh over every glow-eligible group.
+/// `count` receives the number of changes; when it exceeds `capacity` the
+/// call returns `TooLarge` and commits nothing, so the host retries with a
+/// larger buffer. `disabled` reports light-up motion turning off.
+///
+/// # Safety
+/// See [`guard`]. `groups` points to `len` elements and `output` to
+/// `capacity` (either may be null when zero); `count` and `disabled` are writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_glow_advance(
+    core: *mut ShellCore, animate: bool, halo: bool,
+    groups: *const crate::group_glow::ShellGlowGroup, len: usize,
+    output: *mut crate::group_glow::ShellGlowChange, capacity: usize,
+    count: *mut usize, disabled: *mut bool,
+) -> ShellStatus {
+    guard(core, |core| {
+        let (Some(count), Some(disabled)) = (count.as_mut(), disabled.as_mut()) else { return ShellStatus::InvalidArgument; };
+        *count = 0; *disabled = false;
+        if len > crate::group_glow::MAX_GROUPS || (groups.is_null() && len != 0) || (output.is_null() && capacity != 0) {
+            return ShellStatus::InvalidArgument;
+        }
+        let groups = if len == 0 { &[][..] } else { std::slice::from_raw_parts(groups, len) };
+        let mut next = core.group_glow.clone();
+        let (off, changes) = next.advance(animate, halo, groups);
+        *count = changes.len();
+        if changes.len() > capacity { return ShellStatus::TooLarge; }
+        if !changes.is_empty() { std::ptr::copy_nonoverlapping(changes.as_ptr(), output, changes.len()); }
+        core.group_glow = next;
+        *disabled = off;
+        ShellStatus::Ok
+    })
+}
+
+/// Record shown groups' settled extents and report those that grew; while
+/// `moving`, only forget groups no longer lit. At most `len` results, so a
+/// `len`-element `output` always suffices.
+///
+/// # Safety
+/// See [`guard`]. `extents` points to `len` elements and `output` to as many
+/// (either may be null when zero); `count` is writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_glow_settle(
+    core: *mut ShellCore, moving: bool,
+    extents: *const crate::group_glow::ShellGlowExtent, len: usize,
+    output: *mut crate::group_glow::ShellGlowRecatch, count: *mut usize,
+) -> ShellStatus {
+    guard(core, |core| {
+        let Some(count) = count.as_mut() else { return ShellStatus::InvalidArgument; };
+        *count = 0;
+        if len > crate::group_glow::MAX_GROUPS || (len != 0 && (extents.is_null() || output.is_null())) {
+            return ShellStatus::InvalidArgument;
+        }
+        let extents = if len == 0 { &[][..] } else { std::slice::from_raw_parts(extents, len) };
+        let recatch = core.group_glow.settle(moving, extents);
+        *count = recatch.len();
+        if !recatch.is_empty() { std::ptr::copy_nonoverlapping(recatch.as_ptr(), output, recatch.len()); }
+        ShellStatus::Ok
+    })
 }
 
 

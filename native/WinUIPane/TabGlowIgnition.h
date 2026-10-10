@@ -42,8 +42,6 @@ struct TabGlowIgnition {
     // Owner tuning (2026-09-30): a slower 750 ms dim did not suit the slower
     // light-up, so it stays about 220 ms.
     static constexpr float DimEdge = 140, DimLag = 40, DimDuration = 180;
-    // A settled group that grew at least this much re-catches its moved edge.
-    static constexpr float RecatchGrowth = 8, RecatchEdge = 4;
 
     bool option{};
     // Firefox's groupGlowFadeOut, opt-in: with it on, extinguished glow
@@ -88,24 +86,8 @@ struct TabGlowIgnition {
         return counter.QuadPart * 1000.0 / frequency.QuadPart;
     }
 
-    // Which groups are lit, as the owner defines new lighting: a group lights
-    // up when it first becomes eligible and shown, not when scrolling or
-    // realization merely shows an already-lit group again. `seed` accepts
-    // everything eligible as already lit (first snapshot, option turned on).
-    struct Lit {
-        std::set<uint32_t> ids;
-        std::vector<uint32_t> Advance(std::set<uint32_t> const& eligible, std::set<uint32_t> const& shown,
-                                      bool seed, std::set<uint32_t>& gone) {
-            for (auto it = ids.begin(); it != ids.end();) {
-                if (eligible.count(*it)) { ++it; continue; }
-                gone.insert(*it); it = ids.erase(it);
-            }
-            std::vector<uint32_t> lit;
-            if (seed) { ids.insert(eligible.begin(), eligible.end()); return lit; }
-            for (auto id : shown) if (eligible.count(id) && ids.insert(id).second) lit.push_back(id);
-            return lit;
-        }
-    };
+    // Which groups are lit, and when a settled group re-catches its grown
+    // edge (RECATCH_GROWTH/RECATCH_EDGE), are decided in ShellCore's group_glow.
 
     static winrt::Windows::Foundation::TimeSpan Ms(float value) {
         return std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(

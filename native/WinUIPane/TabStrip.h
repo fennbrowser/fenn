@@ -145,13 +145,13 @@ struct NativeTabStrip {
     // Opt-in outer halo for group glow; off unless Firefox publishes it.
     bool groupHalo{};
     // Opt-in light-up motion for group glow (ambient.motion.option holds
-    // Firefox's groupGlowAnimations). Groups already lit when a full snapshot
-    // arrives, or when motion turns on, are seeded rather than lit up again.
-    TabGlowIgnition::Lit glowLit, haloLit;
-    bool glowSeed{true}, glowAnimated{};
-    // Settled horizontal extent of each lit group in scroll-content space,
-    // so scrolling alone never reads as growth.
-    std::map<uint32_t, std::pair<float, float>> glowSettled;
+    // Firefox's groupGlowAnimations). Which groups are lit, seeding (a full
+    // snapshot or motion turning on shows groups already lit) and each lit
+    // group's settled extent live in ShellCore's group_glow.
+    bool GlowLit(uint32_t id) const {
+        bool lit = false;
+        return core && shell_core_glow_is_lit(core, id, &lit) == SHELL_STATUS_OK && lit;
+    }
     // While a group's light is being revealed, tab backgrounds fade between
     // visual states rather than snapping. A drag that forms a group leaves the
     // pointer over a dropped tab, whose stock pointer-over background would
@@ -190,7 +190,6 @@ struct NativeTabStrip {
         ambient.EndReveals(); ambient.EndRecolors(); groupSurface.EndReveals();
         pendingRecolors.clear();
         FadeTabBackgrounds(false);
-        glowSettled.clear();
     }
     // Positioned light trails only one-off geometry changes. During
     // continuous motion it follows the geometry directly; re-place it from
@@ -279,24 +278,25 @@ struct NativeTabStrip {
                 motion.Attach(light->second.visual, true); light->second.animated = true;
             }
         }
-        for (auto it = glowSettled.begin(); it != glowSettled.end();)
-            it = glowLit.ids.count(it->first) ? std::next(it) : glowSettled.erase(it);
-        // Drags, slides and joins are followed by the implicit motion; compare
-        // extents only once they settle, never on every frame.
-        if (moving) return;
+        // Settled extents are in scroll-content space, so scrolling alone
+        // never reads as growth. Drags, slides and joins are followed by the
+        // implicit motion; ShellCore compares extents only once they settle.
+        if (!core) return;
         const float offset = scroller ? float(scroller.HorizontalOffset()) : 0.f;
         const bool rtl = root.FlowDirection() == FlowDirection::RightToLeft;
-        for (auto id : groups) {
-            const auto& rect = bounds.at(id);
-            const float left = rect.X + (rtl ? -offset : offset), right = left + rect.Width;
-            auto [settled, inserted] = glowSettled.try_emplace(id, left, right);
-            if (inserted) continue;
-            const auto [oldLeft, oldRight] = settled->second;
-            settled->second = {left, right};
-            if ((right - left) - (oldRight - oldLeft) < TabGlowIgnition::RecatchGrowth || motion.Active(id)) continue;
-            motion.Recatch(outlineOf(id), oldLeft - left >= TabGlowIgnition::RecatchEdge,
-                right - oldRight >= TabGlowIgnition::RecatchEdge);
-        }
+        std::vector<ShellGlowExtent> extents;
+        if (!moving)
+            for (auto id : groups) {
+                const auto& rect = bounds.at(id);
+                const float left = rect.X + (rtl ? -offset : offset);
+                extents.push_back({id, left, left + rect.Width});
+            }
+        std::vector<ShellGlowRecatch> recatch(extents.size());
+        size_t count = 0;
+        if (shell_core_glow_settle(core, moving, extents.data(), extents.size(), recatch.data(), &count) != SHELL_STATUS_OK) return;
+        for (size_t index = 0; index < count; ++index)
+            if (!motion.Active(recatch[index].group))
+                motion.Recatch(outlineOf(recatch[index].group), recatch[index].left, recatch[index].right);
     }
     // The island's system backdrop, chosen by Firefox's strip preference. The
     // pane owns the DesktopWindowXamlSource and applies a validated change.
@@ -692,7 +692,7 @@ struct NativeTabStrip {
             // applies at once beneath the reveal, and keep old-color copies.
             const auto shown = ambient.groups.find(id);
             const uint32_t previousColor = shown == ambient.groups.end() ? 0 : shown->second.color;
-            if (previousColor && previousColor != color && ambient.motion.Enabled() && glowLit.ids.count(id) &&
+            if (previousColor && previousColor != color && ambient.motion.Enabled() && GlowLit(id) &&
                 !ambient.reveals.count(id) && !ambient.recolors.count(id)) {
                 for (auto* fields : {&ambient.groups, &ambient.groupSpill})
                     if (auto field = fields->find(id); field != fields->end() && field->second.animated) {
@@ -736,24 +736,35 @@ struct NativeTabStrip {
         // Decide which groups newly lit or went out before lighting and
         // pruning, so either can animate. Culling alone is neither.
         const bool animate = ambient.motion.Enabled();
-        if (animate != glowAnimated) {
-            glowAnimated = animate;
-            if (animate) glowSeed = true;
-            else { ambient.motion.Cancel(); DetachGlow(); }
-        }
-        std::set<uint32_t> eligible, haloEligible, gone, haloGone;
+        std::vector<ShellGlowGroup> eligible;
         for (auto value : currentGroups) {
             auto group = value.GetObject();
             if (!groupGlow || !uint32_t(group.GetNamedNumber(L"color", 0))) continue;
             const auto id = uint32_t(group.GetNamedNumber(L"id"));
-            eligible.insert(id);
-            if (groupHalo) haloEligible.insert(id);
+            eligible.push_back({id, groups.count(id) != 0});
         }
-        const bool seed = glowSeed || !animate;
-        glowSeed = false;
-        auto lit = glowLit.Advance(eligible, groups, seed, gone);
-        auto haloLitNow = haloLit.Advance(haloEligible, groupHalo ? groups : std::set<uint32_t>{}, seed, haloGone);
-        haloGone.insert(gone.begin(), gone.end());
+        std::vector<ShellGlowChange> changes(eligible.size());
+        size_t changeCount = 0;
+        bool glowDisabled = false;
+        auto advance = [&] {
+            return core ? shell_core_glow_advance(core, animate, groupHalo, eligible.data(), eligible.size(),
+                                                  changes.data(), changes.size(), &changeCount, &glowDisabled)
+                        : SHELL_STATUS_INVALID_ARGUMENT;
+        };
+        auto status = advance();
+        // Nothing was committed: retry once with room for every change.
+        if (status == SHELL_STATUS_TOO_LARGE) { changes.resize(changeCount); status = advance(); }
+        if (status != SHELL_STATUS_OK) changeCount = 0;
+        if (glowDisabled) { ambient.motion.Cancel(); DetachGlow(); }
+        std::vector<uint32_t> lit, haloLitNow;
+        std::set<uint32_t> gone, haloGone;
+        for (size_t index = 0; index < changeCount; ++index) {
+            const auto [id, flags] = changes[index];
+            if (flags & SHELL_GLOW_LIT) lit.push_back(id);
+            if (flags & SHELL_GLOW_HALO_LIT) haloLitNow.push_back(id);
+            if (flags & SHELL_GLOW_GONE) gone.insert(id);
+            if (flags & SHELL_GLOW_HALO_GONE) haloGone.insert(id);
+        }
         // Light going out ends any reveal first, so it dims or goes whole.
         for (auto id : gone) {
             if (TabGlowIgnition::Diagnostics() && ambient.reveals.count(id))
@@ -3098,7 +3109,7 @@ struct NativeTabStrip {
         ambient.motion.fadeOut = options.group_glow_fade_out;
         // A full snapshot (window open, session restore) shows its groups
         // already lit; only later changes light up.
-        if (!base) glowSeed = true;
+        if (!base && core) shell_core_glow_seed(core);
         if (groupReach != options.group_reach) { groupReach = options.group_reach; ApplyAddSpacing(); }
         if (const auto nextBackdrop = BackdropOf(options.backdrop); nextBackdrop != backdrop) {
             backdrop = nextBackdrop;

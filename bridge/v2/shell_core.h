@@ -24,11 +24,31 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 32
+#define SHELL_CORE_ABI_VERSION 33
 
 #define MAX_EDIT_ID 9007199254740991
 
 #define MAX_ROWS 10000
+
+/*
+ A settled group that grew at least this much re-catches its moved edge.
+ */
+#define RECATCH_GROWTH 8.0
+
+#define RECATCH_EDGE 4.0
+
+/*
+ Bound on groups per call.
+ */
+#define MAX_GROUPS 10000
+
+#define SHELL_GLOW_LIT 1
+
+#define SHELL_GLOW_HALO_LIT 2
+
+#define SHELL_GLOW_GONE 4
+
+#define SHELL_GLOW_HALO_GONE 8
 
 /*
  Ease-out duration shared with the sliding tabs.
@@ -538,6 +558,43 @@ typedef struct {
    */
   bool holding;
 } ShellGroupSurfaceResult;
+
+/*
+ One glow-eligible group (glow on and colored) this refresh.
+ */
+typedef struct {
+  uint32_t group;
+  /*
+   Laid out and inside the viewport.
+   */
+  bool shown;
+} ShellGlowGroup;
+
+/*
+ What happened to one group's light this refresh: `SHELL_GLOW_*` flags.
+ */
+typedef struct {
+  uint32_t group;
+  uint32_t flags;
+} ShellGlowChange;
+
+/*
+ A shown group's horizontal extent in scroll-content space.
+ */
+typedef struct {
+  uint32_t group;
+  float left;
+  float right;
+} ShellGlowExtent;
+
+/*
+ A settled group grew: re-catch the edges that moved.
+ */
+typedef struct {
+  uint32_t group;
+  bool left;
+  bool right;
+} ShellGlowRecatch;
 
 typedef struct {
   uint64_t edit_id;
@@ -1102,6 +1159,58 @@ ShellStatus shell_core_group_surface_join(ShellCore *core,
                                           uint32_t group,
                                           uint32_t tab,
                                           double until_ms);
+
+/*
+ The next glow refresh shows its groups already lit (a full snapshot).
+
+ # Safety
+ See [`guard`].
+ */
+ShellStatus shell_core_glow_seed(ShellCore *core);
+
+/*
+ Whether `group`'s glow is lit as of the last refresh.
+
+ # Safety
+ See [`guard`]. `lit` must be writable.
+ */
+ShellStatus shell_core_glow_is_lit(ShellCore *core, uint32_t group, bool *lit);
+
+/*
+ Advance glow lighting by one refresh over every glow-eligible group.
+ `count` receives the number of changes; when it exceeds `capacity` the
+ call returns `TooLarge` and commits nothing, so the host retries with a
+ larger buffer. `disabled` reports light-up motion turning off.
+
+ # Safety
+ See [`guard`]. `groups` points to `len` elements and `output` to
+ `capacity` (either may be null when zero); `count` and `disabled` are writable.
+ */
+ShellStatus shell_core_glow_advance(ShellCore *core,
+                                    bool animate,
+                                    bool halo,
+                                    const ShellGlowGroup *groups,
+                                    uintptr_t len,
+                                    ShellGlowChange *output,
+                                    uintptr_t capacity,
+                                    uintptr_t *count,
+                                    bool *disabled);
+
+/*
+ Record shown groups' settled extents and report those that grew; while
+ `moving`, only forget groups no longer lit. At most `len` results, so a
+ `len`-element `output` always suffices.
+
+ # Safety
+ See [`guard`]. `extents` points to `len` elements and `output` to as many
+ (either may be null when zero); `count` is writable.
+ */
+ShellStatus shell_core_glow_settle(ShellCore *core,
+                                   bool moving,
+                                   const ShellGlowExtent *extents,
+                                   uintptr_t len,
+                                   ShellGlowRecatch *output,
+                                   uintptr_t *count);
 
 /*
  Read address coordination state; no WinUI objects or borrowed data escape.
