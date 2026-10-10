@@ -676,7 +676,8 @@ test("adopted group rejects stale destinations, members, malformed sources and r
 
 // Presentation-only changes (a favicon, loading or audio status) between forming
 // a gesture and Firefox draining it must not revoke the gesture; structural
-// changes must. See the presentation protocol, sections 1 and 5.
+// changes must. Freshness is judged against the publication revision at which
+// the structure last changed, and revalidation compares structureOf only.
 const icon = {width:2, height:2, pixels:"0000ffff0000ffff0000ffff0000ffff"};
 const loading = row => Object.assign(row, {flags:row.flags | 2, status:"Loading"});
 

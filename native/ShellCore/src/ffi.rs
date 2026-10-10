@@ -41,6 +41,7 @@ use crate::model::{ApplyError, Change, ModelLimits, TabEntry, TabModel};
 use crate::queue::{
     CompleteError, DrainError, EnqueueStatus, Limits, Outcome, Request, RequestKind, RequestQueue,
 };
+use crate::publication::{Classification, ShellPublicationCounts};
 use crate::SHELL_CORE_ABI_VERSION;
 use crate::strip::{ShellStripSlot, StripState};
 use crate::group_motion::ShellGroupMotionRow;
@@ -794,6 +795,42 @@ pub unsafe extern "C" fn shell_core_stats(
     })
 }
 
+/// Publication channels whose acceptance runs through the shared protocol in
+/// [`crate::publication`]. Passed to [`shell_core_publication_stats`] as a
+/// `u32`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ShellPublicationChannel {
+    Strip = 0,
+    TabMenuState = 1,
+    SurfaceMenu = 2,
+}
+
+/// What one channel did with the publications it received, for diagnostics.
+/// Counts publications that reached the core; a malformed call rejected at
+/// the boundary is reported by its own status and not counted here.
+///
+/// # Safety
+/// See [`guard`]. `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_publication_stats(
+    core: *mut ShellCore,
+    channel: u32,
+    out: *mut ShellPublicationCounts,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out = ShellPublicationCounts::default();
+    guard(core, |core| {
+        *out = match channel {
+            c if c == ShellPublicationChannel::Strip as u32 => core.strip.counts(),
+            c if c == ShellPublicationChannel::TabMenuState as u32 => core.menu.counts(),
+            c if c == ShellPublicationChannel::SurfaceMenu as u32 => core.surface_menu.counts(),
+            _ => return ShellStatus::InvalidArgument,
+        };
+        ShellStatus::Ok
+    })
+}
+
 /// A JSON number the host read without interpreting; `present` is false when
 /// the key was absent.
 #[derive(Clone, Copy, Default)]
@@ -889,9 +926,14 @@ pub unsafe extern "C" fn shell_core_strip_resolve(
         return ShellStatus::InvalidArgument;
     };
     guard(core, |core| match core.strip.resolve(&envelope, fingerprint) {
-        Ok(crate::strip::Resolution::Unchanged) => { *unchanged = true; ShellStatus::Ok }
+        Ok(crate::strip::Resolution::Unchanged) => {
+            core.strip.record(Classification::Unchanged);
+            *unchanged = true;
+            ShellStatus::Ok
+        }
+        // Counted by shell_core_strip_publish, which the host calls next.
         Ok(crate::strip::Resolution::Accepted(options)) => { *out = options; ShellStatus::Ok }
-        Err(()) => ShellStatus::InvalidArgument,
+        Err(()) => { core.strip.record(Classification::Invalid); ShellStatus::InvalidArgument }
     })
 }
 
@@ -1021,8 +1063,10 @@ pub unsafe extern "C" fn shell_core_strip_publish(
         let layout = if !p.has_layout { None } else if p.layout_count == 0 { Some(&[][..]) }
                      else { Some(std::slice::from_raw_parts(p.layout, p.layout_count)) };
         let Some(published) = core.strip.publish(&envelope, fingerprint, &inputs, removals, layout) else {
+            core.strip.record(Classification::Invalid);
             return ShellStatus::InvalidArgument;
         };
+        core.strip.record(Classification::Accepted);
         *out = published.options;
         if !published.rows.is_empty() { std::ptr::copy_nonoverlapping(published.rows.as_ptr(), rows, published.rows.len()); }
         if !published.removed.is_empty() { std::ptr::copy_nonoverlapping(published.removed.as_ptr(), removed, published.removed.len()); }
@@ -1366,6 +1410,41 @@ mod tests {
             detail: crate::strip::ShellStripSource::Empty, status: crate::strip::ShellStripSource::Empty,
             container_name: crate::strip::ShellStripSource::Empty, image: crate::strip::ShellStripSource::Empty,
             group_source: false, group_target: false,
+        }
+    }
+
+    #[test]
+    fn strip_publications_are_counted_once_each() {
+        unsafe {
+            let core = core();
+            let mut options = crate::strip::ShellStripOptions::default();
+            let mut unchanged = false;
+            let full = strip_envelope(2.0, 0.0, 1.0);
+            let print = utf16("one");
+            let rows = [strip_row(1.0)];
+            let one = strip_publication(&rows, &[]);
+            let none = strip_publication(&[], &[]);
+            let mut resolved = [blank_row(); 1];
+            // The host resolves, then publishes: one accepted publication.
+            assert_eq!(shell_core_strip_resolve(core, &full, print.as_ptr(), print.len(), &mut options, &mut unchanged), ShellStatus::Ok);
+            assert_eq!(shell_core_strip_publish(core, &full, print.as_ptr(), print.len(), &one, &mut options,
+                                                resolved.as_mut_ptr(), std::ptr::null_mut()), ShellStatus::Ok);
+            // A replay stops at resolve.
+            assert_eq!(shell_core_strip_resolve(core, &full, print.as_ptr(), print.len(), &mut options, &mut unchanged), ShellStatus::Ok);
+            assert!(unchanged);
+            // A delta against a base this core never held.
+            let gap = strip_envelope(2.0, 5.0, 2.0);
+            assert_eq!(shell_core_strip_resolve(core, &gap, std::ptr::null(), 0, &mut options, &mut unchanged), ShellStatus::InvalidArgument);
+            let next = strip_envelope(2.0, 1.0, 2.0);
+            assert_eq!(shell_core_strip_publish(core, &next, std::ptr::null(), 0, &none, &mut options,
+                                                std::ptr::null_mut(), std::ptr::null_mut()), ShellStatus::Ok);
+            let mut counts = ShellPublicationCounts::default();
+            assert_eq!(shell_core_publication_stats(core, ShellPublicationChannel::Strip as u32, &mut counts), ShellStatus::Ok);
+            assert_eq!(counts, ShellPublicationCounts { accepted: 2, unchanged: 1, ignored: 0, refused: 1 });
+            assert_eq!(shell_core_publication_stats(core, 3, &mut counts), ShellStatus::InvalidArgument);
+            assert_eq!(counts, ShellPublicationCounts::default(), "an unknown channel reports nothing");
+            assert_eq!(shell_core_publication_stats(core, 0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            shell_core_destroy(core);
         }
     }
 
@@ -2515,6 +2594,43 @@ pub unsafe extern "C" fn shell_core_menu_activate(core: *mut ShellCore, session:
 #[cfg(test)]
 mod menu_ffi_tests {
     use super::*;
+    #[test]
+    fn menu_publications_are_counted_by_policy() { unsafe {
+        let core=shell_core_create(&std::mem::zeroed());let mut changed=false;
+        let (a,b,c)=([97u16],[98u16],[99u16]);
+        for (revision,tabs,print,status) in [
+            (1,&[7u32][..],&a,ShellStatus::Ok),             // accepted
+            (1,&[7][..],&a,ShellStatus::Ok),                // unchanged
+            (1,&[7][..],&b,ShellStatus::InvalidArgument),   // conflict: refused
+            (0,&[7][..],&a,ShellStatus::InvalidArgument),   // invalid: refused
+            (2,&[7,7][..],&a,ShellStatus::InvalidArgument), // body: refused
+            (3,&[7][..],&c,ShellStatus::Ok),                // accepted
+            (2,&[7][..],&b,ShellStatus::Ok),                // late snapshot: ignored
+        ] {
+            assert_eq!(shell_core_menu_publish(core,revision,tabs.as_ptr(),tabs.len(),print.as_ptr(),1,&mut changed),status);
+        }
+        let mut counts=ShellPublicationCounts::default();
+        assert_eq!(shell_core_publication_stats(core,ShellPublicationChannel::TabMenuState as u32,&mut counts),ShellStatus::Ok);
+        assert_eq!(counts,ShellPublicationCounts{accepted:2,unchanged:1,ignored:1,refused:3});
+        let mut session=0;
+        assert_eq!(shell_core_surface_menu_open(core,&mut session),ShellStatus::Ok);
+        for (s,revision,actions,status) in [
+            (session,1,&[1u32][..],ShellStatus::Ok),          // accepted
+            (session+5,2,&[1][..],ShellStatus::Ok),           // superseded opening: ignored
+            (session,1,&[1][..],ShellStatus::Ok),             // unchanged
+            (session,1,&[2][..],ShellStatus::InvalidArgument),// conflict: refused
+            (session,0,&[1][..],ShellStatus::InvalidArgument),// invalid: refused
+        ] {
+            assert_eq!(shell_core_surface_menu_accept(core,s,revision,actions.as_ptr(),actions.len(),a.as_ptr(),1,&mut changed),status);
+        }
+        assert_eq!(shell_core_publication_stats(core,ShellPublicationChannel::SurfaceMenu as u32,&mut counts),ShellStatus::Ok);
+        assert_eq!(counts,ShellPublicationCounts{accepted:1,unchanged:1,ignored:1,refused:2});
+        // Reopening resets the stream but keeps its lifetime counts.
+        assert_eq!(shell_core_surface_menu_open(core,&mut session),ShellStatus::Ok);
+        assert_eq!(shell_core_publication_stats(core,ShellPublicationChannel::SurfaceMenu as u32,&mut counts),ShellStatus::Ok);
+        assert_eq!(counts.accepted,1);
+        shell_core_destroy(core);
+    }}
     #[test]
     fn menu_boundary_roundtrip_and_invalid_buffers_owner_and_close() { unsafe {
         let core=shell_core_create(&std::mem::zeroed());

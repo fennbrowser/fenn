@@ -9,7 +9,7 @@
 //! required fields, ranges, text and image bounds, and which fields a known
 //! row keeps by omission.
 use std::collections::{HashMap, HashSet};
-use crate::publication::{Classification, Stream};
+use crate::publication::{Classification, ShellPublicationCounts, Stream};
 
 /// A 1 MiB UTF-16 publication re-serialized with every unit escaped (`\uXXXX`).
 pub(crate) const MAX_FINGERPRINT: usize = 6 * 1024 * 1024;
@@ -427,6 +427,9 @@ impl StripState {
     }
 
     pub fn layout(&self) -> &[ShellStripSlot] { &self.layout }
+
+    pub fn record(&mut self, class: Classification) { self.stream.record(class); }
+    pub fn counts(&self) -> ShellPublicationCounts { self.stream.counts() }
 
     pub fn apply(&mut self, base: u32, revision: u32, changes: &[ShellStripChange]) -> bool {
         // Stricter than the envelope: this layer has no fingerprint, so an

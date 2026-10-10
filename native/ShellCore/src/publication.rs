@@ -10,8 +10,6 @@
 //! no surface content: callers validate their own bodies and keep their own
 //! projections. There is deliberately no store shared between streams, so this
 //! cannot grow into a second copy of Firefox's model.
-//!
-//! See the presentation protocol.
 
 /// How a stream is published. The kind fixes the policy for a late revision;
 /// classification is the same for all three.
@@ -65,6 +63,21 @@ impl Classification {
     }
 }
 
+/// Lifetime totals of what a stream did with the publications it received,
+/// bucketed by the kind's policy. Diagnostics only: nothing reads them to
+/// decide anything, and a reset does not clear them.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShellPublicationCounts {
+    pub accepted: u64,
+    pub unchanged: u64,
+    /// Late publications the kind ignores (never on a delta stream).
+    pub ignored: u64,
+    /// Refused without mutation: invalid, conflicting, a gap, or late on a
+    /// delta stream, including a body the surface itself refused.
+    pub refused: u64,
+}
+
 /// One publication stream's accepted identity. Revision zero means nothing has
 /// been accepted; a complete publication carries base zero.
 #[derive(Debug, Default)]
@@ -73,11 +86,33 @@ pub struct Stream {
     revision: u32,
     /// Exact serialized form of the accepted revision: a replay must match it.
     fingerprint: Vec<u16>,
+    counts: ShellPublicationCounts,
 }
 
 impl Stream {
     pub const fn new(kind: StreamKind) -> Self {
-        Self { kind, revision: 0, fingerprint: Vec::new() }
+        Self {
+            kind,
+            revision: 0,
+            fingerprint: Vec::new(),
+            counts: ShellPublicationCounts { accepted: 0, unchanged: 0, ignored: 0, refused: 0 },
+        }
+    }
+
+    /// Count one publication's fate. Call once per publication, with the
+    /// classification that decided it (`Invalid` for a refused body).
+    pub fn record(&mut self, class: Classification) {
+        let counts = &mut self.counts;
+        match class.outcome(self.kind) {
+            Ok(true) => counts.accepted += 1,
+            Ok(false) if class == Classification::Unchanged => counts.unchanged += 1,
+            Ok(false) => counts.ignored += 1,
+            Err(()) => counts.refused += 1,
+        }
+    }
+
+    pub fn counts(&self) -> ShellPublicationCounts {
+        self.counts
     }
 
     pub fn kind(&self) -> StreamKind {
@@ -210,6 +245,22 @@ mod tests {
         }
         assert_eq!(s.revision(), 5);
         assert_eq!(s.classify(0, 5, &[1]), Unchanged);
+    }
+
+    #[test]
+    fn counts_follow_the_kind_policy_and_survive_a_reset() {
+        let mut delta = at(StreamKind::Delta, 5, &[1]);
+        let mut menu = at(StreamKind::Snapshot, 5, &[1]);
+        for class in [Accepted, Unchanged, Stale, Conflict, Gap, Invalid] {
+            delta.record(class);
+            menu.record(class);
+        }
+        let counts = |accepted, unchanged, ignored, refused|
+            ShellPublicationCounts { accepted, unchanged, ignored, refused };
+        assert_eq!(delta.counts(), counts(1, 1, 0, 4), "a late delta is refused");
+        assert_eq!(menu.counts(), counts(1, 1, 1, 3), "a late snapshot is ignored");
+        delta.reset();
+        assert_eq!(delta.counts(), counts(1, 1, 0, 4));
     }
 
     #[test]

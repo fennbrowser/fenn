@@ -1,6 +1,6 @@
 //! Window-scoped menu openings, independent of tab and address-query membership.
 use std::collections::BTreeSet;
-use crate::publication::{Classification, Stream, StreamKind};
+use crate::publication::{Classification, ShellPublicationCounts, Stream, StreamKind};
 pub const MAX_ACTIONS: usize = 256;
 pub const MAX_DESCRIPTION: usize = 65536;
 pub struct SurfaceMenu {
@@ -21,17 +21,21 @@ impl SurfaceMenu {
         if let Some(next)=self.next.checked_add(1) {self.next=next;self.session=next;}
         self.session
     }
+    pub fn counts(&self) -> ShellPublicationCounts {self.stream.counts()}
     pub fn dismiss(&mut self) {self.session=0;self.stream.reset();self.actions.clear();}
     pub fn accept(&mut self, session:u32, revision:u32, actions:&[u32], fingerprint:&[u16]) -> Result<bool,()> {
-        if session==0 || revision==0 || actions.len()>MAX_ACTIONS || fingerprint.len()>MAX_DESCRIPTION {return Err(());}
+        let refuse=|stream:&mut Stream|{stream.record(Classification::Invalid);Err(())};
+        if session==0 || revision==0 || actions.len()>MAX_ACTIONS || fingerprint.len()>MAX_DESCRIPTION {return refuse(&mut self.stream);}
         let ids:BTreeSet<_>=actions.iter().copied().collect();
-        if ids.contains(&0) || ids.len()!=actions.len(){return Err(());}
-        if session!=self.session {return Ok(false);}
+        if ids.contains(&0) || ids.len()!=actions.len(){return refuse(&mut self.stream);}
+        // An answer to a superseded opening is late, not wrong.
+        if session!=self.session {self.stream.record(Classification::Stale);return Ok(false);}
         // A replay must repeat the action set as well as the description.
         let class=match self.stream.classify(0,revision,fingerprint) {
             Classification::Unchanged if ids!=self.actions => Classification::Conflict,
             class => class,
         };
+        self.stream.record(class);
         if !class.outcome(self.stream.kind())? {return Ok(false);}
         self.stream.commit(revision,fingerprint);self.actions=ids;Ok(true)
     }

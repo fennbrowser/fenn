@@ -242,4 +242,9 @@ struct NativeShellCore {
         if (core) shell_core_stats(core, &stats);
         return stats;
     }
+    ShellPublicationCounts PublicationCounts(uint32_t channel) const {
+        ShellPublicationCounts counts{};
+        if (core) shell_core_publication_stats(core, channel, &counts);
+        return counts;
+    }
 };

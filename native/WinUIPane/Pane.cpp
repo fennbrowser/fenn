@@ -613,6 +613,20 @@ struct Pane {
         CloseAddressHost();
         drainOpen = false;
         tabMenu.Close();
+        if (shell && WorkAccountingEnabled()) {
+            // A refusal means Firefox and this window disagreed about a
+            // publication; suites read these lines to catch it.
+            static constexpr struct { uint32_t channel; wchar_t const* name; } channels[] = {
+                {SHELL_PUBLICATION_CHANNEL_STRIP, L"strip"},
+                {SHELL_PUBLICATION_CHANNEL_TAB_MENU_STATE, L"tab-menu-state"},
+                {SHELL_PUBLICATION_CHANNEL_SURFACE_MENU, L"surface-menu"},
+            };
+            for (auto const& entry : channels) {
+                const auto counts = shell.PublicationCounts(entry.channel);
+                fwprintf(stderr, L"WinUIPane publications channel=%s accepted=%llu unchanged=%llu ignored=%llu refused=%llu\n",
+                         entry.name, counts.accepted, counts.unchanged, counts.ignored, counts.refused);
+            }
+        }
         if (shell.core) shell_core_close(shell.core);
         lifetime.reset();
         source.TakeFocusRequested(takeFocus);

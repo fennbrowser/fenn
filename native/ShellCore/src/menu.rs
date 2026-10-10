@@ -1,7 +1,7 @@
 //! Native menu protocol identity. Firefox owns command meaning and eligibility;
 //! WinUI supplies the enabled opaque IDs of the rendered description.
 use std::collections::BTreeSet;
-use crate::publication::{Stream, StreamKind};
+use crate::publication::{Classification, ShellPublicationCounts, Stream, StreamKind};
 pub const MAX_TABS: usize = 10_000;
 pub const MAX_COMMANDS: usize = 128;
 pub const MAX_ID: usize = 64;
@@ -33,11 +33,15 @@ impl Default for MenuState {
 impl MenuState {
     pub fn state(&self) -> ShellMenuState { self.state }
     pub fn has_tab(&self, id: u32) -> bool { self.tabs.contains(&id) }
+    pub fn counts(&self) -> ShellPublicationCounts { self.stream.counts() }
     pub fn publish(&mut self, revision: u32, tabs: &[u32], fingerprint: &[u16]) -> Result<bool, ()> {
-        if tabs.len() > MAX_TABS || fingerprint.len() > MAX_FINGERPRINT { return Err(()); }
+        let refuse = |stream: &mut Stream| { stream.record(Classification::Invalid); Err(()) };
+        if tabs.len() > MAX_TABS || fingerprint.len() > MAX_FINGERPRINT { return refuse(&mut self.stream); }
         let members: BTreeSet<_> = tabs.iter().copied().collect();
-        if members.contains(&0) || members.len() != tabs.len() { return Err(()); }
-        if !self.stream.check(0, revision, fingerprint)? { return Ok(false); }
+        if members.contains(&0) || members.len() != tabs.len() { return refuse(&mut self.stream); }
+        let class = self.stream.classify(0, revision, fingerprint);
+        self.stream.record(class);
+        if !class.outcome(self.stream.kind())? { return Ok(false); }
         self.tabs = members;
         self.stream.commit(revision, fingerprint);
         self.state.state_revision = revision;

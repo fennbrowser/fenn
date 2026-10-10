@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 34
+#define SHELL_CORE_ABI_VERSION 35
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -220,6 +220,28 @@ typedef uint32_t ShellStripImageKind;
 #endif // __cplusplus
 
 /*
+ Publication channels whose acceptance runs through the shared protocol in
+ [`crate::publication`]. Passed to [`shell_core_publication_stats`] as a
+ `u32`.
+ */
+enum ShellPublicationChannel
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  SHELL_PUBLICATION_CHANNEL_STRIP = 0,
+  SHELL_PUBLICATION_CHANNEL_TAB_MENU_STATE = 1,
+  SHELL_PUBLICATION_CHANNEL_SURFACE_MENU = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum ShellPublicationChannel ShellPublicationChannel;
+#else
+typedef uint32_t ShellPublicationChannel;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/*
  Opaque per-endpoint state. One per native shell surface.
  */
 typedef struct ShellCore ShellCore;
@@ -335,6 +357,25 @@ typedef struct {
   uint32_t pending_changes;
   uint32_t reserved;
 } ShellCoreStats;
+
+/*
+ Lifetime totals of what a stream did with the publications it received,
+ bucketed by the kind's policy. Diagnostics only: nothing reads them to
+ decide anything, and a reset does not clear them.
+ */
+typedef struct {
+  uint64_t accepted;
+  uint64_t unchanged;
+  /*
+   Late publications the kind ignores (never on a delta stream).
+   */
+  uint64_t ignored;
+  /*
+   Refused without mutation: invalid, conflicting, a gap, or late on a
+   delta stream, including a body the surface itself refused.
+   */
+  uint64_t refused;
+} ShellPublicationCounts;
 
 /*
  A JSON number the host read without interpreting; `present` is false when
@@ -959,6 +1000,18 @@ ShellStatus shell_core_close(ShellCore *core);
  See [`guard`]. `out` must be writable.
  */
 ShellStatus shell_core_stats(ShellCore *core, ShellCoreStats *out);
+
+/*
+ What one channel did with the publications it received, for diagnostics.
+ Counts publications that reached the core; a malformed call rejected at
+ the boundary is reported by its own status and not counted here.
+
+ # Safety
+ See [`guard`]. `out` must be writable.
+ */
+ShellStatus shell_core_publication_stats(ShellCore *core,
+                                         uint32_t channel,
+                                         ShellPublicationCounts *out);
 
 /*
  Validate a strip publication's envelope before the host stages anything.
