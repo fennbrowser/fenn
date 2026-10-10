@@ -1517,6 +1517,7 @@ struct NativeTabStrip {
                    !rowAnimations.empty() || !foreignGroupShift.entries.empty() ||
                    (ownerHwnd && GetAncestor(ownerHwnd, GA_ROOT) != GetForegroundWindow());
         };
+        hoverCard.core = model.core;
         hoverCard.Bind(root);
         hoverCard.send = [this](uint32_t tab, uint64_t request, double scale) {
             if (!preview) return;

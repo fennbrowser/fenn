@@ -3,6 +3,7 @@
 #include <functional>
 #include <map>
 #include "JsonValidation.h"
+#include "ShellCore.h"
 
 // The tab hover card: Firefox's tab preview presented in a stock Flyout. It
 // shows the title, the site's registrable domain, the row's container/group
@@ -61,7 +62,8 @@ struct TabHoverCard {
     std::map<uint32_t, Card> cards;
     // The row whose card is wanted, and the request its answer must name.
     uint32_t tab{};
-    uint64_t pending{}, nextRequest{};
+    uint64_t pending{};
+    ShellCore* core{};
     bool open{};
     // The row whose card is showing, and the one waiting out the hover delay.
     uint32_t shown{}, waiting{};
@@ -75,6 +77,7 @@ struct TabHoverCard {
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
     ~TabHoverCard() {
+        CancelRequest();
         lifetime.reset();
         if (timer) timer.Stop();
         try {
@@ -144,9 +147,16 @@ struct TabHoverCard {
         block.Visibility(text.empty() ? Visibility::Collapsed : Visibility::Visible);
     }
 
+    void CancelRequest() {
+        if (core) shell_core_preview_dismiss(core, pending);
+        tab = 0; pending = 0;
+    }
     void Request(uint32_t id, Controls::TabViewItem const& row) {
-        tab = id;
-        pending = ++nextRequest;
+        uint64_t request = 0;
+        if (!core || shell_core_preview_begin(core, id, &request) != SHELL_STATUS_OK) {
+            CancelRequest(); return;
+        }
+        tab = id; pending = request;
         const double scale = row.XamlRoot() ? row.XamlRoot().RasterizationScale() : 1.0;
         if (send) send(id, pending, scale);
     }
@@ -174,6 +184,7 @@ struct TabHoverCard {
         // Queuing can wake a host that republishes at once and drops rows, so
         // nothing from the map is held across the request.
         if (tab != id) Request(id, row);
+        if (tab != id) return;
         found = cards.find(id);
         if (found == cards.end()) return;
         auto flyout = found->second.flyout;
@@ -186,11 +197,20 @@ struct TabHoverCard {
     }
 
     void Hide(uint32_t id) {
+        if (tab == id) CancelRequest();
         if (waiting == id) {
             waiting = 0;
             if (timer) timer.Stop();
         }
-        if (shown != id) return;
+        if (shown != id) {
+            // A capture can finish during the hover delay, before any Flyout
+            // opens. No Closed event will release that pending bitmap.
+            if (auto found = cards.find(id); found != cards.end()) {
+                found->second.image.Source(nullptr);
+                found->second.frame.Visibility(Visibility::Collapsed);
+            }
+            return;
+        }
         shown = 0;
         closedAt = std::chrono::steady_clock::now();
         if (auto found = cards.find(id); found != cards.end()) found->second.flyout.Hide();
@@ -203,6 +223,7 @@ struct TabHoverCard {
         // Ask before the delay runs out, so the answer is usually here by the
         // time the card appears.
         if (tab != id) Request(id, row);
+        if (tab != id) return;
         if (shown == id) return;
         if (shown || std::chrono::steady_clock::now() - closedAt < kReshowWindow) {
             Show(id);
@@ -262,7 +283,8 @@ struct TabHoverCard {
             closed.frame.Visibility(Visibility::Collapsed);
             // A light dismissal is a close this card did not ask for.
             if (shown == id) { shown = 0; closedAt = std::chrono::steady_clock::now(); }
-            if (tab == id) { tab = 0; open = false; }
+            if (tab == id) CancelRequest();
+            if (!tab) open = false;
         });
         cards.insert_or_assign(id, card);
     }
@@ -291,7 +313,8 @@ struct TabHoverCard {
         Hide(id);
         if (pressed == id) pressed = 0;
         cards.erase(id);
-        if (tab == id) { tab = 0; open = false; }
+        if (tab == id) CancelRequest();
+        if (!tab) open = false;
     }
 
     // {"tab":id,"request":n,"domain":"..","thumbnail":bool,"image":{..}?}
@@ -307,10 +330,24 @@ struct TabHoverCard {
         NativeJson::ValidateImage(answer, pixels, kPreviewLimits);
         const bool hasImage = answer.HasKey(L"image") &&
             answer.GetNamedValue(L"image").ValueType() != Windows::Data::Json::JsonValueType::Null;
-        if (id != tab || request != double(pending) || !cards.count(id)) return;
+        const auto fingerprint = answer.Stringify();
+        const uint32_t phase = answer.HasKey(L"image") ? 2 : 1;
+        bool apply = false;
+        auto resolve = [&](bool commit) {
+            check_hresult(shell_core_preview_publication(core, id, uint64_t(request), phase,
+                reinterpret_cast<uint16_t const*>(fingerprint.c_str()), fingerprint.size(), commit, &apply)
+                == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
+        };
+        resolve(false);
+        if (!apply || !cards.count(id)) return;
+        // Decode before commit: a failed allocation leaves acceptance unchanged.
+        Media::Imaging::WriteableBitmap bitmap{nullptr};
+        if (hasImage) bitmap = NativeJson::DecodeImage(answer.GetNamedObject(L"image"));
+        resolve(true);
+        if (!apply) return;
         auto& card = cards.at(id);
         SetText(card.domain, domain);
-        if (hasImage) card.image.Source(NativeJson::DecodeImage(answer.GetNamedObject(L"image")));
+        if (hasImage) card.image.Source(bitmap);
         else if (!thumbnail) card.image.Source(nullptr);
         // Reserve the frame as soon as Firefox says a thumbnail is coming, so
         // the card does not grow when the capture lands.

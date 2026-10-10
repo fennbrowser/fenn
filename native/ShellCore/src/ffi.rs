@@ -203,6 +203,7 @@ pub struct ShellCore {
     surface_menu: crate::surface_menu::SurfaceMenu,
     address_publication: crate::address_publication::AddressPublication,
     toolbar_publication: crate::toolbar_publication::ToolbarPublication,
+    preview_publication: crate::preview_publication::PreviewPublication,
     /// Identity of this core among every core in the process; transfers name it.
     endpoint: u64,
     snapshot: Option<SnapshotBuilder>,
@@ -425,6 +426,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         surface_menu: Default::default(),
         address_publication: Default::default(),
         toolbar_publication: Default::default(),
+        preview_publication: Default::default(),
         endpoint: NEXT_ENDPOINT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         snapshot: None,
         stats: Counters::default(),
@@ -751,6 +753,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
         core.surface_menu.dismiss();
         core.address_publication.reset();
         core.toolbar_publication.reset();
+        core.preview_publication.reset();
         core.model.reset(core.queue.generation());
         core.snapshot = None;
         ShellStatus::Ok
@@ -771,6 +774,7 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
         core.surface_menu.dismiss();
         core.address_publication.reset();
         core.toolbar_publication.reset();
+        core.preview_publication.reset();
         core.snapshot = None;
         ShellStatus::Ok
     })
@@ -818,6 +822,7 @@ pub enum ShellPublicationChannel {
     AddressSession = 3,
     ToolbarCustomization = 4,
     TabModel = 5,
+    TabPreview = 6,
 }
 
 /// What one channel did with the publications it received, for diagnostics.
@@ -836,6 +841,7 @@ pub unsafe extern "C" fn shell_core_publication_stats(
     *out = ShellPublicationCounts::default();
     guard(core, |core| {
         *out = match channel {
+            c if c == ShellPublicationChannel::TabPreview as u32 => core.preview_publication.counts(),
             c if c == ShellPublicationChannel::TabModel as u32 => core.model.counts(),
             c if c == ShellPublicationChannel::Strip as u32 => core.strip.counts(),
             c if c == ShellPublicationChannel::TabMenuState as u32 => core.menu.counts(),
@@ -1504,7 +1510,7 @@ mod tests {
             let mut counts = ShellPublicationCounts::default();
             assert_eq!(shell_core_publication_stats(core, ShellPublicationChannel::Strip as u32, &mut counts), ShellStatus::Ok);
             assert_eq!(counts, ShellPublicationCounts { accepted: 2, unchanged: 1, ignored: 0, refused: 1 });
-            assert_eq!(shell_core_publication_stats(core, 6, &mut counts), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_publication_stats(core, 7, &mut counts), ShellStatus::InvalidArgument);
             assert_eq!(counts, ShellPublicationCounts::default(), "an unknown channel reports nothing");
             assert_eq!(shell_core_publication_stats(core, 0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
             shell_core_destroy(core);
@@ -3425,6 +3431,79 @@ mod tab_publication_ffi_tests {
         let mut counts = ShellPublicationCounts::default();
         assert_eq!(shell_core_publication_stats(core, ShellPublicationChannel::TabModel as u32, &mut counts), ShellStatus::Ok);
         assert_eq!((counts.accepted, counts.unchanged, counts.refused), (3, 1, 2));
+        shell_core_destroy(core);
+    }}
+}
+
+/// Open a preview request; IDs stay safe JavaScript integers and never wrap.
+/// # Safety
+/// See [`guard`]. `request` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_preview_begin(core: *mut ShellCore, tab: u32, request: *mut u64) -> ShellStatus {
+    let Some(out) = request.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out = 0;
+    guard(core, |core| {
+        if core.queue.is_closed() { return ShellStatus::Closed; }
+        match core.preview_publication.begin(tab) {
+            Ok(value) => { *out = value; ShellStatus::Ok }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
+}
+/// Dismiss only the named opening; an old close cannot revoke a newer request.
+/// # Safety
+/// See [`guard`].
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_preview_dismiss(core: *mut ShellCore, request: u64) -> ShellStatus {
+    guard(core, |core| { core.preview_publication.dismiss(request); ShellStatus::Ok })
+}
+/// Resolve/commit fully validated preview content before native mutation.
+/// Phase 1 has no wire image key; phase 2 has an image key, including null.
+/// # Safety
+/// See [`guard`]. The fingerprint span must be readable and `apply` writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_preview_publication(core: *mut ShellCore, tab: u32, request: u64,
+    phase: u32, fingerprint: *const u16, fingerprint_len: usize, commit: bool, apply: *mut bool) -> ShellStatus {
+    let Some(out) = apply.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out = false;
+    if fingerprint_len > crate::preview_publication::MAX_PREVIEW_FINGERPRINT { return ShellStatus::TooLarge; }
+    let Some(fingerprint) = slice(fingerprint, fingerprint_len) else { return ShellStatus::InvalidArgument; };
+    guard(core, |core| match core.preview_publication.resolve(tab, request, phase, fingerprint, commit) {
+        Ok(value) => { *out = value; ShellStatus::Ok }
+        Err(()) => ShellStatus::InvalidArgument,
+    })
+}
+
+#[cfg(test)]
+mod preview_publication_ffi_tests {
+    use super::*;
+    #[test]
+    fn preview_boundary_preflight_cancellation_and_close_preserve_counts() { unsafe {
+        let core=shell_core_create(std::ptr::null());let mut request=0;let mut apply=true;
+        assert_eq!(shell_core_preview_begin(core,7,&mut request),ShellStatus::Ok);
+        assert_eq!(shell_core_preview_begin(core,8,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        let publish=|tab,req,phase,body:&[u16],commit,out|shell_core_preview_publication(core,tab,req,phase,body.as_ptr(),body.len(),commit,out);
+        assert_eq!(publish(7,request,1,&[1],false,&mut apply),ShellStatus::Ok);assert!(apply);
+        assert_eq!(publish(7,request,1,&[1],true,&mut apply),ShellStatus::Ok);assert!(apply);
+        assert_eq!(publish(7,request,1,&[1],false,&mut apply),ShellStatus::Ok);assert!(!apply);
+        assert_eq!(publish(7,request,1,&[2],false,&mut apply),ShellStatus::InvalidArgument);assert!(!apply);
+        assert_eq!(publish(7,request,2,&[2],true,&mut apply),ShellStatus::Ok);assert!(apply);
+        assert_eq!(publish(7,request,1,&[3],false,&mut apply),ShellStatus::Ok);assert!(!apply);
+        assert_eq!(publish(8,request,2,&[2],false,&mut apply),ShellStatus::Ok);assert!(!apply);
+        assert_eq!(shell_core_preview_publication(core,7,request,2,std::ptr::null(),1,false,&mut apply),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_preview_publication(core,7,request,2,std::ptr::null(),usize::MAX,false,&mut apply),ShellStatus::TooLarge);
+        shell_core_cancel_all(core);
+        assert_eq!(publish(7,request,2,&[2],true,&mut apply),ShellStatus::Ok);assert!(!apply);
+        let previous=request;shell_core_preview_begin(core,8,&mut request);assert!(request>previous);
+        assert_eq!(shell_core_toolbar_publication_reset(core),ShellStatus::Ok);
+        shell_core_preview_dismiss(core,previous);
+        assert_eq!(publish(8,request,1,&[4],true,&mut apply),ShellStatus::Ok);assert!(apply);
+        shell_core_close(core);
+        assert_eq!(publish(8,request,2,&[5],true,&mut apply),ShellStatus::Ok);assert!(!apply);
+        assert_eq!(shell_core_preview_begin(core,8,&mut request),ShellStatus::Closed);assert_eq!(request,0);
+        let mut counts=ShellPublicationCounts::default();
+        assert_eq!(shell_core_publication_stats(core,ShellPublicationChannel::TabPreview as u32,&mut counts),ShellStatus::Ok);
+        assert_eq!((counts.accepted,counts.unchanged,counts.ignored,counts.refused),(3,1,4,1));
         shell_core_destroy(core);
     }}
 }

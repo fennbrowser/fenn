@@ -619,6 +619,7 @@ struct Pane {
             // A refusal means Firefox and this window disagreed about a
             // publication; suites read these lines to catch it.
             static constexpr struct { uint32_t channel; wchar_t const* name; } channels[] = {
+                {SHELL_PUBLICATION_CHANNEL_TAB_PREVIEW, L"tab-preview"},
                 {SHELL_PUBLICATION_CHANNEL_TAB_MODEL, L"tab-model"},
                 {SHELL_PUBLICATION_CHANNEL_STRIP, L"strip"},
                 {SHELL_PUBLICATION_CHANNEL_TAB_MENU_STATE, L"tab-menu-state"},
@@ -2150,7 +2151,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestCorePanic(HWND hwnd
             pane.notifySink = nullptr;
             pane.notifyContext = nullptr;
             pane.drainOpen = false;
-            if (pane.strip) pane.strip->core = nullptr;
+            if (pane.strip) { pane.strip->core = nullptr; pane.strip->hoverCard.core = nullptr; }
             pane.shell.Close();
             return E_FAIL;
         }

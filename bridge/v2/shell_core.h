@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 39
+#define SHELL_CORE_ABI_VERSION 40
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -77,6 +77,8 @@
 #define MAX_DESCRIPTION 65536
 
 #define MAX_TOOLBAR_FINGERPRINT ((6 * 1024) * 1024)
+
+#define MAX_PREVIEW_FINGERPRINT (1024 * 1024)
 
 /*
  Matches the host's neighbor animation: 135 ms, cubic-bezier(.215, .61, .355, 1).
@@ -246,6 +248,7 @@ enum ShellPublicationChannel
   SHELL_PUBLICATION_CHANNEL_ADDRESS_SESSION = 3,
   SHELL_PUBLICATION_CHANNEL_TOOLBAR_CUSTOMIZATION = 4,
   SHELL_PUBLICATION_CHANNEL_TAB_MODEL = 5,
+  SHELL_PUBLICATION_CHANNEL_TAB_PREVIEW = 6,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -2034,6 +2037,35 @@ ShellStatus shell_core_surface_menu_activate(ShellCore *core,
                                              uint32_t revision,
                                              uint32_t action,
                                              bool *accepted);
+
+/*
+ Open a preview request; IDs stay safe JavaScript integers and never wrap.
+ # Safety
+ See [`guard`]. `request` must be writable.
+ */
+ShellStatus shell_core_preview_begin(ShellCore *core, uint32_t tab, uint64_t *request);
+
+/*
+ Dismiss only the named opening; an old close cannot revoke a newer request.
+ # Safety
+ See [`guard`].
+ */
+ShellStatus shell_core_preview_dismiss(ShellCore *core, uint64_t request);
+
+/*
+ Resolve/commit fully validated preview content before native mutation.
+ Phase 1 has no wire image key; phase 2 has an image key, including null.
+ # Safety
+ See [`guard`]. The fingerprint span must be readable and `apply` writable.
+ */
+ShellStatus shell_core_preview_publication(ShellCore *core,
+                                           uint32_t tab,
+                                           uint64_t request,
+                                           uint32_t phase,
+                                           const uint16_t *fingerprint,
+                                           uintptr_t fingerprint_len,
+                                           bool commit,
+                                           bool *apply);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -713,11 +713,11 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
             "the work queued while blocked is still there, and is delivered once");
     CompleteRequests(api, hwnd, resumed);
 
-    uint32_t replay = 0;
-    Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, revision, &replay)) && replay == revision,
-            "complete replay acknowledges Firefox's stamp");
+    uint32_t snapshotReplay = 0;
+    Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, revision, &snapshotReplay)) && snapshotReplay == revision,
+            "complete snapshotReplay acknowledges Firefox's stamp");
     WinUITab conflict[]{{101, L"conflict", 7}, {102, L"second", 7}, {103, L"third", 7}};
-    Require(api.syncTabs(hwnd, conflict, 3, 103, revision, &replay) == E_INVALIDARG && replay == 0,
+    Require(api.syncTabs(hwnd, conflict, 3, 103, revision, &snapshotReplay) == E_INVALIDARG && snapshotReplay == 0,
             "conflicting complete publication is refused without acknowledgement");
 
     // Incremental presentation. One title changes; nothing else is touched, and
@@ -751,14 +751,14 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     Require(delta(partial.c_str()).first == E_NOT_VALID_STATE, "invalid later row refuses the whole batch");
     Pump();
     Require(view.SelectedItem() == StripRow(view, 103), "refused batch retains active selection");
-    auto batch = std::wstring(LR"({"version":1,"base":)") + std::to_wstring(selected.second) +
+    auto tabBatch = std::wstring(LR"({"version":1,"base":)") + std::to_wstring(selected.second) +
                  LR"(,"selected":101,"titles":[{"id":102,"title":"batch two"},{"id":103,"title":"batch three"}]})";
-    auto batched = delta(batch.c_str());
+    auto batched = delta(tabBatch.c_str());
     Require(SUCCEEDED(batched.first) && batched.second == selected.second + 1,
             "two titles and selection acknowledge one producer revision");
     Pump();
     Require(view.SelectedItem() == StripRow(view, 101), "accepted batch applies selection");
-    Require(delta(batch.c_str()).second == batched.second, "batch replay retains the same stamp");
+    Require(delta(tabBatch.c_str()).second == batched.second, "batch replay retains the same stamp");
 
     Require(SUCCEEDED(api.setNotifySink(hwnd, nullptr, nullptr)), "clear the drain wakeup");
     notifications = 0;
@@ -1709,6 +1709,18 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         MenuPublish(api, host, answer(requestNumber,
             LR"("domain":"example.co.uk","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})").c_str());
         Require(bool(preview.Source()), "the captured thumbnail is shown");
+        const auto acceptedImage = preview.Source();
+        MenuPublish(api, host, answer(requestNumber,
+            LR"("domain":"example.co.uk","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})").c_str());
+        Require(preview.Source() == acceptedImage, "exact thumbnail replay keeps the existing bitmap");
+        MenuPublish(api, host, answer(requestNumber, LR"("domain":"late-domain.example","thumbnail":false)").c_str());
+        Require(preview.Source() == acceptedImage && line(1).Text() == L"example.co.uk" && frame.Visibility() == Visibility::Visible,
+            "a reordered initial answer cannot withdraw the completed thumbnail");
+        Require(FAILED(api.syncTabMenu(host, answer(requestNumber,
+            LR"("domain":"conflict.example","thumbnail":false,"image":null)").c_str())) &&
+            preview.Source() == acceptedImage && line(1).Text() == L"example.co.uk",
+            "conflicting completion is refused before card mutation");
+
         hover(22, false);
         for (int i = 0; i < 100 && (cardOpen || preview.Source()); ++i) { Pump(); Sleep(5); }
         Require(!cardOpen, "leaving the tab closes its card");
@@ -1717,6 +1729,34 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         MenuPublish(api, host, answer(requestNumber,
             LR"("domain":"late.example","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})").c_str());
         Require(!preview.Source() && line(1).Text() == L"example.co.uk", "a late answer after closing is ignored");
+        hover(22, true);
+        auto newer = NextRequest(api, host, 9, L"strip-preview");
+        Require(newer.Size() != 0, "reopening allocates a fresh preview request");
+        const auto newerRequest = newer.GetNamedObject(L"action").GetNamedNumber(L"request");
+        Require(newerRequest > requestNumber, "dismissal never reuses request identity");
+        MenuPublish(api, host, answer(newerRequest,
+            LR"("domain":"capture-failed.example","thumbnail":false,"image":null)").c_str());
+        Require(!preview.Source() && frame.Visibility() == Visibility::Collapsed && line(1).Text() == L"capture-failed.example",
+            "failed capture completes without an image and withdraws the frame");
+        MenuPublish(api, host, answer(newerRequest, LR"("domain":"late.example","thumbnail":true)").c_str());
+        Require(line(1).Text() == L"capture-failed.example" && frame.Visibility() == Visibility::Collapsed,
+            "late initial answer cannot undo failed capture");
+        hover(22, false);
+        for (int i = 0; i < 100 && cardOpen; ++i) { Pump(); Sleep(5); }
+        Sleep(350); // Outside the reshow window: this opening stays pending.
+        hover(22, true);
+        Require(!cardOpen, "a new opening waits for the hover delay");
+        auto pendingRequest = NextRequest(api, host, 9, L"strip-preview");
+        Require(pendingRequest.Size() != 0, "pending opening owns a fresh request");
+        const auto pendingNumber = pendingRequest.GetNamedObject(L"action").GetNamedNumber(L"request");
+        MenuPublish(api, host, answer(pendingNumber,
+            LR"("domain":"pending.example","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})").c_str());
+        Require(bool(preview.Source()), "a capture may finish before the card opens");
+        hover(22, false);
+        Require(!preview.Source() && frame.Visibility() == Visibility::Collapsed, "pending dismissal releases its bitmap without a Closed event");
+        MenuPublish(api, host, answer(pendingNumber,
+            LR"("domain":"revoked.example","thumbnail":false,"image":null)").c_str());
+        Require(line(1).Text() == L"pending.example" && !preview.Source(), "pending dismissal revokes late publications");
         card.Opened(openedToken);
         card.Closed(closedToken);
     }
