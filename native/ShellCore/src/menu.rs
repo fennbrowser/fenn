@@ -1,6 +1,7 @@
 //! Native menu protocol identity. Firefox owns command meaning and eligibility;
 //! WinUI supplies the enabled opaque IDs of the rendered description.
 use std::collections::BTreeSet;
+use crate::publication::{Stream, StreamKind};
 pub const MAX_TABS: usize = 10_000;
 pub const MAX_COMMANDS: usize = 128;
 pub const MAX_ID: usize = 64;
@@ -14,25 +15,31 @@ pub struct ShellMenuState {
     pub state_revision: u32,
     pub awaiting: u32,
 }
-#[derive(Default)]
 pub struct MenuState {
     state: ShellMenuState,
     next_session: u32,
     tabs: BTreeSet<u32>,
-    fingerprint: Vec<u16>,
+    /// The tab-menu state is a latest-wins snapshot; `state.state_revision`
+    /// mirrors its accepted revision for the C ABI.
+    stream: Stream,
     enabled: BTreeSet<Vec<u16>>,
+}
+impl Default for MenuState {
+    fn default() -> Self {
+        Self { state: ShellMenuState::default(), next_session: 0, tabs: BTreeSet::new(),
+            stream: Stream::new(StreamKind::Snapshot), enabled: BTreeSet::new() }
+    }
 }
 impl MenuState {
     pub fn state(&self) -> ShellMenuState { self.state }
     pub fn has_tab(&self, id: u32) -> bool { self.tabs.contains(&id) }
     pub fn publish(&mut self, revision: u32, tabs: &[u32], fingerprint: &[u16]) -> Result<bool, ()> {
-        if revision == 0 || tabs.len() > MAX_TABS || fingerprint.len() > MAX_FINGERPRINT { return Err(()); }
+        if tabs.len() > MAX_TABS || fingerprint.len() > MAX_FINGERPRINT { return Err(()); }
         let members: BTreeSet<_> = tabs.iter().copied().collect();
         if members.contains(&0) || members.len() != tabs.len() { return Err(()); }
-        if revision == self.state.state_revision && fingerprint != self.fingerprint { return Err(()); }
-        if revision <= self.state.state_revision { return Ok(false); }
+        if !self.stream.check(0, revision, fingerprint)? { return Ok(false); }
         self.tabs = members;
-        self.fingerprint = fingerprint.to_vec();
+        self.stream.commit(revision, fingerprint);
         self.state.state_revision = revision;
         // The host emits the old session's dismiss before hiding its flyout.
         // Revision checks already prevent accepting/activating that old menu.
@@ -57,7 +64,7 @@ impl MenuState {
         self.enabled.clear();
     }
     pub fn close(&mut self) {
-        self.dismiss(); self.tabs.clear(); self.fingerprint.clear(); self.state.state_revision = 0;
+        self.dismiss(); self.tabs.clear(); self.stream.reset(); self.state.state_revision = 0;
         // Never reuse a session ID within this endpoint, even after cancellation.
     }
     pub fn matches(&self, session: u32, tab: u32, revision: u32) -> bool {

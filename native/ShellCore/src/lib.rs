@@ -37,6 +37,7 @@ pub mod model;
 pub mod menu;
 pub mod surface_menu;
 pub mod pending;
+pub mod publication;
 pub mod queue;
 pub mod settle;
 pub mod strip;

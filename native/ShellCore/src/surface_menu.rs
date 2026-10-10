@@ -1,14 +1,19 @@
 //! Window-scoped menu openings, independent of tab and address-query membership.
 use std::collections::BTreeSet;
+use crate::publication::{Classification, Stream, StreamKind};
 pub const MAX_ACTIONS: usize = 256;
 pub const MAX_DESCRIPTION: usize = 65536;
-#[derive(Default)]
 pub struct SurfaceMenu {
     next: u32,
     session: u32,
-    revision: u32,
-    fingerprint: Vec<u16>,
+    /// Descriptions are scoped to one opening and reset with it.
+    stream: Stream,
     actions: BTreeSet<u32>,
+}
+impl Default for SurfaceMenu {
+    fn default() -> Self {
+        Self { next: 0, session: 0, stream: Stream::new(StreamKind::Session), actions: BTreeSet::new() }
+    }
 }
 impl SurfaceMenu {
     pub fn open(&mut self) -> u32 {
@@ -16,17 +21,22 @@ impl SurfaceMenu {
         if let Some(next)=self.next.checked_add(1) {self.next=next;self.session=next;}
         self.session
     }
-    pub fn dismiss(&mut self) {self.session=0;self.revision=0;self.actions.clear();self.fingerprint.clear();}
+    pub fn dismiss(&mut self) {self.session=0;self.stream.reset();self.actions.clear();}
     pub fn accept(&mut self, session:u32, revision:u32, actions:&[u32], fingerprint:&[u16]) -> Result<bool,()> {
         if session==0 || revision==0 || actions.len()>MAX_ACTIONS || fingerprint.len()>MAX_DESCRIPTION {return Err(());}
         let ids:BTreeSet<_>=actions.iter().copied().collect();
         if ids.contains(&0) || ids.len()!=actions.len(){return Err(());}
-        if session!=self.session || revision<self.revision {return Ok(false);}
-        if revision==self.revision {return if fingerprint==self.fingerprint && ids==self.actions {Ok(false)}else{Err(())};}
-        self.revision=revision;self.actions=ids;self.fingerprint=fingerprint.to_vec();Ok(true)
+        if session!=self.session {return Ok(false);}
+        // A replay must repeat the action set as well as the description.
+        let class=match self.stream.classify(0,revision,fingerprint) {
+            Classification::Unchanged if ids!=self.actions => Classification::Conflict,
+            class => class,
+        };
+        if !class.outcome(self.stream.kind())? {return Ok(false);}
+        self.stream.commit(revision,fingerprint);self.actions=ids;Ok(true)
     }
     pub fn activate(&mut self,session:u32,revision:u32,action:u32)->bool {
-        if session==0 || session!=self.session || revision!=self.revision || !self.actions.contains(&action){return false;}
+        if session==0 || session!=self.session || revision!=self.stream.revision() || !self.actions.contains(&action){return false;}
         self.dismiss();true
     }
 }
