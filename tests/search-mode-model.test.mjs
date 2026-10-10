@@ -135,8 +135,39 @@ test('both input implementations own and dispose the binding, and the native ada
     assert.match(source,/bindSearchModeModel\(this\)/);assert.match(source,/#searchModeModel\?\.dispose\(\)/);
   }
   const switcher=readFileSync(new URL('SearchModeSwitcher.mjs',base),'utf8');
-  assert.doesNotMatch(switcher,/nativeSnapshot|nativeActivate|nativeOpened/);
+  assert.doesNotMatch(switcher,/nativeSnapshot|nativeActivate|nativeOpened|nativeVisibility/);
   for(const name of ['localSearch','remoteSearch','install','displayedEngineDetails','populateEngines'])assert.ok(switcher.includes(`searchModeModel.${name}(`));
   const session=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIUrlbarSession.sys.mjs',import.meta.url),'utf8');
   assert.match(session,/searchModeModel\.snapshot\(/);assert.match(session,/searchModeModel\.activate\(/);
+});
+
+
+test('visibility policy covers availability, feature gates, mode exits and alternate SAPs without DOM',()=>{
+  const {model,prefs}=fixture();
+  for(const available of [false,true]) for(const active of [false,true])
+    for(const always of [false,true]) for(const gate of [false,true])
+    for(const override of [false,true]) for(const isSearchbarSAP of [false,true])
+    for(const smartbar of [false,true]) {
+      prefs['unifiedSearchButton.always']=always;
+      prefs['searchModeSwitcher.featureGate']=gate;
+      prefs['scotchBonnet.enableOverride']=override;
+      const state=model.constructor.visibility({available,searchMode:active?{source:1}:null,isSearchbarSAP,smartbar});
+      const visible=available && !smartbar && (gate || override || isSearchbarSAP);
+      assert.equal(state.modeButtonVisible,visible);
+      assert.equal(state.modeExitVisible,visible && active && !always && !isSearchbarSAP);
+    }
+});
+
+test('preference changes do not erase explicit keyboard reveal or per-tab availability',()=>{
+  const {model,prefs}=fixture(),state={available:false,searchMode:null};
+  prefs['scotchBonnet.enableOverride']=true;
+  prefs['unifiedSearchButton.always']=true;
+  assert.equal(model.constructor.visibility(state).modeButtonVisible,false);
+  // Only Firefox's availability setter applies always-on and tab restoration.
+  state.available=true;
+  assert.equal(model.constructor.visibility(state).modeButtonVisible,true);
+  prefs['scotchBonnet.enableOverride']=false;
+  assert.equal(model.constructor.visibility(state).modeButtonVisible,false);
+  prefs['searchModeSwitcher.featureGate']=true;
+  assert.equal(model.constructor.visibility(state).modeButtonVisible,true);
 });

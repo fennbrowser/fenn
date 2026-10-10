@@ -37,7 +37,7 @@ function fixture(expectNative = true) {
     window:{fullScreen:false,windowUtils:{syncWinUIAddress:state=>publications.push(JSON.parse(state))}},
     document:{fullscreenElement:null,documentElement:{matches:()=>false}},
     gBrowser:{selectedTab:tab,selectedBrowser:browser},
-    gURLBar:{view,inputField:{value:'new-page',getAttribute:()=>''},searchModeSwitcher:{nativeVisibility:()=>({})}},
+    gURLBar:{view,inputField:{value:'new-page',getAttribute:()=>''},searchModeVisibility:{}},
   });
   const source=readFileSync(new URL('../upstream/firefox/browser/base/content/browser-winui-pane.js',import.meta.url),'utf8');
   const start=source.indexOf('  syncAddress() {'),end=source.indexOf('\n  // One native address intent',start);
