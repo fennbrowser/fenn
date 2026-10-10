@@ -6,19 +6,28 @@ const context=vm.createContext({console});
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIUrlbarSession.sys.mjs',import.meta.url),'utf8')
  .replace(/^import .*;$/m,'').replace('export class WinUIUrlbarSession','this.Session = class WinUIUrlbarSession'),context);
 function fixture() {
- const session=Object.create(context.Session.prototype), commands=[], queries=[];
+ const session=Object.create(context.Session.prototype), commands=[], queries=[], copies=[];
+ context.Cc={'@mozilla.org/widget/clipboardhelper;1':{getService:()=>({copyString:value=>copies.push(value)})}};
+ context.Ci={nsIClipboardHelper:{}};
  const field={value:'alpha beta',setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}};
  field.controllers={getControllerForCommand:()=>({isCommandEnabled:()=>true,doCommand(command){
   commands.push(command);
   if(command==='cmd_cut'){field.value=field.value.slice(0,field.selectionStart)+field.value.slice(field.selectionEnd);field.selectionEnd=field.selectionStart;}
  }})};
- Object.assign(session,{sessionId:'s',editId:3,input:{inputField:field},window:{InputEvent:class{constructor(type,init){Object.assign(this,init);}}},
+ Object.assign(session,{sessionId:'s',editId:3,input:{inputField:field,
+ _getSelectedValueForClipboard:({text,start,end})=>text.slice(start,end)},window:{InputEvent:class{constructor(type,init){Object.assign(this,init);}}},
  changed(){},query(text,event){queries.push({text,event});return Promise.resolve();}});
  const request={version:1,session:'s',editId:3,text:'alpha beta',selectionStart:0,selectionEnd:5,composing:false,clipboard:'cmd_copy'};
- return {session,field,request,commands,queries};
+ return {session,field,request,commands,queries,copies};
 }
-test('copy uses the original address controller without changing text or querying',()=>{
- const f=fixture();assert.equal(f.session.clipboard(f.request),1);assert.deepEqual(f.commands,['cmd_copy']);
+test('copy formats the native selection without a DOM command controller or query',()=>{
+ const f=fixture();f.field.controllers={getControllerForCommand(){throw new Error('DOM controller forbidden');}};
+ f.session.input._getSelectedValueForClipboard=selection=>{
+  assert.equal(selection.text,'alpha beta');assert.equal(selection.start,0);assert.equal(selection.end,5);
+  return 'Firefox formatted selection';
+ };
+ assert.equal(f.session.clipboard(f.request),1);assert.deepEqual(f.commands,[]);
+ assert.deepEqual(f.copies,['Firefox formatted selection']);
  assert.equal(f.field.value,'alpha beta');assert.equal(f.queries.length,0);
 });
 test('cut publishes caret scoped to the accepted edit',()=>{
@@ -35,7 +44,12 @@ test('stale sessions, edits, malformed ranges and arbitrary commands are refused
 });
 test('disabled editor command does not run',()=>{
  const f=fixture();f.field.controllers.getControllerForCommand=()=>({isCommandEnabled:()=>false});
- assert.equal(f.session.clipboard(f.request),2);assert.equal(f.commands.length,0);
+ assert.equal(f.session.clipboard({...f.request,clipboard:'cmd_paste'}),2);assert.equal(f.commands.length,0);
+});
+
+test('empty native copy does not change clipboard contents',()=>{
+ const f=fixture();assert.equal(f.session.clipboard({...f.request,selectionEnd:0}),2);
+ assert.deepEqual(f.copies,[]);
 });
 
 test('replacing selected text with identical clipboard text still publishes collapsed caret',()=>{
@@ -45,10 +59,10 @@ test('replacing selected text with identical clipboard text still publishes coll
  assert.equal(f.session.clipboardResult.start,5);assert.equal(f.session.clipboardResult.end,5);
  assert.equal(f.queries[0].event.inputType,'insertFromPaste');
 });
-test('latest carried edit is accepted before invoking clipboard controller',()=>{
+test('latest carried edit is accepted before formatting the copy selection',()=>{
  const f=fixture();f.session.acceptEdit=request=>{f.session.editId=request.editId;f.field.value=request.text;return {status:'accepted'};};
  assert.equal(f.session.clipboard({...f.request,editId:4,text:'new typing'}),1);
- assert.equal(f.commands.length,1);assert.equal(f.session.editId,4);
+ assert.equal(f.commands.length,0);assert.equal(f.session.editId,4);assert.deepEqual(f.copies,['new t']);
 });
 
 test('presentation release detaches before cancellation can close the session',()=>{

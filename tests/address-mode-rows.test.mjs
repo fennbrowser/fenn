@@ -12,7 +12,7 @@ function fixture(type=2,providerName='UrlbarProviderTokenAliasEngines') {
  let picked=0;
  Object.assign(s,{sessionId:'s',_sequence:0,_revision:2,editId:5,modeApplied:0,nativeOpen:true,nativeVisible:['r'],cancelImages(){},
   window:{gBrowser:{selectedBrowser:browser},KeyboardEvent:class{}},
-  input:{inputField:{value:'@'},view:{prepareNativeSearchModeTitle:async()=> 'Firefox mode label'},
+  input:{inputField:{value:'@'},view:{},resultPresentation:{searchModeTitle:async()=> 'Firefox mode label'},
    controller:{parentController:{onBeforeSelection(){},onSelection(){}}},
    setValueFromResult({result:chosen}){assert.equal(s.nativeSelected,chosen);this.inputField.value='';},
    pickResult(){picked++;this.inputField.value='';}},
@@ -49,7 +49,7 @@ test('an older edit cannot admit a replacement mode query',async()=>{
 });
 test('stale mode labels and hidden/document-replaced activations are rejected',async()=>{
  for(const change of [f=>f.s.active={},f=>f.browser.currentURI.spec='new',f=>f.browser.browsingContext.currentWindowGlobal.innerWindowId++]) {
-  const f=fixture();let resolve;f.s.input.view.prepareNativeSearchModeTitle=()=>new Promise(r=>resolve=r);
+  const f=fixture();let resolve;f.s.input.resultPresentation.searchModeTitle=()=>new Promise(r=>resolve=r);
   const pending=f.s.loadNativeModeResult(f.s.active,f.row,f.result);change(f);resolve('Firefox');await pending;
   assert.equal(f.row.modeDocument,undefined);
  }
