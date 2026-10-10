@@ -216,29 +216,33 @@ struct NativeShellCore {
     // SHELL_STATUS_GAP here means the producer's delta was computed against a
     // revision this core no longer holds: answer with one snapshot, never with
     // a retry loop.
-    ShellStatus SetTitle(uint32_t base, uint32_t tab, std::wstring_view title, bool& changed) {
+    ShellStatus SetTitle(uint32_t base, uint32_t revision, uint32_t tab, std::wstring_view title, bool& changed) {
         changed = false;
         if (!core) return SHELL_STATUS_INVALID_ARGUMENT;
-        return shell_core_model_set_title(core, base, tab, reinterpret_cast<uint16_t const*>(title.data()),
+        return shell_core_model_set_title(core, base, revision, tab, reinterpret_cast<uint16_t const*>(title.data()),
                                           title.size(), &changed);
     }
-    ShellStatus SetSelected(uint32_t base, uint32_t tab, bool& changed) {
+    ShellStatus SetSelected(uint32_t base, uint32_t revision, uint32_t tab, bool& changed) {
         changed = false;
         if (!core) return SHELL_STATUS_INVALID_ARGUMENT;
-        return shell_core_model_set_selected(core, base, tab, &changed);
+        return shell_core_model_set_selected(core, base, revision, tab, &changed);
     }
-    bool BeginSnapshot(uint64_t session, uint32_t capacity) {
-        return core && shell_core_model_begin_snapshot(core, session, capacity) == SHELL_STATUS_OK;
+    bool BeginSnapshot(uint64_t session, uint32_t revision, uint32_t capacity) {
+        return core && shell_core_model_begin_snapshot(core, session, revision, capacity) == SHELL_STATUS_OK;
     }
-    bool PushSnapshotTab(uint32_t tab, std::wstring_view title) {
+    bool PushSnapshotTab(uint32_t tab, std::wstring_view title, uint32_t commands) {
         return core && shell_core_model_push_snapshot_tab(
-                           core, tab, reinterpret_cast<uint16_t const*>(title.data()), title.size()) ==
+                           core, tab, reinterpret_cast<uint16_t const*>(title.data()), title.size(), commands) ==
                            SHELL_STATUS_OK;
     }
     ShellStatus CommitSnapshot(uint32_t selected, uint32_t& changeCount) {
         changeCount = 0;
         if (!core) return SHELL_STATUS_INVALID_ARGUMENT;
         return shell_core_model_commit_snapshot(core, selected, &changeCount);
+    }
+    ShellStatus ApplyTabDelta(uint32_t base, uint32_t revision, std::vector<ShellTabTitle> const& rows,
+                              bool hasSelected, uint32_t selected) {
+        return shell_core_model_apply_delta(core, base, revision, rows.data(), rows.size(), hasSelected, selected);
     }
     Changes TakeChanges() {
         Changes changes;

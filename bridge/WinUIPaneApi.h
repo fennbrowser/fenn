@@ -25,7 +25,7 @@
 // completeRequests) and incremental tab deltas (applyTabDelta), and retired
 // syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 // retaining the sidebar entry point.
-#define WINUI_PANE_ABI_VERSION 16u
+#define WINUI_PANE_ABI_VERSION 17u
 
 // The pane is built framework-dependent on the shared Windows App SDK runtime
 // (Microsoft.WindowsAppRuntime.2, at least 2.5.1.0). A packaged host declares it
@@ -75,18 +75,13 @@ struct WinUIPaneApi {
     HRESULT (WINAPI* destroy)(HWND);
     BOOL (WINAPI* translate)(MSG*);
     HRESULT (WINAPI* shutdown)();
-    // Copies a snapshot and drains one close or new-tab request.
-    // Since v11 the first output is the pane's presentation-model revision
-    // after this snapshot, which the next applyTabDelta must name as its base;
-    // selection travels on the request path below instead, so no command
-    // reaches Firefox through both executors. The final two outputs are
-    // reserved and always zero.
-    // Only one action is drained per snapshot; Firefox revalidates availability.
-    // A close request does not remove a row or choose a successor. The next
-    // snapshot acknowledges it: do not sync while Firefox is deciding closure.
-    // Publication only since v14; the single out-parameter is the pane's
-    // presentation-model revision after this snapshot.
-    HRESULT (WINAPI* syncTabs)(HWND, const WinUITab*, uint32_t, uint32_t, uint32_t*);
+    // Publication only since v14. v17 adds Firefox's nonzero revision input
+    // after selected; all earlier fields remain. The output acknowledges that
+    // exact stamp, which the next applyTabDelta names as its base.
+    // Complete replay is a no-op; a conflicting or stale stamp is refused.
+    // Native actions travel through the request path. A close never removes
+    // its row or chooses a successor before Firefox publishes the result.
+    HRESULT (WINAPI* syncTabs)(HWND, const WinUITab*, uint32_t, uint32_t, uint32_t, uint32_t*);
     // Versioned JSON messages, copied during the call; output capacity is in wchar_t.
     // Publication only since v13; intents arrive through drainRequests.
     HRESULT (WINAPI* syncAddress)(HWND, const wchar_t*);

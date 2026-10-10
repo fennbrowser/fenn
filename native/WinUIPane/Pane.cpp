@@ -619,6 +619,7 @@ struct Pane {
             // A refusal means Firefox and this window disagreed about a
             // publication; suites read these lines to catch it.
             static constexpr struct { uint32_t channel; wchar_t const* name; } channels[] = {
+                {SHELL_PUBLICATION_CHANNEL_TAB_MODEL, L"tab-model"},
                 {SHELL_PUBLICATION_CHANNEL_STRIP, L"strip"},
                 {SHELL_PUBLICATION_CHANNEL_TAB_MENU_STATE, L"tab-menu-state"},
                 {SHELL_PUBLICATION_CHANNEL_SURFACE_MENU, L"surface-menu"},
@@ -699,21 +700,23 @@ struct Pane {
     // so a later delta has a correct base to apply against. Structural apply to
     // the controls still happens below from the snapshot itself; the model is
     // what makes single-property updates cost one row instead of all of them.
-    void SeedModel(const WinUITab* snapshot, uint32_t count, uint32_t selected) {
-        if (!shell) return;
-        shell.BeginSnapshot(shell.Stats().generation, count);
-        for (uint32_t i = 0; i < count; ++i) shell.PushSnapshotTab(snapshot[i].id, snapshot[i].title);
-        uint32_t changes = 0;
-        shell.CommitSnapshot(selected, changes);
-        // The snapshot is the authority: whatever diff it produced has just been
-        // applied from the snapshot itself, so nothing is left pending.
-        shell.TakeChanges();
-    }
-    void Sync(const WinUITab* snapshot, uint32_t count, uint32_t selected) {
-        SeedModel(snapshot, count, selected);
+    HRESULT Sync(const WinUITab* snapshot, uint32_t count, uint32_t selected, uint32_t revision) {
+        if (shell) {
+            const auto previous = shell.ModelRevision();
+            if (!shell.BeginSnapshot(shell.Stats().generation, revision, count)) return E_INVALIDARG;
+            for (uint32_t i = 0; i < count; ++i)
+                if (!shell.PushSnapshotTab(snapshot[i].id, snapshot[i].title, snapshot[i].commands)) return E_INVALIDARG;
+            uint32_t changes = 0;
+            auto status = shell.CommitSnapshot(selected, changes);
+            if (status != SHELL_STATUS_OK) return status == SHELL_STATUS_GAP ? E_NOT_VALID_STATE : E_INVALIDARG;
+            if (previous == revision) return S_OK;
+            shell.TakeChanges();
+        }
+        ReconcileOutcomes();
         browserSelection = selected;
         shell.SelectionPending(tabMenu.StateRevision());
         strip->Sync(snapshot, count, selected);
+        return S_OK;
     }
     void QueueStripSelection(uint32_t id) {
         if (!tabMenu.HasTab(id)) return;
@@ -746,7 +749,7 @@ struct Pane {
         if (!shell) return E_NOT_VALID_STATE;
         if (NativeJson::RequireId(delta, L"version") != 1) return E_INVALIDARG;
         auto base = NativeJson::RequireId(delta, L"base");
-        if (base != shell.ModelRevision()) return E_NOT_VALID_STATE;
+        auto revision = NativeJson::RequireId(delta, L"revision");
         // Validate the whole delta before any of it is applied.
         std::vector<std::pair<uint32_t, hstring>> titles;
         if (delta.HasKey(L"titles")) {
@@ -759,7 +762,7 @@ struct Pane {
                 if (title.size() > NativeJson::kMaxFieldText) return E_INVALIDARG;
                 // A tab the model does not hold means producer and consumer have
                 // diverged: ask for a snapshot rather than guess.
-                if (shell.IndexOf(id) == SHELL_NO_INDEX) return E_NOT_VALID_STATE;
+
                 titles.emplace_back(id, title);
             }
         }
@@ -771,22 +774,17 @@ struct Pane {
             if (!std::isfinite(value) || value < 0 || value > UINT32_MAX || std::floor(value) != value)
                 return E_INVALIDARG;
             nextSelected = uint32_t(value);
-            if (nextSelected && shell.IndexOf(nextSelected) == SHELL_NO_INDEX) return E_NOT_VALID_STATE;
+
         }
-        for (auto const& [id, title] : titles) {
-            bool changed = false;
-            auto status = shell.SetTitle(shell.ModelRevision(), id, std::wstring_view(title), changed);
-            if (status != SHELL_STATUS_OK) return status == SHELL_STATUS_GAP ? E_NOT_VALID_STATE : E_INVALIDARG;
-            if (changed) tabTitles[id] = title;
-        }
-        if (delta.HasKey(L"selected")) {
-            bool changed = false;
-            auto status = shell.SetSelected(shell.ModelRevision(), nextSelected, changed);
-            if (status != SHELL_STATUS_OK) return status == SHELL_STATUS_GAP ? E_NOT_VALID_STATE : E_INVALIDARG;
-            if (changed) {
-                browserSelection = nextSelected;
-            }
-        }
+        std::vector<ShellTabTitle> rows;
+        rows.reserve(titles.size());
+        for (auto const& [id, title] : titles)
+            rows.push_back({id, reinterpret_cast<uint16_t const*>(title.c_str()), title.size()});
+        auto status = shell.ApplyTabDelta(base, revision, rows, delta.HasKey(L"selected"), nextSelected);
+        if (status != SHELL_STATUS_OK)
+            return status == SHELL_STATUS_GAP || status == SHELL_STATUS_UNKNOWN_TAB ? E_NOT_VALID_STATE : E_INVALIDARG;
+        for (auto const& [id, title] : titles) tabTitles[id] = title;
+        if (delta.HasKey(L"selected")) browserSelection = nextSelected;
         // Read the resynchronization flag before ApplyChanges consumes the
         // change list: taking the changes is what clears it.
         const bool resync = shell.NeedsSnapshot();
@@ -1707,13 +1705,13 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
 // Publication only, since v14: close and new-tab joined the request path, and
 // the reserved context/command pair went with them, so nothing is drained here.
 HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected,
-                        uint32_t* requested) noexcept {
+                        uint32_t revision, uint32_t* requested) noexcept {
     WorkScope scope{EntrySyncTabs};
     try {
         check_hresult(Check(hwnd));
         if (!requested) return E_POINTER;
         *requested = 0;
-        if (!hwnd || (count && !tabs) || count > 10000) return E_INVALIDARG;
+        if (!revision || !hwnd || (count && !tabs) || count > 10000) return E_INVALIDARG;
         std::set<uint32_t> ids;
         for (uint32_t i = 0; i < count; ++i) {
             if (!tabs[i].id || !tabs[i].title || !ids.insert(tabs[i].id).second ||
@@ -1724,14 +1722,8 @@ HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end()) return E_INVALIDARG;
         auto& pane = *found->second;
-        // Reconcile any outstanding optimistic selection feedback against the
-        // authoritative outcomes recorded since the last snapshot.
-        pane.ReconcileOutcomes();
-        pane.Sync(tabs, count, selected);
-        pane.browserSelection = selected;
-        // Since v11 this carries the presentation-model revision this snapshot
-        // produced; the next applyTabDelta names it as its base. Selection,
-        // close and new-tab all travel on the request path instead.
+        check_hresult(pane.Sync(tabs, count, selected, revision));
+        // Acknowledge Firefox's publication stamp for the next delta's base.
         *requested = pane.ModelRevision();
         pane.ArmPresentation();
         return S_OK;

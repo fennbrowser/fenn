@@ -1751,7 +1751,7 @@ index 8979a2e4e8..e9835799cc 100644
  # Include the DevTools client, not just the server (which is the default)
  imply_option("MOZ_DEVTOOLS", "all")
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
-index 994aac6c3a..b59b2757d2 100644
+index 994aac6c3a..cbbfb20a01 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
 +++ b/dom/base/nsDOMWindowUtils.cpp
 @@ -152,6 +152,163 @@ using namespace mozilla::layers;
@@ -1846,14 +1846,14 @@ index 994aac6c3a..b59b2757d2 100644
 +nsDOMWindowUtils::SyncWinUITabs(const nsTArray<uint32_t>& aIds,
 +                              const nsTArray<nsString>& aTitles,
 +                              const nsTArray<uint32_t>& aCommands,
-+                              uint32_t aSelected, uint32_t* aResult) {
++                              uint32_t aSelected, uint32_t aRevision, uint32_t* aResult) {
 +  *aResult = 0;
 +  auto* doc = GetDocument();
 +  if (!XRE_IsParentProcess() || !doc ||
 +      !doc->NodePrincipal()->IsSystemPrincipal() ||
 +      !doc->GetDocumentURI()->GetSpecOrDefault().EqualsLiteral(
 +          "chrome://browser/content/browser.xhtml")) return NS_ERROR_NOT_AVAILABLE;
-+  if (aIds.Length() != aTitles.Length() || aIds.Length() != aCommands.Length() || aIds.Length() > 10000)
++  if (!aRevision || aIds.Length() != aTitles.Length() || aIds.Length() != aCommands.Length() || aIds.Length() > 10000)
 +    return NS_ERROR_INVALID_ARG;
 +  for (auto commands : aCommands) {
 +    if ((commands & ~31u) || (commands & 12u) == 12u) return NS_ERROR_INVALID_ARG;
@@ -1863,7 +1863,7 @@ index 994aac6c3a..b59b2757d2 100644
 +  }
 +  auto* widget = GetWidget();
 +  if (!widget) return NS_ERROR_NOT_AVAILABLE;
-+  *aResult = widget->SyncWinUITabs(aIds, aTitles, aCommands, aSelected);
++  *aResult = widget->SyncWinUITabs(aIds, aTitles, aCommands, aSelected, aRevision);
 +  return NS_OK;
 +}
 +
@@ -1919,7 +1919,7 @@ index 994aac6c3a..b59b2757d2 100644
  #define APZZTFI_LOG(...) \
    MOZ_LOG(sApzZoomToFocusedInputLog, LogLevel::Debug, (__VA_ARGS__))
 diff --git a/dom/interfaces/base/nsIDOMWindowUtils.idl b/dom/interfaces/base/nsIDOMWindowUtils.idl
-index c14d1de114..d933190509 100644
+index c14d1de114..198db6e462 100644
 --- a/dom/interfaces/base/nsIDOMWindowUtils.idl
 +++ b/dom/interfaces/base/nsIDOMWindowUtils.idl
 @@ -61,6 +61,41 @@ interface nsISynthesizedEventCallback : nsISupports {
@@ -1941,7 +1941,7 @@ index c14d1de114..d933190509 100644
 +  AString drainWinUIRequests();
 +  void completeWinUIRequests(in AString outcomes);
 +  /**
-+   * Incremental presentation update. Returns the pane's model revision after
++   * Incremental presentation update. Returns the acknowledged Firefox publication revision after
 +   * applying, for the next delta's base, or 0 if the delta was refused -- in
 +   * which case send one full syncWinUITabs snapshot rather than retrying.
 +   */
@@ -1950,12 +1950,12 @@ index c14d1de114..d933190509 100644
 +  /**
 +   * Publishes a snapshot. Since ABI v14 nothing is drained here: selection,
 +   * close, new tab and every other native intent travel on the request path
-+   * above. The return value is the pane's model revision after the snapshot,
++   * above. The return value is the acknowledged Firefox publication revision after the snapshot,
 +   * which the next applyWinUITabDelta names as its base.
 +   */
 +  unsigned long syncWinUITabs(in Array<unsigned long> ids,
 +                             in Array<AString> titles, in Array<unsigned long> commands,
-+                             in unsigned long selected);
++                             in unsigned long selected, in unsigned long revision);
 +
 +  boolean updateWinUIPane(in double x, in double y, in double width,
 +                         in double height, in boolean visible,
@@ -2154,7 +2154,7 @@ index 6bef7f9779..80ef6a4512 100644
      return IsEqualCLSID(rclsid, MOZ_INOTIFICATIONACTIVATION_CLSID);
    }
 diff --git a/widget/nsIWidget.h b/widget/nsIWidget.h
-index 2d06d7b7dd..3925f8d967 100644
+index 2d06d7b7dd..067fc37684 100644
 --- a/widget/nsIWidget.h
 +++ b/widget/nsIWidget.h
 @@ -1292,6 +1292,28 @@ class nsIWidget : public nsSupportsWeakReference {
@@ -2173,7 +2173,7 @@ index 2d06d7b7dd..3925f8d967 100644
 +  virtual uint32_t ApplyWinUITabDelta(const nsAString& aDelta) { return 0; }
 +
 +  virtual uint32_t SyncWinUITabs(const nsTArray<uint32_t>& aIds,
-+                                const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected) {
++                                const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t aRevision) {
 +    return 0;
 +  }
 +
@@ -2274,7 +2274,7 @@ index f5d293a068..46a8434081 100644
              IMEHandler::ProcessRawKeyMessage(msg)) {
            continue;  // the message is consumed.
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index b8d139b22a..4ac2d9f458 100644
+index b8d139b22a..7d5f1e54bf 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -79,6 +79,7 @@
@@ -2320,9 +2320,9 @@ index b8d139b22a..4ac2d9f458 100644
 +}
 +
 +uint32_t nsWindow::SyncWinUITabs(const nsTArray<uint32_t>& aIds,
-+                               const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected) {
++                               const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t aRevision) {
 +  if (mWindowType != WindowType::TopLevel || mDestroyCalled) return 0;
-+  return mozilla::widget::SyncWinUITabs(mWnd, aIds, aTitles, aCommands, aSelected);
++  return mozilla::widget::SyncWinUITabs(mWnd, aIds, aTitles, aCommands, aSelected, aRevision);
 +}
 +
 +bool nsWindow::UpdateWinUIPane(
@@ -2378,7 +2378,7 @@ index b8d139b22a..4ac2d9f458 100644
  
    // If this is a toplevel window, notify the taskbar concealer to clean up any
 diff --git a/widget/windows/nsWindow.h b/widget/windows/nsWindow.h
-index 1e2660589b..85227d8e69 100644
+index 1e2660589b..5ae3ab4843 100644
 --- a/widget/windows/nsWindow.h
 +++ b/widget/windows/nsWindow.h
 @@ -139,6 +139,23 @@ class nsWindow final : public nsIWidget {
@@ -2395,7 +2395,7 @@ index 1e2660589b..85227d8e69 100644
 +  uint32_t ApplyWinUITabDelta(const nsAString& aDelta) override;
 +
 +  uint32_t SyncWinUITabs(const nsTArray<uint32_t>& aIds,
-+                        const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected) override;
++                        const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t aRevision) override;
 +
 +  bool UpdateWinUIPane(
 +      const LayoutDeviceIntRect& aRect, bool aVisible, bool aFocus,
@@ -5674,10 +5674,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..4222a97edd
+index 0000000000..3953022a56
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2112 @@
+@@ -0,0 +1,2127 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -5728,6 +5728,7 @@ index 0000000000..4222a97edd
 +  // Every delta names it; a mismatch means producer and consumer diverged, and
 +  // is answered with one snapshot rather than a retry.
 +  nativeRevision: 0,
++  tabPublicationRevision: 0,
 +  // Complete publications sent because a delta was refused.
 +  publicationRecoveries: 0,
 +  publishedIds: new Set(),
@@ -7407,6 +7408,13 @@ index 0000000000..4222a97edd
 +  // One tab's title, or the active tab, applied without rebuilding anything.
 +  // The delta names the revision it was computed against; a refusal means the
 +  // two sides diverged and is answered with exactly one snapshot.
++  nextTabPublicationRevision() {
++    if (this.tabPublicationRevision >= 0xffffffff) {
++      throw new Error("Native tab publication revision exhausted");
++    }
++    return ++this.tabPublicationRevision;
++  },
++
 +  publishTabDelta() {
 +    const titles = [];
 +    for (const tab of this.dirtyTitles) {
@@ -7422,11 +7430,14 @@ index 0000000000..4222a97edd
 +    this.dirtyTitles.clear();
 +    this.dirtySelection = false;
 +    if (!titles.length && delta.selected === undefined) return;
-+    let revision = 0;
++    delta.revision = this.nextTabPublicationRevision();
 +    this.publishWithRecovery(
-+      () => !!(revision = window.windowUtils.applyWinUITabDelta(JSON.stringify(delta))),
++      () => {
++        if (window.windowUtils.applyWinUITabDelta(JSON.stringify(delta)) !== delta.revision) return false;
++        this.nativeRevision = delta.revision;
++        return true;
++      },
 +      () => this.syncTabs());
-+    if (revision) this.nativeRevision = revision;
 +  },
 +
 +  // The one answer to a refused delta, for every delta channel: exactly one
@@ -7461,15 +7472,18 @@ index 0000000000..4222a97edd
 +    const selected = this.tabIds.get(gBrowser.selectedTab) || 0;
 +    // Since ABI v14 this publishes and nothing more: close, new tab and every
 +    // other native intent arrive as drained requests.
-+    this.nativeRevision = window.windowUtils.syncWinUITabs(
++    const revision = this.nextTabPublicationRevision();
++    const acknowledged = window.windowUtils.syncWinUITabs(
 +      ids,
 +      titles,
 +      tabs.map(tab => this.tabCommands(tab)),
-+      ids.includes(selected) ? selected : 0
++      ids.includes(selected) ? selected : 0,
++      revision
 +    );
-+    if (!this.nativeRevision && Services.prefs.getBoolPref(this.replaceTabsPref, false)) {
++    if (acknowledged !== revision) {
 +      throw new Error("Native tab publication failed");
 +    }
++    this.nativeRevision = revision;
 +    // This snapshot is authoritative for everything recorded so far.
 +    this.dirtyTitles.clear();
 +    this.dirtySelection = false;
@@ -7710,6 +7724,7 @@ index 0000000000..4222a97edd
 +    this.blocked = false;
 +    this.draining = false;
 +    this.nativeRevision = 0;
++    this.tabPublicationRevision = 0;
 +    this.dirtyTitles.clear();
 +    this.dirtySelection = false;
 +    this.structuralDirty = true;
@@ -7792,7 +7807,7 @@ index 0000000000..4222a97edd
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 0000000000..ca9d87b930
+index 0000000000..3c26bffa40
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
 @@ -0,0 +1,328 @@
@@ -7984,7 +7999,7 @@ index 0000000000..ca9d87b930
 +}
 +
 +uint32_t SyncWinUITabs(HWND aWindow, const nsTArray<uint32_t>& aIds,
-+                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected) {
++                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t aRevision) {
 +  if (!XRE_IsParentProcess() || !NS_IsMainThread() || sPaneStopped ||
 +      !sPaneApi.syncTabs || aIds.Length() != aTitles.Length() || aIds.Length() != aCommands.Length() ||
 +      !PaneEnabled())
@@ -7994,7 +8009,7 @@ index 0000000000..ca9d87b930
 +    tabs.AppendElement(WinUITab{aIds[i], aTitles[i].get(), aCommands[i]});
 +  }
 +  uint32_t requested = 0;
-+  if (FAILED(sPaneApi.syncTabs(aWindow, tabs.Elements(), tabs.Length(), aSelected, &requested)))
++  if (FAILED(sPaneApi.syncTabs(aWindow, tabs.Elements(), tabs.Length(), aSelected, aRevision, &requested)))
 +    return 0;
 +  return requested;
 +}
@@ -8126,7 +8141,7 @@ index 0000000000..ca9d87b930
 +}  // namespace mozilla::widget
 diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
 new file mode 100644
-index 0000000000..8b7d8a3ba1
+index 0000000000..cf68f6fb6f
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.h
 @@ -0,0 +1,39 @@
@@ -8146,7 +8161,7 @@ index 0000000000..8b7d8a3ba1
 +                     bool aFocus, bool aBackwards,
 +                     const nsTArray<LayoutDeviceIntRect>& aOcclusions);
 +uint32_t SyncWinUITabs(HWND aWindow, const nsTArray<uint32_t>& aIds,
-+                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected);
++                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t aRevision);
 +bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot);
 +bool UpdateWinUIAddress(HWND aWindow, const RECT& aRect, bool aVisible,
 +                       bool aFocus, bool aSelectAll);
@@ -8171,10 +8186,10 @@ index 0000000000..8b7d8a3ba1
 +#endif
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 0000000000..1d5b0d9558
+index 0000000000..4c2af64a22
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,136 @@
 +#pragma once
 +#include <windows.h>
 +#include <stdint.h>
@@ -8202,7 +8217,7 @@ index 0000000000..1d5b0d9558
 +// completeRequests) and incremental tab deltas (applyTabDelta), and retired
 +// syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 +// retaining the sidebar entry point.
-+#define WINUI_PANE_ABI_VERSION 16u
++#define WINUI_PANE_ABI_VERSION 17u
 +
 +// The pane is built framework-dependent on the shared Windows App SDK runtime
 +// (Microsoft.WindowsAppRuntime.2, at least 2.5.1.0). A packaged host declares it
@@ -8252,18 +8267,13 @@ index 0000000000..1d5b0d9558
 +    HRESULT (WINAPI* destroy)(HWND);
 +    BOOL (WINAPI* translate)(MSG*);
 +    HRESULT (WINAPI* shutdown)();
-+    // Copies a snapshot and drains one close or new-tab request.
-+    // Since v11 the first output is the pane's presentation-model revision
-+    // after this snapshot, which the next applyTabDelta must name as its base;
-+    // selection travels on the request path below instead, so no command
-+    // reaches Firefox through both executors. The final two outputs are
-+    // reserved and always zero.
-+    // Only one action is drained per snapshot; Firefox revalidates availability.
-+    // A close request does not remove a row or choose a successor. The next
-+    // snapshot acknowledges it: do not sync while Firefox is deciding closure.
-+    // Publication only since v14; the single out-parameter is the pane's
-+    // presentation-model revision after this snapshot.
-+    HRESULT (WINAPI* syncTabs)(HWND, const WinUITab*, uint32_t, uint32_t, uint32_t*);
++    // Publication only since v14. v17 adds Firefox's nonzero revision input
++    // after selected; all earlier fields remain. The output acknowledges that
++    // exact stamp, which the next applyTabDelta names as its base.
++    // Complete replay is a no-op; a conflicting or stale stamp is refused.
++    // Native actions travel through the request path. A close never removes
++    // its row or chooses a successor before Firefox publishes the result.
++    HRESULT (WINAPI* syncTabs)(HWND, const WinUITab*, uint32_t, uint32_t, uint32_t, uint32_t*);
 +    // Versioned JSON messages, copied during the call; output capacity is in wchar_t.
 +    // Publication only since v13; intents arrive through drainRequests.
 +    HRESULT (WINAPI* syncAddress)(HWND, const wchar_t*);

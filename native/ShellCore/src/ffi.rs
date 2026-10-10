@@ -218,6 +218,7 @@ struct Counters {
 
 struct SnapshotBuilder {
     session: u64,
+    revision: u32,
     entries: Vec<TabEntry>,
 }
 
@@ -265,6 +266,7 @@ fn limits_from(raw: &ShellCoreLimits) -> (Limits, ModelLimits) {
 fn apply_error(error: ApplyError) -> ShellStatus {
     match error {
         ApplyError::Gap => ShellStatus::Gap,
+        ApplyError::Invalid => ShellStatus::InvalidArgument,
         ApplyError::TooLarge => ShellStatus::TooLarge,
         ApplyError::UnknownTab => ShellStatus::UnknownTab,
     }
@@ -749,6 +751,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
         core.surface_menu.dismiss();
         core.address_publication.reset();
         core.toolbar_publication.reset();
+        core.model.reset(core.queue.generation());
         core.snapshot = None;
         ShellStatus::Ok
     })
@@ -814,6 +817,7 @@ pub enum ShellPublicationChannel {
     SurfaceMenu = 2,
     AddressSession = 3,
     ToolbarCustomization = 4,
+    TabModel = 5,
 }
 
 /// What one channel did with the publications it received, for diagnostics.
@@ -832,6 +836,7 @@ pub unsafe extern "C" fn shell_core_publication_stats(
     *out = ShellPublicationCounts::default();
     guard(core, |core| {
         *out = match channel {
+            c if c == ShellPublicationChannel::TabModel as u32 => core.model.counts(),
             c if c == ShellPublicationChannel::Strip as u32 => core.strip.counts(),
             c if c == ShellPublicationChannel::TabMenuState as u32 => core.menu.counts(),
             c if c == ShellPublicationChannel::SurfaceMenu as u32 => core.surface_menu.counts(),
@@ -1172,6 +1177,7 @@ pub unsafe extern "C" fn shell_core_model_revision(
 pub unsafe extern "C" fn shell_core_model_set_title(
     core: *mut ShellCore,
     base_revision: u32,
+    revision: u32,
     tab: u32,
     title: *const u16,
     title_len: usize,
@@ -1180,7 +1186,7 @@ pub unsafe extern "C" fn shell_core_model_set_title(
     let Some(title) = slice(title, title_len) else {
         return ShellStatus::InvalidArgument;
     };
-    guard(core, |core| match core.model.set_title(base_revision, tab, title) {
+    guard(core, |core| match core.model.set_title(base_revision, revision, tab, title) {
         Ok(value) => {
             if let Some(out) = changed.as_mut() {
                 *out = value;
@@ -1199,10 +1205,11 @@ pub unsafe extern "C" fn shell_core_model_set_title(
 pub unsafe extern "C" fn shell_core_model_set_selected(
     core: *mut ShellCore,
     base_revision: u32,
+    revision: u32,
     tab: u32,
     changed: *mut bool,
 ) -> ShellStatus {
-    guard(core, |core| match core.model.set_selected(base_revision, tab) {
+    guard(core, |core| match core.model.set_selected(base_revision, revision, tab) {
         Ok(value) => {
             if value { core.queue.clear_selection(); }
             if let Some(out) = changed.as_mut() {
@@ -1224,11 +1231,13 @@ pub unsafe extern "C" fn shell_core_model_set_selected(
 pub unsafe extern "C" fn shell_core_model_begin_snapshot(
     core: *mut ShellCore,
     session: u64,
+    revision: u32,
     capacity: u32,
 ) -> ShellStatus {
     guard(core, |core| {
         core.snapshot = Some(SnapshotBuilder {
             session,
+            revision,
             entries: Vec::with_capacity(capacity.min(4096) as usize),
         });
         ShellStatus::Ok
@@ -1243,6 +1252,7 @@ pub unsafe extern "C" fn shell_core_model_push_snapshot_tab(
     tab: u32,
     title: *const u16,
     title_len: usize,
+    commands: u32,
 ) -> ShellStatus {
     let Some(title) = slice(title, title_len) else {
         return ShellStatus::InvalidArgument;
@@ -1251,7 +1261,11 @@ pub unsafe extern "C" fn shell_core_model_push_snapshot_tab(
         let Some(builder) = core.snapshot.as_mut() else {
             return ShellStatus::NotDraining;
         };
-        builder.entries.push(TabEntry { id: tab, title: title.to_vec() });
+        if builder.entries.len() >= ModelLimits::default().max_tabs || title.len() > ModelLimits::default().max_title_units {
+            core.snapshot = None;
+            return ShellStatus::TooLarge;
+        }
+        builder.entries.push(TabEntry { id: tab, title: title.to_vec(), commands });
         ShellStatus::Ok
     })
 }
@@ -1271,12 +1285,49 @@ pub unsafe extern "C" fn shell_core_model_commit_snapshot(
         let Some(builder) = core.snapshot.take() else {
             return ShellStatus::NotDraining;
         };
-        match core.model.apply_snapshot(builder.session, &builder.entries, selected) {
+        match core.model.apply_snapshot(builder.session, builder.revision, &builder.entries, selected) {
             Ok(count) => {
                 core.queue.retain_tabs(|tab| core.model.contains(tab));
                 if let Some(out) = change_count.as_mut() {
                     *out = count as u32;
                 }
+                ShellStatus::Ok
+            }
+            Err(error) => apply_error(error),
+        }
+    })
+}
+
+/// One bounded, fully validated title/selection publication. No mutation is
+/// visible until all rows and the publication identity have been accepted.
+#[repr(C)]
+pub struct ShellTabTitle {
+    pub tab: u32,
+    pub title: *const u16,
+    pub title_len: usize,
+}
+
+/// # Safety
+/// See [`guard`]. Rows and their UTF-16 spans must be valid for the call.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_model_apply_delta(
+    core: *mut ShellCore, base: u32, revision: u32,
+    rows: *const ShellTabTitle, row_count: usize, has_selected: bool, selected: u32,
+) -> ShellStatus {
+    if row_count > ModelLimits::default().max_tabs { return ShellStatus::TooLarge; }
+    if row_count != 0 && rows.is_null() { return ShellStatus::InvalidArgument; }
+    let rows = if row_count == 0 { &[] } else { std::slice::from_raw_parts(rows, row_count) };
+    let mut entries = Vec::with_capacity(row_count);
+    for row in rows {
+        if row.title_len > ModelLimits::default().max_title_units { return ShellStatus::TooLarge; }
+        let Some(title) = slice(row.title, row.title_len) else { return ShellStatus::InvalidArgument; };
+        entries.push(TabEntry { id: row.tab, title: title.to_vec(), commands: 0 });
+    }
+    guard(core, |core| {
+        let previous = core.model.selected();
+        match core.model.apply_delta(base, revision, &entries, has_selected.then_some(selected)) {
+            Ok(_) => {
+                if previous != core.model.selected() { core.queue.clear_selection(); }
                 ShellStatus::Ok
             }
             Err(error) => apply_error(error),
@@ -1453,7 +1504,7 @@ mod tests {
             let mut counts = ShellPublicationCounts::default();
             assert_eq!(shell_core_publication_stats(core, ShellPublicationChannel::Strip as u32, &mut counts), ShellStatus::Ok);
             assert_eq!(counts, ShellPublicationCounts { accepted: 2, unchanged: 1, ignored: 0, refused: 1 });
-            assert_eq!(shell_core_publication_stats(core, 5, &mut counts), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_publication_stats(core, 6, &mut counts), ShellStatus::InvalidArgument);
             assert_eq!(counts, ShellPublicationCounts::default(), "an unknown channel reports nothing");
             assert_eq!(shell_core_publication_stats(core, 0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
             shell_core_destroy(core);
@@ -1662,9 +1713,9 @@ mod tests {
                 let mut result = std::mem::zeroed::<ShellEnqueueResult>();
                 shell_core_enqueue(core, kind, tab, 9, std::ptr::null(), 0, &mut result)
             };
-            assert_eq!(shell_core_model_begin_snapshot(core, 1, 2), ShellStatus::Ok);
+            assert_eq!(shell_core_model_begin_snapshot(core, 1, (*core).model.revision() + 1, 2), ShellStatus::Ok);
             for tab in [1, 2] {
-                assert_eq!(shell_core_model_push_snapshot_tab(core, tab, std::ptr::null(), 0), ShellStatus::Ok);
+                assert_eq!(shell_core_model_push_snapshot_tab(core, tab, std::ptr::null(), 0, 0), ShellStatus::Ok);
             }
             assert_eq!(shell_core_model_commit_snapshot(core, 1, std::ptr::null_mut()), ShellStatus::Ok);
             assert_eq!(enqueue(1, 2), ShellStatus::Ok);
@@ -1673,24 +1724,24 @@ mod tests {
             assert_eq!(shell_core_selection_pending(core, 10, std::ptr::null_mut()), ShellStatus::InvalidArgument);
             shell_core_model_revision(core, &mut revision);
             // Rejected and unchanged publications must preserve feedback.
-            assert_eq!(shell_core_model_set_selected(core, revision + 1, 2, &mut changed), ShellStatus::Gap);
-            assert_eq!(shell_core_model_set_selected(core, revision, 1, &mut changed), ShellStatus::Ok);
+            assert_eq!(shell_core_model_set_selected(core, revision + 1, (*core).model.revision() + 1, 2, &mut changed), ShellStatus::Gap);
+            assert_eq!(shell_core_model_set_selected(core, revision, (*core).model.revision() + 1, 1, &mut changed), ShellStatus::Ok);
             assert!(!changed);
             shell_core_selection_pending(core, 9, &mut pending);
             assert!(pending);
             shell_core_model_revision(core, &mut revision);
-            assert_eq!(shell_core_model_set_selected(core, revision, 2, &mut changed), ShellStatus::Ok);
+            assert_eq!(shell_core_model_set_selected(core, revision, (*core).model.revision() + 1, 2, &mut changed), ShellStatus::Ok);
             assert!(changed);
             shell_core_selection_pending(core, 9, &mut pending);
             assert!(!pending);
 
             assert_eq!(enqueue(3, 2), ShellStatus::Ok);
             // Invalid snapshots cannot prune an admitted close.
-            shell_core_model_begin_snapshot(core, 1, 0);
+            shell_core_model_begin_snapshot(core, 1, (*core).model.revision() + 1, 0);
             assert_eq!(shell_core_model_commit_snapshot(core, 99, std::ptr::null_mut()), ShellStatus::UnknownTab);
             assert_eq!(shell_core_enqueue(core, 3, 2, 9, std::ptr::null(), 0, &mut result), ShellStatus::Rejected);
             assert_eq!(result.status, EnqueueStatus::RejectedPendingClose as u32);
-            shell_core_model_begin_snapshot(core, 1, 0);
+            shell_core_model_begin_snapshot(core, 1, (*core).model.revision() + 1, 0);
             assert_eq!(shell_core_model_commit_snapshot(core, 0, std::ptr::null_mut()), ShellStatus::Ok);
             assert_eq!(enqueue(3, 2), ShellStatus::Ok);
             assert_eq!(shell_core_selection_pending(std::ptr::null_mut(), 9, &mut pending), ShellStatus::InvalidArgument);
@@ -1892,11 +1943,11 @@ mod tests {
     fn the_model_round_trips_snapshots_and_deltas() {
         unsafe {
             let core = core();
-            assert_eq!(shell_core_model_begin_snapshot(core, 1, 3), ShellStatus::Ok);
+            assert_eq!(shell_core_model_begin_snapshot(core, 1, (*core).model.revision() + 1, 3), ShellStatus::Ok);
             for (id, title) in [(1u32, "one"), (2, "two"), (3, "three")] {
                 let value = utf16(title);
                 assert_eq!(
-                    shell_core_model_push_snapshot_tab(core, id, value.as_ptr(), value.len()),
+                    shell_core_model_push_snapshot_tab(core, id, value.as_ptr(), value.len(), 0),
                     ShellStatus::Ok
                 );
             }
@@ -1914,18 +1965,18 @@ mod tests {
             let title = utf16("renamed");
             let mut changed = false;
             assert_eq!(
-                shell_core_model_set_title(core, revision, 3, title.as_ptr(), title.len(), &mut changed),
+                shell_core_model_set_title(core, revision, (*core).model.revision() + 1, 3, title.as_ptr(), title.len(), &mut changed),
                 ShellStatus::Ok
             );
             assert!(changed);
             // The same delta replayed names a revision that has moved on.
             assert_eq!(
-                shell_core_model_set_title(core, revision, 3, title.as_ptr(), title.len(), &mut changed),
+                shell_core_model_set_title(core, revision, (*core).model.revision() + 1, 3, title.as_ptr(), title.len(), &mut changed),
                 ShellStatus::Gap
             );
             shell_core_model_revision(core, &mut revision);
-            assert_eq!(shell_core_model_set_selected(core, revision, 99, &mut changed), ShellStatus::UnknownTab);
-            assert_eq!(shell_core_model_set_selected(core, revision, 1, &mut changed), ShellStatus::Ok);
+            assert_eq!(shell_core_model_set_selected(core, revision, (*core).model.revision() + 1, 99, &mut changed), ShellStatus::UnknownTab);
+            assert_eq!(shell_core_model_set_selected(core, revision, (*core).model.revision() + 1, 1, &mut changed), ShellStatus::Ok);
             assert!(changed);
 
             assert_eq!(shell_core_model_take_changes(core, &mut changes), ShellStatus::Ok);
@@ -1953,7 +2004,7 @@ mod tests {
             let core = core();
             let title = utf16("x");
             assert_eq!(
-                shell_core_model_push_snapshot_tab(core, 1, title.as_ptr(), title.len()),
+                shell_core_model_push_snapshot_tab(core, 1, title.as_ptr(), title.len(), 0),
                 ShellStatus::NotDraining
             );
             assert_eq!(
@@ -1970,7 +2021,7 @@ mod tests {
             let core = core();
             let mut result = std::mem::zeroed::<ShellEnqueueResult>();
             shell_core_enqueue(core, RequestKind::CloseTab as u32, 1, 0, std::ptr::null(), 0, &mut result);
-            shell_core_model_begin_snapshot(core, 1, 1);
+            shell_core_model_begin_snapshot(core, 1, (*core).model.revision() + 1, 1);
             let mut before = std::mem::zeroed::<ShellCoreStats>();
             shell_core_stats(core, &mut before);
             assert_eq!(shell_core_cancel_all(core), ShellStatus::Ok);
@@ -3343,4 +3394,37 @@ mod surface_menu_ffi_tests {
   shell_core_close(core);assert_eq!(shell_core_surface_menu_open(core,&mut session),ShellStatus::Closed);assert_eq!(session,0);
   shell_core_destroy(core);
  }}
+}
+
+#[cfg(test)]
+mod tab_publication_ffi_tests {
+    use super::*;
+    #[test]
+    fn atomic_batch_boundary_acknowledges_producer_and_revokes_on_cancel() { unsafe {
+        let core = shell_core_create(std::ptr::null());
+        assert_eq!(shell_core_model_begin_snapshot(core, 1, 80, 2), ShellStatus::Ok);
+        for tab in [1, 2] { assert_eq!(shell_core_model_push_snapshot_tab(core, tab, std::ptr::null(), 0, 3), ShellStatus::Ok); }
+        assert_eq!(shell_core_model_commit_snapshot(core, 1, std::ptr::null_mut()), ShellStatus::Ok);
+        (*core).model.take_changes();
+        let text = [65u16];
+        let rows = [ShellTabTitle { tab: 1, title: text.as_ptr(), title_len: 1 },
+                    ShellTabTitle { tab: 99, title: text.as_ptr(), title_len: 1 }];
+        assert_eq!(shell_core_model_apply_delta(core, 80, 900, rows.as_ptr(), 2, true, 2), ShellStatus::UnknownTab);
+        assert_eq!((*core).model.title(1), Some(&[][..]));
+        assert_eq!((*core).model.selected(), 1);
+        assert_eq!(shell_core_model_apply_delta(core, 80, 900, rows.as_ptr(), 1, true, 2), ShellStatus::Ok);
+        assert_eq!((*core).model.revision(), 900);
+        (*core).model.take_changes();
+        assert_eq!(shell_core_model_apply_delta(core, 80, 900, rows.as_ptr(), 1, true, 2), ShellStatus::Ok);
+        assert!((*core).model.pending_changes().is_empty());
+        assert_eq!(shell_core_model_apply_delta(core, 900, 901, std::ptr::null(), 1, false, 0), ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_model_apply_delta(core, 900, 901, std::ptr::null(), 0, false, 0), ShellStatus::Ok);
+        shell_core_cancel_all(core);
+        assert_eq!((*core).model.revision(), 0);
+        assert_eq!(shell_core_model_apply_delta(core, 901, 902, std::ptr::null(), 0, false, 0), ShellStatus::Gap);
+        let mut counts = ShellPublicationCounts::default();
+        assert_eq!(shell_core_publication_stats(core, ShellPublicationChannel::TabModel as u32, &mut counts), ShellStatus::Ok);
+        assert_eq!((counts.accepted, counts.unchanged, counts.refused), (3, 1, 2));
+        shell_core_destroy(core);
+    }}
 }

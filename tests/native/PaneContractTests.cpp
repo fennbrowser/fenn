@@ -393,6 +393,8 @@ static winrt::Windows::Data::Json::JsonObject NextRequest(WinUIPaneApi& api, HWN
 }
 // Refresh the existing test fixture after publishing descriptions, as Firefox does.
 // Publish a menu context for these tabs, then the snapshot that shows them.
+static uint32_t NextTabRevision() { static uint32_t revision = 0; return revision += 100; }
+
 static void PrepareFixtureMenus(WinUIPaneApi& api, HWND hwnd, std::vector<WinUITab> tabs, uint32_t selected) {
     std::vector<uint32_t> ids;
     for (auto& tab : tabs) {
@@ -401,10 +403,12 @@ static void PrepareFixtureMenus(WinUIPaneApi& api, HWND hwnd, std::vector<WinUIT
     }
     MenuPublish(api, hwnd, MenuState(ids).Stringify().c_str());
     uint32_t revision{};
-    Require(SUCCEEDED(api.syncTabs(hwnd, tabs.data(), uint32_t(tabs.size()), selected, &revision)),
+    Require(SUCCEEDED(api.syncTabs(hwnd, tabs.data(), uint32_t(tabs.size()), selected, NextTabRevision(), &revision)),
             "publish fixture menus before tab snapshot");
     Pump();
 }
+// Fixture-owned stamps can skip numbers; native code only acknowledges them.
+
 static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
@@ -420,7 +424,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
         }
     };
     auto sync = [&](uint32_t count = 2) {
-        Require(SUCCEEDED(api.syncTabs(hwnd, tabs, count, 71, &selected)),
+        Require(SUCCEEDED(api.syncTabs(hwnd, tabs, count, 71, NextTabRevision(), &selected)),
                 "context tabs");
         settle();
     };
@@ -620,7 +624,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     {
         uint32_t reserved{}, c{}, n{}, i{}, cmd{};
         WinUITab pair[]{{71, L"Context first", 7}, {72, L"Context second", 27}};
-        Require(SUCCEEDED(api.syncTabs(hwnd, pair, 2, 71, &reserved)), "snapshot after selection");
+        Require(SUCCEEDED(api.syncTabs(hwnd, pair, 2, 71, NextTabRevision(), &reserved)), "snapshot after selection");
         Require(c == 0 && n == 0 && i == 0 && cmd == 0, "syncTabs no longer drains selection");
     }
     current = MenuState({71, 72});
@@ -642,7 +646,7 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     uint32_t revision{};
     WinUITab tabs[]{{101, L"Core first", 7}, {102, L"Core second", 7}, {103, L"Core third", 7}};
     MenuPublish(api, hwnd, MenuState({101, 102, 103}).Stringify().c_str());
-    Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, &revision)),
+    Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, NextTabRevision(), &revision)),
             "seed the presentation model");
     Require(revision != 0, "a snapshot reports the model revision it produced");
     Pump();
@@ -709,11 +713,20 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
             "the work queued while blocked is still there, and is delivered once");
     CompleteRequests(api, hwnd, resumed);
 
+    uint32_t replay = 0;
+    Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, revision, &replay)) && replay == revision,
+            "complete replay acknowledges Firefox's stamp");
+    WinUITab conflict[]{{101, L"conflict", 7}, {102, L"second", 7}, {103, L"third", 7}};
+    Require(api.syncTabs(hwnd, conflict, 3, 103, revision, &replay) == E_INVALIDARG && replay == 0,
+            "conflicting complete publication is refused without acknowledgement");
+
     // Incremental presentation. One title changes; nothing else is touched, and
     // the revision advances so the next delta has a base.
     auto delta = [&](wchar_t const* json) {
         uint32_t next = 0;
-        auto hr = api.applyTabDelta(hwnd, json, &next);
+        auto publication = winrt::Windows::Data::Json::JsonObject::Parse(json);
+        publication.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(publication.GetNamedNumber(L"base") + 1));
+        auto hr = api.applyTabDelta(hwnd, publication.Stringify().c_str(), &next);
         return std::pair<HRESULT, uint32_t>{hr, next};
     };
     auto before = revision;
@@ -721,9 +734,8 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
                  LR"(,"titles":[{"id":102,"title":"Core renamed"}]})";
     auto applied = delta(title.c_str());
     Require(SUCCEEDED(applied.first) && applied.second > before, "a title delta applies and advances the revision");
-    // The same delta replayed names a revision the model has moved past.
-    Require(delta(title.c_str()).first == E_NOT_VALID_STATE,
-            "a delta against a stale base is a gap, answered with a snapshot rather than a retry");
+    // Exact replay acknowledges the same producer stamp without work.
+    Require(delta(title.c_str()).second == applied.second, "exact replay retains the publication revision");
     auto selection = std::wstring(LR"({"version":1,"base":)") + std::to_wstring(applied.second) +
                      LR"(,"selected":103,"titles":[]})";
     auto selected = delta(selection.c_str());
@@ -734,9 +746,23 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
                    LR"(,"titles":[{"id":999,"title":"absent"}]})";
     Require(delta(unknown.c_str()).first == E_NOT_VALID_STATE, "a delta for an unknown tab is refused");
 
+    auto partial = std::wstring(LR"({"version":1,"base":)") + std::to_wstring(selected.second) +
+                   LR"(,"selected":101,"titles":[{"id":102,"title":"must not apply"},{"id":999,"title":"absent"}]})";
+    Require(delta(partial.c_str()).first == E_NOT_VALID_STATE, "invalid later row refuses the whole batch");
+    Pump();
+    Require(view.SelectedItem() == StripRow(view, 103), "refused batch retains active selection");
+    auto batch = std::wstring(LR"({"version":1,"base":)") + std::to_wstring(selected.second) +
+                 LR"(,"selected":101,"titles":[{"id":102,"title":"batch two"},{"id":103,"title":"batch three"}]})";
+    auto batched = delta(batch.c_str());
+    Require(SUCCEEDED(batched.first) && batched.second == selected.second + 1,
+            "two titles and selection acknowledge one producer revision");
+    Pump();
+    Require(view.SelectedItem() == StripRow(view, 101), "accepted batch applies selection");
+    Require(delta(batch.c_str()).second == batched.second, "batch replay retains the same stamp");
+
     Require(SUCCEEDED(api.setNotifySink(hwnd, nullptr, nullptr)), "clear the drain wakeup");
     notifications = 0;
-    view.SelectedItem(StripRow(view, 101));
+    view.SelectedItem(StripRow(view, 103));
     Pump();
     Require(notifications == 0, "a cleared sink is never called");
     // Work queued with no sink must not be stranded: registering one again
@@ -753,10 +779,10 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     // working through its snapshot-only fallback.
     if (auto panic = reinterpret_cast<HRESULT(WINAPI*)(HWND)>(GetProcAddress(module, "WinUIPaneTestCorePanic"))) {
         Require(panic(hwnd) == E_FAIL, "a Rust panic is contained and reported as a failure");
-        Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, &revision)),
+        Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, NextTabRevision(), &revision)),
                 "the pane still accepts snapshots after a contained panic");
         uint32_t next = 0;
-        Require(api.applyTabDelta(hwnd, LR"({"version":1,"base":1,"titles":[]})", &next) == E_NOT_VALID_STATE,
+        Require(api.applyTabDelta(hwnd, LR"({"version":1,"base":1,"revision":2,"titles":[]})", &next) == E_NOT_VALID_STATE,
                 "a poisoned core refuses deltas instead of pretending to apply them");
     }
     puts("Shell core: one wakeup per endpoint, superseding selection, blocked/unblocked execution, bounded batches, "
@@ -1176,7 +1202,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     WinUITab tabs[]{{11, L"Same title"}, {22, L"Same title"}};
     uint32_t selected{};
     auto sync = [&] {
-        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, &selected)),
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, NextTabRevision(), &selected)),
                 "sync strip snapshot");
     };
     sync();
@@ -1288,13 +1314,13 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "short and long titles receive equal comfortable widths");
     WinUITab crowded[12]{{11, L"Same title"}, {22, L"Y"}};
     for (uint32_t i = 2; i < 12; ++i) crowded[i] = {100 + i, L"Another tab"};
-    Require(SUCCEEDED(api.syncTabs(host, crowded, 4, 11, &selected)),
+    Require(SUCCEEDED(api.syncTabs(host, crowded, 4, 11, NextTabRevision(), &selected)),
             "four-tab sizing snapshot");
     settleWidths();
     fprintf(stderr, "Four width actual %.1f Width %.1f Min %.1f Max %.1f align %d\n", first.ActualWidth(),
             first.Width(), first.MinWidth(), first.MaxWidth(), int(first.HorizontalAlignment()));
     Require(first.ActualWidth() < spaciousWidth - 20 && first.ActualWidth() >= 99, "tabs shrink as the strip fills");
-    Require(SUCCEEDED(api.syncTabs(host, crowded, 12, 11, &selected)),
+    Require(SUCCEEDED(api.syncTabs(host, crowded, 12, 11, NextTabRevision(), &selected)),
             "overflow sizing snapshot");
     settleWidths();
     fprintf(stderr, "Tab sizing: spacious=%.1f crowded=%.1f\n", spaciousWidth, first.ActualWidth());
@@ -1385,7 +1411,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
                 };
                 const auto firstOld = firstBounds();
                 const auto addOld = addX();
-                auto grown = observe([&] { Require(SUCCEEDED(api.syncTabs(host, crowded, 3, 11, &selected)), "add a tab"); });
+                auto grown = observe([&] { Require(SUCCEEDED(api.syncTabs(host, crowded, 3, 11, NextTabRevision(), &selected)), "add a tab"); });
                 settleWidths(); waitIdle();
                 const bool addMoved = std::abs(addX() - addOld) > 1, resized = std::abs(first.ActualWidth() - before) > 1;
                 if (animated) {
@@ -1428,7 +1454,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "size the strip for overflow entry motion");
             WinUITab many[14]{{11, L"Same title"}, {22, L"Y"}};
             for (uint32_t i = 2; i < 14; ++i) many[i] = {300 + i, L"Overflow tab"};
-            Require(SUCCEEDED(api.syncTabs(host, many, 12, 11, &selected)), "overflow the strip");
+            Require(SUCCEEDED(api.syncTabs(host, many, 12, 11, NextTabRevision(), &selected)), "overflow the strip");
             settleWidths(); waitIdle();
             // This host renders few frames, so lay out on each poll as a
             // running browser would every frame.
@@ -1464,7 +1490,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
                     active = created;
                 }
                 auto seen = observeLaidOut([&] {
-                    Require(SUCCEEDED(api.syncTabs(host, next, count, active, &selected)), "open a tab in an overflowing strip");
+                    Require(SUCCEEDED(api.syncTabs(host, next, count, active, NextTabRevision(), &selected)), "open a tab in an overflowing strip");
                 });
                 settleWidths(); waitIdle();
                 printf("Overflow entry (%s): tracked=%d clip=%d\n", middle ? "middle" : "end", seen.tracked, seen.clipOrigin);
@@ -1927,7 +1953,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     MenuPublish(api, host, full);
     WinUITab tabs[]{{41,L"Home"},{42,L"Research page"}};
     uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(host,tabs,2,41,&selected)), "sync grouped tabs");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,2,41, NextTabRevision(), &selected)), "sync grouped tabs");
     auto settle = [&] { for (int i=0;i<20;++i) { Pump(); Sleep(10); } root.UpdateLayout(); };
     std::function<Controls::Button(DependencyObject const&, hstring const&)> find;
     find = [&](DependencyObject const& node, hstring const& id) -> Controls::Button {
@@ -2128,13 +2154,13 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             Require(invoke(decrease, false, true) && !fullyVisible(home),
                     "a stale selected-tab request cannot undo a stock backward scroll");
             // Later selection still brings the selected tab into view.
-            Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 42, &selected)), "select grouped tab after arrow scroll");
+            Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 42, NextTabRevision(), &selected)), "select grouped tab after arrow scroll");
             drain();
             Controls::TabViewItem research{nullptr};
             for (auto const& tab : visibleTabs) if (unbox_value<uint32_t>(tab.Tag()) == 42) research = tab;
             Require(research && research.IsSelected() && fullyVisible(research),
                     "selection after an arrow scroll still brings the selected tab into view");
-            Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 41, &selected)), "restore first tab after arrow scroll");
+            Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 41, NextTabRevision(), &selected)), "restore first tab after arrow scroll");
             drain();
             Require(fullyVisible(home), "restored selection brings the first tab back into view");
         } else if (width == 820) {
@@ -2187,17 +2213,17 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         return std::abs(indicatorWidth() - target) < .001;
     };
     Require(std::abs(indicatorWidth() - 6.0) < .001, "inactive group has a short color indicator");
-    Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "activate group member for indicator");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "activate group member for indicator");
     settle();
     Require(awaitIndicator(16.0), "active group has a long color indicator");
     Require(find(view,L"FennInlineGroup-7") == header, "selection retains group input target");
-    Require(SUCCEEDED(api.syncTabs(host,tabs,2,41,&selected)), "leave active group for indicator");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,2,41, NextTabRevision(), &selected)), "leave active group for indicator");
     // Retarget before settling to cover reversal from the displayed width.
     Pump(); Sleep(30); Pump();
-    Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "reverse group indicator transition");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "reverse group indicator transition");
     settle();
     Require(awaitIndicator(16.0), "reversed indicator reaches active state");
-    Require(SUCCEEDED(api.syncTabs(host,tabs,2,41,&selected)), "restore ungrouped selection");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,2,41, NextTabRevision(), &selected)), "restore ungrouped selection");
     settle();
     Require(awaitIndicator(6.0), "ungrouped selection shortens group indicator");
     auto accent = header.Resources().ThemeDictionaries().Lookup(box_value(L"Default")).as<ResourceDictionary>()
@@ -2288,7 +2314,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"A deliberately long named group for trimming"));
     collapseData.GetNamedObject(L"strip").SetNamedValue(L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
     MenuPublish(api,host,collapseData.Stringify().c_str());
-    Require(SUCCEEDED(api.syncTabs(host,tabs,1,41,&selected)), "sync hidden group member");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,1,41, NextTabRevision(), &selected)), "sync hidden group member");
     settle();
     Require(marker.Visibility() == Visibility::Collapsed, "legacy group metadata without color hides marker");
     auto groupText = capsule.Children().GetAt(2).as<Controls::TextBlock>();
@@ -2350,7 +2376,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         strip.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(revision));
         MenuPublish(api, host, publication.Stringify().c_str());
         WinUITab ordered[]{{reversed ? 42u : 41u,L"One"},{reversed ? 41u : 42u,L"Two"}};
-        Require(SUCCEEDED(api.syncTabs(host,ordered,2,42,&selected)), "publish two-tab round trip");
+        Require(SUCCEEDED(api.syncTabs(host,ordered,2,42, NextTabRevision(), &selected)), "publish two-tab round trip");
         settle();
         Require(std::abs(addButton.TransformToVisual(root).TransformPoint({0,0}).Y - groupedAddY) < .5,
             "group presence cannot move the add button vertically");
@@ -2381,7 +2407,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 strip.GetNamedArray(L"layout").RemoveAt(1);
             }
             MenuPublish(api,host,state.Stringify().c_str());
-            Require(SUCCEEDED(api.syncTabs(host,tabs + (collapsed ? 1 : 0),collapsed ? 1 : 2,42,&selected)), "publish motion fixture");
+            Require(SUCCEEDED(api.syncTabs(host,tabs + (collapsed ? 1 : 0),collapsed ? 1 : 2,42, NextTabRevision(), &selected)), "publish motion fixture");
         };
         motionState(9,false); settle();
         auto hasGroupSurface = [&] {
@@ -2447,10 +2473,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         // Collapsing every member reparents the retained header. Its disclosure
         // animation must survive that transient Unloaded/Loaded pair.
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":14,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","headerText":"Research","label":"Research","collapsed":false}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":41},{"group":0,"tab":42}]}})");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "prepare empty-group rotation fixture");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "prepare empty-group rotation fixture");
         settle();
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":15,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","headerText":"Research","label":"Research","collapsed":true}],"rows":[{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":0,"tab":42}]}})");
-        Require(SUCCEEDED(api.syncTabs(host,tabs+1,1,42,&selected)), "collapse every group member");
+        Require(SUCCEEDED(api.syncTabs(host,tabs+1,1,42, NextTabRevision(), &selected)), "collapse every group member");
         turned=false;
         for (int i=0;i<12;++i) {
             Pump(); Sleep(5);
@@ -2574,7 +2600,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             winrt::Microsoft::UI::Composition::CompositionGetValueStatus::Succeeded &&
             std::abs(joinedFace.x - hr.X) < 1 && std::abs(joinedFace.x + joinedFace.z - ar.X - ar.Width) < 1,
             "header and first inactive tab share a continuous face mask without a fabricated inner edge");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,41,&selected)), "activate the first grouped member for mask inspection");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,41, NextTabRevision(), &selected)), "activate the first grouped member for mask inspection");
         settle();
         winrt::Windows::Foundation::Numerics::float4 selectedGroupedFace{};
         Require(faceShape(41).Properties().TryGetVector4(L"FaceBounds", selectedGroupedFace) ==
@@ -2587,7 +2613,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(selectedEdge.ColorStops().GetAt(0).Color().A == 180 && selectedEdge.ColorStops().GetAt(1).Color().A == 0 &&
             std::abs(selectedEdge.EndPoint().y - (ar.Y + ar.Height - 4)) < 1 &&
             faceShape(41).StrokeThickness() == 1.5f, "selected tab keeps top/side reflections but blocks its bottom flares");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "restore the second grouped member after mask inspection");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "restore the second grouped member after mask inspection");
         settle();
         Require(faceFill.ColorStops().GetAt(0).Color().A == 255 && faceFill.ColorStops().GetAt(2).Color().A == 24,
             "deselection restores the retained face's inactive lighting");
@@ -2776,7 +2802,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         toggleIndicators(20, false, false);
         toggleIndicators(21, true, false);
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":21,"revision":22,"rows":[],"removed":[],"groups":[],"layout":[{"group":0,"tab":41},{"group":0,"tab":42}]}})");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "ungroup colored container tabs");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "ungroup colored container tabs");
         settle();
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 1 && halo.Children().Count() == 0,
             "container glow survives tab realization after ungrouping; the group halo is released");
@@ -2801,7 +2827,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         auto activeClip = diffusion.Clip().as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>();
         Require(activeClip.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path() != nullptr,
             "the active tab cuts a notch in the final diffused glow rather than changing the per-tab fields");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,41,&selected)), "activate the first container tab");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,41, NextTabRevision(), &selected)), "activate the first container tab");
         settle();
         Require(diffusion.Clip() != activeClip && topGlow.Children().First().Current() == joined,
             "active-tab clipping follows selection without replacing the container glow");
@@ -2815,7 +2841,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             std::abs(selectedFace.z - ar.Width) < 1,
             "ungrouped selected tab retains its separate native contour");
         activeClip = diffusion.Clip().as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>();
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "restore the second active tab");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "restore the second active tab");
         settle();
         Require(diffusion.Clip() != activeClip, "moving activation restores the former active tab's upper spill");
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":23,"revision":24,"rows":[{"id":42,"containerColor":4281558681}],"removed":[]}})");
@@ -2846,10 +2872,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             "clearing glow sources also hides their surface reflections");
         Require(SUCCEEDED(motion(host,2,&ghosts)), "disable motion for indicator selection checks");
         auto reducedMarker = find(view,L"FennInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,0,&selected)), "clear active group with reduced motion");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,0, NextTabRevision(), &selected)), "clear active group with reduced motion");
         Require(reducedMarker.Width() == 6.0,
             "reduced motion immediately shortens group indicator");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42,&selected)), "restore active group with reduced motion");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "restore active group with reduced motion");
         Require(reducedMarker.Width() == 16.0,
             "reduced motion immediately lengthens group indicator");
         Require(SUCCEEDED(motion(host,3,&ghosts)), "restore motion after indicator selection checks");
@@ -2870,7 +2896,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             };
             WinUITab opened[]{{41,L"Home"},{42,L"Research page"},{43,L"New tab"}};
             lastGroup(27,false);
-            Require(SUCCEEDED(api.syncTabs(host,opened,2,42,&selected)), "activate the trailing group's member");
+            Require(SUCCEEDED(api.syncTabs(host,opened,2,42, NextTabRevision(), &selected)), "activate the trailing group's member");
             settle(); settle();
             Require(bottomGlow.Children().Count() == 1 && halo.Children().Count() == 1, "trailing active group is lit");
             auto litGroup = bottomGlow.Children().First().Current();
@@ -2897,7 +2923,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             auto layoutToken = root.LayoutUpdated([&](auto&&, auto&&) { observeWidth(); });
             lastGroup(28,true);
             sample();
-            Require(SUCCEEDED(api.syncTabs(host,opened,3,43,&selected)), "open a new tab after the active group");
+            Require(SUCCEEDED(api.syncTabs(host,opened,3,43, NextTabRevision(), &selected)), "open a new tab after the active group");
             sample();
             const bool detached = !openMarker.IsLoaded();
             const auto heldWidth = openMarker.Width();
@@ -2920,7 +2946,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 for (bool animated : {true, false}) {
                     if (!animated) Require(SUCCEEDED(motion(host,2,&ghosts)), "disable motion for the close width check");
                     lastGroup(revision++, false);
-                    Require(SUCCEEDED(api.syncTabs(host,opened,2,42,&selected)), "close the active ungrouped tab after a group");
+                    Require(SUCCEEDED(api.syncTabs(host,opened,2,42, NextTabRevision(), &selected)), "close the active ungrouped tab after a group");
                     settle(); settle();
                     Controls::TabViewItem lastTab{nullptr};
                     for (auto item : view.TabItems())
@@ -2946,7 +2972,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                         if (auto row = item.try_as<Controls::TabViewItem>(); row && row.Tag())
                             Require(!std::isnan(row.Width()), "closing a tab leaves every tab with an Equal-mode width");
                     lastGroup(revision++, true);
-                    Require(SUCCEEDED(api.syncTabs(host,opened,3,43,&selected)), "reopen the ungrouped tab after the close width check");
+                    Require(SUCCEEDED(api.syncTabs(host,opened,3,43, NextTabRevision(), &selected)), "reopen the ungrouped tab after the close width check");
                     settle(); settle();
                     if (!animated) Require(SUCCEEDED(motion(host,3,&ghosts)), "restore motion after the close width check");
                 }
@@ -2970,7 +2996,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     state.GetNamedObject(L"strip").SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(revision++));
                     MenuPublish(api,host,state.Stringify().c_str());
                     WinUITab remaining[]{{42,L"Research page"},{43,L"New tab"}};
-                    Require(SUCCEEDED(api.syncTabs(host,remaining,2,43,&selected)), "close the ungrouped tab before the group");
+                    Require(SUCCEEDED(api.syncTabs(host,remaining,2,43, NextTabRevision(), &selected)), "close the ungrouped tab before the group");
                     std::vector<double> lefts;
                     bool held = false;
                     for (int i = 0; i < 400; ++i) {
@@ -2997,7 +3023,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     for (size_t i = 1; i < lefts.size(); ++i) steady &= lefts[i] <= lefts[i - 1] + .5;
                     Require(steady, "the group's outline only moves toward its new place while the tabs ease there");
                     lastGroup(revision++, true);
-                    Require(SUCCEEDED(api.syncTabs(host,opened,3,43,&selected)), "reopen the ungrouped tab after the outline check");
+                    Require(SUCCEEDED(api.syncTabs(host,opened,3,43, NextTabRevision(), &selected)), "reopen the ungrouped tab after the outline check");
                     settle(); settle();
                 }
                 reachRevisionStart = revision - 1;
@@ -3242,7 +3268,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     strip.SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
                     if (joined) strip.GetNamedArray(L"layout").GetObjectAt(3).SetNamedValue(L"group", Value::CreateNumberValue(7));
                     MenuPublish(api,host,state.Stringify().c_str());
-                    Require(SUCCEEDED(api.syncTabs(host,opened,3,43,&selected)), "sync glow growth layout");
+                    Require(SUCCEEDED(api.syncTabs(host,opened,3,43, NextTabRevision(), &selected)), "sync glow growth layout");
                 };
                 layout(false); settle(); settle();
                 const auto recatches = query(3);
@@ -3259,7 +3285,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 auto ungrouped = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groupGlowAnimations":true,"groupGlowFadeOut":true,"groups":[],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":0,"tab":42},{"group":0,"tab":43}]}})");
                 ungrouped.GetNamedObject(L"strip").SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
                 MenuPublish(api,host,ungrouped.Stringify().c_str());
-                Require(SUCCEEDED(api.syncTabs(host,opened,3,43,&selected)), "ungroup the lit group");
+                Require(SUCCEEDED(api.syncTabs(host,opened,3,43, NextTabRevision(), &selected)), "ungroup the lit group");
                 Require(waitFor([&] { return query(1) >= 4; }) && reachSurface() && outline() && bottomGlow.Children().Count() == 1,
                     "ungrouping keeps the outline, its color pools and the wash while they dim");
                 Require(waitFor([&] { return query(1) == 0; }) && !reachSurface() && bottomGlow.Children().Count() == 0 &&
@@ -3314,7 +3340,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                         slots.Append(slot);
                     }
                     MenuPublish(api,host,state.Stringify().c_str());
-                    Require(SUCCEEDED(api.syncTabs(host,crowded,count,41,&selected)), "sync crowded group fixture");
+                    Require(SUCCEEDED(api.syncTabs(host,crowded,count,41, NextTabRevision(), &selected)), "sync crowded group fixture");
                 };
                 auto left = [&](FrameworkElement const& element) { return element.TransformToVisual(root).TransformPoint({0,0}).X; };
                 crowd(true); settle(); settle();
@@ -3553,7 +3579,7 @@ static void CheckGroupNeighbors(WinUIPaneApi& api, HWND host) {
         MenuPublish(api,host,state.Stringify().c_str());
         WinUITab tabs[]{{11,L"One"},{22,L"Two"},{33,L"Three"},{44,L"Four"}};
         uint32_t selected{};
-        Require(SUCCEEDED(api.syncTabs(host,tabs,4,33,&selected)),"neighbor tabs");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,4,33, NextTabRevision(), &selected)),"neighbor tabs");
         settle();
         for (int pass=0;pass<3;++pass) {
             fprintf(stderr,"Start neighbor rtl=%d pass=%d\n",rtl,pass);
@@ -3615,7 +3641,7 @@ static void CheckGroupNeighbors(WinUIPaneApi& api, HWND host) {
                 : LR"([{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22},{"group":8,"tab":0},{"group":8,"tab":33},{"group":8,"tab":44}])"));
             MenuPublish(api,host,state.Stringify().c_str());
             WinUITab reversed[]{{33,L"Three"},{44,L"Four"},{11,L"One"},{22,L"Two"}};
-            Require(SUCCEEDED(api.syncTabs(host,reverse ? reversed : tabs,4,33,&selected)),"acknowledge neighbor reorder");
+            Require(SUCCEEDED(api.syncTabs(host,reverse ? reversed : tabs,4,33, NextTabRevision(), &selected)),"acknowledge neighbor reorder");
             settle();
             fprintf(stderr,"Check disclosures rtl=%d move=%d\n",rtl,move);
             for (auto id : {L"FennInlineGroup-7",L"FennInlineGroup-8"}) {
@@ -3649,7 +3675,7 @@ static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND hos
         MenuPublish(api,host,state.Stringify().c_str());
         WinUITab tabs[]{{11,L"Before"},{22,L"Group member"},{44,L"Second member"},{33,L"After"}};
         uint32_t selected{};
-        Require(SUCCEEDED(api.syncTabs(host,tabs,4,11,&selected)), "group gap tabs");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,4,11, NextTabRevision(), &selected)), "group gap tabs");
         settle();
         for (bool backward : {false,true}) {
             auto source=TabScreenBounds(host,backward ? L"FennTab-33" : L"FennTab-11");
@@ -3822,7 +3848,7 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{11, L"First tab"}, {22, L"Second tab"}};
     uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs, 2, inactive ? 22 : 11, &selected)),
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 2, inactive ? 22 : 11, NextTabRevision(), &selected)),
             "sync strip snapshot for drag test");
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
     UIElement content{nullptr};
@@ -3946,7 +3972,7 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
         auto action = NextRequest(api,host,5,L"strip-create-group").GetNamedObject(L"action");
         Require(action.GetNamedNumber(L"id") == 11 && action.GetNamedNumber(L"targetId") == 22, "physical dwell creates group");
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":50,"revision":51,"rows":[],"removed":[],"groups":[{"id":7,"name":"New group","label":"New group","collapsed":false}],"layout":[{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22}]}})");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,11,&selected)), "Firefox confirms created group");
+        Require(SUCCEEDED(api.syncTabs(host,tabs,2,11, NextTabRevision(), &selected)), "Firefox confirms created group");
         settle(100);
         // Raw capture can deprive TabViewItem of PointerReleased. Re-enter the
         // retained source after grouping, without another press or selection.
@@ -3973,11 +3999,11 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
     const auto pendingOffset = first.RenderTransform().as<Media::TranslateTransform>().X();
     Require(first.Opacity() == 1 && pendingOffset > first.ActualWidth() / 2,
             "released tab is revealed at the destination while awaiting Firefox");
-    Require(SUCCEEDED(api.syncTabs(host,tabs,2,11,&selected)), "unrelated old-order snapshot while reorder is pending");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,2,11, NextTabRevision(), &selected)), "unrelated old-order snapshot while reorder is pending");
     Require(first.RenderTransform().as<Media::TranslateTransform>().X() == pendingOffset,
             "old-order snapshot does not flash the released tab at its original slot");
     WinUITab confirmed[]{{22,L"Second tab"},{11,L"First tab"}};
-    Require(SUCCEEDED(api.syncTabs(host,confirmed,2,11,&selected)), "Firefox confirms move to end");
+    Require(SUCCEEDED(api.syncTabs(host,confirmed,2,11, NextTabRevision(), &selected)), "Firefox confirms move to end");
     Require(view.TabItems().GetAt(1) == first && first.RenderTransform().as<Media::TranslateTransform>().X() == 0,
             "confirmed order replaces the temporary offset without a settle animation");
 }
@@ -3996,7 +4022,7 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
     std::vector<WinUITab> tabs{{11, L"First tab"}};
     for (uint32_t id = 101; id <= 113; ++id) tabs.push_back({id, L"Overflow tab"});
     uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), 11, &selected)), "sync overflowing strip");
+    Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), 11, NextTabRevision(), &selected)), "sync overflowing strip");
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
     UIElement content{nullptr};
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect overflowing strip");
@@ -4050,9 +4076,9 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
     WinUITab order[14];
     for (uint32_t i = 0; i < 13; ++i) order[i] = tabs[i + 1];
     order[13] = tabs[0];
-    Require(SUCCEEDED(api.syncTabs(host, order, 14, 11, &selected)), "Firefox confirms overflow move to end");
+    Require(SUCCEEDED(api.syncTabs(host, order, 14, 11, NextTabRevision(), &selected)), "Firefox confirms overflow move to end");
     WinUITab restored[]{{11, L"First tab"}, {22, L"Second tab"}};
-    Require(SUCCEEDED(api.syncTabs(host, restored, 2, 11, &selected)), "restore the two-tab strip");
+    Require(SUCCEEDED(api.syncTabs(host, restored, 2, 11, NextTabRevision(), &selected)), "restore the two-tab strip");
     settle();
     puts("CHECKS PASSED: overflowing strip drags scroll to reach the end");
 }
@@ -4117,7 +4143,7 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{11, L"One"}, {22, L"Two"}, {101, L"Loose"}};
     uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs, 3, 11, &selected)), "source tabs for cross-window group drag");
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 3, 11, NextTabRevision(), &selected)), "source tabs for cross-window group drag");
     MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(1) +
         L",\"rtl\":false,\"windowDragSession\":5,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false}],"
         L"\"rows\":[{\"id\":11,\"detail\":\"\",\"flags\":0},{\"id\":22,\"detail\":\"\",\"flags\":0},{\"id\":101,\"detail\":\"\",\"flags\":0}],"
@@ -4146,7 +4172,7 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         ShowWindow(covered, SW_SHOWNOACTIVATE);
         WinUITab coveredTabs[]{{301, L"Covered"}};
         uint32_t coveredSelected{};
-        Require(SUCCEEDED(api.syncTabs(covered, coveredTabs, 1, 301, &coveredSelected)), "covered destination tabs");
+        Require(SUCCEEDED(api.syncTabs(covered, coveredTabs, 1, 301, NextTabRevision(), &coveredSelected)), "covered destination tabs");
         MenuPublish(api, covered, LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":100,"rtl":false,"windowDragSession":18,"groupsLabel":"Groups","groups":[],"rows":[{"id":301,"detail":"","flags":0}],"layout":[{"group":0,"tab":301}]}})");
     }
     Require(SUCCEEDED(api.updateTabStrip(host2, &rect, TRUE)), "destination strip for cross-window group drag");
@@ -4155,7 +4181,7 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         SetWindowPos(host2, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     WinUITab tabs2[]{{201, L"Here"}, {203, L"Grouped"}, {202, L"There"}};
     uint32_t selected2{};
-    Require(SUCCEEDED(api.syncTabs(host2, tabs2, 3, 201, &selected2)), "destination tabs");
+    Require(SUCCEEDED(api.syncTabs(host2, tabs2, 3, 201, NextTabRevision(), &selected2)), "destination tabs");
     auto publish2 = [&](uint32_t revision, std::wstring const& extraGroup, std::wstring const& extraLayout) {
         MenuPublish(api, host2, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(revision) +
             L",\"rtl\":false,\"windowDragSession\":8,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":9,\"name\":\"Ninth\",\"label\":\"Ninth\",\"collapsed\":false}" + extraGroup + L"],"
@@ -4305,7 +4331,7 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
                 "the source group stays hidden until its own window publishes without it");
         WinUITab rest[]{{101, L"Loose"}};
         MenuPublish(api, host, LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":2,"rtl":false,"windowDragSession":5,"groupsLabel":"Groups","groups":[],"rows":[{"id":101,"detail":"","flags":0}],"layout":[{"group":0,"tab":101}]}})");
-        Require(SUCCEEDED(api.syncTabs(host, rest, 1, 101, &selected)), "the group's tabs leave the source");
+        Require(SUCCEEDED(api.syncTabs(host, rest, 1, 101, NextTabRevision(), &selected)), "the group's tabs leave the source");
         settle();
         Require(!inList(view1, L"FennInlineGroup-7"), "the source's publication removes the departed group");
         puts(overlap ? "CHECKS PASSED: an overlapping group drop selects only the visible destination"
@@ -4352,7 +4378,7 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
         layout += L",{\"group\":" + std::wstring(detach == GroupDetach::Sole ? L"7" : L"0") + L",\"tab\":" + std::to_wstring(id) + L"}";
     }
     uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), pickup ? 112 : 11, &selected)), "group edge tabs");
+    Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), pickup ? 112 : 11, NextTabRevision(), &selected)), "group edge tabs");
     MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(5000 + (pickup ? 1 : 0) + 4 * int(detach)) + L",\"rtl\":false" + std::wstring(detach != GroupDetach::None ? L",\"groupGlow\":true" : L"") + L",\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false,\"color\":4281558681}],\"rows\":[" + rows + L"],\"layout\":[" + layout + L"]}}").c_str());
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
     UIElement content{nullptr};
@@ -4438,7 +4464,7 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
                 // Firefox publishes the strip before its tabs, as the fixtures above do.
                 MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":5005,\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[],\"rows\":[" +
                     restRows + L"],\"layout\":[" + restLayout + L"]}}").c_str());
-                Require(SUCCEEDED(api.syncTabs(host, rest.data(), uint32_t(rest.size()), rest[0].id, &selected)), "the group's tabs leave");
+                Require(SUCCEEDED(api.syncTabs(host, rest.data(), uint32_t(rest.size()), rest[0].id, NextTabRevision(), &selected)), "the group's tabs leave");
                 settle();
                 Require(!FindInTabList(view, L"FennInlineGroup-7"), "the published layout removes the departed group");
                 for (uint32_t i = 0; i < view.TabItems().Size(); ++i)
@@ -4447,7 +4473,7 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
                 // Put the departed tabs back for the following scenarios.
                 MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":5006,\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[],\"rows\":[" +
                     rows + L"],\"layout\":[{\"group\":0,\"tab\":11},{\"group\":0,\"tab\":22}," + restLayout + L"]}}").c_str());
-                Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), 11, &selected)), "the departed tabs return");
+                Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), 11, NextTabRevision(), &selected)), "the departed tabs return");
                 settle();
             }
             puts(detach == GroupDetach::Sole ? "CHECKS PASSED: a group holding every tab asks Firefox to move its window"
@@ -4519,7 +4545,7 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{55, L"Detach tab"}};
     uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs, 1, 55, &selected)),
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 1, 55, NextTabRevision(), &selected)),
             "sync strip snapshot for detach test");
     UIElement content{nullptr};
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect strip for detach test");
@@ -4573,11 +4599,11 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
     puts("Detach gesture completed without crashing");
     Require(tab.Opacity() == 0, "detach release keeps the real source tab hidden");
     CheckAttachedTabAppearance(tab);
-    Require(SUCCEEDED(api.syncTabs(host,tabs,1,55,&selected)), "old source snapshot during detach");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,1,55, NextTabRevision(), &selected)), "old source snapshot during detach");
     Require(tab.Opacity() == 0, "a departing last tab is not mistaken for a confirmed move to end");
     auto detachEvent = NextRequest(api, host, 5, L"strip-detach",40,reject ? 2 : 1).GetNamedObject(L"action");
     Require(tab.Opacity() == (reject ? 1 : 0), "detach outcome restores rejected tabs but preserves accepted handoff");
-    Require(SUCCEEDED(api.syncTabs(host,nullptr,0,0,&selected)), "source removal confirms detach");
+    Require(SUCCEEDED(api.syncTabs(host,nullptr,0,0, NextTabRevision(), &selected)), "source removal confirms detach");
     Require(detachEvent.Size() && detachEvent.GetNamedNumber(L"id") == 55,
             "dragging a tab outside every open window's bounds queues a validated detach request");
     if (horizontal) {
@@ -4636,7 +4662,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{33, L"Source tab"}};
     uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs, 1, 33, &selected)),
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 1, 33, NextTabRevision(), &selected)),
             "sync first host's strip snapshot for adopt test");
     UIElement content{nullptr};
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect first host's strip for adopt test");
@@ -4666,7 +4692,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     const bool changeTarget = scenario == AdoptScenario::ChangeThenClose || scenario == AdoptScenario::ChangeThenDrop;
     const uint32_t targetCount = changeTarget || scaled ? 3 : 1;
     uint32_t selected2{};
-    Require(SUCCEEDED(api.syncTabs(host2, tabs2, targetCount, 44, &selected2)),
+    Require(SUCCEEDED(api.syncTabs(host2, tabs2, targetCount, 44, NextTabRevision(), &selected2)),
             "sync second host's strip snapshot for adopt test");
     UIElement content2{nullptr};
     Require(SUCCEEDED(inspect(host2, put_abi(content2))), "inspect second host's strip");
@@ -4754,7 +4780,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         // Closing covers shrinkage; dropping covers a same-count replacement
         // and reorder, which a count-only invalidation would miss.
         uint32_t changedCount = scenario == AdoptScenario::ChangeThenDrop ? 3 : 2;
-        Require(SUCCEEDED(api.syncTabs(host2, changed, changedCount, 66, &selected2)),
+        Require(SUCCEEDED(api.syncTabs(host2, changed, changedCount, 66, NextTabRevision(), &selected2)),
                 "destination removes, replaces and reorders tabs while foreign drag is held");
     }
     if (scenario == AdoptScenario::CloseSource) {
@@ -4782,7 +4808,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         Require(sourceTab.Opacity() == 1, "closing the hovered destination restores the surviving source row");
         CheckAttachedTabAppearance(sourceTab);
         WinUITab refreshed[]{{33, L"Source after cancelled drag"}, {88, L"New source tab"}};
-        Require(SUCCEEDED(api.syncTabs(host, refreshed, 2, 33, &selected)),
+        Require(SUCCEEDED(api.syncTabs(host, refreshed, 2, 33, NextTabRevision(), &selected)),
                 "source accepts snapshot after destination disappears");
         Require(view.TabItems().Size() == 2, "destination close clears source dragging guard");
         Require(!NextRequest(api, host, 5).Size(), "destination close does not commit reorder or detach");
@@ -4810,12 +4836,12 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     // independent rather than one shared list.
     Require(sourceTab.Opacity() == 0, "foreign drop does not reveal the original source slot");
     CheckAttachedTabAppearance(sourceTab);
-    Require(SUCCEEDED(api.syncTabs(host,tabs,1,33,&selected)), "old source snapshot during adoption");
+    Require(SUCCEEDED(api.syncTabs(host,tabs,1,33, NextTabRevision(), &selected)), "old source snapshot during adoption");
     Require(sourceTab.Opacity() == 0, "old source snapshot preserves pending departure");
     if (!changeTarget && !scaled) {
         Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() > 0,
                 "destination gap survives release until adoption is published");
-        Require(SUCCEEDED(api.syncTabs(host2,tabs2,targetCount,44,&selected2)), "old destination snapshot during adoption");
+        Require(SUCCEEDED(api.syncTabs(host2,tabs2,targetCount,44, NextTabRevision(), &selected2)), "old destination snapshot during adoption");
         Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() > 0,
                 "old destination snapshot does not close the pending gap");
     }
@@ -4850,9 +4876,9 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     } else {
         Require(sourceTab.Opacity() == 0, "accepted adoption waits for source removal");
         WinUITab adopted[]{{77,L"Adopted tab"},{44,L"Other window's tab"}};
-        Require(SUCCEEDED(api.syncTabs(host2,adopted,2,77,&selected2)), "destination publishes adopted tab");
+        Require(SUCCEEDED(api.syncTabs(host2,adopted,2,77, NextTabRevision(), &selected2)), "destination publishes adopted tab");
         Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() == 0, "adopted layout replaces preview gap");
-        Require(SUCCEEDED(api.syncTabs(host,nullptr,0,0,&selected)), "source publishes departure");
+        Require(SUCCEEDED(api.syncTabs(host,nullptr,0,0, NextTabRevision(), &selected)), "source publishes departure");
     }
     Require(SUCCEEDED(api.destroy(host2)), "destroy second host's pane");
     DestroyWindow(host2);
@@ -5342,34 +5368,34 @@ int wmain(int argc, wchar_t** argv) {
     };
     WinUITab tabs[]{{11, L"First tab"}, {22, L"Unicode tab \u65e5\u672c\u8a9e"}};
     Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)) &&
+        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)) &&
             advancedRevision() && noSelectionRequest(first),
         "initial tabs do not emit user selection, and the snapshot reports a model revision");
     tabs[0].title = L"Renamed tab";
     Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 22, &requested)) &&
+        SUCCEEDED(api.syncTabs(first, tabs, 2, 22, NextTabRevision(), &requested)) &&
             advancedRevision() && noSelectionRequest(first),
         "title and Firefox selection updates do not echo");
     WinUITab reordered[]{{22, L"Moved tab"}, {11, L"Renamed tab"}};
-    Require(SUCCEEDED(api.syncTabs(first, reordered, 2, 22, &requested)),
+    Require(SUCCEEDED(api.syncTabs(first, reordered, 2, 22, NextTabRevision(), &requested)),
             "reorder tabs");
-    Require(SUCCEEDED(api.syncTabs(first, reordered, 1, 22, &requested)),
+    Require(SUCCEEDED(api.syncTabs(first, reordered, 1, 22, NextTabRevision(), &requested)),
             "close tab");
-    Require(api.syncTabs(first, tabs, 2, 99, &requested) ==
+    Require(api.syncTabs(first, tabs, 2, 99, NextTabRevision(), &requested) ==
                 E_INVALIDARG,
             "reject missing selected tab");
-    Require(api.syncTabs(first, nullptr, 2, 0, &requested) ==
+    Require(api.syncTabs(first, nullptr, 2, 0, NextTabRevision(), &requested) ==
                 E_INVALIDARG,
             "reject null snapshot");
     WinUITab duplicate[]{{11, L"One"}, {11, L"Two"}};
-    Require(api.syncTabs(first, duplicate, 2, 11, &requested) ==
+    Require(api.syncTabs(first, duplicate, 2, 11, NextTabRevision(), &requested) ==
                 E_INVALIDARG,
             "reject duplicate identities");
     Require(
-        SUCCEEDED(api.syncTabs(first, nullptr, 0, 0, &requested)),
+        SUCCEEDED(api.syncTabs(first, nullptr, 0, 0, NextTabRevision(), &requested)),
         "empty list");
     Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)),
+        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)),
         "restore tabs");
     HWND island = IslandOf(first);
     Require(island != nullptr && Above(island, compositor), "island above compositor sibling");
@@ -5423,7 +5449,7 @@ int wmain(int argc, wchar_t** argv) {
                 "the reverse keyboard selection is its own request");
     }
     Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)),
+        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)),
         "restore after keyboard selection");
     WithTab(first, tabs[1].title, tabs[1].title, true);
     {
@@ -5434,7 +5460,7 @@ int wmain(int argc, wchar_t** argv) {
     // A strip tab's close button is shown on the selected tab, so the close
     // checks below act on the tab Firefox has selected.
     Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 22, &requested)),
+        SUCCEEDED(api.syncTabs(first, tabs, 2, 22, NextTabRevision(), &requested)),
         "select the tab whose close is exercised");
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
     closeWithoutSelection(first, 22, 200);
@@ -5446,7 +5472,7 @@ int wmain(int argc, wchar_t** argv) {
     closeWithoutSelection(first, 22);
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
     closeWithoutSelection(first, 22);
-    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 22, &requested)), "restore close fixtures");
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 22, NextTabRevision(), &requested)), "restore close fixtures");
     // A close remains suppressed both while queued and while Firefox is
     // deciding. A rejected outcome releases it without needing a publication.
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
@@ -5463,7 +5489,7 @@ int wmain(int argc, wchar_t** argv) {
     // Two different tabs, two requests, in the order they were clicked. The
     // queue never collapses them: each is a command the user gave.
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
-    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)), "select the second close target");
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)), "select the second close target");
     WithTab(first, tabs[0].title, tabs[0].title, false, true);
     std::vector<uint32_t> closed;
     for (int attempt = 0; attempt < 40 && closed.size() < 2; ++attempt) {
@@ -5482,8 +5508,8 @@ int wmain(int argc, wchar_t** argv) {
     Require(closed == std::vector<uint32_t>({22, 11}), "both queued closes arrive, in order");
     // A stock TabView close button is not a keyboard stop; keyboard closing
     // is Firefox's Ctrl+W, covered by the Firefox integration suite.
-    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)), "restore selection after close checks");
-    Require(api.syncTabs(first, tabs, 2, 11, nullptr) == E_POINTER, "reject null revision output");
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)), "restore selection after close checks");
+    Require(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), nullptr) == E_POINTER, "reject null revision output");
     for (int input : {0, 2, 3}) {
         WithTab(first, L"FennStripNewTab", L"New tab", false, false, input);
         Require(NextRequest(api, first, 4, nullptr).Size(),
@@ -5543,7 +5569,7 @@ int wmain(int argc, wchar_t** argv) {
             return value;
         };
         auto presentedBefore = presentSamples();
-        Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)), "a change to present");
+        Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)), "a change to present");
         for (int i = 0; i < 60; ++i) {
             Pump();
             Sleep(10);
@@ -5552,19 +5578,19 @@ int wmain(int argc, wchar_t** argv) {
                 "one change is one presentation sample, and the frame callback is not left subscribed");
     }
     WinUITab duplicates[]{{11, L"New tab"}, {22, L"New tab"}};
-    Require(SUCCEEDED(api.syncTabs(first, duplicates, 2, 11, &requested)), "identical title snapshot");
+    Require(SUCCEEDED(api.syncTabs(first, duplicates, 2, 11, NextTabRevision(), &requested)), "identical title snapshot");
     WithTab(first, L"New tab", L"New tab", true, false, 0, 2, 1);
     {
         auto request = NextRequest(api, first, 1);
         Require(request.Size() && request.GetNamedObject(L"action").GetNamedNumber(L"tab") == 22,
                 "the second of two identically named tabs is selected by its own identity");
     }
-    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)),
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)),
             "restore titles after duplicate regression");
     if (argc == 3) {
         CheckContextMenu(module, api, first);
         CheckMenuThemes(module, api, first, {tabs[0], tabs[1]});
-        Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, &requested)), "restore after theme checks");
+        Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)), "restore after theme checks");
     }
     Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "restore geometry after theme checks");
     ShowWindow(first, SW_HIDE);
@@ -5722,7 +5748,7 @@ int wmain(int argc, wchar_t** argv) {
         Require(second != nullptr, "second host");
         Require(SUCCEEDED(api.updateTabStrip(second, &rect, TRUE)), "create second island");
         WinUITab other[]{{11, L"Independent window"}};
-        Require(SUCCEEDED(api.syncTabs(second, other, 1, 11, &requested)) &&
+        Require(SUCCEEDED(api.syncTabs(second, other, 1, 11, NextTabRevision(), &requested)) &&
                     requested && noSelectionRequest(second),
                 "independent window can reuse tab IDs and keeps its own model revision");
         if (cycle == 0) {

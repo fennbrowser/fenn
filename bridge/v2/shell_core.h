@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 38
+#define SHELL_CORE_ABI_VERSION 39
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -245,6 +245,7 @@ enum ShellPublicationChannel
   SHELL_PUBLICATION_CHANNEL_SURFACE_MENU = 2,
   SHELL_PUBLICATION_CHANNEL_ADDRESS_SESSION = 3,
   SHELL_PUBLICATION_CHANNEL_TOOLBAR_CUSTOMIZATION = 4,
+  SHELL_PUBLICATION_CHANNEL_TAB_MODEL = 5,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -547,6 +548,16 @@ typedef struct {
   uint32_t group;
   bool entering;
 } ShellGroupMotionRow;
+
+/*
+ One bounded, fully validated title/selection publication. No mutation is
+ visible until all rows and the publication identity have been accepted.
+ */
+typedef struct {
+  uint32_t tab;
+  const uint16_t *title;
+  uintptr_t title_len;
+} ShellTabTitle;
 
 typedef struct {
   uint32_t kind;
@@ -1122,6 +1133,7 @@ ShellStatus shell_core_model_revision(ShellCore *core, uint32_t *out);
  */
 ShellStatus shell_core_model_set_title(ShellCore *core,
                                        uint32_t base_revision,
+                                       uint32_t revision,
                                        uint32_t tab,
                                        const uint16_t *title,
                                        uintptr_t title_len,
@@ -1135,6 +1147,7 @@ ShellStatus shell_core_model_set_title(ShellCore *core,
  */
 ShellStatus shell_core_model_set_selected(ShellCore *core,
                                           uint32_t base_revision,
+                                          uint32_t revision,
                                           uint32_t tab,
                                           bool *changed);
 
@@ -1146,7 +1159,10 @@ ShellStatus shell_core_model_set_selected(ShellCore *core,
  # Safety
  See [`guard`].
  */
-ShellStatus shell_core_model_begin_snapshot(ShellCore *core, uint64_t session, uint32_t capacity);
+ShellStatus shell_core_model_begin_snapshot(ShellCore *core,
+                                            uint64_t session,
+                                            uint32_t revision,
+                                            uint32_t capacity);
 
 /*
  # Safety
@@ -1155,7 +1171,8 @@ ShellStatus shell_core_model_begin_snapshot(ShellCore *core, uint64_t session, u
 ShellStatus shell_core_model_push_snapshot_tab(ShellCore *core,
                                                uint32_t tab,
                                                const uint16_t *title,
-                                               uintptr_t title_len);
+                                               uintptr_t title_len,
+                                               uint32_t commands);
 
 /*
  Commit the snapshot and report how many changes it produced, so a caller can
@@ -1167,6 +1184,18 @@ ShellStatus shell_core_model_push_snapshot_tab(ShellCore *core,
 ShellStatus shell_core_model_commit_snapshot(ShellCore *core,
                                              uint32_t selected,
                                              uint32_t *change_count);
+
+/*
+ # Safety
+ See [`guard`]. Rows and their UTF-16 spans must be valid for the call.
+ */
+ShellStatus shell_core_model_apply_delta(ShellCore *core,
+                                         uint32_t base,
+                                         uint32_t revision,
+                                         const ShellTabTitle *rows,
+                                         uintptr_t row_count,
+                                         bool has_selected,
+                                         uint32_t selected);
 
 /*
  Take the accumulated presentation changes. The host applies exactly these to
