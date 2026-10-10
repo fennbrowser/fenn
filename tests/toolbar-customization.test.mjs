@@ -162,3 +162,12 @@ test('shared stamp preserves digit grammar and rejects unsafe revisions before c
  assert.equal(f.c.execute(command.replace(/^customize:[0-9]+:/,'customize:9007199254740992:')),2);
  assert.equal(f.calls.length,n);
 });
+
+
+test('palette labels can refresh without revoking Firefox customization commands',()=>{
+ const f=fixture(),before=f.state(),command=f.command('profile','remove');
+ f.c.toolbar.owner.localization=()=>({formatValueSync:k=>k.startsWith('winui-toolbar-customize-')?'Translated '+k:k});
+ const after=f.state();assert.equal(after.revision,before.revision);
+ assert.deepEqual(after.items,before.items);assert.notDeepEqual(after.labels,before.labels);
+ assert.equal(f.c.execute(command),1);assert.equal(f.order().includes('fxa-toolbar-menu-button'),false);
+});

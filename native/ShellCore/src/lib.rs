@@ -39,6 +39,7 @@ pub mod surface_menu;
 pub mod pending;
 pub mod publication;
 pub mod address_publication;
+pub mod toolbar_publication;
 pub mod queue;
 pub mod settle;
 pub mod strip;
@@ -51,4 +52,4 @@ pub mod ffi;
 /// Version of the C boundary in `bridge/v2/shell_core.h`. Bumped whenever the
 /// layout or meaning of anything in [`ffi`] changes; the native host refuses to
 /// use a core whose version it was not compiled against.
-pub const SHELL_CORE_ABI_VERSION: u32 = 37;
+pub const SHELL_CORE_ABI_VERSION: u32 = 38;

@@ -822,6 +822,7 @@ struct NativeAddress {
         if (snapshot.GetNamedNumber(L"version") != 1) winrt::throw_hresult(E_INVALIDARG);
         if (!snapshot.GetNamedBoolean(L"enabled", false)) {
             shell.ResetAddressPublication();
+            shell.ResetToolbarPublication();
             if (navigation) navigation->Apply({}, false);
             context.Reset();
             resultMenu.Reset();
@@ -846,7 +847,7 @@ struct NativeAddress {
         const auto checkedRtl = snapshot.GetNamedBoolean(L"rtl", false);
         const auto checkedTextEpoch = snapshot.HasKey(L"textEpoch") ? NativeJson::RequireRevision(snapshot, L"textEpoch") : 0;
         const auto navigationToolbar = snapshot.GetNamedBoolean(L"navigationToolbar", false);
-        const auto customizationState = NativeToolbarCustomization::Read(snapshot);
+        auto customizationState = NativeToolbarCustomization::Read(snapshot);
         const auto historyMenuState = NativeHistoryMenu::Read(snapshot);
         const auto navigationState = NativeNavigationToolbar::Read(snapshot);
         const auto pinnedState = PinnedExtensionButtons::Read(snapshot);
@@ -1005,6 +1006,14 @@ struct NativeAddress {
         const bool applyAddress = shell.AddressPublication(nextSession, uint64_t(checkedSequence),
             uint64_t(checkedRevision), addressFingerprint, false);
         const bool applyHistory = navigation && navigation->historyMenu.Resolve(historyMenuState);
+        const auto toolbarDecision = navigation && customizationState.revision
+            ? shell.ToolbarPublication(customizationState.revision, customizationState.fingerprint, false)
+            : SHELL_TOOLBAR_PUBLICATION_IGNORED;
+        if(navigation && customizationState.revision && toolbarDecision!=SHELL_TOOLBAR_PUBLICATION_ACCEPTED) {
+            auto labels=std::move(customizationState.labels);
+            customizationState=navigation->customization.state;
+            if(toolbarDecision==SHELL_TOOLBAR_PUBLICATION_UNCHANGED) customizationState.labels=std::move(labels);
+        }
         if (applyAddress && nextSession != session) {
             if (navigation) navigation->sentOverflow.clear();
             context.Reset();
@@ -1032,6 +1041,9 @@ struct NativeAddress {
             root.Visibility(Visibility::Visible);
         }
         if (toolbarRoot) {
+            if(!customizationState.revision) shell.ResetToolbarPublication();
+            else if(toolbarDecision==SHELL_TOOLBAR_PUBLICATION_ACCEPTED)
+                shell.ToolbarPublication(customizationState.revision, customizationState.fingerprint, true);
             navigation->Apply(navigationState, navigationToolbar && snapshot.HasKey(L"navigation"));
             navigation->pinned.externalLayout = customizationState.revision != 0;
             navigation->pinned.Apply(pinnedState, navigationToolbar);

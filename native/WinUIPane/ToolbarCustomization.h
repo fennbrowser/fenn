@@ -11,7 +11,7 @@ struct NativeToolbarCustomization {
     using Map = winrt::Windows::Foundation::Collections::IObservableMap<winrt::hstring,winrt::Windows::Foundation::IInspectable>;
     using Button = Microsoft::UI::Xaml::Controls::Button;
     struct Item { winrt::hstring id, control, label; bool placed{}, movable{}, removable{}, spring{}, canOverflow{}, canAutoOverflow{}, extension{}; winrt::hstring palette; };
-    struct State { uint64_t revision{}; bool canReset{}, canUndoReset{}; std::vector<Item> items; std::map<winrt::hstring,winrt::hstring> labels; };
+    struct State { winrt::hstring fingerprint; uint64_t revision{}; bool canReset{}, canUndoReset{}; std::vector<Item> items; std::map<winrt::hstring,winrt::hstring> labels; };
     State state;
     winrt::Windows::Foundation::Collections::IObservableVector<winrt::Windows::Foundation::IInspectable> availableItems = winrt::single_threaded_observable_vector<winrt::Windows::Foundation::IInspectable>();
     Microsoft::UI::Xaml::Controls::Primitives::Popup popup{nullptr};
@@ -43,7 +43,7 @@ struct NativeToolbarCustomization {
         auto nav=snapshot.GetNamedObject(L"navigation");
         if (!nav.HasKey(L"customization")) return state;
         auto obj=nav.GetNamedObject(L"customization");
-        state.revision=NativeJson::RequireRevision(obj,L"revision");
+        state.revision=uint64_t(NativeJson::RequireRevision(obj,L"revision"));
         state.canReset=obj.GetNamedBoolean(L"canReset",false);state.canUndoReset=obj.GetNamedBoolean(L"canUndoReset",false);
         auto items=obj.GetNamedArray(L"items");
         if(items.Size()>59) throw winrt::hresult_invalid_argument();
@@ -60,11 +60,17 @@ struct NativeToolbarCustomization {
             address |= item.placed && item.control==L"address";
             state.items.push_back(std::move(item));
         }
-        if(!address) return {};
+        if(address && !state.revision) throw winrt::hresult_invalid_argument();
         auto labels=obj.GetNamedObject(L"labels");
         for(auto key:{L"title",L"available",L"earlier",L"later",L"add",L"remove",L"done",L"hint",L"reset",L"undo-reset",L"reset-hint",L"overflow",L"drop"}) {
             auto value=labels.GetNamedString(key);NativeJson::RequireLength(value,4096);state.labels[key]=value;
         }
+        if(!address) return {};
+        // Palette labels are presentation-only: Firefox does not revise them.
+        JObject identity;
+        for(auto const& entry:obj) if(entry.Key()!=L"labels") identity.SetNamedValue(entry.Key(),entry.Value());
+        state.fingerprint=identity.Stringify();
+        if(state.fingerprint.size()>MAX_TOOLBAR_FINGERPRINT) throw winrt::hresult_invalid_argument();
         return state;
     }
     static winrt::hstring Id(winrt::Windows::Foundation::IInspectable const& item) {

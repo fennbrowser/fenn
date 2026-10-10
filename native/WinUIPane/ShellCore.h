@@ -62,6 +62,14 @@ struct NativeShellCore {
     void ResetAddressMode() { if (core) shell_core_address_reset_mode(core); }
     void ResetAddress() { if (core) shell_core_address_reset(core); }
     void ResetAddressPublication() { if (core) shell_core_address_publication_reset(core); }
+    void ResetToolbarPublication() { if (core) shell_core_toolbar_publication_reset(core); }
+    ShellToolbarPublication ToolbarPublication(uint64_t revision, std::wstring_view fingerprint, bool commit) {
+        ShellToolbarPublication decision = SHELL_TOOLBAR_PUBLICATION_IGNORED;
+        winrt::check_hresult(shell_core_toolbar_publication(core, revision,
+            reinterpret_cast<uint16_t const*>(fingerprint.data()), fingerprint.size(), commit, &decision)
+            == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
+        return decision;
+    }
     bool AddressPublication(std::wstring_view session, uint64_t sequence, uint64_t revision,
                             std::wstring_view fingerprint, bool commit) {
         bool apply = false;

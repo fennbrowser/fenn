@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 37
+#define SHELL_CORE_ABI_VERSION 38
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -75,6 +75,8 @@
 #define MAX_ACTIONS 256
 
 #define MAX_DESCRIPTION 65536
+
+#define MAX_TOOLBAR_FINGERPRINT ((6 * 1024) * 1024)
 
 /*
  Matches the host's neighbor animation: 135 ms, cubic-bezier(.215, .61, .355, 1).
@@ -196,6 +198,15 @@ typedef uint32_t ShellStripSource;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
+typedef enum {
+  SHELL_TOOLBAR_PUBLICATION_IGNORED = 0,
+  /*
+   Revisioned content is identical; independent labels may refresh.
+   */
+  SHELL_TOOLBAR_PUBLICATION_UNCHANGED = 1,
+  SHELL_TOOLBAR_PUBLICATION_ACCEPTED = 2,
+} ShellToolbarPublication;
+
 /*
  Values of [`ShellStripImage::kind`].
  */
@@ -233,6 +244,7 @@ enum ShellPublicationChannel
   SHELL_PUBLICATION_CHANNEL_TAB_MENU_STATE = 1,
   SHELL_PUBLICATION_CHANNEL_SURFACE_MENU = 2,
   SHELL_PUBLICATION_CHANNEL_ADDRESS_SESSION = 3,
+  SHELL_PUBLICATION_CHANNEL_TOOLBAR_CUSTOMIZATION = 4,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -1345,6 +1357,26 @@ ShellStatus shell_core_address_publication(ShellCore *core,
                                            uintptr_t units,
                                            bool commit,
                                            bool *apply);
+
+/*
+ Resolve/commit a bounded customization description, excluding independent
+ labels. Unchanged permits label refresh; ignored preserves the live section.
+ # Safety
+ Live core, readable fingerprint (null only for zero), writable decision.
+ */
+ShellStatus shell_core_toolbar_publication(ShellCore *core,
+                                           uint64_t revision,
+                                           const uint16_t *fingerprint,
+                                           uintptr_t units,
+                                           bool commit,
+                                           ShellToolbarPublication *decision);
+
+/*
+ Reset customization identity on removal, disable or island recreation.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_toolbar_publication_reset(ShellCore *core);
 
 /*
  Reset address publication identity on disable or island recreation.
