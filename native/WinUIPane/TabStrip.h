@@ -439,27 +439,37 @@ struct NativeTabStrip {
         // in between see the same geometry, so the outline borders this pass
         // sizes cannot keep layout from ever settling (a layout cycle).
         if (joinFrame != ambient.frames) { joinFrame = ambient.frames; joinClock = SteadyMs(); }
-        bool settlingMotion = false;
         if (!settling.empty()) {
-            if (!core || shell_core_settle_advance(core, joinClock, false, &settlingMotion) != SHELL_STATUS_OK) settlingMotion = false;
-            if (!settlingMotion) settling.clear();
+            bool curve = false;
+            if (!core || shell_core_settle_advance(core, joinClock, false, &curve) != SHELL_STATUS_OK) curve = false;
+            // Finished elements leave once XAML reports them at rest.
+            if (!curve) settling.erase(std::remove_if(settling.begin(), settling.end(), [](auto const& held) { return held.rested; }), settling.end());
+            if (joinClock >= settlingUntil) settling.clear();
         }
+        const bool settlingMotion = !settling.empty();
         auto boundsOf = [&](FrameworkElement const& item) {
-            for (auto const& held : settling) {
+            for (auto& held : settling) {
                 if (held.element != item) continue;
                 // A held element's composition Translation reaches XAML (as
                 // UIElement.Translation) a frame or two late, so its transformed
                 // bounds would first snap to the new place and then trail the
-                // motion. Place it from its layout slot (the parent's transform,
-                // its arranged offset and any XAML RenderTransform) and apply the
-                // offset and scale it is drawn with now.
+                // motion, and after the motion step back by its last offset.
+                // Place it from its layout slot (the parent's transform, its
+                // arranged offset and any XAML RenderTransform) and apply the
+                // offset and scale it is drawn with now, which is none once the
+                // curve has ended.
                 auto parent = Media::VisualTreeHelper::GetParent(item).try_as<UIElement>();
                 ShellSettleSample sample{};
-                if (!parent || shell_core_settle_sample(core, held.kind, held.id, joinClock, &sample) != SHELL_STATUS_OK || !sample.active) break;
+                if (!parent || shell_core_settle_sample(core, held.kind, held.id, joinClock, &sample) != SHELL_STATUS_OK) break;
                 const auto offset = item.ActualOffset();
                 auto origin = parent.TransformToVisual(ambient.layer).TransformPoint({offset.x, offset.y});
                 if (auto shift = item.RenderTransform().try_as<Media::TranslateTransform>()) origin.X += float(shift.X());
-                return Windows::Foundation::Rect{origin.X + sample.dx, origin.Y, float(item.ActualWidth()) * sample.sx, float(item.ActualHeight())};
+                const Windows::Foundation::Rect slot{origin.X + sample.dx, origin.Y, float(item.ActualWidth()) * sample.sx, float(item.ActualHeight())};
+                if (!sample.active) {
+                    const auto reported = item.TransformToVisual(ambient.layer).TransformBounds({0, 0, slot.Width, slot.Height});
+                    held.rested = std::abs(reported.X - slot.X) < .5f && std::abs(reported.Width - slot.Width) < .5f;
+                }
+                return slot;
             }
             return item.TransformToVisual(ambient.layer).TransformBounds({0, 0, float(item.ActualWidth()), float(item.ActualHeight())});
         };
@@ -1911,14 +1921,38 @@ struct NativeTabStrip {
         rowAnimations.erase(it);
     }
 
-    // Runs `work` once, from the next frame's Rendering callback: after the
-    // layout that follows the current change, before that frame is presented.
-    void AfterNextLayout(std::function<void()> work) {
-        auto token = std::make_shared<winrt::event_token>();
-        *token = Media::CompositionTarget::Rendering([token, work = std::move(work)](auto&&, auto&&) {
-            Media::CompositionTarget::Rendering(*token);
-            work();
-        });
+    // Feed `work` the layout passes and frames that follow a change until it
+    // returns true: `Pass` after each layout pass, before its frame is drawn,
+    // and `Frame` from each Rendering callback, which runs before that frame's
+    // layout, so after every pass of the frame before it. TabView arranges a
+    // change over several passes (rows first, New Tab in a later one), so work
+    // that must hide a new arrangement in the frame that first shows it acts
+    // on every Pass, and work that needs the whole arrangement waits for the
+    // next Frame. After `limitMs`, `Expired` is the last call.
+    enum class LayoutStep { Pass, Frame, Expired };
+    void OnLayoutSteps(std::function<bool(LayoutStep)> work, double limitMs) {
+        struct Pending { winrt::event_token layout, rendering; std::function<bool(LayoutStep)> work; double until{}; bool running{}; };
+        auto pending = std::make_shared<Pending>();
+        pending->work = std::move(work);
+        pending->until = SteadyMs() + limitMs;
+        auto run = [this, alive = std::weak_ptr<int>(lifetime), weak = std::weak_ptr<Pending>(pending)](bool frame) {
+            auto state = weak.lock();
+            // `running`: the work's own layout reads can raise LayoutUpdated.
+            if (alive.expired() || !state || !state->work || state->running) return;
+            const auto step = !frame ? LayoutStep::Pass : SteadyMs() >= state->until ? LayoutStep::Expired : LayoutStep::Frame;
+            state->running = true;
+            bool done = true;
+            try { done = state->work(step); } catch (...) {}
+            state->running = false;
+            if (!done && step != LayoutStep::Expired) return;
+            state->work = nullptr;
+            // Revoking may release this handler; nothing runs after it.
+            root.LayoutUpdated(state->layout);
+            Media::CompositionTarget::Rendering(state->rendering);
+        };
+        // The handlers own the shared state until it finishes.
+        pending->layout = root.LayoutUpdated([run, pending](auto&&, auto&&) { run(false); });
+        pending->rendering = Media::CompositionTarget::Rendering([run, pending](auto&&, auto&&) { run(true); });
     }
 
     // A tab created after the strip was already populated is revealed with a
@@ -1934,6 +1968,9 @@ struct NativeTabStrip {
         Media::ImageSource image{nullptr};
         bool selected{};
     };
+    // Bound on waiting for TabView to arrange a close before repairing widths
+    // and starting the motion from whatever layout there is.
+    static constexpr double CloseArrangeMs = 250;
     Controls::Canvas closeOverlay{nullptr};
     std::vector<Media::Animation::Storyboard> closeStoryboards;
 
@@ -2020,8 +2057,13 @@ struct NativeTabStrip {
     // reaches XAML bounds a frame or two late, so RefreshAmbient samples
     // ShellCore's settle curve for them and the lighting moves with the tabs
     // instead of jumping.
-    struct Settling { FrameworkElement element{nullptr}; uint32_t kind{}, id{}; };
+    // XAML also reports the last offset for a frame or two after the curve
+    // ends, so a finished element stays placed from its layout slot until its
+    // reported bounds agree (`rested`), for at most SettleLagMs.
+    struct Settling { FrameworkElement element{nullptr}; uint32_t kind{}, id{}; bool rested{}; };
     std::vector<Settling> settling;
+    static constexpr double SettleLagMs = 250;
+    double settlingUntil = 0;
 
     // Opt-in (FENN_PANE_DIAGNOSTICS) trace of the new-tab entry motion.
     template <typename... Args> static void EntryLog(char const* format, Args... args) {
@@ -2031,8 +2073,10 @@ struct NativeTabStrip {
         fflush(stderr);
     }
 
-    std::vector<Neighbor> HoldNeighbors(GeometryBefore const& before, uint32_t newId) {
-        std::vector<Neighbor> held;
+    // Rows (other than `newId`) and group headers whose arranged geometry
+    // differs from `before`, with the offset and scale that draw them there.
+    std::vector<Neighbor> NeighborOffsets(GeometryBefore const& before, uint32_t newId) {
+        std::vector<Neighbor> moved;
         std::vector<std::tuple<uint32_t, uint32_t, FrameworkElement>> candidates;
         for (auto const& [id, row] : rows)
             if (id != newId) candidates.emplace_back(SHELL_SETTLE_TAB, id, row);
@@ -2040,7 +2084,6 @@ struct NativeTabStrip {
         // light (which include its header) keep pace with its members.
         for (auto const& [group, run] : inlineGroups.runs)
             if (run.button) candidates.emplace_back(SHELL_SETTLE_HEADER, group, run.button);
-        const double start = SteadyMs();
         for (auto const& [kind, id, row] : candidates) {
             auto old = before.find({kind, id});
             // Grouped-source rows can be arranged while IsLoaded stays false.
@@ -2054,12 +2097,20 @@ struct NativeTabStrip {
             if (outside(now.X, now.Width) && outside(old->second.first, old->second.second)) continue;
             const float dx = old->second.first - now.X, sx = now.Width > 0 ? old->second.second / now.Width : 1.f;
             if (std::abs(dx) < .5f && std::abs(sx - 1.f) < .002f) continue;
+            moved.push_back({row, dx, sx, kind, id});
+        }
+        return moved;
+    }
+
+    std::vector<Neighbor> HoldNeighbors(GeometryBefore const& before, uint32_t newId) {
+        auto held = NeighborOffsets(before, newId);
+        const double start = SteadyMs();
+        for (auto const& [row, dx, sx, kind, id] : held) {
             auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(row);
             winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::SetIsTranslationEnabled(row, true);
             visual.Properties().InsertVector3(L"Translation", {dx, 0, 0});
             visual.CenterPoint({0, 0, 0});
             visual.Scale({sx, 1, 1});
-            held.push_back({row, dx, sx, kind, id});
             // Held until SettleNeighbors starts the motion; bounded in case
             // it never does.
             Track(kind, id, row, dx, sx, start + 1000);
@@ -2070,11 +2121,15 @@ struct NativeTabStrip {
 
     void Track(uint32_t kind, uint32_t id, FrameworkElement const& element, float dx, float sx, double start) {
         if (!core || shell_core_settle_hold(core, kind, id, dx, sx, start) != SHELL_STATUS_OK) return;
-        if (std::none_of(settling.begin(), settling.end(), [&](auto const& item) { return item.element == element; }))
-            settling.push_back({element, kind, id});
+        settlingUntil = start + SETTLE_MS + SettleLagMs;
+        auto found = std::find_if(settling.begin(), settling.end(), [&](auto const& item) { return item.element == element; });
+        if (found == settling.end()) settling.push_back({element, kind, id});
+        else *found = {element, kind, id};
     }
 
-    void SettleNeighbors(std::vector<Neighbor> const& held, bool animate) {
+    // Without `refresh`, the caller refreshes the lighting once it has placed
+    // everything (a refresh between can move outlines and schedule a layout).
+    void SettleNeighbors(std::vector<Neighbor> const& held, bool animate, bool refresh = true) {
         const double start = SteadyMs();
         for (auto const& item : held) {
             try {
@@ -2098,7 +2153,7 @@ struct NativeTabStrip {
                 visual.Properties().StartAnimation(L"Translation.X", shift);
             } catch (...) {}
         }
-        if (!held.empty()) ambient.Update();
+        if (refresh && !held.empty()) ambient.Update();
     }
 
     // `addBefore` is the New Tab button's X (in root space) before this
@@ -3904,30 +3959,67 @@ struct NativeTabStrip {
         else if (createdRows.empty() && rows.size() < priorRowCount) {
             // The toggle above can leave TabView's next layout with every Width
             // NaN (tabs sized to their content, the group's last tab narrow until
-            // the pointer moves). Repair it once that layout has run, then read the
-            // motion's geometry from the layout the repaired widths produce.
+            // the pointer moves). Repair it once TabView has arranged the close,
+            // and start the motion from the layout the repaired widths produce.
+            // Every layout pass that moves something holds the neighbors and
+            // New Tab at their old places again, before that frame is drawn;
+            // the next frame, when TabView has finished arranging, eases them.
+            // Holding them only from that frame drew the one before it at their
+            // new places (the group outline with them) before they eased from
+            // the old ones.
             const auto generation = ++closeGeneration;
             const bool animate = !std::isnan(addBefore) && groupSlide.Enabled() && !IsDragging() && !groupSlide.storyboard;
-            AfterNextLayout([this, alive = std::weak_ptr<int>(lifetime), generation, animate, addBefore, rowsBefore, closing] {
-                if (alive.expired() || generation != closeGeneration) return;
-                bool unsized = false;
-                for (auto const& [id, row] : rows) unsized |= std::isnan(row.Width());
-                if (unsized) {
+            struct CloseMotion { bool moved{}, repaired{}, holding{}; double addDelta{}; std::vector<Neighbor> held; };
+            OnLayoutSteps([this, alive = std::weak_ptr<int>(lifetime), generation, animate, addBefore, rowsBefore, closing,
+                           motion = CloseMotion{}](LayoutStep step) mutable {
+                if (alive.expired()) return true;
+                auto release = [&] {
+                    if (!motion.holding) return;
+                    motion.holding = false;
+                    StartAddSlide(0);
+                    SettleNeighbors(motion.held, false);
+                };
+                if (generation != closeGeneration || (motion.holding && (IsDragging() || groupSlide.storyboard))) { release(); return true; }
+                auto repair = [&] {
+                    bool unsized = false;
+                    for (auto const& [id, row] : rows) unsized |= std::isnan(row.Width());
+                    if (!unsized || motion.repaired) return false;
+                    motion.repaired = true;
                     view.TabWidthMode(Controls::TabViewWidthMode::SizeToContent);
                     view.TabWidthMode(Controls::TabViewWidthMode::Equal);
+                    return true;
+                };
+                auto hold = [&] {
+                    if (!animate || IsDragging() || groupSlide.storyboard) return;
+                    // Measure from the layout with nothing held. The lighting is
+                    // refreshed once, with the new holds in place.
+                    const bool released = motion.holding && !motion.held.empty();
+                    StartAddSlide(0);
+                    if (motion.holding) SettleNeighbors(motion.held, false, false);
+                    motion.addDelta = HoldAddButton(addBefore);
+                    motion.held = HoldNeighbors(rowsBefore, 0);
+                    // The stand-in replaces the closed tab in the same frame.
+                    if (!motion.holding) AddCloseGhost(closing);
+                    motion.holding = true;
+                    if (released && motion.held.empty()) ambient.Update();
+                };
+                if (step == LayoutStep::Pass) {
+                    auto add = FindAddButton(view);
+                    const bool addMoved = add && !std::isnan(addBefore) &&
+                        std::abs(add.TransformToVisual(root).TransformPoint({0, 0}).X - addBefore) >= .5;
+                    if (!motion.holding && !addMoved && NeighborOffsets(rowsBefore, 0).empty()) return false;
+                    motion.moved = true;
+                    repair();
+                    hold();
+                    return false;
                 }
-                if (!animate) return;
-                AfterNextLayout([this, alive, generation, addBefore, rowsBefore, closing] {
-                    if (alive.expired() || generation != closeGeneration || IsDragging() || groupSlide.storyboard) return;
-                    try {
-                        const double addDelta = HoldAddButton(addBefore);
-                        auto neighbors = HoldNeighbors(rowsBefore, 0);
-                        AddCloseGhost(closing);
-                        StartAddSlide(addDelta);
-                        SettleNeighbors(neighbors, true);
-                    } catch (...) {}
-                });
-            });
+                if (step == LayoutStep::Frame && (!motion.moved || repair())) return false;
+                if (step == LayoutStep::Expired) { repair(); if (!motion.holding) hold(); }
+                if (!motion.holding) return true;
+                StartAddSlide(motion.addDelta);
+                SettleNeighbors(motion.held, true);
+                return true;
+            }, CloseArrangeMs);
         }
         // A stationary cursor may produce no further input after this layout
         // change. Refresh a live hover now using the session's cursor sampler.
