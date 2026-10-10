@@ -9,6 +9,7 @@
 //! required fields, ranges, text and image bounds, and which fields a known
 //! row keeps by omission.
 use std::collections::{HashMap, HashSet};
+use crate::publication::{Classification, Stream};
 
 /// A 1 MiB UTF-16 publication re-serialized with every unit escaped (`\uXXXX`).
 pub(crate) const MAX_FINGERPRINT: usize = 6 * 1024 * 1024;
@@ -18,12 +19,13 @@ const MAX_GROUPING_DELAY: f64 = 60_000.0;
 
 #[derive(Default)]
 pub struct StripState {
-    revision: u32,
+    /// The accepted revision and its exact serialized form, under the shared
+    /// delta-stream rules: a replay must match it, and a late or skipped
+    /// revision is refused.
+    stream: Stream,
     rows: HashMap<u32, u32>,
     pixels: u64,
     layout: Vec<ShellStripSlot>,
-    /// Exact serialized form of the accepted revision: a replay must match it.
-    fingerprint: Vec<u16>,
     options: ShellStripOptions,
     /// Scalar row fields a delta keeps by omission. WinUI keeps the strings
     /// and pixels; this decides when they are kept.
@@ -269,11 +271,11 @@ impl StripState {
         } else { return Err(()); };
         let revision = id(e.revision).ok_or(())?;
         // A revision is accepted once; a replay must be that publication exactly.
-        if revision < self.revision || (revision == self.revision && fingerprint != self.fingerprint.as_slice()) {
-            return Err(());
+        match self.stream.classify(base, revision, fingerprint) {
+            Classification::Accepted => {}
+            Classification::Unchanged => return Ok(Resolution::Unchanged),
+            _ => return Err(()),
         }
-        if revision == self.revision { return Ok(Resolution::Unchanged); }
-        if base != 0 && base != self.revision { return Err(()); }
         // A full snapshot must state its direction; everything else defaults.
         if base == 0 && e.rtl.is_none() { return Err(()); }
         let previous = if base == 0 { ShellStripOptions::default() } else { self.options };
@@ -389,8 +391,7 @@ impl StripState {
             });
         }
         self.options = options;
-        self.fingerprint.clear();
-        self.fingerprint.extend_from_slice(fingerprint);
+        self.stream.commit(options.revision, fingerprint);
         Some(Published { options, rows: staged.rows, removed: staged.removed })
     }
 
@@ -428,7 +429,10 @@ impl StripState {
     pub fn layout(&self) -> &[ShellStripSlot] { &self.layout }
 
     pub fn apply(&mut self, base: u32, revision: u32, changes: &[ShellStripChange]) -> bool {
-        if revision <= self.revision || (base != 0 && base != self.revision) || changes.len() > 20_000 {
+        // Stricter than the envelope: this layer has no fingerprint, so an
+        // equal revision is never a harmless replay here.
+        let held = self.stream.revision();
+        if revision <= held || (base != 0 && base != held) || changes.len() > 20_000 {
             return false;
         }
         let mut ids = HashSet::new();
@@ -457,7 +461,8 @@ impl StripState {
             if change.remove { self.rows.remove(&change.id); }
             else { self.rows.insert(change.id, change.pixels); }
         }
-        self.revision = revision;
+        // publish() then records the publication's fingerprint.
+        self.stream.commit(revision, &[]);
         self.pixels = pixels;
         true
     }

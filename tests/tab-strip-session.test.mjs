@@ -674,14 +674,13 @@ test("adopted group rejects stale destinations, members, malformed sources and r
   assert.equal(f.session.receive(f.adopt),false);
 });
 
-// Presentation-only changes (a favicon, a title) between forming a gesture and
-// Firefox draining it. the presentation protocol section 5: actions should be
-// stamped with the structure revision, so these should all succeed. They are
-// todo until the strip adopts that stamp; today each is refused.
+// Presentation-only changes (a favicon, loading or audio status) between forming
+// a gesture and Firefox draining it must not revoke the gesture; structural
+// changes must. See the presentation protocol, sections 1 and 5.
 const icon = {width:2, height:2, pixels:"0000ffff0000ffff0000ffff0000ffff"};
-const pending = "refused today: see the presentation protocol section 1";
+const loading = row => Object.assign(row, {flags:row.flags | 2, status:"Loading"});
 
-test("a published favicon change does not revoke a queued reorder", {todo:pending}, () => {
+test("a published favicon change does not revoke a queued reorder", () => {
   const f = fixture();
   const action = {kind:"strip-reorder", revision:f.session.revision, id:22, beforeId:11};
   f.state.rows[1].image = icon;
@@ -690,7 +689,7 @@ test("a published favicon change does not revoke a queued reorder", {todo:pendin
   assert.deepEqual(f.reorderCalls, [[22, 11]]);
 });
 
-test("an unpublished favicon change does not revoke a queued detach", {todo:pending}, () => {
+test("an unpublished favicon change does not revoke a queued detach", () => {
   const f = fixture();
   const action = {kind:"strip-detach", revision:f.session.revision, id:22, screenX:100, screenY:-40};
   f.state.rows[0].image = icon;
@@ -698,20 +697,80 @@ test("an unpublished favicon change does not revoke a queued detach", {todo:pend
   assert.equal(f.detachCalls.length, 1);
 });
 
-test("a published title change does not revoke a queued group creation", {todo:pending}, () => {
+test("a published loading change does not revoke a queued group creation", () => {
   const f = groupingFixture();
-  f.state.rows[1].detail = "New title";
+  loading(f.state.rows[1]);
   assert.notEqual(f.session.update(), null);
   assert.equal(f.session.receive(f.groupAction), true);
   assert.deepEqual(f.created, [[11,22,true]]);
 });
 
-test("a published favicon change does not revoke a queued group join", {todo:pending}, () => {
+test("a published favicon change does not revoke a queued group join", () => {
   const f = joiningFixture();
   f.state.rows[1].image = icon;
   assert.notEqual(f.session.update(), null);
   assert.equal(f.session.receive(f.joinAction), true);
   assert.equal(f.joined.length, 1);
+});
+
+test("published and unpublished loading changes do not revoke a group toggle", () => {
+  for (const publish of [true, false]) {
+    const f = fixture();
+    loading(f.state.rows[0]);
+    if (publish) assert.notEqual(f.session.update(), null);
+    assert.equal(f.session.receive(f.action), true);
+    assert.deepEqual(f.calls, [[f.target, true]]);
+  }
+});
+
+test("several presentation publications keep an older action fresh", () => {
+  const f = fixture();
+  const action = {kind:"strip-reorder", revision:f.session.revision, id:22, beforeId:11};
+  f.state.rows[0].image = icon; f.session.update();
+  loading(f.state.rows[1]); f.session.update();
+  f.state.rows[1].flags |= 8; f.session.update();
+  assert.equal(f.session.revision, action.revision + 3);
+  assert.equal(f.session.receive(action), true);
+});
+
+test("a published split change still revokes a queued reorder", () => {
+  const f = fixture();
+  const action = {kind:"strip-reorder", revision:f.session.revision, id:22, beforeId:11};
+  f.state.rows[1].detail = "Split 1";
+  assert.notEqual(f.session.update(), null);
+  assert.equal(f.session.receive(action), false);
+  assert.equal(f.reorderCalls.length, 0);
+});
+
+test("a pin change still revokes a queued reorder", () => {
+  const f = fixture();
+  const action = {kind:"strip-reorder", revision:f.session.revision, id:22, beforeId:11};
+  f.state.rows[0].flags |= 1;
+  assert.equal(f.session.receive(action), false);
+  f.session.update();
+  assert.equal(f.session.receive(action), false);
+});
+
+test("a complete publication and a consumed action are structural boundaries", () => {
+  const f = fixture();
+  const before = f.session.revision;
+  f.session.update(true);
+  assert.equal(f.session.receive({...f.action, revision:before}), false);
+  assert.equal(f.session.receive({...f.action, revision:f.session.revision}), true);
+  // Firefox refuses or no-ops the toggle: the next publication may carry the
+  // same structure, but anything formed before the consumption stays revoked.
+  f.state.groups[0].collapsed = false;
+  const consumedAt = f.session.revision;
+  f.state.rows[0].image = icon;
+  f.session.update();
+  assert.equal(f.session.receive({...f.action, revision:consumedAt}), false);
+  assert.equal(f.session.receive({...f.action, revision:f.session.revision}), true);
+});
+
+test("revisions beyond the latest publication are refused", () => {
+  const f = fixture();
+  assert.equal(f.session.receive({...f.action, revision:f.session.revision + 1}), false);
+  assert.equal(f.calls.length, 0);
 });
 
 // Controls: the same sequence with a structural change must still refuse.

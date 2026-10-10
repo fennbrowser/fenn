@@ -3122,8 +3122,9 @@ struct NativeTabStrip {
             for (auto const& [id, value] : next) presentation.insert_or_assign(id, value);
         }
         // A gesture formed against an older presentation is not revoked here:
-        // it is already queued, carrying the revision it was formed against,
-        // and Firefox refuses it explicitly on that revision.
+        // it is already queued, carrying the revision it was formed against.
+        // Firefox refuses it only if the strip's structure changed since then;
+        // presentation-only publications leave it valid.
         if (groupingDelay != options.grouping_delay || layoutChanged || !removed.empty()) ClearGroupHover();
         groupingDelay = options.grouping_delay;
         if (groupCandidate && (!presentation.count(groupCandidate) || !presentation.at(groupCandidate).groupTarget ||

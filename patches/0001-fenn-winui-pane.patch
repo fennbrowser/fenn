@@ -3301,10 +3301,10 @@ index 0000000000..c2927f9a1d
 +}
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 0000000000..128aee51da
+index 0000000000..5dd7b09662
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,316 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3319,6 +3319,9 @@ index 0000000000..128aee51da
 +    this.ids = new WeakMap();
 +    this.nextId = 1;
 +    this.revision = 0;
++    // The publication revision at which the structure last changed. Actions
++    // name the publication they were formed against and stay fresh until then.
++    this.structureRevision = 0;
 +    if (nextWindowDragSession === 0xffffffff) throw new Error("Strip session identity exhausted");
 +    this.windowDragSession = ++nextWindowDragSession;
 +  }
@@ -3352,6 +3355,32 @@ index 0000000000..128aee51da
 +    return keys.length === Object.keys(b).length && keys.every(k => this.same(a[k], b[k]));
 +  }
 +
++  // What actions are validated against: identities, order, membership and
++  // eligibility. A row's detail stays here because it is the only record of
++  // its split pairing. Images, status, loading/audio flags and appearance are
++  // presentation, and a change to them must not revoke a queued gesture.
++  structureOf(state) {
++    if (!state) return null;
++    return {
++      rows: state.rows.map(r => [r.id, r.flags & 1, !!r.groupSource, !!r.groupTarget, r.detail]),
++      layout: state.layout || null,
++      groups: state.groups.map(g => [g.id, !!g.collapsed, g.members || null, (g.tabs || []).map(t => t.id)]),
++      windowDragSession: state.windowDragSession,
++      windowDragPrivate: !!state.windowDragPrivate,
++      rtl: !!state.rtl,
++    };
++  }
++
++  sameStructure(state) {
++    return this.same(this.structureOf(state), this.structureOf(this.state));
++  }
++
++  // No structural change has been published or consumed since `revision`.
++  fresh(revision) {
++    return Number.isSafeInteger(revision) && revision > 0 &&
++      revision >= this.structureRevision && revision <= this.revision;
++  }
++
 +  update(full = false) {
 +    const state = this.describe();
 +    if (!full && !this.consumed && this.same(state, this.state)) return null;
@@ -3380,15 +3409,20 @@ index 0000000000..128aee51da
 +      }
 +    }
 +    if (JSON.stringify(strip).length > 900000) throw new Error("Native strip snapshot too large");
++    // A complete publication or a consumed action is a boundary even when the
++    // structure looks unchanged: the native model was replaced, or Firefox
++    // executed something formed against the old publication.
++    const structural = !base || this.consumed || !this.sameStructure(state);
 +    this.state = state;
 +    this.consumed = false;
 +    this.publishedRevision = ++this.revision;
++    if (structural) this.structureRevision = this.revision;
 +    return { version: 2, publishOnly: true, strip };
 +  }
 +
 +  receive(event) {
 +    if (event?.kind === "strip-group-reorder") {
-+      if (this.consumed || event.session !== this.windowDragSession || event.revision !== this.revision ||
++      if (this.consumed || event.session !== this.windowDragSession || !this.fresh(event.revision) ||
 +          !this.moveGroup || !Number.isSafeInteger(event.group) || event.group <= 0 ||
 +          !Number.isSafeInteger(event.beforeGroup) || event.beforeGroup < 0 ||
 +          !Number.isSafeInteger(event.beforeTab) || event.beforeTab < 0 ||
@@ -3411,7 +3445,7 @@ index 0000000000..128aee51da
 +    if (event?.kind === "strip-group-detach") {
 +      // Like a tab detach, the screen point is physical pixels; Firefox owns
 +      // whether the group can leave and how its new window adopts it.
-+      if (this.consumed || event.session !== this.windowDragSession || event.revision !== this.revision ||
++      if (this.consumed || event.session !== this.windowDragSession || !this.fresh(event.revision) ||
 +          !this.detachGroup || !Number.isSafeInteger(event.group) || event.group <= 0 ||
 +          ![event.screenX,event.screenY].every(n => Number.isFinite(n) && Math.abs(n) <= 1000000)) return false;
 +      const current = this.describe();
@@ -3427,7 +3461,7 @@ index 0000000000..128aee51da
 +      // This window receives another window's whole group. The group ID is
 +      // opaque to the source window's session; that session resolves it, so
 +      // only this window's own destination is checked here.
-+      if (this.consumed || event.session !== this.windowDragSession || event.revision !== this.revision ||
++      if (this.consumed || event.session !== this.windowDragSession || !this.fresh(event.revision) ||
 +          !this.adoptGroup || !Number.isSafeInteger(event.sourceHwnd) || event.sourceHwnd <= 0 ||
 +          !Number.isSafeInteger(event.sourceSession) || event.sourceSession <= 0 ||
 +          !Number.isSafeInteger(event.group) || event.group <= 0 ||
@@ -3454,7 +3488,7 @@ index 0000000000..128aee51da
 +      return this.preview(event.id, event.request, event.scale) !== false;
 +    }
 +    if (event?.kind === "strip-all-tabs") {
-+      if (event.session !== this.windowDragSession || event.revision !== this.revision ||
++      if (event.session !== this.windowDragSession || !this.fresh(event.revision) ||
 +          !this.openAllTabsMenu ||
 +          ![event.x,event.y,event.width,event.height].every(n => Number.isFinite(n) && Math.abs(n) <= 1000000) ||
 +          event.width <= 0 || event.height <= 0) return false;
@@ -3463,7 +3497,7 @@ index 0000000000..128aee51da
 +      }) !== false;
 +    }
 +    if (event?.kind === "strip-group-context") {
-+      if (this.consumed || event.session !== this.windowDragSession || event.revision !== this.revision ||
++      if (this.consumed || event.session !== this.windowDragSession || !this.fresh(event.revision) ||
 +          !Number.isSafeInteger(event.group) || event.group <= 0 || !this.openGroupMenu ||
 +          ![event.x,event.y,event.width,event.height].every(n => Number.isFinite(n) && Math.abs(n) <= 1000000) ||
 +          event.width <= 0 || event.height <= 0) return false;
@@ -3476,7 +3510,7 @@ index 0000000000..128aee51da
 +      }) !== false;
 +    }
 +    if (event?.kind === "strip-group-select") {
-+      if (this.consumed || event.session !== this.windowDragSession || event.revision !== this.revision ||
++      if (this.consumed || event.session !== this.windowDragSession || !this.fresh(event.revision) ||
 +          !Number.isSafeInteger(event.group) || event.group <= 0 ||
 +          !Number.isSafeInteger(event.id) || event.id <= 0 || !this.selectGroupTab) return false;
 +      const current = this.describe();
@@ -3490,7 +3524,7 @@ index 0000000000..128aee51da
 +    }
 +    if (event?.kind === "strip-join-group") {
 +      if (event.session !== this.windowDragSession || this.consumed ||
-+          event.revision !== this.revision || !Number.isSafeInteger(event.revision) ||
++          !this.fresh(event.revision) ||
 +          !Number.isSafeInteger(event.id) || event.id <= 0 ||
 +          !Number.isSafeInteger(event.group) || event.group <= 0 ||
 +          !Number.isSafeInteger(event.targetId) || event.targetId < 0 ||
@@ -3517,15 +3551,15 @@ index 0000000000..128aee51da
 +      const source = current.rows.find(r => r.id === event.id);
 +      const target = current.rows.find(r => r.id === event.targetId);
 +      if (!source?.groupSource || !target?.groupTarget || !this.createGroup) return false;
-+      if (!Number.isSafeInteger(event.revision) || event.revision !== this.revision) return false;
++      if (!this.fresh(event.revision)) return false;
 +      this.consumed = true;
 +      return this.createGroup(event.id, event.targetId, event.before) !== false;
 +    }
-+    if (event?.revision !== this.revision) return false;
++    if (!this.fresh(event?.revision)) return false;
 +    if (event.kind === "strip-group") {
 +      if (!Number.isSafeInteger(event.group) || typeof event.collapsed !== "boolean") return false;
 +      const current = this.describe();
-+      if (this.consumed || !this.same(current, this.state)) return false;
++      if (this.consumed || !this.sameStructure(current)) return false;
 +      const group = current.groups.find(g => g.id === event.group);
 +      if (!group || group.collapsed === event.collapsed) return false;
 +      const target = this.targets.get(event.group);
@@ -3542,7 +3576,7 @@ index 0000000000..128aee51da
 +          (event.unpin !== undefined && typeof event.unpin !== "boolean"))
 +        return false;
 +      const current = this.describe();
-+      if (this.consumed || !this.same(current, this.state)) return false;
++      if (this.consumed || !this.sameStructure(current)) return false;
 +      const index = current.rows.findIndex(r => r.id === event.id);
 +      if (index < 0) return false;
 +      const ungroup = event.ungroup === true;
@@ -3564,7 +3598,7 @@ index 0000000000..128aee51da
 +      if (!Number.isSafeInteger(event.id) || !Number.isFinite(event.screenX) || !Number.isFinite(event.screenY))
 +        return false;
 +      const current = this.describe();
-+      if (this.consumed || !this.same(current, this.state)) return false;
++      if (this.consumed || !this.sameStructure(current)) return false;
 +      if (!current.rows.some(r => r.id === event.id)) return false;
 +      // Consume before Firefox mutates state or enters any nested browser work.
 +      this.consumed = true;
@@ -3580,6 +3614,7 @@ index 0000000000..128aee51da
 +        return false;
 +      if (this.revision === 0xffffffff) throw new Error("Native strip revision exhausted");
 +      this.revision++;
++      this.structureRevision = this.revision;
 +      this.consumed = true;
 +      return this.adopt(event.sourceHwnd, event.id, event.index) !== false;
 +    }

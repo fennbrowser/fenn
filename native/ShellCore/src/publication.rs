@@ -15,11 +15,12 @@
 
 /// How a stream is published. The kind fixes the policy for a late revision;
 /// classification is the same for all three.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StreamKind {
     /// Base/revision deltas with occasional complete publications. A late
     /// revision means the producer has diverged, so it is refused and answered
-    /// with one complete publication.
+    /// with one complete publication. The default, as the strictest policy.
+    #[default]
     Delta,
     /// Each publication is complete and the newest wins. A late one is
     /// harmless and ignored.
@@ -66,7 +67,7 @@ impl Classification {
 
 /// One publication stream's accepted identity. Revision zero means nothing has
 /// been accepted; a complete publication carries base zero.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Stream {
     kind: StreamKind,
     revision: u32,
