@@ -66,7 +66,7 @@ test('feedback is localized and late feedback cannot cross a navigation',async()
 
 test('Firefox input-button restart preserves native presentation only for its scoped text',async()=>{
  for(const stale of [false,true]) {
-  const f=fixture();f.s.editId=1;f.element.action={input:'rewritten',command:'rewrite'};
+  const f=fixture();f.s.input.controller={visibleResults:[]};f.s.editId=1;f.element.action={input:'rewritten',command:'rewrite'};
   f.s.cancelImages=()=>{};f.s.active.context.id=9;
   await f.s.loadNativeTipButtons(f.s.active,f.row,f.result);
   assert.equal(f.s.activateTipButton(f.request),'activated');

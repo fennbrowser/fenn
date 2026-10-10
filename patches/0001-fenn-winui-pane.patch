@@ -825,6 +825,23 @@ index ce4dc0f5e3..dbaa9db04a 100644
    },
    "flightStatus.featureGate": {
      defaultValues: {
+diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
+index ba254af0c6..b52c4126f6 100644
+--- a/browser/components/urlbar/UrlbarParentController.sys.mjs
++++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
+@@ -171,6 +171,12 @@ export class UrlbarParentController {
+     return AppConstants.platform;
+   }
+ 
++  // The message path supplies its serialized exposure snapshot explicitly;
++  // its child proxy has no local results. The direct path reads shared state.
++  get visibleResults() {
++    return this.#child?.visibleResults ?? [];
++  }
++
+   /**
+    * The input or an object that can forward calls to the input.
+    *
 diff --git a/browser/components/urlbar/UrlbarPrefs.sys.mjs b/browser/components/urlbar/UrlbarPrefs.sys.mjs
 index e044c8a6df..be0ea6dbee 100644
 --- a/browser/components/urlbar/UrlbarPrefs.sys.mjs
@@ -856,6 +873,33 @@ index d9d7f9dd83..d262035073 100644
    getViewTemplate(result) {
      let action = lazy.ActionsProviderQuickActions.getAction(result.payload.key);
      let isInactive = this.#isActionInactive(action);
+diff --git a/browser/components/urlbar/UrlbarProvidersManager.sys.mjs b/browser/components/urlbar/UrlbarProvidersManager.sys.mjs
+index bc6837e211..d5ff780b17 100644
+--- a/browser/components/urlbar/UrlbarProvidersManager.sys.mjs
++++ b/browser/components/urlbar/UrlbarProvidersManager.sys.mjs
+@@ -579,7 +579,7 @@ export class ProvidersManager {
+    *   The controller associated with the engagement
+    * @param {UrlbarResult[]} [visibleResults]
+    *   The results shown at engagement. Passed on the message path, where the
+-   *   parent's view has none; falls back to the view on the direct path.
++   *   parent has none; falls back to the controller on the direct path.
+    */
+   notifyEngagementChange(
+     state,
+@@ -593,10 +593,9 @@ export class ProvidersManager {
+       return;
+     }
+ 
+-    // On the message path the parent's view has no results; the caller passes
+-    // the results shown content-side. Fall back to the view for the direct path.
+-    visibleResults ??=
+-      "visibleResults" in controller.view ? controller.view.visibleResults : [];
++    // Content sends its snapshot explicitly. Direct consumers publish their
++    // validated exposure state on the controller, independently of a view.
++    visibleResults ??= controller.visibleResults ?? [];
+     const visibleResultsByProviderName = new Map();
+ 
+     visibleResults.forEach((result, index) => {
 diff --git a/browser/components/urlbar/content/SearchModeSwitcher.mjs b/browser/components/urlbar/content/SearchModeSwitcher.mjs
 index 30f5aa6556..6198840503 100644
 --- a/browser/components/urlbar/content/SearchModeSwitcher.mjs
@@ -1260,7 +1304,7 @@ index 30f5aa6556..6198840503 100644
 +
  }
 diff --git a/browser/components/urlbar/content/SmartbarInput.mjs b/browser/components/urlbar/content/SmartbarInput.mjs
-index e5dcc2c923..0878b5f587 100644
+index e5dcc2c923..52a5ba4fa8 100644
 --- a/browser/components/urlbar/content/SmartbarInput.mjs
 +++ b/browser/components/urlbar/content/SmartbarInput.mjs
 @@ -2,6 +2,10 @@
@@ -1487,6 +1531,15 @@ index e5dcc2c923..0878b5f587 100644
    } = {}) {
      // Usually this is set by a previous input event, but in certain cases, like
      // when opening Top Sites on a loaded page, it wouldn't happen. To avoid
+@@ -3015,7 +3061,7 @@ ${
+           checkValue: false,
+           startQuery:
+             UrlbarPrefs.get("scotchBonnet.enableOverride") &&
+-            this.view.visibleResults.length == 1,
++            this.controller.visibleResults.length == 1,
+         });
+       }
+       if (!enteredSearchMode) {
 @@ -3029,7 +3075,7 @@ ${
      }
  
@@ -1641,8 +1694,25 @@ index e5dcc2c923..0878b5f587 100644
  
        let event = new UIEvent("input", {
          bubbles: true,
+diff --git a/browser/components/urlbar/content/UrlbarChildController.mjs b/browser/components/urlbar/content/UrlbarChildController.mjs
+index b679c5cf1b..274e1998d0 100644
+--- a/browser/components/urlbar/content/UrlbarChildController.mjs
++++ b/browser/components/urlbar/content/UrlbarChildController.mjs
+@@ -50,6 +50,12 @@ export class UrlbarChildController {
+    */
+   isProxy = false;
+ 
++  // Semantic exposure state, published by the active presenter. Native callers
++  // publish only validated viewport-visible results, never candidate rows.
++  // Replace the array when revoking exposure so an engagement already holding
++  // its snapshot keeps the result identities it was recorded against.
++  visibleResults = [];
++
+   get logger() {
+     if (!UrlbarChildController.#logger) {
+       UrlbarChildController.#logger = UrlbarShared.getLogger({
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..c54a01725c 100644
+index a077de625f..e9b937ef01 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,6 +2,11 @@
@@ -1878,6 +1948,15 @@ index a077de625f..c54a01725c 100644
    } = {}) {
      // Usually this is set by a previous input event, but in certain cases, like
      // when opening Top Sites on a loaded page, it wouldn't happen. To avoid
+@@ -2353,7 +2409,7 @@ ${
+           checkValue: false,
+           startQuery:
+             UrlbarPrefs.get("scotchBonnet.enableOverride") &&
+-            this.view.visibleResults.length == 1,
++            this.controller.visibleResults.length == 1,
+         });
+       }
+       if (!enteredSearchMode) {
 @@ -2367,7 +2423,7 @@ ${
      }
  
@@ -2394,7 +2473,7 @@ index a077de625f..c54a01725c 100644
        let event = new UIEvent("input", {
          bubbles: true,
 diff --git a/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs b/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
-index 9596698cf9..2f35cd41c4 100644
+index 9596698cf9..892442c187 100644
 --- a/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
 +++ b/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
 @@ -53,14 +53,14 @@ export class UrlbarTelemetryUtils {
@@ -2434,8 +2513,17 @@ index 9596698cf9..2f35cd41c4 100644
      };
  
      return {
+@@ -254,7 +254,7 @@ export class UrlbarTelemetryUtils {
+   static engagementData(input, view) {
+     return {
+       searchMode: input.searchMode,
+-      visibleResults: view?.visibleResults ?? [],
++      visibleResults: input.controller.visibleResults,
+       viewIsOpen: view?.isOpen ?? false,
+       searchSource: input.getSearchSource(),
+     };
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 278cb5ca71..a744a04814 100644
+index 278cb5ca71..2e762467e1 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
 @@ -22,16 +22,6 @@ const SELECTABLE_ELEMENT_SELECTOR = "[role=button], [selectable], a";
@@ -2539,7 +2627,7 @@ index 278cb5ca71..a744a04814 100644
      let row = this.#getRowByResultId(resultId);
      if (!row) {
        return;
-@@ -624,30 +626,19 @@ export class UrlbarView {
+@@ -624,40 +626,35 @@ export class UrlbarView {
      this.#setRowSelectable(row, false);
  
      // Replace the row with a dismissal acknowledgment tip.
@@ -2576,7 +2664,24 @@ index 278cb5ca71..a744a04814 100644
    removeAccessibleFocus() {
      this.#setAccessibleFocus(null);
    }
-@@ -670,6 +661,10 @@ export class UrlbarView {
+ 
++  // Read-only compatibility for retained view consumers. The renderer is no
++  // longer the exposure-state owner; providers/native sessions use controller.
++  get visibleResults() {
++    return this.controller.visibleResults;
++  }
++
+   clear() {
+     this.#rows.textContent = "";
+     this.#rows.toggleAttribute("actionmode", false);
+     this.input.toggleAttribute("noresults", true);
+     this.clearSelection();
+-    this.visibleResults = [];
++    this.controller.visibleResults = [];
+   }
+ 
+   /**
+@@ -670,6 +667,10 @@ export class UrlbarView {
     *   True if the Urlbar focus border should be shown after the view is closed.
     */
    close({ elementPicked = false, showFocusBorder = true } = {}) {
@@ -2587,7 +2692,7 @@ index 278cb5ca71..a744a04814 100644
      const isShowingZeroPrefix =
        this.#queryContext && !this.#queryContext.searchString;
      this.controller.cancelQuery();
-@@ -929,6 +924,10 @@ export class UrlbarView {
+@@ -929,6 +930,10 @@ export class UrlbarView {
     *   The context of the query.
     */
    onQueryStarted(queryContext) {
@@ -2598,7 +2703,7 @@ index 278cb5ca71..a744a04814 100644
      this.#queryWasCancelled = false;
      this.#queryUpdatedResults = false;
      this.#openPanelInstance = null;
-@@ -960,6 +959,7 @@ export class UrlbarView {
+@@ -960,6 +965,7 @@ export class UrlbarView {
     *   The context of the query.
     */
    onQueryFinished(queryContext) {
@@ -2606,7 +2711,7 @@ index 278cb5ca71..a744a04814 100644
      this.#cancelRemoveStaleRowsTimer();
      if (this.#queryWasCancelled) {
        return;
-@@ -1018,6 +1018,7 @@ export class UrlbarView {
+@@ -1018,6 +1024,7 @@ export class UrlbarView {
    onQueryResults(queryContext) {
      this.queryContextCache.put(queryContext);
      this.#queryContext = queryContext;
@@ -2614,7 +2719,7 @@ index 278cb5ca71..a744a04814 100644
  
      if (!this.isOpen) {
        this.clear();
-@@ -1152,6 +1153,10 @@ export class UrlbarView {
+@@ -1152,6 +1159,10 @@ export class UrlbarView {
     *   it. Undefined when the row is removed without acknowledgment.
     */
    onQueryResultRemoved(id, acknowledgeDismissalL10n) {
@@ -2625,7 +2730,7 @@ index 278cb5ca71..a744a04814 100644
      let removedIndex = -1;
      let rowToRemove = null;
      for (let i = 0; i < this.#rows.children.length; i++) {
-@@ -1216,12 +1221,17 @@ export class UrlbarView {
+@@ -1216,12 +1227,17 @@ export class UrlbarView {
     *   The UrlbarResult's new menu commands.
     */
    updateResultMenuCommands(resultId, commands) {
@@ -2644,7 +2749,7 @@ index 278cb5ca71..a744a04814 100644
    }
  
    /**
-@@ -1258,7 +1268,8 @@ export class UrlbarView {
+@@ -1258,7 +1274,8 @@ export class UrlbarView {
    #queryWasCancelled;
    #removeStaleRowsTimer;
    #resultMenuResult;
@@ -2654,7 +2759,7 @@ index 278cb5ca71..a744a04814 100644
    #rows;
    #rawSelectedElement;
    #tail150 = null;
-@@ -1342,13 +1353,7 @@ export class UrlbarView {
+@@ -1342,13 +1359,7 @@ export class UrlbarView {
    }
  
    #shouldShowHeuristic(result) {
@@ -2669,7 +2774,7 @@ index 278cb5ca71..a744a04814 100644
    }
  
    /**
-@@ -2146,13 +2151,7 @@ export class UrlbarView {
+@@ -2146,13 +2157,7 @@ export class UrlbarView {
    }
  
    #updateRowButtons(item, oldResult, result) {
@@ -2684,7 +2789,7 @@ index 278cb5ca71..a744a04814 100644
  
      if (!this.#needsNewButtons(item, oldResult, result)) {
        return;
-@@ -2230,12 +2229,7 @@ export class UrlbarView {
+@@ -2230,12 +2235,7 @@ export class UrlbarView {
            "urlbarView-button",
            "urlbarView-button-" + buttonName,
          ],
@@ -2698,7 +2803,7 @@ index 278cb5ca71..a744a04814 100644
        },
        item
      );
-@@ -2800,43 +2794,8 @@ export class UrlbarView {
+@@ -2800,43 +2800,8 @@ export class UrlbarView {
    }
  
    #iconForResult(result, iconUrlOverride = null) {
@@ -2744,7 +2849,7 @@ index 278cb5ca71..a744a04814 100644
    }
  
    #getBlobUrlForResult(result, blob) {
-@@ -2921,21 +2880,22 @@ export class UrlbarView {
+@@ -2921,21 +2886,22 @@ export class UrlbarView {
  
      let description = item._elements.get("description");
      if (result.payload.descriptionL10n) {
@@ -2782,7 +2887,34 @@ index 278cb5ca71..a744a04814 100644
          }
        }
      } else {
-@@ -3164,71 +3124,7 @@ export class UrlbarView {
+@@ -3011,7 +2977,7 @@ export class UrlbarView {
+    * deferred until all rows have been updated.
+    */
+   #updateIndices() {
+-    this.visibleResults = [];
++    this.controller.visibleResults = [];
+     this.#overflowObserver.disconnect();
+ 
+     // `lastVisibleLabel` is the l10n object of the last-seen visible row label
+@@ -3033,7 +2999,7 @@ export class UrlbarView {
+ 
+       let visible = this.#isElementVisible(item);
+       if (visible) {
+-        this.visibleResults.push(result);
++        this.controller.visibleResults.push(result);
+         seenOnlyHeuristicOrSearchSuggestions &&=
+           result.heuristic ||
+           (result.type == UrlbarShared.RESULT_TYPE.SEARCH &&
+@@ -3067,7 +3033,7 @@ export class UrlbarView {
+       selectableElement = this.#getNextSelectableElement(selectableElement);
+     }
+ 
+-    this.input.toggleAttribute("noresults", !this.visibleResults.length);
++    this.input.toggleAttribute("noresults", !this.controller.visibleResults.length);
+   }
+ 
+   /**
+@@ -3164,71 +3130,7 @@ export class UrlbarView {
     *   If the current row should not have a label, returns null. Otherwise
     *   returns an l10n object for the label's l10n string: `{ id, args }`
     */
@@ -2855,7 +2987,16 @@ index 278cb5ca71..a744a04814 100644
  
    #setRowVisibility(row, visible) {
      row.toggleAttribute("hidden", !visible);
-@@ -3598,55 +3494,13 @@ export class UrlbarView {
+@@ -3277,7 +3179,7 @@ export class UrlbarView {
+     // necessarily imply we are in actions mode, therefore we should check both.
+     if (
+       this.input.searchMode?.source != UrlbarShared.RESULT_SOURCE.ACTIONS &&
+-      this.visibleResults[0]?.source != UrlbarShared.RESULT_SOURCE.ACTIONS
++      this.controller.visibleResults[0]?.source != UrlbarShared.RESULT_SOURCE.ACTIONS
+     ) {
+       this.#rows.toggleAttribute("actionmode", false);
+     }
+@@ -3598,55 +3500,13 @@ export class UrlbarView {
     *   The DOM node for the result's tile.
     */
    #setResultTitle(result, titleNode) {
@@ -2916,7 +3057,7 @@ index 278cb5ca71..a744a04814 100644
        return;
      }
  
-@@ -4160,51 +4014,6 @@ export class UrlbarView {
+@@ -4160,51 +4020,6 @@ export class UrlbarView {
      return idArgs;
    }
  
@@ -2968,7 +3109,7 @@ index 278cb5ca71..a744a04814 100644
    #hasMenuButton(result) {
      return (
        (!result.heuristic && this.#canOpenInNewTarget(result)) ||
-@@ -4217,7 +4026,7 @@ export class UrlbarView {
+@@ -4217,7 +4032,7 @@ export class UrlbarView {
     * buttons of the rows that are already built, which would otherwise keep the
     * attribute they got when they were created.
     */
@@ -2977,7 +3118,7 @@ index 278cb5ca71..a744a04814 100644
      let inaccessible = !UrlbarPrefs.get("resultMenu.keyboardAccessible");
      for (let button of this.#rows.querySelectorAll(
        ".urlbarView-button-result-menu"
-@@ -4232,98 +4041,9 @@ export class UrlbarView {
+@@ -4232,98 +4047,9 @@ export class UrlbarView {
     * @returns {boolean}
     *   Whether the result's menu offers to open it in a new tab or window.
     */
@@ -3079,7 +3220,7 @@ index 278cb5ca71..a744a04814 100644
  
    /**
     * Popuplates the result menu with commands.
-@@ -4333,106 +4053,45 @@ export class UrlbarView {
+@@ -4333,106 +4059,45 @@ export class UrlbarView {
     * @param {UrlbarResultCommand[]} options.commands
     */
    async #populateResultMenu({ panel = this.resultMenu, commands }) {
@@ -3219,7 +3360,7 @@ index 278cb5ca71..a744a04814 100644
    }
  
    // Event handlers below.
-@@ -4710,39 +4369,12 @@ export class UrlbarView {
+@@ -4710,39 +4375,12 @@ export class UrlbarView {
    }
  
    on_click(event) {
@@ -3265,7 +3406,7 @@ index 278cb5ca71..a744a04814 100644
    }
  
    on_showing(event) {
-@@ -4780,6 +4412,7 @@ export class UrlbarView {
+@@ -4780,6 +4418,7 @@ export class UrlbarView {
      if (event.target != event.currentTarget) {
        return;
      }
@@ -3273,6 +3414,138 @@ index 278cb5ca71..a744a04814 100644
      event.currentTarget.lastAnchorNode
        ?.closest(".urlbarView-row")
        ?.toggleAttribute("menu-trigger", false);
+diff --git a/browser/components/urlbar/tests/UrlbarTestUtils.sys.mjs b/browser/components/urlbar/tests/UrlbarTestUtils.sys.mjs
+index c459a4dded..facc9b40bf 100644
+--- a/browser/components/urlbar/tests/UrlbarTestUtils.sys.mjs
++++ b/browser/components/urlbar/tests/UrlbarTestUtils.sys.mjs
+@@ -1678,6 +1678,7 @@ export class UrlbarInputBaseTestUtils {
+       // so the mock dispatches queries the way a real controller does once its
+       // store is up. Tests that need engines populate it themselves.
+       controller.engineStore.initialized = true;
++      parentOptions.input.controller = controller;
+       return controller;
+     } finally {
+       lazy.ProvidersManager.getInstanceForSap = originalGetInstanceForSap;
+diff --git a/browser/components/urlbar/tests/unit/head.js b/browser/components/urlbar/tests/unit/head.js
+index 072b04d57d..5c082b9cdc 100644
+--- a/browser/components/urlbar/tests/unit/head.js
++++ b/browser/components/urlbar/tests/unit/head.js
+@@ -1135,10 +1135,13 @@ async function check_results({
+       },
+     },
+   });
+-  controller.setView({
+-    get visibleResults() {
++  Object.defineProperty(controller, "visibleResults", {
++    configurable: true,
++    get() {
+       return context.results;
+     },
++  });
++  controller.setView({
+     controller: {
+       removeResult() {},
+     },
+diff --git a/browser/components/urlbar/tests/unit/test_provider_notification.js b/browser/components/urlbar/tests/unit/test_provider_notification.js
+index b2f37826f8..5699d44236 100644
+--- a/browser/components/urlbar/tests/unit/test_provider_notification.js
++++ b/browser/components/urlbar/tests/unit/test_provider_notification.js
+@@ -85,11 +85,13 @@ add_task(async function testOnEngagementNotification() {
+   });
+ 
+   let controller = UrlbarTestUtils.mockChildController();
+-  controller.setView({
+-    get visibleResults() {
++  Object.defineProperty(controller, "visibleResults", {
++    configurable: true,
++    get() {
+       return context.results;
+     },
+   });
++  controller.setView({});
+ 
+   await ProvidersManager.getInstanceForSap("urlbar").notifyEngagementChange(
+     "engagement",
+@@ -129,11 +131,13 @@ add_task(async function testOnAbandonmentNotification() {
+   });
+ 
+   let controller = UrlbarTestUtils.mockChildController();
+-  controller.setView({
+-    get visibleResults() {
++  Object.defineProperty(controller, "visibleResults", {
++    configurable: true,
++    get() {
+       return context.results;
+     },
+   });
++  controller.setView({});
+ 
+   await ProvidersManager.getInstanceForSap("urlbar").notifyEngagementChange(
+     "abandonment",
+@@ -173,11 +177,13 @@ add_task(async function testOnImpressionNotification() {
+   });
+ 
+   let controller = UrlbarTestUtils.mockChildController();
+-  controller.setView({
+-    get visibleResults() {
++  Object.defineProperty(controller, "visibleResults", {
++    configurable: true,
++    get() {
+       return context.results;
+     },
+   });
++  controller.setView({});
+ 
+   let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+   await providersManager.notifyEngagementChange(
+@@ -240,11 +246,13 @@ add_task(async function testOnSearchSessionEndNotification() {
+   });
+ 
+   let controller = UrlbarTestUtils.mockChildController();
+-  controller.setView({
+-    get visibleResults() {
++  Object.defineProperty(controller, "visibleResults", {
++    configurable: true,
++    get() {
+       return context.results;
+     },
+   });
++  controller.setView({});
+ 
+   let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+   await providersManager.notifyEngagementChange(
+diff --git a/browser/components/urlbar/tests/unit/test_result_highlights.js b/browser/components/urlbar/tests/unit/test_result_highlights.js
+index 01ca994a13..47eef737ae 100644
+--- a/browser/components/urlbar/tests/unit/test_result_highlights.js
++++ b/browser/components/urlbar/tests/unit/test_result_highlights.js
+@@ -80,10 +80,13 @@ async function doTest({ context, expected }) {
+       },
+     },
+   });
+-  controller.setView({
+-    get visibleResults() {
++  Object.defineProperty(controller, "visibleResults", {
++    configurable: true,
++    get() {
+       return context.results;
+     },
++  });
++  controller.setView({
+     controller: {
+       removeResult() {},
+     },
+diff --git a/browser/components/urlbar/tests/unit/xpcshell.toml b/browser/components/urlbar/tests/unit/xpcshell.toml
+index 580aa47135..55e52c6ef3 100644
+--- a/browser/components/urlbar/tests/unit/xpcshell.toml
++++ b/browser/components/urlbar/tests/unit/xpcshell.toml
+@@ -4,6 +4,7 @@ run-if = [
+ ]
+ head = "head.js"
+ firefox-appdir = "browser"
++fenn-appdir = "browser"
+ support-files = ["data/engine.xml"]
+ # The shipped engines contribute tab-to-search rows to queries that prefix
+ # their domain, which these tests don't account for.
 diff --git a/browser/installer/package-manifest.in b/browser/installer/package-manifest.in
 index ae503c243c..fe10f80b9a 100644
 --- a/browser/installer/package-manifest.in
@@ -6496,7 +6769,7 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..9d21f96b04
+index 0000000000..cb11c19f75
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
 @@ -0,0 +1,1509 @@
@@ -6705,7 +6978,7 @@ index 0000000000..9d21f96b04
 +    this.nativeOpen = open;
 +    this.nativeVisible = [];
 +    this.nativeSelected = null;
-+    this.input.view.visibleResults = [];
++    this.input.controller.visibleResults = [];
 +  }
 +
 +  suspendNativePresentation() {
@@ -6719,7 +6992,7 @@ index 0000000000..9d21f96b04
 +    }
 +    this.nativeOpen = false;
 +    this.nativeVisible = [];
-+    this.input.view.visibleResults = [];
++    this.input.controller.visibleResults = [];
 +  }
 +
 +  resumeNativePresentation() {
@@ -6830,7 +7103,7 @@ index 0000000000..9d21f96b04
 +    // Cancellation can synchronously close this session through Firefox focus
 +    // and query callbacks. Detach presentation before making that call.
 +    this.input.view.nativePresentation = null;
-+    this.input.view.visibleResults = [];
++    this.input.controller.visibleResults = [];
 +    this.nativeVisible = [];
 +    this.nativeOpen = false;
 +    this.nativeSelected = null;
@@ -6842,9 +7115,9 @@ index 0000000000..9d21f96b04
 +      this.suspendNativePresentation();
 +      return;
 +    }
-+    const visible = this.input.view.visibleResults;
++    const visible = this.input.controller.visibleResults;
 +    this.cancel();
-+    if (elementPicked) this.input.view.visibleResults = visible;
++    if (elementPicked) this.input.controller.visibleResults = visible;
 +    this.nativeOpen = false;
 +  }
 +
@@ -6879,7 +7152,7 @@ index 0000000000..9d21f96b04
 +      results.push(result);
 +    }
 +    this.nativeVisible = [...request.ids];
-+    this.input.view.visibleResults = results;
++    this.input.controller.visibleResults = results;
 +    for (const result of results) {
 +      active.context.deferUserSelectionProviders?.delete(result.providerName);
 +      if (result.exposureTelemetry && !active.exposed.has(result)) {
@@ -7269,7 +7542,7 @@ index 0000000000..9d21f96b04
 +      this.modeQueryRestart = null;
 +      this.cancelImages();
 +      this.nativeVisible = []; this.nativeSelected = null;
-+      this.input.view.visibleResults = [];
++      this.input.controller.visibleResults = [];
 +      active.context = null; active.rows = []; active.results = []; active.resultIndexes = [];
 +      active.text = active.inputValue = context.searchString; active.done = false;
 +      this.autofillResult = null; this.sequence++;
@@ -7302,7 +7575,7 @@ index 0000000000..9d21f96b04
 +      this.nativeSelected = null;
 +      this.nativeVisible = [];
 +      active.exposed = new Set();
-+      this.input.view.visibleResults = [];
++      this.input.controller.visibleResults = [];
 +      this.input.controller.engagementEvent.discardTentativeExposures();
 +      for (const result of context.results) {
 +        if (result.isHiddenExposure && this.nativeOpen) {
@@ -7609,7 +7882,7 @@ index 0000000000..9d21f96b04
 +    this.cancelImages();
 +    this.nativeVisible = [];
 +    this.nativeSelected = null;
-+    this.input.view.visibleResults = [];
++    this.input.controller.visibleResults = [];
 +    this.autofillResult = null;
 +    active.context = null;
 +    active.text = active.inputValue = this.input.inputField.value;
@@ -7654,7 +7927,7 @@ index 0000000000..9d21f96b04
 +      visibleIds: this.input.view.isOpen
 +        ? active.rows
 +            .filter((row, index) =>
-+              this.input.view.visibleResults.includes(
++              this.input.controller.visibleResults.includes(
 +                active.results[active.resultIndexes[index]]
 +              )
 +            )
@@ -7725,7 +7998,7 @@ index 0000000000..9d21f96b04
 +        text: active.inputValue,
 +      };
 +    }
-+    const visibleIndex = this.input.view.visibleResults.indexOf(result);
++    const visibleIndex = this.input.controller.visibleResults.indexOf(result);
 +    if (
 +      !this.input.view.isOpen ||
 +      visibleIndex < 0 ||
@@ -7974,7 +8247,7 @@ index 0000000000..9d21f96b04
 +    if (this.input?.view.nativePresentation === this) {
 +      this.nativeVisible = [];
 +      this.nativeSelected = null;
-+      this.input.view.visibleResults = [];
++      this.input.controller.visibleResults = [];
 +    }
 +    const active = this.active;
 +    this.active = null;

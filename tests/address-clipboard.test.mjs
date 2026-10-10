@@ -95,10 +95,11 @@ test('latest carried edit is accepted before formatting the copy selection',()=>
 test('presentation release detaches before cancellation can close the session',()=>{
   const s=Object.create(context.Session.prototype);
   const view={nativePresentation:s,visibleResults:['old']};
-  s.input={view};s.nativeOpen=true;s.nativeSelected='old';s.nativeVisible=['old'];
+  const controller={visibleResults:['old']};
+  s.input={view,controller};s.nativeOpen=true;s.nativeSelected='old';s.nativeVisible=['old'];
   s.cancel=()=>{assert.equal(view.nativePresentation,null);s.input=null;};
   assert.doesNotThrow(()=>s.releaseNativePresentation());
-  assert.equal(view.visibleResults.length,0);
+  assert.equal(controller.visibleResults.length,0);
   assert.equal(s.nativeOpen,false);
   assert.doesNotThrow(()=>s.releaseNativePresentation());
 });

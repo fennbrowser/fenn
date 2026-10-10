@@ -10,7 +10,7 @@ function fixture() {
   const field={value:"example.test/",selectionStart:3,selectionEnd:13,
     setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}};
   Object.assign(s,{sessionId:"s",editId:1,selectionId:0,_revision:2,_sequence:1,changed(){},
-    input:{inputField:field,_autofillPlaceholder:{value:field.value}},
+    input:{controller:{visibleResults:[]},inputField:field,_autofillPlaceholder:{value:field.value}},
     active:{text:"exa",inputValue:"exa",nativeEdit:true,context:{id:1}}});
   return {s,field};
 }

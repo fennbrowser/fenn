@@ -10,9 +10,9 @@ vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/W
 test('a new native owner can suppress DOM results without opening suggestions',()=>{
   const s=Object.create(sessionContext.Session.prototype),calls=[];
   const view={close(){calls.push('close');},clearSelection(){calls.push('clear');},visibleResults:['old']};
-  s.input={view};s.beginNativePresentation({open:false});
+  s.input={view,controller:{visibleResults:['old']}};s.beginNativePresentation({open:false});
   assert.equal(view.nativePresentation,s);assert.equal(s.nativeOpen,false);
-  assert.deepEqual(calls,['close','clear']);assert.equal(view.visibleResults.length,0);
+  assert.deepEqual(calls,['close','clear']);assert.equal(s.input.controller.visibleResults.length,0);
   s.beginNativePresentation();
   assert.equal(s.nativeOpen,false,'ownership checks must not reopen a dismissed list');
   assert.equal(calls.length,2);
