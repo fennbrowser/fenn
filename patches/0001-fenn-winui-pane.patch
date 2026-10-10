@@ -216,7 +216,7 @@ index a182468fce..428407c54a 100644
  </body>
  </html>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..4a4695c98c 100644
+index b2b5db6040..2f3dbf352e 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
 @@ -33,6 +33,20 @@ browser.jar:
@@ -240,12 +240,14 @@ index b2b5db6040..4a4695c98c 100644
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
-@@ -104,3 +118,7 @@ browser.jar:
+@@ -104,3 +118,9 @@ browser.jar:
  
  # L10n resources and overrides.
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
++    content/browser/urlbar/UrlbarSearchModeModel.mjs (../components/urlbar/content/UrlbarSearchModeModel.mjs)
++    content/browser/urlbar/UrlbarSearchModeBinding.mjs (../components/urlbar/content/UrlbarSearchModeBinding.mjs)
 +    content/browser/urlbar/UrlbarResultPresentation.mjs (../components/urlbar/content/UrlbarResultPresentation.mjs)
 +    content/browser/urlbar/UrlbarClipboardText.mjs (../components/urlbar/content/UrlbarClipboardText.mjs)
 diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
@@ -841,14 +843,65 @@ index d9d7f9dd83..d262035073 100644
      let action = lazy.ActionsProviderQuickActions.getAction(result.payload.key);
      let isInactive = this.#isActionInactive(action);
 diff --git a/browser/components/urlbar/content/SearchModeSwitcher.mjs b/browser/components/urlbar/content/SearchModeSwitcher.mjs
-index 30f5aa6556..33f65b5997 100644
+index 30f5aa6556..2e0a135eb2 100644
 --- a/browser/components/urlbar/content/SearchModeSwitcher.mjs
 +++ b/browser/components/urlbar/content/SearchModeSwitcher.mjs
-@@ -173,6 +173,89 @@ export class SearchModeSwitcher {
+@@ -11,8 +11,8 @@
+  */
+ 
+ import UrlbarPrefs from "chrome://browser/content/urlbar/UrlbarContentPrefs.mjs";
+-import { UrlbarContentUtils } from "chrome://browser/content/urlbar/UrlbarContentUtils.mjs";
+ import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
++import { UrlbarSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs";
+ 
+ const lazy = typeof ChromeUtils != "undefined" ? {} : null;
+ 
+@@ -22,18 +22,9 @@ if (lazy) {
+       "moz-src:///browser/components/customizableui/CustomizableUI.sys.mjs",
+     OpenSearchManager:
+       "moz-src:///browser/components/search/OpenSearchManager.sys.mjs",
+-    SearchUIUtils: "moz-src:///browser/components/search/SearchUIUtils.sys.mjs",
+   });
+ }
+ 
+-/** @type {Localization} */
+-let l10n;
+-
+-function getL10n() {
+-  l10n ??= new Localization(["browser/browser.ftl"]);
+-  return l10n;
+-}
+-
+ // Default icon used for engines that do not have icons loaded.
+ const DEFAULT_ENGINE_ICON =
+   "chrome://browser/skin/search-engine-placeholder@2x.png";
+@@ -70,7 +61,7 @@ export class SearchModeSwitcher {
+    * The maximum number of openSearch engines available to install
+    * to display.
+    */
+-  static MAX_OPENSEARCH_ENGINES = 3;
++  static MAX_OPENSEARCH_ENGINES = UrlbarSearchModeModel.MAX_OPENSEARCH_ENGINES;
+ 
+   /** @type {PanelList} */
+   #panelList;
+@@ -91,12 +82,6 @@ export class SearchModeSwitcher {
+   // The value of the urlbar the last time a search mode was changed.
+   #lastInputValue;
+ 
+-  // Keep a cache of the engine list as the keyboard functionality
+-  // needs sync access to them.
+-  #engines = [];
+-  // Keep track of the currently selected engine when the user is cycling
+-  // through them with Accel+Up/Down.
+-  #selectedIndex = 0;
+   /**
+    * Store the last page each browser had its badge counted for as we
+    * don't overcount page visits when badge is updated.
+@@ -173,6 +158,16 @@ export class SearchModeSwitcher {
      );
    }
  
-+  // Native presentation reuses this switcher's policy and semantic handlers.
++  // Visibility remains presenter-owned until the address visibility contract is extracted.
 +  nativeVisibility() {
 +    const window = this.#input.window;
 +    const shown = element => window.getComputedStyle(element).display !== "none" &&
@@ -857,159 +910,308 @@ index 30f5aa6556..33f65b5997 100644
 +    return {modeButtonVisible:visible, modeExitVisible:visible && shown(this.#closebutton)};
 +  }
 +
-+  async nativeSnapshot() {
-+    await this.#populateEngines();
-+    const entries = await Promise.all(this.#engines.map(async engine => ({
-+      key: engine.source ? `local:${engine.restrict}` : `engine:${engine.id}`,
-+      label: engine.source ? await this.#getSearchModeLabel(engine.source) : engine.name,
-+      icon: engine.source ? null : await engine.getIconURL().catch(() => null),
-+      symbol: engine.source ? UrlbarShared.getResultSourceName(engine.source) : "search",
-+      local: !!engine.source,
-+    })));
-+    const browser = this.#input.window.gBrowser?.selectedBrowser;
-+    const offered = browser ? lazy.OpenSearchManager.getInstallableEngines(browser)
-+      .slice(0, SearchModeSwitcher.MAX_OPENSEARCH_ENGINES) : [];
-+    // The DOM inserts each offered engine after the same separator.
-+    for (const engine of offered.toReversed()) {
-+      entries.push({key:`install:${engine.uri}`, label:await getL10n().formatValue(
-+        "urlbar-searchmode-popup-add-engine", {engineName:engine.title}),
-+        icon:engine.icon, symbol:"add", local:true});
-+    }
-+    const settingsId = UrlbarPrefs.get("browser.nova.enabled")
-+      ? "urlbar-searchmode-popup-settings2" : "urlbar-searchmode-popup-search-settings2";
-+    const [settings] = await getL10n().formatMessages([{id: settingsId}]);
-+    entries.push({key:"settings", label:settings.value || settings.attributes?.find(a => a.name == "label")?.value || "Settings", symbol:"settings", local:true});
-+    const displayed = await this.#getDisplayedEngineDetails(this.#input.searchMode);
-+    const mode = this.#input.searchMode;
-+    const [buttonMessage, exitMessage] = await getL10n().formatMessages([
-+      {id: displayed.label ? "urlbar-searchmode-button3" : "urlbar-searchmode-button-no-engine2", args:{engine:displayed.label || ""}},
-+      {id:"urlbar-searchmode-exit-button2"},
-+    ]);
-+    const title = message => message.attributes?.find(a => a.name == "title")?.value || "";
-+    return {buttonLabel:title(buttonMessage), exitLabel:title(exitMessage), entries, label:displayed.label || "Search", icon:(mode && !mode.engineName) || Object.values(UrlbarShared.ICON).includes(displayed.icon) ? null : displayed.icon,
-+      symbol:mode && !mode.engineName ? UrlbarShared.getResultSourceName(mode.source) : "search",
-+      active:!!mode};
-+  }
-+
-+  nativeOpened() {
-+    this.#input.controller.engagementEvent.discard();
-+    this.#input.view.close({showFocusBorder:false});
-+    Glean.urlbarUnifiedsearchbutton.opened.add(1);
-+  }
-+
-+  async nativeActivate(key, event, isCurrent, isContextCurrent = isCurrent) {
-+    await this.#populateEngines();
-+    if (!isCurrent()) return false;
-+    const options = {focus:false, startQuery:false};
-+    if (key.startsWith("install:")) {
-+      const browser = this.#input.window.gBrowser?.selectedBrowser;
-+      const engine = browser && lazy.OpenSearchManager.getInstallableEngines(browser)
-+        .slice(0, SearchModeSwitcher.MAX_OPENSEARCH_ENGINES).find(e => key == `install:${e.uri}`);
-+      if (!engine) return false;
-+      const added = await this.#installOpenSearchEngine(engine, options, isContextCurrent);
-+      return added && isContextCurrent() ? "query" : false;
-+    }
-+    if (key == "settings") {
-+      this.#openPreferences();
-+      return "settings";
-+    }
-+    if (key == "exit") {
-+      this.#input.searchMode = null;
-+      this.#selectedIndex = 0;
-+      this.#engines = [];
-+      return "query";
-+    }
-+    const engine = this.#engines.find(item =>
-+      key == (item.source ? `local:${item.restrict}` : `engine:${item.id}`));
-+    if (!engine) return false;
-+    if (engine.source) {
-+      this.#localSearch(engine.restrict, options);
-+      return "query";
-+    }
-+    const query = !event.shiftKey && this.#whereToOpenSerp(event) == "current";
-+    this.#remoteSearch(engine, event, options);
-+    return query ? "query" : "navigation";
-+  }
 +
    async #onPopupShowing() {
      // Discard event to avoid recording an abandonment.
      this.#input.controller.engagementEvent.discard();
-@@ -995,9 +1078,10 @@ export class SearchModeSwitcher {
+@@ -195,11 +190,7 @@ export class SearchModeSwitcher {
+   }
+ 
+   #openPreferences() {
+-    this.#input.parentController.openPreferences("paneSearch");
+-
+-    if (this.#input.sapName == "urlbar") {
+-      Glean.urlbarUnifiedsearchbutton.picked.settings.add(1);
+-    }
++    this.#input.searchModeModel.openPreferences();
+   }
+ 
+   /**
+@@ -210,9 +201,7 @@ export class SearchModeSwitcher {
+    */
+   exitSearchMode(event) {
+     event.preventDefault();
+-    this.#input.searchMode = null;
+-    this.#selectedIndex = 0;
+-    this.#engines = [];
++    this.#input.searchModeModel.exit();
+     // Update the result by the default engine.
+     this.#input.startQuery();
+   }
+@@ -480,17 +469,17 @@ export class SearchModeSwitcher {
+   }
+ 
+   async #handleAccelUpDown(event) {
+-    if (!this.#engines.length) {
++    if (!this.#input.searchModeModel.engines.length) {
+       await this.#populateEngines();
+     }
+-    this.#selectedIndex += event.keyCode == KeyEvent.DOM_VK_UP ? -1 : 1;
+-    if (this.#selectedIndex > this.#engines.length - 1) {
+-      this.#selectedIndex = 0;
++    this.#input.searchModeModel.selectedIndex += event.keyCode == KeyEvent.DOM_VK_UP ? -1 : 1;
++    if (this.#input.searchModeModel.selectedIndex > this.#input.searchModeModel.engines.length - 1) {
++      this.#input.searchModeModel.selectedIndex = 0;
+     }
+-    if (this.#selectedIndex < 0) {
+-      this.#selectedIndex = this.#engines.length - 1;
++    if (this.#input.searchModeModel.selectedIndex < 0) {
++      this.#input.searchModeModel.selectedIndex = this.#input.searchModeModel.engines.length - 1;
+     }
+-    let selectedEngine = this.#engines[this.#selectedIndex];
++    let selectedEngine = this.#input.searchModeModel.engines[this.#input.searchModeModel.selectedIndex];
+     this.#input.setSearchMode(
+       {
+         entry: "searchbutton",
+@@ -508,31 +497,7 @@ export class SearchModeSwitcher {
+   }
+ 
+   async #populateEngines() {
+-    let searchEngines = [];
+-
+-    try {
+-      await this.#input.controller.engineStore.init();
+-      searchEngines = this.#input.controller.engineStore
+-        .getEngines()
+-        .filter(engine => !engine.hideOneOffButton);
+-    } catch {
+-      // Search service failed but we still offer local search modes.
+-    }
+-
+-    if (this.#input.sapName != "urlbar") {
+-      this.#engines = searchEngines;
+-    } else {
+-      // After the settings redesign we no longer use the prefs to hide local
+-      // search modes. Hence when the settings redesign is enabled we show
+-      // all local search modes regardless of the prefs.
+-      this.#engines = searchEngines.concat(
+-        UrlbarShared.LOCAL_SEARCH_MODES.filter(
+-          engine =>
+-            UrlbarPrefs.get("browser.settings-redesign.enabled") ||
+-            UrlbarPrefs.get(engine.pref)
+-        )
+-      );
+-    }
++    await this.#input.searchModeModel.populateEngines();
+   }
+ 
+   /**
+@@ -800,43 +765,10 @@ export class SearchModeSwitcher {
+     return WORDMARK_ENGINE_FAMILIES.has(family) ? family : null;
+   }
+ 
+-  async #getSearchModeLabel(source) {
+-    let mode = UrlbarShared.LOCAL_SEARCH_MODES.find(m => m.source == source);
+-    let [str] = await getL10n().formatMessages([{ id: mode.uiLabel }]);
+-    return str.value;
+-  }
+-
+   async #getDisplayedEngineDetails(searchMode = null) {
+-    if (!searchMode || searchMode.engineName) {
+-      try {
+-        await this.#input.controller.engineStore.init();
+-      } catch {
+-        return { label: null, icon: SearchModeSwitcher.ICON_GLASS };
+-      }
+-
+-      let engine = searchMode
+-        ? this.#input.controller.engineStore.getEngineByName(
+-            searchMode.engineName
+-          )
+-        : this.#input.controller.engineStore.default;
+-      if (!engine) {
+-        return { label: null, icon: SearchModeSwitcher.ICON_GLASS };
+-      }
+-      let icon = (await engine.getIconURL()) ?? SearchModeSwitcher.ICON_GLASS;
+-      return {
+-        label: engine.name,
+-        icon,
+-        wordmark: this.#getEngineWordmark(engine),
+-      };
+-    }
+-
+-    let mode = UrlbarShared.LOCAL_SEARCH_MODES.find(
+-      m => m.source == searchMode.source
+-    );
+-    return {
+-      label: await this.#getSearchModeLabel(searchMode.source),
+-      icon: mode.icon,
+-    };
++    const {engine, ...details} = await this.#input.searchModeModel.displayedEngineDetails(searchMode);
++    if (engine) details.wordmark = this.#getEngineWordmark(engine);
++    return details;
+   }
+ 
+   /**
+@@ -847,7 +779,6 @@ export class SearchModeSwitcher {
+       item.remove();
+     }
+ 
+-    let browser = this.#input.window.gBrowser;
+     let installedEngineSeparator = this.#panelList.querySelector(
+       ".searchmode-switcher-panel-installed-engine-separator"
+     );
+@@ -856,7 +787,7 @@ export class SearchModeSwitcher {
+     );
+ 
+     await this.#populateEngines();
+-    for (let engine of this.#engines) {
++    for (let engine of this.#input.searchModeModel.engines) {
+       if (engine.source) {
+         footerSeparator.before(await this.#buildLocalSearchButton(engine));
+       } else if (engine.name) {
+@@ -868,13 +799,7 @@ export class SearchModeSwitcher {
+ 
+     // Add engines that can be installed. Only a browser window has a page to
+     // offer them from.
+-    let openSearchEngines = browser
+-      ? lazy.OpenSearchManager.getInstallableEngines(browser.selectedBrowser)
+-      : [];
+-    openSearchEngines = openSearchEngines.slice(
+-      0,
+-      SearchModeSwitcher.MAX_OPENSEARCH_ENGINES
+-    );
++    let openSearchEngines = this.#input.searchModeModel.offeredEngines();
+ 
+     for (let engine of openSearchEngines) {
+       let menuitem = this.#createButton(engine.icon);
+@@ -918,14 +843,7 @@ export class SearchModeSwitcher {
+    *   Where the search engine result page should be opened.
+    */
+   #whereToOpenSerp(event) {
+-    let where = UrlbarContentUtils.whereToOpenLink(event);
+-    // Usually, shift means "open in new window", but in the search
+-    // mode switcher it means "open SERP even if urlbar is empty",
+-    // so we just return tab, tabshifted or current but never window.
+-    if (where.startsWith("tab")) {
+-      return where;
+-    }
+-    return "current";
++    return this.#input.searchModeModel.disposition(event);
+   }
+ 
+   /**
+@@ -995,14 +913,8 @@ export class SearchModeSwitcher {
     * @param {string} restrict
     *   The restrict token
     */
 -  #localSearch(restrict) {
+-    this.#input.search(restrict + " " + this.#getSearchString(), {
+-      searchModeEntry: "searchbutton",
+-    });
+-
+-    if (this.#input.sapName == "urlbar") {
+-      Glean.urlbarUnifiedsearchbutton.picked.local_search.add(1);
+-    }
 +  #localSearch(restrict, options = {}) {
-     this.#input.search(restrict + " " + this.#getSearchString(), {
-       searchModeEntry: "searchbutton",
-+      ...options,
-     });
++    this.#input.searchModeModel.localSearch(restrict, options);
+   }
  
-     if (this.#input.sapName == "urlbar") {
-@@ -1014,7 +1098,7 @@ export class SearchModeSwitcher {
+   /**
+@@ -1014,36 +926,9 @@ export class SearchModeSwitcher {
     * @param {KeyboardEvent|MouseEvent} event
     *   The event that triggered the search.
     */
 -  #remoteSearch(searchEngine, event) {
+-    let whereToOpenSerp = this.#whereToOpenSerp(event);
+-    let searchString = this.#getSearchString();
+-    if (!event.shiftKey && whereToOpenSerp == "current") {
+-      // Go into searchmode.
+-      this.closePanel();
+-      this.#input.search(searchString, {
+-        searchEngine,
+-        searchModeEntry: "searchbutton",
+-      });
+-    } else {
+-      // Go directly to SERP.
+-      if (whereToOpenSerp == "current") {
+-        this.closePanel();
+-      }
+-
+-      this.#input.openSearchEnginePage(searchString, {
+-        event,
+-        searchEngine,
+-        where: whereToOpenSerp,
+-        inBackground: true,
+-      });
+-    }
+-
+-    if (this.#input.sapName == "urlbar") {
+-      // TODO do we really need to distinguish here?
+-      Glean.urlbarUnifiedsearchbutton.picked[
+-        searchEngine.isConfigEngine ? "builtin_search" : "addon_search"
+-      ].add(1);
+-    }
 +  #remoteSearch(searchEngine, event, options = {}) {
-     let whereToOpenSerp = this.#whereToOpenSerp(event);
-     let searchString = this.#getSearchString();
-     if (!event.shiftKey && whereToOpenSerp == "current") {
-@@ -1023,6 +1107,7 @@ export class SearchModeSwitcher {
-       this.#input.search(searchString, {
-         searchEngine,
-         searchModeEntry: "searchbutton",
-+        ...options,
-       });
-     } else {
-       // Go directly to SERP.
-@@ -1168,12 +1253,14 @@ export class SearchModeSwitcher {
++    if (this.#whereToOpenSerp(event) == "current") this.closePanel();
++    this.#input.searchModeModel.remoteSearch(searchEngine, event, options);
+   }
+ 
+   /**
+@@ -1052,10 +937,7 @@ export class SearchModeSwitcher {
+    * @returns {string}
+    */
+   #getSearchString() {
+-    if (this.#input.getAttribute("pageproxystate") == "valid") {
+-      return "";
+-    }
+-    return this.#input.value;
++    return this.#input.searchModeModel.searchString();
+   }
+ 
+   /**
+@@ -1168,25 +1050,8 @@ export class SearchModeSwitcher {
     * @param {OpenSearchData} engine
     *   The engine to install.
     */
 -  async #installOpenSearchEngine(engine) {
-+  async #installOpenSearchEngine(engine, options = {}, isCurrent = () => true) {
-     /** @type {(_: string, newEngine: PartialSearchEngine) => void} */
-     let observer = (_, newEngine) => {
-+      if (!isCurrent()) { this.#input.controller.engineStore.removeObserver(observer); return; }
-       this.#input.search(this.#getSearchString(), {
-         searchEngine: newEngine,
-         searchModeEntry: "searchbutton",
-+        ...options,
-       });
- 
-       this.#input.controller.engineStore.removeObserver(observer);
-@@ -1183,10 +1270,12 @@ export class SearchModeSwitcher {
-       Glean.urlbarUnifiedsearchbutton.picked.addon_search.add(1);
-     }
- 
+-    /** @type {(_: string, newEngine: PartialSearchEngine) => void} */
+-    let observer = (_, newEngine) => {
+-      this.#input.search(this.#getSearchString(), {
+-        searchEngine: newEngine,
+-        searchModeEntry: "searchbutton",
+-      });
+-
+-      this.#input.controller.engineStore.removeObserver(observer);
+-    };
+-    this.#input.controller.engineStore.addObserver(observer);
+-    if (this.#input.sapName == "urlbar") {
+-      Glean.urlbarUnifiedsearchbutton.picked.addon_search.add(1);
+-    }
+-
 -    await lazy.SearchUIUtils.addOpenSearchEngine(
-+    const added = await lazy.SearchUIUtils.addOpenSearchEngine(
-       engine.uri,
-       engine.icon,
-       this.#input.window.gBrowser.selectedBrowser.browsingContext
-     );
-+    if (!added || !isCurrent()) this.#input.controller.engineStore.removeObserver(observer);
-+    return added;
+-      engine.uri,
+-      engine.icon,
+-      this.#input.window.gBrowser.selectedBrowser.browsingContext
+-    );
++  async #installOpenSearchEngine(engine, options = {}, isCurrent = () => true) {
++    return this.#input.searchModeModel.install(engine, options, isCurrent);
    }
++
  }
 diff --git a/browser/components/urlbar/content/SmartbarInput.mjs b/browser/components/urlbar/content/SmartbarInput.mjs
-index e5dcc2c923..b927447965 100644
+index e5dcc2c923..86b86ff90d 100644
 --- a/browser/components/urlbar/content/SmartbarInput.mjs
 +++ b/browser/components/urlbar/content/SmartbarInput.mjs
-@@ -2,6 +2,8 @@
+@@ -2,6 +2,9 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  
 +import { UrlbarResultPresentation } from "chrome://browser/content/urlbar/UrlbarResultPresentation.mjs";
 +import { UrlbarResultActions } from "chrome://browser/content/urlbar/UrlbarResultActions.mjs";
++import { bindSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeBinding.mjs";
  import { SearchModeSwitcher } from "chrome://browser/content/urlbar/SearchModeSwitcher.mjs";
  import { UrlbarChildController } from "chrome://browser/content/urlbar/UrlbarChildController.mjs";
  import { UrlbarEventBufferer } from "chrome://browser/content/urlbar/UrlbarEventBufferer.mjs";
-@@ -150,6 +152,16 @@ const MAX_CONTEXT_WEBSITES = 5;
+@@ -150,6 +153,21 @@ const MAX_CONTEXT_WEBSITES = 5;
   * Implements the text input part of the address bar UI.
   */
  export class SmartbarInput extends HTMLElement {
++  #searchModeModel;
++  get searchModeModel() {
++    return (this.#searchModeModel ??= bindSearchModeModel(this));
++  }
++
 +  #resultPresentation;
 +  get resultPresentation() {
 +    return (this.#resultPresentation ??= new UrlbarResultPresentation(this.document.l10n));
@@ -1023,7 +1225,16 @@ index e5dcc2c923..b927447965 100644
    static get #markup() {
      return `
        <html:smartwindow-smartbar-glow class="smartbar-glow"></html:smartwindow-smartbar-glow>
-@@ -2439,20 +2451,24 @@ ${
+@@ -639,6 +657,8 @@ ${
+     this.controller.removeListener(this);
+ 
+     this.searchModeSwitcher.disconnect();
++    this.#searchModeModel?.dispose();
++    this.#searchModeModel = null;
+ 
+     if (this._copyCutController) {
+       this.inputField.controllers.removeController(this._copyCutController);
+@@ -2439,20 +2459,24 @@ ${
     * @param {UrlbarResult} options.result The result that was picked.
     * @param {Event} options.event The event that picked the result.
     * @param {HTMLElement} [options.element] The picked view element, if available.
@@ -1051,7 +1262,7 @@ index e5dcc2c923..b927447965 100644
        return;
      }
  
-@@ -2496,6 +2512,7 @@ ${
+@@ -2496,6 +2520,7 @@ ${
        this.controller.engagementEvent.record(event, {
          result,
          element,
@@ -1059,7 +1270,7 @@ index e5dcc2c923..b927447965 100644
          location: this.sapLocation,
          searchSource: this.getSearchSource(event),
          searchString: this._lastSearchString,
-@@ -2506,12 +2523,13 @@ ${
+@@ -2506,12 +2531,13 @@ ${
        return;
      }
  
@@ -1074,7 +1285,7 @@ index e5dcc2c923..b927447965 100644
        urlOverride: resultUrl,
      });
      let where = this.controller.whereToOpen(event);
-@@ -2540,6 +2558,7 @@ ${
+@@ -2540,6 +2566,7 @@ ${
        this.controller.engagementEvent.record(event, {
          result,
          element,
@@ -1082,7 +1293,7 @@ index e5dcc2c923..b927447965 100644
          location: this.sapLocation,
          selType: "canonized",
          searchSource: this.getSearchSource(event),
-@@ -2626,11 +2645,12 @@ ${
+@@ -2626,11 +2653,12 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1096,7 +1307,7 @@ index e5dcc2c923..b927447965 100644
            windowMode: this.windowMode,
          });
  
-@@ -2649,10 +2669,11 @@ ${
+@@ -2649,10 +2677,11 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -1109,7 +1320,7 @@ index e5dcc2c923..b927447965 100644
              windowMode: this.windowMode,
            });
            this.maybeConfirmSearchModeFromResult({
-@@ -2719,6 +2740,7 @@ ${
+@@ -2719,6 +2748,7 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1117,7 +1328,7 @@ index e5dcc2c923..b927447965 100644
            location: this.sapLocation,
            selType: "tip",
            searchSource: this.getSearchSource(event),
-@@ -2738,11 +2760,12 @@ ${
+@@ -2738,11 +2768,12 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -1131,7 +1342,7 @@ index e5dcc2c923..b927447965 100644
              windowMode: this.windowMode,
            });
            return;
-@@ -2753,6 +2776,7 @@ ${
+@@ -2753,6 +2784,7 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1139,7 +1350,7 @@ index e5dcc2c923..b927447965 100644
            location: this.sapLocation,
            selType: "extension",
            searchSource: this.getSearchSource(event),
-@@ -2781,10 +2805,11 @@ ${
+@@ -2781,10 +2813,11 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1152,7 +1363,7 @@ index e5dcc2c923..b927447965 100644
            windowMode: this.windowMode,
          });
          this.maybeConfirmSearchModeFromResult({
-@@ -2798,10 +2823,11 @@ ${
+@@ -2798,10 +2831,11 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1165,7 +1376,7 @@ index e5dcc2c923..b927447965 100644
            windowMode: this.windowMode,
          });
          return;
-@@ -2841,9 +2867,10 @@ ${
+@@ -2841,9 +2875,10 @@ ${
            {
              result,
              element,
@@ -1177,7 +1388,7 @@ index e5dcc2c923..b927447965 100644
              searchSource: this.getSearchSource(event),
              windowMode: this.windowMode,
            }
-@@ -2854,9 +2881,10 @@ ${
+@@ -2854,9 +2889,10 @@ ${
      this.controller.engagementEvent.record(event, {
        result,
        element,
@@ -1189,7 +1400,7 @@ index e5dcc2c923..b927447965 100644
        searchSource: this.getSearchSource(event),
        windowMode: this.windowMode,
      });
-@@ -2945,6 +2973,7 @@ ${
+@@ -2945,6 +2981,7 @@ ${
      event = null,
      urlOverride = null,
      element = null,
@@ -1197,7 +1408,7 @@ index e5dcc2c923..b927447965 100644
    } = {}) {
      // Usually this is set by a previous input event, but in certain cases, like
      // when opening Top Sites on a loaded page, it wouldn't happen. To avoid
-@@ -3029,7 +3058,7 @@ ${
+@@ -3029,7 +3066,7 @@ ${
      }
  
      if (!result.autofill) {
@@ -1206,7 +1417,7 @@ index e5dcc2c923..b927447965 100644
        this.setValue(value, {
          actionType: this.#getActionTypeFromResult(result),
        });
-@@ -4484,7 +4513,8 @@ ${
+@@ -4484,7 +4521,8 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
@@ -1216,7 +1427,7 @@ index e5dcc2c923..b927447965 100644
      switch (result.type) {
        case UrlbarShared.RESULT_TYPE.KEYWORD:
          return result.payload.input;
-@@ -4511,7 +4541,7 @@ ${
+@@ -4511,7 +4549,7 @@ ${
        case UrlbarShared.RESULT_TYPE.AI_CHAT:
          return result.payload.query ?? "";
        case UrlbarShared.RESULT_TYPE.TIP: {
@@ -1225,7 +1436,7 @@ index e5dcc2c923..b927447965 100644
          if (value) {
            return value;
          }
-@@ -5064,34 +5094,35 @@ ${
+@@ -5064,34 +5102,35 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -1268,23 +1479,29 @@ index e5dcc2c923..b927447965 100644
        where = "tab";
      }
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..d94964f354 100644
+index a077de625f..71a950fa08 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
-@@ -2,6 +2,9 @@
+@@ -2,6 +2,10 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  
 +import { formatUrlbarClipboardText } from "chrome://browser/content/urlbar/UrlbarClipboardText.mjs";
 +import { UrlbarResultPresentation } from "chrome://browser/content/urlbar/UrlbarResultPresentation.mjs";
 +import { UrlbarResultActions } from "chrome://browser/content/urlbar/UrlbarResultActions.mjs";
++import { bindSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeBinding.mjs";
  import { SearchModeSwitcher } from "chrome://browser/content/urlbar/SearchModeSwitcher.mjs";
  import { UrlbarChildController } from "chrome://browser/content/urlbar/UrlbarChildController.mjs";
  import { UrlbarEventBufferer } from "chrome://browser/content/urlbar/UrlbarEventBufferer.mjs";
-@@ -134,6 +137,16 @@ function parseMarkupToFragment(markup) {
+@@ -134,6 +138,21 @@ function parseMarkupToFragment(markup) {
   * extends this class (e.g. `UrlbarInput`, `SearchbarInput`).
   */
  export class UrlbarInputBase extends HTMLElement {
++  #searchModeModel;
++  get searchModeModel() {
++    return (this.#searchModeModel ??= bindSearchModeModel(this));
++  }
++
 +  #resultPresentation;
 +  get resultPresentation() {
 +    return (this.#resultPresentation ??= new UrlbarResultPresentation(this.document.l10n));
@@ -1298,7 +1515,16 @@ index a077de625f..d94964f354 100644
    static get #markup() {
      return `
        <div class="urlbar-background"/>
-@@ -1716,20 +1729,32 @@ ${
+@@ -600,6 +619,8 @@ ${
+     this.sapDisconnectedCallback();
+ 
+     this.searchModeSwitcher.disconnect();
++    this.#searchModeModel?.dispose();
++    this.#searchModeModel = null;
+ 
+     if (this._copyCutController) {
+       this.inputField.controllers.removeController(this._copyCutController);
+@@ -1716,20 +1737,32 @@ ${
     * @param {UrlbarResult} options.result The result that was picked.
     * @param {Event} options.event The event that picked the result.
     * @param {HTMLElement} [options.element] The picked view element, if available.
@@ -1334,7 +1560,7 @@ index a077de625f..d94964f354 100644
        return;
      }
  
-@@ -1784,6 +1809,7 @@ ${
+@@ -1784,6 +1817,7 @@ ${
        this.controller.engagementEvent.record(event, {
          result,
          element,
@@ -1342,7 +1568,7 @@ index a077de625f..d94964f354 100644
          searchString: this._lastSearchString,
          selType: "dismiss",
          searchSource: this.getSearchSource(event),
-@@ -1793,12 +1819,13 @@ ${
+@@ -1793,12 +1827,13 @@ ${
        return;
      }
  
@@ -1357,7 +1583,7 @@ index a077de625f..d94964f354 100644
        urlOverride: resultUrl,
      });
  
-@@ -1815,8 +1842,8 @@ ${
+@@ -1815,8 +1850,8 @@ ${
        private: this.isPrivate,
      };
  
@@ -1368,7 +1594,7 @@ index a077de625f..d94964f354 100644
  
      if (openIn) {
        switch (openIn) {
-@@ -1868,6 +1895,7 @@ ${
+@@ -1868,6 +1903,7 @@ ${
        this.controller.engagementEvent.record(event, {
          result,
          element,
@@ -1376,7 +1602,7 @@ index a077de625f..d94964f354 100644
          selType: "canonized",
          searchString: this._lastSearchString,
          searchSource: this.getSearchSource(event),
-@@ -1951,9 +1979,10 @@ ${
+@@ -1951,9 +1987,10 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1388,7 +1614,7 @@ index a077de625f..d94964f354 100644
            searchSource: this.getSearchSource(event),
            windowMode: this.windowMode,
          });
-@@ -1973,8 +2002,9 @@ ${
+@@ -1973,8 +2010,9 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -1399,7 +1625,7 @@ index a077de625f..d94964f354 100644
              searchSource: this.getSearchSource(event),
              windowMode: this.windowMode,
            });
-@@ -2077,6 +2107,7 @@ ${
+@@ -2077,6 +2115,7 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1407,7 +1633,7 @@ index a077de625f..d94964f354 100644
            selType: "tip",
            searchString: this._lastSearchString,
            searchSource: this.getSearchSource(event),
-@@ -2099,9 +2130,11 @@ ${
+@@ -2099,9 +2138,11 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -1420,7 +1646,7 @@ index a077de625f..d94964f354 100644
              searchSource: this.getSearchSource(event),
              windowMode: this.windowMode,
            });
-@@ -2119,6 +2152,7 @@ ${
+@@ -2119,6 +2160,7 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1428,7 +1654,7 @@ index a077de625f..d94964f354 100644
            selType: "extension",
            searchString: this._lastSearchString,
            searchSource: this.getSearchSource(event),
-@@ -2146,8 +2180,9 @@ ${
+@@ -2146,8 +2188,9 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1439,7 +1665,7 @@ index a077de625f..d94964f354 100644
            searchSource: this.getSearchSource(event),
            windowMode: this.windowMode,
          });
-@@ -2163,8 +2198,9 @@ ${
+@@ -2163,8 +2206,9 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1450,7 +1676,7 @@ index a077de625f..d94964f354 100644
            searchSource: this.getSearchSource(event),
            windowMode: this.windowMode,
          });
-@@ -2225,8 +2261,9 @@ ${
+@@ -2225,8 +2269,9 @@ ${
        .startTrackingBounceEvent(this.#selectedBrowserId, event, {
          result,
          element,
@@ -1461,7 +1687,7 @@ index a077de625f..d94964f354 100644
          searchSource: this.getSearchSource(event),
          windowMode: this.windowMode,
        })
-@@ -2235,8 +2272,9 @@ ${
+@@ -2235,8 +2280,9 @@ ${
      this.controller.engagementEvent.record(event, {
        result,
        element,
@@ -1472,7 +1698,7 @@ index a077de625f..d94964f354 100644
        searchSource: this.getSearchSource(event),
        windowMode: this.windowMode,
      });
-@@ -2283,6 +2321,7 @@ ${
+@@ -2283,6 +2329,7 @@ ${
      event = null,
      urlOverride = null,
      element = null,
@@ -1480,7 +1706,7 @@ index a077de625f..d94964f354 100644
    } = {}) {
      // Usually this is set by a previous input event, but in certain cases, like
      // when opening Top Sites on a loaded page, it wouldn't happen. To avoid
-@@ -2367,7 +2406,7 @@ ${
+@@ -2367,7 +2414,7 @@ ${
      }
  
      if (!result.autofill) {
@@ -1489,7 +1715,7 @@ index a077de625f..d94964f354 100644
        this.setValue(value, {
          actionType: this.#getActionTypeFromResult(result),
        });
-@@ -2479,6 +2518,7 @@ ${
+@@ -2479,6 +2526,7 @@ ${
        })
      ) {
        // Search mode restarts the query, so these results are obsolete.
@@ -1497,7 +1723,7 @@ index a077de625f..d94964f354 100644
        this.controller.discardResults(queryContext);
        return;
      }
-@@ -3245,6 +3285,7 @@ ${
+@@ -3245,6 +3293,7 @@ ${
      result = this._resultForCurrentValue,
      checkValue = true,
      startQuery = true,
@@ -1505,7 +1731,7 @@ index a077de625f..d94964f354 100644
    }) {
      if (
        !result ||
-@@ -3255,12 +3296,12 @@ ${
+@@ -3255,12 +3304,12 @@ ${
        return false;
      }
  
@@ -1520,7 +1746,7 @@ index a077de625f..d94964f354 100644
        // Closing the view discards a previewed search mode, so the mode has to
        // be confirmed before the query below gets a chance to run.
        searchMode.isPreview = false;
-@@ -3270,13 +3311,13 @@ ${
+@@ -3270,13 +3319,13 @@ ${
      let value = result.payload.query?.trimStart() || "";
      this.setValue(value);
  
@@ -1536,7 +1762,7 @@ index a077de625f..d94964f354 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -3516,7 +3557,8 @@ ${
+@@ -3516,7 +3565,8 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
@@ -1546,7 +1772,7 @@ index a077de625f..d94964f354 100644
      switch (result.type) {
        case UrlbarShared.RESULT_TYPE.KEYWORD:
          return result.payload.input;
-@@ -3543,7 +3585,7 @@ ${
+@@ -3543,7 +3593,7 @@ ${
        case UrlbarShared.RESULT_TYPE.AI_CHAT:
          return result.payload.query ?? "";
        case UrlbarShared.RESULT_TYPE.TIP: {
@@ -1555,7 +1781,7 @@ index a077de625f..d94964f354 100644
          if (value) {
            return value;
          }
-@@ -3772,105 +3814,31 @@ ${
+@@ -3772,105 +3822,31 @@ ${
      }
    }
  
@@ -1686,7 +1912,7 @@ index a077de625f..d94964f354 100644
    }
  
    _toggleActionOverride(event) {
-@@ -4081,33 +4049,34 @@ ${
+@@ -4081,33 +4057,34 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -1727,7 +1953,7 @@ index a077de625f..d94964f354 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -4479,7 +4448,7 @@ ${
+@@ -4479,7 +4456,7 @@ ${
        return;
      }
      let controller =
@@ -1736,7 +1962,7 @@ index a077de625f..d94964f354 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4510,8 +4479,13 @@ ${
+@@ -4510,8 +4487,13 @@ ${
          pasteAndGo.addEventListener("command", () => {
            this._suppressStartQuery = true;
  
@@ -1752,7 +1978,7 @@ index a077de625f..d94964f354 100644
            this.setResultForCurrentValue(null);
            this.handleCommand();
            this.parentController.clearLastQueryContextCache();
-@@ -4546,7 +4520,7 @@ ${
+@@ -4546,7 +4528,7 @@ ${
          );
  
          let controller =
@@ -1761,7 +1987,7 @@ index a077de625f..d94964f354 100644
          let enabled = controller.isCommandEnabled("cmd_paste");
          if (enabled) {
            pasteAndGo.removeAttribute("disabled");
-@@ -4747,12 +4721,13 @@ ${
+@@ -4747,12 +4729,13 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -1777,7 +2003,7 @@ index a077de625f..d94964f354 100644
      ) {
        return null;
      }
-@@ -4767,8 +4742,8 @@ ${
+@@ -4767,8 +4750,8 @@ ${
          result.payload.engine == result.payload.originalEngine)
      ) {
        searchMode = { engineName: result.payload.engine };
@@ -1788,7 +2014,7 @@ index a077de625f..d94964f354 100644
      }
  
      if (searchMode) {
-@@ -5477,6 +5452,57 @@ ${
+@@ -5477,6 +5460,57 @@ ${
      }
    }
  
@@ -1846,7 +2072,7 @@ index a077de625f..d94964f354 100644
    _on_input(event) {
      // A new input starts a fresh search; bump the epoch so a pending
      // deferred-Enter's async keyup won't reset this search's caret.
-@@ -5505,17 +5531,7 @@ ${
+@@ -5505,17 +5539,7 @@ ${
      }
  
      let value = this.value;
@@ -1865,7 +2091,7 @@ index a077de625f..d94964f354 100644
  
      let compositionState = this.#compositionState;
      let compositionClosedPopup = this.#compositionClosedPopup;
-@@ -5530,27 +5546,7 @@ ${
+@@ -5530,27 +5554,7 @@ ${
        this.#compositionHadText = true;
      }
  
@@ -3644,6 +3870,296 @@ index 1e2660589b..5ae3ab4843 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/components/urlbar/content/UrlbarSearchModeModel.mjs b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
+new file mode 100644
+index 0000000000..461476591d
+--- /dev/null
++++ b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
+@@ -0,0 +1,239 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Shared search-mode policy. Services supply engine/localization data, semantic
++// state and browser commands; no presenter, element or window is retained here.
++import UrlbarPrefs from "chrome://browser/content/urlbar/UrlbarContentPrefs.mjs";
++import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
++
++export class UrlbarSearchModeModel {
++  static MAX_OPENSEARCH_ENGINES = 3;
++  engines = [];
++  selectedIndex = 0;
++  #pendingInstalls = new Set();
++  #disposed = false;
++
++  // readState: {value, pageProxyValid, searchMode}; engineStore: Firefox's store;
++  // offeredEngines: current document's offers; installEngine: browser install;
++  // search/exit/openEngine/openPreferences: Firefox semantic commands;
++  // whereToOpenLink: Firefox modifier policy; recordPicked: SAP telemetry.
++  constructor(services) {
++    this.services = services;
++  }
++
++  dispose() {
++    this.#disposed = true;
++    for (const cleanup of this.#pendingInstalls) cleanup();
++  }
++
++  offeredEngines() {
++    return this.services.offeredEngines().slice(0, UrlbarSearchModeModel.MAX_OPENSEARCH_ENGINES);
++  }
++
++  searchString() {
++    const state = this.services.readState();
++    return state.pageProxyValid ? "" : state.value;
++  }
++
++  disposition(event) {
++    const where = this.services.whereToOpenLink(event);
++    // Shift requests a SERP, not a new window, in the mode switcher.
++    return where.startsWith("tab") ? where : "current";
++  }
++
++  exit() {
++    this.services.exit();
++    this.selectedIndex = 0;
++    this.engines = [];
++  }
++
++  openPreferences() {
++    this.services.openPreferences();
++    this.services.recordPicked("settings");
++  }
++
++  localSearch(restrict, options = {}) {
++    this.services.search(restrict + " " + this.searchString(), {
++      searchModeEntry: "searchbutton", ...options,
++    });
++    this.services.recordPicked("local_search");
++  }
++
++  remoteSearch(engine, event, options = {}) {
++    const where = this.disposition(event);
++    const query = !event.shiftKey && where == "current";
++    const searchString = this.searchString();
++    if (query) {
++      this.services.search(searchString, {
++        searchEngine: engine, searchModeEntry: "searchbutton", ...options,
++      });
++    } else {
++      this.services.openEngine(searchString, {
++        event, searchEngine: engine, where, inBackground: true,
++      });
++    }
++    this.services.recordPicked(engine.isConfigEngine ? "builtin_search" : "addon_search");
++    return query ? "query" : "navigation";
++  }
++
++  async install(engine, options = {}, isCurrent = () => true) {
++    if (this.#disposed || !isCurrent()) return false;
++    const store = this.services.engineStore;
++    const cleanup = () => {
++      store.removeObserver(observer);
++      this.#pendingInstalls.delete(cleanup);
++    };
++    const observer = (_, newEngine) => {
++      if (this.#disposed || !isCurrent()) {
++        cleanup();
++        return;
++      }
++      try {
++        this.services.search(this.searchString(), {
++          searchEngine: newEngine, searchModeEntry: "searchbutton", ...options,
++        });
++      } finally {
++        cleanup();
++      }
++    };
++    this.#pendingInstalls.add(cleanup);
++    store.addObserver(observer);
++    this.services.recordPicked("addon_search");
++    try {
++      const added = await this.services.installEngine(engine);
++      if (!added || this.#disposed || !isCurrent()) cleanup();
++      return added && !this.#disposed;
++    } catch (error) {
++      cleanup();
++      throw error;
++    }
++  }
++
++  async activate(key, event, isCurrent, isContextCurrent = isCurrent) {
++    await this.populateEngines();
++    if (this.#disposed || !isCurrent()) return false;
++    const options = {focus: false, startQuery: false};
++    if (key.startsWith("install:")) {
++      const engine = this.offeredEngines().find(e => key == `install:${e.uri}`);
++      if (!engine) return false;
++      const added = await this.install(engine, options, isContextCurrent);
++      return added && isContextCurrent() ? "query" : false;
++    }
++    if (key == "settings") {
++      this.openPreferences();
++      return "settings";
++    }
++    if (key == "exit") {
++      this.exit();
++      return "query";
++    }
++    const engine = this.engines.find(item =>
++      key == (item.source ? `local:${item.restrict}` : `engine:${item.id}`));
++    if (!engine) return false;
++    if (engine.source) {
++      this.localSearch(engine.restrict, options);
++      return "query";
++    }
++    return this.remoteSearch(engine, event, options);
++  }
++
++  async populateEngines() {
++    let searchEngines = [];
++
++    try {
++      await this.services.engineStore.init();
++      searchEngines = this.services.engineStore
++        .getEngines()
++        .filter(engine => !engine.hideOneOffButton);
++    } catch {
++      // Search service failed but we still offer local search modes.
++    }
++
++    if (this.services.sapName != "urlbar") {
++      this.engines = searchEngines;
++    } else {
++      // After the settings redesign we no longer use the prefs to hide local
++      // search modes. Hence when the settings redesign is enabled we show
++      // all local search modes regardless of the prefs.
++      this.engines = searchEngines.concat(
++        UrlbarShared.LOCAL_SEARCH_MODES.filter(
++          engine =>
++            UrlbarPrefs.get("browser.settings-redesign.enabled") ||
++            UrlbarPrefs.get(engine.pref)
++        )
++      );
++    }
++  }
++
++  async localLabel(source) {
++    let mode = UrlbarShared.LOCAL_SEARCH_MODES.find(m => m.source == source);
++    let [str] = await this.services.l10n.formatMessages([{ id: mode.uiLabel }]);
++    return str.value;
++  }
++
++  async displayedEngineDetails(searchMode = null) {
++    if (!searchMode || searchMode.engineName) {
++      try {
++        await this.services.engineStore.init();
++      } catch {
++        return { label: null, icon: UrlbarShared.ICON.SEARCH_GLASS };
++      }
++
++      let engine = searchMode
++        ? this.services.engineStore.getEngineByName(
++            searchMode.engineName
++          )
++        : this.services.engineStore.default;
++      if (!engine) {
++        return { label: null, icon: UrlbarShared.ICON.SEARCH_GLASS };
++      }
++      let icon = (await engine.getIconURL()) ?? UrlbarShared.ICON.SEARCH_GLASS;
++      return {
++        label: engine.name,
++        icon,
++        engine,
++      };
++    }
++
++    let mode = UrlbarShared.LOCAL_SEARCH_MODES.find(
++      m => m.source == searchMode.source
++    );
++    return {
++      label: await this.localLabel(searchMode.source),
++      icon: mode.icon,
++    };
++  }
++
++  async snapshot() {
++    await this.populateEngines();
++    const entries = await Promise.all(this.engines.map(async engine => ({
++      key: engine.source ? `local:${engine.restrict}` : `engine:${engine.id}`,
++      label: engine.source ? await this.localLabel(engine.source) : engine.name,
++      icon: engine.source ? null : await engine.getIconURL().catch(() => null),
++      symbol: engine.source ? UrlbarShared.getResultSourceName(engine.source) : "search",
++      local: !!engine.source,
++    })));
++    const offered = this.offeredEngines();
++    // The DOM inserts each offered engine after the same separator.
++    for (const engine of offered.toReversed()) {
++      entries.push({key:`install:${engine.uri}`, label:await this.services.l10n.formatValue(
++        "urlbar-searchmode-popup-add-engine", {engineName:engine.title}),
++        icon:engine.icon, symbol:"add", local:true});
++    }
++    const settingsId = UrlbarPrefs.get("browser.nova.enabled")
++      ? "urlbar-searchmode-popup-settings2" : "urlbar-searchmode-popup-search-settings2";
++    const [settings] = await this.services.l10n.formatMessages([{id: settingsId}]);
++    entries.push({key:"settings", label:settings.value || settings.attributes?.find(a => a.name == "label")?.value || "Settings", symbol:"settings", local:true});
++    const mode = this.services.readState().searchMode;
++    const displayed = await this.displayedEngineDetails(mode);
++    const [buttonMessage, exitMessage] = await this.services.l10n.formatMessages([
++      {id: displayed.label ? "urlbar-searchmode-button3" : "urlbar-searchmode-button-no-engine2", args:{engine:displayed.label || ""}},
++      {id:"urlbar-searchmode-exit-button2"},
++    ]);
++    const title = message => message.attributes?.find(a => a.name == "title")?.value || "";
++    return {buttonLabel:title(buttonMessage), exitLabel:title(exitMessage), entries, label:displayed.label || "Search", icon:(mode && !mode.engineName) || Object.values(UrlbarShared.ICON).includes(displayed.icon) ? null : displayed.icon,
++      symbol:mode && !mode.engineName ? UrlbarShared.getResultSourceName(mode.source) : "search",
++      active:!!mode};
++  }
++}
+diff --git a/browser/components/urlbar/content/UrlbarSearchModeBinding.mjs b/browser/components/urlbar/content/UrlbarSearchModeBinding.mjs
+new file mode 100644
+index 0000000000..e3ee46ce03
+--- /dev/null
++++ b/browser/components/urlbar/content/UrlbarSearchModeBinding.mjs
+@@ -0,0 +1,39 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Transitional binding to the retained input. This is the remaining input
++// dependency, kept separate from the shared model and from switcher rendering.
++import { UrlbarSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs";
++import { UrlbarContentUtils } from "chrome://browser/content/urlbar/UrlbarContentUtils.mjs";
++
++const lazy = typeof ChromeUtils != "undefined" ? {} : null;
++if (lazy) ChromeUtils.defineESModuleGetters(lazy, {
++  OpenSearchManager: "moz-src:///browser/components/search/OpenSearchManager.sys.mjs",
++  SearchUIUtils: "moz-src:///browser/components/search/SearchUIUtils.sys.mjs",
++});
++
++export function bindSearchModeModel(input) {
++  return new UrlbarSearchModeModel({
++    sapName: input.sapName,
++    engineStore: input.controller.engineStore,
++    l10n: new Localization(["browser/browser.ftl"]),
++    readState: () => ({value: input.value,
++      pageProxyValid: input.getAttribute("pageproxystate") == "valid",
++      searchMode: input.searchMode}),
++    offeredEngines: () => {
++      const browser = input.window.gBrowser?.selectedBrowser;
++      return browser ? lazy.OpenSearchManager.getInstallableEngines(browser) : [];
++    },
++    installEngine: engine => lazy.SearchUIUtils.addOpenSearchEngine(
++      engine.uri, engine.icon, input.window.gBrowser.selectedBrowser.browsingContext),
++    whereToOpenLink: event => UrlbarContentUtils.whereToOpenLink(event),
++    search: (value, options) => input.search(value, options),
++    exit: () => { input.searchMode = null; },
++    openEngine: (value, options) => input.openSearchEnginePage(value, options),
++    openPreferences: () => input.parentController.openPreferences("paneSearch"),
++    recordPicked: kind => {
++      if (input.sapName == "urlbar") Glean.urlbarUnifiedsearchbutton.picked[kind].add(1);
++    },
++  });
++}
 diff --git a/browser/components/urlbar/content/UrlbarClipboardText.mjs b/browser/components/urlbar/content/UrlbarClipboardText.mjs
 new file mode 100644
 index 0000000000..d7bf8f6313
@@ -5632,7 +6148,7 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..cd6ed5eacc
+index 0000000000..8fd595301c
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
 @@ -0,0 +1,1486 @@
@@ -5751,7 +6267,7 @@ index 0000000000..cd6ed5eacc
 +    this.modeDirty = false;
 +    const generation = ++this.modeGeneration;
 +    this.modeLoading = true;
-+    this.input.searchModeSwitcher.nativeSnapshot().then(data => {
++    this.input.searchModeModel.snapshot().then(data => {
 +      if (this.closed || generation !== this.modeGeneration) return;
 +      // Keep the complete Firefox order or use the original surface; never truncate.
 +      if (data.entries.length > 100) { this.modeMenu = null; return; }
@@ -5802,7 +6318,7 @@ index 0000000000..cd6ed5eacc
 +    const current = () => !this.closed && this.modeMenu === menu &&
 +      request.generation === this.modeGeneration && this.window.gBrowser.selectedBrowser === browser &&
 +      browser.currentURI.spec === page;
-+    const result = await this.input.searchModeSwitcher.nativeActivate(key,
++    const result = await this.input.searchModeModel.activate(key,
 +      new this.window.MouseEvent("click", request.intent), current, () =>
 +        !this.closed && operation === this.modeOperation && editId === this.editId &&
 +        this.window.gBrowser.selectedBrowser === browser && browser.currentURI.spec === page);
@@ -7504,10 +8020,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..d0dfd57d1d
+index 0000000000..c6bea0c84b
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2136 @@
+@@ -0,0 +1,2138 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8294,7 +8810,9 @@ index 0000000000..d0dfd57d1d
 +      session.modeReveal = (session.modeReveal || 0) + 1;
 +      this.invalidateAddress(); // Reveal also needs publication when the switcher was already visible.
 +    } else if (action.kind === "mode-open") {
-+      gURLBar.searchModeSwitcher.nativeOpened();
++      gURLBar.controller.engagementEvent.discard();
++      gURLBar.view.close({showFocusBorder:false});
++      Glean.urlbarUnifiedsearchbutton.opened.add(1);
 +    } else if (action.kind === "mode-pick" || action.kind === "mode-exit") {
 +      session.selectNativeMode(action).catch(console.error);
 +    } else if (action.kind === "global-action") {

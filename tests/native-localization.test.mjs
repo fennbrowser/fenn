@@ -6,15 +6,15 @@ import { test } from "node:test";
 // reject the snapshot and leave the native search menu unavailable. Check
 // against the pinned Firefox resource, rather than hard-coding message IDs.
 const source = readFileSync(new URL(
-  "../upstream/firefox/browser/components/urlbar/content/SearchModeSwitcher.mjs",
+  "../upstream/firefox/browser/components/urlbar/content/UrlbarSearchModeModel.mjs",
   import.meta.url), "utf8");
 const resource = readFileSync(new URL(
   "../upstream/firefox/browser/locales/en-US/browser/browser.ftl",
   import.meta.url), "utf8");
 
 test("native search-mode snapshot only requests messages present in pinned Firefox", () => {
-  const start = source.indexOf("async nativeSnapshot()");
-  const end = source.indexOf("nativeOpened()", start);
+  const start = source.indexOf("async snapshot()");
+  const end = source.length;
   assert(start >= 0 && end > start, "locate the native snapshot boundary");
   const ids = [...source.slice(start, end).matchAll(/"(urlbar-[a-z0-9-]+)"/g)]
     .map(match => match[1]);
