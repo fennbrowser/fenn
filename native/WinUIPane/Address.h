@@ -964,12 +964,6 @@ struct NativeAddress {
             modes.GetNamedBoolean(L"active");
             modes.GetNamedNumber(L"applied", 0);
             NativeJson::RequireLength(modes.GetNamedString(L"symbol", L"search"), NativeJson::kMaxShortLabel);
-            if (nextSession == session && modes.GetNamedNumber(L"generation") == mode.generation) {
-                if (entries.Size() != mode.ids.size()) winrt::throw_hresult(E_INVALIDARG);
-                for (uint32_t i = 0; i < entries.Size(); ++i)
-                    if (entries.GetAt(i).GetObject().GetNamedString(L"id") != mode.ids[i])
-                        winrt::throw_hresult(E_INVALIDARG);
-            }
             size_t pixels = 0;
             ValidateModeImage(modes, pixels);
             std::set<winrt::hstring> unique;
@@ -1005,6 +999,31 @@ struct NativeAddress {
         auto addressFingerprint = addressSection.Stringify();
         const bool applyAddress = shell.AddressPublication(nextSession, uint64_t(checkedSequence),
             uint64_t(checkedRevision), addressFingerprint, false);
+        const bool hasModes = snapshot.HasKey(L"modes") && snapshot.GetNamedValue(L"modes").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null;
+        const auto modesObject = hasModes ? snapshot.GetNamedObject(L"modes") : JObject();
+        const auto modesFingerprint = hasModes ? NativeSearchMode::Fingerprint(modesObject) : winrt::hstring();
+        const auto modesGeneration = hasModes ? uint64_t(modesObject.GetNamedNumber(L"generation")) : 0;
+        const auto modesDecision = applyAddress && hasModes
+            ? shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_MODES, nextSession, modesGeneration,
+                modesFingerprint, true, false) : SHELL_ADDRESS_SECTION_DECISION_IGNORED;
+        const bool hasContext = snapshot.HasKey(L"contextMenu"), hasResult = snapshot.HasKey(L"resultMenu");
+        const auto contextObject = hasContext ? snapshot.GetNamedObject(L"contextMenu") : JObject();
+        const auto resultObject = hasResult ? snapshot.GetNamedObject(L"resultMenu") : JObject();
+        const auto contextFingerprint = hasContext ? contextObject.Stringify() : winrt::hstring();
+        const auto resultFingerprint = hasResult ? resultObject.Stringify() : winrt::hstring();
+        const auto contextGeneration = hasContext ? uint64_t(contextObject.GetNamedNumber(L"generation")) : 0;
+        const auto resultGeneration = hasResult ? uint64_t(resultObject.GetNamedNumber(L"generation")) : 0;
+        const auto currentEdit = shell.AddressState().edit_id;
+        const bool contextEligible = nextSession == session && context.requested && focusWithin && hasContext &&
+            uint64_t(contextObject.GetNamedNumber(L"editId")) == currentEdit;
+        const bool resultEligible = nextSession == session && resultMenu.requested && focusWithin && hasResult &&
+            uint64_t(resultObject.GetNamedNumber(L"editId")) == currentEdit && resultObject.GetNamedString(L"resultId") == resultMenuId;
+        const auto contextDecision = applyAddress && hasContext
+            ? shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU, nextSession, contextGeneration,
+                contextFingerprint, contextEligible, false) : SHELL_ADDRESS_SECTION_DECISION_IGNORED;
+        const auto resultDecision = applyAddress && hasResult
+            ? shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_RESULT_MENU, nextSession, resultGeneration,
+                resultFingerprint, resultEligible, false) : SHELL_ADDRESS_SECTION_DECISION_IGNORED;
         const bool applyHistory = navigation && navigation->historyMenu.Resolve(historyMenuState);
         const auto toolbarDecision = navigation && customizationState.revision
             ? shell.ToolbarPublication(customizationState.revision, customizationState.fingerprint, false)
@@ -1133,7 +1152,9 @@ struct NativeAddress {
             }
             suggestions.SyncSelection(snapshot.GetNamedString(L"selectedId", L""));
             suggestions.RefreshLabels();
-            mode.Sync(snapshot);
+            if (modesDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED)
+                shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_MODES, nextSession, modesGeneration, modesFingerprint, true, true);
+            mode.Sync(snapshot, modesDecision != SHELL_ADDRESS_SECTION_DECISION_IGNORED);
             actions.Sync(snapshot);
             shell.PublishAddress(uint64_t(checkedEdit), checkedComplete || !suggestions.ids.empty());
         } catch (...) {
@@ -1145,10 +1166,14 @@ struct NativeAddress {
             PlacePopup();
             popup.IsOpen(checkedOpen);
         }
-        context.Sync(snapshot, shell.AddressState().edit_id, focusWithin, field);
+        if (contextDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED)
+            shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU, nextSession, contextGeneration, contextFingerprint, contextEligible, true);
+        if (resultDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED)
+            shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_RESULT_MENU, nextSession, resultGeneration, resultFingerprint, resultEligible, true);
+        context.Sync(snapshot, contextDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED, field);
         if (snapshot.HasKey(L"resultMenu") && snapshot.GetNamedObject(L"resultMenu").GetNamedString(L"resultId") != resultMenuId)
             resultMenu.Reset();
-        else resultMenu.Sync(snapshot, shell.AddressState().edit_id, focusWithin, field);
+        else resultMenu.Sync(snapshot, resultDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED, field);
         if (focusWithin && (!popup || popup.IsOpen())) suggestions.FocusPending();
         mode.ShowPendingReveal();
         // The deferred commit's precondition is satisfied by a publication, so

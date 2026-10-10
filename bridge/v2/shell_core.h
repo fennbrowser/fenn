@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 40
+#define SHELL_CORE_ABI_VERSION 41
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -79,6 +79,8 @@
 #define MAX_TOOLBAR_FINGERPRINT ((6 * 1024) * 1024)
 
 #define MAX_PREVIEW_FINGERPRINT (1024 * 1024)
+
+#define MAX_ADDRESS_SECTION_FINGERPRINT ((6 * 1024) * 1024)
 
 /*
  Matches the host's neighbor animation: 135 ms, cubic-bezier(.215, .61, .355, 1).
@@ -209,6 +211,23 @@ typedef enum {
   SHELL_TOOLBAR_PUBLICATION_ACCEPTED = 2,
 } ShellToolbarPublication;
 
+enum ShellAddressSectionDecision
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  SHELL_ADDRESS_SECTION_DECISION_IGNORED = 0,
+  SHELL_ADDRESS_SECTION_DECISION_ACCEPTED = 1,
+  SHELL_ADDRESS_SECTION_DECISION_UNCHANGED = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum ShellAddressSectionDecision ShellAddressSectionDecision;
+#else
+typedef uint32_t ShellAddressSectionDecision;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
 /*
  Values of [`ShellStripImage::kind`].
  */
@@ -249,6 +268,9 @@ enum ShellPublicationChannel
   SHELL_PUBLICATION_CHANNEL_TOOLBAR_CUSTOMIZATION = 4,
   SHELL_PUBLICATION_CHANNEL_TAB_MODEL = 5,
   SHELL_PUBLICATION_CHANNEL_TAB_PREVIEW = 6,
+  SHELL_PUBLICATION_CHANNEL_ADDRESS_MODES = 7,
+  SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU = 8,
+  SHELL_PUBLICATION_CHANNEL_ADDRESS_RESULT_MENU = 9,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -2066,6 +2088,24 @@ ShellStatus shell_core_preview_publication(ShellCore *core,
                                            uintptr_t fingerprint_len,
                                            bool commit,
                                            bool *apply);
+
+/*
+ Classify/commit a C++-validated address section (channels 7..=9).
+ Modes fingerprints exclude image/applied updates; menus include the full body.
+ Native opening/focus/edit/target preconditions are supplied as eligibility.
+ # Safety
+ See [`guard`]. All input spans are readable; decision is writable.
+ */
+ShellStatus shell_core_address_section(ShellCore *core,
+                                       uint32_t channel,
+                                       const uint16_t *session,
+                                       uintptr_t session_len,
+                                       uint64_t generation,
+                                       const uint16_t *fingerprint,
+                                       uintptr_t fingerprint_len,
+                                       bool eligible,
+                                       bool commit,
+                                       ShellAddressSectionDecision *decision);
 
 #ifdef __cplusplus
 }  // extern "C"

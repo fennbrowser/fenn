@@ -625,6 +625,9 @@ struct Pane {
                 {SHELL_PUBLICATION_CHANNEL_TAB_MENU_STATE, L"tab-menu-state"},
                 {SHELL_PUBLICATION_CHANNEL_SURFACE_MENU, L"surface-menu"},
                 {SHELL_PUBLICATION_CHANNEL_ADDRESS_SESSION, L"address-session"},
+                {SHELL_PUBLICATION_CHANNEL_ADDRESS_MODES, L"address-modes"},
+                {SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU, L"address-context-menu"},
+                {SHELL_PUBLICATION_CHANNEL_ADDRESS_RESULT_MENU, L"address-result-menu"},
                 {SHELL_PUBLICATION_CHANNEL_TOOLBAR_CUSTOMIZATION, L"toolbar-customization"},
             };
             for (auto const& entry : channels) {

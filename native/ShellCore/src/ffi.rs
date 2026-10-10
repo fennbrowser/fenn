@@ -204,6 +204,7 @@ pub struct ShellCore {
     address_publication: crate::address_publication::AddressPublication,
     toolbar_publication: crate::toolbar_publication::ToolbarPublication,
     preview_publication: crate::preview_publication::PreviewPublication,
+    address_sections: crate::address_sections::AddressSections,
     /// Identity of this core among every core in the process; transfers name it.
     endpoint: u64,
     snapshot: Option<SnapshotBuilder>,
@@ -427,6 +428,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         address_publication: Default::default(),
         toolbar_publication: Default::default(),
         preview_publication: Default::default(),
+        address_sections: Default::default(),
         endpoint: NEXT_ENDPOINT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         snapshot: None,
         stats: Counters::default(),
@@ -752,6 +754,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
         core.menu.close();
         core.surface_menu.dismiss();
         core.address_publication.reset();
+        core.address_sections.reset();
         core.toolbar_publication.reset();
         core.preview_publication.reset();
         core.model.reset(core.queue.generation());
@@ -773,6 +776,7 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
         core.menu.close();
         core.surface_menu.dismiss();
         core.address_publication.reset();
+        core.address_sections.reset();
         core.toolbar_publication.reset();
         core.preview_publication.reset();
         core.snapshot = None;
@@ -823,6 +827,9 @@ pub enum ShellPublicationChannel {
     ToolbarCustomization = 4,
     TabModel = 5,
     TabPreview = 6,
+    AddressModes = 7,
+    AddressContextMenu = 8,
+    AddressResultMenu = 9,
 }
 
 /// What one channel did with the publications it received, for diagnostics.
@@ -841,6 +848,7 @@ pub unsafe extern "C" fn shell_core_publication_stats(
     *out = ShellPublicationCounts::default();
     guard(core, |core| {
         *out = match channel {
+            7..=9 => core.address_sections.counts((channel-7) as usize).unwrap(),
             c if c == ShellPublicationChannel::TabPreview as u32 => core.preview_publication.counts(),
             c if c == ShellPublicationChannel::TabModel as u32 => core.model.counts(),
             c if c == ShellPublicationChannel::Strip as u32 => core.strip.counts(),
@@ -1510,7 +1518,7 @@ mod tests {
             let mut counts = ShellPublicationCounts::default();
             assert_eq!(shell_core_publication_stats(core, ShellPublicationChannel::Strip as u32, &mut counts), ShellStatus::Ok);
             assert_eq!(counts, ShellPublicationCounts { accepted: 2, unchanged: 1, ignored: 0, refused: 1 });
-            assert_eq!(shell_core_publication_stats(core, 7, &mut counts), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_publication_stats(core, 10, &mut counts), ShellStatus::InvalidArgument);
             assert_eq!(counts, ShellPublicationCounts::default(), "an unknown channel reports nothing");
             assert_eq!(shell_core_publication_stats(core, 0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
             shell_core_destroy(core);
@@ -2347,7 +2355,7 @@ fn toolbar_publication_boundary_lifetime_and_counts() { unsafe {
 /// See [`guard`].
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_address_publication_reset(core: *mut ShellCore) -> ShellStatus {
-    guard(core, |core| { core.address_publication.reset(); ShellStatus::Ok })
+    guard(core, |core| { core.address_publication.reset(); core.address_sections.reset(); ShellStatus::Ok })
 }
 
 /// Read address coordination state; no WinUI objects or borrowed data escape.
@@ -3506,4 +3514,54 @@ mod preview_publication_ffi_tests {
         assert_eq!((counts.accepted,counts.unchanged,counts.ignored,counts.refused),(3,1,4,1));
         shell_core_destroy(core);
     }}
+}
+
+/// Classify/commit a C++-validated address section (channels 7..=9).
+/// Modes fingerprints exclude image/applied updates; menus include the full body.
+/// Native opening/focus/edit/target preconditions are supplied as eligibility.
+/// # Safety
+/// See [`guard`]. All input spans are readable; decision is writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_section(core: *mut ShellCore, channel: u32,
+ session: *const u16, session_len: usize, generation: u64,
+ fingerprint: *const u16, fingerprint_len: usize, eligible: bool, commit: bool,
+ decision: *mut crate::address_sections::ShellAddressSectionDecision) -> ShellStatus {
+ use crate::address_sections::{ShellAddressSectionDecision as D,MAX_ADDRESS_SECTION_FINGERPRINT};
+ let Some(out)=decision.as_mut() else {return ShellStatus::InvalidArgument;}; *out=D::Ignored;
+ if !(7..=9).contains(&channel) {return ShellStatus::InvalidArgument;}
+ if session_len>256 || fingerprint_len>MAX_ADDRESS_SECTION_FINGERPRINT {return ShellStatus::TooLarge;}
+ let Some(session)=slice(session,session_len) else {return ShellStatus::InvalidArgument;};
+ let Some(fingerprint)=slice(fingerprint,fingerprint_len) else {return ShellStatus::InvalidArgument;};
+ guard(core,|core| {
+  if core.queue.is_closed() {return ShellStatus::Closed;}
+  match core.address_sections.resolve((channel-7) as usize,session,generation,fingerprint,eligible,commit) {
+   Ok(v)=>{*out=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument
+  }
+ })
+}
+#[cfg(test)]
+mod address_section_ffi_tests {
+ use super::*;
+ #[test] fn table_boundary_cancellation_and_disable_keep_counts_and_channels_separate() {unsafe {
+  use crate::address_sections::ShellAddressSectionDecision as D;
+  let core=shell_core_create(std::ptr::null());let mut decision=D::Ignored;
+  let resolve=|channel,generation,body:&[u16],eligible,commit,out|shell_core_address_section(core,channel,[1].as_ptr(),1,generation,body.as_ptr(),body.len(),eligible,commit,out);
+  for channel in 7..=9 {
+   assert_eq!(resolve(channel,0,&[1],true,false,&mut decision),ShellStatus::Ok);assert_eq!(decision,D::Accepted);
+   assert_eq!(resolve(channel,0,&[1],true,true,&mut decision),ShellStatus::Ok);
+   assert_eq!(resolve(channel,0,&[2],true,false,&mut decision),ShellStatus::InvalidArgument);assert_eq!(decision,D::Ignored);
+  }
+  assert_eq!(resolve(6,0,&[],true,false,&mut decision),ShellStatus::InvalidArgument);
+  assert_eq!(shell_core_address_section(core,7,std::ptr::null(),1,0,std::ptr::null(),0,true,false,&mut decision),ShellStatus::InvalidArgument);
+  assert_eq!(shell_core_address_section(core,7,[1].as_ptr(),1,0,std::ptr::null(),usize::MAX,true,false,&mut decision),ShellStatus::TooLarge);
+  shell_core_address_publication_reset(core);
+  assert_eq!(resolve(7,0,&[2],true,true,&mut decision),ShellStatus::Ok);
+  shell_core_cancel_all(core);
+  assert_eq!(resolve(8,0,&[3],true,true,&mut decision),ShellStatus::Ok);
+  let mut counts=ShellPublicationCounts::default();
+  assert_eq!(shell_core_publication_stats(core,8,&mut counts),ShellStatus::Ok);assert_eq!(counts.accepted,2);assert_eq!(counts.refused,1);
+  shell_core_close(core);
+  assert_eq!(resolve(7,0,&[1],true,true,&mut decision),ShellStatus::Closed);assert_eq!(decision,D::Ignored);
+  shell_core_destroy(core);
+ }}
 }

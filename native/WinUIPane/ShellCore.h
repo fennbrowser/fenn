@@ -79,6 +79,15 @@ struct NativeShellCore {
             == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
         return apply;
     }
+    ShellAddressSectionDecision AddressSection(uint32_t channel, std::wstring_view session,
+            uint64_t generation, std::wstring_view fingerprint, bool eligible, bool commit) {
+        ShellAddressSectionDecision decision = SHELL_ADDRESS_SECTION_DECISION_IGNORED;
+        winrt::check_hresult(shell_core_address_section(core, channel,
+            reinterpret_cast<uint16_t const*>(session.data()), session.size(), generation,
+            reinterpret_cast<uint16_t const*>(fingerprint.data()), fingerprint.size(), eligible, commit, &decision)
+            == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
+        return decision;
+    }
     bool AddressEdit() { return core && shell_core_address_edit(core) == SHELL_STATUS_OK; }
     bool StageAddress(uint64_t request, Intent kind) {
         return core && shell_core_address_stage(core, request, kind) == SHELL_STATUS_OK;

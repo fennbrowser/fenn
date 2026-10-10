@@ -1171,6 +1171,33 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         Require(SUCCEEDED(publishAddress(snapshot)), "publish after maximum edit completion");
         Require(field.Text() == L"initial", "maximum-length completion releases staged state");
     }
+    auto nextModes = winrt::Windows::Data::Json::JsonObject::Parse(modesSnapshot);
+    auto nextMenu = nextModes.GetNamedObject(L"modes");
+    nextMenu.SetNamedValue(L"generation", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(2));
+    auto nextEntries = nextMenu.GetNamedArray(L"entries");
+    nextEntries.GetObjectAt(0).SetNamedValue(L"label", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"New engine"));
+    Require(publishUntil(nextModes.Stringify().c_str(), [&] { return modeButton.IsEnabled() &&
+        modeButton.Flyout().as<Controls::MenuFlyout>().Items().GetAt(0).as<Controls::MenuFlyoutItem>().Text() == L"New engine"; }),
+        "new mode generation replaces the menu");
+    const auto retainedFlyout = modeButton.Flyout().as<Controls::MenuFlyout>();
+    const auto retainedModeItem = retainedFlyout.Items().GetAt(0).as<Controls::MenuFlyoutItem>();
+    const auto retainedModeImage = retainedModeItem.Icon().as<Controls::ImageIcon>().Source();
+    Require(SUCCEEDED(publishAddress(nextModes.Stringify().c_str())) && modeButton.Flyout() == retainedFlyout &&
+        retainedModeItem.Icon().as<Controls::ImageIcon>().Source() == retainedModeImage,
+        "mode replay preserves the flyout, item and bitmap");
+    Require(SUCCEEDED(publishAddress(modesSnapshot)) && modeButton.Flyout() == retainedFlyout && retainedModeItem.Text() == L"New engine",
+        "late mode generation cannot replace the accepted menu in a newer address publication");
+    auto conflictingModes = winrt::Windows::Data::Json::JsonObject::Parse(nextModes.Stringify());
+    conflictingModes.SetNamedValue(L"text", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"must not apply"));
+    conflictingModes.GetNamedObject(L"modes").GetNamedArray(L"entries").GetObjectAt(0).SetNamedValue(L"label",
+        winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"Conflicting engine"));
+    Require(FAILED(publishAddress(conflictingModes.Stringify().c_str())) && field.Text() == L"initial" && retainedModeItem.Text() == L"New engine",
+        "mode conflict refuses the container before editor or menu mutation");
+    nextEntries.GetObjectAt(0).GetNamedObject(L"image").SetNamedValue(L"pixels",
+        winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"00ff00ff"));
+    Require(SUCCEEDED(publishAddress(nextModes.Stringify().c_str())) && modeButton.Flyout() == retainedFlyout &&
+        retainedFlyout.Items().GetAt(0) == retainedModeItem && retainedModeItem.Icon().as<Controls::ImageIcon>().Source() != retainedModeImage,
+        "same-generation image completion refreshes the icon in place");
     for (int i = 0; i < 64; ++i) invoke.Invoke();
     Pump();
     field.Text(L"cancelled before admission");

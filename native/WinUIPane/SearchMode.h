@@ -107,7 +107,24 @@ struct NativeSearchMode {
         revealPending = false;
     }
 
-    void Sync(JObject const& snapshot) {
+    // Stable menu content follows generation. Images and completion acknowledgements
+    // are independent presentation updates within that same generation.
+    static winrt::hstring Fingerprint(JObject const& modes) {
+        JObject content;
+        for (auto const& item : modes)
+            if (item.Key() != L"image" && item.Key() != L"applied" && item.Key() != L"entries")
+                content.SetNamedValue(item.Key(), item.Value());
+        winrt::Windows::Data::Json::JsonArray entries;
+        for (auto value : modes.GetNamedArray(L"entries")) {
+            JObject entry;
+            for (auto const& item : value.GetObject())
+                if (item.Key() != L"image") entry.SetNamedValue(item.Key(), item.Value());
+            entries.Append(entry);
+        }
+        content.SetNamedValue(L"entries", entries);
+        return content.Stringify();
+    }
+    void Sync(JObject const& snapshot, bool applyModes) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         const bool visible = snapshot.GetNamedBoolean(L"modeButtonVisible", true);
@@ -130,6 +147,7 @@ struct NativeSearchMode {
             if (flyout.IsOpen()) flyout.Hide();
             return;
         }
+        if (!applyModes) return;
         auto modes = snapshot.GetNamedObject(L"modes");
         auto entries = modes.GetNamedArray(L"entries");
         auto nextGeneration = modes.GetNamedNumber(L"generation");

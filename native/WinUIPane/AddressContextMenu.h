@@ -8,7 +8,7 @@ struct NativeAddressContextMenu {
     Microsoft::UI::Xaml::Controls::MenuFlyout flyout{nullptr};
     std::function<void(wchar_t const*, winrt::hstring const&)> action;
     std::function<void(wchar_t const*)> editType;
-    std::shared_ptr<int> lifetime = std::make_shared<int>(0);
+    std::shared_ptr<int> lifetime = std::make_shared<int>(0), opening;
     winrt::hstring snapshotKey = L"contextMenu", automationPrefix = L"FennAddressContext-";
     Microsoft::UI::Xaml::FrameworkElement anchor{nullptr};
     bool focusEditor = true;
@@ -17,7 +17,7 @@ struct NativeAddressContextMenu {
     winrt::Windows::Foundation::Point position{};
     ~NativeAddressContextMenu() { lifetime.reset(); if (flyout) flyout.Hide(); }
     bool IsOpen() const { return flyout && flyout.IsOpen(); }
-    void Reset() { requested = false; if (flyout) flyout.Hide(); flyout = nullptr; generation = 0; }
+    void Reset() { opening.reset(); requested = false; if (flyout) flyout.Hide(); flyout = nullptr; generation = 0; }
     static void Validate(Array const& items, size_t& count, unsigned depth = 0) {
         if (depth > 4 || (count += items.Size()) > 128) winrt::throw_hresult(E_INVALIDARG);
         for (auto value : items) {
@@ -40,6 +40,7 @@ struct NativeAddressContextMenu {
             auto item = value.GetObject();
             if (item.GetNamedBoolean(L"separator", false)) { target.Append(MenuFlyoutSeparator()); continue; }
             const auto id = item.GetNamedString(L"id"), label = item.GetNamedString(L"label");
+            const auto acceptedGeneration = generation;
             if (item.HasKey(L"children")) {
                 MenuFlyoutSubItem sub; sub.Text(label); sub.IsEnabled(item.GetNamedBoolean(L"enabled"));
                 Populate(item.GetNamedArray(L"children"), sub.Items(), field); target.Append(sub); continue;
@@ -52,8 +53,8 @@ struct NativeAddressContextMenu {
                 if (id == L"cmd_delete") enabled = field.SelectionLength() > 0;
                 button.IsEnabled(enabled);
                 Automation::AutomationProperties::SetAutomationId(button, automationPrefix + id);
-                button.Click([this, field, id, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-                    if (alive.expired()) return;
+                button.Click([this, field, id, acceptedGeneration, opened = std::weak_ptr<int>(opening), alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                    if (alive.expired() || opened.expired() || generation != acceptedGeneration) return;
                     invoking = true;
                     if (focusEditor) field.Focus(FocusState::Programmatic);
                     if (editType) {
@@ -80,7 +81,7 @@ struct NativeAddressContextMenu {
             } else configure(MenuFlyoutItem());
         }
     }
-    void Sync(Object const& snapshot, uint64_t editId, bool ownsFocus,
+    void Sync(Object const& snapshot, bool accepted,
               Microsoft::UI::Xaml::Controls::TextBox const& field) {
         if (!snapshot.HasKey(snapshotKey)) {
             if (!requested && !invoking && IsOpen()) Reset();
@@ -88,14 +89,15 @@ struct NativeAddressContextMenu {
         }
         auto menu = snapshot.GetNamedObject(snapshotKey);
         auto next = uint64_t(NativeJson::RequireRevision(menu, L"generation"));
-        if (next == generation || !requested || !ownsFocus || NativeJson::RequireRevision(menu, L"editId") != editId) return;
+        if (!accepted) return;
         requested = false;
         generation = next;
+        opening = std::make_shared<int>(0);
         flyout = Microsoft::UI::Xaml::Controls::MenuFlyout();
         Populate(menu.GetNamedArray(L"items"), flyout.Items(), field);
         flyout.OverlayInputPassThroughElement(field.XamlRoot().Content());
-        flyout.Closed([this, next, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-            if (!alive.expired() && next == generation && !invoking && action) action(L"context-close", L"");
+        flyout.Closed([this, next, opened = std::weak_ptr<int>(opening), alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired() && !opened.expired() && next == generation && !invoking && action) action(L"context-close", L"");
         });
         auto target = anchor ? anchor : field.as<Microsoft::UI::Xaml::FrameworkElement>();
         if (atPointer) {
