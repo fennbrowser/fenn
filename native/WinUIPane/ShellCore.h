@@ -79,6 +79,19 @@ struct NativeShellCore {
             == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
         return apply;
     }
+    bool AddressMenuEligible(std::wstring_view session, std::wstring_view currentSession,
+            uint64_t edit, uint64_t currentEdit, std::wstring_view target, std::wstring_view expectedTarget,
+            bool requested, bool focused) {
+        const ShellAddressMenuContext context{
+            reinterpret_cast<uint16_t const*>(session.data()), session.size(),
+            reinterpret_cast<uint16_t const*>(currentSession.data()), currentSession.size(), edit, currentEdit,
+            reinterpret_cast<uint16_t const*>(target.data()), target.size(),
+            reinterpret_cast<uint16_t const*>(expectedTarget.data()), expectedTarget.size(), requested, focused};
+        bool eligible = false;
+        winrt::check_hresult(shell_core_address_menu_eligible(core, &context, &eligible)
+            == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
+        return eligible;
+    }
     ShellAddressSectionDecision AddressSection(uint32_t channel, std::wstring_view session,
             uint64_t generation, std::wstring_view fingerprint, bool eligible, bool commit) {
         ShellAddressSectionDecision decision = SHELL_ADDRESS_SECTION_DECISION_IGNORED;

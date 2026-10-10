@@ -1014,10 +1014,11 @@ struct NativeAddress {
         const auto contextGeneration = hasContext ? uint64_t(contextObject.GetNamedNumber(L"generation")) : 0;
         const auto resultGeneration = hasResult ? uint64_t(resultObject.GetNamedNumber(L"generation")) : 0;
         const auto currentEdit = shell.AddressState().edit_id;
-        const bool contextEligible = nextSession == session && context.requested && focusWithin && hasContext &&
-            uint64_t(contextObject.GetNamedNumber(L"editId")) == currentEdit;
-        const bool resultEligible = nextSession == session && resultMenu.requested && focusWithin && hasResult &&
-            uint64_t(resultObject.GetNamedNumber(L"editId")) == currentEdit && resultObject.GetNamedString(L"resultId") == resultMenuId;
+        const bool contextEligible = hasContext && shell.AddressMenuEligible(nextSession, session,
+            uint64_t(contextObject.GetNamedNumber(L"editId")), currentEdit, L"", L"", context.requested, focusWithin);
+        const bool resultEligible = hasResult && shell.AddressMenuEligible(nextSession, session,
+            uint64_t(resultObject.GetNamedNumber(L"editId")), currentEdit,
+            resultObject.GetNamedString(L"resultId"), resultMenuId, resultMenu.requested, focusWithin);
         const auto contextDecision = applyAddress && hasContext
             ? shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU, nextSession, contextGeneration,
                 contextFingerprint, contextEligible, false) : SHELL_ADDRESS_SECTION_DECISION_IGNORED;

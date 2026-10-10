@@ -3565,3 +3565,49 @@ mod address_section_ffi_tests {
   shell_core_destroy(core);
  }}
 }
+
+
+/// Borrowed native menu context. Firefox supplies publication identity; WinUI
+/// supplies the current opening, editor and target observations.
+#[repr(C)]
+pub struct ShellAddressMenuContext {
+ pub session: *const u16, pub session_len: usize,
+ pub current_session: *const u16, pub current_session_len: usize,
+ pub edit: u64, pub current_edit: u64,
+ pub target: *const u16, pub target_len: usize,
+ pub expected_target: *const u16, pub expected_target_len: usize,
+ pub requested: bool, pub focused: bool,
+}
+/// Test publication eligibility without consuming its generation or content.
+/// # Safety
+/// See [`guard`]. Context and its spans are readable; eligible is writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_menu_eligible(core: *mut ShellCore,
+ context: *const ShellAddressMenuContext, eligible: *mut bool) -> ShellStatus {
+ let Some(out)=eligible.as_mut() else { return ShellStatus::InvalidArgument; }; *out=false;
+ let Some(c)=context.as_ref() else { return ShellStatus::InvalidArgument; };
+ if c.session_len>256 || c.current_session_len>256 || c.target_len>64 || c.expected_target_len>64 { return ShellStatus::TooLarge; }
+ let (Some(session),Some(current),Some(target),Some(expected))=(slice(c.session,c.session_len),slice(c.current_session,c.current_session_len),slice(c.target,c.target_len),slice(c.expected_target,c.expected_target_len)) else {return ShellStatus::InvalidArgument;};
+ guard(core,|core| {
+  if core.queue.is_closed() {return ShellStatus::Closed;}
+  match crate::address_sections::menu_eligible(session,current,c.edit,c.current_edit,target,expected,c.requested,c.focused) {
+   Ok(v)=>{*out=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument
+  }
+ })
+}
+#[cfg(test)]
+mod address_menu_context_ffi_tests {
+ use super::*;
+ #[test] fn borrowed_context_bounds_defaults_and_closed_endpoint() { unsafe {
+  let core=shell_core_create(std::ptr::null());let mut eligible=true;let session=[1u16];let target=[7u16];
+  let mut c=ShellAddressMenuContext {session:session.as_ptr(),session_len:1,current_session:session.as_ptr(),current_session_len:1,
+   edit:0,current_edit:0,target:target.as_ptr(),target_len:1,expected_target:target.as_ptr(),expected_target_len:1,requested:true,focused:true};
+  assert_eq!(shell_core_address_menu_eligible(core,&c,&mut eligible),ShellStatus::Ok);assert!(eligible);
+  c.current_edit=1;assert_eq!(shell_core_address_menu_eligible(core,&c,&mut eligible),ShellStatus::Ok);assert!(!eligible);
+  c.target_len=usize::MAX;assert_eq!(shell_core_address_menu_eligible(core,&c,&mut eligible),ShellStatus::TooLarge);assert!(!eligible);
+  c.target_len=1;c.target=std::ptr::null();assert_eq!(shell_core_address_menu_eligible(core,&c,&mut eligible),ShellStatus::InvalidArgument);
+  c.target=target.as_ptr();assert_eq!(shell_core_address_menu_eligible(core,std::ptr::null(),&mut eligible),ShellStatus::InvalidArgument);
+  shell_core_close(core);assert_eq!(shell_core_address_menu_eligible(core,&c,&mut eligible),ShellStatus::Closed);assert!(!eligible);
+  shell_core_destroy(core);
+ }}
+}

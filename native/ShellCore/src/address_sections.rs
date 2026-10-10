@@ -163,3 +163,81 @@ mod tests {
         assert_eq!(p.resolve(0, &[1], 0, &[1], true, true), Ok(Accepted));
     }
 }
+
+/// Native supplies opening/focus observations; identity comparisons stay here.
+pub fn menu_eligible(
+    session: &[u16],
+    current_session: &[u16],
+    edit: u64,
+    current_edit: u64,
+    target: &[u16],
+    expected_target: &[u16],
+    requested: bool,
+    focused: bool,
+) -> Result<bool, ()> {
+    if session.is_empty()
+        || session.len() > 256
+        || current_session.len() > 256
+        || edit > MAX_EDIT_ID
+        || current_edit > MAX_EDIT_ID
+        || target.len() > 64
+        || expected_target.len() > 64
+    {
+        return Err(());
+    }
+    Ok(requested
+        && focused
+        && session == current_session
+        && edit == current_edit
+        && target == expected_target)
+}
+#[cfg(test)]
+mod eligibility_tests {
+    use super::*;
+    #[test]
+    fn native_opening_focus_and_each_identity_must_match() {
+        let check = |session: &[u16],
+                     current: &[u16],
+                     edit,
+                     current_edit,
+                     target: &[u16],
+                     expected: &[u16],
+                     requested,
+                     focused| {
+            menu_eligible(
+                session,
+                current,
+                edit,
+                current_edit,
+                target,
+                expected,
+                requested,
+                focused,
+            )
+        };
+        assert_eq!(check(&[1], &[1], 0, 0, &[], &[], true, true), Ok(true)); // editor menu, wire zero edit
+        assert_eq!(
+            check(&[1], &[1], MAX_EDIT_ID, MAX_EDIT_ID, &[7], &[7], true, true),
+            Ok(true)
+        );
+        assert_eq!(check(&[2], &[1], 3, 3, &[7], &[7], true, true), Ok(false));
+        assert_eq!(check(&[1], &[], 3, 3, &[7], &[7], true, true), Ok(false)); // initial publication cannot answer an old opening
+        assert_eq!(check(&[1], &[1], 2, 3, &[7], &[7], true, true), Ok(false));
+        assert_eq!(check(&[1], &[1], 3, 3, &[8], &[7], true, true), Ok(false));
+        assert_eq!(check(&[1], &[1], 3, 3, &[7], &[7], false, true), Ok(false));
+        assert_eq!(check(&[1], &[1], 3, 3, &[7], &[7], true, false), Ok(false));
+        assert_eq!(check(&[], &[1], 3, 3, &[], &[], true, true), Err(()));
+        assert_eq!(
+            check(&[1], &[1], MAX_EDIT_ID + 1, 0, &[], &[], false, false),
+            Err(())
+        );
+        assert_eq!(
+            check(&[1], &[1], 0, u64::MAX, &[], &[], true, true),
+            Err(())
+        );
+        assert_eq!(
+            check(&[1], &[1], 0, 0, &[0; 65], &[], false, false),
+            Err(())
+        );
+    }
+}

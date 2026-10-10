@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 41
+#define SHELL_CORE_ABI_VERSION 42
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -868,6 +868,25 @@ typedef struct {
   uint32_t order[56];
   uint32_t len;
 } ShellToolbarPreview;
+
+/*
+ Borrowed native menu context. Firefox supplies publication identity; WinUI
+ supplies the current opening, editor and target observations.
+ */
+typedef struct {
+  const uint16_t *session;
+  uintptr_t session_len;
+  const uint16_t *current_session;
+  uintptr_t current_session_len;
+  uint64_t edit;
+  uint64_t current_edit;
+  const uint16_t *target;
+  uintptr_t target_len;
+  const uint16_t *expected_target;
+  uintptr_t expected_target_len;
+  bool requested;
+  bool focused;
+} ShellAddressMenuContext;
 
 #ifdef __cplusplus
 extern "C" {
@@ -2106,6 +2125,15 @@ ShellStatus shell_core_address_section(ShellCore *core,
                                        bool eligible,
                                        bool commit,
                                        ShellAddressSectionDecision *decision);
+
+/*
+ Test publication eligibility without consuming its generation or content.
+ # Safety
+ See [`guard`]. Context and its spans are readable; eligible is writable.
+ */
+ShellStatus shell_core_address_menu_eligible(ShellCore *core,
+                                             const ShellAddressMenuContext *context,
+                                             bool *eligible);
 
 #ifdef __cplusplus
 }  // extern "C"
