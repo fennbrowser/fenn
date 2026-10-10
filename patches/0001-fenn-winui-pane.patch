@@ -5627,10 +5627,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..c0cb77ef7e
+index 0000000000..a68f4ad69b
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2096 @@
+@@ -0,0 +1,2112 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -5681,6 +5681,8 @@ index 0000000000..c0cb77ef7e
 +  // Every delta names it; a mismatch means producer and consumer diverged, and
 +  // is answered with one snapshot rather than a retry.
 +  nativeRevision: 0,
++  // Complete publications sent because a delta was refused.
++  publicationRecoveries: 0,
 +  publishedIds: new Set(),
 +  // True for the duration of one drain. A drained command can spin a nested
 +  // modal loop, and the pane must not be asked for another batch from inside
@@ -6780,15 +6782,14 @@ index 0000000000..c0cb77ef7e
 +      });
 +    }
 +    const snapshot = this.stripSession.update();
-+    if (snapshot) {
-+      try {
-+        window.windowUtils.syncWinUITabMenu(JSON.stringify(snapshot));
-+      } catch (error) {
-+        if (!snapshot.strip.base) throw error;
-+        // A rejected/missing base must not leave the retained native model
-+        // behind. A bounded full publication is also independently validated.
-+        window.windowUtils.syncWinUITabMenu(JSON.stringify(this.stripSession.update(true)));
-+      }
++    const sync = value => window.windowUtils.syncWinUITabMenu(JSON.stringify(value));
++    if (snapshot && !snapshot.strip.base) {
++      sync(snapshot);
++    } else if (snapshot) {
++      // A rejected/missing base must not leave the retained native model
++      // behind. A bounded full publication is also independently validated.
++      this.publishWithRecovery(() => (sync(snapshot), true),
++        () => sync(this.stripSession.update(true)));
 +    }
 +  },
 +
@@ -7374,12 +7375,27 @@ index 0000000000..c0cb77ef7e
 +    this.dirtyTitles.clear();
 +    this.dirtySelection = false;
 +    if (!titles.length && delta.selected === undefined) return;
-+    const revision = window.windowUtils.applyWinUITabDelta(JSON.stringify(delta));
-+    if (!revision) {
-+      this.syncTabs();
-+      return;
++    let revision = 0;
++    this.publishWithRecovery(
++      () => !!(revision = window.windowUtils.applyWinUITabDelta(JSON.stringify(delta))),
++      () => this.syncTabs());
++    if (revision) this.nativeRevision = revision;
++  },
++
++  // The one answer to a refused delta, for every delta channel: exactly one
++  // complete publication, which native code validates independently. A thrown
++  // delta counts as refused. A refused complete publication propagates, so the
++  // surface takes its fallback instead of retrying in a loop.
++  publishWithRecovery(sendDelta, sendComplete) {
++    let accepted = false;
++    try {
++      accepted = sendDelta();
++    } catch (error) {
++      accepted = false;
 +    }
-+    this.nativeRevision = revision;
++    if (accepted) return;
++    this.publicationRecoveries++;
++    sendComplete();
 +  },
 +
 +  syncTabs() {
