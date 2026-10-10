@@ -2930,6 +2930,56 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     settle(); settle();
                     if (!animated) Require(SUCCEEDED(motion(host,3,&ghosts)), "restore motion after the close width check");
                 }
+                // Closing a tab before a group moves the group aside. Its tabs
+                // and header ease there with a composition Translation that
+                // XAML bounds report a frame or two late, so the outline (placed
+                // with the group's light) snapped to the end and then trailed
+                // back. It must move with them from where the group was.
+                if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
+                    auto entry = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t*)>(GetProcAddress(module, "WinUIPaneTestEntryMotion"));
+                    Require(entry != nullptr, "entry motion inspector exists");
+                    auto outline = [&] {
+                        for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
+                            if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7") return child.as<Controls::Border>();
+                        return Controls::Border{nullptr};
+                    };
+                    auto left = [&] { auto border = outline(); return border ? Controls::Canvas::GetLeft(border) : std::nan(""); };
+                    const double leftBefore = left();
+                    Require(!std::isnan(leftBefore), "the lit group has an outline before the close");
+                    auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}],"rows":[{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":42},{"group":0,"tab":43}]}})");
+                    state.GetNamedObject(L"strip").SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(revision++));
+                    MenuPublish(api,host,state.Stringify().c_str());
+                    WinUITab remaining[]{{42,L"Research page"},{43,L"New tab"}};
+                    Require(SUCCEEDED(api.syncTabs(host,remaining,2,43,&selected)), "close the ungrouped tab before the group");
+                    std::vector<double> lefts;
+                    bool held = false;
+                    for (int i = 0; i < 400; ++i) {
+                        uint32_t out[10]{};
+                        Require(SUCCEEDED(entry(host, 0, out)), "inspect the close motion");
+                        if (out[6]) held = true;
+                        const double now = left();
+                        if (!std::isnan(now) && (lefts.empty() || std::abs(lefts.back() - now) > .01)) lefts.push_back(now);
+                        if (held && !out[4] && !out[5] && !out[6]) break;
+                        Pump();
+                        Sleep(2);
+                    }
+                    settle(); settle();
+                    const double leftAfter = left();
+                    std::string trace;
+                    for (auto value : lefts) trace += std::to_string(int(value)) + " ";
+                    printf("Group outline on close before it: before=%.1f after=%.1f held=%d path=[%s]\n", leftBefore, leftAfter, int(held), trace.c_str());
+                    fflush(stdout);
+                    Require(held && leftAfter < leftBefore - 100, "closing a tab before a group eases the group into its place");
+                    bool between = false;
+                    for (auto value : lefts) between |= value > leftAfter + 5 && value < leftBefore - 5;
+                    Require(between, "the group's outline passes between its old and new place rather than jumping");
+                    bool steady = true;
+                    for (size_t i = 1; i < lefts.size(); ++i) steady &= lefts[i] <= lefts[i - 1] + .5;
+                    Require(steady, "the group's outline only moves toward its new place while the tabs ease there");
+                    lastGroup(revision++, true);
+                    Require(SUCCEEDED(api.syncTabs(host,opened,3,43,&selected)), "reopen the ungrouped tab after the outline check");
+                    settle(); settle();
+                }
                 reachRevisionStart = revision - 1;
             }
             // Firefox's groupReach option sets how far the lone group reaches

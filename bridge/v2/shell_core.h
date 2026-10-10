@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 33
+#define SHELL_CORE_ABI_VERSION 34
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -75,6 +75,20 @@
 #define MAX_ACTIONS 256
 
 #define MAX_DESCRIPTION 65536
+
+/*
+ Matches the host's neighbor animation: 135 ms, cubic-bezier(.215, .61, .355, 1).
+ */
+#define SETTLE_MS 135.0
+
+/*
+ Bound on simultaneously settling elements.
+ */
+#define MAX_SETTLING 4096
+
+#define SHELL_SETTLE_TAB 0
+
+#define SHELL_SETTLE_HEADER 1
 
 /*
  Result of every entry point. `Ok` is zero so the host can test it directly.
@@ -595,6 +609,15 @@ typedef struct {
   bool left;
   bool right;
 } ShellGlowRecatch;
+
+/*
+ One element's current composition offset and horizontal scale.
+ */
+typedef struct {
+  bool active;
+  float dx;
+  float sx;
+} ShellSettleSample;
 
 typedef struct {
   uint64_t edit_id;
@@ -1211,6 +1234,42 @@ ShellStatus shell_core_glow_settle(ShellCore *core,
                                    uintptr_t len,
                                    ShellGlowRecatch *output,
                                    uintptr_t *count);
+
+/*
+ Record a tab row (`SHELL_SETTLE_TAB`) or group header
+ (`SHELL_SETTLE_HEADER`) held at composition offset `dx` and left-anchored
+ scale `sx`, easing to rest from `start_ms`.
+
+ # Safety
+ See [`guard`].
+ */
+ShellStatus shell_core_settle_hold(ShellCore *core,
+                                   uint32_t kind,
+                                   uint32_t id,
+                                   float dx,
+                                   float sx,
+                                   double start_ms);
+
+/*
+ Where a held element is drawn at `now_ms`, relative to its layout bounds.
+
+ # Safety
+ See [`guard`]. `out` must be writable.
+ */
+ShellStatus shell_core_settle_sample(ShellCore *core,
+                                     uint32_t kind,
+                                     uint32_t id,
+                                     double now_ms,
+                                     ShellSettleSample *out);
+
+/*
+ Forget finished holds and report whether anything is still settling.
+ With `clear`, forget every hold (motion was cancelled).
+
+ # Safety
+ See [`guard`]. `active` must be writable.
+ */
+ShellStatus shell_core_settle_advance(ShellCore *core, double now_ms, bool clear, bool *active);
 
 /*
  Read address coordination state; no WinUI objects or borrowed data escape.

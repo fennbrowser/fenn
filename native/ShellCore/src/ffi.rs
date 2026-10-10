@@ -197,6 +197,7 @@ pub struct ShellCore {
     group_hover: crate::group_hover::GroupHover,
     group_surface: crate::group_surface::GroupSurfaceMotion,
     group_glow: crate::group_glow::GroupGlow,
+    settle: crate::settle::Settle,
     menu: crate::menu::MenuState,
     surface_menu: crate::surface_menu::SurfaceMenu,
     /// Identity of this core among every core in the process; transfers name it.
@@ -414,6 +415,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         group_hover: crate::group_hover::GroupHover::default(),
         group_surface: Default::default(),
         group_glow: Default::default(),
+        settle: Default::default(),
         menu: Default::default(),
         surface_menu: Default::default(),
         endpoint: NEXT_ENDPOINT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -1490,6 +1492,26 @@ mod tests {
     }
 
     #[test]
+    fn settle_holds_are_validated_sampled_and_cleared() {
+        use crate::settle::{ShellSettleSample, SHELL_SETTLE_HEADER, SHELL_SETTLE_TAB};
+        unsafe {
+            let core = core();
+            let (mut sample, mut active) = (ShellSettleSample::default(), false);
+            assert_eq!(shell_core_settle_hold(core, SHELL_SETTLE_HEADER, 7, -30.0, 1.0, 10.0), ShellStatus::Ok);
+            assert_eq!(shell_core_settle_hold(core, 2, 7, 0.0, 1.0, 10.0), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_settle_hold(core, SHELL_SETTLE_TAB, 7, f32::NAN, 1.0, 10.0), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_settle_sample(core, SHELL_SETTLE_HEADER, 7, 10.0, &mut sample), ShellStatus::Ok);
+            assert_eq!(sample, ShellSettleSample { active: true, dx: -30.0, sx: 1.0 });
+            assert_eq!(shell_core_settle_advance(core, 20.0, false, &mut active), ShellStatus::Ok);
+            assert!(active);
+            assert_eq!(shell_core_settle_advance(core, 20.0, true, &mut active), ShellStatus::Ok);
+            assert!(!active);
+            assert_eq!(shell_core_settle_sample(core, SHELL_SETTLE_HEADER, 7, 20.0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            shell_core_destroy(core);
+        }
+    }
+
+    #[test]
     fn group_dwell_is_revoked_by_endpoint_cancellation() {
         unsafe {
             let core = core();
@@ -2026,6 +2048,52 @@ pub unsafe extern "C" fn shell_core_glow_settle(
         let recatch = core.group_glow.settle(moving, extents);
         *count = recatch.len();
         if !recatch.is_empty() { std::ptr::copy_nonoverlapping(recatch.as_ptr(), output, recatch.len()); }
+        ShellStatus::Ok
+    })
+}
+
+
+/// Record a tab row (`SHELL_SETTLE_TAB`) or group header
+/// (`SHELL_SETTLE_HEADER`) held at composition offset `dx` and left-anchored
+/// scale `sx`, easing to rest from `start_ms`.
+///
+/// # Safety
+/// See [`guard`].
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_settle_hold(core: *mut ShellCore, kind: u32, id: u32, dx: f32, sx: f32, start_ms: f64) -> ShellStatus {
+    guard(core, |core| {
+        if kind > crate::settle::SHELL_SETTLE_HEADER || !dx.is_finite() || !sx.is_finite() || !start_ms.is_finite() {
+            return ShellStatus::InvalidArgument;
+        }
+        if core.settle.hold(kind, id, dx, sx, start_ms) { ShellStatus::Ok } else { ShellStatus::TooLarge }
+    })
+}
+
+/// Where a held element is drawn at `now_ms`, relative to its layout bounds.
+///
+/// # Safety
+/// See [`guard`]. `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_settle_sample(core: *mut ShellCore, kind: u32, id: u32, now_ms: f64,
+                                                  out: *mut crate::settle::ShellSettleSample) -> ShellStatus {
+    guard(core, |core| {
+        let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+        *out = core.settle.sample(kind, id, now_ms);
+        ShellStatus::Ok
+    })
+}
+
+/// Forget finished holds and report whether anything is still settling.
+/// With `clear`, forget every hold (motion was cancelled).
+///
+/// # Safety
+/// See [`guard`]. `active` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_settle_advance(core: *mut ShellCore, now_ms: f64, clear: bool, active: *mut bool) -> ShellStatus {
+    guard(core, |core| {
+        let Some(active) = active.as_mut() else { return ShellStatus::InvalidArgument; };
+        if clear { core.settle.clear(); }
+        *active = core.settle.advance(now_ms);
         ShellStatus::Ok
     })
 }

@@ -435,7 +435,32 @@ struct NativeTabStrip {
                 if (!alive.expired()) ambient.Update();
             });
         }
+        // Sample the clock once per rendered frame. Layout-triggered refreshes
+        // in between see the same geometry, so the outline borders this pass
+        // sizes cannot keep layout from ever settling (a layout cycle).
+        if (joinFrame != ambient.frames) { joinFrame = ambient.frames; joinClock = SteadyMs(); }
+        bool settlingMotion = false;
+        if (!settling.empty()) {
+            if (!core || shell_core_settle_advance(core, joinClock, false, &settlingMotion) != SHELL_STATUS_OK) settlingMotion = false;
+            if (!settlingMotion) settling.clear();
+        }
         auto boundsOf = [&](FrameworkElement const& item) {
+            for (auto const& held : settling) {
+                if (held.element != item) continue;
+                // A held element's composition Translation reaches XAML (as
+                // UIElement.Translation) a frame or two late, so its transformed
+                // bounds would first snap to the new place and then trail the
+                // motion. Place it from its layout slot (the parent's transform,
+                // its arranged offset and any XAML RenderTransform) and apply the
+                // offset and scale it is drawn with now.
+                auto parent = Media::VisualTreeHelper::GetParent(item).try_as<UIElement>();
+                ShellSettleSample sample{};
+                if (!parent || shell_core_settle_sample(core, held.kind, held.id, joinClock, &sample) != SHELL_STATUS_OK || !sample.active) break;
+                const auto offset = item.ActualOffset();
+                auto origin = parent.TransformToVisual(ambient.layer).TransformPoint({offset.x, offset.y});
+                if (auto shift = item.RenderTransform().try_as<Media::TranslateTransform>()) origin.X += float(shift.X());
+                return Windows::Foundation::Rect{origin.X + sample.dx, origin.Y, float(item.ActualWidth()) * sample.sx, float(item.ActualHeight())};
+            }
             return item.TransformToVisual(ambient.layer).TransformBounds({0, 0, float(item.ActualWidth()), float(item.ActualHeight())});
         };
         auto viewport = scroller ? boundsOf(scroller) : boundsOf(view);
@@ -494,10 +519,7 @@ struct NativeTabStrip {
         // past its first and last member (neighbors share the gap and never
         // overlap), and holds a dropped join's surface until Firefox publishes
         // it, so the outline, wash and halo all follow the drag.
-        // Sample the clock once per rendered frame. Layout-triggered refreshes
-        // in between see the same extension, so the width cannot change with
-        // each pass and keep layout from ever settling (a layout cycle).
-        if (joinFrame != ambient.frames) { joinFrame = ambient.frames; joinClock = SteadyMs(); }
+        // The frame clock sampled above keeps the extension stable within a frame.
         {
             const auto [tailGroup, tailWidth] = JoinTail();
             ShellGroupSurfaceFrame frame{};
@@ -520,7 +542,7 @@ struct NativeTabStrip {
                                                        measured.data(), measured.size(), &surfaceMotion) == SHELL_STATUS_OK)
                 for (auto const& value : measured) surfaceBounds[value.group] = {value.x, value.y, value.width, value.height};
         }
-        const bool followingMotion = surfaceMotion.following || IsDragging() || GroupDrag().phase || !foreignGroupShift.entries.empty() || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty();
+        const bool followingMotion = surfaceMotion.following || settlingMotion || IsDragging() || GroupDrag().phase || !foreignGroupShift.entries.empty() || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty();
         // Before this pass places any light, so continuous motion never
         // starts a trailing animation.
         if (ambient.motion.Enabled()) FollowGlow(!followingMotion);
@@ -1990,7 +2012,16 @@ struct NativeTabStrip {
     // unmirrored space in both flow directions (a row's Visual.Offset is the
     // same in each), so the left-edge formula holds in right-to-left too; the
     // right-edge anchor tried first was wrong.
-    struct Neighbor { Controls::TabViewItem row{nullptr}; float dx{}, sx{}; };
+    struct Neighbor { FrameworkElement element{nullptr}; float dx{}, sx{}; uint32_t kind{}, id{}; };
+    // Old left edge and width of every tab row (SHELL_SETTLE_TAB) and group
+    // header (SHELL_SETTLE_HEADER), captured before a publication moves them.
+    using GeometryBefore = std::map<std::pair<uint32_t, uint32_t>, std::pair<float, float>>;
+    // Elements easing to rest after HoldNeighbors. Their composition offset
+    // reaches XAML bounds a frame or two late, so RefreshAmbient samples
+    // ShellCore's settle curve for them and the lighting moves with the tabs
+    // instead of jumping.
+    struct Settling { FrameworkElement element{nullptr}; uint32_t kind{}, id{}; };
+    std::vector<Settling> settling;
 
     // Opt-in (FENN_PANE_DIAGNOSTICS) trace of the new-tab entry motion.
     template <typename... Args> static void EntryLog(char const* format, Args... args) {
@@ -2000,12 +2031,20 @@ struct NativeTabStrip {
         fflush(stderr);
     }
 
-    std::vector<Neighbor> HoldNeighbors(std::map<uint32_t, std::pair<float, float>> const& before, uint32_t newId) {
+    std::vector<Neighbor> HoldNeighbors(GeometryBefore const& before, uint32_t newId) {
         std::vector<Neighbor> held;
-        for (auto const& [id, row] : rows) {
-            auto old = before.find(id);
+        std::vector<std::tuple<uint32_t, uint32_t, FrameworkElement>> candidates;
+        for (auto const& [id, row] : rows)
+            if (id != newId) candidates.emplace_back(SHELL_SETTLE_TAB, id, row);
+        // Group headers move with the tabs; held too, the group's outline and
+        // light (which include its header) keep pace with its members.
+        for (auto const& [group, run] : inlineGroups.runs)
+            if (run.button) candidates.emplace_back(SHELL_SETTLE_HEADER, group, run.button);
+        const double start = SteadyMs();
+        for (auto const& [kind, id, row] : candidates) {
+            auto old = before.find({kind, id});
             // Grouped-source rows can be arranged while IsLoaded stays false.
-            if (id == newId || old == before.end() || (!row.IsLoaded() && row.ActualWidth() <= 0)) continue;
+            if (old == before.end() || (!row.IsLoaded() && row.ActualWidth() <= 0)) continue;
             const auto now = row.TransformToVisual(root).TransformBounds(
                 {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
             // Rows outside the strip before and after cannot be seen moving; a
@@ -2020,15 +2059,27 @@ struct NativeTabStrip {
             visual.Properties().InsertVector3(L"Translation", {dx, 0, 0});
             visual.CenterPoint({0, 0, 0});
             visual.Scale({sx, 1, 1});
-            held.push_back({row, dx, sx});
+            held.push_back({row, dx, sx, kind, id});
+            // Held until SettleNeighbors starts the motion; bounded in case
+            // it never does.
+            Track(kind, id, row, dx, sx, start + 1000);
         }
+        if (!held.empty()) ambient.Update();
         return held;
     }
 
-    static void SettleNeighbors(std::vector<Neighbor> const& held, bool animate) {
+    void Track(uint32_t kind, uint32_t id, FrameworkElement const& element, float dx, float sx, double start) {
+        if (!core || shell_core_settle_hold(core, kind, id, dx, sx, start) != SHELL_STATUS_OK) return;
+        if (std::none_of(settling.begin(), settling.end(), [&](auto const& item) { return item.element == element; }))
+            settling.push_back({element, kind, id});
+    }
+
+    void SettleNeighbors(std::vector<Neighbor> const& held, bool animate) {
+        const double start = SteadyMs();
         for (auto const& item : held) {
             try {
-                auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(item.row);
+                auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(item.element);
+                Track(item.kind, item.id, item.element, animate ? item.dx : 0.f, animate ? item.sx : 1.f, start);
                 if (!animate) {
                     visual.Properties().InsertVector3(L"Translation", {0, 0, 0});
                     visual.Scale({1, 1, 1});
@@ -2047,13 +2098,14 @@ struct NativeTabStrip {
                 visual.Properties().StartAnimation(L"Translation.X", shift);
             } catch (...) {}
         }
+        if (!held.empty()) ambient.Update();
     }
 
     // `addBefore` is the New Tab button's X (in root space) before this
     // publication, or NaN. The button eases from there to its new position with
     // the reveal, so it keeps pace with the tab opening beside it.
     void RevealNewRow(Controls::TabViewItem const& row, uint32_t id, double addBefore,
-                      std::map<uint32_t, std::pair<float, float>> const& before = {}) {
+                      GeometryBefore const& before = {}) {
         EntryLog("WinUIPane entry reveal id=%u enabled=%d dragging=%d slide=%d width=%.1f loaded=%d before=%zu\n",
             id, int(groupSlide.Enabled()), int(IsDragging()), int(bool(groupSlide.storyboard)), row.ActualWidth(), int(row.IsLoaded()), before.size());
         if (!groupSlide.Enabled() || IsDragging() || groupSlide.storyboard) return;
@@ -3481,7 +3533,7 @@ struct NativeTabStrip {
         }
         ClosingTab closing;
         double addBefore = std::numeric_limits<double>::quiet_NaN();
-        std::map<uint32_t, std::pair<float, float>> rowsBefore;
+        GeometryBefore rowsBefore;
         if (!groupSlide.pending) groupSlide.Cancel();
         if (ForeignPreview().active) {
             std::vector<uint32_t> order;
@@ -3544,7 +3596,14 @@ struct NativeTabStrip {
                     if ((!row.IsLoaded() && row.ActualWidth() <= 0) || rowsBefore.size() >= 128) continue;
                     const auto bounds = row.TransformToVisual(root).TransformBounds(
                         {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
-                    rowsBefore.emplace(rowId, std::make_pair(bounds.X, bounds.Width));
+                    rowsBefore.emplace(std::make_pair(uint32_t(SHELL_SETTLE_TAB), rowId), std::make_pair(bounds.X, bounds.Width));
+                }
+                for (auto const& [group, run] : inlineGroups.runs) {
+                    auto button = run.button;
+                    if (!button || (!button.IsLoaded() && button.ActualWidth() <= 0)) continue;
+                    const auto bounds = button.TransformToVisual(root).TransformBounds(
+                        {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
+                    rowsBefore.emplace(std::make_pair(uint32_t(SHELL_SETTLE_HEADER), group), std::make_pair(bounds.X, bounds.Width));
                 }
             }
             for (uint32_t i = 0; i < count; ++i) {
