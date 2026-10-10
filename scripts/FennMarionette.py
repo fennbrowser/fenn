@@ -13,6 +13,24 @@ ROOT = Path(__file__).resolve().parents[1]
 EXE = ROOT / "build/firefox/dist/bin/fenn.exe"
 
 
+def browser_descendants(parents, root_pid):
+    """Include children of browser processes, excluding unrelated process trees.
+
+    parents maps pid to (parent_pid, executable_name), from one OS snapshot.
+    A process can exit between snapshots, including the launcher's parent.
+    """
+    found = {root_pid}
+    changed = True
+    while changed:
+        changed = False
+        for pid, (parent, _) in parents.items():
+            if (parent in found and pid not in found and
+                    parents.get(parent, (None, ""))[1].lower() == EXE.name.lower()):
+                found.add(pid)
+                changed = True
+    return sorted(found)
+
+
 class Marionette:
     def __init__(self, port, process):
         deadline = time.monotonic() + 45

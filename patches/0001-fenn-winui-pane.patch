@@ -216,7 +216,7 @@ index a182468fce..428407c54a 100644
  </body>
  </html>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..95fc5bf01c 100644
+index b2b5db6040..4374f867a6 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
 @@ -33,6 +33,20 @@ browser.jar:
@@ -240,6 +240,12 @@ index b2b5db6040..95fc5bf01c 100644
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
+@@ -104,3 +118,5 @@ browser.jar:
+ 
+ # L10n resources and overrides.
+ % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
++
++        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
 diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
 index 76cab7f8e4..ac11827449 100644
 --- a/browser/components/customizableui/CustomizableUI.sys.mjs
@@ -985,16 +991,314 @@ index 30f5aa6556..33f65b5997 100644
 +    return added;
    }
  }
-diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..858355036c 100644
---- a/browser/components/urlbar/content/UrlbarInputBase.mjs
-+++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
-@@ -1722,7 +1722,15 @@ ${
+diff --git a/browser/components/urlbar/content/SmartbarInput.mjs b/browser/components/urlbar/content/SmartbarInput.mjs
+index e5dcc2c923..7e58df72da 100644
+--- a/browser/components/urlbar/content/SmartbarInput.mjs
++++ b/browser/components/urlbar/content/SmartbarInput.mjs
+@@ -2,6 +2,7 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
++import { UrlbarResultActions } from "chrome://browser/content/urlbar/UrlbarResultActions.mjs";
+ import { SearchModeSwitcher } from "chrome://browser/content/urlbar/SearchModeSwitcher.mjs";
+ import { UrlbarChildController } from "chrome://browser/content/urlbar/UrlbarChildController.mjs";
+ import { UrlbarEventBufferer } from "chrome://browser/content/urlbar/UrlbarEventBufferer.mjs";
+@@ -150,6 +151,11 @@ const MAX_CONTEXT_WEBSITES = 5;
+  * Implements the text input part of the address bar UI.
+  */
+ export class SmartbarInput extends HTMLElement {
++  #resultActions;
++  get resultActions() {
++    return (this.#resultActions ??= new UrlbarResultActions(this));
++  }
++
+   static get #markup() {
+     return `
+       <html:smartwindow-smartbar-glow class="smartbar-glow"></html:smartwindow-smartbar-glow>
+@@ -2439,20 +2445,24 @@ ${
+    * @param {UrlbarResult} options.result The result that was picked.
+    * @param {Event} options.event The event that picked the result.
+    * @param {HTMLElement} [options.element] The picked view element, if available.
++   * @param {object} [options.resultAction]
++   *   Firefox-owned button/menu metadata from UrlbarResultActions. Native
++   *   presenters resolve opaque IDs to this descriptor before calling here.
+    * @param {number} [options.browserId]
+    *   The id of the browser to load into, for a load that resolves
+    *   asynchronously and must target the tab selected when it was committed.
     *   Defaults to the parent resolving the selected browser at load time.
     */
    // eslint-disable-next-line complexity
 -  pickResult({ result, event, element = null, browserId = null }) {
-+  pickResult({ result, event, element = null, browserId = null, nativeActionKey = null }) {
++  pickResult({ result, event, element = null, resultAction = null, browserId = null }) {
++    resultAction ??= UrlbarResultActions.fromElement(element);
+     if (element?.classList.contains("urlbarView-button-menu")) {
+       this.view.openResultMenu(result, element);
+       return;
+     }
+ 
+-    if (element?.dataset.command) {
+-      this.#pickMenuResult(result, event, element);
++    if (resultAction?.command) {
++      this.#pickMenuResult(result, event, element, resultAction);
+       return;
+     }
+ 
+@@ -2496,6 +2506,7 @@ ${
+       this.controller.engagementEvent.record(event, {
+         result,
+         element,
++        resultAction,
+         location: this.sapLocation,
+         searchSource: this.getSearchSource(event),
+         searchString: this._lastSearchString,
+@@ -2506,12 +2517,13 @@ ${
+       return;
+     }
+ 
+-    let resultUrl = element?.dataset.url;
++    let resultUrl = resultAction?.url;
+     let originalUntrimmedValue = this.untrimmedValue;
+     let isCanonized = this.setValueFromResult({
+       result,
+       event,
+       element,
++      resultAction,
+       urlOverride: resultUrl,
+     });
+     let where = this.controller.whereToOpen(event);
+@@ -2540,6 +2552,7 @@ ${
+       this.controller.engagementEvent.record(event, {
+         result,
+         element,
++        resultAction,
+         location: this.sapLocation,
+         selType: "canonized",
+         searchSource: this.getSearchSource(event),
+@@ -2626,11 +2639,12 @@ ${
+         this.controller.engagementEvent.record(event, {
+           result,
+           element,
++          resultAction,
+           location: this.sapLocation,
+           searchSource: this.getSearchSource(event),
+           searchString,
+           searchMode,
+-          selType: this.view.telemetryTypeFromElement(result, element),
++          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+           windowMode: this.windowMode,
+         });
+ 
+@@ -2649,10 +2663,11 @@ ${
+           this.controller.engagementEvent.record(event, {
+             result,
+             element,
++            resultAction,
+             location: this.sapLocation,
+             searchSource: this.getSearchSource(event),
+             searchString: this._lastSearchString,
+-            selType: this.view.telemetryTypeFromElement(result, element),
++            selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+             windowMode: this.windowMode,
+           });
+           this.maybeConfirmSearchModeFromResult({
+@@ -2719,6 +2734,7 @@ ${
+         this.controller.engagementEvent.record(event, {
+           result,
+           element,
++          resultAction,
+           location: this.sapLocation,
+           selType: "tip",
+           searchSource: this.getSearchSource(event),
+@@ -2738,11 +2754,12 @@ ${
+           this.controller.engagementEvent.record(event, {
+             result,
+             element,
++            resultAction,
+             location: this.sapLocation,
+             searchMode,
+             searchSource: this.getSearchSource(event),
+             searchString: this._lastSearchString,
+-            selType: this.view.telemetryTypeFromElement(result, element),
++            selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+             windowMode: this.windowMode,
+           });
+           return;
+@@ -2753,6 +2770,7 @@ ${
+         this.controller.engagementEvent.record(event, {
+           result,
+           element,
++          resultAction,
+           location: this.sapLocation,
+           selType: "extension",
+           searchSource: this.getSearchSource(event),
+@@ -2781,10 +2799,11 @@ ${
+         this.controller.engagementEvent.record(event, {
+           result,
+           element,
++          resultAction,
+           location: this.sapLocation,
+           searchSource: this.getSearchSource(event),
+           searchString: this._lastSearchString,
+-          selType: this.view.telemetryTypeFromElement(result, element),
++          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+           windowMode: this.windowMode,
+         });
+         this.maybeConfirmSearchModeFromResult({
+@@ -2798,10 +2817,11 @@ ${
+         this.controller.engagementEvent.record(event, {
+           result,
+           element,
++          resultAction,
+           location: this.sapLocation,
+           searchSource: this.getSearchSource(event),
+           searchString: this._lastSearchString,
+-          selType: this.view.telemetryTypeFromElement(result, element),
++          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+           windowMode: this.windowMode,
+         });
+         return;
+@@ -2841,9 +2861,10 @@ ${
+           {
+             result,
+             element,
++            resultAction,
+             location: this.sapLocation,
+             searchString: this._lastSearchString,
+-            selType: this.view.telemetryTypeFromElement(result, element),
++            selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+             searchSource: this.getSearchSource(event),
+             windowMode: this.windowMode,
+           }
+@@ -2854,9 +2875,10 @@ ${
+     this.controller.engagementEvent.record(event, {
+       result,
+       element,
++      resultAction,
+       location: this.sapLocation,
+       searchString: this._lastSearchString,
+-      selType: this.view.telemetryTypeFromElement(result, element),
++      selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+       searchSource: this.getSearchSource(event),
+       windowMode: this.windowMode,
+     });
+@@ -2945,6 +2967,7 @@ ${
+     event = null,
+     urlOverride = null,
+     element = null,
++    resultAction = null,
+   } = {}) {
+     // Usually this is set by a previous input event, but in certain cases, like
+     // when opening Top Sites on a loaded page, it wouldn't happen. To avoid
+@@ -3029,7 +3052,7 @@ ${
+     }
+ 
+     if (!result.autofill) {
+-      let value = this.#getValueFromResult(result, { urlOverride, element });
++      let value = this.#getValueFromResult(result, { urlOverride, element, resultAction });
+       this.setValue(value, {
+         actionType: this.#getActionTypeFromResult(result),
+       });
+@@ -4484,7 +4507,8 @@ ${
+    *   element rather than the result.
+    * @returns {string} The value.
+    */
+-  #getValueFromResult(result, { urlOverride = null, element = null } = {}) {
++  #getValueFromResult(result, { urlOverride = null, element = null, resultAction = null } = {}) {
++    resultAction ??= UrlbarResultActions.fromElement(element);
+     switch (result.type) {
+       case UrlbarShared.RESULT_TYPE.KEYWORD:
+         return result.payload.input;
+@@ -4511,7 +4535,7 @@ ${
+       case UrlbarShared.RESULT_TYPE.AI_CHAT:
+         return result.payload.query ?? "";
+       case UrlbarShared.RESULT_TYPE.TIP: {
+-        let value = element?.dataset.url || element?.dataset.input;
++        let value = resultAction?.url || resultAction?.input;
+         if (value) {
+           return value;
+         }
+@@ -5064,34 +5088,35 @@ ${
+    * @param {Event} event The event that picked the result.
+    * @param {HTMLElement} element the picked view element, if available.
+    */
+-  #pickMenuResult(result, event, element) {
++  #pickMenuResult(result, event, element, resultAction = UrlbarResultActions.fromElement(element)) {
+     this.controller.engagementEvent.record(event, {
+       result,
+       element,
++      resultAction,
+       location: this.sapLocation,
+       searchSource: this.getSearchSource(event),
+       searchString: this._lastSearchString,
+-      selType: element.dataset.command,
++      selType: resultAction.command,
+       windowMode: this.windowMode,
+     });
+ 
+-    if (element.dataset.command == "manage") {
++    if (resultAction.command == "manage") {
+       this.window.openPreferences("search-locationBar");
+       return;
+     }
+ 
+     let url;
+-    if (element.dataset.command == "help") {
++    if (resultAction.command == "help") {
+       url = result.payload.helpUrl;
+     }
+-    url ||= element.dataset.url;
++    url ||= resultAction.url;
+ 
+     if (!url) {
+       return;
+     }
+ 
+     let where = this.controller.whereToOpen(event);
+-    if (element.dataset.command == "help" && where == "current") {
++    if (resultAction.command == "help" && where == "current") {
+       // Open help links in a new tab.
+       where = "tab";
+     }
+diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
+index a077de625f..39a24c5e03 100644
+--- a/browser/components/urlbar/content/UrlbarInputBase.mjs
++++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
+@@ -2,6 +2,7 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
++import { UrlbarResultActions } from "chrome://browser/content/urlbar/UrlbarResultActions.mjs";
+ import { SearchModeSwitcher } from "chrome://browser/content/urlbar/SearchModeSwitcher.mjs";
+ import { UrlbarChildController } from "chrome://browser/content/urlbar/UrlbarChildController.mjs";
+ import { UrlbarEventBufferer } from "chrome://browser/content/urlbar/UrlbarEventBufferer.mjs";
+@@ -134,6 +135,11 @@ function parseMarkupToFragment(markup) {
+  * extends this class (e.g. `UrlbarInput`, `SearchbarInput`).
+  */
+ export class UrlbarInputBase extends HTMLElement {
++  #resultActions;
++  get resultActions() {
++    return (this.#resultActions ??= new UrlbarResultActions(this));
++  }
++
+   static get #markup() {
+     return `
+       <div class="urlbar-background"/>
+@@ -1716,20 +1722,32 @@ ${
+    * @param {UrlbarResult} options.result The result that was picked.
+    * @param {Event} options.event The event that picked the result.
+    * @param {HTMLElement} [options.element] The picked view element, if available.
++   * @param {object} [options.resultAction]
++   *   Firefox-owned button/menu metadata from UrlbarResultActions. Native
++   *   presenters resolve opaque IDs to this descriptor before calling here.
+    * @param {number} [options.browserId]
+    *   The id of the browser to load into, for a load that resolves
+    *   asynchronously and must target the tab selected when it was committed.
+    *   Defaults to the parent resolving the selected browser at load time.
+    */
+   // eslint-disable-next-line complexity
+-  pickResult({ result, event, element = null, browserId = null }) {
++  pickResult({ result, event, element = null, resultAction = null, browserId = null, nativeActionKey = null }) {
++    resultAction ??= UrlbarResultActions.fromElement(element);
 +    const nativeAction = nativeActionKey && this.view.nativePresentation &&
 +      result.providerName === "UrlbarProviderGlobalActions" &&
 +      result.payload.actionsResults.find(action => action.key === nativeActionKey);
@@ -1006,15 +1310,171 @@ index a077de625f..858355036c 100644
      if (element?.classList.contains("urlbarView-button-menu")) {
        this.view.openResultMenu(result, element);
        return;
-@@ -2099,6 +2107,7 @@ ${
+     }
+ 
+-    if (element?.dataset.command) {
+-      this.#pickMenuResult(result, event, element);
++    if (resultAction?.command) {
++      this.#pickMenuResult(result, event, element, resultAction);
+       return;
+     }
+ 
+@@ -1784,6 +1802,7 @@ ${
+       this.controller.engagementEvent.record(event, {
+         result,
+         element,
++        resultAction,
+         searchString: this._lastSearchString,
+         selType: "dismiss",
+         searchSource: this.getSearchSource(event),
+@@ -1793,12 +1812,13 @@ ${
+       return;
+     }
+ 
+-    let resultUrl = element?.dataset.url;
++    let resultUrl = resultAction?.url;
+     let originalUntrimmedValue = this.untrimmedValue;
+     let isCanonized = this.setValueFromResult({
+       result,
+       event,
+       element,
++      resultAction,
+       urlOverride: resultUrl,
+     });
+ 
+@@ -1815,8 +1835,8 @@ ${
+       private: this.isPrivate,
+     };
+ 
+-    let userContextId = element?.dataset.usercontextid;
+-    let openIn = userContextId ? "container-tab" : element?.dataset.openIn;
++    let userContextId = resultAction?.userContextId;
++    let openIn = userContextId ? "container-tab" : resultAction?.openIn;
+ 
+     if (openIn) {
+       switch (openIn) {
+@@ -1868,6 +1888,7 @@ ${
+       this.controller.engagementEvent.record(event, {
+         result,
+         element,
++        resultAction,
+         selType: "canonized",
+         searchString: this._lastSearchString,
+         searchSource: this.getSearchSource(event),
+@@ -1951,9 +1972,10 @@ ${
+         this.controller.engagementEvent.record(event, {
+           result,
+           element,
++          resultAction,
+           searchString,
+           searchMode,
+-          selType: this.view.telemetryTypeFromElement(result, element),
++          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+           searchSource: this.getSearchSource(event),
+           windowMode: this.windowMode,
+         });
+@@ -1973,8 +1995,9 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
++            resultAction,
+             searchString: this._lastSearchString,
+-            selType: this.view.telemetryTypeFromElement(result, element),
++            selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+             searchSource: this.getSearchSource(event),
+             windowMode: this.windowMode,
+           });
+@@ -2077,6 +2100,7 @@ ${
+         this.controller.engagementEvent.record(event, {
+           result,
+           element,
++          resultAction,
+           selType: "tip",
+           searchString: this._lastSearchString,
+           searchSource: this.getSearchSource(event),
+@@ -2099,9 +2123,11 @@ ${
+           this.controller.engagementEvent.record(event, {
+             result,
+             element,
++            resultAction,
 +            pickedActionKey: nativeAction?.key,
              searchMode,
              searchString: this._lastSearchString,
-             selType: this.view.telemetryTypeFromElement(result, element),
-@@ -2479,6 +2488,7 @@ ${
+-            selType: this.view.telemetryTypeFromElement(result, element),
++            selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+             searchSource: this.getSearchSource(event),
+             windowMode: this.windowMode,
+           });
+@@ -2119,6 +2145,7 @@ ${
+         this.controller.engagementEvent.record(event, {
+           result,
+           element,
++          resultAction,
+           selType: "extension",
+           searchString: this._lastSearchString,
+           searchSource: this.getSearchSource(event),
+@@ -2146,8 +2173,9 @@ ${
+         this.controller.engagementEvent.record(event, {
+           result,
+           element,
++          resultAction,
+           searchString: this._lastSearchString,
+-          selType: this.view.telemetryTypeFromElement(result, element),
++          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+           searchSource: this.getSearchSource(event),
+           windowMode: this.windowMode,
+         });
+@@ -2163,8 +2191,9 @@ ${
+         this.controller.engagementEvent.record(event, {
+           result,
+           element,
++          resultAction,
+           searchString: this._lastSearchString,
+-          selType: this.view.telemetryTypeFromElement(result, element),
++          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+           searchSource: this.getSearchSource(event),
+           windowMode: this.windowMode,
+         });
+@@ -2225,8 +2254,9 @@ ${
+       .startTrackingBounceEvent(this.#selectedBrowserId, event, {
+         result,
+         element,
++        resultAction,
+         searchString: this._lastSearchString,
+-        selType: this.view.telemetryTypeFromElement(result, element),
++        selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+         searchSource: this.getSearchSource(event),
+         windowMode: this.windowMode,
+       })
+@@ -2235,8 +2265,9 @@ ${
+     this.controller.engagementEvent.record(event, {
+       result,
+       element,
++      resultAction,
+       searchString: this._lastSearchString,
+-      selType: this.view.telemetryTypeFromElement(result, element),
++      selType: this.view.telemetryTypeFromElement(result, element, resultAction),
+       searchSource: this.getSearchSource(event),
+       windowMode: this.windowMode,
+     });
+@@ -2283,6 +2314,7 @@ ${
+     event = null,
+     urlOverride = null,
+     element = null,
++    resultAction = null,
+   } = {}) {
+     // Usually this is set by a previous input event, but in certain cases, like
+     // when opening Top Sites on a loaded page, it wouldn't happen. To avoid
+@@ -2367,7 +2399,7 @@ ${
+     }
+ 
+     if (!result.autofill) {
+-      let value = this.#getValueFromResult(result, { urlOverride, element });
++      let value = this.#getValueFromResult(result, { urlOverride, element, resultAction });
+       this.setValue(value, {
+         actionType: this.#getActionTypeFromResult(result),
+       });
+@@ -2479,6 +2511,7 @@ ${
        })
      ) {
        // Search mode restarts the query, so these results are obsolete.
@@ -1022,7 +1482,7 @@ index a077de625f..858355036c 100644
        this.controller.discardResults(queryContext);
        return;
      }
-@@ -3245,6 +3255,7 @@ ${
+@@ -3245,6 +3278,7 @@ ${
      result = this._resultForCurrentValue,
      checkValue = true,
      startQuery = true,
@@ -1030,7 +1490,7 @@ index a077de625f..858355036c 100644
    }) {
      if (
        !result ||
-@@ -3255,12 +3266,12 @@ ${
+@@ -3255,12 +3289,12 @@ ${
        return false;
      }
  
@@ -1045,7 +1505,7 @@ index a077de625f..858355036c 100644
        // Closing the view discards a previewed search mode, so the mode has to
        // be confirmed before the query below gets a chance to run.
        searchMode.isPreview = false;
-@@ -3270,13 +3281,13 @@ ${
+@@ -3270,13 +3304,13 @@ ${
      let value = result.payload.query?.trimStart() || "";
      this.setValue(value);
  
@@ -1061,7 +1521,67 @@ index a077de625f..858355036c 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -4479,7 +4490,7 @@ ${
+@@ -3516,7 +3550,8 @@ ${
+    *   element rather than the result.
+    * @returns {string} The value.
+    */
+-  #getValueFromResult(result, { urlOverride = null, element = null } = {}) {
++  #getValueFromResult(result, { urlOverride = null, element = null, resultAction = null } = {}) {
++    resultAction ??= UrlbarResultActions.fromElement(element);
+     switch (result.type) {
+       case UrlbarShared.RESULT_TYPE.KEYWORD:
+         return result.payload.input;
+@@ -3543,7 +3578,7 @@ ${
+       case UrlbarShared.RESULT_TYPE.AI_CHAT:
+         return result.payload.query ?? "";
+       case UrlbarShared.RESULT_TYPE.TIP: {
+-        let value = element?.dataset.url || element?.dataset.input;
++        let value = resultAction?.url || resultAction?.input;
+         if (value) {
+           return value;
+         }
+@@ -4081,33 +4116,34 @@ ${
+    * @param {Event} event The event that picked the result.
+    * @param {HTMLElement} element the picked view element, if available.
+    */
+-  #pickMenuResult(result, event, element) {
++  #pickMenuResult(result, event, element, resultAction = UrlbarResultActions.fromElement(element)) {
+     this.controller.engagementEvent.record(event, {
+       result,
+       element,
++      resultAction,
+       searchString: this._lastSearchString,
+-      selType: element.dataset.command,
++      selType: resultAction.command,
+       searchSource: this.getSearchSource(event),
+       windowMode: this.windowMode,
+     });
+ 
+-    if (element.dataset.command == "manage") {
++    if (resultAction.command == "manage") {
+       this.parentController.openPreferences("search-locationBar");
+       return;
+     }
+ 
+     let url;
+-    if (element.dataset.command == "help") {
++    if (resultAction.command == "help") {
+       url = result.payload.helpUrl;
+     }
+-    url ||= element.dataset.url;
++    url ||= resultAction.url;
+ 
+     if (!url) {
+       return;
+     }
+ 
+     let where = this.controller.whereToOpen(event);
+-    if (element.dataset.command == "help" && where == "current") {
++    if (resultAction.command == "help" && where == "current") {
+       // Open help links in a new tab.
+       where = "tab";
+     }
+@@ -4479,7 +4515,7 @@ ${
        return;
      }
      let controller =
@@ -1070,7 +1590,7 @@ index a077de625f..858355036c 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4510,8 +4521,13 @@ ${
+@@ -4510,8 +4546,13 @@ ${
          pasteAndGo.addEventListener("command", () => {
            this._suppressStartQuery = true;
  
@@ -1086,7 +1606,7 @@ index a077de625f..858355036c 100644
            this.setResultForCurrentValue(null);
            this.handleCommand();
            this.parentController.clearLastQueryContextCache();
-@@ -4546,7 +4562,7 @@ ${
+@@ -4546,7 +4587,7 @@ ${
          );
  
          let controller =
@@ -1095,7 +1615,7 @@ index a077de625f..858355036c 100644
          let enabled = controller.isCommandEnabled("cmd_paste");
          if (enabled) {
            pasteAndGo.removeAttribute("disabled");
-@@ -4747,12 +4763,13 @@ ${
+@@ -4747,12 +4788,13 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -1111,7 +1631,7 @@ index a077de625f..858355036c 100644
      ) {
        return null;
      }
-@@ -4767,8 +4784,8 @@ ${
+@@ -4767,8 +4809,8 @@ ${
          result.payload.engine == result.payload.originalEngine)
      ) {
        searchMode = { engineName: result.payload.engine };
@@ -1122,7 +1642,7 @@ index a077de625f..858355036c 100644
      }
  
      if (searchMode) {
-@@ -5477,6 +5494,57 @@ ${
+@@ -5477,6 +5519,57 @@ ${
      }
    }
  
@@ -1180,7 +1700,7 @@ index a077de625f..858355036c 100644
    _on_input(event) {
      // A new input starts a fresh search; bump the epoch so a pending
      // deferred-Enter's async keyup won't reset this search's caret.
-@@ -5505,17 +5573,7 @@ ${
+@@ -5505,17 +5598,7 @@ ${
      }
  
      let value = this.value;
@@ -1199,7 +1719,7 @@ index a077de625f..858355036c 100644
  
      let compositionState = this.#compositionState;
      let compositionClosedPopup = this.#compositionClosedPopup;
-@@ -5530,27 +5588,7 @@ ${
+@@ -5530,27 +5613,7 @@ ${
        this.#compositionHadText = true;
      }
  
@@ -1229,9 +1749,37 @@ index a077de625f..858355036c 100644
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
 diff --git a/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs b/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
-index 9596698cf9..b95f43a4b3 100644
+index 9596698cf9..2f35cd41c4 100644
 --- a/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
 +++ b/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
+@@ -53,14 +53,14 @@ export class UrlbarTelemetryUtils {
+     }
+     // dismiss_autofill temporarily blocks autofill suggestions rather than
+     // removing history, but we still want to report it "dismiss" in telemetry.
+-    if (details.element?.dataset.command === "dismiss_autofill") {
++    if ((details.resultAction?.command ?? details.element?.dataset.command) === "dismiss_autofill") {
+       return "dismiss";
+     }
+     if (
+-      details.element?.dataset.command &&
+-      details.element.dataset.command !== "help"
++      (details.resultAction?.command ?? details.element?.dataset.command) &&
++      (details.resultAction?.command ?? details.element.dataset.command) !== "help"
+     ) {
+-      return details.element.dataset.command;
++      return (details.resultAction?.command ?? details.element.dataset.command);
+     }
+     if (details.selType === "dismiss") {
+       return "dismiss";
+@@ -68,7 +68,7 @@ export class UrlbarTelemetryUtils {
+     if (UrlbarShared.isInstance(event, MouseEvent)) {
+       // TODO (Bug 2018250): Don’t rely on `event` and use `selType` or
+       // `details.element` if possible.
+-      return /** @type {HTMLElement} */ (event.target).classList.contains(
++      return /** @type {HTMLElement} */ (event.target)?.classList?.contains(
+         "urlbar-go-button"
+       )
+         ? "go_button"
 @@ -225,7 +225,7 @@ export class UrlbarTelemetryUtils {
        event,
        provider: details.result?.providerName,
@@ -1242,10 +1790,36 @@ index 9596698cf9..b95f43a4b3 100644
  
      return {
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 278cb5ca71..0ccd6546ca 100644
+index 278cb5ca71..701094e685 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
-@@ -85,6 +85,7 @@ export class UrlbarView {
+@@ -22,16 +22,6 @@ const SELECTABLE_ELEMENT_SELECTOR = "[role=button], [selectable], a";
+ const KEYBOARD_SELECTABLE_ELEMENT_SELECTOR =
+   '[role=button]:not([keyboard-inaccessible]):not([aria-disabled="true"]), [selectable], a';
+ 
+-const RESULT_MENU_COMMANDS = {
+-  DISMISS: "dismiss",
+-  HELP: "help",
+-  MANAGE: "manage",
+-  TOGGLE_KEYBOARD_ACCESSIBLE: "toggle-keyboard-accessible",
+-};
+-
+-// The entry point the container menu items report to telemetry.
+-const CONTAINER_SOURCE = "urlbar_result_context_menu";
+-
+ const getBoundsWithoutFlushing = UrlbarShared.getBoundsWithoutFlushing;
+ 
+ // Used to get a unique id to use for row elements, it wraps at 9999, that
+@@ -58,7 +48,7 @@ export class UrlbarView {
+ 
+     this.#rows = this.panel.querySelector(".urlbarView-results");
+     this.resultMenu = this.panel.querySelector(".urlbarView-result-menu");
+-    this.#resultMenuCommands = new WeakMap();
++    this.#menuActions = new WeakMap();
+ 
+     this.#rows.addEventListener("mousedown", this);
+ 
+@@ -85,6 +75,7 @@ export class UrlbarView {
    }
  
    get oneOffSearchButtons() {
@@ -1253,7 +1827,7 @@ index 278cb5ca71..0ccd6546ca 100644
      if (this.input.sapName != "urlbar") {
        return null;
      }
-@@ -140,7 +141,54 @@ export class UrlbarView {
+@@ -140,7 +131,54 @@ export class UrlbarView {
     *
     * @returns {boolean}
     */
@@ -1308,7 +1882,7 @@ index 278cb5ca71..0ccd6546ca 100644
      return this.input.hasAttribute("open");
    }
  
-@@ -213,6 +261,8 @@ export class UrlbarView {
+@@ -213,6 +251,8 @@ export class UrlbarView {
     *   The currently selected result.
     */
    get selectedResult() {
@@ -1317,7 +1891,7 @@ index 278cb5ca71..0ccd6546ca 100644
      if (!this.isOpen) {
        return null;
      }
-@@ -225,6 +275,7 @@ export class UrlbarView {
+@@ -225,6 +265,7 @@ export class UrlbarView {
     *   The currently selected element.
     */
    get selectedElement() {
@@ -1325,15 +1899,23 @@ index 278cb5ca71..0ccd6546ca 100644
      if (!this.isOpen) {
        return null;
      }
-@@ -303,6 +354,7 @@ export class UrlbarView {
+@@ -301,8 +342,14 @@ export class UrlbarView {
+    * @param {HTMLElement} element The element to analyze.
+    * @returns {string} A string type for telemetry.
     */
-   telemetryTypeFromElement(result, element) {
+-  telemetryTypeFromElement(result, element) {
++  telemetryTypeFromElement(result, element, resultAction = null) {
++    if (resultAction && !element) {
++      if (resultAction.help || resultAction.command === "help") return "help";
++      if (resultAction.command === "dismiss") return "block";
++      return this.telemetryTypeFromResult(result);
++    }
      if (!element) {
 +      if (this.nativePresentation && ["UrlbarProviderActionsSearchMode", "UrlbarProviderGlobalActions"].includes(result?.providerName)) return "action";
        return "none";
      }
      if (
-@@ -447,6 +499,7 @@ export class UrlbarView {
+@@ -447,6 +494,7 @@ export class UrlbarView {
     * @returns {boolean} True if the given result is selected.
     */
    resultIsSelected(result) {
@@ -1341,7 +1923,7 @@ index 278cb5ca71..0ccd6546ca 100644
      if (this.selectedRowIndex < 0) {
        return false;
      }
-@@ -581,6 +634,7 @@ export class UrlbarView {
+@@ -581,6 +629,7 @@ export class UrlbarView {
     * @param {number} resultId
     */
    async acknowledgeFeedback(resultId) {
@@ -1349,47 +1931,44 @@ index 278cb5ca71..0ccd6546ca 100644
      let row = this.#getRowByResultId(resultId);
      if (!row) {
        return;
-@@ -624,7 +678,17 @@ export class UrlbarView {
+@@ -624,30 +673,19 @@ export class UrlbarView {
      this.#setRowSelectable(row, false);
  
      // Replace the row with a dismissal acknowledgment tip.
 -    let tip = new UrlbarResult({
-+    let tip = this.createDismissalAcknowledgment(result, titleL10n);
-+    this.#updateRow(row, tip);
-+    this.#updateIndices();
-+
-+    if (isSelected) {
-+      this.#selectElement(this.#getNextSelectableElement(row), { updateInput: false });
-+    }
-+  }
-+
-+  createDismissalAcknowledgment(result, titleL10n) {
-+    return new UrlbarResult({
-       type: UrlbarShared.RESULT_TYPE.TIP,
-       source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
-       payload: {
-@@ -633,19 +697,10 @@ export class UrlbarView {
-         buttons: [{ l10n: { id: "urlbar-search-tips-confirm-short" } }],
-         icon: "chrome://branding/content/icon32.png",
-       },
+-      type: UrlbarShared.RESULT_TYPE.TIP,
+-      source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
+-      payload: {
+-        type: "dismissalAcknowledgment",
+-        titleL10n,
+-        buttons: [{ l10n: { id: "urlbar-search-tips-confirm-short" } }],
+-        icon: "chrome://branding/content/icon32.png",
+-      },
 -      rowLabel: !result.hideRowLabel && this.#rowLabel(row),
-+      rowLabel: !result.hideRowLabel && this.#rowLabel({result}),
-       hideRowLabel: result.hideRowLabel,
-       richSuggestionIconSize: 32,
-     });
--    this.#updateRow(row, tip);
--    this.#updateIndices();
--
+-      hideRowLabel: result.hideRowLabel,
+-      richSuggestionIconSize: 32,
+-    });
++    let tip = this.createDismissalAcknowledgment(result, titleL10n);
+     this.#updateRow(row, tip);
+     this.#updateIndices();
+ 
 -    // If the row was selected, move the selection to the tip button.
--    if (isSelected) {
+     if (isSelected) {
 -      this.#selectElement(this.#getNextSelectableElement(row), {
 -        updateInput: false,
 -      });
--    }
++      this.#selectElement(this.#getNextSelectableElement(row), { updateInput: false });
+     }
    }
  
++  createDismissalAcknowledgment(result, titleL10n) {
++    return this.input.resultActions.createDismissalAcknowledgment(result, titleL10n, this.#queryContext);
++  }
++
    removeAccessibleFocus() {
-@@ -670,6 +725,10 @@ export class UrlbarView {
+     this.#setAccessibleFocus(null);
+   }
+@@ -670,6 +708,10 @@ export class UrlbarView {
     *   True if the Urlbar focus border should be shown after the view is closed.
     */
    close({ elementPicked = false, showFocusBorder = true } = {}) {
@@ -1400,7 +1979,7 @@ index 278cb5ca71..0ccd6546ca 100644
      const isShowingZeroPrefix =
        this.#queryContext && !this.#queryContext.searchString;
      this.controller.cancelQuery();
-@@ -929,6 +988,10 @@ export class UrlbarView {
+@@ -929,6 +971,10 @@ export class UrlbarView {
     *   The context of the query.
     */
    onQueryStarted(queryContext) {
@@ -1411,7 +1990,7 @@ index 278cb5ca71..0ccd6546ca 100644
      this.#queryWasCancelled = false;
      this.#queryUpdatedResults = false;
      this.#openPanelInstance = null;
-@@ -960,6 +1023,7 @@ export class UrlbarView {
+@@ -960,6 +1006,7 @@ export class UrlbarView {
     *   The context of the query.
     */
    onQueryFinished(queryContext) {
@@ -1419,7 +1998,7 @@ index 278cb5ca71..0ccd6546ca 100644
      this.#cancelRemoveStaleRowsTimer();
      if (this.#queryWasCancelled) {
        return;
-@@ -1018,6 +1082,7 @@ export class UrlbarView {
+@@ -1018,6 +1065,7 @@ export class UrlbarView {
    onQueryResults(queryContext) {
      this.queryContextCache.put(queryContext);
      this.#queryContext = queryContext;
@@ -1427,7 +2006,7 @@ index 278cb5ca71..0ccd6546ca 100644
  
      if (!this.isOpen) {
        this.clear();
-@@ -1152,6 +1217,10 @@ export class UrlbarView {
+@@ -1152,6 +1200,10 @@ export class UrlbarView {
     *   it. Undefined when the row is removed without acknowledgment.
     */
    onQueryResultRemoved(id, acknowledgeDismissalL10n) {
@@ -1438,87 +2017,65 @@ index 278cb5ca71..0ccd6546ca 100644
      let removedIndex = -1;
      let rowToRemove = null;
      for (let i = 0; i < this.#rows.children.length; i++) {
-@@ -1195,6 +1264,67 @@ export class UrlbarView {
-     }
-   }
- 
-+  async prepareNativeTipDescription(result) {
-+    if (result.type !== UrlbarShared.RESULT_TYPE.TIP || !result.payload.descriptionLearnMoreTopic ||
-+        !result.payload.descriptionL10n) return null;
-+    const description = this.#createElement("div");
-+    const link = this.#createElement("a");
-+    link.setAttribute("data-l10n-name", "learn-more-link");
-+    description.appendChild(link);
-+    await this.#l10nCache.ensure(result.payload.descriptionL10n);
-+    this.#l10nCache.setElementL10n(description, result.payload.descriptionL10n);
-+    const element = description.querySelector('[data-l10n-name="learn-more-link"]');
-+    if (!element?.textContent) return null;
-+    element.dataset.url = this.window.getHelpLinkURL(result.payload.descriptionLearnMoreTopic);
-+    // Localization may put the link anywhere. Never send markup or a URL to native.
-+    let before = "", after = "", found = false;
-+    for (const node of description.childNodes) {
-+      if (node === element) found = true;
-+      else if (found) after += node.textContent;
-+      else before += node.textContent;
-+    }
-+    if (!found) return null;
-+    return {before, after, label:element.textContent, element};
-+  }
-+
-+  async prepareNativeTipButtons(result, acknowledgment = false) {
-+    if (result.type !== UrlbarShared.RESULT_TYPE.TIP ||
-+        (!acknowledgment && result.payload.type === "dismissalAcknowledgment") ||
-+        !result.payload.buttons?.length || result.payload.buttons.length > 8) return null;
-+    await this.#l10nCache.ensureAll(result.payload.buttons.map(button => button.l10n).filter(Boolean));
-+    const row = this.#createRow();
-+    row.result = result;
-+    this.#updateRowButtons(row, null, result);
-+    return result.payload.buttons.map(button => row._buttons.get(button.name));
-+  }
-+
-+  async prepareNativeResultMenu(result, buttonName = null) {
-+    if (buttonName === null && !UrlbarPrefs.get("contextMenu.featureGate")) return null;
-+    const commands = buttonName === null ? this.#getMenuCommands(result) :
-+      result.payload.buttons?.find(button => button.name === buttonName)?.menu;
-+    if (!commands?.length) return null;
-+    const panel = this.document.createElement("panel-list");
-+    await this.#populateResultMenu({panel, commands});
-+    for (const item of panel.children) {
-+      if (item.dataset.openIn === "container-tab")
-+        await this.#populateContainerSubmenu(item.querySelector("panel-list"));
-+    }
-+    await this.document.l10n.translateElements([...panel.querySelectorAll("[data-l10n-id]")]);
-+    return panel;
-+  }
-+
-+  activateNativeResultMenu(result, item, event) {
-+    // Reuse the original item handlers, including container management items.
-+    const previous = this.#resultMenuResult;
-+    this.#resultMenuResult = result;
-+    try {
-+      const listener = e => this.on_click(e);
-+      item.addEventListener("click", listener);
-+      try { item.dispatchEvent(event); }
-+      finally { item.removeEventListener("click", listener); }
-+    } finally { this.#resultMenuResult = previous; }
-+  }
-+
-   openResultMenu(result, anchor) {
-     this.#resultMenuResult = result;
-     let event = new CustomEvent("ResultMenuTriggered", {
-@@ -1216,6 +1346,11 @@ export class UrlbarView {
+@@ -1216,12 +1268,17 @@ export class UrlbarView {
     *   The UrlbarResult's new menu commands.
     */
    updateResultMenuCommands(resultId, commands) {
 +    if (this.nativePresentation) {
 +      const result = this.nativePresentation.updateResultMenuCommands(resultId, commands);
-+      if (result) this.#resultMenuCommands.delete(result);
++      if (result) this.input.resultActions.invalidate(result);
 +      return;
 +    }
      let row = this.#getRowByResultId(resultId);
      if (!row) {
        return;
-@@ -2799,7 +2934,7 @@ export class UrlbarView {
+     }
+     row.result.commands = commands;
+-    this.#resultMenuCommands.delete(row.result);
++    this.input.resultActions.invalidate(row.result);
+   }
+ 
+   /**
+@@ -1258,7 +1315,8 @@ export class UrlbarView {
+   #queryWasCancelled;
+   #removeStaleRowsTimer;
+   #resultMenuResult;
+-  #resultMenuCommands;
++  #menuActions;
++  #menuBuilds = new WeakMap();
+   #rows;
+   #rawSelectedElement;
+   #tail150 = null;
+@@ -2146,13 +2204,7 @@ export class UrlbarView {
+   }
+ 
+   #updateRowButtons(item, oldResult, result) {
+-    for (let i = 0; i < result.payload.buttons?.length; i++) {
+-      // We hold the name to each button data in payload to enable to get the
+-      // data from button element by the name. This name is mainly used for
+-      // button that has menu (Split Button).
+-      let button = result.payload.buttons[i];
+-      button.name ??= i.toString();
+-    }
++    this.input.resultActions.buttons(result);
+ 
+     if (!this.#needsNewButtons(item, oldResult, result)) {
+       return;
+@@ -2230,12 +2282,7 @@ export class UrlbarView {
+           "urlbarView-button",
+           "urlbarView-button-" + buttonName,
+         ],
+-        dataset: {
+-          name: buttonName,
+-          command,
+-          url,
+-          input,
+-        },
++        dataset: this.input.resultActions.buttonAction({name:buttonName,command,url,input}),
+       },
+       item
+     );
+@@ -2799,7 +2846,7 @@ export class UrlbarView {
      }
    }
  
@@ -1527,7 +2084,7 @@ index 278cb5ca71..0ccd6546ca 100644
      if (
        result.source == UrlbarShared.RESULT_SOURCE.HISTORY &&
        (result.type == UrlbarShared.RESULT_TYPE.SEARCH ||
-@@ -2816,6 +2951,7 @@ export class UrlbarView {
+@@ -2816,6 +2863,7 @@ export class UrlbarView {
        return result.payload.icon;
      }
      if (result.payload.iconBlob) {
@@ -1535,6 +2092,474 @@ index 278cb5ca71..0ccd6546ca 100644
        let blobUrl = this.#getBlobUrlForResult(result, result.payload.iconBlob);
        if (blobUrl) {
          return blobUrl;
+@@ -2921,21 +2969,22 @@ export class UrlbarView {
+ 
+     let description = item._elements.get("description");
+     if (result.payload.descriptionL10n) {
+-      this.#l10nCache.setElementL10n(
+-        description,
+-        result.payload.descriptionL10n
+-      );
+-
+-      if (result.payload.descriptionLearnMoreTopic) {
+-        let learnMoreLink = description.querySelector(
+-          "[data-l10n-name=learn-more-link]"
+-        );
+-        if (learnMoreLink) {
+-          learnMoreLink.dataset.url = this.window.getHelpLinkURL(
+-            result.payload.descriptionLearnMoreTopic
+-          );
+-        } else {
+-          console.warn("learn-more-link was not found");
++      const message = this.#l10nCache.get(result.payload.descriptionL10n);
++      const help = result.payload.descriptionLearnMoreTopic && message?.value &&
++        this.input.resultActions.description(result, message.value);
++      if (help && !help.unsupported) {
++        this.#l10nCache.removeElementL10n(description);
++        const link = this.#createElement("a");
++        link.dataset.l10nName = "learn-more-link";
++        link.dataset.url = help.action.url;
++        link.textContent = help.label;
++        description.replaceChildren(help.before, link, help.after);
++      } else {
++        // Richer provider markup stays supported by the original renderer.
++        this.#l10nCache.setElementL10n(description, result.payload.descriptionL10n);
++        if (result.payload.descriptionLearnMoreTopic) {
++          const link = description.querySelector("[data-l10n-name=learn-more-link]");
++          if (link) link.dataset.url = this.input.resultActions.helpAction(result).url;
+         }
+       }
+     } else {
+@@ -3164,71 +3213,7 @@ export class UrlbarView {
+    *   If the current row should not have a label, returns null. Otherwise
+    *   returns an l10n object for the label's l10n string: `{ id, args }`
+    */
+-  #rowLabel(row) {
+-    if (!UrlbarPrefs.get("groupLabels.enabled")) {
+-      return null;
+-    }
+-
+-    if (row.result.rowLabel) {
+-      return row.result.rowLabel;
+-    }
+-
+-    let engineName =
+-      row.result.payload.engine || this.controller.engineStore.default?.name;
+-
+-    if (row.result.payload.trending) {
+-      return {
+-        id: "urlbar-group-trending",
+-        args: { engine: engineName },
+-      };
+-    }
+-
+-    if (row.result.providerName == "UrlbarProviderRecentSearches") {
+-      return { id: "urlbar-group-recent-searches" };
+-    }
+-
+-    if (row.result.providerName == "UrlbarProviderQuickSuggest") {
+-      return row.result.isBestMatch
+-        ? null
+-        : { id: "urlbar-group-firefox-suggest" };
+-    }
+-
+-    if (row.result.isBestMatch) {
+-      return { id: "urlbar-group-best-match" };
+-    }
+-
+-    // Show "Shortcuts" if there's another result before that group.
+-    if (
+-      row.result.providerName == "UrlbarProviderTopSites" &&
+-      this.#queryContext.results[0].providerName != "UrlbarProviderTopSites"
+-    ) {
+-      return { id: "urlbar-group-shortcuts" };
+-    }
+-
+-    if (!this.#queryContext?.searchString || row.result.heuristic) {
+-      return null;
+-    }
+-
+-    switch (row.result.type) {
+-      case UrlbarShared.RESULT_TYPE.KEYWORD:
+-      case UrlbarShared.RESULT_TYPE.REMOTE_TAB:
+-      case UrlbarShared.RESULT_TYPE.TAB_SWITCH:
+-      case UrlbarShared.RESULT_TYPE.URL:
+-        return { id: "urlbar-group-firefox-suggest" };
+-      case UrlbarShared.RESULT_TYPE.SEARCH:
+-        return {
+-          id: "urlbar-group-search-suggestions",
+-          args: { engine: engineName },
+-        };
+-      case UrlbarShared.RESULT_TYPE.DYNAMIC:
+-        if (row.result.providerName == "quickactions") {
+-          return { id: "urlbar-group-quickactions" };
+-        }
+-        break;
+-    }
+-
+-    return null;
+-  }
++  #rowLabel(row) { return this.input.resultActions.rowLabel(row.result, this.#queryContext); }
+ 
+   #setRowVisibility(row, visible) {
+     row.toggleAttribute("hidden", !visible);
+@@ -4160,51 +4145,6 @@ export class UrlbarView {
+     return idArgs;
+   }
+ 
+-  /**
+-   * The commands that open a result in a new tab or window. They're offered
+-   * alongside a result's own menu commands, gated on `contextMenu.featureGate`.
+-   *
+-   * @returns {UrlbarResultCommand[]}
+-   */
+-  get #openInCommands() {
+-    /** @type {UrlbarResultCommand[]} */
+-    let commands = [
+-      {
+-        openIn: "tab",
+-        l10n: { id: "urlbar-view-context-menu-open-in-tab2" },
+-      },
+-    ];
+-    if (
+-      !this.input.isPrivate &&
+-      UrlbarPrefs.get("privacy.userContext.enabled")
+-    ) {
+-      commands.push({
+-        openIn: "container-tab",
+-        submenu: true,
+-        l10n: { id: "urlbar-view-context-menu-open-in-container-tab2" },
+-      });
+-    }
+-    commands.push(
+-      {
+-        openIn: "window",
+-        l10n: { id: "urlbar-view-context-menu-open-in-window2" },
+-      },
+-      {
+-        openIn: "private-window",
+-        l10n: { id: "urlbar-view-context-menu-open-in-private-window2" },
+-      }
+-    );
+-    return commands;
+-  }
+-
+-  /**
+-   * @param {UrlbarResult} result
+-   *   The result to check.
+-   * @returns {boolean}
+-   *   Whether the result's row shows a menu button. The heuristic result shows
+-   *   one only for its own commands, so that the first Tab press moves to the
+-   *   second row.
+-   */
+   #hasMenuButton(result) {
+     return (
+       (!result.heuristic && this.#canOpenInNewTarget(result)) ||
+@@ -4217,7 +4157,7 @@ export class UrlbarView {
+    * buttons of the rows that are already built, which would otherwise keep the
+    * attribute they got when they were created.
+    */
+-  #updateMenuButtonKeyboardAccessibility() {
++  updateMenuButtonKeyboardAccessibility() {
+     let inaccessible = !UrlbarPrefs.get("resultMenu.keyboardAccessible");
+     for (let button of this.#rows.querySelectorAll(
+       ".urlbarView-button-result-menu"
+@@ -4232,98 +4172,9 @@ export class UrlbarView {
+    * @returns {boolean}
+    *   Whether the result's menu offers to open it in a new tab or window.
+    */
+-  #canOpenInNewTarget(result) {
+-    return (
+-      UrlbarPrefs.get("contextMenu.featureGate") &&
+-      this.input.handlesOpenInCommands &&
+-      result.type != UrlbarShared.RESULT_TYPE.TAB_SWITCH &&
+-      !!UrlbarShared.getLoadRequestFromResult(result)
+-    );
+-  }
+-
+-  /**
+-   * @param {UrlbarResult} result
+-   *   The result to get menu commands for.
+-   * @returns {?UrlbarResultCommand[]}
+-   *   Everything the result's menu shows, null if it has nothing to show. The
+-   *   three-dot button and a right-click both open this menu, so it combines
+-   *   the result's own commands with the ones that open it in a new tab or
+-   *   window, and closes with the checkbox that skips the menu button when
+-   *   tabbing through the results.
+-   */
+-  #getMenuCommands(result) {
+-    let commands = this.#getResultMenuCommands(result);
+-    if (this.#canOpenInNewTarget(result)) {
+-      let openInCommands = this.#openInCommands;
+-      commands = commands
+-        ? [...openInCommands, { name: "separator" }, ...commands]
+-        : openInCommands;
+-    }
+-    if (!commands) {
+-      return null;
+-    }
+-    return [
+-      ...commands,
+-      { name: "separator" },
+-      {
+-        name: RESULT_MENU_COMMANDS.TOGGLE_KEYBOARD_ACCESSIBLE,
+-        type: "checkbox",
+-        checked: !UrlbarPrefs.get("resultMenu.keyboardAccessible"),
+-        l10n: { id: "urlbar-view-context-menu-skip-menu-with-tab" },
+-      },
+-    ];
+-  }
+-
+-  /**
+-   * @param {UrlbarResult} result
+-   *   The result to get menu commands for.
+-   * @returns {Array}
+-   *   Array of the result's own menu commands, null if there are none.
+-   */
+-  #getResultMenuCommands(result) {
+-    if (this.#resultMenuCommands.has(result)) {
+-      return this.#resultMenuCommands.get(result);
+-    }
+-
+-    /**
+-     * @type {?UrlbarResultCommand[]}
+-     */
+-    let commands = result.commands;
+-    if (commands) {
+-      this.#resultMenuCommands.set(result, commands);
+-      return commands;
+-    }
+-
+-    commands = [];
+-    if (result.payload.isBlockable) {
+-      commands.push({
+-        name: RESULT_MENU_COMMANDS.DISMISS,
+-        l10n: result.payload.blockL10n || {
+-          id: "urlbar-result-menu-dismiss-suggestion2",
+-        },
+-      });
+-    }
+-    if (result.payload.helpUrl) {
+-      commands.push({
+-        name: RESULT_MENU_COMMANDS.HELP,
+-        l10n: result.payload.helpL10n || {
+-          id: "urlbar-result-menu-learn-more2",
+-        },
+-      });
+-    }
+-    if (result.payload.isManageable) {
+-      commands.push({
+-        name: RESULT_MENU_COMMANDS.MANAGE,
+-        l10n: {
+-          id: "urlbar-result-menu-manage-firefox-suggest2",
+-        },
+-      });
+-    }
+-
+-    let rv = commands.length ? commands : null;
+-    this.#resultMenuCommands.set(result, rv);
+-    return rv;
+-  }
++  #canOpenInNewTarget(result) { return this.input.resultActions.canOpenInNewTarget(result); }
++  #getMenuCommands(result) { return this.input.resultActions.getMenuCommands(result); }
++  #getResultMenuCommands(result) { return this.input.resultActions.getResultMenuCommands(result); }
+ 
+   /**
+    * Popuplates the result menu with commands.
+@@ -4333,106 +4184,45 @@ export class UrlbarView {
+    * @param {UrlbarResultCommand[]} options.commands
+    */
+   async #populateResultMenu({ panel = this.resultMenu, commands }) {
++    const generation = {};
++    this.#menuBuilds.set(panel, generation);
++    const items = await this.input.resultActions.describeCommands(commands, false);
++    if (this.#menuBuilds.get(panel) === generation) this.#renderResultMenu(panel, items);
++  }
++
++  #renderResultMenu(panel, items) {
+     panel.textContent = "";
+-    await this.#l10nCache.ensureAll(commands.map(e => e.l10n).filter(e => e));
+-    for (let data of commands) {
+-      if (data.name == "separator") {
+-        panel.appendChild(this.document.createElement("hr"));
+-        continue;
+-      }
+-      let menuitem = this.document.createElement("panel-item");
+-      menuitem.classList.add("urlbarView-result-menuitem");
+-      if (data.openIn) {
+-        menuitem.dataset.openIn = data.openIn;
+-      } else {
+-        menuitem.dataset.command = data.name;
+-      }
+-      if (data.submenu) {
+-        // The submenu is populated when it's about to be shown, so that it
+-        // doesn't go stale. Fluent replaces the contents of the element it
+-        // localizes, so the label goes in a child and its accesskey stays on
+-        // the item, where pressing it activates the item.
+-        menuitem.toggleAttribute("submenu", true);
+-        let label = this.document.createElement("span");
+-        this.#l10nCache.setElementL10n(label, data.l10n);
+-        if (label.hasAttribute("accesskey")) {
+-          menuitem.setAttribute("accesskey", label.getAttribute("accesskey"));
+-          label.removeAttribute("accesskey");
+-        }
+-        menuitem.appendChild(label);
+-        let submenu = this.document.createElement("panel-list");
++    for (const data of items) {
++      if (data.separator) { panel.appendChild(this.document.createElement("hr")); continue; }
++      const item = this.document.createElement("panel-item");
++      item.classList.add("urlbarView-result-menuitem");
++      this.#menuActions.set(item, data.action);
++      if (data.action.command) item.dataset.command = data.action.command;
++      if (data.action.openIn) item.dataset.openIn = data.action.openIn;
++      if (data.action.userContextId) item.dataset.usercontextid = data.action.userContextId;
++      item.disabled = !data.enabled;
++      if (data.checkable) { item.type = "checkbox"; item.checked = data.checked; }
++      if (data.accessKey) item.setAttribute("accesskey", data.accessKey);
++      if (data.iconURL) item.style.setProperty("--panel-item-icon", `url("${data.iconURL}")`);
++      if (data.colorCode) item.style.setProperty("--panel-item-fill", data.colorCode);
++      if (data.children) {
++        item.toggleAttribute("submenu", true);
++        const label = this.document.createElement("span");
++        label.textContent = data.label;
++        item.appendChild(label);
++        const submenu = this.document.createElement("panel-list");
+         submenu.slot = "submenu";
+-        menuitem.appendChild(submenu);
+-      } else {
+-        this.#l10nCache.setElementL10n(menuitem, data.l10n);
+-      }
+-      if (data.type == "checkbox") {
+-        menuitem.type = "checkbox";
+-        menuitem.checked = data.checked;
+-      }
+-      panel.appendChild(menuitem);
++        item.appendChild(submenu);
++      } else { item.textContent = data.label; }
++      panel.appendChild(item);
+     }
+   }
+ 
+-  /**
+-   * Fills the submenu of the command that opens a result in a container tab
+-   * with the containers, along with the items that add and manage them.
+-   *
+-   * @param {PanelList} panel
+-   *   The submenu to fill.
+-   */
+   async #populateContainerSubmenu(panel) {
+-    let containers = await UrlbarContentUtils.getContainers();
+-
+-    panel.textContent = "";
+-    for (let container of containers) {
+-      let menuitem = this.document.createElement("panel-item");
+-      menuitem.dataset.usercontextid = String(container.userContextId);
+-      menuitem.textContent = container.name;
+-      menuitem.style.setProperty(
+-        "--panel-item-icon",
+-        `url("${container.iconURL}")`
+-      );
+-      menuitem.style.setProperty("--panel-item-fill", container.colorCode);
+-      panel.appendChild(menuitem);
+-    }
+-
+-    panel.appendChild(this.document.createElement("hr"));
+-    panel.appendChild(
+-      this.#createContainerMenuItem(
+-        "user-context-add-container2-panel-item",
+-        () =>
+-          this.controller.parentController.openContainerCreationPanel(
+-            CONTAINER_SOURCE
+-          )
+-      )
+-    );
+-    panel.appendChild(
+-      this.#createContainerMenuItem(
+-        "user-context-manage-containers2-panel-item",
+-        () =>
+-          this.controller.parentController.openPreferences("paneContainers", {
+-            urlParams: { entrypoint: CONTAINER_SOURCE },
+-          })
+-      )
+-    );
+-  }
+-
+-  /**
+-   * Builds one of the container submenu's items that don't pick the result.
+-   *
+-   * @param {string} l10nId
+-   *   The l10n id of the item's label.
+-   * @param {Function} onPick
+-   *   Called when the item is picked.
+-   * @returns {Element}
+-   *   The menu item.
+-   */
+-  #createContainerMenuItem(l10nId, onPick) {
+-    let menuitem = this.document.createElement("panel-item");
+-    this.document.l10n.setAttributes(menuitem, l10nId);
+-    menuitem.addEventListener("click", onPick);
+-    return menuitem;
++    const generation = {};
++    this.#menuBuilds.set(panel, generation);
++    const items = await this.input.resultActions.describeContainers();
++    if (this.#menuBuilds.get(panel) === generation) this.#renderResultMenu(panel, items);
+   }
+ 
+   // Event handlers below.
+@@ -4710,39 +4500,12 @@ export class UrlbarView {
+   }
+ 
+   on_click(event) {
+-    let menuitem = event
+-      .composedPath()
+-      .find(node => node.localName == "panel-item");
+-    if (
+-      !menuitem ||
+-      // Clicking a submenu's parent item only opens the submenu.
+-      menuitem.hasSubmenu ||
+-      // The container submenu also holds items that manage containers, which
+-      // bring up their own UI instead of picking the result.
+-      !(
+-        menuitem.dataset.command ||
+-        menuitem.dataset.openIn ||
+-        menuitem.dataset.usercontextid
+-      )
+-    ) {
+-      return;
+-    }
+-    if (
+-      menuitem.dataset.command ==
+-      RESULT_MENU_COMMANDS.TOGGLE_KEYBOARD_ACCESSIBLE
+-    ) {
+-      UrlbarPrefs.toggleResultMenuKeyboardAccessible();
+-      this.#updateMenuButtonKeyboardAccessibility();
+-      return;
+-    }
+-    let result = this.#resultMenuResult;
+-    this.#resultMenuResult = null;
+-    if (menuitem.dataset.command == RESULT_MENU_COMMANDS.HELP) {
+-      menuitem.dataset.url =
+-        result.payload.helpUrl ||
+-        UrlbarContentUtils.getSupportUrl("awesome-bar-result-menu");
+-    }
+-    this.input.pickResult({ result, event, element: menuitem });
++    const item = event.composedPath().find(node => node.localName === "panel-item");
++    const action = item && this.#menuActions.get(item);
++    if (!action || item.hasSubmenu || item.disabled) return;
++    const result = this.#resultMenuResult;
++    if (action.command !== "toggle-keyboard-accessible") this.#resultMenuResult = null;
++    this.input.resultActions.invokeMenu(result, action, event);
+   }
+ 
+   on_showing(event) {
+@@ -4780,6 +4543,7 @@ export class UrlbarView {
+     if (event.target != event.currentTarget) {
+       return;
+     }
++    this.#menuBuilds.delete(event.currentTarget);
+     event.currentTarget.lastAnchorNode
+       ?.closest(".urlbarView-row")
+       ?.toggleAttribute("menu-trigger", false);
 diff --git a/browser/installer/package-manifest.in b/browser/installer/package-manifest.in
 index ae503c243c..fe10f80b9a 100644
 --- a/browser/installer/package-manifest.in
@@ -2405,6 +3430,326 @@ index 1e2660589b..5ae3ab4843 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/components/urlbar/content/UrlbarResultActions.mjs b/browser/components/urlbar/content/UrlbarResultActions.mjs
+new file mode 100644
+index 0000000000..cd182f9217
+--- /dev/null
++++ b/browser/components/urlbar/content/UrlbarResultActions.mjs
+@@ -0,0 +1,314 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Shared Firefox result actions. No element creation, node storage or native ABI.
++import UrlbarPrefs from "chrome://browser/content/urlbar/UrlbarContentPrefs.mjs";
++import { UrlbarContentUtils } from "chrome://browser/content/urlbar/UrlbarContentUtils.mjs";
++import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
++import { UrlbarResult } from "chrome://browser/content/urlbar/UrlbarResult.mjs";
++const RESULT_MENU_COMMANDS = {DISMISS:"dismiss",HELP:"help",MANAGE:"manage",TOGGLE_KEYBOARD_ACCESSIBLE:"toggle-keyboard-accessible"};
++const CONTAINER_SOURCE = "urlbar_result_context_menu";
++
++export class UrlbarResultActions {
++  constructor(input) { this.input=input; this.commandsCache=new WeakMap(); }
++  invalidate(result) { this.commandsCache.delete(result); }
++  buttons(result) {
++    for (const [index, button] of (result.payload.buttons || []).entries()) button.name ??= String(index);
++    return result.payload.buttons || [];
++  }
++  static fromElement(element) {
++    if (!element) return null;
++    const d=element.dataset;
++    return {command:d.command,url:d.url,input:d.input,openIn:d.openIn,
++      userContextId:d.usercontextid,name:d.name,help:d.l10nName==="learn-more-link"};
++  }
++  buttonAction(button) {
++    return {name:button.name,command:button.command,url:button.url,input:button.input};
++  }
++  helpAction(result) {
++    return {help:true,url:this.input.window.getHelpLinkURL(result.payload.descriptionLearnMoreTopic)};
++  }
++  async label(l10n) {
++    if (!l10n) return {label:"",accessKey:""};
++    const [message]=await this.input.document.l10n.formatMessages([l10n]);
++    const attrs=Object.fromEntries((message?.attributes || []).map(a=>[a.name,a.value]));
++    return {label:message?.value || attrs.label || attrs["aria-label"] || "",accessKey:attrs.accesskey || ""};
++  }
++  async describeCommands(commands, includeContainers=true) {
++    const items=[];
++    for (const data of commands || []) {
++      if (data.name==="separator") { items.push({separator:true}); continue; }
++      const action={command:data.openIn ? undefined : data.name,openIn:data.openIn,
++        userContextId:data.userContextId,operation:data.operation};
++      const item={...await this.label(data.l10n),action,enabled:!data.disabled,
++        checkable:data.type==="checkbox",checked:data.checked===true,
++        l10n:data.l10n,iconURL:data.iconURL,colorCode:data.colorCode};
++      if (data.label !== undefined) item.label=data.label;
++      if (data.submenu) item.children=includeContainers ? await this.describeContainers() : [];
++      items.push(item);
++    }
++    return items;
++  }
++  async describeContainers() {
++    const containers=await UrlbarContentUtils.getContainers();
++    return this.describeCommands([
++      ...containers.map(c=>({label:c.name,userContextId:String(c.userContextId),iconURL:c.iconURL,colorCode:c.colorCode})),
++      {name:"separator"},
++      {operation:"add-container",l10n:{id:"user-context-add-container2-panel-item"}},
++      {operation:"manage-containers",l10n:{id:"user-context-manage-containers2-panel-item"}},
++    ],false);
++  }
++  async describeMenu(result, buttonName=null) {
++    if (buttonName===null && !UrlbarPrefs.get("contextMenu.featureGate")) return null;
++    const commands=buttonName===null ? this.getMenuCommands(result) : this.buttons(result).find(b=>b.name===buttonName)?.menu;
++    return commands?.length ? this.describeCommands(commands) : null;
++  }
++  invokeMenu(result, action, event, browserId=null) {
++    if (action.command===RESULT_MENU_COMMANDS.TOGGLE_KEYBOARD_ACCESSIBLE) {
++      UrlbarPrefs.toggleResultMenuKeyboardAccessible();
++      this.input.view.updateMenuButtonKeyboardAccessibility();
++      return;
++    }
++    if (action.operation==="add-container") return this.input.controller.parentController.openContainerCreationPanel(CONTAINER_SOURCE);
++    if (action.operation==="manage-containers") return this.input.controller.parentController.openPreferences("paneContainers",{urlParams:{entrypoint:CONTAINER_SOURCE}});
++    if (action.command==="help") action={...action,url:result.payload.helpUrl || UrlbarContentUtils.getSupportUrl("awesome-bar-result-menu")};
++    return this.input.pickResult({result,event,browserId,resultAction:action});
++  }
++  async describeButtons(result, acknowledgment=false) {
++    if (result.type!==UrlbarShared.RESULT_TYPE.TIP || (!acknowledgment && result.payload.type==="dismissalAcknowledgment") ||
++        !result.payload.buttons?.length || result.payload.buttons.length>8) return null;
++    return Promise.all(this.buttons(result).map(async button=>({
++      ...await this.label(button.l10n), name:button.name, menu:!!button.menu,
++      enabled:!["hidden","disabled"].some(key=>button.attributes?.[key] != null && button.attributes[key] !== false),
++      action:this.buttonAction(button),
++    })));
++  }
++  // Fluent's supported description contract is text with one named help link.
++  // Reject richer markup explicitly so native can restore Firefox presentation.
++  description(result, value) {
++    const match=/^([^<>]*)<a\s+data-l10n-name=["']learn-more-link["']\s*>([^<>]*)<\/a>([^<>]*)$/s.exec(value || "");
++    // Do not display unknown HTML entities literally. Their original Fluent
++    // markup remains available through the retained Firefox renderer.
++    if (!match || /&(?!(?:amp|lt|gt|quot|apos|#x[0-9a-f]+|#\d+);)[a-z#]/i.test(value)) return {unsupported:true};
++    const decode=text=>text.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi,(_,entity)=>{
++      const named={amp:"&",lt:"<",gt:">",quot:'"',apos:"'"};
++      if (entity[0]!=="#") return named[entity.toLowerCase()];
++      const value=entity[1].toLowerCase()==="x" ? parseInt(entity.slice(2),16) : Number(entity.slice(1));
++      return value>0 && value<=0x10ffff && !(value>=0xd800 && value<=0xdfff) ? String.fromCodePoint(value) : "\uFFFD";
++    });
++    return {before:decode(match[1]),label:decode(match[2]),after:decode(match[3]),
++      action:this.helpAction(result)};
++  }
++  async describeDescription(result) {
++    if (result.type!==UrlbarShared.RESULT_TYPE.TIP || !result.payload.descriptionLearnMoreTopic || !result.payload.descriptionL10n) return null;
++    const {id,args}=result.payload.descriptionL10n;
++    return this.description(result,await this.input.document.l10n.formatValue(id,args));
++  }
++  get openInCommands() {
++    /** @type {UrlbarResultCommand[]} */
++    let commands = [
++      {
++        openIn: "tab",
++        l10n: { id: "urlbar-view-context-menu-open-in-tab2" },
++      },
++    ];
++    if (
++      !this.input.isPrivate &&
++      UrlbarPrefs.get("privacy.userContext.enabled")
++    ) {
++      commands.push({
++        openIn: "container-tab",
++        submenu: true,
++        l10n: { id: "urlbar-view-context-menu-open-in-container-tab2" },
++      });
++    }
++    commands.push(
++      {
++        openIn: "window",
++        l10n: { id: "urlbar-view-context-menu-open-in-window2" },
++      },
++      {
++        openIn: "private-window",
++        l10n: { id: "urlbar-view-context-menu-open-in-private-window2" },
++      }
++    );
++    return commands;
++  }
++
++  canOpenInNewTarget(result) {
++    return (
++      UrlbarPrefs.get("contextMenu.featureGate") &&
++      this.input.handlesOpenInCommands &&
++      result.type != UrlbarShared.RESULT_TYPE.TAB_SWITCH &&
++      !!UrlbarShared.getLoadRequestFromResult(result)
++    );
++  }
++
++  /**
++   * @param {UrlbarResult} result
++   *   The result to get menu commands for.
++   * @returns {?UrlbarResultCommand[]}
++   *   Everything the result's menu shows, null if it has nothing to show. The
++   *   three-dot button and a right-click both open this menu, so it combines
++   *   the result's own commands with the ones that open it in a new tab or
++   *   window, and closes with the checkbox that skips the menu button when
++   *   tabbing through the results.
++   */
++  getMenuCommands(result) {
++    let commands = this.getResultMenuCommands(result);
++    if (this.canOpenInNewTarget(result)) {
++      let openInCommands = this.openInCommands;
++      commands = commands
++        ? [...openInCommands, { name: "separator" }, ...commands]
++        : openInCommands;
++    }
++    if (!commands) {
++      return null;
++    }
++    return [
++      ...commands,
++      { name: "separator" },
++      {
++        name: RESULT_MENU_COMMANDS.TOGGLE_KEYBOARD_ACCESSIBLE,
++        type: "checkbox",
++        checked: !UrlbarPrefs.get("resultMenu.keyboardAccessible"),
++        l10n: { id: "urlbar-view-context-menu-skip-menu-with-tab" },
++      },
++    ];
++  }
++
++  /**
++   * @param {UrlbarResult} result
++   *   The result to get menu commands for.
++   * @returns {Array}
++   *   Array of the result's own menu commands, null if there are none.
++   */
++  getResultMenuCommands(result) {
++    if (this.commandsCache.has(result)) {
++      return this.commandsCache.get(result);
++    }
++
++    /**
++     * @type {?UrlbarResultCommand[]}
++     */
++    let commands = result.commands;
++    if (commands) {
++      this.commandsCache.set(result, commands);
++      return commands;
++    }
++
++    commands = [];
++    if (result.payload.isBlockable) {
++      commands.push({
++        name: RESULT_MENU_COMMANDS.DISMISS,
++        l10n: result.payload.blockL10n || {
++          id: "urlbar-result-menu-dismiss-suggestion2",
++        },
++      });
++    }
++    if (result.payload.helpUrl) {
++      commands.push({
++        name: RESULT_MENU_COMMANDS.HELP,
++        l10n: result.payload.helpL10n || {
++          id: "urlbar-result-menu-learn-more2",
++        },
++      });
++    }
++    if (result.payload.isManageable) {
++      commands.push({
++        name: RESULT_MENU_COMMANDS.MANAGE,
++        l10n: {
++          id: "urlbar-result-menu-manage-firefox-suggest2",
++        },
++      });
++    }
++
++    let rv = commands.length ? commands : null;
++    this.commandsCache.set(result, rv);
++    return rv;
++  }
++
++  rowLabel(result, context) {
++    if (!UrlbarPrefs.get("groupLabels.enabled")) {
++      return null;
++    }
++
++    if (result.rowLabel) {
++      return result.rowLabel;
++    }
++
++    let engineName =
++      result.payload.engine || this.input.controller.engineStore.default?.name;
++
++    if (result.payload.trending) {
++      return {
++        id: "urlbar-group-trending",
++        args: { engine: engineName },
++      };
++    }
++
++    if (result.providerName == "UrlbarProviderRecentSearches") {
++      return { id: "urlbar-group-recent-searches" };
++    }
++
++    if (result.providerName == "UrlbarProviderQuickSuggest") {
++      return result.isBestMatch
++        ? null
++        : { id: "urlbar-group-firefox-suggest" };
++    }
++
++    if (result.isBestMatch) {
++      return { id: "urlbar-group-best-match" };
++    }
++
++    // Show "Shortcuts" if there's another result before that group.
++    if (
++      result.providerName == "UrlbarProviderTopSites" &&
++      context.results[0].providerName != "UrlbarProviderTopSites"
++    ) {
++      return { id: "urlbar-group-shortcuts" };
++    }
++
++    if (!context?.searchString || result.heuristic) {
++      return null;
++    }
++
++    switch (result.type) {
++      case UrlbarShared.RESULT_TYPE.KEYWORD:
++      case UrlbarShared.RESULT_TYPE.REMOTE_TAB:
++      case UrlbarShared.RESULT_TYPE.TAB_SWITCH:
++      case UrlbarShared.RESULT_TYPE.URL:
++        return { id: "urlbar-group-firefox-suggest" };
++      case UrlbarShared.RESULT_TYPE.SEARCH:
++        return {
++          id: "urlbar-group-search-suggestions",
++          args: { engine: engineName },
++        };
++      case UrlbarShared.RESULT_TYPE.DYNAMIC:
++        if (result.providerName == "quickactions") {
++          return { id: "urlbar-group-quickactions" };
++        }
++        break;
++    }
++
++    return null;
++  }
++
++  createDismissalAcknowledgment(result, titleL10n, context) {
++    return new UrlbarResult({
++      type: UrlbarShared.RESULT_TYPE.TIP,
++      source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
++      payload: {
++        type: "dismissalAcknowledgment",
++        titleL10n,
++        buttons: [{ l10n: { id: "urlbar-search-tips-confirm-short" } }],
++        icon: "chrome://branding/content/icon32.png",
++      },
++      rowLabel: !result.hideRowLabel && this.rowLabel(result, context),
++      hideRowLabel: result.hideRowLabel,
++      richSuggestionIconSize: 32,
++    });
++  }
++
++}
 diff --git a/browser/base/content/WinUIActionStamp.sys.mjs b/browser/base/content/WinUIActionStamp.sys.mjs
 new file mode 100644
 index 0000000000..6db39b4aab
@@ -2711,7 +4056,7 @@ index 0000000000..8eb1307b8c
 +}
 diff --git a/browser/base/content/WinUIDismissalAcknowledgments.sys.mjs b/browser/base/content/WinUIDismissalAcknowledgments.sys.mjs
 new file mode 100644
-index 0000000000..36d8ac8e91
+index 0000000000..06237d3c52
 --- /dev/null
 +++ b/browser/base/content/WinUIDismissalAcknowledgments.sys.mjs
 @@ -0,0 +1,86 @@
@@ -2738,27 +4083,27 @@ index 0000000000..36d8ac8e91
 +    const originalRow = active.rows[index];
 +    index = this.decorate(active.rows).findIndex(row => row.id === originalRow.id);
 +    const id = `${s.sessionId}:ack:${++this.serial}`;
-+    const tip = s.input.view.createDismissalAcknowledgment(result, message);
++    const tip = s.input.resultActions.createDismissalAcknowledgment(result, message, active.context);
 +    const entry = {id, active, tip, index, focus:s.nativeSelected === result, editId:s.editId,
 +      document:active.browser.browsingContext.currentWindowGlobal?.innerWindowId};
 +    this.entries.set(id, entry);
-+    let title, elements;
++    let title, buttons;
 +    try {
-+      [title, elements] = await Promise.all([
++      [title, buttons] = await Promise.all([
 +      s.window.document.l10n.formatValue(message.id, message.args),
-+      s.input.view.prepareNativeTipButtons(tip, true),
++      s.input.resultActions.describeButtons(tip, true),
 +      ]);
 +    } catch (error) {
 +      this.entries.delete(id);
 +      throw error;
 +    }
-+    if (this.entries.get(id) !== entry || !this.current(entry) || !elements?.length) {
++    if (this.entries.get(id) !== entry || !this.current(entry) || !buttons?.length) {
 +      this.entries.delete(id); return;
 +    }
-+    const element = elements[0];
-+    entry.element = element;
++    const button = buttons[0];
++    entry.action = button.action;
 +    entry.row = {id, title:title.slice(0,1024), feedback:title.slice(0,1024), symbol:"page", imageSize:32, sectionLabel:originalRow.sectionLabel || "", focusButton:entry.focus,
-+      tipButtons:[{id:`${id}:confirm`,label:(element.textContent || element.getAttribute('aria-label') || '').slice(0,1024),enabled:true}]};
++      tipButtons:[{id:`${id}:confirm`,label:button.label.slice(0,1024),enabled:true}]};
 +    s.sequence++;
 +    s.loadNativeImage?.(active, entry.row, {icon:tip.payload.icon,size:32},
 +      () => this.entries.get(id) === entry && this.current(entry));
@@ -2795,7 +4140,7 @@ index 0000000000..36d8ac8e91
 +    // Firefox's existing acknowledgment branch records engagement and removes
 +    // this synthetic tip through the view adapter. No URL or provider is invented.
 +    try {
-+      s.input.pickResult({result:entry.tip, element:entry.element,
++      s.input.pickResult({result:entry.tip, resultAction:entry.action,
 +        event:new s.window.KeyboardEvent('keydown',{key:'Enter'}),browserId:entry.active.browser.browserId});
 +    } finally { this.remove(entry.tip.id); }
 +    return 'activated';
@@ -2803,10 +4148,10 @@ index 0000000000..36d8ac8e91
 +}
 diff --git a/browser/base/content/WinUIResultContextMenu.sys.mjs b/browser/base/content/WinUIResultContextMenu.sys.mjs
 new file mode 100644
-index 0000000000..22dbfe9aaf
+index 0000000000..e778f95a65
 --- /dev/null
 +++ b/browser/base/content/WinUIResultContextMenu.sys.mjs
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,98 @@
 +// Firefox owns result-menu commands; native receives only scoped opaque IDs.
 +export class WinUIResultContextMenu {
 +  constructor(session) { this.session = session; this.generation = 0; }
@@ -2847,46 +4192,43 @@ index 0000000000..22dbfe9aaf
 +    const state={button,signature:button?.signature,active,result,id:request.resultId,browser:active.browser,
 +      document:active.browser.browsingContext.currentWindowGlobal?.innerWindowId,
 +      page:active.browser.currentURI?.spec,
-+      editId:s.editId,text:s.input.inputField.value,nodes:new Map()};
++      editId:s.editId,text:s.input.inputField.value,actions:new Map()};
 +    if (!this.current(state)) return;
-+    const panel=await s.input.view.prepareNativeResultMenu(result, button?.name ?? null);
-+    if (generation!==this.generation || !this.current(state) || !panel) return;
++    const descriptors=await s.input.resultActions.describeMenu(result, button?.name ?? null);
++    if (generation!==this.generation || !this.current(state) || !descriptors) return;
 +    let count=0;
-+    const read=(parent,depth=0)=>{
++    const read=(descriptors,depth=0)=>{
 +      if(depth>4) throw new Error("Result menu too deep");
-+      return [...parent.children].map(node=>{
++      return descriptors.map(descriptor=>{
 +        if(++count>128) throw new Error("Result menu too large");
-+        if(node.localName==='hr') return {separator:true};
++        if(descriptor.separator) return {separator:true};
 +        const id=`${generation}:${count}`;
-+        state.nodes.set(id,node);
-+        const child=node.querySelector('panel-list');
-+        const label=(child ? node.querySelector('span')?.textContent : node.textContent) || '';
-+        const item={id,label:label.trim().slice(0,4096),enabled:!node.disabled,
-+          checkable:node.type === 'checkbox', checked:node.checked === true,
-+          accessKey:(node.getAttribute('accesskey') || '').slice(0,16)};
-+        if(child) item.children=read(child,depth+1);
++        state.actions.set(id,descriptor);
++        const item={id,label:descriptor.label.trim().slice(0,4096),enabled:descriptor.enabled,
++          checkable:descriptor.checkable, checked:descriptor.checked,
++          accessKey:(descriptor.accessKey || '').slice(0,16)};
++        if(descriptor.children) item.children=read(descriptor.children,depth+1);
 +        return item;
 +      }).filter(item=>item.separator || item.label);
 +    };
-+    const items=read(panel);
++    const items=read(descriptors);
 +    this.state=state;
 +    s.resultMenuSnapshot={generation,editId:s.editId,resultId:state.id,items};
 +    s.changed();
 +  }
-+  async activate(state, node, generation) {
++  async activate(state, descriptor, generation) {
 +    const s=this.session;
-+    const key=item => JSON.stringify([item.dataset.command, item.dataset.openIn,
-+      item.dataset.usercontextid, item.getAttribute('data-l10n-id')]);
-+    const wanted=key(node);
-+    const panel=await s.input.view.prepareNativeResultMenu(state.result, state.button?.name ?? null);
++    const key=item => JSON.stringify(item.action);
++    const wanted=key(descriptor);
++    const descriptors=await s.input.resultActions.describeMenu(state.result, state.button?.name ?? null);
 +    if(generation!==this.generation) return;
 +    if(!this.current(state)) {this.close();return;}
-+    const fresh=panel && [...panel.querySelectorAll('panel-item')].find(item=>
-+      !item.disabled && !item.hidden && !item.querySelector('panel-list') && key(item)===wanted);
++    const find=items=>items?.flatMap(item=>item.children ? find(item.children) : [item]) || [];
++    const fresh=find(descriptors).find(item=>item.enabled && key(item)===wanted);
 +    try {
-+      if(fresh) s.input.view.activateNativeResultMenu(state.result,fresh,
-+        new s.window.MouseEvent('click',{bubbles:true,view:s.window,button:0}));
-+    } finally {this.close();}
++      if(fresh) s.input.resultActions.invokeMenu(state.result,fresh.action,
++        new s.window.MouseEvent('click',{bubbles:true,view:s.window,button:0}),state.browser.browserId);
++    } finally {if(generation===this.generation)this.close();}
 +  }
 +  execute(request) {
 +    const s=this.session, state=this.state;
@@ -2894,14 +4236,14 @@ index 0000000000..22dbfe9aaf
 +        !this.current(state)) { this.close(); return 2; }
 +    if(request.kind==='context-close') {if(!state.invoking)this.close();return 1;}
 +    if(request.kind!=='context-action') return 2;
-+    const node=state.nodes.get(request.id);
-+    if(!node || node.disabled || node.hidden || node.querySelector('panel-list')) return 2;
++    const descriptor=state.actions.get(request.id);
++    if(!descriptor || !descriptor.enabled || descriptor.children) return 2;
 +    // Rebuild through Firefox immediately before dispatch. Container and policy
 +    // changes while the flyout was open must revoke commands as well.
 +    if(state.invoking) return 2;
 +    state.invoking=true;
 +    const generation=this.generation;
-+    this.activate(state,node,generation).catch(error=>{
++    this.activate(state,descriptor,generation).catch(error=>{
 +      if(generation===this.generation)this.close();
 +      console.error(error);
 +    });
@@ -3839,10 +5181,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..22f276a0f4
+index 0000000000..7cd7931c8f
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1449 @@
+@@ -0,0 +1,1452 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4808,11 +6150,12 @@ index 0000000000..22f276a0f4
 +    if (result.type !== UrlbarShared.RESULT_TYPE.TIP || !result.payload.descriptionLearnMoreTopic) return;
 +    const document = active.browser.browsingContext.currentWindowGlobal?.innerWindowId;
 +    const helpSignature = JSON.stringify([result.payload.descriptionLearnMoreTopic, result.payload.descriptionL10n]);
-+    const help = await this.input.view.prepareNativeTipDescription(result);
++    const help = await this.input.resultActions.describeDescription(result);
 +    if (!help || !document || this.closed || this.active !== active || !active.rows.includes(row) ||
 +        active.browser !== this.window.gBrowser.selectedBrowser || active.page !== active.browser.currentURI.spec ||
 +        document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        helpSignature !== JSON.stringify([result.payload.descriptionLearnMoreTopic, result.payload.descriptionL10n])) return;
++    if (help.unsupported) { this.window.gWinUIPane.addressFallback(); return; }
 +    if ([help.before, help.after, help.label].some(value => typeof value !== "string" || value.length > 1024)) return;
 +    if ((help.before + help.label + help.after).length > 1024) return;
 +    row.helpLink = {...help, id:`${row.id}:help`, document, helpSignature, enabled:true,
@@ -4824,19 +6167,21 @@ index 0000000000..22f276a0f4
 +  async loadNativeTipButtons(active, row, result) {
 +    if (result.type !== UrlbarShared.RESULT_TYPE.TIP) return;
 +    const document = active.browser.browsingContext.currentWindowGlobal?.innerWindowId;
-+    const elements = await this.input.view.prepareNativeTipButtons(result);
-+    if (!elements || !document || this.closed || this.active !== active || !active.rows.includes(row) ||
++    this.input.resultActions.buttons(result);
++    const signature = JSON.stringify(result.payload.buttons);
++    const buttons = await this.input.resultActions.describeButtons(result);
++    if (!buttons || signature !== JSON.stringify(result.payload.buttons) || !document || this.closed || this.active !== active || !active.rows.includes(row) ||
 +        active.browser !== this.window.gBrowser.selectedBrowser || active.page !== active.browser.currentURI.spec ||
 +        document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId) return;
 +    const menuLabel = result.payload.buttons.some(button => button.menu) ?
 +      await this.window.document.l10n.formatValue("urlbar-splitbutton-dropmarker") : "";
 +    if (this.active !== active || !active.rows.includes(row) ||
 +        document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId) return;
-+    row.tipButtons = elements.map((element, index) => ({
-+      id: `${row.id}:tip:${index}`, label: (element.textContent || element.getAttribute("aria-label") || "").slice(0,1024),
-+      enabled: !element.hidden && !element.hasAttribute("disabled"), element, document,
-+      signature: JSON.stringify(result.payload.buttons),
-+      menuLabel, menu: !!result.payload.buttons[index].menu, name: result.payload.buttons[index].name,
++    if (signature !== JSON.stringify(result.payload.buttons)) return;
++    row.tipButtons = buttons.map((button, index) => ({
++      id: `${row.id}:tip:${index}`, label: button.label.slice(0,1024),
++      enabled: button.enabled, action:button.action, document, signature,
++      menuLabel, menu: button.menu, name: button.name,
 +    })).filter(button => button.label);
 +    for (const [field, message] of [["title", result.payload.titleL10n], ["description", result.payload.descriptionL10n]]) {
 +      if (!message || (field === "description" && result.payload.descriptionLearnMoreTopic)) continue;
@@ -4859,20 +6204,20 @@ index 0000000000..22f276a0f4
 +        !button.document || button.document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !this.nativeVisible?.includes(row.id) || this.input.inputField.value !== active.inputValue) return "stale";
 +    const index = active.resultIndexes[active.rows.indexOf(row)], result = active.results[index];
-+    if (active.context.results[index] !== result || button.signature !== JSON.stringify(result.payload.buttons) || button.element.hidden || button.element.hasAttribute("disabled")) return "stale";
++    if (active.context.results[index] !== result || button.signature !== JSON.stringify(result.payload.buttons)) return "stale";
 +    if (button.helpSignature && button.helpSignature !== JSON.stringify([result.payload.descriptionLearnMoreTopic, result.payload.descriptionL10n])) return "stale";
 +    const intent = request.intent || {};
 +    if (Object.keys(intent).some(key => !["ctrlKey","altKey","shiftKey","metaKey"].includes(key)) ||
 +        Object.values(intent).some(value => typeof value !== "boolean")) return "stale";
 +    // A provider may restart a query with the input carried by its button.
 +    // Admit exactly that query while this edit and document remain current.
-+    if (button.element.dataset?.input && button.element.dataset?.command) {
++    if (button.action?.input && button.action?.command) {
 +      this.tipQueryRestart = {active, editId:this.editId, document:button.document,
-+        text:button.element.dataset.input};
++        text:button.action.input};
 +    }
 +    // Retain Firefox's exact button metadata for load requests and provider engagement.
 +    row.tipButtons = []; row.helpLink = null;
-+    this.input.pickResult({result, element:button.element, browserId:active.browser.browserId,
++    this.input.pickResult({result, resultAction:button.action, browserId:active.browser.browserId,
 +      event:new this.window.KeyboardEvent("keydown", {key:"Enter", ...intent})});
 +    this.changed();
 +    return "activated";

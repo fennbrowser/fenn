@@ -8,9 +8,9 @@ function fixture() {
   const s={sessionId:'s',sequence:0,editId:1,nativeOpen:true,nativeVisible:['a','b','c'],
     active:{browser,page:'page',inputValue:'query',revision:2,rows},
     window:{gBrowser:{selectedBrowser:browser},document:{l10n:{formatValue:async()=> 'Feedback'}},KeyboardEvent:class{}},
-    input:{inputField:{value:'query'},view:{
+    input:{inputField:{value:'query'},view:{},resultActions:{
       createDismissalAcknowledgment:()=>({id:++serial,payload:{icon:'brand'}}),
-      prepareNativeTipButtons:async()=>[{textContent:'Got it'}]},pickResult(){picked++;}}};
+      describeButtons:async()=>[{label:'Got it',enabled:true,action:{name:'0'}}]},pickResult(){picked++;}}};
   s.input.view.nativePresentation=s;
   const a=new WinUIDismissalAcknowledgments(s);
   async function add(index=0){await a.add({}, {id:'feedback'},index);return [...a.entries.values()].at(-1);}
@@ -54,6 +54,6 @@ test('late localization is discarded after document replacement or clear',async(
   }
 });
 test('failed preparation releases its pending entry',async()=>{
-  const f=fixture();f.s.input.view.prepareNativeTipButtons=async()=>{throw Error('prepare');};
+  const f=fixture();f.s.input.resultActions.describeButtons=async()=>{throw Error('prepare');};
   await assert.rejects(f.add(),/prepare/);assert.equal(f.a.entries.size,0);
 });
