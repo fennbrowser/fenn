@@ -188,6 +188,46 @@ test('URL previews preserve scheme and a reentrant selection hook sees committed
   assert.equal(f.editor.getResultPreview(p.token),null);f.editor.close();
 });
 
+test('selected autofill previews preserve suffix selection and placeholder metadata after exact observation',async()=>{
+  const f=await previewFixture();f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.URL;
+  f.result.payload={url:'https://typed.example.test/'};
+  f.result.autofill={value:'typed.example.test/',selectionStart:5,selectionEnd:19,
+    type:'adaptive_origin',adaptiveHistoryInput:'type',untrimmedValue:'https://typed.example.test/'};
+  const snapshot=f.editor.snapshot,p=f.editor.beginResultPreview(1,f.query.id,f.result);
+  assert.equal(p.kind,'autofill');assert.equal(p.selectionDirection,'backward');
+  assert.equal(p.selectionStart,5);assert.equal(p.autofill.untrimmedValue,'https://typed.example.test/');
+  assert.equal(Object.isFrozen(p.autofill),true);assert.equal(f.editor.snapshot,snapshot);
+  assert.equal(f.editor.acknowledgeResultPreview(p.token,{...observed(p),selectionDirection:'forward'}),false);
+  assert.equal(f.editor.acknowledgeResultPreview(p.token,observed(p)),true);
+  assert.deepEqual(f.calls,['before',p.value]);assert.equal(f.query.searchString,'typed words');
+  const next=f.editor.edit({},edit(2,'typed.'));
+  const placeholder=f.updates.find(u=>u.edit.revision===2 && u.kind==='prepared')?.completion;
+  assert.equal(placeholder?.kind,'placeholder');assert.equal(placeholder.value,p.value);
+  assert.equal(placeholder.selectionStart,6);assert.equal(placeholder.untrimmedValue,p.autofill.untrimmedValue);
+  await next;f.editor.close();
+});
+
+test('autofill previews revalidate selection, metadata and transition kind before host writes',async()=>{
+  for (const mutate of [r=>r.autofill.selectionStart++,r=>r.autofill.untrimmedValue='changed',
+    r=>r.autofill.type='adaptive_url',r=>delete r.autofill,r=>r.payload.providesSearchMode=true]) {
+    const f=await previewFixture();f.result.autofill={value:'suggested words',selectionStart:3,selectionEnd:15,
+      type:'origin',untrimmedValue:'https://suggested.test/'};
+    const p=f.editor.beginResultPreview(1,f.query.id,f.result);mutate(f.result);
+    assert.equal(f.editor.getResultPreview(p.token),null);
+    assert.equal(f.editor.acknowledgeResultPreview(p.token,observed(p)),false);f.editor.close();
+  }
+});
+
+test('malformed autofill selection cannot produce a preview or notify providers',async()=>{
+  const f=await previewFixture();
+  for (const autofill of [{},{value:'abc',selectionStart:-1,selectionEnd:3},
+    {value:'abc',selectionStart:2,selectionEnd:1},{value:'abc',selectionStart:0,selectionEnd:4},
+    {value:'abc',selectionStart:0.5,selectionEnd:3}]) {
+    f.result.autofill=autofill;assert.equal(f.editor.beginResultPreview(1,f.query.id,f.result),null);
+  }
+  assert.deepEqual(f.calls,[]);f.editor.close();
+});
+
 test('removed frozen results lose identity and exposure even if an old descriptor or late batch retains them',async()=>{
   const requests=[],f=fixture({onPresentationRequest:r=>requests.push(r)});
   const q=await f.session.query({}, {searchString:'remove'}),a={id:1},b={id:2};q.results=[a,b];

@@ -6860,10 +6860,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..03c1fdf0ec
+index 0000000000..9e289cd605
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,426 @@
+@@ -0,0 +1,441 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7144,7 +7144,7 @@ index 0000000000..03c1fdf0ec
 +  #supportsResultPreview(result) {
 +    // Search-mode and action-specific transitions need their own host contract.
 +    // Do not silently turn them into ordinary text writes.
-+    if (this.#searchModePreview || result.autofill || result.payload.providesSearchMode ||
++    if (this.#searchModePreview || result.payload.providesSearchMode ||
 +        result.payload.keyword || result.providerName === "UrlbarProviderGlobalActions" ||
 +        ![UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.SEARCH].includes(result.type)) {
 +      return null;
@@ -7152,29 +7152,41 @@ index 0000000000..03c1fdf0ec
 +    return true;
 +  }
 +
-+  #plainResultPreview(result) {
-+    return this.#supportsResultPreview(result)
-+      ? this.describeResultInput(this.#edit.revision, this.#selectionRequest.queryId, result) : null;
++  #describeResultPreview(revision, queryId, result) {
++    if (!this.#supportsResultPreview(result)) return null;
++    if (result.autofill) {
++      const autofill = Object.freeze({ ...result.autofill });
++      if (typeof autofill.value !== "string" ||
++          !Number.isSafeInteger(autofill.selectionStart) ||
++          !Number.isSafeInteger(autofill.selectionEnd) ||
++          autofill.selectionStart < 0 || autofill.selectionEnd < autofill.selectionStart ||
++          autofill.selectionEnd > autofill.value.length) return null;
++      return { kind: "autofill", value: autofill.value,
++        selectionStart: autofill.selectionStart, selectionEnd: autofill.selectionEnd,
++        selectionDirection: "backward", autofill };
++    }
++    const text = this.describeResultInput(revision, queryId, result);
++    if (typeof text.value !== "string") return null;
++    return { ...text, kind: "text", selectionStart: text.value.length,
++      selectionEnd: text.value.length, selectionDirection: "none", autofill: null };
 +  }
 +
-+  /** Propose an ordinary result preview; null means this path is unsupported. */
++  /** Propose plain or autofill result text; null means this path is unsupported. */
 +  beginResultPreview(revision, queryId, result) {
 +    this.#check();
 +    this.#resultPreview = null;
 +    this.#selectionRequest = null;
 +    this.describeResultInput(revision, queryId, result);
-+    if (!this.#supportsResultPreview(result)) return null;
++    if (!this.#describeResultPreview(revision, queryId, result)) return null;
 +    this.freezeResults(revision, queryId);
 +    const request = this.beginResultSelection(revision, queryId, result);
 +    if (!request) return null;
-+    const description = this.#plainResultPreview(result);
++    const description = this.#describeResultPreview(revision, queryId, result);
 +    if (!description || typeof description.value !== "string") {
 +      this.#selectionRequest = null;
 +      return null;
 +    }
-+    const proposal = Object.freeze({ ...description, token: request.token, edit: request.edit,
-+      selectionStart: description.value.length, selectionEnd: description.value.length,
-+      selectionDirection: "none" });
++    const proposal = Object.freeze({ ...description, token: request.token, edit: request.edit });
 +    this.#resultPreview = proposal;
 +    return proposal;
 +  }
@@ -7184,9 +7196,12 @@ index 0000000000..03c1fdf0ec
 +    const request = this.getResultSelection(token);
 +    const proposal = this.#resultPreview;
 +    if (!request || !proposal || proposal.token !== token) return null;
-+    const live = this.#plainResultPreview(request.result);
-+    return live && live.value === proposal.value && live.actionType === proposal.actionType
-+      ? proposal : null;
++    const live = this.#describeResultPreview(this.#edit.revision, request.queryId, request.result);
++    if (!live || ["kind", "value", "actionType", "selectionStart", "selectionEnd", "selectionDirection"]
++      .some(key => live[key] !== proposal[key])) return null;
++    if (live.autofill && (Object.keys(live.autofill).length !== Object.keys(proposal.autofill).length ||
++        Object.keys(live.autofill).some(key => live.autofill[key] !== proposal.autofill[key]))) return null;
++    return proposal;
 +  }
 +
 +  /** Observe both row selection and exact preview text, then notify the provider. */
@@ -7200,8 +7215,8 @@ index 0000000000..03c1fdf0ec
 +    this.#resultPreview = null;
 +    this.#selectionRequest = null;
 +    this.#completion = null;
-+    this.#autofill = null;
-+    this.#placeholder = null;
++    this.#autofill = proposal.autofill;
++    this.#placeholder = proposal.autofill;
 +    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: this.#edit.selectionRevision + 1 });
 +    // Preserve the original typed query and notify only after observing the write.
