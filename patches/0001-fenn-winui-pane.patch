@@ -7032,10 +7032,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..60df170250
+index 0000000000..19b0683bf8
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,922 @@
+@@ -0,0 +1,997 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7076,6 +7076,7 @@ index 0000000000..60df170250
 +  #resultPreview = null;
 +  #modeApplication = null;
 +  #modeRequery = null;
++  #searchCommandRequest = null;
 +  #modeRestoreRequest = null;
 +  #modeExitRequest = null;
 +  #modeExitRequery = null;
@@ -7137,6 +7138,7 @@ index 0000000000..60df170250
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7261,6 +7263,7 @@ index 0000000000..60df170250
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7370,6 +7373,7 @@ index 0000000000..60df170250
 +    if (this.#hiddenResults) throw new Error("Hidden result mode application");
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7396,6 +7400,7 @@ index 0000000000..60df170250
 +    if (this.#hiddenResults) throw new Error("Hidden result mode exit");
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7444,6 +7449,7 @@ index 0000000000..60df170250
 +    const request = this.#selectionRequest;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7504,6 +7510,7 @@ index 0000000000..60df170250
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7533,6 +7540,7 @@ index 0000000000..60df170250
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7577,6 +7585,7 @@ index 0000000000..60df170250
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7603,6 +7612,7 @@ index 0000000000..60df170250
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7650,6 +7660,7 @@ index 0000000000..60df170250
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7693,6 +7704,7 @@ index 0000000000..60df170250
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7732,6 +7744,7 @@ index 0000000000..60df170250
 +    this.#queries.publishPresentation(queryId, visibleResults, open);
 +    if (this.#modeRequery && (!open || !visibleResults.includes(this.#modeRequery.result))) {
 +      this.#modeRequery = null;
++      this.#searchCommandRequest = null;
 +      this.#modeRestoreRequest = null;
 +      this.#modeExitRequest = null;
 +      this.#modeExitRequery = null;
@@ -7747,6 +7760,63 @@ index 0000000000..60df170250
 +    this.#check();
 +    if (this.#edit !== edit) throw new Error("Editor search command superseded");
 +    return command;
++  }
++
++  /** Propose a search command write, revoking previous results before asynchronous preparation. */
++  async beginSearchCommand(revision, value, { engineId = null, searchModeEntry = "searchbutton" } = {}) {
++    this.#check();
++    const edit = this.#edit, previousMode = this.#searchMode;
++    if (!edit || revision !== edit.revision || edit.composing) throw new Error("Stale editor search command");
++    if (typeof value !== "string" || (engineId !== null && (typeof engineId !== "string" || !engineId))) {
++      throw new TypeError("Invalid search command facts");
++    }
++    const options = Object.freeze({ engineId, searchModeEntry });
++    this.cancel();
++    this.#check();
++    if (this.#edit !== edit || this.#searchMode !== previousMode) return null;
++    const pending = { token: Object.freeze({}), edit, previousMode, value, options, proposal: null };
++    this.#searchCommandRequest = pending;
++    try {
++      const description = await this.#queries.prepareSearchCommand(value, options);
++      this.#check();
++      if (this.#searchCommandRequest !== pending || this.#edit !== edit) return null;
++      if (!description) {
++        this.#searchCommandRequest = null;
++        return null;
++      }
++      pending.description = description;
++      pending.proposal = Object.freeze({ ...description, token: pending.token, edit,
++        searchMode: description.changeSearchMode ? description.searchMode : previousMode,
++        selectionStart: description.value.length, selectionEnd: description.value.length,
++        selectionDirection: "none" });
++      return this.getSearchCommand(pending.token);
++    } catch (error) {
++      if (this.#searchCommandRequest === pending) this.#searchCommandRequest = null;
++      throw error;
++    }
++  }
++
++  /** Validate the live engine/alias/default facts immediately before a host write. */
++  getSearchCommand(token) {
++    this.#check();
++    const pending = this.#searchCommandRequest;
++    if (!pending || pending.token !== token || pending.edit !== this.#edit || !pending.proposal ||
++        pending.previousMode !== this.#searchMode) return null;
++    const live = this.#queries.describeSearchCommand(pending.value, pending.options);
++    return live && UrlbarShared.deepEqual(live, pending.description) ? pending.proposal : null;
++  }
++
++  /** Observe exact command mode/text/caret once; input dispatch and browser effects are separate. */
++  acknowledgeSearchCommand(token, { searchMode, text, selectionStart, selectionEnd, selectionDirection }) {
++    const proposal = this.getSearchCommand(token);
++    if (!proposal || !UrlbarShared.deepEqual(searchMode, proposal.searchMode) || text !== proposal.value ||
++        selectionStart !== proposal.selectionStart || selectionEnd !== proposal.selectionEnd ||
++        selectionDirection !== proposal.selectionDirection) return false;
++    this.#searchCommandRequest = null;
++    this.#searchMode = proposal.searchMode;
++    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart, selectionEnd,
++      selectionDirection, selectionRevision: this.#edit.selectionRevision + 1 });
++    return true;
 +  }
 +
 +  /**
@@ -7795,6 +7865,7 @@ index 0000000000..60df170250
 +    if (!request || !UrlbarShared.deepEqual(searchMode, request.searchMode) || text !== request.edit.text ||
 +        selectionStart !== request.edit.selectionStart || selectionEnd !== request.edit.selectionEnd ||
 +        selectionDirection !== request.edit.selectionDirection) return false;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#searchMode = request.searchMode;
 +    return true;
@@ -7830,6 +7901,7 @@ index 0000000000..60df170250
 +    if (!request || searchMode !== null || text !== request.edit.text ||
 +        selectionStart !== request.edit.selectionStart || selectionEnd !== request.edit.selectionEnd ||
 +        selectionDirection !== request.edit.selectionDirection) return false;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7915,6 +7987,7 @@ index 0000000000..60df170250
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7930,6 +8003,7 @@ index 0000000000..60df170250
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
@@ -7948,6 +8022,7 @@ index 0000000000..60df170250
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;

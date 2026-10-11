@@ -1683,3 +1683,87 @@ test('independent command descriptions reject stale editor snapshots and scope d
   g.invalidate();g.parent.child.updateEngineStore('init',[],null);
   await assert.rejects(initializing,/scope changed/);
 });
+
+
+test('search-command writes revoke results and require exact one-use mode, text and caret observation',async()=>{
+  const f=await previewFixture(),snapshot=f.editor.snapshot,started=f.parent.started.length;
+  const p=await f.editor.beginSearchCommand(1,'^ command words');
+  assert.equal(p.value,'command words');assert.equal(p.searchMode.isPreview,true);
+  assert.equal(Object.isFrozen(p),true);assert.equal(f.editor.snapshot,snapshot);
+  assert.equal(f.parent.child.resultsOpen,false);assert.deepEqual([...f.parent.child.visibleResults],[]);
+  assert.throws(()=>f.editor.describeResultInput(1,f.query.id,f.result),/Stale/);
+  for(const wrong of [{searchMode:null},{text:'wrong'},{selectionStart:0},{selectionDirection:'backward'}]) {
+    assert.equal(f.editor.acknowledgeSearchCommand(p.token,{...observedCommand(p),...wrong}),false);
+  }
+  assert.equal(f.editor.getSearchCommand(p.token),p);
+  assert.equal(f.editor.acknowledgeSearchCommand(p.token,observedCommand(p)),true);
+  assert.equal(f.editor.acknowledgeSearchCommand(p.token,observedCommand(p)),false);
+  assert.equal(f.editor.snapshot.text,p.value);assert.equal(f.editor.snapshot.selectionRevision,snapshot.selectionRevision+1);
+  assert.equal(f.parent.started.length,started);assert.deepEqual(f.calls,[]);
+  assert.equal(f.editor.beginSearchModeExit(1).previousSearchMode.source,p.searchMode.source);f.editor.close();
+});
+
+test('ordinary search commands preserve the current mode while unsupported restrictions explicitly clear it',async()=>{
+  const f=await editorFixture(),mode={source:1,isPreview:false,entry:'searchbutton'};
+  await f.editor.edit({searchMode:mode},edit(1,'old'));
+  const plain=await f.editor.beginSearchCommand(1,'new ordinary text');
+  assert.equal(plain.changeSearchMode,false);assert.equal(plain.searchMode.source,1);
+  assert.equal(f.editor.acknowledgeSearchCommand(plain.token,{...observedCommand(plain),searchMode:null}),false);
+  assert.equal(f.editor.acknowledgeSearchCommand(plain.token,observedCommand(plain)),true);
+  const clear=await f.editor.beginSearchCommand(1,'#');
+  assert.equal(clear.changeSearchMode,true);assert.equal(clear.searchMode,null);assert.equal(clear.value,'# ');
+  assert.equal(f.editor.acknowledgeSearchCommand(clear.token,observedCommand(clear)),true);
+  assert.equal(f.editor.beginSearchModeExit(1),null);f.editor.close();
+});
+
+test('search-command acknowledgment revalidates live aliases and engine removal',async()=>{
+  const f=await editorFixture();await f.editor.edit({},edit(1,'old'));
+  const engine={id:'engine',name:'Engine',aliases:['@e'],isGeneralPurposeEngine:true};
+  f.parent.child.updateEngineStore('changed',engine,-1);
+  const options={engineId:'engine'},p=await f.editor.beginSearchCommand(1,'@e words',options);
+  options.engineId='missing';assert.equal(f.editor.getSearchCommand(p.token),p);
+  f.parent.child.updateEngineStore('changed',{...engine,aliases:[]},0);
+  assert.equal(f.editor.getSearchCommand(p.token),null);
+  assert.equal(f.editor.acknowledgeSearchCommand(p.token,observedCommand(p)),false);
+  const changed=await f.editor.beginSearchCommand(1,'@e words',{engineId:'engine'});
+  assert.equal(changed.value,'@e words');f.parent.child.updateEngineStore('removed',engine,-1);
+  assert.equal(f.editor.getSearchCommand(changed.token),null);
+  assert.equal(await f.editor.beginSearchCommand(1,'words',{engineId:'engine'}),null);f.editor.close();
+});
+
+test('search-command proposals cannot survive supersession during preparation or after publication',async()=>{
+  for(const revoke of [f=>f.editor.beginSearchCommand(1,'new'),f=>f.editor.beginSearchModeRestoration(1,null),
+    f=>f.editor.select(1,0,0),f=>f.editor.edit({},edit(2,'new')),f=>f.editor.cancel()]) {
+    for(const during of [true,false]) {
+      const f=await editorFixture();await f.editor.edit({},edit(1,'old'));
+      const pending=f.editor.beginSearchCommand(1,'^ words'),p=during?null:await pending;
+      await revoke(f);
+      if(during)assert.equal(await pending,null);
+      else {assert.equal(f.editor.getSearchCommand(p.token),null);assert.equal(f.editor.acknowledgeSearchCommand(p.token,observedCommand(p)),false);}
+      f.editor.close();
+    }
+  }
+  for(const close of [true,false]) {
+    const f=await editorFixture();await f.editor.edit({},edit(1,'old'));
+    const pending=f.editor.beginSearchCommand(1,'^ words');if(close)f.editor.close();else f.loseScope();
+    await assert.rejects(pending,close?/closed/:/scope changed/);
+  }
+});
+
+test('search-command admission rejects stale/composing edits and failed initialization cannot erase a newer request',async()=>{
+  const f=await editorFixture();await f.editor.edit({},edit(1,'old'));
+  await assert.rejects(f.editor.beginSearchCommand(0,'words'),/Stale/);
+  await assert.rejects(f.editor.beginSearchCommand(1,42),/Invalid/);
+  const gate=Promise.withResolvers();f.parent.child.engineStore.init=()=>gate.promise;
+  const failed=f.editor.beginSearchCommand(1,'words',{engineId:'engine'});
+  const newer=await f.editor.beginSearchCommand(1,'^ new words');
+  const rejection=assert.rejects(failed,/engine failure/);gate.reject(Error('engine failure'));await rejection;
+  assert.equal(f.editor.getSearchCommand(newer.token),newer);
+  assert.equal(f.editor.acknowledgeSearchCommand(newer.token,observedCommand(newer)),true);
+  await f.editor.edit({},edit(2,'composing',{composing:true}));
+  await assert.rejects(f.editor.beginSearchCommand(2,'words'),/Stale/);f.editor.close();
+});
+
+function observedCommand(proposal) {
+  return {...observed(proposal),searchMode:proposal.searchMode ? {...proposal.searchMode} : null};
+}
