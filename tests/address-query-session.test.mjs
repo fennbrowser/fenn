@@ -3828,6 +3828,9 @@ async function commandConfirmationFixture(value='^ words',options={},fixtureOpti
   f.parent.commitIndependentModeState=()=>({applied:true,stateToken:f.initialToken});
   f.editor.acknowledgeSearchCommand(p.token,observedOwnedCommand(p));
   f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false});
+  f.inputToken=Object.freeze({});
+  f.parent.commitIndependentInputState=()=>({applied:true,current:true,stateToken:f.inputToken});
+  f.editor.commitAcknowledgedSearchCommandInput(p.token,{...observedCommand(p),userTypedValue:'previous',persistedSearchTerms:false});
   const confirmation=f.editor.beginSearchCommandConfirmation(p.token,{...commandEntry(),untrimmedValue:f.editor.snapshot.text});
   return {...f,confirmation};
 }
@@ -3852,7 +3855,7 @@ test('confirmed command commit preserves preview query context and emits confirm
     {onModeStateChanged:n=>events.push(n)}),c=f.confirmation,p=f.proposal;
   await assert.rejects(f.editor.requeryAfterSearchCommand(p.token,{searchMode:c.searchMode}),/confirmation has not committed/);
   f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{
-    assert.equal(current(),true);assert.equal(mode.isPreview,false);assert.equal(facts.expectedStateToken,f.initialToken);
+    assert.equal(current(),true);assert.equal(mode.isPreview,false);assert.equal(facts.expectedStateToken,f.inputToken);
     assert.equal(facts.engineId,'engine');assert.equal(facts.modeEntry,c.modeEntry);
     notify({browserId:id,searchMode:mode,userTypedValue:c.edit.text});return {applied:true};
   };
@@ -3901,4 +3904,93 @@ test('parent continuation mode commit requires the exact preceding owned commit 
     assert.equal(prepared,valid?1:0);assert.equal(outcome?.applied??false,valid);
     if(valid)assert.equal(outcome.stateToken,next);
   }
+});
+
+
+async function commandInputFixture(value='^ words') {
+  const f=await ownedCommandFixture(value),p=f.proposal;f.stateToken={};
+  f.parent.commitIndependentModeState=()=>({applied:true,stateToken:f.stateToken});
+  f.editor.acknowledgeSearchCommand(p.token,observedOwnedCommand(p));
+  f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false});
+  return f;
+}
+const observedCommandInput=p=>({...observedCommand(p),userTypedValue:'previous browser text',persistedSearchTerms:false});
+
+test('command input requires exact observation and initial receipt, commits once without querying',async()=>{
+  const f=await commandInputFixture(),p=f.proposal,calls=[],next={};
+  f.parent.child.userSelectionBehavior='arrow';
+  f.parent.commitIndependentInputState=(id,value,facts,current)=>{
+    calls.push(value);assert.equal(id,42);assert.equal(current(),true);assert.equal(facts.expectedStateToken,f.stateToken);
+    assert.equal(facts.userTypedValue,'previous browser text');return {applied:true,current:true,stateToken:next};
+  };
+  assert.equal(f.editor.beginSearchCommandConfirmation(p.token,commandEntry()),null);
+  for(const wrong of [{text:'wrong'},{selectionStart:0},{searchMode:null},{selectionDirection:'backward'}]) {
+    assert.equal(f.editor.commitAcknowledgedSearchCommandInput(p.token,{...observedCommandInput(p),...wrong}),null);
+  }
+  assert.equal(calls.length,0);
+  assert.equal(f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p)).applied,true);
+  assert.equal(f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p)),null);
+  assert.equal(f.parent.child.userSelectionBehavior,'none');assert.equal(f.parent.started.length,1);assert.deepEqual(calls,['words']);
+  const confirmation=f.editor.beginSearchCommandConfirmation(p.token,commandEntry());assert.ok(confirmation);
+  f.parent.commitIndependentModeState=(_id,_mode,facts)=>{assert.equal(facts.expectedStateToken,next);return {applied:true};};
+  f.editor.commitSearchCommandConfirmation(confirmation.token,observedConfirmation(confirmation));f.editor.close();
+});
+
+test('clearing command cannot query before input commit and then uses its unchanged editor',async()=>{
+  const f=await commandInputFixture('#'),p=f.proposal,snapshot=f.editor.snapshot;
+  await assert.rejects(f.editor.requeryAfterSearchCommand(p.token,{searchMode:null}),/input has not committed/);
+  f.parent.commitIndependentInputState=()=>({applied:true,current:true,stateToken:{}});
+  f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p));
+  const q=await f.editor.requeryAfterSearchCommand(p.token,{searchMode:null});
+  assert.equal(q.searchString,'# ');assert.equal(f.editor.snapshot,snapshot);f.editor.close();
+});
+
+test('failed or superseded input application revokes follow-up without repeating browser effects',async()=>{
+  for(const action of ['reject','throw','stale','reentry']) {
+    const f=await commandInputFixture(),p=f.proposal;let calls=0;
+    f.parent.commitIndependentInputState=()=>{calls++;if(action==='throw')throw Error('input failed');
+      if(action==='reject')return null;if(action==='reentry')f.editor.cancel();return {applied:true,current:action!=='stale',stateToken:{}};};
+    assert.throws(()=>f.editor.commitAcknowledgedSearchCommandInput(p.token,{}),/Invalid/);assert.equal(calls,0);
+    if(action==='throw')assert.throws(()=>f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p)),/input failed/);
+    else f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p));
+    assert.equal(calls,1);assert.equal(f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p)),null);
+    assert.equal(f.editor.getSearchCommandRequery(p.token),null);f.editor.close();
+  }
+});
+
+test('new editor work revokes pending command input and ordinary mode no-ops do not grant receipts',async()=>{
+  for(const revoke of [f=>f.editor.cancel(),f=>f.editor.select(1,0,0),f=>f.editor.edit({},edit(2,'new'))]) {
+    const f=await commandInputFixture(),p=f.proposal;await revoke(f);
+    assert.equal(f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p)),null);f.editor.close();
+  }
+  const f=await ownedCommandFixture('ordinary'),p=f.proposal;f.editor.acknowledgeSearchCommand(p.token,observedOwnedCommand(p));
+  assert.equal(f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false}).modeUnchanged,true);
+  assert.equal(f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p)),null);f.editor.close();
+});
+
+test('parent input commit validates receipt, persistence and lifetime before browser text mutation',()=>{
+  for(const change of ['none','old-text','receipt','document','scope','persistence']) {
+    const {p,browser,lazy}=parentLoadFixture(),prior={},next={};let prepared=0,committed=0,current=true;
+    browser.userTypedValue='old';let latest=prior;
+    lazy.independentUrlbarBrowserState={isCommitted:(_b,t)=>t===latest,
+      prepareInput:(_b,value)=>{prepared++;latest=next;if(change==='document')browser.browsingContext.currentWindowGlobal={};
+        if(change==='scope')current=false;return {token:next,effects:{userTypedValue:value,persistenceChanged:true,persistedSearchTerms:change==='persistence'}};},
+      commit:()=>{committed++;return true;},discard:()=>{}};
+    if(change==='receipt')latest={};
+    const result=p.commitIndependentInputState(42,'new',{expectedStateToken:prior,persistedSearchTerms:false,
+      userTypedValue:change==='old-text'?'different':'old'},()=>current);
+    assert.equal(result?.applied??false,change==='none',change);assert.equal(committed,change==='none'?1:0);
+    assert.equal(browser.userTypedValue,change==='none'?'new':'old');assert.equal(prepared,['old-text','receipt'].includes(change)?0:1);
+    if(result){assert.equal(result.current,true);assert.equal(result.stateToken,next);assert.equal(Object.isFrozen(result),true);}
+  }
+});
+
+test('parent input commits state before browser setters and reports reentrant supersession',()=>{
+  const {p,browser,lazy}=parentLoadFixture(),prior={},next={},events=[];let text='old',latest=prior;
+  lazy.independentUrlbarBrowserState={isCommitted:(_b,t)=>t===latest,
+    prepareInput:()=>({token:next,effects:{userTypedValue:'new',persistedSearchTerms:false}}),
+    commit:()=>{events.push('state');latest=next;return true;},discard:()=>{}};
+  Object.defineProperty(browser,'userTypedValue',{get:()=>text,set:value=>{events.push('text');text=value;latest={};}});
+  const result=p.commitIndependentInputState(42,'new',{userTypedValue:'old',expectedStateToken:prior,persistedSearchTerms:false},()=>true);
+  assert.equal(result.applied,true);assert.equal(result.current,false);assert.deepEqual(events,['state','text']);
 });
