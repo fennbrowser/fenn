@@ -2911,7 +2911,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..9a61c9bce3 100644
+index a077de625f..926b76a51c 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,20 @@
@@ -3275,7 +3275,72 @@ index a077de625f..9a61c9bce3 100644
    }
  
    /**
-@@ -3245,38 +3278,21 @@ ${
+@@ -2880,50 +2913,11 @@ ${
+       }
+     }
+ 
+-    let {
+-      engineName,
+-      source,
+-      entry,
+-      restrictType,
+-      isPreview = true,
+-    } = searchMode || {};
+-
+-    searchMode = null;
+-
+-    if (engineName) {
+-      searchMode = {
+-        engineName,
+-        isGeneralPurposeEngine: engine.isGeneralPurposeEngine,
+-      };
+-      if (source) {
+-        searchMode.source = source;
+-      } else if (searchMode.isGeneralPurposeEngine) {
+-        // History results for general-purpose search engines are often not
+-        // useful, so we hide them in search mode. See bug 1658646 for
+-        // discussion.
+-        searchMode.source = UrlbarShared.RESULT_SOURCE.SEARCH;
+-      }
+-    } else if (source) {
+-      let sourceName = UrlbarShared.getResultSourceName(source);
+-      if (sourceName) {
+-        searchMode = { source };
+-      } else {
+-        console.error(`Unrecognized source: ${source}`);
+-      }
+-    }
+-
++    const normalized = UrlbarSearchModeModel.normalizeMode(searchMode, engine);
++    // The browser state owner keeps mutable modes; descriptions stay immutable.
++    searchMode = normalized ? { ...normalized } : null;
+     let modes = this.#getSearchModesObject(browser);
+-
+     if (searchMode) {
+-      searchMode.isPreview = isPreview;
+-      if (UrlbarShared.SEARCH_MODE_ENTRY.has(entry)) {
+-        searchMode.entry = entry;
+-      } else {
+-        // If we see this value showing up in telemetry, we should review
+-        // search mode's entry points.
+-        searchMode.entry = "other";
+-      }
+-
+       if (!searchMode.isPreview) {
+         modes.confirmed = searchMode;
+         delete modes.preview;
+@@ -2935,10 +2929,6 @@ ${
+       delete modes.confirmed;
+     }
+ 
+-    if (restrictType) {
+-      searchMode.restrictType = restrictType;
+-    }
+-
+     // The address bar keeps a search mode per browser, so it only enters search
+     // mode for the selected one. Every other input keeps a single search mode.
+     if (
+@@ -3245,38 +3235,21 @@ ${
      result = this._resultForCurrentValue,
      checkValue = true,
      startQuery = true,
@@ -3326,7 +3391,7 @@ index a077de625f..9a61c9bce3 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -3516,84 +3532,19 @@ ${
+@@ -3516,84 +3489,19 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
@@ -3423,7 +3488,7 @@ index a077de625f..9a61c9bce3 100644
    }
  
    /**
-@@ -3604,14 +3555,7 @@ ${
+@@ -3604,14 +3512,7 @@ ${
     * @returns {string} The `actiontype` value, or undefined.
     */
    #getActionTypeFromResult(result) {
@@ -3439,7 +3504,7 @@ index a077de625f..9a61c9bce3 100644
    }
  
    /**
-@@ -3634,64 +3578,27 @@ ${
+@@ -3634,64 +3535,27 @@ ${
     *   Whether autofill should be allowed in the new search.
     */
    _maybeAutofillPlaceholder(value) {
@@ -3524,7 +3589,7 @@ index a077de625f..9a61c9bce3 100644
    }
  
    /**
-@@ -3772,105 +3679,31 @@ ${
+@@ -3772,105 +3636,31 @@ ${
      }
    }
  
@@ -3655,7 +3720,7 @@ index a077de625f..9a61c9bce3 100644
    }
  
    _toggleActionOverride(event) {
-@@ -4081,33 +3914,34 @@ ${
+@@ -4081,33 +3871,34 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -3696,7 +3761,7 @@ index a077de625f..9a61c9bce3 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -4267,6 +4101,15 @@ ${
+@@ -4267,6 +4058,15 @@ ${
      }
    }
  
@@ -3712,7 +3777,7 @@ index a077de625f..9a61c9bce3 100644
    _initCopyCutController() {
      // This exists to put an untrimmed URL on the clipboard, and only the address
      // bar trims. Every other input keeps its native copy/cut.
-@@ -4479,7 +4322,7 @@ ${
+@@ -4479,7 +4279,7 @@ ${
        return;
      }
      let controller =
@@ -3721,7 +3786,7 @@ index a077de625f..9a61c9bce3 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4495,6 +4338,33 @@ ${
+@@ -4495,6 +4295,33 @@ ${
      stripOnShare.removeAttribute("disabled");
    }
  
@@ -3755,7 +3820,7 @@ index a077de625f..9a61c9bce3 100644
    _initPasteAndGo() {
      this.addContextMenuItems({
        after: "edit-contextmenu-paste",
-@@ -4507,17 +4377,7 @@ ${
+@@ -4507,17 +4334,7 @@ ${
            .GetStringFromName("pasteAndGo.label");
          pasteAndGo.setAttribute("label", label);
          pasteAndGo.setAttribute("anonid", "paste-and-go");
@@ -3774,7 +3839,7 @@ index a077de625f..9a61c9bce3 100644
  
          fragment.appendChild(pasteAndGo);
          return fragment;
-@@ -4545,10 +4405,7 @@ ${
+@@ -4545,10 +4362,7 @@ ${
            { once: true }
          );
  
@@ -3786,7 +3851,7 @@ index a077de625f..9a61c9bce3 100644
            pasteAndGo.removeAttribute("disabled");
          } else {
            pasteAndGo.setAttribute("disabled", "true");
-@@ -4747,60 +4604,11 @@ ${
+@@ -4747,60 +4561,11 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -3852,7 +3917,7 @@ index a077de625f..9a61c9bce3 100644
    }
  
    /**
-@@ -5071,6 +4879,8 @@ ${
+@@ -5071,6 +4836,8 @@ ${
    setUnifiedSearchButtonAvailability(available) {
      available ||=
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
@@ -3861,7 +3926,7 @@ index a077de625f..9a61c9bce3 100644
      const switcher = this.querySelector(".searchmode-switcher");
      switcher.toggleAttribute("offscreen", !available);
      if (available) {
-@@ -5085,6 +4895,7 @@ ${
+@@ -5085,6 +4852,7 @@ ${
          this.window.gBrowser.selectedBrowser
        ).isUnifiedSearchButtonAvailable = available;
      }
@@ -3869,7 +3934,7 @@ index a077de625f..9a61c9bce3 100644
    }
  
    /**
-@@ -5151,7 +4962,7 @@ ${
+@@ -5151,7 +4919,7 @@ ${
    #maybeSelectAll() {
      if (
        !this.#preventClickSelectsAll &&
@@ -3878,7 +3943,7 @@ index a077de625f..9a61c9bce3 100644
        this.focused &&
        this.inputField.selectionStart == this.inputField.selectionEnd
      ) {
-@@ -5477,34 +5288,20 @@ ${
+@@ -5477,34 +5245,20 @@ ${
      }
    }
  
@@ -3886,28 +3951,28 @@ index a077de625f..9a61c9bce3 100644
 -    // A new input starts a fresh search; bump the epoch so a pending
 -    // deferred-Enter's async keyup won't reset this search's caret.
 -    this.#inputEpoch++;
--    if (
++  setNativeInputValue(value) {
+     if (
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      (event.inputType === "deleteContentBackward" ||
 -        event.inputType === "deleteContentForward")
--    ) {
++      !this.view.nativePresentation ||
++      typeof value !== "string" ||
++      value.length > 32768
+     ) {
 -      // Take a telemetry if user deleted whole autofilled value.
 -      this.parentController.recordAutofillDeletion();
 -    }
 -
-+  setNativeInputValue(value) {
-     if (
+-    if (
 -      UrlbarPrefs.get("autoFill.adaptiveHistory.enabled") &&
 -      event.inputType?.startsWith("deleteContent") &&
 -      !this.isPrivate &&
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      this._resultForCurrentValue?.payload?.url
-+      !this.view.nativePresentation ||
-+      typeof value !== "string" ||
-+      value.length > 32768
-     ) {
+-    ) {
 -      this.parentController.recordAutofillBackspace(
 -        this._resultForCurrentValue.payload.url
 -      );
@@ -3923,7 +3988,7 @@ index a077de625f..9a61c9bce3 100644
      this.valueIsTyped = true;
      this._untrimmedValue = value;
      this._protocolIsTrimmed = false;
-@@ -5516,20 +5313,9 @@ ${
+@@ -5516,20 +5270,9 @@ ${
      // string, thus there's no valid selection. This is also used by the view
      // to set "aria-activedescendant", thus it should never get stale.
      this.controller.userSelectionBehavior = "none";
@@ -3946,7 +4011,7 @@ index a077de625f..9a61c9bce3 100644
      this.toggleAttribute("usertyping", value);
      this.removeAttribute("actiontype");
  
-@@ -5551,6 +5337,43 @@ ${
+@@ -5551,6 +5294,43 @@ ${
          this.removeAttribute("persistsearchterms");
        }
      }
@@ -3990,7 +4055,7 @@ index a077de625f..9a61c9bce3 100644
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
-@@ -5580,10 +5403,9 @@ ${
+@@ -5580,10 +5360,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -4004,7 +4069,7 @@ index a077de625f..9a61c9bce3 100644
      ) {
        return;
      }
-@@ -5591,11 +5413,10 @@ ${
+@@ -5591,11 +5370,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -4020,7 +4085,7 @@ index a077de625f..9a61c9bce3 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5669,33 +5490,20 @@ ${
+@@ -5669,33 +5447,20 @@ ${
    }
  
    _on_paste(event) {
@@ -4062,7 +4127,7 @@ index a077de625f..9a61c9bce3 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5517,7 @@ ${
+@@ -5709,7 +5474,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -4071,7 +4136,7 @@ index a077de625f..9a61c9bce3 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5548,25 @@ ${
+@@ -5740,51 +5505,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -4139,7 +4204,7 @@ index a077de625f..9a61c9bce3 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5760,11 @@ ${
+@@ -5978,15 +5717,11 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -4157,7 +4222,7 @@ index a077de625f..9a61c9bce3 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5784,24 @@ ${
+@@ -6006,44 +5741,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -4214,7 +4279,7 @@ index a077de625f..9a61c9bce3 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,9 +5927,7 @@ ${
+@@ -6169,9 +5884,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -4225,7 +4290,7 @@ index a077de625f..9a61c9bce3 100644
        ? SCHEMELESS_INPUT_SCHEMELESS
        : SCHEMELESS_INPUT_SCHEMEFUL;
    }
-@@ -6311,111 +6067,6 @@ function getDroppableData(event) {
+@@ -6311,111 +6024,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -4337,7 +4402,7 @@ index a077de625f..9a61c9bce3 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +6091,10 @@ class CopyCutController {
+@@ -6440,12 +6048,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -6889,10 +6954,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..d02b35b7fd
+index 0000000000..90d76b8f7e
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,555 @@
+@@ -0,0 +1,567 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7184,6 +7249,18 @@ index 0000000000..d02b35b7fd
 +    });
 +  }
 +
++  /** Describe canonical mode facts without applying per-tab browser state. */
++  describeResultModeApplication(revision, queryId, result, { checkValue = true,
++    startQuery = true, entry = null } = {}) {
++    this.#check();
++    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing) {
++      throw new Error("Stale editor mode application");
++    }
++    return this.#queries.describeResultModeApplication(queryId, result, {
++      value: this.#edit.text, checkValue, startQuery, entry,
++    });
++  }
++
 +  /** Prepare provider notification without applying selection or preview text. */
 +  beginResultSelection(revision, queryId, result) {
 +    this.#check();
@@ -7450,10 +7527,10 @@ index 0000000000..d02b35b7fd
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..468d456dc0
+index 0000000000..4efc861434
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,291 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7642,6 +7719,17 @@ index 0000000000..468d456dc0
 +        typeof startQuery !== "boolean") throw new TypeError("Invalid mode transition facts");
 +    return UrlbarSearchModeModel.resultTransition(result, { value, checkValue, startQuery,
 +      resolveMode: current => this.describeResultSearchMode(queryId, current, { entry }) });
++  }
++
++  /** Describe a normalized mode using the current visible-engine store. */
++  describeResultModeApplication(queryId, result, options) {
++    const transition = this.describeResultModeTransition(queryId, result, options);
++    if (!transition) return null;
++    const requested = transition.searchMode;
++    const engine = requested.engineName
++      ? this.#controller.engineStore.getEngineByName(requested.engineName) : null;
++    const searchMode = UrlbarSearchModeModel.normalizeMode(requested, engine);
++    return searchMode ? Object.freeze({ ...transition, searchMode }) : null;
 +  }
 +
 +  /**
@@ -8050,10 +8138,10 @@ index 0000000000..1fec37fd9e
 +}
 diff --git a/browser/components/urlbar/content/UrlbarSearchModeModel.mjs b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
 new file mode 100644
-index 0000000000..881c81390a
+index 0000000000..fe7e04841f
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,354 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8146,6 +8234,26 @@ index 0000000000..881c81390a
 +      storeTypedValue: !!confirmed,
 +      startQuery: !!startQuery,
 +    });
++  }
++
++  /** Normalize requested mode facts; engine is resolved by Firefox's live store. */
++  static normalizeMode(request, engine = null) {
++    if (request?.engineName && !engine) return null;
++    const { engineName, source, entry, restrictType, isPreview = true } = request || {};
++    let mode = null;
++    if (engineName) {
++      mode = { engineName, isGeneralPurposeEngine: engine.isGeneralPurposeEngine };
++      if (source) mode.source = source;
++      else if (mode.isGeneralPurposeEngine) mode.source = UrlbarShared.RESULT_SOURCE.SEARCH;
++    } else if (source) {
++      if (UrlbarShared.getResultSourceName(source)) mode = { source };
++      else console.error(`Unrecognized source: ${source}`);
++    }
++    if (!mode) return null;
++    mode.isPreview = isPreview;
++    mode.entry = UrlbarShared.SEARCH_MODE_ENTRY.has(entry) ? entry : "other";
++    if (restrictType) mode.restrictType = restrictType;
++    return Object.freeze(mode);
 +  }
 +
 +  // Availability is explicit per-tab state. Preferences gate presentation but

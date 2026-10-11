@@ -26,8 +26,8 @@ function fixture() {
   // No browser window, input, DOM or switcher is supplied to the real module.
   const context=vm.createContext({UrlbarPrefs:{get:key=>prefs[key]},
     UrlbarShared:{LOCAL_SEARCH_MODES:[local],RESTRICT_TOKENS:{SEARCH:'?'},
-      SEARCH_MODE_RESTRICT:new Set(['^','?']),RESULT_TYPE:{RESTRICT:9},
-      ICON:{SEARCH_GLASS:'glass'},getResultSourceName:()=> 'history'}});
+      SEARCH_MODE_RESTRICT:new Set(['^','?']),SEARCH_MODE_ENTRY:new Set(['keywordoffer','searchbutton']),RESULT_TYPE:{RESTRICT:9},RESULT_SOURCE:{SEARCH:3},
+      ICON:{SEARCH_GLASS:'glass'},getResultSourceName:source=>source===1 ? 'history' : undefined}});
   vm.runInContext(readFileSync(new URL('UrlbarSearchModeModel.mjs',base),'utf8')
     .replace(/^import .*;\r?$/gm,'').replace('export class UrlbarSearchModeModel','this.Model = class UrlbarSearchModeModel'),context);
   return {model:new context.Model(services),services,state,calls,prefs,engine,local,observers};
@@ -272,4 +272,47 @@ test('original result-mode binding applies mutable state and text before awaitin
   assert.deepEqual(calls.map(c=>c[0]),['mode','value']);assert.equal(input.userTypedValue,'words');
   assert.equal(calls[0][1].isPreview,false);gate.resolve();await gate.promise;await Promise.resolve();
   assert.deepEqual(calls.map(c=>c[0]),['mode','value','query']);assert.equal(calls[2][1],false);
+});
+
+
+test('mode normalization preserves engine source precedence and rejects missing engines',()=>{
+  const Model=fixture().model.constructor,engine={isGeneralPurposeEngine:true};
+  const request={engineName:'Engine',entry:'searchbutton',isPreview:false,restrictType:'keyword'};
+  const mode=Model.normalizeMode(request,engine);
+  assert.equal(mode.source,3);assert.equal(mode.isPreview,false);assert.equal(mode.entry,'searchbutton');
+  assert.equal(mode.restrictType,'keyword');assert.equal(Object.isFrozen(mode),true);
+  assert.equal(Model.normalizeMode({...request,source:1},engine).source,1);
+  assert.equal(Model.normalizeMode(request,{isGeneralPurposeEngine:false}).source,undefined);
+  assert.equal(Model.normalizeMode(request,null),null);assert.equal(request.source,undefined);
+});
+
+test('local modes default to preview, sanitize entry, and reject invalid source even with restriction metadata',()=>{
+  const Model=fixture().model.constructor;
+  const mode=Model.normalizeMode({source:1,entry:'unrecognized',restrictType:'symbol'});
+  assert.equal(mode.isPreview,true);assert.equal(mode.entry,'other');assert.equal(mode.restrictType,'symbol');
+  assert.equal(Model.normalizeMode({source:999,restrictType:'symbol'}),null);
+  assert.equal(Model.normalizeMode({restrictType:'symbol'}),null);assert.equal(Model.normalizeMode(null),null);
+});
+
+test('original mode owner keeps confirmed state below previews and clears invalid modes',async()=>{
+  const Model=fixture().model.constructor;
+  const source=readFileSync(new URL('UrlbarInputBase.mjs',base),'utf8');
+  const start=source.indexOf('  async setSearchMode(searchMode, browser) {');
+  const end=source.indexOf('\n  /**',start),method=source.slice(start,end).replaceAll('#getSearchModesObject','_getModes').replaceAll('#isAddressbar','_isAddressbar');
+  const context=vm.createContext({UrlbarSearchModeModel:Model,UrlbarShared:{deepEqual:(a,b)=>JSON.stringify(a)===JSON.stringify(b)},
+    lazy:{UrlbarSearchTermsPersistence:{onSearchModeChanged(){}}},Event:class {}});
+  vm.runInContext('this.Binding=class {'+method+'}',context);
+  const input=new context.Binding(),browser={},modes={};
+  input.window={gBrowser:{selectedBrowser:browser}};input._isAddressbar=true;
+  input._getModes=()=>modes;input.getSearchMode=()=>modes.preview ?? modes.confirmed;
+  input.controller={engineStore:{initialized:true,getEngineByName:name=>name==='Engine'?{isGeneralPurposeEngine:true}:null}};
+  input.parentController={recordSearchMode(){}};input._updateSearchModeUI=()=>{};input.dispatchEvent=()=>{};
+  input.untrimmedValue='query';
+  await input.setSearchMode({engineName:'Engine',entry:'searchbutton',isPreview:false},browser);
+  const confirmed=modes.confirmed;assert.equal(confirmed.source,3);assert.equal(input.userTypedValue,'query');
+  await input.setSearchMode({source:1},browser);assert.equal(modes.confirmed,confirmed);assert.equal(modes.preview.source,1);
+  await input.setSearchMode({engineName:'missing',restrictType:'keyword'},browser);
+  assert.equal(modes.preview,undefined);assert.equal(modes.confirmed,undefined);
+  await input.setSearchMode({source:999,restrictType:'keyword'},browser);
+  assert.equal(modes.preview,undefined);assert.equal(modes.confirmed,undefined);
 });

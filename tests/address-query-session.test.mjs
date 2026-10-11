@@ -32,7 +32,9 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     .replace(/^import .*;$/gm,'').replaceAll('export function ','function '),sandbox);
   Object.assign(sandbox.UrlbarShared, {RESTRICT_TOKENS:sharedPolicy.UrlbarShared.RESTRICT_TOKENS,
     LOCAL_SEARCH_MODES:sharedPolicy.UrlbarShared.LOCAL_SEARCH_MODES,
-    SEARCH_MODE_RESTRICT:sharedPolicy.UrlbarShared.SEARCH_MODE_RESTRICT});
+    SEARCH_MODE_RESTRICT:sharedPolicy.UrlbarShared.SEARCH_MODE_RESTRICT,
+    SEARCH_MODE_ENTRY:sharedPolicy.UrlbarShared.SEARCH_MODE_ENTRY,
+    getResultSourceName:sharedPolicy.UrlbarShared.getResultSourceName.bind(sharedPolicy.UrlbarShared)});
   for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarSearchModeModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarResultPresentation','UrlbarEditSession']) {
     const source=readFileSync(new URL(`../upstream/firefox/browser/components/urlbar/content/${file}.mjs`,import.meta.url),'utf8');
     vm.runInContext(source.replace(/^import .*;$/gm,'').replaceAll('export class ','class ')+`\nthis.${file}=${file};`,sandbox);
@@ -388,6 +390,23 @@ test('independent result-mode transition descriptions use current observed text 
   f.parent.child.notify('onQueryResultRemoved',5,undefined,f.query.id);
   assert.throws(()=>f.editor.describeResultModeTransition(1,f.query.id,f.result,{checkValue:false}),/Stale/);
   f.editor.close();
+});
+
+test('independent mode application descriptions normalize against live engines without applying state',async()=>{
+  const f=await previewFixture();f.result.payload={engine:'Engine',query:'words'};
+  const describe=()=>f.editor.describeResultModeApplication(1,f.query.id,f.result,{checkValue:false,startQuery:false});
+  assert.equal(describe(),null);
+  const engine={id:'engine',name:'Engine',isGeneralPurposeEngine:true};
+  f.parent.child.updateEngineStore('changed',engine,-1);
+  const plan=describe();assert.equal(plan.searchMode.isPreview,true);
+  assert.equal(plan.searchMode.source,f.sandbox.UrlbarShared.RESULT_SOURCE.SEARCH);
+  assert.equal(plan.searchMode.entry,'keywordoffer');assert.equal(Object.isFrozen(plan.searchMode),true);
+  assert.equal(f.editor.snapshot.text,'typed words');assert.equal(f.parent.started.length,1);
+  f.parent.child.updateEngineStore('changed',{...engine,isGeneralPurposeEngine:false},0);
+  assert.equal(describe().searchMode.source,undefined);
+  f.parent.child.updateEngineStore('removed',engine,-1);assert.equal(describe(),null);
+  f.parent.child.notify('onQueryResultRemoved',5,undefined,f.query.id);
+  assert.throws(describe,/Stale/);f.editor.close();
 });
 
 test('removed frozen results lose identity and exposure even if an old descriptor or late batch retains them',async()=>{
