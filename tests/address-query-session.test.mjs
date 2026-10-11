@@ -2599,8 +2599,8 @@ test('bounce setup failures do not prevent terminal recording or cause unhandled
 });
 
 
-async function historyEngagementFixture(isPrivate=false) {
-  const f=await editorFixture({browserId:42,isPrivate}),q=await f.editor.edit({},edit(1,'typed'));
+async function historyEngagementFixture(isPrivate=false, fixtureOptions={}) {
+  const f=await editorFixture({...fixtureOptions,browserId:42,isPrivate}),q=await f.editor.edit({},edit(1,'typed'));
   const result={id:102,type:f.sandbox.UrlbarShared.RESULT_TYPE.URL,payload:{url:'https://history.test/'}};
   q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
   f.editor.startEngagement(1,q.id,{type:'input',timeStamp:1});
@@ -2860,9 +2860,10 @@ function parentLoadFixture() {
   const start=source.indexOf('  prepareCurrentLoad(loadData) {');
   const methods=source.slice(start,source.indexOf('  /**\n   * Focuses the browser',start));
   const calls=[],browser={browserId:42,lastLocationChange:1,browsingContext:{currentWindowGlobal:{}},focus:()=>calls.push('focus')};
-  let stateToken=null;
-  const owner={prepareRecovery:()=>({token:stateToken={}}),isCurrent:(_b,t)=>t===stateToken,
-    commit:(_b,t)=>{if(t!==stateToken)return false;stateToken=null;return true;},
+  let stateToken=null,lastCommit=null,latest=null;
+  const owner={prepareRecovery:()=>({token:stateToken=latest={}}),isCurrent:(_b,t)=>t===stateToken,
+    isCommitted:(_b,t)=>t===lastCommit && t===latest,
+    commit:(_b,t)=>{if(t!==stateToken)return false;lastCommit=t;stateToken=null;return true;},
     discard:(_b,t)=>{if(t!==stateToken)return false;stateToken=null;return true;}};
   const lazy={independentUrlbarBrowserState:owner,UrlbarUtils:{isPersistedSearchTermsEnabled:()=>true,
     loadRequestToUrl:request=>({url:request.urlLoad?.url,postData:null})}};
@@ -3190,13 +3191,17 @@ test('recovery tickets expire on document, value and newer-load changes',()=>{
   }
 });
 
-async function editorRecoveryFixture() {
-  const f=await historyEngagementFixture(),write=mockActivationLoad(f);
+async function editorRecoveryFixture(options={}) {
+  const f=await historyEngagementFixture(false,options),write=mockActivationLoad(f);
   const recovery={token:{},value:'https://loaded.test/',pageProxyValid:true,searchMode:null,userTypedValue:null,persistedSearchTerms:false};
   let pending=true;
   f.parent.commitCurrentLoad=()=>({attempted:true,reverted:true,browserId:42,recovery});
   f.parent.getCurrentLoadRecovery=token=>pending && token===recovery.token?recovery:null;
-  f.parent.acknowledgeCurrentLoadRecovery=token=>{if(!pending || token!==recovery.token)return false;pending=false;f.calls.push(['recover']);return true;};
+  f.parent.acknowledgeCurrentLoadRecovery=(token,applyEditor,editorCurrent,notify)=>{
+    if(!pending || token!==recovery.token)return false;pending=false;f.calls.push(['recover']);
+    if(applyEditor && !applyEditor(()=>true))return false;if(editorCurrent && !editorCurrent())return false;
+    notify?.(Object.freeze({browserId:42,searchMode:null,persistedSearchTerms:false,userTypedValue:null,persistenceChanged:false}));return true;
+  };
   const outcome=f.editor.commitAcknowledgedNavigation(write.token,f.event,f.options);
   return {...f,recovery,outcome};
 }
@@ -3570,4 +3575,93 @@ test('mode observer is optional and invalid callbacks fail before state applicat
   assert.throws(()=>p.commitIndependentModeState(42,null,{persistedSearchTerms:false},()=>true,{}),/Invalid independent/);
   assert.equal(calls,0);
   assert.equal(p.commitIndependentModeState(42,null,{persistedSearchTerms:false},()=>true).modeChangeNotified,false);assert.equal(calls,1);
+});
+
+
+test('recovery delivers one frozen notification correlated with the recovered editor',async()=>{
+  const events=[],f=await editorRecoveryFixture({onModeStateChanged:n=>events.push(n)});
+  const before=f.editor.snapshot,p=f.editor.getNavigationRecovery(f.recovery.token,{focused:false});
+  assert.equal(f.editor.acknowledgeNavigationRecovery(p.token,{...recoveryObservation(p),text:'wrong'}),false);
+  assert.equal(events.length,0);
+  assert.equal(f.editor.acknowledgeNavigationRecovery(p.token,recoveryObservation(p)),true);
+  assert.equal(events.length,1);const n=events[0];
+  assert.equal(n.kind,'mode-state-changed');assert.equal(n.reason,'navigation-recovery');
+  assert.equal(n.token,p.token);assert.equal(n.queryId,f.q.id);assert.equal(n.browserId,42);
+  assert.equal(n.edit,f.editor.snapshot);assert.notEqual(n.edit,before);assert.equal(n.edit.text,p.value);
+  assert.equal(n.searchMode,null);assert.equal(n.userTypedValue,null);assert.equal(n.persistedSearchTerms,false);
+  assert.equal(Object.isFrozen(n),true);assert.equal(Object.isFrozen(n.edit),true);
+  assert.equal(f.editor.acknowledgeNavigationRecovery(p.token,recoveryObservation(p)),false);
+  assert.equal(events.length,1);f.editor.close();
+});
+
+test('recovery notification errors and consumer reentry cannot repeat the committed recovery',async()=>{
+  for(const action of ['throw','cancel','edit']) {
+    let f,next,delivered;
+    f=await editorRecoveryFixture({onModeStateChanged:n=>{
+      delivered=n;
+      if(action==='throw')throw Error('consumer failure');
+      if(action==='cancel')f.editor.cancel();
+      if(action==='edit')next=f.editor.edit({},edit(2,'new consumer edit'));
+    }});
+    const p=f.editor.getNavigationRecovery(f.recovery.token,{focused:false});
+    assert.equal(f.editor.acknowledgeNavigationRecovery(p.token,recoveryObservation(p)),true,action);
+    if(next)await next;
+    assert.equal(delivered.edit.text,p.value);
+    if(action==='edit')assert.equal(f.editor.snapshot.text,'new consumer edit');
+    assert.equal(f.editor.acknowledgeNavigationRecovery(p.token,recoveryObservation(p)),false);f.editor.close();
+  }
+});
+
+test('recovery checks editor again after browser validation reenters the session',async()=>{
+  const events=[],f=await editorRecoveryFixture({onModeStateChanged:n=>events.push(n)});
+  const p=f.editor.getNavigationRecovery(f.recovery.token,{focused:false});let next;
+  f.parent.acknowledgeCurrentLoadRecovery=(_token,apply)=>apply(()=>{
+    next=f.editor.edit({},edit(2,'newer edit'));return true;
+  });
+  assert.equal(f.editor.acknowledgeNavigationRecovery(p.token,recoveryObservation(p)),false);
+  await next;assert.equal(f.editor.snapshot.text,'newer edit');assert.equal(events.length,0);f.editor.close();
+});
+
+function notifyingRecoveryFixture() {
+  const f=parentLoadFixture();f.browser.userTypedValue='failed';
+  f.p.recoveryDescription={value:'old.test',pageProxyValid:true,searchMode:null,userTypedValue:null};
+  f.p.browserWindow.openTrustedLinkIn=()=>{throw {result:1};};
+  f.recovery=f.p.commitCurrentLoad(f.p.prepareCurrentLoad(f.data)).recovery;return f;
+}
+
+test('parent recovery applies editor after browser commit and before notification',()=>{
+  const {p,browser,lazy,recovery}=notifyingRecoveryFixture(),calls=[];
+  const commit=lazy.independentUrlbarBrowserState.commit;
+  lazy.independentUrlbarBrowserState.commit=(...args)=>{calls.push('commit');return commit(...args);};
+  assert.equal(p.acknowledgeCurrentLoadRecovery(recovery.token,current=>{
+    assert.equal(browser.userTypedValue,null);assert.equal(current(),true);calls.push('editor');return true;
+  },()=>true,n=>{calls.push('notify');assert.equal(n.searchMode,null);assert.equal(Object.isFrozen(n),true);}),true);
+  assert.deepEqual(calls,['commit','editor','notify']);
+});
+
+test('parent recovery suppresses stale notifications after continuation reentry',()=>{
+  for(const change of ['load','document','typed','state','display','originalURI','preference','destroy','editor']) {
+    const {p,browser,lazy,recovery,data}=notifyingRecoveryFixture();let notified=false;
+    assert.equal(p.acknowledgeCurrentLoadRecovery(recovery.token,()=>{
+      if(change==='load')p.prepareCurrentLoad(data);
+      if(change==='document')browser.browsingContext.currentWindowGlobal={};
+      if(change==='typed')browser.userTypedValue='newer';
+      if(change==='state')lazy.independentUrlbarBrowserState.prepareRecovery(browser);
+      if(change==='display')p.recoveryDescription={...p.recoveryDescription,value:'newer'};
+      if(change==='originalURI')browser.originalURI={spec:'https://newer.test/'};
+      if(change==='preference')lazy.UrlbarUtils.isPersistedSearchTermsEnabled=()=>false;
+      if(change==='destroy')p.destroy();
+      return true;
+    },()=>change!=='editor',()=>{notified=true;}),false,change);
+    assert.equal(notified,false,change);
+  }
+});
+
+test('malformed recovery continuations fail before consuming browser state',()=>{
+  const {p,browser,recovery}=notifyingRecoveryFixture();
+  for(const args of [[1],[null,1],[null,()=>true,1]]) {
+    assert.throws(()=>p.acknowledgeCurrentLoadRecovery(recovery.token,...args),/Invalid recovery/);
+    assert.equal(browser.userTypedValue,'failed');
+  }
+  assert.equal(p.acknowledgeCurrentLoadRecovery(recovery.token),true);
 });

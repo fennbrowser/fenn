@@ -125,6 +125,7 @@ test('owned recovery prepares mode and persistence clearing without exposing una
   p=owner.preparePersistence(browser,facts);assert.equal(p.effects.userTypedValue,'chosen words');owner.commit(browser,p.token);
   assert.equal(owner.snapshot(browser).persistedSearchTerms,true);
   p=owner.prepareRecovery(browser,facts);
+  assert.equal(p.effects.persistenceChanged,true);
   assert.equal(owner.snapshot(browser).persistedSearchTerms,true);assert.equal(owner.snapshot(browser).confirmed.engineName,'engine');
   assert.equal(p.effects.shouldPersist,false);assert.equal(p.effects.recordView,false);
   owner.commit(browser,p.token);assert.equal(owner.snapshot(browser).persistedSearchTerms,false);assert.equal(owner.snapshot(browser).confirmed,null);
