@@ -2298,3 +2298,62 @@ test('Firefox recorder shares event building for explicit snapshots and retained
   recorder.start({type:'input',timeStamp:3},{},'typed');recorder.record({type:'blur',timeStamp:4},{searchString:'typed',searchSource:'urlbar'});
   assert.equal(reads,2);assert.equal(builds[1].data,fallback);assert.equal(builds[1].smartbar,smart);assert.deepEqual(errors,[]);
 });
+
+
+test('shared engagement classification preserves Firefox result and provider precedence',()=>{
+  const f=fixture(),classify=f.sandbox.UrlbarResultPresentation.telemetryTypeFromResult;
+  const T=f.sandbox.UrlbarShared.RESULT_TYPE,S=f.sandbox.UrlbarShared.RESULT_SOURCE;
+  const cases=[
+    [null,'unknown'],[{type:-1},'unknown'],
+    ...[['TAB_SWITCH','switchtab'],['KEYWORD','keyword'],['OMNIBOX','extension'],['REMOTE_TAB','remotetab'],['TIP','tip'],['AI_CHAT','ai_chat']].map(([type,name])=>[{type:T[type]},name]),
+    [{type:T.SEARCH,payload:{}},'searchengine'],
+    [{type:T.SEARCH,providerName:'UrlbarProviderRecentSearches',source:S.HISTORY},'recent_search'],
+    [{type:T.SEARCH,source:S.HISTORY},'formhistory'],
+    [{type:T.SEARCH,providerName:'UrlbarProviderTabToSearch'},'tabtosearch'],
+    [{type:T.SEARCH,providerName:'UrlbarProviderAiChat'},'ai_search_fallback'],
+    [{type:T.SEARCH,payload:{suggestion:'q'}},'searchsuggestion'],
+    [{type:T.SEARCH,payload:{suggestion:'q',trending:true},isRichSuggestion:true},'trending_rich'],
+    [{type:T.URL,autofill:{type:'adaptive_origin'}},'autofill_adaptive_origin'],
+    [{type:T.URL,source:S.OTHER_LOCAL,heuristic:true},'visiturl'],
+    [{type:T.URL,providerName:'UrlbarProviderQuickSuggest'},'quicksuggest'],
+    [{type:T.URL,providerName:'UrlbarProviderClipboard'},'clipboard'],
+    [{type:T.URL,source:S.BOOKMARKS},'bookmark'],
+    [{type:T.URL,source:S.BOOKMARKS,providerName:'UrlbarProviderInputHistory'},'bookmarkadaptive'],
+    [{type:T.URL,source:S.HISTORY,providerName:'UrlbarProviderInputHistory'},'historyadaptive'],
+    [{type:T.URL,source:S.HISTORY},'history'],
+    [{type:T.DYNAMIC,providerName:'UrlbarProviderTabToSearch'},'tabtosearch'],
+    [{type:T.DYNAMIC},'dynamic'],
+    ...[['BOOKMARK','bookmarks'],['OPENPAGE','tabs'],['HISTORY','history'],['ACTION','actions']].map(([token,name])=>[
+      {type:T.RESTRICT,payload:{keyword:f.sandbox.UrlbarShared.RESTRICT_TOKENS[token]}},'restrict_keyword_'+name]),
+    [{type:T.RESTRICT,payload:{keyword:'unknown'}},'unknown'],
+  ];
+  for(const [result,expected] of cases)assert.equal(classify(result),expected,JSON.stringify(result));
+  f.session.close();
+});
+
+test('engagement descriptions capture validated exposure and owned editor facts without recording',async()=>{
+  const f=await editorFixture(),q=await f.editor.edit({},edit(1,'typed query'));
+  const result={id:71,type:f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH,payload:{engine:'engine',query:'picked query'}};
+  q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+  const before=f.editor.snapshot,count=f.parent.engagements.length;
+  const description=f.editor.describeResultEngagement(1,q.id,result,{searchString:'spoof',searchMode:{engineName:'spoof'}});
+  assert.equal(description.details.searchString,'typed query');assert.equal(description.details.searchMode,null);
+  assert.equal(description.details.selType,'searchengine');assert.equal(description.details.windowMode,'private');
+  assert.equal(description.details.result,result);assert.equal(description.state.engagementData.visibleResults[0],result);
+  assert.equal(Object.isFrozen(description.state.engagementData.visibleResults),true);
+  assert.equal(f.editor.snapshot,before);assert.equal(f.parent.engagements.length,count);
+  f.editor.publishPresentation(1,q.id,[],false);
+  assert.throws(()=>f.editor.describeResultEngagement(1,q.id,result),/Stale/);
+  assert.equal(description.state.engagementData.visibleResults.length,1);f.editor.close();
+});
+
+test('engagement descriptions reject copied results, stale revisions and invalid source facts',async()=>{
+  const f=await editorFixture(),q=await f.editor.edit({},edit(1,'typed'));
+  const result={id:72,type:f.sandbox.UrlbarShared.RESULT_TYPE.URL,source:f.sandbox.UrlbarShared.RESULT_SOURCE.HISTORY,payload:{url:'https://history.test/'}};
+  q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+  assert.throws(()=>f.editor.describeResultEngagement(1,q.id,{...result}),/Stale/);
+  assert.throws(()=>f.editor.describeResultEngagement(2,q.id,result),/Stale/);
+  assert.throws(()=>f.editor.describeResultEngagement(1,q.id,result,{isHandoff:1}),/Invalid/);
+  assert.equal(f.editor.describeResultEngagement(1,q.id,result,{isHandoff:true}).details.searchSource,'urlbar_handoff');
+  f.editor.cancel();assert.throws(()=>f.editor.describeResultEngagement(1,q.id,result),/Stale/);f.editor.close();
+});
