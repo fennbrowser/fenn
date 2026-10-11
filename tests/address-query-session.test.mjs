@@ -2502,3 +2502,57 @@ test('navigation consumption rejects synchronous reentry and supports URL prepar
   assert.equal(reentry,null);assert.equal(packet.searchRecording,null);
   assert.equal(packet.navigation.plan.loadRequest.urlLoad.url,'https://example.test/');f.editor.close();
 });
+
+
+test('terminal result engagement records once with owned text and captured exposure',async()=>{
+  const f=await navigationWriteFixture();
+  f.editor.startEngagement(1,f.q.id,{type:'input',timeStamp:1});
+  const event={type:'keydown',key:'Enter',timeStamp:2};
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,event,{searchString:'spoof'}),true);
+  const records=f.parent.engagements.filter(e=>e.kind==='record');assert.equal(records.length,1);
+  assert.equal(records[0].args[1].searchString,'typed');assert.equal(records[0].args[1].selType,'searchengine');
+  assert.equal(records[0].args[2].engagementData.visibleResults[0],f.result);
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,event),false);
+  assert.throws(()=>f.editor.publishPresentation(1,f.q.id,[f.result],true),/Invalid/);f.editor.close();
+});
+
+test('terminal engagement rejects invalid events, hidden identities and search-mode actions without consuming the clock',async()=>{
+  const f=await navigationWriteFixture();f.editor.startEngagement(1,f.q.id,{type:'input',timeStamp:1});
+  const event={type:'click',button:0,timeStamp:2};
+  for(const bad of [{type:'blur',timeStamp:2},{type:'keydown',key:'Escape',timeStamp:2},
+    {type:'click',button:2,timeStamp:2},{...event,timeStamp:NaN}]) {
+    assert.throws(()=>f.editor.recordResultEngagement(1,f.q.id,f.result,bad),/Invalid/);
+  }
+  assert.throws(()=>f.editor.recordResultEngagement(1,f.q.id,{...f.result},event),/Stale/);
+  f.result.payload.providesSearchMode=true;
+  assert.throws(()=>f.editor.recordResultEngagement(1,f.q.id,f.result,event),/Unsupported/);
+  delete f.result.payload.providesSearchMode;
+  f.editor.publishPresentation(1,f.q.id,[],false);
+  assert.throws(()=>f.editor.recordResultEngagement(1,f.q.id,f.result,event),/Stale/);
+  f.editor.publishPresentation(1,f.q.id,[f.result],true);
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,event),true);f.editor.close();
+});
+
+test('terminal engagement blocks reentry and preserves a replacement query begun by providers',async()=>{
+  const f=fixture(),q=await f.session.query({}, {searchString:'old'});
+  const result={id:90,type:f.sandbox.UrlbarShared.RESULT_TYPE.URL,payload:{url:'https://example.test/'}};
+  q.results=[result];f.session.publishPresentation(q.id,[result],true);
+  f.session.startEngagement(q.id,{type:'input',timeStamp:1});
+  const event={type:'keydown',key:'Enter',timeStamp:2};let next;
+  f.parent.engagementEvent.record=(e,details)=>{
+    details.isSessionOngoing=false;
+    assert.equal(f.session.recordResultEngagement(q.id,result,event,{searchString:'old'}),false);
+    next=f.session.query({}, {searchString:'new'});
+  };
+  assert.equal(f.session.recordResultEngagement(q.id,result,event,{searchString:'old'}),true);
+  const replacement=await next;assert.equal(f.session.ownsQuery(replacement.id),true);f.session.close();
+});
+
+test('terminal engagement revokes the old query even if recording throws',async()=>{
+  const f=await navigationWriteFixture();f.editor.startEngagement(1,f.q.id,{type:'input',timeStamp:1});
+  f.parent.engagementEvent.record=()=>{throw Error('recorder failure');};
+  const event={type:'keydown',key:'Enter',timeStamp:2};
+  assert.throws(()=>f.editor.recordResultEngagement(1,f.q.id,f.result,event),/recorder failure/);
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,event),false);
+  assert.throws(()=>f.editor.publishPresentation(1,f.q.id,[f.result],true),/Invalid/);f.editor.close();
+});

@@ -7961,10 +7961,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..07a4574950
+index 0000000000..759a972e88
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1251 @@
+@@ -0,0 +1,1260 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8857,6 +8857,15 @@ index 0000000000..07a4574950
 +      searchString: this.#typedText, searchMode: this.#searchMode });
 +  }
 +
++  recordResultEngagement(revision, queryId, result, event, options = {}) {
++    this.#check();
++    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing || this.#hiddenResults) {
++      throw new Error("Stale editor engagement");
++    }
++    return this.#queries.recordResultEngagement(queryId, result, event, { ...options,
++      searchString: this.#typedText, searchMode: this.#searchMode });
++  }
++
 +  startEngagement(revision, queryId, event, options = {}) {
 +    this.#check();
 +    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing) throw new Error("Stale editor engagement");
@@ -9218,10 +9227,10 @@ index 0000000000..07a4574950
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..4c3397b4bd
+index 0000000000..88a4ea0061
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,542 @@
+@@ -0,0 +1,566 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9514,6 +9523,30 @@ index 0000000000..4c3397b4bd
 +    const facts = Object.freeze({ type: event.type, timeStamp: event.timeStamp, inputType: event.inputType });
 +    this.#controller.engagementEvent.start(facts, this.#query, this.#query.searchString, interactionType);
 +    this.#engagementActive = true;
++    return true;
++  }
++
++  /** Record an actual primary-result engagement; activation/load execution is separate. */
++  recordResultEngagement(queryId, result, event, options) {
++    this.#check();
++    if (!this.#engagementActive || this.#endingEngagement) return false;
++    if (!((event?.type === "keydown" && event.key === "Enter") ||
++        (["click", "auxclick"].includes(event?.type) && [0, 1].includes(event.button))) ||
++        !Number.isFinite(event.timeStamp) || event.timeStamp < 0) throw new TypeError("Invalid result engagement event");
++    if (![UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.SEARCH, UrlbarShared.RESULT_TYPE.KEYWORD].includes(result?.type) ||
++        result.payload?.providesSearchMode) throw new Error("Unsupported terminal engagement");
++    const description = this.describeResultEngagement(queryId, result, options);
++    const query = this.#query;
++    this.#engagementActive = false;
++    this.#endingEngagement = true;
++    try {
++      // Firefox annotates details.isSessionOngoing; keep the description immutable.
++      this.#controller.engagementEvent.record(event, { ...description.details }, description.state);
++    } finally {
++      this.#endingEngagement = false;
++      // Provider callbacks can start another query; never cancel its ownership.
++      if (this.#query === query) this.cancel();
++    }
 +    return true;
 +  }
 +
