@@ -1360,3 +1360,71 @@ test('mode-exit row writes reject changed semantics, hidden results, and caret r
     assert.equal(f.calls.some(([kind,id])=>kind==='selected' && id===2),false);f.editor.close();
   }
 });
+
+
+test('confirmed mode requery requires acknowledgment and runs once with exact text and no autofill',async()=>{
+  const f=await modeWriteFixture(),p=f.proposal,state={searchMode:{...p.searchMode}};
+  await assert.rejects(f.editor.requeryAfterModeApplication(p.token,state),/Stale/);
+  assert.equal(f.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),true);
+  const snapshot=f.editor.snapshot;
+  await assert.rejects(f.editor.requeryAfterModeApplication(p.token,{searchMode:null}),/Stale/);
+  const q=await f.editor.requeryAfterModeApplication(p.token,state);
+  assert.equal(q.searchString,'words  ');assert.equal(q.allowAutofill,false);
+  assert.equal(q.searchMode.engineName,'Engine');assert.equal(f.editor.snapshot,snapshot);
+  state.searchMode.engineName='Mutated host';assert.equal(q.searchMode.engineName,'Engine');
+  assert.equal(f.parent.started.length,2);assert.notEqual(q.id,f.query.id);
+  await assert.rejects(f.editor.requeryAfterModeApplication(p.token,state),/Stale/);
+  assert.throws(()=>f.editor.describeResultInput(1,f.query.id,f.result),/Stale/);
+  q.results=[{id:9,type:sharedPolicy.UrlbarShared.RESULT_TYPE.SEARCH,heuristic:true,payload:{query:'words'}}];
+  q.trimmedSearchString='words';f.parent.child.notify('onQueryResults',q);
+  assert.equal(f.updates.at(-1).completion,null);assert.equal(f.updates.at(-1).defaultSelection.kind,'select-first');
+  f.editor.close();
+});
+
+test('mode requery revalidates engine/result facts and rejects preview-only transitions',async()=>{
+  for(const mutate of [f=>{f.result.payload.query='changed';},
+    f=>f.parent.child.updateEngineStore('removed',f.engine,-1),
+    f=>f.parent.child.updateEngineStore('changed',{...f.engine,isGeneralPurposeEngine:false},0)]) {
+    const f=await modeWriteFixture(),p=f.proposal;
+    f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));mutate(f);
+    await assert.rejects(f.editor.requeryAfterModeApplication(p.token,{searchMode:p.searchMode}),/Changed/);
+    assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+  const f=await modeWriteFixture({startQuery:false}),p=f.proposal;
+  f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
+  await assert.rejects(f.editor.requeryAfterModeApplication(p.token,{searchMode:p.searchMode}),/Stale/);f.editor.close();
+});
+
+test('acknowledged mode requery is revoked by later editor work and provider reentrancy',async()=>{
+  for(const revoke of [f=>f.editor.select(1,0,0),f=>f.editor.cancel(),
+    f=>f.editor.edit({},edit(2,'new')),f=>f.editor.hideResults(1,f.query.id),
+    f=>f.editor.beginResultSelection(1,f.query.id,f.result),
+    f=>f.editor.publishPresentation(1,f.query.id,[],false),
+    f=>f.editor.publishPresentation(1,f.query.id,[],true)]) {
+    const f=await modeWriteFixture(),p=f.proposal;f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
+    await revoke(f);await assert.rejects(f.editor.requeryAfterModeApplication(p.token,{searchMode:p.searchMode}),/Stale/);
+    f.editor.close();
+  }
+  for(const action of ['cancel','throw']) {
+    const f=await modeWriteFixture(),p=f.proposal;
+    f.parent.onSelection=()=>{if(action==='throw')throw Error('provider failed');f.editor.cancel();};
+    if(action==='throw')assert.throws(()=>f.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),/provider failed/);
+    else f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
+    await assert.rejects(f.editor.requeryAfterModeApplication(p.token,{searchMode:p.searchMode}),/Stale/);f.editor.close();
+  }
+});
+
+
+test('failed mode requery consumes its dispatch authority and rejects stale completion',async()=>{
+  const f=await modeWriteFixture(),p=f.proposal;
+  f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
+  f.parent.startQuery=()=>Promise.reject(Error('dispatch failed'));
+  await assert.rejects(f.editor.requeryAfterModeApplication(p.token,{searchMode:p.searchMode}),/dispatch failed/);
+  await assert.rejects(f.editor.requeryAfterModeApplication(p.token,{searchMode:p.searchMode}),/Stale/);
+  f.editor.close();
+  const g=await modeWriteFixture(),proposal=g.proposal,gate=Promise.withResolvers();
+  g.editor.acknowledgeResultModeApplication(proposal.token,observedMode(proposal));
+  g.parent.startQuery=()=>gate.promise;
+  const pending=g.editor.requeryAfterModeApplication(proposal.token,{searchMode:proposal.searchMode});
+  g.editor.cancel();gate.resolve();await assert.rejects(pending,/cancelled/);g.editor.close();
+});
