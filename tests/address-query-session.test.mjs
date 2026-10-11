@@ -10,7 +10,7 @@ vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/url
 
 function fixture({hold=false,uninitializedResults=false,onPresentationRequest=null}={}) {
   const parents=[];
-  const prefs={"experimental.hideHeuristic":false};
+  const prefs={"experimental.hideHeuristic":false,openintab:false,ctrlCanonizesURLs:false,"browser.search.openintab":false};
   class Parent {
     constructor(identity){this.identity=identity;this.started=[];this.engagements=[];
       this.engagementEvent={start:(...args)=>this.engagements.push({kind:'start',args}),
@@ -23,16 +23,17 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
   }
   let id=0;
   const sandbox=vm.createContext({console,URL,UrlbarQueryLifecycle,UrlbarParentControllerProxy:class {},
+    KeyboardEvent:class {constructor(facts={}){Object.assign(this,{keyCode:13},facts);}getModifierState(key){return key==='AltGraph' && !!this.altGraph;}},KeyEvent:{DOM_VK_RETURN:13},
     UrlbarShared:{stripPrefixAndTrim:sharedPolicy.UrlbarShared.stripPrefixAndTrim,getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_TYPE:sharedPolicy.UrlbarShared.RESULT_TYPE,RESULT_SOURCE:sharedPolicy.UrlbarShared.RESULT_SOURCE,canAutofillURL:sharedPolicy.UrlbarShared.canAutofillURL.bind(sharedPolicy.UrlbarShared),NOTIFICATIONS:{
       RESULTS_CLOSE_REQUESTED:'onResultsCloseRequested',QUERY_RESULT_REMOVED:'onQueryResultRemoved',
       QUERY_ARMED:'onQueryArmed',QUERY_STARTED:'onQueryStarted',QUERY_CANCELLED:'onQueryCancelled',
       QUERY_FIRST_RESULT:'onFirstResult',QUERY_RESULTS:'onQueryResults',QUERY_FINISHED:'onQueryFinished'}},
-    UrlbarPrefs:{get:key=>prefs[key] ?? 10},UrlbarContentUtils:{usesMessagePath:()=>false,getDisplaySpec:spec=>spec,getFixupPrimitives:()=>({})},
+    UrlbarPrefs:{get:key=>prefs[key] ?? 10},UrlbarContentUtils:{usesMessagePath:()=>false,getDisplaySpec:spec=>spec,getFixupPrimitives:()=>({}),getPlatform:()=> 'win',whereToOpenLink:e=>e?.where || 'current',willLoadInBackground:(_where,params)=>!params.forceForeground},
     UrlbarQueryContext:class {constructor(options){Object.assign(this,options,{id:++id,results:uninitializedResults?undefined:[]});}},
     ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;}}});
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarUrlValue.mjs',import.meta.url),'utf8')
     .replace(/^import .*;$/gm,'').replaceAll('export function ','function '),sandbox);
-  Object.assign(sandbox.UrlbarShared, {REGEXP_SPACES:sharedPolicy.UrlbarShared.REGEXP_SPACES,RESTRICT_TOKENS:sharedPolicy.UrlbarShared.RESTRICT_TOKENS,
+  Object.assign(sandbox.UrlbarShared, {isInstance:(event,type)=>event instanceof type,REGEXP_SPACES:sharedPolicy.UrlbarShared.REGEXP_SPACES,RESTRICT_TOKENS:sharedPolicy.UrlbarShared.RESTRICT_TOKENS,
     LOCAL_SEARCH_MODES:sharedPolicy.UrlbarShared.LOCAL_SEARCH_MODES,
     SEARCH_MODE_RESTRICT:sharedPolicy.UrlbarShared.SEARCH_MODE_RESTRICT,
     SEARCH_MODE_ENTRY:sharedPolicy.UrlbarShared.SEARCH_MODE_ENTRY,
@@ -1951,6 +1952,68 @@ test('engagement rejects invalid events, stale editor revisions, composition and
   await f.editor.edit({},edit(2,'composing',{composing:true}));
   assert.throws(()=>f.editor.startEngagement(2,q.id,{type:'input',timeStamp:3}),/Stale/);
   f.loseScope();assert.throws(()=>f.editor.discardEngagement(),/scope changed/);
+});
+
+test('shared result opening preserves explicit destinations, privacy, containers and background policy',()=>{
+  const f=fixture(),model=f.sandbox.UrlbarQueryModel;
+  const result={payload:{engine:'engine',isSponsored:true,url:'https://sponsored.test/'}};
+  for(const [action,target,privateValue,container] of [[{openIn:'tab'},'tab',false],
+    [{openIn:'window'},'window',false],[{openIn:'private-window'},'window',true],
+    [{openIn:'window',userContextId:'7'},'tab',false,7]]) {
+    let backgroundCalls=0;
+    const policy=model.resultOpenPolicy({result,sapName:'urlbar',isPrivate:false,resultAction:action},
+      ()=>assert.fail('explicit destination read event policy'),(where,params)=>{backgroundCalls++;
+        assert.equal(where,target);assert.equal(params.forceForeground,false);return true;});
+    assert.equal(backgroundCalls,1);assert.equal(policy.where,target);assert.equal(policy.keepViewOpen,true);
+    assert.equal(policy.openParams.avoidBrowserFocus,true);assert.equal(policy.openParams.private,privateValue);
+    assert.equal(policy.openParams.userContextId,container);assert.equal(policy.openParams.allowInheritPrincipal,false);
+    assert.equal(policy.openParams.globalHistoryOptions.triggeringSponsoredURL,result.payload.url);
+    if(container)assert.equal(policy.openParams.eventDetail.containerSource,'urlbar_result_context_menu');
+  }
+  for(const [action,target] of [[null,'current'],[{url:'https://help.test/'},'tab']]) {
+    const policy=model.resultOpenPolicy({result,sapName:'urlbar',isPrivate:true,resultAction:action},()=> 'current',
+      (_where,params)=>{assert.equal(params.forceForeground,true);return false;});
+    assert.equal(policy.where,target);assert.equal(policy.openParams.private,true);assert.equal(policy.keepViewOpen,false);
+  }
+  f.session.close();
+});
+
+test('independent opening shares keyboard, canonization, preference and empty-tab rules',async()=>{
+  const f=fixture(),q=await f.session.query({}, {searchString:'open'}),result={id:1,payload:{}};
+  q.results=[result];f.session.publishPresentation(q.id,[result],true);
+  const key=facts=>new f.sandbox.KeyboardEvent(facts);
+  const describe=(event,empty=false)=>f.session.describeResultOpenPolicy(q.id,result,event,{selectedTabIsEmpty:empty});
+  assert.equal(describe(key({altKey:true})).where,'tab');
+  assert.equal(describe(key({altGraph:true,shiftKey:true})).where,'tabshifted');
+  assert.equal(describe(key({altKey:true}),true).where,'current');
+  assert.equal(describe({where:'tab'},true).where,'tab','mouse does not reuse empty tab');
+  f.prefs.ctrlCanonizesURLs=true;assert.equal(describe(key({ctrlKey:true,where:'tab'})).where,'current');
+  assert.equal(describe(key({ctrlKey:true,_disableCanonization:true,where:'tab'})).where,'tab');
+  f.prefs.openintab=true;
+  assert.equal(describe(key({})).where,'tab');assert.equal(describe({where:'tab'}).where,'current');
+  assert.equal(describe({where:'current'},true).where,'current');
+  const policy=describe(key({}));assert.equal(policy.openParams.private,true);
+  assert.equal(Object.isFrozen(policy),true);assert.equal(Object.isFrozen(policy.openParams.globalHistoryOptions),true);
+  f.session.close();
+});
+
+test('opening descriptions reject unexposed, stale and reentrant results without granting navigation',async()=>{
+  const f=fixture(),q=await f.session.query({}, {searchString:'open'}),result={id:1,payload:{}};q.results=[result];
+  assert.throws(()=>f.session.describeResultOpenPolicy(q.id,result,{},{}),/empty-tab/);
+  const describe=()=>f.session.describeResultOpenPolicy(q.id,result,{}, {selectedTabIsEmpty:false});
+  assert.throws(describe,/Invalid/);f.session.publishPresentation(q.id,[result],true);assert.ok(describe());
+  f.sandbox.UrlbarContentUtils.willLoadInBackground=()=>{f.session.cancel();return false;};
+  assert.throws(describe,/Stale/);f.session.close();
+});
+
+test('editor opening descriptions require the current non-composing revision',async()=>{
+  const f=await editorFixture(),q=await f.editor.edit({},edit(1,'open')),result={id:1,payload:{}};
+  q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+  const before=f.editor.snapshot;assert.ok(f.editor.describeResultOpenPolicy(1,q.id,result,{}, {selectedTabIsEmpty:false}));
+  assert.equal(f.editor.snapshot,before);
+  assert.throws(()=>f.editor.describeResultOpenPolicy(0,q.id,result,{}, {selectedTabIsEmpty:false}),/Stale/);
+  await f.editor.edit({},edit(2,'ime',{composing:true}));
+  assert.throws(()=>f.editor.describeResultOpenPolicy(2,q.id,result,{}, {selectedTabIsEmpty:false}),/Stale/);f.editor.close();
 });
 
 test('search attribution preserves handoff, switcher, mode and persisted precedence across SAPs',()=>{
