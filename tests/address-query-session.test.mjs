@@ -33,7 +33,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;}}});
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarUrlValue.mjs',import.meta.url),'utf8')
     .replace(/^import .*;$/gm,'').replaceAll('export function ','function '),sandbox);
-  Object.assign(sandbox.UrlbarShared, {isInstance:(event,type)=>event instanceof type,REGEXP_SPACES:sharedPolicy.UrlbarShared.REGEXP_SPACES,RESTRICT_TOKENS:sharedPolicy.UrlbarShared.RESTRICT_TOKENS,
+  Object.assign(sandbox.UrlbarShared, {getLoadRequestFromResult:sharedPolicy.UrlbarShared.getLoadRequestFromResult.bind(sharedPolicy.UrlbarShared),looksLikeSingleWordHost:sharedPolicy.UrlbarShared.looksLikeSingleWordHost.bind(sharedPolicy.UrlbarShared),isInstance:(event,type)=>event instanceof type,REGEXP_SPACES:sharedPolicy.UrlbarShared.REGEXP_SPACES,RESTRICT_TOKENS:sharedPolicy.UrlbarShared.RESTRICT_TOKENS,
     LOCAL_SEARCH_MODES:sharedPolicy.UrlbarShared.LOCAL_SEARCH_MODES,
     SEARCH_MODE_RESTRICT:sharedPolicy.UrlbarShared.SEARCH_MODE_RESTRICT,
     SEARCH_MODE_ENTRY:sharedPolicy.UrlbarShared.SEARCH_MODE_ENTRY,
@@ -1952,6 +1952,57 @@ test('engagement rejects invalid events, stale editor revisions, composition and
   await f.editor.edit({},edit(2,'composing',{composing:true}));
   assert.throws(()=>f.editor.startEngagement(2,q.id,{type:'input',timeStamp:3}),/Stale/);
   f.loseScope();assert.throws(()=>f.editor.discardEngagement(),/scope changed/);
+});
+
+test('shared load policy preserves heuristic DNS and scheme handling without mutating requests',()=>{
+  const f=fixture(),model=f.sandbox.UrlbarQueryModel,T=f.sandbox.UrlbarShared.RESULT_TYPE;
+  const result={type:T.URL,heuristic:true},request={urlLoad:{url:'http://intranet/',postData:null}};
+  f.prefs['browser.fixup.dns_first_for_single_words']=true;
+  const policy=model.resultLoadPolicy(result,request,'intranet');
+  assert.equal(policy.loadRequest.urlLoad.url,'intranet');assert.equal(request.urlLoad.url,'http://intranet/');
+  assert.equal(policy.openParams.schemelessInput,2);
+  for(const [value,scheme] of [['https://example.test/',1],['http://intranet',1],['file:///test',1],['example.test/',2]]) {
+    const p=model.resultLoadPolicy(result,request,value);assert.equal(p.loadRequest,request);assert.equal(p.openParams.schemelessInput,scheme);
+  }
+  f.prefs['browser.fixup.dns_first_for_single_words']=false;
+  assert.equal(model.resultLoadPolicy(result,request,'intranet').loadRequest,request);
+  assert.equal(model.resultLoadPolicy({type:T.URL},request,'intranet').openParams.schemelessInput,undefined);
+  assert.equal(model.resultLoadPolicy({type:T.KEYWORD},request,'intranet').openParams.allowInheritPrincipal,true);
+  assert.equal(model.resultLoadPolicy({type:T.SEARCH},request,'intranet').openParams.allowInheritPrincipal,undefined);f.session.close();
+});
+
+test('independent primary load descriptions retain search terms, POST data and keyword principals',async()=>{
+  const f=fixture(),q=await f.session.query({}, {searchString:'load'}),T=f.sandbox.UrlbarShared.RESULT_TYPE;
+  for(const result of [{id:1,type:T.URL,payload:{url:'https://example.test/'}},
+    {id:2,type:T.KEYWORD,payload:{url:'https://keyword.test/',postData:'q=terms'}},
+    {id:3,type:T.SEARCH,payload:{engine:'engine',suggestion:'suggested',query:'original'}}]) {
+    q.results=[result];f.session.publishPresentation(q.id,[result],true);
+    const p=f.session.describeResultLoad(q.id,result,{}, {selectedTabIsEmpty:false,originalUntrimmedValue:'original'});
+    assert.equal(p.openParams.allowInheritPrincipal,result.type===T.KEYWORD);
+    assert.equal(Object.isFrozen(p.loadRequest),true);
+    if(result.type===T.SEARCH){assert.equal(p.loadRequest.engineSearch.query,'suggested');assert.equal(p.loadRequest.engineSearch.engineName,'engine');}
+    else {assert.equal(p.loadRequest.urlLoad.url,result.payload.url);assert.equal(p.loadRequest.urlLoad.postData,result.payload.postData??null);}
+    assert.equal(f.session.ownsResult(q.id,result),true);
+  }
+  f.session.close();
+});
+
+test('load descriptions reject unsupported, canonized, hidden, stale and composing requests',async()=>{
+  const f=await editorFixture(),q=await f.editor.edit({},edit(1,'load')),T=f.sandbox.UrlbarShared.RESULT_TYPE;
+  const options={selectedTabIsEmpty:false,originalUntrimmedValue:'load'};
+  for(const result of [{id:1,type:T.TAB_SWITCH,payload:{url:'https://tab.test/'}},
+    {id:2,type:T.SEARCH,payload:{engine:'e',query:'q',providesSearchMode:true}},
+    {id:3,type:T.URL,payload:{}}]) {
+    q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+    assert.equal(f.editor.describeResultLoad(1,q.id,result,{},options),null);
+  }
+  const result={id:4,type:T.URL,payload:{url:'https://example.test/'}};q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+  f.prefs.ctrlCanonizesURLs=true;
+  assert.equal(f.editor.describeResultLoad(1,q.id,result,new f.sandbox.KeyboardEvent({ctrlKey:true}),options),null);
+  assert.throws(()=>f.editor.describeResultLoad(1,q.id,result,{}, {selectedTabIsEmpty:false}),/untrimmed/);
+  assert.throws(()=>f.editor.describeResultLoad(0,q.id,result,{},options),/Stale/);
+  f.editor.hideResults(1,q.id);assert.throws(()=>f.editor.describeResultLoad(1,q.id,result,{},options),/Invalid/);
+  await f.editor.edit({},edit(2,'ime',{composing:true}));assert.throws(()=>f.editor.describeResultLoad(2,q.id,result,{},options),/Stale/);f.editor.close();
 });
 
 test('shared result opening preserves explicit destinations, privacy, containers and background policy',()=>{
