@@ -6978,10 +6978,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..6d597e7f3c
+index 0000000000..c40ae9f87c
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,746 @@
+@@ -0,0 +1,798 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7002,7 +7002,8 @@ index 0000000000..6d597e7f3c
 + * Active composition cancels queries; the committed edit starts a fresh one.
 + * Result-mode writes have an exact host acknowledgment, but mode persistence,
 + * browser effects, undo and activation remain host work. Mode requery is an
-+ * explicit one-use step after acknowledgment, never an implicit text-edit query. In particular, this is not a navigation controller.
++ * explicit one-use step after acknowledgment, never an implicit text-edit query.
++ * In particular, this is not a navigation controller.
 + */
 +export class UrlbarEditSession {
 +  #queries;
@@ -7021,7 +7022,8 @@ index 0000000000..6d597e7f3c
 +  #resultPreview = null;
 +  #modeApplication = null;
 +  #modeRequery = null;
-+  #searchModePreview = false;
++  #modeExitRequest = null;
++  #searchMode = null;
 +  #hiddenResults = null;
 +  #onPresentationRequest;
 +
@@ -7070,7 +7072,7 @@ index 0000000000..6d597e7f3c
 +    this.#validateSelection(text, selectionStart, selectionEnd, selectionDirection);
 +    this.#hiddenResults = null;
 +    this.#typedText = text;
-+    this.#searchModePreview = !!state.searchMode?.isPreview;
++    this.#searchMode = state.searchMode ? Object.freeze({ ...state.searchMode }) : null;
 +    this.#edit = Object.freeze({ revision, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: 0, composing });
 +    this.#completion = null;
@@ -7079,6 +7081,7 @@ index 0000000000..6d597e7f3c
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    this.#autofill = null;
 +    // Revoke old work before any new snapshot can be published.
 +    this.#queries.cancel();
@@ -7169,7 +7172,7 @@ index 0000000000..6d597e7f3c
 +    const queryText = UrlbarQueryModel.resolveSearchString({ value: text, pageProxyValid }, searchString);
 +    this.cancel();
 +    this.#typedText = queryText || text;
-+    this.#searchModePreview = !!state.searchMode?.isPreview;
++    this.#searchMode = state.searchMode ? Object.freeze({ ...state.searchMode }) : null;
 +    this.#edit = Object.freeze({ revision, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: 0, composing });
 +    if (composing) return null;
@@ -7193,6 +7196,7 @@ index 0000000000..6d597e7f3c
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#edit = Object.freeze({ ...this.#edit, selectionStart: start,
@@ -7299,6 +7303,7 @@ index 0000000000..6d597e7f3c
 +    if (this.#hiddenResults) throw new Error("Hidden result mode application");
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    this.#resultPreview = null;
 +    this.#selectionRequest = null;
 +    const options = Object.freeze({ checkValue, startQuery, entry });
@@ -7322,11 +7327,12 @@ index 0000000000..6d597e7f3c
 +    if (this.#hiddenResults) throw new Error("Hidden result mode exit");
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    this.#resultPreview = null;
 +    this.#selectionRequest = null;
 +    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
 +        !this.#queries.ownsQuery(queryId)) throw new Error("Stale result mode exit");
-+    if (!this.#searchModePreview) return null;
++    if (!this.#searchMode?.isPreview) return null;
 +    this.freezeResults(revision, queryId);
 +    const request = this.beginResultSelection(revision, queryId, null);
 +    if (!request) return null;
@@ -7346,7 +7352,7 @@ index 0000000000..6d597e7f3c
 +    const pending = this.#modeApplication;
 +    if (!request || !pending || pending.proposal.token !== token) return null;
 +    if (pending.proposal.kind === "mode-exit") {
-+      return request.result === null && this.#searchModePreview &&
++      return request.result === null && this.#searchMode?.isPreview &&
 +        pending.proposal.value === this.#typedText ? pending.proposal : null;
 +    }
 +    const live = this.describeResultModeApplication(this.#edit.revision,
@@ -7367,12 +7373,13 @@ index 0000000000..6d597e7f3c
 +    const request = this.#selectionRequest;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    this.#selectionRequest = null;
 +    this.#resultPreview = null;
 +    this.#completion = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
-+    this.#searchModePreview = !!proposal.searchMode?.isPreview;
++    this.#searchMode = proposal.searchMode;
 +    if (proposal.storeTypedValue) this.#typedText = text;
 +    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: this.#edit.selectionRevision + 1 });
@@ -7424,6 +7431,7 @@ index 0000000000..6d597e7f3c
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    const edit = this.#edit;
 +    if (!edit || revision !== edit.revision || edit.composing) {
 +      throw new Error("Stale editor result selection");
@@ -7450,6 +7458,7 @@ index 0000000000..6d597e7f3c
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    return this.#queries.acknowledgeResultSelection(token);
 +  }
 +
@@ -7466,7 +7475,7 @@ index 0000000000..6d597e7f3c
 +
 +  #describeResultPreview(revision, queryId, result) {
 +    if (!this.#supportsResultPreview(result)) return null;
-+    const modeExit = this.#searchModePreview ? { searchMode: null } : {};
++    const modeExit = this.#searchMode?.isPreview ? { searchMode: null } : {};
 +    if (result.autofill) {
 +      const autofill = Object.freeze({ ...result.autofill });
 +      if (typeof autofill.value !== "string" ||
@@ -7491,6 +7500,7 @@ index 0000000000..6d597e7f3c
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    this.#selectionRequest = null;
 +    this.describeResultInput(revision, queryId, result);
 +    if (!this.#describeResultPreview(revision, queryId, result)) return null;
@@ -7514,11 +7524,12 @@ index 0000000000..6d597e7f3c
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    this.#selectionRequest = null;
 +    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
 +        !this.#queries.ownsQuery(queryId)) throw new Error("Stale result restoration");
 +    // Exiting a preview search mode requires a separate semantic transition.
-+    if (this.#searchModePreview) return null;
++    if (this.#searchMode?.isPreview) return null;
 +    this.freezeResults(revision, queryId);
 +    const request = this.beginResultSelection(revision, queryId, null);
 +    if (!request) return null;
@@ -7536,7 +7547,7 @@ index 0000000000..6d597e7f3c
 +    const proposal = this.#resultPreview;
 +    if (!request || !proposal || proposal.token !== token) return null;
 +    if (proposal.kind === "restore") {
-+      return request.result === null && !this.#searchModePreview &&
++      return request.result === null && !this.#searchMode?.isPreview &&
 +        proposal.value === this.#typedText ? proposal : null;
 +    }
 +    const live = this.#describeResultPreview(this.#edit.revision, request.queryId, request.result);
@@ -7558,9 +7569,10 @@ index 0000000000..6d597e7f3c
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    this.#selectionRequest = null;
 +    this.#completion = null;
-+    if (proposal.searchMode === null) this.#searchModePreview = false;
++    if (proposal.searchMode === null) this.#searchMode = null;
 +    this.#autofill = proposal.autofill;
 +    this.#placeholder = proposal.autofill;
 +    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart, selectionEnd,
@@ -7588,7 +7600,7 @@ index 0000000000..6d597e7f3c
 +    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
 +        !this.#queries.ownsQuery(queryId)) throw new Error("Stale result hide");
 +    // Preview dismissal cancels its query and asks the host to clear mode state.
-+    if (this.#searchModePreview) {
++    if (this.#searchMode?.isPreview) {
 +      this.#requestPresentation({ kind: "close", queryId, elementPicked: false });
 +      return null;
 +    }
@@ -7598,6 +7610,7 @@ index 0000000000..6d597e7f3c
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#hiddenResults = Object.freeze({ revision, queryId, text: this.#edit.text });
@@ -7634,7 +7647,43 @@ index 0000000000..6d597e7f3c
 +    this.#queries.publishPresentation(queryId, visibleResults, open);
 +    if (this.#modeRequery && (!open || !visibleResults.includes(this.#modeRequery.result))) {
 +      this.#modeRequery = null;
++      this.#modeExitRequest = null;
 +    }
++  }
++
++  /** Clear an explicit engine/source mode without restoring or rewriting editor text. */
++  beginSearchModeExit(revision) {
++    this.#check();
++    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing) {
++      throw new Error("Stale search mode exit");
++    }
++    if (!this.#searchMode) return null;
++    const edit = this.#edit, mode = this.#searchMode;
++    this.cancel();
++    this.#check();
++    if (this.#edit !== edit || this.#searchMode !== mode) return null;
++    const proposal = Object.freeze({ token: Object.freeze({}), edit,
++      previousSearchMode: mode, searchMode: null, startQuery: true });
++    this.#modeExitRequest = proposal;
++    return proposal;
++  }
++
++  getSearchModeExit(token) {
++    this.#check();
++    const request = this.#modeExitRequest;
++    return request && request.token === token && request.edit === this.#edit &&
++      request.previousSearchMode === this.#searchMode ? request : null;
++  }
++
++  /** Observe cleared mode with unchanged text/caret; browser effects and requery follow separately. */
++  acknowledgeSearchModeExit(token, { searchMode, text, selectionStart, selectionEnd, selectionDirection }) {
++    const request = this.getSearchModeExit(token);
++    if (!request || searchMode !== null || text !== request.edit.text ||
++        selectionStart !== request.edit.selectionStart || selectionEnd !== request.edit.selectionEnd ||
++        selectionDirection !== request.edit.selectionDirection) return false;
++    this.#modeExitRequest = null;
++    this.#searchMode = null;
++    return true;
 +  }
 +
 +  /** Prepare a user-initiated preview close; no typed-text restoration is requested. */
@@ -7642,7 +7691,7 @@ index 0000000000..6d597e7f3c
 +    this.#check();
 +    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
 +        !this.#queries.ownsQuery(queryId)) throw new Error("Stale preview mode dismissal");
-+    if (!this.#searchModePreview) return null;
++    if (!this.#searchMode?.isPreview) return null;
 +    return this.#prepareClose({ kind: "close", queryId, elementPicked: false });
 +  }
 +
@@ -7662,7 +7711,7 @@ index 0000000000..6d597e7f3c
 +
 +  #prepareClose(request) {
 +    const edit = this.#edit;
-+    const clearPreview = this.#searchModePreview;
++    const clearPreview = this.#searchMode?.isPreview;
 +    // A provider engagement ends result authority immediately; waiting for a
 +    // host close must not leave completion writes or result exposure usable.
 +    // This differs from temporarily hiding suggestions on focus loss.
@@ -7688,12 +7737,13 @@ index 0000000000..6d597e7f3c
 +    const request = this.getCloseRequest(token);
 +    if (!request || open !== false || (request.searchMode === null &&
 +        (searchMode !== null || userTypedValue !== null))) return false;
-+    if (request.searchMode === null) this.#searchModePreview = false;
++    if (request.searchMode === null) this.#searchMode = null;
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    return true;
 +  }
 +
@@ -7706,6 +7756,7 @@ index 0000000000..6d597e7f3c
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#queries.cancel();
@@ -7721,6 +7772,7 @@ index 0000000000..6d597e7f3c
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeExitRequest = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#queries.close();

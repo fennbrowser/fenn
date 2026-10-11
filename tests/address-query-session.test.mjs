@@ -1428,3 +1428,59 @@ test('failed mode requery consumes its dispatch authority and rejects stale comp
   const pending=g.editor.requeryAfterModeApplication(proposal.token,{searchMode:proposal.searchMode});
   g.editor.cancel();gate.resolve();await assert.rejects(pending,/cancelled/);g.editor.close();
 });
+
+
+const observedExit=p=>({searchMode:null,text:p.edit.text,selectionStart:p.edit.selectionStart,
+  selectionEnd:p.edit.selectionEnd,selectionDirection:p.edit.selectionDirection});
+
+test('explicit mode exit accepts confirmed and preview modes with exact unchanged editor observation',async()=>{
+  for(const startQuery of [true,false]) {
+    const f=await modeWriteFixture({startQuery}),write=f.proposal;
+    f.editor.acknowledgeResultModeApplication(write.token,observedMode(write));
+    f.editor.select(1,1,3,'backward');const snapshot=f.editor.snapshot;
+    const p=f.editor.beginSearchModeExit(1);
+    assert.equal(p.previousSearchMode.isPreview,!startQuery);assert.equal(p.searchMode,null);
+    assert.equal(p.startQuery,true);assert.equal(p.edit,snapshot);
+    assert.equal(f.editor.getSearchModeExit(p.token),p);
+    assert.throws(()=>f.editor.publishPresentation(1,f.query.id,[f.result],true),/Invalid/);
+    for(const wrong of [{searchMode:write.searchMode},{searchMode:undefined},{text:'changed'},
+      {selectionStart:0},{selectionEnd:4},{selectionDirection:'forward'}]) {
+      assert.equal(f.editor.acknowledgeSearchModeExit(p.token,{...observedExit(p),...wrong}),false);
+      assert.equal(f.editor.snapshot,snapshot);
+    }
+    assert.equal(f.editor.acknowledgeSearchModeExit(p.token,observedExit(p)),true);
+    assert.equal(f.editor.acknowledgeSearchModeExit(p.token,observedExit(p)),false);
+    assert.equal(f.editor.beginSearchModeExit(1),null);assert.equal(f.editor.snapshot,snapshot);
+    assert.equal(f.parent.started.length,1);assert.deepEqual(f.calls,['before','selected']);f.editor.close();
+  }
+});
+
+test('mode exit works without result rows and snapshots host-owned mode facts',async()=>{
+  const f=await editorFixture(),mode={source:1,isPreview:false};
+  await f.editor.edit({searchMode:mode},edit(1,'typed'));mode.source=99;
+  const p=f.editor.beginSearchModeExit(1);
+  assert.equal(p.previousSearchMode.source,1);assert.equal(Object.isFrozen(p.previousSearchMode),true);
+  assert.equal(f.editor.acknowledgeSearchModeExit(p.token,observedExit(p)),true);
+  f.editor.close();
+});
+
+test('explicit mode exit requests revoke on replacement, caret, edits, cancellation and scope loss',async()=>{
+  for(const revoke of [f=>f.editor.beginSearchModeExit(1),f=>f.editor.select(1,0,0),
+    f=>f.editor.edit({},edit(2,'new')),f=>f.editor.cancel()]) {
+    const f=await modeWriteFixture();f.editor.acknowledgeResultModeApplication(f.proposal.token,observedMode(f.proposal));
+    const p=f.editor.beginSearchModeExit(1);await revoke(f);
+    assert.equal(f.editor.getSearchModeExit(p.token),null);
+    assert.equal(f.editor.acknowledgeSearchModeExit(p.token,observedExit(p)),false);f.editor.close();
+  }
+  const f=await modeWriteFixture();f.editor.acknowledgeResultModeApplication(f.proposal.token,observedMode(f.proposal));
+  const p=f.editor.beginSearchModeExit(1);f.loseScope();
+  assert.throws(()=>f.editor.getSearchModeExit(p.token),/scope changed/);
+});
+
+test('explicit mode exit rejects composition and stale revisions and leaves no-mode state alone',async()=>{
+  const f=await editorFixture();await f.editor.edit({},edit(1,'typed'));
+  assert.equal(f.editor.beginSearchModeExit(1),null);
+  assert.throws(()=>f.editor.beginSearchModeExit(0),/Stale/);
+  await f.editor.edit({searchMode:{source:1,isPreview:false}},edit(2,'composing',{composing:true}));
+  assert.throws(()=>f.editor.beginSearchModeExit(2),/Stale/);f.editor.close();
+});
