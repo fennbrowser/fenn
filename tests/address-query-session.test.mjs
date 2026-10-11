@@ -3817,3 +3817,88 @@ test('new editor work and notification reentry revoke command follow-up without 
   assert.equal(f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false}).applied,true);
   assert.equal(f.editor.getSearchCommandRequery(p.token),null);f.editor.close();
 });
+
+
+const observedConfirmation=p=>({searchMode:p.searchMode,text:p.edit.text,selectionStart:p.edit.selectionStart,
+  selectionEnd:p.edit.selectionEnd,selectionDirection:p.edit.selectionDirection,modeEntry:p.modeEntry,
+  pageProxyValid:false,persistedSearchTerms:false});
+async function commandConfirmationFixture(value='^ words',options={},fixtureOptions={}) {
+  const f=await ownedCommandFixture(value,options,fixtureOptions),p=f.proposal;
+  f.initialToken=Object.freeze({});
+  f.parent.commitIndependentModeState=()=>({applied:true,stateToken:f.initialToken});
+  f.editor.acknowledgeSearchCommand(p.token,observedOwnedCommand(p));
+  f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false});
+  const confirmation=f.editor.beginSearchCommandConfirmation(p.token,{...commandEntry(),untrimmedValue:f.editor.snapshot.text});
+  return {...f,confirmation};
+}
+
+test('command confirmation requires initial commit and exact unchanged editor and entry observation',async()=>{
+  const f=await ownedCommandFixture(),p=f.proposal;
+  f.editor.acknowledgeSearchCommand(p.token,observedOwnedCommand(p));
+  assert.equal(f.editor.beginSearchCommandConfirmation(p.token,commandEntry()),null);f.editor.close();
+  const g=await commandConfirmationFixture(),c=g.confirmation;let called=0;
+  g.parent.commitIndependentModeState=()=>{called++;return {applied:true};};
+  assert.equal(c.searchMode.isPreview,false);assert.equal(c.commandToken,g.proposal.token);assert.equal(Object.isFrozen(c.modeEntry),true);
+  for(const wrong of [{searchMode:g.proposal.searchMode},{text:'wrong'},{selectionStart:0},{pageProxyValid:true},
+    {modeEntry:{...c.modeEntry,userTypedValue:'new'}}]) {
+    assert.equal(g.editor.commitSearchCommandConfirmation(c.token,{...observedConfirmation(c),...wrong}),null);
+  }
+  assert.equal(called,0);assert.equal(g.editor.commitSearchCommandConfirmation(c.token,observedConfirmation(c)).applied,true);
+  assert.equal(g.editor.commitSearchCommandConfirmation(c.token,observedConfirmation(c)),null);assert.equal(called,1);g.editor.close();
+});
+
+test('confirmed command commit preserves preview query context and emits confirmed editor correlation',async()=>{
+  const events=[],f=await commandConfirmationFixture('@e words',{engineId:'engine'},
+    {onModeStateChanged:n=>events.push(n)}),c=f.confirmation,p=f.proposal;
+  await assert.rejects(f.editor.requeryAfterSearchCommand(p.token,{searchMode:c.searchMode}),/confirmation has not committed/);
+  f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{
+    assert.equal(current(),true);assert.equal(mode.isPreview,false);assert.equal(facts.expectedStateToken,f.initialToken);
+    assert.equal(facts.engineId,'engine');assert.equal(facts.modeEntry,c.modeEntry);
+    notify({browserId:id,searchMode:mode,userTypedValue:c.edit.text});return {applied:true};
+  };
+  assert.equal(f.editor.commitSearchCommandConfirmation(c.token,observedConfirmation(c)).applied,true);
+  assert.equal(events.length,1);assert.equal(events[0].reason,'search-command-confirmation');
+  assert.equal(events[0].token,c.token);assert.equal(events[0].commandToken,p.token);assert.equal(events[0].edit,c.edit);
+  const q=await f.editor.requeryAfterSearchCommand(p.token,{searchMode:c.searchMode});
+  assert.equal(q.searchMode.isPreview,true);assert.equal(f.editor.snapshot,c.edit);
+  assert.equal(f.editor.beginSearchModeExit(1).previousSearchMode.isPreview,false);f.editor.close();
+});
+
+test('confirmation failure and engine changes consume follow-up authority',async()=>{
+  for(const action of ['reject','throw','engine']) {
+    const f=await commandConfirmationFixture('@e words',{engineId:'engine'}),c=f.confirmation;let called=0;
+    f.parent.commitIndependentModeState=()=>{called++;if(action==='throw')throw Error('failed confirmation');return null;};
+    if(action==='engine')f.parent.child.updateEngineStore('changed',{id:'replacement',name:'Engine',aliases:['@e'],isGeneralPurposeEngine:true},0);
+    if(action==='throw')assert.throws(()=>f.editor.commitSearchCommandConfirmation(c.token,observedConfirmation(c)),/failed confirmation/);
+    else assert.equal(f.editor.commitSearchCommandConfirmation(c.token,observedConfirmation(c)),null);
+    assert.equal(called,action==='engine'?0:1);
+    await assert.rejects(f.editor.requeryAfterSearchCommand(f.proposal.token,{searchMode:c.searchMode}),/Stale/);f.editor.close();
+  }
+});
+
+test('new confirmation proposals and editor work revoke older confirmation tokens',async()=>{
+  const f=await commandConfirmationFixture(),old=f.confirmation;
+  const next=f.editor.beginSearchCommandConfirmation(f.proposal.token,commandEntry());
+  assert.equal(f.editor.commitSearchCommandConfirmation(old.token,observedConfirmation(old)),null);
+  assert.ok(next);f.editor.cancel();assert.equal(f.editor.commitSearchCommandConfirmation(next.token,observedConfirmation(next)),null);f.editor.close();
+  const g=await commandConfirmationFixture(),c=g.confirmation;g.editor.select(1,0,0);
+  assert.equal(g.editor.commitSearchCommandConfirmation(c.token,observedConfirmation(c)),null);g.editor.close();
+});
+
+test('confirmation consumer reentry does not undo state but revokes the old requery',async()=>{
+  let f;f=await commandConfirmationFixture('^ words',{}, {onModeStateChanged:()=>f.editor.cancel()});const c=f.confirmation;
+  f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{notify({browserId:id,searchMode:mode});return {applied:true};};
+  assert.equal(f.editor.commitSearchCommandConfirmation(c.token,observedConfirmation(c)).applied,true);
+  await assert.rejects(f.editor.requeryAfterSearchCommand(f.proposal.token,{searchMode:c.searchMode}),/Stale/);f.editor.close();
+});
+
+test('parent continuation mode commit requires the exact preceding owned commit receipt',()=>{
+  for(const valid of [true,false]) {
+    const {p,browser,lazy}=parentLoadFixture(),previous={},next={};let prepared=0;
+    lazy.independentUrlbarBrowserState={isCommitted:(_b,t)=>valid&&t===previous,
+      prepareMode:()=>{prepared++;return {token:next,effects:{persistedSearchTerms:false}};},commit:()=>true,discard:()=>{}};
+    const outcome=p.commitIndependentModeState(42,null,{persistedSearchTerms:false,expectedStateToken:previous},()=>true);
+    assert.equal(prepared,valid?1:0);assert.equal(outcome?.applied??false,valid);
+    if(valid)assert.equal(outcome.stateToken,next);
+  }
+});
