@@ -9243,10 +9243,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..7cb00781aa
+index 0000000000..95254f8282
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2034 @@
+@@ -0,0 +1,2067 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9286,6 +9286,7 @@ index 0000000000..7cb00781aa
 +  #identityEdit = null;
 +  #compositionPresentation = null;
 +  #compositionStart = null;
++  #compositionHistory = null;
 +  #compositionEnd = null;
 +  #compositionReopen = null;
 +  #reopeningComposition = null;
@@ -9354,11 +9355,16 @@ index 0000000000..7cb00781aa
 +    if (!edit?.composing || edit.revision !== revision || this.#compositionStart ||
 +        this.#compositionStateReady || this.#committingComposition) return null;
 +    const keepPanelOpen = UrlbarPrefs.get("keepPanelOpenDuringImeComposition");
-+    const policy = UrlbarCompositionModel.endPolicy({ hasData, hadText, closedPopup, keepPanelOpen });
++    const history = this.#compositionHistory;
++    if (history && (hadText !== undefined || closedPopup !== undefined)) {
++      throw new TypeError("Owned composition history cannot be overridden");
++    }
++    const policy = history ? history.describeEnd(hasData, keepPanelOpen) :
++      UrlbarCompositionModel.endPolicy({ hasData, hadText, closedPopup, keepPanelOpen });
 +    const identity = policy.reopen ? this.#queries.captureCompositionMode(this.#searchMode) : null;
 +    if (policy.reopen && !identity) return null;
 +    const proposal = Object.freeze({ ...policy, edit, token: Object.freeze({}) });
-+    this.#compositionEnd = { proposal, keepPanelOpen, mode: this.#searchMode, engineId: identity?.engineId };
++    this.#compositionEnd = { proposal, keepPanelOpen, history, hasData, mode: this.#searchMode, engineId: identity?.engineId };
 +    return proposal;
 +  }
 +
@@ -9367,6 +9373,7 @@ index 0000000000..7cb00781aa
 +    const pending = this.#compositionEnd;
 +    if (!pending || pending.proposal.token !== token) return null;
 +    if (pending.proposal.edit !== this.#edit || pending.mode !== this.#searchMode ||
++        pending.history !== this.#compositionHistory ||
 +        (pending.proposal.reopen && !this.#queries.isCompositionModeCurrent(pending.mode, pending.engineId)) ||
 +        pending.keepPanelOpen !== UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
 +      this.#compositionEnd = null;
@@ -9385,6 +9392,8 @@ index 0000000000..7cb00781aa
 +        (request.clearResultForCurrentValue && resultForCurrentValue !== null)) return false;
 +    const pending = this.#compositionEnd;
 +    this.#compositionEnd = null;
++    // Host selection effects have already been observed; model transition is local.
++    pending.history?.end(pending.hasData, pending.keepPanelOpen, () => {});
 +    // The end event does not consume the next input transition or start its query.
 +    const edit = { ...request.edit, composing: false };
 +    delete edit.composition;
@@ -9464,8 +9473,9 @@ index 0000000000..7cb00781aa
 +  }
 +
 +  /** Observe composition beginning, then request its ordered host effects. */
-+  beginCompositionStart(revision, { viewIsOpen, userTypedValue, modeEntry } = {}) {
++  beginCompositionStart(revision, { viewIsOpen, userTypedValue, modeEntry, trackHistory = false } = {}) {
 +    this.#check();
++    if (typeof trackHistory !== "boolean") throw new TypeError("Invalid composition history mode");
 +    if (userTypedValue !== null && typeof userTypedValue !== "string") throw new TypeError("Invalid composition typed value");
 +    const description = this.describeCompositionStart(revision, { viewIsOpen });
 +    if (!description) return null;
@@ -9524,7 +9534,10 @@ index 0000000000..7cb00781aa
 +      this.#compositionPresentation = Object.freeze({ revision, queryId });
 +    }
 +    this.#compositionStateReady = null;
-+    this.#compositionStart = { proposal, mode, keepPanelOpen, viewIsOpen, priorTypedValue: userTypedValue, engineId: identity.engineId };
++    this.#compositionHistory = null;
++    const history = trackHistory ? new UrlbarCompositionModel() : null;
++    history?.begin();
++    this.#compositionStart = { proposal, history, mode, keepPanelOpen, viewIsOpen, priorTypedValue: userTypedValue, engineId: identity.engineId };
 +    return proposal;
 +  }
 +
@@ -9602,12 +9615,17 @@ index 0000000000..7cb00781aa
 +    }) : null;
 +    try {
 +      if (!current()) return null;
-+      return this.#queries.commitCompositionStart({ previousMode: pending.mode, searchMode: request.searchMode,
++      const outcome = this.#queries.commitCompositionStart({ previousMode: pending.mode, searchMode: request.searchMode,
 +        text: request.edit.text, priorTypedValue: pending.priorTypedValue,
 +        applyMode: request.applyMode, clearUserTypedValue: request.clearUserTypedValue,
 +        modeEntry: request.modeEntry, restoration: request.restoration ?? null,
 +        engineId: pending.engineId, keepPanelOpen: pending.keepPanelOpen,
 +        viewIsOpen: pending.viewIsOpen, previousPersistedSearchTerms, persistedSearchTerms }, current, notify);
++      if (outcome?.current === true && current() && pending.history) {
++        pending.history.setPopupClosed(request.closePopup);
++        this.#compositionHistory = pending.history;
++      }
++      return outcome;
 +    } finally {
 +      if (this.#committingComposition === pending) this.#committingComposition = null;
 +    }
@@ -9653,11 +9671,13 @@ index 0000000000..7cb00781aa
 +   * browser text/persistence updates; userTypedValue is the observed prior
 +   * browser value, including null. Explicit composition snapshots use Firefox's
 +   * query/autofill policy; the legacy composing flag still suppresses queries.
++   * After an acknowledged trackHistory start, compositionHasData consumes owned
++   * event history instead of accepting an externally supplied composition state.
 +   * Rejection leaves the observed editor revision consumed; it cannot be retried.
 +   */
 +  async edit(state, {
 +    revision, text, selectionStart, selectionEnd, selectionDirection = "none",
-+    inputType = "insertText", composing = false, pasteLength, composition = null,
++    inputType = "insertText", composing = false, pasteLength, composition = null, compositionHasData,
 +  }, browserState = null) {
 +    this.#check();
 +    if (!Number.isSafeInteger(revision) || revision <= (this.#edit?.revision ?? 0) ||
@@ -9679,6 +9699,17 @@ index 0000000000..7cb00781aa
 +        throw new TypeError("Invalid composition input snapshot");
 +      }
 +      composition = Object.freeze(snapshot);
++    }
++    if (compositionHasData !== undefined) {
++      if (typeof compositionHasData !== "boolean" || composition !== null || !this.#compositionHistory ||
++          composing !== this.#compositionHistory.isComposing) {
++        throw new TypeError("Invalid owned composition input");
++      }
++      // Validate the whole observation before advancing the owned event history.
++      composition = Object.freeze(this.#compositionHistory.input(compositionHasData));
++    } else {
++      // An independently supplied snapshot replaces the owned event stream.
++      this.#compositionHistory = null;
 +    }
 +    const priorTypedValue = browserState?.userTypedValue;
 +    this.#inputState = null;
@@ -11214,6 +11245,7 @@ index 0000000000..7cb00781aa
 +  }
 +
 +  cancel() {
++    this.#compositionHistory = null;
 +    this.#compositionReopen = null;
 +    this.#reopeningComposition = null;
 +    this.#compositionStateReady = null;
@@ -11246,6 +11278,7 @@ index 0000000000..7cb00781aa
 +  }
 +
 +  close() {
++    this.#compositionHistory = null;
 +    this.#compositionReopen = null;
 +    this.#reopeningComposition = null;
 +    this.#compositionStateReady = null;
@@ -12211,10 +12244,10 @@ index 0000000000..fd9b7fd407
 +}
 diff --git a/browser/components/urlbar/content/UrlbarCompositionModel.mjs b/browser/components/urlbar/content/UrlbarCompositionModel.mjs
 new file mode 100644
-index 0000000000..69b0a982d2
+index 0000000000..139c755f55
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarCompositionModel.mjs
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,101 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12274,6 +12307,13 @@ index 0000000000..69b0a982d2
 +    this.#state = policy.nextInput.state;
 +    this.#closedPopup = policy.nextInput.closedPopup;
 +    return policy.reopen;
++  }
++
++  /** Inspect owned event history without ending composition or consuming input. */
++  describeEnd(hasData, keepPanelOpen) {
++    if (!this.isComposing) throw new Error("Trying to stop a non existing composition?");
++    return UrlbarCompositionModel.endPolicy({ hasData, keepPanelOpen,
++      hadText: this.#hadText, closedPopup: this.#closedPopup });
 +  }
 +
 +  /** End-event effects; nextInput is consumed by the following input, not here. */

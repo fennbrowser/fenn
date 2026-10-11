@@ -5223,3 +5223,89 @@ test('page-clear acknowledgment cannot overwrite an edit installed by query canc
   await newer;assert.equal(f.editor.snapshot.text,'newer');assert.equal(f.browser.writes.length,0);
   assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,compositionPersistence),null);f.editor.close();
 });
+
+
+async function ownedCompositionFixture({keep=false,open=true}={}) {
+  const f=await restorationEditorFixture('prior','text');f.prefs.keepPanelOpenDuringImeComposition=keep;
+  f.facts.viewIsOpen=open;f.facts.modeEntry.hasAutofillPlaceholder=false;
+  const start=f.editor.beginCompositionStart(1,{...f.facts,trackHistory:true});
+  assert.equal(f.editor.acknowledgeCompositionStart(start.token,observedCompositionStart(start)),true);
+  assert.equal(f.editor.commitAcknowledgedCompositionStart(start.token,compositionPersistence).current,true);
+  return Object.assign(f,{start,state:{searchMode:f.browser.getMode()}});
+}
+
+test('owned composition end derives popup history and empty reopen only after acknowledged start commit',async()=>{
+  for(const open of [false,true]) {
+    const f=await ownedCompositionFixture({open});const p=f.editor.beginCompositionEnd(1,{hasData:false});
+    assert.equal(p.reopen,open);assert.equal(p.nextInput.closedPopup,false);
+    assert.equal(f.editor.acknowledgeCompositionEnd(p.token,observedCompositionEnd(p)),true);
+    assert.equal(f.editor.acknowledgeCompositionEnd(p.token,observedCompositionEnd(p)),false);
+    assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('owned composing inputs remember real input data and consume cancellation on exactly one following input',async()=>{
+  const f=await ownedCompositionFixture({open:false});
+  assert.equal(await f.editor.edit(f.state,{...edit(2,'composed'),composing:true,compositionHasData:true}),null);
+  const p=f.editor.beginCompositionEnd(2,{hasData:false});assert.equal(p.reopen,false);
+  assert.equal(p.nextInput.state,f.sandbox.UrlbarShared.COMPOSITION.CANCELED);
+  assert.equal(f.editor.acknowledgeCompositionEnd(p.token,observedCompositionEnd(p)),true);
+  assert.equal(await f.editor.edit(f.state,{...edit(3,'composed'),compositionHasData:false}),null);
+  assert.equal(f.editor.snapshot.composition.state,f.sandbox.UrlbarShared.COMPOSITION.CANCELED);
+  assert.ok(await f.editor.edit(f.state,{...edit(4,'composed'),compositionHasData:false}));
+  assert.equal(f.editor.snapshot.composition.state,f.sandbox.UrlbarShared.COMPOSITION.NONE);
+  assert.equal(f.parent.started.length,2);f.editor.close();
+});
+
+test('owned keep-open composition queries disable autofill and retain commit until the following input',async()=>{
+  const f=await ownedCompositionFixture({keep:true});
+  const q=await f.editor.edit(f.state,{...edit(2,'composed'),composing:true,compositionHasData:true});
+  assert.equal(q.allowAutofill,false);const p=f.editor.beginCompositionEnd(2,{hasData:true});
+  assert.equal(p.clearSelection,false);assert.equal(p.reopen,false);
+  assert.equal(f.editor.acknowledgeCompositionEnd(p.token,{...p.edit,composing:false}),true);
+  const committed=await f.editor.edit(f.state,{...edit(3,'composed'),compositionHasData:false});
+  assert.equal(committed.allowAutofill,true);assert.equal(f.editor.snapshot.composition.state,f.sandbox.UrlbarShared.COMPOSITION.COMMIT);
+  f.editor.close();
+});
+
+test('owned event history refuses injected history and malformed input without consuming valid history',async()=>{
+  const f=await ownedCompositionFixture(),before=f.editor.snapshot;
+  assert.throws(()=>f.editor.beginCompositionEnd(1,{hasData:false,hadText:false,closedPopup:true}),/cannot be overridden/);
+  for(const change of [{revision:1},{selectionEnd:99},{compositionHasData:'yes'},{composing:false},
+    {composition:{state:f.sandbox.UrlbarShared.COMPOSITION.COMPOSING,closedPopup:false}}]) {
+    await assert.rejects(f.editor.edit(f.state,{...edit(2,'text'),composing:true,compositionHasData:true,...change}));
+    assert.equal(f.editor.snapshot,before);
+  }
+  const p=f.editor.beginCompositionEnd(1,{hasData:false});assert.equal(p.reopen,true);
+  assert.equal(f.editor.acknowledgeCompositionEnd(p.token,{...observedCompositionEnd(p),selectionCleared:false}),false);
+  assert.equal(f.editor.getCompositionEnd(p.token),p);assert.equal(f.editor.acknowledgeCompositionEnd(p.token,observedCompositionEnd(p)),true);
+  f.editor.close();
+});
+
+test('cancel and independently supplied input revoke owned composition history',async()=>{
+  for(const change of ['cancel','input']) {
+    const f=await ownedCompositionFixture();
+    if(change==='cancel')f.editor.cancel();else await f.editor.edit(f.state,{...edit(2,'new'),composing:true});
+    await assert.rejects(f.editor.edit(f.state,{...edit(3,'text'),composing:true,compositionHasData:true}),/owned composition/);
+    f.editor.close();
+  }
+});
+
+test('owned history is not published when start browser commit becomes stale during notification',async()=>{
+  const f=await restorationEditorFixture('prior','text');f.facts.modeEntry.hasAutofillPlaceholder=false;
+  const p=f.editor.beginCompositionStart(1,{...f.facts,trackHistory:true});
+  assert.equal(f.editor.acknowledgeCompositionStart(p.token,observedCompositionStart(p)),true);
+  f.parent.commitIndependentCompositionStart=()=>{f.editor.select(1,0,0);return {applied:true,current:true};};
+  f.editor.commitAcknowledgedCompositionStart(p.token,compositionPersistence);
+  await assert.rejects(f.editor.edit(f.state??{}, {...edit(2,'new'),composing:true,compositionHasData:true}),/owned composition/);
+  f.editor.close();
+});
+
+test('query cancellation replacement cannot retain the superseded owned input history',async()=>{
+  const f=await ownedCompositionFixture();let reentered=false,newer;
+  f.parent.cancelQuery=()=>{if(!reentered){reentered=true;newer=f.editor.edit(f.state,edit(3,'newest'));}};
+  await assert.rejects(f.editor.edit(f.state,{...edit(2,'old'),composing:true,compositionHasData:true}),/superseded/);
+  await newer;assert.equal(f.editor.snapshot.text,'newest');
+  await assert.rejects(f.editor.edit(f.state,{...edit(4,'new'),composing:true,compositionHasData:true}),/owned composition/);
+  f.editor.close();
+});

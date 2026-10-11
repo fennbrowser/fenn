@@ -149,3 +149,13 @@ test('end transition observes composition history changed by selection-clear ree
     assert.equal(next.closedPopup,change==='input');
   }
 });
+
+
+test('end descriptions read owned history without ending composition or consuming the next input',()=>{
+  const m=new M();assert.throws(()=>m.describeEnd(false,false),/non existing/);
+  m.begin();m.setPopupClosed(true);const empty=m.describeEnd(false,false);
+  assert.equal(empty.reopen,true);assert.equal(m.isComposing,true);assert.equal(Object.isFrozen(empty),true);
+  m.input(true);assert.equal(m.describeEnd(false,false).reopen,false);
+  assert.equal(empty.reopen,true);assert.equal(m.end(true,false,()=>{}),false);
+  assert.equal(m.input(false).state,S.COMMIT);assert.equal(m.input(false).state,S.NONE);
+});
