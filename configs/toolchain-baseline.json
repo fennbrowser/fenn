@@ -24,7 +24,7 @@
   "rust": "1.98.1",
   "cbindgen": "0.29.4",
   "nodeFromMozillaBootstrap": "22.16.0",
-  "windowsAppSDK": "2.4.0",
+  "windowsAppSDK": "2.5.1",
   "cppWinRT": "3.0.260818.1",
   "searchfoxCLI": "0.20.4",
   "treeherderCLI": "0.2.17",
