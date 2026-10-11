@@ -836,7 +836,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..0e1c320d74 100644
+index ba254af0c6..2542c25791 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -946,7 +946,7 @@ index ba254af0c6..0e1c320d74 100644
    }
  
    /**
-@@ -999,6 +1043,458 @@ export class UrlbarParentController {
+@@ -999,6 +1043,460 @@ export class UrlbarParentController {
      }
    }
  
@@ -1199,8 +1199,10 @@ index ba254af0c6..0e1c320d74 100644
 +        (!applyMode && persistedSearchTerms !== previousPersistedSearchTerms)) return null;
 +    if (applyMode && (!modeEntry || modeEntry.untrimmedValue !== text || modeEntry.userTypedValue !== priorTypedValue ||
 +        typeof modeEntry.pageProxyValid !== "boolean" || typeof modeEntry.hasAutofillPlaceholder !== "boolean")) return null;
-+    const restores = applyMode && modeEntry.hasAutofillPlaceholder;
-+    if (restores && (clearUserTypedValue || modeEntry.pageProxyValid || !priorTypedValue || !restoration ||
++    const restores = applyMode && !modeEntry.pageProxyValid &&
++      lazy.UrlbarSearchModeModel.modeEntryRestoresAutofill(modeEntry.hasAutofillPlaceholder,
++        clearUserTypedValue ? null : priorTypedValue);
++    if (restores && (!restoration ||
 +        !lazy.UrlbarShared.deepEqual(restoration, this.describeIndependentCompositionRestoration(browserId, modeEntry)))) return null;
 +    if (!restores && restoration !== null) return null;
 +    if (this.#destroyed || this.rendersInContentProcess || !this.#isAddressbar) return null;
@@ -1405,7 +1407,7 @@ index ba254af0c6..0e1c320d74 100644
    /**
     * Loads a URL in the browser window resolved from the actor. The content
     * child supplies the serializable load parameters; the parent fills in the
-@@ -1027,9 +1523,15 @@ export class UrlbarParentController {
+@@ -1027,9 +1525,15 @@ export class UrlbarParentController {
     *   browser to hand `focusBrowser` on the deferred-Enter keyup -- a
     *   content-process input can't resolve the selected browser itself.
     */
@@ -1422,7 +1424,7 @@ index ba254af0c6..0e1c320d74 100644
      if (!browser) {
        // The tab was closed before the load got here; don't hand its load to
        // whichever tab is selected now.
-@@ -1040,8 +1542,9 @@ export class UrlbarParentController {
+@@ -1040,8 +1544,9 @@ export class UrlbarParentController {
      }
  
      let { url, postData } = lazy.UrlbarUtils.loadRequestToUrl(loadRequest);
@@ -1433,7 +1435,7 @@ index ba254af0c6..0e1c320d74 100644
      }
      params.postData = postData;
  
-@@ -1055,6 +1558,7 @@ export class UrlbarParentController {
+@@ -1055,6 +1560,7 @@ export class UrlbarParentController {
        });
      }
  
@@ -1441,7 +1443,7 @@ index ba254af0c6..0e1c320d74 100644
      if (where == "current") {
        params.targetBrowser = browser;
      } else {
-@@ -1071,6 +1575,7 @@ export class UrlbarParentController {
+@@ -1071,6 +1577,7 @@ export class UrlbarParentController {
        browser.focus();
      }
  
@@ -1449,7 +1451,7 @@ index ba254af0c6..0e1c320d74 100644
      try {
        this.browserWindow.openTrustedLinkIn(url, where, params);
      } catch (ex) {
-@@ -1079,9 +1584,10 @@ export class UrlbarParentController {
+@@ -1079,9 +1586,10 @@ export class UrlbarParentController {
        return {
          reverted: ex.result != Cr.NS_ERROR_LOAD_SHOWED_ERRORPAGE,
          browserId: browser.browserId,
@@ -1461,7 +1463,7 @@ index ba254af0c6..0e1c320d74 100644
    }
  
    /**
-@@ -1292,10 +1798,22 @@ export class UrlbarParentController {
+@@ -1292,10 +1800,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -1485,7 +1487,7 @@ index ba254af0c6..0e1c320d74 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +1850,7 @@ export class UrlbarParentController {
+@@ -1332,6 +1852,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -1493,7 +1495,7 @@ index ba254af0c6..0e1c320d74 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +1874,10 @@ export class UrlbarParentController {
+@@ -1355,6 +1876,10 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
@@ -1504,7 +1506,7 @@ index ba254af0c6..0e1c320d74 100644
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +1909,7 @@ export class UrlbarParentController {
+@@ -1386,7 +1911,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -1513,7 +1515,7 @@ index ba254af0c6..0e1c320d74 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +1917,11 @@ export class UrlbarParentController {
+@@ -1394,10 +1919,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -1526,7 +1528,7 @@ index ba254af0c6..0e1c320d74 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +1939,7 @@ export class UrlbarParentController {
+@@ -1415,7 +1941,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -1535,7 +1537,7 @@ index ba254af0c6..0e1c320d74 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +1961,7 @@ export class UrlbarParentController {
+@@ -1437,7 +1963,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -1544,7 +1546,7 @@ index ba254af0c6..0e1c320d74 100644
          break;
      }
    };
-@@ -1727,8 +2251,12 @@ export class TelemetryEvent {
+@@ -1727,8 +2253,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -1558,7 +1560,7 @@ index ba254af0c6..0e1c320d74 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +2271,7 @@ export class TelemetryEvent {
+@@ -1743,7 +2273,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -1567,7 +1569,7 @@ index ba254af0c6..0e1c320d74 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +2297,7 @@ export class TelemetryEvent {
+@@ -1769,7 +2299,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -1576,7 +1578,7 @@ index ba254af0c6..0e1c320d74 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +2308,13 @@ export class TelemetryEvent {
+@@ -1780,12 +2310,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -1592,7 +1594,7 @@ index ba254af0c6..0e1c320d74 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +2325,7 @@ export class TelemetryEvent {
+@@ -1796,7 +2327,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -1601,7 +1603,7 @@ index ba254af0c6..0e1c320d74 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +2393,16 @@ export class TelemetryEvent {
+@@ -1864,17 +2395,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -1623,7 +1625,7 @@ index ba254af0c6..0e1c320d74 100644
      );
    }
  
-@@ -2009,158 +2537,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2539,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -1782,7 +1784,7 @@ index ba254af0c6..0e1c320d74 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +2897,27 @@ export class TelemetryEvent {
+@@ -2521,17 +2899,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -1819,7 +1821,7 @@ index ba254af0c6..0e1c320d74 100644
      );
    }
  
-@@ -2548,14 +2934,19 @@ export class TelemetryEvent {
+@@ -2548,14 +2936,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -1845,7 +1847,7 @@ index ba254af0c6..0e1c320d74 100644
    }
  
    /**
-@@ -2581,39 +2972,4 @@ export class TelemetryEvent {
+@@ -2581,39 +2974,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -9241,10 +9243,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..980be54e5c
+index 0000000000..7cb00781aa
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2031 @@
+@@ -0,0 +1,2034 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9479,8 +9481,10 @@ index 0000000000..980be54e5c
 +      modeEntry = this.#captureModeEntry(modeEntry);
 +      if (!modeEntry) throw new TypeError("Missing composition pre-mode facts");
 +      if (modeEntry.untrimmedValue !== this.#edit.text || modeEntry.userTypedValue !== userTypedValue) return null;
-+      if (modeEntry.hasAutofillPlaceholder) {
-+        if (modeEntry.pageProxyValid || !resultingTypedValue) return null;
++      // Page clearing wins over restoration in the final mode-entry value.
++      // Empty/reset typed state does not restore a placeholder either.
++      if (!modeEntry.pageProxyValid && UrlbarSearchModeModel.modeEntryRestoresAutofill(
++          modeEntry.hasAutofillPlaceholder, resultingTypedValue)) {
 +        restoration = this.#queries.describeCompositionRestoration(modeEntry);
 +        if (!restoration) return null;
 +      }
@@ -9507,6 +9511,7 @@ index 0000000000..980be54e5c
 +      }) } : {}),
 +      ...(confirmation.applyMode && modeEntry.pageProxyValid ? { editorWrite: Object.freeze({
 +        text: "", selectionStart: 0, selectionEnd: 0, selectionDirection: "none", pageProxyValid: false,
++        untrimmedValue: "", protocolIsTrimmed: false, wwwIsTrimmed: false, valueIsTyped: false,
 +      }) } : {}),
 +      userTypedValue: resultingTypedValue, open: description.closePopup ? false : viewIsOpen });
 +    this.#edit = edit;
@@ -9553,8 +9558,8 @@ index 0000000000..980be54e5c
 +    if (!request || text !== expected.text || selectionStart !== expected.selectionStart ||
 +        selectionEnd !== expected.selectionEnd || selectionDirection !== expected.selectionDirection ||
 +        (request.editorWrite && pageProxyValid !== false) ||
-+        (request.restoration && (untrimmedValue !== request.restoration.untrimmedValue ||
-+          protocolIsTrimmed !== request.restoration.protocolIsTrimmed || wwwIsTrimmed !== request.restoration.wwwIsTrimmed ||
++        (request.editorWrite && (untrimmedValue !== expected.untrimmedValue ||
++          protocolIsTrimmed !== expected.protocolIsTrimmed || wwwIsTrimmed !== expected.wwwIsTrimmed ||
 +          valueIsTyped !== false)) ||
 +        composing !== true || open !== request.open || userTypedValue !== request.userTypedValue ||
 +        (request.clearOneOffSelection && oneOffSelected !== false) ||

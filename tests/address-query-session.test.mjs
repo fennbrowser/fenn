@@ -4604,11 +4604,11 @@ test('both retained confirmation bindings preserve setter then one-off order and
   f.session.close();
 });
 
-test('composition preview requests require stable non-restoring pre-mode facts before changing editor',async()=>{
+test('composition preview requests require stable pre-mode facts before changing editor',async()=>{
   const f=await editorFixture();await f.editor.edit({searchMode:{source:1,isPreview:true}},edit(1,'text'));
   const before=f.editor.snapshot,options={viewIsOpen:true,userTypedValue:'prior'};
   assert.throws(()=>f.editor.beginCompositionStart(1,options),/Missing composition/);
-  for(const facts of [{hasAutofillPlaceholder:true,pageProxyValid:true},{untrimmedValue:'other'},{userTypedValue:'changed'}]) {
+  for(const facts of [{untrimmedValue:'other'},{userTypedValue:'changed'}]) {
     assert.equal(f.editor.beginCompositionStart(1,{...options,modeEntry:{untrimmedValue:'text',pageProxyValid:false,
       hasAutofillPlaceholder:false,userTypedValue:'prior',...facts}}),null);assert.equal(f.editor.snapshot,before);
   }
@@ -5159,4 +5159,67 @@ test('Reader Mode restoration commits the captured full value and exposes setter
     assert.equal(result.applied,true);assert.equal(result.current,!reenter);
     assert.deepEqual(f.writes,['https://www.restored.test/']);assert.equal(result.typedResetApplied,false);
   }
+});
+
+
+test('valid-page placeholder confirmation requests only the final empty display and exact cleared metadata',async()=>{
+  for(const typed of [null,'','https://www.restored.test/','about:reader?url=https%3A%2F%2Frestored.test']) {
+    const f=await restorationEditorFixture(typed,'page');f.facts.modeEntry.pageProxyValid=true;
+    f.parent.describeIndependentCompositionRestoration=()=>assert.fail('page clear does not need restoration formatting');
+    const p=f.editor.beginCompositionStart(1,f.facts),observed={...observedCompositionStart(p),...p.editorWrite};
+    assert.equal(p.editorWrite.text,'');assert.equal(p.editorWrite.untrimmedValue,'');
+    assert.equal(p.editorWrite.protocolIsTrimmed,false);assert.equal(p.editorWrite.wwwIsTrimmed,false);
+    assert.equal(p.editorWrite.valueIsTyped,false);assert.equal('restoration' in p,false);
+    assert.equal(f.editor.snapshot.text,'page');assert.equal(f.browser.writes.length,0);
+    for(const wrong of [{untrimmedValue:'page'},{protocolIsTrimmed:true},{wwwIsTrimmed:true},
+      {valueIsTyped:true},{untrimmedValue:undefined},{protocolIsTrimmed:undefined},{valueIsTyped:undefined}]) {
+      assert.equal(f.editor.acknowledgeCompositionStart(p.token,{...observed,...wrong}),false);
+    }
+    assert.equal(f.editor.acknowledgeCompositionStart(p.token,observed),true);
+    const result=f.editor.commitAcknowledgedCompositionStart(p.token,compositionPersistence);
+    assert.equal(result.applied,true);assert.equal(result.current,true);assert.equal(result.typedResetApplied,false);
+    assert.equal(f.editor.snapshot.text,'');assert.deepEqual(f.browser.writes,['']);
+    assert.equal(f.notifications[0].edit,f.editor.snapshot);assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('placeholder with empty typed state preserves nonempty editor text without requesting restoration',async()=>{
+  for(const typed of [null,'']) {
+    const f=await restorationEditorFixture(typed,'retained');
+    f.parent.describeIndependentCompositionRestoration=()=>assert.fail('empty typed value cannot restore autofill');
+    const p=f.editor.beginCompositionStart(1,f.facts);
+    assert.equal(p.editorWrite,undefined);assert.equal(p.restoration,undefined);assert.equal(p.userTypedValue,'retained');
+    assert.equal(f.editor.acknowledgeCompositionStart(p.token,observedCompositionStart(p)),true);
+    const result=f.editor.commitAcknowledgedCompositionStart(p.token,compositionPersistence);
+    assert.equal(result.applied,true);assert.equal(result.typedResetApplied,false);
+    assert.equal(f.editor.snapshot.text,'retained');assert.deepEqual(f.browser.writes,['retained']);f.editor.close();
+  }
+});
+
+test('empty composition text resets prior typed state before confirming a placeholder mode',async()=>{
+  const f=await restorationEditorFixture('prior typed','');
+  f.parent.describeIndependentCompositionRestoration=()=>assert.fail('intermediate null reset suppresses restoration');
+  const p=f.editor.beginCompositionStart(1,f.facts);
+  assert.equal(p.clearUserTypedValue,true);assert.equal(p.editorWrite,undefined);assert.equal(p.userTypedValue,'');
+  assert.equal(f.editor.acknowledgeCompositionStart(p.token,observedCompositionStart(p)),true);
+  const result=f.editor.commitAcknowledgedCompositionStart(p.token,compositionPersistence);
+  assert.equal(result.applied,true);assert.equal(result.current,true);assert.equal(result.typedResetApplied,true);
+  assert.deepEqual(f.browser.writes,[null,'']);assert.equal(f.editor.snapshot.text,'');f.editor.close();
+});
+
+test('non-restoring composition commits reject an injected restoration descriptor',()=>{
+  for(const valid of [false,true]) {
+    const f=compositionParentFixture(true,'page',null);f.facts.modeEntry.hasAutofillPlaceholder=true;
+    f.facts.modeEntry.pageProxyValid=valid;f.facts.restoration={value:'injected',untrimmedValue:'injected'};
+    assert.equal(f.p.commitIndependentCompositionStart(42,f.facts,()=>true),null);assert.deepEqual(f.writes,[]);
+  }
+});
+
+test('page-clear acknowledgment cannot overwrite an edit installed by query cancellation',async()=>{
+  const f=await restorationEditorFixture('prior','page');f.facts.modeEntry.pageProxyValid=true;
+  const p=f.editor.beginCompositionStart(1,f.facts);let newer,reentered=false;
+  f.parent.cancelQuery=()=>{if(!reentered){reentered=true;newer=f.editor.edit({},edit(2,'newer'));}};
+  assert.equal(f.editor.acknowledgeCompositionStart(p.token,{...observedCompositionStart(p),...p.editorWrite}),false);
+  await newer;assert.equal(f.editor.snapshot.text,'newer');assert.equal(f.browser.writes.length,0);
+  assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,compositionPersistence),null);f.editor.close();
 });
