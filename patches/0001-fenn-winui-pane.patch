@@ -216,7 +216,7 @@ index a182468fce..428407c54a 100644
  </body>
  </html>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..b5a1e28fe5 100644
+index b2b5db6040..9e398bff45 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
 @@ -33,6 +33,20 @@ browser.jar:
@@ -240,7 +240,7 @@ index b2b5db6040..b5a1e28fe5 100644
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
-@@ -104,3 +118,18 @@ browser.jar:
+@@ -104,3 +118,19 @@ browser.jar:
  
  # L10n resources and overrides.
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
@@ -258,6 +258,7 @@ index b2b5db6040..b5a1e28fe5 100644
 +    content/browser/urlbar/UrlbarResultPresentation.mjs (../components/urlbar/content/UrlbarResultPresentation.mjs)
 +    content/browser/urlbar/UrlbarClipboardText.mjs (../components/urlbar/content/UrlbarClipboardText.mjs)
 +    content/browser/urlbar/UrlbarBrowserState.mjs (../components/urlbar/content/UrlbarBrowserState.mjs)
++    content/browser/urlbar/UrlbarInputIdentity.mjs (../components/urlbar/content/UrlbarInputIdentity.mjs)
 +    content/browser/urlbar/UrlbarEditSession.mjs (../components/urlbar/content/UrlbarEditSession.mjs)
 diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
 index 76cab7f8e4..ac11827449 100644
@@ -3895,10 +3896,10 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..6120e68ca4 100644
+index a077de625f..0174015171 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
-@@ -2,12 +2,21 @@
+@@ -2,12 +2,22 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  
@@ -3917,11 +3918,12 @@ index a077de625f..6120e68ca4 100644
 +import { UrlbarCompositionModel } from "chrome://browser/content/urlbar/UrlbarCompositionModel.mjs";
 +import { UrlbarAutofillModel } from "chrome://browser/content/urlbar/UrlbarAutofillModel.mjs";
 +import { querySelectedSearch } from "chrome://browser/content/urlbar/UrlbarSelectedSearch.mjs";
++import { UrlbarInputIdentity } from "chrome://browser/content/urlbar/UrlbarInputIdentity.mjs";
 +import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
  import { UrlbarView } from "chrome://browser/content/urlbar/UrlbarView.mjs";
  import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
  
-@@ -60,18 +69,14 @@ if (lazy) {
+@@ -60,18 +70,14 @@ if (lazy) {
      ExtensionUtils: "resource://gre/modules/ExtensionUtils.sys.mjs",
      handleBounceEventTrigger:
        "moz-src:///browser/components/urlbar/UrlbarParentController.sys.mjs",
@@ -3940,7 +3942,7 @@ index a077de625f..6120e68ca4 100644
    });
    XPCOMUtils.defineLazyServiceGetters(lazy, {
      ClipboardHelper: [
-@@ -87,12 +92,6 @@ if (lazy) {
+@@ -87,12 +93,6 @@ if (lazy) {
  
  const logger = () => UrlbarShared.getLogger({ prefix: "Input" });
  
@@ -3953,7 +3955,7 @@ index a077de625f..6120e68ca4 100644
  
  const XHTML_NS = "http://www.w3.org/1999/xhtml";
  
-@@ -134,6 +133,29 @@ function parseMarkupToFragment(markup) {
+@@ -134,6 +134,29 @@ function parseMarkupToFragment(markup) {
   * extends this class (e.g. `UrlbarInput`, `SearchbarInput`).
   */
  export class UrlbarInputBase extends HTMLElement {
@@ -3983,7 +3985,7 @@ index a077de625f..6120e68ca4 100644
    static get #markup() {
      return `
        <div class="urlbar-background"/>
-@@ -275,9 +297,7 @@ ${
+@@ -275,9 +298,7 @@ ${
    _suppressPrimaryAdjustment = false;
    _lastSearchString = "";
    // Tracks IME composition.
@@ -3994,7 +3996,7 @@ index a077de625f..6120e68ca4 100644
    // Bumped on each input-driven search; a deferred-Enter snapshots it so its
    // async keyup can tell whether a fresh search has started since.
    #inputEpoch = 0;
-@@ -600,6 +620,8 @@ ${
+@@ -600,6 +621,8 @@ ${
      this.sapDisconnectedCallback();
  
      this.searchModeSwitcher.disconnect();
@@ -4003,7 +4005,7 @@ index a077de625f..6120e68ca4 100644
  
      if (this._copyCutController) {
        this.inputField.controllers.removeController(this._copyCutController);
-@@ -1017,36 +1039,12 @@ ${
+@@ -1017,36 +1040,12 @@ ${
          uri = Services.io.createExposableURI(uri);
        } catch (e) {}
  
@@ -4046,7 +4048,7 @@ index a077de625f..6120e68ca4 100644
      } else if (
        this.window.isInitialPage(value) &&
        lazy.BrowserUIUtils.checkEmptyPageOrigin(
-@@ -1716,32 +1714,38 @@ ${
+@@ -1716,32 +1715,38 @@ ${
     * @param {UrlbarResult} options.result The result that was picked.
     * @param {Event} options.event The event that picked the result.
     * @param {HTMLElement} [options.element] The picked view element, if available.
@@ -4097,7 +4099,7 @@ index a077de625f..6120e68ca4 100644
      }
  
      if (
-@@ -1784,6 +1788,7 @@ ${
+@@ -1784,6 +1789,7 @@ ${
        this.controller.engagementEvent.record(event, {
          result,
          element,
@@ -4105,7 +4107,7 @@ index a077de625f..6120e68ca4 100644
          searchString: this._lastSearchString,
          selType: "dismiss",
          searchSource: this.getSearchSource(event),
-@@ -1793,72 +1798,21 @@ ${
+@@ -1793,72 +1799,21 @@ ${
        return;
      }
  
@@ -4184,7 +4186,7 @@ index a077de625f..6120e68ca4 100644
  
      if (!this.#providesSearchMode(result) && !keepViewOpen) {
        this.view.close({ elementPicked: true });
-@@ -1868,6 +1822,7 @@ ${
+@@ -1868,6 +1823,7 @@ ${
        this.controller.engagementEvent.record(event, {
          result,
          element,
@@ -4192,7 +4194,7 @@ index a077de625f..6120e68ca4 100644
          selType: "canonized",
          searchString: this._lastSearchString,
          searchSource: this.getSearchSource(event),
-@@ -1889,47 +1844,14 @@ ${
+@@ -1889,47 +1845,14 @@ ${
        ? { urlLoad: { url: resultUrl, postData: null } }
        : UrlbarShared.getLoadRequestFromResult(result, { element });
  
@@ -4246,7 +4248,7 @@ index a077de625f..6120e68ca4 100644
        case UrlbarShared.RESULT_TYPE.TAB_SWITCH: {
          // Behaviour is reversed with SecondaryActions, default behaviour is to navigate
          // and button is provided to switch to tab.
-@@ -1951,9 +1873,10 @@ ${
+@@ -1951,9 +1874,10 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -4258,7 +4260,7 @@ index a077de625f..6120e68ca4 100644
            searchSource: this.getSearchSource(event),
            windowMode: this.windowMode,
          });
-@@ -1973,8 +1896,9 @@ ${
+@@ -1973,8 +1897,9 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -4269,7 +4271,7 @@ index a077de625f..6120e68ca4 100644
              searchSource: this.getSearchSource(event),
              windowMode: this.windowMode,
            });
-@@ -1985,35 +1909,16 @@ ${
+@@ -1985,35 +1910,16 @@ ${
            return;
          }
  
@@ -4313,7 +4315,7 @@ index a077de625f..6120e68ca4 100644
  
          const actionDetails = {
            isSuggestion: !!result.payload.suggestion,
-@@ -2033,40 +1938,10 @@ ${
+@@ -2033,40 +1939,10 @@ ${
            opensInPrivateWindow: result.payload.inPrivateWindow,
          });
  
@@ -4358,7 +4360,7 @@ index a077de625f..6120e68ca4 100644
          break;
        }
        case UrlbarShared.RESULT_TYPE.TIP: {
-@@ -2077,6 +1952,7 @@ ${
+@@ -2077,6 +1953,7 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -4366,7 +4368,7 @@ index a077de625f..6120e68ca4 100644
            selType: "tip",
            searchString: this._lastSearchString,
            searchSource: this.getSearchSource(event),
-@@ -2099,9 +1975,11 @@ ${
+@@ -2099,9 +1976,11 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -4379,7 +4381,7 @@ index a077de625f..6120e68ca4 100644
              searchSource: this.getSearchSource(event),
              windowMode: this.windowMode,
            });
-@@ -2119,6 +1997,7 @@ ${
+@@ -2119,6 +1998,7 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -4387,7 +4389,7 @@ index a077de625f..6120e68ca4 100644
            selType: "extension",
            searchString: this._lastSearchString,
            searchSource: this.getSearchSource(event),
-@@ -2146,8 +2025,9 @@ ${
+@@ -2146,8 +2026,9 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -4398,7 +4400,7 @@ index a077de625f..6120e68ca4 100644
            searchSource: this.getSearchSource(event),
            windowMode: this.windowMode,
          });
-@@ -2163,8 +2043,9 @@ ${
+@@ -2163,8 +2044,9 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -4409,7 +4411,7 @@ index a077de625f..6120e68ca4 100644
            searchSource: this.getSearchSource(event),
            windowMode: this.windowMode,
          });
-@@ -2176,47 +2057,15 @@ ${
+@@ -2176,47 +2058,15 @@ ${
        throw new Error(`No load request for result ${JSON.stringify(result)}`);
      }
  
@@ -4465,7 +4467,7 @@ index a077de625f..6120e68ca4 100644
  
      // Bounce tracking keys on the tab the engagement happened in: the chrome
      // window's selected tab, or the tab hosting an input that has no chrome
-@@ -2225,8 +2074,9 @@ ${
+@@ -2225,8 +2075,9 @@ ${
        .startTrackingBounceEvent(this.#selectedBrowserId, event, {
          result,
          element,
@@ -4476,7 +4478,7 @@ index a077de625f..6120e68ca4 100644
          searchSource: this.getSearchSource(event),
          windowMode: this.windowMode,
        })
-@@ -2235,8 +2085,9 @@ ${
+@@ -2235,8 +2086,9 @@ ${
      this.controller.engagementEvent.record(event, {
        result,
        element,
@@ -4487,7 +4489,7 @@ index a077de625f..6120e68ca4 100644
        searchSource: this.getSearchSource(event),
        windowMode: this.windowMode,
      });
-@@ -2283,6 +2134,7 @@ ${
+@@ -2283,6 +2135,7 @@ ${
      event = null,
      urlOverride = null,
      element = null,
@@ -4495,7 +4497,7 @@ index a077de625f..6120e68ca4 100644
    } = {}) {
      // Usually this is set by a previous input event, but in certain cases, like
      // when opening Top Sites on a loaded page, it wouldn't happen. To avoid
-@@ -2353,7 +2205,7 @@ ${
+@@ -2353,7 +2206,7 @@ ${
            checkValue: false,
            startQuery:
              UrlbarPrefs.get("scotchBonnet.enableOverride") &&
@@ -4504,7 +4506,7 @@ index a077de625f..6120e68ca4 100644
          });
        }
        if (!enteredSearchMode) {
-@@ -2367,7 +2219,7 @@ ${
+@@ -2367,7 +2220,7 @@ ${
      }
  
      if (!result.autofill) {
@@ -4513,7 +4515,7 @@ index a077de625f..6120e68ca4 100644
        this.setValue(value, {
          actionType: this.#getActionTypeFromResult(result),
        });
-@@ -2415,23 +2267,13 @@ ${
+@@ -2415,23 +2268,13 @@ ${
        return;
      }
  
@@ -4544,7 +4546,7 @@ index a077de625f..6120e68ca4 100644
        return;
      }
  
-@@ -2479,6 +2321,7 @@ ${
+@@ -2479,6 +2322,7 @@ ${
        })
      ) {
        // Search mode restarts the query, so these results are obsolete.
@@ -4552,7 +4554,7 @@ index a077de625f..6120e68ca4 100644
        this.controller.discardResults(queryContext);
        return;
      }
-@@ -2534,12 +2377,10 @@ ${
+@@ -2534,12 +2378,10 @@ ${
      event,
      interactionType,
    } = {}) {
@@ -4569,7 +4571,7 @@ index a077de625f..6120e68ca4 100644
  
      let queryContext = this.#makeQueryContext({
        allowAutofill,
-@@ -2608,9 +2449,7 @@ ${
+@@ -2608,9 +2450,7 @@ ${
      if (options.focus ?? true) {
        this.focus();
      }
@@ -4580,7 +4582,7 @@ index a077de625f..6120e68ca4 100644
  
      if (
        firstToken == UrlbarShared.RESTRICT_TOKENS.SEARCH &&
-@@ -2629,36 +2468,13 @@ ${
+@@ -2629,36 +2469,13 @@ ${
        return;
      }
  
@@ -4623,7 +4625,7 @@ index a077de625f..6120e68ca4 100644
      this.inputField.value = value;
      // Avoid selecting the text if this method is called twice in a row.
      this.selectionStart = -1;
-@@ -2692,21 +2508,9 @@ ${
+@@ -2692,21 +2509,9 @@ ${
     *   setSearchMode documentation for details.
     */
    searchModeForToken(token) {
@@ -4648,7 +4650,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    /**
-@@ -2824,16 +2628,9 @@ ${
+@@ -2824,16 +2629,9 @@ ${
     *   See setSearchMode documentation.
     */
    getSearchMode(browser, confirmedOnly = false) {
@@ -4668,7 +4670,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    /**
-@@ -2880,64 +2677,10 @@ ${
+@@ -2880,64 +2678,10 @@ ${
        }
      }
  
@@ -4737,7 +4739,7 @@ index a077de625f..6120e68ca4 100644
  
      // The address bar keeps a search mode per browser, so it only enters search
      // mode for the selected one. Every other input keeps a single search mode.
-@@ -2951,7 +2694,7 @@ ${
+@@ -2951,7 +2695,7 @@ ${
          // when switching back to the current tab and across sessions.
          this.userTypedValue = this.untrimmedValue;
          this.valueIsTyped = true;
@@ -4746,7 +4748,7 @@ index a077de625f..6120e68ca4 100644
            this.parentController.recordSearchMode(searchMode);
          }
        }
-@@ -3040,8 +2783,7 @@ ${
+@@ -3040,8 +2784,7 @@ ${
    confirmSearchMode() {
      let searchMode = this.searchMode;
      if (searchMode?.isPreview) {
@@ -4756,7 +4758,7 @@ index a077de625f..6120e68ca4 100644
  
        // Unselect the one-off search button to ensure UI consistency.
        if (this.view.oneOffSearchButtons) {
-@@ -3245,38 +2987,21 @@ ${
+@@ -3245,38 +2988,21 @@ ${
      result = this._resultForCurrentValue,
      checkValue = true,
      startQuery = true,
@@ -4807,7 +4809,7 @@ index a077de625f..6120e68ca4 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -3317,37 +3042,20 @@ ${
+@@ -3317,37 +3043,20 @@ ${
     *   The source name.
     */
    getSearchSource(event) {
@@ -4859,7 +4861,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    // Private methods below.
-@@ -3516,84 +3224,19 @@ ${
+@@ -3516,84 +3225,19 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
@@ -4956,7 +4958,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    /**
-@@ -3604,14 +3247,7 @@ ${
+@@ -3604,14 +3248,7 @@ ${
     * @returns {string} The `actiontype` value, or undefined.
     */
    #getActionTypeFromResult(result) {
@@ -4972,7 +4974,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    /**
-@@ -3634,64 +3270,27 @@ ${
+@@ -3634,64 +3271,27 @@ ${
     *   Whether autofill should be allowed in the new search.
     */
    _maybeAutofillPlaceholder(value) {
@@ -5057,7 +5059,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    /**
-@@ -3772,105 +3371,31 @@ ${
+@@ -3772,105 +3372,31 @@ ${
      }
    }
  
@@ -5188,7 +5190,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    _toggleActionOverride(event) {
-@@ -3942,22 +3467,10 @@ ${
+@@ -3942,22 +3468,10 @@ ${
      const isOneOff = this.view.oneOffSearchButtons?.eventTargetIsAOneOff(event);
      const searchSource = this.getSearchSource(event);
  
@@ -5215,7 +5217,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    /**
-@@ -3972,15 +3485,12 @@ ${
+@@ -3972,15 +3486,12 @@ ${
      if (!this.#isAddressbar) {
        return val;
      }
@@ -5237,7 +5239,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    /**
-@@ -4081,33 +3591,34 @@ ${
+@@ -4081,33 +3592,34 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -5278,7 +5280,7 @@ index a077de625f..6120e68ca4 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -4200,45 +3711,25 @@ ${
+@@ -4200,45 +3712,25 @@ ${
        keyDownEnterDeferred = this._keyDownEnterDeferred;
      }
  
@@ -5333,7 +5335,7 @@ index a077de625f..6120e68ca4 100644
        this.handleRevert();
      }
  
-@@ -4267,6 +3758,15 @@ ${
+@@ -4267,6 +3759,15 @@ ${
      }
    }
  
@@ -5349,7 +5351,7 @@ index a077de625f..6120e68ca4 100644
    _initCopyCutController() {
      // This exists to put an untrimmed URL on the clipboard, and only the address
      // bar trims. Every other input keeps its native copy/cut.
-@@ -4479,7 +3979,7 @@ ${
+@@ -4479,7 +3980,7 @@ ${
        return;
      }
      let controller =
@@ -5358,7 +5360,7 @@ index a077de625f..6120e68ca4 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4495,6 +3995,33 @@ ${
+@@ -4495,6 +3996,33 @@ ${
      stripOnShare.removeAttribute("disabled");
    }
  
@@ -5392,7 +5394,7 @@ index a077de625f..6120e68ca4 100644
    _initPasteAndGo() {
      this.addContextMenuItems({
        after: "edit-contextmenu-paste",
-@@ -4507,17 +4034,7 @@ ${
+@@ -4507,17 +4035,7 @@ ${
            .GetStringFromName("pasteAndGo.label");
          pasteAndGo.setAttribute("label", label);
          pasteAndGo.setAttribute("anonid", "paste-and-go");
@@ -5411,7 +5413,7 @@ index a077de625f..6120e68ca4 100644
  
          fragment.appendChild(pasteAndGo);
          return fragment;
-@@ -4545,10 +4062,7 @@ ${
+@@ -4545,10 +4063,7 @@ ${
            { once: true }
          );
  
@@ -5423,7 +5425,7 @@ index a077de625f..6120e68ca4 100644
            pasteAndGo.removeAttribute("disabled");
          } else {
            pasteAndGo.setAttribute("disabled", "true");
-@@ -4747,60 +4261,11 @@ ${
+@@ -4747,60 +4262,11 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -5489,7 +5491,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    /**
-@@ -4866,7 +4331,8 @@ ${
+@@ -4866,7 +4332,8 @@ ${
  
      this.toggleAttribute("searchmode", true);
      // Clear autofill.
@@ -5499,7 +5501,7 @@ index a077de625f..6120e68ca4 100644
        this.value = this.userTypedValue;
      }
      // Search mode should only be active when pageproxystate is invalid.
-@@ -4904,66 +4370,18 @@ ${
+@@ -4904,66 +4371,18 @@ ${
      isSameDocument,
      uri,
    }) {
@@ -5578,7 +5580,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    /**
-@@ -5071,6 +4489,8 @@ ${
+@@ -5071,6 +4490,8 @@ ${
    setUnifiedSearchButtonAvailability(available) {
      available ||=
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
@@ -5587,7 +5589,7 @@ index a077de625f..6120e68ca4 100644
      const switcher = this.querySelector(".searchmode-switcher");
      switcher.toggleAttribute("offscreen", !available);
      if (available) {
-@@ -5085,6 +4505,7 @@ ${
+@@ -5085,6 +4506,7 @@ ${
          this.window.gBrowser.selectedBrowser
        ).isUnifiedSearchButtonAvailable = available;
      }
@@ -5595,7 +5597,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    /**
-@@ -5151,7 +4572,7 @@ ${
+@@ -5151,7 +4573,7 @@ ${
    #maybeSelectAll() {
      if (
        !this.#preventClickSelectsAll &&
@@ -5604,56 +5606,80 @@ index a077de625f..6120e68ca4 100644
        this.focused &&
        this.inputField.selectionStart == this.inputField.selectionEnd
      ) {
-@@ -5477,34 +4898,20 @@ ${
+@@ -5477,6 +4899,57 @@ ${
      }
    }
  
--  _on_input(event) {
--    // A new input starts a fresh search; bump the epoch so a pending
--    // deferred-Enter's async keyup won't reset this search's caret.
--    this.#inputEpoch++;
 +  setNativeInputValue(value) {
-     if (
--      this._autofillPlaceholder &&
--      this.value === this.userTypedValue &&
--      (event.inputType === "deleteContentBackward" ||
--        event.inputType === "deleteContentForward")
++    if (
 +      !this.view.nativePresentation ||
 +      typeof value !== "string" ||
 +      value.length > 32768
-     ) {
--      // Take a telemetry if user deleted whole autofilled value.
--      this.parentController.recordAutofillDeletion();
--    }
--
--    if (
--      UrlbarPrefs.get("autoFill.adaptiveHistory.enabled") &&
--      event.inputType?.startsWith("deleteContent") &&
--      !this.isPrivate &&
--      this._autofillPlaceholder &&
--      this.value === this.userTypedValue &&
--      this._resultForCurrentValue?.payload?.url
--    ) {
--      this.parentController.recordAutofillBackspace(
--        this._resultForCurrentValue.payload.url
--      );
++    ) {
 +      throw new Error("Native presentation ownership is required");
-     }
++    }
 +    this.inputField.value = value;
 +    this.#updateTypedValue(value);
 +    this.#updateTypedIdentity(value);
 +  }
- 
--    let value = this.value;
++
 +  #updateTypedValue(value) {
-     this.valueIsTyped = true;
-     this._untrimmedValue = value;
-     this._protocolIsTrimmed = false;
-@@ -5516,20 +4923,9 @@ ${
-     // string, thus there's no valid selection. This is also used by the view
-     // to set "aria-activedescendant", thus it should never get stale.
-     this.controller.userSelectionBehavior = "none";
++    const typed = UrlbarInputIdentity.typedValue(value);
++    this.valueIsTyped = typed.valueIsTyped;
++    this._untrimmedValue = typed.untrimmedValue;
++    this._protocolIsTrimmed = typed.protocolIsTrimmed;
++    this._wwwIsTrimmed = typed.wwwIsTrimmed;
++    this._resultForCurrentValue = typed.resultForCurrentValue;
++
++    this.userTypedValue = typed.userTypedValue;
++    // Unset userSelectionBehavior because the user is modifying the search
++    // string, thus there's no valid selection. This is also used by the view
++    // to set "aria-activedescendant", thus it should never get stale.
++    this.controller.userSelectionBehavior = typed.userSelectionBehavior;
 +  }
++
++  #updateTypedIdentity(value) {
++    this.toggleAttribute("usertyping", value);
++    this.removeAttribute("actiontype");
++
++    if (
++      this.getAttribute("pageproxystate") == "valid" &&
++      UrlbarInputIdentity.invalidatesPageProxy(this.value, this._lastValidURLStr)
++    ) {
++      this.setPageProxyState("invalid", true);
++    }
++
++    if (this.#isAddressbar) {
++      // Search-terms persistence is an address bar feature.
++      let state = this.getBrowserState(this.window.gBrowser.selectedBrowser);
++      if (
++        state.persist?.shouldPersist &&
++        lazy.UrlbarSearchTermsPersistence.updateInputState(state, this.value)
++      ) {
++        this.removeAttribute("persistsearchterms");
++      }
++    }
++  }
++
+   _on_input(event) {
+     // A new input starts a fresh search; bump the epoch so a pending
+     // deferred-Enter's async keyup won't reset this search's caret.
+@@ -5505,52 +4978,13 @@ ${
+     }
+ 
+     let value = this.value;
+-    this.valueIsTyped = true;
+-    this._untrimmedValue = value;
+-    this._protocolIsTrimmed = false;
+-    this._wwwIsTrimmed = false;
+-    this._resultForCurrentValue = null;
+-
+-    this.userTypedValue = value;
+-    // Unset userSelectionBehavior because the user is modifying the search
+-    // string, thus there's no valid selection. This is also used by the view
+-    // to set "aria-activedescendant", thus it should never get stale.
+-    this.controller.userSelectionBehavior = "none";
++    this.#updateTypedValue(value);
  
 -    let compositionState = this.#compositionState;
 -    let compositionClosedPopup = this.#compositionClosedPopup;
@@ -5668,62 +5694,35 @@ index a077de625f..6120e68ca4 100644
 -      this.#compositionHadText = true;
 -    }
 -
-+  #updateTypedIdentity(value) {
-     this.toggleAttribute("usertyping", value);
-     this.removeAttribute("actiontype");
- 
-@@ -5545,12 +4941,48 @@ ${
-       let state = this.getBrowserState(this.window.gBrowser.selectedBrowser);
-       if (
-         state.persist?.shouldPersist &&
--        this.value !== state.persist.searchTerms
-+        lazy.UrlbarSearchTermsPersistence.updateInputState(state, this.value)
-       ) {
--        state.persist.shouldPersist = false;
-         this.removeAttribute("persistsearchterms");
-       }
-     }
-+  }
-+
-+  _on_input(event) {
-+    // A new input starts a fresh search; bump the epoch so a pending
-+    // deferred-Enter's async keyup won't reset this search's caret.
-+    this.#inputEpoch++;
-+    if (
-+      this._autofillPlaceholder &&
-+      this.value === this.userTypedValue &&
-+      (event.inputType === "deleteContentBackward" ||
-+        event.inputType === "deleteContentForward")
-+    ) {
-+      // Take a telemetry if user deleted whole autofilled value.
-+      this.parentController.recordAutofillDeletion();
-+    }
-+
-+    if (
-+      UrlbarPrefs.get("autoFill.adaptiveHistory.enabled") &&
-+      event.inputType?.startsWith("deleteContent") &&
-+      !this.isPrivate &&
-+      this._autofillPlaceholder &&
-+      this.value === this.userTypedValue &&
-+      this._resultForCurrentValue?.payload?.url
-+    ) {
-+      this.parentController.recordAutofillBackspace(
-+        this._resultForCurrentValue.payload.url
-+      );
-+    }
-+
-+    let value = this.value;
-+    this.#updateTypedValue(value);
-+
+-    this.toggleAttribute("usertyping", value);
+-    this.removeAttribute("actiontype");
 +    const composition = this.#composition.input(
 +      this.#composition.isComposing && !!event.data
 +    );
-+
+ 
+-    if (
+-      this.getAttribute("pageproxystate") == "valid" &&
+-      this.value != this._lastValidURLStr
+-    ) {
+-      this.setPageProxyState("invalid", true);
+-    }
+-
+-    if (this.#isAddressbar) {
+-      // Search-terms persistence is an address bar feature.
+-      let state = this.getBrowserState(this.window.gBrowser.selectedBrowser);
+-      if (
+-        state.persist?.shouldPersist &&
+-        this.value !== state.persist.searchTerms
+-      ) {
+-        state.persist.shouldPersist = false;
+-        this.removeAttribute("persistsearchterms");
+-      }
+-    }
 +    this.#updateTypedIdentity(value);
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
-@@ -5580,10 +5012,9 @@ ${
+@@ -5580,10 +5014,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -5737,7 +5736,7 @@ index a077de625f..6120e68ca4 100644
      ) {
        return;
      }
-@@ -5591,11 +5022,10 @@ ${
+@@ -5591,11 +5024,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -5753,7 +5752,7 @@ index a077de625f..6120e68ca4 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5669,33 +5099,20 @@ ${
+@@ -5669,33 +5101,20 @@ ${
    }
  
    _on_paste(event) {
@@ -5795,7 +5794,7 @@ index a077de625f..6120e68ca4 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5126,7 @@ ${
+@@ -5709,7 +5128,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -5804,7 +5803,7 @@ index a077de625f..6120e68ca4 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5157,25 @@ ${
+@@ -5740,51 +5159,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -5872,7 +5871,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5369,11 @@ ${
+@@ -5978,15 +5371,11 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -5890,7 +5889,7 @@ index a077de625f..6120e68ca4 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5393,24 @@ ${
+@@ -6006,44 +5395,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -5947,7 +5946,7 @@ index a077de625f..6120e68ca4 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,11 +5536,7 @@ ${
+@@ -6169,11 +5538,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -5960,7 +5959,7 @@ index a077de625f..6120e68ca4 100644
    }
  
    get #isOpenedPageInBlankTargetLoading() {
-@@ -6311,111 +5674,6 @@ function getDroppableData(event) {
+@@ -6311,111 +5676,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -6072,7 +6071,7 @@ index a077de625f..6120e68ca4 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +5698,10 @@ class CopyCutController {
+@@ -6440,12 +5700,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -8624,6 +8623,40 @@ index 1e2660589b..5ae3ab4843 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/components/urlbar/content/UrlbarInputIdentity.mjs b/browser/components/urlbar/content/UrlbarInputIdentity.mjs
+new file mode 100644
+index 0000000000..e0803c1e34
+--- /dev/null
++++ b/browser/components/urlbar/content/UrlbarInputIdentity.mjs
+@@ -0,0 +1,28 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++/** Firefox typed-input bookkeeping over explicit text, without field or view. */
++export class UrlbarInputIdentity {
++  static typedValue(value) {
++    if (typeof value !== "string") throw new TypeError("Invalid typed input value");
++    return Object.freeze({ valueIsTyped: true, untrimmedValue: value,
++      protocolIsTrimmed: false, wwwIsTrimmed: false, resultForCurrentValue: null,
++      userTypedValue: value, userSelectionBehavior: "none" });
++  }
++
++  /** Compare displayed text, not a parsed URL or a connection/security claim. */
++  static invalidatesPageProxy(value, lastValidURL) {
++    if (typeof value !== "string") throw new TypeError("Invalid displayed input value");
++    return value != lastValidURL;
++  }
++
++  /** Effects for an actual observed edit; applying UI attributes remains host work. */
++  static describe(value, { pageProxyValid, lastValidURL } = {}) {
++    if (typeof pageProxyValid !== "boolean") throw new TypeError("Invalid page proxy observation");
++    const typed = this.typedValue(value);
++    const invalidatePageProxy = pageProxyValid && this.invalidatesPageProxy(value, lastValidURL);
++    return Object.freeze({ ...typed, userTyping: !!value, actionType: null,
++      pageProxyValid: pageProxyValid && !invalidatePageProxy, invalidatePageProxy });
++  }
++}
 diff --git a/browser/components/urlbar/content/UrlbarBrowserState.mjs b/browser/components/urlbar/content/UrlbarBrowserState.mjs
 new file mode 100644
 index 0000000000..34460929de
@@ -8980,15 +9013,16 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..7e0195af59
+index 0000000000..d01565ad29
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1705 @@
+@@ -0,0 +1,1715 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +import { UrlbarSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs";
++import { UrlbarInputIdentity } from "chrome://browser/content/urlbar/UrlbarInputIdentity.mjs";
 +import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
 +import { UrlbarQuerySession } from "chrome://browser/content/urlbar/UrlbarQuerySession.mjs";
 +import { UrlbarAutofillModel } from "chrome://browser/content/urlbar/UrlbarAutofillModel.mjs";
@@ -9017,6 +9051,7 @@ index 0000000000..7e0195af59
 +  #onUpdate;
 +  #edit = null;
 +  #inputState = null;
++  #identityEdit = null;
 +  #closed = false;
 +  #completion = null;
 +  #autofill = null;
@@ -9065,6 +9100,13 @@ index 0000000000..7e0195af59
 +
 +  /** Last observed edit's committed browser effects; no write/dispatch authority. */
 +  get inputState() { return this.#inputState; }
++
++  /** Describe only the exact latest observed edit, never an autofill/preview write. */
++  describeInputIdentity(revision, facts) {
++    this.#check();
++    if (!this.#identityEdit || this.#edit !== this.#identityEdit || this.#edit.revision !== revision) return null;
++    return Object.freeze({ revision, ...UrlbarInputIdentity.describe(this.#edit.text, facts) });
++  }
 +
 +  #check() {
 +    if (this.#closed) throw new Error("Editor session is closed");
@@ -9130,6 +9172,7 @@ index 0000000000..7e0195af59
 +    this.#searchMode = state.searchMode ? Object.freeze({ ...state.searchMode }) : null;
 +    this.#edit = Object.freeze({ revision, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: 0, composing });
++    this.#identityEdit = this.#edit;
 +    this.#completion = null;
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;

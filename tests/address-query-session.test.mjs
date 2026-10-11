@@ -41,7 +41,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     SEARCH_MODE_ENTRY:sharedPolicy.UrlbarShared.SEARCH_MODE_ENTRY,
     deepEqual:sharedPolicy.UrlbarShared.deepEqual.bind(sharedPolicy.UrlbarShared),
     getResultSourceName:sharedPolicy.UrlbarShared.getResultSourceName.bind(sharedPolicy.UrlbarShared)});
-  for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarSelectedSearch','UrlbarSearchModeModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarResultPresentation','UrlbarEditSession']) {
+  for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarSelectedSearch','UrlbarSearchModeModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarResultPresentation','UrlbarInputIdentity','UrlbarEditSession']) {
     const source=readFileSync(new URL(`../upstream/firefox/browser/components/urlbar/content/${file}.mjs`,import.meta.url),'utf8');
     vm.runInContext(source.replace(/^import .*;$/gm,'').replaceAll('export class ','class ').replaceAll('export function ','function ')+`\nthis.${file}=${file==='UrlbarSelectedSearch'?'querySelectedSearch':file};`,sandbox);
   }
@@ -4302,4 +4302,27 @@ test('cancel callback replacement cannot attach an older observed input to the n
   await assert.rejects(f.editor.edit({},edit(2,'obsolete'),{userTypedValue:null}),/superseded/);
   await newer;assert.equal(commits.length,0);assert.equal(f.editor.snapshot.revision,3);
   assert.equal(f.parent.started.at(-1).searchString,'newest');f.editor.close();
+});
+
+
+test('independent identity describes typed and composing snapshots but never stale revisions',async()=>{
+  const f=await editorFixture();await f.editor.edit({},edit(1,' exact '));
+  const d=f.editor.describeInputIdentity(1,{pageProxyValid:true,lastValidURL:'other'});
+  assert.equal(d.revision,1);assert.equal(d.userTypedValue,' exact ');assert.equal(d.invalidatePageProxy,true);
+  assert.equal(d.userSelectionBehavior,'none');assert.equal(Object.isFrozen(d),true);
+  assert.equal(f.editor.describeInputIdentity(0,{}),null);
+  await f.editor.edit({}, {...edit(2,''),composing:true});
+  const c=f.editor.describeInputIdentity(2,{pageProxyValid:false});
+  assert.equal(c.userTyping,false);assert.equal(c.pageProxyValid,false);
+  assert.equal(f.editor.describeInputIdentity(1,{}),null);f.editor.close();
+});
+
+test('completion and selection changes revoke observed-input identity descriptions',async()=>{
+  const f=await completionFixture();
+  assert.ok(f.editor.describeInputIdentity(1,{pageProxyValid:false}));
+  assert.equal(f.editor.acknowledgeCompletion(f.proposal.token,{text:f.proposal.value,
+    selectionStart:f.proposal.selectionStart,selectionEnd:f.proposal.selectionEnd,selectionDirection:'backward'}),true);
+  assert.equal(f.editor.describeInputIdentity(1,{pageProxyValid:false}),null);
+  await f.editor.edit({},edit(2,'next'));f.editor.select(2,0,0);
+  assert.equal(f.editor.describeInputIdentity(2,{pageProxyValid:false}),null);f.editor.close();
 });

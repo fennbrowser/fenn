@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {UrlbarInputIdentity} from '../upstream/firefox/browser/components/urlbar/content/UrlbarInputIdentity.mjs';
 import test from 'node:test';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
@@ -210,7 +211,7 @@ test('retained input identity applies shared persistence while preserving displa
   const source=read('content/UrlbarInputBase.mjs'),start=source.indexOf('  #updateTypedIdentity(value) {');
   const method=source.slice(start,source.indexOf('\n  _on_input(',start)).replace('#updateTypedIdentity','update');
   const {service}=fixture(),events=[];let active=true;
-  const Input=new Function('lazy',`return class {#isAddressbar=true;setAddressbar(value){this.#isAddressbar=value;}${method}}`)({UrlbarSearchTermsPersistence:service});
+  const Input=new Function('lazy','UrlbarInputIdentity',`return class {#isAddressbar=true;setAddressbar(value){this.#isAddressbar=value;}${method}}`)({UrlbarSearchTermsPersistence:service},UrlbarInputIdentity);
   const input=new Input(),state={persist:{shouldPersist:true,searchTerms:'displayed'}};
   input.window={gBrowser:{selectedBrowser:{}}};input.getBrowserState=()=>state;
   input.getAttribute=()=> 'invalid';input.toggleAttribute=(...args)=>events.push(args);input.removeAttribute=name=>events.push(name);
