@@ -6850,10 +6850,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..55f03df3d9
+index 0000000000..8a8f8fc4a7
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,307 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6886,12 +6886,19 @@ index 0000000000..55f03df3d9
 +  #completion = null;
 +  #autofill = null;
 +  #placeholder = null;
++  #closeRequest = null;
++  #onPresentationRequest;
 +
-+  constructor({ context, isCurrent, onUpdate }) {
++  constructor({ context, isCurrent, onUpdate, onPresentationRequest = null }) {
 +    if (typeof onUpdate != "function") throw new TypeError("Missing editor listener");
++    if (onPresentationRequest !== null && typeof onPresentationRequest != "function") {
++      throw new TypeError("Invalid editor presentation listener");
++    }
 +    this.#isCurrent = isCurrent;
 +    this.#onUpdate = onUpdate;
-+    this.#queries = new UrlbarQuerySession({ context, isCurrent });
++    this.#onPresentationRequest = onPresentationRequest;
++    this.#queries = new UrlbarQuerySession({ context, isCurrent,
++      onPresentationRequest: request => this.#requestClose(request) });
 +    this.#isPrivate = context.isPrivate;
 +  }
 +
@@ -6929,6 +6936,7 @@ index 0000000000..55f03df3d9
 +    this.#edit = Object.freeze({ revision, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: 0, composing });
 +    this.#completion = null;
++    this.#closeRequest = null;
 +    this.#autofill = null;
 +    // Revoke old work before any new snapshot can be published.
 +    this.#queries.cancel();
@@ -7008,6 +7016,7 @@ index 0000000000..55f03df3d9
 +    }
 +    this.#validateSelection(this.#edit.text, start, end, direction);
 +    this.#completion = null;
++    this.#closeRequest = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#edit = Object.freeze({ ...this.#edit, selectionStart: start,
@@ -7102,9 +7111,39 @@ index 0000000000..55f03df3d9
 +    this.#queries.publishPresentation(queryId, visibleResults, open);
 +  }
 +
++  #requestClose(request) {
++    this.#check();
++    const edit = this.#edit;
++    if (!edit || edit.composing || request.kind !== "close") return;
++    // A provider engagement ends result authority immediately; waiting for a
++    // host close must not leave completion writes or result exposure usable.
++    // This differs from temporarily hiding suggestions on focus loss.
++    this.cancel();
++    this.#check();
++    if (this.#edit !== edit) return;
++    const proposal = Object.freeze({ ...request, token: Object.freeze({}), edit });
++    this.#closeRequest = proposal;
++    this.#onPresentationRequest?.(proposal);
++  }
++
++  /** Validate immediately before closing a host surface; tokens stay in JS. */
++  getCloseRequest(token) {
++    this.#check();
++    const request = this.#closeRequest;
++    return request && request.token === token && request.edit === this.#edit ? request : null;
++  }
++
++  /** Observe a completed host close, not merely an enqueued native command. */
++  acknowledgeClose(token, { open }) {
++    if (!this.getCloseRequest(token) || open !== false) return false;
++    this.#closeRequest = null;
++    return true;
++  }
++
 +  cancel() {
 +    this.#check();
 +    this.#completion = null;
++    this.#closeRequest = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#queries.cancel();
@@ -7114,10 +7153,12 @@ index 0000000000..55f03df3d9
 +    if (this.#closed) return;
 +    this.#closed = true;
 +    this.#completion = null;
++    this.#closeRequest = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#queries.close();
 +    this.#onUpdate = null;
++    this.#onPresentationRequest = null;
 +  }
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs

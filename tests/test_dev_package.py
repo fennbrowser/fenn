@@ -11,6 +11,7 @@ import tempfile
 import types
 import unittest
 from urllib.parse import unquote
+from uuid import uuid4
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -246,7 +247,9 @@ class DevPackageTests(unittest.TestCase):
         app = ET.SubElement(apps, f"{{{package.NS['f']}}}Application", {
             "Id": "App", "Executable": "VFS/ProgramFiles/Dev Root/firefox.exe"})
         ET.SubElement(app, f"{{{package.NS['desktop']}}}ExecutionAlias", {"Alias": alias or lane.alias})
-        path = root / "test.msix"
+        # Each variant is independent. Avoid immediately overwriting a package
+        # that Windows may still have open after the previous validation.
+        path = root / f"test-{uuid4().hex}.msix"
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("AppxManifest.xml", ET.tostring(manifest))
             # Firefox's own package-root PRI must not be mistaken for the runtime's.

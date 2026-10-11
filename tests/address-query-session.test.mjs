@@ -156,11 +156,13 @@ test('a first-result callback can replace the query without leaking the old resu
 });
 
 async function editorFixture(options) {
-  const f=fixture(options);f.session.close();const updates=[];
+  const f=fixture(options);f.session.close();const updates=[],requests=[];
   const editor=new f.sandbox.UrlbarEditSession({context:f.context,isCurrent:()=>!f.invalid,
-    onUpdate:update=>updates.push(update)});
+    onUpdate:update=>updates.push(update),onPresentationRequest:request=>{
+      requests.push(request);options?.onRequest?.(request,editor);
+    }});
   const parent=f.parents.at(-1);await parent.child.engineStore.init();
-  return {...f,editor,parent,updates,loseScope(){f.invalid=true;}};
+  return {...f,editor,parent,updates,requests,loseScope(){f.invalid=true;}};
 }
 
 test('freezing stops providers once, retains identities and exposure, and suppresses synchronous and late updates',async()=>{
@@ -316,6 +318,61 @@ async function completionFixture() {
 }
 const observed=p=>({text:p.value,selectionStart:p.selectionStart,selectionEnd:p.selectionEnd,
   selectionDirection:p.selectionDirection});
+
+test('editor close requests revoke query and completion authority before host notification and require observed closure',async()=>{
+  const f=await completionFixture(),snapshot=f.editor.snapshot;
+  f.editor.publishPresentation(1,f.query.id,[f.result],true);
+  assert.equal(f.editor.getCloseRequest(undefined),null);
+  f.parent.child.notify('onResultsCloseRequested',f.query.id+1,true);
+  f.parent.child.notify('onResultsCloseRequested',f.query.id,false);
+  assert.equal(f.requests.length,0);assert.equal(f.editor.getCompletion(f.proposal.token),f.proposal);
+  f.parent.child.notify('onResultsCloseRequested',f.query.id,true);
+  const request=f.requests[0];assert.ok(Object.isFrozen(request));assert.ok(Object.isFrozen(request.token));
+  assert.equal(request.edit,snapshot);assert.equal(request.queryId,f.query.id);assert.equal(request.elementPicked,true);
+  assert.equal(f.editor.snapshot,snapshot);assert.equal(f.parent.child.resultsOpen,false);
+  assert.equal(f.parent.child.visibleResults.length,0);
+  assert.equal(f.editor.getCompletion(f.proposal.token),null);
+  assert.throws(()=>f.editor.describeResultInput(1,f.query.id,f.result),/Stale/);
+  assert.throws(()=>f.editor.publishPresentation(1,f.query.id,[f.result],true),/Invalid/);
+  assert.equal(f.editor.acknowledgeClose({}, {open:false}),false);
+  assert.equal(f.editor.acknowledgeClose(request.token,{open:true}),false);
+  assert.equal(f.editor.getCloseRequest(request.token),request);
+  assert.equal(f.editor.acknowledgeClose(request.token,{open:false}),true);
+  assert.equal(f.editor.acknowledgeClose(request.token,{open:false}),false);
+  f.parent.child.notify('onResultsCloseRequested',f.query.id,true);
+  f.parent.child.notify('onFirstResult',f.query);
+  assert.equal(f.requests.length,1);assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+test('frozen editor close requests cannot outlive a caret move, edit, cancel, scope or another session',async()=>{
+  for(const revoke of [f=>f.editor.select(1,1,1),f=>f.editor.edit({},edit(2,'new')),f=>f.editor.cancel()]) {
+    const f=await completionFixture();f.editor.freezeResults(1,f.query.id);
+    f.parent.child.notify('onResultsCloseRequested',f.query.id,true);
+    const request=f.requests[0];await revoke(f);
+    assert.equal(f.editor.getCloseRequest(request.token),null);
+    assert.equal(f.editor.acknowledgeClose(request.token,{open:false}),false);f.editor.close();
+  }
+  const a=await completionFixture(),b=await completionFixture();
+  for(const f of [a,b])f.parent.child.notify('onResultsCloseRequested',f.query.id,true);
+  assert.equal(b.editor.acknowledgeClose(a.requests[0].token,{open:false}),false);
+  a.loseScope();assert.throws(()=>a.editor.getCloseRequest(a.requests[0].token),/scope changed/);
+  assert.equal(a.parent.destroyed,1);b.editor.close();
+  assert.throws(()=>b.editor.getCloseRequest(b.requests[0].token),/closed/);
+});
+
+test('host close callbacks may synchronously replace the edit without reviving the old request',async()=>{
+  let next;
+  const f=await editorFixture({onRequest:(request,editor)=>{
+    assert.equal(editor.getCloseRequest(request.token),request);
+    next=editor.edit({},edit(2,'new host edit'));
+  }});
+  const q=await f.editor.edit({},edit(1,'old'));q.results=[{payload:{}}];
+  f.parent.child.notify('onResultsCloseRequested',q.id,true);
+  const current=await next;
+  assert.equal(f.editor.getCloseRequest(f.requests[0].token),null);
+  f.editor.publishPresentation(2,current.id,[],true);assert.equal(f.parent.child.resultsOpen,true);
+  f.parent.child.notify('onResultsCloseRequested',q.id,true);assert.equal(f.requests.length,1);f.editor.close();
+});
 
 test('completion acknowledgment observes exactly one host write without issuing a new query',async()=>{
   const f=await completionFixture(),p=f.proposal,count=f.parent.started.length;
