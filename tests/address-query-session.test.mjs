@@ -19,6 +19,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     initEngineStore(){if(!hold)this.child.updateEngineStore('init',[],null);}
     startQuery(query){query.results??=[];this.started.push(query);return Promise.resolve(query);}
     cancelQuery(){this.cancelled=(this.cancelled??0)+1;}
+    captureIndependentQueryAuthority(){return ()=>true;}
     destroy(){this.destroyed=(this.destroyed??0)+1;}
   }
   let id=0;
@@ -3857,7 +3858,7 @@ test('confirmed command commit preserves preview query context and emits confirm
   f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{
     assert.equal(current(),true);assert.equal(mode.isPreview,false);assert.equal(facts.expectedStateToken,f.inputToken);
     assert.equal(facts.engineId,'engine');assert.equal(facts.modeEntry,c.modeEntry);
-    notify({browserId:id,searchMode:mode,userTypedValue:c.edit.text});return {applied:true};
+    notify({browserId:id,searchMode:mode,userTypedValue:c.edit.text});return {applied:true,stateToken:{},userTypedValue:c.edit.text};
   };
   assert.equal(f.editor.commitSearchCommandConfirmation(c.token,observedConfirmation(c)).applied,true);
   assert.equal(events.length,1);assert.equal(events[0].reason,'search-command-confirmation');
@@ -3993,4 +3994,75 @@ test('parent input commits state before browser setters and reports reentrant su
   Object.defineProperty(browser,'userTypedValue',{get:()=>text,set:value=>{events.push('text');text=value;latest={};}});
   const result=p.commitIndependentInputState(42,'new',{userTypedValue:'old',expectedStateToken:prior,persistedSearchTerms:false},()=>true);
   assert.equal(result.applied,true);assert.equal(result.current,false);assert.deepEqual(events,['state','text']);
+});
+
+
+test('dispatch authority is evaluated after engine readiness and never enters provider query data',async()=>{
+  for(const allowed of [true,false]) {
+    const f=fixture({hold:true}),events=[];let ready=false,calls=0;
+    const pending=f.session.query({}, {searchString:'guarded'},u=>events.push(u.kind),()=>{calls++;assert.equal(ready,true);return allowed;});
+    assert.equal(calls,0);ready=true;f.parent.child.updateEngineStore('init',[],null);
+    if(allowed){const q=await pending;assert.equal(Object.hasOwn(q,'authorize'),false);assert.equal(f.parent.started.length,1);}
+    else {await assert.rejects(pending,/dispatch authority/);assert.equal(f.parent.started.length,0);}
+    assert.equal(calls,1);f.session.close();
+  }
+});
+
+test('dispatch guard cancellation and replacement cannot dispatch the obsolete context',async()=>{
+  for(const action of ['cancel','replace','throw']) {
+    const f=fixture();let next;
+    const pending=f.session.query({}, {searchString:'old'},null,()=>{
+      if(action==='throw')throw Error('guard failed');
+      if(action==='cancel')f.session.cancel();
+      if(action==='replace')next=f.session.query({}, {searchString:'new'});
+      return true;
+    });
+    await assert.rejects(pending,action==='throw'?/guard failed/:/superseded|cancelled/);
+    if(next)await next;
+    assert.deepEqual(f.parent.started.map(q=>q.searchString),action==='replace'?['new']:[]);
+    await f.session.query({}, {searchString:'later'});assert.equal(f.parent.started.at(-1).searchString,'later');f.session.close();
+  }
+});
+
+test('invalid dispatch guards fail before replacing an owned query',async()=>{
+  const f=fixture(),q=await f.session.query({}, {searchString:'keep'});
+  await assert.rejects(f.session.query({}, {searchString:'bad'},null,1),/Invalid query dispatch guard/);
+  assert.equal(f.session.ownsQuery(q.id),true);f.session.close();
+});
+
+test('parent dispatch authority pins receipt, typed text, selected browser and document lifetime',()=>{
+  for(const change of ['receipt','text','document','epoch','selected','destroy']) {
+    const {p,browser,lazy}=parentLoadFixture(),token={};let owned=true;browser.userTypedValue='command';
+    lazy.independentUrlbarBrowserState.isCommitted=(_b,t)=>owned&&t===token;
+    const guard=p.captureIndependentQueryAuthority(42,token,'command');assert.equal(guard(),true);
+    if(change==='receipt')owned=false;if(change==='text')browser.userTypedValue='new';
+    if(change==='document')browser.browsingContext.currentWindowGlobal={};if(change==='epoch')browser.lastLocationChange++;
+    if(change==='selected')p.browserWindow.gBrowser.selectedBrowser={};if(change==='destroy')p.destroy();
+    assert.equal(guard(),false,change);assert.equal(p.captureIndependentQueryAuthority(42,token,'command')===null,change!=='epoch'&&change!=='document');
+  }
+});
+
+test('committed command dispatch uses the final input receipt and can reject while engines are held',async()=>{
+  const f=await commandInputFixture('#'),p=f.proposal,inputToken={};let allowed=true,checked=0;
+  f.parent.commitIndependentInputState=()=>({applied:true,current:true,stateToken:inputToken});
+  f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p));
+  f.parent.captureIndependentQueryAuthority=(id,token,text)=>{
+    assert.equal(id,42);assert.equal(token,inputToken);assert.equal(text,'# ');return ()=>{checked++;return allowed;};
+  };
+  const store=f.parent.child.engineStore,gate=Promise.withResolvers();
+  Object.defineProperty(store,'initialized',{value:false});store.init=()=>gate.promise;
+  const query=f.editor.requeryAfterSearchCommand(p.token,{searchMode:null});
+  assert.equal(checked,0);allowed=false;gate.resolve();await assert.rejects(query,/dispatch authority/);
+  assert.equal(checked,1);assert.equal(f.parent.started.length,1);assert.equal(f.editor.getSearchCommandRequery(p.token),null);f.editor.close();
+});
+
+test('confirmed command passes confirmation receipt and final browser text to dispatch capture',async()=>{
+  const f=await commandConfirmationFixture(),c=f.confirmation,confirmedToken={};
+  f.parent.commitIndependentModeState=()=>({applied:true,stateToken:confirmedToken,userTypedValue:'actual mode text'});
+  f.editor.commitSearchCommandConfirmation(c.token,observedConfirmation(c));
+  f.parent.captureIndependentQueryAuthority=(id,token,text)=>{
+    assert.equal(token,confirmedToken);assert.equal(text,'actual mode text');return null;
+  };
+  await assert.rejects(f.editor.requeryAfterSearchCommand(f.proposal.token,{searchMode:c.searchMode}),/browser state superseded/);
+  assert.equal(f.editor.getSearchCommandRequery(f.proposal.token),null);f.editor.close();
 });
