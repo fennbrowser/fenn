@@ -4815,3 +4815,122 @@ test('a newer composition end preparation revokes its predecessor without ending
   assert.equal(f.editor.snapshot.composing,true);
   assert.equal(f.editor.acknowledgeCompositionEnd(b.token,observedCompositionEnd(b)),true);f.editor.close();
 });
+
+
+async function compositionReopenFixture(mode=null, text='retained', engine=null) {
+  const f=await editorFixture({browserId:42});
+  if(engine)f.parent.child.updateEngineStore('changed',engine,-1);
+  await f.editor.edit({searchMode:mode}, {...edit(1,text),composing:true});
+  const proposal=f.editor.beginCompositionEnd(1,{hasData:false,hadText:false,closedPopup:true});
+  assert.equal(f.editor.acknowledgeCompositionEnd(proposal.token,observedCompositionEnd(proposal)),true);
+  const receipt={},events=[];let preserves=0;
+  f.parent.commitIndependentModePreservation=(id,observed,persisted,current)=>{
+    assert.equal(id,42);assert.equal(JSON.stringify(observed),JSON.stringify(mode));assert.equal(persisted,false);
+    assert.equal(current(),true);preserves++;return {applied:true,stateToken:receipt};
+  };
+  f.parent.captureIndependentQueryAuthority=(id,token,value)=>{
+    assert.equal(id,42);assert.equal(token,receipt);assert.equal(value,null);return ()=>true;
+  };
+  f.parent.child.engagementEvent.start=(event,query,text)=>events.push({event,query,text});
+  return {...f,proposal,events,preserves:()=>preserves,
+    observation:{pageProxyValid:false,userTypedValue:null,persistedSearchTerms:false,
+      event:{type:'compositionend',data:'',timeStamp:12}}};
+}
+
+test('empty composition reopens once without input, mode reset or typed-value writes',async()=>{
+  const mode={source:1,isPreview:false},f=await compositionReopenFixture(mode);
+  const before=f.editor.snapshot;
+  const query=await f.editor.reopenAfterCompositionEnd(f.proposal.token,{searchMode:mode},f.observation);
+  assert.equal(query.searchString,'retained');assert.equal(query.allowAutofill,true);
+  assert.equal(f.editor.snapshot,before);assert.equal(f.editor.inputState,null);assert.equal(f.preserves(),1);
+  assert.equal(f.events.length,1);assert.equal(f.events[0].event.type,'compositionend');
+  assert.equal(Object.isFrozen(f.events[0].event),true);assert.equal(f.events[0].query,query);
+  assert.equal(f.parent.started.length,1);
+  assert.equal(await f.editor.reopenAfterCompositionEnd(f.proposal.token,{searchMode:mode},f.observation),null);
+  f.editor.close();
+});
+
+test('valid-page composition reopening queries zero-prefix without changing the displayed address',async()=>{
+  const f=await compositionReopenFixture(null,'https://example.test/');
+  const query=await f.editor.reopenAfterCompositionEnd(f.proposal.token,{}, {...f.observation,pageProxyValid:true});
+  assert.equal(query.searchString,'');assert.equal(f.editor.snapshot.text,'https://example.test/');
+  assert.equal(f.events[0].text,'');f.editor.close();
+});
+
+test('reopen rejects malformed facts before consumption and mismatched or preview mode after consumption',async()=>{
+  const f=await compositionReopenFixture();
+  for(const change of [{pageProxyValid:null},{userTypedValue:4},{persistedSearchTerms:null},
+    {event:{type:'input',timeStamp:12,data:''}},{event:{type:'compositionend',timeStamp:12,data:'commit'}}]) {
+    await assert.rejects(f.editor.reopenAfterCompositionEnd(f.proposal.token,{}, {...f.observation,...change}),/Invalid composition reopen/);
+  }
+  assert.equal(f.preserves(),0);
+  assert.equal(await f.editor.reopenAfterCompositionEnd(f.proposal.token,{searchMode:{source:1}},f.observation),null);
+  assert.equal(await f.editor.reopenAfterCompositionEnd(f.proposal.token,{},f.observation),null);f.editor.close();
+  const preview=await compositionReopenFixture({source:1,isPreview:true});
+  assert.equal(await preview.editor.reopenAfterCompositionEnd(preview.proposal.token,{searchMode:{source:1,isPreview:true}},preview.observation),null);
+  assert.equal(preview.preserves(),0);preview.editor.close();
+});
+
+test('caret, input, preference and cancellation revoke acknowledged empty reopen',async()=>{
+  for(const change of ['caret','input','preference','cancel']) {
+    const f=await compositionReopenFixture();
+    if(change==='caret')f.editor.select(1,0,0);
+    if(change==='input')await f.editor.edit({},edit(2,'new'));
+    if(change==='preference')f.prefs.keepPanelOpenDuringImeComposition=true;
+    if(change==='cancel')f.editor.cancel();
+    assert.equal(await f.editor.reopenAfterCompositionEnd(f.proposal.token,{},f.observation),null);
+    assert.equal(f.preserves(),0);f.editor.close();
+  }
+});
+
+test('reopen browser-state failure consumes authority without an engagement update or query',async()=>{
+  for(const phase of ['preserve','capture']) {
+    const f=await compositionReopenFixture();
+    if(phase==='preserve')f.parent.commitIndependentModePreservation=()=>null;
+    else f.parent.captureIndependentQueryAuthority=()=>null;
+    assert.equal(await f.editor.reopenAfterCompositionEnd(f.proposal.token,{},f.observation),null);
+    assert.equal(await f.editor.reopenAfterCompositionEnd(f.proposal.token,{},f.observation),null);
+    assert.equal(f.events.length,0);assert.equal(f.parent.started.length,0);f.editor.close();
+  }
+});
+
+test('engine-held reopen rechecks browser authority and cancellation immediately before dispatch',async()=>{
+  for(const change of ['browser','caret','cancel']) {
+    const f=await compositionReopenFixture();let allowed=true;
+    f.parent.captureIndependentQueryAuthority=()=>()=>allowed;
+    const store=f.parent.child.engineStore,gate=Promise.withResolvers();
+    Object.defineProperty(store,'initialized',{value:false});store.init=()=>gate.promise;
+    const pending=f.editor.reopenAfterCompositionEnd(f.proposal.token,{},f.observation);
+    assert.equal(f.events.length,1);assert.equal(f.parent.started.length,0);
+    if(change==='browser')allowed=false;if(change==='caret')f.editor.select(1,0,0);if(change==='cancel')f.editor.cancel();
+    gate.resolve();await assert.rejects(pending,/dispatch authority|superseded|cancelled/i);
+    assert.equal(f.parent.started.length,0);f.editor.close();
+  }
+});
+
+test('engagement reentry cannot dispatch a superseded composition reopen',async()=>{
+  const f=await compositionReopenFixture();
+  f.parent.child.engagementEvent.start=()=>f.editor.cancel();
+  await assert.rejects(f.editor.reopenAfterCompositionEnd(f.proposal.token,{},f.observation),/superseded|cancelled/i);
+  assert.equal(f.parent.started.length,0);f.editor.close();
+});
+
+
+test('engine replacement revokes captured composition reopen identity before and during dispatch',async()=>{
+  for(const held of [false,true]) {
+    const engine={id:'engine',name:'Engine',isGeneralPurposeEngine:true,aliases:[]};
+    const mode={engineName:'Engine',isGeneralPurposeEngine:true,source:3,isPreview:false};
+    const f=await compositionReopenFixture(mode,'retained',engine);
+    const replace=()=>f.parent.child.updateEngineStore('changed',{...engine,id:'replacement'},0);
+    if(!held) {
+      replace();assert.equal(await f.editor.reopenAfterCompositionEnd(f.proposal.token,{searchMode:mode},f.observation),null);
+      assert.equal(f.preserves(),0);
+    } else {
+      const store=f.parent.child.engineStore,gate=Promise.withResolvers();
+      Object.defineProperty(store,'initialized',{value:false,configurable:true});store.init=()=>gate.promise;
+      const pending=f.editor.reopenAfterCompositionEnd(f.proposal.token,{searchMode:mode},f.observation);
+      Object.defineProperty(store,'initialized',{value:true});replace();gate.resolve();await assert.rejects(pending,/dispatch authority/);
+    }
+    assert.equal(f.parent.started.length,0);f.editor.close();
+  }
+});

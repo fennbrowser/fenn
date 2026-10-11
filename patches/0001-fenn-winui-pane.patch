@@ -9126,10 +9126,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..bdd79447b1
+index 0000000000..223b6de375
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1933 @@
+@@ -0,0 +1,1980 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9170,6 +9170,8 @@ index 0000000000..bdd79447b1
 +  #compositionPresentation = null;
 +  #compositionStart = null;
 +  #compositionEnd = null;
++  #compositionReopen = null;
++  #reopeningComposition = null;
 +  #compositionStateReady = null;
 +  #committingComposition = null;
 +  #closed = false;
@@ -9236,8 +9238,10 @@ index 0000000000..bdd79447b1
 +        this.#compositionStateReady || this.#committingComposition) return null;
 +    const keepPanelOpen = UrlbarPrefs.get("keepPanelOpenDuringImeComposition");
 +    const policy = UrlbarCompositionModel.endPolicy({ hasData, hadText, closedPopup, keepPanelOpen });
++    const identity = policy.reopen ? this.#queries.captureCompositionMode(this.#searchMode) : null;
++    if (policy.reopen && !identity) return null;
 +    const proposal = Object.freeze({ ...policy, edit, token: Object.freeze({}) });
-+    this.#compositionEnd = { proposal, keepPanelOpen };
++    this.#compositionEnd = { proposal, keepPanelOpen, mode: this.#searchMode, engineId: identity?.engineId };
 +    return proposal;
 +  }
 +
@@ -9245,7 +9249,8 @@ index 0000000000..bdd79447b1
 +    this.#check();
 +    const pending = this.#compositionEnd;
 +    if (!pending || pending.proposal.token !== token) return null;
-+    if (pending.proposal.edit !== this.#edit ||
++    if (pending.proposal.edit !== this.#edit || pending.mode !== this.#searchMode ||
++        (pending.proposal.reopen && !this.#queries.isCompositionModeCurrent(pending.mode, pending.engineId)) ||
 +        pending.keepPanelOpen !== UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
 +      this.#compositionEnd = null;
 +      return null;
@@ -9261,11 +9266,14 @@ index 0000000000..bdd79447b1
 +        selectionEnd !== request.edit.selectionEnd || selectionDirection !== request.edit.selectionDirection ||
 +        composing !== false || (request.clearSelection && selectionCleared !== true) ||
 +        (request.clearResultForCurrentValue && resultForCurrentValue !== null)) return false;
++    const pending = this.#compositionEnd;
 +    this.#compositionEnd = null;
 +    // The end event does not consume the next input transition or start its query.
 +    const edit = { ...request.edit, composing: false };
 +    delete edit.composition;
 +    this.#edit = Object.freeze(edit);
++    this.#compositionReopen = request.reopen ? { token, edit: this.#edit,
++      mode: pending.mode, engineId: pending.engineId, keepPanelOpen: pending.keepPanelOpen } : null;
 +    this.#compositionPresentation = null;
 +    this.#completion = null;
 +    this.#autofill = null;
@@ -9276,6 +9284,39 @@ index 0000000000..bdd79447b1
 +      this.#resultPreview = null;
 +    }
 +    return true;
++  }
++
++  /** Reopen an acknowledged empty composition once, without synthesizing input. */
++  async reopenAfterCompositionEnd(token, state, { pageProxyValid, userTypedValue, persistedSearchTerms, event } = {}) {
++    this.#check();
++    const pending = this.#compositionReopen;
++    if (!pending || pending.token !== token) return null;
++    if (typeof pageProxyValid !== "boolean" || typeof persistedSearchTerms !== "boolean" ||
++        (userTypedValue !== null && typeof userTypedValue !== "string") ||
++        event?.type !== "compositionend" || event.data !== "" ||
++        !Number.isFinite(event.timeStamp) || event.timeStamp < 0) {
++      throw new TypeError("Invalid composition reopen observations");
++    }
++    const endEvent = Object.freeze({ type: event.type, timeStamp: event.timeStamp, data: "" });
++    this.#compositionReopen = null;
++    this.#reopeningComposition = pending;
++    const current = () => !this.#closed && this.#isCurrent() && this.#reopeningComposition === pending &&
++      this.#edit === pending.edit && !this.#edit.composing && this.#searchMode === pending.mode &&
++      UrlbarPrefs.get("keepPanelOpenDuringImeComposition") === pending.keepPanelOpen;
++    try {
++      if (!current() || pending.mode?.isPreview || !UrlbarShared.deepEqual(state.searchMode ?? null, pending.mode)) return null;
++      const authorize = this.#queries.createCompositionReopenAuthority(pending.mode, pending.engineId,
++        { userTypedValue, persistedSearchTerms }, current);
++      if (!authorize || !current()) return null;
++      const text = UrlbarQueryModel.resolveSearchString({ value: pending.edit.text, pageProxyValid });
++      const revision = pending.edit.revision;
++      return await this.#queries.query({ ...state, searchMode: pending.mode }, { searchString: text, allowAutofill: true }, update => {
++        if (update.kind === "prepared") this.#queries.updateCompositionEngagement(update.query.id, endEvent);
++        else this.#publishQueryUpdate(update, { revision, text, allowAutofill: true });
++      }, authorize);
++    } finally {
++      if (this.#reopeningComposition === pending) this.#reopeningComposition = null;
++    }
 +  }
 +
 +  /** Plan a composition start for the current edit; the host still applies effects. */
@@ -9470,6 +9511,8 @@ index 0000000000..bdd79447b1
 +    }
 +    const priorTypedValue = browserState?.userTypedValue;
 +    this.#inputState = null;
++    this.#compositionReopen = null;
++    this.#reopeningComposition = null;
 +    this.#compositionStateReady = null;
 +    this.#committingComposition = null;
 +    this.#compositionStart = null;
@@ -11000,6 +11043,8 @@ index 0000000000..bdd79447b1
 +  }
 +
 +  cancel() {
++    this.#compositionReopen = null;
++    this.#reopeningComposition = null;
 +    this.#compositionStateReady = null;
 +    this.#committingComposition = null;
 +    this.#compositionStart = null;
@@ -11030,6 +11075,8 @@ index 0000000000..bdd79447b1
 +  }
 +
 +  close() {
++    this.#compositionReopen = null;
++    this.#reopeningComposition = null;
 +    this.#compositionStateReady = null;
 +    this.#committingComposition = null;
 +    this.#compositionStart = null;
@@ -11065,10 +11112,10 @@ index 0000000000..bdd79447b1
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..0e3f7bca59
+index 0000000000..ac984b1932
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,884 @@
+@@ -0,0 +1,914 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11697,6 +11744,36 @@ index 0000000000..0e3f7bca59
 +    if (!current()) return null;
 +    return this.#controller.parentController.commitIndependentCompositionStart(this.#context.browserId,
 +      facts, current, onCommitted);
++  }
++
++  /** Preserve owned mode and pin browser text/lifetime until reopen dispatch. */
++  createCompositionReopenAuthority(searchMode, engineId, { userTypedValue, persistedSearchTerms }, isCurrent) {
++    this.#check();
++    if ((userTypedValue !== null && typeof userTypedValue !== "string") ||
++        typeof persistedSearchTerms !== "boolean" || typeof isCurrent !== "function") {
++      throw new TypeError("Invalid composition reopen state");
++    }
++    const current = () => !this.#closed && this.#isCurrent() && isCurrent() &&
++      this.isCompositionModeCurrent(searchMode, engineId);
++    if (searchMode?.isPreview || !current()) return null;
++    const parent = this.#controller.parentController;
++    const outcome = parent.commitIndependentModePreservation(this.#context.browserId,
++      searchMode, persistedSearchTerms, current);
++    if (!outcome?.applied || !current()) return null;
++    const browserCurrent = parent.captureIndependentQueryAuthority(this.#context.browserId,
++      outcome.stateToken, userTypedValue);
++    return browserCurrent && current() ? () => current() && browserCurrent() && current() : null;
++  }
++
++  /** Forward the real end event to Firefox's existing engagement clock policy. */
++  updateCompositionEngagement(queryId, event) {
++    if (!this.ownsQuery(queryId)) throw new Error("Stale composition engagement query");
++    if (event?.type !== "compositionend" || event.data !== "" ||
++        !Number.isFinite(event.timeStamp) || event.timeStamp < 0) throw new TypeError("Invalid composition end event");
++    // Firefox may update an existing clock; this event cannot start a new one.
++    // Do not synthesize input or mark an inactive engagement active.
++    this.#controller.engagementEvent.start(Object.freeze({ type: event.type,
++      timeStamp: event.timeStamp, data: "" }), this.#query, this.#query.searchString);
 +  }
 +
 +  /** Commit observed typing without borrowing search-command semantics. */
