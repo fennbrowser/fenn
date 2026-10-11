@@ -216,7 +216,7 @@ index a182468fce..428407c54a 100644
  </body>
  </html>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..275e090d8a 100644
+index b2b5db6040..ce37f89ea0 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
 @@ -33,6 +33,20 @@ browser.jar:
@@ -240,7 +240,7 @@ index b2b5db6040..275e090d8a 100644
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
-@@ -104,3 +118,13 @@ browser.jar:
+@@ -104,3 +118,14 @@ browser.jar:
  
  # L10n resources and overrides.
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
@@ -248,6 +248,7 @@ index b2b5db6040..275e090d8a 100644
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
 +    content/browser/urlbar/UrlbarCompositionModel.mjs (../components/urlbar/content/UrlbarCompositionModel.mjs)
 +    content/browser/urlbar/UrlbarAutofillModel.mjs (../components/urlbar/content/UrlbarAutofillModel.mjs)
++    content/browser/urlbar/UrlbarQuerySession.mjs (../components/urlbar/content/UrlbarQuerySession.mjs)
 +    content/browser/urlbar/UrlbarQueryModel.mjs (../components/urlbar/content/UrlbarQueryModel.mjs)
 +    content/browser/urlbar/UrlbarQueryLifecycle.mjs (../components/urlbar/content/UrlbarQueryLifecycle.mjs)
 +    content/browser/urlbar/UrlbarSearchModeModel.mjs (../components/urlbar/content/UrlbarSearchModeModel.mjs)
@@ -830,10 +831,18 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..51ece7dc8c 100644
+index ba254af0c6..10dd25a926 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
-@@ -171,6 +171,12 @@ export class UrlbarParentController {
+@@ -114,6 +114,7 @@ export class UrlbarParentController {
+    * @type {UrlbarChildControllerProxy | UrlbarChildController}
+    */
+   #child = null;
++  #destroyed = false;
+ 
+   // The owning JSWindowActor, used to resolve the chrome window parent-side
+   // (see `browserWindow`). Unlike the input and view, the browser window is a
+@@ -171,6 +172,12 @@ export class UrlbarParentController {
      return AppConstants.platform;
    }
  
@@ -846,7 +855,64 @@ index ba254af0c6..51ece7dc8c 100644
    /**
     * The input or an object that can forward calls to the input.
     *
-@@ -1864,17 +1870,16 @@ export class TelemetryEvent {
+@@ -1332,6 +1339,7 @@ export class UrlbarParentController {
+    * @param {object} params Parameters to pass with the notification.
+    */
+   notify(name, ...params) {
++    if (this.#destroyed) return;
+     if (this.#child.isProxy === true) {
+       this.#child.notifyFromWire(
+         name,
+@@ -1355,6 +1363,8 @@ export class UrlbarParentController {
+    * it once the input it serves is gone.
+    */
+   destroy() {
++    if (this.#destroyed) return;
++    this.#destroyed = true;
+     if (this.#engineObserverRegistered) {
+       Services.obs.removeObserver(this, "browser-search-engine-modified");
+       this.#engineObserverRegistered = false;
+@@ -1386,7 +1396,7 @@ export class UrlbarParentController {
+   }
+ 
+   async initEngineStore() {
+-    if (this.#engineStoreInitStarted) {
++    if (this.#destroyed || this.#engineStoreInitStarted) {
+       return;
+     }
+     this.#engineStoreInitStarted = true;
+@@ -1394,10 +1404,11 @@ export class UrlbarParentController {
+       try {
+         await lazy.SearchService.init();
+       } catch {
+-        this.#child.updateEngineStore("error");
++        if (!this.#destroyed) this.#child.updateEngineStore("error");
+         return;
+       }
+     }
++    if (this.#destroyed) return;
+     let engines = lazy.SearchService.visibleEngines;
+     let engineInfos = engines.map(engineToEngineInfo);
+     let defaultEngine = this.isPrivate
+@@ -1415,7 +1426,7 @@ export class UrlbarParentController {
+   }
+ 
+   #topSitesListener = () => {
+-    this.view.clearTopSitesCache();
++    this.notify(lazy.UrlbarShared.NOTIFICATIONS.PRESENTATION_CACHE_INVALIDATED, "topsites");
+   };
+ 
+   QueryInterface = ChromeUtils.generateQI([
+@@ -1437,7 +1448,7 @@ export class UrlbarParentController {
+         );
+         break;
+       case "intl:app-locales-changed":
+-        this.view.clearL10nCache();
++        this.notify(lazy.UrlbarShared.NOTIFICATIONS.PRESENTATION_CACHE_INVALIDATED, "l10n");
+         break;
+     }
+   };
+@@ -1864,17 +1875,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -926,6 +992,29 @@ index bc6837e211..d5ff780b17 100644
      const visibleResultsByProviderName = new Map();
  
      visibleResults.forEach((result, index) => {
+diff --git a/browser/components/urlbar/content/SearchEngineStore.mjs b/browser/components/urlbar/content/SearchEngineStore.mjs
+index 6d9c262c83..58fe21fd4f 100644
+--- a/browser/components/urlbar/content/SearchEngineStore.mjs
++++ b/browser/components/urlbar/content/SearchEngineStore.mjs
+@@ -128,7 +128,17 @@ export class SearchEngineStore {
+    */
+   constructor(controller) {
+     this.#controller = controller;
+-    this.isPrivate = controller.input.isPrivate;
++    this.isPrivate = controller.isPrivate;
++  }
++
++  /** Release observers and settle any engine-initialization wait. */
++  destroy() {
++    this.failed = true;
++    this.initialized = false;
++    this.#store = [];
++    this.#defaultEngine = null;
++    this.#observers = [];
++    this.#initPromiseWithResolvers.resolve();
+   }
+ 
+   /**
 diff --git a/browser/components/urlbar/content/SearchModeSwitcher.mjs b/browser/components/urlbar/content/SearchModeSwitcher.mjs
 index 30f5aa6556..6198840503 100644
 --- a/browser/components/urlbar/content/SearchModeSwitcher.mjs
@@ -2152,7 +2241,7 @@ index e5dcc2c923..c5c7d8b11b 100644
        let event = new UIEvent("input", {
          bubbles: true,
 diff --git a/browser/components/urlbar/content/UrlbarChildController.mjs b/browser/components/urlbar/content/UrlbarChildController.mjs
-index b679c5cf1b..e4b7254d43 100644
+index b679c5cf1b..046a7ebf7f 100644
 --- a/browser/components/urlbar/content/UrlbarChildController.mjs
 +++ b/browser/components/urlbar/content/UrlbarChildController.mjs
 @@ -8,6 +8,7 @@ import { UrlbarChildTelemetry } from "chrome://browser/content/urlbar/UrlbarChil
@@ -2180,7 +2269,17 @@ index b679c5cf1b..e4b7254d43 100644
    get logger() {
      if (!UrlbarChildController.#logger) {
        UrlbarChildController.#logger = UrlbarShared.getLogger({
-@@ -76,19 +87,7 @@ export class UrlbarChildController {
+@@ -62,6 +73,9 @@ export class UrlbarChildController {
+   #parentController;
+ 
+   #input;
++  #context;
++  #destroyed = false;
++  #isCurrent = () => true;
+ 
+   /** @type {UrlbarView} */
+   #view = null;
+@@ -76,19 +90,7 @@ export class UrlbarChildController {
  
    #userSelectionBehavior = /** @type {"arrow"|"tab"|"none"} */ ("none");
  
@@ -2201,20 +2300,95 @@ index b679c5cf1b..e4b7254d43 100644
  
    /**
     * The content-side engagement-telemetry collector, created lazily on the
-@@ -118,6 +117,12 @@ export class UrlbarChildController {
+@@ -100,27 +102,55 @@ export class UrlbarChildController {
+ 
+   /**
+    * @param {object} options
+-   * @param {UrlbarInput} options.input
++   * @param {UrlbarInput} [options.input] Retained DOM consumer.
++   * @param {object} [options.context] Independent chrome consumer identity:
++   *   {sapName, isPrivate, actor}. Mutually exclusive with input.
++   * @param {Function} [options.isCurrent] Independent host's scope check. Checked
++   *   again after engine readiness and before result notification side effects.
+    */
+   constructor(options) {
+-    if (!options.input) {
+-      throw new Error("Missing options: input");
++    if (!options.input && !options.context) {
++      throw new Error("Missing options: input or context");
+     }
+-    this.#input = options.input;
+-
+-    this.#parentController = UrlbarContentUtils.usesMessagePath()
+-      ? new UrlbarParentControllerProxy(options.input)
+-      : new lazy.UrlbarParentController({
+-          sapName: options.input.sapName,
+-          isPrivate: options.input.isPrivate,
+-          actor: options.input.window.windowGlobalChild.getActor("Urlbar"),
+-        });
++    if (options.input && options.context) {
++      throw new Error("Specify input or context, not both");
++    }
++    this.#input = options.input ?? null;
++    if (!this.#input && options.isCurrent) this.#isCurrent = options.isCurrent;
++    const messagePath = this.#input && UrlbarContentUtils.usesMessagePath();
++    const context = options.context ?? {
++      sapName: options.input.sapName,
++      isPrivate: options.input.isPrivate,
++      actor: messagePath ? null : options.input.window.windowGlobalChild.getActor("Urlbar"),
++    };
++    if (options.context && (!context.sapName || typeof context.isPrivate != "boolean" ||
++        !context.actor?.browsingContext || context.actor.browsingContext.isContent)) {
++      throw new Error("Independent controllers require a chrome context");
++    }
++    this.#context = Object.freeze({
++      sapName: context.sapName, isPrivate: context.isPrivate, actor: context.actor,
++    });
++    this.#parentController = messagePath
++      ? new UrlbarParentControllerProxy(this.#input)
++      : new lazy.UrlbarParentController(this.#context);
      this.#parentController.setChild(this);
  
      this.engineStore = new SearchEngineStore(this);
 +    this.#queryLifecycle = new UrlbarQueryLifecycle({
 +      engineStore: this.engineStore,
-+      dispatch: context => this.#parentController.startQuery(context),
++      dispatch: context => this.#isCurrent()
++        ? this.#parentController.startQuery(context)
++        : Promise.resolve(context),
 +      cancel: () => this.#parentController.cancelQuery(),
 +      arm: context => this.notify(UrlbarShared.NOTIFICATIONS.QUERY_ARMED, context),
 +    });
    }
  
++  get sapName() { return this.#context.sapName; }
++  get isPrivate() { return this.#context.isPrivate; }
++
    get input() {
-@@ -186,7 +191,7 @@ export class UrlbarChildController {
++    if (!this.#input) throw new Error("Independent controller has no input");
+     return this.#input;
+   }
+ 
+@@ -129,10 +159,11 @@ export class UrlbarChildController {
+    * browser window; for a content-process one it's the content window.
+    */
+   get window() {
+-    return this.#input.window;
++    return this.#input?.window ?? this.#context.actor.browsingContext.topChromeWindow;
+   }
+ 
+   get view() {
++    if (!this.#input) throw new Error("Independent controller has no view");
+     return this.#view;
+   }
+ 
+@@ -180,13 +211,14 @@ export class UrlbarChildController {
+   }
+ 
+   setView(view) {
++    if (!this.#input) throw new Error("Independent controller cannot attach a DOM view");
+     this.#view = view;
+   }
+ 
    async resolveFallbackNavigation(details) {
      // The result this hands back is picked like a query's, and paste-and-go
      // suppresses the query that would otherwise have waited for the store.
@@ -2223,7 +2397,15 @@ index b679c5cf1b..e4b7254d43 100644
      return this.#parentController.resolveFallbackNavigation(details);
    }
  
-@@ -242,7 +247,7 @@ export class UrlbarChildController {
+@@ -232,6 +264,7 @@ export class UrlbarChildController {
+    *   context.
+    */
+   notify(notification, ...params) {
++    if (this.#destroyed || !this.#isCurrent()) return;
+     // Drop the results and the end of a query nobody is waiting for anymore.
+     // Its end, read against results the listeners never saw, would tell the
+     // view that the query produced nothing: the view would clear its rows and
+@@ -242,7 +275,7 @@ export class UrlbarChildController {
        (notification === UrlbarShared.NOTIFICATIONS.QUERY_FIRST_RESULT ||
          notification === UrlbarShared.NOTIFICATIONS.QUERY_RESULTS ||
          notification === UrlbarShared.NOTIFICATIONS.QUERY_FINISHED) &&
@@ -2232,7 +2414,7 @@ index b679c5cf1b..e4b7254d43 100644
      ) {
        return;
      }
-@@ -287,67 +292,11 @@ export class UrlbarChildController {
+@@ -287,67 +320,12 @@ export class UrlbarChildController {
     *   query was cancelled or superseded while waiting for the engine store.
     */
    startQuery(queryContext) {
@@ -2291,6 +2473,7 @@ index b679c5cf1b..e4b7254d43 100644
 -    } catch {
 -      // The search service failed.
 -    }
++    if (this.#destroyed) throw new Error("Controller is destroyed");
 +    return this.#queryLifecycle.start(queryContext);
    }
  
@@ -2302,7 +2485,7 @@ index b679c5cf1b..e4b7254d43 100644
    }
  
    /**
-@@ -362,7 +311,7 @@ export class UrlbarChildController {
+@@ -362,7 +340,7 @@ export class UrlbarChildController {
     *   The context of the query being discarded.
     */
    discardResults(queryContext) {
@@ -2311,6 +2494,50 @@ index b679c5cf1b..e4b7254d43 100644
      this.notify(UrlbarShared.NOTIFICATIONS.QUERY_CANCELLED, queryContext);
    }
  
+@@ -767,7 +745,7 @@ export class UrlbarChildController {
+    *   Whether the event is a KeyboardEvent that triggers canonization.
+    */
+   isCanonizeKeyboardEvent(event) {
+-    if (this.#input.sapName == "searchbar") {
++    if (this.sapName == "searchbar") {
+       return false;
+     }
+     if (!UrlbarShared.isInstance(event, KeyboardEvent)) {
+@@ -814,7 +792,7 @@ export class UrlbarChildController {
+       where = UrlbarContentUtils.whereToOpenLink(event);
+     }
+     let openInTabPref =
+-      this.#input.sapName == "searchbar"
++      this.sapName == "searchbar"
+         ? UrlbarPrefs.get("browser.search.openintab")
+         : UrlbarPrefs.get("openintab");
+     if (openInTabPref) {
+@@ -879,10 +857,21 @@ export class UrlbarChildController {
+     return this.#parentController.maybeInitEngineStore();
+   }
+ 
+-  /**
+-   * @type {typeof SearchEngineStore.prototype.receive}
+-   */
++  /** Release a controller owned by an independent consumer. */
++  destroy() {
++    if (this.#destroyed) return;
++    this.#destroyed = true;
++    this.#queryLifecycle.cancel();
++    this.#queryLifecycle.discard();
++    this.visibleResults = [];
++    this.resultsOpen = false;
++    this.#listeners.clear();
++    this.engineStore.destroy();
++    this.#parentController.destroy();
++  }
++
++  /** @type {typeof SearchEngineStore.prototype.receive} */
+   updateEngineStore(...args) {
+-    this.engineStore.receive(...args);
++    if (!this.#destroyed) this.engineStore.receive(...args);
+   }
+ }
 diff --git a/browser/components/urlbar/content/UrlbarChildTelemetry.mjs b/browser/components/urlbar/content/UrlbarChildTelemetry.mjs
 index 73fef3a888..b7a9733852 100644
 --- a/browser/components/urlbar/content/UrlbarChildTelemetry.mjs
@@ -3499,10 +3726,10 @@ index a077de625f..79229f78c7 100644
        let event = new UIEvent("input", {
          bubbles: true,
 diff --git a/browser/components/urlbar/content/UrlbarShared.mjs b/browser/components/urlbar/content/UrlbarShared.mjs
-index 862b56c9ca..3d1572e4da 100644
+index 862b56c9ca..4f1cb193e6 100644
 --- a/browser/components/urlbar/content/UrlbarShared.mjs
 +++ b/browser/components/urlbar/content/UrlbarShared.mjs
-@@ -117,6 +117,10 @@ export const UrlbarShared = {
+@@ -117,6 +117,12 @@ export const UrlbarShared = {
    // so both the parent controller and the content-side child controller name
    // them identically without the child reaching into the parent module.
    NOTIFICATIONS: Object.freeze({
@@ -3510,6 +3737,8 @@ index 862b56c9ca..3d1572e4da 100644
 +    // waiting for engines and again after dispatch tears down the old query.
 +    // This is not a parent/wire notification or a provider-start signal.
 +    QUERY_ARMED: "onQueryArmed",
++    // Parent notification; only presenters owning these caches need a listener.
++    PRESENTATION_CACHE_INVALIDATED: "onPresentationCacheInvalidated",
      QUERY_STARTED: "onQueryStarted",
      // Fires when the first result changed, before QUERY_RESULTS, so the input
      // can react to it (enter search mode, apply autofill) before the results
@@ -3583,7 +3812,7 @@ index 9596698cf9..f1a8624ab3 100644
      };
    }
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 278cb5ca71..afd6a356e4 100644
+index 278cb5ca71..88666e5815 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
 @@ -22,16 +22,6 @@ const SELECTABLE_ELEMENT_SELECTOR = "[role=button], [selectable], a";
@@ -3761,7 +3990,19 @@ index 278cb5ca71..afd6a356e4 100644
      this.input.toggleAttribute("open", false);
  
      // Search Tips can open the view without the Urlbar being focused. If the
-@@ -929,6 +930,10 @@ export class UrlbarView {
+@@ -922,6 +923,11 @@ export class UrlbarView {
+ 
+   // UrlbarChildController listener methods.
+ 
++  onPresentationCacheInvalidated(kind) {
++    if (kind == "topsites") this.clearTopSitesCache();
++    else if (kind == "l10n") this.clearL10nCache();
++  }
++
+   /**
+    * Called when a query starts.
+    *
+@@ -929,6 +935,10 @@ export class UrlbarView {
     *   The context of the query.
     */
    onQueryStarted(queryContext) {
@@ -3772,7 +4013,7 @@ index 278cb5ca71..afd6a356e4 100644
      this.#queryWasCancelled = false;
      this.#queryUpdatedResults = false;
      this.#openPanelInstance = null;
-@@ -960,6 +965,7 @@ export class UrlbarView {
+@@ -960,6 +970,7 @@ export class UrlbarView {
     *   The context of the query.
     */
    onQueryFinished(queryContext) {
@@ -3780,7 +4021,7 @@ index 278cb5ca71..afd6a356e4 100644
      this.#cancelRemoveStaleRowsTimer();
      if (this.#queryWasCancelled) {
        return;
-@@ -1018,6 +1024,7 @@ export class UrlbarView {
+@@ -1018,6 +1029,7 @@ export class UrlbarView {
    onQueryResults(queryContext) {
      this.queryContextCache.put(queryContext);
      this.#queryContext = queryContext;
@@ -3788,7 +4029,7 @@ index 278cb5ca71..afd6a356e4 100644
  
      if (!this.isOpen) {
        this.clear();
-@@ -1152,6 +1159,10 @@ export class UrlbarView {
+@@ -1152,6 +1164,10 @@ export class UrlbarView {
     *   it. Undefined when the row is removed without acknowledgment.
     */
    onQueryResultRemoved(id, acknowledgeDismissalL10n) {
@@ -3799,7 +4040,7 @@ index 278cb5ca71..afd6a356e4 100644
      let removedIndex = -1;
      let rowToRemove = null;
      for (let i = 0; i < this.#rows.children.length; i++) {
-@@ -1216,12 +1227,17 @@ export class UrlbarView {
+@@ -1216,12 +1232,17 @@ export class UrlbarView {
     *   The UrlbarResult's new menu commands.
     */
    updateResultMenuCommands(resultId, commands) {
@@ -3818,7 +4059,7 @@ index 278cb5ca71..afd6a356e4 100644
    }
  
    /**
-@@ -1258,7 +1274,8 @@ export class UrlbarView {
+@@ -1258,7 +1279,8 @@ export class UrlbarView {
    #queryWasCancelled;
    #removeStaleRowsTimer;
    #resultMenuResult;
@@ -3828,7 +4069,7 @@ index 278cb5ca71..afd6a356e4 100644
    #rows;
    #rawSelectedElement;
    #tail150 = null;
-@@ -1310,6 +1327,7 @@ export class UrlbarView {
+@@ -1310,6 +1332,7 @@ export class UrlbarView {
      this.input.inputField.setAttribute("aria-expanded", "true");
  
      this.input.toggleAttribute("suppress-focus-border", true);
@@ -3836,7 +4077,7 @@ index 278cb5ca71..afd6a356e4 100644
      this.input.toggleAttribute("open", true);
  
      this.window.addEventListener("resize", this);
-@@ -1342,13 +1360,7 @@ export class UrlbarView {
+@@ -1342,13 +1365,7 @@ export class UrlbarView {
    }
  
    #shouldShowHeuristic(result) {
@@ -3851,7 +4092,7 @@ index 278cb5ca71..afd6a356e4 100644
    }
  
    /**
-@@ -2146,13 +2158,7 @@ export class UrlbarView {
+@@ -2146,13 +2163,7 @@ export class UrlbarView {
    }
  
    #updateRowButtons(item, oldResult, result) {
@@ -3866,7 +4107,7 @@ index 278cb5ca71..afd6a356e4 100644
  
      if (!this.#needsNewButtons(item, oldResult, result)) {
        return;
-@@ -2230,12 +2236,7 @@ export class UrlbarView {
+@@ -2230,12 +2241,7 @@ export class UrlbarView {
            "urlbarView-button",
            "urlbarView-button-" + buttonName,
          ],
@@ -3880,7 +4121,7 @@ index 278cb5ca71..afd6a356e4 100644
        },
        item
      );
-@@ -2800,43 +2801,8 @@ export class UrlbarView {
+@@ -2800,43 +2806,8 @@ export class UrlbarView {
    }
  
    #iconForResult(result, iconUrlOverride = null) {
@@ -3926,7 +4167,7 @@ index 278cb5ca71..afd6a356e4 100644
    }
  
    #getBlobUrlForResult(result, blob) {
-@@ -2921,21 +2887,22 @@ export class UrlbarView {
+@@ -2921,21 +2892,22 @@ export class UrlbarView {
  
      let description = item._elements.get("description");
      if (result.payload.descriptionL10n) {
@@ -3964,7 +4205,7 @@ index 278cb5ca71..afd6a356e4 100644
          }
        }
      } else {
-@@ -3011,7 +2978,7 @@ export class UrlbarView {
+@@ -3011,7 +2983,7 @@ export class UrlbarView {
     * deferred until all rows have been updated.
     */
    #updateIndices() {
@@ -3973,7 +4214,7 @@ index 278cb5ca71..afd6a356e4 100644
      this.#overflowObserver.disconnect();
  
      // `lastVisibleLabel` is the l10n object of the last-seen visible row label
-@@ -3033,7 +3000,7 @@ export class UrlbarView {
+@@ -3033,7 +3005,7 @@ export class UrlbarView {
  
        let visible = this.#isElementVisible(item);
        if (visible) {
@@ -3982,7 +4223,7 @@ index 278cb5ca71..afd6a356e4 100644
          seenOnlyHeuristicOrSearchSuggestions &&=
            result.heuristic ||
            (result.type == UrlbarShared.RESULT_TYPE.SEARCH &&
-@@ -3067,7 +3034,7 @@ export class UrlbarView {
+@@ -3067,7 +3039,7 @@ export class UrlbarView {
        selectableElement = this.#getNextSelectableElement(selectableElement);
      }
  
@@ -3991,7 +4232,7 @@ index 278cb5ca71..afd6a356e4 100644
    }
  
    /**
-@@ -3164,71 +3131,7 @@ export class UrlbarView {
+@@ -3164,71 +3136,7 @@ export class UrlbarView {
     *   If the current row should not have a label, returns null. Otherwise
     *   returns an l10n object for the label's l10n string: `{ id, args }`
     */
@@ -4064,7 +4305,7 @@ index 278cb5ca71..afd6a356e4 100644
  
    #setRowVisibility(row, visible) {
      row.toggleAttribute("hidden", !visible);
-@@ -3277,7 +3180,7 @@ export class UrlbarView {
+@@ -3277,7 +3185,7 @@ export class UrlbarView {
      // necessarily imply we are in actions mode, therefore we should check both.
      if (
        this.input.searchMode?.source != UrlbarShared.RESULT_SOURCE.ACTIONS &&
@@ -4073,7 +4314,7 @@ index 278cb5ca71..afd6a356e4 100644
      ) {
        this.#rows.toggleAttribute("actionmode", false);
      }
-@@ -3598,55 +3501,13 @@ export class UrlbarView {
+@@ -3598,55 +3506,13 @@ export class UrlbarView {
     *   The DOM node for the result's tile.
     */
    #setResultTitle(result, titleNode) {
@@ -4134,7 +4375,7 @@ index 278cb5ca71..afd6a356e4 100644
        return;
      }
  
-@@ -4160,51 +4021,6 @@ export class UrlbarView {
+@@ -4160,51 +4026,6 @@ export class UrlbarView {
      return idArgs;
    }
  
@@ -4186,7 +4427,7 @@ index 278cb5ca71..afd6a356e4 100644
    #hasMenuButton(result) {
      return (
        (!result.heuristic && this.#canOpenInNewTarget(result)) ||
-@@ -4217,7 +4033,7 @@ export class UrlbarView {
+@@ -4217,7 +4038,7 @@ export class UrlbarView {
     * buttons of the rows that are already built, which would otherwise keep the
     * attribute they got when they were created.
     */
@@ -4195,7 +4436,7 @@ index 278cb5ca71..afd6a356e4 100644
      let inaccessible = !UrlbarPrefs.get("resultMenu.keyboardAccessible");
      for (let button of this.#rows.querySelectorAll(
        ".urlbarView-button-result-menu"
-@@ -4232,98 +4048,9 @@ export class UrlbarView {
+@@ -4232,98 +4053,9 @@ export class UrlbarView {
     * @returns {boolean}
     *   Whether the result's menu offers to open it in a new tab or window.
     */
@@ -4297,7 +4538,7 @@ index 278cb5ca71..afd6a356e4 100644
  
    /**
     * Popuplates the result menu with commands.
-@@ -4333,106 +4060,45 @@ export class UrlbarView {
+@@ -4333,106 +4065,45 @@ export class UrlbarView {
     * @param {UrlbarResultCommand[]} options.commands
     */
    async #populateResultMenu({ panel = this.resultMenu, commands }) {
@@ -4437,7 +4678,7 @@ index 278cb5ca71..afd6a356e4 100644
    }
  
    // Event handlers below.
-@@ -4710,39 +4376,12 @@ export class UrlbarView {
+@@ -4710,39 +4381,12 @@ export class UrlbarView {
    }
  
    on_click(event) {
@@ -4483,7 +4724,7 @@ index 278cb5ca71..afd6a356e4 100644
    }
  
    on_showing(event) {
-@@ -4780,6 +4419,7 @@ export class UrlbarView {
+@@ -4780,6 +4424,7 @@ export class UrlbarView {
      if (event.target != event.currentTarget) {
        return;
      }
@@ -4535,7 +4776,7 @@ index 072b04d57d..5c082b9cdc 100644
        removeResult() {},
      },
 diff --git a/browser/components/urlbar/tests/unit/test_UrlbarParentController_unit.js b/browser/components/urlbar/tests/unit/test_UrlbarParentController_unit.js
-index 0b77fe5d86..63f2cb7f7a 100644
+index 0b77fe5d86..d8565fd646 100644
 --- a/browser/components/urlbar/tests/unit/test_UrlbarParentController_unit.js
 +++ b/browser/components/urlbar/tests/unit/test_UrlbarParentController_unit.js
 @@ -219,13 +219,13 @@ add_task(async function test_notifications_order() {
@@ -4567,7 +4808,7 @@ index 0b77fe5d86..63f2cb7f7a 100644
        "onQueryCancelled",
        "onQueryFinished",
      ],
-@@ -247,12 +249,15 @@ add_task(async function test_notifications_order() {
+@@ -247,15 +249,107 @@ add_task(async function test_notifications_order() {
    Assert.deepEqual(
      [
        "onQueryStarted",
@@ -4583,6 +4824,98 @@ index 0b77fe5d86..63f2cb7f7a 100644
        "onQueryFinished",
      ],
      collectingListener.notifications,
+     "Check order of notifications"
+   );
+ });
++
++
++add_task(function test_cache_invalidation_without_view_and_destroy() {
++  const { UrlbarProviderTopSites } = ChromeUtils.importESModule(
++    "moz-src:///browser/components/urlbar/UrlbarProviderTopSites.sys.mjs"
++  );
++  const local = sinon.createSandbox();
++  let topSitesChanged;
++  local.stub(UrlbarProviderTopSites, "addTopSitesListener").callsFake(callback => {
++    topSitesChanged = callback;
++  });
++  const notifications = [];
++  const parent = new UrlbarParentController({ sapName: "urlbar" });
++  parent.setChild({
++    get input() { throw new Error("No input"); },
++    get view() { throw new Error("No view"); },
++    notify: (...args) => notifications.push(args),
++  });
++  try {
++    topSitesChanged();
++    parent.observe(null, "intl:app-locales-changed");
++    Assert.deepEqual(notifications, [
++      ["onPresentationCacheInvalidated", "topsites"],
++      ["onPresentationCacheInvalidated", "l10n"],
++    ]);
++    const wireNotifications = [];
++    parent.setChild({ isProxy: true, notifyFromWire: (...args) => wireNotifications.push(args) });
++    topSitesChanged();
++    parent.observe(null, "intl:app-locales-changed");
++    Assert.deepEqual(wireNotifications, notifications, "Cache events also use the actor wire notification path");
++    parent.destroy();
++    parent.destroy();
++    topSitesChanged();
++    parent.observe(null, "intl:app-locales-changed");
++    Assert.equal(notifications.length, 2, "Direct child receives no later notifications");
++    Assert.equal(wireNotifications.length, 2, "Destroyed parents stop wire notifications");
++  } finally {
++    parent.destroy();
++    local.restore();
++  }
++});
++
++add_task(async function test_destroy_during_engine_initialization() {
++  const local = sinon.createSandbox();
++  const { SearchService } = ChromeUtils.importESModule(
++    "moz-src:///toolkit/components/search/SearchService.sys.mjs"
++  );
++  const gate = Promise.withResolvers();
++  local.stub(SearchService, "hasSuccessfullyInitialized").get(() => false);
++  local.stub(SearchService, "init").returns(gate.promise);
++  const parent = new UrlbarParentController({ sapName: "urlbar" });
++  let updates = 0;
++  parent.setChild({ updateEngineStore() { updates++; } });
++  try {
++    const pending = parent.initEngineStore();
++    parent.destroy();
++    gate.resolve();
++    await pending;
++    await parent.initEngineStore();
++    Assert.equal(updates, 0, "No engine publication or observer registration after teardown");
++  } finally {
++    parent.destroy();
++    local.restore();
++  }
++});
++
++
++add_task(async function test_destroy_during_failed_engine_initialization() {
++  const local = sinon.createSandbox();
++  const { SearchService } = ChromeUtils.importESModule(
++    "moz-src:///toolkit/components/search/SearchService.sys.mjs"
++  );
++  const gate = Promise.withResolvers();
++  local.stub(SearchService, "hasSuccessfullyInitialized").get(() => false);
++  local.stub(SearchService, "init").returns(gate.promise);
++  const parent = new UrlbarParentController({ sapName: "urlbar" });
++  let updates = 0;
++  parent.setChild({ updateEngineStore() { updates++; } });
++  try {
++    const pending = parent.initEngineStore();
++    parent.destroy();
++    gate.reject(new Error("Search initialization failed after teardown"));
++    await pending;
++    Assert.equal(updates, 0, "No failed-engine publication after teardown either");
++  } finally {
++    parent.destroy();
++    local.restore();
++  }
++});
 diff --git a/browser/components/urlbar/tests/unit/test_UrlbarQueryContext.js b/browser/components/urlbar/tests/unit/test_UrlbarQueryContext.js
 index 6eb5729ad2..b730b3089c 100644
 --- a/browser/components/urlbar/tests/unit/test_UrlbarQueryContext.js
@@ -5643,6 +5976,105 @@ index 1e2660589b..5ae3ab4843 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
+new file mode 100644
+index 0000000000..bcd31a19f5
+--- /dev/null
++++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
+@@ -0,0 +1,93 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++import { UrlbarChildController } from "chrome://browser/content/urlbar/UrlbarChildController.mjs";
++import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
++
++/**
++ * Independent query consumer. No editor or view is constructed or emulated.
++ * The chrome host supplies identity and a pinned tab/document validity check.
++ * Editing, navigation and engagement are not implemented by this consumer yet.
++ * This first consumer returns completed queries only; it exposes neither the
++ * mutable controller nor streaming listeners. The host must close it on scope
++ * loss and teardown; the scope check also rejects races at dispatch, delivery,
++ * completion and presentation publication. It does not observe browser events.
++ */
++export class UrlbarQuerySession {
++  #context;
++  #isCurrent;
++  #query = null;
++  #closed = false;
++  #controller;
++
++  constructor({ context, isCurrent }) {
++    if (typeof isCurrent != "function") throw new TypeError("Missing scope check");
++    this.#context = Object.freeze({ ...context });
++    this.#isCurrent = isCurrent;
++    if (!isCurrent()) throw new Error("Query session scope changed");
++    this.#controller = new UrlbarChildController({
++      context: this.#context,
++      isCurrent: () => !this.#closed && this.#isCurrent(),
++    });
++  }
++
++  #check() {
++    if (this.#closed) throw new Error("Query session is closed");
++    if (!this.#isCurrent()) {
++      this.close();
++      throw new Error("Query session scope changed");
++    }
++  }
++
++  async query(state, request) {
++    this.#check();
++    const query = UrlbarQueryModel.create({
++      ...state,
++      sapName: this.#context.sapName,
++      isPrivate: this.#context.isPrivate,
++    }, request);
++    this.#query = query;
++    this.#controller.visibleResults = [];
++    this.#controller.resultsOpen = false;
++    try {
++      await this.#controller.startQuery(query);
++    } catch (error) {
++      if (this.#query === query) this.cancel();
++      throw error;
++    }
++    this.#check();
++    if (this.#query !== query) throw new Error("Query superseded or cancelled");
++    return query;
++  }
++
++  publishPresentation(queryId, visibleResults, open) {
++    this.#check();
++    if (
++      !this.#query || queryId !== this.#query.id ||
++      !Array.isArray(visibleResults) || typeof open != "boolean" ||
++      new Set(visibleResults).size !== visibleResults.length ||
++      visibleResults.some(result => !this.#query.results?.includes(result))
++    ) {
++      throw new Error("Invalid query presentation");
++    }
++    this.#controller.visibleResults = [...visibleResults];
++    this.#controller.resultsOpen = open;
++  }
++
++  cancel() {
++    if (this.#closed) return;
++    this.#query = null;
++    this.#controller.visibleResults = [];
++    this.#controller.resultsOpen = false;
++    this.#controller.cancelQuery();
++    this.#controller.discardResults(null);
++  }
++
++  close() {
++    if (this.#closed) return;
++    this.#closed = true;
++    this.#query = null;
++    this.#controller.destroy();
++  }
++}
 diff --git a/browser/components/urlbar/content/UrlbarCompositionModel.mjs b/browser/components/urlbar/content/UrlbarCompositionModel.mjs
 new file mode 100644
 index 0000000000..ff5291f782
