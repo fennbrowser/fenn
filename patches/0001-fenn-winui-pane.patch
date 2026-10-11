@@ -1329,13 +1329,14 @@ index 30f5aa6556..6198840503 100644
 +
  }
 diff --git a/browser/components/urlbar/content/SmartbarInput.mjs b/browser/components/urlbar/content/SmartbarInput.mjs
-index e5dcc2c923..6c4418d4c0 100644
+index e5dcc2c923..6bf8d178fb 100644
 --- a/browser/components/urlbar/content/SmartbarInput.mjs
 +++ b/browser/components/urlbar/content/SmartbarInput.mjs
-@@ -2,6 +2,12 @@
+@@ -2,6 +2,13 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  
++import { executeUrlbarPasteAndGo } from "chrome://browser/content/urlbar/UrlbarClipboardText.mjs";
 +import { UrlbarAutofillModel } from "chrome://browser/content/urlbar/UrlbarAutofillModel.mjs";
 +import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
 +import { UrlbarResultPresentation } from "chrome://browser/content/urlbar/UrlbarResultPresentation.mjs";
@@ -1345,7 +1346,7 @@ index e5dcc2c923..6c4418d4c0 100644
  import { SearchModeSwitcher } from "chrome://browser/content/urlbar/SearchModeSwitcher.mjs";
  import { UrlbarChildController } from "chrome://browser/content/urlbar/UrlbarChildController.mjs";
  import { UrlbarEventBufferer } from "chrome://browser/content/urlbar/UrlbarEventBufferer.mjs";
-@@ -74,7 +80,6 @@ const lazy = XPCOMUtils.declareLazy({
+@@ -74,7 +81,6 @@ const lazy = XPCOMUtils.declareLazy({
    SearchUIUtils: "moz-src:///browser/components/search/SearchUIUtils.sys.mjs",
    SmartbarInputController:
      "chrome://browser/content/urlbar/SmartbarInputController.mjs",
@@ -1353,7 +1354,7 @@ index e5dcc2c923..6c4418d4c0 100644
    UrlbarProviderHeuristicFallback:
      "moz-src:///browser/components/urlbar/UrlbarProviderHeuristicFallback.sys.mjs",
    UrlbarUtils: "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs",
-@@ -96,7 +101,6 @@ const lazy = XPCOMUtils.declareLazy({
+@@ -96,7 +102,6 @@ const lazy = XPCOMUtils.declareLazy({
  
  const logger = () => UrlbarShared.getLogger({ prefix: "SmartbarInput" });
  
@@ -1361,7 +1362,7 @@ index e5dcc2c923..6c4418d4c0 100644
  const MAX_INPUT_LENGTH = 32000;
  
  // Default Smartbar action before the user types or picks one. The live guess
-@@ -150,6 +154,29 @@ const MAX_CONTEXT_WEBSITES = 5;
+@@ -150,6 +155,29 @@ const MAX_CONTEXT_WEBSITES = 5;
   * Implements the text input part of the address bar UI.
   */
  export class SmartbarInput extends HTMLElement {
@@ -1391,7 +1392,7 @@ index e5dcc2c923..6c4418d4c0 100644
    static get #markup() {
      return `
        <html:smartwindow-smartbar-glow class="smartbar-glow"></html:smartwindow-smartbar-glow>
-@@ -639,6 +666,8 @@ ${
+@@ -639,6 +667,8 @@ ${
      this.controller.removeListener(this);
  
      this.searchModeSwitcher.disconnect();
@@ -1400,7 +1401,7 @@ index e5dcc2c923..6c4418d4c0 100644
  
      if (this._copyCutController) {
        this.inputField.controllers.removeController(this._copyCutController);
-@@ -2439,20 +2468,24 @@ ${
+@@ -2439,20 +2469,24 @@ ${
     * @param {UrlbarResult} options.result The result that was picked.
     * @param {Event} options.event The event that picked the result.
     * @param {HTMLElement} [options.element] The picked view element, if available.
@@ -1428,7 +1429,7 @@ index e5dcc2c923..6c4418d4c0 100644
        return;
      }
  
-@@ -2496,6 +2529,7 @@ ${
+@@ -2496,6 +2530,7 @@ ${
        this.controller.engagementEvent.record(event, {
          result,
          element,
@@ -1436,7 +1437,7 @@ index e5dcc2c923..6c4418d4c0 100644
          location: this.sapLocation,
          searchSource: this.getSearchSource(event),
          searchString: this._lastSearchString,
-@@ -2506,12 +2540,13 @@ ${
+@@ -2506,12 +2541,13 @@ ${
        return;
      }
  
@@ -1451,7 +1452,7 @@ index e5dcc2c923..6c4418d4c0 100644
        urlOverride: resultUrl,
      });
      let where = this.controller.whereToOpen(event);
-@@ -2540,6 +2575,7 @@ ${
+@@ -2540,6 +2576,7 @@ ${
        this.controller.engagementEvent.record(event, {
          result,
          element,
@@ -1459,7 +1460,7 @@ index e5dcc2c923..6c4418d4c0 100644
          location: this.sapLocation,
          selType: "canonized",
          searchSource: this.getSearchSource(event),
-@@ -2626,11 +2662,12 @@ ${
+@@ -2626,11 +2663,12 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1473,7 +1474,7 @@ index e5dcc2c923..6c4418d4c0 100644
            windowMode: this.windowMode,
          });
  
-@@ -2649,10 +2686,11 @@ ${
+@@ -2649,10 +2687,11 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -1486,7 +1487,7 @@ index e5dcc2c923..6c4418d4c0 100644
              windowMode: this.windowMode,
            });
            this.maybeConfirmSearchModeFromResult({
-@@ -2719,6 +2757,7 @@ ${
+@@ -2719,6 +2758,7 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1494,7 +1495,7 @@ index e5dcc2c923..6c4418d4c0 100644
            location: this.sapLocation,
            selType: "tip",
            searchSource: this.getSearchSource(event),
-@@ -2738,11 +2777,12 @@ ${
+@@ -2738,11 +2778,12 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -1508,7 +1509,7 @@ index e5dcc2c923..6c4418d4c0 100644
              windowMode: this.windowMode,
            });
            return;
-@@ -2753,6 +2793,7 @@ ${
+@@ -2753,6 +2794,7 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1516,7 +1517,7 @@ index e5dcc2c923..6c4418d4c0 100644
            location: this.sapLocation,
            selType: "extension",
            searchSource: this.getSearchSource(event),
-@@ -2781,10 +2822,11 @@ ${
+@@ -2781,10 +2823,11 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1529,7 +1530,7 @@ index e5dcc2c923..6c4418d4c0 100644
            windowMode: this.windowMode,
          });
          this.maybeConfirmSearchModeFromResult({
-@@ -2798,10 +2840,11 @@ ${
+@@ -2798,10 +2841,11 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -1542,7 +1543,7 @@ index e5dcc2c923..6c4418d4c0 100644
            windowMode: this.windowMode,
          });
          return;
-@@ -2841,9 +2884,10 @@ ${
+@@ -2841,9 +2885,10 @@ ${
            {
              result,
              element,
@@ -1554,7 +1555,7 @@ index e5dcc2c923..6c4418d4c0 100644
              searchSource: this.getSearchSource(event),
              windowMode: this.windowMode,
            }
-@@ -2854,9 +2898,10 @@ ${
+@@ -2854,9 +2899,10 @@ ${
      this.controller.engagementEvent.record(event, {
        result,
        element,
@@ -1566,7 +1567,7 @@ index e5dcc2c923..6c4418d4c0 100644
        searchSource: this.getSearchSource(event),
        windowMode: this.windowMode,
      });
-@@ -2945,6 +2990,7 @@ ${
+@@ -2945,6 +2991,7 @@ ${
      event = null,
      urlOverride = null,
      element = null,
@@ -1574,7 +1575,7 @@ index e5dcc2c923..6c4418d4c0 100644
    } = {}) {
      // Usually this is set by a previous input event, but in certain cases, like
      // when opening Top Sites on a loaded page, it wouldn't happen. To avoid
-@@ -3015,7 +3061,7 @@ ${
+@@ -3015,7 +3062,7 @@ ${
            checkValue: false,
            startQuery:
              UrlbarPrefs.get("scotchBonnet.enableOverride") &&
@@ -1583,7 +1584,7 @@ index e5dcc2c923..6c4418d4c0 100644
          });
        }
        if (!enteredSearchMode) {
-@@ -3029,7 +3075,7 @@ ${
+@@ -3029,7 +3076,7 @@ ${
      }
  
      if (!result.autofill) {
@@ -1592,7 +1593,7 @@ index e5dcc2c923..6c4418d4c0 100644
        this.setValue(value, {
          actionType: this.#getActionTypeFromResult(result),
        });
-@@ -3076,28 +3122,14 @@ ${
+@@ -3076,28 +3123,14 @@ ${
        return;
      }
  
@@ -1629,7 +1630,7 @@ index e5dcc2c923..6c4418d4c0 100644
        return;
      }
  
-@@ -4484,7 +4516,8 @@ ${
+@@ -4484,7 +4517,8 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
@@ -1639,7 +1640,7 @@ index e5dcc2c923..6c4418d4c0 100644
      switch (result.type) {
        case UrlbarShared.RESULT_TYPE.KEYWORD:
          return result.payload.input;
-@@ -4511,7 +4544,7 @@ ${
+@@ -4511,7 +4545,7 @@ ${
        case UrlbarShared.RESULT_TYPE.AI_CHAT:
          return result.payload.query ?? "";
        case UrlbarShared.RESULT_TYPE.TIP: {
@@ -1648,7 +1649,7 @@ index e5dcc2c923..6c4418d4c0 100644
          if (value) {
            return value;
          }
-@@ -4601,73 +4634,29 @@ ${
+@@ -4601,73 +4635,29 @@ ${
     *   Whether autofill should be allowed in the new search.
     */
    _maybeAutofillPlaceholder(value) {
@@ -1744,7 +1745,7 @@ index e5dcc2c923..6c4418d4c0 100644
    }
  
    /**
-@@ -5064,34 +5053,35 @@ ${
+@@ -5064,34 +5054,35 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -1786,7 +1787,7 @@ index e5dcc2c923..6c4418d4c0 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -5246,6 +5236,15 @@ ${
+@@ -5246,6 +5237,15 @@ ${
      this.view.close({ showFocusBorder: false });
    }
  
@@ -1802,7 +1803,72 @@ index e5dcc2c923..6c4418d4c0 100644
    _initCopyCutController() {
      // Clipboard handling is managed by the multiline editor in smartbar mode.
      if (this.#isSmartbarMode) {
-@@ -6665,33 +6664,20 @@ ${
+@@ -5464,7 +5464,7 @@ ${
+    *
+    * @returns {boolean}
+    */
+-  #pasteAndGoEnabled() {
++  canPasteAndGo() {
+     if (this.#isSmartbarMode) {
+       return Services.clipboard.hasDataMatchingFlavors(
+         ["text/plain"],
+@@ -5491,6 +5491,25 @@ ${
+     this.value = clipboardText;
+   }
+ 
++  /** Runs Firefox's Paste and Go independently of the menu node. */
++  pasteAndGo() {
++    executeUrlbarPasteAndGo({
++      suppressQuery: () => this.suppressStartQuery(),
++      paste: () => {
++        this.select();
++        this.#pasteForPasteAndGo();
++      },
++      clearResult: () => this.setResultForCurrentValue(null),
++      submit: () => this.handleCommand(),
++      clearQueryCache: () => this.parentController.clearLastQueryContextCache(),
++      resumeQuery: () => {
++        if (!this._permanentlySuppressStartQuery) {
++          this.unsuppressStartQuery();
++        }
++      },
++    });
++  }
++
+   _initPasteAndGo() {
+     this.#addContextMenuItems({
+       after: "edit-contextmenu-paste",
+@@ -5504,19 +5523,7 @@ ${
+           .GetStringFromName("pasteAndGo.label");
+         pasteAndGo.setAttribute("label", label);
+         pasteAndGo.setAttribute("anonid", "paste-and-go");
+-        pasteAndGo.addEventListener("command", () => {
+-          this.suppressStartQuery();
+-
+-          this.select();
+-          this.#pasteForPasteAndGo();
+-          this.setResultForCurrentValue(null);
+-          this.handleCommand();
+-          this.parentController.clearLastQueryContextCache();
+-
+-          if (!this._permanentlySuppressStartQuery) {
+-            this.unsuppressStartQuery();
+-          }
+-        });
++        pasteAndGo.addEventListener("command", () => this.pasteAndGo());
+ 
+         fragment.appendChild(pasteAndGo);
+         return fragment;
+@@ -5544,7 +5551,7 @@ ${
+           { once: true }
+         );
+ 
+-        if (this.#pasteAndGoEnabled()) {
++        if (this.canPasteAndGo()) {
+           pasteAndGo.removeAttribute("disabled");
+         } else {
+           pasteAndGo.setAttribute("disabled", "true");
+@@ -6665,33 +6672,20 @@ ${
    }
  
    _on_paste(event) {
@@ -1844,7 +1910,7 @@ index e5dcc2c923..6c4418d4c0 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -6705,7 +6691,7 @@ ${
+@@ -6705,7 +6699,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -1853,7 +1919,7 @@ index e5dcc2c923..6c4418d4c0 100644
        this.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -6736,56 +6722,27 @@ ${
+@@ -6736,56 +6730,27 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -1928,7 +1994,7 @@ index e5dcc2c923..6c4418d4c0 100644
    }
  
    /**
-@@ -7771,12 +7728,10 @@ class CopyCutController {
+@@ -7771,12 +7736,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -2164,14 +2230,14 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..97751f319f 100644
+index a077de625f..7390d754f7 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,18 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  
-+import { formatUrlbarClipboardText, planUrlbarCut, planUrlbarPaste } from "chrome://browser/content/urlbar/UrlbarClipboardText.mjs";
++import { formatUrlbarClipboardText, planUrlbarCut, planUrlbarPaste, executeUrlbarPasteAndGo } from "chrome://browser/content/urlbar/UrlbarClipboardText.mjs";
 +import { UrlbarResultPresentation } from "chrome://browser/content/urlbar/UrlbarResultPresentation.mjs";
 +import { UrlbarResultActions } from "chrome://browser/content/urlbar/UrlbarResultActions.mjs";
 +import { UrlbarSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs";
@@ -2813,32 +2879,72 @@ index a077de625f..97751f319f 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4510,8 +4458,13 @@ ${
-         pasteAndGo.addEventListener("command", () => {
-           this._suppressStartQuery = true;
+@@ -4495,6 +4443,33 @@ ${
+     stripOnShare.removeAttribute("disabled");
+   }
  
++  /** Live editor eligibility, shared by original and native menu commands. */
++  canPasteAndGo() {
++    return this.inputField.controllers
++      .getControllerForCommand("cmd_paste")
++      .isCommandEnabled("cmd_paste");
++  }
++
++  /** Runs Firefox's Paste and Go independently of the menu node. */
++  pasteAndGo() {
++    executeUrlbarPasteAndGo({
++      suppressQuery: () => { this._suppressStartQuery = true; },
++      paste: () => {
++        if (this.view.nativePresentation) {
++          this.inputField.setSelectionRange(0, this.inputField.value.length);
++          this.inputField.controllers.getControllerForCommand("cmd_paste").doCommand("cmd_paste");
++        } else {
++          this.select();
++          this.window.goDoCommand("cmd_paste");
++        }
++      },
++      clearResult: () => this.setResultForCurrentValue(null),
++      submit: () => this.handleCommand(),
++      clearQueryCache: () => this.parentController.clearLastQueryContextCache(),
++      resumeQuery: () => { this._suppressStartQuery = false; },
++    });
++  }
++
+   _initPasteAndGo() {
+     this.addContextMenuItems({
+       after: "edit-contextmenu-paste",
+@@ -4507,17 +4482,7 @@ ${
+           .GetStringFromName("pasteAndGo.label");
+         pasteAndGo.setAttribute("label", label);
+         pasteAndGo.setAttribute("anonid", "paste-and-go");
+-        pasteAndGo.addEventListener("command", () => {
+-          this._suppressStartQuery = true;
+-
 -          this.select();
 -          this.window.goDoCommand("cmd_paste");
-+          if (this.view.nativePresentation) {
-+            this.inputField.setSelectionRange(0, this.inputField.value.length);
-+            this.inputField.controllers.getControllerForCommand("cmd_paste").doCommand("cmd_paste");
-+          } else {
-+            this.select();
-+            this.window.goDoCommand("cmd_paste");
-+          }
-           this.setResultForCurrentValue(null);
-           this.handleCommand();
-           this.parentController.clearLastQueryContextCache();
-@@ -4546,7 +4499,7 @@ ${
+-          this.setResultForCurrentValue(null);
+-          this.handleCommand();
+-          this.parentController.clearLastQueryContextCache();
+-
+-          this._suppressStartQuery = false;
+-        });
++        pasteAndGo.addEventListener("command", () => this.pasteAndGo());
+ 
+         fragment.appendChild(pasteAndGo);
+         return fragment;
+@@ -4545,10 +4510,7 @@ ${
+           { once: true }
          );
  
-         let controller =
+-        let controller =
 -          this.document.commandDispatcher.getControllerForCommand("cmd_paste");
-+          this.inputField.controllers.getControllerForCommand("cmd_paste");
-         let enabled = controller.isCommandEnabled("cmd_paste");
-         if (enabled) {
+-        let enabled = controller.isCommandEnabled("cmd_paste");
+-        if (enabled) {
++        if (this.canPasteAndGo()) {
            pasteAndGo.removeAttribute("disabled");
-@@ -4747,12 +4700,13 @@ ${
+         } else {
+           pasteAndGo.setAttribute("disabled", "true");
+@@ -4747,12 +4709,13 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -2854,7 +2960,7 @@ index a077de625f..97751f319f 100644
      ) {
        return null;
      }
-@@ -4767,8 +4721,8 @@ ${
+@@ -4767,8 +4730,8 @@ ${
          result.payload.engine == result.payload.originalEngine)
      ) {
        searchMode = { engineName: result.payload.engine };
@@ -2865,7 +2971,7 @@ index a077de625f..97751f319f 100644
      }
  
      if (searchMode) {
-@@ -5071,6 +5025,8 @@ ${
+@@ -5071,6 +5034,8 @@ ${
    setUnifiedSearchButtonAvailability(available) {
      available ||=
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
@@ -2874,7 +2980,7 @@ index a077de625f..97751f319f 100644
      const switcher = this.querySelector(".searchmode-switcher");
      switcher.toggleAttribute("offscreen", !available);
      if (available) {
-@@ -5085,6 +5041,7 @@ ${
+@@ -5085,6 +5050,7 @@ ${
          this.window.gBrowser.selectedBrowser
        ).isUnifiedSearchButtonAvailable = available;
      }
@@ -2882,7 +2988,7 @@ index a077de625f..97751f319f 100644
    }
  
    /**
-@@ -5477,6 +5434,57 @@ ${
+@@ -5477,6 +5443,57 @@ ${
      }
    }
  
@@ -2940,7 +3046,7 @@ index a077de625f..97751f319f 100644
    _on_input(event) {
      // A new input starts a fresh search; bump the epoch so a pending
      // deferred-Enter's async keyup won't reset this search's caret.
-@@ -5505,17 +5513,7 @@ ${
+@@ -5505,17 +5522,7 @@ ${
      }
  
      let value = this.value;
@@ -2959,7 +3065,7 @@ index a077de625f..97751f319f 100644
  
      let compositionState = this.#compositionState;
      let compositionClosedPopup = this.#compositionClosedPopup;
-@@ -5530,27 +5528,7 @@ ${
+@@ -5530,27 +5537,7 @@ ${
        this.#compositionHadText = true;
      }
  
@@ -2988,7 +3094,7 @@ index a077de625f..97751f319f 100644
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
-@@ -5669,33 +5647,20 @@ ${
+@@ -5669,33 +5656,20 @@ ${
    }
  
    _on_paste(event) {
@@ -3030,7 +3136,7 @@ index a077de625f..97751f319f 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5674,7 @@ ${
+@@ -5709,7 +5683,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -3039,7 +3145,7 @@ index a077de625f..97751f319f 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5705,25 @@ ${
+@@ -5740,51 +5714,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -3107,7 +3213,7 @@ index a077de625f..97751f319f 100644
    }
  
    _on_scrollend() {
-@@ -6440,12 +6379,10 @@ class CopyCutController {
+@@ -6440,12 +6388,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -5794,10 +5900,10 @@ index 0000000000..e3ee46ce03
 +}
 diff --git a/browser/components/urlbar/content/UrlbarClipboardText.mjs b/browser/components/urlbar/content/UrlbarClipboardText.mjs
 new file mode 100644
-index 0000000000..b6fb66d6af
+index 0000000000..82d5029bd9
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarClipboardText.mjs
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,155 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -5934,6 +6040,24 @@ index 0000000000..b6fb66d6af
 +  const pasteData = services.sanitize(originalPasteData,
 +    services.fixup(originalPasteData, state.isPrivate));
 +  return originalPasteData === pasteData ? null : selectionReplacement(state, pasteData);
++}
++
++
++/**
++ * Shared Paste and Go command ordering. The binding supplies the existing
++ * trusted editor paste operation; this never reads or inserts clipboard text.
++ * Navigation remains fire-and-forget, as in the original menu command.
++ */
++export function executeUrlbarPasteAndGo(commands) {
++  commands.suppressQuery();
++  try {
++    commands.paste();
++    commands.clearResult();
++    commands.submit();
++    commands.clearQueryCache();
++  } finally {
++    commands.resumeQuery();
++  }
 +}
 diff --git a/browser/components/urlbar/content/UrlbarResultPresentation.mjs b/browser/components/urlbar/content/UrlbarResultPresentation.mjs
 new file mode 100644
@@ -6883,10 +7007,10 @@ index 0000000000..e778f95a65
 +}
 diff --git a/browser/base/content/WinUIAddressContextMenu.sys.mjs b/browser/base/content/WinUIAddressContextMenu.sys.mjs
 new file mode 100644
-index 0000000000..b10e3c1439
+index 0000000000..78194ca887
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressContextMenu.sys.mjs
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,105 @@
 +// Firefox owns context item eligibility, localization and browser actions.
 +export class WinUIAddressContextMenu {
 +  constructor(session) { this.session = session; this.generation = 0; }
@@ -6894,6 +7018,7 @@ index 0000000000..b10e3c1439
 +    this.generation++;
 +    this.state = null;
 +    this.nodes = null;
++    this.commands = null;
 +    this.session.contextSnapshot = null;
 +    const popup = this.popup;
 +    this.popup = null;
@@ -6913,7 +7038,7 @@ index 0000000000..b10e3c1439
 +    if (generation !== this.generation || session.closed || win.gDialogBox?.isOpen || request.editId !== session.editId ||
 +        request.text !== session.input.inputField.value || win.gBrowser.selectedTab !== tab ||
 +        document !== tab.linkedBrowser.browsingContext.currentWindowGlobal?.innerWindowId) return;
-+    const nodes = new Map(); let count = 0;
++    const nodes = new Map(), commands = new Map(); let count = 0;
 +    const standard = new Set(["cmd_undo", "cmd_redo", "cmd_cut", "cmd_copy", "cmd_paste", "cmd_delete", "cmd_selectAll"]);
 +    const read = (parent, depth=0) => {
 +      if (depth > 4) throw new Error("Context menu too deep");
@@ -6922,10 +7047,13 @@ index 0000000000..b10e3c1439
 +        if (node.localName === "menuseparator") return {separator:true};
 +        const command = node.getAttribute("command");
 +        const id = standard.has(command) ? command : `${generation}:${count}`;
-+        nodes.set(id, node);
++        const pasteAndGo = node.id === "paste-and-go";
++        if (pasteAndGo) commands.set(id, "paste-and-go");
++        else nodes.set(id, node);
 +        const item = {id, label:(node.getAttribute("label") || "").slice(0,4096),
 +          accessKey:node.getAttribute("accesskey") || "", enabled:node.getAttribute("disabled") !== "true",
 +          checked:node.getAttribute("checked") === "true", checkable:node.getAttribute("type") === "checkbox"};
++        if (pasteAndGo) item.enabled = !!session.input.canPasteAndGo();
 +        if (standard.has(command)) item.enabled = !!session.input.inputField.controllers.getControllerForCommand(command)?.isCommandEnabled(command);
 +        if (node.localName === "menu") item.children = read(node.menupopup || node.querySelector("menupopup"), depth+1);
 +        return item;
@@ -6933,6 +7061,7 @@ index 0000000000..b10e3c1439
 +    };
 +    const items = read(popup);
 +    this.nodes = nodes;
++    this.commands = commands;
 +    this.state = {generation, tab, document, text:request.text, editId:request.editId};
 +    session.contextSnapshot = {generation, editId:request.editId, items};
 +    session.changed();
@@ -6954,6 +7083,19 @@ index 0000000000..b10e3c1439
 +      const result = s.syncNativeSelection(request);
 +      this.close();
 +      return result;
++    }
++    if (win.gDialogBox?.isOpen || s.editId !== state.editId || s.input.inputField.value !== state.text) {
++      this.close();
++      return 2;
++    }
++    if (this.commands?.get(request.id) === "paste-and-go") {
++      // Recheck the live editor, not a cached disabled attribute. The opening
++      // still uses Firefox's menu localization; activation retains no node.
++      try {
++        if (!s.input.canPasteAndGo()) return 2;
++        s.input.pasteAndGo();
++        return 1;
++      } finally { this.close(); }
 +    }
 +    const node = this.nodes?.get(request.id);
 +    if (!node || win.gDialogBox?.isOpen || s.editId !== state.editId || s.input.inputField.value !== state.text ||

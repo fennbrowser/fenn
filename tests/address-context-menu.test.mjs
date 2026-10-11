@@ -101,3 +101,40 @@ test('an intervening dialog blocks a previously prepared browser action',async()
   assert.equal(f.adapter.execute({...f.request,kind:'context-action',generation:menu.generation,id:menu.items[1].id}),2);
   assert.equal(f.invoked,0);
 });
+
+
+function pasteFixture() {
+  const f=fixture();let called=0;
+  f.extra.id='paste-and-go';f.session.input.canPasteAndGo=()=>true;
+  f.session.input.pasteAndGo=()=>called++;
+  return {f,get called(){return called;}};
+}
+
+test('native Paste and Go holds a semantic command, not the original node',async()=>{
+  const p=pasteFixture(),{f}=p;await f.adapter.open(f.request);const menu=f.session.contextSnapshot;
+  const id=menu.items[1].id;assert.equal(f.adapter.nodes.has(id),false);
+  f.extra.isConnected=false;f.extra.dispatchEvent=()=>{throw Error('retained menu node');};
+  assert.equal(f.adapter.execute({...f.request,kind:'context-action',generation:menu.generation,id}),1);
+  assert.equal(p.called,1);assert.equal(f.session.contextSnapshot,null);
+});
+
+test('Paste and Go rechecks live editor eligibility and rejects stale context',async()=>{
+  for(const change of [f=>f.session.input.canPasteAndGo=()=>false,
+    f=>f.session.input.inputField.value='new',f=>f.session.editId++,
+    f=>f.tab.linkedBrowser.browsingContext.currentWindowGlobal.innerWindowId++,
+    f=>f.session.window.gBrowser.selectedTab={},f=>f.session.window.gDialogBox={isOpen:true},
+    f=>f.session.window.EditContextMenu.input={},f=>f.adapter.close()]) {
+    const p=pasteFixture(),{f}=p;await f.adapter.open(f.request);const menu=f.session.contextSnapshot;change(f);
+    assert.equal(f.adapter.execute({...f.request,kind:'context-action',generation:menu.generation,id:menu.items[1].id}),2);
+    assert.equal(p.called,0);
+  }
+});
+
+test('Paste and Go uses live eligibility on publication and revokes the menu on exceptions',async()=>{
+  const p=pasteFixture(),{f}=p;f.session.input.canPasteAndGo=()=>false;
+  await f.adapter.open(f.request);assert.equal(f.session.contextSnapshot.items[1].enabled,false);
+  f.session.input.canPasteAndGo=()=>true;f.session.input.pasteAndGo=()=>{throw Error('paste failed');};
+  const menu=f.session.contextSnapshot;
+  assert.throws(()=>f.adapter.execute({...f.request,kind:'context-action',generation:menu.generation,id:menu.items[1].id}),/paste failed/);
+  assert.equal(f.session.contextSnapshot,null);assert.equal(f.adapter.commands,null);
+});
