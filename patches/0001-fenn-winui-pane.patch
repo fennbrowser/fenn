@@ -834,7 +834,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..6835d73ebc 100644
+index ba254af0c6..9e4dc1f9d1 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,8 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -846,17 +846,18 @@ index ba254af0c6..6835d73ebc 100644
    BrowserSearchTelemetry:
      "moz-src:///browser/components/search/BrowserSearchTelemetry.sys.mjs",
    ContainerCreationPanel:
-@@ -114,6 +116,9 @@ export class UrlbarParentController {
+@@ -114,6 +116,10 @@ export class UrlbarParentController {
     * @type {UrlbarChildControllerProxy | UrlbarChildController}
     */
    #child = null;
 +  #destroyed = false;
 +  #currentLoad = null;
++  #currentLoadRecovery = null;
 +  #currentLoadGeneration = 0;
  
    // The owning JSWindowActor, used to resolve the chrome window parent-side
    // (see `browserWindow`). Unlike the input and view, the browser window is a
-@@ -171,6 +176,12 @@ export class UrlbarParentController {
+@@ -171,6 +177,12 @@ export class UrlbarParentController {
      return AppConstants.platform;
    }
  
@@ -869,7 +870,7 @@ index ba254af0c6..6835d73ebc 100644
    /**
     * The input or an object that can forward calls to the input.
     *
-@@ -607,9 +618,15 @@ export class UrlbarParentController {
+@@ -607,9 +619,15 @@ export class UrlbarParentController {
     *   not added to form history. If this is false but the current window
     *   is private, it's not added either.
     */
@@ -887,7 +888,7 @@ index ba254af0c6..6835d73ebc 100644
    }
  
    /**
-@@ -711,6 +728,17 @@ export class UrlbarParentController {
+@@ -711,6 +729,17 @@ export class UrlbarParentController {
      Glean.urlbarZeroprefix2[kind][this.sapName].add(1);
    }
  
@@ -905,7 +906,7 @@ index ba254af0c6..6835d73ebc 100644
    /**
     * Runs the single-word keyword URI fixup DNS check for a search picked in the
     * address bar. When a single word is turned directly into a search (bypassing
-@@ -723,11 +751,20 @@ export class UrlbarParentController {
+@@ -723,11 +752,20 @@ export class UrlbarParentController {
     *   The string being searched.
     * @param {?number} browserId
     *   The browser the search loads into, or null for the selected browser.
@@ -930,7 +931,7 @@ index ba254af0c6..6835d73ebc 100644
      let fixupInfo = lazy.UrlbarUtils.getURIFixupInfo(
        searchString,
        this.isPrivate
-@@ -735,6 +772,7 @@ export class UrlbarParentController {
+@@ -735,6 +773,7 @@ export class UrlbarParentController {
      if (fixupInfo) {
        this.browserWindow.gKeywordURIFixup.check(browser, fixupInfo);
      }
@@ -938,7 +939,7 @@ index ba254af0c6..6835d73ebc 100644
    }
  
    /**
-@@ -999,6 +1037,84 @@ export class UrlbarParentController {
+@@ -999,6 +1038,124 @@ export class UrlbarParentController {
      }
    }
  
@@ -975,6 +976,7 @@ index ba254af0c6..6835d73ebc 100644
 +   */
 +  prepareCurrentLoad(loadData) {
 +    this.#currentLoad = null;
++    this.#currentLoadRecovery = null;
 +    const generation = ++this.#currentLoadGeneration;
 +    if (this.#destroyed || this.rendersInContentProcess || !this.#isAddressbar) return null;
 +    if (loadData?.where !== "current" || !Number.isSafeInteger(loadData.browserId) || loadData.browserId <= 0) {
@@ -1003,7 +1005,46 @@ index ba254af0c6..6835d73ebc 100644
 +      this.browserWindow.gBrowser.selectedBrowser === browser &&
 +      browser.browsingContext?.currentWindowGlobal === pending.document &&
 +      browser.lastLocationChange === pending.epoch;
-+    return this.#loadURL(pending.data, current);
++    const outcome = this.#loadURL(pending.data, current);
++    if (outcome.reverted && current(pending.browser)) {
++      const typedValue = pending.browser.userTypedValue;
++      const description = this.describeCurrentPageRevert(pending.data.browserId);
++      if (description && current(pending.browser) && pending.browser.userTypedValue === typedValue) {
++        const recovery = Object.freeze({ token: Object.freeze({}), ...description });
++        this.#currentLoadRecovery = { browser: pending.browser, document: pending.document,
++          epoch: pending.epoch, browserId: pending.data.browserId, typedValue, recovery };
++        return { ...outcome, recovery };
++      }
++    }
++    return outcome;
++  }
++
++  /** Revalidate a failure-owned recovery without retaining the activation callback. */
++  getCurrentLoadRecovery(token) {
++    const pending = this.#currentLoadRecovery;
++    if (!pending || pending.recovery.token !== token) return null;
++    const browser = pending.browser;
++    const current = () => this.#currentLoadRecovery === pending && !this.#destroyed &&
++      browser.userTypedValue === pending.typedValue &&
++      this.resolveTargetBrowser(pending.browserId) === browser &&
++      this.browserWindow.gBrowser.selectedBrowser === browser &&
++      browser.browsingContext?.currentWindowGlobal === pending.document && browser.lastLocationChange === pending.epoch;
++    if (!current()) { if (this.#currentLoadRecovery === pending) this.#currentLoadRecovery = null; return null; }
++    const live = this.describeCurrentPageRevert(pending.browserId);
++    if (!live || !current() || Object.keys(live).some(key => live[key] !== pending.recovery[key])) {
++      if (this.#currentLoadRecovery === pending) this.#currentLoadRecovery = null;
++      return null;
++    }
++    return pending.recovery;
++  }
++
++  /** Apply browser typed-state reset only after the host acknowledges recovery. */
++  acknowledgeCurrentLoadRecovery(token) {
++    if (!this.getCurrentLoadRecovery(token)) return false;
++    const pending = this.#currentLoadRecovery;
++    this.#currentLoadRecovery = null;
++    pending.browser.userTypedValue = null;
++    return true;
 +  }
 +
 +  /** Revoke only this preparation, without disturbing a newer one. */
@@ -1023,7 +1064,7 @@ index ba254af0c6..6835d73ebc 100644
    /**
     * Loads a URL in the browser window resolved from the actor. The content
     * child supplies the serializable load parameters; the parent fills in the
-@@ -1027,9 +1143,15 @@ export class UrlbarParentController {
+@@ -1027,9 +1184,15 @@ export class UrlbarParentController {
     *   browser to hand `focusBrowser` on the deferred-Enter keyup -- a
     *   content-process input can't resolve the selected browser itself.
     */
@@ -1040,7 +1081,7 @@ index ba254af0c6..6835d73ebc 100644
      if (!browser) {
        // The tab was closed before the load got here; don't hand its load to
        // whichever tab is selected now.
-@@ -1040,8 +1162,9 @@ export class UrlbarParentController {
+@@ -1040,8 +1203,9 @@ export class UrlbarParentController {
      }
  
      let { url, postData } = lazy.UrlbarUtils.loadRequestToUrl(loadRequest);
@@ -1051,7 +1092,7 @@ index ba254af0c6..6835d73ebc 100644
      }
      params.postData = postData;
  
-@@ -1055,6 +1178,7 @@ export class UrlbarParentController {
+@@ -1055,6 +1219,7 @@ export class UrlbarParentController {
        });
      }
  
@@ -1059,7 +1100,7 @@ index ba254af0c6..6835d73ebc 100644
      if (where == "current") {
        params.targetBrowser = browser;
      } else {
-@@ -1071,6 +1195,7 @@ export class UrlbarParentController {
+@@ -1071,6 +1236,7 @@ export class UrlbarParentController {
        browser.focus();
      }
  
@@ -1067,7 +1108,7 @@ index ba254af0c6..6835d73ebc 100644
      try {
        this.browserWindow.openTrustedLinkIn(url, where, params);
      } catch (ex) {
-@@ -1079,9 +1204,10 @@ export class UrlbarParentController {
+@@ -1079,9 +1245,10 @@ export class UrlbarParentController {
        return {
          reverted: ex.result != Cr.NS_ERROR_LOAD_SHOWED_ERRORPAGE,
          browserId: browser.browserId,
@@ -1079,7 +1120,7 @@ index ba254af0c6..6835d73ebc 100644
    }
  
    /**
-@@ -1292,10 +1418,22 @@ export class UrlbarParentController {
+@@ -1292,10 +1459,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -1103,7 +1144,7 @@ index ba254af0c6..6835d73ebc 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +1470,7 @@ export class UrlbarParentController {
+@@ -1332,6 +1511,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -1111,17 +1152,18 @@ index ba254af0c6..6835d73ebc 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +1494,9 @@ export class UrlbarParentController {
+@@ -1355,6 +1535,10 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
 +    if (this.#destroyed) return;
 +    this.#destroyed = true;
 +    this.#currentLoad = null;
++    this.#currentLoadRecovery = null;
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +1528,7 @@ export class UrlbarParentController {
+@@ -1386,7 +1570,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -1130,7 +1172,7 @@ index ba254af0c6..6835d73ebc 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +1536,11 @@ export class UrlbarParentController {
+@@ -1394,10 +1578,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -1143,7 +1185,7 @@ index ba254af0c6..6835d73ebc 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +1558,7 @@ export class UrlbarParentController {
+@@ -1415,7 +1600,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -1152,7 +1194,7 @@ index ba254af0c6..6835d73ebc 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +1580,7 @@ export class UrlbarParentController {
+@@ -1437,7 +1622,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -1161,7 +1203,7 @@ index ba254af0c6..6835d73ebc 100644
          break;
      }
    };
-@@ -1727,8 +1870,12 @@ export class TelemetryEvent {
+@@ -1727,8 +1912,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -1175,7 +1217,7 @@ index ba254af0c6..6835d73ebc 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +1890,7 @@ export class TelemetryEvent {
+@@ -1743,7 +1932,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -1184,7 +1226,7 @@ index ba254af0c6..6835d73ebc 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +1916,7 @@ export class TelemetryEvent {
+@@ -1769,7 +1958,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -1193,7 +1235,7 @@ index ba254af0c6..6835d73ebc 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +1927,13 @@ export class TelemetryEvent {
+@@ -1780,12 +1969,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -1209,7 +1251,7 @@ index ba254af0c6..6835d73ebc 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +1944,7 @@ export class TelemetryEvent {
+@@ -1796,7 +1986,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -1218,7 +1260,7 @@ index ba254af0c6..6835d73ebc 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +2012,16 @@ export class TelemetryEvent {
+@@ -1864,17 +2054,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -1240,7 +1282,7 @@ index ba254af0c6..6835d73ebc 100644
      );
    }
  
-@@ -2009,158 +2156,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2198,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -1399,7 +1441,7 @@ index ba254af0c6..6835d73ebc 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +2516,27 @@ export class TelemetryEvent {
+@@ -2521,17 +2558,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -1436,7 +1478,7 @@ index ba254af0c6..6835d73ebc 100644
      );
    }
  
-@@ -2548,14 +2553,19 @@ export class TelemetryEvent {
+@@ -2548,14 +2595,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -1462,7 +1504,7 @@ index ba254af0c6..6835d73ebc 100644
    }
  
    /**
-@@ -2581,39 +2591,4 @@ export class TelemetryEvent {
+@@ -2581,39 +2633,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -8325,10 +8367,10 @@ index 0000000000..b8b493fefc
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..bf98716b39
+index 0000000000..93317118a0
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1363 @@
+@@ -0,0 +1,1429 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8378,6 +8420,7 @@ index 0000000000..bf98716b39
 +  #searchMode = null;
 +  #navigationWrite = null;
 +  #navigationReady = null;
++  #navigationRecovery = null;
 +  #navigationActivation = null;
 +  #selectionGeneration = 0;
 +  #activationSelecting = null;
@@ -8440,6 +8483,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -8569,6 +8613,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -8683,6 +8728,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -8714,6 +8760,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -8767,6 +8814,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -8833,6 +8881,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -8867,6 +8916,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -8916,6 +8966,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -8947,6 +8998,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -8999,6 +9051,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -9047,6 +9100,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -9093,6 +9147,7 @@ index 0000000000..bf98716b39
 +    if (navigation && (!open || !visibleResults.includes(navigation.result))) {
 +      this.#navigationWrite = null;
 +      this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    }
 +    if (this.#modeRequery && (!open || !visibleResults.includes(this.#modeRequery.result))) {
@@ -9112,6 +9167,7 @@ index 0000000000..bf98716b39
 +    this.#navigationActivation = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    if (!UrlbarQueryModel.isResultActivationEvent(event)) throw new TypeError("Invalid result activation event");
 +    const plan = this.describeResultNavigation(revision, queryId, result, event, options);
 +    if (!plan || plan.where !== "current" || !plan.resetSelection || plan.editorValue === undefined ||
@@ -9165,6 +9221,7 @@ index 0000000000..bf98716b39
 +    this.#selectionGeneration++;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    const plan = this.describeResultNavigation(revision, queryId, result, event, options);
 +    if (!plan || plan.where !== "current" || !plan.resetSelection || plan.editorValue === undefined ||
@@ -9179,6 +9236,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequest = null;
 +    this.#searchCommandRequery = null;
@@ -9243,6 +9301,7 @@ index 0000000000..bf98716b39
 +    if (!pending || pending.proposal.token !== token) return null;
 +    // Consume before validation/descriptions: failure or reentry cannot retry it.
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    const { queryId, result } = pending;
 +    const revision = this.#edit.revision;
@@ -9268,11 +9327,57 @@ index 0000000000..bf98716b39
 +    const pending = this.#navigationReady;
 +    if (!pending || pending.proposal.token !== token) return null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    if (!this.#navigationIsCurrent(pending, event, options)) return null;
-+    return this.#queries.commitResultNavigation(pending.queryId, pending.result, event,
++    const generation = this.#selectionGeneration;
++    const outcome = this.#queries.commitResultNavigation(pending.queryId, pending.result, event,
 +      { ...options, searchString: this.#typedText, searchMode: this.#searchMode }, pending.proposal.plan,
 +      () => !this.#closed && this.#navigationIsCurrent(pending, event, options));
++    if (!outcome?.recovery) return outcome;
++    const { recovery, ...status } = outcome;
++    if (this.#closed || !this.#isCurrent() || this.#edit !== pending.edit ||
++        this.#searchMode !== pending.searchMode || this.#selectionGeneration !== generation) return status;
++    this.#navigationRecovery = { recovery, edit: this.#edit, searchMode: this.#searchMode, generation };
++    return { ...status, recovery };
++  }
++
++  /** Untrimmed recovery write; focus observation determines select-all versus caret reset. */
++  getNavigationRecovery(token, { focused } = {}) {
++    this.#check();
++    if (typeof focused !== "boolean") throw new TypeError("Missing recovery focus observation");
++    const pending = this.#navigationRecovery;
++    if (!pending || pending.recovery.token !== token) return null;
++    const current = () => !this.#closed && this.#isCurrent() &&
++      this.#navigationRecovery === pending && pending.edit === this.#edit &&
++      pending.searchMode === this.#searchMode && pending.generation === this.#selectionGeneration;
++    if (!current() || !this.#queries.getNavigationRecovery(token) || !current()) {
++      if (this.#navigationRecovery === pending) this.#navigationRecovery = null;
++      return null;
++    }
++    return Object.freeze({ ...pending.recovery, kind: "navigation-recovery", edit: this.#edit, focused,
++      selectionStart: 0, selectionEnd: focused ? pending.recovery.value.length : 0, selectionDirection: "none" });
++  }
++
++  acknowledgeNavigationRecovery(token, observation) {
++    const proposal = this.getNavigationRecovery(token, { focused: observation?.focused });
++    if (!proposal || observation.text !== proposal.value || observation.selectionStart !== proposal.selectionStart ||
++        observation.selectionEnd !== proposal.selectionEnd || observation.selectionDirection !== "none" ||
++        observation.searchMode !== null || observation.userTypedValue !== null ||
++        observation.pageProxyValid !== proposal.pageProxyValid) return false;
++    const pending = this.#navigationRecovery;
++    this.#navigationRecovery = null;
++    if (!this.#queries.acknowledgeNavigationRecovery(token) || this.#closed || !this.#isCurrent() ||
++        this.#edit !== proposal.edit || this.#searchMode !== pending.searchMode ||
++        this.#selectionGeneration !== pending.generation) return false;
++    this.cancel();
++    if (this.#closed || !this.#isCurrent() || this.#edit !== proposal.edit ||
++        this.#searchMode !== pending.searchMode || this.#selectionGeneration !== pending.generation + 1) return false;
++    this.#typedText = proposal.value;
++    this.#searchMode = null;
++    this.#edit = Object.freeze({ ...this.#edit, text: proposal.value, selectionStart: proposal.selectionStart,
++      selectionEnd: proposal.selectionEnd, selectionDirection: "none", selectionRevision: this.#edit.selectionRevision + 1 });
++    return true;
 +  }
 +
 +  describeResultNavigation(revision, queryId, result, event, options) {
@@ -9634,6 +9739,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -9655,6 +9761,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -9679,6 +9786,7 @@ index 0000000000..bf98716b39
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationRecovery = null;
 +    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
@@ -9694,10 +9802,10 @@ index 0000000000..bf98716b39
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..6711d7b5ff
+index 0000000000..2b2019705b
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,700 @@
+@@ -0,0 +1,710 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10048,6 +10156,16 @@ index 0000000000..6711d7b5ff
 +    } finally {
 +      parent.discardCurrentLoad(token);
 +    }
++  }
++
++  getNavigationRecovery(token) {
++    this.#check();
++    return this.#controller.parentController.getCurrentLoadRecovery(token);
++  }
++
++  acknowledgeNavigationRecovery(token) {
++    this.#check();
++    return this.#controller.parentController.acknowledgeCurrentLoadRecovery(token);
 +  }
 +
 +  /** Record an actual primary-result engagement; activation/load execution is separate. */

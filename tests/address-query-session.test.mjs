@@ -2862,9 +2862,10 @@ function parentLoadFixture() {
   const calls=[],browser={browserId:42,lastLocationChange:1,browsingContext:{currentWindowGlobal:{}},focus:()=>calls.push('focus')};
   const lazy={UrlbarUtils:{loadRequestToUrl:request=>({url:request.urlLoad?.url,postData:null})}};
   const Parent=new Function('lazy','Cr',`return class {
-    #currentLoad=null;#currentLoadGeneration=0;#destroyed=false;#isAddressbar=true;
+    #currentLoad=null;#currentLoadRecovery=null;#currentLoadGeneration=0;#destroyed=false;#isAddressbar=true;
     #prepareAddressbarLoad(data){this.prepare?.(data);}
-    destroy(){this.#destroyed=true;this.#currentLoad=null;}
+    destroy(){this.#destroyed=true;this.#currentLoad=null;this.#currentLoadRecovery=null;}
+    describeCurrentPageRevert(){return this.recoveryDescription??null;}
     ${methods}
   }`)(lazy,{NS_ERROR_LOAD_SHOWED_ERRORPAGE:99});
   const p=new Parent();p.resolveTargetBrowser=id=>id===42?browser:null;
@@ -3147,4 +3148,91 @@ test('revert description refuses missing/mismatched tabs, changed lifetime and u
   }
   const f=recoveryValueFixture();assert.throws(()=>f.p.describeCurrentPageRevert(0),/Invalid/);
   f.p.resolveTargetBrowser=()=>null;assert.equal(f.p.describeCurrentPageRevert(42),null);f.session.close();
+});
+
+
+test('only reverting guarded loads create recovery, which revalidates and resets typed state once',()=>{
+  const {p,data,browser}=parentLoadFixture();browser.userTypedValue='failed';
+  p.recoveryDescription={value:'https://loaded.test/',pageProxyValid:true,searchMode:null,userTypedValue:null};
+  p.browserWindow.openTrustedLinkIn=()=>{throw {result:1};};
+  const outcome=p.commitCurrentLoad(p.prepareCurrentLoad(data));assert.equal(outcome.reverted,true);assert.ok(outcome.recovery);
+  assert.equal(p.getCurrentLoadRecovery(outcome.recovery.token),outcome.recovery);assert.equal(browser.userTypedValue,'failed');
+  assert.equal(p.acknowledgeCurrentLoadRecovery(outcome.recovery.token),true);assert.equal(browser.userTypedValue,null);
+  assert.equal(p.acknowledgeCurrentLoadRecovery(outcome.recovery.token),false);
+  p.browserWindow.openTrustedLinkIn=()=>{throw {result:99};};
+  assert.equal(p.commitCurrentLoad(p.prepareCurrentLoad(data)).recovery,undefined);
+});
+
+test('recovery tickets expire on document, value and newer-load changes',()=>{
+  for(const change of ['document','value','load','typed']) {
+    const {p,data,browser}=parentLoadFixture();browser.userTypedValue='failed';
+    p.recoveryDescription={value:'loaded',pageProxyValid:true,searchMode:null,userTypedValue:null};
+    p.browserWindow.openTrustedLinkIn=()=>{throw {result:1};};
+    const {recovery}=p.commitCurrentLoad(p.prepareCurrentLoad(data));
+    if(change==='document')browser.browsingContext.currentWindowGlobal={};
+    if(change==='value')p.recoveryDescription={...p.recoveryDescription,value:'changed'};
+    if(change==='load')p.prepareCurrentLoad(data);
+    if(change==='typed')browser.userTypedValue='new typed value';
+    assert.equal(p.getCurrentLoadRecovery(recovery.token),null);assert.equal(p.acknowledgeCurrentLoadRecovery(recovery.token),false);
+    assert.equal(browser.userTypedValue,change==='typed'?'new typed value':'failed');
+  }
+});
+
+async function editorRecoveryFixture() {
+  const f=await historyEngagementFixture(),write=mockActivationLoad(f);
+  const recovery={token:{},value:'https://loaded.test/',pageProxyValid:true,searchMode:null,userTypedValue:null};
+  let pending=true;
+  f.parent.commitCurrentLoad=()=>({attempted:true,reverted:true,browserId:42,recovery});
+  f.parent.getCurrentLoadRecovery=token=>pending && token===recovery.token?recovery:null;
+  f.parent.acknowledgeCurrentLoadRecovery=token=>{if(!pending || token!==recovery.token)return false;pending=false;f.calls.push(['recover']);return true;};
+  const outcome=f.editor.commitAcknowledgedNavigation(write.token,f.event,f.options);
+  return {...f,recovery,outcome};
+}
+const recoveryObservation=p=>({text:p.value,selectionStart:p.selectionStart,selectionEnd:p.selectionEnd,
+  selectionDirection:p.selectionDirection,searchMode:null,userTypedValue:null,pageProxyValid:p.pageProxyValid,focused:p.focused});
+
+test('failed independent commit proposes untrimmed recovery and requires exact observation once',async()=>{
+  const f=await editorRecoveryFixture();assert.equal(f.outcome.recovery,f.recovery);
+  const before=f.editor.snapshot,p=f.editor.getNavigationRecovery(f.recovery.token,{focused:true});
+  assert.equal(p.selectionEnd,p.value.length);assert.equal(f.editor.snapshot,before);
+  assert.equal(f.editor.acknowledgeNavigationRecovery(p.token,{...recoveryObservation(p),text:'wrong'}),false);
+  assert.equal(f.editor.acknowledgeNavigationRecovery(p.token,recoveryObservation(p)),true);
+  assert.equal(f.editor.snapshot.text,p.value);assert.equal(f.editor.snapshot.selectionEnd,p.value.length);
+  assert.equal(f.editor.acknowledgeNavigationRecovery(p.token,recoveryObservation(p)),false);f.editor.close();
+});
+
+test('unfocused recovery resets caret and rejects wrong mode, proxy and typed-state observations',async()=>{
+  const f=await editorRecoveryFixture(),p=f.editor.getNavigationRecovery(f.recovery.token,{focused:false});
+  assert.equal(p.selectionEnd,0);
+  for(const override of [{searchMode:{}},{pageProxyValid:false},{userTypedValue:'old'},{selectionStart:1}]) {
+    assert.equal(f.editor.acknowledgeNavigationRecovery(p.token,{...recoveryObservation(p),...override}),false);
+  }
+  assert.equal(f.editor.acknowledgeNavigationRecovery(p.token,recoveryObservation(p)),true);f.editor.close();
+});
+
+test('new edits, cancellation and lost scope cannot recover over current editor state',async()=>{
+  for(const change of ['edit','cancel','scope']) {
+    const f=await editorRecoveryFixture();
+    if(change==='edit')await f.editor.edit({},edit(2,'new'));
+    if(change==='cancel')f.editor.cancel();
+    if(change==='scope')f.loseScope();
+    const get=()=>f.editor.getNavigationRecovery(f.recovery.token,{focused:false});
+    if(change==='scope')assert.throws(get,/scope/);else assert.equal(get(),null);
+    assert.equal(f.calls.some(x=>x[0]==='recover'),false);f.editor.close();
+  }
+});
+
+
+test('recovery revalidates editor state after parent capture and acknowledgment callbacks',async()=>{
+  const f=await editorRecoveryFixture();let next;
+  f.parent.getCurrentLoadRecovery=()=>{next=f.editor.edit({},edit(2,'replacement'));return f.recovery;};
+  assert.equal(f.editor.getNavigationRecovery(f.recovery.token,{focused:false}),null);await next;
+  assert.equal(f.editor.snapshot.text,'replacement');f.editor.close();
+  const g=await editorRecoveryFixture(),p=g.editor.getNavigationRecovery(g.recovery.token,{focused:false});
+  g.parent.acknowledgeCurrentLoadRecovery=()=>{g.editor.cancel();return true;};
+  assert.equal(g.editor.acknowledgeNavigationRecovery(p.token,recoveryObservation(p)),false);
+  assert.notEqual(g.editor.snapshot.text,p.value);g.editor.close();
+  const h=await editorRecoveryFixture();
+  h.parent.getCurrentLoadRecovery=()=>{h.loseScope();return h.recovery;};
+  assert.equal(h.editor.getNavigationRecovery(h.recovery.token,{focused:false}),null);h.editor.close();
 });
