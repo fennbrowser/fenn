@@ -1112,8 +1112,8 @@ test('independent URL descriptions use typed text and fixed privacy even after c
 });
 
 
-async function modeWriteFixture(options={}) {
-  const f=await editorFixture(),query=await f.editor.edit({},edit(1,'@engine'));
+async function modeWriteFixture(options={},fixtureOptions={}) {
+  const f=await editorFixture(fixtureOptions),query=await f.editor.edit({},edit(1,'@engine'));
   const engine={id:'engine',name:'Engine',isGeneralPurposeEngine:true};
   f.parent.child.updateEngineStore('changed',engine,-1);
   const result={id:1,type:sharedPolicy.UrlbarShared.RESULT_TYPE.SEARCH,
@@ -3320,4 +3320,76 @@ test('parent consumes owned recovery state before typed-value reset and refuses 
   lazy.independentUrlbarBrowserState.commit=()=>false;
   assert.equal(p.acknowledgeCurrentLoadRecovery(outcome.recovery.token),false);
   assert.equal(browser.userTypedValue,'failed');assert.equal(p.getCurrentLoadRecovery(outcome.recovery.token),null);
+});
+
+
+test('acknowledged result mode commits pinned browser state once without starting a query',async()=>{
+  const f=await modeWriteFixture({}, {browserId:42}),p=f.proposal,calls=[];
+  f.parent.commitIndependentModeState=(id,mode,observation,current)=>{assert.equal(current(),true);calls.push({id,mode,observation});return {applied:true};};
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),null);
+  assert.equal(f.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),true);
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}).applied,true);
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),null);
+  assert.equal(calls.length,1);assert.equal(calls[0].id,42);assert.equal(calls[0].mode.engineName,'Engine');
+  assert.equal(calls[0].observation.userTypedValue,p.value);assert.equal(calls[0].observation.persistedSearchTerms,false);
+  assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+test('mode-state commit rejects engine, editor and presentation changes after acknowledgment',async()=>{
+  for(const change of ['engine','caret','cancel','hidden','removed','selection']) {
+    const f=await modeWriteFixture({startQuery:false},{browserId:42}),p=f.proposal;let calls=0;
+    f.parent.commitIndependentModeState=()=>{calls++;return {applied:true};};
+    f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
+    if(change==='engine')f.parent.child.updateEngineStore('removed',f.engine,-1);
+    if(change==='caret')f.editor.select(1,0,0);
+    if(change==='cancel')f.editor.cancel();
+    if(change==='hidden'){f.editor.publishPresentation(1,f.query.id,[],false);f.editor.publishPresentation(1,f.query.id,[f.result],true);}
+    if(change==='removed'){f.editor.publishPresentation(1,f.query.id,[],true);f.editor.publishPresentation(1,f.query.id,[f.result],true);}
+    if(change==='selection')f.editor.beginResultSelection(1,f.query.id,f.result);
+    assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),null,change);assert.equal(calls,0);f.editor.close();
+  }
+});
+
+test('provider reentry and failure cannot leave an owned-mode commit dispatchable',async()=>{
+  for(const action of ['cancel','throw']) {
+    const f=await modeWriteFixture({}, {browserId:42}),p=f.proposal;
+    f.parent.onSelection=()=>{if(action==='throw')throw Error('provider failure');f.editor.cancel();};
+    f.parent.commitIndependentModeState=()=>{throw Error('unexpected state commit');};
+    if(action==='throw')assert.throws(()=>f.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),/provider failure/);
+    else f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
+    assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),null);f.editor.close();
+  }
+});
+
+test('mode-state live guard rejects removal and re-exposure during commit',async()=>{
+  const f=await modeWriteFixture({startQuery:false},{browserId:42}),p=f.proposal;
+  f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
+  f.parent.commitIndependentModeState=(_id,_mode,_obs,current)=>{
+    assert.equal(current(),true);f.editor.publishPresentation(1,f.query.id,[],true);
+    f.editor.publishPresentation(1,f.query.id,[f.result],true);assert.equal(current(),false);return null;
+  };
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),null);f.editor.close();
+});
+
+test('parent mode commit validates browser scope, typed state and persistence observation',()=>{
+  for(const change of ['none','document','typed','scope','persistence']) {
+    const {p,browser,lazy}=parentLoadFixture();browser.userTypedValue='old';let committed=0,discarded=0,current=true;
+    lazy.independentUrlbarBrowserState={prepareMode:()=>{
+      if(change==='document')browser.browsingContext.currentWindowGlobal={};
+      if(change==='typed')browser.userTypedValue='newer';if(change==='scope')current=false;
+      return {token:{},effects:{persistedSearchTerms:change==='persistence'}};
+    },commit:()=>{committed++;return true;},discard:()=>{discarded++;}};
+    const result=p.commitIndependentModeState(42,{engineName:'Engine'},{userTypedValue:'chosen',persistedSearchTerms:false},()=>current);
+    assert.equal(result?.applied??false,change==='none');assert.equal(committed,change==='none'?1:0);assert.equal(discarded,1);
+    assert.equal(browser.userTypedValue,change==='none'?'chosen':change==='typed'?'newer':'old');
+  }
+});
+
+test('parent mode commit rejects missing targets and preserves typed text for preview exits',()=>{
+  const {p,browser,lazy}=parentLoadFixture();browser.userTypedValue='retained';let effects;
+  lazy.independentUrlbarBrowserState={prepareMode:(_b,mode)=>({token:{},effects:effects={searchMode:mode,persistedSearchTerms:false}}),commit:()=>true,discard:()=>{}};
+  assert.equal(p.commitIndependentModeState(43,null,{persistedSearchTerms:false},()=>true),null);
+  assert.equal(p.commitIndependentModeState(42,null,{persistedSearchTerms:false},()=>true).applied,true);
+  assert.equal(browser.userTypedValue,'retained');assert.equal(effects.searchMode,null);
+  assert.throws(()=>p.commitIndependentModeState(42,null,{},()=>true),/Invalid/);
 });

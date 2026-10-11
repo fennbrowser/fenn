@@ -835,7 +835,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..ad4a204ff4 100644
+index ba254af0c6..479b4736ad 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,11 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -943,7 +943,7 @@ index ba254af0c6..ad4a204ff4 100644
    }
  
    /**
-@@ -999,6 +1041,166 @@ export class UrlbarParentController {
+@@ -999,6 +1041,198 @@ export class UrlbarParentController {
      }
    }
  
@@ -1093,6 +1093,38 @@ index ba254af0c6..ad4a204ff4 100644
 +    if (pending) lazy.independentUrlbarBrowserState.discard(pending.browser, pending.stateUpdate.token);
 +  }
 +
++  /** Commit only an acknowledged independent mode; caller validates live engine/result facts. */
++  commitIndependentModeState(browserId, searchMode, { userTypedValue, persistedSearchTerms }, isCurrent) {
++    if (!Number.isSafeInteger(browserId) || browserId <= 0 || typeof isCurrent !== "function" ||
++        typeof persistedSearchTerms !== "boolean" ||
++        (userTypedValue !== undefined && typeof userTypedValue !== "string") ||
++        (searchMode !== null && (typeof searchMode !== "object" || !searchMode))) {
++      throw new TypeError("Invalid independent mode state");
++    }
++    if (this.#destroyed || this.rendersInContentProcess || !this.#isAddressbar) return null;
++    const browser = this.resolveTargetBrowser(browserId);
++    const document = browser?.browsingContext?.currentWindowGlobal;
++    const epoch = browser?.lastLocationChange;
++    const typedValue = browser?.userTypedValue;
++    const current = () => isCurrent() && !this.#destroyed && !!document &&
++      browser?.browserId === browserId && this.resolveTargetBrowser(browserId) === browser &&
++      this.browserWindow.gBrowser.selectedBrowser === browser &&
++      browser.browsingContext?.currentWindowGlobal === document && browser.lastLocationChange === epoch &&
++      browser.userTypedValue === typedValue;
++    if (!current()) return null;
++    const update = lazy.independentUrlbarBrowserState.prepareMode(browser, searchMode);
++    if (!update) return null;
++    try {
++      if (update.effects.persistedSearchTerms !== persistedSearchTerms || !current() ||
++          !lazy.independentUrlbarBrowserState.commit(browser, update.token)) return null;
++      // The owned state is committed before browser setters can reenter.
++      if (userTypedValue !== undefined) browser.userTypedValue = userTypedValue;
++      return Object.freeze({ applied: true, ...update.effects });
++    } finally {
++      lazy.independentUrlbarBrowserState.discard(browser, update.token);
++    }
++  }
++
 +  /** Revoke only this preparation, without disturbing a newer one. */
 +  discardCurrentLoad(token) {
 +    if (this.#currentLoad?.token !== token) return false;
@@ -1110,7 +1142,7 @@ index ba254af0c6..ad4a204ff4 100644
    /**
     * Loads a URL in the browser window resolved from the actor. The content
     * child supplies the serializable load parameters; the parent fills in the
-@@ -1027,9 +1229,15 @@ export class UrlbarParentController {
+@@ -1027,9 +1261,15 @@ export class UrlbarParentController {
     *   browser to hand `focusBrowser` on the deferred-Enter keyup -- a
     *   content-process input can't resolve the selected browser itself.
     */
@@ -1127,7 +1159,7 @@ index ba254af0c6..ad4a204ff4 100644
      if (!browser) {
        // The tab was closed before the load got here; don't hand its load to
        // whichever tab is selected now.
-@@ -1040,8 +1248,9 @@ export class UrlbarParentController {
+@@ -1040,8 +1280,9 @@ export class UrlbarParentController {
      }
  
      let { url, postData } = lazy.UrlbarUtils.loadRequestToUrl(loadRequest);
@@ -1138,7 +1170,7 @@ index ba254af0c6..ad4a204ff4 100644
      }
      params.postData = postData;
  
-@@ -1055,6 +1264,7 @@ export class UrlbarParentController {
+@@ -1055,6 +1296,7 @@ export class UrlbarParentController {
        });
      }
  
@@ -1146,7 +1178,7 @@ index ba254af0c6..ad4a204ff4 100644
      if (where == "current") {
        params.targetBrowser = browser;
      } else {
-@@ -1071,6 +1281,7 @@ export class UrlbarParentController {
+@@ -1071,6 +1313,7 @@ export class UrlbarParentController {
        browser.focus();
      }
  
@@ -1154,7 +1186,7 @@ index ba254af0c6..ad4a204ff4 100644
      try {
        this.browserWindow.openTrustedLinkIn(url, where, params);
      } catch (ex) {
-@@ -1079,9 +1290,10 @@ export class UrlbarParentController {
+@@ -1079,9 +1322,10 @@ export class UrlbarParentController {
        return {
          reverted: ex.result != Cr.NS_ERROR_LOAD_SHOWED_ERRORPAGE,
          browserId: browser.browserId,
@@ -1166,7 +1198,7 @@ index ba254af0c6..ad4a204ff4 100644
    }
  
    /**
-@@ -1292,10 +1504,22 @@ export class UrlbarParentController {
+@@ -1292,10 +1536,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -1190,7 +1222,7 @@ index ba254af0c6..ad4a204ff4 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +1556,7 @@ export class UrlbarParentController {
+@@ -1332,6 +1588,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -1198,7 +1230,7 @@ index ba254af0c6..ad4a204ff4 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +1580,10 @@ export class UrlbarParentController {
+@@ -1355,6 +1612,10 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
@@ -1209,7 +1241,7 @@ index ba254af0c6..ad4a204ff4 100644
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +1615,7 @@ export class UrlbarParentController {
+@@ -1386,7 +1647,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -1218,7 +1250,7 @@ index ba254af0c6..ad4a204ff4 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +1623,11 @@ export class UrlbarParentController {
+@@ -1394,10 +1655,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -1231,7 +1263,7 @@ index ba254af0c6..ad4a204ff4 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +1645,7 @@ export class UrlbarParentController {
+@@ -1415,7 +1677,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -1240,7 +1272,7 @@ index ba254af0c6..ad4a204ff4 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +1667,7 @@ export class UrlbarParentController {
+@@ -1437,7 +1699,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -1249,7 +1281,7 @@ index ba254af0c6..ad4a204ff4 100644
          break;
      }
    };
-@@ -1727,8 +1957,12 @@ export class TelemetryEvent {
+@@ -1727,8 +1989,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -1263,7 +1295,7 @@ index ba254af0c6..ad4a204ff4 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +1977,7 @@ export class TelemetryEvent {
+@@ -1743,7 +2009,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -1272,7 +1304,7 @@ index ba254af0c6..ad4a204ff4 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +2003,7 @@ export class TelemetryEvent {
+@@ -1769,7 +2035,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -1281,7 +1313,7 @@ index ba254af0c6..ad4a204ff4 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +2014,13 @@ export class TelemetryEvent {
+@@ -1780,12 +2046,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -1297,7 +1329,7 @@ index ba254af0c6..ad4a204ff4 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +2031,7 @@ export class TelemetryEvent {
+@@ -1796,7 +2063,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -1306,7 +1338,7 @@ index ba254af0c6..ad4a204ff4 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +2099,16 @@ export class TelemetryEvent {
+@@ -1864,17 +2131,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -1328,7 +1360,7 @@ index ba254af0c6..ad4a204ff4 100644
      );
    }
  
-@@ -2009,158 +2243,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2275,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -1487,7 +1519,7 @@ index ba254af0c6..ad4a204ff4 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +2603,27 @@ export class TelemetryEvent {
+@@ -2521,17 +2635,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -1524,7 +1556,7 @@ index ba254af0c6..ad4a204ff4 100644
      );
    }
  
-@@ -2548,14 +2640,19 @@ export class TelemetryEvent {
+@@ -2548,14 +2672,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -1550,7 +1582,7 @@ index ba254af0c6..ad4a204ff4 100644
    }
  
    /**
-@@ -2581,39 +2678,4 @@ export class TelemetryEvent {
+@@ -2581,39 +2710,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -8383,10 +8415,10 @@ index 1e2660589b..5ae3ab4843 100644
    /*
 diff --git a/browser/components/urlbar/content/UrlbarBrowserState.mjs b/browser/components/urlbar/content/UrlbarBrowserState.mjs
 new file mode 100644
-index 0000000000..be404394c6
+index 0000000000..633c3752ea
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarBrowserState.mjs
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,98 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8441,7 +8473,8 @@ index 0000000000..be404394c6
 +    return this.#prepare(browser, state => {
 +      const searchMode = UrlbarSearchModeModel.writeMode(state.searchModes, normalized);
 +      const persistenceChanged = lazy.UrlbarSearchTermsPersistence.updateSearchModeState(state);
-+      return { searchMode: searchMode ? Object.freeze({ ...searchMode }) : null, persistenceChanged };
++      return { searchMode: searchMode ? Object.freeze({ ...searchMode }) : null, persistenceChanged,
++        persistedSearchTerms: !!state.persist?.shouldPersist };
 +    });
 +  }
 +
@@ -8695,10 +8728,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..d820272ad3
+index 0000000000..865843b9a2
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1430 @@
+@@ -0,0 +1,1481 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8740,6 +8773,8 @@ index 0000000000..d820272ad3
 +  #resultPreview = null;
 +  #modeApplication = null;
 +  #modeRequery = null;
++  #modeStateReady = null;
++  #committingModeState = null;
 +  #searchCommandRequery = null;
 +  #searchCommandRequest = null;
 +  #modeRestoreRequest = null;
@@ -8809,6 +8844,7 @@ index 0000000000..d820272ad3
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -8939,6 +8975,7 @@ index 0000000000..d820272ad3
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -9054,6 +9091,7 @@ index 0000000000..d820272ad3
 +    if (this.#hiddenResults) throw new Error("Hidden result mode application");
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -9086,6 +9124,7 @@ index 0000000000..d820272ad3
 +    if (this.#hiddenResults) throw new Error("Hidden result mode exit");
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -9140,6 +9179,7 @@ index 0000000000..d820272ad3
 +    const request = this.#selectionRequest;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -9163,11 +9203,39 @@ index 0000000000..d820272ad3
 +      description: pending.description, options: pending.options } : null;
 +    // Consume the write before notification. Reentrant edits/cancellation revoke
 +    // the follow-up query; a failing provider must not leave it dispatchable.
++    const ready = { token, edit: this.#edit, generation: this.#selectionGeneration,
++      queryId: request.queryId, result: request.result, proposal,
++      description: pending.description ?? proposal, options: pending.options };
++    this.#modeStateReady = ready;
 +    try {
-+      return this.#queries.acknowledgeResultSelection(token);
++      const acknowledged = this.#queries.acknowledgeResultSelection(token);
++      if (!acknowledged && this.#modeStateReady === ready) this.#modeStateReady = null;
++      return acknowledged;
 +    } catch (error) {
 +      if (this.#modeRequery?.token === token) this.#modeRequery = null;
++      if (this.#modeStateReady === ready) this.#modeStateReady = null;
 +      throw error;
++    }
++  }
++
++  /** One-use browser-state commit after mode/text acknowledgment; never starts a query. */
++  commitAcknowledgedModeState(token, { persistedSearchTerms } = {}) {
++    this.#check();
++    if (typeof persistedSearchTerms !== "boolean") throw new TypeError("Missing observed persistence state");
++    const pending = this.#modeStateReady;
++    if (!pending || pending.token !== token) return null;
++    this.#modeStateReady = null;
++    const current = () => !this.#closed && this.#isCurrent() && !this.#hiddenResults &&
++      this.#edit === pending.edit && this.#searchMode === pending.proposal.searchMode &&
++      this.#selectionGeneration === pending.generation;
++    if (!current()) return null;
++    this.#committingModeState = pending;
++    try {
++      return this.#queries.commitAcknowledgedModeState(pending.queryId, pending.result,
++        pending.description, { ...pending.options, value: pending.proposal.edit.text },
++        { persistedSearchTerms }, current);
++    } finally {
++      if (this.#committingModeState === pending) this.#committingModeState = null;
 +    }
 +  }
 +
@@ -9207,6 +9275,7 @@ index 0000000000..d820272ad3
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -9242,6 +9311,7 @@ index 0000000000..d820272ad3
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -9292,6 +9362,7 @@ index 0000000000..d820272ad3
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -9324,6 +9395,7 @@ index 0000000000..d820272ad3
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -9377,6 +9449,7 @@ index 0000000000..d820272ad3
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -9426,6 +9499,7 @@ index 0000000000..d820272ad3
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -9469,7 +9543,12 @@ index 0000000000..d820272ad3
 +      throw new Error("Hidden results require explicit reopening");
 +    }
 +    const activation = this.#navigationActivation ?? this.#activationSelecting;
++    const modeState = this.#modeStateReady ?? this.#committingModeState;
 +    this.#queries.publishPresentation(queryId, visibleResults, open);
++    if (modeState && (!open || (modeState.result !== null && !visibleResults.includes(modeState.result)))) {
++      this.#modeStateReady = null;
++      this.#selectionGeneration++;
++    }
 +    if (!open || (activation && !visibleResults.includes(activation.result))) this.#selectionGeneration++;
 +    const navigation = this.#navigationWrite ?? this.#navigationReady;
 +    if (navigation && (!open || !visibleResults.includes(navigation.result))) {
@@ -9480,6 +9559,7 @@ index 0000000000..d820272ad3
 +    }
 +    if (this.#modeRequery && (!open || !visibleResults.includes(this.#modeRequery.result))) {
 +      this.#modeRequery = null;
++      this.#modeStateReady = null;
 +      this.#searchCommandRequery = null;
 +      this.#searchCommandRequest = null;
 +      this.#modeRestoreRequest = null;
@@ -9562,6 +9642,7 @@ index 0000000000..d820272ad3
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -10066,6 +10147,7 @@ index 0000000000..d820272ad3
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -10088,6 +10170,7 @@ index 0000000000..d820272ad3
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -10113,6 +10196,7 @@ index 0000000000..d820272ad3
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#modeStateReady = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
@@ -10131,10 +10215,10 @@ index 0000000000..d820272ad3
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..2b2019705b
+index 0000000000..8f4c9d3439
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,710 @@
+@@ -0,0 +1,727 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10749,6 +10833,23 @@ index 0000000000..2b2019705b
 +      ? this.#controller.engineStore.getEngineByName(requested.engineName) : null;
 +    const searchMode = UrlbarSearchModeModel.normalizeMode(requested, engine);
 +    return searchMode ? Object.freeze({ ...transition, searchMode }) : null;
++  }
++
++  /** Commit browser state only while acknowledged result/engine facts remain live. */
++  commitAcknowledgedModeState(queryId, result, description, options, observation, isCurrent) {
++    this.#check();
++    if (!Number.isSafeInteger(this.#context.browserId) || this.#context.browserId <= 0) {
++      throw new Error("Mode state requires a pinned browser");
++    }
++    const current = () => !this.#closed && this.#isCurrent() && isCurrent() &&
++      this.ownsQuery(queryId) && this.#controller.resultsOpen &&
++      (result === null ? description.kind === "mode-exit" && description.searchMode === null :
++        this.ownsResult(queryId, result) && this.#controller.visibleResults.includes(result) &&
++        UrlbarShared.deepEqual(this.describeResultModeApplication(queryId, result, options), description));
++    if (!current()) return null;
++    return this.#controller.parentController.commitIndependentModeState(this.#context.browserId,
++      description.searchMode, { userTypedValue: description.storeTypedValue ? description.value : undefined,
++        persistedSearchTerms: observation.persistedSearchTerms }, current);
 +  }
 +
 +  /**
