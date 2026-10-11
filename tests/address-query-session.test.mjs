@@ -1953,6 +1953,64 @@ test('engagement rejects invalid events, stale editor revisions, composition and
   f.loseScope();assert.throws(()=>f.editor.discardEngagement(),/scope changed/);
 });
 
+test('search attribution preserves handoff, switcher, mode and persisted precedence across SAPs',()=>{
+  const {sandbox}=fixture();const model=sandbox.UrlbarQueryModel;
+  for(const isAddressbar of [false,true])for(const isHandoff of [false,true])
+    for(const switcherItem of [false,true])for(const searchMode of [null,{source:4}])
+      for(const isOneOff of [false,true])for(const persistedSearchTerms of [false,true]) {
+        const facts={sapName:isAddressbar?'urlbar':'searchbar',isAddressbar,isHandoff,switcherItem,searchMode,isOneOff,persistedSearchTerms};
+        const expected=!isAddressbar?'searchbar':isHandoff?'urlbar_handoff':
+          switcherItem || searchMode && !isOneOff?'urlbar_searchmode':persistedSearchTerms && !isOneOff?'urlbar_persisted':'urlbar';
+        assert.equal(model.searchSource(facts),expected,JSON.stringify(facts));
+      }
+});
+
+test('independent abandonment forwards host attribution with editor-owned mode and rejects invalid facts',async()=>{
+  for(const [facts,expected] of [[{},'urlbar'],[{persistedSearchTerms:true},'urlbar_persisted'],
+    [{isHandoff:true,persistedSearchTerms:true},'urlbar_handoff']]) {
+    const f=await editorFixture(),q=await f.editor.edit({},edit(1,'typed'));
+    f.editor.startEngagement(1,q.id,{type:'input',timeStamp:1});
+    for(const invalid of [{isHandoff:'true'},{persistedSearchTerms:1}]) {
+      assert.throws(()=>f.editor.abandonEngagement(1,q.id,{type:'blur',timeStamp:2},invalid),/Invalid/);
+      assert.equal(f.parent.engagements.filter(e=>e.kind==='record').length,0);
+    }
+    assert.equal(f.editor.abandonEngagement(1,q.id,{type:'blur',timeStamp:3},facts),true);
+    const record=f.parent.engagements.find(e=>e.kind==='record');
+    assert.equal(record.args[1].searchSource,expected);
+    assert.equal(record.args[2].engagementData.searchSource,expected);f.editor.close();
+  }
+  const f=fixture(),q=await f.session.query({}, {searchString:'mode'});
+  f.session.startEngagement(q.id,{type:'focus',timeStamp:1});
+  f.session.abandonEngagement(q.id,{type:'blur',timeStamp:2},
+    {searchString:'mode',searchMode:{source:4},persistedSearchTerms:true});
+  assert.equal(f.parent.engagements.find(e=>e.kind==='record').args[1].searchSource,'urlbar_searchmode');f.session.close();
+});
+
+test('retained attribution binding preserves lazy DOM and browser-state reads',()=>{
+  const {sandbox}=fixture();
+  const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarInputBase.mjs',import.meta.url),'utf8');
+  const method=source.slice(source.indexOf('  getSearchSource(event) {'),source.indexOf('  // Private methods below.'))
+    .replaceAll('this.#isAddressbar','this.isAddressbar').replaceAll('this.#sapName','this.sapName');
+  const context=vm.createContext({UrlbarQueryModel:sandbox.UrlbarQueryModel});
+  const binding=vm.runInContext('({'+method+'})',context);
+  for(const [facts,expected,reads] of [
+    [{isAddressbar:false},'searchbar',[]],
+    [{_isHandoffSession:true},'urlbar_handoff',[]],
+    [{switcher:true},'urlbar_searchmode',['switcher']],
+    [{mode:{source:4}},'urlbar_searchmode',['switcher','oneoff','mode']],
+    [{terms:'kept terms',shouldPersist:false},'urlbar_persisted',['switcher','oneoff','mode','browser']],
+    [{mode:{source:4},oneoff:true,terms:'kept terms'},'urlbar',['switcher','oneoff','mode','browser']],
+  ]) {
+    const calls=[],event={};const host={isAddressbar:true,sapName:facts.isAddressbar===false?'searchbar':'urlbar',
+      ...facts,window:{gBrowser:{selectedBrowser:{}}},
+      searchModeSwitcher:{eventTargetIsPanelItem:e=>{assert.equal(e,event);calls.push('switcher');return !!facts.switcher;}},
+      view:{oneOffSearchButtons:{eventTargetIsAOneOff:e=>{assert.equal(e,event);calls.push('oneoff');return !!facts.oneoff;}}},
+      get searchMode(){calls.push('mode');return facts.mode;},
+      getBrowserState(){calls.push('browser');return {persist:{searchTerms:facts.terms,shouldPersist:facts.shouldPersist}};}};
+    assert.equal(binding.getSearchSource.call(host,event),expected);assert.deepEqual(calls,reads);
+  }
+});
+
 test('Firefox recorder shares event building for explicit snapshots and retained input without hidden input reads',()=>{
   const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarParentController.sys.mjs',import.meta.url),'utf8');
   const builds=[],records=[],errors=[],fallback={visibleResults:[],searchMode:null},smart={};let reads=0;

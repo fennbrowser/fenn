@@ -2968,7 +2968,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..79f2590661 100644
+index a077de625f..73a18388aa 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,20 @@
@@ -3536,7 +3536,59 @@ index a077de625f..79f2590661 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -3516,84 +3445,19 @@ ${
+@@ -3317,37 +3246,20 @@ ${
+    *   The source name.
+    */
+   getSearchSource(event) {
+-    if (this.#isAddressbar) {
+-      if (this._isHandoffSession) {
+-        return "urlbar_handoff";
+-      }
+-
+-      if (this.searchModeSwitcher?.eventTargetIsPanelItem(event)) {
+-        // The search mode switcher doesn't have its own search source yet.
+-        return "urlbar_searchmode";
+-      }
+-
+-      const isOneOff =
+-        this.view.oneOffSearchButtons?.eventTargetIsAOneOff(event);
+-      if (this.searchMode && !isOneOff) {
+-        // Without checking !isOneOff, we might record the string
+-        // oneoff_urlbar-searchmode in the SEARCH_COUNTS probe (in addition to
+-        // oneoff_urlbar and oneoff_searchbar). The extra information is not
+-        // necessary; the intent is the same regardless of whether the user is
+-        // in search mode when they do a key-modified click/enter on a one-off.
+-        return "urlbar_searchmode";
+-      }
+-
+-      let state = this.getBrowserState(this.window.gBrowser.selectedBrowser);
+-      if (state.persist?.searchTerms && !isOneOff) {
+-        // Normally, we use state.persist.shouldPersist to check if search terms
+-        // persisted. However when the user modifies the search term, the boolean
+-        // will become false. Thus, we check the presence of the search terms to
+-        // know whether or not search terms ever persisted in the address bar.
+-        return "urlbar_persisted";
+-      }
+-    }
+-    return this.#sapName;
++    const isAddressbar = this.#isAddressbar;
++    const isHandoff = isAddressbar && this._isHandoffSession;
++    const switcherItem = isAddressbar && !isHandoff &&
++      this.searchModeSwitcher?.eventTargetIsPanelItem(event);
++    const isOneOff = isAddressbar && !isHandoff && !switcherItem &&
++      this.view.oneOffSearchButtons?.eventTargetIsAOneOff(event);
++    const searchMode = isAddressbar && !isHandoff && !switcherItem ? this.searchMode : null;
++    // Preserve lazy browser-state access and the presence-of-terms rule: editing
++    // can clear shouldPersist without changing persisted-search attribution.
++    const persistedSearchTerms = isAddressbar && !isHandoff && !switcherItem &&
++      !(searchMode && !isOneOff) &&
++      this.getBrowserState(this.window.gBrowser.selectedBrowser).persist?.searchTerms;
++    return UrlbarQueryModel.searchSource({ sapName: this.#sapName, isAddressbar,
++      isHandoff, switcherItem, isOneOff, searchMode, persistedSearchTerms });
+   }
+ 
+   // Private methods below.
+@@ -3516,84 +3428,19 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
@@ -3633,7 +3685,7 @@ index a077de625f..79f2590661 100644
    }
  
    /**
-@@ -3604,14 +3468,7 @@ ${
+@@ -3604,14 +3451,7 @@ ${
     * @returns {string} The `actiontype` value, or undefined.
     */
    #getActionTypeFromResult(result) {
@@ -3649,7 +3701,7 @@ index a077de625f..79f2590661 100644
    }
  
    /**
-@@ -3634,64 +3491,27 @@ ${
+@@ -3634,64 +3474,27 @@ ${
     *   Whether autofill should be allowed in the new search.
     */
    _maybeAutofillPlaceholder(value) {
@@ -3734,7 +3786,7 @@ index a077de625f..79f2590661 100644
    }
  
    /**
-@@ -3772,105 +3592,31 @@ ${
+@@ -3772,105 +3575,31 @@ ${
      }
    }
  
@@ -3865,7 +3917,7 @@ index a077de625f..79f2590661 100644
    }
  
    _toggleActionOverride(event) {
-@@ -4081,33 +3827,34 @@ ${
+@@ -4081,33 +3810,34 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -3906,7 +3958,7 @@ index a077de625f..79f2590661 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -4267,6 +4014,15 @@ ${
+@@ -4267,6 +3997,15 @@ ${
      }
    }
  
@@ -3922,7 +3974,7 @@ index a077de625f..79f2590661 100644
    _initCopyCutController() {
      // This exists to put an untrimmed URL on the clipboard, and only the address
      // bar trims. Every other input keeps its native copy/cut.
-@@ -4479,7 +4235,7 @@ ${
+@@ -4479,7 +4218,7 @@ ${
        return;
      }
      let controller =
@@ -3931,7 +3983,7 @@ index a077de625f..79f2590661 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4495,6 +4251,33 @@ ${
+@@ -4495,6 +4234,33 @@ ${
      stripOnShare.removeAttribute("disabled");
    }
  
@@ -3965,7 +4017,7 @@ index a077de625f..79f2590661 100644
    _initPasteAndGo() {
      this.addContextMenuItems({
        after: "edit-contextmenu-paste",
-@@ -4507,17 +4290,7 @@ ${
+@@ -4507,17 +4273,7 @@ ${
            .GetStringFromName("pasteAndGo.label");
          pasteAndGo.setAttribute("label", label);
          pasteAndGo.setAttribute("anonid", "paste-and-go");
@@ -3984,7 +4036,7 @@ index a077de625f..79f2590661 100644
  
          fragment.appendChild(pasteAndGo);
          return fragment;
-@@ -4545,10 +4318,7 @@ ${
+@@ -4545,10 +4301,7 @@ ${
            { once: true }
          );
  
@@ -3996,7 +4048,7 @@ index a077de625f..79f2590661 100644
            pasteAndGo.removeAttribute("disabled");
          } else {
            pasteAndGo.setAttribute("disabled", "true");
-@@ -4747,60 +4517,11 @@ ${
+@@ -4747,60 +4500,11 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -4062,7 +4114,7 @@ index a077de625f..79f2590661 100644
    }
  
    /**
-@@ -5071,6 +4792,8 @@ ${
+@@ -5071,6 +4775,8 @@ ${
    setUnifiedSearchButtonAvailability(available) {
      available ||=
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
@@ -4071,7 +4123,7 @@ index a077de625f..79f2590661 100644
      const switcher = this.querySelector(".searchmode-switcher");
      switcher.toggleAttribute("offscreen", !available);
      if (available) {
-@@ -5085,6 +4808,7 @@ ${
+@@ -5085,6 +4791,7 @@ ${
          this.window.gBrowser.selectedBrowser
        ).isUnifiedSearchButtonAvailable = available;
      }
@@ -4079,7 +4131,7 @@ index a077de625f..79f2590661 100644
    }
  
    /**
-@@ -5151,7 +4875,7 @@ ${
+@@ -5151,7 +4858,7 @@ ${
    #maybeSelectAll() {
      if (
        !this.#preventClickSelectsAll &&
@@ -4088,7 +4140,7 @@ index a077de625f..79f2590661 100644
        this.focused &&
        this.inputField.selectionStart == this.inputField.selectionEnd
      ) {
-@@ -5477,34 +5201,20 @@ ${
+@@ -5477,34 +5184,20 @@ ${
      }
    }
  
@@ -4096,28 +4148,28 @@ index a077de625f..79f2590661 100644
 -    // A new input starts a fresh search; bump the epoch so a pending
 -    // deferred-Enter's async keyup won't reset this search's caret.
 -    this.#inputEpoch++;
-+  setNativeInputValue(value) {
-     if (
+-    if (
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      (event.inputType === "deleteContentBackward" ||
 -        event.inputType === "deleteContentForward")
-+      !this.view.nativePresentation ||
-+      typeof value !== "string" ||
-+      value.length > 32768
-     ) {
+-    ) {
 -      // Take a telemetry if user deleted whole autofilled value.
 -      this.parentController.recordAutofillDeletion();
 -    }
 -
--    if (
++  setNativeInputValue(value) {
+     if (
 -      UrlbarPrefs.get("autoFill.adaptiveHistory.enabled") &&
 -      event.inputType?.startsWith("deleteContent") &&
 -      !this.isPrivate &&
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      this._resultForCurrentValue?.payload?.url
--    ) {
++      !this.view.nativePresentation ||
++      typeof value !== "string" ||
++      value.length > 32768
+     ) {
 -      this.parentController.recordAutofillBackspace(
 -        this._resultForCurrentValue.payload.url
 -      );
@@ -4133,7 +4185,7 @@ index a077de625f..79f2590661 100644
      this.valueIsTyped = true;
      this._untrimmedValue = value;
      this._protocolIsTrimmed = false;
-@@ -5516,20 +5226,9 @@ ${
+@@ -5516,20 +5209,9 @@ ${
      // string, thus there's no valid selection. This is also used by the view
      // to set "aria-activedescendant", thus it should never get stale.
      this.controller.userSelectionBehavior = "none";
@@ -4156,7 +4208,7 @@ index a077de625f..79f2590661 100644
      this.toggleAttribute("usertyping", value);
      this.removeAttribute("actiontype");
  
-@@ -5551,6 +5250,43 @@ ${
+@@ -5551,6 +5233,43 @@ ${
          this.removeAttribute("persistsearchterms");
        }
      }
@@ -4200,7 +4252,7 @@ index a077de625f..79f2590661 100644
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
-@@ -5580,10 +5316,9 @@ ${
+@@ -5580,10 +5299,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -4214,7 +4266,7 @@ index a077de625f..79f2590661 100644
      ) {
        return;
      }
-@@ -5591,11 +5326,10 @@ ${
+@@ -5591,11 +5309,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -4230,7 +4282,7 @@ index a077de625f..79f2590661 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5669,33 +5403,20 @@ ${
+@@ -5669,33 +5386,20 @@ ${
    }
  
    _on_paste(event) {
@@ -4272,7 +4324,7 @@ index a077de625f..79f2590661 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5430,7 @@ ${
+@@ -5709,7 +5413,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -4281,7 +4333,7 @@ index a077de625f..79f2590661 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5461,25 @@ ${
+@@ -5740,51 +5444,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -4349,7 +4401,7 @@ index a077de625f..79f2590661 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5673,11 @@ ${
+@@ -5978,15 +5656,11 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -4367,7 +4419,7 @@ index a077de625f..79f2590661 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5697,24 @@ ${
+@@ -6006,44 +5680,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -4424,7 +4476,7 @@ index a077de625f..79f2590661 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,9 +5840,7 @@ ${
+@@ -6169,9 +5823,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -4435,7 +4487,7 @@ index a077de625f..79f2590661 100644
        ? SCHEMELESS_INPUT_SCHEMELESS
        : SCHEMELESS_INPUT_SCHEMEFUL;
    }
-@@ -6311,111 +5980,6 @@ function getDroppableData(event) {
+@@ -6311,111 +5963,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -4547,7 +4599,7 @@ index a077de625f..79f2590661 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +6004,10 @@ class CopyCutController {
+@@ -6440,12 +5987,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -7099,7 +7151,7 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..b472810e5a
+index 0000000000..9edeec492a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
 @@ -0,0 +1,1083 @@
@@ -7839,11 +7891,11 @@ index 0000000000..b472810e5a
 +    return this.#queries.startEngagement(queryId, event, options);
 +  }
 +
-+  abandonEngagement(revision, queryId, event) {
++  abandonEngagement(revision, queryId, event, { isHandoff = false, persistedSearchTerms = false } = {}) {
 +    this.#check();
 +    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing) throw new Error("Stale editor abandonment");
 +    return this.#queries.abandonEngagement(queryId, event, {
-+      searchString: this.#typedText, searchMode: this.#searchMode,
++      searchString: this.#typedText, searchMode: this.#searchMode, isHandoff, persistedSearchTerms,
 +    });
 +  }
 +
@@ -8188,10 +8240,10 @@ index 0000000000..b472810e5a
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..9fad7d0a88
+index 0000000000..55ce5802dd
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,427 @@
+@@ -0,0 +1,431 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8377,22 +8429,26 @@ index 0000000000..9fad7d0a88
 +  }
 +
 +  /** Record a urlbar abandonment using only validated exposure and explicit editor facts. */
-+  abandonEngagement(queryId, event, { searchString, searchMode = null } = {}) {
++  abandonEngagement(queryId, event, { searchString, searchMode = null,
++    isHandoff = false, persistedSearchTerms = false } = {}) {
 +    if (!this.ownsQuery(queryId)) throw new Error("Stale abandonment query");
 +    if (this.#context.sapName !== "urlbar") throw new Error("Independent abandonment requires urlbar SAP");
 +    if (!["blur", "tabswitch"].includes(event?.type) || !Number.isFinite(event.timeStamp) || event.timeStamp < 0 ||
-+        typeof searchString !== "string") throw new TypeError("Invalid abandonment facts");
++        typeof searchString !== "string" || typeof isHandoff !== "boolean" ||
++        typeof persistedSearchTerms !== "boolean") throw new TypeError("Invalid abandonment facts");
 +    if (!this.#engagementActive || this.#endingEngagement) return false;
 +    const query = this.#query;
 +    const mode = searchMode ? Object.freeze({ ...searchMode }) : null;
++    const searchSource = UrlbarQueryModel.searchSource({ sapName: this.#context.sapName,
++      isAddressbar: true, isHandoff, persistedSearchTerms, searchMode: mode });
 +    const explicitState = Object.freeze({ engagementData: Object.freeze({ searchMode: mode,
 +      visibleResults: Object.freeze([...this.#controller.visibleResults]),
-+      viewIsOpen: this.#controller.resultsOpen, searchSource: "urlbar" }), smartbarData: Object.freeze({}) });
++      viewIsOpen: this.#controller.resultsOpen, searchSource }), smartbarData: Object.freeze({}) });
 +    this.#engagementActive = false;
 +    this.#endingEngagement = true;
 +    try {
 +      this.#controller.engagementEvent.record(Object.freeze({ type: event.type, timeStamp: event.timeStamp }), {
-+        searchString, searchMode: mode, searchSource: "urlbar",
++        searchString, searchMode: mode, searchSource,
 +        windowMode: this.#context.isPrivate ? "private" : "classic",
 +      }, explicitState);
 +    } finally {
@@ -8784,10 +8840,10 @@ index 0000000000..83b4b88af9
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQueryModel.mjs b/browser/components/urlbar/content/UrlbarQueryModel.mjs
 new file mode 100644
-index 0000000000..76c0325b5e
+index 0000000000..4dbc12c8e4
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQueryModel.mjs
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,74 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8798,6 +8854,17 @@ index 0000000000..76c0325b5e
 +
 +/** Firefox query policy over explicit state, without retaining an input/view. */
 +export class UrlbarQueryModel {
++  /** Search attribution from Firefox-owned facts, independent of event targets. */
++  static searchSource({ sapName, isAddressbar, isHandoff = false,
++    switcherItem = false, searchMode = null, isOneOff = false,
++    persistedSearchTerms = false }) {
++    if (!isAddressbar) return sapName;
++    if (isHandoff) return "urlbar_handoff";
++    if (switcherItem || (searchMode && !isOneOff)) return "urlbar_searchmode";
++    if (persistedSearchTerms && !isOneOff) return "urlbar_persisted";
++    return sapName;
++  }
++
 +  /** Choose query text from Firefox-owned page-proxy validity and displayed value. */
 +  static resolveSearchString({ value, pageProxyValid }, searchString) {
 +    if (!searchString) return pageProxyValid ? "" : value;
