@@ -279,3 +279,51 @@ test('retained presenter handles cache notifications without rebuilding unrelate
   for(const name of ['topsites','l10n','unknown'])presenter.onPresentationCacheInvalidated(name);
   assert.deepEqual(calls,['topsites','l10n']);
 });
+
+
+test('a later non-autofill first result proposes exact typed-text restoration without requery',async()=>{
+  const f=await completionFixture();
+  assert.equal(f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal)),true);
+  const count=f.parent.started.length;
+  f.query.results=[{payload:{}}];f.parent.child.notify('onFirstResult',f.query);
+  const restore=f.updates.at(-1).completion;
+  assert.equal(restore.kind,'restore');assert.equal(restore.value,'exam');
+  assert.equal(restore.selectionStart,4);assert.equal(restore.selectionEnd,4);
+  assert.equal(restore.selectionDirection,'none');
+  assert.equal(f.editor.snapshot.text,'example.test/','proposal must not observe its own write');
+  assert.equal(f.editor.getCompletion(restore.token),restore);
+  assert.equal(f.editor.acknowledgeCompletion(restore.token,observed(restore)),true);
+  assert.equal(f.editor.snapshot.text,'exam');assert.equal(f.editor.snapshot.selectionRevision,2);
+  assert.equal(f.parent.started.length,count);
+  assert.equal(f.editor.acknowledgeCompletion(restore.token,observed(restore)),false);
+  f.parent.child.notify('onFirstResult',f.query);assert.equal(f.updates.at(-1).completion,null);
+  f.editor.close();
+});
+
+test('restoration never claims an unacknowledged suffix or intervening caret/text edit',async()=>{
+  for(const action of ['unacknowledged','caret','edit','keyword']) {
+    const f=await completionFixture();
+    if(action!=='unacknowledged')f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal));
+    if(action==='caret')f.editor.select(1,2,2);
+    if(action==='edit')await f.editor.edit({},edit(2,'example.test/ '));
+    const before=f.updates.length;
+    f.query.results=[{payload:action==='keyword'?{keyword:'alias'}:{}}];
+    f.parent.child.notify('onFirstResult',f.query);
+    assert.ok(f.updates.slice(before).every(u=>u.completion===null),action);
+    assert.equal(f.editor.snapshot.text,action==='unacknowledged'?'exam':action==='edit'?'example.test/ ':'example.test/');
+    f.editor.close();
+  }
+});
+
+test('restoration authority rejects changed provider data, replacement and pending selection',async()=>{
+  for(const mutate of [f=>{f.query.results[0].autofill=f.result.autofill;},
+    f=>{f.query.results[0].payload.keyword='alias';},f=>{f.query.results=[{payload:{}}];},
+    f=>f.editor.select(1,4,13,'backward'),f=>f.editor.cancel()]) {
+    const f=await completionFixture();f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal));
+    f.query.results=[{payload:{}}];f.parent.child.notify('onFirstResult',f.query);
+    const restore=f.updates.at(-1).completion;mutate(f);
+    assert.equal(f.editor.getCompletion(restore.token),null);
+    assert.equal(f.editor.acknowledgeCompletion(restore.token,observed(restore)),false);
+    assert.equal(f.editor.snapshot.text,'example.test/');f.editor.close();
+  }
+});

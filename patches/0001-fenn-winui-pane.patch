@@ -5987,10 +5987,10 @@ index 1e2660589b..5ae3ab4843 100644
    /*
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..c5bb09a9a3
+index 0000000000..3df6d86e87
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,189 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6082,8 +6082,24 @@ index 0000000000..c5bb09a9a3
 +      if (eligible) {
 +        const token = Object.freeze({});
 +        const descriptor = Object.freeze({ ...first.autofill });
-+        completion = Object.freeze({ ...descriptor, selectionDirection: "backward", token });
++        completion = Object.freeze({ ...descriptor, kind: "autofill", selectionDirection: "backward", token });
 +        this.#completion = { token, proposal: completion, descriptor,
++          query: update.query, result: first, edit: this.#edit };
++      }
++      // A later first result may disprove an already acknowledged suffix.
++      // Only propose restoration while that exact suffix is still selected;
++      // user edits and caret observations revoke our authority over it.
++      if (update.kind === "first-result" && first && !first.autofill &&
++          !first.payload?.keyword && this.#autofill &&
++          this.#edit.text === this.#autofill.value &&
++          !this.#edit.text.endsWith(" ") &&
++          this.#edit.selectionStart === this.#autofill.selectionStart &&
++          this.#edit.selectionEnd === this.#autofill.selectionEnd) {
++        const token = Object.freeze({});
++        completion = Object.freeze({ kind: "restore", value: text,
++          selectionStart: text.length, selectionEnd: text.length,
++          selectionDirection: "none", token });
++        this.#completion = { token, proposal: completion, descriptor: null,
 +          query: update.query, result: first, edit: this.#edit };
 +      }
 +      this.#onUpdate(Object.freeze({ ...update, edit: this.#edit, completion }));
@@ -6097,6 +6113,7 @@ index 0000000000..c5bb09a9a3
 +    }
 +    this.#validateSelection(this.#edit.text, start, end, direction);
 +    this.#completion = null;
++    this.#autofill = null;
 +    this.#edit = Object.freeze({ ...this.#edit, selectionStart: start,
 +      selectionEnd: end, selectionDirection: direction,
 +      selectionRevision: this.#edit.selectionRevision + 1 });
@@ -6115,6 +6132,9 @@ index 0000000000..c5bb09a9a3
 +    // A provider can update a result in place. Object identity alone is not a
 +    // promise that its proposed edit still describes that result.
 +    const live = current.result.autofill;
++    if (current.proposal.kind === "restore") {
++      return live ? null : current.proposal;
++    }
 +    if (!live || Object.keys(live).length !== Object.keys(current.descriptor).length ||
 +        Object.keys(current.descriptor).some(key => live[key] !== current.descriptor[key])) {
 +      return null;
