@@ -3106,13 +3106,17 @@ function recoveryValueFixture() {
   const uri=spec=>({spec,displaySpec:spec});
   const browser={browserId:42,lastLocationChange:1,userTypedValue:'untouched',currentURI:uri('https://loaded.test/'),
     browsingContext:{currentWindowGlobal:{},sessionHistory:{count:1}}};
-  const lazy={loadedURIValue:f.sandbox.loadedURIValue,BrowserUIUtils:{checkEmptyPageOrigin:()=>true},ExtensionUtils:{isExtensionUrl:u=>u.spec.startsWith('moz-extension:')}};
+  const prefs={trimURLs:false,'formatting.enabled':true,'security.insecure_connection_text.enabled':false};
+  const lazy={loadedURIValue:f.sandbox.loadedURIValue,trimDisplayValue:f.sandbox.trimDisplayValue,
+    ReaderMode:{getOriginalUrlObjectForDisplay:()=>null},UrlbarPrefs:{get:key=>prefs[key]},
+    BrowserUIUtils:{checkEmptyPageOrigin:()=>true,trimURL:s=>s.replace(/^https:\/\/(?:www\.)?/, '').replace(/\/$/, ''),
+      getTrimmedURLPrefix:s=>s.startsWith('https://www.')?'https://www.':s.startsWith('https://')?'https://':'',trimURLProtocol:'https://'},ExtensionUtils:{isExtensionUrl:u=>u.spec.startsWith('moz-extension:')}};
   const services={io:{createExposableURI:u=>uri(u.spec.replace('user:pass@',''))}};
-  const Parent=new Function('lazy','Services',`return class { #destroyed=false;#isAddressbar=true;
-    destroy(){this.#destroyed=true;} ${method} }`)(lazy,services),p=new Parent();
-  p.resolveTargetBrowser=()=>browser;p.browserWindow={gBrowser:{selectedBrowser:browser},browsingContext:{},
+  const Parent=new Function('lazy','Services','Ci',`return class { #destroyed=false;#isAddressbar=true;
+    destroy(){this.#destroyed=true;} ${method} }`)(lazy,services,{nsIWebProgressListener:{STATE_LOADED_MIXED_ACTIVE_CONTENT:4}}),p=new Parent();
+  p.resolveTargetBrowser=()=>browser;p.browserWindow={gBrowser:{selectedBrowser:browser,securityUI:{state:0}},browsingContext:{},windowUtils:{getDirectionFromText:()=>0,DIRECTION_RTL:1},
     isInitialPage:u=>u.spec==='about:blank',isBlankPageURL:spec=>spec==='about:blank'};
-  return {...f,p,browser,lazy,services,uri};
+  return {...f,p,browser,lazy,services,uri,prefs};
 }
 
 test('parent revert description preserves auth/loading/current URI precedence and strips credentials without mutation',()=>{
@@ -3235,4 +3239,54 @@ test('recovery revalidates editor state after parent capture and acknowledgment 
   const h=await editorRecoveryFixture();
   h.parent.getCurrentLoadRecovery=()=>{h.loseScope();return h.recovery;};
   assert.equal(h.editor.getNavigationRecovery(h.recovery.token,{focused:false}),null);h.editor.close();
+});
+
+
+test('recovery formatting retains full Reader Mode URL and reports actual prefix removal',()=>{
+  const f=recoveryValueFixture();f.prefs.trimURLs=true;
+  f.lazy.ReaderMode.getOriginalUrlObjectForDisplay=()=>f.uri('https://www.reader.test/');
+  const d=f.p.describeCurrentPageRevert(42);
+  assert.equal(d.value,'reader.test');assert.equal(d.untrimmedValue,'https://www.reader.test/');
+  assert.equal(d.protocolIsTrimmed,true);assert.equal(d.wwwIsTrimmed,true);
+  assert.equal(f.browser.userTypedValue,'untouched');f.session.close();
+});
+
+test('recovery formatting uses RTL and Gecko mixed-content facts with Firefox prefs',()=>{
+  const f=recoveryValueFixture();f.prefs.trimURLs=true;
+  assert.equal(f.p.describeCurrentPageRevert(42).value,'loaded.test');
+  f.p.browserWindow.windowUtils.getDirectionFromText=()=>1;
+  let d=f.p.describeCurrentPageRevert(42);assert.equal(d.value,'https://loaded.test/');assert.equal(d.protocolIsTrimmed,false);
+  f.p.browserWindow.windowUtils.getDirectionFromText=()=>0;
+  f.p.browserWindow.gBrowser.securityUI.state=4;
+  d=f.p.describeCurrentPageRevert(42);assert.equal(d.value,'https://loaded.test/');assert.equal(d.protocolIsTrimmed,false);
+  f.prefs['formatting.enabled']=false;assert.equal(f.p.describeCurrentPageRevert(42).value,'loaded.test');
+  f.prefs['formatting.enabled']=true;f.prefs['security.insecure_connection_text.enabled']=true;
+  assert.equal(f.p.describeCurrentPageRevert(42).value,'loaded.test');
+  f.prefs.trimURLs=false;assert.equal(f.p.describeCurrentPageRevert(42).value,'https://loaded.test/');f.session.close();
+});
+
+test('shared trim policy preserves service short circuit and retained input delegates to it',()=>{
+  const f=fixture(),calls=[];
+  const opts={trimURLs:true,trimURL:v=>{calls.push('trim');return v.slice(8);},
+    isTextDirectionRTL:()=>{calls.push('rtl');return true;},preserveMixedContentProtocol:()=>{throw Error('unexpected mixed read');}};
+  assert.equal(f.sandbox.trimDisplayValue('https://host/',opts),'https://host/');assert.deepEqual(calls,['trim','rtl']);
+  opts.trimURLs=false;calls.length=0;f.sandbox.trimDisplayValue('https://host/',opts);assert.deepEqual(calls,['rtl']);
+  const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarInputBase.mjs',import.meta.url),'utf8');
+  const start=source.indexOf('  _trimValue(val) {'),method=source.slice(start,source.indexOf('\n  /**',start));
+  const Input=new Function('trimDisplayValue','UrlbarPrefs','lazy','UrlbarContentUtils','window',
+    `return class {#isAddressbar=true; #getValueFormatter(){return {willShowFormattedMixedContentProtocol:()=>false};} ${method}}`)
+    (f.sandbox.trimDisplayValue,{get:()=>true},{BrowserUIUtils:{trimURL:v=>v.slice(8)}},{isTextDirectionRTL:()=>false},{});
+  assert.equal(new Input()._trimValue('https://host/'),'host/');f.session.close();
+});
+
+test('recovery ticket revokes on display metadata changes even when visible text is unchanged',()=>{
+  for(const key of ['untrimmedValue','protocolIsTrimmed','wwwIsTrimmed']) {
+    const {p,data,browser}=parentLoadFixture();browser.userTypedValue='failed';
+    p.recoveryDescription={value:'loaded.test',untrimmedValue:'https://loaded.test/',protocolIsTrimmed:true,wwwIsTrimmed:false,pageProxyValid:true,searchMode:null,userTypedValue:null};
+    p.browserWindow.openTrustedLinkIn=()=>{throw {result:1};};
+    const outcome=p.commitCurrentLoad(p.prepareCurrentLoad(data));
+    p.recoveryDescription={...p.recoveryDescription,[key]:key==='untrimmedValue'?'http://loaded.test/':!p.recoveryDescription[key]};
+    assert.equal(p.getCurrentLoadRecovery(outcome.recovery.token),null);
+    assert.equal(p.acknowledgeCurrentLoadRecovery(outcome.recovery.token),false);assert.equal(browser.userTypedValue,'failed');
+  }
 });
