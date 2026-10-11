@@ -8,7 +8,7 @@ const sharedPolicy=vm.createContext({URL,UrlbarContentUtils:{},UrlbarPrefs:{get:
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarShared.mjs',import.meta.url),'utf8')
   .replace(/^import .*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),sharedPolicy);
 
-function fixture({hold=false,uninitializedResults=false,onPresentationRequest=null,isPrivate=true}={}) {
+function fixture({hold=false,uninitializedResults=false,onPresentationRequest=null,isPrivate=true,browserId}={}) {
   const parents=[];
   const prefs={"experimental.hideHeuristic":false,openintab:false,ctrlCanonizesURLs:false,"browser.search.openintab":false};
   class Parent {
@@ -44,7 +44,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     vm.runInContext(source.replace(/^import .*;$/gm,'').replaceAll('export class ','class ')+`\nthis.${file}=${file};`,sandbox);
   }
   let current=true;
-  const context={sapName:'urlbar',isPrivate,actor:{browsingContext:{isContent:false}}};
+  const context={sapName:'urlbar',isPrivate,browserId,actor:{browsingContext:{isContent:false}}};
   const session=new sandbox.UrlbarQuerySession({context,isCurrent:()=>current,onPresentationRequest});
   return {session,parent:parents[0],parents,sandbox,context,prefs,invalidate(){current=false;}};
 }
@@ -2555,4 +2555,45 @@ test('terminal engagement revokes the old query even if recording throws',async(
   assert.throws(()=>f.editor.recordResultEngagement(1,f.q.id,f.result,event),/recorder failure/);
   assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,event),false);
   assert.throws(()=>f.editor.publishPresentation(1,f.q.id,[f.result],true),/Invalid/);f.editor.close();
+});
+
+
+test('terminal bounce captures pinned identity and exposure before engagement and survives cancellation',async()=>{
+  const f=await editorFixture({browserId:42}),q=await f.editor.edit({},edit(1,'typed'));
+  const result={id:100,type:f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH,payload:{query:'typed',engine:'e'}};
+  q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+  f.editor.startEngagement(1,q.id,{type:'input',timeStamp:1});
+  const calls=[],gate=Promise.withResolvers();let captured;
+  f.parent.engagementEvent.startTrackingBounceEvent=(...args)=>{calls.push('bounce');captured=args;return gate.promise;};
+  f.parent.engagementEvent.record=()=>calls.push('record');
+  f.context.browserId=99;
+  const event={type:'keydown',key:'Enter',timeStamp:2};
+  assert.equal(f.editor.recordResultEngagement(1,q.id,result,event,{trackBounce:true,browserId:999}),true);
+  assert.deepEqual(calls,['bounce','record']);assert.equal(captured[0],42);
+  assert.equal(captured[2].searchString,'typed');assert.equal(captured[3].engagementData.visibleResults[0],result);
+  assert.equal(f.editor.recordResultEngagement(1,q.id,result,event,{trackBounce:true}),false);
+  assert.throws(()=>f.editor.publishPresentation(1,q.id,[result],true),/Invalid/);
+  gate.resolve();await gate.promise;assert.equal(captured[3].engagementData.visibleResults.length,1);f.editor.close();
+});
+
+test('bounce admission rejects missing identities and invalid flags without consuming engagement',async()=>{
+  for(const browserId of [0,-1,1.5,NaN,'42'])assert.throws(()=>fixture({browserId}),/Invalid pinned/);
+  const f=await navigationWriteFixture();f.editor.startEngagement(1,f.q.id,{type:'input',timeStamp:1});
+  const event={type:'keydown',key:'Enter',timeStamp:2};
+  for(const trackBounce of [true,1,'yes'])assert.throws(()=>f.editor.recordResultEngagement(1,f.q.id,f.result,event,{trackBounce}),/pinned browser/);
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,event),true);f.editor.close();
+});
+
+test('bounce setup failures do not prevent terminal recording or cause unhandled rejection',async()=>{
+  for(const asynchronous of [false,true]) {
+    const f=await editorFixture({browserId:42}),q=await f.editor.edit({},edit(1,'typed'));
+    const result={id:101,type:f.sandbox.UrlbarShared.RESULT_TYPE.URL,payload:{url:'https://example.test/'}};
+    q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+    f.editor.startEngagement(1,q.id,{type:'input',timeStamp:1});
+    const errors=[];f.sandbox.console={error:(...args)=>errors.push(args)};
+    f.parent.engagementEvent.startTrackingBounceEvent=()=>{if(asynchronous)return Promise.reject(Error('bounce'));throw Error('bounce');};
+    assert.equal(f.editor.recordResultEngagement(1,q.id,result,{type:'keydown',key:'Enter',timeStamp:2},{trackBounce:true}),true);
+    await new Promise(resolve=>setImmediate(resolve));assert.equal(errors.length,1);
+    assert.equal(f.parent.engagements.filter(e=>e.kind==='record').length,1);f.editor.close();
+  }
 });

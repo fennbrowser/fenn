@@ -9227,10 +9227,10 @@ index 0000000000..759a972e88
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..88a4ea0061
+index 0000000000..c5c5640389
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,566 @@
+@@ -0,0 +1,583 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9269,6 +9269,9 @@ index 0000000000..88a4ea0061
 +    if (typeof isCurrent != "function") throw new TypeError("Missing scope check");
 +    if (onPresentationRequest !== null && typeof onPresentationRequest != "function") {
 +      throw new TypeError("Invalid presentation request callback");
++    }
++    if (context.browserId !== undefined && (!Number.isSafeInteger(context.browserId) || context.browserId <= 0)) {
++      throw new TypeError("Invalid pinned browser identity");
 +    }
 +    this.#onPresentationRequest = onPresentationRequest;
 +    this.#context = Object.freeze({ ...context });
@@ -9535,11 +9538,25 @@ index 0000000000..88a4ea0061
 +        !Number.isFinite(event.timeStamp) || event.timeStamp < 0) throw new TypeError("Invalid result engagement event");
 +    if (![UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.SEARCH, UrlbarShared.RESULT_TYPE.KEYWORD].includes(result?.type) ||
 +        result.payload?.providesSearchMode) throw new Error("Unsupported terminal engagement");
++    const { trackBounce = false } = options ?? {};
++    if (typeof trackBounce !== "boolean" || (trackBounce && !this.#context.browserId)) {
++      throw new TypeError("Bounce tracking requires a pinned browser identity");
++    }
 +    const description = this.describeResultEngagement(queryId, result, options);
 +    const query = this.#query;
 +    this.#engagementActive = false;
 +    this.#endingEngagement = true;
 +    try {
++      if (trackBounce) {
++        // Capture before record() clears the clock. Only delayed view time is awaited.
++        try {
++          Promise.resolve(this.#controller.engagementEvent.startTrackingBounceEvent(
++            this.#context.browserId, event, { ...description.details }, description.state
++          )).catch(error => console.error("Independent bounce tracking failed", error));
++        } catch (error) {
++          console.error("Independent bounce tracking failed", error);
++        }
++      }
 +      // Firefox annotates details.isSessionOngoing; keep the description immutable.
 +      this.#controller.engagementEvent.record(event, { ...description.details }, description.state);
 +    } finally {
