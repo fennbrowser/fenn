@@ -190,3 +190,60 @@ test('owned mode telemetry preserves Firefox pre-normalization request compariso
   const raw={engineName:'engine',isPreview:false,entry:'keywordoffer'};
   const repeated=owner.prepareMode(browser,{...normalized},raw);assert.equal(repeated.effects.recordModeEntry,true);
 });
+
+
+test('input persistence compares exact displayed terms without clearing cache or mode',()=>{
+  const {service}=fixture();
+  for(const value of ['chosen words','chosen words ','Chosen words','','chosen']) {
+    const persist={shouldPersist:true,searchTerms:'chosen words',originalURI:uri('https://search.test/')};
+    const mode={confirmed:{engineName:'engine'}},state={persist,searchModes:mode};
+    assert.equal(service.updateInputState(state,value),value!=='chosen words');
+    assert.equal(persist.shouldPersist,value==='chosen words');assert.equal(state.persist,persist);assert.equal(state.searchModes,mode);
+    assert.equal(persist.searchTerms,'chosen words');assert.equal(service.updateInputState(state,value),false);
+  }
+  for(const state of [null,{}, {persist:{shouldPersist:false,searchTerms:'words'}}])assert.equal(service.updateInputState(state,'new'),false);
+  const state={persist:{shouldPersist:true,searchTerms:'words'}};
+  assert.throws(()=>service.updateInputState(state,null),/Invalid/);assert.equal(state.persist.shouldPersist,true);
+});
+
+test('retained input identity applies shared persistence while preserving displayed-value short circuit',()=>{
+  const source=read('content/UrlbarInputBase.mjs'),start=source.indexOf('  #updateTypedIdentity(value) {');
+  const method=source.slice(start,source.indexOf('\n  _on_input(',start)).replace('#updateTypedIdentity','update');
+  const {service}=fixture(),events=[];let active=true;
+  const Input=new Function('lazy',`return class {#isAddressbar=true;setAddressbar(value){this.#isAddressbar=value;}${method}}`)({UrlbarSearchTermsPersistence:service});
+  const input=new Input(),state={persist:{shouldPersist:true,searchTerms:'displayed'}};
+  input.window={gBrowser:{selectedBrowser:{}}};input.getBrowserState=()=>state;
+  input.getAttribute=()=> 'invalid';input.toggleAttribute=(...args)=>events.push(args);input.removeAttribute=name=>events.push(name);
+  Object.defineProperty(input,'value',{get(){if(!active)throw Error('unneeded value read');return 'displayed';}});
+  input.update('different argument');assert.equal(state.persist.shouldPersist,true);
+  state.persist.searchTerms='old';input.update('displayed');assert.equal(state.persist.shouldPersist,false);
+  assert.equal(events.filter(e=>e==='persistsearchterms').length,1);
+  active=false;input.update('new');input.setAddressbar(false);input.getBrowserState=()=>{throw Error('non-addressbar state');};input.update('new');
+});
+
+test('owned input effects are atomic, preserve modes and cache, and require a current receipt',()=>{
+  const {owner,facts}=ownerFixture(),browser={};
+  let update=owner.prepareMode(browser,{engineName:'engine',isPreview:false});owner.commit(browser,update.token);
+  update=owner.preparePersistence(browser,facts);owner.commit(browser,update.token);
+  const prior=update.token,snapshot=owner.snapshot(browser);
+  assert.throws(()=>owner.prepareInput(browser,null),/Invalid/);assert.equal(owner.isCommitted(browser,prior),true);
+  update=owner.prepareInput(browser,'edited words');assert.equal(Object.isFrozen(update.effects),true);
+  assert.equal(update.effects.userTypedValue,'edited words');assert.equal(update.effects.persistenceChanged,true);
+  assert.equal(update.effects.persistedSearchTerms,false);assert.equal(owner.snapshot(browser).persistedSearchTerms,true);
+  assert.equal(owner.isCommitted(browser,prior),false);assert.equal(owner.commit(browser,update.token),true);
+  assert.equal(owner.commit(browser,update.token),false);assert.equal(owner.snapshot(browser).confirmed.engineName,snapshot.confirmed.engineName);
+  assert.equal(owner.snapshot(browser).searchTerms,'chosen words');assert.equal(owner.snapshot(browser).persistedSearchTerms,false);
+  assert.equal(browser.userTypedValue,undefined);
+});
+
+test('input preparations revoke older authority but discard and reentry cannot change committed state',()=>{
+  const {owner,facts,service}=ownerFixture(),browser={};
+  let update=owner.preparePersistence(browser,facts);owner.commit(browser,update.token);
+  const same=owner.prepareInput(browser,'chosen words');assert.equal(same.effects.persistenceChanged,false);assert.equal(same.effects.persistedSearchTerms,true);
+  owner.commit(browser,same.token);
+  const dropped=owner.prepareInput(browser,'different');owner.discard(browser,dropped.token);
+  assert.equal(owner.snapshot(browser).persistedSearchTerms,true);assert.equal(owner.isCommitted(browser,same.token),false);
+  let newer;service.updateInputState=()=>{newer=owner.prepareMode(browser,null);return true;};
+  assert.equal(owner.prepareInput(browser,'new'),null);assert.equal(owner.commit(browser,newer.token),true);
+  assert.equal(owner.snapshot(browser).persistedSearchTerms,true);
+});

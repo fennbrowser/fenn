@@ -1738,7 +1738,7 @@ index bc6837e211..d5ff780b17 100644
  
      visibleResults.forEach((result, index) => {
 diff --git a/browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs b/browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs
-index 05db07d0ed..3d896a3583 100644
+index 05db07d0ed..fac057f94b 100644
 --- a/browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs
 +++ b/browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs
 @@ -212,6 +212,35 @@ class _UrlbarSearchTermsPersistence {
@@ -1777,7 +1777,7 @@ index 05db07d0ed..3d896a3583 100644
    shouldPersist(state, { uri, isSameDocument, userTypedValue, firstView }) {
      let persist = state.persist;
      if (!persist) {
-@@ -364,17 +393,21 @@ class _UrlbarSearchTermsPersistence {
+@@ -364,17 +393,29 @@ class _UrlbarSearchTermsPersistence {
        return;
      }
  
@@ -1793,6 +1793,14 @@ index 05db07d0ed..3d896a3583 100644
      }
    }
  
++  /** Clear persisted presentation only when observed input differs from cached terms. */
++  updateInputState(state, value) {
++    if (typeof value !== "string") throw new TypeError("Invalid persisted-search input value");
++    const changed = !!state?.persist?.shouldPersist && value !== state.persist.searchTerms;
++    if (changed) state.persist.shouldPersist = false;
++    return changed;
++  }
++
 +  /** Return whether a mode change disabled persistence in caller-owned state. */
 +  updateSearchModeState(state) {
 +    if (state?.persist?.shouldPersist &&
@@ -3767,7 +3775,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..fdd04fee18 100644
+index a077de625f..6120e68ca4 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,21 @@
@@ -5544,7 +5552,14 @@ index a077de625f..fdd04fee18 100644
      this.toggleAttribute("usertyping", value);
      this.removeAttribute("actiontype");
  
-@@ -5551,6 +4947,43 @@ ${
+@@ -5545,12 +4941,48 @@ ${
+       let state = this.getBrowserState(this.window.gBrowser.selectedBrowser);
+       if (
+         state.persist?.shouldPersist &&
+-        this.value !== state.persist.searchTerms
++        lazy.UrlbarSearchTermsPersistence.updateInputState(state, this.value)
+       ) {
+-        state.persist.shouldPersist = false;
          this.removeAttribute("persistsearchterms");
        }
      }
@@ -5588,7 +5603,7 @@ index a077de625f..fdd04fee18 100644
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
-@@ -5580,10 +5013,9 @@ ${
+@@ -5580,10 +5012,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -5602,7 +5617,7 @@ index a077de625f..fdd04fee18 100644
      ) {
        return;
      }
-@@ -5591,11 +5023,10 @@ ${
+@@ -5591,11 +5022,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -5618,7 +5633,7 @@ index a077de625f..fdd04fee18 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5669,33 +5100,20 @@ ${
+@@ -5669,33 +5099,20 @@ ${
    }
  
    _on_paste(event) {
@@ -5660,7 +5675,7 @@ index a077de625f..fdd04fee18 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5127,7 @@ ${
+@@ -5709,7 +5126,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -5669,7 +5684,7 @@ index a077de625f..fdd04fee18 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5158,25 @@ ${
+@@ -5740,51 +5157,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -5737,7 +5752,7 @@ index a077de625f..fdd04fee18 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5370,11 @@ ${
+@@ -5978,15 +5369,11 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -5755,7 +5770,7 @@ index a077de625f..fdd04fee18 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5394,24 @@ ${
+@@ -6006,44 +5393,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -5812,7 +5827,7 @@ index a077de625f..fdd04fee18 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,11 +5537,7 @@ ${
+@@ -6169,11 +5536,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -5825,7 +5840,7 @@ index a077de625f..fdd04fee18 100644
    }
  
    get #isOpenedPageInBlankTargetLoading() {
-@@ -6311,111 +5675,6 @@ function getDroppableData(event) {
+@@ -6311,111 +5674,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -5937,7 +5952,7 @@ index a077de625f..fdd04fee18 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +5699,10 @@ class CopyCutController {
+@@ -6440,12 +5698,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -8491,10 +8506,10 @@ index 1e2660589b..5ae3ab4843 100644
    /*
 diff --git a/browser/components/urlbar/content/UrlbarBrowserState.mjs b/browser/components/urlbar/content/UrlbarBrowserState.mjs
 new file mode 100644
-index 0000000000..00dae55469
+index 0000000000..4d8591b980
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarBrowserState.mjs
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,121 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8561,6 +8576,15 @@ index 0000000000..00dae55469
 +
 +  preparePersistence(browser, facts) {
 +    return this.#prepare(browser, state => lazy.UrlbarSearchTermsPersistence.updateState(state, facts));
++  }
++
++  /** Prepare input effects without mutating browser text or the committed mode. */
++  prepareInput(browser, value) {
++    if (typeof value !== "string") throw new TypeError("Invalid browser input value");
++    return this.#prepare(browser, state => {
++      const persistenceChanged = lazy.UrlbarSearchTermsPersistence.updateInputState(state, value);
++      return { userTypedValue: value, persistenceChanged, persistedSearchTerms: !!state.persist?.shouldPersist };
++    });
 +  }
 +
 +  prepareRecovery(browser, facts) {
