@@ -4492,3 +4492,85 @@ test('independent composition start descriptions reject stale, composing and inv
   await f.editor.edit({}, {...edit(2,'composing'),composing:true});
   assert.equal(f.editor.describeCompositionStart(2,{viewIsOpen:true}),null);f.editor.close();
 });
+
+
+const observedCompositionStart=p=>({text:p.edit.text,selectionStart:p.edit.selectionStart,
+  selectionEnd:p.edit.selectionEnd,selectionDirection:p.edit.selectionDirection,composing:true,
+  searchMode:p.searchMode,userTypedValue:p.userTypedValue,open:p.open});
+
+test('composition start requests confirm preview and empty typed reset only after exact host acknowledgment',async()=>{
+  const f=await editorFixture(),mode={source:1,isPreview:true};
+  const q=await f.editor.edit({searchMode:mode},edit(1,''));q.results=[{id:1,payload:{}}];
+  f.editor.publishPresentation(1,q.id,q.results,true);
+  const request=f.editor.beginCompositionStart(1,{viewIsOpen:true,userTypedValue:'previous'});
+  assert.equal(request.searchMode.isPreview,false);assert.equal(request.userTypedValue,null);assert.equal(request.open,false);
+  assert.equal(f.editor.snapshot.composing,true);assert.equal(f.parent.child.visibleResults.length,1);
+  const observed=observedCompositionStart(request);
+  for(const wrong of [{open:true},{text:'wrong'},{selectionStart:1},{composing:false},{searchMode:mode},{userTypedValue:'previous'}]) {
+    assert.equal(f.editor.acknowledgeCompositionStart(request.token,{...observed,...wrong}),false);
+    assert.equal(f.editor.getCompositionStart(request.token),request);
+  }
+  assert.equal(f.editor.acknowledgeCompositionStart(request.token,observed),true);
+  assert.equal(f.parent.child.visibleResults.length,0);assert.equal(f.parent.child.resultsOpen,false);
+  assert.equal(f.editor.acknowledgeCompositionStart(request.token,observed),false);f.editor.close();
+});
+
+test('keep-open composition start retains query exposure while revoking pending and late autofill writes',async()=>{
+  const f=await completionFixture();f.prefs.keepPanelOpenDuringImeComposition=true;
+  const request=f.editor.beginCompositionStart(1,{viewIsOpen:true,userTypedValue:'exa'});
+  assert.equal(request.closePopup,false);assert.equal(request.confirmSearchMode,false);
+  assert.equal(f.editor.getCompletion(f.proposal.token),null);
+  f.parent.child.notify('onFirstResult',f.query);
+  assert.equal(f.updates.at(-1).completion,null);
+  f.editor.publishPresentation(1,f.query.id,[f.result],true);
+  assert.equal(f.editor.acknowledgeCompositionStart(request.token,observedCompositionStart(request)),true);
+  assert.equal(f.parent.child.visibleResults[0],f.result);
+  assert.throws(()=>f.editor.beginResultSelection(1,f.query.id,f.result),/Stale/);f.editor.close();
+});
+
+test('composition start acknowledgment expires on preference change without later resurrection',async()=>{
+  const f=await editorFixture();await f.editor.edit({},edit(1,'text'));
+  const p=f.editor.beginCompositionStart(1,{viewIsOpen:false,userTypedValue:null});
+  f.prefs.keepPanelOpenDuringImeComposition=true;assert.equal(f.editor.getCompositionStart(p.token),null);
+  f.prefs.keepPanelOpenDuringImeComposition=false;assert.equal(f.editor.getCompositionStart(p.token),null);f.editor.close();
+});
+
+test('composition start acknowledgment cannot survive edit, caret, cancellation or scope changes',async()=>{
+  for(const action of ['edit','caret','cancel','scope']) {
+    const f=await editorFixture();await f.editor.edit({},edit(1,'text'));
+    const p=f.editor.beginCompositionStart(1,{viewIsOpen:false,userTypedValue:'text'});
+    if(action==='edit')await f.editor.edit({},edit(2,'new'));
+    else if(action==='caret')f.editor.select(1,0,0);
+    else if(action==='scope')f.loseScope();else f.editor.cancel();
+    if(action==='scope')assert.throws(()=>f.editor.getCompositionStart(p.token),/scope/);
+    else assert.equal(f.editor.getCompositionStart(p.token),null);f.editor.close();
+  }
+});
+
+test('composition close acknowledgment consumes before cancellation callback replacement',async()=>{
+  const f=await editorFixture();await f.editor.edit({},edit(1,'text'));
+  const p=f.editor.beginCompositionStart(1,{viewIsOpen:true,userTypedValue:'text'});let newer,reentered=false;
+  f.parent.cancelQuery=()=>{if(!reentered){reentered=true;newer=f.editor.edit({},edit(2,'new'));}};
+  assert.equal(f.editor.acknowledgeCompositionStart(p.token,observedCompositionStart(p)),false);
+  await newer;assert.equal(f.editor.snapshot.text,'new');assert.equal(f.editor.getCompositionStart(p.token),null);f.editor.close();
+});
+
+test('invalid and repeated composition starts cannot replace an admitted request',async()=>{
+  const f=await editorFixture();await f.editor.edit({},edit(1,'text'));const before=f.editor.snapshot;
+  assert.throws(()=>f.editor.beginCompositionStart(1,{viewIsOpen:true}),/Invalid composition typed/);
+  assert.equal(f.editor.snapshot,before);
+  const p=f.editor.beginCompositionStart(1,{viewIsOpen:false,userTypedValue:null});
+  assert.equal(f.editor.beginCompositionStart(1,{viewIsOpen:false,userTypedValue:null}),null);
+  assert.equal(f.editor.getCompositionStart(p.token),p);assert.equal(Object.isFrozen(p),true);f.editor.close();
+});
+
+
+test('keep-open composition can start after query cancellation without inventing exposure authority',async()=>{
+  const f=await editorFixture();const q=await f.editor.edit({}, {...edit(1,'text'),
+    composition:{state:f.sandbox.UrlbarShared.COMPOSITION.NONE,closedPopup:false}});f.editor.cancel();
+  f.prefs.keepPanelOpenDuringImeComposition=true;
+  const p=f.editor.beginCompositionStart(1,{viewIsOpen:false,userTypedValue:'text'});
+  assert.ok(p);assert.equal(p.open,false);assert.equal('composition' in p.edit,false);
+  assert.equal(f.editor.acknowledgeCompositionStart(p.token,observedCompositionStart(p)),true);
+  assert.throws(()=>f.editor.publishPresentation(1,q.id,[],true),/Stale/);f.editor.close();
+});

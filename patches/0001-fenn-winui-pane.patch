@@ -9053,10 +9053,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..3ffa2ba3f0
+index 0000000000..061c19fd04
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1754 @@
+@@ -0,0 +1,1819 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9095,6 +9095,7 @@ index 0000000000..3ffa2ba3f0
 +  #inputState = null;
 +  #identityEdit = null;
 +  #compositionPresentation = null;
++  #compositionStart = null;
 +  #closed = false;
 +  #completion = null;
 +  #autofill = null;
@@ -9159,6 +9160,67 @@ index 0000000000..3ffa2ba3f0
 +      keepPanelOpen: UrlbarPrefs.get("keepPanelOpenDuringImeComposition"),
 +      viewIsOpen, hasSearchMode: !!this.#searchMode, value: this.#edit.text });
 +    return Object.freeze({ edit: this.#edit, ...policy });
++  }
++
++  /** Observe composition beginning, then request its ordered host effects. */
++  beginCompositionStart(revision, { viewIsOpen, userTypedValue } = {}) {
++    this.#check();
++    if (userTypedValue !== null && typeof userTypedValue !== "string") throw new TypeError("Invalid composition typed value");
++    const description = this.describeCompositionStart(revision, { viewIsOpen });
++    if (!description) return null;
++    const mode = this.#searchMode;
++    const keepPanelOpen = UrlbarPrefs.get("keepPanelOpenDuringImeComposition");
++    const searchMode = description.confirmSearchMode ? UrlbarSearchModeModel.confirmedMode(mode) : mode;
++    const queryId = keepPanelOpen ? this.#queries.currentQueryId : null;
++    if (this.#edit !== description.edit || this.#searchMode !== mode) return null;
++    const edit = { ...this.#edit, composing: true };
++    // A start event is not an input transition; do not retain the prior input's state.
++    delete edit.composition;
++    Object.freeze(edit);
++    const proposal = Object.freeze({ ...description, edit, token: Object.freeze({}),
++      searchMode: searchMode ? Object.freeze({ ...searchMode }) : null,
++      userTypedValue: description.clearUserTypedValue ? null : userTypedValue,
++      open: description.closePopup ? false : viewIsOpen });
++    this.#edit = edit;
++    this.#completion = null;
++    this.#autofill = null;
++    this.#placeholder = null;
++    this.#hiddenResults = null;
++    this.#compositionPresentation = null;
++    if (keepPanelOpen && queryId !== null) {
++      this.#compositionPresentation = Object.freeze({ revision, queryId });
++    }
++    this.#compositionStart = { proposal, mode, keepPanelOpen };
++    return proposal;
++  }
++
++  getCompositionStart(token) {
++    this.#check();
++    const pending = this.#compositionStart;
++    if (!pending || pending.proposal.token !== token) return null;
++    if (pending.proposal.edit !== this.#edit || pending.mode !== this.#searchMode ||
++        pending.keepPanelOpen !== UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
++      this.#compositionStart = null;
++      return null;
++    }
++    return pending.proposal;
++  }
++
++  /** Observe host completion; this is not a browser-mode or typed-value write. */
++  acknowledgeCompositionStart(token, { text, selectionStart, selectionEnd, selectionDirection,
++    composing, searchMode, userTypedValue, open }) {
++    const request = this.getCompositionStart(token);
++    if (!request || text !== request.edit.text || selectionStart !== request.edit.selectionStart ||
++        selectionEnd !== request.edit.selectionEnd || selectionDirection !== request.edit.selectionDirection ||
++        composing !== true || open !== request.open || userTypedValue !== request.userTypedValue ||
++        !UrlbarShared.deepEqual(searchMode, request.searchMode)) return false;
++    this.#compositionStart = null;
++    this.#searchMode = request.searchMode;
++    if (request.closePopup) {
++      this.#compositionPresentation = null;
++      this.#queries.cancel();
++    }
++    return !this.#closed && this.#isCurrent() && this.#edit === request.edit;
 +  }
 +
 +  #check() {
@@ -9230,6 +9292,7 @@ index 0000000000..3ffa2ba3f0
 +    }
 +    const priorTypedValue = browserState?.userTypedValue;
 +    this.#inputState = null;
++    this.#compositionStart = null;
 +    this.#compositionPresentation = null;
 +    this.#hiddenResults = null;
 +    this.#typedText = text;
@@ -9314,7 +9377,7 @@ index 0000000000..3ffa2ba3f0
 +    const first = update.query.results[0];
 +    let completion = null;
 +    if (update.kind === "first-result") this.#completion = null;
-+    const eligible = update.kind === "first-result" && allowAutofill &&
++    const eligible = !this.#edit.composing && update.kind === "first-result" && allowAutofill &&
 +      first?.autofill && !first.payload?.keyword &&
 +      UrlbarAutofillModel.acceptsResult({
 +        placeholder: this.#autofill,
@@ -9331,7 +9394,7 @@ index 0000000000..3ffa2ba3f0
 +    // A later first result may disprove an already acknowledged suffix.
 +    // Only propose restoration while that exact suffix is still selected;
 +    // user edits and caret observations revoke our authority over it.
-+    if (update.kind === "first-result" && first && !first.autofill &&
++    if (!this.#edit.composing && update.kind === "first-result" && first && !first.autofill &&
 +        !first.payload?.keyword && this.#autofill &&
 +        this.#edit.text === this.#autofill.value &&
 +        !this.#edit.text.endsWith(" ") &&
@@ -10756,6 +10819,7 @@ index 0000000000..3ffa2ba3f0
 +  }
 +
 +  cancel() {
++    this.#compositionStart = null;
 +    this.#compositionPresentation = null;
 +    this.#selectionGeneration++;
 +    this.#check();
@@ -10782,6 +10846,7 @@ index 0000000000..3ffa2ba3f0
 +  }
 +
 +  close() {
++    this.#compositionStart = null;
 +    this.#compositionPresentation = null;
 +    this.#selectionGeneration++;
 +    if (this.#closed) return;
@@ -10813,10 +10878,10 @@ index 0000000000..3ffa2ba3f0
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..22f96717d5
+index 0000000000..01309a3ef5
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,858 @@
+@@ -0,0 +1,864 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10962,6 +11027,12 @@ index 0000000000..22f96717d5
 +    this.#check();
 +    if (this.#query !== query) throw new Error("Query superseded or cancelled");
 +    return query;
++  }
++
++  /** Current query identity only; null after cancellation, never a result capability. */
++  get currentQueryId() {
++    this.#check();
++    return this.#query?.id ?? null;
 +  }
 +
 +  ownsQuery(queryId) {
