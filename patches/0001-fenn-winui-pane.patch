@@ -6978,10 +6978,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..c40ae9f87c
+index 0000000000..395ef5233b
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,798 @@
+@@ -0,0 +1,843 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7023,6 +7023,7 @@ index 0000000000..c40ae9f87c
 +  #modeApplication = null;
 +  #modeRequery = null;
 +  #modeExitRequest = null;
++  #modeExitRequery = null;
 +  #searchMode = null;
 +  #hiddenResults = null;
 +  #onPresentationRequest;
@@ -7082,6 +7083,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    this.#autofill = null;
 +    // Revoke old work before any new snapshot can be published.
 +    this.#queries.cancel();
@@ -7116,42 +7118,49 @@ index 0000000000..c40ae9f87c
 +        }
 +        return;
 +      }
-+      const first = update.query.results[0];
-+      let completion = null;
-+      if (update.kind === "first-result") this.#completion = null;
-+      const eligible = update.kind === "first-result" && allowAutofill &&
-+        first?.autofill && !first.payload?.keyword &&
-+        UrlbarAutofillModel.acceptsResult({
-+          placeholder: this.#autofill,
-+          searchString: text, selectionStart: this.#edit.selectionStart,
-+          selectionEnd: this.#edit.selectionEnd,
-+        });
-+      if (eligible) {
-+        const token = Object.freeze({});
-+        const descriptor = Object.freeze({ ...first.autofill });
-+        completion = Object.freeze({ ...descriptor, kind: "autofill", selectionDirection: "backward", token });
-+        this.#completion = { token, proposal: completion, descriptor,
-+          query: update.query, result: first, edit: this.#edit };
-+      }
-+      // A later first result may disprove an already acknowledged suffix.
-+      // Only propose restoration while that exact suffix is still selected;
-+      // user edits and caret observations revoke our authority over it.
-+      if (update.kind === "first-result" && first && !first.autofill &&
-+          !first.payload?.keyword && this.#autofill &&
-+          this.#edit.text === this.#autofill.value &&
-+          !this.#edit.text.endsWith(" ") &&
-+          this.#edit.selectionStart === this.#autofill.selectionStart &&
-+          this.#edit.selectionEnd === this.#autofill.selectionEnd) {
-+        const token = Object.freeze({});
-+        completion = Object.freeze({ kind: "restore", value: text,
-+          selectionStart: text.length, selectionEnd: text.length,
-+          selectionDirection: "none", token });
-+        this.#completion = { token, proposal: completion, descriptor: null,
-+          query: update.query, result: first, edit: this.#edit };
-+      }
-+      this.#onUpdate(Object.freeze({ ...update, edit: this.#edit, completion,
-+        defaultSelection: this.#presentation.defaultSelection(update.query) }));
++      this.#publishQueryUpdate(update, { revision, text, allowAutofill });
 +    });
++  }
++
++
++  #publishQueryUpdate(update, { revision, text, allowAutofill }) {
++    if (this.#closed || !this.#isCurrent() || this.#edit.revision !== revision ||
++        this.#hiddenResults || update.kind === "prepared") return;
++    const first = update.query.results[0];
++    let completion = null;
++    if (update.kind === "first-result") this.#completion = null;
++    const eligible = update.kind === "first-result" && allowAutofill &&
++      first?.autofill && !first.payload?.keyword &&
++      UrlbarAutofillModel.acceptsResult({
++        placeholder: this.#autofill,
++        searchString: text, selectionStart: this.#edit.selectionStart,
++        selectionEnd: this.#edit.selectionEnd,
++      });
++    if (eligible) {
++      const token = Object.freeze({});
++      const descriptor = Object.freeze({ ...first.autofill });
++      completion = Object.freeze({ ...descriptor, kind: "autofill", selectionDirection: "backward", token });
++      this.#completion = { token, proposal: completion, descriptor,
++        query: update.query, result: first, edit: this.#edit };
++    }
++    // A later first result may disprove an already acknowledged suffix.
++    // Only propose restoration while that exact suffix is still selected;
++    // user edits and caret observations revoke our authority over it.
++    if (update.kind === "first-result" && first && !first.autofill &&
++        !first.payload?.keyword && this.#autofill &&
++        this.#edit.text === this.#autofill.value &&
++        !this.#edit.text.endsWith(" ") &&
++        this.#edit.selectionStart === this.#autofill.selectionStart &&
++        this.#edit.selectionEnd === this.#autofill.selectionEnd) {
++      const token = Object.freeze({});
++      completion = Object.freeze({ kind: "restore", value: text,
++        selectionStart: text.length, selectionEnd: text.length,
++        selectionDirection: "none", token });
++      this.#completion = { token, proposal: completion, descriptor: null,
++        query: update.query, result: first, edit: this.#edit };
++    }
++    this.#onUpdate(Object.freeze({ ...update, edit: this.#edit, completion,
++      defaultSelection: this.#presentation.defaultSelection(update.query) }));
 +  }
 +
 +  /**
@@ -7197,6 +7206,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#edit = Object.freeze({ ...this.#edit, selectionStart: start,
@@ -7304,6 +7314,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    this.#resultPreview = null;
 +    this.#selectionRequest = null;
 +    const options = Object.freeze({ checkValue, startQuery, entry });
@@ -7328,6 +7339,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    this.#resultPreview = null;
 +    this.#selectionRequest = null;
 +    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
@@ -7374,6 +7386,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    this.#selectionRequest = null;
 +    this.#resultPreview = null;
 +    this.#completion = null;
@@ -7432,6 +7445,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    const edit = this.#edit;
 +    if (!edit || revision !== edit.revision || edit.composing) {
 +      throw new Error("Stale editor result selection");
@@ -7459,6 +7473,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    return this.#queries.acknowledgeResultSelection(token);
 +  }
 +
@@ -7501,6 +7516,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    this.#selectionRequest = null;
 +    this.describeResultInput(revision, queryId, result);
 +    if (!this.#describeResultPreview(revision, queryId, result)) return null;
@@ -7525,6 +7541,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    this.#selectionRequest = null;
 +    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
 +        !this.#queries.ownsQuery(queryId)) throw new Error("Stale result restoration");
@@ -7570,6 +7587,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    this.#selectionRequest = null;
 +    this.#completion = null;
 +    if (proposal.searchMode === null) this.#searchMode = null;
@@ -7611,6 +7629,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#hiddenResults = Object.freeze({ revision, queryId, text: this.#edit.text });
@@ -7648,6 +7667,7 @@ index 0000000000..c40ae9f87c
 +    if (this.#modeRequery && (!open || !visibleResults.includes(this.#modeRequery.result))) {
 +      this.#modeRequery = null;
 +      this.#modeExitRequest = null;
++      this.#modeExitRequery = null;
 +    }
 +  }
 +
@@ -7682,8 +7702,30 @@ index 0000000000..c40ae9f87c
 +        selectionStart !== request.edit.selectionStart || selectionEnd !== request.edit.selectionEnd ||
 +        selectionDirection !== request.edit.selectionDirection) return false;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    this.#searchMode = null;
++    this.#modeExitRequery = { token, edit: this.#edit };
 +    return true;
++  }
++
++  /** Requery after explicit exit using Firefox's default autofill and page-proxy policy. */
++  async requeryAfterSearchModeExit(token, state, { pageProxyValid } = {}) {
++    this.#check();
++    const pending = this.#modeExitRequery;
++    if (!pending || pending.token !== token || pending.edit !== this.#edit ||
++        this.#searchMode !== null || state?.searchMode !== null) {
++      throw new Error("Stale explicit mode exit requery");
++    }
++    if (typeof pageProxyValid !== "boolean") throw new TypeError("Missing page-proxy validity");
++    const text = UrlbarQueryModel.resolveSearchString({ value: this.#edit.text, pageProxyValid }, null);
++    const queryState = { ...state, searchMode: null };
++    this.cancel();
++    if (this.#edit !== pending.edit) throw new Error("Explicit mode exit requery superseded");
++    this.#typedText = text || this.#edit.text;
++    const revision = this.#edit.revision;
++    return this.#queries.query(queryState, { searchString: text, allowAutofill: true }, update => {
++      this.#publishQueryUpdate(update, { revision, text, allowAutofill: true });
++    });
 +  }
 +
 +  /** Prepare a user-initiated preview close; no typed-text restoration is requested. */
@@ -7744,6 +7786,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    return true;
 +  }
 +
@@ -7757,6 +7800,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#queries.cancel();
@@ -7773,6 +7817,7 @@ index 0000000000..c40ae9f87c
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#queries.close();

@@ -1484,3 +1484,66 @@ test('explicit mode exit rejects composition and stale revisions and leaves no-m
   await f.editor.edit({searchMode:{source:1,isPreview:false}},edit(2,'composing',{composing:true}));
   assert.throws(()=>f.editor.beginSearchModeExit(2),/Stale/);f.editor.close();
 });
+
+
+async function explicitExitQueryFixture(text='exam',selection={}) {
+  const f=await editorFixture();await f.editor.edit({searchMode:{source:1,isPreview:false}},edit(1,text,selection));
+  const proposal=f.editor.beginSearchModeExit(1);
+  return {...f,proposal};
+}
+
+test('explicit exit requery follows default autofill policy and shares exact completion acknowledgment',async()=>{
+  const f=await explicitExitQueryFixture(),p=f.proposal,state={searchMode:null};
+  await assert.rejects(f.editor.requeryAfterSearchModeExit(p.token,state,{pageProxyValid:false}),/Stale/);
+  f.editor.acknowledgeSearchModeExit(p.token,observedExit(p));const snapshot=f.editor.snapshot;
+  await assert.rejects(f.editor.requeryAfterSearchModeExit(p.token,state),/page-proxy/);
+  await assert.rejects(f.editor.requeryAfterSearchModeExit(p.token,{searchMode:{source:1}},{pageProxyValid:false}),/Stale/);
+  const q=await f.editor.requeryAfterSearchModeExit(p.token,state,{pageProxyValid:false});
+  assert.equal(q.searchString,'exam');assert.equal(q.allowAutofill,true);assert.equal(q.searchMode,undefined);
+  assert.equal(f.editor.snapshot,snapshot);
+  const result={id:7,type:sharedPolicy.UrlbarShared.RESULT_TYPE.URL,payload:{},
+    autofill:{value:'example.test/',selectionStart:4,selectionEnd:13}};
+  q.results=[result];q.trimmedSearchString='exam';f.parent.child.notify('onFirstResult',q);
+  const completion=f.updates.at(-1).completion;assert.equal(completion.kind,'autofill');
+  assert.equal(f.editor.snapshot,snapshot);assert.equal(f.editor.acknowledgeCompletion(completion.token,observed(completion)),true);
+  assert.equal(f.editor.snapshot.text,'example.test/');
+  await assert.rejects(f.editor.requeryAfterSearchModeExit(p.token,state,{pageProxyValid:false}),/Stale/);f.editor.close();
+});
+
+test('explicit exit zero-prefix query preserves valid-page display and caret suppresses completion writes',async()=>{
+  for(const valid of [true,false]) {
+    const f=await explicitExitQueryFixture('https://page.test/',{selectionStart:0,selectionEnd:18});
+    const p=f.proposal;f.editor.acknowledgeSearchModeExit(p.token,observedExit(p));
+    const q=await f.editor.requeryAfterSearchModeExit(p.token,{searchMode:null},{pageProxyValid:valid});
+    assert.equal(q.searchString,valid?'':'https://page.test/');assert.equal(q.allowAutofill,true);
+    assert.equal(f.editor.snapshot.text,'https://page.test/');
+    q.results=[{id:1,type:sharedPolicy.UrlbarShared.RESULT_TYPE.URL,payload:{},
+      autofill:{value:'https://page.test/more',selectionStart:18,selectionEnd:22}}];
+    f.parent.child.notify('onFirstResult',q);assert.equal(f.updates.at(-1).completion,null);
+    f.editor.publishPresentation(1,q.id,q.results,true);
+    assert.equal(f.editor.beginResultRestore(1,q.id).value,'https://page.test/');f.editor.close();
+  }
+});
+
+test('explicit exit requery revokes on newer editor work, cancellation and scope loss',async()=>{
+  for(const revoke of [f=>f.editor.select(1,0,0),f=>f.editor.edit({},edit(2,'new')),f=>f.editor.cancel()]) {
+    const f=await explicitExitQueryFixture(),p=f.proposal;f.editor.acknowledgeSearchModeExit(p.token,observedExit(p));
+    await revoke(f);await assert.rejects(f.editor.requeryAfterSearchModeExit(p.token,{searchMode:null},{pageProxyValid:false}),/Stale/);
+    f.editor.close();
+  }
+  const f=await explicitExitQueryFixture(),p=f.proposal;f.editor.acknowledgeSearchModeExit(p.token,observedExit(p));
+  f.loseScope();await assert.rejects(f.editor.requeryAfterSearchModeExit(p.token,{searchMode:null},{pageProxyValid:false}),/scope changed/);
+});
+
+test('explicit exit requery consumes authority on failure and rejects cancelled completion',async()=>{
+  for(const failure of [true,false]) {
+    const f=await explicitExitQueryFixture(),p=f.proposal,gate=Promise.withResolvers();
+    f.editor.acknowledgeSearchModeExit(p.token,observedExit(p));
+    f.parent.startQuery=()=>failure?Promise.reject(Error('dispatch failed')):gate.promise;
+    const pending=f.editor.requeryAfterSearchModeExit(p.token,{searchMode:null},{pageProxyValid:false});
+    if(!failure){f.editor.cancel();gate.resolve();}
+    await assert.rejects(pending,failure?/dispatch failed/:/cancelled/);
+    await assert.rejects(f.editor.requeryAfterSearchModeExit(p.token,{searchMode:null},{pageProxyValid:false}),/Stale/);
+    f.editor.close();
+  }
+});
