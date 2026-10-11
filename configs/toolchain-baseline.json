@@ -28,5 +28,5 @@
   "cppWinRT": "3.0.260818.1",
   "searchfoxCLI": "0.20.4",
   "treeherderCLI": "0.2.17",
-  "nativePackageLock": "prototypes/WinUIBaseline/packages.config"
+  "nativePackageLock": "native/WinUIPane/packages.config"
 }

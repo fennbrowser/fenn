@@ -11,6 +11,4 @@
 *.user
 *.pfx
 *.p12
-/prototypes/WinUIBaseline/*_h.h
-/prototypes/Win32IslandHarness/*_h.h
 /native/ShellCore/target/
