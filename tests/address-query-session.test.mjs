@@ -376,6 +376,20 @@ test('hiding clears automatic completion and declines retention for preview sear
   assert.equal(f.editor.getHiddenResults(2,q.id),null);f.editor.close();
 });
 
+test('independent result-mode transition descriptions use current observed text and revoke stale identity',async()=>{
+  const f=await previewFixture();f.result.payload={keyword:'@engine',engine:'Engine',query:'  mode words  '};
+  assert.equal(f.editor.describeResultModeTransition(1,f.query.id,f.result),null);
+  const p=f.editor.describeResultModeTransition(1,f.query.id,f.result,{checkValue:false,startQuery:false});
+  assert.equal(p.value,'mode words  ');assert.equal(p.searchMode.engineName,'Engine');
+  assert.equal(p.storeTypedValue,false);assert.equal(p.startQuery,false);assert.equal(Object.isFrozen(p),true);
+  assert.equal(f.editor.snapshot.text,'typed words');assert.equal(f.parent.started.length,1);
+  f.result.payload.query=' changed';
+  assert.equal(f.editor.describeResultModeTransition(1,f.query.id,f.result,{checkValue:false}).value,'changed');
+  f.parent.child.notify('onQueryResultRemoved',5,undefined,f.query.id);
+  assert.throws(()=>f.editor.describeResultModeTransition(1,f.query.id,f.result,{checkValue:false}),/Stale/);
+  f.editor.close();
+});
+
 test('removed frozen results lose identity and exposure even if an old descriptor or late batch retains them',async()=>{
   const requests=[],f=fixture({onPresentationRequest:r=>requests.push(r)});
   const q=await f.session.query({}, {searchString:'remove'}),a={id:1},b={id:2};q.results=[a,b];

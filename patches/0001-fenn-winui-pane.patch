@@ -2911,7 +2911,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..1233f65594 100644
+index a077de625f..9a61c9bce3 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,20 @@
@@ -3275,46 +3275,58 @@ index a077de625f..1233f65594 100644
    }
  
    /**
-@@ -3245,6 +3278,7 @@ ${
+@@ -3245,38 +3278,21 @@ ${
      result = this._resultForCurrentValue,
      checkValue = true,
      startQuery = true,
 +    nativeAction = null,
    }) {
-     if (
-       !result ||
-@@ -3255,12 +3289,12 @@ ${
-       return false;
-     }
- 
+-    if (
+-      !result ||
+-      (checkValue &&
+-        this.value.trim() != result.payload.keyword?.trim() &&
+-        this.value.trim() != result.payload.autofillKeyword?.trim())
+-    ) {
+-      return false;
+-    }
+-
 -    let searchMode = this._searchModeForResult(result, entry);
-+    let searchMode = this._searchModeForResult(result, entry, nativeAction);
-     if (!searchMode) {
-       return false;
-     }
+-    if (!searchMode) {
+-      return false;
+-    }
+-
+-    if (startQuery) {
+-      // Closing the view discards a previewed search mode, so the mode has to
+-      // be confirmed before the query below gets a chance to run.
+-      searchMode.isPreview = false;
+-    }
+-    this.searchMode = searchMode;
+-
+-    let value = result.payload.query?.trimStart() || "";
+-    this.setValue(value);
++    const transition = UrlbarSearchModeModel.resultTransition(result, {
++      value: this.value, checkValue, startQuery, nativeAction: !!nativeAction,
++      resolveMode: current => this._searchModeForResult(current, entry, nativeAction),
++    });
++    if (!transition) return false;
  
 -    if (startQuery) {
-+    if (startQuery || nativeAction) {
-       // Closing the view discards a previewed search mode, so the mode has to
-       // be confirmed before the query below gets a chance to run.
-       searchMode.isPreview = false;
-@@ -3270,13 +3304,13 @@ ${
-     let value = result.payload.query?.trimStart() || "";
-     this.setValue(value);
- 
--    if (startQuery) {
-+    if (startQuery || nativeAction) {
-       // Search mode stores the value to restore on tab switch. For a confirmed
-       // mode that's the query string, not the keyword that entered it.
+-      // Search mode stores the value to restore on tab switch. For a confirmed
+-      // mode that's the query string, not the keyword that entered it.
++    // Confirm the mode before closing/requerying could discard its preview.
++    this.searchMode = { ...transition.searchMode };
++    this.setValue(transition.value);
++    if (transition.storeTypedValue) {
        this.userTypedValue = this.untrimmedValue;
- 
-       // The query has to run in the search mode we just entered.
+-
+-      // The query has to run in the search mode we just entered.
 -      this.#searchModeApplied.then(() =>
-+      if (startQuery) this.#searchModeApplied.then(() =>
++      // The query must wait for Firefox to apply the selected mode.
++      if (transition.startQuery) this.#searchModeApplied.then(() =>
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -3516,84 +3550,19 @@ ${
+@@ -3516,84 +3532,19 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
@@ -3411,7 +3423,7 @@ index a077de625f..1233f65594 100644
    }
  
    /**
-@@ -3604,14 +3573,7 @@ ${
+@@ -3604,14 +3555,7 @@ ${
     * @returns {string} The `actiontype` value, or undefined.
     */
    #getActionTypeFromResult(result) {
@@ -3427,7 +3439,7 @@ index a077de625f..1233f65594 100644
    }
  
    /**
-@@ -3634,64 +3596,27 @@ ${
+@@ -3634,64 +3578,27 @@ ${
     *   Whether autofill should be allowed in the new search.
     */
    _maybeAutofillPlaceholder(value) {
@@ -3512,7 +3524,7 @@ index a077de625f..1233f65594 100644
    }
  
    /**
-@@ -3772,105 +3697,31 @@ ${
+@@ -3772,105 +3679,31 @@ ${
      }
    }
  
@@ -3643,7 +3655,7 @@ index a077de625f..1233f65594 100644
    }
  
    _toggleActionOverride(event) {
-@@ -4081,33 +3932,34 @@ ${
+@@ -4081,33 +3914,34 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -3684,7 +3696,7 @@ index a077de625f..1233f65594 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -4267,6 +4119,15 @@ ${
+@@ -4267,6 +4101,15 @@ ${
      }
    }
  
@@ -3700,7 +3712,7 @@ index a077de625f..1233f65594 100644
    _initCopyCutController() {
      // This exists to put an untrimmed URL on the clipboard, and only the address
      // bar trims. Every other input keeps its native copy/cut.
-@@ -4479,7 +4340,7 @@ ${
+@@ -4479,7 +4322,7 @@ ${
        return;
      }
      let controller =
@@ -3709,7 +3721,7 @@ index a077de625f..1233f65594 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4495,6 +4356,33 @@ ${
+@@ -4495,6 +4338,33 @@ ${
      stripOnShare.removeAttribute("disabled");
    }
  
@@ -3743,7 +3755,7 @@ index a077de625f..1233f65594 100644
    _initPasteAndGo() {
      this.addContextMenuItems({
        after: "edit-contextmenu-paste",
-@@ -4507,17 +4395,7 @@ ${
+@@ -4507,17 +4377,7 @@ ${
            .GetStringFromName("pasteAndGo.label");
          pasteAndGo.setAttribute("label", label);
          pasteAndGo.setAttribute("anonid", "paste-and-go");
@@ -3762,7 +3774,7 @@ index a077de625f..1233f65594 100644
  
          fragment.appendChild(pasteAndGo);
          return fragment;
-@@ -4545,10 +4423,7 @@ ${
+@@ -4545,10 +4405,7 @@ ${
            { once: true }
          );
  
@@ -3774,7 +3786,7 @@ index a077de625f..1233f65594 100644
            pasteAndGo.removeAttribute("disabled");
          } else {
            pasteAndGo.setAttribute("disabled", "true");
-@@ -4747,60 +4622,11 @@ ${
+@@ -4747,60 +4604,11 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -3840,7 +3852,7 @@ index a077de625f..1233f65594 100644
    }
  
    /**
-@@ -5071,6 +4897,8 @@ ${
+@@ -5071,6 +4879,8 @@ ${
    setUnifiedSearchButtonAvailability(available) {
      available ||=
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
@@ -3849,7 +3861,7 @@ index a077de625f..1233f65594 100644
      const switcher = this.querySelector(".searchmode-switcher");
      switcher.toggleAttribute("offscreen", !available);
      if (available) {
-@@ -5085,6 +4913,7 @@ ${
+@@ -5085,6 +4895,7 @@ ${
          this.window.gBrowser.selectedBrowser
        ).isUnifiedSearchButtonAvailable = available;
      }
@@ -3857,7 +3869,7 @@ index a077de625f..1233f65594 100644
    }
  
    /**
-@@ -5151,7 +4980,7 @@ ${
+@@ -5151,7 +4962,7 @@ ${
    #maybeSelectAll() {
      if (
        !this.#preventClickSelectsAll &&
@@ -3866,7 +3878,7 @@ index a077de625f..1233f65594 100644
        this.focused &&
        this.inputField.selectionStart == this.inputField.selectionEnd
      ) {
-@@ -5477,34 +5306,20 @@ ${
+@@ -5477,34 +5288,20 @@ ${
      }
    }
  
@@ -3911,7 +3923,7 @@ index a077de625f..1233f65594 100644
      this.valueIsTyped = true;
      this._untrimmedValue = value;
      this._protocolIsTrimmed = false;
-@@ -5516,20 +5331,9 @@ ${
+@@ -5516,20 +5313,9 @@ ${
      // string, thus there's no valid selection. This is also used by the view
      // to set "aria-activedescendant", thus it should never get stale.
      this.controller.userSelectionBehavior = "none";
@@ -3934,7 +3946,7 @@ index a077de625f..1233f65594 100644
      this.toggleAttribute("usertyping", value);
      this.removeAttribute("actiontype");
  
-@@ -5551,6 +5355,43 @@ ${
+@@ -5551,6 +5337,43 @@ ${
          this.removeAttribute("persistsearchterms");
        }
      }
@@ -3978,7 +3990,7 @@ index a077de625f..1233f65594 100644
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
-@@ -5580,10 +5421,9 @@ ${
+@@ -5580,10 +5403,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -3992,7 +4004,7 @@ index a077de625f..1233f65594 100644
      ) {
        return;
      }
-@@ -5591,11 +5431,10 @@ ${
+@@ -5591,11 +5413,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -4008,7 +4020,7 @@ index a077de625f..1233f65594 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5669,33 +5508,20 @@ ${
+@@ -5669,33 +5490,20 @@ ${
    }
  
    _on_paste(event) {
@@ -4050,7 +4062,7 @@ index a077de625f..1233f65594 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5535,7 @@ ${
+@@ -5709,7 +5517,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -4059,7 +4071,7 @@ index a077de625f..1233f65594 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5566,25 @@ ${
+@@ -5740,51 +5548,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -4127,7 +4139,7 @@ index a077de625f..1233f65594 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5778,11 @@ ${
+@@ -5978,15 +5760,11 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -4145,7 +4157,7 @@ index a077de625f..1233f65594 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5802,24 @@ ${
+@@ -6006,44 +5784,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -4202,7 +4214,7 @@ index a077de625f..1233f65594 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,9 +5945,7 @@ ${
+@@ -6169,9 +5927,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -4213,7 +4225,7 @@ index a077de625f..1233f65594 100644
        ? SCHEMELESS_INPUT_SCHEMELESS
        : SCHEMELESS_INPUT_SCHEMEFUL;
    }
-@@ -6311,111 +6085,6 @@ function getDroppableData(event) {
+@@ -6311,111 +6067,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -4325,7 +4337,7 @@ index a077de625f..1233f65594 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +6109,10 @@ class CopyCutController {
+@@ -6440,12 +6091,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -6877,10 +6889,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..344f748d60
+index 0000000000..d02b35b7fd
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,543 @@
+@@ -0,0 +1,555 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7160,6 +7172,18 @@ index 0000000000..344f748d60
 +    return this.#queries.describeResultSearchMode(queryId, result, options);
 +  }
 +
++  /** Describe a mode transition using the current observed editor value. */
++  describeResultModeTransition(revision, queryId, result, { checkValue = true,
++    startQuery = true, entry = null } = {}) {
++    this.#check();
++    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing) {
++      throw new Error("Stale editor mode transition");
++    }
++    return this.#queries.describeResultModeTransition(queryId, result, {
++      value: this.#edit.text, checkValue, startQuery, entry,
++    });
++  }
++
 +  /** Prepare provider notification without applying selection or preview text. */
 +  beginResultSelection(revision, queryId, result) {
 +    this.#check();
@@ -7426,10 +7450,10 @@ index 0000000000..344f748d60
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..88408384d9
+index 0000000000..468d456dc0
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,270 @@
+@@ -0,0 +1,280 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7608,6 +7632,16 @@ index 0000000000..88408384d9
 +      }),
 +    });
 +    return mode ? Object.freeze(mode) : null;
++  }
++
++  /** Describe result-mode transition policy without applying browser state. */
++  describeResultModeTransition(queryId, result, { value, checkValue = true,
++    startQuery = true, entry = null } = {}) {
++    if (!this.ownsResult(queryId, result)) throw new Error("Stale result mode transition");
++    if (typeof value !== "string" || typeof checkValue !== "boolean" ||
++        typeof startQuery !== "boolean") throw new TypeError("Invalid mode transition facts");
++    return UrlbarSearchModeModel.resultTransition(result, { value, checkValue, startQuery,
++      resolveMode: current => this.describeResultSearchMode(queryId, current, { entry }) });
 +  }
 +
 +  /**
@@ -8016,10 +8050,10 @@ index 0000000000..1fec37fd9e
 +}
 diff --git a/browser/components/urlbar/content/UrlbarSearchModeModel.mjs b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
 new file mode 100644
-index 0000000000..b3f665bdf9
+index 0000000000..881c81390a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
-@@ -0,0 +1,318 @@
+@@ -0,0 +1,334 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8096,6 +8130,22 @@ index 0000000000..b3f665bdf9
 +    }
 +
 +    return searchMode;
++  }
++
++  /** Plan a result-driven mode transition; the binding owns application/order. */
++  static resultTransition(result, { value, checkValue = true, startQuery = true,
++    nativeAction = false, resolveMode }) {
++    if (!result || (checkValue && value.trim() !== result.payload.keyword?.trim() &&
++        value.trim() !== result.payload.autofillKeyword?.trim())) return null;
++    const mode = resolveMode(result);
++    if (!mode) return null;
++    const confirmed = startQuery || nativeAction;
++    return Object.freeze({
++      searchMode: Object.freeze({ ...mode, ...(confirmed ? { isPreview: false } : {}) }),
++      value: result.payload.query?.trimStart() || "",
++      storeTypedValue: !!confirmed,
++      startQuery: !!startQuery,
++    });
 +  }
 +
 +  // Availability is explicit per-tab state. Preferences gate presentation but

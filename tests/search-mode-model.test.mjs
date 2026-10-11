@@ -229,3 +229,47 @@ test('original inputs adapt token and selected-action facts to shared result-mod
     } else assert.equal(described.source,1,'Smartbar must not acquire action-element overrides');
   }
 });
+
+
+test('result transition checks trimmed keywords before resolving a mode and preserves query trailing space',()=>{
+  const Model=fixture().model.constructor,calls=[];
+  const result={payload:{keyword:' @engine ',autofillKeyword:'@auto',query:'  words  '}};
+  const resolveMode=()=>{calls.push('resolve');return {engineName:'Engine'};};
+  assert.equal(Model.resultTransition(result,{value:'unrelated',resolveMode}),null);assert.deepEqual(calls,[]);
+  for(const value of ['@engine',' @auto ']) {
+    const plan=Model.resultTransition(result,{value,resolveMode});
+    assert.equal(plan.value,'words  ');assert.equal(plan.searchMode.isPreview,false);
+    assert.equal(plan.storeTypedValue,true);assert.equal(plan.startQuery,true);
+    assert.equal(Object.isFrozen(plan.searchMode),true);
+  }
+  assert.equal(Model.resultTransition(result,{value:'@engine',resolveMode:()=>null}),null);
+});
+
+test('result transition preserves preview inference and confirms native actions without forcing a query',()=>{
+  const Model=fixture().model.constructor,mode={engineName:'Engine'},result={payload:{}};
+  const plan=options=>Model.resultTransition(result,{value:'',checkValue:false,resolveMode:()=>mode,...options});
+  const preview=plan({startQuery:false});assert.equal(preview.searchMode.isPreview,undefined);
+  assert.equal(preview.value,'');assert.equal(preview.storeTypedValue,false);assert.equal(preview.startQuery,false);
+  const action=plan({startQuery:false,nativeAction:true});
+  assert.equal(action.searchMode.isPreview,false);assert.equal(action.storeTypedValue,true);assert.equal(action.startQuery,false);
+  assert.equal(mode.isPreview,undefined);
+});
+
+test('original result-mode binding applies mutable state and text before awaiting the mode query',async()=>{
+  const Model=fixture().model.constructor;
+  const source=readFileSync(new URL('UrlbarInputBase.mjs',base),'utf8');
+  const start=source.indexOf('  maybeConfirmSearchModeFromResult({');
+  const end=source.indexOf('\n  /**',start);
+  const method=source.slice(start,end).replaceAll('#searchModeApplied','_searchModeApplied');
+  const context=vm.createContext({UrlbarSearchModeModel:Model});
+  vm.runInContext('this.Binding=class {'+method+'}',context);
+  const input=new context.Binding(),calls=[],gate=Promise.withResolvers();
+  input.value='@engine';input._searchModeForResult=()=>({engineName:'Engine'});
+  Object.defineProperty(input,'searchMode',{set(mode){mode.source=3;calls.push(['mode',mode]);input._searchModeApplied=gate.promise;}});
+  input.setValue=value=>{calls.push(['value',value]);input.untrimmedValue=value;};
+  input.startQuery=options=>calls.push(['query',options.allowAutofill]);
+  assert.equal(input.maybeConfirmSearchModeFromResult({result:{payload:{keyword:'@engine',query:' words'}}}),true);
+  assert.deepEqual(calls.map(c=>c[0]),['mode','value']);assert.equal(input.userTypedValue,'words');
+  assert.equal(calls[0][1].isPreview,false);gate.resolve();await gate.promise;await Promise.resolve();
+  assert.deepEqual(calls.map(c=>c[0]),['mode','value','query']);assert.equal(calls[2][1],false);
+});
