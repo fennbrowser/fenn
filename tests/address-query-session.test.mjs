@@ -4,23 +4,27 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {UrlbarQueryLifecycle} from '../upstream/firefox/browser/components/urlbar/content/UrlbarQueryLifecycle.mjs';
 
-function fixture({hold=false}={}) {
+const sharedPolicy=vm.createContext({URL,UrlbarContentUtils:{},UrlbarPrefs:{}});
+vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarShared.mjs',import.meta.url),'utf8')
+  .replace(/^import .*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),sharedPolicy);
+
+function fixture({hold=false,uninitializedResults=false}={}) {
   const parents=[];
   class Parent {
     constructor(identity){this.identity=identity;this.started=[];parents.push(this);}
     setChild(child){this.child=child;}
     initEngineStore(){if(!hold)this.child.updateEngineStore('init',[],null);}
-    startQuery(query){this.started.push(query);return Promise.resolve(query);}
+    startQuery(query){query.results??=[];this.started.push(query);return Promise.resolve(query);}
     cancelQuery(){this.cancelled=(this.cancelled??0)+1;}
     destroy(){this.destroyed=(this.destroyed??0)+1;}
   }
   let id=0;
   const sandbox=vm.createContext({console,UrlbarQueryLifecycle,
-    UrlbarShared:{getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_SOURCE:{ACTIONS:7},NOTIFICATIONS:{
+    UrlbarShared:{getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_SOURCE:sharedPolicy.UrlbarShared.RESULT_SOURCE,canAutofillURL:sharedPolicy.UrlbarShared.canAutofillURL.bind(sharedPolicy.UrlbarShared),NOTIFICATIONS:{
       QUERY_ARMED:'onQueryArmed',QUERY_STARTED:'onQueryStarted',QUERY_CANCELLED:'onQueryCancelled',
       QUERY_FIRST_RESULT:'onFirstResult',QUERY_RESULTS:'onQueryResults',QUERY_FINISHED:'onQueryFinished'}},
     UrlbarPrefs:{get:()=>10},UrlbarContentUtils:{usesMessagePath:()=>false},
-    UrlbarQueryContext:class {constructor(options){Object.assign(this,options,{id:++id,results:[]});}},
+    UrlbarQueryContext:class {constructor(options){Object.assign(this,options,{id:++id,results:uninitializedResults?undefined:[]});}},
     ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;}}});
   for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarEditSession']) {
     const source=readFileSync(new URL(`../upstream/firefox/browser/components/urlbar/content/${file}.mjs`,import.meta.url),'utf8');
@@ -48,7 +52,7 @@ test('streaming updates preserve context identity and suppress stale, cancelled 
   const f=fixture(),events=[];await f.parent.child.engineStore.init();
   let query;const gate=Promise.withResolvers();
   f.parent.startQuery=q=>{query=q;return gate.promise;};
-  const pending=f.session.query({}, {searchString:'stream'},e=>events.push(e));
+  const pending=f.session.query({}, {searchString:'stream'},e=>{if(e.kind!=='prepared')events.push(e);});
   for(const name of ['onFirstResult','onQueryResults','onQueryFinished'])f.parent.child.notify(name,query);
   assert.deepEqual(events.map(e=>e.kind),['first-result','results','finished']);
   assert.ok(events.every(e=>e.query===query && Object.isFrozen(e)));
@@ -62,8 +66,9 @@ test('a first-result callback can replace the query without leaking the old resu
   let first,second,newer;
   f.parent.startQuery=q=>{if(!first)first=q;else second=q;return Promise.resolve(q);};
   const old=f.session.query({}, {searchString:'old'},e=>{
+    if(e.kind==='prepared')return;
     events.push('old '+e.kind);
-    newer=f.session.query({}, {searchString:'new'},n=>events.push('new '+n.kind));
+    newer=f.session.query({}, {searchString:'new'},n=>{if(n.kind!=='prepared')events.push('new '+n.kind);});
   });
   f.parent.child.notify('onFirstResult',first);
   f.parent.child.notify('onQueryResults',first);f.parent.child.notify('onQueryFinished',first);
@@ -72,8 +77,8 @@ test('a first-result callback can replace the query without leaking the old resu
   assert.deepEqual(events,['old first-result','new results']);f.session.close();
 });
 
-async function editorFixture() {
-  const f=fixture();f.session.close();const updates=[];
+async function editorFixture(options) {
+  const f=fixture(options);f.session.close();const updates=[];
   const editor=new f.sandbox.UrlbarEditSession({context:f.context,isCurrent:()=>!f.invalid,
     onUpdate:update=>updates.push(update)});
   const parent=f.parents.at(-1);await parent.child.engineStore.init();
@@ -326,4 +331,110 @@ test('restoration authority rejects changed provider data, replacement and pendi
     assert.equal(f.editor.acknowledgeCompletion(restore.token,observed(restore)),false);
     assert.equal(f.editor.snapshot.text,'example.test/');f.editor.close();
   }
+});
+
+
+test('prepared query identity permits cancellation or replacement before provider dispatch',async()=>{
+  const f=fixture();await f.parent.child.engineStore.init();
+  await assert.rejects(f.session.query({}, {searchString:'cancel'},update=>{
+    assert.equal(update.kind,'prepared');assert.equal(f.session.ownsQuery(update.query.id),true);
+    f.session.cancel();
+  }),/superseded or cancelled/);
+  assert.equal(f.parent.started.length,0);
+  let replacement;
+  await assert.rejects(f.session.query({}, {searchString:'replace'},()=>{
+    replacement=f.session.query({}, {searchString:'current'});
+  }),/superseded or cancelled/);
+  const current=await replacement;
+  assert.deepEqual(f.parent.started,[current]);f.session.close();
+});
+
+test('acknowledged placeholders are proposed before providers and restored without querying the suffix',async()=>{
+  const f=await completionFixture();f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal));
+  const gate=Promise.withResolvers();let query;
+  f.parent.startQuery=q=>{query=q;return gate.promise;};
+  const pending=f.editor.edit({},edit(2,'examp'));
+  const update=f.updates.at(-1),p=update.completion;
+  assert.equal(update.kind,'prepared');assert.equal(update.query,query);
+  assert.equal(p.kind,'placeholder');assert.equal(p.value,'example.test/');
+  assert.equal(p.selectionStart,5);assert.equal(query.searchString,'examp');
+  assert.equal(f.editor.snapshot.text,'examp');
+  assert.equal(f.editor.getCompletion(p.token),p);
+  assert.equal(f.editor.acknowledgeCompletion(p.token,observed(p)),true);
+  query.results=[{payload:{}}];f.parent.child.notify('onFirstResult',query);
+  const restore=f.updates.at(-1).completion;assert.equal(restore.kind,'restore');
+  assert.equal(restore.value,'examp');f.editor.acknowledgeCompletion(restore.token,observed(restore));
+  assert.equal(f.editor.snapshot.text,'examp');
+  gate.resolve(query);await pending;f.editor.close();
+});
+
+test('result arrival revokes speculative tokens and replaces an acknowledged prediction',async()=>{
+  for(const acknowledged of [false,true]) {
+    const f=await completionFixture();f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal));
+    const q=await f.editor.edit({},edit(2,'examp')),p=f.updates.at(-1).completion;
+    if(acknowledged)f.editor.acknowledgeCompletion(p.token,observed(p));
+    q.results=[{payload:{},autofill:{value:'example.other/',selectionStart:5,selectionEnd:14}}];
+    assert.equal(f.editor.getCompletion(p.token),null,'results invalidate an unpublished prediction too');
+    f.parent.child.notify('onFirstResult',q);
+    const actual=f.updates.at(-1).completion;assert.equal(actual.kind,'autofill');
+    assert.equal(actual.value,'example.other/');assert.equal(f.editor.getCompletion(actual.token),actual);
+    f.editor.acknowledgeCompletion(actual.token,observed(actual));
+    assert.equal(f.editor.snapshot.text,'example.other/');f.editor.close();
+  }
+});
+
+test('speculative reuse obeys input intent, search mode, caret and composition gates',async()=>{
+  for(const extra of [{inputType:'deleteContentBackward'},{inputType:'historyUndo'},
+    {inputType:'historyRedo'},{inputType:'insertFromPaste'},
+    {selectionStart:1,selectionEnd:1},{composing:true}]) {
+    const f=await completionFixture();f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal));
+    const before=f.updates.length;
+    const q=await f.editor.edit({},edit(2,'examp',extra));
+    assert.ok(!q || !q.allowAutofill);assert.equal(f.updates.length,before);f.editor.close();
+  }
+  for(const state of [{searchMode:{engineName:'engine'}},
+    {searchMode:{source:sharedPolicy.UrlbarShared.RESULT_SOURCE.SEARCH}}]) {
+    const f=await completionFixture();f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal));
+    const before=f.updates.length,q=await f.editor.edit(state,edit(2,'examp'));
+    assert.equal(q.allowAutofill,false);assert.equal(f.updates.length,before);f.editor.close();
+  }
+  const f=await completionFixture();f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal));
+  await f.editor.edit({},edit(2,'exam',{inputType:'deleteContentBackward'}));
+  await f.editor.edit({},edit(3,'examp'));
+  assert.equal(f.updates.at(-1).completion.kind,'placeholder','delete suppresses application, not the reusable candidate');
+  f.editor.close();
+});
+
+test('only acknowledged candidates survive edits and cancellation, selection or composition clear reuse',async()=>{
+  const unack=await completionFixture(),before=unack.updates.length;
+  await unack.editor.edit({},edit(2,'examp'));assert.equal(unack.updates.length,before);unack.editor.close();
+  for(const revoke of [f=>f.editor.cancel(),f=>f.editor.select(1,4,13,'backward'),
+    f=>f.editor.edit({},edit(2,'examp',{composing:true})),f=>f.editor.edit({},edit(2,'other'))]) {
+    const f=await completionFixture();f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal));
+    await revoke(f);const before=f.updates.length;
+    await f.editor.edit({},edit(3,'examp'));assert.equal(f.updates.length,before);f.editor.close();
+  }
+  const f=await completionFixture();f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal));
+  await f.editor.edit({},edit(2,'examp'));const p=f.updates.at(-1).completion;
+  f.editor.select(2,1,1);assert.equal(f.editor.getCompletion(p.token),null);
+  assert.equal(f.editor.acknowledgeCompletion(p.token,observed(p)),false);f.editor.close();
+});
+
+
+test('speculation validates before real QueryContext results have been initialized',async()=>{
+  const f=await editorFixture({uninitializedResults:true});
+  const first=await f.editor.edit({},edit(1,'exam'));
+  first.results=[{payload:{},autofill:{value:'example.test/',selectionStart:4,selectionEnd:13}}];
+  f.parent.child.notify('onFirstResult',first);
+  const p=f.updates.at(-1).completion;f.editor.acknowledgeCompletion(p.token,observed(p));
+  let prepared=false;
+  f.updates.push=update=>{
+    assert.equal(update.kind,'prepared');assert.equal(update.query.results,undefined);
+    assert.equal(f.editor.getCompletion(update.completion.token),update.completion);
+    assert.equal(f.editor.acknowledgeCompletion(update.completion.token,observed(update.completion)),true);
+    prepared=true;
+  };
+  const q=await f.editor.edit({},edit(2,'examp'));
+  assert.equal(prepared,true);assert.equal(q.searchString,'examp');
+  assert.equal(f.editor.snapshot.text,'example.test/');f.editor.close();
 });

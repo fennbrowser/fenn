@@ -5987,10 +5987,10 @@ index 1e2660589b..5ae3ab4843 100644
    /*
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..3df6d86e87
+index 0000000000..2d181dff98
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,224 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6006,7 +6006,7 @@ index 0000000000..3df6d86e87
 + * validates a one-use token before a write and acknowledges its exact observed
 + * text/selection afterward. Acknowledgment never starts a query.
 + * Active composition cancels queries; the committed edit starts a fresh one.
-+ * Undo, speculative placeholders, search-mode transitions and activation are
++ * Undo, search-mode transitions and activation are
 + * not implemented here. In particular, this is not a navigation controller.
 + */
 +export class UrlbarEditSession {
@@ -6017,6 +6017,7 @@ index 0000000000..3df6d86e87
 +  #closed = false;
 +  #completion = null;
 +  #autofill = null;
++  #placeholder = null;
 +
 +  constructor({ context, isCurrent, onUpdate }) {
 +    if (typeof onUpdate != "function") throw new TypeError("Missing editor listener");
@@ -6061,14 +6062,37 @@ index 0000000000..3df6d86e87
 +    this.#autofill = null;
 +    // Revoke old work before any new snapshot can be published.
 +    this.#queries.cancel();
-+    if (composing) return null;
++    if (composing) {
++      this.#placeholder = null;
++      return null;
++    }
 +    const isPaste = UrlbarShared.isPasteEvent({ inputType });
-+    const allowAutofill = UrlbarAutofillModel.allowsInput(inputType, isPaste) &&
++    const eligibleInput = UrlbarAutofillModel.allowsInput(inputType, isPaste) &&
 +      selectionStart === selectionEnd && selectionEnd === text.length;
++    const placeholderPlan = eligibleInput ? UrlbarAutofillModel.planPlaceholder({
++      searchString: text, value: text, selectionStart, selectionEnd,
++      searchMode: state.searchMode, placeholder: this.#placeholder, enabled: true,
++    }) : null;
++    if (placeholderPlan?.operation === "clear" || placeholderPlan?.operation === "discard") {
++      this.#placeholder = null;
++    }
++    const allowAutofill = eligibleInput && placeholderPlan.allowAutofill;
 +    return this.#queries.query(state, {
 +      searchString: text, allowAutofill, isPaste, pasteLength,
 +    }, update => {
 +      if (this.#closed || !this.#isCurrent() || this.#edit.revision !== revision) return;
++      if (update.kind === "prepared") {
++        if (placeholderPlan?.operation === "apply") {
++          const token = Object.freeze({});
++          const descriptor = Object.freeze({ ...placeholderPlan.autofill });
++          const completion = Object.freeze({ ...descriptor, kind: "placeholder",
++            selectionDirection: "backward", token });
++          this.#completion = { token, proposal: completion, descriptor,
++            query: update.query, result: null, edit: this.#edit };
++          this.#onUpdate(Object.freeze({ ...update, edit: this.#edit, completion }));
++        }
++        return;
++      }
 +      const first = update.query.results[0];
 +      let completion = null;
 +      if (update.kind === "first-result") this.#completion = null;
@@ -6114,6 +6138,7 @@ index 0000000000..3df6d86e87
 +    this.#validateSelection(this.#edit.text, start, end, direction);
 +    this.#completion = null;
 +    this.#autofill = null;
++    this.#placeholder = null;
 +    this.#edit = Object.freeze({ ...this.#edit, selectionStart: start,
 +      selectionEnd: end, selectionDirection: direction,
 +      selectionRevision: this.#edit.selectionRevision + 1 });
@@ -6125,7 +6150,13 @@ index 0000000000..3df6d86e87
 +    this.#check();
 +    const current = this.#completion;
 +    if (!current || token !== current.token || current.edit !== this.#edit ||
-+        !this.#queries.ownsResult(current.query.id, current.result) ||
++        !this.#queries.ownsQuery(current.query.id)) {
++      return null;
++    }
++    if (current.proposal.kind === "placeholder") {
++      return current.query.results?.length ? null : current.proposal;
++    }
++    if (!this.#queries.ownsResult(current.query.id, current.result) ||
 +        current.query.results[0] !== current.result || current.result.payload?.keyword) {
 +      return null;
 +    }
@@ -6151,6 +6182,7 @@ index 0000000000..3df6d86e87
 +    }
 +    this.#validateSelection(text, selectionStart, selectionEnd, selectionDirection);
 +    this.#autofill = this.#completion.descriptor;
++    this.#placeholder = this.#autofill;
 +    this.#completion = null;
 +    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: this.#edit.selectionRevision + 1 });
@@ -6168,6 +6200,8 @@ index 0000000000..3df6d86e87
 +  cancel() {
 +    this.#check();
 +    this.#completion = null;
++    this.#autofill = null;
++    this.#placeholder = null;
 +    this.#queries.cancel();
 +  }
 +
@@ -6176,16 +6210,17 @@ index 0000000000..3df6d86e87
 +    this.#closed = true;
 +    this.#completion = null;
 +    this.#autofill = null;
++    this.#placeholder = null;
 +    this.#queries.close();
 +    this.#onUpdate = null;
 +  }
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..1849fc2431
+index 0000000000..be503e558a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,128 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6255,6 +6290,12 @@ index 0000000000..1849fc2431
 +    this.#controller.visibleResults = [];
 +    this.#controller.resultsOpen = false;
 +    try {
++      // Publish identity before provider dispatch so an editor can propose a
++      // speculative placeholder for this query. A listener may cancel, close
++      // or replace it synchronously; never dispatch that obsolete query.
++      this.#update("prepared", query);
++      this.#check();
++      if (this.#query !== query) throw new Error("Query superseded or cancelled");
 +      await this.#controller.startQuery(query);
 +    } catch (error) {
 +      if (this.#query === query) this.cancel();
@@ -6265,10 +6306,15 @@ index 0000000000..1849fc2431
 +    return query;
 +  }
 +
++  ownsQuery(queryId) {
++    this.#check();
++    return !!this.#query && queryId === this.#query.id;
++  }
++
 +  ownsResult(queryId, result) {
 +    this.#check();
 +    return !!this.#query && queryId === this.#query.id &&
-+      this.#query.results.includes(result);
++      !!this.#query.results?.includes(result);
 +  }
 +
 +  publishPresentation(queryId, visibleResults, open) {
