@@ -6877,10 +6877,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..36022d1c66
+index 0000000000..344f748d60
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,496 @@
+@@ -0,0 +1,543 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6918,6 +6918,7 @@ index 0000000000..36022d1c66
 +  #selectionRequest = null;
 +  #resultPreview = null;
 +  #searchModePreview = false;
++  #hiddenResults = null;
 +  #onPresentationRequest;
 +
 +  constructor({ context, isCurrent, onUpdate, onPresentationRequest = null }) {
@@ -6963,6 +6964,7 @@ index 0000000000..36022d1c66
 +      throw new TypeError("Invalid or stale editor snapshot");
 +    }
 +    this.#validateSelection(text, selectionStart, selectionEnd, selectionDirection);
++    this.#hiddenResults = null;
 +    this.#typedText = text;
 +    this.#searchModePreview = !!state.searchMode?.isPreview;
 +    this.#edit = Object.freeze({ revision, text, selectionStart, selectionEnd,
@@ -6992,7 +6994,7 @@ index 0000000000..36022d1c66
 +    return this.#queries.query(state, {
 +      searchString: text, allowAutofill, isPaste, pasteLength,
 +    }, update => {
-+      if (this.#closed || !this.#isCurrent() || this.#edit.revision !== revision) return;
++      if (this.#closed || !this.#isCurrent() || this.#edit.revision !== revision || this.#hiddenResults) return;
 +      if (update.kind === "prepared") {
 +        if (placeholderPlan?.operation === "apply") {
 +          const token = Object.freeze({});
@@ -7066,7 +7068,7 @@ index 0000000000..36022d1c66
 +      selectionDirection, selectionRevision: 0, composing });
 +    if (composing) return null;
 +    return this.#queries.query(state, { searchString: queryText, allowAutofill: false }, update => {
-+      if (this.#closed || !this.#isCurrent() || this.#edit.revision !== revision ||
++      if (this.#closed || !this.#isCurrent() || this.#edit.revision !== revision || this.#hiddenResults ||
 +          update.kind === "prepared") return;
 +      this.#onUpdate(Object.freeze({ ...update, edit: this.#edit, completion: null,
 +        defaultSelection: this.#presentation.defaultSelection(update.query) }));
@@ -7161,6 +7163,7 @@ index 0000000000..36022d1c66
 +  /** Prepare provider notification without applying selection or preview text. */
 +  beginResultSelection(revision, queryId, result) {
 +    this.#check();
++    if (this.#hiddenResults) throw new Error("Hidden result selection");
 +    this.#selectionRequest = null;
 +    this.#resultPreview = null;
 +    const edit = this.#edit;
@@ -7222,6 +7225,7 @@ index 0000000000..36022d1c66
 +  /** Propose plain or autofill result text; null means this path is unsupported. */
 +  beginResultPreview(revision, queryId, result) {
 +    this.#check();
++    if (this.#hiddenResults) throw new Error("Hidden result preview");
 +    this.#resultPreview = null;
 +    this.#selectionRequest = null;
 +    this.describeResultInput(revision, queryId, result);
@@ -7242,6 +7246,7 @@ index 0000000000..36022d1c66
 +  /** Restore the query's typed text when clearing selection, without requerying. */
 +  beginResultRestore(revision, queryId) {
 +    this.#check();
++    if (this.#hiddenResults) throw new Error("Hidden result restoration");
 +    this.#resultPreview = null;
 +    this.#selectionRequest = null;
 +    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
@@ -7307,10 +7312,50 @@ index 0000000000..36022d1c66
 +    return frozen;
 +  }
 +
++  /** Hide suggestions without invalidating or stopping the current query. */
++  hideResults(revision, queryId = null) {
++    this.#check();
++    if (queryId === null) queryId = this.#queries.describeResults().queryId;
++    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
++        !this.#queries.ownsQuery(queryId)) throw new Error("Stale result hide");
++    // Mode preview dismissal needs a separate Firefox semantic transition.
++    if (this.#searchModePreview) { this.cancel(); return null; }
++    this.#queries.publishPresentation(queryId, [], false);
++    this.#completion = null;
++    this.#selectionRequest = null;
++    this.#resultPreview = null;
++    this.#autofill = null;
++    this.#placeholder = null;
++    this.#hiddenResults = Object.freeze({ revision, queryId, text: this.#edit.text });
++    return this.getHiddenResults(revision, queryId);
++  }
++
++  /** Retained identities are descriptive; fresh viewport observation is required. */
++  getHiddenResults(revision, queryId) {
++    this.#check();
++    const hidden = this.#hiddenResults;
++    if (!hidden || hidden.revision !== revision || hidden.queryId !== queryId ||
++        this.#edit.revision !== revision || this.#edit.text !== hidden.text ||
++        !this.#queries.ownsQuery(queryId)) return null;
++    return this.#queries.describeResults(queryId);
++  }
++
++  /** Observe reopening and its visible rows, without requerying or editing text. */
++  reopenResults(revision, queryId, visibleResults) {
++    const retained = this.getHiddenResults(revision, queryId);
++    if (!retained?.results.length) return false;
++    this.#queries.publishPresentation(queryId, visibleResults, true);
++    this.#hiddenResults = null;
++    return true;
++  }
++
 +  publishPresentation(revision, queryId, visibleResults, open) {
 +    this.#check();
 +    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing) {
 +      throw new Error("Stale editor presentation");
++    }
++    if (this.#hiddenResults && (open || visibleResults.length)) {
++      throw new Error("Hidden results require explicit reopening");
 +    }
 +    this.#queries.publishPresentation(queryId, visibleResults, open);
 +  }
@@ -7354,6 +7399,7 @@ index 0000000000..36022d1c66
 +
 +  cancel() {
 +    this.#check();
++    this.#hiddenResults = null;
 +    this.#completion = null;
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
@@ -7366,6 +7412,7 @@ index 0000000000..36022d1c66
 +  close() {
 +    if (this.#closed) return;
 +    this.#closed = true;
++    this.#hiddenResults = null;
 +    this.#completion = null;
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
@@ -7379,10 +7426,10 @@ index 0000000000..36022d1c66
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..fd5d14cb92
+index 0000000000..88408384d9
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,262 @@
+@@ -0,0 +1,270 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7509,6 +7556,14 @@ index 0000000000..fd5d14cb92
 +    return !!this.#query && queryId === this.#query.id &&
 +      !this.#removedIds.has(result?.id) &&
 +      !!(this.#frozen?.results ?? this.#query.results)?.includes(result);
++  }
++
++  /** Snapshot current identities for a presenter without stopping providers. */
++  describeResults(queryId = this.#query?.id) {
++    this.#check();
++    if (!this.ownsQuery(queryId)) throw new Error("Stale retained query results");
++    return Object.freeze({ queryId, results: Object.freeze(
++      (this.#frozen?.results ?? this.#query.results ?? []).filter(result => !this.#removedIds.has(result.id))) });
 +  }
 +
 +  /**

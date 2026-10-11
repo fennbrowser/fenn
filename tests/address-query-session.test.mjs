@@ -323,6 +323,59 @@ test('focus replaces old completion authority and new edits revoke focus-query p
   f.loseScope();await assert.rejects(f.editor.focus({}, {...edit(4,'scope'),pageProxyValid:false}),/scope changed/);
 });
 
+test('hiding revokes exposure and writes while retaining result identity for explicit reopening',async()=>{
+  const f=await previewFixture(),snapshot=f.editor.snapshot;
+  const p=f.editor.beginResultPreview(1,f.query.id,f.result),cancelled=f.parent.cancelled;
+  const hidden=f.editor.hideResults(1,f.query.id);
+  assert.equal(hidden.results[0],f.result);assert.equal(f.editor.snapshot,snapshot);
+  assert.equal(f.parent.cancelled,cancelled);assert.deepEqual([...f.parent.child.visibleResults],[]);
+  assert.equal(f.parent.child.resultsOpen,false);assert.equal(f.editor.getResultPreview(p.token),null);
+  assert.throws(()=>f.editor.beginResultPreview(1,f.query.id,f.result),/Hidden/);
+  assert.throws(()=>f.editor.beginResultRestore(1,f.query.id),/Hidden/);
+  assert.throws(()=>f.editor.publishPresentation(1,f.query.id,[f.result],true),/explicit reopening/);
+  f.editor.select(1,0,0);
+  assert.equal(f.editor.getHiddenResults(1,f.query.id).results[0],f.result);
+  assert.equal(f.editor.reopenResults(1,f.query.id,[f.result]),true);
+  assert.equal(f.parent.child.resultsOpen,true);assert.equal(f.editor.reopenResults(1,f.query.id,[f.result]),false);
+  assert.equal(f.editor.getResultPreview(p.token),null);assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+test('providers finish hidden queries without publishing completion or reopening suggestions',async()=>{
+  const f=await editorFixture(),gate=Promise.withResolvers();let q;
+  f.parent.startQuery=query=>{q=query;return gate.promise;};
+  const pending=f.editor.edit({},edit(1,'exam'));
+  const cancelled=f.parent.cancelled,hidden=f.editor.hideResults(1);
+  assert.equal(hidden.queryId,q.id);
+  assert.equal(hidden.results.length,0);assert.equal(f.editor.reopenResults(1,q.id,[]),false);
+  const result={id:1,payload:{},autofill:{value:'example.test/',selectionStart:4,selectionEnd:13}};
+  q.results=[result];f.parent.child.notify('onFirstResult',q);f.parent.child.notify('onQueryResults',q);
+  assert.equal(f.updates.length,0);assert.equal(f.parent.cancelled,cancelled);
+  assert.equal(f.editor.snapshot.text,'exam');assert.equal(f.parent.child.resultsOpen,false);
+  gate.resolve(q);await pending;
+  assert.equal(f.editor.getHiddenResults(1,q.id).results[0],result);
+  assert.equal(f.editor.reopenResults(1,q.id,[result]),true);f.editor.close();
+});
+
+test('hidden removals cannot regain exposure and newer queries or scope changes invalidate reopening',async()=>{
+  const f=await previewFixture();f.editor.hideResults(1,f.query.id);
+  f.parent.child.notify('onQueryResultRemoved',5,undefined,f.query.id);
+  assert.equal(f.editor.getHiddenResults(1,f.query.id).results.length,0);
+  assert.equal(f.editor.reopenResults(1,f.query.id,[f.result]),false);
+  const q=await f.editor.edit({},edit(2,'next'));q.results=[f.result];
+  assert.equal(f.editor.getHiddenResults(1,f.query.id),null);
+  f.editor.hideResults(2,q.id);f.loseScope();
+  assert.throws(()=>f.editor.reopenResults(2,q.id,[f.result]),/scope changed/);
+});
+
+test('hiding clears automatic completion and declines retention for preview search modes',async()=>{
+  const f=await completionFixture();f.editor.hideResults(1,f.query.id);
+  assert.equal(f.editor.getCompletion(f.proposal.token),null);
+  f.editor.cancel();assert.equal(f.editor.getHiddenResults(1,f.query.id),null);
+  const q=await f.editor.edit({searchMode:{isPreview:true}},edit(2,'mode'));
+  assert.equal(f.editor.hideResults(2,q.id),null);
+  assert.equal(f.editor.getHiddenResults(2,q.id),null);f.editor.close();
+});
+
 test('removed frozen results lose identity and exposure even if an old descriptor or late batch retains them',async()=>{
   const requests=[],f=fixture({onPresentationRequest:r=>requests.push(r)});
   const q=await f.session.query({}, {searchString:'remove'}),a={id:1},b={id:2};q.results=[a,b];
