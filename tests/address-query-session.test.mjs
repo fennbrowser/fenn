@@ -8,7 +8,7 @@ const sharedPolicy=vm.createContext({URL,UrlbarContentUtils:{},UrlbarPrefs:{get:
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarShared.mjs',import.meta.url),'utf8')
   .replace(/^import .*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),sharedPolicy);
 
-function fixture({hold=false,uninitializedResults=false,onPresentationRequest=null}={}) {
+function fixture({hold=false,uninitializedResults=false,onPresentationRequest=null,isPrivate=true}={}) {
   const parents=[];
   const prefs={"experimental.hideHeuristic":false,openintab:false,ctrlCanonizesURLs:false,"browser.search.openintab":false};
   class Parent {
@@ -44,7 +44,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     vm.runInContext(source.replace(/^import .*;$/gm,'').replaceAll('export class ','class ')+`\nthis.${file}=${file};`,sandbox);
   }
   let current=true;
-  const context={sapName:'urlbar',isPrivate:true,actor:{browsingContext:{isContent:false}}};
+  const context={sapName:'urlbar',isPrivate,actor:{browsingContext:{isContent:false}}};
   const session=new sandbox.UrlbarQuerySession({context,isCurrent:()=>current,onPresentationRequest});
   return {session,parent:parents[0],parents,sandbox,context,prefs,invalidate(){current=false;}};
 }
@@ -1952,6 +1952,58 @@ test('engagement rejects invalid events, stale editor revisions, composition and
   await f.editor.edit({},edit(2,'composing',{composing:true}));
   assert.throws(()=>f.editor.startEngagement(2,q.id,{type:'input',timeStamp:3}),/Stale/);
   f.loseScope();assert.throws(()=>f.editor.discardEngagement(),/scope changed/);
+});
+
+test('history effects preserve nonheuristic, adaptive and deferred-origin input rules',()=>{
+  const f=fixture(),model=f.sandbox.UrlbarQueryModel,T=f.sandbox.UrlbarShared.RESULT_TYPE;
+  const request={urlLoad:{url:'https://history.test/'}};
+  f.prefs['autoFill.adaptiveHistory.enabled']=true;
+  for(const [result,text,input,whenReady,reintegrate] of [
+    [{type:T.URL},'', '',false,true],
+    [{type:T.URL,heuristic:true,autofill:{type:'adaptive_url',adaptiveHistoryInput:'adaptive'}},'typed','adaptive',false,false],
+    [{type:T.URL,heuristic:true,autofill:{type:'adaptive_origin',adaptiveHistoryInput:''}},'typed','',false,false],
+    [{type:T.URL,heuristic:true,autofill:{type:'origin'}},'typed','typed',true,false],
+    [{type:T.URL,heuristic:true,autofill:{type:'url'}},'typed',undefined,undefined,true],
+    [{type:T.KEYWORD},'typed','typed',false,false],
+  ]) {
+    const effects=model.resultHistoryEffects(result,request,{searchString:text,isPrivate:false});
+    assert.equal(effects.inputHistory?.input,input);assert.equal(effects.inputHistory?.whenReady,whenReady);
+    assert.equal(effects.reintegrateURL,reintegrate?request.urlLoad.url:null);
+    assert.equal(Object.isFrozen(effects),true);if(effects.inputHistory)assert.equal(Object.isFrozen(effects.inputHistory),true);
+  }
+  f.session.close();
+});
+
+test('private, engine-only and disabled adaptive effects do not propose persistence',()=>{
+  const f=fixture(),model=f.sandbox.UrlbarQueryModel,T=f.sandbox.UrlbarShared.RESULT_TYPE;
+  const result={type:T.URL,heuristic:true,autofill:{type:'origin'},payload:{url:'https://history.test/'}};
+  f.prefs['autoFill.adaptiveHistory.enabled']=true;
+  for(const [request,isPrivate] of [[{urlLoad:{url:result.payload.url}},true],[{engineSearch:{query:'q',engineName:'e'}},false]]) {
+    const p=model.resultHistoryEffects(result,request,{searchString:'typed',isPrivate});
+    assert.equal(p.inputHistory,null);assert.equal(p.reintegrateURL,null);
+  }
+  assert.equal(model.autofillBackspaceURL(result,true),null);
+  assert.equal(model.autofillBackspaceURL(result,false),result.payload.url);
+  f.prefs['autoFill.adaptiveHistory.enabled']=false;
+  assert.equal(model.autofillBackspaceURL(result,false),null);
+  assert.equal(model.resultHistoryEffects(result,{urlLoad:{url:result.payload.url}},{searchString:'typed',isPrivate:false}).inputHistory,null);
+  f.session.close();
+});
+
+test('acknowledged navigation history uses typed basis and revokes on adaptive policy changes',async()=>{
+  const f=await editorFixture({isPrivate:false}),q=await f.editor.edit({},edit(1,'typed query'));
+  const result={id:1,type:f.sandbox.UrlbarShared.RESULT_TYPE.URL,payload:{url:'https://history.test/'}};
+  q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+  const options={selectedTabIsEmpty:false,originalUntrimmedValue:'typed query',searchString:'untrusted override'};
+  f.prefs['autoFill.adaptiveHistory.enabled']=true;
+  const p=f.editor.beginNavigationWrite(1,q.id,result,{},options);
+  assert.equal(p.plan.history.inputHistory.input,'typed query');
+  assert.equal(f.editor.acknowledgeNavigationWrite(p.token,navigationObservation(p),{},options),true);
+  assert.equal(f.editor.getAcknowledgedNavigation(p.token,{},options).plan.history.inputHistory.input,'typed query');
+  f.prefs['autoFill.adaptiveHistory.enabled']=false;
+  assert.equal(f.editor.getAcknowledgedNavigation(p.token,{},options),null);
+  f.prefs['autoFill.adaptiveHistory.enabled']=true;
+  assert.equal(f.editor.getAcknowledgedNavigation(p.token,{},options),null);f.editor.close();
 });
 
 async function navigationWriteFixture() {
