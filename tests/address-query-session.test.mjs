@@ -3111,15 +3111,15 @@ test('loaded-URI value preserves blank/origin/extension/session-restore validity
   assert.equal(result.value,'about:blank');assert.equal(result.valid,true);f.session.close();
 });
 
-function recoveryValueFixture() {
+function recoveryValueFixture(methodName='describeCurrentPageRevert') {
   const f=fixture(),source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarParentController.sys.mjs',import.meta.url),'utf8');
-  const start=source.indexOf('  describeCurrentPageRevert(browserId) {');
+  const start=source.indexOf('  '+methodName+'(');
   const method=source.slice(start,source.indexOf('\n  /**',start));
   const uri=spec=>({spec,displaySpec:spec});
   const browser={browserId:42,lastLocationChange:1,userTypedValue:'untouched',currentURI:uri('https://loaded.test/'),
     browsingContext:{currentWindowGlobal:{},sessionHistory:{count:1}}};
   const prefs={trimURLs:false,'formatting.enabled':true,'security.insecure_connection_text.enabled':false};
-  const lazy={loadedURIValue:f.sandbox.loadedURIValue,trimDisplayValue:f.sandbox.trimDisplayValue,
+  const lazy={loadedURIValue:f.sandbox.loadedURIValue,trimDisplayValue:f.sandbox.trimDisplayValue,UrlbarSearchModeModel:f.sandbox.UrlbarSearchModeModel,
     ReaderMode:{getOriginalUrlObjectForDisplay:()=>null},UrlbarPrefs:{get:key=>prefs[key]},
     BrowserUIUtils:{checkEmptyPageOrigin:()=>true,trimURL:s=>s.replace(/^https:\/\/(?:www\.)?/, '').replace(/\/$/, ''),
       getTrimmedURLPrefix:s=>s.startsWith('https://www.')?'https://www.':s.startsWith('https://')?'https://':'',trimURLProtocol:'https://'},ExtensionUtils:{isExtensionUrl:u=>u.spec.startsWith('moz-extension:')}};
@@ -4992,4 +4992,68 @@ test('valid-page write acknowledgment rejects stale caret and a newer edit revok
     f.parent.commitIndependentCompositionStart=()=>assert.fail('stale composition write');
     assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,{previousPersistedSearchTerms:false,persistedSearchTerms:false}),null);f.editor.close();
   }
+});
+
+
+function compositionRestorationFixture(value='https://www.restored.test/') {
+  const f=recoveryValueFixture('describeIndependentCompositionRestoration');f.browser.userTypedValue=value;
+  f.facts={untrimmedValue:'autofilled',userTypedValue:value,pageProxyValid:false,hasAutofillPlaceholder:true};return f;
+}
+
+test('composition restoration uses Firefox normalization and reports full versus displayed value without writes',()=>{
+  const f=compositionRestorationFixture();
+  for(const trim of [false,true]) {
+    f.prefs.trimURLs=trim;const d=f.p.describeIndependentCompositionRestoration(42,f.facts);
+    assert.equal(d.value,trim?'restored.test':'https://www.restored.test/');assert.equal(d.untrimmedValue,'https://www.restored.test/');
+    assert.equal(d.protocolIsTrimmed,trim);assert.equal(d.wwwIsTrimmed,trim);assert.equal(d.valueIsTyped,false);
+    assert.equal(d.pageProxyValid,false);assert.equal(Object.isFrozen(d),true);assert.equal(f.browser.userTypedValue,f.facts.userTypedValue);
+  }
+  f.session.close();
+});
+
+test('composition restoration unwraps Reader Mode and preserves RTL display without asserting security',()=>{
+  const f=compositionRestorationFixture('about:reader?url=https%3A%2F%2Fwww.restored.test%2F');
+  f.lazy.ReaderMode.getOriginalUrlObjectForDisplay=()=>({displaySpec:'https://www.restored.test/'});f.prefs.trimURLs=true;
+  assert.equal(f.p.describeIndependentCompositionRestoration(42,f.facts).value,'restored.test');
+  f.p.browserWindow.windowUtils.getDirectionFromText=()=>1;
+  const d=f.p.describeIndependentCompositionRestoration(42,f.facts);assert.equal(d.value,'https://www.restored.test/');
+  assert.equal(d.protocolIsTrimmed,false);assert.equal(d.wwwIsTrimmed,false);assert.equal(d.pageProxyValid,false);f.session.close();
+});
+
+test('composition restoration rejects stale browser facts and formatting reentry',()=>{
+  for(const change of ['typed','selected','document','epoch','destroy']) {
+    const f=compositionRestorationFixture();
+    if(change==='typed')f.browser.userTypedValue='changed';
+    if(change==='selected')f.p.browserWindow.gBrowser.selectedBrowser={};
+    if(change==='destroy')f.p.destroy();
+    if(change==='document' || change==='epoch')f.lazy.ReaderMode.getOriginalUrlObjectForDisplay=()=>{
+      if(change==='document')f.browser.browsingContext.currentWindowGlobal={};else f.browser.lastLocationChange++;return null;
+    };
+    assert.equal(f.p.describeIndependentCompositionRestoration(42,f.facts),null);f.session.close();
+  }
+});
+
+test('composition restoration rejects malformed facts and skips absent, empty or page-clearing cases',()=>{
+  const f=compositionRestorationFixture();
+  for(const facts of [{...f.facts,userTypedValue:null},{...f.facts,userTypedValue:''},
+    {...f.facts,hasAutofillPlaceholder:false},{...f.facts,pageProxyValid:true}]) {
+    assert.equal(f.p.describeIndependentCompositionRestoration(42,facts),null);
+  }
+  assert.throws(()=>f.p.describeIndependentCompositionRestoration(42,{...f.facts,pageProxyValid:1}),/Invalid composition restoration/);
+  assert.throws(()=>f.p.describeIndependentCompositionRestoration(0,f.facts),/Invalid composition restoration/);f.session.close();
+});
+
+test('editor restoration description is immutable, revocable and does not begin composition or query',async()=>{
+  const f=await editorFixture({browserId:42});await f.editor.edit({searchMode:{source:1,isPreview:true}},edit(1,'autofilled'));
+  const before=f.editor.snapshot,facts={viewIsOpen:true,userTypedValue:'typed',modeEntry:{untrimmedValue:'autofilled',
+    userTypedValue:'typed',pageProxyValid:false,hasAutofillPlaceholder:true}};
+  let calls=0;f.parent.describeIndependentCompositionRestoration=(id,entry)=>{
+    assert.equal(id,42);assert.equal(entry.userTypedValue,'typed');calls++;return Object.freeze({value:'typed',untrimmedValue:'typed'});
+  };
+  const d=f.editor.describeCompositionRestoration(1,facts);assert.equal(d.value,'typed');assert.equal(d.edit,before);
+  assert.equal(Object.isFrozen(d),true);assert.equal(Object.isFrozen(d.modeEntry),true);assert.equal(f.editor.snapshot,before);
+  assert.equal(f.parent.started.length,1);assert.equal(f.editor.beginCompositionStart(1,facts),null,'description does not authorize unsupported host write');
+  f.prefs.keepPanelOpenDuringImeComposition=true;assert.equal(f.editor.describeCompositionRestoration(1,facts),null);assert.equal(calls,1);
+  f.prefs.keepPanelOpenDuringImeComposition=false;f.parent.describeIndependentCompositionRestoration=()=>{f.editor.select(1,0,0);return d;};
+  assert.equal(f.editor.describeCompositionRestoration(1,facts),null);f.editor.close();
 });
