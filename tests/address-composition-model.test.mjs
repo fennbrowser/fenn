@@ -68,3 +68,49 @@ test('both actual input bindings retain search-mode confirmation and popup order
     trace.length=0;keep=true;b._on_compositionstart();b._on_compositionend({data:'done'});assert.deepEqual(trace,[]);
   }
 });
+
+
+test('composition start policy covers open, mode, empty and keep-open facts without mutation',()=>{
+  for(const keepPanelOpen of [false,true]) for(const viewIsOpen of [false,true])
+    for(const hasSearchMode of [false,true]) for(const value of ['', ' ', 'text']) {
+      const facts={keepPanelOpen,viewIsOpen,hasSearchMode,value},policy=M.startPolicy(facts);
+      assert.equal(policy.closePopup,!keepPanelOpen && viewIsOpen);
+      assert.equal(policy.confirmSearchMode,!keepPanelOpen && viewIsOpen && hasSearchMode);
+      assert.equal(policy.clearUserTypedValue,policy.confirmSearchMode && value==='');
+      assert.equal(Object.isFrozen(policy),true);assert.equal(Object.keys(facts).length,4);
+    }
+});
+
+test('composition start policy rejects malformed observations',()=>{
+  const valid={keepPanelOpen:false,viewIsOpen:true,hasSearchMode:true,value:''};
+  for(const key of Object.keys(valid))assert.throws(()=>M.startPolicy({...valid,[key]:null}),/Invalid composition start/);
+});
+
+test('both retained start bindings preserve lazy mode/value reads when popup or mode is absent',()=>{
+  for(const name of ['UrlbarInputBase.mjs','SmartbarInput.mjs']) for(const open of [false,true]) for(const mode of [false,true]) {
+    const source=readFileSync(new URL(name,root),'utf8'),start=source.indexOf('  _on_compositionstart(');
+    const method=source.slice(start,source.indexOf('\n  }\n',start)+4);
+    let keep=false;c.UrlbarCompositionModel=M;c.UrlbarPrefs={get:()=>keep};
+    vm.runInContext('this.Binding=class {#composition=new UrlbarCompositionModel();'+method+'}',c);
+    const b=new c.Binding(),reads=[];
+    Object.defineProperty(b,'view',{get(){reads.push('view');if(keep)throw Error('unneeded view');return {isOpen:open,close(){reads.push('close');}};}});
+    Object.defineProperty(b,'searchMode',{get(){reads.push('mode');if(!open)throw Error('unneeded mode');return mode?{}:null;}});
+    Object.defineProperty(b,'value',{get(){reads.push('value');if(!open || !mode)throw Error('unneeded value');return 'text';}});
+    b.confirmSearchMode=()=>reads.push('confirm');b._on_compositionstart();
+    assert.equal(reads.includes('mode'),open);assert.equal(reads.includes('value'),open && mode);
+    assert.equal(reads.includes('close'),open);
+    const other=new c.Binding();Object.defineProperty(other,'view',{get(){throw Error('keep-open view read');}});
+    keep=true;other._on_compositionstart();
+  }
+});
+
+test('retained confirmation failure prevents popup closure after the empty typed reset',()=>{
+  for(const name of ['UrlbarInputBase.mjs','SmartbarInput.mjs']) {
+    const source=readFileSync(new URL(name,root),'utf8'),start=source.indexOf('  _on_compositionstart(');
+    c.UrlbarPrefs={get:()=>false};c.UrlbarCompositionModel=M;
+    vm.runInContext('this.Binding=class {#composition=new UrlbarCompositionModel();'+source.slice(start,source.indexOf('\n  }\n',start)+4)+'}',c);
+    const b=new c.Binding();Object.assign(b,{value:'',userTypedValue:'old',searchMode:{},view:{isOpen:true,close(){assert.fail('closed after failure');}},
+      confirmSearchMode(){assert.equal(this.userTypedValue,null);throw Error('confirmation failed');}});
+    assert.throws(()=>b._on_compositionstart(),/confirmation failed/);
+  }
+});

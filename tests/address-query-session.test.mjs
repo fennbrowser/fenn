@@ -4468,3 +4468,27 @@ test('provider close revokes composing exposure immediately and preserves previe
   assert.equal(f.editor.acknowledgeClose(close.token,{open:false}),false);
   assert.throws(()=>f.editor.publishPresentation(1,q.id,[result],true),/Stale/);f.editor.close();
 });
+
+
+test('independent composition start descriptions match owned mode, text and live preference',async()=>{
+  const f=await editorFixture(),mode={source:1,isPreview:true};
+  await f.editor.edit({searchMode:mode},edit(1,''));const observed=f.editor.snapshot,starts=f.parent.started.length;
+  const p=f.editor.describeCompositionStart(1,{viewIsOpen:true});
+  assert.equal(p.closePopup,true);assert.equal(p.confirmSearchMode,true);assert.equal(p.clearUserTypedValue,true);
+  assert.equal(p.edit,observed);assert.equal(Object.isFrozen(p),true);
+  assert.equal(f.editor.snapshot,observed);assert.equal(f.parent.started.length,starts);
+  f.prefs.keepPanelOpenDuringImeComposition=true;
+  const kept=f.editor.describeCompositionStart(1,{viewIsOpen:true});
+  assert.equal(kept.closePopup,false);assert.equal(kept.confirmSearchMode,false);assert.equal(kept.clearUserTypedValue,false);
+  assert.equal(p.closePopup,true);f.editor.close();
+});
+
+test('independent composition start descriptions reject stale, composing and invalid observations',async()=>{
+  const f=await editorFixture();assert.equal(f.editor.describeCompositionStart(0,{viewIsOpen:true}),null);
+  await f.editor.edit({},edit(1,'words'));
+  assert.equal(f.editor.describeCompositionStart(0,{viewIsOpen:true}),null);
+  assert.throws(()=>f.editor.describeCompositionStart(1,{}),/Invalid/);
+  const closed=f.editor.describeCompositionStart(1,{viewIsOpen:false});assert.equal(closed.closePopup,false);
+  await f.editor.edit({}, {...edit(2,'composing'),composing:true});
+  assert.equal(f.editor.describeCompositionStart(2,{viewIsOpen:true}),null);f.editor.close();
+});

@@ -2345,7 +2345,7 @@ index 30f5aa6556..6198840503 100644
 +
  }
 diff --git a/browser/components/urlbar/content/SmartbarInput.mjs b/browser/components/urlbar/content/SmartbarInput.mjs
-index e5dcc2c923..4a4d3ec03a 100644
+index e5dcc2c923..4b984f1447 100644
 --- a/browser/components/urlbar/content/SmartbarInput.mjs
 +++ b/browser/components/urlbar/content/SmartbarInput.mjs
 @@ -2,6 +2,15 @@
@@ -3259,7 +3259,7 @@ index e5dcc2c923..4a4d3ec03a 100644
    }
  
    /**
-@@ -7056,11 +6882,7 @@ ${
+@@ -7056,68 +6882,35 @@ ${
    }
  
    _on_compositionstart() {
@@ -3272,17 +3272,37 @@ index e5dcc2c923..4a4d3ec03a 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -7080,44 +6902,24 @@ ${
-         }
-         this.confirmSearchMode();
-       }
--      this.#compositionClosedPopup = true;
-+      this.#composition.setPopupClosed(true);
-       this.view.close();
-     } else {
--      this.#compositionClosedPopup = false;
-+      this.#composition.setPopupClosed(false);
      }
+ 
+-    // Close the view. This will also stop searching.
+-    if (this.view.isOpen) {
+-      // We're closing the view, but we want to retain search mode if the
+-      // selected result was previewing it.
+-      if (this.searchMode) {
+-        // If we entered search mode with an empty string, clear userTypedValue,
+-        // otherwise confirmSearchMode may try to set it as value.
+-        // This can happen for example if we entered search mode typing a
+-        // a partial engine domain and selecting a tab-to-search result.
+-        if (!this.value) {
+-          this.userTypedValue = null;
+-        }
+-        this.confirmSearchMode();
+-      }
+-      this.#compositionClosedPopup = true;
+-      this.view.close();
+-    } else {
+-      this.#compositionClosedPopup = false;
+-    }
++    // Avoid reading mode/value when no popup is open, as in the retained path.
++    const viewIsOpen = this.view.isOpen;
++    const hasSearchMode = viewIsOpen && !!this.searchMode;
++    const policy = UrlbarCompositionModel.startPolicy({ keepPanelOpen: false,
++      viewIsOpen, hasSearchMode, value: hasSearchMode ? this.value : "" });
++    // Clear an empty edit before confirmation can restore its previous text.
++    if (policy.clearUserTypedValue) this.userTypedValue = null;
++    if (policy.confirmSearchMode) this.confirmSearchMode();
++    this.#composition.setPopupClosed(policy.closePopup);
++    if (policy.closePopup) this.view.close();
    }
  
    _on_compositionend(event) {
@@ -3329,7 +3349,7 @@ index e5dcc2c923..4a4d3ec03a 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -7235,9 +7037,7 @@ ${
+@@ -7235,9 +7028,7 @@ ${
     *   Returns `Ci.nsILoadInfo.SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -3340,7 +3360,7 @@ index e5dcc2c923..4a4d3ec03a 100644
        ? Ci.nsILoadInfo.SchemelessInputTypeSchemeless
        : Ci.nsILoadInfo.SchemelessInputTypeSchemeful;
    }
-@@ -7666,85 +7466,7 @@ function getDroppableData(event) {
+@@ -7666,85 +7457,7 @@ function getDroppableData(event) {
   *   The decoded URI
   */
  function losslessDecodeURI(aURI) {
@@ -3427,7 +3447,7 @@ index e5dcc2c923..4a4d3ec03a 100644
  }
  
  /**
-@@ -7771,12 +7493,10 @@ class CopyCutController {
+@@ -7771,12 +7484,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -3896,7 +3916,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..0174015171 100644
+index a077de625f..87ad07b65f 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,22 @@
@@ -5679,8 +5699,7 @@ index a077de625f..0174015171 100644
 -    // string, thus there's no valid selection. This is also used by the view
 -    // to set "aria-activedescendant", thus it should never get stale.
 -    this.controller.userSelectionBehavior = "none";
-+    this.#updateTypedValue(value);
- 
+-
 -    let compositionState = this.#compositionState;
 -    let compositionClosedPopup = this.#compositionClosedPopup;
 -
@@ -5693,20 +5712,21 @@ index a077de625f..0174015171 100644
 -    if (compositionState == UrlbarShared.COMPOSITION.COMPOSING && event.data) {
 -      this.#compositionHadText = true;
 -    }
--
++    this.#updateTypedValue(value);
+ 
 -    this.toggleAttribute("usertyping", value);
 -    this.removeAttribute("actiontype");
-+    const composition = this.#composition.input(
-+      this.#composition.isComposing && !!event.data
-+    );
- 
+-
 -    if (
 -      this.getAttribute("pageproxystate") == "valid" &&
 -      this.value != this._lastValidURLStr
 -    ) {
 -      this.setPageProxyState("invalid", true);
 -    }
--
++    const composition = this.#composition.input(
++      this.#composition.isComposing && !!event.data
++    );
+ 
 -    if (this.#isAddressbar) {
 -      // Search-terms persistence is an address bar feature.
 -      let state = this.getBrowserState(this.window.gBrowser.selectedBrowser);
@@ -5871,7 +5891,7 @@ index a077de625f..0174015171 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5371,11 @@ ${
+@@ -5978,72 +5371,39 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -5889,17 +5909,37 @@ index a077de625f..0174015171 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5395,24 @@ ${
-         }
-         this.confirmSearchMode();
-       }
--      this.#compositionClosedPopup = true;
-+      this.#composition.setPopupClosed(true);
-       this.view.close();
-     } else {
--      this.#compositionClosedPopup = false;
-+      this.#composition.setPopupClosed(false);
      }
+ 
+-    // Close the view. This will also stop searching.
+-    if (this.view.isOpen) {
+-      // We're closing the view, but we want to retain search mode if the
+-      // selected result was previewing it.
+-      if (this.searchMode) {
+-        // If we entered search mode with an empty string, clear userTypedValue,
+-        // otherwise confirmSearchMode may try to set it as value.
+-        // This can happen for example if we entered search mode typing a
+-        // a partial engine domain and selecting a tab-to-search result.
+-        if (!this.value) {
+-          this.userTypedValue = null;
+-        }
+-        this.confirmSearchMode();
+-      }
+-      this.#compositionClosedPopup = true;
+-      this.view.close();
+-    } else {
+-      this.#compositionClosedPopup = false;
+-    }
++    // Avoid reading mode/value when no popup is open, as in the retained path.
++    const viewIsOpen = this.view.isOpen;
++    const hasSearchMode = viewIsOpen && !!this.searchMode;
++    const policy = UrlbarCompositionModel.startPolicy({ keepPanelOpen: false,
++      viewIsOpen, hasSearchMode, value: hasSearchMode ? this.value : "" });
++    // Clear an empty edit before confirmation can restore its previous text.
++    if (policy.clearUserTypedValue) this.userTypedValue = null;
++    if (policy.confirmSearchMode) this.confirmSearchMode();
++    this.#composition.setPopupClosed(policy.closePopup);
++    if (policy.closePopup) this.view.close();
    }
  
    _on_compositionend(event) {
@@ -5946,7 +5986,7 @@ index a077de625f..0174015171 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,11 +5538,7 @@ ${
+@@ -6169,11 +5529,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -5959,7 +5999,7 @@ index a077de625f..0174015171 100644
    }
  
    get #isOpenedPageInBlankTargetLoading() {
-@@ -6311,111 +5676,6 @@ function getDroppableData(event) {
+@@ -6311,111 +5667,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -6071,7 +6111,7 @@ index a077de625f..0174015171 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +5700,10 @@ class CopyCutController {
+@@ -6440,12 +5691,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -9013,10 +9053,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..645c4ff64b
+index 0000000000..3ffa2ba3f0
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1744 @@
+@@ -0,0 +1,1754 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9109,6 +9149,16 @@ index 0000000000..645c4ff64b
 +    this.#check();
 +    if (!this.#identityEdit || this.#edit !== this.#identityEdit || this.#edit.revision !== revision) return null;
 +    return Object.freeze({ revision, ...UrlbarInputIdentity.describe(this.#edit.text, facts) });
++  }
++
++  /** Plan a composition start for the current edit; the host still applies effects. */
++  describeCompositionStart(revision, { viewIsOpen } = {}) {
++    this.#check();
++    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing) return null;
++    const policy = UrlbarCompositionModel.startPolicy({
++      keepPanelOpen: UrlbarPrefs.get("keepPanelOpenDuringImeComposition"),
++      viewIsOpen, hasSearchMode: !!this.#searchMode, value: this.#edit.text });
++    return Object.freeze({ edit: this.#edit, ...policy });
 +  }
 +
 +  #check() {
@@ -11627,10 +11677,10 @@ index 0000000000..22f96717d5
 +}
 diff --git a/browser/components/urlbar/content/UrlbarCompositionModel.mjs b/browser/components/urlbar/content/UrlbarCompositionModel.mjs
 new file mode 100644
-index 0000000000..ff5291f782
+index 0000000000..1b3e0e7f20
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarCompositionModel.mjs
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,83 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11692,6 +11742,16 @@ index 0000000000..ff5291f782
 +      return true;
 +    }
 +    return false;
++  }
++
++  /** Describe composition-start effects without reading or mutating a presenter. */
++  static startPolicy({ keepPanelOpen, viewIsOpen, hasSearchMode, value }) {
++    if ([keepPanelOpen, viewIsOpen, hasSearchMode].some(fact => typeof fact !== "boolean") ||
++        typeof value !== "string") throw new TypeError("Invalid composition start facts");
++    const closePopup = !keepPanelOpen && viewIsOpen;
++    const confirmSearchMode = closePopup && hasSearchMode;
++    return Object.freeze({ closePopup, confirmSearchMode,
++      clearUserTypedValue: confirmSearchMode && !value });
 +  }
 +
 +  static allowsQuery(snapshot, keepPanelOpen) {
