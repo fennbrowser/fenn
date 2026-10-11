@@ -458,3 +458,19 @@ test('independent updates publish shared defaults without mutating observed text
   const count=f.updates.length;f.editor.cancel();f.parent.child.notify('onQueryResults',q);
   assert.equal(f.updates.length,count);f.editor.close();
 });
+
+
+test('independent result input descriptions require current edit, query and exact result identity',async()=>{
+  const f=await editorFixture(),q=await f.editor.edit({},edit(1,'typed'));
+  const result={type:sharedPolicy.UrlbarShared.RESULT_TYPE.SEARCH,payload:{keyword:'@engine',suggestion:'suggestion',query:'typed'}};
+  q.results=[result];const count=f.parent.started.length;
+  const text=f.editor.describeResultInput(1,q.id,result);
+  assert.equal(text.value,'@engine suggestion');assert.ok(Object.isFrozen(text));
+  assert.equal(f.editor.snapshot.text,'typed');assert.equal(f.parent.started.length,count);
+  for(const args of [[0,q.id,result],[1,q.id+1,result],[1,q.id,{...result}]]) {
+    assert.throws(()=>f.editor.describeResultInput(...args),/Stale/);
+  }
+  result.payload.suggestion='updated';assert.equal(f.editor.describeResultInput(1,q.id,result).value,'@engine updated');
+  result.type=sharedPolicy.UrlbarShared.RESULT_TYPE.URL;assert.equal(f.editor.describeResultInput(1,q.id,result),null);
+  f.editor.cancel();assert.throws(()=>f.editor.describeResultInput(1,q.id,result),/Stale/);f.editor.close();
+});

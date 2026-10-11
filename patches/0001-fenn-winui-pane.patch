@@ -1420,7 +1420,7 @@ index 30f5aa6556..6198840503 100644
 +
  }
 diff --git a/browser/components/urlbar/content/SmartbarInput.mjs b/browser/components/urlbar/content/SmartbarInput.mjs
-index e5dcc2c923..bf97a721ca 100644
+index e5dcc2c923..fe4897e28f 100644
 --- a/browser/components/urlbar/content/SmartbarInput.mjs
 +++ b/browser/components/urlbar/content/SmartbarInput.mjs
 @@ -2,6 +2,14 @@
@@ -1733,26 +1733,72 @@ index e5dcc2c923..bf97a721ca 100644
        return;
      }
  
-@@ -4484,7 +4516,8 @@ ${
+@@ -4484,40 +4516,14 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
 -  #getValueFromResult(result, { urlOverride = null, element = null } = {}) {
+-    switch (result.type) {
+-      case UrlbarShared.RESULT_TYPE.KEYWORD:
+-        return result.payload.input;
+-      case UrlbarShared.RESULT_TYPE.SEARCH: {
+-        let value = "";
+-        if (result.payload.keyword) {
+-          value += result.payload.keyword + " ";
+-        }
+-        value += result.payload.suggestion || result.payload.query;
+-        return value;
+-      }
+-      case UrlbarShared.RESULT_TYPE.OMNIBOX:
+-        return result.payload.content;
+-      case UrlbarShared.RESULT_TYPE.DYNAMIC:
+-        return (
+-          element?.dataset.query ||
+-          element?.dataset.url ||
+-          result.payload.input ||
+-          result.payload.query ||
+-          ""
+-        );
+-      case UrlbarShared.RESULT_TYPE.RESTRICT:
+-        return result.payload.autofillKeyword + " ";
+-      case UrlbarShared.RESULT_TYPE.AI_CHAT:
+-        return result.payload.query ?? "";
+-      case UrlbarShared.RESULT_TYPE.TIP: {
+-        let value = element?.dataset.url || element?.dataset.input;
+-        if (value) {
+-          return value;
+-        }
+-        break;
+-      }
+-    }
 +  #getValueFromResult(result, { urlOverride = null, element = null, resultAction = null } = {}) {
 +    resultAction ??= UrlbarResultActions.fromElement(element);
-     switch (result.type) {
-       case UrlbarShared.RESULT_TYPE.KEYWORD:
-         return result.payload.input;
-@@ -4511,7 +4544,7 @@ ${
-       case UrlbarShared.RESULT_TYPE.AI_CHAT:
-         return result.payload.query ?? "";
-       case UrlbarShared.RESULT_TYPE.TIP: {
--        let value = element?.dataset.url || element?.dataset.input;
-+        let value = resultAction?.url || resultAction?.input;
-         if (value) {
-           return value;
-         }
-@@ -4601,73 +4634,29 @@ ${
++    const text = this.resultPresentation.inputText(result, {
++      dynamicQuery: result.type == UrlbarShared.RESULT_TYPE.DYNAMIC ? element?.dataset.query : undefined,
++      dynamicUrl: result.type == UrlbarShared.RESULT_TYPE.DYNAMIC ? element?.dataset.url : undefined,
++      resultAction,
++    });
++    if (text) return text.value;
+ 
+     // Always respect a set urlOverride property.
+     if (urlOverride !== null) {
+@@ -4571,14 +4577,7 @@ ${
+    * @returns {string} The `actiontype` value, or undefined.
+    */
+   #getActionTypeFromResult(result) {
+-    switch (result.type) {
+-      case UrlbarShared.RESULT_TYPE.TAB_SWITCH:
+-        return "switchtab";
+-      case UrlbarShared.RESULT_TYPE.OMNIBOX:
+-        return "extension";
+-      default:
+-        return undefined;
+-    }
++    return this.resultPresentation.actionType(result);
+   }
+ 
+   /**
+@@ -4601,73 +4600,29 @@ ${
     *   Whether autofill should be allowed in the new search.
     */
    _maybeAutofillPlaceholder(value) {
@@ -1848,7 +1894,7 @@ index e5dcc2c923..bf97a721ca 100644
    }
  
    /**
-@@ -5064,34 +5053,35 @@ ${
+@@ -5064,34 +5019,35 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -1890,7 +1936,7 @@ index e5dcc2c923..bf97a721ca 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -5246,6 +5236,15 @@ ${
+@@ -5246,6 +5202,15 @@ ${
      this.view.close({ showFocusBorder: false });
    }
  
@@ -1906,7 +1952,7 @@ index e5dcc2c923..bf97a721ca 100644
    _initCopyCutController() {
      // Clipboard handling is managed by the multiline editor in smartbar mode.
      if (this.#isSmartbarMode) {
-@@ -5464,7 +5463,7 @@ ${
+@@ -5464,7 +5429,7 @@ ${
     *
     * @returns {boolean}
     */
@@ -1915,7 +1961,7 @@ index e5dcc2c923..bf97a721ca 100644
      if (this.#isSmartbarMode) {
        return Services.clipboard.hasDataMatchingFlavors(
          ["text/plain"],
-@@ -5491,6 +5490,25 @@ ${
+@@ -5491,6 +5456,25 @@ ${
      this.value = clipboardText;
    }
  
@@ -1941,7 +1987,7 @@ index e5dcc2c923..bf97a721ca 100644
    _initPasteAndGo() {
      this.#addContextMenuItems({
        after: "edit-contextmenu-paste",
-@@ -5504,19 +5522,7 @@ ${
+@@ -5504,19 +5488,7 @@ ${
            .GetStringFromName("pasteAndGo.label");
          pasteAndGo.setAttribute("label", label);
          pasteAndGo.setAttribute("anonid", "paste-and-go");
@@ -1962,7 +2008,7 @@ index e5dcc2c923..bf97a721ca 100644
  
          fragment.appendChild(pasteAndGo);
          return fragment;
-@@ -5544,7 +5550,7 @@ ${
+@@ -5544,7 +5516,7 @@ ${
            { once: true }
          );
  
@@ -1971,7 +2017,7 @@ index e5dcc2c923..bf97a721ca 100644
            pasteAndGo.removeAttribute("disabled");
          } else {
            pasteAndGo.setAttribute("disabled", "true");
-@@ -6129,7 +6135,7 @@ ${
+@@ -6129,7 +6101,7 @@ ${
      }
      if (
        !this._preventClickSelectsAll &&
@@ -1980,7 +2026,7 @@ index e5dcc2c923..bf97a721ca 100644
        this.focused &&
        this.selectionStart == this.selectionEnd
      ) {
-@@ -6481,18 +6487,9 @@ ${
+@@ -6481,18 +6453,9 @@ ${
      // to set "aria-activedescendant", thus it should never get stale.
      this.controller.userSelectionBehavior = "none";
  
@@ -2002,7 +2048,7 @@ index e5dcc2c923..bf97a721ca 100644
  
      this.toggleAttribute("usertyping", value);
      this.removeAttribute("actiontype");
-@@ -6575,10 +6572,9 @@ ${
+@@ -6575,10 +6538,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -2016,7 +2062,7 @@ index e5dcc2c923..bf97a721ca 100644
      ) {
        return;
      }
-@@ -6586,11 +6582,10 @@ ${
+@@ -6586,11 +6548,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -2032,7 +2078,7 @@ index e5dcc2c923..bf97a721ca 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -6665,33 +6660,20 @@ ${
+@@ -6665,33 +6626,20 @@ ${
    }
  
    _on_paste(event) {
@@ -2074,7 +2120,7 @@ index e5dcc2c923..bf97a721ca 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -6705,7 +6687,7 @@ ${
+@@ -6705,7 +6653,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -2083,7 +2129,7 @@ index e5dcc2c923..bf97a721ca 100644
        this.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -6736,56 +6718,27 @@ ${
+@@ -6736,56 +6684,27 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -2158,7 +2204,7 @@ index e5dcc2c923..bf97a721ca 100644
    }
  
    /**
-@@ -7056,11 +7009,7 @@ ${
+@@ -7056,11 +6975,7 @@ ${
    }
  
    _on_compositionstart() {
@@ -2171,7 +2217,7 @@ index e5dcc2c923..bf97a721ca 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -7080,44 +7029,24 @@ ${
+@@ -7080,44 +6995,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -2228,7 +2274,7 @@ index e5dcc2c923..bf97a721ca 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -7771,12 +7700,10 @@ class CopyCutController {
+@@ -7771,12 +7666,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -2602,7 +2648,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..fefb34d8d3 100644
+index a077de625f..e2caaeaf7a 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,19 @@
@@ -2962,26 +3008,72 @@ index a077de625f..fefb34d8d3 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -3516,7 +3563,8 @@ ${
+@@ -3516,40 +3563,14 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
 -  #getValueFromResult(result, { urlOverride = null, element = null } = {}) {
+-    switch (result.type) {
+-      case UrlbarShared.RESULT_TYPE.KEYWORD:
+-        return result.payload.input;
+-      case UrlbarShared.RESULT_TYPE.SEARCH: {
+-        let value = "";
+-        if (result.payload.keyword) {
+-          value += result.payload.keyword + " ";
+-        }
+-        value += result.payload.suggestion || result.payload.query;
+-        return value;
+-      }
+-      case UrlbarShared.RESULT_TYPE.OMNIBOX:
+-        return result.payload.content;
+-      case UrlbarShared.RESULT_TYPE.DYNAMIC:
+-        return (
+-          element?.dataset.query ||
+-          element?.dataset.url ||
+-          result.payload.input ||
+-          result.payload.query ||
+-          ""
+-        );
+-      case UrlbarShared.RESULT_TYPE.RESTRICT:
+-        return result.payload.autofillKeyword + " ";
+-      case UrlbarShared.RESULT_TYPE.AI_CHAT:
+-        return result.payload.query ?? "";
+-      case UrlbarShared.RESULT_TYPE.TIP: {
+-        let value = element?.dataset.url || element?.dataset.input;
+-        if (value) {
+-          return value;
+-        }
+-        break;
+-      }
+-    }
 +  #getValueFromResult(result, { urlOverride = null, element = null, resultAction = null } = {}) {
 +    resultAction ??= UrlbarResultActions.fromElement(element);
-     switch (result.type) {
-       case UrlbarShared.RESULT_TYPE.KEYWORD:
-         return result.payload.input;
-@@ -3543,7 +3591,7 @@ ${
-       case UrlbarShared.RESULT_TYPE.AI_CHAT:
-         return result.payload.query ?? "";
-       case UrlbarShared.RESULT_TYPE.TIP: {
--        let value = element?.dataset.url || element?.dataset.input;
-+        let value = resultAction?.url || resultAction?.input;
-         if (value) {
-           return value;
-         }
-@@ -3634,64 +3682,27 @@ ${
++    const text = this.resultPresentation.inputText(result, {
++      dynamicQuery: result.type == UrlbarShared.RESULT_TYPE.DYNAMIC ? element?.dataset.query : undefined,
++      dynamicUrl: result.type == UrlbarShared.RESULT_TYPE.DYNAMIC ? element?.dataset.url : undefined,
++      resultAction,
++    });
++    if (text) return text.value;
+ 
+     // Always respect a set urlOverride property.
+     if (urlOverride !== null) {
+@@ -3604,14 +3625,7 @@ ${
+    * @returns {string} The `actiontype` value, or undefined.
+    */
+   #getActionTypeFromResult(result) {
+-    switch (result.type) {
+-      case UrlbarShared.RESULT_TYPE.TAB_SWITCH:
+-        return "switchtab";
+-      case UrlbarShared.RESULT_TYPE.OMNIBOX:
+-        return "extension";
+-      default:
+-        return undefined;
+-    }
++    return this.resultPresentation.actionType(result);
+   }
+ 
+   /**
+@@ -3634,64 +3648,27 @@ ${
     *   Whether autofill should be allowed in the new search.
     */
    _maybeAutofillPlaceholder(value) {
@@ -3066,7 +3158,7 @@ index a077de625f..fefb34d8d3 100644
    }
  
    /**
-@@ -3772,105 +3783,31 @@ ${
+@@ -3772,105 +3749,31 @@ ${
      }
    }
  
@@ -3197,7 +3289,7 @@ index a077de625f..fefb34d8d3 100644
    }
  
    _toggleActionOverride(event) {
-@@ -4081,33 +4018,34 @@ ${
+@@ -4081,33 +3984,34 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -3238,7 +3330,7 @@ index a077de625f..fefb34d8d3 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -4267,6 +4205,15 @@ ${
+@@ -4267,6 +4171,15 @@ ${
      }
    }
  
@@ -3254,7 +3346,7 @@ index a077de625f..fefb34d8d3 100644
    _initCopyCutController() {
      // This exists to put an untrimmed URL on the clipboard, and only the address
      // bar trims. Every other input keeps its native copy/cut.
-@@ -4479,7 +4426,7 @@ ${
+@@ -4479,7 +4392,7 @@ ${
        return;
      }
      let controller =
@@ -3263,7 +3355,7 @@ index a077de625f..fefb34d8d3 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4495,6 +4442,33 @@ ${
+@@ -4495,6 +4408,33 @@ ${
      stripOnShare.removeAttribute("disabled");
    }
  
@@ -3297,7 +3389,7 @@ index a077de625f..fefb34d8d3 100644
    _initPasteAndGo() {
      this.addContextMenuItems({
        after: "edit-contextmenu-paste",
-@@ -4507,17 +4481,7 @@ ${
+@@ -4507,17 +4447,7 @@ ${
            .GetStringFromName("pasteAndGo.label");
          pasteAndGo.setAttribute("label", label);
          pasteAndGo.setAttribute("anonid", "paste-and-go");
@@ -3316,7 +3408,7 @@ index a077de625f..fefb34d8d3 100644
  
          fragment.appendChild(pasteAndGo);
          return fragment;
-@@ -4545,10 +4509,7 @@ ${
+@@ -4545,10 +4475,7 @@ ${
            { once: true }
          );
  
@@ -3328,7 +3420,7 @@ index a077de625f..fefb34d8d3 100644
            pasteAndGo.removeAttribute("disabled");
          } else {
            pasteAndGo.setAttribute("disabled", "true");
-@@ -4747,12 +4708,13 @@ ${
+@@ -4747,12 +4674,13 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -3344,7 +3436,7 @@ index a077de625f..fefb34d8d3 100644
      ) {
        return null;
      }
-@@ -4767,8 +4729,8 @@ ${
+@@ -4767,8 +4695,8 @@ ${
          result.payload.engine == result.payload.originalEngine)
      ) {
        searchMode = { engineName: result.payload.engine };
@@ -3355,7 +3447,7 @@ index a077de625f..fefb34d8d3 100644
      }
  
      if (searchMode) {
-@@ -5071,6 +5033,8 @@ ${
+@@ -5071,6 +4999,8 @@ ${
    setUnifiedSearchButtonAvailability(available) {
      available ||=
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
@@ -3364,7 +3456,7 @@ index a077de625f..fefb34d8d3 100644
      const switcher = this.querySelector(".searchmode-switcher");
      switcher.toggleAttribute("offscreen", !available);
      if (available) {
-@@ -5085,6 +5049,7 @@ ${
+@@ -5085,6 +5015,7 @@ ${
          this.window.gBrowser.selectedBrowser
        ).isUnifiedSearchButtonAvailable = available;
      }
@@ -3372,7 +3464,7 @@ index a077de625f..fefb34d8d3 100644
    }
  
    /**
-@@ -5151,7 +5116,7 @@ ${
+@@ -5151,7 +5082,7 @@ ${
    #maybeSelectAll() {
      if (
        !this.#preventClickSelectsAll &&
@@ -3381,7 +3473,7 @@ index a077de625f..fefb34d8d3 100644
        this.focused &&
        this.inputField.selectionStart == this.inputField.selectionEnd
      ) {
-@@ -5477,34 +5442,20 @@ ${
+@@ -5477,34 +5408,20 @@ ${
      }
    }
  
@@ -3426,7 +3518,7 @@ index a077de625f..fefb34d8d3 100644
      this.valueIsTyped = true;
      this._untrimmedValue = value;
      this._protocolIsTrimmed = false;
-@@ -5516,20 +5467,9 @@ ${
+@@ -5516,20 +5433,9 @@ ${
      // string, thus there's no valid selection. This is also used by the view
      // to set "aria-activedescendant", thus it should never get stale.
      this.controller.userSelectionBehavior = "none";
@@ -3449,7 +3541,7 @@ index a077de625f..fefb34d8d3 100644
      this.toggleAttribute("usertyping", value);
      this.removeAttribute("actiontype");
  
-@@ -5551,6 +5491,43 @@ ${
+@@ -5551,6 +5457,43 @@ ${
          this.removeAttribute("persistsearchterms");
        }
      }
@@ -3493,7 +3585,7 @@ index a077de625f..fefb34d8d3 100644
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
-@@ -5580,10 +5557,9 @@ ${
+@@ -5580,10 +5523,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -3507,7 +3599,7 @@ index a077de625f..fefb34d8d3 100644
      ) {
        return;
      }
-@@ -5591,11 +5567,10 @@ ${
+@@ -5591,11 +5533,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -3523,7 +3615,7 @@ index a077de625f..fefb34d8d3 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5669,33 +5644,20 @@ ${
+@@ -5669,33 +5610,20 @@ ${
    }
  
    _on_paste(event) {
@@ -3565,7 +3657,7 @@ index a077de625f..fefb34d8d3 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5671,7 @@ ${
+@@ -5709,7 +5637,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -3574,7 +3666,7 @@ index a077de625f..fefb34d8d3 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5702,25 @@ ${
+@@ -5740,51 +5668,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -3642,7 +3734,7 @@ index a077de625f..fefb34d8d3 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5914,11 @@ ${
+@@ -5978,15 +5880,11 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -3660,7 +3752,7 @@ index a077de625f..fefb34d8d3 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5938,24 @@ ${
+@@ -6006,44 +5904,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -3717,7 +3809,7 @@ index a077de625f..fefb34d8d3 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6440,12 +6352,10 @@ class CopyCutController {
+@@ -6440,12 +6318,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -6026,10 +6118,10 @@ index 1e2660589b..5ae3ab4843 100644
    /*
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..6fb53983ac
+index 0000000000..dd7043048a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,238 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6229,6 +6321,17 @@ index 0000000000..6fb53983ac
 +    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: this.#edit.selectionRevision + 1 });
 +    return true;
++  }
++
++  /** Describe current result text; null leaves URL-dependent preview unsupported. */
++  describeResultInput(revision, queryId, result, options = {}) {
++    this.#check();
++    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
++        !this.#queries.ownsResult(queryId, result)) {
++      throw new Error("Stale result input description");
++    }
++    const text = this.#presentation.inputText(result, options);
++    return text ? Object.freeze({ ...text, actionType: this.#presentation.actionType(result) }) : null;
 +  }
 +
 +  publishPresentation(revision, queryId, visibleResults, open) {
@@ -7162,10 +7265,10 @@ index 0000000000..82d5029bd9
 +}
 diff --git a/browser/components/urlbar/content/UrlbarResultPresentation.mjs b/browser/components/urlbar/content/UrlbarResultPresentation.mjs
 new file mode 100644
-index 0000000000..f7a9efbaba
+index 0000000000..c72048df5a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarResultPresentation.mjs
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,190 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7213,6 +7316,57 @@ index 0000000000..f7a9efbaba
 +      return Object.freeze({ kind: "associate-first", valueResult: first });
 +    }
 +    return Object.freeze({ kind: "none", valueResult: null });
++  }
++
++  /**
++   * Non-URL input text for a selected result. Bindings capture dynamic element
++   * facts and semantic tip actions; no node or editor crosses this boundary.
++   * Null means use the binding's URL decoding/trimming path, not empty text.
++   * This describes text only: it does not authorize selection or navigation.
++   */
++  inputText(result, { dynamicQuery, dynamicUrl, resultAction = null } = {}) {
++    switch (result.type) {
++      case UrlbarShared.RESULT_TYPE.KEYWORD:
++        return Object.freeze({ value: result.payload.input });
++      case UrlbarShared.RESULT_TYPE.SEARCH: {
++        let value = "";
++        if (result.payload.keyword) {
++          value += result.payload.keyword + " ";
++        }
++        value += result.payload.suggestion || result.payload.query;
++        return Object.freeze({ value });
++      }
++      case UrlbarShared.RESULT_TYPE.OMNIBOX:
++        return Object.freeze({ value: result.payload.content });
++      case UrlbarShared.RESULT_TYPE.DYNAMIC:
++        return Object.freeze({
++          value: dynamicQuery || dynamicUrl || result.payload.input || result.payload.query || "",
++        });
++      case UrlbarShared.RESULT_TYPE.RESTRICT:
++        return Object.freeze({ value: result.payload.autofillKeyword + " " });
++      case UrlbarShared.RESULT_TYPE.AI_CHAT:
++        return Object.freeze({ value: result.payload.query ?? "" });
++      case UrlbarShared.RESULT_TYPE.TIP: {
++        let value = resultAction?.url || resultAction?.input;
++        if (value) {
++          return Object.freeze({ value });
++        }
++        break;
++      }
++    }
++
++    return null;
++  }
++
++  actionType(result) {
++    switch (result.type) {
++      case UrlbarShared.RESULT_TYPE.TAB_SWITCH:
++        return "switchtab";
++      case UrlbarShared.RESULT_TYPE.OMNIBOX:
++        return "extension";
++      default:
++        return undefined;
++    }
 +  }
 +
 +  // These are presentation candidates, not proof of viewport visibility.
