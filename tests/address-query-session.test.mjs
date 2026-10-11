@@ -283,6 +283,46 @@ test('restoration rejects stale edits, query replacement, scope loss and preview
   f.loseScope();assert.throws(()=>f.editor.beginResultRestore(3,q.id),/scope changed/);
 });
 
+test('focus queries preserve displayed page text and restore it after zero-prefix result preview',async()=>{
+  const f=await editorFixture(),text='https://page.example/path';
+  const q=await f.editor.focus({}, {...edit(1,text),pageProxyValid:true});
+  assert.equal(q.searchString,'');assert.equal(q.allowAutofill,false);assert.equal(f.editor.snapshot.text,text);
+  const result={id:1,type:f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH,payload:{query:'suggestion'}};q.results=[result];
+  f.parent.child.notify('onFirstResult',q);assert.equal(f.updates.at(-1).completion,null);
+  f.parent.onBeforeSelection=()=>{};f.parent.onSelection=()=>{};
+  f.editor.publishPresentation(1,q.id,[result],true);
+  const p=f.editor.beginResultPreview(1,q.id,result);f.editor.acknowledgeResultPreview(p.token,observed(p));
+  const restore=f.editor.beginResultRestore(1,q.id);assert.equal(restore.value,text);
+  assert.equal(f.editor.acknowledgeResultPreview(restore.token,observed(restore)),true);
+  assert.equal(q.searchString,'');assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+test('focus query text uses explicit page validity and prefix while composition suppresses dispatch',async()=>{
+  const f=await editorFixture();
+  const q=await f.editor.focus({}, {...edit(1,'restored words'),pageProxyValid:false});
+  assert.equal(q.searchString,'restored words');
+  const prefix=await f.editor.focus({}, {...edit(2,'prefix suffix'),pageProxyValid:true,searchString:'prefix'});
+  prefix.results=[{id:2}];f.editor.publishPresentation(2,prefix.id,[],true);
+  assert.equal(f.editor.beginResultRestore(2,prefix.id).value,'prefix');
+  await assert.rejects(f.editor.focus({}, {...edit(3,'other'),pageProxyValid:true,searchString:'prefix'}),/doesn't start/);
+  assert.equal(f.editor.snapshot.revision,2);
+  const count=f.parent.started.length;
+  assert.equal(await f.editor.focus({}, {...edit(3,'composing'),composing:true,pageProxyValid:false}),null);
+  assert.equal(f.parent.started.length,count);assert.equal(f.editor.snapshot.composing,true);f.editor.close();
+});
+
+test('focus replaces old completion authority and new edits revoke focus-query publications',async()=>{
+  const f=await completionFixture();
+  const q=await f.editor.focus({}, {...edit(2,'https://page.example/'),pageProxyValid:true});
+  assert.equal(f.editor.getCompletion(f.proposal.token),null);
+  await f.editor.edit({},edit(3,'new text'));
+  f.parent.child.notify('onQueryResults',q);
+  assert.throws(()=>f.editor.publishPresentation(2,q.id,[],true),/Stale/);
+  await assert.rejects(f.editor.focus({}, {...edit(3,'stale'),pageProxyValid:false}),/stale/);
+  await assert.rejects(f.editor.focus({},edit(4,'missing validity')),/Invalid/);
+  f.loseScope();await assert.rejects(f.editor.focus({}, {...edit(4,'scope'),pageProxyValid:false}),/scope changed/);
+});
+
 test('removed frozen results lose identity and exposure even if an old descriptor or late batch retains them',async()=>{
   const requests=[],f=fixture({onPresentationRequest:r=>requests.push(r)});
   const q=await f.session.query({}, {searchString:'remove'}),a={id:1},b={id:2};q.results=[a,b];

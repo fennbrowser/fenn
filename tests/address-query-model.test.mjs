@@ -61,3 +61,14 @@ test('both actual retained bindings capture browser facts and paste UTF-16 lengt
     input.window={};assert.equal('userContextId' in input.make({searchString:'query'}),false);
   }
 });
+
+
+test('query text preserves valid-page zero-prefix and invalid-page restoration policy',()=>{
+  const resolve=(value,valid,requested)=>sandbox.Model.resolveSearchString({value,pageProxyValid:valid},requested);
+  for (const request of [undefined,null,'']) {
+    assert.equal(resolve('https://example.test/',true,request),'');
+    assert.equal(resolve('restored words',false,request),'restored words');
+  }
+  assert.equal(resolve('prefix suffix',true,'prefix'),'prefix');
+  assert.throws(()=>resolve('different',false,'prefix'),/doesn't start/);
+});
