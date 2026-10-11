@@ -6978,10 +6978,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..087fc17e36
+index 0000000000..31b93d41f4
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,664 @@
+@@ -0,0 +1,688 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7536,8 +7536,11 @@ index 0000000000..087fc17e36
 +    if (queryId === null) queryId = this.#queries.describeResults().queryId;
 +    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
 +        !this.#queries.ownsQuery(queryId)) throw new Error("Stale result hide");
-+    // Mode preview dismissal needs a separate Firefox semantic transition.
-+    if (this.#searchModePreview) { this.cancel(); return null; }
++    // Preview dismissal cancels its query and asks the host to clear mode state.
++    if (this.#searchModePreview) {
++      this.#requestPresentation({ kind: "close", queryId, elementPicked: false });
++      return null;
++    }
 +    this.#queries.publishPresentation(queryId, [], false);
 +    this.#completion = null;
 +    this.#selectionRequest = null;
@@ -7579,6 +7582,15 @@ index 0000000000..087fc17e36
 +    this.#queries.publishPresentation(queryId, visibleResults, open);
 +  }
 +
++  /** Prepare a user-initiated preview close; no typed-text restoration is requested. */
++  beginPreviewModeDismissal(revision, queryId) {
++    this.#check();
++    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
++        !this.#queries.ownsQuery(queryId)) throw new Error("Stale preview mode dismissal");
++    if (!this.#searchModePreview) return null;
++    return this.#prepareClose({ kind: "close", queryId, elementPicked: false });
++  }
++
 +  #requestPresentation(request) {
 +    this.#check();
 +    const edit = this.#edit;
@@ -7589,15 +7601,24 @@ index 0000000000..087fc17e36
 +      return;
 +    }
 +    if (request.kind !== "close") return;
++    const proposal = this.#prepareClose(request);
++    if (proposal) this.#onPresentationRequest?.(proposal);
++  }
++
++  #prepareClose(request) {
++    const edit = this.#edit;
++    const clearPreview = this.#searchModePreview;
 +    // A provider engagement ends result authority immediately; waiting for a
 +    // host close must not leave completion writes or result exposure usable.
 +    // This differs from temporarily hiding suggestions on focus loss.
 +    this.cancel();
 +    this.#check();
-+    if (this.#edit !== edit) return;
-+    const proposal = Object.freeze({ ...request, token: Object.freeze({}), edit });
++    if (this.#edit !== edit) return null;
++    const proposal = Object.freeze({ ...request,
++      ...(clearPreview ? { searchMode: null, userTypedValue: null } : {}),
++      token: Object.freeze({}), edit });
 +    this.#closeRequest = proposal;
-+    this.#onPresentationRequest?.(proposal);
++    return proposal;
 +  }
 +
 +  /** Validate immediately before closing a host surface; tokens stay in JS. */
@@ -7608,8 +7629,11 @@ index 0000000000..087fc17e36
 +  }
 +
 +  /** Observe a completed host close, not merely an enqueued native command. */
-+  acknowledgeClose(token, { open }) {
-+    if (!this.getCloseRequest(token) || open !== false) return false;
++  acknowledgeClose(token, { open, searchMode, userTypedValue }) {
++    const request = this.getCloseRequest(token);
++    if (!request || open !== false || (request.searchMode === null &&
++        (searchMode !== null || userTypedValue !== null))) return false;
++    if (request.searchMode === null) this.#searchModePreview = false;
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
 +    this.#resultPreview = null;

@@ -1247,3 +1247,58 @@ test('mode-exit restoration rejects stale revisions and preserves confirmed mode
   assert.throws(()=>f.editor.beginResultModeExit(1,f.query.id+1),/Stale/);
   f.editor.close();
 });
+
+
+async function previewDismissalFixture() {
+  const f=await modeWriteFixture({startQuery:false});
+  f.editor.acknowledgeResultModeApplication(f.proposal.token,observedMode(f.proposal));
+  return {...f,proposal:f.editor.beginPreviewModeDismissal(1,f.query.id)};
+}
+
+test('preview dismissal revokes results immediately and requires observed close plus cleared browser mode/text state',async()=>{
+  const f=await previewDismissalFixture(),p=f.proposal,snapshot=f.editor.snapshot;
+  assert.equal(p.kind,'close');assert.equal(p.searchMode,null);assert.equal(p.userTypedValue,null);
+  assert.equal(p.elementPicked,false);assert.equal(p.edit,snapshot);
+  assert.equal(snapshot.text,'words  ','dismissal must not restore the original typed query');
+  assert.throws(()=>f.editor.publishPresentation(1,f.query.id,[f.result],true),/Invalid query presentation/);
+  assert.throws(()=>f.editor.beginResultModeApplication(1,f.query.id,f.result),/Stale/);
+  assert.equal(f.editor.getHiddenResults(1,f.query.id),null);
+  for(const observed of [{open:false},{open:true,searchMode:null,userTypedValue:null},
+    {open:false,searchMode:{source:1},userTypedValue:null},
+    {open:false,searchMode:null,userTypedValue:'old'}]) {
+    assert.equal(f.editor.acknowledgeClose(p.token,observed),false);
+    assert.equal(f.editor.getCloseRequest(p.token),p);
+  }
+  assert.equal(f.editor.acknowledgeClose(p.token,{open:false,searchMode:null,userTypedValue:null}),true);
+  assert.equal(f.editor.acknowledgeClose(p.token,{open:false,searchMode:null,userTypedValue:null}),false);
+  assert.equal(f.editor.snapshot,snapshot);assert.equal(f.parent.started.length,1);
+  assert.deepEqual(f.calls,['before','selected']);f.editor.close();
+});
+
+test('hiding previews and provider close requests publish the same required mode cleanup',async()=>{
+  for(const close of [f=>f.editor.hideResults(1,f.query.id),
+    f=>f.parent.child.notify('onResultsCloseRequested',f.query.id,true)]) {
+    const f=await modeWriteFixture({startQuery:false});
+    f.editor.acknowledgeResultModeApplication(f.proposal.token,observedMode(f.proposal));
+    close(f);const request=f.requests.at(-1);
+    assert.equal(request.searchMode,null);assert.equal(request.userTypedValue,null);
+    assert.equal(f.editor.getCloseRequest(request.token),request);
+    assert.equal(f.editor.acknowledgeClose(request.token,{open:false}),false);
+    assert.equal(f.editor.acknowledgeClose(request.token,{open:false,searchMode:null,userTypedValue:null}),true);
+    assert.equal(f.editor.snapshot.text,'words  ');f.editor.close();
+  }
+});
+
+test('preview close acknowledgment cannot survive caret, new edit, cancellation or scope changes',async()=>{
+  for(const revoke of [f=>f.editor.select(1,0,0),f=>f.editor.edit({},edit(2,'new')),f=>f.editor.cancel()]) {
+    const f=await previewDismissalFixture(),p=f.proposal;await revoke(f);
+    assert.equal(f.editor.getCloseRequest(p.token),null);
+    assert.equal(f.editor.acknowledgeClose(p.token,{open:false,searchMode:null,userTypedValue:null}),false);
+    f.editor.close();
+  }
+  const f=await previewDismissalFixture();f.loseScope();
+  assert.throws(()=>f.editor.getCloseRequest(f.proposal.token),/scope changed/);
+  const g=await modeWriteFixture();g.editor.acknowledgeResultModeApplication(g.proposal.token,observedMode(g.proposal));
+  assert.equal(g.editor.beginPreviewModeDismissal(1,g.query.id),null,'confirmed mode does not use preview cleanup');
+  assert.throws(()=>g.editor.beginPreviewModeDismissal(0,g.query.id),/Stale/);g.editor.close();
+});
