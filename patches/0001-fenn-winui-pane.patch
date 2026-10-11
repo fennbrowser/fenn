@@ -7961,10 +7961,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..6b0573677a
+index 0000000000..07a4574950
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1226 @@
+@@ -0,0 +1,1251 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8794,6 +8794,31 @@ index 0000000000..6b0573677a
 +    if (!pending || pending.proposal.token !== token) return null;
 +    if (!this.#navigationIsCurrent(pending, event, options)) { this.#navigationReady = null; return null; }
 +    return Object.freeze({ token, edit: this.#edit, plan: pending.proposal.plan, userTypedValue: this.#edit.text });
++  }
++
++  /** Consume acknowledged preparation once; the host still owns activation and dispatch. */
++  takeAcknowledgedNavigation(token, event, options) {
++    this.#check();
++    const pending = this.#navigationReady;
++    if (!pending || pending.proposal.token !== token) return null;
++    // Consume before validation/descriptions: failure or reentry cannot retry it.
++    this.#navigationReady = null;
++    const { queryId, result } = pending;
++    const revision = this.#edit.revision;
++    try {
++      if (!this.#navigationIsCurrent(pending, event, options)) return null;
++      const navigation = Object.freeze({ token, edit: this.#edit,
++        plan: pending.proposal.plan, userTypedValue: this.#edit.text });
++      const engagement = this.describeResultEngagement(revision, queryId, result, options);
++      const searchRecording = result.type === UrlbarShared.RESULT_TYPE.SEARCH
++        ? this.describeResultSearchRecording(revision, queryId, result, event, options) : null;
++      if ((result.type === UrlbarShared.RESULT_TYPE.SEARCH && !searchRecording) ||
++          !this.#navigationIsCurrent(pending, event, options)) return null;
++      return Object.freeze({ navigation, engagement, searchRecording });
++    } catch {
++      // A removed engine, invalid facts or lost scope consumes this preparation.
++      return null;
++    }
 +  }
 +
 +  describeResultNavigation(revision, queryId, result, event, options) {

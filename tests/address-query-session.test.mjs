@@ -2459,3 +2459,46 @@ test('independent search effects use pinned privacy, owned mode and live default
   assert.equal(describe().effects.backendEligible,false);assert.equal(first.effects.backendEligible,true);
   result.payload.inPrivateWindow=true;assert.equal(describe().effects.backendEligible,false);f.editor.close();
 });
+
+
+test('acknowledged navigation is consumed once with live search and owned engagement facts',async()=>{
+  const f=await navigationWriteFixture();
+  f.parent.child.updateEngineStore('changed',{id:'e',name:'engine'},-1);
+  const p=f.begin();assert.equal(f.editor.takeAcknowledgedNavigation(p.token,f.event,f.options),null);
+  f.editor.acknowledgeNavigationWrite(p.token,navigationObservation(p),f.event,f.options);
+  assert.equal(f.editor.takeAcknowledgedNavigation({},f.event,f.options),null);
+  const packet=f.editor.takeAcknowledgedNavigation(p.token,f.event,f.options);
+  assert.equal(packet.navigation.userTypedValue,'chosen search');assert.equal(packet.engagement.details.searchString,'typed');
+  assert.equal(packet.searchRecording.data.engineId,'e');assert.equal(packet.searchRecording.data.query,'chosen search');
+  assert.equal(Object.isFrozen(packet),true);assert.equal(f.parent.engagements.length,0);
+  assert.equal(f.editor.takeAcknowledgedNavigation(p.token,f.event,f.options),null);
+  assert.equal(f.editor.getAcknowledgedNavigation(p.token,f.event,f.options),null);f.editor.close();
+});
+
+test('failed navigation consumption cannot revive after engine or fact repair',async()=>{
+  for(const failure of ['engine','facts','target','dismissal']) {
+    const f=await navigationWriteFixture(),engine={id:'e',name:'engine'};
+    f.parent.child.updateEngineStore('changed',engine,-1);
+    const p=f.begin();f.editor.acknowledgeNavigationWrite(p.token,navigationObservation(p),f.event,f.options);
+    if(failure==='engine')f.parent.child.updateEngineStore('removed',engine,-1);
+    if(failure==='dismissal')f.editor.publishPresentation(1,f.q.id,[],false);
+    assert.equal(f.editor.takeAcknowledgedNavigation(p.token,failure==='target'?{where:'tab'}:f.event,
+      failure==='facts'?{...f.options,isHandoff:1}:f.options),null);
+    if(failure==='engine')f.parent.child.updateEngineStore('changed',engine,-1);
+    if(failure==='dismissal')f.editor.publishPresentation(1,f.q.id,[f.result],true);
+    assert.equal(f.editor.takeAcknowledgedNavigation(p.token,f.event,f.options),null);f.editor.close();
+  }
+});
+
+test('navigation consumption rejects synchronous reentry and supports URL preparations without engines',async()=>{
+  const f=await navigationWriteFixture();f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.URL;
+  f.result.payload={url:'https://example.test/'};
+  const p=f.begin();f.editor.acknowledgeNavigationWrite(p.token,navigationObservation(p),f.event,f.options);
+  const original=f.editor.describeResultNavigation.bind(f.editor);let reentry;
+  f.editor.describeResultNavigation=(...args)=>{
+    reentry=f.editor.takeAcknowledgedNavigation(p.token,f.event,f.options);return original(...args);
+  };
+  const packet=f.editor.takeAcknowledgedNavigation(p.token,f.event,f.options);
+  assert.equal(reentry,null);assert.equal(packet.searchRecording,null);
+  assert.equal(packet.navigation.plan.loadRequest.urlLoad.url,'https://example.test/');f.editor.close();
+});
