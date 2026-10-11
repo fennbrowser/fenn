@@ -11,11 +11,13 @@ function fixture(kind='calculator') {
  const browser={currentURI:{spec:'page'},browserId:7,browsingContext:{currentWindowGlobal:{innerWindowId:4}}};
  const provider={getViewUpdate:()=>({input:{textContent:'= 4',attributes:{dir:'ltr'}},output:{textContent:'3.937 inches'},action:{l10n:{id:'copy'}}})};
  const picks=[];
- Object.assign(s,{_sequence:0,revision:2,nativeOpen:true,nativeVisible:['r'],
+ Object.assign(s,{_sequence:0,revision:2,nativeVisible:['r'],
   window:{document:{l10n:{formatValue:async id=>'Localized '+id}},gBrowser:{selectedBrowser:browser},KeyboardEvent:class {constructor(_,args){Object.assign(this,args);}}},
   input:{controller:{parentController:{manager:{getProvider:()=>provider}}},view:{},inputField:{value:'query'},pickResult:args=>picks.push(args)},
   active:{revision:2,rows:[row],results:[result],resultIndexes:[0],context:{results:[result]},inputValue:'query',browser,page:'page'}});
+ s.input.controller ??= {};
  s.input.view.nativePresentation=s;
+ s.nativeOpen=true;
  return {s,row,result,browser,provider,picks};
 }
 test('copy rows use provider view output and Firefox localization',async()=>{

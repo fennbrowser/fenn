@@ -826,7 +826,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..b52c4126f6 100644
+index ba254af0c6..51ece7dc8c 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -171,6 +171,12 @@ export class UrlbarParentController {
@@ -842,6 +842,28 @@ index ba254af0c6..b52c4126f6 100644
    /**
     * The input or an object that can forward calls to the input.
     *
+@@ -1864,17 +1870,16 @@ export class TelemetryEvent {
+   }
+ 
+   /**
+-   * The input/view state the engagement-telemetry recording needs. Read from
+-   * the live input/view: only the direct path and the parent-side bounce/disable
+-   * recording reach this getter, and both have the live objects. (Message-path
++   * The input/controller state the engagement-telemetry recording needs. Only
++   * the direct path and the parent-side bounce/disable recording reach this
++   * getter, and both have the live input. (Message-path
+    * engagement builds its event content-side, so nothing is injected here.)
+    *
+    * @type {{searchMode: object, visibleResults: UrlbarResult[], viewIsOpen: boolean, searchSource: string}}
+    */
+   get #engagementData() {
+     return lazy.UrlbarTelemetryUtils.engagementData(
+-      this._controller.input,
+-      this._controller.view
++      this._controller.input
+     );
+   }
+ 
 diff --git a/browser/components/urlbar/UrlbarPrefs.sys.mjs b/browser/components/urlbar/UrlbarPrefs.sys.mjs
 index e044c8a6df..be0ea6dbee 100644
 --- a/browser/components/urlbar/UrlbarPrefs.sys.mjs
@@ -1695,10 +1717,10 @@ index e5dcc2c923..52a5ba4fa8 100644
        let event = new UIEvent("input", {
          bubbles: true,
 diff --git a/browser/components/urlbar/content/UrlbarChildController.mjs b/browser/components/urlbar/content/UrlbarChildController.mjs
-index b679c5cf1b..274e1998d0 100644
+index b679c5cf1b..f8d437ef3f 100644
 --- a/browser/components/urlbar/content/UrlbarChildController.mjs
 +++ b/browser/components/urlbar/content/UrlbarChildController.mjs
-@@ -50,6 +50,12 @@ export class UrlbarChildController {
+@@ -50,6 +50,16 @@ export class UrlbarChildController {
     */
    isProxy = false;
  
@@ -1708,9 +1730,39 @@ index b679c5cf1b..274e1998d0 100644
 +  // its snapshot keeps the result identities it was recorded against.
 +  visibleResults = [];
 +
++  // Logical suggestion visibility, published by the active presenter. Hidden
++  // retained queries and captured exposure arrays do not imply an open view.
++  resultsOpen = false;
++
    get logger() {
      if (!UrlbarChildController.#logger) {
        UrlbarChildController.#logger = UrlbarShared.getLogger({
+diff --git a/browser/components/urlbar/content/UrlbarChildTelemetry.mjs b/browser/components/urlbar/content/UrlbarChildTelemetry.mjs
+index 73fef3a888..b7a9733852 100644
+--- a/browser/components/urlbar/content/UrlbarChildTelemetry.mjs
++++ b/browser/components/urlbar/content/UrlbarChildTelemetry.mjs
+@@ -152,8 +152,8 @@ export class UrlbarChildTelemetry {
+         this.#startEventInfo
+       );
+       if (snapshot) {
+-        let { input, view } = this.#controller;
+-        let engagementData = UrlbarTelemetryUtils.engagementData(input, view);
++        let { input } = this.#controller;
++        let engagementData = UrlbarTelemetryUtils.engagementData(input);
+         let smartbarData = UrlbarTelemetryUtils.smartbarData(input);
+ 
+         let { built, previousSearchWords } =
+@@ -319,8 +319,8 @@ export class UrlbarChildTelemetry {
+    * @param {object} details The interaction details.
+    */
+   async startTrackingBounceEvent(browserId, event, details) {
+-    let { input, view } = this.#controller;
+-    let engagementData = UrlbarTelemetryUtils.engagementData(input, view);
++    let { input } = this.#controller;
++    let engagementData = UrlbarTelemetryUtils.engagementData(input);
+     let smartbarData = UrlbarTelemetryUtils.smartbarData(input);
+ 
+     let snapshot = UrlbarTelemetryUtils.collectBounceSnapshot(
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
 index a077de625f..e9b937ef01 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
@@ -2473,7 +2525,7 @@ index a077de625f..e9b937ef01 100644
        let event = new UIEvent("input", {
          bubbles: true,
 diff --git a/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs b/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
-index 9596698cf9..892442c187 100644
+index 9596698cf9..f1a8624ab3 100644
 --- a/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
 +++ b/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
 @@ -53,14 +53,14 @@ export class UrlbarTelemetryUtils {
@@ -2513,17 +2565,36 @@ index 9596698cf9..892442c187 100644
      };
  
      return {
-@@ -254,7 +254,7 @@ export class UrlbarTelemetryUtils {
-   static engagementData(input, view) {
+@@ -241,21 +241,20 @@ export class UrlbarTelemetryUtils {
+   }
+ 
+   /**
+-   * The input/view state the engagement recording reads, gathered from the live
+-   * objects. On the message path the child collector gathers this content-side
++   * The input/controller state the engagement recording reads. The active
++   * presenter publishes exposure and logical visibility on the controller.
++   * On the message path the child collector gathers this content-side
+    * and ships it; the parent recorder is fed the shipped copy.
+    *
+    * @param {object} input
+    *   The `UrlbarInput`/`SmartbarInput`.
+-   * @param {?object} view
+-   *   The `UrlbarView`, if any.
+    * @returns {{searchMode: object, visibleResults: object[], viewIsOpen: boolean, searchSource: string}}
+    */
+-  static engagementData(input, view) {
++  static engagementData(input) {
      return {
        searchMode: input.searchMode,
 -      visibleResults: view?.visibleResults ?? [],
+-      viewIsOpen: view?.isOpen ?? false,
 +      visibleResults: input.controller.visibleResults,
-       viewIsOpen: view?.isOpen ?? false,
++      viewIsOpen: input.controller.resultsOpen,
        searchSource: input.getSearchSource(),
      };
+   }
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 278cb5ca71..2e762467e1 100644
+index 278cb5ca71..afd6a356e4 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
 @@ -22,16 +22,6 @@ const SELECTABLE_ELEMENT_SELECTOR = "[role=button], [selectable], a";
@@ -2560,15 +2631,16 @@ index 278cb5ca71..2e762467e1 100644
      if (this.input.sapName != "urlbar") {
        return null;
      }
-@@ -141,6 +132,7 @@ export class UrlbarView {
+@@ -141,7 +132,7 @@ export class UrlbarView {
     * @returns {boolean}
     */
    get isOpen() {
-+    if (this.nativePresentation) return this.nativePresentation.nativeOpen;
-     return this.input.hasAttribute("open");
+-    return this.input.hasAttribute("open");
++    return this.controller.resultsOpen;
    }
  
-@@ -152,8 +144,7 @@ export class UrlbarView {
+   /**
+@@ -152,8 +143,7 @@ export class UrlbarView {
    }
  
    get allowEmptySelection() {
@@ -2578,7 +2650,7 @@ index 278cb5ca71..2e762467e1 100644
    }
  
    get selectedRowIndex() {
-@@ -213,6 +204,8 @@ export class UrlbarView {
+@@ -213,6 +203,8 @@ export class UrlbarView {
     *   The currently selected result.
     */
    get selectedResult() {
@@ -2587,7 +2659,7 @@ index 278cb5ca71..2e762467e1 100644
      if (!this.isOpen) {
        return null;
      }
-@@ -225,6 +218,7 @@ export class UrlbarView {
+@@ -225,6 +217,7 @@ export class UrlbarView {
     *   The currently selected element.
     */
    get selectedElement() {
@@ -2595,7 +2667,7 @@ index 278cb5ca71..2e762467e1 100644
      if (!this.isOpen) {
        return null;
      }
-@@ -301,8 +295,14 @@ export class UrlbarView {
+@@ -301,8 +294,14 @@ export class UrlbarView {
     * @param {HTMLElement} element The element to analyze.
     * @returns {string} A string type for telemetry.
     */
@@ -2611,7 +2683,7 @@ index 278cb5ca71..2e762467e1 100644
        return "none";
      }
      if (
-@@ -447,6 +447,7 @@ export class UrlbarView {
+@@ -447,6 +446,7 @@ export class UrlbarView {
     * @returns {boolean} True if the given result is selected.
     */
    resultIsSelected(result) {
@@ -2619,7 +2691,7 @@ index 278cb5ca71..2e762467e1 100644
      if (this.selectedRowIndex < 0) {
        return false;
      }
-@@ -581,6 +582,7 @@ export class UrlbarView {
+@@ -581,6 +581,7 @@ export class UrlbarView {
     * @param {number} resultId
     */
    async acknowledgeFeedback(resultId) {
@@ -2627,7 +2699,7 @@ index 278cb5ca71..2e762467e1 100644
      let row = this.#getRowByResultId(resultId);
      if (!row) {
        return;
-@@ -624,40 +626,35 @@ export class UrlbarView {
+@@ -624,40 +625,35 @@ export class UrlbarView {
      this.#setRowSelectable(row, false);
  
      // Replace the row with a dismissal acknowledgment tip.
@@ -2681,7 +2753,7 @@ index 278cb5ca71..2e762467e1 100644
    }
  
    /**
-@@ -670,6 +667,10 @@ export class UrlbarView {
+@@ -670,6 +666,10 @@ export class UrlbarView {
     *   True if the Urlbar focus border should be shown after the view is closed.
     */
    close({ elementPicked = false, showFocusBorder = true } = {}) {
@@ -2692,6 +2764,14 @@ index 278cb5ca71..2e762467e1 100644
      const isShowingZeroPrefix =
        this.#queryContext && !this.#queryContext.searchString;
      this.controller.cancelQuery();
+@@ -704,6 +704,7 @@ export class UrlbarView {
+     this.#openPanelInstance = null;
+     this.#previousTabToSearchEngine = null;
+ 
++    this.controller.resultsOpen = false;
+     this.input.toggleAttribute("open", false);
+ 
+     // Search Tips can open the view without the Urlbar being focused. If the
 @@ -929,6 +930,10 @@ export class UrlbarView {
     *   The context of the query.
     */
@@ -2759,7 +2839,15 @@ index 278cb5ca71..2e762467e1 100644
    #rows;
    #rawSelectedElement;
    #tail150 = null;
-@@ -1342,13 +1359,7 @@ export class UrlbarView {
+@@ -1310,6 +1327,7 @@ export class UrlbarView {
+     this.input.inputField.setAttribute("aria-expanded", "true");
+ 
+     this.input.toggleAttribute("suppress-focus-border", true);
++    this.controller.resultsOpen = true;
+     this.input.toggleAttribute("open", true);
+ 
+     this.window.addEventListener("resize", this);
+@@ -1342,13 +1360,7 @@ export class UrlbarView {
    }
  
    #shouldShowHeuristic(result) {
@@ -2774,7 +2862,7 @@ index 278cb5ca71..2e762467e1 100644
    }
  
    /**
-@@ -2146,13 +2157,7 @@ export class UrlbarView {
+@@ -2146,13 +2158,7 @@ export class UrlbarView {
    }
  
    #updateRowButtons(item, oldResult, result) {
@@ -2789,7 +2877,7 @@ index 278cb5ca71..2e762467e1 100644
  
      if (!this.#needsNewButtons(item, oldResult, result)) {
        return;
-@@ -2230,12 +2235,7 @@ export class UrlbarView {
+@@ -2230,12 +2236,7 @@ export class UrlbarView {
            "urlbarView-button",
            "urlbarView-button-" + buttonName,
          ],
@@ -2803,7 +2891,7 @@ index 278cb5ca71..2e762467e1 100644
        },
        item
      );
-@@ -2800,43 +2800,8 @@ export class UrlbarView {
+@@ -2800,43 +2801,8 @@ export class UrlbarView {
    }
  
    #iconForResult(result, iconUrlOverride = null) {
@@ -2849,7 +2937,7 @@ index 278cb5ca71..2e762467e1 100644
    }
  
    #getBlobUrlForResult(result, blob) {
-@@ -2921,21 +2886,22 @@ export class UrlbarView {
+@@ -2921,21 +2887,22 @@ export class UrlbarView {
  
      let description = item._elements.get("description");
      if (result.payload.descriptionL10n) {
@@ -2887,7 +2975,7 @@ index 278cb5ca71..2e762467e1 100644
          }
        }
      } else {
-@@ -3011,7 +2977,7 @@ export class UrlbarView {
+@@ -3011,7 +2978,7 @@ export class UrlbarView {
     * deferred until all rows have been updated.
     */
    #updateIndices() {
@@ -2896,7 +2984,7 @@ index 278cb5ca71..2e762467e1 100644
      this.#overflowObserver.disconnect();
  
      // `lastVisibleLabel` is the l10n object of the last-seen visible row label
-@@ -3033,7 +2999,7 @@ export class UrlbarView {
+@@ -3033,7 +3000,7 @@ export class UrlbarView {
  
        let visible = this.#isElementVisible(item);
        if (visible) {
@@ -2905,7 +2993,7 @@ index 278cb5ca71..2e762467e1 100644
          seenOnlyHeuristicOrSearchSuggestions &&=
            result.heuristic ||
            (result.type == UrlbarShared.RESULT_TYPE.SEARCH &&
-@@ -3067,7 +3033,7 @@ export class UrlbarView {
+@@ -3067,7 +3034,7 @@ export class UrlbarView {
        selectableElement = this.#getNextSelectableElement(selectableElement);
      }
  
@@ -2914,7 +3002,7 @@ index 278cb5ca71..2e762467e1 100644
    }
  
    /**
-@@ -3164,71 +3130,7 @@ export class UrlbarView {
+@@ -3164,71 +3131,7 @@ export class UrlbarView {
     *   If the current row should not have a label, returns null. Otherwise
     *   returns an l10n object for the label's l10n string: `{ id, args }`
     */
@@ -2987,7 +3075,7 @@ index 278cb5ca71..2e762467e1 100644
  
    #setRowVisibility(row, visible) {
      row.toggleAttribute("hidden", !visible);
-@@ -3277,7 +3179,7 @@ export class UrlbarView {
+@@ -3277,7 +3180,7 @@ export class UrlbarView {
      // necessarily imply we are in actions mode, therefore we should check both.
      if (
        this.input.searchMode?.source != UrlbarShared.RESULT_SOURCE.ACTIONS &&
@@ -2996,7 +3084,7 @@ index 278cb5ca71..2e762467e1 100644
      ) {
        this.#rows.toggleAttribute("actionmode", false);
      }
-@@ -3598,55 +3500,13 @@ export class UrlbarView {
+@@ -3598,55 +3501,13 @@ export class UrlbarView {
     *   The DOM node for the result's tile.
     */
    #setResultTitle(result, titleNode) {
@@ -3057,7 +3145,7 @@ index 278cb5ca71..2e762467e1 100644
        return;
      }
  
-@@ -4160,51 +4020,6 @@ export class UrlbarView {
+@@ -4160,51 +4021,6 @@ export class UrlbarView {
      return idArgs;
    }
  
@@ -3109,7 +3197,7 @@ index 278cb5ca71..2e762467e1 100644
    #hasMenuButton(result) {
      return (
        (!result.heuristic && this.#canOpenInNewTarget(result)) ||
-@@ -4217,7 +4032,7 @@ export class UrlbarView {
+@@ -4217,7 +4033,7 @@ export class UrlbarView {
     * buttons of the rows that are already built, which would otherwise keep the
     * attribute they got when they were created.
     */
@@ -3118,7 +3206,7 @@ index 278cb5ca71..2e762467e1 100644
      let inaccessible = !UrlbarPrefs.get("resultMenu.keyboardAccessible");
      for (let button of this.#rows.querySelectorAll(
        ".urlbarView-button-result-menu"
-@@ -4232,98 +4047,9 @@ export class UrlbarView {
+@@ -4232,98 +4048,9 @@ export class UrlbarView {
     * @returns {boolean}
     *   Whether the result's menu offers to open it in a new tab or window.
     */
@@ -3220,7 +3308,7 @@ index 278cb5ca71..2e762467e1 100644
  
    /**
     * Popuplates the result menu with commands.
-@@ -4333,106 +4059,45 @@ export class UrlbarView {
+@@ -4333,106 +4060,45 @@ export class UrlbarView {
     * @param {UrlbarResultCommand[]} options.commands
     */
    async #populateResultMenu({ panel = this.resultMenu, commands }) {
@@ -3360,7 +3448,7 @@ index 278cb5ca71..2e762467e1 100644
    }
  
    // Event handlers below.
-@@ -4710,39 +4375,12 @@ export class UrlbarView {
+@@ -4710,39 +4376,12 @@ export class UrlbarView {
    }
  
    on_click(event) {
@@ -3406,7 +3494,7 @@ index 278cb5ca71..2e762467e1 100644
    }
  
    on_showing(event) {
-@@ -4780,6 +4418,7 @@ export class UrlbarView {
+@@ -4780,6 +4419,7 @@ export class UrlbarView {
      if (event.target != event.currentTarget) {
        return;
      }
@@ -6769,10 +6857,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..cb11c19f75
+index 0000000000..2829e3ea9c
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1509 @@
+@@ -0,0 +1,1519 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6846,6 +6934,16 @@ index 0000000000..cb11c19f75
 +    this.originalFocus = () => this.releaseNativePresentation();
 +    this.input.inputField.addEventListener("focus", this.originalFocus);
 +    Services.prefs.addObserver(window.gWinUIPane.pref, this);
++  }
++
++  // The current presenter owns the controller's logical open state. A released
++  // session must neither observe nor overwrite its successor's presentation.
++  get nativeOpen() {
++    return this.input?.view.nativePresentation === this && this.input.controller.resultsOpen;
++  }
++  set nativeOpen(open) {
++    if (this.input?.view.nativePresentation === this)
++      this.input.controller.resultsOpen = open;
 +  }
 +
 +  get revision() { return this._revision; }
@@ -7102,10 +7200,10 @@ index 0000000000..cb11c19f75
 +    if (this.input?.view.nativePresentation !== this) return;
 +    // Cancellation can synchronously close this session through Firefox focus
 +    // and query callbacks. Detach presentation before making that call.
++    this.nativeOpen = false;
 +    this.input.view.nativePresentation = null;
 +    this.input.controller.visibleResults = [];
 +    this.nativeVisible = [];
-+    this.nativeOpen = false;
 +    this.nativeSelected = null;
 +    this.cancel();
 +  }

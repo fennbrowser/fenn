@@ -10,10 +10,12 @@ function fixture() {
  const result={type:5,providerName:'UrlbarProviderBookmarkKeywords',payload:{url:'https://example.test/',postData:'q=a%2Bb',input:'kw a+b',keyword:'kw'}};
  const browser={browserId:7,currentURI:{spec:'page'},browsingContext:{currentWindowGlobal:{innerWindowId:9}}};
  const row={id:'r',keywordDocument:9};
- Object.assign(s,{_revision:2,_sequence:0,nativeOpen:true,nativeVisible:['r'],window:{gBrowser:{selectedBrowser:browser},KeyboardEvent:class {constructor(type,args){Object.assign(this,args);}}},
+ Object.assign(s,{_revision:2,_sequence:0,nativeVisible:['r'],window:{gBrowser:{selectedBrowser:browser},KeyboardEvent:class {constructor(type,args){Object.assign(this,args);}}},
   input:{inputField:{value:'kw a+b'},view:{},focus(){},pickResult(args){assert.equal(s.active,null);calls.push(args);}},
   active:{revision:2,rows:[row],results:[result],resultIndexes:[0],context:{results:[result]},inputValue:'kw a+b',browser,page:'page'}});
+ s.input.controller ??= {};
  s.input.view.nativePresentation=s;
+ s.nativeOpen=true;
  return {s,row,result,browser,calls};
 }
 test('only Firefox bookmark keywords are admitted and pickResult retains POST and modifier metadata',()=>{

@@ -10,11 +10,13 @@ function fixture(){
  const element={label:'Localized button',name:'0',enabled:true,action:{name:'0'}};
  const browser={currentURI:{spec:'page'},browserId:7,browsingContext:{currentWindowGlobal:{innerWindowId:4}}};
  let picked=0;
- Object.assign(s,{sessionId:'s',_sequence:0,changed(){},nativeOpen:true,nativeVisible:['r'],
+ Object.assign(s,{sessionId:'s',_sequence:0,changed(){},nativeVisible:['r'],
   window:{gBrowser:{selectedBrowser:browser},KeyboardEvent:class{}},
   input:{inputField:{value:'tip'},view:{},resultActions:{buttons:()=>result.payload.buttons,describeButtons:async()=>[element]},pickResult(){picked++;}},
   active:{revision:2,rows:[row],results:[result],resultIndexes:[0],context:{results:[result]},inputValue:'tip',browser,page:'page'}});
+ s.input.controller ??= {};
  s.input.view.nativePresentation=s;
+ s.nativeOpen=true;
  const request={version:1,session:'s',revision:2,id:'r',actionId:'r:tip:0'};
  return {s,row,result,element,browser,request,get picked(){return picked;}};
 }
@@ -66,7 +68,7 @@ test('feedback is localized and late feedback cannot cross a navigation',async()
 
 test('Firefox input-button restart preserves native presentation only for its scoped text',async()=>{
  for(const stale of [false,true]) {
-  const f=fixture();f.s.input.controller={visibleResults:[]};f.s.editId=1;f.element.action={input:'rewritten',command:'rewrite'};
+  const f=fixture();f.s.input.controller.visibleResults=[];f.s.editId=1;f.element.action={input:'rewritten',command:'rewrite'};
   f.s.cancelImages=()=>{};f.s.active.context.id=9;
   await f.s.loadNativeTipButtons(f.s.active,f.row,f.result);
   assert.equal(f.s.activateTipButton(f.request),'activated');

@@ -10,14 +10,16 @@ function fixture(type=2,providerName='UrlbarProviderTokenAliasEngines') {
  const result={type,providerName,payload:{providesSearchMode:true,query:''}};
  const browser={currentURI:{spec:'page'},browserId:7,browsingContext:{currentWindowGlobal:{innerWindowId:4}}};
  let picked=0;
- Object.assign(s,{sessionId:'s',_sequence:0,_revision:2,editId:5,modeApplied:0,nativeOpen:true,nativeVisible:['r'],cancelImages(){},
+ Object.assign(s,{sessionId:'s',_sequence:0,_revision:2,editId:5,modeApplied:0,nativeVisible:['r'],cancelImages(){},
   window:{gBrowser:{selectedBrowser:browser},KeyboardEvent:class{}},
   input:{inputField:{value:'@'},view:{},resultPresentation:{searchModeTitle:async()=> 'Firefox mode label'},
    controller:{parentController:{onBeforeSelection(){},onSelection(){}}},
    setValueFromResult({result:chosen}){assert.equal(s.nativeSelected,chosen);this.inputField.value='';},
    pickResult(){picked++;this.inputField.value='';}},
   active:{revision:2,rows:[row],results:[result],resultIndexes:[0],context:{id:8,results:[result]},inputValue:'@',text:'@',browser,page:'page'}});
+ s.input.controller ??= {};
  s.input.view.nativePresentation=s;
+ s.nativeOpen=true;
  const request={version:1,session:'s',revision:2,id:'r'};
  return {s,row,result,browser,request,get picked(){return picked;}};
 }

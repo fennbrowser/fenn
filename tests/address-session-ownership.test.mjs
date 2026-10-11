@@ -70,3 +70,36 @@ test('replacement does not take ownership back from the original presenter',()=>
   assert.deepEqual(f.events,['close-old','construct','snapshot','activate']);
   assert.equal(f.view.nativePresentation,null);
 });
+
+
+test('controller open state survives hidden query retention and rejects a released owner',()=>{
+  const s=Object.create(sessionContext.Session.prototype);
+  const browser={currentURI:{spec:'page'}};
+  const controller={resultsOpen:false,visibleResults:[],engagementEvent:{addExposure(){}}};
+  const view={close(){controller.resultsOpen=false;},clearSelection(){}};
+  s.input={view,controller,inputField:{value:'query'}};
+  s.window={gBrowser:{selectedBrowser:browser}};s._sequence=0;
+  s.beginNativePresentation();assert.equal(controller.resultsOpen,true);
+  const active={browser,page:'page',inputValue:'query',results:[],exposed:new Set()};
+  s.active=active;s.suspendNativePresentation();
+  assert.equal(controller.resultsOpen,false);assert.equal(s.active,active);
+  browser.currentURI.spec='other';s.resumeNativePresentation();
+  assert.equal(controller.resultsOpen,false,'a different document cannot reopen retained results');
+  browser.currentURI.spec='page';s.resumeNativePresentation();
+  assert.equal(controller.resultsOpen,true);assert.equal(s.sequence,1);
+  s.cancel=()=>{assert.equal(view.nativePresentation,null);assert.equal(controller.resultsOpen,false);};
+  s.releaseNativePresentation();
+  const successor=Object.create(sessionContext.Session.prototype);successor.input=s.input;
+  successor.beginNativePresentation();assert.equal(controller.resultsOpen,true);
+  assert.equal(s.nativeOpen,false);s.nativeOpen=false;s.releaseNativePresentation();
+  assert.equal(controller.resultsOpen,true,'old owners cannot close a successor');
+});
+
+test('picked close captures exposure and closes logical presentation after cancellation',()=>{
+  const s=Object.create(sessionContext.Session.prototype),visible=[{}];
+  const controller={resultsOpen:true,visibleResults:visible};
+  s.input={controller,view:{nativePresentation:s}};
+  s.cancel=()=>{assert.equal(controller.resultsOpen,true);controller.visibleResults=[];};
+  s.onNativeViewClosed(true);
+  assert.equal(controller.resultsOpen,false);assert.equal(controller.visibleResults,visible);
+});

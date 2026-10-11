@@ -64,12 +64,12 @@ test('dismissal revokes current exposure without mutating a captured engagement 
   assert.equal(f.controller.visibleResults,snapshot);
 });
 
-test('engagement snapshot reads controller identities and only open state from the retained view',()=>{
+test('engagement snapshot reads controller identities and open state without reading the retained view',()=>{
   const source=read('browser/components/urlbar/content/UrlbarTelemetryUtils.mjs');
   const start=source.indexOf('  static engagementData('),end=source.indexOf('\n  /**',start);
   const c=vm.createContext({});vm.runInContext('this.Helpers=class {'+source.slice(start,end)+'}',c);
-  const result={},input={controller:{visibleResults:[result]},searchMode:null,getSearchSource:()=> 'urlbar'};
-  const snapshot=c.Helpers.engagementData(input,{isOpen:true,get visibleResults(){throw Error('View read');}});
+  const result={},input={controller:{visibleResults:[result],resultsOpen:true},searchMode:null,getSearchSource:()=> 'urlbar',get view(){throw Error('View read');}};
+  const snapshot=c.Helpers.engagementData(input);
   input.controller.visibleResults=[];
   assert.equal(snapshot.visibleResults[0],result);assert.equal(snapshot.viewIsOpen,true);
 });
