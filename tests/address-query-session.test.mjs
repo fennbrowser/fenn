@@ -2357,3 +2357,57 @@ test('engagement descriptions reject copied results, stale revisions and invalid
   assert.equal(f.editor.describeResultEngagement(1,q.id,result,{isHandoff:true}).details.searchSource,'urlbar_handoff');
   f.editor.cancel();assert.throws(()=>f.editor.describeResultEngagement(1,q.id,result),/Stale/);f.editor.close();
 });
+
+
+test('search recording policy preserves destination routing and explicit payload fields',()=>{
+  const f=fixture();
+  for(const where of ['current','window','tab','tabshifted']) {
+    const p=f.sandbox.UrlbarQueryModel.searchRecording({engineId:'id',query:'  query ',where,
+      searchSource:'urlbar',searchActionDetails:{alias:'@e',isOneOff:'override'},isOneOff:false,newtabSessionId:'session'});
+    assert.equal(p.method,where.startsWith('tab')?'recordSearchInOpenedTab':'recordSearch');
+    assert.equal(p.data.query,'  query ');assert.equal(p.data.engineId,'id');
+    assert.equal(p.data.details.alias,'@e');assert.equal(p.data.details.isOneOff,false);
+    assert.equal(p.data.details.newtabSessionId,'session');assert.equal(p.data.opensInPrivateWindow,false);
+  }
+  f.session.close();
+});
+
+test('independent search recordings resolve live engines and preserve suggestion and private semantics',async()=>{
+  const f=await editorFixture(),q=await f.editor.edit({},edit(1,'typed'));
+  await f.parent.child.engineStore.init();
+  const engine={id:'live-engine',name:'Engine'};f.parent.child.updateEngineStore('changed',engine,-1);
+  const result={id:81,type:f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH,source:f.sandbox.UrlbarShared.RESULT_SOURCE.HISTORY,
+    payload:{engine:'Engine',query:'query',suggestion:' suggestion ',keyword:'@e'}};
+  q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+  const options={selectedTabIsEmpty:false,originalUntrimmedValue:'typed',newtabSessionId:'handoff',isHandoff:true};
+  const describe=(event={})=>f.editor.describeResultSearchRecording(1,q.id,result,event,options);
+  const before=f.editor.snapshot,p=describe({where:'tab'});
+  assert.equal(p.method,'recordSearchInOpenedTab');assert.equal(p.data.engineId,'live-engine');
+  assert.equal(p.data.query,' suggestion ');assert.equal(p.data.searchSource,'urlbar_handoff');
+  assert.equal(p.data.details.isSuggestion,true);assert.equal(p.data.details.isFormHistory,true);
+  assert.equal(p.data.details.isOneOff,false);assert.equal(p.data.details.alias,'@e');
+  assert.equal(Object.isFrozen(p.data.details),true);assert.equal(f.editor.snapshot,before);
+  result.payload.inPrivateWindow=true;
+  const privatePlan=describe({where:'tab'});assert.equal(privatePlan.method,'recordSearch');
+  assert.equal(privatePlan.data.opensInPrivateWindow,true);
+  const navigation=f.editor.describeResultNavigation(1,q.id,result,{where:'tab'},options);
+  assert.equal(navigation.where,'window');assert.equal(navigation.openParams.private,true);
+  assert.equal(navigation.revertBeforeLoad,true);
+  assert.equal(f.editor.beginNavigationWrite(1,q.id,result,{},options),null);
+  f.parent.child.updateEngineStore('removed',engine,-1);assert.equal(describe(),null);
+  assert.equal(f.parent.engagements.length,0);f.editor.close();
+});
+
+test('search recording descriptions reject stale, unexposed and unsupported results',async()=>{
+  const f=await editorFixture(),q=await f.editor.edit({},edit(1,'typed'));
+  await f.parent.child.engineStore.init();f.parent.child.updateEngineStore('changed',{id:'e',name:'Engine'},-1);
+  const result={id:82,type:f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH,payload:{engine:'Engine',query:'query'}};
+  q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+  const options={selectedTabIsEmpty:false,originalUntrimmedValue:'typed'};
+  const describe=(r=result,o=options)=>f.editor.describeResultSearchRecording(1,q.id,r,{},o);
+  assert.throws(()=>describe({...result}),/Invalid/);
+  assert.throws(()=>describe(result,{...options,newtabSessionId:1}),/Invalid/);
+  result.payload.providesSearchMode=true;assert.equal(describe(),null);delete result.payload.providesSearchMode;
+  result.type=f.sandbox.UrlbarShared.RESULT_TYPE.URL;result.payload.url='https://example.test/';assert.equal(describe(),null);
+  f.editor.publishPresentation(1,q.id,[],false);assert.throws(()=>describe(),/Invalid/);f.editor.close();
+});

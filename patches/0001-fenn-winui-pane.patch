@@ -3298,7 +3298,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..69a5ffb3e1 100644
+index a077de625f..18d32af36b 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,20 @@
@@ -3609,7 +3609,21 @@ index a077de625f..69a5ffb3e1 100644
              searchSource: this.getSearchSource(event),
              windowMode: this.windowMode,
            });
-@@ -2077,6 +2028,7 @@ ${
+@@ -2010,10 +1961,9 @@ ${
+           );
+         }
+ 
+-        if (result.payload.inPrivateWindow) {
+-          where = "window";
+-          openParams.private = true;
+-        }
++        const destination = UrlbarQueryModel.searchResultDestination(result, where);
++        where = destination.where;
++        Object.assign(openParams, destination.openParams);
+ 
+         const actionDetails = {
+           isSuggestion: !!result.payload.suggestion,
+@@ -2077,6 +2027,7 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -3617,7 +3631,7 @@ index a077de625f..69a5ffb3e1 100644
            selType: "tip",
            searchString: this._lastSearchString,
            searchSource: this.getSearchSource(event),
-@@ -2099,9 +2051,11 @@ ${
+@@ -2099,9 +2050,11 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -3630,7 +3644,7 @@ index a077de625f..69a5ffb3e1 100644
              searchSource: this.getSearchSource(event),
              windowMode: this.windowMode,
            });
-@@ -2119,6 +2073,7 @@ ${
+@@ -2119,6 +2072,7 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -3638,7 +3652,7 @@ index a077de625f..69a5ffb3e1 100644
            selType: "extension",
            searchString: this._lastSearchString,
            searchSource: this.getSearchSource(event),
-@@ -2146,8 +2101,9 @@ ${
+@@ -2146,8 +2100,9 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -3649,7 +3663,7 @@ index a077de625f..69a5ffb3e1 100644
            searchSource: this.getSearchSource(event),
            windowMode: this.windowMode,
          });
-@@ -2163,8 +2119,9 @@ ${
+@@ -2163,8 +2118,9 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -3660,7 +3674,7 @@ index a077de625f..69a5ffb3e1 100644
            searchSource: this.getSearchSource(event),
            windowMode: this.windowMode,
          });
-@@ -2176,47 +2133,15 @@ ${
+@@ -2176,47 +2132,15 @@ ${
        throw new Error(`No load request for result ${JSON.stringify(result)}`);
      }
  
@@ -3716,7 +3730,7 @@ index a077de625f..69a5ffb3e1 100644
  
      // Bounce tracking keys on the tab the engagement happened in: the chrome
      // window's selected tab, or the tab hosting an input that has no chrome
-@@ -2225,8 +2150,9 @@ ${
+@@ -2225,8 +2149,9 @@ ${
        .startTrackingBounceEvent(this.#selectedBrowserId, event, {
          result,
          element,
@@ -3727,7 +3741,7 @@ index a077de625f..69a5ffb3e1 100644
          searchSource: this.getSearchSource(event),
          windowMode: this.windowMode,
        })
-@@ -2235,8 +2161,9 @@ ${
+@@ -2235,8 +2160,9 @@ ${
      this.controller.engagementEvent.record(event, {
        result,
        element,
@@ -3738,7 +3752,7 @@ index a077de625f..69a5ffb3e1 100644
        searchSource: this.getSearchSource(event),
        windowMode: this.windowMode,
      });
-@@ -2283,6 +2210,7 @@ ${
+@@ -2283,6 +2209,7 @@ ${
      event = null,
      urlOverride = null,
      element = null,
@@ -3746,7 +3760,7 @@ index a077de625f..69a5ffb3e1 100644
    } = {}) {
      // Usually this is set by a previous input event, but in certain cases, like
      // when opening Top Sites on a loaded page, it wouldn't happen. To avoid
-@@ -2353,7 +2281,7 @@ ${
+@@ -2353,7 +2280,7 @@ ${
            checkValue: false,
            startQuery:
              UrlbarPrefs.get("scotchBonnet.enableOverride") &&
@@ -3755,7 +3769,7 @@ index a077de625f..69a5ffb3e1 100644
          });
        }
        if (!enteredSearchMode) {
-@@ -2367,7 +2295,7 @@ ${
+@@ -2367,7 +2294,7 @@ ${
      }
  
      if (!result.autofill) {
@@ -3764,7 +3778,7 @@ index a077de625f..69a5ffb3e1 100644
        this.setValue(value, {
          actionType: this.#getActionTypeFromResult(result),
        });
-@@ -2415,23 +2343,13 @@ ${
+@@ -2415,23 +2342,13 @@ ${
        return;
      }
  
@@ -3795,7 +3809,7 @@ index a077de625f..69a5ffb3e1 100644
        return;
      }
  
-@@ -2479,6 +2397,7 @@ ${
+@@ -2479,6 +2396,7 @@ ${
        })
      ) {
        // Search mode restarts the query, so these results are obsolete.
@@ -3803,7 +3817,7 @@ index a077de625f..69a5ffb3e1 100644
        this.controller.discardResults(queryContext);
        return;
      }
-@@ -2534,12 +2453,10 @@ ${
+@@ -2534,12 +2452,10 @@ ${
      event,
      interactionType,
    } = {}) {
@@ -3820,7 +3834,7 @@ index a077de625f..69a5ffb3e1 100644
  
      let queryContext = this.#makeQueryContext({
        allowAutofill,
-@@ -2608,9 +2525,7 @@ ${
+@@ -2608,9 +2524,7 @@ ${
      if (options.focus ?? true) {
        this.focus();
      }
@@ -3831,7 +3845,7 @@ index a077de625f..69a5ffb3e1 100644
  
      if (
        firstToken == UrlbarShared.RESTRICT_TOKENS.SEARCH &&
-@@ -2629,36 +2544,13 @@ ${
+@@ -2629,36 +2543,13 @@ ${
        return;
      }
  
@@ -3874,7 +3888,7 @@ index a077de625f..69a5ffb3e1 100644
      this.inputField.value = value;
      // Avoid selecting the text if this method is called twice in a row.
      this.selectionStart = -1;
-@@ -2692,21 +2584,9 @@ ${
+@@ -2692,21 +2583,9 @@ ${
     *   setSearchMode documentation for details.
     */
    searchModeForToken(token) {
@@ -3899,7 +3913,7 @@ index a077de625f..69a5ffb3e1 100644
    }
  
    /**
-@@ -2824,16 +2704,9 @@ ${
+@@ -2824,16 +2703,9 @@ ${
     *   See setSearchMode documentation.
     */
    getSearchMode(browser, confirmedOnly = false) {
@@ -3919,7 +3933,7 @@ index a077de625f..69a5ffb3e1 100644
    }
  
    /**
-@@ -2880,64 +2753,10 @@ ${
+@@ -2880,64 +2752,10 @@ ${
        }
      }
  
@@ -3988,7 +4002,7 @@ index a077de625f..69a5ffb3e1 100644
  
      // The address bar keeps a search mode per browser, so it only enters search
      // mode for the selected one. Every other input keeps a single search mode.
-@@ -3040,8 +2859,7 @@ ${
+@@ -3040,8 +2858,7 @@ ${
    confirmSearchMode() {
      let searchMode = this.searchMode;
      if (searchMode?.isPreview) {
@@ -3998,7 +4012,7 @@ index a077de625f..69a5ffb3e1 100644
  
        // Unselect the one-off search button to ensure UI consistency.
        if (this.view.oneOffSearchButtons) {
-@@ -3245,38 +3063,21 @@ ${
+@@ -3245,38 +3062,21 @@ ${
      result = this._resultForCurrentValue,
      checkValue = true,
      startQuery = true,
@@ -4049,7 +4063,7 @@ index a077de625f..69a5ffb3e1 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -3317,37 +3118,20 @@ ${
+@@ -3317,37 +3117,20 @@ ${
     *   The source name.
     */
    getSearchSource(event) {
@@ -4101,7 +4115,7 @@ index a077de625f..69a5ffb3e1 100644
    }
  
    // Private methods below.
-@@ -3516,84 +3300,19 @@ ${
+@@ -3516,84 +3299,19 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
@@ -4198,7 +4212,7 @@ index a077de625f..69a5ffb3e1 100644
    }
  
    /**
-@@ -3604,14 +3323,7 @@ ${
+@@ -3604,14 +3322,7 @@ ${
     * @returns {string} The `actiontype` value, or undefined.
     */
    #getActionTypeFromResult(result) {
@@ -4214,7 +4228,7 @@ index a077de625f..69a5ffb3e1 100644
    }
  
    /**
-@@ -3634,64 +3346,27 @@ ${
+@@ -3634,64 +3345,27 @@ ${
     *   Whether autofill should be allowed in the new search.
     */
    _maybeAutofillPlaceholder(value) {
@@ -4299,7 +4313,7 @@ index a077de625f..69a5ffb3e1 100644
    }
  
    /**
-@@ -3772,105 +3447,31 @@ ${
+@@ -3772,105 +3446,31 @@ ${
      }
    }
  
@@ -4430,7 +4444,34 @@ index a077de625f..69a5ffb3e1 100644
    }
  
    _toggleActionOverride(event) {
-@@ -4081,33 +3682,34 @@ ${
+@@ -3942,22 +3542,10 @@ ${
+     const isOneOff = this.view.oneOffSearchButtons?.eventTargetIsAOneOff(event);
+     const searchSource = this.getSearchSource(event);
+ 
+-    let searchData = {
+-      engineId: engine.id,
+-      searchSource,
+-      query,
+-      opensInPrivateWindow,
+-      details: {
+-        ...searchActionDetails,
+-        isOneOff,
+-        newtabSessionId: this._handoffSession,
+-      },
+-    };
+-    if (where.startsWith("tab")) {
+-      this.parentController.recordSearchInOpenedTab(searchData);
+-    } else {
+-      this.parentController.recordSearch(searchData);
+-    }
++    const recording = UrlbarQueryModel.searchRecording({ engineId: engine.id,
++      query, where, searchSource, searchActionDetails, isOneOff,
++      newtabSessionId: this._handoffSession, opensInPrivateWindow });
++    this.parentController[recording.method](recording.data);
+   }
+ 
+   /**
+@@ -4081,33 +3669,34 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -4471,7 +4512,7 @@ index a077de625f..69a5ffb3e1 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -4200,45 +3802,25 @@ ${
+@@ -4200,45 +3789,25 @@ ${
        keyDownEnterDeferred = this._keyDownEnterDeferred;
      }
  
@@ -4526,7 +4567,7 @@ index a077de625f..69a5ffb3e1 100644
        this.handleRevert();
      }
  
-@@ -4267,6 +3849,15 @@ ${
+@@ -4267,6 +3836,15 @@ ${
      }
    }
  
@@ -4542,7 +4583,7 @@ index a077de625f..69a5ffb3e1 100644
    _initCopyCutController() {
      // This exists to put an untrimmed URL on the clipboard, and only the address
      // bar trims. Every other input keeps its native copy/cut.
-@@ -4479,7 +4070,7 @@ ${
+@@ -4479,7 +4057,7 @@ ${
        return;
      }
      let controller =
@@ -4551,7 +4592,7 @@ index a077de625f..69a5ffb3e1 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4495,6 +4086,33 @@ ${
+@@ -4495,6 +4073,33 @@ ${
      stripOnShare.removeAttribute("disabled");
    }
  
@@ -4585,7 +4626,7 @@ index a077de625f..69a5ffb3e1 100644
    _initPasteAndGo() {
      this.addContextMenuItems({
        after: "edit-contextmenu-paste",
-@@ -4507,17 +4125,7 @@ ${
+@@ -4507,17 +4112,7 @@ ${
            .GetStringFromName("pasteAndGo.label");
          pasteAndGo.setAttribute("label", label);
          pasteAndGo.setAttribute("anonid", "paste-and-go");
@@ -4604,7 +4645,7 @@ index a077de625f..69a5ffb3e1 100644
  
          fragment.appendChild(pasteAndGo);
          return fragment;
-@@ -4545,10 +4153,7 @@ ${
+@@ -4545,10 +4140,7 @@ ${
            { once: true }
          );
  
@@ -4616,7 +4657,7 @@ index a077de625f..69a5ffb3e1 100644
            pasteAndGo.removeAttribute("disabled");
          } else {
            pasteAndGo.setAttribute("disabled", "true");
-@@ -4747,60 +4352,11 @@ ${
+@@ -4747,60 +4339,11 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -4682,7 +4723,7 @@ index a077de625f..69a5ffb3e1 100644
    }
  
    /**
-@@ -5071,6 +4627,8 @@ ${
+@@ -5071,6 +4614,8 @@ ${
    setUnifiedSearchButtonAvailability(available) {
      available ||=
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
@@ -4691,7 +4732,7 @@ index a077de625f..69a5ffb3e1 100644
      const switcher = this.querySelector(".searchmode-switcher");
      switcher.toggleAttribute("offscreen", !available);
      if (available) {
-@@ -5085,6 +4643,7 @@ ${
+@@ -5085,6 +4630,7 @@ ${
          this.window.gBrowser.selectedBrowser
        ).isUnifiedSearchButtonAvailable = available;
      }
@@ -4699,7 +4740,7 @@ index a077de625f..69a5ffb3e1 100644
    }
  
    /**
-@@ -5151,7 +4710,7 @@ ${
+@@ -5151,7 +4697,7 @@ ${
    #maybeSelectAll() {
      if (
        !this.#preventClickSelectsAll &&
@@ -4708,7 +4749,7 @@ index a077de625f..69a5ffb3e1 100644
        this.focused &&
        this.inputField.selectionStart == this.inputField.selectionEnd
      ) {
-@@ -5477,34 +5036,20 @@ ${
+@@ -5477,34 +5023,20 @@ ${
      }
    }
  
@@ -4716,28 +4757,28 @@ index a077de625f..69a5ffb3e1 100644
 -    // A new input starts a fresh search; bump the epoch so a pending
 -    // deferred-Enter's async keyup won't reset this search's caret.
 -    this.#inputEpoch++;
--    if (
++  setNativeInputValue(value) {
+     if (
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      (event.inputType === "deleteContentBackward" ||
 -        event.inputType === "deleteContentForward")
--    ) {
++      !this.view.nativePresentation ||
++      typeof value !== "string" ||
++      value.length > 32768
+     ) {
 -      // Take a telemetry if user deleted whole autofilled value.
 -      this.parentController.recordAutofillDeletion();
 -    }
 -
-+  setNativeInputValue(value) {
-     if (
+-    if (
 -      UrlbarPrefs.get("autoFill.adaptiveHistory.enabled") &&
 -      event.inputType?.startsWith("deleteContent") &&
 -      !this.isPrivate &&
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      this._resultForCurrentValue?.payload?.url
-+      !this.view.nativePresentation ||
-+      typeof value !== "string" ||
-+      value.length > 32768
-     ) {
+-    ) {
 -      this.parentController.recordAutofillBackspace(
 -        this._resultForCurrentValue.payload.url
 -      );
@@ -4753,7 +4794,7 @@ index a077de625f..69a5ffb3e1 100644
      this.valueIsTyped = true;
      this._untrimmedValue = value;
      this._protocolIsTrimmed = false;
-@@ -5516,20 +5061,9 @@ ${
+@@ -5516,20 +5048,9 @@ ${
      // string, thus there's no valid selection. This is also used by the view
      // to set "aria-activedescendant", thus it should never get stale.
      this.controller.userSelectionBehavior = "none";
@@ -4776,7 +4817,7 @@ index a077de625f..69a5ffb3e1 100644
      this.toggleAttribute("usertyping", value);
      this.removeAttribute("actiontype");
  
-@@ -5551,6 +5085,43 @@ ${
+@@ -5551,6 +5072,43 @@ ${
          this.removeAttribute("persistsearchterms");
        }
      }
@@ -4820,7 +4861,7 @@ index a077de625f..69a5ffb3e1 100644
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
-@@ -5580,10 +5151,9 @@ ${
+@@ -5580,10 +5138,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -4834,7 +4875,7 @@ index a077de625f..69a5ffb3e1 100644
      ) {
        return;
      }
-@@ -5591,11 +5161,10 @@ ${
+@@ -5591,11 +5148,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -4850,7 +4891,7 @@ index a077de625f..69a5ffb3e1 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5669,33 +5238,20 @@ ${
+@@ -5669,33 +5225,20 @@ ${
    }
  
    _on_paste(event) {
@@ -4892,7 +4933,7 @@ index a077de625f..69a5ffb3e1 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5265,7 @@ ${
+@@ -5709,7 +5252,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -4901,7 +4942,7 @@ index a077de625f..69a5ffb3e1 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5296,25 @@ ${
+@@ -5740,51 +5283,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -4969,7 +5010,7 @@ index a077de625f..69a5ffb3e1 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5508,11 @@ ${
+@@ -5978,15 +5495,11 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -4987,7 +5028,7 @@ index a077de625f..69a5ffb3e1 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5532,24 @@ ${
+@@ -6006,44 +5519,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -5044,7 +5085,7 @@ index a077de625f..69a5ffb3e1 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,11 +5675,7 @@ ${
+@@ -6169,11 +5662,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -5057,7 +5098,7 @@ index a077de625f..69a5ffb3e1 100644
    }
  
    get #isOpenedPageInBlankTargetLoading() {
-@@ -6311,111 +5813,6 @@ function getDroppableData(event) {
+@@ -6311,111 +5800,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -5169,7 +5210,7 @@ index a077de625f..69a5ffb3e1 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +5837,10 @@ class CopyCutController {
+@@ -6440,12 +5824,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -7872,10 +7913,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..d23865c6be
+index 0000000000..6b0573677a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1217 @@
+@@ -0,0 +1,1226 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8725,6 +8766,15 @@ index 0000000000..d23865c6be
 +    return this.#queries.describeResultOpenPolicy(queryId, result, event, options);
 +  }
 +
++  describeResultSearchRecording(revision, queryId, result, event, options = {}) {
++    this.#check();
++    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing || this.#hiddenResults) {
++      throw new Error("Stale editor search recording");
++    }
++    return this.#queries.describeResultSearchRecording(queryId, result, event, { ...options,
++      searchString: this.#typedText, searchMode: this.#searchMode });
++  }
++
 +  describeResultEngagement(revision, queryId, result, options = {}) {
 +    this.#check();
 +    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing || this.#hiddenResults) {
@@ -9095,10 +9145,10 @@ index 0000000000..d23865c6be
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..0cd2e8e486
+index 0000000000..a2baf4a92e
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,509 @@
+@@ -0,0 +1,536 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9306,8 +9356,10 @@ index 0000000000..0cd2e8e486
 +      ...(policy.loadRequest.urlLoad ? { urlLoad: Object.freeze({ ...policy.loadRequest.urlLoad }) } : {}),
 +      ...(policy.loadRequest.engineSearch ? { engineSearch: Object.freeze({ ...policy.loadRequest.engineSearch }) } : {}),
 +    });
-+    return Object.freeze({ ...opening, loadRequest,
-+      openParams: Object.freeze({ ...opening.openParams, ...policy.openParams }) });
++    const destination = result.type === UrlbarShared.RESULT_TYPE.SEARCH
++      ? UrlbarQueryModel.searchResultDestination(result, opening.where) : { where: opening.where, openParams: {} };
++    return Object.freeze({ ...opening, where: destination.where, loadRequest,
++      openParams: Object.freeze({ ...opening.openParams, ...policy.openParams, ...destination.openParams }) });
 +  }
 +
 +  /** Describe ordinary result opening, without granting activation/load authority. */
@@ -9324,6 +9376,31 @@ index 0000000000..0cd2e8e486
 +    Object.freeze(policy.openParams.globalHistoryOptions);
 +    Object.freeze(policy.openParams);
 +    return Object.freeze(policy);
++  }
++
++  /** Describe a primary search recording; resolve a live engine, never record here. */
++  describeResultSearchRecording(queryId, result, event, options = {}) {
++    const load = this.describeResultLoad(queryId, result, event, options);
++    if (!load || result.type !== UrlbarShared.RESULT_TYPE.SEARCH || !load.loadRequest.engineSearch) return null;
++    const { newtabSessionId = null } = options;
++    if (newtabSessionId !== null && typeof newtabSessionId !== "string") throw new TypeError("Invalid handoff session");
++    const store = this.#controller.engineStore;
++    if (!store.initialized) throw new Error("Search recording engines are not initialized");
++    const engine = store.getEngineByName(result.payload.engine);
++    if (!engine) return null;
++    const engagement = this.describeResultEngagement(queryId, result, options);
++    const recording = UrlbarQueryModel.searchRecording({ engineId: engine.id,
++      query: result.payload.suggestion || result.payload.query, where: load.where,
++      searchSource: engagement.details.searchSource, isOneOff: false, newtabSessionId,
++      opensInPrivateWindow: result.payload.inPrivateWindow,
++      searchActionDetails: { isSuggestion: !!result.payload.suggestion,
++        isFormHistory: result.source == UrlbarShared.RESULT_SOURCE.HISTORY, alias: result.payload.keyword } });
++    if (!this.ownsResult(queryId, result) || !this.#controller.resultsOpen ||
++        !this.#controller.visibleResults.includes(result) || store.getEngineByName(result.payload.engine) !== engine) {
++      throw new Error("Stale search recording");
++    }
++    return Object.freeze({ method: recording.method, data: Object.freeze({ ...recording.data,
++      details: Object.freeze(recording.data.details) }) });
 +  }
 +
 +  /** Primary result engagement facts only; no recording or activation authority. */
@@ -9773,10 +9850,10 @@ index 0000000000..83b4b88af9
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQueryModel.mjs b/browser/components/urlbar/content/UrlbarQueryModel.mjs
 new file mode 100644
-index 0000000000..a2806c1566
+index 0000000000..67cbe62b6e
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQueryModel.mjs
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,200 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9897,6 +9974,20 @@ index 0000000000..a2806c1566
 +    const keepViewOpen = willLoadInBackground(where, openParams);
 +    openParams.avoidBrowserFocus = keepViewOpen;
 +    return { where, openParams, keepViewOpen };
++  }
++
++  /** Search-result override applied after initial opening policy in pickResult. */
++  static searchResultDestination(result, where) {
++    return result.payload.inPrivateWindow ? { where: "window", openParams: { private: true } }
++      : { where, openParams: {} };
++  }
++
++  /** Search recorder payload and destination, shared with the original input. */
++  static searchRecording({ engineId, query, where = "current", searchSource,
++    searchActionDetails = {}, isOneOff, newtabSessionId, opensInPrivateWindow = false }) {
++    return { method: where.startsWith("tab") ? "recordSearchInOpenedTab" : "recordSearch",
++      data: { engineId, searchSource, query, opensInPrivateWindow,
++        details: { ...searchActionDetails, isOneOff, newtabSessionId } } };
 +  }
 +
 +  /** Search attribution from Firefox-owned facts, independent of event targets. */
