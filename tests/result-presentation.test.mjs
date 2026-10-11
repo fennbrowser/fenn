@@ -17,6 +17,34 @@ function fixture() {
   return {model,prefs,requests,shared};
 }
 
+test('contextual opt-in selection announcement belongs to the view and preserves rendered text',()=>{
+  const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarView.mjs',import.meta.url),'utf8');
+  const start=source.indexOf('  announceSelection(result, element) {');
+  const method=source.slice(start,source.indexOf('\n  #selectElement(',start));
+  const View=new Function(`return class {${method}}`)(),view=new View(),announcements=[];
+  let copies=0,removed=false;
+  const description={textContent:'Learn more Description',cloneNode(deep){
+    assert.equal(deep,true);copies++;return {firstElementChild:{remove(){removed=true;}},
+      get textContent(){return removed?'Description':description.textContent;}};
+  }};
+  const row={querySelector:selector=>selector.endsWith('-title')?{textContent:'Title'}:description,
+    ariaNotify:text=>announcements.push(text)};
+  const element={getAttribute:name=>{assert.equal(name,'name');return 'learn_more';},
+    closest:selector=>{assert.equal(selector,'.urlbarView-row');return row;}};
+  const result={providerName:'UrlbarProviderQuickSuggestContextualOptIn'};
+  view.announceSelection(result,element);
+  assert.deepEqual(announcements,['Title. Description']);assert.equal(copies,1);
+  assert.equal(description.textContent,'Learn more Description');
+  view.announceSelection(result,null);view.announceSelection(null,element);
+  view.announceSelection({providerName:'Other'},element);
+  view.announceSelection(result,{getAttribute:()=> 'allow'});
+  assert.equal(announcements.length,1);
+  const selection=source.slice(source.indexOf('  #selectElement('));
+  assert.ok(selection.indexOf('this.announceSelection(result, element)') < selection.indexOf('parentController.onBeforeSelection'));
+  const provider=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarProviderQuickSuggestContextualOptIn.sys.mjs',import.meta.url),'utf8');
+  assert.doesNotMatch(provider,/onBeforeSelection\(|#a11yAlertRow|\.querySelector\(/);
+});
+
 test('candidate spans exclude hidden exposures and respect live heuristic policy',()=>{
   const {model,prefs}=fixture();
   const heuristic={heuristic:true,type:2},hidden={isHiddenExposure:true,span:99},tip={type:7,span:3},tail={type:2};

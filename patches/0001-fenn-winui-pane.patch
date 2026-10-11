@@ -4378,7 +4378,7 @@ index 9596698cf9..f1a8624ab3 100644
      };
    }
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 278cb5ca71..3b4c4cb481 100644
+index 278cb5ca71..4fe5ecab14 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
 @@ -22,16 +22,6 @@ const SELECTABLE_ELEMENT_SELECTOR = "[role=button], [selectable], a";
@@ -4961,24 +4961,62 @@ index 278cb5ca71..3b4c4cb481 100644
      ) {
        this.#rows.toggleAttribute("actionmode", false);
      }
-@@ -3598,55 +3484,13 @@ export class UrlbarView {
+@@ -3305,6 +3191,29 @@ export class UrlbarView {
+     }
+   }
+ 
++  /**
++   * Announce presentation text for the contextual opt-in's Learn More control.
++   * This belongs to the presenter, not the provider selection hook: providers
++   * must not require a selected DOM element from an independent consumer.
++   */
++  announceSelection(result, element) {
++    if (result?.providerName != "UrlbarProviderQuickSuggestContextualOptIn" ||
++        element?.getAttribute("name") != "learn_more") {
++      return;
++    }
++    const row = element.closest(".urlbarView-row");
++    let alertText = row.querySelector(
++      ".urlbarView-dynamic-quickSuggestContextualOptIn-title"
++    ).textContent;
++    const description = row.querySelector(
++      ".urlbarView-dynamic-quickSuggestContextualOptIn-description"
++    ).cloneNode(true);
++    // Exclude the link without changing the rendered description.
++    description.firstElementChild?.remove();
++    alertText += ". " + description.textContent;
++    row.ariaNotify(alertText);
++  }
++
+   #selectElement(
+     element,
+     { updateInput = true, setAccessibleFocus = true } = {}
+@@ -3340,6 +3249,7 @@ export class UrlbarView {
+ 
+     let result = row?.result;
+     if (result) {
++      this.announceSelection(result, element);
+       this.controller.parentController.onBeforeSelection(result, element);
+     }
+ 
+@@ -3598,55 +3508,13 @@ export class UrlbarView {
     *   The DOM node for the result's tile.
     */
    #setResultTitle(result, titleNode) {
 -    if (result.payload.titleL10n) {
 -      this.#l10nCache.setElementL10n(titleNode, result.payload.titleL10n);
-+    const descriptor = this.input.resultPresentation.title(result);
-+    if (descriptor?.l10n) {
-+      this.#l10nCache.setElementL10n(titleNode, descriptor.l10n);
-       return;
-     }
+-      return;
+-    }
 -
 -    // TODO: `text` is intended only for WebExtensions. We should remove it and
 -    // the WebExtensions urlbar API since we're no longer using it.
 -    if (result.payload.text) {
 -      titleNode.textContent = result.payload.text;
--      return;
--    }
++    const descriptor = this.input.resultPresentation.title(result);
++    if (descriptor?.l10n) {
++      this.#l10nCache.setElementL10n(titleNode, descriptor.l10n);
+       return;
+     }
 -
 -    if (result.payload.providesSearchMode) {
 -      if (result.type == UrlbarShared.RESULT_TYPE.RESTRICT) {
@@ -5022,7 +5060,7 @@ index 278cb5ca71..3b4c4cb481 100644
        return;
      }
  
-@@ -4160,51 +4004,6 @@ export class UrlbarView {
+@@ -4160,51 +4028,6 @@ export class UrlbarView {
      return idArgs;
    }
  
@@ -5074,7 +5112,7 @@ index 278cb5ca71..3b4c4cb481 100644
    #hasMenuButton(result) {
      return (
        (!result.heuristic && this.#canOpenInNewTarget(result)) ||
-@@ -4217,7 +4016,7 @@ export class UrlbarView {
+@@ -4217,7 +4040,7 @@ export class UrlbarView {
     * buttons of the rows that are already built, which would otherwise keep the
     * attribute they got when they were created.
     */
@@ -5083,7 +5121,7 @@ index 278cb5ca71..3b4c4cb481 100644
      let inaccessible = !UrlbarPrefs.get("resultMenu.keyboardAccessible");
      for (let button of this.#rows.querySelectorAll(
        ".urlbarView-button-result-menu"
-@@ -4232,98 +4031,9 @@ export class UrlbarView {
+@@ -4232,98 +4055,9 @@ export class UrlbarView {
     * @returns {boolean}
     *   Whether the result's menu offers to open it in a new tab or window.
     */
@@ -5185,7 +5223,7 @@ index 278cb5ca71..3b4c4cb481 100644
  
    /**
     * Popuplates the result menu with commands.
-@@ -4333,106 +4043,45 @@ export class UrlbarView {
+@@ -4333,106 +4067,45 @@ export class UrlbarView {
     * @param {UrlbarResultCommand[]} options.commands
     */
    async #populateResultMenu({ panel = this.resultMenu, commands }) {
@@ -5325,7 +5363,7 @@ index 278cb5ca71..3b4c4cb481 100644
    }
  
    // Event handlers below.
-@@ -4710,39 +4359,12 @@ export class UrlbarView {
+@@ -4710,39 +4383,12 @@ export class UrlbarView {
    }
  
    on_click(event) {
@@ -5371,7 +5409,7 @@ index 278cb5ca71..3b4c4cb481 100644
    }
  
    on_showing(event) {
-@@ -4780,6 +4402,7 @@ export class UrlbarView {
+@@ -4780,6 +4426,7 @@ export class UrlbarView {
      if (event.target != event.currentTarget) {
        return;
      }
