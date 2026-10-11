@@ -6978,10 +6978,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..90d76b8f7e
+index 0000000000..3585c8d916
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,567 @@
+@@ -0,0 +1,637 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7000,8 +7000,8 @@ index 0000000000..90d76b8f7e
 + * validates a one-use token before a write and acknowledges its exact observed
 + * text/selection afterward. Acknowledgment never starts a query.
 + * Active composition cancels queries; the committed edit starts a fresh one.
-+ * Undo, search-mode transitions and activation are
-+ * not implemented here. In particular, this is not a navigation controller.
++ * Result-mode writes have an exact host acknowledgment, but mode persistence,
++ * query dispatch after mode changes, undo and activation remain host work. In particular, this is not a navigation controller.
 + */
 +export class UrlbarEditSession {
 +  #queries;
@@ -7018,6 +7018,7 @@ index 0000000000..90d76b8f7e
 +  #closeRequest = null;
 +  #selectionRequest = null;
 +  #resultPreview = null;
++  #modeApplication = null;
 +  #searchModePreview = false;
 +  #hiddenResults = null;
 +  #onPresentationRequest;
@@ -7074,6 +7075,7 @@ index 0000000000..90d76b8f7e
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
 +    this.#resultPreview = null;
++    this.#modeApplication = null;
 +    this.#autofill = null;
 +    // Revoke old work before any new snapshot can be published.
 +    this.#queries.cancel();
@@ -7186,6 +7188,7 @@ index 0000000000..90d76b8f7e
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
 +    this.#resultPreview = null;
++    this.#modeApplication = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#edit = Object.freeze({ ...this.#edit, selectionStart: start,
@@ -7285,12 +7288,70 @@ index 0000000000..90d76b8f7e
 +    });
 +  }
 +
++  /** Propose a result mode and editor text as one observed host operation. */
++  beginResultModeApplication(revision, queryId, result, { checkValue = true,
++    startQuery = true, entry = null } = {}) {
++    this.#check();
++    if (this.#hiddenResults) throw new Error("Hidden result mode application");
++    this.#modeApplication = null;
++    this.#resultPreview = null;
++    this.#selectionRequest = null;
++    const options = Object.freeze({ checkValue, startQuery, entry });
++    if (!this.describeResultModeApplication(revision, queryId, result, options)) return null;
++    this.freezeResults(revision, queryId);
++    const request = this.beginResultSelection(revision, queryId, result);
++    if (!request) return null;
++    // The pre-selection provider hook can change the result or live engines.
++    const description = this.describeResultModeApplication(revision, queryId, result, options);
++    if (!description) { this.#selectionRequest = null; return null; }
++    const proposal = Object.freeze({ ...description, token: request.token, edit: request.edit,
++      selectionStart: description.value.length, selectionEnd: description.value.length,
++      selectionDirection: "none" });
++    this.#modeApplication = { proposal, description, options };
++    return proposal;
++  }
++
++  /** Recheck live result/engine facts immediately before applying the host mode. */
++  getResultModeApplication(token) {
++    const request = this.getResultSelection(token);
++    const pending = this.#modeApplication;
++    if (!request || !pending || pending.proposal.token !== token) return null;
++    const live = this.describeResultModeApplication(this.#edit.revision,
++      request.queryId, request.result, pending.options);
++    return live && UrlbarShared.deepEqual(live, pending.description) ? pending.proposal : null;
++  }
++
++  /** Observe mode, row and text together; no query or browser effects run here. */
++  acknowledgeResultModeApplication(token, { searchMode, text, selectionStart,
++    selectionEnd, selectionDirection }) {
++    const proposal = this.getResultModeApplication(token);
++    if (!proposal || !UrlbarShared.deepEqual(searchMode, proposal.searchMode) ||
++        text !== proposal.value || selectionStart !== proposal.selectionStart ||
++        selectionEnd !== proposal.selectionEnd || selectionDirection !== proposal.selectionDirection) {
++      return false;
++    }
++    this.#modeApplication = null;
++    this.#selectionRequest = null;
++    this.#resultPreview = null;
++    this.#completion = null;
++    this.#autofill = null;
++    this.#placeholder = null;
++    this.#searchModePreview = !!proposal.searchMode.isPreview;
++    if (proposal.storeTypedValue) this.#typedText = text;
++    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart, selectionEnd,
++      selectionDirection, selectionRevision: this.#edit.selectionRevision + 1 });
++    // Consume before notifying providers, which may reenter or replace this session.
++    // The host owns per-tab mode state and performs requested requery only afterward.
++    return this.#queries.acknowledgeResultSelection(token);
++  }
++
 +  /** Prepare provider notification without applying selection or preview text. */
 +  beginResultSelection(revision, queryId, result) {
 +    this.#check();
 +    if (this.#hiddenResults) throw new Error("Hidden result selection");
 +    this.#selectionRequest = null;
 +    this.#resultPreview = null;
++    this.#modeApplication = null;
 +    const edit = this.#edit;
 +    if (!edit || revision !== edit.revision || edit.composing) {
 +      throw new Error("Stale editor result selection");
@@ -7311,9 +7372,11 @@ index 0000000000..90d76b8f7e
 +
 +  /** Acknowledge host row selection only; this grants no editor-write authority. */
 +  acknowledgeResultSelection(token) {
-+    if (!this.getResultSelection(token) || this.#resultPreview?.token === token) return false;
++    if (!this.getResultSelection(token) || this.#resultPreview?.token === token ||
++        this.#modeApplication?.proposal.token === token) return false;
 +    this.#selectionRequest = null;
 +    this.#resultPreview = null;
++    this.#modeApplication = null;
 +    return this.#queries.acknowledgeResultSelection(token);
 +  }
 +
@@ -7352,6 +7415,7 @@ index 0000000000..90d76b8f7e
 +    this.#check();
 +    if (this.#hiddenResults) throw new Error("Hidden result preview");
 +    this.#resultPreview = null;
++    this.#modeApplication = null;
 +    this.#selectionRequest = null;
 +    this.describeResultInput(revision, queryId, result);
 +    if (!this.#describeResultPreview(revision, queryId, result)) return null;
@@ -7373,6 +7437,7 @@ index 0000000000..90d76b8f7e
 +    this.#check();
 +    if (this.#hiddenResults) throw new Error("Hidden result restoration");
 +    this.#resultPreview = null;
++    this.#modeApplication = null;
 +    this.#selectionRequest = null;
 +    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
 +        !this.#queries.ownsQuery(queryId)) throw new Error("Stale result restoration");
@@ -7415,6 +7480,7 @@ index 0000000000..90d76b8f7e
 +    }
 +    this.#validateSelection(text, selectionStart, selectionEnd, selectionDirection);
 +    this.#resultPreview = null;
++    this.#modeApplication = null;
 +    this.#selectionRequest = null;
 +    this.#completion = null;
 +    this.#autofill = proposal.autofill;
@@ -7449,6 +7515,7 @@ index 0000000000..90d76b8f7e
 +    this.#completion = null;
 +    this.#selectionRequest = null;
 +    this.#resultPreview = null;
++    this.#modeApplication = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#hiddenResults = Object.freeze({ revision, queryId, text: this.#edit.text });
@@ -7519,6 +7586,7 @@ index 0000000000..90d76b8f7e
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
 +    this.#resultPreview = null;
++    this.#modeApplication = null;
 +    return true;
 +  }
 +
@@ -7529,6 +7597,7 @@ index 0000000000..90d76b8f7e
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
 +    this.#resultPreview = null;
++    this.#modeApplication = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#queries.cancel();
@@ -7542,6 +7611,7 @@ index 0000000000..90d76b8f7e
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
 +    this.#resultPreview = null;
++    this.#modeApplication = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#queries.close();

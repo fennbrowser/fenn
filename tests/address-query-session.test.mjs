@@ -34,6 +34,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     LOCAL_SEARCH_MODES:sharedPolicy.UrlbarShared.LOCAL_SEARCH_MODES,
     SEARCH_MODE_RESTRICT:sharedPolicy.UrlbarShared.SEARCH_MODE_RESTRICT,
     SEARCH_MODE_ENTRY:sharedPolicy.UrlbarShared.SEARCH_MODE_ENTRY,
+    deepEqual:sharedPolicy.UrlbarShared.deepEqual.bind(sharedPolicy.UrlbarShared),
     getResultSourceName:sharedPolicy.UrlbarShared.getResultSourceName.bind(sharedPolicy.UrlbarShared)});
   for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarSearchModeModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarResultPresentation','UrlbarEditSession']) {
     const source=readFileSync(new URL(`../upstream/firefox/browser/components/urlbar/content/${file}.mjs`,import.meta.url),'utf8');
@@ -1105,4 +1106,92 @@ test('independent URL descriptions use typed text and fixed privacy even after c
   assert.equal(f.editor.snapshot.text,'example.test/');
   assert.equal(f.editor.describeResultInput(1,f.query.id,f.result,{urlOverride:'https://safe.test/path'}).value,'https://safe.test/path');
   assert.equal(calls.length,1,'override bypasses heuristic trimming');f.editor.close();
+});
+
+
+async function modeWriteFixture(options={}) {
+  const f=await editorFixture(),query=await f.editor.edit({},edit(1,'@engine'));
+  const engine={id:'engine',name:'Engine',isGeneralPurposeEngine:true};
+  f.parent.child.updateEngineStore('changed',engine,-1);
+  const result={id:1,type:sharedPolicy.UrlbarShared.RESULT_TYPE.SEARCH,
+    payload:{engine:'Engine',keyword:'@engine',query:' words  ',providesSearchMode:true}};
+  query.results=[result];f.editor.publishPresentation(1,query.id,[result],true);
+  const calls=[];f.parent.onBeforeSelection=()=>calls.push('before');
+  f.parent.onSelection=()=>calls.push('selected');
+  const proposal=f.editor.beginResultModeApplication(1,query.id,result,options);
+  return {...f,query,result,engine,calls,proposal};
+}
+const observedMode=p=>({...observed(p),searchMode:{...p.searchMode}});
+
+test('mode writes require exact mode, text and caret acknowledgment before provider notification',async()=>{
+  const f=await modeWriteFixture(),p=f.proposal,before=f.editor.snapshot;
+  assert.equal(p.value,'words  ');assert.equal(p.searchMode.isPreview,false);
+  assert.equal(p.startQuery,true);assert.equal(p.storeTypedValue,true);
+  assert.deepEqual(f.calls,['before']);assert.equal(f.editor.snapshot,before);
+  assert.equal(f.editor.acknowledgeResultSelection(p.token),false);
+  assert.equal(f.editor.getResultPreview(p.token),null);
+  for(const wrong of [{searchMode:null},{searchMode:{...p.searchMode,isPreview:true}},
+    {text:'wrong'},{selectionStart:0},{selectionEnd:0},{selectionDirection:'backward'}]) {
+    assert.equal(f.editor.acknowledgeResultModeApplication(p.token,{...observedMode(p),...wrong}),false);
+    assert.equal(f.editor.snapshot,before);assert.deepEqual(f.calls,['before']);
+  }
+  assert.equal(f.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),true);
+  assert.equal(f.editor.snapshot.text,'words  ');assert.deepEqual(f.calls,['before','selected']);
+  assert.equal(f.parent.started.length,1,'acknowledgment must not dispatch the requested requery');
+  assert.equal(f.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),false);
+  const restore=f.editor.beginResultRestore(1,f.query.id);
+  assert.equal(restore.value,'words  ','confirmation updates typed-text restoration');f.editor.close();
+});
+
+test('mode previews retain preview semantics and reject ordinary text restoration',async()=>{
+  const f=await modeWriteFixture({startQuery:false}),p=f.proposal;
+  assert.equal(p.searchMode.isPreview,true);assert.equal(p.storeTypedValue,false);assert.equal(p.startQuery,false);
+  assert.equal(f.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),true);
+  assert.equal(f.editor.beginResultRestore(1,f.query.id),null);
+  assert.equal(f.editor.hideResults(1,f.query.id),null,'preview dismissal needs the mode-exit path');
+  f.editor.close();
+});
+
+test('pending mode writes revalidate live result payload and engine properties',async()=>{
+  for(const mutate of [f=>{f.result.payload.query='changed';},f=>{f.result.payload.keyword='@other';},
+    f=>{f.result.payload.engine='Missing';},
+    f=>f.parent.child.updateEngineStore('changed',{...f.engine,isGeneralPurposeEngine:false},0),
+    f=>f.parent.child.updateEngineStore('removed',f.engine,-1)]) {
+    const f=await modeWriteFixture(),p=f.proposal;mutate(f);
+    assert.equal(f.editor.getResultModeApplication(p.token),null);
+    assert.equal(f.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),false);
+    assert.equal(f.editor.snapshot.text,'@engine');assert.deepEqual(f.calls,['before']);f.editor.close();
+  }
+});
+
+test('mode write authority is revoked by replacement, caret, edit, hide, removal and cancellation',async()=>{
+  for(const revoke of [f=>f.editor.beginResultSelection(1,f.query.id,f.result),
+    f=>f.editor.beginResultModeApplication(1,f.query.id,f.result),
+    f=>f.editor.select(1,0,0),f=>f.editor.edit({},edit(2,'new')),
+    f=>f.editor.hideResults(1,f.query.id),f=>f.editor.cancel(),
+    f=>f.editor.publishPresentation(1,f.query.id,[],false),
+    f=>f.parent.child.notify('onQueryResultRemoved',1,null,f.query.id)]) {
+    const f=await modeWriteFixture(),p=f.proposal;await revoke(f);
+    assert.equal(f.editor.getResultModeApplication(p.token),null);
+    assert.equal(f.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),false);
+    assert.equal(f.calls.includes('selected'),false);f.editor.close();
+  }
+  const f=await modeWriteFixture();f.loseScope();
+  assert.throws(()=>f.editor.getResultModeApplication(f.proposal.token),/scope changed/);
+  assert.throws(()=>f.editor.acknowledgeResultModeApplication(f.proposal.token,observedMode(f.proposal)),/closed/);
+});
+
+test('mode preparation rechecks provider pre-selection mutations and consumes before reentrant notification',async()=>{
+  const f=await modeWriteFixture();
+  f.parent.onBeforeSelection=()=>f.parent.child.updateEngineStore('removed',f.engine,-1);
+  assert.equal(f.editor.beginResultModeApplication(1,f.query.id,f.result),null);
+  assert.equal(f.editor.getResultModeApplication(f.proposal.token),null);f.editor.close();
+  const g=await modeWriteFixture(),p=g.proposal;
+  g.parent.onSelection=()=>{
+    assert.equal(g.editor.getResultModeApplication(p.token),null);
+    assert.equal(g.editor.snapshot.text,p.value);
+    assert.equal(g.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),false);
+    g.editor.cancel();
+  };
+  assert.equal(g.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),true);g.editor.close();
 });
