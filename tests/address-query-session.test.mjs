@@ -2994,3 +2994,90 @@ test('throwing activation effects consume editor readiness and discard parent au
   assert.equal(f.calls.at(-1)[0],'discard');assert.equal(f.calls.some(x=>x[0]==='load'),false);
   assert.equal(f.editor.commitAcknowledgedNavigation(p.token,f.event,f.options),null);f.editor.close();
 });
+
+
+async function activationSelectionFixture() {
+  const f=await historyEngagementFixture();f.result.autofill={type:'origin'};
+  f.parent.clearAutofillBackspaceEntryForUrl=()=>f.calls.push(['cleanup']);
+  f.parent.onBeforeSelection=()=>f.calls.push(['before']);
+  f.parent.onSelection=()=>f.calls.push(['selected']);
+  f.beginActivation=()=>f.editor.beginNavigationActivation(1,f.q.id,f.result,f.event,f.options);
+  return f;
+}
+
+test('staged activation cleans up before provider selection and requires exact observed row',async()=>{
+  const f=await activationSelectionFixture(),p=f.beginActivation();
+  assert.deepEqual(f.calls,[['cleanup'],['before']]);assert.equal(p.resultId,f.result.id);
+  assert.equal(f.editor.getNavigationWrite(p.token,f.event,f.options),null);
+  for(const observation of [{queryId:-1,resultId:p.resultId},{queryId:p.queryId,resultId:-1}]) {
+    assert.equal(f.editor.acknowledgeNavigationActivation(p.token,observation,f.event,f.options),null);
+  }
+  const write=f.editor.acknowledgeNavigationActivation(p.token,{queryId:p.queryId,resultId:p.resultId},f.event,f.options);
+  assert.equal(write.value,'https://history.test/');assert.deepEqual(f.calls,[['cleanup'],['before'],['selected']]);
+  assert.equal(f.editor.getAcknowledgedNavigation(write.token,f.event,f.options),null);
+  assert.equal(f.editor.acknowledgeNavigationActivation(p.token,{queryId:p.queryId,resultId:p.resultId},f.event,f.options),null);
+  assert.equal(f.editor.acknowledgeNavigationWrite(write.token,navigationObservation(write),f.event,f.options),true);
+  assert.ok(f.editor.getAcknowledgedNavigation(write.token,f.event,f.options));f.editor.close();
+});
+
+test('activation rejects unsupported destinations and non-activation events before cleanup',async()=>{
+  const f=await activationSelectionFixture();
+  assert.throws(()=>f.editor.beginNavigationActivation(1,f.q.id,f.result,{type:'mousemove',timeStamp:2},f.options),/Invalid/);
+  assert.equal(f.editor.beginNavigationActivation(1,f.q.id,f.result,{...f.event,where:'tab'},f.options),null);
+  assert.equal(f.calls.length,0);assert.ok(f.beginActivation());f.editor.close();
+});
+
+test('cleanup reentry or failures cannot start or retry a stale selection',async()=>{
+  for(const change of ['throw','selection','edit']) {
+    const f=await activationSelectionFixture();let next;
+    f.parent.clearAutofillBackspaceEntryForUrl=()=>{
+      if(change==='throw')throw Error('cleanup failure');
+      if(change==='selection')f.editor.beginResultSelection(1,f.q.id,f.result);
+      if(change==='edit')next=f.editor.edit({},edit(2,'new'));
+    };
+    if(change==='throw')assert.throws(f.beginActivation,/cleanup failure/);else assert.equal(f.beginActivation(),null);
+    if(next) {const q=await next;f.editor.publishPresentation(2,q.id,[],false);}
+    else assert.equal(f.beginActivation(),null);
+    f.editor.close();
+  }
+});
+
+test('activation acknowledgment rejects changed row identity, exposure and opening facts permanently',async()=>{
+  for(const change of ['id','hide','target']) {
+    const f=await activationSelectionFixture(),p=f.beginActivation();
+    if(change==='id')f.result.id++;
+    if(change==='hide')f.editor.publishPresentation(1,f.q.id,[],false);
+    const event=change==='target'?{...f.event,where:'tab'}:f.event;
+    assert.equal(f.editor.getNavigationActivation(p.token,event,f.options),null);
+    if(change==='id')f.result.id--;
+    if(change==='hide')f.editor.publishPresentation(1,f.q.id,[f.result],true);
+    assert.equal(f.editor.getNavigationActivation(p.token,f.event,f.options),null);
+    assert.equal(f.calls.some(x=>x[0]==='selected'),false);f.editor.close();
+  }
+});
+
+test('selection callbacks cannot restore old activation after reselection or hide/reopen',async()=>{
+  for(const change of ['selection','exposure','throw']) {
+    const f=await activationSelectionFixture(),p=f.beginActivation();
+    f.parent.onSelection=()=>{
+      if(change==='throw')throw Error('selection failure');
+      if(change==='selection'){const newer=f.editor.beginResultSelection(1,f.q.id,f.result);f.parent.onSelection=()=>{};f.editor.acknowledgeResultSelection(newer.token);}
+      if(change==='exposure'){f.editor.publishPresentation(1,f.q.id,[],false);f.editor.publishPresentation(1,f.q.id,[f.result],true);}
+    };
+    const acknowledge=()=>f.editor.acknowledgeNavigationActivation(p.token,{queryId:p.queryId,resultId:p.resultId},f.event,f.options);
+    if(change==='throw')assert.throws(acknowledge,/selection failure/);else assert.equal(acknowledge(),null);
+    assert.equal(acknowledge(),null);assert.equal(f.editor.getNavigationWrite(p.token,f.event,f.options),null);f.editor.close();
+  }
+});
+
+
+test('unchanged exposure preserves staged activation while removal/republication during selection revokes it',async()=>{
+  const f=await activationSelectionFixture(),p=f.beginActivation();
+  f.editor.publishPresentation(1,f.q.id,[f.result],true);
+  assert.equal(f.editor.getNavigationActivation(p.token,f.event,f.options),p);
+  f.parent.onSelection=()=>f.editor.publishPresentation(1,f.q.id,[f.result],true);
+  assert.ok(f.editor.acknowledgeNavigationActivation(p.token,{queryId:p.queryId,resultId:p.resultId},f.event,f.options));f.editor.close();
+  const g=await activationSelectionFixture(),other={id:123};g.q.results.push(other);const a=g.beginActivation();
+  g.parent.onSelection=()=>{g.editor.publishPresentation(1,g.q.id,[other],true);g.editor.publishPresentation(1,g.q.id,[g.result,other],true);};
+  assert.equal(g.editor.acknowledgeNavigationActivation(a.token,{queryId:a.queryId,resultId:a.resultId},g.event,g.options),null);g.editor.close();
+});

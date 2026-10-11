@@ -8235,10 +8235,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..d0477b3be9
+index 0000000000..bf98716b39
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1280 @@
+@@ -0,0 +1,1363 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8288,6 +8288,9 @@ index 0000000000..d0477b3be9
 +  #searchMode = null;
 +  #navigationWrite = null;
 +  #navigationReady = null;
++  #navigationActivation = null;
++  #selectionGeneration = 0;
++  #activationSelecting = null;
 +  #hiddenResults = null;
 +  #onPresentationRequest;
 +
@@ -8347,6 +8350,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8475,6 +8479,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8588,6 +8593,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8618,6 +8624,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8670,6 +8677,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8726,6 +8734,7 @@ index 0000000000..d0477b3be9
 +
 +  /** Prepare provider notification without applying selection or preview text. */
 +  beginResultSelection(revision, queryId, result) {
++    this.#selectionGeneration++;
 +    this.#check();
 +    if (this.#hiddenResults) throw new Error("Hidden result selection");
 +    this.#selectionRequest = null;
@@ -8734,6 +8743,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8767,6 +8777,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8815,6 +8826,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8845,6 +8857,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8896,6 +8909,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8943,6 +8957,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8981,11 +8996,14 @@ index 0000000000..d0477b3be9
 +    if (this.#hiddenResults && (open || visibleResults.length)) {
 +      throw new Error("Hidden results require explicit reopening");
 +    }
++    const activation = this.#navigationActivation ?? this.#activationSelecting;
 +    this.#queries.publishPresentation(queryId, visibleResults, open);
++    if (!open || (activation && !visibleResults.includes(activation.result))) this.#selectionGeneration++;
 +    const navigation = this.#navigationWrite ?? this.#navigationReady;
 +    if (navigation && (!open || !visibleResults.includes(navigation.result))) {
 +      this.#navigationWrite = null;
 +      this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    }
 +    if (this.#modeRequery && (!open || !visibleResults.includes(this.#modeRequery.result))) {
 +      this.#modeRequery = null;
@@ -8997,10 +9015,67 @@ index 0000000000..d0477b3be9
 +    }
 +  }
 +
-+  /** Propose the ordinary current-tab editor write; no event/DOM object is retained. */
-+  beginNavigationWrite(revision, queryId, result, event, options) {
++  /** Start ordinary activation, then wait for an exact host row-selection observation. */
++  beginNavigationActivation(revision, queryId, result, event, options) {
++    this.#check();
++    this.#selectionGeneration++;
++    this.#navigationActivation = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    if (!UrlbarQueryModel.isResultActivationEvent(event)) throw new TypeError("Invalid result activation event");
++    const plan = this.describeResultNavigation(revision, queryId, result, event, options);
++    if (!plan || plan.where !== "current" || !plan.resetSelection || plan.editorValue === undefined ||
++        plan.revertBeforeLoad) return null;
++    const edit = this.#edit, searchMode = this.#searchMode, generation = this.#selectionGeneration;
++    this.freezeResults(revision, queryId);
++    if (generation !== this.#selectionGeneration || edit !== this.#edit || searchMode !== this.#searchMode ||
++        !this.clearResultAutofillBackspace(revision, queryId, result)) return null;
++    if (generation !== this.#selectionGeneration || edit !== this.#edit || searchMode !== this.#searchMode) return null;
++    const selection = this.beginResultSelection(revision, queryId, result);
++    if (!selection) return null;
++    const facts = Object.freeze({ selectedTabIsEmpty: options.selectedTabIsEmpty,
++      originalUntrimmedValue: options.originalUntrimmedValue, deferEnterFocus: options.deferEnterFocus ?? false });
++    const proposal = Object.freeze({ token: selection.token, queryId, resultId: result.id, edit, plan });
++    this.#navigationActivation = { proposal, queryId, result, facts, edit, searchMode,
++      generation: this.#selectionGeneration };
++    return this.getNavigationActivation(selection.token, event, options);
++  }
++
++  getNavigationActivation(token, event, options) {
++    this.#check();
++    const pending = this.#navigationActivation;
++    if (!pending || pending.proposal.token !== token) return null;
++    if (pending.generation !== this.#selectionGeneration || pending.result.id !== pending.proposal.resultId ||
++        !this.getResultSelection(token) ||
++        !UrlbarQueryModel.isResultActivationEvent(event) || !this.#navigationIsCurrent(pending, event, options)) {
++      this.#navigationActivation = null;
++      return null;
++    }
++    return pending.proposal;
++  }
++
++  /** Acknowledgment consumes selection before provider callbacks and proposes the editor write. */
++  acknowledgeNavigationActivation(token, observation, event, options) {
++    const proposal = this.getNavigationActivation(token, event, options);
++    if (!proposal || observation?.queryId !== proposal.queryId || observation.resultId !== proposal.resultId) return null;
++    const pending = this.#navigationActivation;
++    this.#navigationActivation = null;
++    this.#activationSelecting = pending;
++    try {
++      if (!this.acknowledgeResultSelection(token) || pending.generation !== this.#selectionGeneration ||
++          pending.result.id !== proposal.resultId || !this.#navigationIsCurrent(pending, event, options)) return null;
++      return this.beginNavigationWrite(this.#edit.revision, pending.queryId, pending.result, event, options);
++    } finally {
++      if (this.#activationSelecting === pending) this.#activationSelecting = null;
++    }
++  }
++
++  /** Propose the ordinary current-tab editor write; no event/DOM object is retained. */
++  beginNavigationWrite(revision, queryId, result, event, options) {
++    this.#selectionGeneration++;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    const plan = this.describeResultNavigation(revision, queryId, result, event, options);
 +    if (!plan || plan.where !== "current" || !plan.resetSelection || plan.editorValue === undefined ||
 +        plan.revertBeforeLoad) return null;
@@ -9014,6 +9089,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequest = null;
 +    this.#searchCommandRequery = null;
 +    this.#modeRestoreRequest = null;
@@ -9077,6 +9153,7 @@ index 0000000000..d0477b3be9
 +    if (!pending || pending.proposal.token !== token) return null;
 +    // Consume before validation/descriptions: failure or reentry cannot retry it.
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    const { queryId, result } = pending;
 +    const revision = this.#edit.revision;
 +    try {
@@ -9101,6 +9178,7 @@ index 0000000000..d0477b3be9
 +    const pending = this.#navigationReady;
 +    if (!pending || pending.proposal.token !== token) return null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    if (!this.#navigationIsCurrent(pending, event, options)) return null;
 +    return this.#queries.commitResultNavigation(pending.queryId, pending.result, event,
 +      { ...options, searchString: this.#typedText, searchMode: this.#searchMode }, pending.proposal.plan,
@@ -9466,6 +9544,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -9475,6 +9554,7 @@ index 0000000000..d0477b3be9
 +  }
 +
 +  cancel() {
++    this.#selectionGeneration++;
 +    this.#check();
 +    this.#hiddenResults = null;
 +    this.#completion = null;
@@ -9485,6 +9565,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -9496,6 +9577,7 @@ index 0000000000..d0477b3be9
 +  }
 +
 +  close() {
++    this.#selectionGeneration++;
 +    if (this.#closed) return;
 +    this.#closed = true;
 +    this.#hiddenResults = null;
@@ -9507,6 +9589,7 @@ index 0000000000..d0477b3be9
 +    this.#modeRequery = null;
 +    this.#navigationWrite = null;
 +    this.#navigationReady = null;
++    this.#navigationActivation = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -9521,10 +9604,10 @@ index 0000000000..d0477b3be9
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..502de196cd
+index 0000000000..6711d7b5ff
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,702 @@
+@@ -0,0 +1,700 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9885,9 +9968,7 @@ index 0000000000..502de196cd
 +  #recordResultEngagement(queryId, result, event, options, afterRecord = null) {
 +    this.#check();
 +    if (!this.#engagementActive || this.#endingEngagement) return false;
-+    if (!((event?.type === "keydown" && event.key === "Enter") ||
-+        (["click", "auxclick"].includes(event?.type) && [0, 1].includes(event.button))) ||
-+        !Number.isFinite(event.timeStamp) || event.timeStamp < 0) throw new TypeError("Invalid result engagement event");
++    if (!UrlbarQueryModel.isResultActivationEvent(event)) throw new TypeError("Invalid result engagement event");
 +    if (![UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.SEARCH, UrlbarShared.RESULT_TYPE.KEYWORD].includes(result?.type) ||
 +        result.payload?.providesSearchMode) throw new Error("Unsupported terminal engagement");
 +    const { trackBounce = false, recordHistory = false, recordSearch = false, checkSearchDNS = false, querySearchBackend = false } = options ?? {};
@@ -10392,10 +10473,10 @@ index 0000000000..83b4b88af9
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQueryModel.mjs b/browser/components/urlbar/content/UrlbarQueryModel.mjs
 new file mode 100644
-index 0000000000..ce7d37c6c0
+index 0000000000..dbe645a9e9
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQueryModel.mjs
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,222 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10407,6 +10488,13 @@ index 0000000000..ce7d37c6c0
 +
 +/** Firefox query policy over explicit state, without retaining an input/view. */
 +export class UrlbarQueryModel {
++  /** Primary user-activation events accepted by independent activation/recording. */
++  static isResultActivationEvent(event) {
++    return !!(((event?.type === "keydown" && event.key === "Enter") ||
++      (["click", "auxclick"].includes(event?.type) && [0, 1].includes(event.button))) &&
++      Number.isFinite(event.timeStamp) && event.timeStamp >= 0);
++  }
++
 +  /** Pre-selection adaptive-backspace cleanup, before specialized result actions. */
 +  static autofillBackspaceURL(result, isPrivate) {
 +    return UrlbarPrefs.get("autoFill.adaptiveHistory.enabled") && result.autofill &&
