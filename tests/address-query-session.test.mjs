@@ -561,7 +561,7 @@ test('a first-result callback can replace the query without leaking the old resu
 async function editorFixture(options) {
   const f=fixture(options);f.session.close();const updates=[],requests=[];
   const editor=new f.sandbox.UrlbarEditSession({context:f.context,isCurrent:()=>!f.invalid,
-    onUpdate:update=>updates.push(update),onPresentationRequest:request=>{
+    onUpdate:update=>updates.push(update),onModeStateChanged:options?.onModeStateChanged ?? null,onPresentationRequest:request=>{
       requests.push(request);options?.onRequest?.(request,editor);
     }});
   const parent=f.parents.at(-1);await parent.child.engineStore.init();
@@ -3498,4 +3498,76 @@ test('pre-mode facts reject malformed snapshots before provider selection',async
     assert.throws(()=>f.editor.beginResultModeApplication(1,f.query.id,f.result,{modeEntry}),/Invalid pre-mode/);
   }
   assert.equal(f.calls.length,before);f.editor.close();
+});
+
+
+test('committed mode notification is separate, immutable, correlated and delivered only once',async()=>{
+  const notifications=[];
+  const f=await modeWriteFixture({}, {browserId:42,onModeStateChanged:n=>notifications.push(n)}),p=f.proposal;
+  f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{
+    assert.equal(current(),true);notify(Object.freeze({browserId:id,searchMode:Object.freeze({...mode}),
+      userTypedValue:facts.userTypedValue,persistedSearchTerms:false,persistenceChanged:false}));return {applied:true,modeChangeNotified:true};
+  };
+  assert.equal(notifications.length,0);f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
+  assert.equal(notifications.length,0);const acknowledged=f.editor.snapshot;
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}).modeChangeNotified,true);
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),null);
+  assert.equal(notifications.length,1);const n=notifications[0];
+  assert.equal(n.kind,'mode-state-changed');assert.equal(n.reason,'result-mode');assert.equal(n.token,p.token);
+  assert.equal(n.queryId,f.query.id);assert.equal(n.edit,acknowledged);assert.equal(n.browserId,42);
+  assert.equal(n.userTypedValue,p.value);assert.equal(n.searchMode.engineName,'Engine');
+  assert.equal(Object.isFrozen(n),true);assert.equal(Object.isFrozen(n.searchMode),true);assert.equal(Object.isFrozen(n.edit),true);
+  assert.equal(f.updates.length,0);assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+test('mode notification exceptions are reported without retrying or undoing the committed operation',async()=>{
+  let delivered=0;const f=await modeWriteFixture({}, {browserId:42,onModeStateChanged:()=>{delivered++;throw Error('consumer failed');}}),p=f.proposal,errors=[];
+  f.sandbox.console={error:e=>errors.push(e.message)};
+  f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{
+    notify(Object.freeze({browserId:id,searchMode:Object.freeze({...mode}),userTypedValue:facts.userTypedValue,persistedSearchTerms:false}));return {applied:true};
+  };
+  f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}).applied,true);
+  assert.deepEqual(errors,['consumer failed']);assert.equal(delivered,1);
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),null);
+  assert.equal(f.editor.snapshot.text,p.value);f.editor.close();
+});
+
+test('reentrant mode consumer revokes old follow-up query without rewriting the delivered snapshot',async()=>{
+  let f,delivered;
+  f=await modeWriteFixture({}, {browserId:42,onModeStateChanged:n=>{delivered=n;f.editor.cancel();}});const p=f.proposal;
+  f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{
+    assert.equal(current(),true);notify(Object.freeze({browserId:id,searchMode:Object.freeze({...mode}),userTypedValue:facts.userTypedValue,persistedSearchTerms:false}));return {applied:true};
+  };
+  f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));const before=f.editor.snapshot;
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}).applied,true);
+  assert.equal(delivered.edit,before);await assert.rejects(f.editor.requeryAfterModeApplication(p.token,{searchMode:p.searchMode}),/Stale/);
+  assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+test('parent notifies committed mode only after effects and suppresses superseded delivery',()=>{
+  for(const phase of ['none','typed','record','engine','owner']) {
+    const {p,browser,lazy}=parentLoadFixture(),events=[];let typed='old',current=true,owned=true;
+    Object.defineProperty(browser,'userTypedValue',{get:()=>typed,set:v=>{typed=v;events.push('typed');if(phase==='typed')current=false;}});
+    lazy.independentUrlbarBrowserState={prepareMode:()=>({token:{},effects:{searchMode:Object.freeze({engineName:'Engine'}),persistedSearchTerms:false,recordModeEntry:true}}),
+      commit:()=>{events.push('commit');return true;},isCommitted:()=>owned,discard:()=>events.push('discard')};
+    p.recordSearchMode=()=>{events.push('record');if(phase==='record')current=false;};
+    p.markEngineAsUsed=()=>{events.push('engine');if(phase==='engine')current=false;if(phase==='owner')owned=false;};
+    const outcome=p.commitIndependentModeState(42,{engineName:'Engine'},{userTypedValue:'chosen',persistedSearchTerms:false,engineId:'engine'},()=>current,n=>{
+      events.push('notify');assert.equal(n.browserId,42);assert.equal(n.userTypedValue,'chosen');
+      assert.equal(Object.isFrozen(n),true);assert.equal(Object.isFrozen(n.searchMode),true);
+    });
+    assert.equal(outcome.applied,true);assert.equal(outcome.modeChangeNotified,phase==='none');
+    assert.equal(events.includes('notify'),phase==='none');
+    if(phase==='none')assert.deepEqual(events,['commit','typed','record','engine','notify','discard']);
+  }
+});
+
+test('mode observer is optional and invalid callbacks fail before state application',async()=>{
+  const f=fixture();assert.throws(()=>new f.sandbox.UrlbarEditSession({context:f.context,isCurrent:()=>true,onUpdate:()=>{},onModeStateChanged:{}}),/Invalid mode-state listener/);f.session.close();
+  const {p,browser,lazy}=parentLoadFixture();browser.userTypedValue='old';let calls=0;
+  lazy.independentUrlbarBrowserState={prepareMode:()=>({token:{},effects:{searchMode:null,persistedSearchTerms:false}}),commit:()=>{calls++;return true;},discard:()=>{}};
+  assert.throws(()=>p.commitIndependentModeState(42,null,{persistedSearchTerms:false},()=>true,{}),/Invalid independent/);
+  assert.equal(calls,0);
+  assert.equal(p.commitIndependentModeState(42,null,{persistedSearchTerms:false},()=>true).modeChangeNotified,false);assert.equal(calls,1);
 });
