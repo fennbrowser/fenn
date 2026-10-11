@@ -1195,3 +1195,55 @@ test('mode preparation rechecks provider pre-selection mutations and consumes be
   };
   assert.equal(g.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),true);g.editor.close();
 });
+
+
+async function modeExitFixture() {
+  const f=await modeWriteFixture({startQuery:false});
+  assert.equal(f.editor.acknowledgeResultModeApplication(f.proposal.token,observedMode(f.proposal)),true);
+  const proposal=f.editor.beginResultModeExit(1,f.query.id);
+  return {...f,proposal};
+}
+
+test('clearing a mode-preview selection restores typed text only after exact null-mode acknowledgment',async()=>{
+  const f=await modeExitFixture(),p=f.proposal,before=f.editor.snapshot;
+  assert.equal(p.kind,'mode-exit');assert.equal(p.searchMode,null);assert.equal(p.value,'@engine');
+  assert.equal(p.startQuery,false);assert.equal(p.storeTypedValue,false);
+  assert.equal(f.editor.getResultModeApplication(p.token),p);
+  assert.equal(f.editor.acknowledgeResultSelection(p.token),false);
+  assert.equal(f.editor.getResultPreview(p.token),null);
+  for(const wrong of [{searchMode:{source:1}},{searchMode:undefined},{text:'words  '},
+    {selectionStart:0},{selectionDirection:'backward'}]) {
+    assert.equal(f.editor.acknowledgeResultModeApplication(p.token,{...observed(p),searchMode:null,...wrong}),false);
+    assert.equal(f.editor.snapshot,before);
+  }
+  assert.equal(f.editor.acknowledgeResultModeApplication(p.token,{...observed(p),searchMode:null}),true);
+  assert.equal(f.editor.snapshot.text,'@engine');assert.equal(f.parent.started.length,1);
+  assert.deepEqual(f.calls,['before','selected'],'clearing selection must not notify the result provider');
+  assert.equal(f.editor.acknowledgeResultModeApplication(p.token,{...observed(p),searchMode:null}),false);
+  assert.equal(f.editor.beginResultModeExit(1,f.query.id),null);
+  assert.equal(f.editor.beginResultRestore(1,f.query.id).value,'@engine');f.editor.close();
+});
+
+test('preview-mode exits revoke on edit, caret, selection, close and scope loss',async()=>{
+  for(const revoke of [f=>f.editor.select(1,0,0),f=>f.editor.edit({},edit(2,'new')),
+    f=>f.editor.beginResultSelection(1,f.query.id,f.result),f=>f.editor.cancel(),
+    f=>f.editor.publishPresentation(1,f.query.id,[],false),f=>f.editor.hideResults(1,f.query.id)]) {
+    const f=await modeExitFixture(),p=f.proposal;await revoke(f);
+    assert.equal(f.editor.getResultModeApplication(p.token),null);
+    assert.equal(f.editor.acknowledgeResultModeApplication(p.token,{...observed(p),searchMode:null}),false);
+    f.editor.close();
+  }
+  const f=await modeExitFixture();f.loseScope();
+  assert.throws(()=>f.editor.getResultModeApplication(f.proposal.token),/scope changed/);
+  const g=await modeExitFixture();g.editor.close();
+  assert.throws(()=>g.editor.getResultModeApplication(g.proposal.token),/closed/);
+});
+
+test('mode-exit restoration rejects stale revisions and preserves confirmed mode',async()=>{
+  const f=await modeWriteFixture();
+  assert.equal(f.editor.acknowledgeResultModeApplication(f.proposal.token,observedMode(f.proposal)),true);
+  assert.equal(f.editor.beginResultModeExit(1,f.query.id),null,'confirmed mode requires explicit exit semantics');
+  assert.throws(()=>f.editor.beginResultModeExit(0,f.query.id),/Stale/);
+  assert.throws(()=>f.editor.beginResultModeExit(1,f.query.id+1),/Stale/);
+  f.editor.close();
+});

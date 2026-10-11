@@ -6978,10 +6978,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..3585c8d916
+index 0000000000..087fc17e36
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,637 @@
+@@ -0,0 +1,664 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7311,11 +7311,38 @@ index 0000000000..3585c8d916
 +    return proposal;
 +  }
 +
++  /** Clear result selection, exit preview mode and restore the original query text. */
++  beginResultModeExit(revision, queryId) {
++    this.#check();
++    if (this.#hiddenResults) throw new Error("Hidden result mode exit");
++    this.#modeApplication = null;
++    this.#resultPreview = null;
++    this.#selectionRequest = null;
++    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
++        !this.#queries.ownsQuery(queryId)) throw new Error("Stale result mode exit");
++    if (!this.#searchModePreview) return null;
++    this.freezeResults(revision, queryId);
++    const request = this.beginResultSelection(revision, queryId, null);
++    if (!request) return null;
++    const value = this.#typedText;
++    // Match setValueFromResult(null): clear both mode layers, not just preview.
++    // Popup close and one-off selection have separate semantics and host work.
++    const proposal = Object.freeze({ kind: "mode-exit", searchMode: null, value,
++      storeTypedValue: false, startQuery: false, token: request.token, edit: request.edit,
++      selectionStart: value.length, selectionEnd: value.length, selectionDirection: "none" });
++    this.#modeApplication = { proposal };
++    return proposal;
++  }
++
 +  /** Recheck live result/engine facts immediately before applying the host mode. */
 +  getResultModeApplication(token) {
 +    const request = this.getResultSelection(token);
 +    const pending = this.#modeApplication;
 +    if (!request || !pending || pending.proposal.token !== token) return null;
++    if (pending.proposal.kind === "mode-exit") {
++      return request.result === null && this.#searchModePreview &&
++        pending.proposal.value === this.#typedText ? pending.proposal : null;
++    }
 +    const live = this.describeResultModeApplication(this.#edit.revision,
 +      request.queryId, request.result, pending.options);
 +    return live && UrlbarShared.deepEqual(live, pending.description) ? pending.proposal : null;
@@ -7336,7 +7363,7 @@ index 0000000000..3585c8d916
 +    this.#completion = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
-+    this.#searchModePreview = !!proposal.searchMode.isPreview;
++    this.#searchModePreview = !!proposal.searchMode?.isPreview;
 +    if (proposal.storeTypedValue) this.#typedText = text;
 +    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: this.#edit.selectionRevision + 1 });
