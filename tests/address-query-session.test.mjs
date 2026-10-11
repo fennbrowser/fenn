@@ -8,7 +8,7 @@ const sharedPolicy=vm.createContext({URL,UrlbarContentUtils:{},UrlbarPrefs:{get:
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarShared.mjs',import.meta.url),'utf8')
   .replace(/^import .*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),sharedPolicy);
 
-function fixture({hold=false,uninitializedResults=false}={}) {
+function fixture({hold=false,uninitializedResults=false,onPresentationRequest=null}={}) {
   const parents=[];
   const prefs={"experimental.hideHeuristic":false};
   class Parent {
@@ -22,6 +22,7 @@ function fixture({hold=false,uninitializedResults=false}={}) {
   let id=0;
   const sandbox=vm.createContext({console,URL,UrlbarQueryLifecycle,
     UrlbarShared:{stripPrefixAndTrim:sharedPolicy.UrlbarShared.stripPrefixAndTrim,getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_TYPE:sharedPolicy.UrlbarShared.RESULT_TYPE,RESULT_SOURCE:sharedPolicy.UrlbarShared.RESULT_SOURCE,canAutofillURL:sharedPolicy.UrlbarShared.canAutofillURL.bind(sharedPolicy.UrlbarShared),NOTIFICATIONS:{
+      RESULTS_CLOSE_REQUESTED:'onResultsCloseRequested',
       QUERY_ARMED:'onQueryArmed',QUERY_STARTED:'onQueryStarted',QUERY_CANCELLED:'onQueryCancelled',
       QUERY_FIRST_RESULT:'onFirstResult',QUERY_RESULTS:'onQueryResults',QUERY_FINISHED:'onQueryFinished'}},
     UrlbarPrefs:{get:key=>prefs[key] ?? 10},UrlbarContentUtils:{usesMessagePath:()=>false,getDisplaySpec:spec=>spec,getFixupPrimitives:()=>({})},
@@ -38,7 +39,7 @@ function fixture({hold=false,uninitializedResults=false}={}) {
   }
   let current=true;
   const context={sapName:'urlbar',isPrivate:true,actor:{browsingContext:{isContent:false}}};
-  const session=new sandbox.UrlbarQuerySession({context,isCurrent:()=>current});
+  const session=new sandbox.UrlbarQuerySession({context,isCurrent:()=>current,onPresentationRequest});
   return {session,parent:parents[0],parents,sandbox,context,prefs,invalidate(){current=false;}};
 }
 
@@ -52,6 +53,77 @@ test('fresh controllers and engine stores use explicit identity with no input or
   assert.equal(f.parent.started[0],q);
   assert.throws(()=>new f.sandbox.UrlbarChildController({context:{...f.context,actor:{browsingContext:{isContent:true}}}}),/chrome context/);
   f.session.close();f.session.close();assert.equal(f.parent.destroyed,1);
+});
+
+test('query-scoped close requests survive result freezing but not cancellation, replacement or scope loss',async()=>{
+  const requests=[],f=fixture({onPresentationRequest:request=>requests.push(request)});
+  const q=await f.session.query({}, {searchString:'close'});q.results=[{}];
+  f.session.freezeResults(q.id);
+  f.parent.child.notify('onResultsCloseRequested',q.id,true);
+  assert.deepEqual({...requests[0]},{kind:'close',queryId:q.id,elementPicked:true});
+  assert.ok(Object.isFrozen(requests[0]));assert.equal(f.session.ownsQuery(q.id),true,'request does not apply host UI effects');
+  for(const args of [[q.id-1,true],[q.id,false],[q.id,{}]])f.parent.child.notify('onResultsCloseRequested',...args);
+  const next=await f.session.query({}, {searchString:'new'});
+  f.parent.child.notify('onResultsCloseRequested',q.id,true);
+  f.session.cancel();f.parent.child.notify('onResultsCloseRequested',next.id,true);
+  const last=await f.session.query({}, {searchString:'scope'});f.invalidate();
+  f.parent.child.notify('onResultsCloseRequested',last.id,true);
+  assert.equal(requests.length,1);f.session.close();
+});
+
+test('child drops delayed close requests as soon as a newer query is armed before its results arrive',async()=>{
+  const f=fixture(),received=[];
+  f.parent.child.addListener({onResultsCloseRequested:id=>received.push(id)});
+  const old=await f.session.query({}, {searchString:'old'});
+  const gate=Promise.withResolvers();let current;
+  f.parent.startQuery=q=>{current=q;return gate.promise;};
+  const pending=f.session.query({}, {searchString:'new'});
+  f.parent.child.notify('onResultsCloseRequested',old.id,true);
+  assert.deepEqual(received,[]);
+  f.parent.child.notify('onResultsCloseRequested',current.id,true);
+  assert.deepEqual(received,[current.id]);gate.resolve(current);await pending;f.session.close();
+});
+
+test('parent close requests require exact current context and original view ignores delayed requests',()=>{
+  const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarParentController.sys.mjs',import.meta.url),'utf8');
+  const start=source.indexOf('  requestResultsClose(queryContext) {');
+  const method=source.slice(start,source.indexOf('\n  }',start)+4);
+  const Parent=new Function('lazy',`return class {#destroyed=false; destroy(){this.#destroyed=true;} ${method}}`)({UrlbarShared:{NOTIFICATIONS:{RESULTS_CLOSE_REQUESTED:'close'}}});
+  const parent=new Parent(),q={id:1},calls=[];parent.notify=(...args)=>calls.push(args);
+  assert.equal(parent.requestResultsClose(q),false);
+  parent._lastQueryContextWrapper={queryContext:q,done:true};
+  assert.equal(parent.requestResultsClose({...q}),false);
+  assert.equal(parent.requestResultsClose(q),true);assert.deepEqual(calls,[['close',1,true]]);
+  parent.destroy();assert.equal(parent.requestResultsClose(q),false);
+  const viewSource=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarView.mjs',import.meta.url),'utf8');
+  const a=viewSource.indexOf('  onResultsCloseRequested(queryId, elementPicked) {');
+  const viewMethod=viewSource.slice(a,viewSource.indexOf('\n  }',a)+4);
+  const View=new Function(`return class {#queryContext={id:2}; ${viewMethod}}`)(),view=new View();
+  view.close=options=>calls.push({...options});
+  view.onResultsCloseRequested(1,true);view.onResultsCloseRequested(2,false);
+  assert.equal(calls.length,1);view.onResultsCloseRequested(2,true);
+  assert.deepEqual(calls[1],{elementPicked:true});
+});
+
+test('contextual commands retain effects and close-before-removal order without reading a view or container',()=>{
+  const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarProviderQuickSuggestContextualOptIn.sys.mjs',import.meta.url),'utf8');
+  const a=source.indexOf('  onEngagement(queryContext,'),b=source.indexOf('  #dismiss()',a);
+  const calls=[],Provider=new Function('lazy',`return class {
+    #dismiss(){this.calls.push('dismiss');} #shouldDisplayContextualOptIn(){return false;}
+    ${source.slice(a,b)}
+  }`)({UrlbarPrefs:{set:(...args)=>calls.push(['pref',...args])}});
+  const provider=new Provider();provider.calls=calls;
+  const q={},result={},controller={get view(){throw Error('provider accessed a view');},
+    browserWindow:{openHelpLink:name=>calls.push(['help',name])},
+    requestResultsClose:context=>{assert.equal(context,q);calls.push('close');},
+    removeResult:r=>{assert.equal(r,result);calls.push('remove');}};
+  for(const [selType,effect] of [['allow',['pref','quicksuggest.online.enabled',true]],
+    ['learn_more',['help','firefox-suggest']],['dismiss','dismiss']]) {
+    calls.length=0;provider.onEngagement(q,controller,{selType,result});
+    assert.deepEqual(calls,[effect,'close','remove']);
+  }
+  calls.length=0;provider.onEngagement(q,controller,{selType:'unknown',result});assert.deepEqual(calls,[]);
+  assert.doesNotMatch(source,/controller\.view|container\.hidden/);
 });
 
 test('streaming updates preserve context identity and suppress stale, cancelled and out-of-scope callbacks',async()=>{
