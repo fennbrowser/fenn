@@ -1622,6 +1622,75 @@ index bc6837e211..d5ff780b17 100644
      const visibleResultsByProviderName = new Map();
  
      visibleResults.forEach((result, index) => {
+diff --git a/browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs b/browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs
+index 05db07d0ed..3d896a3583 100644
+--- a/browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs
++++ b/browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs
+@@ -212,6 +212,35 @@ class _UrlbarSearchTermsPersistence {
+     return "";
+   }
+ 
++  /**
++   * Update an explicitly owned browser state. The caller supplies browser facts
++   * and applies returned editor/telemetry effects; this method never reads an
++   * input, window or presenter. State must belong to the caller's live browser.
++   */
++  updateState(state, { enabled, originalURI, uri, userTypedValue,
++    hideSearchTerms, dueToTabSwitch, isSameDocument }) {
++    if (!enabled) {
++      const updateAttribute = !!state.persist;
++      if (state.persist) delete state.persist;
++      return { shouldPersist: false, updateAttribute, writeUserTypedValue: false,
++        userTypedValue, recordView: false };
++    }
++    const firstView = (!isSameDocument && !dueToTabSwitch) || !state.persist;
++    const cachedUriDidChange = state.persist?.originalURI &&
++      (!originalURI || !state.persist.originalURI.equals(originalURI));
++    const wasPersisting = state.persist?.shouldPersist ?? false;
++    if (firstView || cachedUriDidChange) this.setPersistenceState(state, originalURI);
++    const shouldPersist = !hideSearchTerms && this.shouldPersist(state, {
++      dueToTabSwitch, isSameDocument, uri, userTypedValue, firstView,
++    });
++    const writeUserTypedValue = !!(shouldPersist || wasPersisting);
++    if (shouldPersist) userTypedValue = state.persist.searchTerms;
++    else if (wasPersisting) userTypedValue = null;
++    state.persist.shouldPersist = shouldPersist;
++    return { shouldPersist, updateAttribute: true, writeUserTypedValue,
++      userTypedValue, recordView: !!(shouldPersist && !isSameDocument) };
++  }
++
+   shouldPersist(state, { uri, isSameDocument, userTypedValue, firstView }) {
+     let persist = state.persist;
+     if (!persist) {
+@@ -364,17 +393,21 @@ class _UrlbarSearchTermsPersistence {
+       return;
+     }
+ 
+-    // Exit search terms persistence when search mode changes and it's not
+-    // consistent with the persisted engine.
+-    if (
+-      state.persist.shouldPersist &&
+-      !this.searchModeMatchesState(state.searchModes?.confirmed, state)
+-    ) {
+-      state.persist.shouldPersist = false;
++    if (this.updateSearchModeState(state)) {
+       window.gURLBar.removeAttribute("persistsearchterms");
+     }
+   }
+ 
++  /** Return whether a mode change disabled persistence in caller-owned state. */
++  updateSearchModeState(state) {
++    if (state?.persist?.shouldPersist &&
++        !this.searchModeMatchesState(state.searchModes?.confirmed, state)) {
++      state.persist.shouldPersist = false;
++      return true;
++    }
++    return false;
++  }
++
+   async #onSettingsSync(event) {
+     let current = event.data?.current;
+     if (current) {
 diff --git a/browser/components/urlbar/content/SearchEngineStore.mjs b/browser/components/urlbar/content/SearchEngineStore.mjs
 index 6d9c262c83..58fe21fd4f 100644
 --- a/browser/components/urlbar/content/SearchEngineStore.mjs
@@ -3583,7 +3652,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..7feb4ab290 100644
+index a077de625f..e88d87bd01 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,21 @@
@@ -5168,7 +5237,86 @@ index a077de625f..7feb4ab290 100644
    }
  
    /**
-@@ -5071,6 +4536,8 @@ ${
+@@ -4904,66 +4369,18 @@ ${
+     isSameDocument,
+     uri,
+   }) {
+-    if (!lazy.UrlbarUtils.isPersistedSearchTermsEnabled()) {
+-      if (state.persist) {
+-        this.removeAttribute("persistsearchterms");
+-        delete state.persist;
+-      }
+-      return false;
+-    }
+-
+-    // The first time the browser URI has been loaded to the input. If
+-    // persist is not defined, it is likely due to the tab being created in
+-    // the background or an existing tab moved to a new window and we have to
+-    // do the work for the first time.
+-    let firstView = (!isSameDocument && !dueToTabSwitch) || !state.persist;
+-
+-    let cachedUriDidChange =
+-      state.persist?.originalURI &&
+-      (!this.window.gBrowser.selectedBrowser.originalURI ||
+-        !state.persist.originalURI.equals(
+-          this.window.gBrowser.selectedBrowser.originalURI
+-        ));
+-
+-    // Capture the shouldPersist property if it exists before
+-    // setPersistenceState potentially modifies it.
+-    let wasPersisting = state.persist?.shouldPersist ?? false;
+-
+-    if (firstView || cachedUriDidChange) {
+-      lazy.UrlbarSearchTermsPersistence.setPersistenceState(
+-        state,
+-        this.window.gBrowser.selectedBrowser.originalURI
+-      );
+-    }
+-    let shouldPersist =
+-      !hideSearchTerms &&
+-      lazy.UrlbarSearchTermsPersistence.shouldPersist(state, {
+-        dueToTabSwitch,
+-        isSameDocument,
+-        uri: uri ?? this.window.gBrowser.currentURI,
+-        userTypedValue: this.userTypedValue,
+-        firstView,
+-      });
+-    // When persisting, userTypedValue should have a value consistent with the
+-    // search terms to mimic a user typing the search terms.
+-    // When turning off persist, check if the userTypedValue needs to be
+-    // removed in order for the URL to return to the address bar. Single page
+-    // application SERPs will load secondary search pages (e.g. Maps, Images)
+-    // with the same document, which won't unset userTypedValue.
+-    if (shouldPersist) {
+-      this.userTypedValue = state.persist.searchTerms;
+-    } else if (wasPersisting && !shouldPersist) {
+-      this.userTypedValue = null;
+-    }
+-
+-    state.persist.shouldPersist = shouldPersist;
+-    this.toggleAttribute("persistsearchterms", state.persist.shouldPersist);
+-
+-    if (state.persist.shouldPersist && !isSameDocument) {
+-      Glean.urlbarPersistedsearchterms.viewCount.add(1);
+-    }
+-
+-    return shouldPersist;
++    const enabled = lazy.UrlbarUtils.isPersistedSearchTermsEnabled();
++    const effect = lazy.UrlbarSearchTermsPersistence.updateState(state, enabled ? {
++      enabled,
++      originalURI: this.window.gBrowser.selectedBrowser.originalURI,
++      uri: uri ?? this.window.gBrowser.currentURI,
++      userTypedValue: this.userTypedValue,
++      hideSearchTerms, dueToTabSwitch, isSameDocument,
++    } : { enabled });
++    if (effect.writeUserTypedValue) this.userTypedValue = effect.userTypedValue;
++    if (effect.updateAttribute) this.toggleAttribute("persistsearchterms", effect.shouldPersist);
++    if (effect.recordView) Glean.urlbarPersistedsearchterms.viewCount.add(1);
++    return effect.shouldPersist;
+   }
+ 
+   /**
+@@ -5071,6 +4488,8 @@ ${
    setUnifiedSearchButtonAvailability(available) {
      available ||=
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
@@ -5177,7 +5325,7 @@ index a077de625f..7feb4ab290 100644
      const switcher = this.querySelector(".searchmode-switcher");
      switcher.toggleAttribute("offscreen", !available);
      if (available) {
-@@ -5085,6 +4552,7 @@ ${
+@@ -5085,6 +4504,7 @@ ${
          this.window.gBrowser.selectedBrowser
        ).isUnifiedSearchButtonAvailable = available;
      }
@@ -5185,7 +5333,7 @@ index a077de625f..7feb4ab290 100644
    }
  
    /**
-@@ -5151,7 +4619,7 @@ ${
+@@ -5151,7 +4571,7 @@ ${
    #maybeSelectAll() {
      if (
        !this.#preventClickSelectsAll &&
@@ -5194,7 +5342,7 @@ index a077de625f..7feb4ab290 100644
        this.focused &&
        this.inputField.selectionStart == this.inputField.selectionEnd
      ) {
-@@ -5477,34 +4945,20 @@ ${
+@@ -5477,34 +4897,20 @@ ${
      }
    }
  
@@ -5202,28 +5350,28 @@ index a077de625f..7feb4ab290 100644
 -    // A new input starts a fresh search; bump the epoch so a pending
 -    // deferred-Enter's async keyup won't reset this search's caret.
 -    this.#inputEpoch++;
--    if (
++  setNativeInputValue(value) {
+     if (
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      (event.inputType === "deleteContentBackward" ||
 -        event.inputType === "deleteContentForward")
--    ) {
++      !this.view.nativePresentation ||
++      typeof value !== "string" ||
++      value.length > 32768
+     ) {
 -      // Take a telemetry if user deleted whole autofilled value.
 -      this.parentController.recordAutofillDeletion();
 -    }
 -
-+  setNativeInputValue(value) {
-     if (
+-    if (
 -      UrlbarPrefs.get("autoFill.adaptiveHistory.enabled") &&
 -      event.inputType?.startsWith("deleteContent") &&
 -      !this.isPrivate &&
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      this._resultForCurrentValue?.payload?.url
-+      !this.view.nativePresentation ||
-+      typeof value !== "string" ||
-+      value.length > 32768
-     ) {
+-    ) {
 -      this.parentController.recordAutofillBackspace(
 -        this._resultForCurrentValue.payload.url
 -      );
@@ -5239,7 +5387,7 @@ index a077de625f..7feb4ab290 100644
      this.valueIsTyped = true;
      this._untrimmedValue = value;
      this._protocolIsTrimmed = false;
-@@ -5516,20 +4970,9 @@ ${
+@@ -5516,20 +4922,9 @@ ${
      // string, thus there's no valid selection. This is also used by the view
      // to set "aria-activedescendant", thus it should never get stale.
      this.controller.userSelectionBehavior = "none";
@@ -5262,7 +5410,7 @@ index a077de625f..7feb4ab290 100644
      this.toggleAttribute("usertyping", value);
      this.removeAttribute("actiontype");
  
-@@ -5551,6 +4994,43 @@ ${
+@@ -5551,6 +4946,43 @@ ${
          this.removeAttribute("persistsearchterms");
        }
      }
@@ -5306,7 +5454,7 @@ index a077de625f..7feb4ab290 100644
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
-@@ -5580,10 +5060,9 @@ ${
+@@ -5580,10 +5012,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -5320,7 +5468,7 @@ index a077de625f..7feb4ab290 100644
      ) {
        return;
      }
-@@ -5591,11 +5070,10 @@ ${
+@@ -5591,11 +5022,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -5336,7 +5484,7 @@ index a077de625f..7feb4ab290 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5669,33 +5147,20 @@ ${
+@@ -5669,33 +5099,20 @@ ${
    }
  
    _on_paste(event) {
@@ -5378,7 +5526,7 @@ index a077de625f..7feb4ab290 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5174,7 @@ ${
+@@ -5709,7 +5126,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -5387,7 +5535,7 @@ index a077de625f..7feb4ab290 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5205,25 @@ ${
+@@ -5740,51 +5157,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -5455,7 +5603,7 @@ index a077de625f..7feb4ab290 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5417,11 @@ ${
+@@ -5978,15 +5369,11 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -5473,7 +5621,7 @@ index a077de625f..7feb4ab290 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5441,24 @@ ${
+@@ -6006,44 +5393,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -5530,7 +5678,7 @@ index a077de625f..7feb4ab290 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,11 +5584,7 @@ ${
+@@ -6169,11 +5536,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -5543,7 +5691,7 @@ index a077de625f..7feb4ab290 100644
    }
  
    get #isOpenedPageInBlankTargetLoading() {
-@@ -6311,111 +5722,6 @@ function getDroppableData(event) {
+@@ -6311,111 +5674,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -5655,7 +5803,7 @@ index a077de625f..7feb4ab290 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +5746,10 @@ class CopyCutController {
+@@ -6440,12 +5698,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
