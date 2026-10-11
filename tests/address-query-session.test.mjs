@@ -228,6 +228,61 @@ test('malformed autofill selection cannot produce a preview or notify providers'
   assert.deepEqual(f.calls,[]);f.editor.close();
 });
 
+test('clearing selection restores typed text exactly without provider notification or another query',async()=>{
+  const f=await previewFixture();const p=f.editor.beginResultPreview(1,f.query.id,f.result);
+  assert.equal(f.editor.acknowledgeResultPreview(p.token,observed(p)),true);
+  const snapshot=f.editor.snapshot,started=f.parent.started.length,calls=[...f.calls];
+  const restore=f.editor.beginResultRestore(1,f.query.id);
+  assert.equal(restore.kind,'restore');assert.equal(restore.value,'typed words');
+  assert.equal(restore.edit,snapshot);assert.equal(f.editor.snapshot,snapshot);
+  assert.equal(f.editor.acknowledgeResultSelection(restore.token),false);
+  assert.equal(f.editor.acknowledgeResultPreview(restore.token,{...observed(restore),selectionStart:0}),false);
+  assert.equal(f.editor.acknowledgeResultPreview(restore.token,observed(restore)),true);
+  assert.equal(f.editor.acknowledgeResultPreview(restore.token,observed(restore)),false);
+  assert.equal(f.editor.snapshot.text,'typed words');assert.equal(f.parent.started.length,started);
+  assert.deepEqual(f.calls,calls);f.editor.close();
+});
+
+test('restoration survives removal of the old row but not hiding or a new selection',async()=>{
+  const f=await previewFixture();let restore=f.editor.beginResultRestore(1,f.query.id);
+  f.parent.child.notify('onQueryResultRemoved',5,undefined,f.query.id);
+  f.editor.publishPresentation(1,f.query.id,[],true);
+  assert.equal(f.editor.getResultPreview(restore.token),restore);
+  f.editor.publishPresentation(1,f.query.id,[],false);
+  f.editor.publishPresentation(1,f.query.id,[],true);
+  assert.equal(f.editor.getResultPreview(restore.token),null);
+  restore=f.editor.beginResultRestore(1,f.query.id);f.editor.select(1,0,0);
+  assert.equal(f.editor.getResultPreview(restore.token),null);f.editor.close();
+  const g=await previewFixture();restore=g.editor.beginResultRestore(1,g.query.id);
+  g.editor.beginResultSelection(1,g.query.id,g.result);
+  assert.equal(g.editor.getResultPreview(restore.token),null);g.editor.close();
+});
+
+test('restoration clears autofill placeholders and preserves an explicitly empty typed value',async()=>{
+  const f=await previewFixture();f.result.autofill={value:'typed.example/',selectionStart:5,selectionEnd:14};
+  const p=f.editor.beginResultPreview(1,f.query.id,f.result);
+  assert.equal(f.editor.acknowledgeResultPreview(p.token,observed(p)),true);
+  const restore=f.editor.beginResultRestore(1,f.query.id);
+  assert.equal(f.editor.acknowledgeResultPreview(restore.token,observed(restore)),true);
+  await f.editor.edit({},edit(2,'typed.'));
+  assert.equal(f.updates.some(u=>u.edit.revision===2 && u.kind==='prepared'),false);
+  const q=await f.editor.edit({},edit(3,''));q.results=[f.result];
+  f.editor.publishPresentation(3,q.id,[f.result],true);
+  const empty=f.editor.beginResultRestore(3,q.id);assert.equal(empty.value,'');
+  assert.equal(f.editor.acknowledgeResultPreview(empty.token,observed(empty)),true);f.editor.close();
+});
+
+test('restoration rejects stale edits, query replacement, scope loss and preview search mode',async()=>{
+  const f=await previewFixture(),restore=f.editor.beginResultRestore(1,f.query.id);
+  await f.editor.edit({},edit(2,'new'));
+  assert.equal(f.editor.getResultPreview(restore.token),null);
+  assert.throws(()=>f.editor.beginResultRestore(1,f.query.id),/Stale/);
+  const q=await f.editor.edit({searchMode:{isPreview:true}},edit(3,'mode'));q.results=[f.result];
+  f.editor.publishPresentation(3,q.id,[f.result],true);
+  assert.equal(f.editor.beginResultRestore(3,q.id),null);
+  f.loseScope();assert.throws(()=>f.editor.beginResultRestore(3,q.id),/scope changed/);
+});
+
 test('removed frozen results lose identity and exposure even if an old descriptor or late batch retains them',async()=>{
   const requests=[],f=fixture({onPresentationRequest:r=>requests.push(r)});
   const q=await f.session.query({}, {searchString:'remove'}),a={id:1},b={id:2};q.results=[a,b];

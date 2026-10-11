@@ -6860,10 +6860,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..9e289cd605
+index 0000000000..0c626eb6bc
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,465 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7191,11 +7191,35 @@ index 0000000000..9e289cd605
 +    return proposal;
 +  }
 +
++  /** Restore the query's typed text when clearing selection, without requerying. */
++  beginResultRestore(revision, queryId) {
++    this.#check();
++    this.#resultPreview = null;
++    this.#selectionRequest = null;
++    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing ||
++        !this.#queries.ownsQuery(queryId)) throw new Error("Stale result restoration");
++    // Exiting a preview search mode requires a separate semantic transition.
++    if (this.#searchModePreview) return null;
++    this.freezeResults(revision, queryId);
++    const request = this.beginResultSelection(revision, queryId, null);
++    if (!request) return null;
++    const value = this.#typedText;
++    const proposal = Object.freeze({ kind: "restore", value, autofill: null,
++      selectionStart: value.length, selectionEnd: value.length, selectionDirection: "none",
++      token: request.token, edit: request.edit });
++    this.#resultPreview = proposal;
++    return proposal;
++  }
++
 +  /** Revalidate live result semantics immediately before the host text write. */
 +  getResultPreview(token) {
 +    const request = this.getResultSelection(token);
 +    const proposal = this.#resultPreview;
 +    if (!request || !proposal || proposal.token !== token) return null;
++    if (proposal.kind === "restore") {
++      return request.result === null && !this.#searchModePreview &&
++        proposal.value === this.#typedText ? proposal : null;
++    }
 +    const live = this.#describeResultPreview(this.#edit.revision, request.queryId, request.result);
 +    if (!live || ["kind", "value", "actionType", "selectionStart", "selectionEnd", "selectionDirection"]
 +      .some(key => live[key] !== proposal[key])) return null;
@@ -7307,10 +7331,10 @@ index 0000000000..9e289cd605
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..b8fd427bd3
+index 0000000000..fd5d14cb92
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,258 @@
+@@ -0,0 +1,262 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7361,7 +7385,7 @@ index 0000000000..b8fd427bd3
 +        if (this.#closed || !this.#isCurrent() || !this.#query || this.#query.id !== queryId ||
 +            resultId === undefined || this.#removedIds.has(resultId)) return;
 +        this.#removedIds.add(resultId);
-+        if (this.#selectionRequest?.result.id === resultId) this.#selectionRequest = null;
++        if (this.#selectionRequest?.result?.id === resultId) this.#selectionRequest = null;
 +        if (this.#frozen) {
 +          this.#frozen = Object.freeze({ queryId,
 +            results: Object.freeze(this.#frozen.results.filter(result => result.id !== resultId)) });
@@ -7488,18 +7512,20 @@ index 0000000000..b8fd427bd3
 +   * the token before applying selection, then acknowledge its observation.
 +   * This neither selects a row nor writes editor text or activates a result.
 +   * No DOM element is supplied to the provider's pre-selection hook.
++   * Explicit null clears selection without notifying a result provider.
 +   */
 +  beginResultSelection(queryId, result) {
 +    this.#check();
 +    this.#selectionRequest = null;
-+    if (!this.ownsResult(queryId, result) || !this.#controller.resultsOpen ||
-+        !this.#controller.visibleResults.includes(result)) {
++    if (!this.ownsQuery(queryId) || !this.#controller.resultsOpen ||
++        (result !== null && (!this.ownsResult(queryId, result) ||
++          !this.#controller.visibleResults.includes(result)))) {
 +      throw new Error("Invalid result selection");
 +    }
 +    const request = Object.freeze({ queryId, result, token: Object.freeze({}) });
 +    this.#selectionRequest = request;
 +    try {
-+      this.#controller.parentController.onBeforeSelection(result);
++      if (result !== null) this.#controller.parentController.onBeforeSelection(result);
 +    } catch (error) {
 +      if (this.#selectionRequest === request) this.#selectionRequest = null;
 +      throw error;
@@ -7513,8 +7539,9 @@ index 0000000000..b8fd427bd3
 +    this.#check();
 +    const request = this.#selectionRequest;
 +    return request && request.token === token &&
-+      this.ownsResult(request.queryId, request.result) &&
-+      this.#controller.resultsOpen && this.#controller.visibleResults.includes(request.result)
++      this.ownsQuery(request.queryId) && this.#controller.resultsOpen &&
++      (request.result === null || (this.ownsResult(request.queryId, request.result) &&
++        this.#controller.visibleResults.includes(request.result)))
 +      ? request : null;
 +  }
 +
@@ -7523,7 +7550,7 @@ index 0000000000..b8fd427bd3
 +    if (!request) return false;
 +    // Consume before invoking a potentially reentrant provider callback.
 +    this.#selectionRequest = null;
-+    this.#controller.parentController.onSelection(request.result);
++    if (request.result !== null) this.#controller.parentController.onSelection(request.result);
 +    return true;
 +  }
 +
@@ -7537,7 +7564,8 @@ index 0000000000..b8fd427bd3
 +    ) {
 +      throw new Error("Invalid query presentation");
 +    }
-+    if (!open || !visibleResults.includes(this.#selectionRequest?.result)) {
++    if (!open || (this.#selectionRequest?.result !== null &&
++        !visibleResults.includes(this.#selectionRequest?.result))) {
 +      this.#selectionRequest = null;
 +    }
 +    this.#controller.visibleResults = [...visibleResults];
