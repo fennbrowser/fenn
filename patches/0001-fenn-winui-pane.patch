@@ -833,7 +833,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..55d404d841 100644
+index ba254af0c6..a51b7f0bfb 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -114,6 +114,7 @@ export class UrlbarParentController {
@@ -938,7 +938,64 @@ index ba254af0c6..55d404d841 100644
          break;
      }
    };
-@@ -1864,17 +1887,16 @@ export class TelemetryEvent {
+@@ -1727,8 +1750,12 @@ export class TelemetryEvent {
+    *   A DOM event. Note: event can be null, that usually happens for paste&go
+    *   or drop&go. If there's no _startEventInfo this is a no-op.
+    * @param {ActionDetails} details
++   * @param {?object} explicitState
++   *   Optional direct-consumer snapshot {engagementData, smartbarData}. It is
++   *   supplied by the independent session from validated exposure and host facts;
++   *   omitted for the retained input. No live input/view adapter is required.
+    */
+-  record(event, details) {
++  record(event, details, explicitState = null) {
+     // Prevent re-entering `record()`. This can happen because
+     // `#internalRecord()` will notify an engagement to the provider, that may
+     // execute an action blurring the input field. Then both an engagement
+@@ -1743,7 +1770,7 @@ export class TelemetryEvent {
+     // This should never throw, or it may break the urlbar.
+     try {
+       this.#handlingRecord = true;
+-      this.#internalRecord(event, details);
++      this.#internalRecord(event, details, explicitState);
+     } catch (ex) {
+       console.error("Could not record event: ", ex);
+     } finally {
+@@ -1769,7 +1796,7 @@ export class TelemetryEvent {
+    * @param {Event} event
+    * @param {ActionDetails} details
+    */
+-  #internalRecord(event, details) {
++  #internalRecord(event, details, explicitState) {
+     let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
+       event,
+       details,
+@@ -1780,12 +1807,13 @@ export class TelemetryEvent {
+     }
+ 
+     // `details.isSessionOngoing` was set by collectSnapshot() above.
+-    let engagementData = this.#engagementData;
++    let engagementData = explicitState ? explicitState.engagementData : this.#engagementData;
++    let smartbarData = explicitState ? explicitState.smartbarData : this.#smartbarData;
+     let { built, previousSearchWords } =
+       lazy.UrlbarTelemetryUtils.buildRecordedEngagement(
+         snapshot,
+         engagementData,
+-        this.#smartbarData,
++        smartbarData,
+         this.#previousSearchWordsSet
+       );
+     this.#previousSearchWordsSet = previousSearchWords;
+@@ -1796,7 +1824,7 @@ export class TelemetryEvent {
+       ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
+           snapshot,
+           engagementData,
+-          this.#smartbarData,
++          smartbarData,
+           this.#previousSearchWordsSet
+         )
+       : null;
+@@ -1864,17 +1892,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -2911,7 +2968,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..7d5311ca29 100644
+index a077de625f..79f2590661 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,20 @@
@@ -3418,7 +3475,17 @@ index a077de625f..7d5311ca29 100644
  
      // The address bar keeps a search mode per browser, so it only enters search
      // mode for the selected one. Every other input keeps a single search mode.
-@@ -3245,38 +3192,21 @@ ${
+@@ -3040,8 +2987,7 @@ ${
+   confirmSearchMode() {
+     let searchMode = this.searchMode;
+     if (searchMode?.isPreview) {
+-      searchMode.isPreview = false;
+-      this.searchMode = searchMode;
++      this.searchMode = { ...UrlbarSearchModeModel.confirmedMode(searchMode) };
+ 
+       // Unselect the one-off search button to ensure UI consistency.
+       if (this.view.oneOffSearchButtons) {
+@@ -3245,38 +3191,21 @@ ${
      result = this._resultForCurrentValue,
      checkValue = true,
      startQuery = true,
@@ -3469,7 +3536,7 @@ index a077de625f..7d5311ca29 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -3516,84 +3446,19 @@ ${
+@@ -3516,84 +3445,19 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
@@ -3566,7 +3633,7 @@ index a077de625f..7d5311ca29 100644
    }
  
    /**
-@@ -3604,14 +3469,7 @@ ${
+@@ -3604,14 +3468,7 @@ ${
     * @returns {string} The `actiontype` value, or undefined.
     */
    #getActionTypeFromResult(result) {
@@ -3582,7 +3649,7 @@ index a077de625f..7d5311ca29 100644
    }
  
    /**
-@@ -3634,64 +3492,27 @@ ${
+@@ -3634,64 +3491,27 @@ ${
     *   Whether autofill should be allowed in the new search.
     */
    _maybeAutofillPlaceholder(value) {
@@ -3667,7 +3734,7 @@ index a077de625f..7d5311ca29 100644
    }
  
    /**
-@@ -3772,105 +3593,31 @@ ${
+@@ -3772,105 +3592,31 @@ ${
      }
    }
  
@@ -3798,7 +3865,7 @@ index a077de625f..7d5311ca29 100644
    }
  
    _toggleActionOverride(event) {
-@@ -4081,33 +3828,34 @@ ${
+@@ -4081,33 +3827,34 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -3839,7 +3906,7 @@ index a077de625f..7d5311ca29 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -4267,6 +4015,15 @@ ${
+@@ -4267,6 +4014,15 @@ ${
      }
    }
  
@@ -3855,7 +3922,7 @@ index a077de625f..7d5311ca29 100644
    _initCopyCutController() {
      // This exists to put an untrimmed URL on the clipboard, and only the address
      // bar trims. Every other input keeps its native copy/cut.
-@@ -4479,7 +4236,7 @@ ${
+@@ -4479,7 +4235,7 @@ ${
        return;
      }
      let controller =
@@ -3864,7 +3931,7 @@ index a077de625f..7d5311ca29 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4495,6 +4252,33 @@ ${
+@@ -4495,6 +4251,33 @@ ${
      stripOnShare.removeAttribute("disabled");
    }
  
@@ -3898,7 +3965,7 @@ index a077de625f..7d5311ca29 100644
    _initPasteAndGo() {
      this.addContextMenuItems({
        after: "edit-contextmenu-paste",
-@@ -4507,17 +4291,7 @@ ${
+@@ -4507,17 +4290,7 @@ ${
            .GetStringFromName("pasteAndGo.label");
          pasteAndGo.setAttribute("label", label);
          pasteAndGo.setAttribute("anonid", "paste-and-go");
@@ -3917,7 +3984,7 @@ index a077de625f..7d5311ca29 100644
  
          fragment.appendChild(pasteAndGo);
          return fragment;
-@@ -4545,10 +4319,7 @@ ${
+@@ -4545,10 +4318,7 @@ ${
            { once: true }
          );
  
@@ -3929,7 +3996,7 @@ index a077de625f..7d5311ca29 100644
            pasteAndGo.removeAttribute("disabled");
          } else {
            pasteAndGo.setAttribute("disabled", "true");
-@@ -4747,60 +4518,11 @@ ${
+@@ -4747,60 +4517,11 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -3995,7 +4062,7 @@ index a077de625f..7d5311ca29 100644
    }
  
    /**
-@@ -5071,6 +4793,8 @@ ${
+@@ -5071,6 +4792,8 @@ ${
    setUnifiedSearchButtonAvailability(available) {
      available ||=
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
@@ -4004,7 +4071,7 @@ index a077de625f..7d5311ca29 100644
      const switcher = this.querySelector(".searchmode-switcher");
      switcher.toggleAttribute("offscreen", !available);
      if (available) {
-@@ -5085,6 +4809,7 @@ ${
+@@ -5085,6 +4808,7 @@ ${
          this.window.gBrowser.selectedBrowser
        ).isUnifiedSearchButtonAvailable = available;
      }
@@ -4012,7 +4079,7 @@ index a077de625f..7d5311ca29 100644
    }
  
    /**
-@@ -5151,7 +4876,7 @@ ${
+@@ -5151,7 +4875,7 @@ ${
    #maybeSelectAll() {
      if (
        !this.#preventClickSelectsAll &&
@@ -4021,7 +4088,7 @@ index a077de625f..7d5311ca29 100644
        this.focused &&
        this.inputField.selectionStart == this.inputField.selectionEnd
      ) {
-@@ -5477,34 +5202,20 @@ ${
+@@ -5477,34 +5201,20 @@ ${
      }
    }
  
@@ -4029,28 +4096,28 @@ index a077de625f..7d5311ca29 100644
 -    // A new input starts a fresh search; bump the epoch so a pending
 -    // deferred-Enter's async keyup won't reset this search's caret.
 -    this.#inputEpoch++;
--    if (
++  setNativeInputValue(value) {
+     if (
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      (event.inputType === "deleteContentBackward" ||
 -        event.inputType === "deleteContentForward")
--    ) {
++      !this.view.nativePresentation ||
++      typeof value !== "string" ||
++      value.length > 32768
+     ) {
 -      // Take a telemetry if user deleted whole autofilled value.
 -      this.parentController.recordAutofillDeletion();
 -    }
 -
-+  setNativeInputValue(value) {
-     if (
+-    if (
 -      UrlbarPrefs.get("autoFill.adaptiveHistory.enabled") &&
 -      event.inputType?.startsWith("deleteContent") &&
 -      !this.isPrivate &&
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      this._resultForCurrentValue?.payload?.url
-+      !this.view.nativePresentation ||
-+      typeof value !== "string" ||
-+      value.length > 32768
-     ) {
+-    ) {
 -      this.parentController.recordAutofillBackspace(
 -        this._resultForCurrentValue.payload.url
 -      );
@@ -4066,7 +4133,7 @@ index a077de625f..7d5311ca29 100644
      this.valueIsTyped = true;
      this._untrimmedValue = value;
      this._protocolIsTrimmed = false;
-@@ -5516,20 +5227,9 @@ ${
+@@ -5516,20 +5226,9 @@ ${
      // string, thus there's no valid selection. This is also used by the view
      // to set "aria-activedescendant", thus it should never get stale.
      this.controller.userSelectionBehavior = "none";
@@ -4089,7 +4156,7 @@ index a077de625f..7d5311ca29 100644
      this.toggleAttribute("usertyping", value);
      this.removeAttribute("actiontype");
  
-@@ -5551,6 +5251,43 @@ ${
+@@ -5551,6 +5250,43 @@ ${
          this.removeAttribute("persistsearchterms");
        }
      }
@@ -4133,7 +4200,7 @@ index a077de625f..7d5311ca29 100644
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
-@@ -5580,10 +5317,9 @@ ${
+@@ -5580,10 +5316,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -4147,7 +4214,7 @@ index a077de625f..7d5311ca29 100644
      ) {
        return;
      }
-@@ -5591,11 +5327,10 @@ ${
+@@ -5591,11 +5326,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -4163,7 +4230,7 @@ index a077de625f..7d5311ca29 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5669,33 +5404,20 @@ ${
+@@ -5669,33 +5403,20 @@ ${
    }
  
    _on_paste(event) {
@@ -4205,7 +4272,7 @@ index a077de625f..7d5311ca29 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5431,7 @@ ${
+@@ -5709,7 +5430,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -4214,7 +4281,7 @@ index a077de625f..7d5311ca29 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5462,25 @@ ${
+@@ -5740,51 +5461,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -4282,7 +4349,7 @@ index a077de625f..7d5311ca29 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5674,11 @@ ${
+@@ -5978,15 +5673,11 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -4300,7 +4367,7 @@ index a077de625f..7d5311ca29 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5698,24 @@ ${
+@@ -6006,44 +5697,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -4357,7 +4424,7 @@ index a077de625f..7d5311ca29 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,9 +5841,7 @@ ${
+@@ -6169,9 +5840,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -4368,7 +4435,7 @@ index a077de625f..7d5311ca29 100644
        ? SCHEMELESS_INPUT_SCHEMELESS
        : SCHEMELESS_INPUT_SCHEMEFUL;
    }
-@@ -6311,111 +5981,6 @@ function getDroppableData(event) {
+@@ -6311,111 +5980,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -4480,7 +4547,7 @@ index a077de625f..7d5311ca29 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +6005,10 @@ class CopyCutController {
+@@ -6440,12 +6004,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -7032,14 +7099,15 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..19b0683bf8
+index 0000000000..b472810e5a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,997 @@
+@@ -0,0 +1,1083 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
++import { UrlbarSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs";
 +import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
 +import { UrlbarQuerySession } from "chrome://browser/content/urlbar/UrlbarQuerySession.mjs";
 +import { UrlbarAutofillModel } from "chrome://browser/content/urlbar/UrlbarAutofillModel.mjs";
@@ -7076,6 +7144,7 @@ index 0000000000..19b0683bf8
 +  #resultPreview = null;
 +  #modeApplication = null;
 +  #modeRequery = null;
++  #searchCommandRequery = null;
 +  #searchCommandRequest = null;
 +  #modeRestoreRequest = null;
 +  #modeExitRequest = null;
@@ -7138,6 +7207,7 @@ index 0000000000..19b0683bf8
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -7263,6 +7333,7 @@ index 0000000000..19b0683bf8
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -7373,6 +7444,7 @@ index 0000000000..19b0683bf8
 +    if (this.#hiddenResults) throw new Error("Hidden result mode application");
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -7400,6 +7472,7 @@ index 0000000000..19b0683bf8
 +    if (this.#hiddenResults) throw new Error("Hidden result mode exit");
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -7449,6 +7522,7 @@ index 0000000000..19b0683bf8
 +    const request = this.#selectionRequest;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -7510,6 +7584,7 @@ index 0000000000..19b0683bf8
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -7540,6 +7615,7 @@ index 0000000000..19b0683bf8
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -7585,6 +7661,7 @@ index 0000000000..19b0683bf8
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -7612,6 +7689,7 @@ index 0000000000..19b0683bf8
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -7660,6 +7738,7 @@ index 0000000000..19b0683bf8
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -7704,6 +7783,7 @@ index 0000000000..19b0683bf8
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -7744,11 +7824,31 @@ index 0000000000..19b0683bf8
 +    this.#queries.publishPresentation(queryId, visibleResults, open);
 +    if (this.#modeRequery && (!open || !visibleResults.includes(this.#modeRequery.result))) {
 +      this.#modeRequery = null;
++      this.#searchCommandRequery = null;
 +      this.#searchCommandRequest = null;
 +      this.#modeRestoreRequest = null;
 +      this.#modeExitRequest = null;
 +      this.#modeExitRequery = null;
 +    }
++  }
++
++  /** Engagement events are explicit host observations, separate from query dispatch. */
++  startEngagement(revision, queryId, event, options = {}) {
++    this.#check();
++    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing) throw new Error("Stale editor engagement");
++    return this.#queries.startEngagement(queryId, event, options);
++  }
++
++  abandonEngagement(revision, queryId, event) {
++    this.#check();
++    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing) throw new Error("Stale editor abandonment");
++    return this.#queries.abandonEngagement(queryId, event, {
++      searchString: this.#typedText, searchMode: this.#searchMode,
++    });
++  }
++
++  discardEngagement() {
++    this.#queries.discardEngagement();
 +  }
 +
 +  /** Describe a search-mode command for the exact observed editor, without applying it. */
@@ -7762,15 +7862,24 @@ index 0000000000..19b0683bf8
 +    return command;
 +  }
 +
++  /** Use a current menu key with explicit Firefox page-proxy and modifier facts. */
++  beginSearchModeMenuCommand(revision, menuKey, { pageProxyValid, where = "current", shiftKey = false } = {}) {
++    this.#check();
++    if (typeof menuKey !== "string" || typeof pageProxyValid !== "boolean" || typeof shiftKey !== "boolean" ||
++        !["current", "tab", "tabshifted", "window"].includes(where)) throw new TypeError("Invalid menu command facts");
++    return this.beginSearchCommand(revision, this.#edit?.text, { menuKey, pageProxyValid, where, shiftKey });
++  }
++
 +  /** Propose a search command write, revoking previous results before asynchronous preparation. */
-+  async beginSearchCommand(revision, value, { engineId = null, searchModeEntry = "searchbutton" } = {}) {
++  async beginSearchCommand(revision, value, { engineId = null, searchModeEntry = "searchbutton",
++    menuKey = null, pageProxyValid, where = "current", shiftKey = false } = {}) {
 +    this.#check();
 +    const edit = this.#edit, previousMode = this.#searchMode;
 +    if (!edit || revision !== edit.revision || edit.composing) throw new Error("Stale editor search command");
 +    if (typeof value !== "string" || (engineId !== null && (typeof engineId !== "string" || !engineId))) {
 +      throw new TypeError("Invalid search command facts");
 +    }
-+    const options = Object.freeze({ engineId, searchModeEntry });
++    const options = Object.freeze({ engineId, searchModeEntry, menuKey, pageProxyValid, where, shiftKey });
 +    this.cancel();
 +    this.#check();
 +    if (this.#edit !== edit || this.#searchMode !== previousMode) return null;
@@ -7781,6 +7890,7 @@ index 0000000000..19b0683bf8
 +      this.#check();
 +      if (this.#searchCommandRequest !== pending || this.#edit !== edit) return null;
 +      if (!description) {
++        this.#searchCommandRequery = null;
 +        this.#searchCommandRequest = null;
 +        return null;
 +      }
@@ -7812,11 +7922,49 @@ index 0000000000..19b0683bf8
 +    if (!proposal || !UrlbarShared.deepEqual(searchMode, proposal.searchMode) || text !== proposal.value ||
 +        selectionStart !== proposal.selectionStart || selectionEnd !== proposal.selectionEnd ||
 +        selectionDirection !== proposal.selectionDirection) return false;
++    const pending = this.#searchCommandRequest;
 +    this.#searchCommandRequest = null;
 +    this.#searchMode = proposal.searchMode;
 +    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: this.#edit.selectionRevision + 1 });
++    this.#searchCommandRequery = { token, edit: this.#edit, queryMode: proposal.searchMode,
++      value: pending.value, options: pending.options, description: pending.description };
 +    return true;
++  }
++
++  /** Describe the mode confirmation required before the command's one-use follow-up. */
++  getSearchCommandRequery(token) {
++    this.#check();
++    const pending = this.#searchCommandRequery;
++    if (!pending || pending.token !== token || pending.edit !== this.#edit || this.#edit.composing ||
++        pending.queryMode !== this.#searchMode) return null;
++    const live = this.#queries.describeSearchCommand(pending.value, pending.options);
++    if (!live || !UrlbarShared.deepEqual(live, pending.description)) return null;
++    return Object.freeze({ token, edit: pending.edit,
++      searchMode: pending.queryMode?.isPreview
++        ? UrlbarSearchModeModel.confirmedMode(pending.queryMode) : pending.queryMode });
++  }
++
++  /** Dispatch after command observation and host mode confirmation, without synthesizing input. */
++  async requeryAfterSearchCommand(token, state) {
++    const request = this.getSearchCommandRequery(token);
++    if (!request || !UrlbarShared.deepEqual(state?.searchMode, request.searchMode)) {
++      throw new Error("Stale search command requery");
++    }
++    const pending = this.#searchCommandRequery;
++    // Original startQuery captures mode before confirmSearchMode updates the UI.
++    const queryState = { ...state, searchMode: pending.queryMode ? { ...pending.queryMode } : null };
++    const { revision, text, selectionStart, selectionEnd } = request.edit;
++    const { allowAutofill } = UrlbarAutofillModel.planPlaceholder({ searchString: text,
++      value: text, selectionStart, selectionEnd, searchMode: pending.queryMode,
++      placeholder: null, enabled: true });
++    this.cancel();
++    if (this.#edit !== request.edit) throw new Error("Search command requery superseded");
++    this.#searchMode = request.searchMode;
++    this.#typedText = text;
++    return this.#queries.query(queryState, { searchString: text, allowAutofill }, update => {
++      this.#publishQueryUpdate(update, { revision, text, allowAutofill });
++    });
 +  }
 +
 +  /**
@@ -7865,6 +8013,7 @@ index 0000000000..19b0683bf8
 +    if (!request || !UrlbarShared.deepEqual(searchMode, request.searchMode) || text !== request.edit.text ||
 +        selectionStart !== request.edit.selectionStart || selectionEnd !== request.edit.selectionEnd ||
 +        selectionDirection !== request.edit.selectionDirection) return false;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#searchMode = request.searchMode;
@@ -7901,6 +8050,7 @@ index 0000000000..19b0683bf8
 +    if (!request || searchMode !== null || text !== request.edit.text ||
 +        selectionStart !== request.edit.selectionStart || selectionEnd !== request.edit.selectionEnd ||
 +        selectionDirection !== request.edit.selectionDirection) return false;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -7987,6 +8137,7 @@ index 0000000000..19b0683bf8
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -8003,6 +8154,7 @@ index 0000000000..19b0683bf8
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -8022,6 +8174,7 @@ index 0000000000..19b0683bf8
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
 +    this.#modeExitRequest = null;
@@ -8035,10 +8188,10 @@ index 0000000000..19b0683bf8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..1c4bc46bee
+index 0000000000..9fad7d0a88
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,357 @@
+@@ -0,0 +1,427 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8068,6 +8221,8 @@ index 0000000000..1c4bc46bee
 +  #onPresentationRequest;
 +  #removedIds = new Set();
 +  #selectionRequest = null;
++  #engagementActive = false;
++  #endingEngagement = false;
 +
 +  constructor({ context, isCurrent, onPresentationRequest = null }) {
 +    if (typeof isCurrent != "function") throw new TypeError("Missing scope check");
@@ -8207,30 +8362,96 @@ index 0000000000..1c4bc46bee
 +    return frozen;
 +  }
 +
++  /** Start/update Firefox's engagement clock for this exact current query. */
++  startEngagement(queryId, event, { interactionType = null } = {}) {
++    if (!this.ownsQuery(queryId)) throw new Error("Stale engagement query");
++    if (this.#endingEngagement) throw new Error("Engagement is ending");
++    if (!["input", "focus", "click", "command", "drop", "keydown", "mousedown", "paste", "tabswitch"].includes(event?.type) ||
++        !Number.isFinite(event.timeStamp) || event.timeStamp < 0 ||
++        (event.inputType !== undefined && typeof event.inputType !== "string") ||
++        ![null, "returned"].includes(interactionType)) throw new TypeError("Invalid engagement start facts");
++    const facts = Object.freeze({ type: event.type, timeStamp: event.timeStamp, inputType: event.inputType });
++    this.#controller.engagementEvent.start(facts, this.#query, this.#query.searchString, interactionType);
++    this.#engagementActive = true;
++    return true;
++  }
++
++  /** Record a urlbar abandonment using only validated exposure and explicit editor facts. */
++  abandonEngagement(queryId, event, { searchString, searchMode = null } = {}) {
++    if (!this.ownsQuery(queryId)) throw new Error("Stale abandonment query");
++    if (this.#context.sapName !== "urlbar") throw new Error("Independent abandonment requires urlbar SAP");
++    if (!["blur", "tabswitch"].includes(event?.type) || !Number.isFinite(event.timeStamp) || event.timeStamp < 0 ||
++        typeof searchString !== "string") throw new TypeError("Invalid abandonment facts");
++    if (!this.#engagementActive || this.#endingEngagement) return false;
++    const query = this.#query;
++    const mode = searchMode ? Object.freeze({ ...searchMode }) : null;
++    const explicitState = Object.freeze({ engagementData: Object.freeze({ searchMode: mode,
++      visibleResults: Object.freeze([...this.#controller.visibleResults]),
++      viewIsOpen: this.#controller.resultsOpen, searchSource: "urlbar" }), smartbarData: Object.freeze({}) });
++    this.#engagementActive = false;
++    this.#endingEngagement = true;
++    try {
++      this.#controller.engagementEvent.record(Object.freeze({ type: event.type, timeStamp: event.timeStamp }), {
++        searchString, searchMode: mode, searchSource: "urlbar",
++        windowMode: this.#context.isPrivate ? "private" : "classic",
++      }, explicitState);
++    } finally {
++      this.#endingEngagement = false;
++      // Provider notifications may have begun another query; do not cancel it.
++      if (this.#query === query) this.cancel();
++    }
++    return true;
++  }
++
++  /** Drop measurement without recording abandonment or changing the current query. */
++  discardEngagement() {
++    this.#check();
++    if (this.#endingEngagement) throw new Error("Engagement is ending");
++    this.#engagementActive = false;
++    this.#controller.engagementEvent.discard();
++  }
++
 +  /** Prepare input.search policy using this consumer's live engine store, without dispatch. */
-+  async prepareSearchCommand(value, { engineId = null, searchModeEntry = "searchbutton" } = {}) {
++  async prepareSearchCommand(value, { engineId = null, searchModeEntry = "searchbutton",
++    menuKey = null, pageProxyValid, where = "current", shiftKey = false } = {}) {
 +    this.#check();
 +    if (typeof value !== "string" || (engineId !== null && (typeof engineId !== "string" || !engineId))) {
 +      throw new TypeError("Invalid search command facts");
 +    }
 +    const store = this.#controller.engineStore;
-+    if (engineId !== null || UrlbarSearchModeModel.searchCommandToken(value) === UrlbarShared.RESTRICT_TOKENS.SEARCH) {
++    if (menuKey !== null || engineId !== null || UrlbarSearchModeModel.searchCommandToken(value) === UrlbarShared.RESTRICT_TOKENS.SEARCH) {
 +      try { await store.init(); } catch (error) {
 +        // The original search-token retry continues after initialization failure.
 +        if (engineId !== null) throw error;
 +      }
 +    }
 +    this.#check();
-+    return this.describeSearchCommand(value, { engineId, searchModeEntry });
++    return this.describeSearchCommand(value, { engineId, searchModeEntry, menuKey, pageProxyValid, where, shiftKey });
 +  }
 +
 +  /** Recompute command facts; a description grants no mode/text write authority. */
-+  describeSearchCommand(value, { engineId = null, searchModeEntry = "searchbutton" } = {}) {
++  describeSearchCommand(value, { engineId = null, searchModeEntry = "searchbutton",
++    menuKey = null, pageProxyValid, where = "current", shiftKey = false } = {}) {
 +    this.#check();
 +    if (typeof value !== "string" || (engineId !== null && (typeof engineId !== "string" || !engineId))) {
 +      throw new TypeError("Invalid search command facts");
 +    }
 +    const store = this.#controller.engineStore;
++    if (menuKey !== null) {
++      if (typeof menuKey !== "string" || typeof pageProxyValid !== "boolean" || typeof shiftKey !== "boolean" ||
++          !["current", "tab", "tabshifted", "window"].includes(where)) throw new TypeError("Invalid menu command facts");
++      if (!store.initialized && !store.failed) throw new Error("Menu command engines are not initialized");
++      const engine = UrlbarSearchModeModel.availableModes(store.initialized ? store.getEngines() : [], this.#context.sapName).find(
++        item => menuKey === (item.source ? `local:${item.restrict}` : `engine:${item.id}`));
++      if (!engine) return null;
++      const command = UrlbarSearchModeModel.menuCommand(engine, { value, pageProxyValid }, { where, shiftKey });
++      // Navigation, settings and installation keep their existing browser paths.
++      if (command.kind !== "query") return null;
++      const description = this.describeSearchCommand(command.value, {
++        engineId: command.engineId, searchModeEntry: "searchbutton",
++      });
++      return description ? Object.freeze({ ...description, menuPicked: command.picked }) : null;
++    }
 +    if ((engineId !== null || UrlbarSearchModeModel.searchCommandToken(value) === UrlbarShared.RESTRICT_TOKENS.SEARCH) &&
 +        !store.initialized && !store.failed) throw new Error("Search command engines are not initialized");
 +    const searchEngine = engineId !== null ? store.getEngine(engineId) : null;
@@ -8393,6 +8614,8 @@ index 0000000000..1c4bc46bee
 +    this.#frozen = null;
 +    this.#onUpdate = null;
 +    this.#onPresentationRequest = null;
++    this.#engagementActive = false;
++    this.#controller.engagementEvent.discard();
 +    this.#controller.destroy();
 +  }
 +}
@@ -8712,10 +8935,10 @@ index 0000000000..1fec37fd9e
 +}
 diff --git a/browser/components/urlbar/content/UrlbarSearchModeModel.mjs b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
 new file mode 100644
-index 0000000000..4aea5d4bac
+index 0000000000..d995a9fee6
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
-@@ -0,0 +1,434 @@
+@@ -0,0 +1,445 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8841,6 +9064,11 @@ index 0000000000..4aea5d4bac
 +    });
 +  }
 +
++  /** Confirm a preview without mutating the query's pre-confirmation mode facts. */
++  static confirmedMode(mode) {
++    return mode ? Object.freeze({ ...mode, isPreview: false }) : null;
++  }
++
 +  /** Normalize requested mode facts; engine is resolved by Firefox's live store. */
 +  static normalizeMode(request, engine = null) {
 +    if (request?.engineName && !engine) return null;
@@ -8894,6 +9122,30 @@ index 0000000000..4aea5d4bac
 +      modeButtonVisible: !!enabled && !!available,
 +      modeExitVisible: !!enabled && !!available && exit};
 +  }
++  /** Shared switcher eligibility, independent of menu construction. */
++  static availableModes(engines, sapName) {
++    const visible = engines.filter(engine => !engine.hideOneOffButton);
++    return sapName !== "urlbar" ? visible : visible.concat(UrlbarShared.LOCAL_SEARCH_MODES.filter(
++      mode => UrlbarPrefs.get("browser.settings-redesign.enabled") || UrlbarPrefs.get(mode.pref)));
++  }
++
++  static menuDisposition(where) {
++    return where.startsWith("tab") ? where : "current";
++  }
++
++  /** Describe a local/engine menu command with Firefox's page-text and modifier policy. */
++  static menuCommand(engine, { value, pageProxyValid }, { where = "current", shiftKey = false } = {}) {
++    const searchString = pageProxyValid ? "" : value;
++    if (engine.source) {
++      return Object.freeze({ kind: "query", value: engine.restrict + " " + searchString,
++        engineId: null, picked: "local_search" });
++    }
++    where = this.menuDisposition(where);
++    return Object.freeze({ kind: !shiftKey && where === "current" ? "query" : "navigation",
++      value: searchString, engineId: engine.id, where, inBackground: true,
++      picked: engine.isConfigEngine ? "builtin_search" : "addon_search" });
++  }
++
 +  engines = [];
 +  selectedIndex = 0;
 +  #pendingInstalls = new Set();
@@ -8924,7 +9176,7 @@ index 0000000000..4aea5d4bac
 +  disposition(event) {
 +    const where = this.services.whereToOpenLink(event);
 +    // Shift requests a SERP, not a new window, in the mode switcher.
-+    return where.startsWith("tab") ? where : "current";
++    return UrlbarSearchModeModel.menuDisposition(where);
 +  }
 +
 +  exit() {
@@ -8939,27 +9191,26 @@ index 0000000000..4aea5d4bac
 +  }
 +
 +  localSearch(restrict, options = {}) {
-+    this.services.search(restrict + " " + this.searchString(), {
-+      searchModeEntry: "searchbutton", ...options,
-+    });
-+    this.services.recordPicked("local_search");
++    const command = UrlbarSearchModeModel.menuCommand({ source: true, restrict }, this.services.readState());
++    this.services.search(command.value, { searchModeEntry: "searchbutton", ...options });
++    this.services.recordPicked(command.picked);
 +  }
 +
 +  remoteSearch(engine, event, options = {}) {
-+    const where = this.disposition(event);
-+    const query = !event.shiftKey && where == "current";
-+    const searchString = this.searchString();
-+    if (query) {
-+      this.services.search(searchString, {
++    const command = UrlbarSearchModeModel.menuCommand(engine, this.services.readState(), {
++      where: this.services.whereToOpenLink(event), shiftKey: event.shiftKey,
++    });
++    if (command.kind === "query") {
++      this.services.search(command.value, {
 +        searchEngine: engine, searchModeEntry: "searchbutton", ...options,
 +      });
 +    } else {
-+      this.services.openEngine(searchString, {
-+        event, searchEngine: engine, where, inBackground: true,
++      this.services.openEngine(command.value, {
++        event, searchEngine: engine, where: command.where, inBackground: command.inBackground,
 +      });
 +    }
-+    this.services.recordPicked(engine.isConfigEngine ? "builtin_search" : "addon_search");
-+    return query ? "query" : "navigation";
++    this.services.recordPicked(command.picked);
++    return command.kind;
 +  }
 +
 +  async install(engine, options = {}, isCurrent = () => true) {
@@ -9024,31 +9275,14 @@ index 0000000000..4aea5d4bac
 +  }
 +
 +  async populateEngines() {
-+    let searchEngines = [];
-+
++    let engines = [];
 +    try {
 +      await this.services.engineStore.init();
-+      searchEngines = this.services.engineStore
-+        .getEngines()
-+        .filter(engine => !engine.hideOneOffButton);
++      engines = this.services.engineStore.getEngines();
 +    } catch {
-+      // Search service failed but we still offer local search modes.
++      // Search service failed but local modes remain available.
 +    }
-+
-+    if (this.services.sapName != "urlbar") {
-+      this.engines = searchEngines;
-+    } else {
-+      // After the settings redesign we no longer use the prefs to hide local
-+      // search modes. Hence when the settings redesign is enabled we show
-+      // all local search modes regardless of the prefs.
-+      this.engines = searchEngines.concat(
-+        UrlbarShared.LOCAL_SEARCH_MODES.filter(
-+          engine =>
-+            UrlbarPrefs.get("browser.settings-redesign.enabled") ||
-+            UrlbarPrefs.get(engine.pref)
-+        )
-+      );
-+    }
++    this.engines = UrlbarSearchModeModel.availableModes(engines, this.services.sapName);
 +  }
 +
 +  async localLabel(source) {

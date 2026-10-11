@@ -12,7 +12,9 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
   const parents=[];
   const prefs={"experimental.hideHeuristic":false};
   class Parent {
-    constructor(identity){this.identity=identity;this.started=[];parents.push(this);}
+    constructor(identity){this.identity=identity;this.started=[];this.engagements=[];
+      this.engagementEvent={start:(...args)=>this.engagements.push({kind:'start',args}),
+        record:(...args)=>this.engagements.push({kind:'record',args}),discard:()=>this.engagements.push({kind:'discard'})};parents.push(this);}
     setChild(child){this.child=child;}
     initEngineStore(){if(!hold)this.child.updateEngineStore('init',[],null);}
     startQuery(query){query.results??=[];this.started.push(query);return Promise.resolve(query);}
@@ -20,7 +22,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     destroy(){this.destroyed=(this.destroyed??0)+1;}
   }
   let id=0;
-  const sandbox=vm.createContext({console,URL,UrlbarQueryLifecycle,
+  const sandbox=vm.createContext({console,URL,UrlbarQueryLifecycle,UrlbarParentControllerProxy:class {},
     UrlbarShared:{stripPrefixAndTrim:sharedPolicy.UrlbarShared.stripPrefixAndTrim,getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_TYPE:sharedPolicy.UrlbarShared.RESULT_TYPE,RESULT_SOURCE:sharedPolicy.UrlbarShared.RESULT_SOURCE,canAutofillURL:sharedPolicy.UrlbarShared.canAutofillURL.bind(sharedPolicy.UrlbarShared),NOTIFICATIONS:{
       RESULTS_CLOSE_REQUESTED:'onResultsCloseRequested',QUERY_RESULT_REMOVED:'onQueryResultRemoved',
       QUERY_ARMED:'onQueryArmed',QUERY_STARTED:'onQueryStarted',QUERY_CANCELLED:'onQueryCancelled',
@@ -1767,3 +1769,205 @@ test('search-command admission rejects stale/composing edits and failed initiali
 function observedCommand(proposal) {
   return {...observed(proposal),searchMode:proposal.searchMode ? {...proposal.searchMode} : null};
 }
+
+
+async function commandRequeryFixture(value='^ command words',options={}) {
+  const f=await editorFixture();await f.editor.edit({},edit(1,'old'));
+  f.parent.child.updateEngineStore('changed',{id:'engine',name:'Engine',aliases:['@e'],isGeneralPurposeEngine:true},-1);
+  const proposal=await f.editor.beginSearchCommand(1,value,options);
+  return {...f,proposal};
+}
+
+test('command follow-up requires acknowledged text and confirmed host mode while preserving query mode order',async()=>{
+  const f=await commandRequeryFixture(),p=f.proposal;
+  assert.equal(f.editor.getSearchCommandRequery(p.token),null);
+  await assert.rejects(f.editor.requeryAfterSearchCommand(p.token,{searchMode:null}),/Stale/);
+  f.editor.acknowledgeSearchCommand(p.token,observedCommand(p));
+  const snapshot=f.editor.snapshot,request=f.editor.getSearchCommandRequery(p.token);
+  assert.equal(request.searchMode.isPreview,false);assert.equal(p.searchMode.isPreview,true);
+  await assert.rejects(f.editor.requeryAfterSearchCommand(p.token,{searchMode:p.searchMode}),/Stale/);
+  const q=await f.editor.requeryAfterSearchCommand(p.token,{searchMode:request.searchMode});
+  assert.equal(q.searchString,p.value);assert.equal(q.searchMode.isPreview,true);assert.equal(q.allowAutofill,true);
+  assert.equal(f.editor.snapshot,snapshot);assert.equal(f.editor.getSearchCommandRequery(p.token),null);
+  await assert.rejects(f.editor.requeryAfterSearchCommand(p.token,{searchMode:request.searchMode}),/Stale/);
+  assert.equal(f.editor.beginSearchModeExit(1).previousSearchMode.isPreview,false);f.editor.close();
+});
+
+test('command queries suppress engine-mode autofill and share first-result writes for ordinary text',async()=>{
+  for(const engine of [false,true]) {
+    const f=await commandRequeryFixture(engine?'@e exam':'exam',engine?{engineId:'engine'}:{}),p=f.proposal;
+    f.editor.acknowledgeSearchCommand(p.token,observedCommand(p));
+    const request=f.editor.getSearchCommandRequery(p.token);
+    const q=await f.editor.requeryAfterSearchCommand(p.token,{searchMode:request.searchMode});
+    assert.equal(q.allowAutofill,!engine);
+    q.results=[{id:1,type:sharedPolicy.UrlbarShared.RESULT_TYPE.URL,payload:{},
+      autofill:{value:'example.test/',selectionStart:4,selectionEnd:13}}];q.trimmedSearchString='exam';
+    f.parent.child.notify('onFirstResult',q);
+    const completion=f.updates.at(-1).completion;
+    if(engine)assert.equal(completion,null);
+    else {assert.equal(completion.kind,'autofill');assert.equal(f.editor.acknowledgeCompletion(completion.token,observed(completion)),true);}
+    f.editor.publishPresentation(1,q.id,q.results,true);
+    assert.equal(f.editor.beginResultRestore(1,q.id).value,'exam');f.editor.close();
+  }
+});
+
+test('command follow-up revokes on composition, edits, caret changes, cancellation and engine mutation',async()=>{
+  for(const revoke of [f=>f.editor.edit({},edit(2,'composing',{composing:true})),
+    f=>f.editor.edit({},edit(2,'new')),f=>f.editor.select(1,0,0),f=>f.editor.cancel(),
+    f=>f.parent.child.updateEngineStore('removed',{id:'engine',name:'Engine'},-1)]) {
+    const f=await commandRequeryFixture('@e words',{engineId:'engine'}),p=f.proposal;
+    f.editor.acknowledgeSearchCommand(p.token,observedCommand(p));
+    const request=f.editor.getSearchCommandRequery(p.token);await revoke(f);
+    assert.equal(f.editor.getSearchCommandRequery(p.token),null);
+    await assert.rejects(f.editor.requeryAfterSearchCommand(p.token,{searchMode:request.searchMode}),/Stale/);f.editor.close();
+  }
+});
+
+test('failed, cancelled and scope-lost command dispatch cannot reuse follow-up authority',async()=>{
+  for(const kind of ['failure','cancel','scope']) {
+    const f=await commandRequeryFixture('words'),p=f.proposal,gate=Promise.withResolvers();
+    f.editor.acknowledgeSearchCommand(p.token,observedCommand(p));
+    const request=f.editor.getSearchCommandRequery(p.token);
+    f.parent.startQuery=()=>kind==='failure'?Promise.reject(Error('dispatch failed')):gate.promise;
+    const pending=f.editor.requeryAfterSearchCommand(p.token,{searchMode:request.searchMode});
+    if(kind==='cancel')f.editor.cancel();if(kind==='scope')f.loseScope();gate.resolve();
+    await assert.rejects(pending,kind==='failure'?/dispatch failed/:kind==='scope'?/scope changed/:/cancelled/);
+    await assert.rejects(f.editor.requeryAfterSearchCommand(p.token,{searchMode:request.searchMode}));f.editor.close();
+  }
+});
+
+
+test('independent menu keys feed acknowledged engine/local commands and page-proxy query text',async()=>{
+  for(const [key,valid,expected,autofill] of [['engine:engine',true,'',false],['engine:engine',false,'page words',false],
+    ['local:^',false,'page words',true],['local:^',true,'',true]]) {
+    const f=await commandRequeryFixture();await f.editor.edit({},edit(2,'page words'));
+    const p=await f.editor.beginSearchModeMenuCommand(2,key,{pageProxyValid:valid});
+    assert.equal(p.value,expected);assert.equal(p.menuPicked,key.startsWith('local')?'local_search':'addon_search');
+    assert.equal(f.editor.acknowledgeSearchCommand(p.token,observedCommand(p)),true);
+    const request=f.editor.getSearchCommandRequery(p.token);
+    const q=await f.editor.requeryAfterSearchCommand(p.token,{searchMode:request.searchMode});
+    assert.equal(q.searchString,expected);assert.equal(q.allowAutofill,autofill);
+    assert.equal(q.searchMode.isPreview,true);f.editor.close();
+  }
+});
+
+test('menu commands reject unavailable entries and leave navigation/install/settings on existing paths',async()=>{
+  const f=await commandRequeryFixture();
+  for(const key of ['engine:removed','local:unknown','install:https://offer.test/','settings','exit']) {
+    assert.equal(await f.editor.beginSearchModeMenuCommand(1,key,{pageProxyValid:false}),null);
+  }
+  for(const facts of [{where:'tab'},{where:'tabshifted'},{where:'window',shiftKey:true}]) {
+    assert.equal(await f.editor.beginSearchModeMenuCommand(1,'engine:engine',{pageProxyValid:false,...facts}),null);
+  }
+  assert.throws(()=>f.editor.beginSearchModeMenuCommand(1,'engine:engine'),/Invalid menu/);
+  f.parent.child.updateEngineStore('changed',{id:'engine',name:'Engine',aliases:[],hideOneOffButton:true},0);
+  assert.equal(await f.editor.beginSearchModeMenuCommand(1,'engine:engine',{pageProxyValid:false}),null);f.editor.close();
+});
+
+test('menu eligibility changes revoke writes and follow-up queries while redesign keeps local entries available',async()=>{
+  for(const acknowledge of [true,false]) {
+    const f=await commandRequeryFixture();f.prefs['browser.settings-redesign.enabled']=false;f.prefs['shortcuts.history']=true;
+    const p=await f.editor.beginSearchModeMenuCommand(1,'local:^',{pageProxyValid:false});
+    if(acknowledge)f.editor.acknowledgeSearchCommand(p.token,observedCommand(p));
+    f.prefs['shortcuts.history']=false;
+    assert.equal(acknowledge?f.editor.getSearchCommandRequery(p.token):f.editor.getSearchCommand(p.token),null);
+    f.prefs['browser.settings-redesign.enabled']=true;
+    assert.ok(await f.editor.beginSearchModeMenuCommand(1,'local:^',{pageProxyValid:false}));f.editor.close();
+  }
+});
+
+test('menu commands retain local fallback after engine initialization fails and obey pinned SAP',async()=>{
+  const f=fixture({hold:true}),pending=f.session.prepareSearchCommand('words',{menuKey:'local:^',pageProxyValid:false});
+  f.parent.child.updateEngineStore('error');const p=await pending;assert.equal(p.value,'words');assert.equal(p.menuPicked,'local_search');
+  const searchbar=new f.sandbox.UrlbarQuerySession({context:{...f.context,sapName:'searchbar'},isCurrent:()=>true});
+  const parent=f.parents.at(-1);parent.child.updateEngineStore('init',[],null);
+  assert.equal(await searchbar.prepareSearchCommand('words',{menuKey:'local:^',pageProxyValid:false}),null);
+  searchbar.close();f.session.close();
+});
+
+
+test('independent engagement start preserves event facts and abandonment records only validated exposure',async()=>{
+  const f=fixture(),q=await f.session.query({}, {searchString:'typed words'}),a={id:1},b={id:2};q.results=[a,b];
+  f.session.publishPresentation(q.id,[a,b],true);
+  assert.equal(f.session.abandonEngagement(q.id,{type:'blur',timeStamp:20},{searchString:'typed words'}),false);
+  const event={type:'input',inputType:'insertText',timeStamp:1};f.session.startEngagement(q.id,event);event.timeStamp=99;
+  f.parent.child.notify('onQueryResultRemoved',2,undefined,q.id);
+  assert.equal(f.session.abandonEngagement(q.id,{type:'blur',timeStamp:20},{searchString:'typed words'}),true);
+  const start=f.parent.engagements.find(e=>e.kind==='start'),record=f.parent.engagements.find(e=>e.kind==='record');
+  assert.equal(start.args[0].timeStamp,1);assert.equal(start.args[1],q);assert.equal(start.args[2],'typed words');
+  assert.equal(record.args[1].windowMode,'private');assert.equal(record.args[1].searchString,'typed words');
+  assert.deepEqual([...record.args[2].engagementData.visibleResults],[a]);assert.equal(record.args[2].engagementData.viewIsOpen,true);
+  assert.equal(f.session.ownsQuery(q.id),false);assert.equal(f.parent.child.resultsOpen,false);
+  assert.throws(()=>f.session.abandonEngagement(q.id,{type:'blur',timeStamp:21},{searchString:'typed words'}),/Stale/);f.session.close();
+});
+
+test('editor abandonment records typed text rather than result preview and hidden results have no exposure',async()=>{
+  for(const hidden of [false,true]) {
+    const f=await previewFixture();assert.equal(f.editor.startEngagement(1,f.query.id,{type:'focus',timeStamp:1}),true);
+    const p=f.editor.beginResultPreview(1,f.query.id,f.result);f.editor.acknowledgeResultPreview(p.token,observed(p));
+    if(hidden)f.editor.hideResults(1,f.query.id);
+    assert.equal(f.editor.abandonEngagement(1,f.query.id,{type:'tabswitch',timeStamp:2}),true);
+    const record=f.parent.engagements.find(e=>e.kind==='record');assert.equal(record.args[1].searchString,'typed words');
+    assert.equal(record.args[2].engagementData.visibleResults.length,hidden?0:1);
+    assert.equal(record.args[2].engagementData.viewIsOpen,!hidden);assert.equal(f.editor.snapshot.text,p.value);f.editor.close();
+  }
+});
+
+test('engagement survives ordinary query replacement but discard and teardown drop measurement',async()=>{
+  const f=fixture(),q=await f.session.query({}, {searchString:'first'});
+  f.session.startEngagement(q.id,{type:'input',timeStamp:1});f.session.cancel();
+  const next=await f.session.query({}, {searchString:'second'});
+  assert.throws(()=>f.session.startEngagement(q.id,{type:'input',timeStamp:2}),/Stale/);
+  f.session.startEngagement(next.id,{type:'input',timeStamp:3},{interactionType:'returned'});
+  f.session.discardEngagement();assert.equal(f.session.ownsQuery(next.id),true);
+  assert.equal(f.session.abandonEngagement(next.id,{type:'blur',timeStamp:4},{searchString:'second'}),false);
+  f.session.startEngagement(next.id,{type:'input',timeStamp:5});f.session.close();f.session.close();
+  assert.equal(f.parent.engagements.filter(e=>e.kind==='discard').length,2);
+});
+
+test('abandonment is consumed before callbacks and does not cancel a reentrant newer query',async()=>{
+  const f=fixture(),q=await f.session.query({}, {searchString:'first'});f.session.startEngagement(q.id,{type:'input',timeStamp:1});
+  let newer;
+  f.parent.engagementEvent.record=()=>{
+    assert.equal(f.session.abandonEngagement(q.id,{type:'blur',timeStamp:3},{searchString:'first'}),false);
+    assert.throws(()=>f.session.startEngagement(q.id,{type:'input',timeStamp:3}),/ending/);
+    newer=f.session.query({}, {searchString:'new'});
+  };
+  assert.equal(f.session.abandonEngagement(q.id,{type:'blur',timeStamp:2},{searchString:'first'}),true);
+  const next=await newer;assert.equal(f.session.ownsQuery(next.id),true);
+  f.session.startEngagement(next.id,{type:'input',timeStamp:4});f.parent.engagementEvent.record=()=>{throw Error('record failed');};
+  assert.throws(()=>f.session.abandonEngagement(next.id,{type:'blur',timeStamp:5},{searchString:'new'}),/record failed/);
+  assert.equal(f.session.ownsQuery(next.id),false);f.session.close();
+});
+
+test('engagement rejects invalid events, stale editor revisions, composition and lost scope',async()=>{
+  const f=await editorFixture(),q=await f.editor.edit({},edit(1,'typed'));
+  for(const event of [{type:'resize',timeStamp:1},{type:'input',timeStamp:-1},{type:'input',timeStamp:NaN}]) {
+    assert.throws(()=>f.editor.startEngagement(1,q.id,event),/Invalid/);
+  }
+  assert.throws(()=>f.editor.startEngagement(0,q.id,{type:'focus',timeStamp:1}),/Stale/);
+  f.editor.startEngagement(1,q.id,{type:'focus',timeStamp:1});
+  assert.throws(()=>f.editor.abandonEngagement(1,q.id,{type:'click',timeStamp:2}),/Invalid/);
+  await f.editor.edit({},edit(2,'composing',{composing:true}));
+  assert.throws(()=>f.editor.startEngagement(2,q.id,{type:'input',timeStamp:3}),/Stale/);
+  f.loseScope();assert.throws(()=>f.editor.discardEngagement(),/scope changed/);
+});
+
+test('Firefox recorder shares event building for explicit snapshots and retained input without hidden input reads',()=>{
+  const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarParentController.sys.mjs',import.meta.url),'utf8');
+  const builds=[],records=[],errors=[],fallback={visibleResults:[],searchMode:null},smart={};let reads=0;
+  const utils={startInteractionType:()=> 'typed',collectSnapshot:(event,details,start)=>start?{method:'abandonment',internalDetails:details}:null,
+    buildRecordedEngagement:(snapshot,data,smartbar)=>{builds.push({data,smartbar});return {built:null,previousSearchWords:new Set()};},
+    buildRecordedDisableCandidate:()=>({test:true}),engagementData:input=>input.data,smartbarData:input=>input.smart};
+  const context=vm.createContext({console:{error:(...args)=>errors.push(args)},
+    Glean:{urlbar:new Proxy({}, {get:()=>({set(){}})})},lazy:{UrlbarPrefs:{addObserver(){},get:()=>true},UrlbarTelemetryUtils:utils}});
+  vm.runInContext(source.slice(source.indexOf('export class TelemetryEvent')).replace('export class','class')+';this.Recorder=TelemetryEvent;',context);
+  const controller={sapName:'urlbar',_lastQueryContextWrapper:{queryContext:{}},get input(){reads++;return {data:fallback,smart};}};
+  const recorder=new context.Recorder(controller);recorder.recordFromChild=data=>records.push(data);
+  const explicit={engagementData:{visibleResults:[{providerName:'UrlbarProviderQuickSuggest'}],searchMode:null},smartbarData:{}};
+  recorder.start({type:'input',timeStamp:1},{},'typed');recorder.record({type:'blur',timeStamp:2},{searchString:'typed',searchSource:'urlbar'},explicit);
+  assert.equal(reads,0);assert.equal(builds[0].data,explicit.engagementData);assert.equal(builds[0].smartbar,explicit.smartbarData);
+  assert.equal(records[0].visibleResults,explicit.engagementData.visibleResults);assert.equal(records[0].disableBuilt.test,true);
+  recorder.start({type:'input',timeStamp:3},{},'typed');recorder.record({type:'blur',timeStamp:4},{searchString:'typed',searchSource:'urlbar'});
+  assert.equal(reads,2);assert.equal(builds[1].data,fallback);assert.equal(builds[1].smartbar,smart);assert.deepEqual(errors,[]);
+});

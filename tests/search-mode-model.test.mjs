@@ -397,3 +397,17 @@ test('original search binding keeps focus, mode-before-text and input-event orde
   calls.length=0;input.search('ordinary',{focus:false,startQuery:false});
   assert.deepEqual(calls,['text','caret']);assert.equal(value,'ordinary');assert.equal(mode.source,1);
 });
+
+
+test('shared confirmation copies preview facts and original binding retains one-off clearing',()=>{
+  const Model=fixture().model.constructor,mode={source:1,isPreview:true,entry:'searchbutton'};
+  const confirmed=Model.confirmedMode(mode);assert.equal(confirmed.isPreview,false);assert.equal(mode.isPreview,true);
+  assert.equal(Object.isFrozen(confirmed),true);assert.equal(Model.confirmedMode(null),null);
+  const source=readFileSync(new URL('UrlbarInputBase.mjs',base),'utf8'),start=source.indexOf('  confirmSearchMode() {');
+  const method=source.slice(start,source.indexOf('\n  // Getters',start));
+  const Binding=new Function('UrlbarSearchModeModel',`return class {${method}}`)(Model);
+  const input=new Binding();input.searchMode=mode;input.view={oneOffSearchButtons:{selectedButton:{}}};
+  input.confirmSearchMode();assert.equal(input.searchMode.isPreview,false);assert.equal(mode.isPreview,true);
+  assert.equal(input.view.oneOffSearchButtons.selectedButton,null);
+  input.searchMode.bindingMutable=true;
+});
