@@ -9013,15 +9013,17 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..d01565ad29
+index 0000000000..bfb731e437
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1715 @@
+@@ -0,0 +1,1729 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +import { UrlbarSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs";
++import UrlbarPrefs from "chrome://browser/content/urlbar/UrlbarContentPrefs.mjs";
++import { UrlbarCompositionModel } from "chrome://browser/content/urlbar/UrlbarCompositionModel.mjs";
 +import { UrlbarInputIdentity } from "chrome://browser/content/urlbar/UrlbarInputIdentity.mjs";
 +import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
 +import { UrlbarQuerySession } from "chrome://browser/content/urlbar/UrlbarQuerySession.mjs";
@@ -9146,12 +9148,13 @@ index 0000000000..d01565ad29
 +  /**
 +   * Accept a committed editor snapshot. Supplying browserState opts into owned
 +   * browser text/persistence updates; userTypedValue is the observed prior
-+   * browser value, including null. Composition commits input without querying.
++   * browser value, including null. Explicit composition snapshots use Firefox's
++   * query/autofill policy; the legacy composing flag still suppresses queries.
 +   * Rejection leaves the observed editor revision consumed; it cannot be retried.
 +   */
 +  async edit(state, {
 +    revision, text, selectionStart, selectionEnd, selectionDirection = "none",
-+    inputType = "insertText", composing = false, pasteLength,
++    inputType = "insertText", composing = false, pasteLength, composition = null,
 +  }, browserState = null) {
 +    this.#check();
 +    if (!Number.isSafeInteger(revision) || revision <= (this.#edit?.revision ?? 0) ||
@@ -9165,13 +9168,22 @@ index 0000000000..d01565ad29
 +        (browserState.userTypedValue !== null && typeof browserState.userTypedValue !== "string"))) {
 +      throw new TypeError("Invalid observed browser input state");
 +    }
++    if (composition !== null) {
++      const snapshot = { state: composition?.state, closedPopup: composition?.closedPopup };
++      if (!Object.values(UrlbarShared.COMPOSITION).includes(snapshot.state) ||
++          typeof snapshot.closedPopup !== "boolean" ||
++          composing !== (snapshot.state === UrlbarShared.COMPOSITION.COMPOSING)) {
++        throw new TypeError("Invalid composition input snapshot");
++      }
++      composition = Object.freeze(snapshot);
++    }
 +    const priorTypedValue = browserState?.userTypedValue;
 +    this.#inputState = null;
 +    this.#hiddenResults = null;
 +    this.#typedText = text;
 +    this.#searchMode = state.searchMode ? Object.freeze({ ...state.searchMode }) : null;
 +    this.#edit = Object.freeze({ revision, text, selectionStart, selectionEnd,
-+      selectionDirection, selectionRevision: 0, composing });
++      selectionDirection, selectionRevision: 0, composing, ...(composition ? { composition } : {}) });
 +    this.#identityEdit = this.#edit;
 +    this.#completion = null;
 +    this.#closeRequest = null;
@@ -9203,12 +9215,14 @@ index 0000000000..d01565ad29
 +        persistenceChanged: outcome.persistenceChanged, persistedSearchTerms: outcome.persistedSearchTerms });
 +      authorize = outcome.authorize;
 +    }
-+    if (composing) {
++    const keepPanelOpen = composition ? UrlbarPrefs.get("keepPanelOpenDuringImeComposition") : false;
++    if (composition ? !UrlbarCompositionModel.allowsQuery(composition, keepPanelOpen) : composing) {
 +      this.#placeholder = null;
 +      return null;
 +    }
++    const compositionAutofill = !composition || UrlbarCompositionModel.allowsAutofill(composition, keepPanelOpen);
 +    const isPaste = UrlbarShared.isPasteEvent({ inputType });
-+    const eligibleInput = UrlbarAutofillModel.allowsInput(inputType, isPaste) &&
++    const eligibleInput = compositionAutofill && UrlbarAutofillModel.allowsInput(inputType, isPaste) &&
 +      selectionStart === selectionEnd && selectionEnd === text.length;
 +    const placeholderPlan = eligibleInput ? UrlbarAutofillModel.planPlaceholder({
 +      searchString: text, value: text, selectionStart, selectionEnd,

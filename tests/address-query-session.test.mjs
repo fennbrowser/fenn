@@ -10,7 +10,7 @@ vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/url
 
 function fixture({hold=false,uninitializedResults=false,onPresentationRequest=null,isPrivate=true,browserId}={}) {
   const parents=[];
-  const prefs={"experimental.hideHeuristic":false,openintab:false,ctrlCanonizesURLs:false,"browser.search.openintab":false};
+  const prefs={"keepPanelOpenDuringImeComposition":false,"experimental.hideHeuristic":false,openintab:false,ctrlCanonizesURLs:false,"browser.search.openintab":false};
   class Parent {
     constructor(identity){this.identity=identity;this.started=[];this.engagements=[];
       this.engagementEvent={start:(...args)=>this.engagements.push({kind:'start',args}),
@@ -26,7 +26,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
   let id=0;
   const sandbox=vm.createContext({console,URL,UrlbarQueryLifecycle,UrlbarParentControllerProxy:class {},
     KeyboardEvent:class {constructor(facts={}){Object.assign(this,{keyCode:13},facts);}getModifierState(key){return key==='AltGraph' && !!this.altGraph;}},KeyEvent:{DOM_VK_RETURN:13},
-    UrlbarShared:{stripPrefixAndTrim:sharedPolicy.UrlbarShared.stripPrefixAndTrim,getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_TYPE:sharedPolicy.UrlbarShared.RESULT_TYPE,RESULT_SOURCE:sharedPolicy.UrlbarShared.RESULT_SOURCE,canAutofillURL:sharedPolicy.UrlbarShared.canAutofillURL.bind(sharedPolicy.UrlbarShared),NOTIFICATIONS:{
+    UrlbarShared:{COMPOSITION:sharedPolicy.UrlbarShared.COMPOSITION,stripPrefixAndTrim:sharedPolicy.UrlbarShared.stripPrefixAndTrim,getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_TYPE:sharedPolicy.UrlbarShared.RESULT_TYPE,RESULT_SOURCE:sharedPolicy.UrlbarShared.RESULT_SOURCE,canAutofillURL:sharedPolicy.UrlbarShared.canAutofillURL.bind(sharedPolicy.UrlbarShared),NOTIFICATIONS:{
       RESULTS_CLOSE_REQUESTED:'onResultsCloseRequested',QUERY_RESULT_REMOVED:'onQueryResultRemoved',
       QUERY_ARMED:'onQueryArmed',QUERY_STARTED:'onQueryStarted',QUERY_CANCELLED:'onQueryCancelled',
       QUERY_FIRST_RESULT:'onFirstResult',QUERY_RESULTS:'onQueryResults',QUERY_FINISHED:'onQueryFinished'}},
@@ -41,7 +41,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     SEARCH_MODE_ENTRY:sharedPolicy.UrlbarShared.SEARCH_MODE_ENTRY,
     deepEqual:sharedPolicy.UrlbarShared.deepEqual.bind(sharedPolicy.UrlbarShared),
     getResultSourceName:sharedPolicy.UrlbarShared.getResultSourceName.bind(sharedPolicy.UrlbarShared)});
-  for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarSelectedSearch','UrlbarSearchModeModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarResultPresentation','UrlbarInputIdentity','UrlbarEditSession']) {
+  for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarSelectedSearch','UrlbarSearchModeModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarResultPresentation','UrlbarInputIdentity','UrlbarCompositionModel','UrlbarEditSession']) {
     const source=readFileSync(new URL(`../upstream/firefox/browser/components/urlbar/content/${file}.mjs`,import.meta.url),'utf8');
     vm.runInContext(source.replace(/^import .*;$/gm,'').replaceAll('export class ','class ').replaceAll('export function ','function ')+`\nthis.${file}=${file==='UrlbarSelectedSearch'?'querySelectedSearch':file};`,sandbox);
   }
@@ -4325,4 +4325,64 @@ test('completion and selection changes revoke observed-input identity descriptio
   assert.equal(f.editor.describeInputIdentity(1,{pageProxyValid:false}),null);
   await f.editor.edit({},edit(2,'next'));f.editor.select(2,0,0);
   assert.equal(f.editor.describeInputIdentity(2,{pageProxyValid:false}),null);f.editor.close();
+});
+
+
+test('explicit composition input uses shared query and autofill gates for every transition',async()=>{
+  for(const keep of [false,true]) for(const name of ['NONE','COMPOSING','COMMIT','CANCELED']) for(const closedPopup of [false,true]) {
+    const f=await editorFixture();f.prefs.keepPanelOpenDuringImeComposition=keep;
+    const composition={state:f.sandbox.UrlbarShared.COMPOSITION[name],closedPopup};
+    const q=await f.editor.edit({}, {...edit(1,'words'),composing:name==='COMPOSING',composition});
+    const allowed=keep || (name!=='COMPOSING' && (name!=='CANCELED' || closedPopup));
+    assert.equal(!!q,allowed,`${keep}/${name}/${closedPopup}`);
+    if(q)assert.equal(q.allowAutofill,!(keep && name==='COMPOSING'));
+    assert.equal(Object.isFrozen(f.editor.snapshot.composition),true);f.editor.close();
+  }
+});
+
+test('invalid composition observations cannot cancel or replace a valid edit',async()=>{
+  const f=await editorFixture(),q=await f.editor.edit({},edit(1,'current'));
+  for(const composition of [{state:0,closedPopup:false},{state:1,closedPopup:1},{state:2,closedPopup:false}]) {
+    await assert.rejects(f.editor.edit({}, {...edit(2,'invalid'),composition}),/Invalid composition/);
+    assert.equal(f.editor.snapshot.revision,1);assert.equal(f.parent.started.length,1);assert.equal(f.parent.started[0],q);
+  }
+  f.editor.close();
+});
+
+test('explicit canceled input still commits browser text when shared policy suppresses its query',async()=>{
+  const f=await editorFixture({browserId:42}),{commits}=observedInputBackend(f);
+  const composition={state:f.sandbox.UrlbarShared.COMPOSITION.CANCELED,closedPopup:false};
+  assert.equal(await f.editor.edit({}, {...edit(1,'canceled edit'),composition},{userTypedValue:'old'}),null);
+  assert.equal(commits.length,1);assert.equal(f.editor.inputState.userTypedValue,'canceled edit');
+  assert.equal(f.parent.started.length,0);f.editor.close();
+});
+
+test('keep-open composing queries never propose placeholder or provider autofill',async()=>{
+  const f=await completionFixture();f.editor.acknowledgeCompletion(f.proposal.token,{text:f.proposal.value,
+    selectionStart:f.proposal.selectionStart,selectionEnd:f.proposal.selectionEnd,selectionDirection:'backward'});
+  f.prefs.keepPanelOpenDuringImeComposition=true;
+  const q=await f.editor.edit({}, {...edit(2,'exa'),composing:true,
+    composition:{state:f.sandbox.UrlbarShared.COMPOSITION.COMPOSING,closedPopup:false}});
+  assert.equal(q.allowAutofill,false);assert.equal(f.updates.filter(u=>u.edit.revision===2 && u.completion).length,0);
+  const result={autofill:{value:'example.test/',selectionStart:3,selectionEnd:13},payload:{url:'https://example.test/'}};
+  q.results=[result];f.parent.child.notify('onFirstResult',q);
+  assert.equal(f.updates.at(-1).completion,null);
+  assert.throws(()=>f.editor.beginResultSelection(2,q.id,result),/Stale/);f.editor.close();
+});
+
+test('composition facts and preference are captured before asynchronous query completion',async()=>{
+  const f=await editorFixture();f.prefs.keepPanelOpenDuringImeComposition=true;
+  const composition={state:f.sandbox.UrlbarShared.COMPOSITION.COMPOSING,closedPopup:false};
+  const pending=f.editor.edit({}, {...edit(1,'words'),composing:true,composition});
+  composition.state=f.sandbox.UrlbarShared.COMPOSITION.NONE;composition.closedPopup=true;
+  f.prefs.keepPanelOpenDuringImeComposition=false;
+  const q=await pending;assert.equal(q.allowAutofill,false);
+  assert.equal(f.editor.snapshot.composition.state,f.sandbox.UrlbarShared.COMPOSITION.COMPOSING);
+  assert.equal(f.editor.snapshot.composition.closedPopup,false);f.editor.close();
+});
+
+test('legacy composing observations retain suppression even with keep-panel-open preference',async()=>{
+  const f=await editorFixture();f.prefs.keepPanelOpenDuringImeComposition=true;
+  assert.equal(await f.editor.edit({}, {...edit(1,'words'),composing:true}),null);
+  assert.equal(f.parent.started.length,0);f.editor.close();
 });
