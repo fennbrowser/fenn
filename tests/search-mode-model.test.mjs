@@ -29,8 +29,8 @@ function fixture() {
       SEARCH_MODE_RESTRICT:new Set(['^','?']),SEARCH_MODE_ENTRY:new Set(['keywordoffer','searchbutton']),RESULT_TYPE:{RESTRICT:9},RESULT_SOURCE:{SEARCH:3},
       ICON:{SEARCH_GLASS:'glass'},getResultSourceName:source=>source===1 ? 'history' : undefined}});
   vm.runInContext(readFileSync(new URL('UrlbarSearchModeModel.mjs',base),'utf8')
-    .replace(/^import .*;\r?$/gm,'').replace('export class UrlbarSearchModeModel','this.Model = class UrlbarSearchModeModel'),context);
-  return {model:new context.Model(services),services,state,calls,prefs,engine,local,observers};
+    .replace(/^import .*;\r?$/gm,'').replaceAll('export class ','class ')+'\nthis.Model=UrlbarSearchModeModel;this.State=UrlbarSearchModeState;',context);
+  return {State:context.State,model:new context.Model(services),services,state,calls,prefs,engine,local,observers};
 }
 
 test('engine filtering, SAP-local eligibility and settings redesign share Firefox policy',async()=>{
@@ -315,4 +315,43 @@ test('original mode owner keeps confirmed state below previews and clears invali
   assert.equal(modes.preview,undefined);assert.equal(modes.confirmed,undefined);
   await input.setSearchMode({source:999,restrictType:'keyword'},browser);
   assert.equal(modes.preview,undefined);assert.equal(modes.confirmed,undefined);
+});
+
+
+test('independent mode state isolates tabs and retains confirmed modes beneath previews',()=>{
+  const {State}=fixture(),state=new State(),a={},b={},engine={isGeneralPurposeEngine:true};
+  assert.equal(state.get(a),null);
+  const request={engineName:'Engine',isPreview:false,entry:'searchbutton'};
+  state.set(a,request,engine);request.engineName='mutated';
+  state.set(a,{source:1});state.set(b,{engineName:'Other'},engine);
+  assert.equal(state.get(a).source,1);assert.equal(state.get(a,true).engineName,'Engine');
+  assert.equal(state.get(b).engineName,'Other');assert.equal(state.get(b,true),null);
+  const returned=state.get(a,true);returned.engineName='changed';
+  assert.equal(state.get(a,true).engineName,'Engine');
+  const restored=state.set(a,state.get(a,true),engine);restored.engineName='changed';
+  assert.equal(state.get(a).engineName,'Engine');assert.equal(state.get(a).isPreview,false);
+  state.forget(a);assert.equal(state.get(a),null);assert.equal(state.get(b).engineName,'Other');
+});
+
+test('independent state clears both layers on exit or missing engine and confirmation replaces preview',()=>{
+  const {State}=fixture(),state=new State(),tab={},engine={isGeneralPurposeEngine:true};
+  for(const invalid of [null,{engineName:'removed'},{source:999,restrictType:'keyword'}]) {
+    state.set(tab,{engineName:'Engine',isPreview:false},engine);state.set(tab,{source:1});
+    assert.equal(state.set(tab,invalid),null);assert.equal(state.get(tab,true),null);
+  }
+  state.set(tab,{engineName:'Engine'},engine);
+  state.set(tab,{source:1,isPreview:false});
+  assert.equal(state.get(tab).source,1);assert.equal(state.get(tab).isPreview,false);
+  assert.equal(state.get(tab,true).source,1);
+});
+
+test('original mode reads use shared preview precedence and never expose stored records',()=>{
+  const Model=fixture().model.constructor,source=readFileSync(new URL('UrlbarInputBase.mjs',base),'utf8');
+  const start=source.indexOf('  getSearchMode(browser, confirmedOnly = false) {');
+  const method=source.slice(start,source.indexOf('\n  /**',start)).replaceAll('#getSearchModesObject','_getModes');
+  const Binding=new Function('UrlbarSearchModeModel',`return class {${method}}`)(Model);
+  const input=new Binding(),modes={confirmed:{source:1},preview:{engineName:'Engine'}};
+  input._getModes=()=>modes;
+  const result=input.getSearchMode({});result.engineName='changed';
+  assert.equal(input.getSearchMode({}).engineName,'Engine');assert.equal(input.getSearchMode({},true).source,1);
 });
