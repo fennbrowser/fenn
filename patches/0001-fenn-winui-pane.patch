@@ -833,7 +833,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..dc069c07fe 100644
+index ba254af0c6..2d12ac1916 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -114,6 +114,7 @@ export class UrlbarParentController {
@@ -857,7 +857,25 @@ index ba254af0c6..dc069c07fe 100644
    /**
     * The input or an object that can forward calls to the input.
     *
-@@ -1292,10 +1299,22 @@ export class UrlbarParentController {
+@@ -607,9 +614,15 @@ export class UrlbarParentController {
+    *   not added to form history. If this is false but the current window
+    *   is private, it's not added either.
+    */
+-  recordSearch(searchData) {
+-    let browser = this.browserWindow.gBrowser.selectedBrowser;
++  recordSearch(searchData, browserId = null) {
++    // A supplied ID is strict: never retarget a vanished independent activation.
++    if (browserId !== null && (!Number.isSafeInteger(browserId) || browserId <= 0)) {
++      throw new TypeError("Invalid search recording browser identity");
++    }
++    const browser = browserId === null ? this.browserWindow.gBrowser.selectedBrowser : this.resolveTargetBrowser(browserId);
++    if (!browser || (browserId !== null && browser.browserId !== browserId)) return false;
+     this.#recordSearchForBrowser({ ...searchData, browser });
++    return true;
+   }
+ 
+   /**
+@@ -1292,10 +1305,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -881,7 +899,7 @@ index ba254af0c6..dc069c07fe 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +1351,7 @@ export class UrlbarParentController {
+@@ -1332,6 +1357,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -889,7 +907,7 @@ index ba254af0c6..dc069c07fe 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +1375,8 @@ export class UrlbarParentController {
+@@ -1355,6 +1381,8 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
@@ -898,7 +916,7 @@ index ba254af0c6..dc069c07fe 100644
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +1408,7 @@ export class UrlbarParentController {
+@@ -1386,7 +1414,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -907,7 +925,7 @@ index ba254af0c6..dc069c07fe 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +1416,11 @@ export class UrlbarParentController {
+@@ -1394,10 +1422,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -920,7 +938,7 @@ index ba254af0c6..dc069c07fe 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +1438,7 @@ export class UrlbarParentController {
+@@ -1415,7 +1444,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -929,7 +947,7 @@ index ba254af0c6..dc069c07fe 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +1460,7 @@ export class UrlbarParentController {
+@@ -1437,7 +1466,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -938,7 +956,7 @@ index ba254af0c6..dc069c07fe 100644
          break;
      }
    };
-@@ -1727,8 +1750,12 @@ export class TelemetryEvent {
+@@ -1727,8 +1756,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -952,7 +970,7 @@ index ba254af0c6..dc069c07fe 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +1770,7 @@ export class TelemetryEvent {
+@@ -1743,7 +1776,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -961,7 +979,7 @@ index ba254af0c6..dc069c07fe 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +1796,7 @@ export class TelemetryEvent {
+@@ -1769,7 +1802,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -970,7 +988,7 @@ index ba254af0c6..dc069c07fe 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +1807,13 @@ export class TelemetryEvent {
+@@ -1780,12 +1813,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -986,7 +1004,7 @@ index ba254af0c6..dc069c07fe 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +1824,7 @@ export class TelemetryEvent {
+@@ -1796,7 +1830,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -995,7 +1013,7 @@ index ba254af0c6..dc069c07fe 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +1892,16 @@ export class TelemetryEvent {
+@@ -1864,17 +1898,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -1017,7 +1035,7 @@ index ba254af0c6..dc069c07fe 100644
      );
    }
  
-@@ -2009,158 +2036,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2042,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -1176,7 +1194,7 @@ index ba254af0c6..dc069c07fe 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +2396,27 @@ export class TelemetryEvent {
+@@ -2521,17 +2402,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -1213,7 +1231,7 @@ index ba254af0c6..dc069c07fe 100644
      );
    }
  
-@@ -2548,14 +2433,19 @@ export class TelemetryEvent {
+@@ -2548,14 +2439,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -1239,7 +1257,7 @@ index ba254af0c6..dc069c07fe 100644
    }
  
    /**
-@@ -2581,39 +2471,4 @@ export class TelemetryEvent {
+@@ -2581,39 +2477,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -9235,10 +9253,10 @@ index 0000000000..de7a88b842
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..24ece2b16c
+index 0000000000..c52ec5c91b
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,621 @@
+@@ -0,0 +1,636 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9564,7 +9582,7 @@ index 0000000000..24ece2b16c
 +        !Number.isFinite(event.timeStamp) || event.timeStamp < 0) throw new TypeError("Invalid result engagement event");
 +    if (![UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.SEARCH, UrlbarShared.RESULT_TYPE.KEYWORD].includes(result?.type) ||
 +        result.payload?.providesSearchMode) throw new Error("Unsupported terminal engagement");
-+    const { trackBounce = false, recordHistory = false } = options ?? {};
++    const { trackBounce = false, recordHistory = false, recordSearch = false } = options ?? {};
 +    if (typeof trackBounce !== "boolean" || (trackBounce && !this.#context.browserId)) {
 +      throw new TypeError("Bounce tracking requires a pinned browser identity");
 +    }
@@ -9577,10 +9595,25 @@ index 0000000000..24ece2b16c
 +      history = UrlbarQueryModel.resultHistoryEffects(result, load.loadRequest, {
 +        searchString: description.details.searchString, isPrivate: this.#context.isPrivate });
 +    }
++    if (typeof recordSearch !== "boolean" || (recordSearch && !this.#context.browserId)) {
++      throw new TypeError("Search recording requires a pinned browser identity");
++    }
++    let search = null;
++    if (recordSearch) {
++      const load = this.describeResultLoad(queryId, result, event, options);
++      if (!load || load.where !== "current") return false;
++      search = this.describeResultSearchRecording(queryId, result, event, options);
++      if (!search) return false;
++    }
 +    const query = this.#query;
 +    this.#engagementActive = false;
 +    this.#endingEngagement = true;
 +    try {
++      if (search) {
++        if (!this.#controller.parentController.recordSearch(
++          { ...search.data, details: { ...search.data.details } }, this.#context.browserId
++        ) || !this.ownsResult(queryId, result)) return false;
++      }
 +      if (history?.inputHistory) {
 +        const { url, input, whenReady } = history.inputHistory;
 +        if (whenReady) this.#controller.parentController.addToInputHistory(url, input, { whenReady: true });

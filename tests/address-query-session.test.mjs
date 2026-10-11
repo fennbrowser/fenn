@@ -2683,3 +2683,39 @@ test('activation cleanup failures cannot retry and replacement queries revoke th
   assert.equal(g.editor.clearResultAutofillBackspace(1,g.q.id,g.result),false);
   const query=await next;g.editor.publishPresentation(2,query.id,[],false);g.editor.close();
 });
+
+
+test('parent search recording uses strict pinned identity without selected-browser fallback',()=>{
+  const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarParentController.sys.mjs',import.meta.url),'utf8');
+  const start=source.indexOf('  recordSearch(searchData, browserId = null) {');
+  const method=source.slice(start,source.indexOf('\n  /**',start));
+  const Parent=new Function(`return class { ${method} #recordSearchForBrowser(data){this.calls.push(data);} }`)();
+  const p=new Parent(),selected={browserId:1},pinned={browserId:2};
+  p.calls=[];p.browserWindow={gBrowser:{selectedBrowser:selected}};p.resolveTargetBrowser=()=>pinned;
+  assert.equal(p.recordSearch({query:'q'},2),true);assert.equal(p.calls[0].browser,pinned);
+  p.resolveTargetBrowser=()=>null;assert.equal(p.recordSearch({},2),false);
+  p.resolveTargetBrowser=()=>selected;assert.equal(p.recordSearch({},2),false);assert.equal(p.calls.length,1);
+  assert.throws(()=>p.recordSearch({},0),/Invalid/);
+  assert.equal(p.recordSearch({}),true);assert.equal(p.calls[1].browser,selected);
+});
+
+test('independent current-tab search recording precedes bounce/engagement and uses a mutable payload copy',async()=>{
+  const f=await historyEngagementFixture();f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH;
+  f.result.payload={engine:'Engine',query:'chosen'};f.parent.child.updateEngineStore('changed',{id:'e',name:'Engine'},-1);
+  f.parent.recordSearch=(data,id)=>{f.calls.push(['search',id,data.query]);data.details.test=true;return true;};
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,{...f.options,recordSearch:true}),true);
+  assert.deepEqual(f.calls,[['search',42,'chosen'],['bounce'],['record']]);
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,{...f.options,recordSearch:true}),false);f.editor.close();
+});
+
+test('search execution rejects non-current targets before consumption and stops if the pinned target vanishes',async()=>{
+  const f=await historyEngagementFixture();f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH;
+  f.result.payload={engine:'Engine',query:'chosen'};f.parent.child.updateEngineStore('changed',{id:'e',name:'Engine'},-1);
+  const options={...f.options,recordSearch:true};
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,{...f.event,where:'tab'},options),false);
+  assert.equal(f.calls.length,0);
+  f.parent.recordSearch=()=>false;
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,options),false);
+  f.parent.recordSearch=()=>assert.fail('consumed search retried');
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,options),false);assert.equal(f.calls.length,0);f.editor.close();
+});
