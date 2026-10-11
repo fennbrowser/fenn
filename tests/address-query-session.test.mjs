@@ -3081,3 +3081,70 @@ test('unchanged exposure preserves staged activation while removal/republication
   g.parent.onSelection=()=>{g.editor.publishPresentation(1,g.q.id,[other],true);g.editor.publishPresentation(1,g.q.id,[g.result,other],true);};
   assert.equal(g.editor.acknowledgeNavigationActivation(a.token,{queryId:a.queryId,resultId:a.resultId},g.event,g.options),null);g.editor.close();
 });
+
+
+test('loaded-URI value preserves blank/origin/extension/session-restore validity and decode fallback',()=>{
+  const f=fixture();
+  for(const hideInitialPage of [false,true])for(const isBlankPage of [false,true])
+    for(const isExtensionUrl of [false,true])for(const dueToSessionRestore of [false,true]) {
+      let reads=0;
+      const result=f.sandbox.loadedURIValue(()=>{reads++;return 'https://loaded.test/path';},
+        {hideInitialPage,isBlankPage,isExtensionUrl,dueToSessionRestore});
+      assert.equal(result.value,hideInitialPage?'':'https://loaded.test/path');
+      assert.equal(result.valid,!dueToSessionRestore && (!isBlankPage || isExtensionUrl || !hideInitialPage));
+      assert.equal(reads,hideInitialPage?0:1);
+    }
+  const result=f.sandbox.loadedURIValue(()=>{throw Error('exotic URI');},{hideInitialPage:false,isBlankPage:false});
+  assert.equal(result.value,'about:blank');assert.equal(result.valid,true);f.session.close();
+});
+
+function recoveryValueFixture() {
+  const f=fixture(),source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarParentController.sys.mjs',import.meta.url),'utf8');
+  const start=source.indexOf('  describeCurrentPageRevert(browserId) {');
+  const method=source.slice(start,source.indexOf('\n  /**',start));
+  const uri=spec=>({spec,displaySpec:spec});
+  const browser={browserId:42,lastLocationChange:1,userTypedValue:'untouched',currentURI:uri('https://loaded.test/'),
+    browsingContext:{currentWindowGlobal:{},sessionHistory:{count:1}}};
+  const lazy={loadedURIValue:f.sandbox.loadedURIValue,BrowserUIUtils:{checkEmptyPageOrigin:()=>true},ExtensionUtils:{isExtensionUrl:u=>u.spec.startsWith('moz-extension:')}};
+  const services={io:{createExposableURI:u=>uri(u.spec.replace('user:pass@',''))}};
+  const Parent=new Function('lazy','Services',`return class { #destroyed=false;#isAddressbar=true;
+    destroy(){this.#destroyed=true;} ${method} }`)(lazy,services),p=new Parent();
+  p.resolveTargetBrowser=()=>browser;p.browserWindow={gBrowser:{selectedBrowser:browser},browsingContext:{},
+    isInitialPage:u=>u.spec==='about:blank',isBlankPageURL:spec=>spec==='about:blank'};
+  return {...f,p,browser,lazy,services,uri};
+}
+
+test('parent revert description preserves auth/loading/current URI precedence and strips credentials without mutation',()=>{
+  const f=recoveryValueFixture();
+  f.browser.currentAuthPromptURI=f.uri('https://user:pass@auth.test/path');
+  f.browser.browsingContext.nonWebControlledLoadingURI=f.uri('https://loading.test/');f.browser.browsingContext.sessionHistory.count=0;
+  assert.equal(f.p.describeCurrentPageRevert(42).value,'https://auth.test/path');
+  f.browser.currentAuthPromptURI=null;assert.equal(f.p.describeCurrentPageRevert(42).value,'https://loading.test/');
+  f.browser.browsingContext.sessionHistory.count=1;const d=f.p.describeCurrentPageRevert(42);
+  assert.equal(d.value,'https://loaded.test/');assert.equal(d.pageProxyValid,true);assert.equal(d.searchMode,null);assert.equal(d.userTypedValue,null);
+  assert.equal(Object.isFrozen(d),true);assert.equal(f.browser.userTypedValue,'untouched');f.session.close();
+});
+
+test('revert description preserves trusted blank versus content-controlled blank behavior',()=>{
+  const f=recoveryValueFixture();f.browser.currentURI=f.uri('about:blank');
+  let d=f.p.describeCurrentPageRevert(42);assert.equal(d.value,'');assert.equal(d.pageProxyValid,false);
+  f.lazy.BrowserUIUtils.checkEmptyPageOrigin=()=>false;d=f.p.describeCurrentPageRevert(42);
+  assert.equal(d.value,'about:blank');assert.equal(d.pageProxyValid,true);f.session.close();
+});
+
+test('revert description refuses missing/mismatched tabs, changed lifetime and unsupported PiP',()=>{
+  for(const change of ['id','tab','document','epoch','destroy','pip']) {
+    const f=recoveryValueFixture();
+    if(change==='id')f.browser.browserId=43;
+    if(change==='tab')f.p.browserWindow.gBrowser.selectedBrowser={};
+    if(change==='destroy')f.p.destroy();
+    if(change==='pip')f.p.browserWindow.browsingContext.isDocumentPiP=true;
+    if(['document','epoch'].includes(change))f.services.io.createExposableURI=u=>{
+      if(change==='document')f.browser.browsingContext.currentWindowGlobal={};else f.browser.lastLocationChange++;
+      return u;
+    };
+    assert.equal(f.p.describeCurrentPageRevert(42),null);f.session.close();
+  }
+  const f=recoveryValueFixture();assert.throws(()=>f.p.describeCurrentPageRevert(0),/Invalid/);
+  f.p.resolveTargetBrowser=()=>null;assert.equal(f.p.describeCurrentPageRevert(42),null);f.session.close();
+});
