@@ -1547,3 +1547,94 @@ test('explicit exit requery consumes authority on failure and rejects cancelled 
     f.editor.close();
   }
 });
+
+
+function observedRestoration(p) {
+  return {text:p.edit.text,selectionStart:p.edit.selectionStart,selectionEnd:p.edit.selectionEnd,
+    selectionDirection:p.edit.selectionDirection,searchMode:p.searchMode ? {...p.searchMode} : null};
+}
+
+test('confirmed restoration preserves text and caret, revokes results, and acknowledges once without a query',async()=>{
+  const f=await previewFixture(),snapshot=f.editor.snapshot,started=f.parent.started.length;
+  const mode={source:1,isPreview:false,entry:'searchbutton'};
+  const pending=f.editor.beginSearchModeRestoration(1,mode);mode.source=99;
+  const p=await pending;
+  assert.equal(p.searchMode.source,1);assert.equal(p.startQuery,false);
+  assert.equal(Object.isFrozen(p.searchMode),true);
+  assert.equal(f.parent.child.resultsOpen,false);assert.deepEqual([...f.parent.child.visibleResults],[]);
+  assert.throws(()=>f.editor.describeResultInput(1,f.query.id,f.result),/Stale/);
+  for(const wrong of [{searchMode:null},{text:'changed'},{selectionStart:0},{selectionDirection:'backward'}]) {
+    assert.equal(f.editor.acknowledgeSearchModeRestoration(p.token,{...observedRestoration(p),...wrong}),false);
+  }
+  assert.equal(f.editor.getSearchModeRestoration(p.token),p);
+  assert.equal(f.editor.acknowledgeSearchModeRestoration(p.token,observedRestoration(p)),true);
+  assert.equal(f.editor.acknowledgeSearchModeRestoration(p.token,observedRestoration(p)),false);
+  assert.equal(f.editor.snapshot,snapshot);assert.equal(f.parent.started.length,started);
+  assert.equal(f.editor.beginSearchModeExit(1).previousSearchMode.source,1);f.editor.close();
+});
+
+test('restoration requires confirmed-only state and clears absent or no-longer-valid modes',async()=>{
+  const f=await editorFixture();await f.editor.edit({searchMode:{source:1,isPreview:true}},edit(1,'typed'));
+  for(const invalid of [undefined,{source:1},{source:1,isPreview:true}]) {
+    await assert.rejects(f.editor.beginSearchModeRestoration(1,invalid),/confirmed mode/);
+  }
+  for(const mode of [null,{engineName:'Removed',isPreview:false},{source:999,isPreview:false}]) {
+    const p=await f.editor.beginSearchModeRestoration(1,mode);assert.equal(p.searchMode,null);
+    assert.equal(f.editor.acknowledgeSearchModeRestoration(p.token,observedRestoration(p)),true);
+    assert.equal(f.editor.beginSearchModeExit(1),null);
+  }
+  await assert.rejects(f.editor.beginSearchModeRestoration(0,null),/Stale/);
+  await f.editor.edit({},edit(2,'composing',{composing:true}));
+  await assert.rejects(f.editor.beginSearchModeRestoration(2,null),/Stale/);f.editor.close();
+});
+
+test('engine restoration revalidates live facts before acknowledgment and can restart after removal',async()=>{
+  const f=await editorFixture(),engine={id:'engine',name:'Engine',isGeneralPurposeEngine:true};
+  await f.editor.edit({},edit(1,'typed'));f.parent.child.updateEngineStore('changed',engine,-1);
+  const mode={engineName:'Engine',isPreview:false,entry:'searchbutton'};
+  const p=await f.editor.beginSearchModeRestoration(1,mode);
+  assert.equal(p.searchMode.isGeneralPurposeEngine,true);
+  f.parent.child.updateEngineStore('changed',{...engine,isGeneralPurposeEngine:false},0);
+  assert.equal(f.editor.getSearchModeRestoration(p.token),null);
+  assert.equal(f.editor.acknowledgeSearchModeRestoration(p.token,observedRestoration(p)),false);
+  const replacement=await f.editor.beginSearchModeRestoration(1,mode);
+  assert.equal(replacement.searchMode.isGeneralPurposeEngine,false);
+  f.parent.child.updateEngineStore('removed',engine,-1);
+  assert.equal(f.editor.getSearchModeRestoration(replacement.token),null);
+  const cleared=await f.editor.beginSearchModeRestoration(1,mode);
+  assert.equal(cleared.searchMode,null);
+  assert.equal(f.editor.acknowledgeSearchModeRestoration(cleared.token,observedRestoration(cleared)),true);
+  f.editor.close();
+});
+
+test('restoration cannot outlive newer mode requests, caret changes, edits, cancellation or scope',async()=>{
+  for(const revoke of [f=>f.editor.beginSearchModeRestoration(1,null),f=>f.editor.select(1,0,0),
+    f=>f.editor.edit({},edit(2,'new')),f=>f.editor.cancel()]) {
+    for(const during of [true,false]) {
+      const f=await editorFixture();await f.editor.edit({},edit(1,'typed'));
+      const pending=f.editor.beginSearchModeRestoration(1,{source:1,isPreview:false});
+      const p=during?null:await pending;await revoke(f);
+      if(during) assert.equal(await pending,null);
+      else {
+        assert.equal(f.editor.getSearchModeRestoration(p.token),null);
+        assert.equal(f.editor.acknowledgeSearchModeRestoration(p.token,observedRestoration(p)),false);
+      }
+      f.editor.close();
+    }
+  }
+  const f=await editorFixture();await f.editor.edit({},edit(1,'typed'));
+  const pending=f.editor.beginSearchModeRestoration(1,{source:1,isPreview:false});f.loseScope();
+  await assert.rejects(pending,/scope changed/);
+});
+
+test('restoration resolves a fresh engine store without querying and rejects scope loss during initialization',async()=>{
+  for(const invalidate of [false,true]) {
+    const f=fixture({hold:true}),mode={engineName:'Engine',isPreview:false};
+    const pending=f.session.prepareSearchModeRestoration(mode);mode.engineName='mutated';
+    if(invalidate)f.invalidate();
+    f.parent.child.updateEngineStore('init',[{id:'engine',name:'Engine',isGeneralPurposeEngine:true}],null);
+    if(invalidate)await assert.rejects(pending,/scope changed/);
+    else assert.equal((await pending).engineName,'Engine');
+    assert.equal(f.parent.started.length,0);f.session.close();
+  }
+});
