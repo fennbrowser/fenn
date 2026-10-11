@@ -25,7 +25,9 @@ function fixture() {
     installEngine:async()=>false};
   // No browser window, input, DOM or switcher is supplied to the real module.
   const context=vm.createContext({UrlbarPrefs:{get:key=>prefs[key]},
-    UrlbarShared:{LOCAL_SEARCH_MODES:[local],ICON:{SEARCH_GLASS:'glass'},getResultSourceName:()=> 'history'}});
+    UrlbarShared:{LOCAL_SEARCH_MODES:[local],RESTRICT_TOKENS:{SEARCH:'?'},
+      SEARCH_MODE_RESTRICT:new Set(['^','?']),RESULT_TYPE:{RESTRICT:9},
+      ICON:{SEARCH_GLASS:'glass'},getResultSourceName:()=> 'history'}});
   vm.runInContext(readFileSync(new URL('UrlbarSearchModeModel.mjs',base),'utf8')
     .replace(/^import .*;\r?$/gm,'').replace('export class UrlbarSearchModeModel','this.Model = class UrlbarSearchModeModel'),context);
   return {model:new context.Model(services),services,state,calls,prefs,engine,local,observers};
@@ -170,4 +172,60 @@ test('preference changes do not erase explicit keyboard reveal or per-tab availa
   assert.equal(model.constructor.visibility(state).modeButtonVisible,false);
   prefs['searchModeSwitcher.featureGate']=true;
   assert.equal(model.constructor.visibility(state).modeButtonVisible,true);
+});
+
+test('token modes use the current default engine and copy addressbar-only local modes',()=>{
+  const {model,services,local}=fixture(),Model=model.constructor;
+  const options={isAddressbar:true,engineStore:services.engineStore};
+  assert.equal(Model.modeForToken('?',options).engineName,'Engine');
+  services.engineStore.default={name:'Replacement'};
+  assert.equal(Model.modeForToken('?',options).engineName,'Replacement');
+  const mode=Model.modeForToken('^',options);assert.notEqual(mode,local);
+  mode.entry='changed';assert.equal(local.entry,undefined);
+  assert.equal(Model.modeForToken('^',{...options,isAddressbar:false}),null);
+  assert.equal(Model.modeForToken('@unknown',options),null);
+  services.engineStore.default=null;
+  assert.equal(Model.modeForToken('?',options).engineName,undefined);
+});
+
+test('result modes preserve original-engine, action-engine and restriction precedence',()=>{
+  const {model,services}=fixture(),Model=model.constructor;
+  const modeForToken=token=>Model.modeForToken(token,{isAddressbar:true,engineStore:services.engineStore});
+  const mode=(payload,extra={})=>Model.modeForResult({payload,type:1},{modeForToken,...extra});
+  assert.equal(mode({}),null);
+  assert.equal(mode({engine:'Result'},{actionEngine:'Action'}).engineName,'Result');
+  assert.equal(mode({engine:'Result',originalEngine:'Different'}),null);
+  assert.equal(mode({engine:'Result',originalEngine:'Different'},{actionEngine:'Action'}).engineName,'Action');
+  assert.equal(mode({keyword:'^',engine:'Result'}).source,1);
+  assert.equal(mode({keyword:'^'},{actionEngine:'Action'}).engineName,'Action');
+  assert.equal(mode({keyword:'^'}).restrictType,'symbol');
+  const result={type:9,payload:{keyword:'^',engine:'Result'},providerName:'UrlbarProviderTopSites'};
+  assert.equal(Model.modeForResult(result,{modeForToken}).restrictType,'keyword');
+  for(const [providerName,dynamicType,entry] of [
+    ['UrlbarProviderTopSites',false,'topsites_urlbar'],['UrlbarProviderTabToSearch',false,'tabtosearch'],
+    ['UrlbarProviderTabToSearch',true,'tabtosearch_onboard'],['Other',false,'keywordoffer']]) {
+    result.providerName=providerName;result.payload.dynamicType=dynamicType;
+    assert.equal(Model.modeForResult(result,{modeForToken}).entry,entry);
+    assert.equal(Model.modeForResult(result,{modeForToken,entry:'explicit'}).entry,'explicit');
+  }
+});
+
+test('original inputs adapt token and selected-action facts to shared result-mode policy',()=>{
+  const {model,services}=fixture();
+  for(const file of ['UrlbarInputBase.mjs','SmartbarInput.mjs']) {
+    const source=readFileSync(new URL(file,base),'utf8');
+    const methods=['searchModeForToken(token)', '_searchModeForResult(result,'].map(signature=>{
+      const start=source.indexOf('  '+signature);return source.slice(start,source.indexOf('\n  /**',start));
+    });
+    const Binding=new Function('UrlbarSearchModeModel',`return class {#isAddressbar=true; ${methods.join('\n')}}`)(model.constructor);
+    const binding=new Binding();binding.controller={engineStore:services.engineStore};binding.view={selectedElement:{dataset:{engine:'Selected'}}};
+    const result={payload:{keyword:'^'}};
+    assert.equal(binding.searchModeForToken('?').engineName,'Engine');
+    const described=binding._searchModeForResult(result,null,{engine:'Native'});
+    assert.equal(described.restrictType,'symbol');
+    if(file==='UrlbarInputBase.mjs') {
+      assert.equal(described.engineName,'Native');
+      assert.equal(binding._searchModeForResult(result).engineName,'Selected');
+    } else assert.equal(described.source,1,'Smartbar must not acquire action-element overrides');
+  }
 });

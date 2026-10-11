@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {UrlbarQueryLifecycle} from '../upstream/firefox/browser/components/urlbar/content/UrlbarQueryLifecycle.mjs';
 
-const sharedPolicy=vm.createContext({URL,UrlbarContentUtils:{},UrlbarPrefs:{}});
+const sharedPolicy=vm.createContext({URL,UrlbarContentUtils:{},UrlbarPrefs:{get:()=>false}});
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarShared.mjs',import.meta.url),'utf8')
   .replace(/^import .*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),sharedPolicy);
 
@@ -29,7 +29,10 @@ function fixture({hold=false,uninitializedResults=false}={}) {
     ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;}}});
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarUrlValue.mjs',import.meta.url),'utf8')
     .replace(/^import .*;$/gm,'').replaceAll('export function ','function '),sandbox);
-  for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarResultPresentation','UrlbarEditSession']) {
+  Object.assign(sandbox.UrlbarShared, {RESTRICT_TOKENS:sharedPolicy.UrlbarShared.RESTRICT_TOKENS,
+    LOCAL_SEARCH_MODES:sharedPolicy.UrlbarShared.LOCAL_SEARCH_MODES,
+    SEARCH_MODE_RESTRICT:sharedPolicy.UrlbarShared.SEARCH_MODE_RESTRICT});
+  for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarSearchModeModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarResultPresentation','UrlbarEditSession']) {
     const source=readFileSync(new URL(`../upstream/firefox/browser/components/urlbar/content/${file}.mjs`,import.meta.url),'utf8');
     vm.runInContext(source.replace(/^import .*;$/gm,'').replaceAll('export class ','class ')+`\nthis.${file}=${file};`,sandbox);
   }
@@ -156,6 +159,24 @@ test('editor freeze revokes completion authority without writing text and keeps 
   assert.throws(()=>f.editor.freezeResults(3,f.query.id),/Stale/);f.editor.close();
 });
 const edit=(revision,text,extra={})=>({revision,text,selectionStart:text.length,selectionEnd:text.length,...extra});
+
+test('independent mode descriptions require exact current result identity and remain usable after freezing',async()=>{
+  const f=await editorFixture(),q=await f.editor.edit({},edit(1,'mode'));
+  const result={type:1,providerName:'UrlbarProviderTabToSearch',payload:{engine:'Engine'}};q.results=[result];
+  const mode=f.editor.describeResultSearchMode(1,q.id,result);
+  assert.equal(mode.engineName,'Engine');assert.equal(mode.entry,'tabtosearch');assert.ok(Object.isFrozen(mode));
+  assert.throws(()=>f.editor.describeResultSearchMode(0,q.id,result),/Stale/);
+  assert.throws(()=>f.editor.describeResultSearchMode(1,q.id,{...result}),/Stale/);
+  f.editor.freezeResults(1,q.id);q.results=[];
+  assert.equal(f.editor.describeResultSearchMode(1,q.id,result).engineName,'Engine');
+  result.payload={keyword:'^'};
+  assert.equal(f.editor.describeResultSearchMode(1,q.id,result,{isAddressbar:false}).restrictType,'symbol');
+  assert.equal(f.editor.describeResultSearchMode(1,q.id,result,{actionEngine:'Action'}).engineName,'Action');
+  await f.editor.edit({},edit(2,'next'));
+  assert.throws(()=>f.editor.describeResultSearchMode(2,q.id,result),/Stale/);
+  await f.editor.edit({},edit(3,'compose',{composing:true}));
+  assert.throws(()=>f.editor.describeResultSearchMode(3,q.id,result),/Stale/);f.editor.close();
+});
 
 test('independent edits validate UTF-16 selection and monotonically increasing revision without cancelling valid work',async()=>{
   const f=await editorFixture();await f.editor.edit({},edit(1,'a😀'));
