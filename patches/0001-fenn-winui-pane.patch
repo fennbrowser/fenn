@@ -836,7 +836,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..a3cf3be2f0 100644
+index ba254af0c6..0e1c320d74 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -946,7 +946,7 @@ index ba254af0c6..a3cf3be2f0 100644
    }
  
    /**
-@@ -999,6 +1043,446 @@ export class UrlbarParentController {
+@@ -999,6 +1043,458 @@ export class UrlbarParentController {
      }
    }
  
@@ -1157,10 +1157,12 @@ index ba254af0c6..a3cf3be2f0 100644
 +      browser.browsingContext?.currentWindowGlobal === document && browser.lastLocationChange === epoch &&
 +      browser.userTypedValue === typedValue;
 +    if (!current()) return null;
++    const formatPolicy = Object.freeze({ trimURLs: lazy.UrlbarPrefs.get("trimURLs"),
++      trimWww: lazy.UrlbarPrefs.get("trimWww"), trimURLProtocol: lazy.BrowserUIUtils.trimURLProtocol });
 +    const untrimmedValue = lazy.UrlbarSearchModeModel.modeEntryTypedValue(modeEntry,
 +      value => lazy.ReaderMode.getOriginalUrlObjectForDisplay(value)?.displaySpec ?? value);
 +    const value = lazy.trimDisplayValue(untrimmedValue, {
-+      trimURLs: lazy.UrlbarPrefs.get("trimURLs"),
++      trimURLs: formatPolicy.trimURLs,
 +      trimURL: text => lazy.BrowserUIUtils.trimURL(text),
 +      isTextDirectionRTL: text => window.windowUtils.getDirectionFromText(text) === window.windowUtils.DIRECTION_RTL,
 +      // This path requires an already-invalid proxy; it cannot assert page security.
@@ -1168,15 +1170,17 @@ index ba254af0c6..a3cf3be2f0 100644
 +    });
 +    const prefix = lazy.BrowserUIUtils.getTrimmedURLPrefix(untrimmedValue);
 +    const removed = !!prefix && !value.startsWith(prefix);
-+    if (!current()) return null;
-+    return Object.freeze({ value, untrimmedValue,
++    if (!current() || formatPolicy.trimURLs !== lazy.UrlbarPrefs.get("trimURLs") ||
++        formatPolicy.trimWww !== lazy.UrlbarPrefs.get("trimWww") ||
++        formatPolicy.trimURLProtocol !== lazy.BrowserUIUtils.trimURLProtocol) return null;
++    return Object.freeze({ value, untrimmedValue, formatPolicy,
 +      protocolIsTrimmed: removed && prefix.startsWith(lazy.BrowserUIUtils.trimURLProtocol),
 +      wwwIsTrimmed: removed && prefix.endsWith("www."), valueIsTyped: false, pageProxyValid: false });
 +  }
 +
 +  /** Apply a consumed composition-start observation through existing owned-mode commits. */
 +  commitIndependentCompositionStart(browserId, { previousMode, searchMode, text, priorTypedValue,
-+    applyMode, clearUserTypedValue, modeEntry, engineId, keepPanelOpen, viewIsOpen,
++    applyMode, clearUserTypedValue, modeEntry, restoration = null, engineId, keepPanelOpen, viewIsOpen,
 +    previousPersistedSearchTerms, persistedSearchTerms }, isCurrent, onCommitted = null) {
 +    if (!Number.isSafeInteger(browserId) || browserId <= 0 || typeof text !== "string" ||
 +        (priorTypedValue !== null && typeof priorTypedValue !== "string") ||
@@ -1194,11 +1198,18 @@ index ba254af0c6..a3cf3be2f0 100644
 +        !lazy.UrlbarShared.deepEqual(searchMode, shouldApply ? confirmation.searchMode : previousMode) ||
 +        (!applyMode && persistedSearchTerms !== previousPersistedSearchTerms)) return null;
 +    if (applyMode && (!modeEntry || modeEntry.untrimmedValue !== text || modeEntry.userTypedValue !== priorTypedValue ||
-+        typeof modeEntry.pageProxyValid !== "boolean" || modeEntry.hasAutofillPlaceholder !== false)) return null;
++        typeof modeEntry.pageProxyValid !== "boolean" || typeof modeEntry.hasAutofillPlaceholder !== "boolean")) return null;
++    const restores = applyMode && modeEntry.hasAutofillPlaceholder;
++    if (restores && (clearUserTypedValue || modeEntry.pageProxyValid || !priorTypedValue || !restoration ||
++        !lazy.UrlbarShared.deepEqual(restoration, this.describeIndependentCompositionRestoration(browserId, modeEntry)))) return null;
++    if (!restores && restoration !== null) return null;
 +    if (this.#destroyed || this.rendersInContentProcess || !this.#isAddressbar) return null;
 +    const browser = this.resolveTargetBrowser(browserId), document = browser?.browsingContext?.currentWindowGlobal;
 +    const epoch = browser?.lastLocationChange;
-+    const scope = () => isCurrent() && !this.#destroyed && !!document && browser?.browserId === browserId &&
++    const formattingCurrent = () => !restores || (restoration.formatPolicy.trimURLs === lazy.UrlbarPrefs.get("trimURLs") &&
++      restoration.formatPolicy.trimWww === lazy.UrlbarPrefs.get("trimWww") &&
++      restoration.formatPolicy.trimURLProtocol === lazy.BrowserUIUtils.trimURLProtocol);
++    const scope = () => isCurrent() && formattingCurrent() && !this.#destroyed && !!document && browser?.browserId === browserId &&
 +      this.resolveTargetBrowser(browserId) === browser && this.browserWindow.gBrowser.selectedBrowser === browser &&
 +      browser.browsingContext?.currentWindowGlobal === document && browser.lastLocationChange === epoch;
 +    if (!scope() || browser.userTypedValue !== priorTypedValue) return null;
@@ -1220,6 +1231,7 @@ index ba254af0c6..a3cf3be2f0 100644
 +    if (!applyMode) return Object.freeze({ ...preserved, userTypedValue: expectedText, typedResetApplied, current: true });
 +    const outcome = this.commitIndependentModeState(browserId, searchMode, {
 +      persistedSearchTerms, engineId, expectedStateToken: preserved.stateToken,
++      ...(restores ? { userTypedValue: restoration.untrimmedValue } : {}),
 +      modeEntry: { ...modeEntry, userTypedValue: expectedText },
 +    }, scope, onCommitted);
 +    if (!outcome?.applied) return incomplete();
@@ -1393,7 +1405,7 @@ index ba254af0c6..a3cf3be2f0 100644
    /**
     * Loads a URL in the browser window resolved from the actor. The content
     * child supplies the serializable load parameters; the parent fills in the
-@@ -1027,9 +1511,15 @@ export class UrlbarParentController {
+@@ -1027,9 +1523,15 @@ export class UrlbarParentController {
     *   browser to hand `focusBrowser` on the deferred-Enter keyup -- a
     *   content-process input can't resolve the selected browser itself.
     */
@@ -1410,7 +1422,7 @@ index ba254af0c6..a3cf3be2f0 100644
      if (!browser) {
        // The tab was closed before the load got here; don't hand its load to
        // whichever tab is selected now.
-@@ -1040,8 +1530,9 @@ export class UrlbarParentController {
+@@ -1040,8 +1542,9 @@ export class UrlbarParentController {
      }
  
      let { url, postData } = lazy.UrlbarUtils.loadRequestToUrl(loadRequest);
@@ -1421,7 +1433,7 @@ index ba254af0c6..a3cf3be2f0 100644
      }
      params.postData = postData;
  
-@@ -1055,6 +1546,7 @@ export class UrlbarParentController {
+@@ -1055,6 +1558,7 @@ export class UrlbarParentController {
        });
      }
  
@@ -1429,7 +1441,7 @@ index ba254af0c6..a3cf3be2f0 100644
      if (where == "current") {
        params.targetBrowser = browser;
      } else {
-@@ -1071,6 +1563,7 @@ export class UrlbarParentController {
+@@ -1071,6 +1575,7 @@ export class UrlbarParentController {
        browser.focus();
      }
  
@@ -1437,7 +1449,7 @@ index ba254af0c6..a3cf3be2f0 100644
      try {
        this.browserWindow.openTrustedLinkIn(url, where, params);
      } catch (ex) {
-@@ -1079,9 +1572,10 @@ export class UrlbarParentController {
+@@ -1079,9 +1584,10 @@ export class UrlbarParentController {
        return {
          reverted: ex.result != Cr.NS_ERROR_LOAD_SHOWED_ERRORPAGE,
          browserId: browser.browserId,
@@ -1449,7 +1461,7 @@ index ba254af0c6..a3cf3be2f0 100644
    }
  
    /**
-@@ -1292,10 +1786,22 @@ export class UrlbarParentController {
+@@ -1292,10 +1798,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -1473,7 +1485,7 @@ index ba254af0c6..a3cf3be2f0 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +1838,7 @@ export class UrlbarParentController {
+@@ -1332,6 +1850,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -1481,7 +1493,7 @@ index ba254af0c6..a3cf3be2f0 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +1862,10 @@ export class UrlbarParentController {
+@@ -1355,6 +1874,10 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
@@ -1492,7 +1504,7 @@ index ba254af0c6..a3cf3be2f0 100644
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +1897,7 @@ export class UrlbarParentController {
+@@ -1386,7 +1909,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -1501,7 +1513,7 @@ index ba254af0c6..a3cf3be2f0 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +1905,11 @@ export class UrlbarParentController {
+@@ -1394,10 +1917,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -1514,7 +1526,7 @@ index ba254af0c6..a3cf3be2f0 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +1927,7 @@ export class UrlbarParentController {
+@@ -1415,7 +1939,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -1523,7 +1535,7 @@ index ba254af0c6..a3cf3be2f0 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +1949,7 @@ export class UrlbarParentController {
+@@ -1437,7 +1961,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -1532,7 +1544,7 @@ index ba254af0c6..a3cf3be2f0 100644
          break;
      }
    };
-@@ -1727,8 +2239,12 @@ export class TelemetryEvent {
+@@ -1727,8 +2251,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -1546,7 +1558,7 @@ index ba254af0c6..a3cf3be2f0 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +2259,7 @@ export class TelemetryEvent {
+@@ -1743,7 +2271,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -1555,7 +1567,7 @@ index ba254af0c6..a3cf3be2f0 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +2285,7 @@ export class TelemetryEvent {
+@@ -1769,7 +2297,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -1564,7 +1576,7 @@ index ba254af0c6..a3cf3be2f0 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +2296,13 @@ export class TelemetryEvent {
+@@ -1780,12 +2308,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -1580,7 +1592,7 @@ index ba254af0c6..a3cf3be2f0 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +2313,7 @@ export class TelemetryEvent {
+@@ -1796,7 +2325,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -1589,7 +1601,7 @@ index ba254af0c6..a3cf3be2f0 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +2381,16 @@ export class TelemetryEvent {
+@@ -1864,17 +2393,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -1611,7 +1623,7 @@ index ba254af0c6..a3cf3be2f0 100644
      );
    }
  
-@@ -2009,158 +2525,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2537,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -1770,7 +1782,7 @@ index ba254af0c6..a3cf3be2f0 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +2885,27 @@ export class TelemetryEvent {
+@@ -2521,17 +2897,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -1807,7 +1819,7 @@ index ba254af0c6..a3cf3be2f0 100644
      );
    }
  
-@@ -2548,14 +2922,19 @@ export class TelemetryEvent {
+@@ -2548,14 +2934,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -1833,7 +1845,7 @@ index ba254af0c6..a3cf3be2f0 100644
    }
  
    /**
-@@ -2581,39 +2960,4 @@ export class TelemetryEvent {
+@@ -2581,39 +2972,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -9229,10 +9241,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..3c1695ed6d
+index 0000000000..980be54e5c
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2008 @@
+@@ -0,0 +1,2031 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9462,18 +9474,24 @@ index 0000000000..3c1695ed6d
 +    const confirmation = description.confirmSearchMode ? UrlbarSearchModeModel.confirmationPolicy(mode) :
 +      Object.freeze({ applyMode: false, clearOneOffSelection: false, searchMode: mode });
 +    let resultingTypedValue = description.clearUserTypedValue ? null : userTypedValue;
++    let restoration = null;
 +    if (confirmation.applyMode) {
 +      modeEntry = this.#captureModeEntry(modeEntry);
 +      if (!modeEntry) throw new TypeError("Missing composition pre-mode facts");
-+      // Autofill restoration still requires its own normalized text-write stage.
-+      if (modeEntry.untrimmedValue !== this.#edit.text || modeEntry.userTypedValue !== userTypedValue ||
-+          modeEntry.hasAutofillPlaceholder) return null;
-+      resultingTypedValue = UrlbarSearchModeModel.modeEntryTypedValue({ ...modeEntry,
++      if (modeEntry.untrimmedValue !== this.#edit.text || modeEntry.userTypedValue !== userTypedValue) return null;
++      if (modeEntry.hasAutofillPlaceholder) {
++        if (modeEntry.pageProxyValid || !resultingTypedValue) return null;
++        restoration = this.#queries.describeCompositionRestoration(modeEntry);
++        if (!restoration) return null;
++      }
++      resultingTypedValue = restoration?.untrimmedValue ?? UrlbarSearchModeModel.modeEntryTypedValue({ ...modeEntry,
 +        userTypedValue: resultingTypedValue });
 +    }
 +    const searchMode = confirmation.searchMode;
 +    const queryId = keepPanelOpen ? this.#queries.currentQueryId : null;
-+    if (this.#edit !== description.edit || this.#searchMode !== mode) return null;
++    if (this.#closed || !this.#isCurrent() || this.#edit !== description.edit || this.#searchMode !== mode ||
++        keepPanelOpen !== UrlbarPrefs.get("keepPanelOpenDuringImeComposition") ||
++        !this.#queries.isCompositionModeCurrent(mode, identity.engineId)) return null;
 +    const edit = { ...this.#edit, composing: true };
 +    // A start event is not an input transition; do not retain the prior input's state.
 +    delete edit.composition;
@@ -9482,6 +9500,11 @@ index 0000000000..3c1695ed6d
 +      searchMode: searchMode ? Object.freeze({ ...searchMode }) : null,
 +      applyMode: confirmation.applyMode, clearOneOffSelection: confirmation.clearOneOffSelection,
 +      ...(confirmation.applyMode ? { modeEntry } : {}),
++      ...(restoration ? { restoration, editorWrite: Object.freeze({ ...restoration, text: restoration.value,
++        selectionStart: restoration.value === edit.text ? edit.selectionStart : restoration.value.length,
++        selectionEnd: restoration.value === edit.text ? edit.selectionEnd : restoration.value.length,
++        selectionDirection: restoration.value === edit.text ? edit.selectionDirection : "none",
++      }) } : {}),
 +      ...(confirmation.applyMode && modeEntry.pageProxyValid ? { editorWrite: Object.freeze({
 +        text: "", selectionStart: 0, selectionEnd: 0, selectionDirection: "none", pageProxyValid: false,
 +      }) } : {}),
@@ -9504,11 +9527,18 @@ index 0000000000..3c1695ed6d
 +    this.#check();
 +    const pending = this.#compositionStart;
 +    if (!pending || pending.proposal.token !== token) return null;
-+    if (pending.proposal.edit !== this.#edit || pending.mode !== this.#searchMode ||
-+        pending.keepPanelOpen !== UrlbarPrefs.get("keepPanelOpenDuringImeComposition") ||
-+        !this.#queries.isCompositionModeCurrent(pending.mode, pending.engineId)) {
-+      this.#compositionStart = null;
-+      this.#compositionEnd = null;
++    const current = () => !this.#closed && this.#isCurrent() && this.#compositionStart === pending &&
++      pending.proposal.edit === this.#edit && pending.mode === this.#searchMode &&
++      pending.keepPanelOpen === UrlbarPrefs.get("keepPanelOpenDuringImeComposition") &&
++      this.#queries.isCompositionModeCurrent(pending.mode, pending.engineId);
++    // Formatting services may reenter the editor while revalidating a restoration.
++    // Check the exact pending request again before granting host-write authority.
++    if (!current() || (pending.proposal.restoration && !UrlbarShared.deepEqual(pending.proposal.restoration,
++        this.#queries.describeCompositionRestoration(pending.proposal.modeEntry))) || !current()) {
++      if (this.#compositionStart === pending) {
++        this.#compositionStart = null;
++        this.#compositionEnd = null;
++      }
 +      return null;
 +    }
 +    return pending.proposal;
@@ -9516,12 +9546,16 @@ index 0000000000..3c1695ed6d
 +
 +  /** Observe host completion; this is not a browser-mode or typed-value write. */
 +  acknowledgeCompositionStart(token, { text, selectionStart, selectionEnd, selectionDirection,
-+    composing, searchMode, userTypedValue, open, oneOffSelected, pageProxyValid }) {
++    composing, searchMode, userTypedValue, open, oneOffSelected, pageProxyValid,
++    untrimmedValue, protocolIsTrimmed, wwwIsTrimmed, valueIsTyped }) {
 +    const request = this.getCompositionStart(token);
 +    const expected = request?.editorWrite ?? request?.edit;
 +    if (!request || text !== expected.text || selectionStart !== expected.selectionStart ||
 +        selectionEnd !== expected.selectionEnd || selectionDirection !== expected.selectionDirection ||
 +        (request.editorWrite && pageProxyValid !== false) ||
++        (request.restoration && (untrimmedValue !== request.restoration.untrimmedValue ||
++          protocolIsTrimmed !== request.restoration.protocolIsTrimmed || wwwIsTrimmed !== request.restoration.wwwIsTrimmed ||
++          valueIsTyped !== false)) ||
 +        composing !== true || open !== request.open || userTypedValue !== request.userTypedValue ||
 +        (request.clearOneOffSelection && oneOffSelected !== false) ||
 +        !UrlbarShared.deepEqual(searchMode, request.searchMode)) return false;
@@ -9566,7 +9600,8 @@ index 0000000000..3c1695ed6d
 +      return this.#queries.commitCompositionStart({ previousMode: pending.mode, searchMode: request.searchMode,
 +        text: request.edit.text, priorTypedValue: pending.priorTypedValue,
 +        applyMode: request.applyMode, clearUserTypedValue: request.clearUserTypedValue,
-+        modeEntry: request.modeEntry, engineId: pending.engineId, keepPanelOpen: pending.keepPanelOpen,
++        modeEntry: request.modeEntry, restoration: request.restoration ?? null,
++        engineId: pending.engineId, keepPanelOpen: pending.keepPanelOpen,
 +        viewIsOpen: pending.viewIsOpen, previousPersistedSearchTerms, persistedSearchTerms }, current, notify);
 +    } finally {
 +      if (this.#committingComposition === pending) this.#committingComposition = null;

@@ -4608,7 +4608,7 @@ test('composition preview requests require stable non-restoring pre-mode facts b
   const f=await editorFixture();await f.editor.edit({searchMode:{source:1,isPreview:true}},edit(1,'text'));
   const before=f.editor.snapshot,options={viewIsOpen:true,userTypedValue:'prior'};
   assert.throws(()=>f.editor.beginCompositionStart(1,options),/Missing composition/);
-  for(const facts of [{hasAutofillPlaceholder:true},{untrimmedValue:'other'},{userTypedValue:'changed'}]) {
+  for(const facts of [{hasAutofillPlaceholder:true,pageProxyValid:true},{untrimmedValue:'other'},{userTypedValue:'changed'}]) {
     assert.equal(f.editor.beginCompositionStart(1,{...options,modeEntry:{untrimmedValue:'text',pageProxyValid:false,
       hasAutofillPlaceholder:false,userTypedValue:'prior',...facts}}),null);assert.equal(f.editor.snapshot,before);
   }
@@ -5052,8 +5052,111 @@ test('editor restoration description is immutable, revocable and does not begin 
   };
   const d=f.editor.describeCompositionRestoration(1,facts);assert.equal(d.value,'typed');assert.equal(d.edit,before);
   assert.equal(Object.isFrozen(d),true);assert.equal(Object.isFrozen(d.modeEntry),true);assert.equal(f.editor.snapshot,before);
-  assert.equal(f.parent.started.length,1);assert.equal(f.editor.beginCompositionStart(1,facts),null,'description does not authorize unsupported host write');
+  assert.equal(f.parent.started.length,1);assert.equal('token' in d,false,'description grants no write token');
   f.prefs.keepPanelOpenDuringImeComposition=true;assert.equal(f.editor.describeCompositionRestoration(1,facts),null);assert.equal(calls,1);
   f.prefs.keepPanelOpenDuringImeComposition=false;f.parent.describeIndependentCompositionRestoration=()=>{f.editor.select(1,0,0);return d;};
   assert.equal(f.editor.describeCompositionRestoration(1,facts),null);f.editor.close();
+});
+
+
+function restorationCommitFixture(typed='https://www.restored.test/',text='autofilled') {
+  const f=compositionParentFixture(true,text,typed),format=compositionRestorationFixture(typed);
+  Object.assign(f.lazy,{UrlbarPrefs:format.lazy.UrlbarPrefs,BrowserUIUtils:format.lazy.BrowserUIUtils,
+    ReaderMode:format.lazy.ReaderMode,trimDisplayValue:format.lazy.trimDisplayValue});
+  f.p.browserWindow.windowUtils=format.p.browserWindow.windowUtils;
+  f.facts.modeEntry.hasAutofillPlaceholder=true;format.session.close();
+  return Object.assign(f,{prefs:format.prefs});
+}
+
+async function restorationEditorFixture(typed='https://www.restored.test/',text='autofilled') {
+  const notifications=[],f=await editorFixture({browserId:42,onModeStateChanged:n=>notifications.push(n)});
+  const browser=restorationCommitFixture(typed,text);browser.prefs.trimURLs=true;
+  f.parent.describeIndependentCompositionRestoration=browser.p.describeIndependentCompositionRestoration.bind(browser.p);
+  f.parent.commitIndependentCompositionStart=browser.p.commitIndependentCompositionStart.bind(browser.p);
+  await f.editor.edit({searchMode:{source:1,isPreview:true}},edit(1,text));
+  const facts={viewIsOpen:true,userTypedValue:typed,modeEntry:{...browser.facts.modeEntry}};
+  return Object.assign(f,{browser,notifications,facts});
+}
+const compositionPersistence={previousPersistedSearchTerms:false,persistedSearchTerms:false};
+
+test('restoration write requires exact display, full value, caret and metadata before a one-use browser commit',async()=>{
+  const f=await restorationEditorFixture();f.editor.select(1,1,3,'backward');
+  const p=f.editor.beginCompositionStart(1,f.facts),observation={...observedCompositionStart(p),...p.editorWrite};
+  assert.equal(p.editorWrite.text,'restored.test');assert.equal(p.editorWrite.selectionStart,13);
+  assert.equal(p.editorWrite.selectionEnd,13);assert.equal(p.editorWrite.selectionDirection,'none');
+  assert.equal(Object.isFrozen(p.restoration.formatPolicy),true);assert.equal(f.browser.writes.length,0);
+  assert.equal(f.editor.snapshot.text,'autofilled');
+  for(const wrong of [{text:p.restoration.untrimmedValue},{untrimmedValue:p.restoration.value},
+    {protocolIsTrimmed:false},{wwwIsTrimmed:false},{valueIsTyped:true},{pageProxyValid:true},
+    {selectionEnd:0},{selectionDirection:'backward'},{userTypedValue:'restored.test'}]) {
+    assert.equal(f.editor.acknowledgeCompositionStart(p.token,{...observation,...wrong}),false);
+  }
+  assert.equal(f.editor.acknowledgeCompositionStart(p.token,observation),true);
+  const acknowledged=f.editor.snapshot;assert.equal(acknowledged.text,'restored.test');
+  assert.equal(f.browser.writes.length,0,'host acknowledgment must not write browser state');
+  const outcome=f.editor.commitAcknowledgedCompositionStart(p.token,compositionPersistence);
+  assert.equal(outcome.applied,true);assert.equal(outcome.current,true);assert.equal(outcome.typedResetApplied,false);
+  assert.deepEqual(f.browser.writes,['https://www.restored.test/']);assert.equal(f.browser.getMode().isPreview,false);
+  assert.equal(f.notifications.length,1);assert.equal(f.notifications[0].edit,acknowledged);
+  assert.equal(f.notifications[0].userTypedValue,'https://www.restored.test/');
+  assert.equal(f.editor.acknowledgeCompositionStart(p.token,observation),false);
+  assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,compositionPersistence),null);
+  assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+test('same-display restoration preserves the observed caret and direction',async()=>{
+  const f=await restorationEditorFixture('autofilled');f.editor.select(1,1,3,'backward');
+  const p=f.editor.beginCompositionStart(1,f.facts);
+  assert.equal(p.editorWrite.selectionStart,1);assert.equal(p.editorWrite.selectionEnd,3);
+  assert.equal(p.editorWrite.selectionDirection,'backward');
+  assert.equal(f.editor.acknowledgeCompositionStart(p.token,{...observedCompositionStart(p),...p.editorWrite}),true);
+  assert.equal(f.editor.snapshot.selectionStart,1);assert.equal(f.editor.snapshot.selectionDirection,'backward');f.editor.close();
+});
+
+test('restoration revalidation revokes writes after formatting, browser or edit changes',async()=>{
+  for(const change of ['trim','typed','caret','formatReentry','preferenceReentry']) {
+    const f=await restorationEditorFixture(),p=f.editor.beginCompositionStart(1,f.facts);
+    if(change==='trim')f.browser.prefs.trimURLs=false;
+    if(change==='typed')f.browser.browser.userTypedValue='newer';
+    if(change==='caret')f.editor.select(1,0,0);
+    if(change==='formatReentry')f.browser.lazy.ReaderMode.getOriginalUrlObjectForDisplay=()=>{f.editor.select(1,0,0);return null;};
+    if(change==='preferenceReentry')f.browser.lazy.ReaderMode.getOriginalUrlObjectForDisplay=()=>{f.prefs.keepPanelOpenDuringImeComposition=true;return null;};
+    assert.equal(f.editor.getCompositionStart(p.token),null);
+    assert.equal(f.editor.acknowledgeCompositionStart(p.token,{...observedCompositionStart(p),...p.editorWrite}),false);
+    assert.equal(f.editor.snapshot.text,'autofilled');f.editor.close();
+  }
+});
+
+test('restoration formatting reentry cannot begin composition against a changed keep-open policy',async()=>{
+  const f=await restorationEditorFixture(),before=f.editor.snapshot;
+  f.browser.lazy.ReaderMode.getOriginalUrlObjectForDisplay=()=>{f.prefs.keepPanelOpenDuringImeComposition=true;return null;};
+  assert.equal(f.editor.beginCompositionStart(1,f.facts),null);assert.equal(f.editor.snapshot,before);f.editor.close();
+});
+
+test('restoration browser commit rechecks formatting and browser lifetime after host acknowledgment',async()=>{
+  for(const change of ['trim','www','protocol','typed','document','prepareReentry']) {
+    const f=await restorationEditorFixture(),p=f.editor.beginCompositionStart(1,f.facts);
+    assert.equal(f.editor.acknowledgeCompositionStart(p.token,{...observedCompositionStart(p),...p.editorWrite}),true);
+    if(change==='trim')f.browser.prefs.trimURLs=false;
+    if(change==='www')f.browser.prefs.trimWww=true;
+    if(change==='protocol')f.browser.lazy.BrowserUIUtils.trimURLProtocol='http://';
+    if(change==='typed')f.browser.browser.userTypedValue='newer';
+    if(change==='document')f.browser.onPrepare=()=>{f.browser.browser.browsingContext.currentWindowGlobal={};};
+    if(change==='prepareReentry')f.browser.onPrepare=()=>{f.browser.prefs.trimURLs=false;};
+    const writes=f.browser.writes.length;
+    assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,compositionPersistence),null);
+    assert.equal(f.browser.writes.length,writes);assert.equal(f.notifications.length,0);f.editor.close();
+  }
+});
+
+test('Reader Mode restoration commits the captured full value and exposes setter reentry without retry',()=>{
+  for(const reenter of [false,true]) {
+    const f=restorationCommitFixture('about:reader?url=https%3A%2F%2Fwww.restored.test%2F');f.prefs.trimURLs=true;
+    f.lazy.ReaderMode.getOriginalUrlObjectForDisplay=()=>({displaySpec:'https://www.restored.test/'});
+    f.facts.restoration=f.p.describeIndependentCompositionRestoration(42,f.facts.modeEntry);
+    if(reenter)f.onWrite=()=>{f.browser.lastLocationChange++;};
+    const result=f.p.commitIndependentCompositionStart(42,f.facts,()=>true);
+    assert.equal(result.applied,true);assert.equal(result.current,!reenter);
+    assert.deepEqual(f.writes,['https://www.restored.test/']);assert.equal(result.typedResetApplied,false);
+  }
 });
