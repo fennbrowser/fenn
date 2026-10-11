@@ -2860,11 +2860,16 @@ function parentLoadFixture() {
   const start=source.indexOf('  prepareCurrentLoad(loadData) {');
   const methods=source.slice(start,source.indexOf('  /**\n   * Focuses the browser',start));
   const calls=[],browser={browserId:42,lastLocationChange:1,browsingContext:{currentWindowGlobal:{}},focus:()=>calls.push('focus')};
-  const lazy={UrlbarUtils:{loadRequestToUrl:request=>({url:request.urlLoad?.url,postData:null})}};
+  let stateToken=null;
+  const owner={prepareRecovery:()=>({token:stateToken={}}),isCurrent:(_b,t)=>t===stateToken,
+    commit:(_b,t)=>{if(t!==stateToken)return false;stateToken=null;return true;},
+    discard:(_b,t)=>{if(t!==stateToken)return false;stateToken=null;return true;}};
+  const lazy={independentUrlbarBrowserState:owner,UrlbarUtils:{isPersistedSearchTermsEnabled:()=>true,
+    loadRequestToUrl:request=>({url:request.urlLoad?.url,postData:null})}};
   const Parent=new Function('lazy','Cr',`return class {
     #currentLoad=null;#currentLoadRecovery=null;#currentLoadGeneration=0;#destroyed=false;#isAddressbar=true;
     #prepareAddressbarLoad(data){this.prepare?.(data);}
-    destroy(){this.#destroyed=true;this.#currentLoad=null;this.#currentLoadRecovery=null;}
+    destroy(){this.#destroyed=true;this.#currentLoad=null;this.#discardCurrentLoadRecovery();}
     describeCurrentPageRevert(){return this.recoveryDescription??null;}
     ${methods}
   }`)(lazy,{NS_ERROR_LOAD_SHOWED_ERRORPAGE:99});
@@ -3157,7 +3162,7 @@ test('revert description refuses missing/mismatched tabs, changed lifetime and u
 
 test('only reverting guarded loads create recovery, which revalidates and resets typed state once',()=>{
   const {p,data,browser}=parentLoadFixture();browser.userTypedValue='failed';
-  p.recoveryDescription={value:'https://loaded.test/',pageProxyValid:true,searchMode:null,userTypedValue:null};
+  p.recoveryDescription={value:'https://loaded.test/',pageProxyValid:true,searchMode:null,userTypedValue:null,persistedSearchTerms:false};
   p.browserWindow.openTrustedLinkIn=()=>{throw {result:1};};
   const outcome=p.commitCurrentLoad(p.prepareCurrentLoad(data));assert.equal(outcome.reverted,true);assert.ok(outcome.recovery);
   assert.equal(p.getCurrentLoadRecovery(outcome.recovery.token),outcome.recovery);assert.equal(browser.userTypedValue,'failed');
@@ -3184,7 +3189,7 @@ test('recovery tickets expire on document, value and newer-load changes',()=>{
 
 async function editorRecoveryFixture() {
   const f=await historyEngagementFixture(),write=mockActivationLoad(f);
-  const recovery={token:{},value:'https://loaded.test/',pageProxyValid:true,searchMode:null,userTypedValue:null};
+  const recovery={token:{},value:'https://loaded.test/',pageProxyValid:true,searchMode:null,userTypedValue:null,persistedSearchTerms:false};
   let pending=true;
   f.parent.commitCurrentLoad=()=>({attempted:true,reverted:true,browserId:42,recovery});
   f.parent.getCurrentLoadRecovery=token=>pending && token===recovery.token?recovery:null;
@@ -3193,7 +3198,7 @@ async function editorRecoveryFixture() {
   return {...f,recovery,outcome};
 }
 const recoveryObservation=p=>({text:p.value,selectionStart:p.selectionStart,selectionEnd:p.selectionEnd,
-  selectionDirection:p.selectionDirection,searchMode:null,userTypedValue:null,pageProxyValid:p.pageProxyValid,focused:p.focused});
+  selectionDirection:p.selectionDirection,searchMode:null,userTypedValue:null,pageProxyValid:p.pageProxyValid,persistedSearchTerms:p.persistedSearchTerms,focused:p.focused});
 
 test('failed independent commit proposes untrimmed recovery and requires exact observation once',async()=>{
   const f=await editorRecoveryFixture();assert.equal(f.outcome.recovery,f.recovery);
@@ -3208,7 +3213,7 @@ test('failed independent commit proposes untrimmed recovery and requires exact o
 test('unfocused recovery resets caret and rejects wrong mode, proxy and typed-state observations',async()=>{
   const f=await editorRecoveryFixture(),p=f.editor.getNavigationRecovery(f.recovery.token,{focused:false});
   assert.equal(p.selectionEnd,0);
-  for(const override of [{searchMode:{}},{pageProxyValid:false},{userTypedValue:'old'},{selectionStart:1}]) {
+  for(const override of [{searchMode:{}},{pageProxyValid:false},{userTypedValue:'old'},{persistedSearchTerms:true},{selectionStart:1}]) {
     assert.equal(f.editor.acknowledgeNavigationRecovery(p.token,{...recoveryObservation(p),...override}),false);
   }
   assert.equal(f.editor.acknowledgeNavigationRecovery(p.token,recoveryObservation(p)),true);f.editor.close();
@@ -3289,4 +3294,30 @@ test('recovery ticket revokes on display metadata changes even when visible text
     assert.equal(p.getCurrentLoadRecovery(outcome.recovery.token),null);
     assert.equal(p.acknowledgeCurrentLoadRecovery(outcome.recovery.token),false);assert.equal(browser.userTypedValue,'failed');
   }
+});
+
+
+test('parent recovery rejects superseded owned state and changed persistence browser facts',()=>{
+  for(const change of ['state','preference','originalURI','destroy']) {
+    const {p,data,browser,lazy}=parentLoadFixture();browser.userTypedValue='failed';browser.originalURI={spec:'https://old.test/'};
+    p.recoveryDescription={value:'old.test',pageProxyValid:true,searchMode:null,userTypedValue:null};
+    p.browserWindow.openTrustedLinkIn=()=>{throw {result:1};};
+    const outcome=p.commitCurrentLoad(p.prepareCurrentLoad(data));assert.equal(outcome.recovery.persistedSearchTerms,false);
+    if(change==='state')lazy.independentUrlbarBrowserState.prepareRecovery(browser);
+    if(change==='preference')lazy.UrlbarUtils.isPersistedSearchTermsEnabled=()=>false;
+    if(change==='originalURI')browser.originalURI={spec:'https://new.test/'};
+    if(change==='destroy')p.destroy();
+    assert.equal(p.acknowledgeCurrentLoadRecovery(outcome.recovery.token),false,change);
+    assert.equal(browser.userTypedValue,'failed');
+  }
+});
+
+test('parent consumes owned recovery state before typed-value reset and refuses failed state commit',()=>{
+  const {p,data,browser,lazy}=parentLoadFixture();browser.userTypedValue='failed';
+  p.recoveryDescription={value:'old.test',pageProxyValid:true,searchMode:null,userTypedValue:null};
+  p.browserWindow.openTrustedLinkIn=()=>{throw {result:1};};
+  const outcome=p.commitCurrentLoad(p.prepareCurrentLoad(data));
+  lazy.independentUrlbarBrowserState.commit=()=>false;
+  assert.equal(p.acknowledgeCurrentLoadRecovery(outcome.recovery.token),false);
+  assert.equal(browser.userTypedValue,'failed');assert.equal(p.getCurrentLoadRecovery(outcome.recovery.token),null);
 });

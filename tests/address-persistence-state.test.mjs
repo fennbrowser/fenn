@@ -96,3 +96,63 @@ test('retained persistence binding applies service effects and avoids disabled b
   enabled=false;Object.defineProperty(input,'window',{get(){throw Error('disabled browser read');}});events.length=0;
   assert.equal(input.update({state:{persist:{}}}),false);assert.deepEqual(events,[['persistsearchterms',false]]);
 });
+
+
+function ownerFixture(){
+  const f=fixture();
+  const c=vm.createContext({ChromeUtils:{defineESModuleGetters:target=>{target.UrlbarSearchTermsPersistence=f.service;}}});
+  vm.runInContext(read('content/UrlbarSearchModeModel.mjs').replace(/^import .*;$/gm,'').replaceAll('export ','')+
+    ';this.UrlbarSearchModeModel=UrlbarSearchModeModel;',c);
+  vm.runInContext(read('content/UrlbarBrowserState.mjs').replace(/^import .*;$/gm,'').replaceAll('export ','')+
+    ';this.Owner=UrlbarBrowserState;',c);
+  return {...f,owner:new c.Owner()};
+}
+
+test('owned browser state commits once, isolates tabs and exposes immutable mode snapshots',()=>{
+  const {owner}=ownerFixture(),a={},b={},mode={engineName:'engine'};
+  const update=owner.prepareMode(a,mode);mode.engineName='changed';
+  assert.equal(owner.snapshot(a).confirmed,null);assert.equal(owner.commit(b,update.token),false);
+  assert.equal(owner.commit(a,update.token),true);assert.equal(owner.commit(a,update.token),false);
+  assert.equal(owner.snapshot(a).confirmed.engineName,'engine');assert.equal(owner.snapshot(b).confirmed,null);
+  assert.equal(Object.isFrozen(owner.snapshot(a).confirmed),true);
+  const preview=owner.prepareMode(a,{engineName:'preview',isPreview:true});owner.commit(a,preview.token);
+  assert.equal(owner.snapshot(a).confirmed.engineName,'engine');assert.equal(owner.snapshot(a).preview.engineName,'preview');
+});
+
+test('owned recovery prepares mode and persistence clearing without exposing unacknowledged changes',()=>{
+  const {owner,facts}=ownerFixture(),browser={};
+  let p=owner.prepareMode(browser,{engineName:'engine'});owner.commit(browser,p.token);
+  p=owner.preparePersistence(browser,facts);assert.equal(p.effects.userTypedValue,'chosen words');owner.commit(browser,p.token);
+  assert.equal(owner.snapshot(browser).persistedSearchTerms,true);
+  p=owner.prepareRecovery(browser,facts);
+  assert.equal(owner.snapshot(browser).persistedSearchTerms,true);assert.equal(owner.snapshot(browser).confirmed.engineName,'engine');
+  assert.equal(p.effects.shouldPersist,false);assert.equal(p.effects.recordView,false);
+  owner.commit(browser,p.token);assert.equal(owner.snapshot(browser).persistedSearchTerms,false);assert.equal(owner.snapshot(browser).confirmed,null);
+});
+
+test('new owned preparations, discard and forget revoke older updates without clearing committed state',()=>{
+  const {owner,facts}=ownerFixture(),browser={};
+  const old=owner.prepareRecovery(browser,facts),next=owner.prepareMode(browser,{engineName:'new'});
+  assert.equal(owner.discard(browser,old.token),false);assert.equal(owner.commit(browser,old.token),false);
+  assert.equal(owner.commit(browser,next.token),true);
+  const cancelled=owner.prepareRecovery(browser,facts);assert.equal(owner.discard(browser,cancelled.token),true);
+  assert.equal(owner.commit(browser,cancelled.token),false);assert.equal(owner.snapshot(browser).confirmed.engineName,'new');
+  const forgotten=owner.prepareRecovery(browser,facts);owner.forget(browser);
+  assert.equal(owner.commit(browser,forgotten.token),false);assert.equal(owner.snapshot(browser).confirmed,null);
+});
+
+test('reentrant and throwing persistence services cannot commit partial or superseded browser state',()=>{
+  for(const action of ['replace','forget','throw']) {
+    const {owner,facts,service}=ownerFixture(),browser={};let newer;
+    service.updateState=()=>{
+      if(action==='throw')throw Error('service failure');
+      if(action==='forget')owner.forget(browser);
+      else newer=owner.prepareMode(browser,{engineName:'new'});
+      return {shouldPersist:false};
+    };
+    if(action==='throw')assert.throws(()=>owner.prepareRecovery(browser,facts),/service failure/);
+    else assert.equal(owner.prepareRecovery(browser,facts),null);
+    assert.equal(owner.snapshot(browser).confirmed,null);
+    if(newer){assert.equal(owner.commit(browser,newer.token),true);assert.equal(owner.snapshot(browser).confirmed.engineName,'new');}
+  }
+});

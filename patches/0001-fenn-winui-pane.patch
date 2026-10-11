@@ -216,7 +216,7 @@ index a182468fce..428407c54a 100644
  </body>
  </html>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..7fee1f3431 100644
+index b2b5db6040..b5a1e28fe5 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
 @@ -33,6 +33,20 @@ browser.jar:
@@ -240,7 +240,7 @@ index b2b5db6040..7fee1f3431 100644
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
-@@ -104,3 +118,17 @@ browser.jar:
+@@ -104,3 +118,18 @@ browser.jar:
  
  # L10n resources and overrides.
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
@@ -257,6 +257,7 @@ index b2b5db6040..7fee1f3431 100644
 +    content/browser/urlbar/UrlbarUrlValue.mjs (../components/urlbar/content/UrlbarUrlValue.mjs)
 +    content/browser/urlbar/UrlbarResultPresentation.mjs (../components/urlbar/content/UrlbarResultPresentation.mjs)
 +    content/browser/urlbar/UrlbarClipboardText.mjs (../components/urlbar/content/UrlbarClipboardText.mjs)
++    content/browser/urlbar/UrlbarBrowserState.mjs (../components/urlbar/content/UrlbarBrowserState.mjs)
 +    content/browser/urlbar/UrlbarEditSession.mjs (../components/urlbar/content/UrlbarEditSession.mjs)
 diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
 index 76cab7f8e4..ac11827449 100644
@@ -834,21 +835,22 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..6013f5473f 100644
+index ba254af0c6..ad4a204ff4 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
-@@ -25,6 +25,10 @@ ChromeUtils.defineESModuleGetters(lazy, {
+@@ -25,6 +25,11 @@ ChromeUtils.defineESModuleGetters(lazy, {
    ASRouter: "resource:///modules/asrouter/ASRouter.sys.mjs",
    ConfigSearchEngine:
      "moz-src:///toolkit/components/search/ConfigSearchEngine.sys.mjs",
 +  BrowserUIUtils: "resource:///modules/BrowserUIUtils.sys.mjs",
 +  trimDisplayValue: "chrome://browser/content/urlbar/UrlbarUrlValue.mjs",
 +  ReaderMode: "moz-src:///toolkit/components/reader/ReaderMode.sys.mjs",
++  independentUrlbarBrowserState: "chrome://browser/content/urlbar/UrlbarBrowserState.mjs",
 +  loadedURIValue: "chrome://browser/content/urlbar/UrlbarUrlValue.mjs",
    BrowserSearchTelemetry:
      "moz-src:///browser/components/search/BrowserSearchTelemetry.sys.mjs",
    ContainerCreationPanel:
-@@ -114,6 +118,10 @@ export class UrlbarParentController {
+@@ -114,6 +119,10 @@ export class UrlbarParentController {
     * @type {UrlbarChildControllerProxy | UrlbarChildController}
     */
    #child = null;
@@ -859,7 +861,7 @@ index ba254af0c6..6013f5473f 100644
  
    // The owning JSWindowActor, used to resolve the chrome window parent-side
    // (see `browserWindow`). Unlike the input and view, the browser window is a
-@@ -171,6 +179,12 @@ export class UrlbarParentController {
+@@ -171,6 +180,12 @@ export class UrlbarParentController {
      return AppConstants.platform;
    }
  
@@ -872,7 +874,7 @@ index ba254af0c6..6013f5473f 100644
    /**
     * The input or an object that can forward calls to the input.
     *
-@@ -607,9 +621,15 @@ export class UrlbarParentController {
+@@ -607,9 +622,15 @@ export class UrlbarParentController {
     *   not added to form history. If this is false but the current window
     *   is private, it's not added either.
     */
@@ -890,7 +892,7 @@ index ba254af0c6..6013f5473f 100644
    }
  
    /**
-@@ -711,6 +731,17 @@ export class UrlbarParentController {
+@@ -711,6 +732,17 @@ export class UrlbarParentController {
      Glean.urlbarZeroprefix2[kind][this.sapName].add(1);
    }
  
@@ -908,7 +910,7 @@ index ba254af0c6..6013f5473f 100644
    /**
     * Runs the single-word keyword URI fixup DNS check for a search picked in the
     * address bar. When a single word is turned directly into a search (bypassing
-@@ -723,11 +754,20 @@ export class UrlbarParentController {
+@@ -723,11 +755,20 @@ export class UrlbarParentController {
     *   The string being searched.
     * @param {?number} browserId
     *   The browser the search loads into, or null for the selected browser.
@@ -933,7 +935,7 @@ index ba254af0c6..6013f5473f 100644
      let fixupInfo = lazy.UrlbarUtils.getURIFixupInfo(
        searchString,
        this.isPrivate
-@@ -735,6 +775,7 @@ export class UrlbarParentController {
+@@ -735,6 +776,7 @@ export class UrlbarParentController {
      if (fixupInfo) {
        this.browserWindow.gKeywordURIFixup.check(browser, fixupInfo);
      }
@@ -941,7 +943,7 @@ index ba254af0c6..6013f5473f 100644
    }
  
    /**
-@@ -999,6 +1040,142 @@ export class UrlbarParentController {
+@@ -999,6 +1041,166 @@ export class UrlbarParentController {
      }
    }
  
@@ -996,7 +998,7 @@ index ba254af0c6..6013f5473f 100644
 +   */
 +  prepareCurrentLoad(loadData) {
 +    this.#currentLoad = null;
-+    this.#currentLoadRecovery = null;
++    this.#discardCurrentLoadRecovery();
 +    const generation = ++this.#currentLoadGeneration;
 +    if (this.#destroyed || this.rendersInContentProcess || !this.#isAddressbar) return null;
 +    if (loadData?.where !== "current" || !Number.isSafeInteger(loadData.browserId) || loadData.browserId <= 0) {
@@ -1030,9 +1032,23 @@ index ba254af0c6..6013f5473f 100644
 +      const typedValue = pending.browser.userTypedValue;
 +      const description = this.describeCurrentPageRevert(pending.data.browserId);
 +      if (description && current(pending.browser) && pending.browser.userTypedValue === typedValue) {
-+        const recovery = Object.freeze({ token: Object.freeze({}), ...description });
-+        this.#currentLoadRecovery = { browser: pending.browser, document: pending.document,
-+          epoch: pending.epoch, browserId: pending.data.browserId, typedValue, recovery };
++        const browser = pending.browser;
++        const persistenceEnabled = lazy.UrlbarUtils.isPersistedSearchTermsEnabled();
++        const originalURI = browser.originalURI?.spec ?? null;
++        const stateUpdate = lazy.independentUrlbarBrowserState.prepareRecovery(browser, {
++          enabled: persistenceEnabled, originalURI: browser.originalURI, uri: browser.currentURI,
++        });
++        if (!stateUpdate || !current(browser) || browser.userTypedValue !== typedValue ||
++            (browser.originalURI?.spec ?? null) !== originalURI ||
++            lazy.UrlbarUtils.isPersistedSearchTermsEnabled() !== persistenceEnabled ||
++            !lazy.independentUrlbarBrowserState.isCurrent(browser, stateUpdate.token)) {
++          if (stateUpdate) lazy.independentUrlbarBrowserState.discard(browser, stateUpdate.token);
++          return outcome;
++        }
++        const recovery = Object.freeze({ token: Object.freeze({}), ...description, persistedSearchTerms: false });
++        this.#currentLoadRecovery = { browser, document: pending.document,
++          epoch: pending.epoch, browserId: pending.data.browserId, typedValue, recovery,
++          stateUpdate, persistenceEnabled, originalURI };
 +        return { ...outcome, recovery };
 +      }
 +    }
@@ -1046,13 +1062,16 @@ index ba254af0c6..6013f5473f 100644
 +    const browser = pending.browser;
 +    const current = () => this.#currentLoadRecovery === pending && !this.#destroyed &&
 +      browser.userTypedValue === pending.typedValue &&
++      (browser.originalURI?.spec ?? null) === pending.originalURI &&
++      lazy.UrlbarUtils.isPersistedSearchTermsEnabled() === pending.persistenceEnabled &&
++      lazy.independentUrlbarBrowserState.isCurrent(browser, pending.stateUpdate.token) &&
 +      this.resolveTargetBrowser(pending.browserId) === browser &&
 +      this.browserWindow.gBrowser.selectedBrowser === browser &&
 +      browser.browsingContext?.currentWindowGlobal === pending.document && browser.lastLocationChange === pending.epoch;
-+    if (!current()) { if (this.#currentLoadRecovery === pending) this.#currentLoadRecovery = null; return null; }
++    if (!current()) { if (this.#currentLoadRecovery === pending) this.#discardCurrentLoadRecovery(); return null; }
 +    const live = this.describeCurrentPageRevert(pending.browserId);
 +    if (!live || !current() || Object.keys(live).some(key => live[key] !== pending.recovery[key])) {
-+      if (this.#currentLoadRecovery === pending) this.#currentLoadRecovery = null;
++      if (this.#currentLoadRecovery === pending) this.#discardCurrentLoadRecovery();
 +      return null;
 +    }
 +    return pending.recovery;
@@ -1063,8 +1082,15 @@ index ba254af0c6..6013f5473f 100644
 +    if (!this.getCurrentLoadRecovery(token)) return false;
 +    const pending = this.#currentLoadRecovery;
 +    this.#currentLoadRecovery = null;
++    if (!lazy.independentUrlbarBrowserState.commit(pending.browser, pending.stateUpdate.token)) return false;
 +    pending.browser.userTypedValue = null;
 +    return true;
++  }
++
++  #discardCurrentLoadRecovery() {
++    const pending = this.#currentLoadRecovery;
++    this.#currentLoadRecovery = null;
++    if (pending) lazy.independentUrlbarBrowserState.discard(pending.browser, pending.stateUpdate.token);
 +  }
 +
 +  /** Revoke only this preparation, without disturbing a newer one. */
@@ -1084,7 +1110,7 @@ index ba254af0c6..6013f5473f 100644
    /**
     * Loads a URL in the browser window resolved from the actor. The content
     * child supplies the serializable load parameters; the parent fills in the
-@@ -1027,9 +1204,15 @@ export class UrlbarParentController {
+@@ -1027,9 +1229,15 @@ export class UrlbarParentController {
     *   browser to hand `focusBrowser` on the deferred-Enter keyup -- a
     *   content-process input can't resolve the selected browser itself.
     */
@@ -1101,7 +1127,7 @@ index ba254af0c6..6013f5473f 100644
      if (!browser) {
        // The tab was closed before the load got here; don't hand its load to
        // whichever tab is selected now.
-@@ -1040,8 +1223,9 @@ export class UrlbarParentController {
+@@ -1040,8 +1248,9 @@ export class UrlbarParentController {
      }
  
      let { url, postData } = lazy.UrlbarUtils.loadRequestToUrl(loadRequest);
@@ -1112,7 +1138,7 @@ index ba254af0c6..6013f5473f 100644
      }
      params.postData = postData;
  
-@@ -1055,6 +1239,7 @@ export class UrlbarParentController {
+@@ -1055,6 +1264,7 @@ export class UrlbarParentController {
        });
      }
  
@@ -1120,7 +1146,7 @@ index ba254af0c6..6013f5473f 100644
      if (where == "current") {
        params.targetBrowser = browser;
      } else {
-@@ -1071,6 +1256,7 @@ export class UrlbarParentController {
+@@ -1071,6 +1281,7 @@ export class UrlbarParentController {
        browser.focus();
      }
  
@@ -1128,7 +1154,7 @@ index ba254af0c6..6013f5473f 100644
      try {
        this.browserWindow.openTrustedLinkIn(url, where, params);
      } catch (ex) {
-@@ -1079,9 +1265,10 @@ export class UrlbarParentController {
+@@ -1079,9 +1290,10 @@ export class UrlbarParentController {
        return {
          reverted: ex.result != Cr.NS_ERROR_LOAD_SHOWED_ERRORPAGE,
          browserId: browser.browserId,
@@ -1140,7 +1166,7 @@ index ba254af0c6..6013f5473f 100644
    }
  
    /**
-@@ -1292,10 +1479,22 @@ export class UrlbarParentController {
+@@ -1292,10 +1504,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -1164,7 +1190,7 @@ index ba254af0c6..6013f5473f 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +1531,7 @@ export class UrlbarParentController {
+@@ -1332,6 +1556,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -1172,18 +1198,18 @@ index ba254af0c6..6013f5473f 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +1555,10 @@ export class UrlbarParentController {
+@@ -1355,6 +1580,10 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
 +    if (this.#destroyed) return;
 +    this.#destroyed = true;
 +    this.#currentLoad = null;
-+    this.#currentLoadRecovery = null;
++    this.#discardCurrentLoadRecovery();
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +1590,7 @@ export class UrlbarParentController {
+@@ -1386,7 +1615,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -1192,7 +1218,7 @@ index ba254af0c6..6013f5473f 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +1598,11 @@ export class UrlbarParentController {
+@@ -1394,10 +1623,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -1205,7 +1231,7 @@ index ba254af0c6..6013f5473f 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +1620,7 @@ export class UrlbarParentController {
+@@ -1415,7 +1645,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -1214,7 +1240,7 @@ index ba254af0c6..6013f5473f 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +1642,7 @@ export class UrlbarParentController {
+@@ -1437,7 +1667,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -1223,7 +1249,7 @@ index ba254af0c6..6013f5473f 100644
          break;
      }
    };
-@@ -1727,8 +1932,12 @@ export class TelemetryEvent {
+@@ -1727,8 +1957,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -1237,7 +1263,7 @@ index ba254af0c6..6013f5473f 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +1952,7 @@ export class TelemetryEvent {
+@@ -1743,7 +1977,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -1246,7 +1272,7 @@ index ba254af0c6..6013f5473f 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +1978,7 @@ export class TelemetryEvent {
+@@ -1769,7 +2003,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -1255,7 +1281,7 @@ index ba254af0c6..6013f5473f 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +1989,13 @@ export class TelemetryEvent {
+@@ -1780,12 +2014,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -1271,7 +1297,7 @@ index ba254af0c6..6013f5473f 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +2006,7 @@ export class TelemetryEvent {
+@@ -1796,7 +2031,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -1280,7 +1306,7 @@ index ba254af0c6..6013f5473f 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +2074,16 @@ export class TelemetryEvent {
+@@ -1864,17 +2099,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -1302,7 +1328,7 @@ index ba254af0c6..6013f5473f 100644
      );
    }
  
-@@ -2009,158 +2218,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2243,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -1461,7 +1487,7 @@ index ba254af0c6..6013f5473f 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +2578,27 @@ export class TelemetryEvent {
+@@ -2521,17 +2603,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -1498,7 +1524,7 @@ index ba254af0c6..6013f5473f 100644
      );
    }
  
-@@ -2548,14 +2615,19 @@ export class TelemetryEvent {
+@@ -2548,14 +2640,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -1524,7 +1550,7 @@ index ba254af0c6..6013f5473f 100644
    }
  
    /**
-@@ -2581,39 +2653,4 @@ export class TelemetryEvent {
+@@ -2581,39 +2678,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -8355,6 +8381,109 @@ index 1e2660589b..5ae3ab4843 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/components/urlbar/content/UrlbarBrowserState.mjs b/browser/components/urlbar/content/UrlbarBrowserState.mjs
+new file mode 100644
+index 0000000000..be404394c6
+--- /dev/null
++++ b/browser/components/urlbar/content/UrlbarBrowserState.mjs
+@@ -0,0 +1,97 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++import { UrlbarSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs";
++const lazy = {};
++ChromeUtils.defineESModuleGetters(lazy, {
++  UrlbarSearchTermsPersistence: "moz-src:///browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs",
++});
++
++/** Independent browser-lifetime mode/persistence state, separate from gURLBar.
++ * Prepared changes are invisible until committed. The browser controller must
++ * validate tab/document scope and host acknowledgment before commit. A controller
++ * closing does not erase committed per-tab state; browser collection releases it.
++ */
++export class UrlbarBrowserState {
++  #browsers = new WeakMap();
++
++  snapshot(browser) {
++    const state = this.#browsers.get(browser)?.state;
++    const copy = mode => mode ? Object.freeze({ ...mode }) : null;
++    return Object.freeze({ confirmed: copy(state?.searchModes?.confirmed),
++      preview: copy(state?.searchModes?.preview),
++      persistedSearchTerms: !!state?.persist?.shouldPersist,
++      searchTerms: state?.persist?.searchTerms ?? "" });
++  }
++
++  #prepare(browser, update) {
++    let slot = this.#browsers.get(browser);
++    if (!slot) {
++      slot = { state: { searchModes: {} }, pending: null };
++      this.#browsers.set(browser, slot);
++    }
++    const token = Object.freeze({});
++    slot.pending = { token };
++    const draft = { ...slot.state, searchModes: { ...slot.state.searchModes } };
++    if (slot.state.persist) draft.persist = { ...slot.state.persist };
++    try {
++      const effects = Object.freeze(update(draft));
++      // Service callbacks must not revive a superseded preparation or forget.
++      if (this.#browsers.get(browser) !== slot || slot.pending?.token !== token) return null;
++      slot.pending = { token, draft };
++      return Object.freeze({ token, effects });
++    } catch (error) {
++      this.discard(browser, token);
++      throw error;
++    }
++  }
++
++  /** The caller supplies a mode already normalized against its live engine store. */
++  prepareMode(browser, normalized) {
++    return this.#prepare(browser, state => {
++      const searchMode = UrlbarSearchModeModel.writeMode(state.searchModes, normalized);
++      const persistenceChanged = lazy.UrlbarSearchTermsPersistence.updateSearchModeState(state);
++      return { searchMode: searchMode ? Object.freeze({ ...searchMode }) : null, persistenceChanged };
++    });
++  }
++
++  preparePersistence(browser, facts) {
++    return this.#prepare(browser, state => lazy.UrlbarSearchTermsPersistence.updateState(state, facts));
++  }
++
++  prepareRecovery(browser, facts) {
++    return this.#prepare(browser, state => {
++      UrlbarSearchModeModel.writeMode(state.searchModes, null);
++      lazy.UrlbarSearchTermsPersistence.updateSearchModeState(state);
++      return lazy.UrlbarSearchTermsPersistence.updateState(state, { ...facts,
++        userTypedValue: null, hideSearchTerms: true, dueToTabSwitch: true, isSameDocument: false });
++    });
++  }
++
++  isCurrent(browser, token) {
++    const pending = this.#browsers.get(browser)?.pending;
++    return !!pending?.draft && pending.token === token;
++  }
++
++  commit(browser, token) {
++    if (!this.isCurrent(browser, token)) return false;
++    const slot = this.#browsers.get(browser);
++    slot.state = slot.pending.draft;
++    slot.pending = null;
++    return true;
++  }
++
++  discard(browser, token) {
++    const slot = this.#browsers.get(browser);
++    if (!slot?.pending || slot.pending.token !== token) return false;
++    slot.pending = null;
++    return true;
++  }
++
++  forget(browser) { this.#browsers.delete(browser); }
++}
++
++// Shared by independent controllers, weakly keyed by actual browser objects.
++// Neither retained input state nor controller/session objects are stored here.
++export const independentUrlbarBrowserState = new UrlbarBrowserState();
 diff --git a/browser/components/urlbar/content/UrlbarSelectedSearch.mjs b/browser/components/urlbar/content/UrlbarSelectedSearch.mjs
 new file mode 100644
 index 0000000000..f565507d28
@@ -8566,10 +8695,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..c3bec8116d
+index 0000000000..d820272ad3
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1429 @@
+@@ -0,0 +1,1430 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9563,7 +9692,8 @@ index 0000000000..c3bec8116d
 +    if (!proposal || observation.text !== proposal.value || observation.selectionStart !== proposal.selectionStart ||
 +        observation.selectionEnd !== proposal.selectionEnd || observation.selectionDirection !== "none" ||
 +        observation.searchMode !== null || observation.userTypedValue !== null ||
-+        observation.pageProxyValid !== proposal.pageProxyValid) return false;
++        observation.pageProxyValid !== proposal.pageProxyValid ||
++        observation.persistedSearchTerms !== proposal.persistedSearchTerms) return false;
 +    const pending = this.#navigationRecovery;
 +    this.#navigationRecovery = null;
 +    if (!this.#queries.acknowledgeNavigationRecovery(token) || this.#closed || !this.#isCurrent() ||
