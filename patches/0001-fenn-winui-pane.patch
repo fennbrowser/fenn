@@ -836,7 +836,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..a50395eddf 100644
+index ba254af0c6..f750397b2a 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -1159,7 +1159,7 @@ index ba254af0c6..a50395eddf 100644
 +        !lazy.UrlbarShared.deepEqual(searchMode, shouldApply ? confirmation.searchMode : previousMode) ||
 +        (!applyMode && persistedSearchTerms !== previousPersistedSearchTerms)) return null;
 +    if (applyMode && (!modeEntry || modeEntry.untrimmedValue !== text || modeEntry.userTypedValue !== priorTypedValue ||
-+        modeEntry.pageProxyValid !== false || modeEntry.hasAutofillPlaceholder !== false)) return null;
++        typeof modeEntry.pageProxyValid !== "boolean" || modeEntry.hasAutofillPlaceholder !== false)) return null;
 +    if (this.#destroyed || this.rendersInContentProcess || !this.#isAddressbar) return null;
 +    const browser = this.resolveTargetBrowser(browserId), document = browser?.browsingContext?.currentWindowGlobal;
 +    const epoch = browser?.lastLocationChange;
@@ -9126,10 +9126,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..223b6de375
+index 0000000000..6d206940c9
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1980 @@
+@@ -0,0 +1,1991 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9345,9 +9345,9 @@ index 0000000000..223b6de375
 +    if (confirmation.applyMode) {
 +      modeEntry = this.#captureModeEntry(modeEntry);
 +      if (!modeEntry) throw new TypeError("Missing composition pre-mode facts");
-+      // Autofill restoration and valid-page clearing require a separate exact text-write stage.
++      // Autofill restoration still requires its own normalized text-write stage.
 +      if (modeEntry.untrimmedValue !== this.#edit.text || modeEntry.userTypedValue !== userTypedValue ||
-+          modeEntry.pageProxyValid || modeEntry.hasAutofillPlaceholder) return null;
++          modeEntry.hasAutofillPlaceholder) return null;
 +      resultingTypedValue = UrlbarSearchModeModel.modeEntryTypedValue({ ...modeEntry,
 +        userTypedValue: resultingTypedValue });
 +    }
@@ -9362,6 +9362,9 @@ index 0000000000..223b6de375
 +      searchMode: searchMode ? Object.freeze({ ...searchMode }) : null,
 +      applyMode: confirmation.applyMode, clearOneOffSelection: confirmation.clearOneOffSelection,
 +      ...(confirmation.applyMode ? { modeEntry } : {}),
++      ...(confirmation.applyMode && modeEntry.pageProxyValid ? { editorWrite: Object.freeze({
++        text: "", selectionStart: 0, selectionEnd: 0, selectionDirection: "none", pageProxyValid: false,
++      }) } : {}),
 +      userTypedValue: resultingTypedValue, open: description.closePopup ? false : viewIsOpen });
 +    this.#edit = edit;
 +    this.#completion = null;
@@ -9393,10 +9396,12 @@ index 0000000000..223b6de375
 +
 +  /** Observe host completion; this is not a browser-mode or typed-value write. */
 +  acknowledgeCompositionStart(token, { text, selectionStart, selectionEnd, selectionDirection,
-+    composing, searchMode, userTypedValue, open, oneOffSelected }) {
++    composing, searchMode, userTypedValue, open, oneOffSelected, pageProxyValid }) {
 +    const request = this.getCompositionStart(token);
-+    if (!request || text !== request.edit.text || selectionStart !== request.edit.selectionStart ||
-+        selectionEnd !== request.edit.selectionEnd || selectionDirection !== request.edit.selectionDirection ||
++    const expected = request?.editorWrite ?? request?.edit;
++    if (!request || text !== expected.text || selectionStart !== expected.selectionStart ||
++        selectionEnd !== expected.selectionEnd || selectionDirection !== expected.selectionDirection ||
++        (request.editorWrite && pageProxyValid !== false) ||
 +        composing !== true || open !== request.open || userTypedValue !== request.userTypedValue ||
 +        (request.clearOneOffSelection && oneOffSelected !== false) ||
 +        !UrlbarShared.deepEqual(searchMode, request.searchMode)) return false;
@@ -9409,6 +9414,12 @@ index 0000000000..223b6de375
 +      this.#queries.cancel();
 +    }
 +    if (this.#closed || !this.#isCurrent() || this.#edit !== request.edit) return false;
++    if (request.editorWrite) {
++      this.#edit = Object.freeze({ ...request.edit, text, selectionStart, selectionEnd, selectionDirection,
++        selectionRevision: request.edit.selectionRevision + 1 });
++      this.#typedText = text;
++    }
++    pending.acknowledgedEdit = this.#edit;
 +    this.#compositionStateReady = pending;
 +    return true;
 +  }
@@ -9424,11 +9435,11 @@ index 0000000000..223b6de375
 +    this.#compositionStateReady = null;
 +    this.#committingComposition = pending;
 +    const current = () => !this.#closed && this.#isCurrent() && this.#committingComposition === pending &&
-+      this.#edit === request.edit && this.#searchMode === request.searchMode &&
++      this.#edit === pending.acknowledgedEdit && this.#searchMode === request.searchMode &&
 +      pending.keepPanelOpen === UrlbarPrefs.get("keepPanelOpenDuringImeComposition");
 +    const listener = this.#onModeStateChanged;
 +    const notify = listener ? state => this.#notifyModeState(listener, state, {
-+      reason: "composition-start", token, queryId: null, edit: request.edit,
++      reason: "composition-start", token, queryId: null, edit: pending.acknowledgedEdit,
 +    }) : null;
 +    try {
 +      if (!current()) return null;

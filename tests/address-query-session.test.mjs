@@ -4608,7 +4608,7 @@ test('composition preview requests require stable non-restoring pre-mode facts b
   const f=await editorFixture();await f.editor.edit({searchMode:{source:1,isPreview:true}},edit(1,'text'));
   const before=f.editor.snapshot,options={viewIsOpen:true,userTypedValue:'prior'};
   assert.throws(()=>f.editor.beginCompositionStart(1,options),/Missing composition/);
-  for(const facts of [{pageProxyValid:true},{hasAutofillPlaceholder:true},{untrimmedValue:'other'},{userTypedValue:'changed'}]) {
+  for(const facts of [{hasAutofillPlaceholder:true},{untrimmedValue:'other'},{userTypedValue:'changed'}]) {
     assert.equal(f.editor.beginCompositionStart(1,{...options,modeEntry:{untrimmedValue:'text',pageProxyValid:false,
       hasAutofillPlaceholder:false,userTypedValue:'prior',...facts}}),null);assert.equal(f.editor.snapshot,before);
   }
@@ -4932,5 +4932,64 @@ test('engine replacement revokes captured composition reopen identity before and
       Object.defineProperty(store,'initialized',{value:true});replace();gate.resolve();await assert.rejects(pending,/dispatch authority/);
     }
     assert.equal(f.parent.started.length,0);f.editor.close();
+  }
+});
+
+
+test('valid-page preview confirmation proposes an exact empty editor write without applying it',async()=>{
+  const f=await editorFixture();await f.editor.edit({searchMode:{source:1,isPreview:true}},edit(1,'https://example.test/'));
+  const p=f.editor.beginCompositionStart(1,{viewIsOpen:true,userTypedValue:null,
+    modeEntry:{untrimmedValue:'https://example.test/',userTypedValue:null,pageProxyValid:true,hasAutofillPlaceholder:false}});
+  assert.equal(p.editorWrite.text,'');assert.equal(p.editorWrite.selectionStart,0);assert.equal(p.editorWrite.selectionEnd,0);
+  assert.equal(p.editorWrite.pageProxyValid,false);assert.equal(Object.isFrozen(p.editorWrite),true);
+  assert.equal(p.clearUserTypedValue,false);assert.equal(p.userTypedValue,'');
+  assert.equal(f.editor.snapshot.text,'https://example.test/');assert.equal(f.editor.snapshot.composing,true);
+  const observation={...observedCompositionStart(p),...p.editorWrite};
+  for(const wrong of [{text:p.edit.text},{selectionEnd:1},{selectionDirection:'backward'},{pageProxyValid:true}]) {
+    assert.equal(f.editor.acknowledgeCompositionStart(p.token,{...observation,...wrong}),false);
+    assert.equal(f.editor.snapshot.text,p.edit.text);
+  }
+  assert.equal(f.editor.acknowledgeCompositionStart(p.token,observation),true);
+  assert.equal(f.editor.snapshot.text,'');assert.equal(f.editor.snapshot.revision,1);
+  assert.equal(f.editor.snapshot.selectionRevision,1);assert.equal(f.editor.snapshot.composing,true);
+  assert.equal(f.editor.acknowledgeCompositionStart(p.token,observation),false);f.editor.close();
+});
+
+test('valid-page browser confirmation uses original mode-entry facts and correlates the acknowledged edit',async()=>{
+  const notifications=[],f=await editorFixture({browserId:42,onModeStateChanged:n=>notifications.push(n)});
+  await f.editor.edit({searchMode:{source:1,isPreview:true}},edit(1,'page'));
+  const p=f.editor.beginCompositionStart(1,{viewIsOpen:true,userTypedValue:null,
+    modeEntry:{untrimmedValue:'page',userTypedValue:null,pageProxyValid:true,hasAutofillPlaceholder:false}});
+  assert.equal(f.editor.acknowledgeCompositionStart(p.token,{...observedCompositionStart(p),...p.editorWrite}),true);
+  const acknowledged=f.editor.snapshot;
+  f.parent.commitIndependentCompositionStart=(id,facts,current,notify)=>{
+    assert.equal(facts.text,'page');assert.equal(facts.modeEntry.untrimmedValue,'page');assert.equal(facts.modeEntry.pageProxyValid,true);
+    assert.equal(current(),true);notify({browserId:id,userTypedValue:'',searchMode:facts.searchMode});return {applied:true,current:true};
+  };
+  assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,{previousPersistedSearchTerms:false,persistedSearchTerms:false}).applied,true);
+  assert.equal(notifications[0].edit,acknowledged);assert.equal(notifications[0].edit.text,'');
+  assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+test('valid-page parent confirmation clears browser text without an unnecessary null reset',()=>{
+  const f=compositionParentFixture(true,'https://example.test/',null);f.facts.modeEntry.pageProxyValid=true;
+  const result=f.p.commitIndependentCompositionStart(42,f.facts,()=>true);
+  assert.equal(result.applied,true);assert.equal(result.current,true);assert.equal(result.typedResetApplied,false);
+  assert.deepEqual(f.writes,['']);assert.equal(f.getMode().isPreview,false);assert.equal(f.browser.userTypedValue,'');
+});
+
+test('valid-page write acknowledgment rejects stale caret and a newer edit revokes its browser commit',async()=>{
+  for(const phase of ['before','after']) {
+    const f=await editorFixture({browserId:42});await f.editor.edit({searchMode:{source:1,isPreview:true}},edit(1,'page'));
+    const p=f.editor.beginCompositionStart(1,{viewIsOpen:true,userTypedValue:null,
+      modeEntry:{untrimmedValue:'page',userTypedValue:null,pageProxyValid:true,hasAutofillPlaceholder:false}});
+    const observation={...observedCompositionStart(p),...p.editorWrite};
+    if(phase==='before') {
+      f.editor.select(1,0,0);assert.equal(f.editor.acknowledgeCompositionStart(p.token,observation),false);
+    } else {
+      assert.equal(f.editor.acknowledgeCompositionStart(p.token,observation),true);await f.editor.edit({},edit(2,'new'));
+    }
+    f.parent.commitIndependentCompositionStart=()=>assert.fail('stale composition write');
+    assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,{previousPersistedSearchTerms:false,persistedSearchTerms:false}),null);f.editor.close();
   }
 });
