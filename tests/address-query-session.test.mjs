@@ -2719,3 +2719,65 @@ test('search execution rejects non-current targets before consumption and stops 
   f.parent.recordSearch=()=>assert.fail('consumed search retried');
   assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,options),false);assert.equal(f.calls.length,0);f.editor.close();
 });
+
+
+test('parent DNS fixup preserves legacy fallback and strictly pins independent targets',()=>{
+  const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarParentController.sys.mjs',import.meta.url),'utf8');
+  const start=source.indexOf('  checkKeywordURIFixup(searchString, browserId, strictTarget = false) {');
+  const method=source.slice(start,source.indexOf('\n  /**',start));
+  const calls=[],info={host:'intranet'},selected={browserId:1},pinned={browserId:2};
+  const lazy={UrlbarUtils:{getURIFixupInfo:(text,priv)=>{calls.push([text,priv]);return info;}}};
+  const Parent=new Function('lazy',`return class { ${method} }`)(lazy),p=new Parent();
+  p.isPrivate=true;p.browserWindow={gBrowser:{selectedBrowser:selected},gKeywordURIFixup:{check:(b,i)=>calls.push([b,i])}};
+  p.resolveTargetBrowser=()=>pinned;
+  assert.equal(p.checkKeywordURIFixup('intranet',2,true),true);
+  assert.deepEqual(calls,[['intranet',true],[pinned,info]]);calls.length=0;
+  for(const target of [null,selected]) {p.resolveTargetBrowser=()=>target;assert.equal(p.checkKeywordURIFixup('intranet',2,true),false);}
+  assert.throws(()=>p.checkKeywordURIFixup('intranet',0,true),/Invalid/);assert.equal(calls.length,0);
+  p.resolveTargetBrowser=()=>null;assert.equal(p.checkKeywordURIFixup('intranet',2),true);assert.equal(calls[1][0],selected);
+  lazy.UrlbarUtils.getURIFixupInfo=()=>null;calls.length=0;p.resolveTargetBrowser=()=>pinned;
+  assert.equal(p.checkKeywordURIFixup('intranet',2,true),true);assert.equal(calls.length,0);
+});
+
+async function dnsEngagementFixture() {
+  const f=await historyEngagementFixture();f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH;
+  f.result.heuristic=true;f.result.payload={engine:'Engine',query:'typed'};
+  f.parent.child.updateEngineStore('changed',{id:'e',name:'Engine'},-1);
+  f.prefs['browser.fixup.dns_first_for_single_words']=false;f.prefs.dnsResolveSingleWordsAfterSearch=1;
+  f.parent.recordSearch=()=>{f.calls.push(['search']);return true;};
+  f.options={...f.options,recordSearch:true,checkSearchDNS:true};return f;
+}
+
+test('independent DNS runs once before search and terminal effects using the pinned target',async()=>{
+  const f=await dnsEngagementFixture();
+  f.parent.checkKeywordURIFixup=(host,id,strict)=>{f.calls.push(['dns',host,id,strict]);return true;};
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options),true);
+  assert.deepEqual(f.calls,[['dns','typed',42,true],['search'],['bounce'],['record']]);
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options),false);f.editor.close();
+});
+
+test('DNS suppression preserves search recording and invalid flag combinations do not consume',async()=>{
+  const f=await dnsEngagementFixture();f.parent.checkKeywordURIFixup=()=>assert.fail('suppressed DNS');
+  assert.throws(()=>f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,{...f.options,recordSearch:false}),/requires search/);
+  assert.throws(()=>f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,{...f.options,checkSearchDNS:1}),/requires search/);
+  f.prefs.dnsResolveSingleWordsAfterSearch=0;
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options),true);
+  assert.deepEqual(f.calls,[['search'],['bounce'],['record']]);f.editor.close();
+});
+
+test('DNS refusal, exceptions and query replacement consume activation and stop later effects',async()=>{
+  for(const outcome of ['refuse','throw','replace']) {
+    const f=await dnsEngagementFixture();let next;
+    f.parent.checkKeywordURIFixup=()=>{
+      if(outcome==='throw')throw Error('DNS failure');
+      if(outcome==='replace')next=f.editor.edit({},edit(2,'replacement'));
+      return outcome!=='refuse';
+    };
+    const run=()=>f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options);
+    if(outcome==='throw')assert.throws(run,/DNS failure/);else assert.equal(run(),false);
+    assert.equal(f.calls.length,0);
+    if(next) {const q=await next;f.editor.publishPresentation(2,q.id,[],false);}
+    else assert.equal(run(),false);
+    f.editor.close();
+  }
+});
