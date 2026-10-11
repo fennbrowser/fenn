@@ -216,7 +216,7 @@ index a182468fce..428407c54a 100644
  </body>
  </html>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..2f3dbf352e 100644
+index b2b5db6040..31abdd2552 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
 @@ -33,6 +33,20 @@ browser.jar:
@@ -240,12 +240,13 @@ index b2b5db6040..2f3dbf352e 100644
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
-@@ -104,3 +118,9 @@ browser.jar:
+@@ -104,3 +118,10 @@ browser.jar:
  
  # L10n resources and overrides.
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
++    content/browser/urlbar/UrlbarQueryLifecycle.mjs (../components/urlbar/content/UrlbarQueryLifecycle.mjs)
 +    content/browser/urlbar/UrlbarSearchModeModel.mjs (../components/urlbar/content/UrlbarSearchModeModel.mjs)
 +    content/browser/urlbar/UrlbarSearchModeBinding.mjs (../components/urlbar/content/UrlbarSearchModeBinding.mjs)
 +    content/browser/urlbar/UrlbarResultPresentation.mjs (../components/urlbar/content/UrlbarResultPresentation.mjs)
@@ -1717,10 +1718,18 @@ index e5dcc2c923..52a5ba4fa8 100644
        let event = new UIEvent("input", {
          bubbles: true,
 diff --git a/browser/components/urlbar/content/UrlbarChildController.mjs b/browser/components/urlbar/content/UrlbarChildController.mjs
-index b679c5cf1b..f8d437ef3f 100644
+index b679c5cf1b..e4b7254d43 100644
 --- a/browser/components/urlbar/content/UrlbarChildController.mjs
 +++ b/browser/components/urlbar/content/UrlbarChildController.mjs
-@@ -50,6 +50,16 @@ export class UrlbarChildController {
+@@ -8,6 +8,7 @@ import { UrlbarChildTelemetry } from "chrome://browser/content/urlbar/UrlbarChil
+ import { UrlbarParentControllerProxy } from "chrome://browser/content/urlbar/UrlbarParentControllerProxy.mjs";
+ import { UrlbarContentUtils } from "chrome://browser/content/urlbar/UrlbarContentUtils.mjs";
+ import UrlbarPrefs from "chrome://browser/content/urlbar/UrlbarContentPrefs.mjs";
++import { UrlbarQueryLifecycle } from "chrome://browser/content/urlbar/UrlbarQueryLifecycle.mjs";
+ import { SearchEngineStore } from "chrome://browser/content/urlbar/SearchEngineStore.mjs";
+ 
+ const lazy = typeof ChromeUtils != "undefined" ? {} : null;
+@@ -50,6 +51,16 @@ export class UrlbarChildController {
     */
    isProxy = false;
  
@@ -1737,6 +1746,137 @@ index b679c5cf1b..f8d437ef3f 100644
    get logger() {
      if (!UrlbarChildController.#logger) {
        UrlbarChildController.#logger = UrlbarShared.getLogger({
+@@ -76,19 +87,7 @@ export class UrlbarChildController {
+ 
+   #userSelectionBehavior = /** @type {"arrow"|"tab"|"none"} */ ("none");
+ 
+-  /**
+-   * The id of the query the listeners are still hearing about. Notifications
+-   * carrying an older id belong to a query nobody is waiting for anymore.
+-   */
+-  #queryId = 0;
+-
+-  /**
+-   * Whether the query identified by `#queryId` was cancelled. Only meaningful
+-   * while it's held back waiting for the engine store; a cancel can't be taken
+-   * as a statement about in-flight results, since the view cancels for reasons
+-   * of its own (freezing the list, closing on a stale query's completion).
+-   */
+-  #queryCancelled = false;
++  #queryLifecycle;
+ 
+   /**
+    * The content-side engagement-telemetry collector, created lazily on the
+@@ -118,6 +117,12 @@ export class UrlbarChildController {
+     this.#parentController.setChild(this);
+ 
+     this.engineStore = new SearchEngineStore(this);
++    this.#queryLifecycle = new UrlbarQueryLifecycle({
++      engineStore: this.engineStore,
++      dispatch: context => this.#parentController.startQuery(context),
++      cancel: () => this.#parentController.cancelQuery(),
++      arm: context => this.notify(UrlbarShared.NOTIFICATIONS.QUERY_ARMED, context),
++    });
+   }
+ 
+   get input() {
+@@ -186,7 +191,7 @@ export class UrlbarChildController {
+   async resolveFallbackNavigation(details) {
+     // The result this hands back is picked like a query's, and paste-and-go
+     // suppresses the query that would otherwise have waited for the store.
+-    await this.#engineStoreReady();
++    await this.#queryLifecycle.whenReady();
+     return this.#parentController.resolveFallbackNavigation(details);
+   }
+ 
+@@ -242,7 +247,7 @@ export class UrlbarChildController {
+       (notification === UrlbarShared.NOTIFICATIONS.QUERY_FIRST_RESULT ||
+         notification === UrlbarShared.NOTIFICATIONS.QUERY_RESULTS ||
+         notification === UrlbarShared.NOTIFICATIONS.QUERY_FINISHED) &&
+-      params[0].id < this.#queryId
++      !this.#queryLifecycle.acceptsResults(params[0])
+     ) {
+       return;
+     }
+@@ -287,67 +292,11 @@ export class UrlbarChildController {
+    *   query was cancelled or superseded while waiting for the engine store.
+    */
+   startQuery(queryContext) {
+-    this.#queryId = queryContext.id;
+-    this.#queryCancelled = false;
+-
+-    if (this.engineStore.initialized || this.engineStore.failed) {
+-      return this.#dispatchQuery(queryContext);
+-    }
+-
+-    // Arm the bufferer up front so an Enter typed during the wait is deferred
+-    // too. Nothing can tear down the previous query in the meantime, which is
+-    // the only thing #dispatchQuery's arm-after-dispatch ordering guards
+-    // against.
+-    this.#input.eventBufferer.queryStarting(queryContext);
+-
+-    return this.#engineStoreReady().then(() =>
+-      this.#queryId == queryContext.id && !this.#queryCancelled
+-        ? this.#dispatchQuery(queryContext)
+-        : queryContext
+-    );
+-  }
+-
+-  /**
+-   * Hands a query to the parent controller.
+-   *
+-   * @param {UrlbarQueryContext} queryContext
+-   * @returns {Promise<UrlbarQueryContext>} Resolves with the finished context.
+-   */
+-  #dispatchQuery(queryContext) {
+-    let queryContextPromise = this.#parentController.startQuery(queryContext);
+-    // Arm the event bufferer as the query starts so a just-typed Enter is
+-    // deferred until results arrive; it can't wait for the QUERY_STARTED
+-    // notification, which arrives a round-trip late over the message path, after
+-    // the key event. Arm after dispatching so the parent's synchronous teardown
+-    // of the previous query (in-process) can't clobber the freshly-armed state.
+-    this.#input.eventBufferer.queryStarting(queryContext);
+-    return queryContextPromise;
+-  }
+-
+-  /**
+-   * Waits for the engine store to be populated.
+-   *
+-   * @returns {Promise<void>}
+-   *   Resolves once the store holds engines, or immediately if it never will
+-   *   because the search service failed. It doesn't reject: waiting on a store
+-   *   that can't be populated would keep the input from producing results at
+-   *   all.
+-   */
+-  async #engineStoreReady() {
+-    if (this.engineStore.initialized || this.engineStore.failed) {
+-      return;
+-    }
+-    try {
+-      await this.engineStore.init();
+-    } catch {
+-      // The search service failed.
+-    }
++    return this.#queryLifecycle.start(queryContext);
+   }
+ 
+   cancelQuery() {
+-    // A query still waiting for the engine store must not be dispatched at all.
+-    this.#queryCancelled = true;
+-    return this.#parentController.cancelQuery();
++    return this.#queryLifecycle.cancel();
+   }
+ 
+   /**
+@@ -362,7 +311,7 @@ export class UrlbarChildController {
+    *   The context of the query being discarded.
+    */
+   discardResults(queryContext) {
+-    this.#queryId++;
++    this.#queryLifecycle.discard();
+     this.notify(UrlbarShared.NOTIFICATIONS.QUERY_CANCELLED, queryContext);
+   }
+ 
 diff --git a/browser/components/urlbar/content/UrlbarChildTelemetry.mjs b/browser/components/urlbar/content/UrlbarChildTelemetry.mjs
 index 73fef3a888..b7a9733852 100644
 --- a/browser/components/urlbar/content/UrlbarChildTelemetry.mjs
@@ -1763,6 +1903,38 @@ index 73fef3a888..b7a9733852 100644
      let smartbarData = UrlbarTelemetryUtils.smartbarData(input);
  
      let snapshot = UrlbarTelemetryUtils.collectBounceSnapshot(
+diff --git a/browser/components/urlbar/content/UrlbarEventBufferer.mjs b/browser/components/urlbar/content/UrlbarEventBufferer.mjs
+index 4172241eaf..ce3917f8f7 100644
+--- a/browser/components/urlbar/content/UrlbarEventBufferer.mjs
++++ b/browser/components/urlbar/content/UrlbarEventBufferer.mjs
+@@ -82,15 +82,15 @@ export class UrlbarEventBufferer {
+   }
+ 
+   /**
+-   * Arms the bufferer to defer subsequent events until results arrive. Called by
+-   * the controller as it starts a query, before the query is dispatched --
++   * Arms the bufferer to defer subsequent events until results arrive. The
++   * controller publishes this local notification as it admits a query --
+    * unlike the QUERY_STARTED notification, which the bufferer would otherwise
+    * observe a round-trip late over the actor message path, after a just-typed
+    * Enter had already been handled.
+    *
+    * @param {UrlbarQueryContext} queryContext
+    */
+-  queryStarting(queryContext) {
++  onQueryArmed(queryContext) {
+     this.#lastQuery = {
+       startDate: performance.now(),
+       status: QUERY_STATUS.RUNNING,
+@@ -122,7 +122,7 @@ export class UrlbarEventBufferer {
+       return;
+     }
+     this.#lastQuery.status = QUERY_STATUS.RUNNING_GOT_ALL_HEURISTIC_RESULTS;
+-    // Refresh the stored context with the results-bearing one: queryStarting
++    // Refresh the stored context with the results-bearing one: onQueryArmed
+     // armed the bufferer with the pre-query context, whose results are
+     // populated on the parent's own copy over the message path.
+     this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
 index a077de625f..e9b937ef01 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
@@ -2524,6 +2696,21 @@ index a077de625f..e9b937ef01 100644
  
        let event = new UIEvent("input", {
          bubbles: true,
+diff --git a/browser/components/urlbar/content/UrlbarShared.mjs b/browser/components/urlbar/content/UrlbarShared.mjs
+index 862b56c9ca..3d1572e4da 100644
+--- a/browser/components/urlbar/content/UrlbarShared.mjs
++++ b/browser/components/urlbar/content/UrlbarShared.mjs
+@@ -117,6 +117,10 @@ export const UrlbarShared = {
+   // so both the parent controller and the content-side child controller name
+   // them identically without the child reaching into the parent module.
+   NOTIFICATIONS: Object.freeze({
++    // Local to the child, before a deferred command can run. Sent while
++    // waiting for engines and again after dispatch tears down the old query.
++    // This is not a parent/wire notification or a provider-start signal.
++    QUERY_ARMED: "onQueryArmed",
+     QUERY_STARTED: "onQueryStarted",
+     // Fires when the first result changed, before QUERY_RESULTS, so the input
+     // can react to it (enter search mode, apply autofill) before the results
 diff --git a/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs b/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
 index 9596698cf9..f1a8624ab3 100644
 --- a/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
@@ -3503,10 +3690,21 @@ index 278cb5ca71..afd6a356e4 100644
        ?.closest(".urlbarView-row")
        ?.toggleAttribute("menu-trigger", false);
 diff --git a/browser/components/urlbar/tests/UrlbarTestUtils.sys.mjs b/browser/components/urlbar/tests/UrlbarTestUtils.sys.mjs
-index c459a4dded..facc9b40bf 100644
+index c459a4dded..1dbd5902c6 100644
 --- a/browser/components/urlbar/tests/UrlbarTestUtils.sys.mjs
 +++ b/browser/components/urlbar/tests/UrlbarTestUtils.sys.mjs
-@@ -1678,6 +1678,7 @@ export class UrlbarInputBaseTestUtils {
+@@ -1641,10 +1641,6 @@ export class UrlbarInputBaseTestUtils {
+       },
+       options
+     );
+-    // The child controller arms the event bufferer when a query starts; a real
+-    // input always has one, so give the mock's input a no-op stand-in. Set here
+-    // after the merge, since a caller-supplied `input` replaces the default one.
+-    parentOptions.input.eventBufferer = { queryStarting() {} };
+     // The parent controller resolves the browser window from its actor (for the
+     // SAP window facts telemetry reads). Mock a minimal one representing a
+     // non-blank, non-extension page, exposed on the stubbed actor.
+@@ -1678,6 +1674,7 @@ export class UrlbarInputBaseTestUtils {
        // so the mock dispatches queries the way a real controller does once its
        // store is up. Tests that need engines populate it themselves.
        controller.engineStore.initialized = true;
@@ -3534,6 +3732,55 @@ index 072b04d57d..5c082b9cdc 100644
      controller: {
        removeResult() {},
      },
+diff --git a/browser/components/urlbar/tests/unit/test_UrlbarParentController_unit.js b/browser/components/urlbar/tests/unit/test_UrlbarParentController_unit.js
+index 0b77fe5d86..63f2cb7f7a 100644
+--- a/browser/components/urlbar/tests/unit/test_UrlbarParentController_unit.js
++++ b/browser/components/urlbar/tests/unit/test_UrlbarParentController_unit.js
+@@ -219,13 +219,13 @@ add_task(async function test_notifications_order() {
+   controller.addListener(collectingListener);
+   controller.startQuery(context);
+   Assert.deepEqual(
+-    ["onQueryStarted"],
++    ["onQueryStarted", "onQueryArmed"],
+     collectingListener.notifications,
+-    "Check onQueryStarted is fired synchronously"
++    "Provider start and local editor arming are synchronous, in that order"
+   );
+   controller.startQuery(context);
+   Assert.deepEqual(
+-    ["onQueryStarted", "onQueryCancelled", "onQueryFinished", "onQueryStarted"],
++    ["onQueryStarted", "onQueryArmed", "onQueryCancelled", "onQueryFinished", "onQueryStarted", "onQueryArmed"],
+     collectingListener.notifications,
+     "Check order of notifications"
+   );
+@@ -233,9 +233,11 @@ add_task(async function test_notifications_order() {
+   Assert.deepEqual(
+     [
+       "onQueryStarted",
++      "onQueryArmed",
+       "onQueryCancelled",
+       "onQueryFinished",
+       "onQueryStarted",
++      "onQueryArmed",
+       "onQueryCancelled",
+       "onQueryFinished",
+     ],
+@@ -247,12 +249,15 @@ add_task(async function test_notifications_order() {
+   Assert.deepEqual(
+     [
+       "onQueryStarted",
++      "onQueryArmed",
+       "onQueryCancelled",
+       "onQueryFinished",
+       "onQueryStarted",
++      "onQueryArmed",
+       "onQueryCancelled",
+       "onQueryFinished",
+       "onQueryStarted",
++      "onQueryArmed",
+       "onQueryFinished",
+     ],
+     collectingListener.notifications,
 diff --git a/browser/components/urlbar/tests/unit/test_provider_notification.js b/browser/components/urlbar/tests/unit/test_provider_notification.js
 index b2f37826f8..5699d44236 100644
 --- a/browser/components/urlbar/tests/unit/test_provider_notification.js
@@ -4534,6 +4781,88 @@ index 1e2660589b..5ae3ab4843 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/components/urlbar/content/UrlbarQueryLifecycle.mjs b/browser/components/urlbar/content/UrlbarQueryLifecycle.mjs
+new file mode 100644
+index 0000000000..1fec37fd9e
+--- /dev/null
++++ b/browser/components/urlbar/content/UrlbarQueryLifecycle.mjs
+@@ -0,0 +1,76 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++/**
++ * Query admission and identity shared by controller consumers. It holds no
++ * input, view, DOM events or results. Engine readiness and parent dispatch are
++ * Firefox services; the active editor decides how to defer its own commands.
++ */
++export class UrlbarQueryLifecycle {
++  #queryId = 0;
++  #cancelled = false;
++  #engineStore;
++  #dispatch;
++  #cancel;
++  #arm;
++
++  constructor({ engineStore, dispatch, cancel, arm }) {
++    this.#engineStore = engineStore;
++    this.#dispatch = dispatch;
++    this.#cancel = cancel;
++    this.#arm = arm;
++  }
++
++  start(queryContext) {
++    this.#queryId = queryContext.id;
++    this.#cancelled = false;
++    if (this.#engineStore.initialized || this.#engineStore.failed) {
++      return this.#dispatchQuery(queryContext);
++    }
++    // An editor must defer Enter even while engine initialization holds the
++    // query back. No previous-query teardown runs until dispatch below.
++    this.#arm(queryContext);
++    return this.whenReady().then(() =>
++      this.#queryId == queryContext.id && !this.#cancelled
++        ? this.#dispatchQuery(queryContext)
++        : queryContext
++    );
++  }
++
++  #dispatchQuery(queryContext) {
++    const promise = this.#dispatch(queryContext);
++    // Direct dispatch synchronously cancels the preceding query. Arm after
++    // that teardown, but before a message-path round trip can deliver STARTED.
++    this.#arm(queryContext);
++    return promise;
++  }
++
++  async whenReady() {
++    if (this.#engineStore.initialized || this.#engineStore.failed) {
++      return;
++    }
++    try {
++      await this.#engineStore.init();
++    } catch {
++      // A failed search service must not permanently block navigation.
++    }
++  }
++
++  cancel() {
++    // Cancellation prevents a held query from dispatching. It does not revoke
++    // in-flight results: presenters also cancel to freeze the current list.
++    this.#cancelled = true;
++    return this.#cancel();
++  }
++
++  discard() {
++    // The input is replacing this query (e.g. a search-mode transition).
++    // Its late results and completion must not reach any active presenter.
++    this.#queryId++;
++  }
++
++  acceptsResults(queryContext) {
++    return queryContext.id >= this.#queryId;
++  }
++}
 diff --git a/browser/components/urlbar/content/UrlbarSearchModeModel.mjs b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
 new file mode 100644
 index 0000000000..7d1385225f
