@@ -55,6 +55,76 @@ test('fresh controllers and engine stores use explicit identity with no input or
   f.session.close();f.session.close();assert.equal(f.parent.destroyed,1);
 });
 
+test('provider selection is ordered, element-free and acknowledged exactly once',async()=>{
+  const f=fixture(),q=await f.session.query({}, {searchString:'select'}),result={id:1};q.results=[result];
+  const calls=[];f.parent.onBeforeSelection=(...args)=>calls.push(['before',...args]);
+  f.parent.onSelection=(...args)=>calls.push(['selected',...args]);
+  assert.throws(()=>f.session.beginResultSelection(q.id,result),/Invalid/);
+  f.session.publishPresentation(q.id,[result],true);f.session.freezeResults(q.id);
+  const request=f.session.beginResultSelection(q.id,result);
+  assert.deepEqual(calls,[['before',result]]);assert.equal(Object.isFrozen(request),true);
+  assert.equal(f.session.getResultSelection({}),null);
+  assert.equal(f.session.acknowledgeResultSelection({}),false);
+  assert.equal(f.session.getResultSelection(request.token),request);
+  assert.equal(f.session.acknowledgeResultSelection(request.token),true);
+  assert.equal(f.session.acknowledgeResultSelection(request.token),false);
+  assert.deepEqual(calls,[['before',result],['selected',result]]);f.session.close();
+});
+
+test('selection requests cannot survive hiding, removal, replacement or cancellation',async()=>{
+  const f=fixture(),q=await f.session.query({}, {searchString:'select'}),result={id:1};q.results=[result];
+  f.parent.onBeforeSelection=()=>{};f.parent.onSelection=()=>assert.fail('stale selection notified');
+  f.session.publishPresentation(q.id,[result],true);
+  let request=f.session.beginResultSelection(q.id,result);
+  f.session.publishPresentation(q.id,[result],false);f.session.publishPresentation(q.id,[result],true);
+  assert.equal(f.session.getResultSelection(request.token),null);
+  request=f.session.beginResultSelection(q.id,result);
+  const newer=f.session.beginResultSelection(q.id,result);
+  assert.equal(f.session.getResultSelection(request.token),null);
+  f.parent.child.notify('onQueryResultRemoved',1,undefined,q.id);
+  assert.equal(f.session.acknowledgeResultSelection(newer.token),false);
+  const next=await f.session.query({}, {searchString:'next'});next.results=[result];
+  f.session.publishPresentation(next.id,[result],true);
+  request=f.session.beginResultSelection(next.id,result);f.session.cancel();
+  assert.equal(f.session.acknowledgeResultSelection(request.token),false);f.session.close();
+});
+
+test('reentrant and throwing provider selection hooks cannot revive or reuse requests',async()=>{
+  const f=fixture(),q=await f.session.query({}, {searchString:'select'}),result={id:1};q.results=[result];
+  f.session.publishPresentation(q.id,[result],true);
+  f.parent.onBeforeSelection=()=>f.session.cancel();
+  assert.equal(f.session.beginResultSelection(q.id,result),null);
+  const next=await f.session.query({}, {searchString:'next'});next.results=[result];
+  f.session.publishPresentation(next.id,[result],true);
+  f.parent.onBeforeSelection=()=>{throw Error('provider failure');};
+  assert.throws(()=>f.session.beginResultSelection(next.id,result),/provider failure/);
+  f.parent.onBeforeSelection=()=>{};
+  const request=f.session.beginResultSelection(next.id,result);
+  f.parent.onSelection=()=>{
+    assert.equal(f.session.acknowledgeResultSelection(request.token),false);
+    throw Error('selection failure');
+  };
+  assert.throws(()=>f.session.acknowledgeResultSelection(request.token),/selection failure/);
+  assert.equal(f.session.getResultSelection(request.token),null);f.session.close();
+});
+
+test('editor selection acknowledgment is bound to the exact observed editor snapshot',async()=>{
+  const f=await completionFixture();f.result.id=7;
+  const calls=[];f.parent.onBeforeSelection=()=>calls.push('before');f.parent.onSelection=()=>calls.push('selected');
+  f.editor.publishPresentation(1,f.query.id,[f.result],true);
+  const snapshot=f.editor.snapshot,request=f.editor.beginResultSelection(1,f.query.id,f.result);
+  assert.equal(request.edit,snapshot);assert.equal(f.editor.snapshot,snapshot);
+  assert.equal(f.editor.getCompletion(f.proposal.token),null);
+  assert.equal(f.editor.acknowledgeResultSelection(request.token),true);
+  assert.equal(f.editor.acknowledgeResultSelection(request.token),false);
+  const stale=f.editor.beginResultSelection(1,f.query.id,f.result);
+  f.editor.select(1,0,0);assert.equal(f.editor.getResultSelection(stale.token),null);
+  assert.equal(f.editor.acknowledgeResultSelection(stale.token),false);
+  f.parent.onBeforeSelection=()=>f.editor.select(1,1,1);
+  assert.equal(f.editor.beginResultSelection(1,f.query.id,f.result),null);
+  assert.deepEqual(calls,['before','selected','before']);f.editor.close();
+});
+
 test('removed frozen results lose identity and exposure even if an old descriptor or late batch retains them',async()=>{
   const requests=[],f=fixture({onPresentationRequest:r=>requests.push(r)});
   const q=await f.session.query({}, {searchString:'remove'}),a={id:1},b={id:2};q.results=[a,b];

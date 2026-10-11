@@ -6860,10 +6860,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..a70eb4dc92
+index 0000000000..20963a9a8d
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,313 @@
+@@ -0,0 +1,348 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6897,6 +6897,7 @@ index 0000000000..a70eb4dc92
 +  #autofill = null;
 +  #placeholder = null;
 +  #closeRequest = null;
++  #selectionRequest = null;
 +  #onPresentationRequest;
 +
 +  constructor({ context, isCurrent, onUpdate, onPresentationRequest = null }) {
@@ -6947,6 +6948,7 @@ index 0000000000..a70eb4dc92
 +      selectionDirection, selectionRevision: 0, composing });
 +    this.#completion = null;
 +    this.#closeRequest = null;
++    this.#selectionRequest = null;
 +    this.#autofill = null;
 +    // Revoke old work before any new snapshot can be published.
 +    this.#queries.cancel();
@@ -7027,6 +7029,7 @@ index 0000000000..a70eb4dc92
 +    this.#validateSelection(this.#edit.text, start, end, direction);
 +    this.#completion = null;
 +    this.#closeRequest = null;
++    this.#selectionRequest = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#edit = Object.freeze({ ...this.#edit, selectionStart: start,
@@ -7102,6 +7105,35 @@ index 0000000000..a70eb4dc92
 +    return this.#queries.describeResultSearchMode(queryId, result, options);
 +  }
 +
++  /** Prepare provider notification without applying selection or preview text. */
++  beginResultSelection(revision, queryId, result) {
++    this.#check();
++    this.#selectionRequest = null;
++    const edit = this.#edit;
++    if (!edit || revision !== edit.revision || edit.composing) {
++      throw new Error("Stale editor result selection");
++    }
++    this.#completion = null;
++    const request = this.#queries.beginResultSelection(queryId, result);
++    if (!request || this.#edit !== edit) return null;
++    this.#selectionRequest = Object.freeze({ ...request, edit });
++    return this.#selectionRequest;
++  }
++
++  getResultSelection(token) {
++    this.#check();
++    const request = this.#selectionRequest;
++    return request && request.token === token && request.edit === this.#edit &&
++      this.#queries.getResultSelection(token) ? request : null;
++  }
++
++  /** Acknowledge host row selection only; this grants no editor-write authority. */
++  acknowledgeResultSelection(token) {
++    if (!this.getResultSelection(token)) return false;
++    this.#selectionRequest = null;
++    return this.#queries.acknowledgeResultSelection(token);
++  }
++
 +  /** Retain query results for interaction without selecting or writing text. */
 +  freezeResults(revision, queryId) {
 +    this.#check();
@@ -7153,6 +7185,7 @@ index 0000000000..a70eb4dc92
 +  acknowledgeClose(token, { open }) {
 +    if (!this.getCloseRequest(token) || open !== false) return false;
 +    this.#closeRequest = null;
++    this.#selectionRequest = null;
 +    return true;
 +  }
 +
@@ -7160,6 +7193,7 @@ index 0000000000..a70eb4dc92
 +    this.#check();
 +    this.#completion = null;
 +    this.#closeRequest = null;
++    this.#selectionRequest = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#queries.cancel();
@@ -7170,6 +7204,7 @@ index 0000000000..a70eb4dc92
 +    this.#closed = true;
 +    this.#completion = null;
 +    this.#closeRequest = null;
++    this.#selectionRequest = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#queries.close();
@@ -7179,10 +7214,10 @@ index 0000000000..a70eb4dc92
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..404688025e
+index 0000000000..b8fd427bd3
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,258 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7210,6 +7245,7 @@ index 0000000000..404688025e
 +  #frozen = null;
 +  #onPresentationRequest;
 +  #removedIds = new Set();
++  #selectionRequest = null;
 +
 +  constructor({ context, isCurrent, onPresentationRequest = null }) {
 +    if (typeof isCurrent != "function") throw new TypeError("Missing scope check");
@@ -7232,6 +7268,7 @@ index 0000000000..404688025e
 +        if (this.#closed || !this.#isCurrent() || !this.#query || this.#query.id !== queryId ||
 +            resultId === undefined || this.#removedIds.has(resultId)) return;
 +        this.#removedIds.add(resultId);
++        if (this.#selectionRequest?.result.id === resultId) this.#selectionRequest = null;
 +        if (this.#frozen) {
 +          this.#frozen = Object.freeze({ queryId,
 +            results: Object.freeze(this.#frozen.results.filter(result => result.id !== resultId)) });
@@ -7275,6 +7312,7 @@ index 0000000000..404688025e
 +    }, request);
 +    this.#query = query;
 +    this.#removedIds.clear();
++    this.#selectionRequest = null;
 +    this.#frozen = null;
 +    this.#onUpdate = onUpdate;
 +    this.#controller.visibleResults = [];
@@ -7352,6 +7390,50 @@ index 0000000000..404688025e
 +    return mode ? Object.freeze(mode) : null;
 +  }
 +
++  /**
++   * Prepare provider notification for a host selection. The host must validate
++   * the token before applying selection, then acknowledge its observation.
++   * This neither selects a row nor writes editor text or activates a result.
++   * No DOM element is supplied to the provider's pre-selection hook.
++   */
++  beginResultSelection(queryId, result) {
++    this.#check();
++    this.#selectionRequest = null;
++    if (!this.ownsResult(queryId, result) || !this.#controller.resultsOpen ||
++        !this.#controller.visibleResults.includes(result)) {
++      throw new Error("Invalid result selection");
++    }
++    const request = Object.freeze({ queryId, result, token: Object.freeze({}) });
++    this.#selectionRequest = request;
++    try {
++      this.#controller.parentController.onBeforeSelection(result);
++    } catch (error) {
++      if (this.#selectionRequest === request) this.#selectionRequest = null;
++      throw error;
++    }
++    // Provider hooks may synchronously remove results, hide the presentation,
++    // replace the query or begin another selection. Do not revive this request.
++    return this.getResultSelection(request.token);
++  }
++
++  getResultSelection(token) {
++    this.#check();
++    const request = this.#selectionRequest;
++    return request && request.token === token &&
++      this.ownsResult(request.queryId, request.result) &&
++      this.#controller.resultsOpen && this.#controller.visibleResults.includes(request.result)
++      ? request : null;
++  }
++
++  acknowledgeResultSelection(token) {
++    const request = this.getResultSelection(token);
++    if (!request) return false;
++    // Consume before invoking a potentially reentrant provider callback.
++    this.#selectionRequest = null;
++    this.#controller.parentController.onSelection(request.result);
++    return true;
++  }
++
 +  publishPresentation(queryId, visibleResults, open) {
 +    this.#check();
 +    if (
@@ -7362,6 +7444,9 @@ index 0000000000..404688025e
 +    ) {
 +      throw new Error("Invalid query presentation");
 +    }
++    if (!open || !visibleResults.includes(this.#selectionRequest?.result)) {
++      this.#selectionRequest = null;
++    }
 +    this.#controller.visibleResults = [...visibleResults];
 +    this.#controller.resultsOpen = open;
 +  }
@@ -7370,6 +7455,7 @@ index 0000000000..404688025e
 +    if (this.#closed) return;
 +    this.#query = null;
 +    this.#removedIds.clear();
++    this.#selectionRequest = null;
 +    this.#frozen = null;
 +    this.#onUpdate = null;
 +    this.#controller.visibleResults = [];
@@ -7383,6 +7469,7 @@ index 0000000000..404688025e
 +    this.#closed = true;
 +    this.#query = null;
 +    this.#removedIds.clear();
++    this.#selectionRequest = null;
 +    this.#frozen = null;
 +    this.#onUpdate = null;
 +    this.#onPresentationRequest = null;
