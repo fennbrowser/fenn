@@ -10,6 +10,7 @@ vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/url
 
 function fixture({hold=false,uninitializedResults=false}={}) {
   const parents=[];
+  const prefs={"experimental.hideHeuristic":false};
   class Parent {
     constructor(identity){this.identity=identity;this.started=[];parents.push(this);}
     setChild(child){this.child=child;}
@@ -20,20 +21,20 @@ function fixture({hold=false,uninitializedResults=false}={}) {
   }
   let id=0;
   const sandbox=vm.createContext({console,UrlbarQueryLifecycle,
-    UrlbarShared:{getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_SOURCE:sharedPolicy.UrlbarShared.RESULT_SOURCE,canAutofillURL:sharedPolicy.UrlbarShared.canAutofillURL.bind(sharedPolicy.UrlbarShared),NOTIFICATIONS:{
+    UrlbarShared:{getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_TYPE:sharedPolicy.UrlbarShared.RESULT_TYPE,RESULT_SOURCE:sharedPolicy.UrlbarShared.RESULT_SOURCE,canAutofillURL:sharedPolicy.UrlbarShared.canAutofillURL.bind(sharedPolicy.UrlbarShared),NOTIFICATIONS:{
       QUERY_ARMED:'onQueryArmed',QUERY_STARTED:'onQueryStarted',QUERY_CANCELLED:'onQueryCancelled',
       QUERY_FIRST_RESULT:'onFirstResult',QUERY_RESULTS:'onQueryResults',QUERY_FINISHED:'onQueryFinished'}},
-    UrlbarPrefs:{get:()=>10},UrlbarContentUtils:{usesMessagePath:()=>false},
+    UrlbarPrefs:{get:key=>prefs[key] ?? 10},UrlbarContentUtils:{usesMessagePath:()=>false},
     UrlbarQueryContext:class {constructor(options){Object.assign(this,options,{id:++id,results:uninitializedResults?undefined:[]});}},
     ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;}}});
-  for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarEditSession']) {
+  for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarResultPresentation','UrlbarEditSession']) {
     const source=readFileSync(new URL(`../upstream/firefox/browser/components/urlbar/content/${file}.mjs`,import.meta.url),'utf8');
     vm.runInContext(source.replace(/^import .*;$/gm,'').replaceAll('export class ','class ')+`\nthis.${file}=${file};`,sandbox);
   }
   let current=true;
   const context={sapName:'urlbar',isPrivate:true,actor:{browsingContext:{isContent:false}}};
   const session=new sandbox.UrlbarQuerySession({context,isCurrent:()=>current});
-  return {session,parent:parents[0],parents,sandbox,context,invalidate(){current=false;}};
+  return {session,parent:parents[0],parents,sandbox,context,prefs,invalidate(){current=false;}};
 }
 
 test('fresh controllers and engine stores use explicit identity with no input or view',async()=>{
@@ -437,4 +438,23 @@ test('speculation validates before real QueryContext results have been initializ
   const q=await f.editor.edit({},edit(2,'examp'));
   assert.equal(prepared,true);assert.equal(q.searchString,'examp');
   assert.equal(f.editor.snapshot.text,'example.test/');f.editor.close();
+});
+
+
+test('independent updates publish shared defaults without mutating observed text or query results',async()=>{
+  const f=await editorFixture(),q=await f.editor.edit({},edit(1,'words'));
+  const first={heuristic:true,type:sharedPolicy.UrlbarShared.RESULT_TYPE.SEARCH,payload:{}};
+  q.results=[first];q.trimmedSearchString='words';
+  f.parent.child.notify('onQueryResults',q);
+  assert.equal(f.updates.at(-1).defaultSelection.kind,'select-first');
+  f.prefs['experimental.hideHeuristic']=true;f.parent.child.notify('onQueryResults',q);
+  const associated=f.updates.at(-1).defaultSelection;
+  assert.equal(associated.kind,'associate-first');assert.equal(associated.valueResult,first);
+  assert.ok(Object.isFrozen(associated));assert.equal(f.editor.snapshot.text,'words');
+  const offer={payload:{providesSearchMode:true}};q.results=[offer];q.trimmedSearchString='@eng';
+  f.parent.child.notify('onQueryResults',q);assert.equal(f.updates.at(-1).defaultSelection.valueResult,offer);
+  q.trimmedSearchString='@';f.parent.child.notify('onQueryResults',q);
+  assert.equal(f.updates.at(-1).defaultSelection.kind,'none');
+  const count=f.updates.length;f.editor.cancel();f.parent.child.notify('onQueryResults',q);
+  assert.equal(f.updates.length,count);f.editor.close();
 });

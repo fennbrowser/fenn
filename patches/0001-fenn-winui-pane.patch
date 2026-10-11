@@ -3821,7 +3821,7 @@ index 9596698cf9..f1a8624ab3 100644
      };
    }
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 278cb5ca71..88666e5815 100644
+index 278cb5ca71..59b77c7014 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
 @@ -22,16 +22,6 @@ const SELECTABLE_ELEMENT_SELECTOR = "[role=button], [selectable], a";
@@ -4038,7 +4038,46 @@ index 278cb5ca71..88666e5815 100644
  
      if (!this.isOpen) {
        this.clear();
-@@ -1152,6 +1164,10 @@ export class UrlbarView {
+@@ -1057,28 +1069,16 @@ export class UrlbarView {
+     }
+ 
+     if (!this.#selectedElement && !this.oneOffSearchButtons?.selectedButton) {
+-      if (firstResult.heuristic) {
+-        // Select the heuristic result.  The heuristic may not be the first
+-        // result added, which is why we do this check here when each result is
+-        // added and not above.
+-        if (this.#shouldShowHeuristic(firstResult)) {
+-          this.#selectElement(this.getFirstSelectableElement(), {
+-            updateInput: false,
+-            setAccessibleFocus:
+-              this.controller.userSelectionBehavior == "arrow",
+-          });
+-        } else {
+-          this.input.setResultForCurrentValue(firstResult);
+-        }
+-      } else if (
+-        firstResult.payload.providesSearchMode &&
+-        queryContext.trimmedSearchString != "@"
+-      ) {
+-        // Filtered keyword offer results can be in the first position but not
+-        // be heuristic results. We do this so the user can press Tab to select
+-        // them, resembling tab-to-search. In that case, the input value is
+-        // still associated with the first result.
+-        this.input.setResultForCurrentValue(firstResult);
++      const selection = this.input.resultPresentation.defaultSelection(queryContext);
++      if (selection.kind == "select-first") {
++        // The heuristic may arrive after other results. The presenter resolves
++        // its first selectable element and owns accessibility focus.
++        this.#selectElement(this.getFirstSelectableElement(), {
++          updateInput: false,
++          setAccessibleFocus: this.controller.userSelectionBehavior == "arrow",
++        });
++      } else if (selection.kind == "associate-first") {
++        this.input.setResultForCurrentValue(selection.valueResult);
+       }
+     }
+ 
+@@ -1152,6 +1152,10 @@ export class UrlbarView {
     *   it. Undefined when the row is removed without acknowledgment.
     */
    onQueryResultRemoved(id, acknowledgeDismissalL10n) {
@@ -4049,7 +4088,7 @@ index 278cb5ca71..88666e5815 100644
      let removedIndex = -1;
      let rowToRemove = null;
      for (let i = 0; i < this.#rows.children.length; i++) {
-@@ -1216,12 +1232,17 @@ export class UrlbarView {
+@@ -1216,12 +1220,17 @@ export class UrlbarView {
     *   The UrlbarResult's new menu commands.
     */
    updateResultMenuCommands(resultId, commands) {
@@ -4068,7 +4107,7 @@ index 278cb5ca71..88666e5815 100644
    }
  
    /**
-@@ -1258,7 +1279,8 @@ export class UrlbarView {
+@@ -1258,7 +1267,8 @@ export class UrlbarView {
    #queryWasCancelled;
    #removeStaleRowsTimer;
    #resultMenuResult;
@@ -4078,7 +4117,7 @@ index 278cb5ca71..88666e5815 100644
    #rows;
    #rawSelectedElement;
    #tail150 = null;
-@@ -1310,6 +1332,7 @@ export class UrlbarView {
+@@ -1310,6 +1320,7 @@ export class UrlbarView {
      this.input.inputField.setAttribute("aria-expanded", "true");
  
      this.input.toggleAttribute("suppress-focus-border", true);
@@ -4086,7 +4125,7 @@ index 278cb5ca71..88666e5815 100644
      this.input.toggleAttribute("open", true);
  
      this.window.addEventListener("resize", this);
-@@ -1342,13 +1365,7 @@ export class UrlbarView {
+@@ -1342,13 +1353,7 @@ export class UrlbarView {
    }
  
    #shouldShowHeuristic(result) {
@@ -4101,7 +4140,7 @@ index 278cb5ca71..88666e5815 100644
    }
  
    /**
-@@ -2146,13 +2163,7 @@ export class UrlbarView {
+@@ -2146,13 +2151,7 @@ export class UrlbarView {
    }
  
    #updateRowButtons(item, oldResult, result) {
@@ -4116,7 +4155,7 @@ index 278cb5ca71..88666e5815 100644
  
      if (!this.#needsNewButtons(item, oldResult, result)) {
        return;
-@@ -2230,12 +2241,7 @@ export class UrlbarView {
+@@ -2230,12 +2229,7 @@ export class UrlbarView {
            "urlbarView-button",
            "urlbarView-button-" + buttonName,
          ],
@@ -4130,7 +4169,7 @@ index 278cb5ca71..88666e5815 100644
        },
        item
      );
-@@ -2800,43 +2806,8 @@ export class UrlbarView {
+@@ -2800,43 +2794,8 @@ export class UrlbarView {
    }
  
    #iconForResult(result, iconUrlOverride = null) {
@@ -4176,7 +4215,7 @@ index 278cb5ca71..88666e5815 100644
    }
  
    #getBlobUrlForResult(result, blob) {
-@@ -2921,21 +2892,22 @@ export class UrlbarView {
+@@ -2921,21 +2880,22 @@ export class UrlbarView {
  
      let description = item._elements.get("description");
      if (result.payload.descriptionL10n) {
@@ -4214,7 +4253,7 @@ index 278cb5ca71..88666e5815 100644
          }
        }
      } else {
-@@ -3011,7 +2983,7 @@ export class UrlbarView {
+@@ -3011,7 +2971,7 @@ export class UrlbarView {
     * deferred until all rows have been updated.
     */
    #updateIndices() {
@@ -4223,7 +4262,7 @@ index 278cb5ca71..88666e5815 100644
      this.#overflowObserver.disconnect();
  
      // `lastVisibleLabel` is the l10n object of the last-seen visible row label
-@@ -3033,7 +3005,7 @@ export class UrlbarView {
+@@ -3033,7 +2993,7 @@ export class UrlbarView {
  
        let visible = this.#isElementVisible(item);
        if (visible) {
@@ -4232,7 +4271,7 @@ index 278cb5ca71..88666e5815 100644
          seenOnlyHeuristicOrSearchSuggestions &&=
            result.heuristic ||
            (result.type == UrlbarShared.RESULT_TYPE.SEARCH &&
-@@ -3067,7 +3039,7 @@ export class UrlbarView {
+@@ -3067,7 +3027,7 @@ export class UrlbarView {
        selectableElement = this.#getNextSelectableElement(selectableElement);
      }
  
@@ -4241,7 +4280,7 @@ index 278cb5ca71..88666e5815 100644
    }
  
    /**
-@@ -3164,71 +3136,7 @@ export class UrlbarView {
+@@ -3164,71 +3124,7 @@ export class UrlbarView {
     *   If the current row should not have a label, returns null. Otherwise
     *   returns an l10n object for the label's l10n string: `{ id, args }`
     */
@@ -4314,7 +4353,7 @@ index 278cb5ca71..88666e5815 100644
  
    #setRowVisibility(row, visible) {
      row.toggleAttribute("hidden", !visible);
-@@ -3277,7 +3185,7 @@ export class UrlbarView {
+@@ -3277,7 +3173,7 @@ export class UrlbarView {
      // necessarily imply we are in actions mode, therefore we should check both.
      if (
        this.input.searchMode?.source != UrlbarShared.RESULT_SOURCE.ACTIONS &&
@@ -4323,7 +4362,7 @@ index 278cb5ca71..88666e5815 100644
      ) {
        this.#rows.toggleAttribute("actionmode", false);
      }
-@@ -3598,55 +3506,13 @@ export class UrlbarView {
+@@ -3598,55 +3494,13 @@ export class UrlbarView {
     *   The DOM node for the result's tile.
     */
    #setResultTitle(result, titleNode) {
@@ -4384,7 +4423,7 @@ index 278cb5ca71..88666e5815 100644
        return;
      }
  
-@@ -4160,51 +4026,6 @@ export class UrlbarView {
+@@ -4160,51 +4014,6 @@ export class UrlbarView {
      return idArgs;
    }
  
@@ -4436,7 +4475,7 @@ index 278cb5ca71..88666e5815 100644
    #hasMenuButton(result) {
      return (
        (!result.heuristic && this.#canOpenInNewTarget(result)) ||
-@@ -4217,7 +4038,7 @@ export class UrlbarView {
+@@ -4217,7 +4026,7 @@ export class UrlbarView {
     * buttons of the rows that are already built, which would otherwise keep the
     * attribute they got when they were created.
     */
@@ -4445,7 +4484,7 @@ index 278cb5ca71..88666e5815 100644
      let inaccessible = !UrlbarPrefs.get("resultMenu.keyboardAccessible");
      for (let button of this.#rows.querySelectorAll(
        ".urlbarView-button-result-menu"
-@@ -4232,98 +4053,9 @@ export class UrlbarView {
+@@ -4232,98 +4041,9 @@ export class UrlbarView {
     * @returns {boolean}
     *   Whether the result's menu offers to open it in a new tab or window.
     */
@@ -4547,7 +4586,7 @@ index 278cb5ca71..88666e5815 100644
  
    /**
     * Popuplates the result menu with commands.
-@@ -4333,106 +4065,45 @@ export class UrlbarView {
+@@ -4333,106 +4053,45 @@ export class UrlbarView {
     * @param {UrlbarResultCommand[]} options.commands
     */
    async #populateResultMenu({ panel = this.resultMenu, commands }) {
@@ -4687,7 +4726,7 @@ index 278cb5ca71..88666e5815 100644
    }
  
    // Event handlers below.
-@@ -4710,39 +4381,12 @@ export class UrlbarView {
+@@ -4710,39 +4369,12 @@ export class UrlbarView {
    }
  
    on_click(event) {
@@ -4733,7 +4772,7 @@ index 278cb5ca71..88666e5815 100644
    }
  
    on_showing(event) {
-@@ -4780,6 +4424,7 @@ export class UrlbarView {
+@@ -4780,6 +4412,7 @@ export class UrlbarView {
      if (event.target != event.currentTarget) {
        return;
      }
@@ -5987,16 +6026,17 @@ index 1e2660589b..5ae3ab4843 100644
    /*
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..2d181dff98
+index 0000000000..6fb53983ac
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,227 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +import { UrlbarQuerySession } from "chrome://browser/content/urlbar/UrlbarQuerySession.mjs";
 +import { UrlbarAutofillModel } from "chrome://browser/content/urlbar/UrlbarAutofillModel.mjs";
++import { UrlbarResultPresentation } from "chrome://browser/content/urlbar/UrlbarResultPresentation.mjs";
 +import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
 +
 +/**
@@ -6011,6 +6051,7 @@ index 0000000000..2d181dff98
 + */
 +export class UrlbarEditSession {
 +  #queries;
++  #presentation = new UrlbarResultPresentation(null);
 +  #isCurrent;
 +  #onUpdate;
 +  #edit = null;
@@ -6126,7 +6167,8 @@ index 0000000000..2d181dff98
 +        this.#completion = { token, proposal: completion, descriptor: null,
 +          query: update.query, result: first, edit: this.#edit };
 +      }
-+      this.#onUpdate(Object.freeze({ ...update, edit: this.#edit, completion }));
++      this.#onUpdate(Object.freeze({ ...update, edit: this.#edit, completion,
++        defaultSelection: this.#presentation.defaultSelection(update.query) }));
 +    });
 +  }
 +
@@ -7120,10 +7162,10 @@ index 0000000000..82d5029bd9
 +}
 diff --git a/browser/components/urlbar/content/UrlbarResultPresentation.mjs b/browser/components/urlbar/content/UrlbarResultPresentation.mjs
 new file mode 100644
-index 0000000000..d3c2b406a9
+index 0000000000..f7a9efbaba
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarResultPresentation.mjs
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,139 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7152,6 +7194,25 @@ index 0000000000..d3c2b406a9
 +  allowEmptySelection(context) {
 +    return !context?.heuristicResult ||
 +      !this.shouldShowHeuristic(context.heuristicResult);
++  }
++
++  /**
++   * Initial choice when neither a result nor a one-off is selected. The host
++   * resolves select-first to its first selectable element; associate-first
++   * binds the input's value without selecting a row (hidden heuristics and
++   * filtered search-mode offers). This never moves an existing user selection.
++   */
++  defaultSelection(context) {
++    const first = context?.results?.[0];
++    if (first?.heuristic) {
++      return Object.freeze(this.shouldShowHeuristic(first)
++        ? { kind: "select-first", valueResult: null }
++        : { kind: "associate-first", valueResult: first });
++    }
++    if (first?.payload.providesSearchMode && context.trimmedSearchString != "@") {
++      return Object.freeze({ kind: "associate-first", valueResult: first });
++    }
++    return Object.freeze({ kind: "none", valueResult: null });
 +  }
 +
 +  // These are presentation candidates, not proof of viewport visibility.

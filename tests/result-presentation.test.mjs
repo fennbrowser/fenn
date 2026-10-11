@@ -82,7 +82,28 @@ test('icon precedence and blob lifetime stay with the presenter',()=>{
 test('original renderer and native adapter share policy and delete native view helpers',()=>{
   const view=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarView.mjs',import.meta.url),'utf8');
   const session=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIUrlbarSession.sys.mjs',import.meta.url),'utf8');
-  for(const method of ['title','icon','allowEmptySelection','shouldShowHeuristic']) assert.ok(view.includes(`this.input.resultPresentation.${method}(`));
+  for(const method of ['title','icon','allowEmptySelection','shouldShowHeuristic','defaultSelection']) assert.ok(view.includes(`this.input.resultPresentation.${method}(`));
   for(const method of ['searchModeTitle','icon','allowEmptySelection','candidates']) assert.ok(session.includes(`this.input.resultPresentation.${method}(`));
   assert.doesNotMatch(view,/prepareNativeSearchModeTitle|nativePresentationResults|nativeResultPresentation/);
+});
+
+
+test('default selection separates visible heuristic selection from hidden value association',()=>{
+  const {model,prefs}=fixture(),first={heuristic:true,type:2,payload:{}};
+  const query={results:[first],trimmedSearchString:'words'};
+  let plan=model.defaultSelection(query);
+  assert.equal(plan.kind,'select-first');assert.equal(plan.valueResult,null);assert.ok(Object.isFrozen(plan));
+  prefs['experimental.hideHeuristic']=true;
+  plan=model.defaultSelection(query);assert.equal(plan.kind,'associate-first');assert.equal(plan.valueResult,first);
+  first.type=7;assert.equal(model.defaultSelection(query).kind,'select-first','heuristic tips remain visible');
+  assert.equal(query.results[0],first);
+});
+
+test('filtered search-mode offers associate input while bare at-sign, ordinary and empty queries do not',()=>{
+  const {model}=fixture(),offer={payload:{providesSearchMode:true}};
+  assert.equal(model.defaultSelection({results:[offer],trimmedSearchString:'@eng'}).valueResult,offer);
+  assert.equal(model.defaultSelection({results:[offer],trimmedSearchString:'@'}).kind,'none');
+  for(const query of [null,{}, {results:[]},{results:[{payload:{}}],trimmedSearchString:'words'}]) {
+    const plan=model.defaultSelection(query);assert.equal(plan.kind,'none');assert.equal(plan.valueResult,null);
+  }
 });
