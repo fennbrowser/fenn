@@ -3298,7 +3298,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..d9d2e2e515 100644
+index a077de625f..81b78f4997 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,20 @@
@@ -4400,7 +4400,62 @@ index a077de625f..d9d2e2e515 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -4267,6 +3907,15 @@ ${
+@@ -4200,45 +3840,25 @@ ${
+       keyDownEnterDeferred = this._keyDownEnterDeferred;
+     }
+ 
++    const navigation = UrlbarQueryModel.navigationPlan({ loadRequest, where, params,
++      sapName: this.#sapName, isPrivate: this.isPrivate,
++      deferEnterFocus: !!keyDownEnterDeferred });
+     let userTypedValue;
+-    if (this.#isAddressbar && where == "current") {
+-      if (loadRequest.engineSearch) {
+-        this.value = loadRequest.engineSearch.query;
+-      } else {
+-        let { url } = loadRequest.urlLoad;
+-        // Make sure URL is formatted properly (don't show punycode).
+-        try {
+-          this.value = losslessDecodeURL(new URL(url));
+-        } catch {
+-          this.value = url;
+-        }
+-      }
++    if (navigation.editorValue !== undefined) {
++      this.value = navigation.editorValue;
++      // Preserve the value actually applied by the retained editor setter.
+       userTypedValue = this.value;
+     }
+-
+-    params.allowThirdPartyFixup = true;
+-
+-    if (where == "current") {
+-      params.indicateErrorPageLoad = true;
+-      params.allowPinnedTabHostChange = this.#isAddressbar;
+-      params.allowPopups =
+-        loadRequest.urlLoad?.url.startsWith("javascript:") ?? false;
+-    }
+-
+-    // Ensure the window gets the `private` feature if the current window
+-    // is private, unless the caller explicitly requested not to.
+-    if (this.isPrivate && !("private" in params)) {
+-      params.private = true;
+-    }
++    Object.assign(params, navigation.openParams);
+ 
+     // Make sure the domain name stays visible for spoof protection and
+     // usability. The browser itself is focused parent-side, where the load
+     // runs against the chrome window.
+-    if (this.#isAddressbar && !params.avoidBrowserFocus) {
++    if (navigation.resetSelection) {
+       this.inputField.setSelectionRange(0, 0);
+     }
+ 
+-    if (where != "current" && !this.isSearchbarSAP) {
++    if (navigation.revertBeforeLoad) {
+       this.handleRevert();
+     }
+ 
+@@ -4267,6 +3887,15 @@ ${
      }
    }
  
@@ -4416,7 +4471,7 @@ index a077de625f..d9d2e2e515 100644
    _initCopyCutController() {
      // This exists to put an untrimmed URL on the clipboard, and only the address
      // bar trims. Every other input keeps its native copy/cut.
-@@ -4479,7 +4128,7 @@ ${
+@@ -4479,7 +4108,7 @@ ${
        return;
      }
      let controller =
@@ -4425,7 +4480,7 @@ index a077de625f..d9d2e2e515 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4495,6 +4144,33 @@ ${
+@@ -4495,6 +4124,33 @@ ${
      stripOnShare.removeAttribute("disabled");
    }
  
@@ -4459,7 +4514,7 @@ index a077de625f..d9d2e2e515 100644
    _initPasteAndGo() {
      this.addContextMenuItems({
        after: "edit-contextmenu-paste",
-@@ -4507,17 +4183,7 @@ ${
+@@ -4507,17 +4163,7 @@ ${
            .GetStringFromName("pasteAndGo.label");
          pasteAndGo.setAttribute("label", label);
          pasteAndGo.setAttribute("anonid", "paste-and-go");
@@ -4478,7 +4533,7 @@ index a077de625f..d9d2e2e515 100644
  
          fragment.appendChild(pasteAndGo);
          return fragment;
-@@ -4545,10 +4211,7 @@ ${
+@@ -4545,10 +4191,7 @@ ${
            { once: true }
          );
  
@@ -4490,7 +4545,7 @@ index a077de625f..d9d2e2e515 100644
            pasteAndGo.removeAttribute("disabled");
          } else {
            pasteAndGo.setAttribute("disabled", "true");
-@@ -4747,60 +4410,11 @@ ${
+@@ -4747,60 +4390,11 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -4556,7 +4611,7 @@ index a077de625f..d9d2e2e515 100644
    }
  
    /**
-@@ -5071,6 +4685,8 @@ ${
+@@ -5071,6 +4665,8 @@ ${
    setUnifiedSearchButtonAvailability(available) {
      available ||=
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
@@ -4565,7 +4620,7 @@ index a077de625f..d9d2e2e515 100644
      const switcher = this.querySelector(".searchmode-switcher");
      switcher.toggleAttribute("offscreen", !available);
      if (available) {
-@@ -5085,6 +4701,7 @@ ${
+@@ -5085,6 +4681,7 @@ ${
          this.window.gBrowser.selectedBrowser
        ).isUnifiedSearchButtonAvailable = available;
      }
@@ -4573,7 +4628,7 @@ index a077de625f..d9d2e2e515 100644
    }
  
    /**
-@@ -5151,7 +4768,7 @@ ${
+@@ -5151,7 +4748,7 @@ ${
    #maybeSelectAll() {
      if (
        !this.#preventClickSelectsAll &&
@@ -4582,7 +4637,7 @@ index a077de625f..d9d2e2e515 100644
        this.focused &&
        this.inputField.selectionStart == this.inputField.selectionEnd
      ) {
-@@ -5477,34 +5094,20 @@ ${
+@@ -5477,34 +5074,20 @@ ${
      }
    }
  
@@ -4590,28 +4645,28 @@ index a077de625f..d9d2e2e515 100644
 -    // A new input starts a fresh search; bump the epoch so a pending
 -    // deferred-Enter's async keyup won't reset this search's caret.
 -    this.#inputEpoch++;
-+  setNativeInputValue(value) {
-     if (
+-    if (
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      (event.inputType === "deleteContentBackward" ||
 -        event.inputType === "deleteContentForward")
-+      !this.view.nativePresentation ||
-+      typeof value !== "string" ||
-+      value.length > 32768
-     ) {
+-    ) {
 -      // Take a telemetry if user deleted whole autofilled value.
 -      this.parentController.recordAutofillDeletion();
 -    }
 -
--    if (
++  setNativeInputValue(value) {
+     if (
 -      UrlbarPrefs.get("autoFill.adaptiveHistory.enabled") &&
 -      event.inputType?.startsWith("deleteContent") &&
 -      !this.isPrivate &&
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      this._resultForCurrentValue?.payload?.url
--    ) {
++      !this.view.nativePresentation ||
++      typeof value !== "string" ||
++      value.length > 32768
+     ) {
 -      this.parentController.recordAutofillBackspace(
 -        this._resultForCurrentValue.payload.url
 -      );
@@ -4627,7 +4682,7 @@ index a077de625f..d9d2e2e515 100644
      this.valueIsTyped = true;
      this._untrimmedValue = value;
      this._protocolIsTrimmed = false;
-@@ -5516,20 +5119,9 @@ ${
+@@ -5516,20 +5099,9 @@ ${
      // string, thus there's no valid selection. This is also used by the view
      // to set "aria-activedescendant", thus it should never get stale.
      this.controller.userSelectionBehavior = "none";
@@ -4650,7 +4705,7 @@ index a077de625f..d9d2e2e515 100644
      this.toggleAttribute("usertyping", value);
      this.removeAttribute("actiontype");
  
-@@ -5551,6 +5143,43 @@ ${
+@@ -5551,6 +5123,43 @@ ${
          this.removeAttribute("persistsearchterms");
        }
      }
@@ -4694,7 +4749,7 @@ index a077de625f..d9d2e2e515 100644
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
-@@ -5580,10 +5209,9 @@ ${
+@@ -5580,10 +5189,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -4708,7 +4763,7 @@ index a077de625f..d9d2e2e515 100644
      ) {
        return;
      }
-@@ -5591,11 +5219,10 @@ ${
+@@ -5591,11 +5199,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -4724,7 +4779,7 @@ index a077de625f..d9d2e2e515 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5669,33 +5296,20 @@ ${
+@@ -5669,33 +5276,20 @@ ${
    }
  
    _on_paste(event) {
@@ -4766,7 +4821,7 @@ index a077de625f..d9d2e2e515 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5323,7 @@ ${
+@@ -5709,7 +5303,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -4775,7 +4830,7 @@ index a077de625f..d9d2e2e515 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5354,25 @@ ${
+@@ -5740,51 +5334,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -4843,7 +4898,7 @@ index a077de625f..d9d2e2e515 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5566,11 @@ ${
+@@ -5978,15 +5546,11 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -4861,7 +4916,7 @@ index a077de625f..d9d2e2e515 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5590,24 @@ ${
+@@ -6006,44 +5570,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -4918,7 +4973,7 @@ index a077de625f..d9d2e2e515 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,11 +5733,7 @@ ${
+@@ -6169,11 +5713,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -4931,7 +4986,7 @@ index a077de625f..d9d2e2e515 100644
    }
  
    get #isOpenedPageInBlankTargetLoading() {
-@@ -6311,111 +5871,6 @@ function getDroppableData(event) {
+@@ -6311,111 +5851,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -5043,7 +5098,7 @@ index a077de625f..d9d2e2e515 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +5895,10 @@ class CopyCutController {
+@@ -6440,12 +5875,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -7636,10 +7691,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..06d9d83405
+index 0000000000..5ad8ca7bc5
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1095 @@
+@@ -0,0 +1,1101 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8370,6 +8425,12 @@ index 0000000000..06d9d83405
 +  }
 +
 +  /** Engagement events are explicit host observations, separate from query dispatch. */
++  describeResultNavigation(revision, queryId, result, event, options) {
++    this.#check();
++    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing) throw new Error("Stale editor navigation");
++    return this.#queries.describeResultNavigation(queryId, result, event, options);
++  }
++
 +  describeResultLoad(revision, queryId, result, event, options) {
 +    this.#check();
 +    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing) throw new Error("Stale editor load");
@@ -8737,10 +8798,10 @@ index 0000000000..06d9d83405
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..5a6f3369fb
+index 0000000000..0436b952d2
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,468 @@
+@@ -0,0 +1,483 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8910,6 +8971,21 @@ index 0000000000..5a6f3369fb
 +    this.#check();
 +    if (this.#query !== query) throw new Error("Query superseded or cancelled");
 +    return frozen;
++  }
++
++  /** Describe pre-load effects, which the host must apply before a future dispatch. */
++  describeResultNavigation(queryId, result, event, options = {}) {
++    const { deferEnterFocus = false } = options;
++    if (typeof deferEnterFocus !== "boolean") throw new TypeError("Invalid deferred-focus fact");
++    const load = this.describeResultLoad(queryId, result, event, options);
++    if (!load) return null;
++    const plan = UrlbarQueryModel.navigationPlan({ loadRequest: load.loadRequest,
++      where: load.where, params: load.openParams, sapName: this.#context.sapName,
++      isPrivate: this.#context.isPrivate,
++      deferEnterFocus: deferEnterFocus && event?.keyCode === 13 });
++    if (!this.ownsResult(queryId, result) || !this.#controller.resultsOpen ||
++        !this.#controller.visibleResults.includes(result)) throw new Error("Stale navigation preparation");
++    return Object.freeze({ ...load, ...plan, openParams: Object.freeze(plan.openParams) });
 +  }
 +
 +  /** Describe supported primary loads only; this grants no dispatch authority. */
@@ -9374,10 +9450,10 @@ index 0000000000..83b4b88af9
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQueryModel.mjs b/browser/components/urlbar/content/UrlbarQueryModel.mjs
 new file mode 100644
-index 0000000000..8a76f74229
+index 0000000000..69817ec8ce
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQueryModel.mjs
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,157 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9385,10 +9461,36 @@ index 0000000000..8a76f74229
 +import UrlbarPrefs from "chrome://browser/content/urlbar/UrlbarContentPrefs.mjs";
 +import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
 +import { UrlbarQueryContext } from "chrome://browser/content/urlbar/UrlbarQueryContext.mjs";
-+import { isSchemelessInput } from "chrome://browser/content/urlbar/UrlbarUrlValue.mjs";
++import { isSchemelessInput, losslessDecodeURL } from "chrome://browser/content/urlbar/UrlbarUrlValue.mjs";
 +
 +/** Firefox query policy over explicit state, without retaining an input/view. */
 +export class UrlbarQueryModel {
++  /** Pre-load editor/focus/parameter policy. The host applies and acknowledges effects. */
++  static navigationPlan({ loadRequest, where, params, sapName, isPrivate, deferEnterFocus = false }) {
++    const isAddressbar = sapName === "urlbar";
++    const openParams = { ...params, allowThirdPartyFixup: true };
++    if (deferEnterFocus && where === "current") openParams.avoidBrowserFocus = true;
++    let editorValue;
++    if (isAddressbar && where === "current") {
++      if (loadRequest.engineSearch) {
++        editorValue = loadRequest.engineSearch.query;
++      } else {
++        const { url } = loadRequest.urlLoad;
++        try { editorValue = losslessDecodeURL(new URL(url)); }
++        catch { editorValue = url; }
++      }
++    }
++    if (where === "current") {
++      openParams.indicateErrorPageLoad = true;
++      openParams.allowPinnedTabHostChange = isAddressbar;
++      openParams.allowPopups = loadRequest.urlLoad?.url.startsWith("javascript:") ?? false;
++    }
++    if (isPrivate && !("private" in openParams)) openParams.private = true;
++    return { editorValue, openParams,
++      resetSelection: isAddressbar && !openParams.avoidBrowserFocus,
++      revertBeforeLoad: where !== "current" && !UrlbarShared.isSearchbarSAP(sapName) };
++  }
++
 +  /** nsILoadInfo schemeful/schemeless values, also usable in content realms. */
 +  static schemelessInput(value) {
 +    return isSchemelessInput(value) ? 2 : 1;

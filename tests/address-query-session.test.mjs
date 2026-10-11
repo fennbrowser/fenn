@@ -33,7 +33,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;}}});
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarUrlValue.mjs',import.meta.url),'utf8')
     .replace(/^import .*;$/gm,'').replaceAll('export function ','function '),sandbox);
-  Object.assign(sandbox.UrlbarShared, {getLoadRequestFromResult:sharedPolicy.UrlbarShared.getLoadRequestFromResult.bind(sharedPolicy.UrlbarShared),looksLikeSingleWordHost:sharedPolicy.UrlbarShared.looksLikeSingleWordHost.bind(sharedPolicy.UrlbarShared),isInstance:(event,type)=>event instanceof type,REGEXP_SPACES:sharedPolicy.UrlbarShared.REGEXP_SPACES,RESTRICT_TOKENS:sharedPolicy.UrlbarShared.RESTRICT_TOKENS,
+  Object.assign(sandbox.UrlbarShared, {isSearchbarSAP:sharedPolicy.UrlbarShared.isSearchbarSAP.bind(sharedPolicy.UrlbarShared),getLoadRequestFromResult:sharedPolicy.UrlbarShared.getLoadRequestFromResult.bind(sharedPolicy.UrlbarShared),looksLikeSingleWordHost:sharedPolicy.UrlbarShared.looksLikeSingleWordHost.bind(sharedPolicy.UrlbarShared),isInstance:(event,type)=>event instanceof type,REGEXP_SPACES:sharedPolicy.UrlbarShared.REGEXP_SPACES,RESTRICT_TOKENS:sharedPolicy.UrlbarShared.RESTRICT_TOKENS,
     LOCAL_SEARCH_MODES:sharedPolicy.UrlbarShared.LOCAL_SEARCH_MODES,
     SEARCH_MODE_RESTRICT:sharedPolicy.UrlbarShared.SEARCH_MODE_RESTRICT,
     SEARCH_MODE_ENTRY:sharedPolicy.UrlbarShared.SEARCH_MODE_ENTRY,
@@ -1952,6 +1952,47 @@ test('engagement rejects invalid events, stale editor revisions, composition and
   await f.editor.edit({},edit(2,'composing',{composing:true}));
   assert.throws(()=>f.editor.startEngagement(2,q.id,{type:'input',timeStamp:3}),/Stale/);
   f.loseScope();assert.throws(()=>f.editor.discardEngagement(),/scope changed/);
+});
+
+test('navigation preparation preserves current-load security flags and explicit private overrides',()=>{
+  const f=fixture(),model=f.sandbox.UrlbarQueryModel;
+  for(const [url,popups] of [['javascript:alert(1)',true],['JavaScript:alert(1)',false],['https://example.test/',false]]) {
+    const params={private:false};const plan=model.navigationPlan({loadRequest:{urlLoad:{url}},where:'current',params,sapName:'urlbar',isPrivate:true});
+    assert.equal(plan.openParams.allowPopups,popups);assert.equal(plan.openParams.allowPinnedTabHostChange,true);
+    assert.equal(plan.openParams.allowThirdPartyFixup,true);assert.equal(plan.openParams.indicateErrorPageLoad,true);
+    assert.equal(plan.openParams.private,false);assert.deepEqual(params,{private:false});assert.equal(plan.resetSelection,true);
+    assert.equal(plan.revertBeforeLoad,false);
+  }
+  const plan=model.navigationPlan({loadRequest:{engineSearch:{query:'terms'}},where:'current',params:{},sapName:'urlbar',isPrivate:true,deferEnterFocus:true});
+  assert.equal(plan.editorValue,'terms');assert.equal(plan.openParams.private,true);assert.equal(plan.resetSelection,false);
+  assert.equal(plan.openParams.avoidBrowserFocus,true);assert.equal(plan.openParams.allowPopups,false);f.session.close();
+});
+
+test('navigation preparation preserves SAP-specific reversion and background focus',()=>{
+  const f=fixture(),model=f.sandbox.UrlbarQueryModel;
+  for(const sapName of ['urlbar','searchbar','newtab_searchbar','smartbar'])for(const where of ['current','tab','window']) {
+    const plan=model.navigationPlan({loadRequest:{urlLoad:{url:'not a valid URL'}},where,params:{avoidBrowserFocus:true},sapName,isPrivate:false});
+    assert.equal(plan.editorValue,sapName==='urlbar' && where==='current'?'not a valid URL':undefined);
+    assert.equal(plan.revertBeforeLoad,where!=='current' && !['searchbar','newtab_searchbar'].includes(sapName));
+    assert.equal(plan.resetSelection,false);
+    assert.equal(plan.openParams.allowPinnedTabHostChange,where==='current'?sapName==='urlbar':undefined);
+    assert.equal(plan.openParams.indicateErrorPageLoad,where==='current'?true:undefined);
+  }
+  f.session.close();
+});
+
+test('independent navigation preparation preserves editor and requires valid scope and focus facts',async()=>{
+  const f=await editorFixture(),q=await f.editor.edit({},edit(1,'terms')),T=f.sandbox.UrlbarShared.RESULT_TYPE;
+  const result={id:1,type:T.SEARCH,payload:{engine:'engine',query:'terms'}};q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+  const options={selectedTabIsEmpty:false,originalUntrimmedValue:'terms',deferEnterFocus:true};
+  const before=f.editor.snapshot;
+  const plan=f.editor.describeResultNavigation(1,q.id,result,new f.sandbox.KeyboardEvent(),options);
+  assert.equal(plan.editorValue,'terms');assert.equal(plan.resetSelection,false);assert.equal(plan.openParams.avoidBrowserFocus,true);
+  assert.equal(Object.isFrozen(plan),true);assert.equal(Object.isFrozen(plan.openParams),true);assert.equal(f.editor.snapshot,before);
+  assert.equal(f.editor.describeResultNavigation(1,q.id,result,{},options).resetSelection,true,'non-Enter must not defer focus');
+  assert.throws(()=>f.editor.describeResultNavigation(1,q.id,result,{}, {...options,deferEnterFocus:1}),/Invalid/);
+  assert.throws(()=>f.editor.describeResultNavigation(0,q.id,result,{},options),/Stale/);
+  f.editor.hideResults(1,q.id);assert.throws(()=>f.editor.describeResultNavigation(1,q.id,result,{},options),/Invalid/);f.editor.close();
 });
 
 test('shared load policy preserves heuristic DNS and scheme handling without mutating requests',()=>{
