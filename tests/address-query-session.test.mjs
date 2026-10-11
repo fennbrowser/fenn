@@ -22,7 +22,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
   let id=0;
   const sandbox=vm.createContext({console,URL,UrlbarQueryLifecycle,
     UrlbarShared:{stripPrefixAndTrim:sharedPolicy.UrlbarShared.stripPrefixAndTrim,getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_TYPE:sharedPolicy.UrlbarShared.RESULT_TYPE,RESULT_SOURCE:sharedPolicy.UrlbarShared.RESULT_SOURCE,canAutofillURL:sharedPolicy.UrlbarShared.canAutofillURL.bind(sharedPolicy.UrlbarShared),NOTIFICATIONS:{
-      RESULTS_CLOSE_REQUESTED:'onResultsCloseRequested',
+      RESULTS_CLOSE_REQUESTED:'onResultsCloseRequested',QUERY_RESULT_REMOVED:'onQueryResultRemoved',
       QUERY_ARMED:'onQueryArmed',QUERY_STARTED:'onQueryStarted',QUERY_CANCELLED:'onQueryCancelled',
       QUERY_FIRST_RESULT:'onFirstResult',QUERY_RESULTS:'onQueryResults',QUERY_FINISHED:'onQueryFinished'}},
     UrlbarPrefs:{get:key=>prefs[key] ?? 10},UrlbarContentUtils:{usesMessagePath:()=>false,getDisplaySpec:spec=>spec,getFixupPrimitives:()=>({})},
@@ -53,6 +53,51 @@ test('fresh controllers and engine stores use explicit identity with no input or
   assert.equal(f.parent.started[0],q);
   assert.throws(()=>new f.sandbox.UrlbarChildController({context:{...f.context,actor:{browsingContext:{isContent:true}}}}),/chrome context/);
   f.session.close();f.session.close();assert.equal(f.parent.destroyed,1);
+});
+
+test('removed frozen results lose identity and exposure even if an old descriptor or late batch retains them',async()=>{
+  const requests=[],f=fixture({onPresentationRequest:r=>requests.push(r)});
+  const q=await f.session.query({}, {searchString:'remove'}),a={id:1},b={id:2};q.results=[a,b];
+  const old=f.session.freezeResults(q.id);f.session.publishPresentation(q.id,[a,b],true);
+  q.results.splice(0,1);const l10n={id:'dismissed'};
+  f.parent.child.notify('onQueryResultRemoved',a.id,l10n,q.id);
+  assert.equal(old.results[0],a,'previous descriptors are immutable historical values');
+  assert.equal(f.session.ownsResult(q.id,a),false);assert.equal(f.session.ownsResult(q.id,b),true);
+  assert.deepEqual([...f.session.freezeResults(q.id).results],[b]);
+  assert.deepEqual([...f.parent.child.visibleResults],[b]);
+  assert.equal(f.parent.child.resultsOpen,true);
+  assert.equal(requests[0].kind,'remove-result');assert.equal(requests[0].acknowledgeDismissalL10n,l10n);
+  q.results=[a,b];assert.equal(f.session.ownsResult(q.id,a),false);
+  assert.throws(()=>f.session.publishPresentation(q.id,[a],true),/Invalid/);
+  f.parent.child.notify('onQueryResultRemoved',a.id,l10n,q.id);assert.equal(requests.length,1);
+  f.parent.child.notify('onQueryResultRemoved',b.id,undefined,q.id);
+  assert.equal(f.session.freezeResults(q.id).results.length,0);f.session.close();
+});
+
+test('removal notifications are query scoped through replacement, cancellation and scope loss',async()=>{
+  const requests=[],f=fixture({onPresentationRequest:r=>requests.push(r)}),delivered=[];
+  f.parent.child.addListener({onQueryResultRemoved:(...args)=>delivered.push(args)});
+  const old=await f.session.query({}, {searchString:'old'});old.results=[{id:1}];
+  const next=await f.session.query({}, {searchString:'next'});next.results=[{id:1}];
+  f.parent.child.notify('onQueryResultRemoved',1,undefined,old.id);
+  assert.equal(delivered.length,0);assert.equal(f.session.ownsResult(next.id,next.results[0]),true);
+  f.parent.child.notify('onQueryResultRemoved',1,undefined,next.id);
+  assert.equal(requests.length,1);assert.equal(f.session.ownsResult(next.id,next.results[0]),false);
+  assert.throws(()=>f.session.freezeResults(next.id),/not ready/);
+  f.session.cancel();f.parent.child.notify('onQueryResultRemoved',2,undefined,next.id);
+  const current=await f.session.query({}, {searchString:'scope'});f.invalidate();
+  f.parent.child.notify('onQueryResultRemoved',3,undefined,current.id);
+  assert.equal(requests.length,1);f.session.close();
+});
+
+test('editor forwards scoped removal metadata and revokes a matching completion without writing text',async()=>{
+  const f=await completionFixture();f.result.id=7;const snapshot=f.editor.snapshot;
+  f.parent.child.notify('onQueryResultRemoved',7,{id:'dismissed'},f.query.id);
+  assert.equal(f.editor.getCompletion(f.proposal.token),null);
+  assert.equal(f.requests[0].kind,'remove-result');assert.equal(f.requests[0].edit,snapshot);
+  assert.equal(f.requests[0].acknowledgeDismissalL10n.id,'dismissed');assert.equal(f.editor.snapshot,snapshot);
+  assert.equal(f.editor.getCloseRequest(f.requests[0].token),null);
+  assert.throws(()=>f.editor.describeResultInput(1,f.query.id,f.result),/Stale/);f.editor.close();
 });
 
 test('query-scoped close requests survive result freezing but not cancellation, replacement or scope loss',async()=>{

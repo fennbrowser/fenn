@@ -833,7 +833,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..a8de2692be 100644
+index ba254af0c6..55d404d841 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -114,6 +114,7 @@ export class UrlbarParentController {
@@ -857,7 +857,13 @@ index ba254af0c6..a8de2692be 100644
    /**
     * The input or an object that can forward calls to the input.
     *
-@@ -1296,6 +1303,17 @@ export class UrlbarParentController {
+@@ -1292,10 +1299,22 @@ export class UrlbarParentController {
+     this.notify(
+       lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
+       result.id,
+-      acknowledgeDismissalL10n
++      acknowledgeDismissalL10n,
++      queryContext.id
      );
    }
  
@@ -875,7 +881,7 @@ index ba254af0c6..a8de2692be 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +1350,7 @@ export class UrlbarParentController {
+@@ -1332,6 +1351,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -883,7 +889,7 @@ index ba254af0c6..a8de2692be 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +1374,8 @@ export class UrlbarParentController {
+@@ -1355,6 +1375,8 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
@@ -892,7 +898,7 @@ index ba254af0c6..a8de2692be 100644
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +1407,7 @@ export class UrlbarParentController {
+@@ -1386,7 +1408,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -901,7 +907,7 @@ index ba254af0c6..a8de2692be 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +1415,11 @@ export class UrlbarParentController {
+@@ -1394,10 +1416,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -914,7 +920,7 @@ index ba254af0c6..a8de2692be 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +1437,7 @@ export class UrlbarParentController {
+@@ -1415,7 +1438,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -923,7 +929,7 @@ index ba254af0c6..a8de2692be 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +1459,7 @@ export class UrlbarParentController {
+@@ -1437,7 +1460,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -932,7 +938,7 @@ index ba254af0c6..a8de2692be 100644
          break;
      }
    };
-@@ -1864,17 +1886,16 @@ export class TelemetryEvent {
+@@ -1864,17 +1887,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -2539,7 +2545,7 @@ index e5dcc2c923..4a4d3ec03a 100644
        let event = new UIEvent("input", {
          bubbles: true,
 diff --git a/browser/components/urlbar/content/UrlbarChildController.mjs b/browser/components/urlbar/content/UrlbarChildController.mjs
-index b679c5cf1b..2374156452 100644
+index b679c5cf1b..62bfc0330c 100644
 --- a/browser/components/urlbar/content/UrlbarChildController.mjs
 +++ b/browser/components/urlbar/content/UrlbarChildController.mjs
 @@ -8,6 +8,7 @@ import { UrlbarChildTelemetry } from "chrome://browser/content/urlbar/UrlbarChil
@@ -2695,7 +2701,7 @@ index b679c5cf1b..2374156452 100644
      return this.#parentController.resolveFallbackNavigation(details);
    }
  
-@@ -232,6 +264,13 @@ export class UrlbarChildController {
+@@ -232,6 +264,17 @@ export class UrlbarChildController {
     *   context.
     */
    notify(notification, ...params) {
@@ -2706,10 +2712,14 @@ index b679c5cf1b..2374156452 100644
 +        !this.#queryLifecycle.acceptsResults({ id: params[0] })) {
 +      return;
 +    }
++    if (notification === UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED &&
++        params[2] !== undefined && !this.#queryLifecycle.acceptsResults({ id: params[2] })) {
++      return;
++    }
      // Drop the results and the end of a query nobody is waiting for anymore.
      // Its end, read against results the listeners never saw, would tell the
      // view that the query produced nothing: the view would clear its rows and
-@@ -242,7 +281,7 @@ export class UrlbarChildController {
+@@ -242,7 +285,7 @@ export class UrlbarChildController {
        (notification === UrlbarShared.NOTIFICATIONS.QUERY_FIRST_RESULT ||
          notification === UrlbarShared.NOTIFICATIONS.QUERY_RESULTS ||
          notification === UrlbarShared.NOTIFICATIONS.QUERY_FINISHED) &&
@@ -2718,7 +2728,7 @@ index b679c5cf1b..2374156452 100644
      ) {
        return;
      }
-@@ -287,67 +326,12 @@ export class UrlbarChildController {
+@@ -287,67 +330,12 @@ export class UrlbarChildController {
     *   query was cancelled or superseded while waiting for the engine store.
     */
    startQuery(queryContext) {
@@ -2789,7 +2799,7 @@ index b679c5cf1b..2374156452 100644
    }
  
    /**
-@@ -362,7 +346,7 @@ export class UrlbarChildController {
+@@ -362,7 +350,7 @@ export class UrlbarChildController {
     *   The context of the query being discarded.
     */
    discardResults(queryContext) {
@@ -2798,7 +2808,7 @@ index b679c5cf1b..2374156452 100644
      this.notify(UrlbarShared.NOTIFICATIONS.QUERY_CANCELLED, queryContext);
    }
  
-@@ -767,7 +751,7 @@ export class UrlbarChildController {
+@@ -767,7 +755,7 @@ export class UrlbarChildController {
     *   Whether the event is a KeyboardEvent that triggers canonization.
     */
    isCanonizeKeyboardEvent(event) {
@@ -2807,7 +2817,7 @@ index b679c5cf1b..2374156452 100644
        return false;
      }
      if (!UrlbarShared.isInstance(event, KeyboardEvent)) {
-@@ -814,7 +798,7 @@ export class UrlbarChildController {
+@@ -814,7 +802,7 @@ export class UrlbarChildController {
        where = UrlbarContentUtils.whereToOpenLink(event);
      }
      let openInTabPref =
@@ -2816,7 +2826,7 @@ index b679c5cf1b..2374156452 100644
          ? UrlbarPrefs.get("browser.search.openintab")
          : UrlbarPrefs.get("openintab");
      if (openInTabPref) {
-@@ -879,10 +863,21 @@ export class UrlbarChildController {
+@@ -879,10 +867,21 @@ export class UrlbarChildController {
      return this.#parentController.maybeInitEngineStore();
    }
  
@@ -6850,10 +6860,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..8a8f8fc4a7
+index 0000000000..a70eb4dc92
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,307 @@
+@@ -0,0 +1,313 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6898,7 +6908,7 @@ index 0000000000..8a8f8fc4a7
 +    this.#onUpdate = onUpdate;
 +    this.#onPresentationRequest = onPresentationRequest;
 +    this.#queries = new UrlbarQuerySession({ context, isCurrent,
-+      onPresentationRequest: request => this.#requestClose(request) });
++      onPresentationRequest: request => this.#requestPresentation(request) });
 +    this.#isPrivate = context.isPrivate;
 +  }
 +
@@ -7111,10 +7121,16 @@ index 0000000000..8a8f8fc4a7
 +    this.#queries.publishPresentation(queryId, visibleResults, open);
 +  }
 +
-+  #requestClose(request) {
++  #requestPresentation(request) {
 +    this.#check();
 +    const edit = this.#edit;
-+    if (!edit || edit.composing || request.kind !== "close") return;
++    if (!edit || edit.composing) return;
++    if (request.kind === "remove-result") {
++      if (this.#completion?.result?.id === request.resultId) this.#completion = null;
++      this.#onPresentationRequest?.(Object.freeze({ ...request, edit }));
++      return;
++    }
++    if (request.kind !== "close") return;
 +    // A provider engagement ends result authority immediately; waiting for a
 +    // host close must not leave completion writes or result exposure usable.
 +    // This differs from temporarily hiding suggestions on focus loss.
@@ -7163,10 +7179,10 @@ index 0000000000..8a8f8fc4a7
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..12be7f5ef8
+index 0000000000..404688025e
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,206 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7193,6 +7209,7 @@ index 0000000000..12be7f5ef8
 +  #onUpdate = null;
 +  #frozen = null;
 +  #onPresentationRequest;
++  #removedIds = new Set();
 +
 +  constructor({ context, isCurrent, onPresentationRequest = null }) {
 +    if (typeof isCurrent != "function") throw new TypeError("Missing scope check");
@@ -7211,6 +7228,18 @@ index 0000000000..12be7f5ef8
 +      onFirstResult: query => this.#update("first-result", query),
 +      onQueryResults: query => this.#update("results", query),
 +      onQueryFinished: query => this.#update("finished", query),
++      onQueryResultRemoved: (resultId, acknowledgeDismissalL10n, queryId) => {
++        if (this.#closed || !this.#isCurrent() || !this.#query || this.#query.id !== queryId ||
++            resultId === undefined || this.#removedIds.has(resultId)) return;
++        this.#removedIds.add(resultId);
++        if (this.#frozen) {
++          this.#frozen = Object.freeze({ queryId,
++            results: Object.freeze(this.#frozen.results.filter(result => result.id !== resultId)) });
++        }
++        this.#controller.visibleResults = this.#controller.visibleResults.filter(result => result.id !== resultId);
++        this.#onPresentationRequest?.(Object.freeze({ kind: "remove-result", queryId,
++          resultId, acknowledgeDismissalL10n }));
++      },
 +      onResultsCloseRequested: (queryId, elementPicked) => {
 +        if (!this.#closed && this.#isCurrent() && this.#query?.id === queryId &&
 +            elementPicked === true) {
@@ -7245,6 +7274,7 @@ index 0000000000..12be7f5ef8
 +      isPrivate: this.#context.isPrivate,
 +    }, request);
 +    this.#query = query;
++    this.#removedIds.clear();
 +    this.#frozen = null;
 +    this.#onUpdate = onUpdate;
 +    this.#controller.visibleResults = [];
@@ -7274,6 +7304,7 @@ index 0000000000..12be7f5ef8
 +  ownsResult(queryId, result) {
 +    this.#check();
 +    return !!this.#query && queryId === this.#query.id &&
++      !this.#removedIds.has(result?.id) &&
 +      !!(this.#frozen?.results ?? this.#query.results)?.includes(result);
 +  }
 +
@@ -7295,7 +7326,9 @@ index 0000000000..12be7f5ef8
 +    }
 +    if (this.#frozen) return this.#frozen;
 +    if (!query.results?.length) throw new Error("Query results are not ready to freeze");
-+    const frozen = Object.freeze({ queryId, results: Object.freeze([...query.results]) });
++    const results = query.results.filter(result => !this.#removedIds.has(result.id));
++    if (!results.length) throw new Error("Query results are not ready to freeze");
++    const frozen = Object.freeze({ queryId, results: Object.freeze(results) });
 +    this.#frozen = frozen;
 +    // Parent cancellation can synchronously report FINISHED. Revoke streaming
 +    // delivery before stopping providers, including for late result batches.
@@ -7325,7 +7358,7 @@ index 0000000000..12be7f5ef8
 +      !this.#query || queryId !== this.#query.id ||
 +      !Array.isArray(visibleResults) || typeof open != "boolean" ||
 +      new Set(visibleResults).size !== visibleResults.length ||
-+      visibleResults.some(result => !(this.#frozen?.results ?? this.#query.results)?.includes(result))
++      visibleResults.some(result => !this.ownsResult(queryId, result))
 +    ) {
 +      throw new Error("Invalid query presentation");
 +    }
@@ -7336,6 +7369,7 @@ index 0000000000..12be7f5ef8
 +  cancel() {
 +    if (this.#closed) return;
 +    this.#query = null;
++    this.#removedIds.clear();
 +    this.#frozen = null;
 +    this.#onUpdate = null;
 +    this.#controller.visibleResults = [];
@@ -7348,6 +7382,7 @@ index 0000000000..12be7f5ef8
 +    if (this.#closed) return;
 +    this.#closed = true;
 +    this.#query = null;
++    this.#removedIds.clear();
 +    this.#frozen = null;
 +    this.#onUpdate = null;
 +    this.#onPresentationRequest = null;
