@@ -2930,3 +2930,67 @@ test('guarded load outcomes distinguish unresolved URLs and attempted errors wit
   const {p,data,lazy}=parentLoadFixture();lazy.UrlbarUtils.loadRequestToUrl=()=>({url:null});
   assert.deepEqual(p.commitCurrentLoad(p.prepareCurrentLoad(data)),{attempted:false,reverted:true,browserId:42});
 });
+
+
+function mockActivationLoad(f) {
+  let pending=null;
+  f.parent.prepareCurrentLoad=data=>{f.calls.push(['prepare',data.userTypedValue]);f.loadData=data;return pending={};};
+  f.parent.discardCurrentLoad=token=>{if(token===pending){pending=null;f.calls.push(['discard']);return true;}return false;};
+  f.parent.notifyStartNavigation=result=>{assert.equal(result,f.result);f.calls.push(['notify']);};
+  f.parent.commitCurrentLoad=(token,current)=>{
+    assert.equal(token,pending);pending=null;
+    if(!current())return {attempted:false,reverted:false,browserId:42};
+    f.calls.push(['load']);return {attempted:true,reverted:false,browserId:42};
+  };
+  const proposal=f.editor.beginNavigationWrite(1,f.q.id,f.result,f.event,f.options);
+  f.editor.acknowledgeNavigationWrite(proposal.token,navigationObservation(proposal),f.event,f.options);
+  return proposal;
+}
+
+test('acknowledged URL activation orders all effects, notification and load exactly once',async()=>{
+  const f=await historyEngagementFixture(),p=mockActivationLoad(f);
+  const outcome=f.editor.commitAcknowledgedNavigation(p.token,f.event,{...f.options,recordHistory:false,trackBounce:false});
+  assert.equal(outcome.attempted,true);
+  assert.deepEqual(f.calls.map(x=>x[0]),['prepare','history','reintegrate','bounce','record','notify','load']);
+  assert.equal(f.loadData.browserId,42);assert.equal(f.loadData.userTypedValue,p.value);
+  assert.equal(f.editor.commitAcknowledgedNavigation(p.token,f.event,f.options),null);f.editor.close();
+});
+
+test('acknowledged search activation includes DNS, search and backend before terminal/load',async()=>{
+  const f=await backendEngagementFixture();f.parent.checkKeywordURIFixup=()=>{f.calls.push(['dns']);return true;};
+  const p=mockActivationLoad(f);
+  assert.equal(f.editor.commitAcknowledgedNavigation(p.token,f.event,f.options).attempted,true);
+  assert.deepEqual(f.calls.map(x=>x[0]),['prepare','dns','search','backend','bounce','record','notify','load']);f.editor.close();
+});
+
+test('navigation observers replacing the edit stop dispatch and preserve the replacement query',async()=>{
+  const f=await historyEngagementFixture(),p=mockActivationLoad(f);let next;
+  f.parent.notifyStartNavigation=()=>{f.calls.push(['notify']);next=f.editor.edit({},edit(2,'new edit'));};
+  assert.equal(f.editor.commitAcknowledgedNavigation(p.token,f.event,f.options),null);
+  assert.equal(f.calls.some(x=>x[0]==='load'),false);assert.equal(f.calls.at(-1)[0],'discard');
+  const q=await next;f.editor.publishPresentation(2,q.id,[],false);f.editor.close();
+});
+
+test('activation revalidates acknowledged result semantics at the final parent guard',async()=>{
+  const f=await historyEngagementFixture(),p=mockActivationLoad(f);
+  f.parent.commitCurrentLoad=(_token,current)=>{f.result.payload.url='https://changed.test/';return {attempted:current(),reverted:false,browserId:42};};
+  assert.equal(f.editor.commitAcknowledgedNavigation(p.token,f.event,f.options).attempted,false);
+  assert.equal(f.editor.commitAcknowledgedNavigation(p.token,f.event,f.options),null);f.editor.close();
+});
+
+test('unacknowledged or inactive navigation cannot prepare a load',async()=>{
+  const f=await historyEngagementFixture();f.parent.prepareCurrentLoad=()=>assert.fail('unready load');
+  const p=f.editor.beginNavigationWrite(1,f.q.id,f.result,f.event,f.options);
+  assert.equal(f.editor.commitAcknowledgedNavigation(p.token,f.event,f.options),null);
+  f.editor.acknowledgeNavigationWrite(p.token,navigationObservation(p),f.event,f.options);
+  f.editor.discardEngagement();
+  assert.equal(f.editor.commitAcknowledgedNavigation(p.token,f.event,f.options),null);f.editor.close();
+});
+
+test('throwing activation effects consume editor readiness and discard parent authorization',async()=>{
+  const f=await historyEngagementFixture(),p=mockActivationLoad(f);
+  f.parent.engagementEvent.record=()=>{throw Error('record failure');};
+  assert.throws(()=>f.editor.commitAcknowledgedNavigation(p.token,f.event,f.options),/record failure/);
+  assert.equal(f.calls.at(-1)[0],'discard');assert.equal(f.calls.some(x=>x[0]==='load'),false);
+  assert.equal(f.editor.commitAcknowledgedNavigation(p.token,f.event,f.options),null);f.editor.close();
+});
