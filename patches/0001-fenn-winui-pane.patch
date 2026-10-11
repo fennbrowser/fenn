@@ -2345,7 +2345,7 @@ index 30f5aa6556..6198840503 100644
 +
  }
 diff --git a/browser/components/urlbar/content/SmartbarInput.mjs b/browser/components/urlbar/content/SmartbarInput.mjs
-index e5dcc2c923..4b984f1447 100644
+index e5dcc2c923..083ed9b511 100644
 --- a/browser/components/urlbar/content/SmartbarInput.mjs
 +++ b/browser/components/urlbar/content/SmartbarInput.mjs
 @@ -2,6 +2,15 @@
@@ -2684,7 +2684,21 @@ index e5dcc2c923..4b984f1447 100644
    }
  
    /**
-@@ -4484,83 +4505,19 @@ ${
+@@ -3774,10 +3795,9 @@ ${
+    * Confirms the current search mode.
+    */
+   confirmSearchMode() {
+-    let searchMode = this.searchMode;
+-    if (searchMode?.isPreview) {
+-      searchMode.isPreview = false;
+-      this.searchMode = searchMode;
++    const confirmation = UrlbarSearchModeModel.confirmationPolicy(this.searchMode);
++    if (confirmation.applyMode) {
++      this.searchMode = { ...confirmation.searchMode };
+ 
+       // Unselect the one-off search button to ensure UI consistency.
+       if (this.view.oneOffSearchButtons) {
+@@ -4484,83 +4504,19 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
@@ -2780,7 +2794,7 @@ index e5dcc2c923..4b984f1447 100644
    }
  
    /**
-@@ -4571,14 +4528,7 @@ ${
+@@ -4571,14 +4527,7 @@ ${
     * @returns {string} The `actiontype` value, or undefined.
     */
    #getActionTypeFromResult(result) {
@@ -2796,7 +2810,7 @@ index e5dcc2c923..4b984f1447 100644
    }
  
    /**
-@@ -4601,73 +4551,29 @@ ${
+@@ -4601,73 +4550,29 @@ ${
     *   Whether autofill should be allowed in the new search.
     */
    _maybeAutofillPlaceholder(value) {
@@ -2892,7 +2906,7 @@ index e5dcc2c923..4b984f1447 100644
    }
  
    /**
-@@ -5064,34 +4970,35 @@ ${
+@@ -5064,34 +4969,35 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -2934,7 +2948,7 @@ index e5dcc2c923..4b984f1447 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -5246,6 +5153,15 @@ ${
+@@ -5246,6 +5152,15 @@ ${
      this.view.close({ showFocusBorder: false });
    }
  
@@ -2950,7 +2964,7 @@ index e5dcc2c923..4b984f1447 100644
    _initCopyCutController() {
      // Clipboard handling is managed by the multiline editor in smartbar mode.
      if (this.#isSmartbarMode) {
-@@ -5464,7 +5380,7 @@ ${
+@@ -5464,7 +5379,7 @@ ${
     *
     * @returns {boolean}
     */
@@ -2959,7 +2973,7 @@ index e5dcc2c923..4b984f1447 100644
      if (this.#isSmartbarMode) {
        return Services.clipboard.hasDataMatchingFlavors(
          ["text/plain"],
-@@ -5491,6 +5407,25 @@ ${
+@@ -5491,6 +5406,25 @@ ${
      this.value = clipboardText;
    }
  
@@ -2985,7 +2999,7 @@ index e5dcc2c923..4b984f1447 100644
    _initPasteAndGo() {
      this.#addContextMenuItems({
        after: "edit-contextmenu-paste",
-@@ -5504,19 +5439,7 @@ ${
+@@ -5504,19 +5438,7 @@ ${
            .GetStringFromName("pasteAndGo.label");
          pasteAndGo.setAttribute("label", label);
          pasteAndGo.setAttribute("anonid", "paste-and-go");
@@ -3006,7 +3020,7 @@ index e5dcc2c923..4b984f1447 100644
  
          fragment.appendChild(pasteAndGo);
          return fragment;
-@@ -5544,7 +5467,7 @@ ${
+@@ -5544,7 +5466,7 @@ ${
            { once: true }
          );
  
@@ -3015,7 +3029,7 @@ index e5dcc2c923..4b984f1447 100644
            pasteAndGo.removeAttribute("disabled");
          } else {
            pasteAndGo.setAttribute("disabled", "true");
-@@ -5693,53 +5616,9 @@ ${
+@@ -5693,53 +5615,9 @@ ${
     *   entered. See setSearchMode documentation for details.
     */
    _searchModeForResult(result, entry = null) {
@@ -3072,7 +3086,7 @@ index e5dcc2c923..4b984f1447 100644
    }
  
    /**
-@@ -6129,7 +6008,7 @@ ${
+@@ -6129,7 +6007,7 @@ ${
      }
      if (
        !this._preventClickSelectsAll &&
@@ -3081,7 +3095,7 @@ index e5dcc2c923..4b984f1447 100644
        this.focused &&
        this.selectionStart == this.selectionEnd
      ) {
-@@ -6481,18 +6360,9 @@ ${
+@@ -6481,18 +6359,9 @@ ${
      // to set "aria-activedescendant", thus it should never get stale.
      this.controller.userSelectionBehavior = "none";
  
@@ -3103,7 +3117,7 @@ index e5dcc2c923..4b984f1447 100644
  
      this.toggleAttribute("usertyping", value);
      this.removeAttribute("actiontype");
-@@ -6575,10 +6445,9 @@ ${
+@@ -6575,10 +6444,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -3117,7 +3131,7 @@ index e5dcc2c923..4b984f1447 100644
      ) {
        return;
      }
-@@ -6586,11 +6455,10 @@ ${
+@@ -6586,11 +6454,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -3133,7 +3147,7 @@ index e5dcc2c923..4b984f1447 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -6665,33 +6533,20 @@ ${
+@@ -6665,33 +6532,20 @@ ${
    }
  
    _on_paste(event) {
@@ -3175,7 +3189,7 @@ index e5dcc2c923..4b984f1447 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -6705,7 +6560,7 @@ ${
+@@ -6705,7 +6559,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -3184,7 +3198,7 @@ index e5dcc2c923..4b984f1447 100644
        this.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -6736,56 +6591,27 @@ ${
+@@ -6736,56 +6590,27 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -3259,7 +3273,7 @@ index e5dcc2c923..4b984f1447 100644
    }
  
    /**
-@@ -7056,68 +6882,35 @@ ${
+@@ -7056,68 +6881,35 @@ ${
    }
  
    _on_compositionstart() {
@@ -3349,7 +3363,7 @@ index e5dcc2c923..4b984f1447 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -7235,9 +7028,7 @@ ${
+@@ -7235,9 +7027,7 @@ ${
     *   Returns `Ci.nsILoadInfo.SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -3360,7 +3374,7 @@ index e5dcc2c923..4b984f1447 100644
        ? Ci.nsILoadInfo.SchemelessInputTypeSchemeless
        : Ci.nsILoadInfo.SchemelessInputTypeSchemeful;
    }
-@@ -7666,85 +7457,7 @@ function getDroppableData(event) {
+@@ -7666,85 +7456,7 @@ function getDroppableData(event) {
   *   The decoded URI
   */
  function losslessDecodeURI(aURI) {
@@ -3447,7 +3461,7 @@ index e5dcc2c923..4b984f1447 100644
  }
  
  /**
-@@ -7771,12 +7484,10 @@ class CopyCutController {
+@@ -7771,12 +7483,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -3916,7 +3930,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..87ad07b65f 100644
+index a077de625f..7855ee1589 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,22 @@
@@ -4768,13 +4782,17 @@ index a077de625f..87ad07b65f 100644
            this.parentController.recordSearchMode(searchMode);
          }
        }
-@@ -3040,8 +2784,7 @@ ${
+@@ -3038,10 +2782,9 @@ ${
+    * Confirms the current search mode.
+    */
    confirmSearchMode() {
-     let searchMode = this.searchMode;
-     if (searchMode?.isPreview) {
+-    let searchMode = this.searchMode;
+-    if (searchMode?.isPreview) {
 -      searchMode.isPreview = false;
 -      this.searchMode = searchMode;
-+      this.searchMode = { ...UrlbarSearchModeModel.confirmedMode(searchMode) };
++    const confirmation = UrlbarSearchModeModel.confirmationPolicy(this.searchMode);
++    if (confirmation.applyMode) {
++      this.searchMode = { ...confirmation.searchMode };
  
        // Unselect the one-off search button to ensure UI consistency.
        if (this.view.oneOffSearchButtons) {
@@ -9053,10 +9071,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..061c19fd04
+index 0000000000..f93c0ff450
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1819 @@
+@@ -0,0 +1,1833 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9163,14 +9181,26 @@ index 0000000000..061c19fd04
 +  }
 +
 +  /** Observe composition beginning, then request its ordered host effects. */
-+  beginCompositionStart(revision, { viewIsOpen, userTypedValue } = {}) {
++  beginCompositionStart(revision, { viewIsOpen, userTypedValue, modeEntry } = {}) {
 +    this.#check();
 +    if (userTypedValue !== null && typeof userTypedValue !== "string") throw new TypeError("Invalid composition typed value");
 +    const description = this.describeCompositionStart(revision, { viewIsOpen });
 +    if (!description) return null;
 +    const mode = this.#searchMode;
 +    const keepPanelOpen = UrlbarPrefs.get("keepPanelOpenDuringImeComposition");
-+    const searchMode = description.confirmSearchMode ? UrlbarSearchModeModel.confirmedMode(mode) : mode;
++    const confirmation = description.confirmSearchMode ? UrlbarSearchModeModel.confirmationPolicy(mode) :
++      Object.freeze({ applyMode: false, clearOneOffSelection: false, searchMode: mode });
++    let resultingTypedValue = description.clearUserTypedValue ? null : userTypedValue;
++    if (confirmation.applyMode) {
++      modeEntry = this.#captureModeEntry(modeEntry);
++      if (!modeEntry) throw new TypeError("Missing composition pre-mode facts");
++      // Autofill restoration and valid-page clearing require a separate exact text-write stage.
++      if (modeEntry.untrimmedValue !== this.#edit.text || modeEntry.userTypedValue !== userTypedValue ||
++          modeEntry.pageProxyValid || modeEntry.hasAutofillPlaceholder) return null;
++      resultingTypedValue = UrlbarSearchModeModel.modeEntryTypedValue({ ...modeEntry,
++        userTypedValue: resultingTypedValue });
++    }
++    const searchMode = confirmation.searchMode;
 +    const queryId = keepPanelOpen ? this.#queries.currentQueryId : null;
 +    if (this.#edit !== description.edit || this.#searchMode !== mode) return null;
 +    const edit = { ...this.#edit, composing: true };
@@ -9179,8 +9209,9 @@ index 0000000000..061c19fd04
 +    Object.freeze(edit);
 +    const proposal = Object.freeze({ ...description, edit, token: Object.freeze({}),
 +      searchMode: searchMode ? Object.freeze({ ...searchMode }) : null,
-+      userTypedValue: description.clearUserTypedValue ? null : userTypedValue,
-+      open: description.closePopup ? false : viewIsOpen });
++      applyMode: confirmation.applyMode, clearOneOffSelection: confirmation.clearOneOffSelection,
++      ...(confirmation.applyMode ? { modeEntry } : {}),
++      userTypedValue: resultingTypedValue, open: description.closePopup ? false : viewIsOpen });
 +    this.#edit = edit;
 +    this.#completion = null;
 +    this.#autofill = null;
@@ -9208,11 +9239,12 @@ index 0000000000..061c19fd04
 +
 +  /** Observe host completion; this is not a browser-mode or typed-value write. */
 +  acknowledgeCompositionStart(token, { text, selectionStart, selectionEnd, selectionDirection,
-+    composing, searchMode, userTypedValue, open }) {
++    composing, searchMode, userTypedValue, open, oneOffSelected }) {
 +    const request = this.getCompositionStart(token);
 +    if (!request || text !== request.edit.text || selectionStart !== request.edit.selectionStart ||
 +        selectionEnd !== request.edit.selectionEnd || selectionDirection !== request.edit.selectionDirection ||
 +        composing !== true || open !== request.open || userTypedValue !== request.userTypedValue ||
++        (request.clearOneOffSelection && oneOffSelected !== false) ||
 +        !UrlbarShared.deepEqual(searchMode, request.searchMode)) return false;
 +    this.#compositionStart = null;
 +    this.#searchMode = request.searchMode;
@@ -12231,10 +12263,10 @@ index 0000000000..1fec37fd9e
 +}
 diff --git a/browser/components/urlbar/content/UrlbarSearchModeModel.mjs b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
 new file mode 100644
-index 0000000000..aecb09630b
+index 0000000000..ad8ea7e7af
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
-@@ -0,0 +1,463 @@
+@@ -0,0 +1,470 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12361,6 +12393,13 @@ index 0000000000..aecb09630b
 +  }
 +
 +  /** Confirm a preview without mutating the query's pre-confirmation mode facts. */
++  /** confirmSearchMode only invokes the setter and clears one-offs for a preview. */
++  static confirmationPolicy(mode) {
++    const applyMode = !!mode?.isPreview;
++    return Object.freeze({ applyMode, clearOneOffSelection: applyMode,
++      searchMode: applyMode ? this.confirmedMode(mode) : (mode ? Object.freeze({ ...mode }) : null) });
++  }
++
 +  static confirmedMode(mode) {
 +    return mode ? Object.freeze({ ...mode, isPreview: false }) : null;
 +  }

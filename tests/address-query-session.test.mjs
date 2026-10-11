@@ -4496,17 +4496,18 @@ test('independent composition start descriptions reject stale, composing and inv
 
 const observedCompositionStart=p=>({text:p.edit.text,selectionStart:p.edit.selectionStart,
   selectionEnd:p.edit.selectionEnd,selectionDirection:p.edit.selectionDirection,composing:true,
-  searchMode:p.searchMode,userTypedValue:p.userTypedValue,open:p.open});
+  searchMode:p.searchMode,userTypedValue:p.userTypedValue,open:p.open,oneOffSelected:p.clearOneOffSelection?false:undefined});
 
 test('composition start requests confirm preview and empty typed reset only after exact host acknowledgment',async()=>{
   const f=await editorFixture(),mode={source:1,isPreview:true};
   const q=await f.editor.edit({searchMode:mode},edit(1,''));q.results=[{id:1,payload:{}}];
   f.editor.publishPresentation(1,q.id,q.results,true);
-  const request=f.editor.beginCompositionStart(1,{viewIsOpen:true,userTypedValue:'previous'});
-  assert.equal(request.searchMode.isPreview,false);assert.equal(request.userTypedValue,null);assert.equal(request.open,false);
+  const request=f.editor.beginCompositionStart(1,{viewIsOpen:true,userTypedValue:'previous',
+    modeEntry:{untrimmedValue:'',pageProxyValid:false,hasAutofillPlaceholder:false,userTypedValue:'previous'}});
+  assert.equal(request.searchMode.isPreview,false);assert.equal(request.userTypedValue,'');assert.equal(request.open,false);
   assert.equal(f.editor.snapshot.composing,true);assert.equal(f.parent.child.visibleResults.length,1);
   const observed=observedCompositionStart(request);
-  for(const wrong of [{open:true},{text:'wrong'},{selectionStart:1},{composing:false},{searchMode:mode},{userTypedValue:'previous'}]) {
+  for(const wrong of [{open:true},{text:'wrong'},{selectionStart:1},{composing:false},{searchMode:mode},{userTypedValue:'previous'},{userTypedValue:null},{oneOffSelected:true},{oneOffSelected:undefined}]) {
     assert.equal(f.editor.acknowledgeCompositionStart(request.token,{...observed,...wrong}),false);
     assert.equal(f.editor.getCompositionStart(request.token),request);
   }
@@ -4573,4 +4574,53 @@ test('keep-open composition can start after query cancellation without inventing
   assert.ok(p);assert.equal(p.open,false);assert.equal('composition' in p.edit,false);
   assert.equal(f.editor.acknowledgeCompositionStart(p.token,observedCompositionStart(p)),true);
   assert.throws(()=>f.editor.publishPresentation(1,q.id,[],true),/Stale/);f.editor.close();
+});
+
+
+test('shared confirmation policy invokes mode and one-off effects only for preview modes',()=>{
+  const f=fixture(),M=f.sandbox.UrlbarSearchModeModel;
+  for(const mode of [null,{source:1,isPreview:false},{source:1,isPreview:true}]) {
+    const p=M.confirmationPolicy(mode);assert.equal(p.applyMode,!!mode?.isPreview);
+    assert.equal(p.clearOneOffSelection,p.applyMode);assert.equal(Object.isFrozen(p),true);
+    if(mode){assert.equal(p.searchMode.isPreview,false);assert.equal(Object.isFrozen(p.searchMode),true);}
+    else assert.equal(p.searchMode,null);
+  }
+  f.session.close();
+});
+
+test('both retained confirmation bindings preserve setter then one-off order and skip confirmed modes',()=>{
+  const f=fixture();
+  for(const name of ['UrlbarInputBase','SmartbarInput']) for(const preview of [false,true]) {
+    const source=readFileSync(new URL(`../upstream/firefox/browser/components/urlbar/content/${name}.mjs`,import.meta.url),'utf8');
+    const start=source.indexOf('  confirmSearchMode() {'),method=source.slice(start,source.indexOf('\n  }',start)+4);
+    const Input=new Function('UrlbarSearchModeModel',`return class {${method}}`)(f.sandbox.UrlbarSearchModeModel);
+    const input=new Input(),events=[];let mode={source:1,isPreview:preview};
+    Object.defineProperty(input,'searchMode',{get:()=>mode,set:value=>{events.push('setter');mode=value;}});
+    const buttons={set selectedButton(value){assert.equal(value,null);events.push('one-off');}};
+    Object.defineProperty(input,'view',{get(){if(!preview)throw Error('confirmed mode read view');return {oneOffSearchButtons:buttons};}});
+    input.confirmSearchMode();assert.deepEqual(events,preview?['setter','one-off']:[]);assert.equal(mode.isPreview,false);
+  }
+  f.session.close();
+});
+
+test('composition preview requests require stable non-restoring pre-mode facts before changing editor',async()=>{
+  const f=await editorFixture();await f.editor.edit({searchMode:{source:1,isPreview:true}},edit(1,'text'));
+  const before=f.editor.snapshot,options={viewIsOpen:true,userTypedValue:'prior'};
+  assert.throws(()=>f.editor.beginCompositionStart(1,options),/Missing composition/);
+  for(const facts of [{pageProxyValid:true},{hasAutofillPlaceholder:true},{untrimmedValue:'other'},{userTypedValue:'changed'}]) {
+    assert.equal(f.editor.beginCompositionStart(1,{...options,modeEntry:{untrimmedValue:'text',pageProxyValid:false,
+      hasAutofillPlaceholder:false,userTypedValue:'prior',...facts}}),null);assert.equal(f.editor.snapshot,before);
+  }
+  const p=f.editor.beginCompositionStart(1,{...options,modeEntry:{untrimmedValue:'text',pageProxyValid:false,
+    hasAutofillPlaceholder:false,userTypedValue:'prior'}});
+  assert.equal(p.userTypedValue,'text');assert.equal(p.applyMode,true);assert.equal(p.clearOneOffSelection,true);
+  assert.equal(Object.isFrozen(p.modeEntry),true);f.editor.close();
+});
+
+test('already-confirmed empty composition clears typed value without requesting another setter or one-off reset',async()=>{
+  const f=await editorFixture();await f.editor.edit({searchMode:{source:1,isPreview:false}},edit(1,''));
+  const p=f.editor.beginCompositionStart(1,{viewIsOpen:true,userTypedValue:'prior'});
+  assert.equal(p.confirmSearchMode,true);assert.equal(p.clearUserTypedValue,true);
+  assert.equal(p.applyMode,false);assert.equal(p.clearOneOffSelection,false);assert.equal(p.userTypedValue,null);
+  assert.equal('modeEntry' in p,false);assert.equal(f.editor.acknowledgeCompositionStart(p.token,observedCompositionStart(p)),true);f.editor.close();
 });
