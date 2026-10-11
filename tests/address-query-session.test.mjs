@@ -87,6 +87,74 @@ async function editorFixture(options) {
   const parent=f.parents.at(-1);await parent.child.engineStore.init();
   return {...f,editor,parent,updates,loseScope(){f.invalid=true;}};
 }
+
+test('freezing stops providers once, retains identities and exposure, and suppresses synchronous and late updates',async()=>{
+  const f=fixture();await f.parent.child.engineStore.init();
+  const events=[],gate=Promise.withResolvers();let query;
+  f.parent.startQuery=q=>{query=q;return gate.promise;};
+  const pending=f.session.query({}, {searchString:'freeze'},e=>events.push(e.kind));
+  const first={payload:{}},late={payload:{}};query.results=[first];
+  f.parent.child.notify('onFirstResult',query);
+  f.session.publishPresentation(query.id,[first],true);
+  f.parent.cancelQuery=()=>{f.parent.cancelled=(f.parent.cancelled??0)+1;f.parent.child.notify('onQueryFinished',query);};
+  const frozen=f.session.freezeResults(query.id);
+  assert.ok(Object.isFrozen(frozen));assert.ok(Object.isFrozen(frozen.results));
+  assert.equal(frozen.results[0],first);assert.equal(f.parent.cancelled,1);
+  assert.equal(f.parent.child.visibleResults[0],first);assert.equal(f.parent.child.resultsOpen,true);
+  query.results=[late];f.parent.child.notify('onQueryResults',query);
+  query.results=[];f.parent.child.notify('onQueryFinished',query);
+  assert.equal(f.session.freezeResults(query.id),frozen);assert.equal(f.parent.cancelled,1);
+  assert.deepEqual(events,['prepared','first-result']);
+  assert.equal(f.session.ownsResult(query.id,first),true);assert.equal(f.session.ownsResult(query.id,late),false);
+  f.session.publishPresentation(query.id,[first],true);
+  assert.throws(()=>f.session.publishPresentation(query.id,[late],true),/Invalid/);
+  gate.resolve(query);assert.equal(await pending,query);
+  f.session.cancel();assert.equal(f.session.ownsResult(query.id,first),false);
+  assert.throws(()=>f.session.freezeResults(query.id),/not ready/);f.session.close();
+});
+
+test('freezing rejects unready or stale queries without interrupting valid work and new queries revoke retained results',async()=>{
+  const f=fixture({uninitializedResults:true}),events=[];
+  const q=await f.session.query({}, {searchString:'ready'},e=>{
+    events.push(e.kind);assert.throws(()=>f.session.freezeResults(e.query.id),/not ready/);
+  });
+  assert.throws(()=>f.session.freezeResults(q.id),/not ready/);assert.equal(f.parent.cancelled,undefined);
+  q.results=[{payload:{}}];assert.throws(()=>f.session.freezeResults(q.id+1),/not ready/);
+  const frozen=f.session.freezeResults(q.id);
+  const next=await f.session.query({}, {searchString:'replacement'},e=>events.push('next '+e.kind));
+  assert.equal(f.session.ownsResult(q.id,frozen.results[0]),false);
+  next.results=[{payload:{}}];f.parent.child.notify('onQueryResults',next);
+  assert.deepEqual(events,['prepared','next prepared','next results']);
+  f.session.freezeResults(next.id);f.invalidate();
+  assert.throws(()=>f.session.ownsResult(next.id,next.results[0]),/scope changed/);
+  assert.equal(f.parent.destroyed,1);
+});
+
+test('reentrant cancellation cannot return a frozen descriptor for a replaced query',async()=>{
+  const f=fixture(),q=await f.session.query({}, {searchString:'old'});q.results=[{payload:{}}];
+  let newer;f.parent.cancelQuery=()=>{newer=f.session.query({}, {searchString:'new'});};
+  assert.throws(()=>f.session.freezeResults(q.id),/superseded/);
+  const current=await newer;assert.equal(f.session.ownsQuery(current.id),true);
+  assert.equal(f.session.ownsResult(q.id,q.results[0]),false);
+  f.parent.cancelQuery=()=>{};f.session.close();
+});
+
+test('editor freeze revokes completion authority without writing text and keeps current result descriptions available',async()=>{
+  const f=await completionFixture(),snapshot=f.editor.snapshot;
+  assert.throws(()=>f.editor.freezeResults(0,f.query.id),/Stale/);
+  assert.throws(()=>f.editor.freezeResults(1,f.query.id+1),/not ready/);
+  assert.equal(f.editor.getCompletion(f.proposal.token),f.proposal);
+  const frozen=f.editor.freezeResults(1,f.query.id);
+  assert.equal(frozen.results[0],f.result);assert.equal(f.editor.snapshot,snapshot);
+  assert.equal(f.editor.getCompletion(f.proposal.token),null);
+  assert.equal(f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal)),false);
+  f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH;f.result.payload.query='retained';
+  assert.equal(f.editor.describeResultInput(1,f.query.id,f.result).value,'retained');
+  await f.editor.edit({},edit(2,'new'));
+  assert.throws(()=>f.editor.describeResultInput(2,f.query.id,f.result),/Stale/);
+  await f.editor.edit({},edit(3,'composing',{composing:true}));
+  assert.throws(()=>f.editor.freezeResults(3,f.query.id),/Stale/);f.editor.close();
+});
 const edit=(revision,text,extra={})=>({revision,text,selectionStart:text.length,selectionEnd:text.length,...extra});
 
 test('independent edits validate UTF-16 selection and monotonically increasing revision without cancelling valid work',async()=>{

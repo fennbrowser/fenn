@@ -6628,10 +6628,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..5bead61e68
+index 0000000000..5479ef9087
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,257 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6852,6 +6852,17 @@ index 0000000000..5bead61e68
 +    return Object.freeze({ ...text, actionType: this.#presentation.actionType(result) });
 +  }
 +
++  /** Retain query results for interaction without selecting or writing text. */
++  freezeResults(revision, queryId) {
++    this.#check();
++    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing) {
++      throw new Error("Stale editor result freeze");
++    }
++    const frozen = this.#queries.freezeResults(queryId);
++    this.#completion = null;
++    return frozen;
++  }
++
 +  publishPresentation(revision, queryId, visibleResults, open) {
 +    this.#check();
 +    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing) {
@@ -6880,10 +6891,10 @@ index 0000000000..5bead61e68
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..be503e558a
+index 0000000000..db0c59a253
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,161 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6907,6 +6918,7 @@ index 0000000000..be503e558a
 +  #closed = false;
 +  #controller;
 +  #onUpdate = null;
++  #frozen = null;
 +
 +  constructor({ context, isCurrent }) {
 +    if (typeof isCurrent != "function") throw new TypeError("Missing scope check");
@@ -6949,6 +6961,7 @@ index 0000000000..be503e558a
 +      isPrivate: this.#context.isPrivate,
 +    }, request);
 +    this.#query = query;
++    this.#frozen = null;
 +    this.#onUpdate = onUpdate;
 +    this.#controller.visibleResults = [];
 +    this.#controller.resultsOpen = false;
@@ -6977,7 +6990,36 @@ index 0000000000..be503e558a
 +  ownsResult(queryId, result) {
 +    this.#check();
 +    return !!this.#query && queryId === this.#query.id &&
-+      !!this.#query.results?.includes(result);
++      !!(this.#frozen?.results ?? this.#query.results)?.includes(result);
++  }
++
++  /**
++   * Stop provider work while retaining the current result identities for user
++   * interaction. This is distinct from cancel(), which revokes ownership.
++   * Empty/undispatched queries cannot be frozen: the binding must defer input
++   * until it has usable results. This does not select or activate a result.
++   *
++   * The retained array is immutable, but result objects remain Firefox-owned
++   * and can change in place. Consumers must revalidate semantic actions before
++   * use; this descriptor is not a frozen payload or navigation authority.
++   */
++  freezeResults(queryId) {
++    this.#check();
++    const query = this.#query;
++    if (!query || queryId !== query.id) {
++      throw new Error("Query results are not ready to freeze");
++    }
++    if (this.#frozen) return this.#frozen;
++    if (!query.results?.length) throw new Error("Query results are not ready to freeze");
++    const frozen = Object.freeze({ queryId, results: Object.freeze([...query.results]) });
++    this.#frozen = frozen;
++    // Parent cancellation can synchronously report FINISHED. Revoke streaming
++    // delivery before stopping providers, including for late result batches.
++    this.#onUpdate = null;
++    this.#controller.cancelQuery();
++    this.#check();
++    if (this.#query !== query) throw new Error("Query superseded or cancelled");
++    return frozen;
 +  }
 +
 +  publishPresentation(queryId, visibleResults, open) {
@@ -6986,7 +7028,7 @@ index 0000000000..be503e558a
 +      !this.#query || queryId !== this.#query.id ||
 +      !Array.isArray(visibleResults) || typeof open != "boolean" ||
 +      new Set(visibleResults).size !== visibleResults.length ||
-+      visibleResults.some(result => !this.#query.results?.includes(result))
++      visibleResults.some(result => !(this.#frozen?.results ?? this.#query.results)?.includes(result))
 +    ) {
 +      throw new Error("Invalid query presentation");
 +    }
@@ -6997,6 +7039,7 @@ index 0000000000..be503e558a
 +  cancel() {
 +    if (this.#closed) return;
 +    this.#query = null;
++    this.#frozen = null;
 +    this.#onUpdate = null;
 +    this.#controller.visibleResults = [];
 +    this.#controller.resultsOpen = false;
@@ -7008,6 +7051,7 @@ index 0000000000..be503e558a
 +    if (this.#closed) return;
 +    this.#closed = true;
 +    this.#query = null;
++    this.#frozen = null;
 +    this.#onUpdate = null;
 +    this.#controller.destroy();
 +  }
