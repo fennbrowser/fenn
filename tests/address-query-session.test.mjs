@@ -4742,3 +4742,76 @@ test('composition browser commit cannot reuse ready state after caret or prefere
     assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,observation),null);f.editor.close();
   }
 });
+
+
+function observedCompositionEnd(p) {
+  return {...p.edit,composing:false,selectionCleared:true,resultForCurrentValue:null};
+}
+
+test('composition end acknowledgment pins text and caret, requests empty reopen, and never queries',async()=>{
+  const f=await editorFixture();await f.editor.edit({}, {...edit(1,'text'),composing:true});
+  const before=f.editor.snapshot;
+  const p=f.editor.beginCompositionEnd(1,{hasData:false,hadText:false,closedPopup:true});
+  assert.equal(p.reopen,true);assert.equal(p.resetSearchState,false);assert.equal(p.clearSelection,true);
+  assert.equal(p.nextInput.state,f.sandbox.UrlbarShared.COMPOSITION.NONE);assert.equal(p.nextInput.closedPopup,false);
+  assert.equal(f.editor.snapshot,before);assert.equal(Object.isFrozen(p),true);
+  for(const wrong of [{text:'other'},{selectionStart:0},{composing:true},{selectionCleared:false},{resultForCurrentValue:{}}]) {
+    assert.equal(f.editor.acknowledgeCompositionEnd(p.token,{...observedCompositionEnd(p),...wrong}),false);
+    assert.equal(f.editor.snapshot,before);assert.equal(f.editor.getCompositionEnd(p.token),p);
+  }
+  assert.equal(f.editor.acknowledgeCompositionEnd(p.token,observedCompositionEnd(p)),true);
+  assert.equal(f.editor.snapshot.composing,false);assert.equal('composition' in f.editor.snapshot,false);
+  assert.equal(f.editor.acknowledgeCompositionEnd(p.token,observedCompositionEnd(p)),false);
+  assert.equal(f.parent.started.length,0);f.editor.close();
+});
+
+test('composition end preserves keep-open query and does not require selection-clear effects',async()=>{
+  const f=await editorFixture();f.prefs.keepPanelOpenDuringImeComposition=true;
+  const S=f.sandbox.UrlbarShared.COMPOSITION;
+  const query=await f.editor.edit({}, {...edit(1,'text'),composing:true,composition:{state:S.COMPOSING,closedPopup:false}});
+  const p=f.editor.beginCompositionEnd(1,{hasData:true,hadText:true,closedPopup:false});
+  assert.equal(p.clearSelection,false);assert.equal(p.clearResultForCurrentValue,false);assert.equal(p.reopen,false);
+  assert.equal(p.nextInput.state,S.COMMIT);
+  assert.equal(f.editor.acknowledgeCompositionEnd(p.token,{...p.edit,composing:false}),true);
+  f.editor.publishPresentation(1,query.id,[],true);
+  assert.equal(f.parent.started.length,1);assert.equal('composition' in f.editor.snapshot,false);
+  // The following real input, rather than the end event, consumes COMMIT.
+  await f.editor.edit({}, {...edit(2,'text'),composition:p.nextInput});
+  assert.equal(f.parent.started.length,2);f.editor.close();
+});
+
+test('composition end requests cannot survive caret, input, cancellation or observed preference changes',async()=>{
+  for(const change of ['caret','input','cancel','preference']) {
+    const f=await editorFixture();await f.editor.edit({}, {...edit(1,'text'),composing:true});
+    const p=f.editor.beginCompositionEnd(1,{hasData:false,hadText:true,closedPopup:true});
+    if(change==='caret')f.editor.select(1,0,0);
+    if(change==='input')await f.editor.edit({},edit(2,'new'));
+    if(change==='cancel')f.editor.cancel();
+    if(change==='preference')f.prefs.keepPanelOpenDuringImeComposition=true;
+    assert.equal(f.editor.getCompositionEnd(p.token),null);
+    if(change==='preference')f.prefs.keepPanelOpenDuringImeComposition=false;
+    assert.equal(f.editor.acknowledgeCompositionEnd(p.token,observedCompositionEnd(p)),false);f.editor.close();
+  }
+});
+
+test('end preparation rejects invalid history and outstanding start effects without mutating observation',async()=>{
+  const f=await editorFixture();await f.editor.edit({},edit(1,'text'));
+  assert.equal(f.editor.beginCompositionEnd(1,{hasData:true,hadText:true,closedPopup:false}),null);
+  const start=f.editor.beginCompositionStart(1,{viewIsOpen:false,userTypedValue:null});
+  assert.equal(f.editor.beginCompositionEnd(1,{hasData:true,hadText:true,closedPopup:false}),null);
+  assert.equal(f.editor.acknowledgeCompositionStart(start.token,observedCompositionStart(start)),true);
+  assert.equal(f.editor.beginCompositionEnd(1,{hasData:true,hadText:true,closedPopup:false}),null);
+  await f.editor.edit({}, {...edit(2,'text'),composing:true});const before=f.editor.snapshot;
+  assert.throws(()=>f.editor.beginCompositionEnd(2,{hasData:true,hadText:null,closedPopup:false}),/Invalid composition end/);
+  assert.equal(f.editor.snapshot,before);f.editor.close();
+});
+
+test('a newer composition end preparation revokes its predecessor without ending composition',async()=>{
+  const f=await editorFixture();await f.editor.edit({}, {...edit(1,''),composing:true});
+  const a=f.editor.beginCompositionEnd(1,{hasData:false,hadText:true,closedPopup:true});
+  const b=f.editor.beginCompositionEnd(1,{hasData:true,hadText:true,closedPopup:true});
+  assert.equal(a.reopen,false);assert.equal(f.editor.getCompositionEnd(a.token),null);
+  assert.equal(f.editor.acknowledgeCompositionEnd(a.token,observedCompositionEnd(a)),false);
+  assert.equal(f.editor.snapshot.composing,true);
+  assert.equal(f.editor.acknowledgeCompositionEnd(b.token,observedCompositionEnd(b)),true);f.editor.close();
+});

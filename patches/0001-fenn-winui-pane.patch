@@ -9126,10 +9126,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..13c8924c04
+index 0000000000..bdd79447b1
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1877 @@
+@@ -0,0 +1,1933 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9169,6 +9169,7 @@ index 0000000000..13c8924c04
 +  #identityEdit = null;
 +  #compositionPresentation = null;
 +  #compositionStart = null;
++  #compositionEnd = null;
 +  #compositionStateReady = null;
 +  #committingComposition = null;
 +  #closed = false;
@@ -9225,6 +9226,56 @@ index 0000000000..13c8924c04
 +    this.#check();
 +    if (!this.#identityEdit || this.#edit !== this.#identityEdit || this.#edit.revision !== revision) return null;
 +    return Object.freeze({ revision, ...UrlbarInputIdentity.describe(this.#edit.text, facts) });
++  }
++
++  /** Prepare end-event host effects from observed IME history, without querying. */
++  beginCompositionEnd(revision, { hasData, hadText, closedPopup } = {}) {
++    this.#check();
++    const edit = this.#edit;
++    if (!edit?.composing || edit.revision !== revision || this.#compositionStart ||
++        this.#compositionStateReady || this.#committingComposition) return null;
++    const keepPanelOpen = UrlbarPrefs.get("keepPanelOpenDuringImeComposition");
++    const policy = UrlbarCompositionModel.endPolicy({ hasData, hadText, closedPopup, keepPanelOpen });
++    const proposal = Object.freeze({ ...policy, edit, token: Object.freeze({}) });
++    this.#compositionEnd = { proposal, keepPanelOpen };
++    return proposal;
++  }
++
++  getCompositionEnd(token) {
++    this.#check();
++    const pending = this.#compositionEnd;
++    if (!pending || pending.proposal.token !== token) return null;
++    if (pending.proposal.edit !== this.#edit ||
++        pending.keepPanelOpen !== UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
++      this.#compositionEnd = null;
++      return null;
++    }
++    return pending.proposal;
++  }
++
++  /** End only after exact host text/caret and required selection-clear observations. */
++  acknowledgeCompositionEnd(token, { text, selectionStart, selectionEnd, selectionDirection,
++    composing, selectionCleared, resultForCurrentValue }) {
++    const request = this.getCompositionEnd(token);
++    if (!request || text !== request.edit.text || selectionStart !== request.edit.selectionStart ||
++        selectionEnd !== request.edit.selectionEnd || selectionDirection !== request.edit.selectionDirection ||
++        composing !== false || (request.clearSelection && selectionCleared !== true) ||
++        (request.clearResultForCurrentValue && resultForCurrentValue !== null)) return false;
++    this.#compositionEnd = null;
++    // The end event does not consume the next input transition or start its query.
++    const edit = { ...request.edit, composing: false };
++    delete edit.composition;
++    this.#edit = Object.freeze(edit);
++    this.#compositionPresentation = null;
++    this.#completion = null;
++    this.#autofill = null;
++    this.#placeholder = null;
++    if (request.clearSelection) {
++      this.#selectionGeneration++;
++      this.#selectionRequest = null;
++      this.#resultPreview = null;
++    }
++    return true;
 +  }
 +
 +  /** Plan a composition start for the current edit; the host still applies effects. */
@@ -9293,6 +9344,7 @@ index 0000000000..13c8924c04
 +        pending.keepPanelOpen !== UrlbarPrefs.get("keepPanelOpenDuringImeComposition") ||
 +        !this.#queries.isCompositionModeCurrent(pending.mode, pending.engineId)) {
 +      this.#compositionStart = null;
++      this.#compositionEnd = null;
 +      return null;
 +    }
 +    return pending.proposal;
@@ -9309,6 +9361,7 @@ index 0000000000..13c8924c04
 +        !UrlbarShared.deepEqual(searchMode, request.searchMode)) return false;
 +    const pending = this.#compositionStart;
 +    this.#compositionStart = null;
++    this.#compositionEnd = null;
 +    this.#searchMode = request.searchMode;
 +    if (request.closePopup) {
 +      this.#compositionPresentation = null;
@@ -9420,6 +9473,7 @@ index 0000000000..13c8924c04
 +    this.#compositionStateReady = null;
 +    this.#committingComposition = null;
 +    this.#compositionStart = null;
++    this.#compositionEnd = null;
 +    this.#compositionPresentation = null;
 +    this.#hiddenResults = null;
 +    this.#typedText = text;
@@ -10949,6 +11003,7 @@ index 0000000000..13c8924c04
 +    this.#compositionStateReady = null;
 +    this.#committingComposition = null;
 +    this.#compositionStart = null;
++    this.#compositionEnd = null;
 +    this.#compositionPresentation = null;
 +    this.#selectionGeneration++;
 +    this.#check();
@@ -10978,6 +11033,7 @@ index 0000000000..13c8924c04
 +    this.#compositionStateReady = null;
 +    this.#committingComposition = null;
 +    this.#compositionStart = null;
++    this.#compositionEnd = null;
 +    this.#compositionPresentation = null;
 +    this.#selectionGeneration++;
 +    if (this.#closed) return;
@@ -11899,10 +11955,10 @@ index 0000000000..0e3f7bca59
 +}
 diff --git a/browser/components/urlbar/content/UrlbarCompositionModel.mjs b/browser/components/urlbar/content/UrlbarCompositionModel.mjs
 new file mode 100644
-index 0000000000..1b3e0e7f20
+index 0000000000..69b0a982d2
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarCompositionModel.mjs
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,94 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11952,18 +12008,29 @@ index 0000000000..1b3e0e7f20
 +    if (!this.isComposing) {
 +      throw new Error("Trying to stop a non existing composition?");
 +    }
-+    if (!keepPanelOpen) {
-+      clearSelection();
++    if (typeof hasData !== "boolean" || typeof keepPanelOpen !== "boolean") {
++      throw new TypeError("Invalid composition end facts");
 +    }
-+    this.#state = hasData
-+      ? UrlbarShared.COMPOSITION.COMMIT
-+      : UrlbarShared.COMPOSITION.CANCELED;
-+    if (!hasData && !this.#hadText && this.#closedPopup && !keepPanelOpen) {
-+      this.#state = UrlbarShared.COMPOSITION.NONE;
-+      this.#closedPopup = false;
-+      return true;
++    if (!keepPanelOpen) clearSelection();
++    // Selection clearing can reenter input; read history afterward, as before.
++    const policy = UrlbarCompositionModel.endPolicy({ hasData, keepPanelOpen,
++      hadText: this.#hadText, closedPopup: this.#closedPopup });
++    this.#state = policy.nextInput.state;
++    this.#closedPopup = policy.nextInput.closedPopup;
++    return policy.reopen;
++  }
++
++  /** End-event effects; nextInput is consumed by the following input, not here. */
++  static endPolicy({ hasData, hadText, closedPopup, keepPanelOpen }) {
++    if ([hasData, hadText, closedPopup, keepPanelOpen].some(fact => typeof fact !== "boolean")) {
++      throw new TypeError("Invalid composition end facts");
 +    }
-+    return false;
++    const reopen = !hasData && !hadText && closedPopup && !keepPanelOpen;
++    return Object.freeze({ clearSelection: !keepPanelOpen, clearResultForCurrentValue: !keepPanelOpen,
++      reopen, resetSearchState: false,
++      nextInput: Object.freeze({ state: reopen ? UrlbarShared.COMPOSITION.NONE :
++        (hasData ? UrlbarShared.COMPOSITION.COMMIT : UrlbarShared.COMPOSITION.CANCELED),
++      closedPopup: reopen ? false : closedPopup }) });
 +  }
 +
 +  /** Describe composition-start effects without reading or mutating a presenter. */

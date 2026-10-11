@@ -5,7 +5,7 @@ import vm from 'node:vm';
 const root=new URL('../upstream/firefox/browser/components/urlbar/content/',import.meta.url);
 const c=vm.createContext({});
 vm.runInContext(readFileSync(new URL('UrlbarShared.mjs',root),'utf8').replace(/^import .*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),c);
-vm.runInContext(readFileSync(new URL('UrlbarCompositionModel.mjs',root),'utf8').replace(/^import .*;$/gm,'').replace('export class UrlbarCompositionModel','this.Model=class'),c);
+vm.runInContext(readFileSync(new URL('UrlbarCompositionModel.mjs',root),'utf8').replace(/^import .*;$/gm,'').replace('export class UrlbarCompositionModel','this.Model=class UrlbarCompositionModel'),c);
 const M=c.Model,S=c.UrlbarShared.COMPOSITION;
 
 test('commit is consumed by exactly one input and selection clears before transition',()=>{
@@ -112,5 +112,40 @@ test('retained confirmation failure prevents popup closure after the empty typed
     const b=new c.Binding();Object.assign(b,{value:'',userTypedValue:'old',searchMode:{},view:{isOpen:true,close(){assert.fail('closed after failure');}},
       confirmSearchMode(){assert.equal(this.userTypedValue,null);throw Error('confirmation failed');}});
     assert.throws(()=>b._on_compositionstart(),/confirmation failed/);
+  }
+});
+
+
+test('end policy matches the transition model for every data/history/popup/preference combination',()=>{
+  for(const hasData of [false,true]) for(const hadText of [false,true])
+    for(const closedPopup of [false,true]) for(const keepPanelOpen of [false,true]) {
+      const policy=M.endPolicy({hasData,hadText,closedPopup,keepPanelOpen});
+      const m=new M();m.begin();m.setPopupClosed(closedPopup);m.input(hadText);let clears=0;
+      assert.equal(m.end(hasData,keepPanelOpen,()=>clears++),policy.reopen);
+      assert.equal(clears,policy.clearSelection?1:0);assert.equal(policy.clearResultForCurrentValue,!keepPanelOpen);
+      assert.equal(policy.resetSearchState,false);assert.equal(Object.isFrozen(policy),true);
+      assert.equal(Object.isFrozen(policy.nextInput),true);
+      assert.deepEqual({...m.input(false)},{...policy.nextInput});
+    }
+});
+
+test('malformed end facts fail before clearing selection or ending composition',()=>{
+  const facts={hasData:false,hadText:false,closedPopup:true,keepPanelOpen:false};
+  for(const key of Object.keys(facts))assert.throws(()=>M.endPolicy({...facts,[key]:null}),/Invalid composition end/);
+  const m=new M();m.begin();let clears=0;
+  assert.throws(()=>m.end(null,false,()=>clears++),/Invalid composition end/);
+  assert.equal(m.isComposing,true);assert.equal(clears,0);
+});
+
+
+test('end transition observes composition history changed by selection-clear reentry',()=>{
+  for(const change of ['input','popup']) {
+    const m=new M();m.begin();m.setPopupClosed(true);
+    assert.equal(m.end(false,false,()=>{
+      assert.equal(m.isComposing,true);
+      if(change==='input')m.input(true);else m.setPopupClosed(false);
+    }),false);
+    const next=m.input(false);assert.equal(next.state,S.CANCELED);
+    assert.equal(next.closedPopup,change==='input');
   }
 });
