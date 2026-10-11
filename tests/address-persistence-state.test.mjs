@@ -247,3 +247,25 @@ test('input preparations revoke older authority but discard and reentry cannot c
   assert.equal(owner.prepareInput(browser,'new'),null);assert.equal(owner.commit(browser,newer.token),true);
   assert.equal(owner.snapshot(browser).persistedSearchTerms,true);
 });
+
+
+test('preserved-mode preparation keeps cache and both mode layers without setter effects',()=>{
+  const {owner,facts,service}=ownerFixture(),browser={};
+  let update=owner.prepareMode(browser,{engineName:'engine',isPreview:false});owner.commit(browser,update.token);
+  update=owner.preparePersistence(browser,facts);owner.commit(browser,update.token);
+  update=owner.prepareMode(browser,{source:1,isPreview:true});owner.commit(browser,update.token);
+  const previous=update.token,snapshot=owner.snapshot(browser);
+  service.updateSearchModeState=()=>{throw Error('mode setter invoked');};
+  assert.equal(owner.preparePreservedMode(browser,snapshot.confirmed),null);assert.equal(owner.isCommitted(browser,previous),true);
+  const preserved=owner.preparePreservedMode(browser,snapshot.preview);
+  assert.equal(owner.isCommitted(browser,previous),false);assert.equal(preserved.effects.persistedSearchTerms,true);
+  assert.equal(owner.commit(browser,preserved.token),true);assert.equal(owner.commit(browser,preserved.token),false);
+  assert.deepEqual(owner.snapshot(browser),snapshot);assert.equal(Object.isFrozen(preserved.effects.searchMode),true);
+});
+
+test('null-mode preservation establishes an empty owner receipt without touching browser text',()=>{
+  const {owner}=ownerFixture(),browser={userTypedValue:'old'};
+  const preserved=owner.preparePreservedMode(browser,null);assert.equal(preserved.effects.searchMode,null);
+  assert.equal(owner.commit(browser,preserved.token),true);assert.equal(owner.isCommitted(browser,preserved.token),true);
+  assert.equal(owner.snapshot(browser).persistedSearchTerms,false);assert.equal(browser.userTypedValue,'old');
+});

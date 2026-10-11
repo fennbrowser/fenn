@@ -20,6 +20,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     startQuery(query){query.results??=[];this.started.push(query);return Promise.resolve(query);}
     cancelQuery(){this.cancelled=(this.cancelled??0)+1;}
     captureIndependentQueryAuthority(){return ()=>true;}
+    commitIndependentModePreservation(_id,mode,persisted,current){return current()?{applied:true,modeUnchanged:true,stateToken:{},searchMode:mode,persistedSearchTerms:persisted}:null;}
     destroy(){this.destroyed=(this.destroyed??0)+1;}
   }
   let id=0;
@@ -3959,14 +3960,15 @@ test('failed or superseded input application revokes follow-up without repeating
   }
 });
 
-test('new editor work revokes pending command input and ordinary mode no-ops do not grant receipts',async()=>{
+test('new editor work revokes pending command input and ordinary preservation grants input receipts',async()=>{
   for(const revoke of [f=>f.editor.cancel(),f=>f.editor.select(1,0,0),f=>f.editor.edit({},edit(2,'new'))]) {
     const f=await commandInputFixture(),p=f.proposal;await revoke(f);
     assert.equal(f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p)),null);f.editor.close();
   }
   const f=await ownedCommandFixture('ordinary'),p=f.proposal;f.editor.acknowledgeSearchCommand(p.token,observedOwnedCommand(p));
   assert.equal(f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false}).modeUnchanged,true);
-  assert.equal(f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p)),null);f.editor.close();
+  f.parent.commitIndependentInputState=()=>({applied:true,current:true,stateToken:{}});
+  assert.equal(f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p)).applied,true);f.editor.close();
 });
 
 test('parent input commit validates receipt, persistence and lifetime before browser text mutation',()=>{
@@ -4065,4 +4067,69 @@ test('confirmed command passes confirmation receipt and final browser text to di
   };
   await assert.rejects(f.editor.requeryAfterSearchCommand(f.proposal.token,{searchMode:c.searchMode}),/browser state superseded/);
   assert.equal(f.editor.getSearchCommandRequery(f.proposal.token),null);f.editor.close();
+});
+
+
+test('ordinary confirmed and preview commands preserve mode without notifications and apply input once',async()=>{
+  for(const preview of [false,true]) {
+    const events=[],f=await editorFixture({browserId:42,onModeStateChanged:n=>events.push(n)});
+    const mode={source:1,isPreview:preview,entry:'searchbutton'};
+    await f.editor.edit({searchMode:mode},edit(1,'previous'));
+    const p=await f.editor.beginSearchCommand(1,'ordinary words');
+    f.editor.acknowledgeSearchCommand(p.token,observedCommand(p));
+    const preserve=f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false});
+    assert.equal(preserve.modeUnchanged,true);assert.ok(preserve.stateToken);assert.equal(events.length,0);
+    const inputToken={};f.parent.commitIndependentInputState=(_id,text,facts)=>{
+      assert.equal(facts.expectedStateToken,preserve.stateToken);assert.equal(text,'ordinary words');return {applied:true,current:true,stateToken:inputToken};
+    };
+    f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p));
+    const request=f.editor.getSearchCommandRequery(p.token);
+    if(preview){
+      const c=f.editor.beginSearchCommandConfirmation(p.token,commandEntry());assert.ok(c);
+      f.parent.commitIndependentModeState=(id,confirmed,facts,current,notify)=>{
+        assert.equal(facts.expectedStateToken,inputToken);assert.equal(confirmed.isPreview,false);
+        notify({browserId:id,searchMode:confirmed});return {applied:true,stateToken:{},userTypedValue:'ordinary words'};
+      };
+      assert.equal(f.editor.commitSearchCommandConfirmation(c.token,observedConfirmation(c)).applied,true);assert.equal(events.length,1);
+    }else assert.equal(f.editor.beginSearchCommandConfirmation(p.token,commandEntry()),null);
+    const q=await f.editor.requeryAfterSearchCommand(p.token,{searchMode:request.searchMode});
+    assert.equal(q.searchMode.isPreview,preview);assert.equal(q.searchString,'ordinary words');f.editor.close();
+  }
+});
+
+test('ordinary engine preservation pins identity for input, confirmation and dispatch',async()=>{
+  for(const phase of ['input','confirmation','dispatch']) {
+    const f=await editorFixture({browserId:42}),engine={id:'e',name:'Engine',isGeneralPurposeEngine:true,aliases:[]};
+    f.parent.child.updateEngineStore('changed',engine,-1);
+    await f.editor.edit({searchMode:{engineName:'Engine',isPreview:true,entry:'searchbutton',isGeneralPurposeEngine:true,source:3}},edit(1,'old'));
+    const p=await f.editor.beginSearchCommand(1,'new words');f.editor.acknowledgeSearchCommand(p.token,observedCommand(p));
+    const preservation=f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false});assert.equal(preservation.engineId,'e');
+    const replace=()=>f.parent.child.updateEngineStore('changed',{...engine,id:'replacement'},0);
+    let inputs=0;f.parent.commitIndependentInputState=()=>{inputs++;return {applied:true,current:true,stateToken:{}};};
+    if(phase==='input')replace();
+    const input=f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p));
+    if(phase==='input'){assert.equal(input,null);assert.equal(inputs,0);f.editor.close();continue;}
+    const c=f.editor.beginSearchCommandConfirmation(p.token,commandEntry());let confirmations=0;
+    f.parent.commitIndependentModeState=()=>{confirmations++;return {applied:true,stateToken:{},userTypedValue:'new words'};};
+    if(phase==='confirmation')replace();
+    const confirmed=f.editor.commitSearchCommandConfirmation(c.token,observedConfirmation(c));
+    if(phase==='confirmation'){assert.equal(confirmed,null);assert.equal(confirmations,0);}
+    else {replace();await assert.rejects(f.editor.requeryAfterSearchCommand(p.token,{searchMode:c.searchMode}),/dispatch authority/);}
+    f.editor.close();
+  }
+});
+
+test('parent preservation grants receipt only for matching owned mode, persistence and browser lifetime',()=>{
+  for(const change of ['none','mode','persistence','typed','document']) {
+    const {p,browser,lazy}=parentLoadFixture(),token={};browser.userTypedValue='unchanged';let committed=0;
+    lazy.independentUrlbarBrowserState={preparePreservedMode:()=>{
+      if(change==='mode')return null;if(change==='typed')browser.userTypedValue='new';
+      if(change==='document')browser.browsingContext.currentWindowGlobal={};
+      return {token,effects:{searchMode:null,persistedSearchTerms:change==='persistence'}};
+    },commit:()=>{committed++;return true;},discard:()=>{}};
+    const result=p.commitIndependentModePreservation(42,null,false,()=>true);
+    assert.equal(result?.applied??false,change==='none');assert.equal(committed,change==='none'?1:0);
+    if(result){assert.equal(result.modeUnchanged,true);assert.equal(result.stateToken,token);assert.equal(Object.isFrozen(result),true);}
+    assert.equal(browser.userTypedValue,change==='typed'?'new':'unchanged');
+  }
 });
