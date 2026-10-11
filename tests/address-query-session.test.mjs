@@ -30,7 +30,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
       QUERY_FIRST_RESULT:'onFirstResult',QUERY_RESULTS:'onQueryResults',QUERY_FINISHED:'onQueryFinished'}},
     UrlbarPrefs:{get:key=>prefs[key] ?? 10},UrlbarContentUtils:{usesMessagePath:()=>false,getDisplaySpec:spec=>spec,getFixupPrimitives:()=>({}),getPlatform:()=> 'win',whereToOpenLink:e=>e?.where || 'current',willLoadInBackground:(_where,params)=>!params.forceForeground},
     UrlbarQueryContext:class {constructor(options){Object.assign(this,options,{id:++id,results:uninitializedResults?undefined:[]});}},
-    ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;}}});
+    ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;target.QuickSuggest={getFeature:()=>sandbox.backend};target.UrlUtils={LOOKS_LIKE_ORIGIN:{NONE:0},looksLikeOrigin:text=>text.includes(".")?1:0};target.UrlbarTokenizer={tokenize:context=>[{value:context.searchString}]};}}});
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarUrlValue.mjs',import.meta.url),'utf8')
     .replace(/^import .*;$/gm,'').replaceAll('export function ','function '),sandbox);
   Object.assign(sandbox.UrlbarShared, {isSearchbarSAP:sharedPolicy.UrlbarShared.isSearchbarSAP.bind(sharedPolicy.UrlbarShared),getLoadRequestFromResult:sharedPolicy.UrlbarShared.getLoadRequestFromResult.bind(sharedPolicy.UrlbarShared),looksLikeSingleWordHost:sharedPolicy.UrlbarShared.looksLikeSingleWordHost.bind(sharedPolicy.UrlbarShared),isInstance:(event,type)=>event instanceof type,REGEXP_SPACES:sharedPolicy.UrlbarShared.REGEXP_SPACES,RESTRICT_TOKENS:sharedPolicy.UrlbarShared.RESTRICT_TOKENS,
@@ -39,9 +39,9 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     SEARCH_MODE_ENTRY:sharedPolicy.UrlbarShared.SEARCH_MODE_ENTRY,
     deepEqual:sharedPolicy.UrlbarShared.deepEqual.bind(sharedPolicy.UrlbarShared),
     getResultSourceName:sharedPolicy.UrlbarShared.getResultSourceName.bind(sharedPolicy.UrlbarShared)});
-  for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarSearchModeModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarResultPresentation','UrlbarEditSession']) {
+  for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarSelectedSearch','UrlbarSearchModeModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarResultPresentation','UrlbarEditSession']) {
     const source=readFileSync(new URL(`../upstream/firefox/browser/components/urlbar/content/${file}.mjs`,import.meta.url),'utf8');
-    vm.runInContext(source.replace(/^import .*;$/gm,'').replaceAll('export class ','class ')+`\nthis.${file}=${file};`,sandbox);
+    vm.runInContext(source.replace(/^import .*;$/gm,'').replaceAll('export class ','class ').replaceAll('export function ','function ')+`\nthis.${file}=${file==='UrlbarSelectedSearch'?'querySelectedSearch':file};`,sandbox);
   }
   let current=true;
   const context={sapName:'urlbar',isPrivate,browserId,actor:{browsingContext:{isContent:false}}};
@@ -2780,4 +2780,76 @@ test('DNS refusal, exceptions and query replacement consume activation and stop 
     else assert.equal(run(),false);
     f.editor.close();
   }
+});
+
+
+test('selected-search browser facts strictly capture the pinned tab instead of the selected tab',()=>{
+  const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarParentController.sys.mjs',import.meta.url),'utf8');
+  const start=source.indexOf('  getSelectedSearchBrowserState(browserId) {');
+  const method=source.slice(start,source.indexOf('\n  /**',start));
+  const Parent=new Function(`return class { ${method} }`)(),p=new Parent();
+  const browser={browserId:42,getAttribute:()=> '7',currentURI:{spec:'https://pinned.test/'}};
+  p.resolveTargetBrowser=()=>browser;p.browserWindow={gBrowser:{getTabForBrowser:b=>b===browser?{group:{id:'group'}}:null}};
+  const state=p.getSelectedSearchBrowserState(42);
+  assert.deepEqual(state,{userContextId:7,tabGroup:'group',currentPage:'https://pinned.test/'});assert.equal(Object.isFrozen(state),true);
+  assert.throws(()=>p.getSelectedSearchBrowserState(0),/Invalid/);
+  assert.equal(p.getSelectedSearchBrowserState(43),null);p.resolveTargetBrowser=()=>null;assert.equal(p.getSelectedSearchBrowserState(42),null);
+});
+
+async function backendEngagementFixture() {
+  const f=await dnsEngagementFixture(),engine={id:'e',name:'Engine',isAppProvided:true};
+  f.parent.child.updateEngineStore('changed',engine,-1);f.parent.child.updateEngineStore('default',engine);
+  f.result.payload={engine:'Engine',query:'typed',suggestion:'  chosen words  '};
+  f.parent.getSelectedSearchBrowserState=id=>{assert.equal(id,42);return {userContextId:7,tabGroup:'g',currentPage:'https://pinned.test/'};};
+  f.sandbox.backend={isEnabled:true,query:(text,{queryContext})=>{f.calls.push(['backend',text]);f.backendContext=queryContext;return Promise.resolve([]);}};
+  f.options={...f.options,checkSearchDNS:false,querySearchBackend:true};return f;
+}
+
+test('selected backend receives a fresh trimmed-selection context between search and terminal effects',async()=>{
+  const f=await backendEngagementFixture();
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options),true);
+  assert.deepEqual(f.calls,[['search'],['backend','chosen words'],['bounce'],['record']]);
+  assert.notEqual(f.backendContext,f.q);assert.equal(f.backendContext.searchString,'chosen words');
+  assert.equal(f.backendContext.tokens[0].value,'chosen words');assert.equal(f.backendContext.userContextId,7);
+  assert.equal(f.backendContext.currentPage,'https://pinned.test/');assert.equal(f.backendContext.tabGroup,'g');
+  assert.equal(f.backendContext.isPrivate,false);assert.equal(f.backendContext.sapName,'urlbar');assert.equal(f.backendContext.prohibitRemoteResults,false);
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options),false);f.editor.close();
+});
+
+test('backend disablement, origin, empty, history and default-engine changes suppress execution',async()=>{
+  for(const policy of ['disabled','origin','empty','history','default']) {
+    const f=await backendEngagementFixture();
+    if(policy==='disabled')f.sandbox.backend.isEnabled=false;
+    if(policy==='origin')f.result.payload.suggestion='private.test';
+    if(policy==='empty')f.result.payload.suggestion='   ';
+    if(policy==='history')f.result.source=f.sandbox.UrlbarShared.RESULT_SOURCE.HISTORY;
+    if(policy==='default')f.parent.recordSearch=()=>{f.calls.push(['search']);f.parent.child.updateEngineStore('changed',{id:'other',name:'Other'},-1);f.parent.child.updateEngineStore('default',{id:'other',name:'Other'});return true;};
+    assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options),true);
+    assert.deepEqual(f.calls,[['search'],['bounce'],['record']]);f.editor.close();
+  }
+});
+
+test('backend flag validation, vanished targets and reentry cannot dispatch obsolete selections',async()=>{
+  const f=await backendEngagementFixture();
+  assert.throws(()=>f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,{...f.options,recordSearch:false}),/requires search/);
+  f.parent.getSelectedSearchBrowserState=()=>null;
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options),false);assert.deepEqual(f.calls,[['search']]);f.editor.close();
+  const g=await backendEngagementFixture();let next;
+  g.parent.getSelectedSearchBrowserState=()=>{next=g.editor.edit({},edit(2,'new'));return {};};
+  assert.equal(g.editor.recordResultEngagement(1,g.q.id,g.result,g.event,g.options),false);assert.deepEqual(g.calls,[['search']]);
+  const q=await next;g.editor.publishPresentation(2,q.id,[],false);g.editor.close();
+});
+
+test('shared selected-search helper rechecks ownership after context construction',()=>{
+  const f=fixture(),engine={isAppProvided:true},result={payload:{query:'chosen words'}};let current=true;
+  f.sandbox.backend={isEnabled:true,query:()=>assert.fail('stale backend dispatch')};
+  assert.equal(f.sandbox.UrlbarSelectedSearch(result,{isAddressbar:true,isPrivate:false,engine,defaultEngine:engine},
+    ()=>{current=false;return {searchString:'chosen words'};},()=>current),false);f.session.close();
+});
+
+test('backend asynchronous rejection is handled without suppressing terminal recording',async()=>{
+  const f=await backendEngagementFixture(),errors=[];f.sandbox.console={error:error=>errors.push(error.message)};
+  f.sandbox.backend.query=()=>Promise.reject(Error('backend failure'));
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options),true);
+  await Promise.resolve();assert.deepEqual(errors,['backend failure']);assert.deepEqual(f.calls,[['search'],['bounce'],['record']]);f.editor.close();
 });

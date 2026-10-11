@@ -216,7 +216,7 @@ index a182468fce..428407c54a 100644
  </body>
  </html>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..b738a3079b 100644
+index b2b5db6040..7fee1f3431 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
 @@ -33,6 +33,20 @@ browser.jar:
@@ -240,7 +240,7 @@ index b2b5db6040..b738a3079b 100644
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
-@@ -104,3 +118,16 @@ browser.jar:
+@@ -104,3 +118,17 @@ browser.jar:
  
  # L10n resources and overrides.
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
@@ -249,6 +249,7 @@ index b2b5db6040..b738a3079b 100644
 +    content/browser/urlbar/UrlbarCompositionModel.mjs (../components/urlbar/content/UrlbarCompositionModel.mjs)
 +    content/browser/urlbar/UrlbarAutofillModel.mjs (../components/urlbar/content/UrlbarAutofillModel.mjs)
 +    content/browser/urlbar/UrlbarQuerySession.mjs (../components/urlbar/content/UrlbarQuerySession.mjs)
++    content/browser/urlbar/UrlbarSelectedSearch.mjs (../components/urlbar/content/UrlbarSelectedSearch.mjs)
 +    content/browser/urlbar/UrlbarQueryModel.mjs (../components/urlbar/content/UrlbarQueryModel.mjs)
 +    content/browser/urlbar/UrlbarQueryLifecycle.mjs (../components/urlbar/content/UrlbarQueryLifecycle.mjs)
 +    content/browser/urlbar/UrlbarSearchModeModel.mjs (../components/urlbar/content/UrlbarSearchModeModel.mjs)
@@ -833,7 +834,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..8c2c650118 100644
+index ba254af0c6..2a4695befe 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -114,6 +114,7 @@ export class UrlbarParentController {
@@ -875,7 +876,25 @@ index ba254af0c6..8c2c650118 100644
    }
  
    /**
-@@ -723,11 +736,20 @@ export class UrlbarParentController {
+@@ -711,6 +724,17 @@ export class UrlbarParentController {
+     Glean.urlbarZeroprefix2[kind][this.sapName].add(1);
+   }
+ 
++  /** Capture browser facts for an independent selected-search context, with no fallback. */
++  getSelectedSearchBrowserState(browserId) {
++    if (!Number.isSafeInteger(browserId) || browserId <= 0) throw new TypeError("Invalid selected-search browser identity");
++    const browser = this.resolveTargetBrowser(browserId);
++    if (!browser || browser.browserId !== browserId) return null;
++    const tab = this.browserWindow.gBrowser.getTabForBrowser(browser);
++    if (!tab) return null;
++    return Object.freeze({ userContextId: parseInt(browser.getAttribute("usercontextid") ?? 0),
++      tabGroup: tab.group?.id ?? null, currentPage: browser.currentURI?.spec });
++  }
++
+   /**
+    * Runs the single-word keyword URI fixup DNS check for a search picked in the
+    * address bar. When a single word is turned directly into a search (bypassing
+@@ -723,11 +747,20 @@ export class UrlbarParentController {
     *   The string being searched.
     * @param {?number} browserId
     *   The browser the search loads into, or null for the selected browser.
@@ -900,7 +919,7 @@ index ba254af0c6..8c2c650118 100644
      let fixupInfo = lazy.UrlbarUtils.getURIFixupInfo(
        searchString,
        this.isPrivate
-@@ -735,6 +757,7 @@ export class UrlbarParentController {
+@@ -735,6 +768,7 @@ export class UrlbarParentController {
      if (fixupInfo) {
        this.browserWindow.gKeywordURIFixup.check(browser, fixupInfo);
      }
@@ -908,7 +927,7 @@ index ba254af0c6..8c2c650118 100644
    }
  
    /**
-@@ -1292,10 +1315,22 @@ export class UrlbarParentController {
+@@ -1292,10 +1326,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -932,7 +951,7 @@ index ba254af0c6..8c2c650118 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +1367,7 @@ export class UrlbarParentController {
+@@ -1332,6 +1378,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -940,7 +959,7 @@ index ba254af0c6..8c2c650118 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +1391,8 @@ export class UrlbarParentController {
+@@ -1355,6 +1402,8 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
@@ -949,7 +968,7 @@ index ba254af0c6..8c2c650118 100644
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +1424,7 @@ export class UrlbarParentController {
+@@ -1386,7 +1435,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -958,7 +977,7 @@ index ba254af0c6..8c2c650118 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +1432,11 @@ export class UrlbarParentController {
+@@ -1394,10 +1443,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -971,7 +990,7 @@ index ba254af0c6..8c2c650118 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +1454,7 @@ export class UrlbarParentController {
+@@ -1415,7 +1465,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -980,7 +999,7 @@ index ba254af0c6..8c2c650118 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +1476,7 @@ export class UrlbarParentController {
+@@ -1437,7 +1487,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -989,7 +1008,7 @@ index ba254af0c6..8c2c650118 100644
          break;
      }
    };
-@@ -1727,8 +1766,12 @@ export class TelemetryEvent {
+@@ -1727,8 +1777,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -1003,7 +1022,7 @@ index ba254af0c6..8c2c650118 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +1786,7 @@ export class TelemetryEvent {
+@@ -1743,7 +1797,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -1012,7 +1031,7 @@ index ba254af0c6..8c2c650118 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +1812,7 @@ export class TelemetryEvent {
+@@ -1769,7 +1823,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -1021,7 +1040,7 @@ index ba254af0c6..8c2c650118 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +1823,13 @@ export class TelemetryEvent {
+@@ -1780,12 +1834,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -1037,7 +1056,7 @@ index ba254af0c6..8c2c650118 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +1840,7 @@ export class TelemetryEvent {
+@@ -1796,7 +1851,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -1046,7 +1065,7 @@ index ba254af0c6..8c2c650118 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +1908,16 @@ export class TelemetryEvent {
+@@ -1864,17 +1919,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -1068,7 +1087,7 @@ index ba254af0c6..8c2c650118 100644
      );
    }
  
-@@ -2009,158 +2052,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2063,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -1227,7 +1246,7 @@ index ba254af0c6..8c2c650118 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +2412,27 @@ export class TelemetryEvent {
+@@ -2521,17 +2423,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -1247,14 +1266,14 @@ index ba254af0c6..8c2c650118 100644
 +    const smartbarData = explicitState ? explicitState.smartbarData : this.#smartbarData;
 +    const snapshot = lazy.UrlbarTelemetryUtils.collectBounceSnapshot(
 +      event, details, this._startEventInfo, engagementData.visibleResults
-     );
--    let sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
++    );
 +    if (snapshot && this._controller.sapName === "smartbar" && !snapshot.location) {
 +      throw new Error("Telemetry extra_key `location` is required for smartbar");
 +    }
 +    const built = lazy.UrlbarTelemetryUtils.buildRecordedBounce(
 +      snapshot, engagementData, smartbarData, this.#previousSearchWordsSet
-+    );
+     );
+-    let sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
 +    const sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
 +    // Preserve direct-path replacement: even an unrecordable candidate triggers
 +    // any older bounce in this tab before replacing it with a no-op candidate.
@@ -1264,7 +1283,7 @@ index ba254af0c6..8c2c650118 100644
      );
    }
  
-@@ -2548,14 +2449,19 @@ export class TelemetryEvent {
+@@ -2548,14 +2460,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -1290,7 +1309,7 @@ index ba254af0c6..8c2c650118 100644
    }
  
    /**
-@@ -2581,39 +2487,4 @@ export class TelemetryEvent {
+@@ -2581,39 +2498,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -3349,10 +3368,10 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..e8e32fb53e 100644
+index a077de625f..54b7bdedf2 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
-@@ -2,12 +2,20 @@
+@@ -2,12 +2,21 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  
@@ -3370,11 +3389,31 @@ index a077de625f..e8e32fb53e 100644
 -import { UrlbarQueryContext } from "chrome://browser/content/urlbar/UrlbarQueryContext.mjs";
 +import { UrlbarCompositionModel } from "chrome://browser/content/urlbar/UrlbarCompositionModel.mjs";
 +import { UrlbarAutofillModel } from "chrome://browser/content/urlbar/UrlbarAutofillModel.mjs";
++import { querySelectedSearch } from "chrome://browser/content/urlbar/UrlbarSelectedSearch.mjs";
 +import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
  import { UrlbarView } from "chrome://browser/content/urlbar/UrlbarView.mjs";
  import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
  
-@@ -87,12 +95,6 @@ if (lazy) {
+@@ -60,18 +69,14 @@ if (lazy) {
+     ExtensionUtils: "resource://gre/modules/ExtensionUtils.sys.mjs",
+     handleBounceEventTrigger:
+       "moz-src:///browser/components/urlbar/UrlbarParentController.sys.mjs",
+-    QuickSuggest: "moz-src:///browser/components/urlbar/QuickSuggest.sys.mjs",
+     ReaderMode: "moz-src:///toolkit/components/reader/ReaderMode.sys.mjs",
+     SharingUtils: "moz-src:///browser/components/sharing/SharingUtils.sys.mjs",
+     SearchUIUtils: "moz-src:///browser/components/search/SearchUIUtils.sys.mjs",
+-    UrlbarTokenizer:
+-      "moz-src:///browser/components/urlbar/UrlbarTokenizer.sys.mjs",
+     UrlbarUtils: "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs",
+     UrlbarValueFormatter:
+       "moz-src:///browser/components/urlbar/UrlbarValueFormatter.sys.mjs",
+     UrlbarSearchTermsPersistence:
+       "moz-src:///browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs",
+-    UrlUtils: "resource://gre/modules/UrlUtils.sys.mjs",
+   });
+   XPCOMUtils.defineLazyServiceGetters(lazy, {
+     ClipboardHelper: [
+@@ -87,12 +92,6 @@ if (lazy) {
  
  const logger = () => UrlbarShared.getLogger({ prefix: "Input" });
  
@@ -3387,7 +3426,7 @@ index a077de625f..e8e32fb53e 100644
  
  const XHTML_NS = "http://www.w3.org/1999/xhtml";
  
-@@ -134,6 +136,29 @@ function parseMarkupToFragment(markup) {
+@@ -134,6 +133,29 @@ function parseMarkupToFragment(markup) {
   * extends this class (e.g. `UrlbarInput`, `SearchbarInput`).
   */
  export class UrlbarInputBase extends HTMLElement {
@@ -3417,7 +3456,7 @@ index a077de625f..e8e32fb53e 100644
    static get #markup() {
      return `
        <div class="urlbar-background"/>
-@@ -275,9 +300,7 @@ ${
+@@ -275,9 +297,7 @@ ${
    _suppressPrimaryAdjustment = false;
    _lastSearchString = "";
    // Tracks IME composition.
@@ -3428,7 +3467,7 @@ index a077de625f..e8e32fb53e 100644
    // Bumped on each input-driven search; a deferred-Enter snapshots it so its
    // async keyup can tell whether a fresh search has started since.
    #inputEpoch = 0;
-@@ -600,6 +623,8 @@ ${
+@@ -600,6 +620,8 @@ ${
      this.sapDisconnectedCallback();
  
      this.searchModeSwitcher.disconnect();
@@ -3437,7 +3476,7 @@ index a077de625f..e8e32fb53e 100644
  
      if (this._copyCutController) {
        this.inputField.controllers.removeController(this._copyCutController);
-@@ -1716,32 +1741,38 @@ ${
+@@ -1716,32 +1738,38 @@ ${
     * @param {UrlbarResult} options.result The result that was picked.
     * @param {Event} options.event The event that picked the result.
     * @param {HTMLElement} [options.element] The picked view element, if available.
@@ -3488,7 +3527,7 @@ index a077de625f..e8e32fb53e 100644
      }
  
      if (
-@@ -1784,6 +1815,7 @@ ${
+@@ -1784,6 +1812,7 @@ ${
        this.controller.engagementEvent.record(event, {
          result,
          element,
@@ -3496,7 +3535,7 @@ index a077de625f..e8e32fb53e 100644
          searchString: this._lastSearchString,
          selType: "dismiss",
          searchSource: this.getSearchSource(event),
-@@ -1793,72 +1825,21 @@ ${
+@@ -1793,72 +1822,21 @@ ${
        return;
      }
  
@@ -3575,7 +3614,7 @@ index a077de625f..e8e32fb53e 100644
  
      if (!this.#providesSearchMode(result) && !keepViewOpen) {
        this.view.close({ elementPicked: true });
-@@ -1868,6 +1849,7 @@ ${
+@@ -1868,6 +1846,7 @@ ${
        this.controller.engagementEvent.record(event, {
          result,
          element,
@@ -3583,7 +3622,7 @@ index a077de625f..e8e32fb53e 100644
          selType: "canonized",
          searchString: this._lastSearchString,
          searchSource: this.getSearchSource(event),
-@@ -1889,47 +1871,14 @@ ${
+@@ -1889,47 +1868,14 @@ ${
        ? { urlLoad: { url: resultUrl, postData: null } }
        : UrlbarShared.getLoadRequestFromResult(result, { element });
  
@@ -3637,7 +3676,7 @@ index a077de625f..e8e32fb53e 100644
        case UrlbarShared.RESULT_TYPE.TAB_SWITCH: {
          // Behaviour is reversed with SecondaryActions, default behaviour is to navigate
          // and button is provided to switch to tab.
-@@ -1951,9 +1900,10 @@ ${
+@@ -1951,9 +1897,10 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -3649,7 +3688,7 @@ index a077de625f..e8e32fb53e 100644
            searchSource: this.getSearchSource(event),
            windowMode: this.windowMode,
          });
-@@ -1973,8 +1923,9 @@ ${
+@@ -1973,8 +1920,9 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -3660,7 +3699,7 @@ index a077de625f..e8e32fb53e 100644
              searchSource: this.getSearchSource(event),
              windowMode: this.windowMode,
            });
-@@ -1985,35 +1936,16 @@ ${
+@@ -1985,35 +1933,16 @@ ${
            return;
          }
  
@@ -3704,7 +3743,7 @@ index a077de625f..e8e32fb53e 100644
  
          const actionDetails = {
            isSuggestion: !!result.payload.suggestion,
-@@ -2033,14 +1965,9 @@ ${
+@@ -2033,40 +1962,10 @@ ${
            opensInPrivateWindow: result.payload.inPrivateWindow,
          });
  
@@ -3716,13 +3755,40 @@ index a077de625f..e8e32fb53e 100644
 -          engine.isAppProvided &&
 -          engine == this.controller.engineStore.default
 -        ) {
-+        if (UrlbarQueryModel.searchBackendEligible(result, {
+-          let merinoBackend = /** @type {?SuggestBackendMerino} */ (
+-            lazy.QuickSuggest.getFeature("SuggestBackendMerino")
+-          );
+-          if (merinoBackend?.isEnabled) {
+-            let selection = (
+-              result.payload.suggestion || result.payload.query
+-            )?.trim();
+-            // Don't record an empty selection, or one that looks like an origin
+-            // (e.g. "facebook.com"), which `allowRemoteResults` would otherwise
+-            // allow.
+-            if (
+-              selection &&
+-              lazy.UrlUtils.looksLikeOrigin(selection) ==
+-                lazy.UrlUtils.LOOKS_LIKE_ORIGIN.NONE
+-            ) {
+-              // Build a context around the selection so all of
+-              // `allowRemoteResults`'s checks apply to it rather than to the
+-              // originally typed string.
+-              let context = this.#makeQueryContext({ searchString: selection });
+-              context.tokens = lazy.UrlbarTokenizer.tokenize(context);
+-              merinoBackend
+-                .query(selection, { queryContext: context })
+-                .catch(console.error);
+-            }
+-          }
+-        }
++        querySelectedSearch(result, {
 +          isAddressbar: this.#isAddressbar, isPrivate: this.isPrivate,
-+          engine, defaultEngine: this.controller.engineStore.default })) {
-           let merinoBackend = /** @type {?SuggestBackendMerino} */ (
-             lazy.QuickSuggest.getFeature("SuggestBackendMerino")
-           );
-@@ -2077,6 +2004,7 @@ ${
++          engine, defaultEngine: this.controller.engineStore.default },
++        selection => this.#makeQueryContext({ searchString: selection }));
+         break;
+       }
+       case UrlbarShared.RESULT_TYPE.TIP: {
+@@ -2077,6 +1976,7 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -3730,7 +3796,7 @@ index a077de625f..e8e32fb53e 100644
            selType: "tip",
            searchString: this._lastSearchString,
            searchSource: this.getSearchSource(event),
-@@ -2099,9 +2027,11 @@ ${
+@@ -2099,9 +1999,11 @@ ${
            this.controller.engagementEvent.record(event, {
              result,
              element,
@@ -3743,7 +3809,7 @@ index a077de625f..e8e32fb53e 100644
              searchSource: this.getSearchSource(event),
              windowMode: this.windowMode,
            });
-@@ -2119,6 +2049,7 @@ ${
+@@ -2119,6 +2021,7 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -3751,7 +3817,7 @@ index a077de625f..e8e32fb53e 100644
            selType: "extension",
            searchString: this._lastSearchString,
            searchSource: this.getSearchSource(event),
-@@ -2146,8 +2077,9 @@ ${
+@@ -2146,8 +2049,9 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -3762,7 +3828,7 @@ index a077de625f..e8e32fb53e 100644
            searchSource: this.getSearchSource(event),
            windowMode: this.windowMode,
          });
-@@ -2163,8 +2095,9 @@ ${
+@@ -2163,8 +2067,9 @@ ${
          this.controller.engagementEvent.record(event, {
            result,
            element,
@@ -3773,7 +3839,7 @@ index a077de625f..e8e32fb53e 100644
            searchSource: this.getSearchSource(event),
            windowMode: this.windowMode,
          });
-@@ -2176,47 +2109,15 @@ ${
+@@ -2176,47 +2081,15 @@ ${
        throw new Error(`No load request for result ${JSON.stringify(result)}`);
      }
  
@@ -3829,7 +3895,7 @@ index a077de625f..e8e32fb53e 100644
  
      // Bounce tracking keys on the tab the engagement happened in: the chrome
      // window's selected tab, or the tab hosting an input that has no chrome
-@@ -2225,8 +2126,9 @@ ${
+@@ -2225,8 +2098,9 @@ ${
        .startTrackingBounceEvent(this.#selectedBrowserId, event, {
          result,
          element,
@@ -3840,7 +3906,7 @@ index a077de625f..e8e32fb53e 100644
          searchSource: this.getSearchSource(event),
          windowMode: this.windowMode,
        })
-@@ -2235,8 +2137,9 @@ ${
+@@ -2235,8 +2109,9 @@ ${
      this.controller.engagementEvent.record(event, {
        result,
        element,
@@ -3851,7 +3917,7 @@ index a077de625f..e8e32fb53e 100644
        searchSource: this.getSearchSource(event),
        windowMode: this.windowMode,
      });
-@@ -2283,6 +2186,7 @@ ${
+@@ -2283,6 +2158,7 @@ ${
      event = null,
      urlOverride = null,
      element = null,
@@ -3859,7 +3925,7 @@ index a077de625f..e8e32fb53e 100644
    } = {}) {
      // Usually this is set by a previous input event, but in certain cases, like
      // when opening Top Sites on a loaded page, it wouldn't happen. To avoid
-@@ -2353,7 +2257,7 @@ ${
+@@ -2353,7 +2229,7 @@ ${
            checkValue: false,
            startQuery:
              UrlbarPrefs.get("scotchBonnet.enableOverride") &&
@@ -3868,7 +3934,7 @@ index a077de625f..e8e32fb53e 100644
          });
        }
        if (!enteredSearchMode) {
-@@ -2367,7 +2271,7 @@ ${
+@@ -2367,7 +2243,7 @@ ${
      }
  
      if (!result.autofill) {
@@ -3877,7 +3943,7 @@ index a077de625f..e8e32fb53e 100644
        this.setValue(value, {
          actionType: this.#getActionTypeFromResult(result),
        });
-@@ -2415,23 +2319,13 @@ ${
+@@ -2415,23 +2291,13 @@ ${
        return;
      }
  
@@ -3908,7 +3974,7 @@ index a077de625f..e8e32fb53e 100644
        return;
      }
  
-@@ -2479,6 +2373,7 @@ ${
+@@ -2479,6 +2345,7 @@ ${
        })
      ) {
        // Search mode restarts the query, so these results are obsolete.
@@ -3916,7 +3982,7 @@ index a077de625f..e8e32fb53e 100644
        this.controller.discardResults(queryContext);
        return;
      }
-@@ -2534,12 +2429,10 @@ ${
+@@ -2534,12 +2401,10 @@ ${
      event,
      interactionType,
    } = {}) {
@@ -3933,7 +3999,7 @@ index a077de625f..e8e32fb53e 100644
  
      let queryContext = this.#makeQueryContext({
        allowAutofill,
-@@ -2608,9 +2501,7 @@ ${
+@@ -2608,9 +2473,7 @@ ${
      if (options.focus ?? true) {
        this.focus();
      }
@@ -3944,7 +4010,7 @@ index a077de625f..e8e32fb53e 100644
  
      if (
        firstToken == UrlbarShared.RESTRICT_TOKENS.SEARCH &&
-@@ -2629,36 +2520,13 @@ ${
+@@ -2629,36 +2492,13 @@ ${
        return;
      }
  
@@ -3987,7 +4053,7 @@ index a077de625f..e8e32fb53e 100644
      this.inputField.value = value;
      // Avoid selecting the text if this method is called twice in a row.
      this.selectionStart = -1;
-@@ -2692,21 +2560,9 @@ ${
+@@ -2692,21 +2532,9 @@ ${
     *   setSearchMode documentation for details.
     */
    searchModeForToken(token) {
@@ -4012,7 +4078,7 @@ index a077de625f..e8e32fb53e 100644
    }
  
    /**
-@@ -2824,16 +2680,9 @@ ${
+@@ -2824,16 +2652,9 @@ ${
     *   See setSearchMode documentation.
     */
    getSearchMode(browser, confirmedOnly = false) {
@@ -4032,7 +4098,7 @@ index a077de625f..e8e32fb53e 100644
    }
  
    /**
-@@ -2880,64 +2729,10 @@ ${
+@@ -2880,64 +2701,10 @@ ${
        }
      }
  
@@ -4101,7 +4167,7 @@ index a077de625f..e8e32fb53e 100644
  
      // The address bar keeps a search mode per browser, so it only enters search
      // mode for the selected one. Every other input keeps a single search mode.
-@@ -3040,8 +2835,7 @@ ${
+@@ -3040,8 +2807,7 @@ ${
    confirmSearchMode() {
      let searchMode = this.searchMode;
      if (searchMode?.isPreview) {
@@ -4111,7 +4177,7 @@ index a077de625f..e8e32fb53e 100644
  
        // Unselect the one-off search button to ensure UI consistency.
        if (this.view.oneOffSearchButtons) {
-@@ -3245,38 +3039,21 @@ ${
+@@ -3245,38 +3011,21 @@ ${
      result = this._resultForCurrentValue,
      checkValue = true,
      startQuery = true,
@@ -4162,7 +4228,7 @@ index a077de625f..e8e32fb53e 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -3317,37 +3094,20 @@ ${
+@@ -3317,37 +3066,20 @@ ${
     *   The source name.
     */
    getSearchSource(event) {
@@ -4214,7 +4280,7 @@ index a077de625f..e8e32fb53e 100644
    }
  
    // Private methods below.
-@@ -3516,84 +3276,19 @@ ${
+@@ -3516,84 +3248,19 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
@@ -4311,7 +4377,7 @@ index a077de625f..e8e32fb53e 100644
    }
  
    /**
-@@ -3604,14 +3299,7 @@ ${
+@@ -3604,14 +3271,7 @@ ${
     * @returns {string} The `actiontype` value, or undefined.
     */
    #getActionTypeFromResult(result) {
@@ -4327,7 +4393,7 @@ index a077de625f..e8e32fb53e 100644
    }
  
    /**
-@@ -3634,64 +3322,27 @@ ${
+@@ -3634,64 +3294,27 @@ ${
     *   Whether autofill should be allowed in the new search.
     */
    _maybeAutofillPlaceholder(value) {
@@ -4412,7 +4478,7 @@ index a077de625f..e8e32fb53e 100644
    }
  
    /**
-@@ -3772,105 +3423,31 @@ ${
+@@ -3772,105 +3395,31 @@ ${
      }
    }
  
@@ -4543,7 +4609,7 @@ index a077de625f..e8e32fb53e 100644
    }
  
    _toggleActionOverride(event) {
-@@ -3942,22 +3519,10 @@ ${
+@@ -3942,22 +3491,10 @@ ${
      const isOneOff = this.view.oneOffSearchButtons?.eventTargetIsAOneOff(event);
      const searchSource = this.getSearchSource(event);
  
@@ -4570,7 +4636,7 @@ index a077de625f..e8e32fb53e 100644
    }
  
    /**
-@@ -4081,33 +3646,34 @@ ${
+@@ -4081,33 +3618,34 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -4611,7 +4677,7 @@ index a077de625f..e8e32fb53e 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -4200,45 +3766,25 @@ ${
+@@ -4200,45 +3738,25 @@ ${
        keyDownEnterDeferred = this._keyDownEnterDeferred;
      }
  
@@ -4666,7 +4732,7 @@ index a077de625f..e8e32fb53e 100644
        this.handleRevert();
      }
  
-@@ -4267,6 +3813,15 @@ ${
+@@ -4267,6 +3785,15 @@ ${
      }
    }
  
@@ -4682,7 +4748,7 @@ index a077de625f..e8e32fb53e 100644
    _initCopyCutController() {
      // This exists to put an untrimmed URL on the clipboard, and only the address
      // bar trims. Every other input keeps its native copy/cut.
-@@ -4479,7 +4034,7 @@ ${
+@@ -4479,7 +4006,7 @@ ${
        return;
      }
      let controller =
@@ -4691,7 +4757,7 @@ index a077de625f..e8e32fb53e 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4495,6 +4050,33 @@ ${
+@@ -4495,6 +4022,33 @@ ${
      stripOnShare.removeAttribute("disabled");
    }
  
@@ -4725,7 +4791,7 @@ index a077de625f..e8e32fb53e 100644
    _initPasteAndGo() {
      this.addContextMenuItems({
        after: "edit-contextmenu-paste",
-@@ -4507,17 +4089,7 @@ ${
+@@ -4507,17 +4061,7 @@ ${
            .GetStringFromName("pasteAndGo.label");
          pasteAndGo.setAttribute("label", label);
          pasteAndGo.setAttribute("anonid", "paste-and-go");
@@ -4744,7 +4810,7 @@ index a077de625f..e8e32fb53e 100644
  
          fragment.appendChild(pasteAndGo);
          return fragment;
-@@ -4545,10 +4117,7 @@ ${
+@@ -4545,10 +4089,7 @@ ${
            { once: true }
          );
  
@@ -4756,7 +4822,7 @@ index a077de625f..e8e32fb53e 100644
            pasteAndGo.removeAttribute("disabled");
          } else {
            pasteAndGo.setAttribute("disabled", "true");
-@@ -4747,60 +4316,11 @@ ${
+@@ -4747,60 +4288,11 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -4822,7 +4888,7 @@ index a077de625f..e8e32fb53e 100644
    }
  
    /**
-@@ -5071,6 +4591,8 @@ ${
+@@ -5071,6 +4563,8 @@ ${
    setUnifiedSearchButtonAvailability(available) {
      available ||=
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
@@ -4831,7 +4897,7 @@ index a077de625f..e8e32fb53e 100644
      const switcher = this.querySelector(".searchmode-switcher");
      switcher.toggleAttribute("offscreen", !available);
      if (available) {
-@@ -5085,6 +4607,7 @@ ${
+@@ -5085,6 +4579,7 @@ ${
          this.window.gBrowser.selectedBrowser
        ).isUnifiedSearchButtonAvailable = available;
      }
@@ -4839,7 +4905,7 @@ index a077de625f..e8e32fb53e 100644
    }
  
    /**
-@@ -5151,7 +4674,7 @@ ${
+@@ -5151,7 +4646,7 @@ ${
    #maybeSelectAll() {
      if (
        !this.#preventClickSelectsAll &&
@@ -4848,7 +4914,7 @@ index a077de625f..e8e32fb53e 100644
        this.focused &&
        this.inputField.selectionStart == this.inputField.selectionEnd
      ) {
-@@ -5477,34 +5000,20 @@ ${
+@@ -5477,34 +4972,20 @@ ${
      }
    }
  
@@ -4856,28 +4922,28 @@ index a077de625f..e8e32fb53e 100644
 -    // A new input starts a fresh search; bump the epoch so a pending
 -    // deferred-Enter's async keyup won't reset this search's caret.
 -    this.#inputEpoch++;
-+  setNativeInputValue(value) {
-     if (
+-    if (
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      (event.inputType === "deleteContentBackward" ||
 -        event.inputType === "deleteContentForward")
-+      !this.view.nativePresentation ||
-+      typeof value !== "string" ||
-+      value.length > 32768
-     ) {
+-    ) {
 -      // Take a telemetry if user deleted whole autofilled value.
 -      this.parentController.recordAutofillDeletion();
 -    }
 -
--    if (
++  setNativeInputValue(value) {
+     if (
 -      UrlbarPrefs.get("autoFill.adaptiveHistory.enabled") &&
 -      event.inputType?.startsWith("deleteContent") &&
 -      !this.isPrivate &&
 -      this._autofillPlaceholder &&
 -      this.value === this.userTypedValue &&
 -      this._resultForCurrentValue?.payload?.url
--    ) {
++      !this.view.nativePresentation ||
++      typeof value !== "string" ||
++      value.length > 32768
+     ) {
 -      this.parentController.recordAutofillBackspace(
 -        this._resultForCurrentValue.payload.url
 -      );
@@ -4893,7 +4959,7 @@ index a077de625f..e8e32fb53e 100644
      this.valueIsTyped = true;
      this._untrimmedValue = value;
      this._protocolIsTrimmed = false;
-@@ -5516,20 +5025,9 @@ ${
+@@ -5516,20 +4997,9 @@ ${
      // string, thus there's no valid selection. This is also used by the view
      // to set "aria-activedescendant", thus it should never get stale.
      this.controller.userSelectionBehavior = "none";
@@ -4916,7 +4982,7 @@ index a077de625f..e8e32fb53e 100644
      this.toggleAttribute("usertyping", value);
      this.removeAttribute("actiontype");
  
-@@ -5551,6 +5049,43 @@ ${
+@@ -5551,6 +5021,43 @@ ${
          this.removeAttribute("persistsearchterms");
        }
      }
@@ -4960,7 +5026,7 @@ index a077de625f..e8e32fb53e 100644
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
-@@ -5580,10 +5115,9 @@ ${
+@@ -5580,10 +5087,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -4974,7 +5040,7 @@ index a077de625f..e8e32fb53e 100644
      ) {
        return;
      }
-@@ -5591,11 +5125,10 @@ ${
+@@ -5591,11 +5097,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -4990,7 +5056,7 @@ index a077de625f..e8e32fb53e 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5669,33 +5202,20 @@ ${
+@@ -5669,33 +5174,20 @@ ${
    }
  
    _on_paste(event) {
@@ -5032,7 +5098,7 @@ index a077de625f..e8e32fb53e 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5229,7 @@ ${
+@@ -5709,7 +5201,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -5041,7 +5107,7 @@ index a077de625f..e8e32fb53e 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5260,25 @@ ${
+@@ -5740,51 +5232,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -5109,7 +5175,7 @@ index a077de625f..e8e32fb53e 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5472,11 @@ ${
+@@ -5978,15 +5444,11 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -5127,7 +5193,7 @@ index a077de625f..e8e32fb53e 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5496,24 @@ ${
+@@ -6006,44 +5468,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -5184,7 +5250,7 @@ index a077de625f..e8e32fb53e 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,11 +5639,7 @@ ${
+@@ -6169,11 +5611,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -5197,7 +5263,7 @@ index a077de625f..e8e32fb53e 100644
    }
  
    get #isOpenedPageInBlankTargetLoading() {
-@@ -6311,111 +5777,6 @@ function getDroppableData(event) {
+@@ -6311,111 +5749,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -5309,7 +5375,7 @@ index a077de625f..e8e32fb53e 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +5801,10 @@ class CopyCutController {
+@@ -6440,12 +5773,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -7861,6 +7927,45 @@ index 1e2660589b..5ae3ab4843 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/components/urlbar/content/UrlbarSelectedSearch.mjs b/browser/components/urlbar/content/UrlbarSelectedSearch.mjs
+new file mode 100644
+index 0000000000..f565507d28
+--- /dev/null
++++ b/browser/components/urlbar/content/UrlbarSelectedSearch.mjs
+@@ -0,0 +1,33 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
++
++const selectedSearchLazy = typeof ChromeUtils != "undefined" ? {} : null;
++if (selectedSearchLazy) {
++  ChromeUtils.defineESModuleGetters(selectedSearchLazy, {
++    QuickSuggest: "moz-src:///browser/components/urlbar/QuickSuggest.sys.mjs",
++    UrlbarTokenizer: "moz-src:///browser/components/urlbar/UrlbarTokenizer.sys.mjs",
++    UrlUtils: "resource://gre/modules/UrlUtils.sys.mjs",
++  });
++}
++
++/** Shared selected-search effect. The host captures live context; Firefox gates remote data. */
++export function querySelectedSearch(result, facts, makeContext, isCurrent = () => true) {
++  if (!isCurrent()) return false;
++  if (!UrlbarQueryModel.searchBackendEligible(result, facts)) return true;
++  const backend = selectedSearchLazy.QuickSuggest.getFeature("SuggestBackendMerino");
++  if (!backend?.isEnabled) return true;
++  const selection = (result.payload.suggestion || result.payload.query)?.trim();
++  // Even origins allowed as searches must not be disclosed by this effect.
++  if (!selection || selectedSearchLazy.UrlUtils.looksLikeOrigin(selection) !=
++      selectedSearchLazy.UrlUtils.LOOKS_LIKE_ORIGIN.NONE) return true;
++  // Rebuild around the selection, never reuse tokens from the typed query.
++  const context = makeContext(selection);
++  context.tokens = selectedSearchLazy.UrlbarTokenizer.tokenize(context);
++  if (!isCurrent()) return false;
++  // The backend retains allowRemoteResults() and its request/session policy.
++  backend.query(selection, { queryContext: context }).catch(console.error);
++  return true;
++}
 diff --git a/browser/components/urlbar/content/UrlbarUrlValue.mjs b/browser/components/urlbar/content/UrlbarUrlValue.mjs
 new file mode 100644
 index 0000000000..599de1afe8
@@ -9286,16 +9391,17 @@ index 0000000000..de7a88b842
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..a0f31d6da4
+index 0000000000..04c5c0a406
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,644 @@
+@@ -0,0 +1,662 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +import { UrlbarChildController } from "chrome://browser/content/urlbar/UrlbarChildController.mjs";
 +import { UrlbarResultPresentation } from "chrome://browser/content/urlbar/UrlbarResultPresentation.mjs";
++import { querySelectedSearch } from "chrome://browser/content/urlbar/UrlbarSelectedSearch.mjs";
 +import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
 +import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
 +import { UrlbarSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs";
@@ -9615,7 +9721,7 @@ index 0000000000..a0f31d6da4
 +        !Number.isFinite(event.timeStamp) || event.timeStamp < 0) throw new TypeError("Invalid result engagement event");
 +    if (![UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.SEARCH, UrlbarShared.RESULT_TYPE.KEYWORD].includes(result?.type) ||
 +        result.payload?.providesSearchMode) throw new Error("Unsupported terminal engagement");
-+    const { trackBounce = false, recordHistory = false, recordSearch = false, checkSearchDNS = false } = options ?? {};
++    const { trackBounce = false, recordHistory = false, recordSearch = false, checkSearchDNS = false, querySearchBackend = false } = options ?? {};
 +    if (typeof trackBounce !== "boolean" || (trackBounce && !this.#context.browserId)) {
 +      throw new TypeError("Bounce tracking requires a pinned browser identity");
 +    }
@@ -9633,6 +9739,9 @@ index 0000000000..a0f31d6da4
 +    }
 +    if (typeof checkSearchDNS !== "boolean" || (checkSearchDNS && !recordSearch)) {
 +      throw new TypeError("DNS checking requires search recording");
++    }
++    if (typeof querySearchBackend !== "boolean" || (querySearchBackend && !recordSearch)) {
++      throw new TypeError("Backend querying requires search recording");
 +    }
 +    let search = null;
 +    if (recordSearch) {
@@ -9654,6 +9763,20 @@ index 0000000000..a0f31d6da4
 +        if (!this.#controller.parentController.recordSearch(
 +          { ...search.data, details: { ...search.data.details } }, this.#context.browserId
 +        ) || !this.ownsResult(queryId, result)) return false;
++        if (querySearchBackend) {
++          const store = this.#controller.engineStore;
++          const engine = store.getEngineByName(result.payload.engine);
++          // Re-read eligibility after recording callbacks. A changed engine is stale.
++          if (!engine || engine.id !== search.data.engineId) return false;
++          const browser = this.#controller.parentController.getSelectedSearchBrowserState(this.#context.browserId);
++          if (!browser || !this.ownsResult(queryId, result)) return false;
++          if (!querySelectedSearch(result, { isAddressbar: true, isPrivate: this.#context.isPrivate,
++            engine, defaultEngine: store.default },
++          selection => UrlbarQueryModel.create({ sapName: this.#context.sapName,
++            isPrivate: this.#context.isPrivate, searchMode: description.details.searchMode, browser },
++          { searchString: selection }), () => this.ownsResult(queryId, result)) ||
++              !this.ownsResult(queryId, result)) return false;
++        }
 +      }
 +      if (history?.inputHistory) {
 +        const { url, input, whenReady } = history.inputHistory;
