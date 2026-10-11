@@ -8817,10 +8817,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..c784ea832b
+index 0000000000..2c2360a9db
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1521 @@
+@@ -0,0 +1,1544 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10194,8 +10194,31 @@ index 0000000000..c784ea832b
 +    this.#modeExitRequest = null;
 +    this.#modeExitRequery = null;
 +    this.#searchMode = null;
-+    this.#modeExitRequery = { token, edit: this.#edit };
++    this.#modeExitRequery = { token, edit: this.#edit, stateReady: true };
 +    return true;
++  }
++
++  /** Commit acknowledged explicit exit once, preserving editor and browser typed text. */
++  commitAcknowledgedSearchModeExit(token, { persistedSearchTerms } = {}) {
++    this.#check();
++    if (typeof persistedSearchTerms !== "boolean") throw new TypeError("Missing persisted-search observation");
++    const pending = this.#modeExitRequery;
++    if (!pending || pending.token !== token || !pending.stateReady) return null;
++    pending.stateReady = false;
++    const current = () => !this.#closed && this.#isCurrent() && this.#modeExitRequery === pending &&
++      this.#edit === pending.edit && this.#searchMode === null && !this.#edit.composing;
++    const listener = this.#onModeStateChanged;
++    const notify = listener ? state => this.#notifyModeState(listener, state, {
++      reason: "explicit-mode-exit", token, queryId: null, edit: pending.edit,
++    }) : null;
++    let outcome = null;
++    try {
++      if (current()) outcome = this.#queries.commitExplicitModeExit({ persistedSearchTerms }, current, notify);
++      return outcome;
++    } finally {
++      // A failed browser commit must not leave a follow-up authorized against old mode state.
++      if (!outcome?.applied && this.#modeExitRequery === pending) this.#modeExitRequery = null;
++    }
 +  }
 +
 +  /** Requery after explicit exit using Firefox's default autofill and page-proxy policy. */
@@ -10344,10 +10367,10 @@ index 0000000000..c784ea832b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..ef0f4eb102
+index 0000000000..1327d8e5e3
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,736 @@
+@@ -0,0 +1,748 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10988,6 +11011,18 @@ index 0000000000..ef0f4eb102
 +      description.searchMode, { userTypedValue: description.storeTypedValue ? description.value : undefined,
 +        persistedSearchTerms: observation.persistedSearchTerms, engineId, requestedSearchMode,
 +        modeEntry: observation.modeEntry }, current, onCommitted);
++  }
++
++  /** Explicit mode exit has no result/query authority; bind it to the scoped editor. */
++  commitExplicitModeExit(observation, isCurrent, onCommitted = null) {
++    this.#check();
++    if (!Number.isSafeInteger(this.#context.browserId) || this.#context.browserId <= 0) {
++      throw new Error("Mode state requires a pinned browser");
++    }
++    const current = () => !this.#closed && this.#isCurrent() && isCurrent();
++    if (!current()) return null;
++    return this.#controller.parentController.commitIndependentModeState(this.#context.browserId,
++      null, { persistedSearchTerms: observation.persistedSearchTerms }, current, onCommitted);
 +  }
 +
 +  /**

@@ -3665,3 +3665,67 @@ test('malformed recovery continuations fail before consuming browser state',()=>
   }
   assert.equal(p.acknowledgeCurrentLoadRecovery(recovery.token),true);
 });
+
+
+async function ownedExplicitExitFixture(options={}) {
+  const f=await editorFixture({browserId:42,...options});
+  await f.editor.edit({searchMode:{source:1,isPreview:false}},edit(1,'unchanged'));
+  const proposal=f.editor.beginSearchModeExit(1);
+  return {...f,proposal};
+}
+
+test('explicit exit commits acknowledged browser state once without result rows or text writes',async()=>{
+  const notices=[],f=await ownedExplicitExitFixture({onModeStateChanged:n=>notices.push(n)}),p=f.proposal,calls=[];
+  f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{
+    calls.push({id,mode,facts});assert.equal(current(),true);
+    notify(Object.freeze({browserId:id,searchMode:null,userTypedValue:'browser text',persistedSearchTerms:false}));
+    return {applied:true};
+  };
+  assert.equal(f.editor.commitAcknowledgedSearchModeExit(p.token,{persistedSearchTerms:false}),null);
+  assert.equal(f.editor.acknowledgeSearchModeExit(p.token,observedExit(p)),true);
+  assert.equal(f.editor.commitAcknowledgedSearchModeExit(p.token,{persistedSearchTerms:false}).applied,true);
+  assert.equal(f.editor.commitAcknowledgedSearchModeExit(p.token,{persistedSearchTerms:false}),null);
+  assert.equal(calls.length,1);assert.equal(calls[0].id,42);assert.equal(calls[0].mode,null);
+  assert.equal(calls[0].facts.userTypedValue,undefined);assert.equal(f.parent.started.length,1);
+  assert.equal(notices.length,1);assert.equal(notices[0].reason,'explicit-mode-exit');assert.equal(notices[0].queryId,null);
+  assert.equal(notices[0].edit,p.edit);assert.equal(notices[0].token,p.token);assert.equal(Object.isFrozen(notices[0]),true);
+  assert.equal(f.editor.snapshot,p.edit);
+  await f.editor.requeryAfterSearchModeExit(p.token,{searchMode:null},{pageProxyValid:false});
+  assert.equal(f.parent.started.length,2);f.editor.close();
+});
+
+test('failed explicit exit commit revokes requery and malformed observation does not consume it',async()=>{
+  for(const failure of ['reject','throw']) {
+    const f=await ownedExplicitExitFixture(),p=f.proposal;
+    f.editor.acknowledgeSearchModeExit(p.token,observedExit(p));
+    assert.throws(()=>f.editor.commitAcknowledgedSearchModeExit(p.token,{}),/persisted-search/);
+    f.parent.commitIndependentModeState=()=>{if(failure==='throw')throw Error('commit failed');return null;};
+    if(failure==='throw')assert.throws(()=>f.editor.commitAcknowledgedSearchModeExit(p.token,{persistedSearchTerms:false}),/commit failed/);
+    else assert.equal(f.editor.commitAcknowledgedSearchModeExit(p.token,{persistedSearchTerms:false}),null);
+    assert.equal(f.editor.commitAcknowledgedSearchModeExit(p.token,{persistedSearchTerms:false}),null);
+    await assert.rejects(f.editor.requeryAfterSearchModeExit(p.token,{searchMode:null},{pageProxyValid:false}),/Stale/);f.editor.close();
+  }
+});
+
+test('explicit exit state commit is revoked by new editor work and requires a pinned browser',async()=>{
+  for(const revoke of [f=>f.editor.cancel(),f=>f.editor.select(1,0,0),f=>f.editor.edit({},edit(2,'new'))]) {
+    const f=await ownedExplicitExitFixture(),p=f.proposal;let calls=0;
+    f.parent.commitIndependentModeState=()=>{calls++;return {applied:true};};
+    f.editor.acknowledgeSearchModeExit(p.token,observedExit(p));await revoke(f);
+    assert.equal(f.editor.commitAcknowledgedSearchModeExit(p.token,{persistedSearchTerms:false}),null);assert.equal(calls,0);f.editor.close();
+  }
+  const f=await ownedExplicitExitFixture({browserId:undefined}),p=f.proposal;
+  f.editor.acknowledgeSearchModeExit(p.token,observedExit(p));
+  assert.throws(()=>f.editor.commitAcknowledgedSearchModeExit(p.token,{persistedSearchTerms:false}),/pinned browser/);f.editor.close();
+});
+
+test('explicit exit notification reentry preserves completed commit but revokes follow-up',async()=>{
+  let f;
+  f=await ownedExplicitExitFixture({onModeStateChanged:()=>f.editor.cancel()});const p=f.proposal;
+  f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{
+    assert.equal(current(),true);notify({browserId:id,searchMode:null});assert.equal(current(),false);return {applied:true};
+  };
+  f.editor.acknowledgeSearchModeExit(p.token,observedExit(p));
+  assert.equal(f.editor.commitAcknowledgedSearchModeExit(p.token,{persistedSearchTerms:false}).applied,true);
+  await assert.rejects(f.editor.requeryAfterSearchModeExit(p.token,{searchMode:null},{pageProxyValid:false}),/Stale/);f.editor.close();
+});
