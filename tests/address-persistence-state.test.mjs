@@ -100,7 +100,7 @@ test('retained persistence binding applies service effects and avoids disabled b
 
 function ownerFixture(){
   const f=fixture();
-  const c=vm.createContext({ChromeUtils:{defineESModuleGetters:target=>{target.UrlbarSearchTermsPersistence=f.service;}}});
+  const c=vm.createContext({UrlbarShared:{deepEqual:(a,b)=>JSON.stringify(a)===JSON.stringify(b)},ChromeUtils:{defineESModuleGetters:target=>{target.UrlbarSearchTermsPersistence=f.service;}}});
   vm.runInContext(read('content/UrlbarSearchModeModel.mjs').replace(/^import .*;$/gm,'').replaceAll('export ','')+
     ';this.UrlbarSearchModeModel=UrlbarSearchModeModel;',c);
   vm.runInContext(read('content/UrlbarBrowserState.mjs').replace(/^import .*;$/gm,'').replaceAll('export ','')+
@@ -155,4 +155,37 @@ test('reentrant and throwing persistence services cannot commit partial or super
     assert.equal(owner.snapshot(browser).confirmed,null);
     if(newer){assert.equal(owner.commit(browser,newer.token),true);assert.equal(owner.snapshot(browser).confirmed.engineName,'new');}
   }
+});
+
+
+test('owned mode effect policy records changed confirmations, not previews, exits or unchanged modes',()=>{
+  const {owner}=ownerFixture(),browser={},confirmed={engineName:'engine',isPreview:false};
+  for(const [mode,record] of [[confirmed,true],[{...confirmed},false],[{...confirmed,isPreview:true},false],
+    [confirmed,true],[null,false],[{source:1,isPreview:false},true]]) {
+    const p=owner.prepareMode(browser,mode);assert.equal(p.effects.recordModeEntry,record);
+    owner.commit(browser,p.token);
+  }
+});
+
+test('committed effect authority cannot revive after a later preparation is discarded',()=>{
+  const {owner}=ownerFixture(),browser={};const p=owner.prepareMode(browser,{source:1,isPreview:false});
+  assert.equal(owner.isCommitted(browser,p.token),false);owner.commit(browser,p.token);
+  assert.equal(owner.isCommitted(browser,p.token),true);
+  const later=owner.prepareMode(browser,null);assert.equal(owner.isCommitted(browser,p.token),false);
+  owner.discard(browser,later.token);assert.equal(owner.isCommitted(browser,p.token),false);
+  assert.equal(owner.snapshot(browser).confirmed.source,1);
+  const next=owner.prepareMode(browser,null);owner.commit(browser,next.token);
+  assert.equal(owner.isCommitted(browser,next.token),true);owner.forget(browser);
+  assert.equal(owner.isCommitted(browser,next.token),false);
+});
+
+
+test('owned mode telemetry preserves Firefox pre-normalization request comparison',()=>{
+  const {owner}=ownerFixture(),browser={};
+  const normalized={engineName:'engine',isPreview:false,source:3,isGeneralPurposeEngine:true,entry:'keywordoffer'};
+  const first=owner.prepareMode(browser,normalized);owner.commit(browser,first.token);
+  const unchanged=owner.prepareMode(browser,{...normalized},{...normalized});assert.equal(unchanged.effects.recordModeEntry,false);
+  owner.discard(browser,unchanged.token);
+  const raw={engineName:'engine',isPreview:false,entry:'keywordoffer'};
+  const repeated=owner.prepareMode(browser,{...normalized},raw);assert.equal(repeated.effects.recordModeEntry,true);
 });

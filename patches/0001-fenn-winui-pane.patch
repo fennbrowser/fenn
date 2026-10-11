@@ -835,7 +835,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..479b4736ad 100644
+index ba254af0c6..669b8662d8 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,11 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -943,7 +943,7 @@ index ba254af0c6..479b4736ad 100644
    }
  
    /**
-@@ -999,6 +1041,198 @@ export class UrlbarParentController {
+@@ -999,6 +1041,212 @@ export class UrlbarParentController {
      }
    }
  
@@ -1094,9 +1094,10 @@ index ba254af0c6..479b4736ad 100644
 +  }
 +
 +  /** Commit only an acknowledged independent mode; caller validates live engine/result facts. */
-+  commitIndependentModeState(browserId, searchMode, { userTypedValue, persistedSearchTerms }, isCurrent) {
++  commitIndependentModeState(browserId, searchMode, { userTypedValue, persistedSearchTerms, engineId = null, requestedSearchMode = searchMode }, isCurrent) {
 +    if (!Number.isSafeInteger(browserId) || browserId <= 0 || typeof isCurrent !== "function" ||
 +        typeof persistedSearchTerms !== "boolean" ||
++        (searchMode?.engineName ? typeof engineId !== "string" || !engineId : engineId !== null) ||
 +        (userTypedValue !== undefined && typeof userTypedValue !== "string") ||
 +        (searchMode !== null && (typeof searchMode !== "object" || !searchMode))) {
 +      throw new TypeError("Invalid independent mode state");
@@ -1106,20 +1107,33 @@ index ba254af0c6..479b4736ad 100644
 +    const document = browser?.browsingContext?.currentWindowGlobal;
 +    const epoch = browser?.lastLocationChange;
 +    const typedValue = browser?.userTypedValue;
-+    const current = () => isCurrent() && !this.#destroyed && !!document &&
++    const current = (expectedTypedValue = typedValue) => isCurrent() && !this.#destroyed && !!document &&
 +      browser?.browserId === browserId && this.resolveTargetBrowser(browserId) === browser &&
 +      this.browserWindow.gBrowser.selectedBrowser === browser &&
 +      browser.browsingContext?.currentWindowGlobal === document && browser.lastLocationChange === epoch &&
-+      browser.userTypedValue === typedValue;
++      browser.userTypedValue === expectedTypedValue;
 +    if (!current()) return null;
-+    const update = lazy.independentUrlbarBrowserState.prepareMode(browser, searchMode);
++    const update = lazy.independentUrlbarBrowserState.prepareMode(browser, searchMode, requestedSearchMode);
 +    if (!update) return null;
 +    try {
 +      if (update.effects.persistedSearchTerms !== persistedSearchTerms || !current() ||
 +          !lazy.independentUrlbarBrowserState.commit(browser, update.token)) return null;
 +      // The owned state is committed before browser setters can reenter.
 +      if (userTypedValue !== undefined) browser.userTypedValue = userTypedValue;
-+      return Object.freeze({ applied: true, ...update.effects });
++      const effectsCurrent = () => current(userTypedValue === undefined ? typedValue : userTypedValue) &&
++        lazy.independentUrlbarBrowserState.isCommitted(browser, update.token);
++      let modeEntryNotified = false, engineUsageNotified = false;
++      if (update.effects.recordModeEntry && effectsCurrent()) {
++        this.recordSearchMode(searchMode);
++        modeEntryNotified = true;
++      }
++      // Match the retained setter: an engine mode marks usage even for previews
++      // or an unchanged mode. Firefox's engine service owns idempotence/policy.
++      if (engineId && effectsCurrent()) {
++        this.markEngineAsUsed(engineId);
++        engineUsageNotified = true;
++      }
++      return Object.freeze({ applied: true, ...update.effects, modeEntryNotified, engineUsageNotified });
 +    } finally {
 +      lazy.independentUrlbarBrowserState.discard(browser, update.token);
 +    }
@@ -1142,7 +1156,7 @@ index ba254af0c6..479b4736ad 100644
    /**
     * Loads a URL in the browser window resolved from the actor. The content
     * child supplies the serializable load parameters; the parent fills in the
-@@ -1027,9 +1261,15 @@ export class UrlbarParentController {
+@@ -1027,9 +1275,15 @@ export class UrlbarParentController {
     *   browser to hand `focusBrowser` on the deferred-Enter keyup -- a
     *   content-process input can't resolve the selected browser itself.
     */
@@ -1159,7 +1173,7 @@ index ba254af0c6..479b4736ad 100644
      if (!browser) {
        // The tab was closed before the load got here; don't hand its load to
        // whichever tab is selected now.
-@@ -1040,8 +1280,9 @@ export class UrlbarParentController {
+@@ -1040,8 +1294,9 @@ export class UrlbarParentController {
      }
  
      let { url, postData } = lazy.UrlbarUtils.loadRequestToUrl(loadRequest);
@@ -1170,7 +1184,7 @@ index ba254af0c6..479b4736ad 100644
      }
      params.postData = postData;
  
-@@ -1055,6 +1296,7 @@ export class UrlbarParentController {
+@@ -1055,6 +1310,7 @@ export class UrlbarParentController {
        });
      }
  
@@ -1178,7 +1192,7 @@ index ba254af0c6..479b4736ad 100644
      if (where == "current") {
        params.targetBrowser = browser;
      } else {
-@@ -1071,6 +1313,7 @@ export class UrlbarParentController {
+@@ -1071,6 +1327,7 @@ export class UrlbarParentController {
        browser.focus();
      }
  
@@ -1186,7 +1200,7 @@ index ba254af0c6..479b4736ad 100644
      try {
        this.browserWindow.openTrustedLinkIn(url, where, params);
      } catch (ex) {
-@@ -1079,9 +1322,10 @@ export class UrlbarParentController {
+@@ -1079,9 +1336,10 @@ export class UrlbarParentController {
        return {
          reverted: ex.result != Cr.NS_ERROR_LOAD_SHOWED_ERRORPAGE,
          browserId: browser.browserId,
@@ -1198,7 +1212,7 @@ index ba254af0c6..479b4736ad 100644
    }
  
    /**
-@@ -1292,10 +1536,22 @@ export class UrlbarParentController {
+@@ -1292,10 +1550,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -1222,7 +1236,7 @@ index ba254af0c6..479b4736ad 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +1588,7 @@ export class UrlbarParentController {
+@@ -1332,6 +1602,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -1230,7 +1244,7 @@ index ba254af0c6..479b4736ad 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +1612,10 @@ export class UrlbarParentController {
+@@ -1355,6 +1626,10 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
@@ -1241,7 +1255,7 @@ index ba254af0c6..479b4736ad 100644
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +1647,7 @@ export class UrlbarParentController {
+@@ -1386,7 +1661,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -1250,7 +1264,7 @@ index ba254af0c6..479b4736ad 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +1655,11 @@ export class UrlbarParentController {
+@@ -1394,10 +1669,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -1263,7 +1277,7 @@ index ba254af0c6..479b4736ad 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +1677,7 @@ export class UrlbarParentController {
+@@ -1415,7 +1691,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -1272,7 +1286,7 @@ index ba254af0c6..479b4736ad 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +1699,7 @@ export class UrlbarParentController {
+@@ -1437,7 +1713,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -1281,7 +1295,7 @@ index ba254af0c6..479b4736ad 100644
          break;
      }
    };
-@@ -1727,8 +1989,12 @@ export class TelemetryEvent {
+@@ -1727,8 +2003,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -1295,7 +1309,7 @@ index ba254af0c6..479b4736ad 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +2009,7 @@ export class TelemetryEvent {
+@@ -1743,7 +2023,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -1304,7 +1318,7 @@ index ba254af0c6..479b4736ad 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +2035,7 @@ export class TelemetryEvent {
+@@ -1769,7 +2049,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -1313,7 +1327,7 @@ index ba254af0c6..479b4736ad 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +2046,13 @@ export class TelemetryEvent {
+@@ -1780,12 +2060,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -1329,7 +1343,7 @@ index ba254af0c6..479b4736ad 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +2063,7 @@ export class TelemetryEvent {
+@@ -1796,7 +2077,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -1338,7 +1352,7 @@ index ba254af0c6..479b4736ad 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +2131,16 @@ export class TelemetryEvent {
+@@ -1864,17 +2145,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -1360,7 +1374,7 @@ index ba254af0c6..479b4736ad 100644
      );
    }
  
-@@ -2009,158 +2275,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2289,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -1519,7 +1533,7 @@ index ba254af0c6..479b4736ad 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +2635,27 @@ export class TelemetryEvent {
+@@ -2521,17 +2649,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -1556,7 +1570,7 @@ index ba254af0c6..479b4736ad 100644
      );
    }
  
-@@ -2548,14 +2672,19 @@ export class TelemetryEvent {
+@@ -2548,14 +2686,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -1582,7 +1596,7 @@ index ba254af0c6..479b4736ad 100644
    }
  
    /**
-@@ -2581,39 +2710,4 @@ export class TelemetryEvent {
+@@ -2581,39 +2724,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -3710,7 +3724,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..e88d87bd01 100644
+index a077de625f..3db8e70fd3 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,21 @@
@@ -4552,6 +4566,15 @@ index a077de625f..e88d87bd01 100644
  
      // The address bar keeps a search mode per browser, so it only enters search
      // mode for the selected one. Every other input keeps a single search mode.
+@@ -2951,7 +2694,7 @@ ${
+         // when switching back to the current tab and across sessions.
+         this.userTypedValue = this.untrimmedValue;
+         this.valueIsTyped = true;
+-        if (!searchMode.isPreview && !areSearchModesSame) {
++        if (UrlbarSearchModeModel.shouldRecordModeEntry(searchMode, areSearchModesSame)) {
+           this.parentController.recordSearchMode(searchMode);
+         }
+       }
 @@ -3040,8 +2783,7 @@ ${
    confirmSearchMode() {
      let searchMode = this.searchMode;
@@ -8415,15 +8438,16 @@ index 1e2660589b..5ae3ab4843 100644
    /*
 diff --git a/browser/components/urlbar/content/UrlbarBrowserState.mjs b/browser/components/urlbar/content/UrlbarBrowserState.mjs
 new file mode 100644
-index 0000000000..633c3752ea
+index 0000000000..0352f2c88f
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarBrowserState.mjs
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,110 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +import { UrlbarSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs";
++import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
 +const lazy = {};
 +ChromeUtils.defineESModuleGetters(lazy, {
 +  UrlbarSearchTermsPersistence: "moz-src:///browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs",
@@ -8453,6 +8477,7 @@ index 0000000000..633c3752ea
 +      this.#browsers.set(browser, slot);
 +    }
 +    const token = Object.freeze({});
++    slot.latest = token;
 +    slot.pending = { token };
 +    const draft = { ...slot.state, searchModes: { ...slot.state.searchModes } };
 +    if (slot.state.persist) draft.persist = { ...slot.state.persist };
@@ -8469,12 +8494,15 @@ index 0000000000..633c3752ea
 +  }
 +
 +  /** The caller supplies a mode already normalized against its live engine store. */
-+  prepareMode(browser, normalized) {
++  prepareMode(browser, normalized, requested = normalized) {
 +    return this.#prepare(browser, state => {
++      const previous = UrlbarSearchModeModel.readMode(state.searchModes);
++      const modesAreSame = (!previous && !requested) || UrlbarShared.deepEqual(previous, requested);
 +      const searchMode = UrlbarSearchModeModel.writeMode(state.searchModes, normalized);
 +      const persistenceChanged = lazy.UrlbarSearchTermsPersistence.updateSearchModeState(state);
 +      return { searchMode: searchMode ? Object.freeze({ ...searchMode }) : null, persistenceChanged,
-+        persistedSearchTerms: !!state.persist?.shouldPersist };
++        persistedSearchTerms: !!state.persist?.shouldPersist,
++        recordModeEntry: UrlbarSearchModeModel.shouldRecordModeEntry(searchMode, modesAreSame) };
 +    });
 +  }
 +
@@ -8500,8 +8528,15 @@ index 0000000000..633c3752ea
 +    if (!this.isCurrent(browser, token)) return false;
 +    const slot = this.#browsers.get(browser);
 +    slot.state = slot.pending.draft;
++    slot.lastCommit = token;
 +    slot.pending = null;
 +    return true;
++  }
++
++  /** Later preparations revoke effect authority even if subsequently discarded. */
++  isCommitted(browser, token) {
++    const slot = this.#browsers.get(browser);
++    return !!slot && slot.lastCommit === token && slot.latest === token;
 +  }
 +
 +  discard(browser, token) {
@@ -10215,10 +10250,10 @@ index 0000000000..865843b9a2
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..8f4c9d3439
+index 0000000000..7ae82cb361
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,727 @@
+@@ -0,0 +1,734 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10841,15 +10876,22 @@ index 0000000000..8f4c9d3439
 +    if (!Number.isSafeInteger(this.#context.browserId) || this.#context.browserId <= 0) {
 +      throw new Error("Mode state requires a pinned browser");
 +    }
++    if (!this.ownsQuery(queryId) || (result !== null && !this.ownsResult(queryId, result))) return null;
++    const requestedSearchMode = result === null ? null :
++      this.describeResultModeTransition(queryId, result, options)?.searchMode;
++    const engineName = description.searchMode?.engineName;
++    const engineId = engineName ? this.#controller.engineStore.getEngineByName(engineName)?.id : null;
 +    const current = () => !this.#closed && this.#isCurrent() && isCurrent() &&
++      (!engineName || (engineId && this.#controller.engineStore.getEngineByName(engineName)?.id === engineId)) &&
 +      this.ownsQuery(queryId) && this.#controller.resultsOpen &&
 +      (result === null ? description.kind === "mode-exit" && description.searchMode === null :
 +        this.ownsResult(queryId, result) && this.#controller.visibleResults.includes(result) &&
++        UrlbarShared.deepEqual(this.describeResultModeTransition(queryId, result, options)?.searchMode, requestedSearchMode) &&
 +        UrlbarShared.deepEqual(this.describeResultModeApplication(queryId, result, options), description));
 +    if (!current()) return null;
 +    return this.#controller.parentController.commitIndependentModeState(this.#context.browserId,
 +      description.searchMode, { userTypedValue: description.storeTypedValue ? description.value : undefined,
-+        persistedSearchTerms: observation.persistedSearchTerms }, current);
++        persistedSearchTerms: observation.persistedSearchTerms, engineId, requestedSearchMode }, current);
 +  }
 +
 +  /**
@@ -11421,10 +11463,10 @@ index 0000000000..1fec37fd9e
 +}
 diff --git a/browser/components/urlbar/content/UrlbarSearchModeModel.mjs b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
 new file mode 100644
-index 0000000000..d995a9fee6
+index 0000000000..7222bbc2a4
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
-@@ -0,0 +1,445 @@
+@@ -0,0 +1,450 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11573,6 +11615,11 @@ index 0000000000..d995a9fee6
 +    mode.entry = UrlbarShared.SEARCH_MODE_ENTRY.has(entry) ? entry : "other";
 +    if (restrictType) mode.restrictType = restrictType;
 +    return Object.freeze(mode);
++  }
++
++  /** Firefox records only a changed, confirmed mode entry. */
++  static shouldRecordModeEntry(mode, modesAreSame) {
++    return !!mode && !mode.isPreview && !modesAreSame;
 +  }
 +
 +  /** Read a copy; preview shadows confirmed state unless explicitly excluded. */

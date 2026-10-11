@@ -2874,6 +2874,7 @@ function parentLoadFixture() {
     ${methods}
   }`)(lazy,{NS_ERROR_LOAD_SHOWED_ERRORPAGE:99});
   const p=new Parent();p.resolveTargetBrowser=id=>id===42?browser:null;
+  p.recordSearchMode=mode=>calls.push(['mode-entry',mode]);p.markEngineAsUsed=id=>calls.push(['engine-used',id]);
   p.browserWindow={gBrowser:{selectedBrowser:browser},openTrustedLinkIn:(url,where,params)=>calls.push({url,where,params})};
   const data={where:'current',browserId:42,loadRequest:{urlLoad:{url:'https://chosen.test/'}},params:{avoidBrowserFocus:false},userTypedValue:'chosen'};
   return {p,browser,data,calls,lazy};
@@ -3378,8 +3379,8 @@ test('parent mode commit validates browser scope, typed state and persistence ob
       if(change==='document')browser.browsingContext.currentWindowGlobal={};
       if(change==='typed')browser.userTypedValue='newer';if(change==='scope')current=false;
       return {token:{},effects:{persistedSearchTerms:change==='persistence'}};
-    },commit:()=>{committed++;return true;},discard:()=>{discarded++;}};
-    const result=p.commitIndependentModeState(42,{engineName:'Engine'},{userTypedValue:'chosen',persistedSearchTerms:false},()=>current);
+    },commit:()=>{committed++;return true;},isCommitted:()=>true,discard:()=>{discarded++;}};
+    const result=p.commitIndependentModeState(42,{engineName:'Engine'},{userTypedValue:'chosen',persistedSearchTerms:false,engineId:'engine'},()=>current);
     assert.equal(result?.applied??false,change==='none');assert.equal(committed,change==='none'?1:0);assert.equal(discarded,1);
     assert.equal(browser.userTypedValue,change==='none'?'chosen':change==='typed'?'newer':'old');
   }
@@ -3392,4 +3393,55 @@ test('parent mode commit rejects missing targets and preserves typed text for pr
   assert.equal(p.commitIndependentModeState(42,null,{persistedSearchTerms:false},()=>true).applied,true);
   assert.equal(browser.userTypedValue,'retained');assert.equal(effects.searchMode,null);
   assert.throws(()=>p.commitIndependentModeState(42,null,{},()=>true),/Invalid/);
+});
+
+
+test('parent mode effects run after typed-state commit and suppress later work on reentry',()=>{
+  for(const phase of ['none','typed','record','owner']) {
+    const {p,browser,lazy}=parentLoadFixture(),events=[];let typed='old',current=true,owned=true;
+    Object.defineProperty(browser,'userTypedValue',{get:()=>typed,set:value=>{typed=value;events.push('typed');if(phase==='typed')current=false;}});
+    lazy.independentUrlbarBrowserState={prepareMode:()=>({token:{},effects:{persistedSearchTerms:false,recordModeEntry:true}}),
+      commit:()=>{events.push('commit');return true;},isCommitted:()=>owned,discard:()=>events.push('discard')};
+    p.recordSearchMode=()=>{events.push('record');if(phase==='record')current=false;if(phase==='owner')owned=false;};
+    p.markEngineAsUsed=id=>{assert.equal(id,'engine');events.push('engine');};
+    const result=p.commitIndependentModeState(42,{engineName:'Engine'},
+      {userTypedValue:'chosen',persistedSearchTerms:false,engineId:'engine'},()=>current);
+    assert.equal(result.applied,true);assert.equal(result.modeEntryNotified,phase!=='typed');
+    assert.equal(result.engineUsageNotified,phase==='none');
+    assert.deepEqual(events,phase==='typed'?['commit','typed','discard']:phase==='none'?
+      ['commit','typed','record','engine','discard']:['commit','typed','record','discard']);
+  }
+});
+
+test('engine previews and unchanged modes still notify usage while local modes have no engine effect',()=>{
+  for(const engineMode of [false,true]) {
+    const {p,browser,lazy}=parentLoadFixture(),events=[];browser.userTypedValue='old';
+    lazy.independentUrlbarBrowserState={prepareMode:()=>({token:{},effects:{persistedSearchTerms:false,recordModeEntry:false}}),
+      commit:()=>true,isCommitted:()=>true,discard:()=>{}};
+    p.recordSearchMode=()=>{throw Error('unexpected mode entry');};p.markEngineAsUsed=id=>events.push(id);
+    const result=p.commitIndependentModeState(42,engineMode?{engineName:'Engine',isPreview:true}:{source:1},
+      {persistedSearchTerms:false,engineId:engineMode?'engine':null},()=>true);
+    assert.equal(result.modeEntryNotified,false);assert.equal(result.engineUsageNotified,engineMode);
+    assert.deepEqual(events,engineMode?['engine']:[]);assert.equal(browser.userTypedValue,'old');
+  }
+});
+
+test('mode-state live guard pins engine id even when a replacement has the same name and mode facts',async()=>{
+  const f=await modeWriteFixture({}, {browserId:42}),p=f.proposal;
+  f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
+  f.parent.commitIndependentModeState=(_id,_mode,observation,current)=>{
+    assert.equal(observation.engineId,'engine');assert.equal(current(),true);
+    f.parent.child.updateEngineStore('changed',{...f.engine,id:'replacement'},0);
+    assert.equal(current(),false);return null;
+  };
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),null);f.editor.close();
+});
+
+test('throwing mode effects cannot make an editor state commit retryable',async()=>{
+  const f=await modeWriteFixture({}, {browserId:42}),p=f.proposal;let calls=0;
+  f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
+  f.parent.commitIndependentModeState=()=>{calls++;throw Error('engine notification failed');};
+  assert.throws(()=>f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),/notification failed/);
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),null);
+  assert.equal(calls,1);f.editor.close();
 });

@@ -411,3 +411,13 @@ test('shared confirmation copies preview facts and original binding retains one-
   assert.equal(input.view.oneOffSearchButtons.selectedButton,null);
   input.searchMode.bindingMutable=true;
 });
+
+
+test('retained and independent mode-entry predicate excludes unchanged, preview and absent modes',()=>{
+  const {model}=fixture();
+  for(const same of [false,true])for(const mode of [null,{isPreview:true},{isPreview:false},{}]) {
+    assert.equal(model.constructor.shouldRecordModeEntry(mode,same),!!mode&&!mode.isPreview&&!same);
+  }
+  const source=readFileSync(new URL('UrlbarInputBase.mjs',base),'utf8');
+  assert.match(source,/UrlbarSearchModeModel\.shouldRecordModeEntry\(searchMode, areSearchModesSame\)/);
+});
