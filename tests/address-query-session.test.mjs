@@ -2411,3 +2411,51 @@ test('search recording descriptions reject stale, unexposed and unsupported resu
   result.type=f.sandbox.UrlbarShared.RESULT_TYPE.URL;result.payload.url='https://example.test/';assert.equal(describe(),null);
   f.editor.publishPresentation(1,q.id,[],false);assert.throws(()=>describe(),/Invalid/);f.editor.close();
 });
+
+
+test('post-search DNS policy preserves heuristic, mode and preference gates',()=>{
+  const f=fixture(),m=f.sandbox.UrlbarQueryModel,result={heuristic:true};
+  const facts={isAddressbar:true,searchMode:null,originalUntrimmedValue:'  intranet  '};
+  f.prefs.dnsResolveSingleWordsAfterSearch=1;f.prefs["browser.fixup.dns_first_for_single_words"]=false;
+  assert.equal(m.searchFixupHost(result,facts),'intranet');
+  for(const override of [{isAddressbar:false},{searchMode:{source:1}},{originalUntrimmedValue:'two words'},
+    {originalUntrimmedValue:'https://example.test/'},{originalUntrimmedValue:''}]) {
+    assert.equal(m.searchFixupHost(result,{...facts,...override}),null);
+  }
+  assert.equal(m.searchFixupHost({heuristic:false},facts),null);
+  f.prefs['browser.fixup.dns_first_for_single_words']=true;assert.equal(m.searchFixupHost(result,facts),null);
+  f.prefs['browser.fixup.dns_first_for_single_words']=false;
+  for(const threshold of [0,-1]) {f.prefs.dnsResolveSingleWordsAfterSearch=threshold;assert.equal(m.searchFixupHost(result,facts),null);}
+  f.prefs.dnsResolveSingleWordsAfterSearch=2;assert.equal(m.searchFixupHost(result,facts),'intranet');f.session.close();
+});
+
+test('selected-search backend eligibility preserves privacy, history and exact default engine gates',()=>{
+  const f=fixture(),m=f.sandbox.UrlbarQueryModel,engine={id:'engine',isAppProvided:true};
+  const result={source:f.sandbox.UrlbarShared.RESULT_SOURCE.SEARCH,payload:{}};
+  const facts={isAddressbar:true,isPrivate:false,engine,defaultEngine:engine};
+  assert.equal(m.searchBackendEligible(result,facts),true);
+  for(const override of [{isAddressbar:false},{isPrivate:true},{engine:null},{engine:{...engine,isAppProvided:false}},
+    {defaultEngine:{...engine}},{defaultEngine:null}])assert.equal(m.searchBackendEligible(result,{...facts,...override}),false);
+  assert.equal(m.searchBackendEligible({...result,source:f.sandbox.UrlbarShared.RESULT_SOURCE.HISTORY},facts),false);
+  assert.equal(m.searchBackendEligible({...result,payload:{inPrivateWindow:true}},facts),false);f.session.close();
+});
+
+test('independent search effects use pinned privacy, owned mode and live default policy without side effects',async()=>{
+  const f=await editorFixture({isPrivate:false}),q=await f.editor.edit({},edit(1,'intranet'));
+  const engine={id:'e',name:'Engine',isAppProvided:true};
+  f.parent.child.updateEngineStore('changed',engine,-1);f.parent.child.updateEngineStore('default',engine);
+  const result={id:83,type:f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH,heuristic:true,payload:{engine:'Engine',query:'intranet'}};
+  q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+  f.parent.checkKeywordURIFixup=()=>assert.fail('description started DNS');
+  f.parent.recordSearch=()=>assert.fail('description recorded search');
+  const options={selectedTabIsEmpty:false,originalUntrimmedValue:' intranet ',isPrivate:true,searchMode:{source:1}};
+  const describe=()=>f.editor.describeResultSearchRecording(1,q.id,result,{},options);
+  f.prefs.dnsResolveSingleWordsAfterSearch=1;f.prefs["browser.fixup.dns_first_for_single_words"]=false;
+  const first=describe();assert.equal(first.effects.fixupHost,'intranet');assert.equal(first.effects.backendEligible,true);
+  assert.equal(Object.isFrozen(first.effects),true);
+  f.prefs['browser.fixup.dns_first_for_single_words']=true;assert.equal(describe().effects.fixupHost,null);
+  const other={id:'other',name:'Other',isAppProvided:true};
+  f.parent.child.updateEngineStore('changed',other,-1);f.parent.child.updateEngineStore('default',other);
+  assert.equal(describe().effects.backendEligible,false);assert.equal(first.effects.backendEligible,true);
+  result.payload.inPrivateWindow=true;assert.equal(describe().effects.backendEligible,false);f.editor.close();
+});
