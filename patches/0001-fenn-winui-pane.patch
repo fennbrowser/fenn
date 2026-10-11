@@ -833,7 +833,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..a51b7f0bfb 100644
+index ba254af0c6..dc069c07fe 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -114,6 +114,7 @@ export class UrlbarParentController {
@@ -1017,6 +1017,268 @@ index ba254af0c6..a51b7f0bfb 100644
      );
    }
  
+@@ -2009,158 +2036,6 @@ export class TelemetryEvent {
+     }
+   }
+ 
+-  /**
+-   * Records the relevant telemetry information for the given parameters.
+-   *
+-   * @param {"abandonment" | "engagement" | "disable" | "bounce"} method
+-   * @param {{interactionType: any, searchString: string }} startEventInfo
+-   * @param {object} details
+-   * @param {string} details.action
+-   *   The type of action that caused this event. This may be recorded in the
+-   *   engagement_type field of the event.
+-   * @param {number} details.numWords
+-   *   The length of words used for the search.
+-   * @param {number} details.numChars
+-   *   The length of string used for the search. It includes whitespaces.
+-   * @param {string} details.provider
+-   *   The name of the `UrlbarProvider` that provided the selected result.
+-   * @param {string[]} details.searchWords
+-   *   The search words entered, used to determine if the search has been refined.
+-   * @param {string} details.searchSource
+-   *   The source of the search event.
+-   * @param {object} details.searchMode
+-   *   The searchMode object to record.
+-   * @param {number} details.selIndex
+-   *   The index of the selected result.
+-   * @param {UrlbarResult[]} details.visibleResults
+-   *   The results shown when the engagement was captured. Passed in (rather than
+-   *   read fresh here) so a deferred recording indexes `selIndex` into the same
+-   *   results it was captured against.
+-   * @param {string} details.selType
+-   *   The Type of the selected element, undefined for "blur".
+-   *   One of "unknown", "autofill", "visiturl", "bookmark", "help", "history",
+-   *   "keyword", "searchengine", "searchsuggestion", "switchtab", "remotetab",
+-   *   "extension", "oneoff", "dismiss".
+-   * @param {string|null} [details.pickedActionKey]
+-   *   The `data-action` of the action button the user picked, when selType is
+-   *   "action". Used to disambiguate which action was picked in the global
+-   *   actions row, which can contain multiple action buttons.
+-   * @param {number} [details.viewTime]
+-   *   The length of the view time in milliseconds.
+-   * @param {SapLocation} [details.location]
+-   *   The location where the interaction occurred.
+-   *   Required when sap is "smartbar".
+-   * @param {WindowMode} [details.windowMode]
+-   *   The window mode: classic, private, or smartwindow.
+-   * @param {string} [details.chatId]
+-   *   UUID for this smart window session. Unique identifier for each chat
+-   *   conversation. Only set when sap is `smartbar`.
+-   * @param {string} [details.intent]
+-   *   The detected intent for the input. Only set when sap is `smartbar`.
+-   * @param {string} [details.model]
+-   *   Model selected by the user. Only set when sap is `smartbar`.
+-   * @param {?string} [details.engagementSap]
+-   *   The search access point. The address bar's `urlbar`, `urlbar_newtab` and
+-   *   `urlbar_addonpage` depend on the page loaded at the time the search was
+-   *   made. The engagement itself loads a new page, so a recording deferred
+-   *   past it passes the sap resolved when the engagement happened. A recording
+-   *   made at engagement time omits it, so the sap resolves from `searchSource`
+-   *   here.
+-   */
+-  #recordSearchEngagementTelemetry(
+-    method,
+-    startEventInfo,
+-    {
+-      action,
+-      numWords,
+-      numChars,
+-      provider,
+-      searchWords,
+-      searchSource,
+-      searchMode,
+-      selIndex,
+-      visibleResults,
+-      selType,
+-      pickedActionKey = null,
+-      viewTime = 0,
+-      location = null,
+-      chatId = "",
+-      intent = "",
+-      model = "",
+-      windowMode,
+-      engagementSap,
+-    }
+-  ) {
+-    let sap = engagementSap ?? this.#searchSourceToSap(searchSource);
+-    if (!sap) {
+-      return;
+-    }
+-    let engagementData = this.#engagementData;
+-    // The extra_key `location` is optional, but required for the smartbar.
+-    // TODO (bug 2024631): Support location for all SAPs.
+-    if (this._controller.sapName === "smartbar" && !location) {
+-      throw new Error(
+-        "Telemetry extra_key `location` is required for smartbar"
+-      );
+-    }
+-    searchMode = searchMode ?? engagementData.searchMode;
+-
+-    // Distinguish user typed search strings from persisted search terms. The
+-    // "refined" check compares against the previous session's search words, so
+-    // thread that state through and store what comes back.
+-    let { interaction, previousSearchWords } =
+-      lazy.UrlbarTelemetryUtils.getInteractionType(
+-        method,
+-        startEventInfo,
+-        searchSource,
+-        searchWords,
+-        searchMode,
+-        this.#previousSearchWordsSet
+-      );
+-    this.#previousSearchWordsSet = previousSearchWords;
+-
+-    let built = lazy.UrlbarTelemetryUtils.buildEventInfo({
+-      method,
+-      action,
+-      interaction,
+-      numChars,
+-      numWords,
+-      provider,
+-      searchSource,
+-      searchMode,
+-      selIndex,
+-      visibleResults,
+-      viewIsOpen: engagementData.viewIsOpen,
+-      selType,
+-      pickedActionKey,
+-      viewTime,
+-      location,
+-      chatId,
+-      intent,
+-      model,
+-      windowMode,
+-    });
+-    if (built) {
+-      this.#fillAndRecord(built, sap);
+-    }
+-  }
+-
+-  /**
+-   * Returns Smart Window telemetry data for SAP `smartbar`.
+-   *
+-   * @param {string} searchSource
+-   *   The search source identifier.
+-   * @returns {{ chatId: string, intent: string, model: string } | null}
+-   *   Telemetry for the smartbar.
+-   */
+-  #getOptionalSmartbarTelemetry(searchSource) {
+-    const isSmartbar = this.#searchSourceToSap(searchSource) === "smartbar";
+-    if (!isSmartbar) {
+-      return null;
+-    }
+-    return this.#smartbarData;
+-  }
+-
+   /**
+    * Retrieves available semantic search sources.
+    * Ensure it is the provider initializing the semantic manager, since it
+@@ -2521,17 +2396,27 @@ export class TelemetryEvent {
+    *   A DOM event.
+    * @param {ActionDetails} details
+    *   An object describing interaction details.
+-   */
+-  async startTrackingBounceEvent(browserId, event, details) {
+-    let snapshot = lazy.UrlbarTelemetryUtils.collectBounceSnapshot(
+-      event,
+-      details,
+-      this._startEventInfo,
+-      this.#engagementData.visibleResults
++   * @param {?object} explicitState
++   *   Validated {engagementData, smartbarData} from an independent consumer;
++   *   omitted for the retained input. All presentation facts are captured now.
++   */
++  async startTrackingBounceEvent(browserId, event, details, explicitState = null) {
++    const engagementData = explicitState ? explicitState.engagementData : this.#engagementData;
++    const smartbarData = explicitState ? explicitState.smartbarData : this.#smartbarData;
++    const snapshot = lazy.UrlbarTelemetryUtils.collectBounceSnapshot(
++      event, details, this._startEventInfo, engagementData.visibleResults
++    );
++    if (snapshot && this._controller.sapName === "smartbar" && !snapshot.location) {
++      throw new Error("Telemetry extra_key `location` is required for smartbar");
++    }
++    const built = lazy.UrlbarTelemetryUtils.buildRecordedBounce(
++      snapshot, engagementData, smartbarData, this.#previousSearchWordsSet
+     );
+-    let sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
++    const sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
++    // Preserve direct-path replacement: even an unrecordable candidate triggers
++    // any older bounce in this tab before replacing it with a no-op candidate.
+     await this.#startTrackingBounce(browserId, viewTime =>
+-      this.#recordBounce(snapshot, viewTime, sap)
++      this.#recordBuiltBounce(built, sap, viewTime)
+     );
+   }
+ 
+@@ -2548,14 +2433,19 @@ export class TelemetryEvent {
+   async startTrackingBuiltBounce(payload) {
+     let { built, searchSource, browserId } = payload;
+     let sap = this.#searchSourceToSap(searchSource);
+-    if (!sap) {
++    if (!sap || !built) {
+       return;
+     }
+-    await this.#startTrackingBounce(browserId, viewTime => {
+-      // view_time is only known now, once Interactions has reported it.
+-      built.eventInfo.view_time = (viewTime / 1000).toString();
+-      this.#fillAndRecord(built, sap);
+-    });
++    await this.#startTrackingBounce(browserId, viewTime =>
++      this.#recordBuiltBounce(built, sap, viewTime)
++    );
++  }
++
++  #recordBuiltBounce(built, sap, viewTime) {
++    if (!built || !sap) return;
++    // Only Interactions' measured time is deferred; no input/view is consulted.
++    built.eventInfo.view_time = (viewTime / 1000).toString();
++    this.#fillAndRecord(built, sap);
+   }
+ 
+   /**
+@@ -2581,39 +2471,4 @@ export class TelemetryEvent {
+     gTrackedBounces.set(browser, { startTime: Date.now(), record });
+   }
+ 
+-  /**
+-   * Records a bounce telemetry event from a bounce snapshot, the direct path's
+-   * recording half.
+-   *
+-   * @param {?object} snapshot
+-   *   The bounce snapshot from `UrlbarTelemetryUtils.collectBounceSnapshot()`.
+-   * @param {number} viewTime
+-   *   The time spent on the tab before navigating away, in milliseconds.
+-   * @param {?string} sap
+-   *   The sap resolved when the engagement happened, or null when it couldn't
+-   *   be. A bounce never resolves its own, so it goes unrecorded then.
+-   */
+-  #recordBounce(snapshot, viewTime, sap) {
+-    if (!snapshot || !sap) {
+-      return;
+-    }
+-
+-    this.#recordSearchEngagementTelemetry("bounce", snapshot.startEventInfo, {
+-      engagementSap: sap,
+-      action: snapshot.action,
+-      numChars: snapshot.numChars,
+-      numWords: snapshot.numWords,
+-      searchWords: snapshot.searchWords,
+-      provider: snapshot.provider,
+-      searchSource: snapshot.searchSource,
+-      searchMode: snapshot.searchMode,
+-      selIndex: snapshot.selIndex,
+-      visibleResults: snapshot.visibleResults,
+-      selType: snapshot.selType,
+-      viewTime: viewTime / 1000,
+-      location: snapshot.location,
+-      windowMode: snapshot.windowMode,
+-      ...this.#getOptionalSmartbarTelemetry(snapshot.searchSource),
+-    });
+-  }
+ }
 diff --git a/browser/components/urlbar/UrlbarPrefs.sys.mjs b/browser/components/urlbar/UrlbarPrefs.sys.mjs
 index e044c8a6df..be0ea6dbee 100644
 --- a/browser/components/urlbar/UrlbarPrefs.sys.mjs
@@ -2910,7 +3172,7 @@ index b679c5cf1b..62bfc0330c 100644
    }
  }
 diff --git a/browser/components/urlbar/content/UrlbarChildTelemetry.mjs b/browser/components/urlbar/content/UrlbarChildTelemetry.mjs
-index 73fef3a888..b7a9733852 100644
+index 73fef3a888..da4dae59c9 100644
 --- a/browser/components/urlbar/content/UrlbarChildTelemetry.mjs
 +++ b/browser/components/urlbar/content/UrlbarChildTelemetry.mjs
 @@ -152,8 +152,8 @@ export class UrlbarChildTelemetry {
@@ -2935,6 +3197,47 @@ index 73fef3a888..b7a9733852 100644
      let smartbarData = UrlbarTelemetryUtils.smartbarData(input);
  
      let snapshot = UrlbarTelemetryUtils.collectBounceSnapshot(
+@@ -333,37 +333,10 @@ export class UrlbarChildTelemetry {
+       return;
+     }
+ 
+-    // Build the Glean event now, while the input and view are live; `view_time`
+-    // is filled parent-side once `Interactions` reports it at trigger time.
+-    let { searchSource } = snapshot;
+-    let searchMode = snapshot.searchMode ?? engagementData.searchMode;
+-    let { interaction } = UrlbarTelemetryUtils.getInteractionType(
+-      "bounce",
+-      snapshot.startEventInfo,
+-      searchSource,
+-      snapshot.searchWords,
+-      searchMode,
+-      this.#previousSearchWords
++    const { searchSource } = snapshot;
++    const built = UrlbarTelemetryUtils.buildRecordedBounce(
++      snapshot, engagementData, smartbarData, this.#previousSearchWords
+     );
+-    let built = UrlbarTelemetryUtils.buildEventInfo({
+-      method: "bounce",
+-      action: snapshot.action,
+-      interaction,
+-      numChars: snapshot.numChars,
+-      numWords: snapshot.numWords,
+-      provider: snapshot.provider,
+-      searchSource,
+-      searchMode,
+-      selIndex: snapshot.selIndex,
+-      visibleResults: snapshot.visibleResults,
+-      viewIsOpen: engagementData.viewIsOpen,
+-      selType: snapshot.selType,
+-      location: snapshot.location,
+-      chatId: smartbarData.chatId,
+-      intent: smartbarData.intent,
+-      model: smartbarData.model,
+-      windowMode: snapshot.windowMode,
+-    });
+ 
+     this.#controller.parentController.startTrackingBuiltBounce({
+       built,
 diff --git a/browser/components/urlbar/content/UrlbarEventBufferer.mjs b/browser/components/urlbar/content/UrlbarEventBufferer.mjs
 index 4172241eaf..ce3917f8f7 100644
 --- a/browser/components/urlbar/content/UrlbarEventBufferer.mjs
@@ -4635,7 +4938,7 @@ index 862b56c9ca..c37f1f26b9 100644
      // Fires when the first result changed, before QUERY_RESULTS, so the input
      // can react to it (enter search mode, apply autofill) before the results
 diff --git a/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs b/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
-index 9596698cf9..f1a8624ab3 100644
+index 9596698cf9..77dd6bd175 100644
 --- a/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
 +++ b/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs
 @@ -53,14 +53,14 @@ export class UrlbarTelemetryUtils {
@@ -4703,6 +5006,47 @@ index 9596698cf9..f1a8624ab3 100644
        searchSource: input.getSearchSource(),
      };
    }
+@@ -829,6 +828,40 @@ export class UrlbarTelemetryUtils {
+     ).built;
+   }
+ 
++  /** Build bounce fields at engagement time; only view_time is deferred. */
++  static buildRecordedBounce(snapshot, engagementData, smartbarData, previousSearchWords) {
++    if (!snapshot) return null;
++    let { searchSource } = snapshot;
++    let searchMode = snapshot.searchMode ?? engagementData.searchMode;
++    let { interaction } = this.getInteractionType(
++      "bounce",
++      snapshot.startEventInfo,
++      searchSource,
++      snapshot.searchWords,
++      searchMode,
++      previousSearchWords
++    );
++    return this.buildEventInfo({
++      method: "bounce",
++      action: snapshot.action,
++      interaction,
++      numChars: snapshot.numChars,
++      numWords: snapshot.numWords,
++      provider: snapshot.provider,
++      searchSource,
++      searchMode,
++      selIndex: snapshot.selIndex,
++      visibleResults: snapshot.visibleResults,
++      viewIsOpen: engagementData.viewIsOpen,
++      selType: snapshot.selType,
++      location: snapshot.location,
++      chatId: smartbarData.chatId,
++      intent: smartbarData.intent,
++      model: smartbarData.model,
++      windowMode: snapshot.windowMode,
++    });
++  }
++
+   static #buildRecorded(
+     method,
+     snapshot,
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
 index 278cb5ca71..b6496441e5 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
@@ -8240,7 +8584,7 @@ index 0000000000..9edeec492a
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..55ce5802dd
+index 0000000000..4be739c78f
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 @@ -0,0 +1,431 @@
@@ -8256,7 +8600,7 @@ index 0000000000..55ce5802dd
 +/**
 + * Independent query consumer. No editor or view is constructed or emulated.
 + * The chrome host supplies identity and a pinned tab/document validity check.
-+ * Editing, navigation and engagement are not implemented by this consumer yet.
++ * Editing is owned by UrlbarEditSession; navigation and activation remain host work.
 + * Per-query updates expose the current context, never the mutable controller.
 + * The host must close it on scope
 + * loss and teardown; the scope check also rejects races at dispatch, delivery,
