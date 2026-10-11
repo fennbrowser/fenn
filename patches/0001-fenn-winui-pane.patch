@@ -7961,10 +7961,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..759a972e88
+index 0000000000..de7a88b842
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1260 @@
+@@ -0,0 +1,1268 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8857,6 +8857,14 @@ index 0000000000..759a972e88
 +      searchString: this.#typedText, searchMode: this.#searchMode });
 +  }
 +
++  clearResultAutofillBackspace(revision, queryId, result) {
++    this.#check();
++    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing || this.#hiddenResults) {
++      throw new Error("Stale editor activation cleanup");
++    }
++    return this.#queries.clearResultAutofillBackspace(queryId, result);
++  }
++
 +  recordResultEngagement(revision, queryId, result, event, options = {}) {
 +    this.#check();
 +    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing || this.#hiddenResults) {
@@ -9227,10 +9235,10 @@ index 0000000000..759a972e88
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..0028276661
+index 0000000000..24ece2b16c
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,601 @@
+@@ -0,0 +1,621 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9261,6 +9269,7 @@ index 0000000000..0028276661
 +  #frozen = null;
 +  #onPresentationRequest;
 +  #removedIds = new Set();
++  #activationCleanup = new Set();
 +  #selectionRequest = null;
 +  #engagementActive = false;
 +  #endingEngagement = false;
@@ -9333,6 +9342,7 @@ index 0000000000..0028276661
 +    }, request);
 +    this.#query = query;
 +    this.#removedIds.clear();
++    this.#activationCleanup.clear();
 +    this.#selectionRequest = null;
 +    this.#frozen = null;
 +    this.#onUpdate = onUpdate;
@@ -9527,6 +9537,22 @@ index 0000000000..0028276661
 +    this.#controller.engagementEvent.start(facts, this.#query, this.#query.searchString, interactionType);
 +    this.#engagementActive = true;
 +    return true;
++  }
++
++  /** Activation-only cleanup before result selection; never called for previews. */
++  clearResultAutofillBackspace(queryId, result) {
++    this.#check();
++    if (!this.#engagementActive || this.#endingEngagement) return false;
++    const current = () => this.ownsResult(queryId, result) && this.#controller.resultsOpen &&
++      this.#controller.visibleResults.includes(result);
++    if (!current()) throw new Error("Stale activation cleanup");
++    if (this.#activationCleanup.has(result)) return false;
++    const url = UrlbarQueryModel.autofillBackspaceURL(result, this.#context.isPrivate);
++    if (!current()) throw new Error("Stale activation cleanup");
++    // Consume before parent callbacks, including failure and reentry.
++    this.#activationCleanup.add(result);
++    if (url) this.#controller.parentController.clearAutofillBackspaceEntryForUrl(url);
++    return current();
 +  }
 +
 +  /** Record an actual primary-result engagement; activation/load execution is separate. */
@@ -9809,6 +9835,7 @@ index 0000000000..0028276661
 +    if (this.#closed) return;
 +    this.#query = null;
 +    this.#removedIds.clear();
++    this.#activationCleanup.clear();
 +    this.#selectionRequest = null;
 +    this.#frozen = null;
 +    this.#onUpdate = null;
@@ -9823,6 +9850,7 @@ index 0000000000..0028276661
 +    this.#closed = true;
 +    this.#query = null;
 +    this.#removedIds.clear();
++    this.#activationCleanup.clear();
 +    this.#selectionRequest = null;
 +    this.#frozen = null;
 +    this.#onUpdate = null;

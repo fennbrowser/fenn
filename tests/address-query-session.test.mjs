@@ -2644,3 +2644,42 @@ test('history admission and failure do not permit duplicate or retargeted effect
   const next=await replacement;assert.equal(g.editor.snapshot.text,'replacement');
   g.editor.publishPresentation(2,next.id,[],false);assert.equal(g.calls.length,0);g.editor.close();
 });
+
+
+test('activation autofill cleanup is explicit, once per result and precedes selection hooks',async()=>{
+  const f=await historyEngagementFixture();f.result.autofill={type:'origin'};
+  f.parent.onBeforeSelection=()=>f.calls.push(['before']);
+  f.parent.clearAutofillBackspaceEntryForUrl=url=>{
+    f.calls.push(['cleanup',url]);
+    assert.equal(f.editor.clearResultAutofillBackspace(1,f.q.id,f.result),false);
+  };
+  f.editor.beginResultSelection(1,f.q.id,f.result);assert.deepEqual(f.calls,[['before']]);f.calls.length=0;
+  assert.equal(f.editor.clearResultAutofillBackspace(1,f.q.id,f.result),true);
+  assert.equal(f.editor.clearResultAutofillBackspace(1,f.q.id,f.result),false);
+  f.editor.beginResultSelection(1,f.q.id,f.result);
+  assert.deepEqual(f.calls,[['cleanup','https://history.test/'],['before']]);f.editor.close();
+});
+
+test('activation cleanup preserves private and disabled policy and rejects unexposed identities',async()=>{
+  for(const disabled of [false,true]) {
+    const f=await historyEngagementFixture(!disabled);f.result.autofill={type:'origin'};
+    if(disabled)f.prefs['autoFill.adaptiveHistory.enabled']=false;
+    f.parent.clearAutofillBackspaceEntryForUrl=()=>assert.fail('suppressed cleanup ran');
+    assert.throws(()=>f.editor.clearResultAutofillBackspace(1,f.q.id,{...f.result}),/Stale/);
+    f.editor.publishPresentation(1,f.q.id,[],false);
+    assert.throws(()=>f.editor.clearResultAutofillBackspace(1,f.q.id,f.result),/Stale/);
+    f.editor.publishPresentation(1,f.q.id,[f.result],true);
+    assert.equal(f.editor.clearResultAutofillBackspace(1,f.q.id,f.result),true);f.editor.close();
+  }
+});
+
+test('activation cleanup failures cannot retry and replacement queries revoke the old operation',async()=>{
+  const f=await historyEngagementFixture();f.result.autofill={type:'origin'};
+  f.parent.clearAutofillBackspaceEntryForUrl=()=>{throw Error('cleanup failure');};
+  assert.throws(()=>f.editor.clearResultAutofillBackspace(1,f.q.id,f.result),/cleanup failure/);
+  assert.equal(f.editor.clearResultAutofillBackspace(1,f.q.id,f.result),false);f.editor.close();
+  const g=await historyEngagementFixture();g.result.autofill={type:'origin'};let next;
+  g.parent.clearAutofillBackspaceEntryForUrl=()=>{next=g.editor.edit({},edit(2,'replacement'));};
+  assert.equal(g.editor.clearResultAutofillBackspace(1,g.q.id,g.result),false);
+  const query=await next;g.editor.publishPresentation(2,query.id,[],false);g.editor.close();
+});
