@@ -16,13 +16,13 @@ function fixture({hold=false}={}) {
   }
   let id=0;
   const sandbox=vm.createContext({console,UrlbarQueryLifecycle,
-    UrlbarShared:{getLogger:()=>({debug(){}}),RESULT_SOURCE:{ACTIONS:7},NOTIFICATIONS:{
+    UrlbarShared:{getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_SOURCE:{ACTIONS:7},NOTIFICATIONS:{
       QUERY_ARMED:'onQueryArmed',QUERY_STARTED:'onQueryStarted',QUERY_CANCELLED:'onQueryCancelled',
       QUERY_FIRST_RESULT:'onFirstResult',QUERY_RESULTS:'onQueryResults',QUERY_FINISHED:'onQueryFinished'}},
     UrlbarPrefs:{get:()=>10},UrlbarContentUtils:{usesMessagePath:()=>false},
     UrlbarQueryContext:class {constructor(options){Object.assign(this,options,{id:++id,results:[]});}},
     ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;}}});
-  for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarQuerySession']) {
+  for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarEditSession']) {
     const source=readFileSync(new URL(`../upstream/firefox/browser/components/urlbar/content/${file}.mjs`,import.meta.url),'utf8');
     vm.runInContext(source.replace(/^import .*;$/gm,'').replaceAll('export class ','class ')+`\nthis.${file}=${file};`,sandbox);
   }
@@ -42,6 +42,100 @@ test('fresh controllers and engine stores use explicit identity with no input or
   assert.equal(f.parent.started[0],q);
   assert.throws(()=>new f.sandbox.UrlbarChildController({context:{...f.context,actor:{browsingContext:{isContent:true}}}}),/chrome context/);
   f.session.close();f.session.close();assert.equal(f.parent.destroyed,1);
+});
+
+test('streaming updates preserve context identity and suppress stale, cancelled and out-of-scope callbacks',async()=>{
+  const f=fixture(),events=[];await f.parent.child.engineStore.init();
+  let query;const gate=Promise.withResolvers();
+  f.parent.startQuery=q=>{query=q;return gate.promise;};
+  const pending=f.session.query({}, {searchString:'stream'},e=>events.push(e));
+  for(const name of ['onFirstResult','onQueryResults','onQueryFinished'])f.parent.child.notify(name,query);
+  assert.deepEqual(events.map(e=>e.kind),['first-result','results','finished']);
+  assert.ok(events.every(e=>e.query===query && Object.isFrozen(e)));
+  f.parent.child.notify('onQueryResults',{...query});assert.equal(events.length,3);
+  f.invalidate();f.parent.child.notify('onQueryResults',query);assert.equal(events.length,3);
+  gate.resolve(query);await assert.rejects(pending,/scope changed/);
+});
+
+test('a first-result callback can replace the query without leaking the old result batch',async()=>{
+  const f=fixture(),events=[];await f.parent.child.engineStore.init();
+  let first,second,newer;
+  f.parent.startQuery=q=>{if(!first)first=q;else second=q;return Promise.resolve(q);};
+  const old=f.session.query({}, {searchString:'old'},e=>{
+    events.push('old '+e.kind);
+    newer=f.session.query({}, {searchString:'new'},n=>events.push('new '+n.kind));
+  });
+  f.parent.child.notify('onFirstResult',first);
+  f.parent.child.notify('onQueryResults',first);f.parent.child.notify('onQueryFinished',first);
+  f.parent.child.notify('onQueryResults',second);
+  await assert.rejects(old,/superseded/);await newer;
+  assert.deepEqual(events,['old first-result','new results']);f.session.close();
+});
+
+async function editorFixture() {
+  const f=fixture();f.session.close();const updates=[];
+  const editor=new f.sandbox.UrlbarEditSession({context:f.context,isCurrent:()=>!f.invalid,
+    onUpdate:update=>updates.push(update)});
+  const parent=f.parents.at(-1);await parent.child.engineStore.init();
+  return {...f,editor,parent,updates,loseScope(){f.invalid=true;}};
+}
+const edit=(revision,text,extra={})=>({revision,text,selectionStart:text.length,selectionEnd:text.length,...extra});
+
+test('independent edits validate UTF-16 selection and monotonically increasing revision without cancelling valid work',async()=>{
+  const f=await editorFixture();await f.editor.edit({},edit(1,'a😀'));
+  assert.equal(f.editor.snapshot.selectionEnd,3);assert.ok(Object.isFrozen(f.editor.snapshot));
+  const cancels=f.parent.cancelled;
+  for(const bad of [edit(1,'stale'),edit(2,'a',{selectionEnd:2}),edit(2,'a',{selectionStart:-1}),edit(2,'a',{pasteLength:-1})]) {
+    await assert.rejects(f.editor.edit({},bad),/Invalid/);
+  }
+  assert.equal(f.parent.cancelled,cancels);assert.equal(f.editor.snapshot.revision,1);
+  assert.throws(()=>f.editor.select(0,0,0),/Stale/);
+  const selected=f.editor.select(1,1,3,'backward');assert.equal(selected.selectionRevision,1);
+  assert.equal(selected.selectionDirection,'backward');f.editor.close();
+});
+
+test('input intent and selection gate autofill and paste metadata reaches the shared query model',async()=>{
+  const f=await editorFixture();let revision=0;
+  for(const [inputType,allow] of [['insertText',true],['deleteContentBackward',false],['historyUndo',false],['insertFromPaste',false],['insertFromYank',false]]) {
+    const q=await f.editor.edit({},edit(++revision,'long paste text',{inputType,pasteLength:20}));
+    assert.equal(q.allowAutofill,allow);
+    assert.equal(q.prohibitRemoteResults,['insertFromPaste','insertFromYank'].includes(inputType));
+  }
+  assert.equal((await f.editor.edit({},edit(++revision,'middle',{selectionStart:2,selectionEnd:2}))).allowAutofill,false);
+  const started=f.parent.started.length;
+  assert.equal(await f.editor.edit({},edit(++revision,'composing',{composing:true})),null);
+  assert.equal(f.parent.started.length,started);
+  assert.throws(()=>f.editor.publishPresentation(revision,1,[],true),/Stale/);
+  await f.editor.edit({},edit(++revision,'committed'));assert.equal(f.parent.started.length,started+1);f.editor.close();
+});
+
+test('streamed completion proposals use live selection, immutable stamps and never overwrite observed text',async()=>{
+  const f=await editorFixture();let query;const gate=Promise.withResolvers();
+  f.parent.startQuery=q=>{query=q;return gate.promise;};
+  const pending=f.editor.edit({},edit(1,'exam'));
+  const result={payload:{},autofill:{value:'example.test/',selectionStart:4,selectionEnd:13}};
+  query.results.push(result);f.parent.child.notify('onFirstResult',query);
+  const proposed=f.updates[0];assert.equal(proposed.completion.value,'example.test/');
+  assert.equal(proposed.completion.selectionDirection,'backward');assert.ok(Object.isFrozen(proposed.completion));
+  assert.equal(f.editor.snapshot.text,'exam');assert.equal(proposed.edit.selectionRevision,0);
+  f.editor.select(1,1,1);f.parent.child.notify('onFirstResult',query);
+  assert.equal(f.updates.at(-1).completion,null);assert.equal(f.updates.at(-1).edit.selectionRevision,1);
+  f.editor.select(1,4,4);result.payload.keyword='alias';f.parent.child.notify('onFirstResult',query);
+  assert.equal(f.updates.at(-1).completion,null,'keyword transitions are not silently emulated');
+  gate.resolve(query);await pending;f.editor.publishPresentation(1,query.id,[result],true);
+  f.editor.cancel();assert.throws(()=>f.editor.publishPresentation(1,query.id,[result],true),/Invalid/);f.editor.close();
+});
+
+test('new edits and scope loss revoke older streaming publications and presentation',async()=>{
+  const f=await editorFixture();const old=await f.editor.edit({},edit(1,'old'));
+  const current=await f.editor.edit({},edit(2,'new'));
+  f.parent.child.notify('onQueryResults',old);assert.equal(f.updates.length,0);
+  f.parent.child.notify('onQueryResults',current);assert.equal(f.updates.length,1);
+  assert.equal(f.updates[0].edit.revision,2);
+  assert.throws(()=>f.editor.publishPresentation(1,old.id,[],true),/Stale/);
+  f.loseScope();f.parent.child.notify('onQueryResults',current);assert.equal(f.updates.length,1);
+  assert.throws(()=>f.editor.select(2,0,0),/scope changed/);assert.equal(f.parent.destroyed,1);
+  await assert.rejects(f.editor.edit({},edit(3,'closed')),/closed/);
 });
 
 test('exposure is query-scoped, copied, identity-validated and revoked by cancellation',async()=>{

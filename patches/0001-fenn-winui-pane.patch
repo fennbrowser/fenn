@@ -216,7 +216,7 @@ index a182468fce..428407c54a 100644
  </body>
  </html>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..ce37f89ea0 100644
+index b2b5db6040..7999c48fd1 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
 @@ -33,6 +33,20 @@ browser.jar:
@@ -240,7 +240,7 @@ index b2b5db6040..ce37f89ea0 100644
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
-@@ -104,3 +118,14 @@ browser.jar:
+@@ -104,3 +118,15 @@ browser.jar:
  
  # L10n resources and overrides.
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
@@ -255,6 +255,7 @@ index b2b5db6040..ce37f89ea0 100644
 +    content/browser/urlbar/UrlbarSearchModeBinding.mjs (../components/urlbar/content/UrlbarSearchModeBinding.mjs)
 +    content/browser/urlbar/UrlbarResultPresentation.mjs (../components/urlbar/content/UrlbarResultPresentation.mjs)
 +    content/browser/urlbar/UrlbarClipboardText.mjs (../components/urlbar/content/UrlbarClipboardText.mjs)
++    content/browser/urlbar/UrlbarEditSession.mjs (../components/urlbar/content/UrlbarEditSession.mjs)
 diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
 index 76cab7f8e4..ac11827449 100644
 --- a/browser/components/customizableui/CustomizableUI.sys.mjs
@@ -1419,7 +1420,7 @@ index 30f5aa6556..6198840503 100644
 +
  }
 diff --git a/browser/components/urlbar/content/SmartbarInput.mjs b/browser/components/urlbar/content/SmartbarInput.mjs
-index e5dcc2c923..c5c7d8b11b 100644
+index e5dcc2c923..bf97a721ca 100644
 --- a/browser/components/urlbar/content/SmartbarInput.mjs
 +++ b/browser/components/urlbar/content/SmartbarInput.mjs
 @@ -2,6 +2,14 @@
@@ -2015,19 +2016,23 @@ index e5dcc2c923..c5c7d8b11b 100644
      ) {
        return;
      }
-@@ -6586,8 +6582,9 @@ ${
+@@ -6586,11 +6582,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
 -      (!UrlbarPrefs.get("keepPanelOpenDuringImeComposition") ||
 -        compositionState !== UrlbarShared.COMPOSITION.COMPOSING) &&
+-      !event.inputType?.startsWith("delete") &&
+-      !event.inputType?.startsWith("history") &&
+-      !UrlbarShared.isPasteEvent(event) &&
 +      UrlbarCompositionModel.allowsAutofill(
 +        composition, UrlbarPrefs.get("keepPanelOpenDuringImeComposition")
 +      ) &&
-       !event.inputType?.startsWith("delete") &&
-       !event.inputType?.startsWith("history") &&
-       !UrlbarShared.isPasteEvent(event) &&
-@@ -6665,33 +6662,20 @@ ${
++      UrlbarAutofillModel.allowsInput(event.inputType, UrlbarShared.isPasteEvent(event)) &&
+       this._maybeAutofillPlaceholder(value);
+ 
+     this.startQuery({
+@@ -6665,33 +6660,20 @@ ${
    }
  
    _on_paste(event) {
@@ -2069,7 +2074,7 @@ index e5dcc2c923..c5c7d8b11b 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -6705,7 +6689,7 @@ ${
+@@ -6705,7 +6687,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -2078,7 +2083,7 @@ index e5dcc2c923..c5c7d8b11b 100644
        this.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -6736,56 +6720,27 @@ ${
+@@ -6736,56 +6718,27 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -2153,7 +2158,7 @@ index e5dcc2c923..c5c7d8b11b 100644
    }
  
    /**
-@@ -7056,11 +7011,7 @@ ${
+@@ -7056,11 +7009,7 @@ ${
    }
  
    _on_compositionstart() {
@@ -2166,7 +2171,7 @@ index e5dcc2c923..c5c7d8b11b 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -7080,44 +7031,24 @@ ${
+@@ -7080,44 +7029,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -2223,7 +2228,7 @@ index e5dcc2c923..c5c7d8b11b 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -7771,12 +7702,10 @@ class CopyCutController {
+@@ -7771,12 +7700,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -2597,7 +2602,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..79229f78c7 100644
+index a077de625f..fefb34d8d3 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,19 @@
@@ -3502,19 +3507,23 @@ index a077de625f..79229f78c7 100644
      ) {
        return;
      }
-@@ -5591,8 +5567,9 @@ ${
+@@ -5591,11 +5567,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
 -      (!UrlbarPrefs.get("keepPanelOpenDuringImeComposition") ||
 -        compositionState !== UrlbarShared.COMPOSITION.COMPOSING) &&
+-      !event.inputType?.startsWith("delete") &&
+-      !event.inputType?.startsWith("history") &&
+-      !UrlbarShared.isPasteEvent(event) &&
 +      UrlbarCompositionModel.allowsAutofill(
 +        composition, UrlbarPrefs.get("keepPanelOpenDuringImeComposition")
 +      ) &&
-       !event.inputType?.startsWith("delete") &&
-       !event.inputType?.startsWith("history") &&
-       !UrlbarShared.isPasteEvent(event) &&
-@@ -5669,33 +5646,20 @@ ${
++      UrlbarAutofillModel.allowsInput(event.inputType, UrlbarShared.isPasteEvent(event)) &&
+       this._maybeAutofillPlaceholder(value);
+ 
+     this.startQuery({
+@@ -5669,33 +5644,20 @@ ${
    }
  
    _on_paste(event) {
@@ -3556,7 +3565,7 @@ index a077de625f..79229f78c7 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5673,7 @@ ${
+@@ -5709,7 +5671,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -3565,7 +3574,7 @@ index a077de625f..79229f78c7 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5704,25 @@ ${
+@@ -5740,51 +5702,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -3633,7 +3642,7 @@ index a077de625f..79229f78c7 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5916,11 @@ ${
+@@ -5978,15 +5914,11 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -3651,7 +3660,7 @@ index a077de625f..79229f78c7 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5940,24 @@ ${
+@@ -6006,44 +5938,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -3708,7 +3717,7 @@ index a077de625f..79229f78c7 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6440,12 +6354,10 @@ class CopyCutController {
+@@ -6440,12 +6352,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -5976,12 +5985,134 @@ index 1e2660589b..5ae3ab4843 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
  
    /*
+diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
+new file mode 100644
+index 0000000000..b67dac6fb8
+--- /dev/null
++++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
+@@ -0,0 +1,116 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++import { UrlbarQuerySession } from "chrome://browser/content/urlbar/UrlbarQuerySession.mjs";
++import { UrlbarAutofillModel } from "chrome://browser/content/urlbar/UrlbarAutofillModel.mjs";
++import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
++
++/**
++ * Independent editor-to-query binding. Owns observed text/selection, not a DOM
++ * editor or a second result store. Host revisions describe committed editor
++ * snapshots; completion proposals never mutate that observed state. The host
++ * must revalidate both edit and selection revisions before applying a proposal.
++ * Active composition cancels queries; the committed edit starts a fresh one.
++ * Undo, speculative placeholders, search-mode transitions and activation are
++ * not implemented here. In particular, this is not a navigation controller.
++ */
++export class UrlbarEditSession {
++  #queries;
++  #isCurrent;
++  #onUpdate;
++  #edit = null;
++  #closed = false;
++
++  constructor({ context, isCurrent, onUpdate }) {
++    if (typeof onUpdate != "function") throw new TypeError("Missing editor listener");
++    this.#isCurrent = isCurrent;
++    this.#onUpdate = onUpdate;
++    this.#queries = new UrlbarQuerySession({ context, isCurrent });
++  }
++
++  get snapshot() { return this.#edit; }
++
++  #check() {
++    if (this.#closed) throw new Error("Editor session is closed");
++    if (!this.#isCurrent()) {
++      this.close();
++      throw new Error("Editor session scope changed");
++    }
++  }
++
++  #validateSelection(text, start, end, direction) {
++    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
++        start < 0 || end < start || end > text.length ||
++        !["none", "forward", "backward"].includes(direction)) {
++      throw new TypeError("Invalid editor selection");
++    }
++  }
++
++  async edit(state, {
++    revision, text, selectionStart, selectionEnd, selectionDirection = "none",
++    inputType = "insertText", composing = false, pasteLength,
++  }) {
++    this.#check();
++    if (!Number.isSafeInteger(revision) || revision <= (this.#edit?.revision ?? 0) ||
++        typeof text != "string" || typeof inputType != "string" ||
++        typeof composing != "boolean" ||
++        (pasteLength !== undefined && (!Number.isSafeInteger(pasteLength) || pasteLength < 0))) {
++      throw new TypeError("Invalid or stale editor snapshot");
++    }
++    this.#validateSelection(text, selectionStart, selectionEnd, selectionDirection);
++    this.#edit = Object.freeze({ revision, text, selectionStart, selectionEnd,
++      selectionDirection, selectionRevision: 0, composing });
++    // Revoke old work before any new snapshot can be published.
++    this.#queries.cancel();
++    if (composing) return null;
++    const isPaste = UrlbarShared.isPasteEvent({ inputType });
++    const allowAutofill = UrlbarAutofillModel.allowsInput(inputType, isPaste) &&
++      selectionStart === selectionEnd && selectionEnd === text.length;
++    return this.#queries.query(state, {
++      searchString: text, allowAutofill, isPaste, pasteLength,
++    }, update => {
++      if (this.#closed || !this.#isCurrent() || this.#edit.revision !== revision) return;
++      const first = update.query.results[0];
++      const completion = update.kind === "first-result" && allowAutofill &&
++        first?.autofill && !first.payload?.keyword &&
++        UrlbarAutofillModel.acceptsResult({
++          searchString: text, selectionStart: this.#edit.selectionStart,
++          selectionEnd: this.#edit.selectionEnd,
++        }) ? Object.freeze({ ...first.autofill, selectionDirection: "backward" }) : null;
++      this.#onUpdate(Object.freeze({ ...update, edit: this.#edit, completion }));
++    });
++  }
++
++  select(revision, start, end, direction = "none") {
++    this.#check();
++    if (!this.#edit || revision !== this.#edit.revision) {
++      throw new Error("Stale editor selection");
++    }
++    this.#validateSelection(this.#edit.text, start, end, direction);
++    this.#edit = Object.freeze({ ...this.#edit, selectionStart: start,
++      selectionEnd: end, selectionDirection: direction,
++      selectionRevision: this.#edit.selectionRevision + 1 });
++    return this.#edit;
++  }
++
++  publishPresentation(revision, queryId, visibleResults, open) {
++    this.#check();
++    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing) {
++      throw new Error("Stale editor presentation");
++    }
++    this.#queries.publishPresentation(queryId, visibleResults, open);
++  }
++
++  cancel() {
++    this.#check();
++    this.#queries.cancel();
++  }
++
++  close() {
++    if (this.#closed) return;
++    this.#closed = true;
++    this.#queries.close();
++    this.#onUpdate = null;
++  }
++}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..bcd31a19f5
+index 0000000000..98398ebecc
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,111 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -5993,8 +6124,8 @@ index 0000000000..bcd31a19f5
 + * Independent query consumer. No editor or view is constructed or emulated.
 + * The chrome host supplies identity and a pinned tab/document validity check.
 + * Editing, navigation and engagement are not implemented by this consumer yet.
-+ * This first consumer returns completed queries only; it exposes neither the
-+ * mutable controller nor streaming listeners. The host must close it on scope
++ * Per-query updates expose the current context, never the mutable controller.
++ * The host must close it on scope
 + * loss and teardown; the scope check also rejects races at dispatch, delivery,
 + * completion and presentation publication. It does not observe browser events.
 + */
@@ -6004,6 +6135,7 @@ index 0000000000..bcd31a19f5
 +  #query = null;
 +  #closed = false;
 +  #controller;
++  #onUpdate = null;
 +
 +  constructor({ context, isCurrent }) {
 +    if (typeof isCurrent != "function") throw new TypeError("Missing scope check");
@@ -6014,6 +6146,17 @@ index 0000000000..bcd31a19f5
 +      context: this.#context,
 +      isCurrent: () => !this.#closed && this.#isCurrent(),
 +    });
++    this.#controller.addListener({
++      onFirstResult: query => this.#update("first-result", query),
++      onQueryResults: query => this.#update("results", query),
++      onQueryFinished: query => this.#update("finished", query),
++    });
++  }
++
++  #update(kind, query) {
++    if (!this.#closed && this.#isCurrent() && query === this.#query) {
++      this.#onUpdate?.(Object.freeze({ kind, query }));
++    }
 +  }
 +
 +  #check() {
@@ -6024,14 +6167,18 @@ index 0000000000..bcd31a19f5
 +    }
 +  }
 +
-+  async query(state, request) {
++  async query(state, request, onUpdate = null) {
 +    this.#check();
++    if (onUpdate !== null && typeof onUpdate != "function") {
++      throw new TypeError("Invalid query update callback");
++    }
 +    const query = UrlbarQueryModel.create({
 +      ...state,
 +      sapName: this.#context.sapName,
 +      isPrivate: this.#context.isPrivate,
 +    }, request);
 +    this.#query = query;
++    this.#onUpdate = onUpdate;
 +    this.#controller.visibleResults = [];
 +    this.#controller.resultsOpen = false;
 +    try {
@@ -6062,6 +6209,7 @@ index 0000000000..bcd31a19f5
 +  cancel() {
 +    if (this.#closed) return;
 +    this.#query = null;
++    this.#onUpdate = null;
 +    this.#controller.visibleResults = [];
 +    this.#controller.resultsOpen = false;
 +    this.#controller.cancelQuery();
@@ -6072,6 +6220,7 @@ index 0000000000..bcd31a19f5
 +    if (this.#closed) return;
 +    this.#closed = true;
 +    this.#query = null;
++    this.#onUpdate = null;
 +    this.#controller.destroy();
 +  }
 +}
@@ -6156,10 +6305,10 @@ index 0000000000..ff5291f782
 +}
 diff --git a/browser/components/urlbar/content/UrlbarAutofillModel.mjs b/browser/components/urlbar/content/UrlbarAutofillModel.mjs
 new file mode 100644
-index 0000000000..50fc470bdc
+index 0000000000..83b4b88af9
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarAutofillModel.mjs
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,78 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6168,6 +6317,12 @@ index 0000000000..50fc470bdc
 +
 +/** Shared autofill decisions over editor facts; never retains an editor. */
 +export class UrlbarAutofillModel {
++  /** Input intent shared by editor bindings; composition is checked separately. */
++  static allowsInput(inputType, isPaste) {
++    return !inputType?.startsWith("delete") &&
++      !inputType?.startsWith("history") && !isPaste;
++  }
++
 +  /** Whether a first result may replace the current selection. */
 +  static acceptsResult({
 +    placeholder, searchString, selectionStart, selectionEnd,
