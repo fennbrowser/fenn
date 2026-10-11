@@ -2869,7 +2869,8 @@ function parentLoadFixture() {
     discard:(_b,t)=>{if(t!==stateToken)return false;stateToken=null;return true;}};
   const lazy={independentUrlbarBrowserState:owner,UrlbarUtils:{isPersistedSearchTermsEnabled:()=>true,
     loadRequestToUrl:request=>({url:request.urlLoad?.url,postData:null})}};
-  const modelFixture=fixture();lazy.UrlbarSearchModeModel=modelFixture.sandbox.UrlbarSearchModeModel;modelFixture.session.close();
+  const modelFixture=fixture();lazy.UrlbarSearchModeModel=modelFixture.sandbox.UrlbarSearchModeModel;
+  lazy.UrlbarCompositionModel=modelFixture.sandbox.UrlbarCompositionModel;lazy.UrlbarShared=modelFixture.sandbox.UrlbarShared;modelFixture.session.close();
   lazy.ReaderMode={getOriginalUrlObjectForDisplay:()=>null};
   const Parent=new Function('lazy','Cr',`return class {
     #currentLoad=null;#currentLoadRecovery=null;#currentLoadGeneration=0;#destroyed=false;#isAddressbar=true;
@@ -4623,4 +4624,121 @@ test('already-confirmed empty composition clears typed value without requesting 
   assert.equal(p.confirmSearchMode,true);assert.equal(p.clearUserTypedValue,true);
   assert.equal(p.applyMode,false);assert.equal(p.clearOneOffSelection,false);assert.equal(p.userTypedValue,null);
   assert.equal('modeEntry' in p,false);assert.equal(f.editor.acknowledgeCompositionStart(p.token,observedCompositionStart(p)),true);f.editor.close();
+});
+
+
+function compositionParentFixture(preview=true,text='',prior='old') {
+  const f=parentLoadFixture(),writes=[];let typed=prior,mode={source:1,isPreview:preview},pending,last,latest;
+  Object.defineProperty(f.browser,'userTypedValue',{get:()=>typed,set:value=>{writes.push(value);typed=value;f.onWrite?.(value);},configurable:true});
+  const prepare=(next,effects)=>{const token=latest={};pending={token,next};return {token,effects};};
+  const owner={preparePreservedMode:(_b,observed)=>{
+    if(!f.lazy.UrlbarShared.deepEqual(observed,mode))return null;
+    const prepared=prepare(mode,{searchMode:mode,persistedSearchTerms:false});f.onPrepare?.();return prepared;
+  },prepareMode:(_b,next)=>prepare(next,{searchMode:next,persistedSearchTerms:false,persistenceChanged:false,recordModeEntry:!!mode?.isPreview && !next?.isPreview}),
+  commit:(_b,token)=>{if(pending?.token!==token)return false;mode=pending.next;last=token;pending=null;return true;},
+  discard:(_b,token)=>{if(pending?.token===token)pending=null;},isCommitted:(_b,token)=>last===token && latest===token};
+  f.lazy.independentUrlbarBrowserState=owner;
+  const facts={previousMode:{...mode},searchMode:{...mode,isPreview:false},text,priorTypedValue:prior,
+    applyMode:preview,clearUserTypedValue:text==='',modeEntry:preview?{untrimmedValue:text,userTypedValue:prior,pageProxyValid:false,hasAutofillPlaceholder:false}:undefined,
+    engineId:null,keepPanelOpen:false,viewIsOpen:true,previousPersistedSearchTerms:false,persistedSearchTerms:false};
+  return Object.assign(f,{writes,owner,facts,getMode:()=>mode});
+}
+
+test('composition browser commit orders null reset before preview confirmation and reports final text',()=>{
+  const f=compositionParentFixture(),notifications=[];
+  const result=f.p.commitIndependentCompositionStart(42,f.facts,()=>true,state=>notifications.push(state));
+  assert.equal(result.applied,true);assert.equal(result.current,true);assert.equal(result.typedResetApplied,true);
+  assert.deepEqual(f.writes,[null,'']);assert.equal(f.browser.userTypedValue,'');assert.equal(f.getMode().isPreview,false);
+  assert.equal(result.modeEntryNotified,true);assert.equal(notifications.length,1);assert.equal(notifications[0].userTypedValue,'');
+});
+
+test('confirmed and keep-open composition commits preserve mode without repeated setter effects',()=>{
+  for(const keep of [false,true]) {
+    const f=compositionParentFixture(false);f.facts.keepPanelOpen=keep;
+    if(keep)f.facts.clearUserTypedValue=false;
+    const result=f.p.commitIndependentCompositionStart(42,f.facts,()=>true,()=>assert.fail('preservation notification'));
+    assert.equal(result.applied,true);assert.equal(result.modeUnchanged,true);assert.equal(result.current,true);
+    assert.deepEqual(f.writes,keep?[]:[null]);assert.equal(f.calls.length,0);
+  }
+});
+
+test('composition commit rejects stale browser, owned mode and prior persistence before writes',()=>{
+  for(const change of ['typed','mode','persistence','document','policy']) {
+    const f=compositionParentFixture();
+    if(change==='typed')f.facts.priorTypedValue='wrong';
+    if(change==='mode')f.facts.previousMode={source:2,isPreview:true};
+    if(change==='persistence')f.facts.previousPersistedSearchTerms=true;
+    if(change==='document')f.onPrepare=()=>{f.browser.browsingContext.currentWindowGlobal={};};
+    if(change==='policy')f.facts.clearUserTypedValue=false;
+    assert.equal(f.p.commitIndependentCompositionStart(42,f.facts,()=>true),null);
+    assert.deepEqual(f.writes,[]);assert.equal(f.calls.length,0);
+  }
+});
+
+test('composition null-reset reentry reports an applied reset without confirming a stale mode',()=>{
+  for(const change of ['document','receipt']) {
+    const f=compositionParentFixture();f.onWrite=()=>{
+      if(change==='document')f.browser.lastLocationChange++;
+      else {const p=f.owner.prepareMode(f.browser,{source:2,isPreview:true});f.owner.discard(f.browser,p.token);}
+    };
+    const result=f.p.commitIndependentCompositionStart(42,f.facts,()=>true);
+    assert.equal(result.applied,false);assert.equal(result.typedResetApplied,true);assert.equal(result.current,false);
+    assert.deepEqual(f.writes,[null]);assert.equal(f.getMode().isPreview,true);assert.equal(f.calls.length,0);
+  }
+});
+
+test('failed post-mode persistence observation cannot hide an already applied composition reset',()=>{
+  const f=compositionParentFixture();f.facts.persistedSearchTerms=true;
+  const result=f.p.commitIndependentCompositionStart(42,f.facts,()=>true);
+  assert.equal(result.applied,false);assert.equal(result.typedResetApplied,true);
+  assert.deepEqual(f.writes,[null]);assert.equal(f.getMode().isPreview,true);assert.equal(f.calls.length,0);
+});
+
+test('acknowledged composition browser commit is one-use, correlated and never starts another query',async()=>{
+  const notifications=[],f=await editorFixture({browserId:42,onModeStateChanged:n=>notifications.push(n)});
+  await f.editor.edit({searchMode:{source:1,isPreview:true}},edit(1,''));
+  const p=f.editor.beginCompositionStart(1,{viewIsOpen:true,userTypedValue:'old',
+    modeEntry:{untrimmedValue:'',pageProxyValid:false,hasAutofillPlaceholder:false,userTypedValue:'old'}});
+  const observation={previousPersistedSearchTerms:false,persistedSearchTerms:false};let calls=0;
+  f.parent.commitIndependentCompositionStart=(id,facts,current,notify)=>{
+    assert.equal(id,42);assert.equal(facts.priorTypedValue,'old');assert.equal(facts.modeEntry.userTypedValue,'old');
+    assert.equal(current(),true);calls++;notify({browserId:id,userTypedValue:'',searchMode:facts.searchMode});
+    return {applied:true,current:true,typedResetApplied:true};
+  };
+  assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,observation),null);
+  assert.equal(f.editor.acknowledgeCompositionStart(p.token,observedCompositionStart(p)),true);
+  assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,observation).applied,true);
+  assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,observation),null);
+  assert.equal(calls,1);assert.equal(f.parent.started.length,1);assert.equal(notifications.length,1);
+  assert.equal(notifications[0].reason,'composition-start');assert.equal(notifications[0].token,p.token);
+  assert.equal(Object.isFrozen(notifications[0]),true);f.editor.close();
+});
+
+test('composition engine replacement revokes both pending acknowledgment and consumed commit',async()=>{
+  for(const phase of ['ack','commit']) {
+    const f=await editorFixture({browserId:42}),engine={id:'e',name:'Engine',isGeneralPurposeEngine:true,aliases:[]};
+    f.parent.child.updateEngineStore('changed',engine,-1);
+    await f.editor.edit({searchMode:{engineName:'Engine',isPreview:true,source:3,isGeneralPurposeEngine:true}},edit(1,'text'));
+    const p=f.editor.beginCompositionStart(1,{viewIsOpen:true,userTypedValue:'text',
+      modeEntry:{untrimmedValue:'text',pageProxyValid:false,hasAutofillPlaceholder:false,userTypedValue:'text'}});
+    if(phase==='commit')assert.equal(f.editor.acknowledgeCompositionStart(p.token,observedCompositionStart(p)),true);
+    f.parent.child.updateEngineStore('changed',{...engine,id:'replacement'},0);
+    let calls=0;f.parent.commitIndependentCompositionStart=()=>{calls++;return {applied:true};};
+    if(phase==='ack')assert.equal(f.editor.acknowledgeCompositionStart(p.token,observedCompositionStart(p)),false);
+    assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,{previousPersistedSearchTerms:false,persistedSearchTerms:false}),null);
+    assert.equal(calls,0);f.editor.close();
+  }
+});
+
+test('composition browser commit cannot reuse ready state after caret or preference changes',async()=>{
+  for(const change of ['caret','preference']) {
+    const f=await editorFixture({browserId:42});await f.editor.edit({},edit(1,'text'));
+    const p=f.editor.beginCompositionStart(1,{viewIsOpen:false,userTypedValue:null});
+    assert.equal(f.editor.acknowledgeCompositionStart(p.token,observedCompositionStart(p)),true);
+    if(change==='caret')f.editor.select(1,0,0);else f.prefs.keepPanelOpenDuringImeComposition=true;
+    f.parent.commitIndependentCompositionStart=()=>assert.fail('stale browser commit');
+    const observation={previousPersistedSearchTerms:false,persistedSearchTerms:false};
+    assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,observation),null);
+    assert.equal(f.editor.commitAcknowledgedCompositionStart(p.token,observation),null);f.editor.close();
+  }
 });
