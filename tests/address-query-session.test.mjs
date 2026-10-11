@@ -4386,3 +4386,85 @@ test('legacy composing observations retain suppression even with keep-panel-open
   assert.equal(await f.editor.edit({}, {...edit(1,'words'),composing:true}),null);
   assert.equal(f.parent.started.length,0);f.editor.close();
 });
+
+
+async function composingExposureFixture() {
+  const f=await editorFixture();f.prefs.keepPanelOpenDuringImeComposition=true;
+  const composition={state:f.sandbox.UrlbarShared.COMPOSITION.COMPOSING,closedPopup:false};
+  const q=await f.editor.edit({}, {...edit(1,'composing exposure'),composing:true,composition});
+  const result={id:901,payload:{}};q.results=[result];return {...f,q,result,composition};
+}
+
+test('keep-open composition exposes only observed current rows and can withdraw them',async()=>{
+  const f=await composingExposureFixture();
+  f.editor.publishPresentation(1,f.q.id,[f.result],true);
+  assert.equal(f.parent.child.visibleResults[0],f.result);assert.equal(f.parent.child.resultsOpen,true);
+  f.editor.publishPresentation(1,f.q.id,[],false);
+  assert.equal(f.parent.child.visibleResults.length,0);assert.equal(f.parent.child.resultsOpen,false);f.editor.close();
+});
+
+test('composition exposure rejects copied, duplicate, stale and superseded rows',async()=>{
+  const f=await composingExposureFixture();
+  for(const rows of [[{...f.result}],[f.result,f.result]])assert.throws(()=>f.editor.publishPresentation(1,f.q.id,rows,true),/Invalid/);
+  const newer=await f.editor.edit({}, {...edit(2,'new composition'),composing:true,composition:f.composition});
+  assert.throws(()=>f.editor.publishPresentation(1,f.q.id,[f.result],true),/Stale/);
+  assert.throws(()=>f.editor.publishPresentation(2,f.q.id,[f.result],true),/Stale/);
+  assert.throws(()=>f.editor.publishPresentation(2,newer.id,[f.result],true),/Invalid/);f.editor.close();
+});
+
+test('legacy and disabled composing edits cannot inherit prior exposure permission',async()=>{
+  for(const legacy of [true,false]) {
+    const f=await composingExposureFixture();f.editor.publishPresentation(1,f.q.id,[f.result],true);
+    f.prefs.keepPanelOpenDuringImeComposition=false;
+    await f.editor.edit({}, {...edit(2,'blocked'),composing:true,...(legacy?{}:{composition:f.composition})});
+    assert.equal(f.parent.child.visibleResults.length,0);
+    assert.throws(()=>f.editor.publishPresentation(2,f.q.id,[f.result],true),/Stale/);f.editor.close();
+  }
+});
+
+test('composing caret observations retain read-only exposure but never grant result actions',async()=>{
+  const f=await composingExposureFixture();f.editor.select(1,0,0);
+  f.editor.publishPresentation(1,f.q.id,[f.result],true);
+  assert.throws(()=>f.editor.beginResultSelection(1,f.q.id,f.result),/Stale/);
+  assert.throws(()=>f.editor.freezeResults(1,f.q.id),/Stale/);
+  assert.throws(()=>f.editor.describeResultNavigation(1,f.q.id,f.result,{}),/Stale/);
+  assert.equal(f.editor.getCompletion({}),null);f.editor.close();
+});
+
+test('current composition removals revoke exposure and reach the presenter once',async()=>{
+  const f=await composingExposureFixture();f.editor.publishPresentation(1,f.q.id,[f.result],true);
+  f.parent.child.notify('onQueryResultRemoved',f.result.id,undefined,f.q.id);
+  assert.equal(f.parent.child.visibleResults.length,0);assert.equal(f.requests.length,1);
+  assert.equal(f.requests[0].kind,'remove-result');assert.equal(f.requests[0].edit,f.editor.snapshot);
+  assert.equal(Object.isFrozen(f.requests[0]),true);
+  f.parent.child.notify('onQueryResultRemoved',f.result.id,undefined,f.q.id);
+  assert.equal(f.requests.length,1);assert.throws(()=>f.editor.publishPresentation(1,f.q.id,[f.result],true),/Invalid/);
+  f.editor.close();
+});
+
+test('cancel, close and scope loss revoke composition exposure',async()=>{
+  for(const action of ['cancel','close','scope']) {
+    const f=await composingExposureFixture();f.editor.publishPresentation(1,f.q.id,[f.result],true);
+    if(action==='scope')f.loseScope();else f.editor[action]();
+    assert.throws(()=>f.editor.publishPresentation(1,f.q.id,[f.result],true));
+    assert.equal(f.parent.child.visibleResults.length,0);f.editor.close();
+  }
+});
+
+
+test('provider close revokes composing exposure immediately and preserves preview mode and text',async()=>{
+  const f=await editorFixture();f.prefs.keepPanelOpenDuringImeComposition=true;
+  const mode={source:1,isPreview:true};
+  const q=await f.editor.edit({searchMode:mode},{...edit(1,'composing'),composing:true,
+    composition:{state:f.sandbox.UrlbarShared.COMPOSITION.COMPOSING,closedPopup:false}});
+  const result={id:42,payload:{}};q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+  const observed=f.editor.snapshot;
+  f.parent.child.notify('onResultsCloseRequested',q.id,true);
+  assert.equal(f.parent.child.visibleResults.length,0);assert.equal(f.parent.child.resultsOpen,false);
+  const close=f.requests.at(-1);assert.equal(close.kind,'close');assert.equal(close.edit,observed);
+  assert.equal('searchMode' in close,false);assert.equal('userTypedValue' in close,false);
+  assert.equal(f.editor.snapshot,observed);assert.equal(f.editor.getCloseRequest(close.token),close);
+  assert.equal(f.editor.acknowledgeClose(close.token,{open:false,searchMode:mode,userTypedValue:'composing'}),true);
+  assert.equal(f.editor.acknowledgeClose(close.token,{open:false}),false);
+  assert.throws(()=>f.editor.publishPresentation(1,q.id,[result],true),/Stale/);f.editor.close();
+});

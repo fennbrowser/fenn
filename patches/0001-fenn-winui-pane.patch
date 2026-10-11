@@ -9013,10 +9013,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..bfb731e437
+index 0000000000..645c4ff64b
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1729 @@
+@@ -0,0 +1,1744 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9038,7 +9038,7 @@ index 0000000000..bfb731e437
 + * snapshots; completion proposals never mutate that observed state. The host
 + * validates a one-use token before a write and acknowledges its exact observed
 + * text/selection afterward. Acknowledgment never starts a query.
-+ * Active composition cancels queries; the committed edit starts a fresh one.
++ * Explicit keep-open composition can query and expose rows without activating them.
 + * Result-mode writes have an exact host acknowledgment, but mode persistence,
 + * browser effects, undo and activation remain host work. Mode requery is an
 + * explicit one-use step after acknowledgment, never an implicit text-edit query.
@@ -9054,6 +9054,7 @@ index 0000000000..bfb731e437
 +  #edit = null;
 +  #inputState = null;
 +  #identityEdit = null;
++  #compositionPresentation = null;
 +  #closed = false;
 +  #completion = null;
 +  #autofill = null;
@@ -9179,6 +9180,7 @@ index 0000000000..bfb731e437
 +    }
 +    const priorTypedValue = browserState?.userTypedValue;
 +    this.#inputState = null;
++    this.#compositionPresentation = null;
 +    this.#hiddenResults = null;
 +    this.#typedText = text;
 +    this.#searchMode = state.searchMode ? Object.freeze({ ...state.searchMode }) : null;
@@ -9237,6 +9239,9 @@ index 0000000000..bfb731e437
 +    }, update => {
 +      if (this.#closed || !this.#isCurrent() || this.#edit.revision !== revision || this.#hiddenResults) return;
 +      if (update.kind === "prepared") {
++        if (composing && composition && keepPanelOpen) {
++          this.#compositionPresentation = Object.freeze({ revision, queryId: update.query.id });
++        }
 +        if (placeholderPlan?.operation === "apply") {
 +          const token = Object.freeze({});
 +          const descriptor = Object.freeze({ ...placeholderPlan.autofill });
@@ -9904,9 +9909,15 @@ index 0000000000..bfb731e437
 +    return true;
 +  }
 +
++  #canExposeComposition(revision, queryId) {
++    return this.#compositionPresentation?.revision === revision &&
++      this.#compositionPresentation.queryId === queryId;
++  }
++
 +  publishPresentation(revision, queryId, visibleResults, open) {
 +    this.#check();
-+    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing) {
++    if (!this.#edit || revision !== this.#edit.revision ||
++        (this.#edit.composing && !this.#canExposeComposition(revision, queryId))) {
 +      throw new Error("Stale editor presentation");
 +    }
 +    if (this.#hiddenResults && (open || visibleResults.length)) {
@@ -10634,20 +10645,22 @@ index 0000000000..bfb731e437
 +  #requestPresentation(request) {
 +    this.#check();
 +    const edit = this.#edit;
-+    if (!edit || edit.composing) return;
++    if (!edit) return;
 +    if (request.kind === "remove-result") {
++      if (edit.composing && !this.#canExposeComposition(edit.revision, request.queryId)) return;
 +      if (this.#completion?.result?.id === request.resultId) this.#completion = null;
 +      this.#onPresentationRequest?.(Object.freeze({ ...request, edit }));
 +      return;
 +    }
-+    if (request.kind !== "close") return;
++    if (request.kind !== "close" ||
++        (edit.composing && !this.#canExposeComposition(edit.revision, request.queryId))) return;
 +    const proposal = this.#prepareClose(request);
 +    if (proposal) this.#onPresentationRequest?.(proposal);
 +  }
 +
 +  #prepareClose(request) {
 +    const edit = this.#edit;
-+    const clearPreview = this.#searchMode?.isPreview;
++    const clearPreview = !edit.composing && this.#searchMode?.isPreview;
 +    // A provider engagement ends result authority immediately; waiting for a
 +    // host close must not leave completion writes or result exposure usable.
 +    // This differs from temporarily hiding suggestions on focus loss.
@@ -10693,6 +10706,7 @@ index 0000000000..bfb731e437
 +  }
 +
 +  cancel() {
++    this.#compositionPresentation = null;
 +    this.#selectionGeneration++;
 +    this.#check();
 +    this.#hiddenResults = null;
@@ -10718,6 +10732,7 @@ index 0000000000..bfb731e437
 +  }
 +
 +  close() {
++    this.#compositionPresentation = null;
 +    this.#selectionGeneration++;
 +    if (this.#closed) return;
 +    this.#closed = true;
