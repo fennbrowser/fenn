@@ -4232,7 +4232,7 @@ index 9596698cf9..f1a8624ab3 100644
      };
    }
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 278cb5ca71..59b77c7014 100644
+index 278cb5ca71..3b4c4cb481 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
 @@ -22,16 +22,6 @@ const SELECTABLE_ELEMENT_SELECTOR = "[role=button], [selectable], a";
@@ -4329,7 +4329,49 @@ index 278cb5ca71..59b77c7014 100644
      if (this.selectedRowIndex < 0) {
        return false;
      }
-@@ -581,6 +581,7 @@ export class UrlbarView {
+@@ -480,29 +480,19 @@ export class UrlbarView {
+     }
+ 
+     if (!userPressedTab) {
+-      let { selectedRowIndex } = this;
+-      let end = this.visibleRowCount - 1;
+-      let step = reverse ? -1 : 1;
+-      let endReached = selectedRowIndex == (reverse ? 0 : end);
+-      if (endReached) {
+-        if (this.allowEmptySelection) {
+-          this.#selectElement(null);
+-        } else {
+-          this.selectedRowIndex = reverse ? end : 0;
+-        }
+-        return;
+-      }
+-
+-      let index = reverse ? end : 0;
+-      if (selectedRowIndex != -1) {
+-        index = Math.min(end, Math.max(0, selectedRowIndex + amount * step));
+-      }
+-      // When navigating with arrow keys we skip rows that contain global
+-      // actions and rows only disabled actions.
+-      while (index >= 0 && index <= end && !this.#isRowArrowSelectable(index)) {
+-        index += step;
++      const selection = this.input.resultPresentation.arrowSelection({
++        selectedRowIndex: this.selectedRowIndex,
++        rowCount: this.visibleRowCount,
++        amount,
++        reverse,
++        allowEmptySelection: this.allowEmptySelection,
++        isSelectable: index => this.#isRowArrowSelectable(index),
++      });
++      if (selection.kind == "clear") {
++        this.#selectElement(null);
++      } else {
++        this.selectedRowIndex = selection.index;
+       }
+-      this.selectedRowIndex = index > end ? -1 : index;
+       return;
+     }
+ 
+@@ -581,6 +571,7 @@ export class UrlbarView {
     * @param {number} resultId
     */
    async acknowledgeFeedback(resultId) {
@@ -4337,7 +4379,7 @@ index 278cb5ca71..59b77c7014 100644
      let row = this.#getRowByResultId(resultId);
      if (!row) {
        return;
-@@ -624,40 +625,35 @@ export class UrlbarView {
+@@ -624,40 +615,35 @@ export class UrlbarView {
      this.#setRowSelectable(row, false);
  
      // Replace the row with a dismissal acknowledgment tip.
@@ -4391,7 +4433,7 @@ index 278cb5ca71..59b77c7014 100644
    }
  
    /**
-@@ -670,6 +666,10 @@ export class UrlbarView {
+@@ -670,6 +656,10 @@ export class UrlbarView {
     *   True if the Urlbar focus border should be shown after the view is closed.
     */
    close({ elementPicked = false, showFocusBorder = true } = {}) {
@@ -4402,7 +4444,7 @@ index 278cb5ca71..59b77c7014 100644
      const isShowingZeroPrefix =
        this.#queryContext && !this.#queryContext.searchString;
      this.controller.cancelQuery();
-@@ -704,6 +704,7 @@ export class UrlbarView {
+@@ -704,6 +694,7 @@ export class UrlbarView {
      this.#openPanelInstance = null;
      this.#previousTabToSearchEngine = null;
  
@@ -4410,7 +4452,7 @@ index 278cb5ca71..59b77c7014 100644
      this.input.toggleAttribute("open", false);
  
      // Search Tips can open the view without the Urlbar being focused. If the
-@@ -922,6 +923,11 @@ export class UrlbarView {
+@@ -922,6 +913,11 @@ export class UrlbarView {
  
    // UrlbarChildController listener methods.
  
@@ -4422,7 +4464,7 @@ index 278cb5ca71..59b77c7014 100644
    /**
     * Called when a query starts.
     *
-@@ -929,6 +935,10 @@ export class UrlbarView {
+@@ -929,6 +925,10 @@ export class UrlbarView {
     *   The context of the query.
     */
    onQueryStarted(queryContext) {
@@ -4433,7 +4475,7 @@ index 278cb5ca71..59b77c7014 100644
      this.#queryWasCancelled = false;
      this.#queryUpdatedResults = false;
      this.#openPanelInstance = null;
-@@ -960,6 +970,7 @@ export class UrlbarView {
+@@ -960,6 +960,7 @@ export class UrlbarView {
     *   The context of the query.
     */
    onQueryFinished(queryContext) {
@@ -4441,7 +4483,7 @@ index 278cb5ca71..59b77c7014 100644
      this.#cancelRemoveStaleRowsTimer();
      if (this.#queryWasCancelled) {
        return;
-@@ -1018,6 +1029,7 @@ export class UrlbarView {
+@@ -1018,6 +1019,7 @@ export class UrlbarView {
    onQueryResults(queryContext) {
      this.queryContextCache.put(queryContext);
      this.#queryContext = queryContext;
@@ -4449,7 +4491,7 @@ index 278cb5ca71..59b77c7014 100644
  
      if (!this.isOpen) {
        this.clear();
-@@ -1057,28 +1069,16 @@ export class UrlbarView {
+@@ -1057,28 +1059,16 @@ export class UrlbarView {
      }
  
      if (!this.#selectedElement && !this.oneOffSearchButtons?.selectedButton) {
@@ -4488,7 +4530,7 @@ index 278cb5ca71..59b77c7014 100644
        }
      }
  
-@@ -1152,6 +1152,10 @@ export class UrlbarView {
+@@ -1152,6 +1142,10 @@ export class UrlbarView {
     *   it. Undefined when the row is removed without acknowledgment.
     */
    onQueryResultRemoved(id, acknowledgeDismissalL10n) {
@@ -4499,7 +4541,7 @@ index 278cb5ca71..59b77c7014 100644
      let removedIndex = -1;
      let rowToRemove = null;
      for (let i = 0; i < this.#rows.children.length; i++) {
-@@ -1216,12 +1220,17 @@ export class UrlbarView {
+@@ -1216,12 +1210,17 @@ export class UrlbarView {
     *   The UrlbarResult's new menu commands.
     */
    updateResultMenuCommands(resultId, commands) {
@@ -4518,7 +4560,7 @@ index 278cb5ca71..59b77c7014 100644
    }
  
    /**
-@@ -1258,7 +1267,8 @@ export class UrlbarView {
+@@ -1258,7 +1257,8 @@ export class UrlbarView {
    #queryWasCancelled;
    #removeStaleRowsTimer;
    #resultMenuResult;
@@ -4528,7 +4570,7 @@ index 278cb5ca71..59b77c7014 100644
    #rows;
    #rawSelectedElement;
    #tail150 = null;
-@@ -1310,6 +1320,7 @@ export class UrlbarView {
+@@ -1310,6 +1310,7 @@ export class UrlbarView {
      this.input.inputField.setAttribute("aria-expanded", "true");
  
      this.input.toggleAttribute("suppress-focus-border", true);
@@ -4536,7 +4578,7 @@ index 278cb5ca71..59b77c7014 100644
      this.input.toggleAttribute("open", true);
  
      this.window.addEventListener("resize", this);
-@@ -1342,13 +1353,7 @@ export class UrlbarView {
+@@ -1342,13 +1343,7 @@ export class UrlbarView {
    }
  
    #shouldShowHeuristic(result) {
@@ -4551,7 +4593,7 @@ index 278cb5ca71..59b77c7014 100644
    }
  
    /**
-@@ -2146,13 +2151,7 @@ export class UrlbarView {
+@@ -2146,13 +2141,7 @@ export class UrlbarView {
    }
  
    #updateRowButtons(item, oldResult, result) {
@@ -4566,7 +4608,7 @@ index 278cb5ca71..59b77c7014 100644
  
      if (!this.#needsNewButtons(item, oldResult, result)) {
        return;
-@@ -2230,12 +2229,7 @@ export class UrlbarView {
+@@ -2230,12 +2219,7 @@ export class UrlbarView {
            "urlbarView-button",
            "urlbarView-button-" + buttonName,
          ],
@@ -4580,7 +4622,7 @@ index 278cb5ca71..59b77c7014 100644
        },
        item
      );
-@@ -2800,43 +2794,8 @@ export class UrlbarView {
+@@ -2800,43 +2784,8 @@ export class UrlbarView {
    }
  
    #iconForResult(result, iconUrlOverride = null) {
@@ -4626,7 +4668,7 @@ index 278cb5ca71..59b77c7014 100644
    }
  
    #getBlobUrlForResult(result, blob) {
-@@ -2921,21 +2880,22 @@ export class UrlbarView {
+@@ -2921,21 +2870,22 @@ export class UrlbarView {
  
      let description = item._elements.get("description");
      if (result.payload.descriptionL10n) {
@@ -4664,7 +4706,7 @@ index 278cb5ca71..59b77c7014 100644
          }
        }
      } else {
-@@ -3011,7 +2971,7 @@ export class UrlbarView {
+@@ -3011,7 +2961,7 @@ export class UrlbarView {
     * deferred until all rows have been updated.
     */
    #updateIndices() {
@@ -4673,7 +4715,7 @@ index 278cb5ca71..59b77c7014 100644
      this.#overflowObserver.disconnect();
  
      // `lastVisibleLabel` is the l10n object of the last-seen visible row label
-@@ -3033,7 +2993,7 @@ export class UrlbarView {
+@@ -3033,7 +2983,7 @@ export class UrlbarView {
  
        let visible = this.#isElementVisible(item);
        if (visible) {
@@ -4682,7 +4724,7 @@ index 278cb5ca71..59b77c7014 100644
          seenOnlyHeuristicOrSearchSuggestions &&=
            result.heuristic ||
            (result.type == UrlbarShared.RESULT_TYPE.SEARCH &&
-@@ -3067,7 +3027,7 @@ export class UrlbarView {
+@@ -3067,7 +3017,7 @@ export class UrlbarView {
        selectableElement = this.#getNextSelectableElement(selectableElement);
      }
  
@@ -4691,7 +4733,7 @@ index 278cb5ca71..59b77c7014 100644
    }
  
    /**
-@@ -3164,71 +3124,7 @@ export class UrlbarView {
+@@ -3164,71 +3114,7 @@ export class UrlbarView {
     *   If the current row should not have a label, returns null. Otherwise
     *   returns an l10n object for the label's l10n string: `{ id, args }`
     */
@@ -4764,7 +4806,7 @@ index 278cb5ca71..59b77c7014 100644
  
    #setRowVisibility(row, visible) {
      row.toggleAttribute("hidden", !visible);
-@@ -3277,7 +3173,7 @@ export class UrlbarView {
+@@ -3277,7 +3163,7 @@ export class UrlbarView {
      // necessarily imply we are in actions mode, therefore we should check both.
      if (
        this.input.searchMode?.source != UrlbarShared.RESULT_SOURCE.ACTIONS &&
@@ -4773,7 +4815,7 @@ index 278cb5ca71..59b77c7014 100644
      ) {
        this.#rows.toggleAttribute("actionmode", false);
      }
-@@ -3598,55 +3494,13 @@ export class UrlbarView {
+@@ -3598,55 +3484,13 @@ export class UrlbarView {
     *   The DOM node for the result's tile.
     */
    #setResultTitle(result, titleNode) {
@@ -4834,7 +4876,7 @@ index 278cb5ca71..59b77c7014 100644
        return;
      }
  
-@@ -4160,51 +4014,6 @@ export class UrlbarView {
+@@ -4160,51 +4004,6 @@ export class UrlbarView {
      return idArgs;
    }
  
@@ -4886,7 +4928,7 @@ index 278cb5ca71..59b77c7014 100644
    #hasMenuButton(result) {
      return (
        (!result.heuristic && this.#canOpenInNewTarget(result)) ||
-@@ -4217,7 +4026,7 @@ export class UrlbarView {
+@@ -4217,7 +4016,7 @@ export class UrlbarView {
     * buttons of the rows that are already built, which would otherwise keep the
     * attribute they got when they were created.
     */
@@ -4895,7 +4937,7 @@ index 278cb5ca71..59b77c7014 100644
      let inaccessible = !UrlbarPrefs.get("resultMenu.keyboardAccessible");
      for (let button of this.#rows.querySelectorAll(
        ".urlbarView-button-result-menu"
-@@ -4232,98 +4041,9 @@ export class UrlbarView {
+@@ -4232,98 +4031,9 @@ export class UrlbarView {
     * @returns {boolean}
     *   Whether the result's menu offers to open it in a new tab or window.
     */
@@ -4997,7 +5039,7 @@ index 278cb5ca71..59b77c7014 100644
  
    /**
     * Popuplates the result menu with commands.
-@@ -4333,106 +4053,45 @@ export class UrlbarView {
+@@ -4333,106 +4043,45 @@ export class UrlbarView {
     * @param {UrlbarResultCommand[]} options.commands
     */
    async #populateResultMenu({ panel = this.resultMenu, commands }) {
@@ -5137,7 +5179,7 @@ index 278cb5ca71..59b77c7014 100644
    }
  
    // Event handlers below.
-@@ -4710,39 +4369,12 @@ export class UrlbarView {
+@@ -4710,39 +4359,12 @@ export class UrlbarView {
    }
  
    on_click(event) {
@@ -5183,7 +5225,7 @@ index 278cb5ca71..59b77c7014 100644
    }
  
    on_showing(event) {
-@@ -4780,6 +4412,7 @@ export class UrlbarView {
+@@ -4780,6 +4402,7 @@ export class UrlbarView {
      if (event.target != event.currentTarget) {
        return;
      }
@@ -7741,10 +7783,10 @@ index 0000000000..82d5029bd9
 +}
 diff --git a/browser/components/urlbar/content/UrlbarResultPresentation.mjs b/browser/components/urlbar/content/UrlbarResultPresentation.mjs
 new file mode 100644
-index 0000000000..c72048df5a
+index 0000000000..8d8f790a0a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarResultPresentation.mjs
-@@ -0,0 +1,190 @@
+@@ -0,0 +1,222 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7792,6 +7834,38 @@ index 0000000000..c72048df5a
 +      return Object.freeze({ kind: "associate-first", valueResult: first });
 +    }
 +    return Object.freeze({ kind: "none", valueResult: null });
++  }
++
++  /**
++   * Arrow-key row traversal. Row count and eligibility describe the presenter's
++   * complete displayed candidate list, including rows outside its viewport.
++   * The callback is synchronous and never retained. It keeps action controls
++   * and disabled-state inspection in the presenter, without passing nodes here.
++   *
++   * A clear descriptor preserves the original explicit deselection path; a row
++   * descriptor (including index -1) uses the presenter's row-selection path.
++   * Query freezing, preview, focus and provider notifications remain binding
++   * responsibilities. Tab-key traversal is a separate element-level policy.
++   */
++  arrowSelection({ selectedRowIndex, rowCount, amount, reverse = false,
++    allowEmptySelection, isSelectable }) {
++    const end = rowCount - 1;
++    const step = reverse ? -1 : 1;
++    if (selectedRowIndex == (reverse ? 0 : end)) {
++      return Object.freeze(allowEmptySelection
++        ? { kind: "clear" }
++        : { kind: "row", index: reverse ? end : 0 });
++    }
++    let index = reverse ? end : 0;
++    if (selectedRowIndex != -1) {
++      index = Math.min(end, Math.max(0, selectedRowIndex + amount * step));
++    }
++    // Preserve Firefox's edge wrap and directional scan order. In particular,
++    // the edge-wrap branch above does not rescan eligibility.
++    while (index >= 0 && index <= end && !isSelectable(index)) {
++      index += step;
++    }
++    return Object.freeze({ kind: "row", index: index > end ? -1 : index });
 +  }
 +
 +  /**

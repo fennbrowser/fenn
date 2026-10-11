@@ -82,9 +82,62 @@ test('icon precedence and blob lifetime stay with the presenter',()=>{
 test('original renderer and native adapter share policy and delete native view helpers',()=>{
   const view=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarView.mjs',import.meta.url),'utf8');
   const session=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIUrlbarSession.sys.mjs',import.meta.url),'utf8');
-  for(const method of ['title','icon','allowEmptySelection','shouldShowHeuristic','defaultSelection']) assert.ok(view.includes(`this.input.resultPresentation.${method}(`));
+  for(const method of ['title','icon','allowEmptySelection','shouldShowHeuristic','defaultSelection','arrowSelection']) assert.ok(view.includes(`this.input.resultPresentation.${method}(`));
   for(const method of ['searchModeTitle','icon','allowEmptySelection','candidates']) assert.ok(session.includes(`this.input.resultPresentation.${method}(`));
   assert.doesNotMatch(view,/prepareNativeSearchModeTitle|nativePresentationResults|nativeResultPresentation/);
+});
+
+test('arrow traversal preserves boundaries, empty selection, amount clamping and lazy eligibility',()=>{
+  const {model}=fixture();
+  const cases=[
+    // selected, count, amount, reverse, empty, eligible, descriptor, inspected
+    [2,3,1,false,true,[true,true,true],{kind:'clear'},[]],
+    [2,3,1,false,false,[false,true,true],{kind:'row',index:0},[]],
+    [0,3,1,true,true,[true,true,true],{kind:'clear'},[]],
+    [0,3,1,true,false,[true,true,false],{kind:'row',index:2},[]],
+    [-1,3,9,false,true,[false,true,true],{kind:'row',index:1},[0,1]],
+    [-1,3,9,true,true,[true,false,false],{kind:'row',index:0},[2,1,0]],
+    [0,4,2,false,false,[true,false,true,true],{kind:'row',index:2},[2]],
+    [0,4,99,false,false,[true,true,true,true],{kind:'row',index:3},[3]],
+    [3,4,99,true,false,[true,true,true,true],{kind:'row',index:0},[0]],
+    [0,3,1,false,false,[true,false,false],{kind:'row',index:-1},[1,2]],
+    [2,3,1,true,false,[false,false,true],{kind:'row',index:-1},[1,0]],
+    [-1,1,1,false,false,[true],{kind:'row',index:0},[0]],
+    [-1,0,1,false,true,[],{kind:'clear'},[]],
+    [-1,0,1,true,true,[],{kind:'row',index:-1},[]],
+  ];
+  for(const [selectedRowIndex,rowCount,amount,reverse,allowEmptySelection,eligible,expected,inspected] of cases){
+    const seen=[];
+    const result=model.arrowSelection({selectedRowIndex,rowCount,amount,reverse,allowEmptySelection,
+      isSelectable:index=>{seen.push(index);return eligible[index];}});
+    assert.deepEqual({...result},expected,JSON.stringify({selectedRowIndex,rowCount,amount,reverse,allowEmptySelection}));
+    assert.deepEqual(seen,inspected);assert.ok(Object.isFrozen(result));
+  }
+});
+
+test('original arrow binding freezes before policy and preserves distinct selection application paths',()=>{
+  const {model}=fixture();
+  const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarView.mjs',import.meta.url),'utf8');
+  const method=source.slice(source.indexOf('  selectBy(amount,'),source.indexOf('    // Tab key handling below.'))+'\n  }';
+  const Binding=new Function(`return class {
+    #selectElement(value){this.calls.push(['clear',value]);this.index=-1;}
+    #isRowArrowSelectable(index){this.calls.push(['eligible',index]);return this.eligible[index];}
+    get selectedRowIndex(){return this.index;}
+    set selectedRowIndex(value){this.calls.push(['row',value]);this.index=value;}
+    ${method}
+  }`)();
+  const binding=new Binding();binding.calls=[];binding.index=0;binding.isOpen=true;
+  binding.visibleRowCount=3;binding.eligible=[true,false,true];binding.allowEmptySelection=true;
+  binding.input={resultPresentation:model,eventBufferer:{isDeferringEvents:false}};
+  binding.controller={cancelQuery:()=>binding.calls.push(['freeze'])};
+  binding.selectBy(1);
+  assert.deepEqual(binding.calls,[['freeze'],['eligible',1],['eligible',2],['row',2]]);
+  binding.calls=[];binding.selectBy(1);
+  assert.deepEqual(binding.calls,[['freeze'],['clear',null]]);
+  binding.calls=[];binding.input.eventBufferer.isDeferringEvents=true;binding.selectBy(1,{reverse:true});
+  assert.deepEqual(binding.calls,[['eligible',2],['row',2]]);
+  binding.calls=[];binding.isOpen=false;assert.throws(()=>binding.selectBy(1),/isn't open/);
+  assert.deepEqual(binding.calls,[]);
 });
 
 
