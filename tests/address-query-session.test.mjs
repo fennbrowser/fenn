@@ -30,7 +30,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;}}});
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarUrlValue.mjs',import.meta.url),'utf8')
     .replace(/^import .*;$/gm,'').replaceAll('export function ','function '),sandbox);
-  Object.assign(sandbox.UrlbarShared, {RESTRICT_TOKENS:sharedPolicy.UrlbarShared.RESTRICT_TOKENS,
+  Object.assign(sandbox.UrlbarShared, {REGEXP_SPACES:sharedPolicy.UrlbarShared.REGEXP_SPACES,RESTRICT_TOKENS:sharedPolicy.UrlbarShared.RESTRICT_TOKENS,
     LOCAL_SEARCH_MODES:sharedPolicy.UrlbarShared.LOCAL_SEARCH_MODES,
     SEARCH_MODE_RESTRICT:sharedPolicy.UrlbarShared.SEARCH_MODE_RESTRICT,
     SEARCH_MODE_ENTRY:sharedPolicy.UrlbarShared.SEARCH_MODE_ENTRY,
@@ -1637,4 +1637,49 @@ test('restoration resolves a fresh engine store without querying and rejects sco
     else assert.equal((await pending).engineName,'Engine');
     assert.equal(f.parent.started.length,0);f.session.close();
   }
+});
+
+
+test('independent search-command descriptions resolve local modes, aliases and live engines without editor writes',async()=>{
+  const f=await editorFixture();await f.editor.edit({searchMode:{source:1}},edit(1,'displayed'));
+  const engine={id:'engine',name:'Engine',aliases:['@e'],isGeneralPurposeEngine:true};
+  f.parent.child.updateEngineStore('changed',engine,-1);
+  const snapshot=f.editor.snapshot,started=f.parent.started.length;
+  const local=await f.editor.describeSearchCommand(1,'^ history words');
+  assert.equal(local.value,'history words');assert.equal(local.changeSearchMode,true);
+  assert.equal(local.searchMode.source,sharedPolicy.UrlbarShared.RESULT_SOURCE.HISTORY);assert.equal(local.searchMode.isPreview,true);
+  const remote=await f.editor.describeSearchCommand(1,'@e engine words',{engineId:'engine'});
+  assert.equal(remote.value,'engine words');assert.equal(remote.searchMode.engineName,'Engine');assert.equal(remote.searchMode.entry,'searchbutton');
+  const unchanged=await f.editor.describeSearchCommand(1,'plain words');
+  assert.equal(unchanged.changeSearchMode,false);assert.equal(unchanged.value,'plain words');
+  const unsupported=await f.editor.describeSearchCommand(1,'#');
+  assert.equal(unsupported.changeSearchMode,true);assert.equal(unsupported.searchMode,null);assert.equal(unsupported.value,'# ');
+  assert.equal(f.editor.snapshot,snapshot);assert.equal(f.parent.started.length,started);
+  f.parent.child.updateEngineStore('removed',engine,-1);
+  assert.equal(await f.editor.describeSearchCommand(1,'@e words',{engineId:'engine'}),null);f.editor.close();
+});
+
+test('search-command preparation initializes default engines and preserves missing-default failure policy',async()=>{
+  for(const fail of [false,true]) {
+    const f=fixture({hold:true}),pending=f.session.prepareSearchCommand('? words');
+    if(fail)f.parent.child.updateEngineStore('error');
+    else f.parent.child.updateEngineStore('init',[{id:'engine',name:'Engine',aliases:[],isGeneralPurposeEngine:true}],0);
+    const plan=await pending;assert.equal(plan.value,'words');assert.equal(plan.changeSearchMode,true);
+    if(fail)assert.equal(plan.searchMode,null);else assert.equal(plan.searchMode.engineName,'Engine');
+    assert.equal(f.parent.started.length,0);f.session.close();
+  }
+});
+
+test('independent command descriptions reject stale editor snapshots and scope during asynchronous preparation',async()=>{
+  const f=await editorFixture();await f.editor.edit({},edit(1,'typed'));
+  const pending=f.editor.describeSearchCommand(1,'^ words');f.editor.select(1,0,0);
+  await assert.rejects(pending,/superseded/);
+  await assert.rejects(f.editor.describeSearchCommand(0,'^ words'),/Stale/);
+  await assert.rejects(f.editor.describeSearchCommand(1,42),/Invalid/);
+  await assert.rejects(f.editor.describeSearchCommand(1,'words',{engineId:''}),/Invalid/);
+  await f.editor.edit({},edit(2,'composing',{composing:true}));
+  await assert.rejects(f.editor.describeSearchCommand(2,'^ words'),/Stale/);f.editor.close();
+  const g=fixture({hold:true}),initializing=g.session.prepareSearchCommand('? words');
+  g.invalidate();g.parent.child.updateEngineStore('init',[],null);
+  await assert.rejects(initializing,/scope changed/);
 });

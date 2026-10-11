@@ -25,7 +25,7 @@ function fixture() {
     installEngine:async()=>false};
   // No browser window, input, DOM or switcher is supplied to the real module.
   const context=vm.createContext({UrlbarPrefs:{get:key=>prefs[key]},
-    UrlbarShared:{LOCAL_SEARCH_MODES:[local],RESTRICT_TOKENS:{SEARCH:'?'},
+    UrlbarShared:{LOCAL_SEARCH_MODES:[local],REGEXP_SPACES:/\s+/,RESTRICT_TOKENS:{SEARCH:'?',HISTORY:'^',BOOKMARK:'*'},
       SEARCH_MODE_RESTRICT:new Set(['^','?']),SEARCH_MODE_ENTRY:new Set(['keywordoffer','searchbutton']),RESULT_TYPE:{RESTRICT:9},RESULT_SOURCE:{SEARCH:3},
       ICON:{SEARCH_GLASS:'glass'},getResultSourceName:source=>source===1 ? 'history' : undefined}});
   vm.runInContext(readFileSync(new URL('UrlbarSearchModeModel.mjs',base),'utf8')
@@ -354,4 +354,46 @@ test('original mode reads use shared preview precedence and never expose stored 
   input._getModes=()=>modes;
   const result=input.getSearchMode({});result.engineName='changed';
   assert.equal(input.getSearchMode({}).engineName,'Engine');assert.equal(input.getSearchMode({},true).source,1);
+});
+
+
+test('shared search commands preserve Firefox token, alias and single-space removal rules',()=>{
+  const {model,services}=fixture(),Model=model.constructor;
+  const engine={name:'Engine',aliases:['@e']};
+  const describe=(value,searchEngine=null)=>Model.searchCommand(value,{searchEngine,searchModeEntry:'searchbutton',
+    resolveMode:token=>Model.modeForToken(token,{isAddressbar:true,engineStore:services.engineStore})});
+  for(const [input,engineArg,value,changed,source] of [
+    ['^ words',null,'words',true,1],['  ^  words  ',null,'   words  ',true,1],
+    ['@e words @e',engine,'words @e',true,undefined],['  words',engine,' words',true,undefined],
+    ['plain',null,'plain',false,undefined],['*',null,'* ',true,undefined],['* words',null,'* words',true,undefined],
+    ['^ words',engine,'words',true,1],['',engine,'',true,undefined]]) {
+    const plan=describe(input,engineArg);
+    assert.equal(plan.value,value,input);assert.equal(plan.changeSearchMode,changed,input);
+    assert.equal(plan.searchMode?.source,source,input);assert.equal(Object.isFrozen(plan),true);
+    if(plan.searchMode)assert.equal(Object.isFrozen(plan.searchMode),true);
+  }
+  assert.equal(describe('@e words',engine).searchMode.engineName,'Engine');
+  assert.equal(describe('? words',engine).searchMode.engineName,'Engine');
+  assert.equal(describe('*').searchMode,null);
+  assert.equal(describe('plain').searchMode,null);
+});
+
+test('original search binding keeps focus, mode-before-text and input-event ordering with shared policy',()=>{
+  const {model,services}=fixture(),source=readFileSync(new URL('UrlbarInputBase.mjs',base),'utf8');
+  const start=source.indexOf('  search(value, options = {}) {');
+  const method=source.slice(start,source.indexOf('\n  /**',start));
+  const context=vm.createContext({UrlbarSearchModeModel:model.constructor,UrlbarShared:{RESTRICT_TOKENS:{SEARCH:'?'}},
+    UIEvent:class {constructor(type,options){this.type=type;this.options=options;}}});
+  vm.runInContext('this.Binding=class {'+method+'}',context);
+  const input=new context.Binding(),calls=[];let value,mode;
+  input.window={};input.focus=()=>calls.push('focus');input.controller={engineStore:{initialized:true}};
+  input.searchModeForToken=token=>model.constructor.modeForToken(token,{isAddressbar:true,engineStore:services.engineStore});
+  input.inputField={dispatchEvent(event){calls.push('input');assert.equal(event.type,'input');assert.equal(input._lastSearchString,'');}};
+  Object.defineProperty(input.inputField,'value',{set(v){value=v;calls.push('text');}});
+  Object.defineProperty(input,'searchMode',{set(v){mode=v;if(v)v.bindingMutable=true;calls.push('mode');}});
+  Object.defineProperty(input,'selectionStart',{set(v){assert.equal(v,-1);calls.push('caret');}});
+  input.search('^ words',{searchModeEntry:'searchbutton'});
+  assert.deepEqual(calls,['focus','mode','text','caret','input']);assert.equal(value,'words');assert.equal(mode.source,1);
+  calls.length=0;input.search('ordinary',{focus:false,startQuery:false});
+  assert.deepEqual(calls,['text','caret']);assert.equal(value,'ordinary');assert.equal(mode.source,1);
 });

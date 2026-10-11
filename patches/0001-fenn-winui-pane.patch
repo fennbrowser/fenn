@@ -2911,7 +2911,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..5b60b66bb5 100644
+index a077de625f..7d5311ca29 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,20 @@
@@ -3250,7 +3250,61 @@ index a077de625f..5b60b66bb5 100644
  
      let queryContext = this.#makeQueryContext({
        allowAutofill,
-@@ -2692,21 +2737,9 @@ ${
+@@ -2608,9 +2653,7 @@ ${
+     if (options.focus ?? true) {
+       this.focus();
+     }
+-    let trimmedValue = value.trim();
+-    let end = trimmedValue.search(UrlbarShared.REGEXP_SPACES);
+-    let firstToken = end == -1 ? trimmedValue : trimmedValue.substring(0, end);
++    const firstToken = UrlbarSearchModeModel.searchCommandToken(value);
+ 
+     if (
+       firstToken == UrlbarShared.RESTRICT_TOKENS.SEARCH &&
+@@ -2629,36 +2672,13 @@ ${
+       return;
+     }
+ 
+-    // Enter search mode if the string starts with a restriction token.
+-    let searchMode = this.searchModeForToken(firstToken);
+-    let firstTokenIsRestriction = !!searchMode;
+-    if (!searchMode && searchEngine) {
+-      searchMode = { engineName: searchEngine.name };
+-      firstTokenIsRestriction = searchEngine.aliases.includes(firstToken);
+-    }
+-
+-    if (searchMode) {
+-      searchMode.entry = searchModeEntry;
+-      this.searchMode = searchMode;
+-      if (firstTokenIsRestriction) {
+-        // Remove the restriction token/alias from the string to be searched for
+-        // in search mode.
+-        value = value.replace(firstToken, "");
+-      }
+-      if (UrlbarShared.REGEXP_SPACES.test(value[0])) {
+-        // If there was a trailing space after the restriction token/alias,
+-        // remove it.
+-        value = value.slice(1);
+-      }
+-    } else if (
+-      Object.values(UrlbarShared.RESTRICT_TOKENS).includes(firstToken)
+-    ) {
+-      this.searchMode = null;
+-      // If the entire value is a restricted token, append a space.
+-      if (Object.values(UrlbarShared.RESTRICT_TOKENS).includes(value)) {
+-        value += " ";
+-      }
++    const command = UrlbarSearchModeModel.searchCommand(value, {
++      searchEngine, searchModeEntry, resolveMode: token => this.searchModeForToken(token),
++    });
++    if (command.changeSearchMode) {
++      this.searchMode = command.searchMode ? { ...command.searchMode } : null;
+     }
++    value = command.value;
+     this.inputField.value = value;
+     // Avoid selecting the text if this method is called twice in a row.
+     this.selectionStart = -1;
+@@ -2692,21 +2712,9 @@ ${
     *   setSearchMode documentation for details.
     */
    searchModeForToken(token) {
@@ -3275,7 +3329,7 @@ index a077de625f..5b60b66bb5 100644
    }
  
    /**
-@@ -2824,16 +2857,9 @@ ${
+@@ -2824,16 +2832,9 @@ ${
     *   See setSearchMode documentation.
     */
    getSearchMode(browser, confirmedOnly = false) {
@@ -3295,7 +3349,7 @@ index a077de625f..5b60b66bb5 100644
    }
  
    /**
-@@ -2880,64 +2906,10 @@ ${
+@@ -2880,64 +2881,10 @@ ${
        }
      }
  
@@ -3364,7 +3418,7 @@ index a077de625f..5b60b66bb5 100644
  
      // The address bar keeps a search mode per browser, so it only enters search
      // mode for the selected one. Every other input keeps a single search mode.
-@@ -3245,38 +3217,21 @@ ${
+@@ -3245,38 +3192,21 @@ ${
      result = this._resultForCurrentValue,
      checkValue = true,
      startQuery = true,
@@ -3415,7 +3469,7 @@ index a077de625f..5b60b66bb5 100644
          this.startQuery({ allowAutofill: false })
        );
      }
-@@ -3516,84 +3471,19 @@ ${
+@@ -3516,84 +3446,19 @@ ${
     *   element rather than the result.
     * @returns {string} The value.
     */
@@ -3512,7 +3566,7 @@ index a077de625f..5b60b66bb5 100644
    }
  
    /**
-@@ -3604,14 +3494,7 @@ ${
+@@ -3604,14 +3469,7 @@ ${
     * @returns {string} The `actiontype` value, or undefined.
     */
    #getActionTypeFromResult(result) {
@@ -3528,7 +3582,7 @@ index a077de625f..5b60b66bb5 100644
    }
  
    /**
-@@ -3634,64 +3517,27 @@ ${
+@@ -3634,64 +3492,27 @@ ${
     *   Whether autofill should be allowed in the new search.
     */
    _maybeAutofillPlaceholder(value) {
@@ -3613,7 +3667,7 @@ index a077de625f..5b60b66bb5 100644
    }
  
    /**
-@@ -3772,105 +3618,31 @@ ${
+@@ -3772,105 +3593,31 @@ ${
      }
    }
  
@@ -3744,7 +3798,7 @@ index a077de625f..5b60b66bb5 100644
    }
  
    _toggleActionOverride(event) {
-@@ -4081,33 +3853,34 @@ ${
+@@ -4081,33 +3828,34 @@ ${
     * @param {Event} event The event that picked the result.
     * @param {HTMLElement} element the picked view element, if available.
     */
@@ -3785,7 +3839,7 @@ index a077de625f..5b60b66bb5 100644
        // Open help links in a new tab.
        where = "tab";
      }
-@@ -4267,6 +4040,15 @@ ${
+@@ -4267,6 +4015,15 @@ ${
      }
    }
  
@@ -3801,7 +3855,7 @@ index a077de625f..5b60b66bb5 100644
    _initCopyCutController() {
      // This exists to put an untrimmed URL on the clipboard, and only the address
      // bar trims. Every other input keeps its native copy/cut.
-@@ -4479,7 +4261,7 @@ ${
+@@ -4479,7 +4236,7 @@ ${
        return;
      }
      let controller =
@@ -3810,7 +3864,7 @@ index a077de625f..5b60b66bb5 100644
      if (
        !controller.isCommandEnabled("cmd_copy") ||
        !this.#isClipboardURIValid()
-@@ -4495,6 +4277,33 @@ ${
+@@ -4495,6 +4252,33 @@ ${
      stripOnShare.removeAttribute("disabled");
    }
  
@@ -3844,7 +3898,7 @@ index a077de625f..5b60b66bb5 100644
    _initPasteAndGo() {
      this.addContextMenuItems({
        after: "edit-contextmenu-paste",
-@@ -4507,17 +4316,7 @@ ${
+@@ -4507,17 +4291,7 @@ ${
            .GetStringFromName("pasteAndGo.label");
          pasteAndGo.setAttribute("label", label);
          pasteAndGo.setAttribute("anonid", "paste-and-go");
@@ -3863,7 +3917,7 @@ index a077de625f..5b60b66bb5 100644
  
          fragment.appendChild(pasteAndGo);
          return fragment;
-@@ -4545,10 +4344,7 @@ ${
+@@ -4545,10 +4319,7 @@ ${
            { once: true }
          );
  
@@ -3875,7 +3929,7 @@ index a077de625f..5b60b66bb5 100644
            pasteAndGo.removeAttribute("disabled");
          } else {
            pasteAndGo.setAttribute("disabled", "true");
-@@ -4747,60 +4543,11 @@ ${
+@@ -4747,60 +4518,11 @@ ${
     * @returns {object} A search mode object. Null if search mode should not be
     *   entered. See setSearchMode documentation for details.
     */
@@ -3941,7 +3995,7 @@ index a077de625f..5b60b66bb5 100644
    }
  
    /**
-@@ -5071,6 +4818,8 @@ ${
+@@ -5071,6 +4793,8 @@ ${
    setUnifiedSearchButtonAvailability(available) {
      available ||=
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
@@ -3950,7 +4004,7 @@ index a077de625f..5b60b66bb5 100644
      const switcher = this.querySelector(".searchmode-switcher");
      switcher.toggleAttribute("offscreen", !available);
      if (available) {
-@@ -5085,6 +4834,7 @@ ${
+@@ -5085,6 +4809,7 @@ ${
          this.window.gBrowser.selectedBrowser
        ).isUnifiedSearchButtonAvailable = available;
      }
@@ -3958,7 +4012,7 @@ index a077de625f..5b60b66bb5 100644
    }
  
    /**
-@@ -5151,7 +4901,7 @@ ${
+@@ -5151,7 +4876,7 @@ ${
    #maybeSelectAll() {
      if (
        !this.#preventClickSelectsAll &&
@@ -3967,7 +4021,7 @@ index a077de625f..5b60b66bb5 100644
        this.focused &&
        this.inputField.selectionStart == this.inputField.selectionEnd
      ) {
-@@ -5477,34 +5227,20 @@ ${
+@@ -5477,34 +5202,20 @@ ${
      }
    }
  
@@ -4012,7 +4066,7 @@ index a077de625f..5b60b66bb5 100644
      this.valueIsTyped = true;
      this._untrimmedValue = value;
      this._protocolIsTrimmed = false;
-@@ -5516,20 +5252,9 @@ ${
+@@ -5516,20 +5227,9 @@ ${
      // string, thus there's no valid selection. This is also used by the view
      // to set "aria-activedescendant", thus it should never get stale.
      this.controller.userSelectionBehavior = "none";
@@ -4035,7 +4089,7 @@ index a077de625f..5b60b66bb5 100644
      this.toggleAttribute("usertyping", value);
      this.removeAttribute("actiontype");
  
-@@ -5551,6 +5276,43 @@ ${
+@@ -5551,6 +5251,43 @@ ${
          this.removeAttribute("persistsearchterms");
        }
      }
@@ -4079,7 +4133,7 @@ index a077de625f..5b60b66bb5 100644
  
      if (this.view.isOpen) {
        // UrlbarView rolls up all popups when it opens, but we should
-@@ -5580,10 +5342,9 @@ ${
+@@ -5580,10 +5317,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -4093,7 +4147,7 @@ index a077de625f..5b60b66bb5 100644
      ) {
        return;
      }
-@@ -5591,11 +5352,10 @@ ${
+@@ -5591,11 +5327,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -4109,7 +4163,7 @@ index a077de625f..5b60b66bb5 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5669,33 +5429,20 @@ ${
+@@ -5669,33 +5404,20 @@ ${
    }
  
    _on_paste(event) {
@@ -4151,7 +4205,7 @@ index a077de625f..5b60b66bb5 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5456,7 @@ ${
+@@ -5709,7 +5431,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -4160,7 +4214,7 @@ index a077de625f..5b60b66bb5 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5487,25 @@ ${
+@@ -5740,51 +5462,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -4228,7 +4282,7 @@ index a077de625f..5b60b66bb5 100644
    }
  
    _on_scrollend() {
-@@ -5978,15 +5699,11 @@ ${
+@@ -5978,15 +5674,11 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -4246,7 +4300,7 @@ index a077de625f..5b60b66bb5 100644
  
      if (UrlbarPrefs.get("keepPanelOpenDuringImeComposition")) {
        return;
-@@ -6006,44 +5723,24 @@ ${
+@@ -6006,44 +5698,24 @@ ${
          }
          this.confirmSearchMode();
        }
@@ -4303,7 +4357,7 @@ index a077de625f..5b60b66bb5 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,9 +5866,7 @@ ${
+@@ -6169,9 +5841,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -4314,7 +4368,7 @@ index a077de625f..5b60b66bb5 100644
        ? SCHEMELESS_INPUT_SCHEMELESS
        : SCHEMELESS_INPUT_SCHEMEFUL;
    }
-@@ -6311,111 +6006,6 @@ function getDroppableData(event) {
+@@ -6311,111 +5981,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -4426,7 +4480,7 @@ index a077de625f..5b60b66bb5 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +6030,10 @@ class CopyCutController {
+@@ -6440,12 +6005,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -6978,10 +7032,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..3e24d6b1bf
+index 0000000000..60df170250
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,911 @@
+@@ -0,0 +1,922 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7684,6 +7738,17 @@ index 0000000000..3e24d6b1bf
 +    }
 +  }
 +
++  /** Describe a search-mode command for the exact observed editor, without applying it. */
++  async describeSearchCommand(revision, value, options = {}) {
++    this.#check();
++    const edit = this.#edit;
++    if (!edit || revision !== edit.revision || edit.composing) throw new Error("Stale editor search command");
++    const command = await this.#queries.prepareSearchCommand(value, options);
++    this.#check();
++    if (this.#edit !== edit) throw new Error("Editor search command superseded");
++    return command;
++  }
++
 +  /**
 +   * Restore the host's confirmed-only tab mode onto this scoped editor. The host
 +   * reads its mode owner before calling, and owns tab persistence/UI effects.
@@ -7895,16 +7960,17 @@ index 0000000000..3e24d6b1bf
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..5fddebdf81
+index 0000000000..1c4bc46bee
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,357 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +import { UrlbarChildController } from "chrome://browser/content/urlbar/UrlbarChildController.mjs";
 +import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
++import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
 +import { UrlbarSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs";
 +
 +/**
@@ -8064,6 +8130,45 @@ index 0000000000..5fddebdf81
 +    this.#check();
 +    if (this.#query !== query) throw new Error("Query superseded or cancelled");
 +    return frozen;
++  }
++
++  /** Prepare input.search policy using this consumer's live engine store, without dispatch. */
++  async prepareSearchCommand(value, { engineId = null, searchModeEntry = "searchbutton" } = {}) {
++    this.#check();
++    if (typeof value !== "string" || (engineId !== null && (typeof engineId !== "string" || !engineId))) {
++      throw new TypeError("Invalid search command facts");
++    }
++    const store = this.#controller.engineStore;
++    if (engineId !== null || UrlbarSearchModeModel.searchCommandToken(value) === UrlbarShared.RESTRICT_TOKENS.SEARCH) {
++      try { await store.init(); } catch (error) {
++        // The original search-token retry continues after initialization failure.
++        if (engineId !== null) throw error;
++      }
++    }
++    this.#check();
++    return this.describeSearchCommand(value, { engineId, searchModeEntry });
++  }
++
++  /** Recompute command facts; a description grants no mode/text write authority. */
++  describeSearchCommand(value, { engineId = null, searchModeEntry = "searchbutton" } = {}) {
++    this.#check();
++    if (typeof value !== "string" || (engineId !== null && (typeof engineId !== "string" || !engineId))) {
++      throw new TypeError("Invalid search command facts");
++    }
++    const store = this.#controller.engineStore;
++    if ((engineId !== null || UrlbarSearchModeModel.searchCommandToken(value) === UrlbarShared.RESTRICT_TOKENS.SEARCH) &&
++        !store.initialized && !store.failed) throw new Error("Search command engines are not initialized");
++    const searchEngine = engineId !== null ? store.getEngine(engineId) : null;
++    if (engineId !== null && !searchEngine) return null;
++    const command = UrlbarSearchModeModel.searchCommand(value, {
++      searchEngine, searchModeEntry,
++      resolveMode: token => UrlbarSearchModeModel.modeForToken(token, {
++        isAddressbar: this.#context.sapName === "urlbar", engineStore: store,
++      }),
++    });
++    const engine = command.searchMode?.engineName ? store.getEngineByName(command.searchMode.engineName) : null;
++    return Object.freeze({ ...command,
++      searchMode: UrlbarSearchModeModel.normalizeMode(command.searchMode, engine) });
 +  }
 +
 +  /** Resolve a stored confirmed mode without starting a query or consulting an input. */
@@ -8532,10 +8637,10 @@ index 0000000000..1fec37fd9e
 +}
 diff --git a/browser/components/urlbar/content/UrlbarSearchModeModel.mjs b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
 new file mode 100644
-index 0000000000..bb9b8c9654
+index 0000000000..4aea5d4bac
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
-@@ -0,0 +1,403 @@
+@@ -0,0 +1,434 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8555,6 +8660,37 @@ index 0000000000..bb9b8c9654
 +    }
 +    const mode = isAddressbar && UrlbarShared.LOCAL_SEARCH_MODES.find(m => m.restrict == token);
 +    return mode ? { ...mode } : null;
++  }
++
++  /** First command token; preserve the original string for the eventual editor write. */
++  static searchCommandToken(value) {
++    const trimmedValue = value.trim();
++    const end = trimmedValue.search(UrlbarShared.REGEXP_SPACES);
++    return end == -1 ? trimmedValue : trimmedValue.substring(0, end);
++  }
++
++  /** Shared input.search text/mode policy; focus, composition and dispatch stay in the binding. */
++  static searchCommand(value, { searchEngine = null, searchModeEntry, resolveMode }) {
++    const firstToken = this.searchCommandToken(value);
++    let searchMode = resolveMode(firstToken);
++    let firstTokenIsRestriction = !!searchMode;
++    if (!searchMode && searchEngine) {
++      searchMode = { engineName: searchEngine.name };
++      firstTokenIsRestriction = searchEngine.aliases.includes(firstToken);
++    }
++    let changeSearchMode = false;
++    if (searchMode) {
++      searchMode = Object.freeze({ ...searchMode, entry: searchModeEntry });
++      changeSearchMode = true;
++      if (firstTokenIsRestriction) value = value.replace(firstToken, "");
++      // Firefox removes one leading whitespace character, not the entire prefix.
++      if (UrlbarShared.REGEXP_SPACES.test(value[0])) value = value.slice(1);
++    } else if (Object.values(UrlbarShared.RESTRICT_TOKENS).includes(firstToken)) {
++      searchMode = null;
++      changeSearchMode = true;
++      if (Object.values(UrlbarShared.RESTRICT_TOKENS).includes(value)) value += " ";
++    }
++    return Object.freeze({ value, changeSearchMode, searchMode: searchMode || null });
 +  }
 +
 +  /** Result-to-mode policy; bindings supply action facts and token resolution. */
