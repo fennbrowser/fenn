@@ -2853,3 +2853,80 @@ test('backend asynchronous rejection is handled without suppressing terminal rec
   assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options),true);
   await Promise.resolve();assert.deepEqual(errors,['backend failure']);assert.deepEqual(f.calls,[['search'],['bounce'],['record']]);f.editor.close();
 });
+
+
+function parentLoadFixture() {
+  const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarParentController.sys.mjs',import.meta.url),'utf8');
+  const start=source.indexOf('  prepareCurrentLoad(loadData) {');
+  const methods=source.slice(start,source.indexOf('  /**\n   * Focuses the browser',start));
+  const calls=[],browser={browserId:42,lastLocationChange:1,browsingContext:{currentWindowGlobal:{}},focus:()=>calls.push('focus')};
+  const lazy={UrlbarUtils:{loadRequestToUrl:request=>({url:request.urlLoad?.url,postData:null})}};
+  const Parent=new Function('lazy','Cr',`return class {
+    #currentLoad=null;#currentLoadGeneration=0;#destroyed=false;#isAddressbar=true;
+    #prepareAddressbarLoad(data){this.prepare?.(data);}
+    destroy(){this.#destroyed=true;this.#currentLoad=null;}
+    ${methods}
+  }`)(lazy,{NS_ERROR_LOAD_SHOWED_ERRORPAGE:99});
+  const p=new Parent();p.resolveTargetBrowser=id=>id===42?browser:null;
+  p.browserWindow={gBrowser:{selectedBrowser:browser},openTrustedLinkIn:(url,where,params)=>calls.push({url,where,params})};
+  const data={where:'current',browserId:42,loadRequest:{urlLoad:{url:'https://chosen.test/'}},params:{avoidBrowserFocus:false},userTypedValue:'chosen'};
+  return {p,browser,data,calls,lazy};
+}
+
+test('parent current loads copy preparation, supersede tokens and dispatch exactly once',()=>{
+  const {p,browser,data,calls}=parentLoadFixture();
+  const old=p.prepareCurrentLoad(data),token=p.prepareCurrentLoad(data);
+  assert.equal(Object.isFrozen(token),true);assert.equal(p.commitCurrentLoad(old).attempted,false);
+  data.loadRequest.urlLoad.url='https://mutated.test/';data.params.avoidBrowserFocus=true;
+  assert.deepEqual(p.commitCurrentLoad(token),{attempted:true,reverted:false,browserId:42});
+  assert.equal(calls[0],'focus');assert.equal(calls[1].url,'https://chosen.test/');assert.equal(calls[1].params.targetBrowser,browser);
+  assert.equal(p.commitCurrentLoad(token).attempted,false);assert.equal(calls.length,2);assert.equal(data.params.targetBrowser,undefined);
+});
+
+test('current-load lifetime rejects tab, document, epoch, identity and destroyed changes',()=>{
+  for(const change of ['tab','document','epoch','identity','gone','destroy','scope']) {
+    const {p,browser,data,calls}=parentLoadFixture(),token=p.prepareCurrentLoad(data);
+    if(change==='tab')p.browserWindow.gBrowser.selectedBrowser={};
+    if(change==='document')browser.browsingContext.currentWindowGlobal={};
+    if(change==='epoch')browser.lastLocationChange++;
+    if(change==='identity')browser.browserId=43;
+    if(change==='gone')p.resolveTargetBrowser=()=>null;
+    if(change==='destroy')p.destroy();
+    assert.equal(p.commitCurrentLoad(token,()=>change!=='scope').attempted,false);
+    assert.equal(calls.length,0);assert.equal(p.commitCurrentLoad(token).attempted,false);
+  }
+});
+
+test('current-load guards cover URL resolution, address preparation and focus reentry',()=>{
+  for(const phase of ['resolve','prepare','focus','supersede']) {
+    const {p,browser,data,calls,lazy}=parentLoadFixture(),token=p.prepareCurrentLoad(data);let next;
+    if(phase==='resolve')lazy.UrlbarUtils.loadRequestToUrl=()=>{browser.lastLocationChange++;return {url:'https://chosen.test/'};};
+    if(phase==='prepare')p.prepare=()=>{browser.lastLocationChange++;};
+    if(phase==='focus')browser.focus=()=>{browser.lastLocationChange++;};
+    if(phase==='supersede')browser.focus=()=>{next=p.prepareCurrentLoad(data);};
+    assert.equal(p.commitCurrentLoad(token).attempted,false);assert.equal(calls.length,0);
+    if(next){browser.focus=()=>{};assert.equal(p.commitCurrentLoad(next).attempted,true);}
+  }
+});
+
+test('current-load consumption survives thrown callbacks and validation failures',()=>{
+  const {p,data,calls}=parentLoadFixture();let token=p.prepareCurrentLoad(data);
+  assert.throws(()=>p.commitCurrentLoad(token,()=>{throw Error('scope failure');}),/scope failure/);
+  assert.equal(p.commitCurrentLoad(token).attempted,false);
+  token=p.prepareCurrentLoad(data);assert.throws(()=>p.commitCurrentLoad(token,null),/Invalid/);
+  assert.equal(p.commitCurrentLoad(token).attempted,false);
+  token=p.prepareCurrentLoad(data);assert.throws(()=>p.prepareCurrentLoad({...data,where:'tab'}),/Invalid/);
+  assert.equal(p.commitCurrentLoad(token).attempted,false);assert.equal(calls.length,0);
+});
+
+test('guarded load outcomes distinguish unresolved URLs and attempted errors without changing legacy results',()=>{
+  for(const error of [null,1,99]) {
+    const {p,data}=parentLoadFixture();
+    if(error)p.browserWindow.openTrustedLinkIn=()=>{throw {result:error};};
+    const result=p.commitCurrentLoad(p.prepareCurrentLoad(data));
+    assert.equal(result.attempted,true);assert.equal(result.reverted,error===1);
+    const legacy=p.loadURL(data);assert.equal('attempted' in legacy,false);assert.equal(legacy.reverted,error===1);
+  }
+  const {p,data,lazy}=parentLoadFixture();lazy.UrlbarUtils.loadRequestToUrl=()=>({url:null});
+  assert.deepEqual(p.commitCurrentLoad(p.prepareCurrentLoad(data)),{attempted:false,reverted:true,browserId:42});
+});

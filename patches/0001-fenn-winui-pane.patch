@@ -834,18 +834,20 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..2a4695befe 100644
+index ba254af0c6..8b65a96338 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
-@@ -114,6 +114,7 @@ export class UrlbarParentController {
+@@ -114,6 +114,9 @@ export class UrlbarParentController {
     * @type {UrlbarChildControllerProxy | UrlbarChildController}
     */
    #child = null;
 +  #destroyed = false;
++  #currentLoad = null;
++  #currentLoadGeneration = 0;
  
    // The owning JSWindowActor, used to resolve the chrome window parent-side
    // (see `browserWindow`). Unlike the input and view, the browser window is a
-@@ -171,6 +172,12 @@ export class UrlbarParentController {
+@@ -171,6 +174,12 @@ export class UrlbarParentController {
      return AppConstants.platform;
    }
  
@@ -858,7 +860,7 @@ index ba254af0c6..2a4695befe 100644
    /**
     * The input or an object that can forward calls to the input.
     *
-@@ -607,9 +614,15 @@ export class UrlbarParentController {
+@@ -607,9 +616,15 @@ export class UrlbarParentController {
     *   not added to form history. If this is false but the current window
     *   is private, it's not added either.
     */
@@ -876,7 +878,7 @@ index ba254af0c6..2a4695befe 100644
    }
  
    /**
-@@ -711,6 +724,17 @@ export class UrlbarParentController {
+@@ -711,6 +726,17 @@ export class UrlbarParentController {
      Glean.urlbarZeroprefix2[kind][this.sapName].add(1);
    }
  
@@ -894,7 +896,7 @@ index ba254af0c6..2a4695befe 100644
    /**
     * Runs the single-word keyword URI fixup DNS check for a search picked in the
     * address bar. When a single word is turned directly into a search (bypassing
-@@ -723,11 +747,20 @@ export class UrlbarParentController {
+@@ -723,11 +749,20 @@ export class UrlbarParentController {
     *   The string being searched.
     * @param {?number} browserId
     *   The browser the search loads into, or null for the selected browser.
@@ -919,7 +921,7 @@ index ba254af0c6..2a4695befe 100644
      let fixupInfo = lazy.UrlbarUtils.getURIFixupInfo(
        searchString,
        this.isPrivate
-@@ -735,6 +768,7 @@ export class UrlbarParentController {
+@@ -735,6 +770,7 @@ export class UrlbarParentController {
      if (fixupInfo) {
        this.browserWindow.gKeywordURIFixup.check(browser, fixupInfo);
      }
@@ -927,7 +929,108 @@ index ba254af0c6..2a4695befe 100644
    }
  
    /**
-@@ -1292,10 +1326,22 @@ export class UrlbarParentController {
+@@ -999,6 +1035,44 @@ export class UrlbarParentController {
+     }
+   }
+ 
++  /**
++   * Prepare one current-tab load from an already validated chrome-host request.
++   * This pins document/epoch and copies data; it does not authorize a result or
++   * record activation. A newer preparation revokes the previous one.
++   */
++  prepareCurrentLoad(loadData) {
++    this.#currentLoad = null;
++    const generation = ++this.#currentLoadGeneration;
++    if (this.#destroyed || this.rendersInContentProcess || !this.#isAddressbar) return null;
++    if (loadData?.where !== "current" || !Number.isSafeInteger(loadData.browserId) || loadData.browserId <= 0) {
++      throw new TypeError("Invalid current-load target");
++    }
++    const data = structuredClone(loadData);
++    const browser = this.resolveTargetBrowser(data.browserId);
++    const document = browser?.browsingContext?.currentWindowGlobal;
++    if (!browser || browser.browserId !== data.browserId || !document ||
++        browser !== this.browserWindow.gBrowser.selectedBrowser) return null;
++    const token = Object.freeze({});
++    this.#currentLoad = { token, data, browser, document, epoch: browser.lastLocationChange, generation };
++    return token;
++  }
++
++  /** Consume before callbacks; stale/failed/reentrant commits cannot retry. */
++  commitCurrentLoad(token, isCurrent = () => true) {
++    const pending = this.#currentLoad;
++    if (!pending || pending.token !== token) return { attempted: false, reverted: false, browserId: null };
++    this.#currentLoad = null;
++    if (typeof isCurrent !== "function") throw new TypeError("Invalid current-load scope check");
++    const current = browser => isCurrent() && !this.#destroyed &&
++      pending.generation === this.#currentLoadGeneration &&
++      browser === pending.browser && browser.browserId === pending.data.browserId &&
++      this.resolveTargetBrowser(pending.data.browserId) === browser &&
++      this.browserWindow.gBrowser.selectedBrowser === browser &&
++      browser.browsingContext?.currentWindowGlobal === pending.document &&
++      browser.lastLocationChange === pending.epoch;
++    return this.#loadURL(pending.data, current);
++  }
++
+   /**
+    * Loads a URL in the browser window resolved from the actor. The content
+    * child supplies the serializable load parameters; the parent fills in the
+@@ -1027,9 +1101,15 @@ export class UrlbarParentController {
+    *   browser to hand `focusBrowser` on the deferred-Enter keyup -- a
+    *   content-process input can't resolve the selected browser itself.
+    */
+-  loadURL({ loadRequest, where, params, browserId, userTypedValue }) {
++  loadURL(loadData) {
++    return this.#loadURL(loadData);
++  }
++
++  #loadURL({ loadRequest, where, params, browserId, userTypedValue }, targetIsCurrent = null) {
++    const dropped = () => ({ reverted: false, browserId, attempted: false });
+     // TODO(bug 2076823): Simplify how the target browser is picked.
+     let browser = this.resolveTargetBrowser(browserId);
++    if (targetIsCurrent && !targetIsCurrent(browser)) return dropped();
+     if (!browser) {
+       // The tab was closed before the load got here; don't hand its load to
+       // whichever tab is selected now.
+@@ -1040,8 +1120,9 @@ export class UrlbarParentController {
+     }
+ 
+     let { url, postData } = lazy.UrlbarUtils.loadRequestToUrl(loadRequest);
++    if (targetIsCurrent && !targetIsCurrent(browser)) return dropped();
+     if (!url) {
+-      return { reverted: true, browserId: browser.browserId };
++      return { reverted: true, browserId: browser.browserId, ...(targetIsCurrent ? { attempted: false } : {}) };
+     }
+     params.postData = postData;
+ 
+@@ -1055,6 +1136,7 @@ export class UrlbarParentController {
+       });
+     }
+ 
++    if (targetIsCurrent && !targetIsCurrent(browser)) return dropped();
+     if (where == "current") {
+       params.targetBrowser = browser;
+     } else {
+@@ -1071,6 +1153,7 @@ export class UrlbarParentController {
+       browser.focus();
+     }
+ 
++    if (targetIsCurrent && !targetIsCurrent(browser)) return dropped();
+     try {
+       this.browserWindow.openTrustedLinkIn(url, where, params);
+     } catch (ex) {
+@@ -1079,9 +1162,10 @@ export class UrlbarParentController {
+       return {
+         reverted: ex.result != Cr.NS_ERROR_LOAD_SHOWED_ERRORPAGE,
+         browserId: browser.browserId,
++        ...(targetIsCurrent ? { attempted: true } : {}),
+       };
+     }
+-    return { reverted: false, browserId: browser.browserId };
++    return { reverted: false, browserId: browser.browserId, ...(targetIsCurrent ? { attempted: true } : {}) };
+   }
+ 
+   /**
+@@ -1292,10 +1376,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -951,7 +1054,7 @@ index ba254af0c6..2a4695befe 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +1378,7 @@ export class UrlbarParentController {
+@@ -1332,6 +1428,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -959,16 +1062,17 @@ index ba254af0c6..2a4695befe 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +1402,8 @@ export class UrlbarParentController {
+@@ -1355,6 +1452,9 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
 +    if (this.#destroyed) return;
 +    this.#destroyed = true;
++    this.#currentLoad = null;
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +1435,7 @@ export class UrlbarParentController {
+@@ -1386,7 +1486,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -977,7 +1081,7 @@ index ba254af0c6..2a4695befe 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +1443,11 @@ export class UrlbarParentController {
+@@ -1394,10 +1494,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -990,7 +1094,7 @@ index ba254af0c6..2a4695befe 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +1465,7 @@ export class UrlbarParentController {
+@@ -1415,7 +1516,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -999,7 +1103,7 @@ index ba254af0c6..2a4695befe 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +1487,7 @@ export class UrlbarParentController {
+@@ -1437,7 +1538,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -1008,7 +1112,7 @@ index ba254af0c6..2a4695befe 100644
          break;
      }
    };
-@@ -1727,8 +1777,12 @@ export class TelemetryEvent {
+@@ -1727,8 +1828,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -1022,7 +1126,7 @@ index ba254af0c6..2a4695befe 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +1797,7 @@ export class TelemetryEvent {
+@@ -1743,7 +1848,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -1031,7 +1135,7 @@ index ba254af0c6..2a4695befe 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +1823,7 @@ export class TelemetryEvent {
+@@ -1769,7 +1874,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -1040,7 +1144,7 @@ index ba254af0c6..2a4695befe 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +1834,13 @@ export class TelemetryEvent {
+@@ -1780,12 +1885,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -1056,7 +1160,7 @@ index ba254af0c6..2a4695befe 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +1851,7 @@ export class TelemetryEvent {
+@@ -1796,7 +1902,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -1065,7 +1169,7 @@ index ba254af0c6..2a4695befe 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +1919,16 @@ export class TelemetryEvent {
+@@ -1864,17 +1970,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -1087,7 +1191,7 @@ index ba254af0c6..2a4695befe 100644
      );
    }
  
-@@ -2009,158 +2063,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2114,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -1246,7 +1350,7 @@ index ba254af0c6..2a4695befe 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +2423,27 @@ export class TelemetryEvent {
+@@ -2521,17 +2474,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -1266,14 +1370,14 @@ index ba254af0c6..2a4695befe 100644
 +    const smartbarData = explicitState ? explicitState.smartbarData : this.#smartbarData;
 +    const snapshot = lazy.UrlbarTelemetryUtils.collectBounceSnapshot(
 +      event, details, this._startEventInfo, engagementData.visibleResults
-+    );
+     );
+-    let sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
 +    if (snapshot && this._controller.sapName === "smartbar" && !snapshot.location) {
 +      throw new Error("Telemetry extra_key `location` is required for smartbar");
 +    }
 +    const built = lazy.UrlbarTelemetryUtils.buildRecordedBounce(
 +      snapshot, engagementData, smartbarData, this.#previousSearchWordsSet
-     );
--    let sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
++    );
 +    const sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
 +    // Preserve direct-path replacement: even an unrecordable candidate triggers
 +    // any older bounce in this tab before replacing it with a no-op candidate.
@@ -1283,7 +1387,7 @@ index ba254af0c6..2a4695befe 100644
      );
    }
  
-@@ -2548,14 +2460,19 @@ export class TelemetryEvent {
+@@ -2548,14 +2511,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -1309,7 +1413,7 @@ index ba254af0c6..2a4695befe 100644
    }
  
    /**
-@@ -2581,39 +2498,4 @@ export class TelemetryEvent {
+@@ -2581,39 +2549,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
