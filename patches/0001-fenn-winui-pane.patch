@@ -7691,10 +7691,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..5ad8ca7bc5
+index 0000000000..c199f00cd4
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1101 @@
+@@ -0,0 +1,1208 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7742,6 +7742,8 @@ index 0000000000..5ad8ca7bc5
 +  #modeExitRequest = null;
 +  #modeExitRequery = null;
 +  #searchMode = null;
++  #navigationWrite = null;
++  #navigationReady = null;
 +  #hiddenResults = null;
 +  #onPresentationRequest;
 +
@@ -7799,6 +7801,8 @@ index 0000000000..5ad8ca7bc5
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -7925,6 +7929,8 @@ index 0000000000..5ad8ca7bc5
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8036,6 +8042,8 @@ index 0000000000..5ad8ca7bc5
 +    if (this.#hiddenResults) throw new Error("Hidden result mode application");
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8064,6 +8072,8 @@ index 0000000000..5ad8ca7bc5
 +    if (this.#hiddenResults) throw new Error("Hidden result mode exit");
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8114,6 +8124,8 @@ index 0000000000..5ad8ca7bc5
 +    const request = this.#selectionRequest;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8176,6 +8188,8 @@ index 0000000000..5ad8ca7bc5
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8207,6 +8221,8 @@ index 0000000000..5ad8ca7bc5
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8253,6 +8269,8 @@ index 0000000000..5ad8ca7bc5
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8281,6 +8299,8 @@ index 0000000000..5ad8ca7bc5
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8330,6 +8350,8 @@ index 0000000000..5ad8ca7bc5
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8375,6 +8397,8 @@ index 0000000000..5ad8ca7bc5
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8414,6 +8438,11 @@ index 0000000000..5ad8ca7bc5
 +      throw new Error("Hidden results require explicit reopening");
 +    }
 +    this.#queries.publishPresentation(queryId, visibleResults, open);
++    const navigation = this.#navigationWrite ?? this.#navigationReady;
++    if (navigation && (!open || !visibleResults.includes(navigation.result))) {
++      this.#navigationWrite = null;
++      this.#navigationReady = null;
++    }
 +    if (this.#modeRequery && (!open || !visibleResults.includes(this.#modeRequery.result))) {
 +      this.#modeRequery = null;
 +      this.#searchCommandRequery = null;
@@ -8424,7 +8453,79 @@ index 0000000000..5ad8ca7bc5
 +    }
 +  }
 +
-+  /** Engagement events are explicit host observations, separate from query dispatch. */
++  /** Propose the ordinary current-tab editor write; no event/DOM object is retained. */
++  beginNavigationWrite(revision, queryId, result, event, options) {
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
++    const plan = this.describeResultNavigation(revision, queryId, result, event, options);
++    if (!plan || plan.where !== "current" || !plan.resetSelection || plan.editorValue === undefined ||
++        plan.revertBeforeLoad) return null;
++    this.freezeResults(revision, queryId);
++    this.#closeRequest = null;
++    this.#autofill = null;
++    this.#placeholder = null;
++    this.#selectionRequest = null;
++    this.#resultPreview = null;
++    this.#modeApplication = null;
++    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
++    this.#searchCommandRequest = null;
++    this.#searchCommandRequery = null;
++    this.#modeRestoreRequest = null;
++    this.#modeExitRequest = null;
++    this.#modeExitRequery = null;
++    const facts = Object.freeze({ selectedTabIsEmpty: options.selectedTabIsEmpty,
++      originalUntrimmedValue: options.originalUntrimmedValue, deferEnterFocus: options.deferEnterFocus ?? false });
++    const proposal = Object.freeze({ token: Object.freeze({}), edit: this.#edit,
++      value: plan.editorValue, selectionStart: 0, selectionEnd: 0, selectionDirection: "none",
++      searchMode: this.#searchMode, plan });
++    this.#navigationWrite = { proposal, queryId, result, facts, edit: this.#edit, searchMode: this.#searchMode };
++    return this.getNavigationWrite(proposal.token, event, options);
++  }
++
++  #navigationIsCurrent(pending, event, options) {
++    if (!pending || pending.edit !== this.#edit || this.#edit.composing || this.#hiddenResults ||
++        pending.searchMode !== this.#searchMode) return false;
++    const facts = { selectedTabIsEmpty: options?.selectedTabIsEmpty,
++      originalUntrimmedValue: options?.originalUntrimmedValue, deferEnterFocus: options?.deferEnterFocus ?? false };
++    if (!UrlbarShared.deepEqual(facts, pending.facts)) return false;
++    try {
++      const live = this.describeResultNavigation(this.#edit.revision, pending.queryId, pending.result, event, facts);
++      return !!live && UrlbarShared.deepEqual(live, pending.proposal.plan);
++    } catch { return false; }
++  }
++
++  getNavigationWrite(token, event, options) {
++    this.#check();
++    const pending = this.#navigationWrite;
++    if (!pending || pending.proposal.token !== token) return null;
++    if (!this.#navigationIsCurrent(pending, event, options)) { this.#navigationWrite = null; return null; }
++    return pending.proposal;
++  }
++
++  acknowledgeNavigationWrite(token, observation, event, options) {
++    const proposal = this.getNavigationWrite(token, event, options);
++    if (!proposal || observation?.text !== proposal.value || observation.selectionStart !== 0 ||
++        observation.selectionEnd !== 0 || observation.selectionDirection !== "none" ||
++        !UrlbarShared.deepEqual(observation.searchMode, proposal.searchMode)) return false;
++    const pending = this.#navigationWrite;
++    this.#navigationWrite = null;
++    this.#edit = Object.freeze({ ...this.#edit, text: proposal.value, selectionStart: 0, selectionEnd: 0,
++      selectionDirection: "none", selectionRevision: this.#edit.selectionRevision + 1 });
++    this.#navigationReady = { ...pending, edit: this.#edit };
++    return true;
++  }
++
++  /** Acknowledged preparation only; future dispatch must consume its own authority. */
++  getAcknowledgedNavigation(token, event, options) {
++    this.#check();
++    const pending = this.#navigationReady;
++    if (!pending || pending.proposal.token !== token) return null;
++    if (!this.#navigationIsCurrent(pending, event, options)) { this.#navigationReady = null; return null; }
++    return Object.freeze({ token, edit: this.#edit, plan: pending.proposal.plan, userTypedValue: this.#edit.text });
++  }
++
 +  describeResultNavigation(revision, queryId, result, event, options) {
 +    this.#check();
 +    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing) throw new Error("Stale editor navigation");
@@ -8747,6 +8848,8 @@ index 0000000000..5ad8ca7bc5
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8764,6 +8867,8 @@ index 0000000000..5ad8ca7bc5
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;
@@ -8784,6 +8889,8 @@ index 0000000000..5ad8ca7bc5
 +    this.#resultPreview = null;
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
++    this.#navigationWrite = null;
++    this.#navigationReady = null;
 +    this.#searchCommandRequery = null;
 +    this.#searchCommandRequest = null;
 +    this.#modeRestoreRequest = null;

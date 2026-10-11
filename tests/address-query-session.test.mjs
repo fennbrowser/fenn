@@ -1954,6 +1954,68 @@ test('engagement rejects invalid events, stale editor revisions, composition and
   f.loseScope();assert.throws(()=>f.editor.discardEngagement(),/scope changed/);
 });
 
+async function navigationWriteFixture() {
+  const f=await editorFixture(),q=await f.editor.edit({},edit(1,'typed'));
+  const result={id:99,type:f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH,payload:{engine:'engine',query:'chosen search'}};
+  q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+  const options={selectedTabIsEmpty:false,originalUntrimmedValue:'typed'},event={};
+  const begin=()=>f.editor.beginNavigationWrite(1,q.id,result,event,options);
+  return {...f,q,result,options,event,begin};
+}
+const navigationObservation=p=>({text:p.value,selectionStart:0,selectionEnd:0,selectionDirection:'none',searchMode:p.searchMode});
+
+test('navigation write acknowledgment is exact, one-use and preserves typed engagement basis',async()=>{
+  const f=await navigationWriteFixture(),before=f.editor.snapshot,p=f.begin();
+  assert.equal(f.editor.snapshot,before);assert.equal(p.value,'chosen search');assert.equal(Object.isFrozen(p),true);
+  assert.equal(f.editor.getAcknowledgedNavigation(p.token,f.event,f.options),null);
+  for(const wrong of [{text:'typed'},{selectionStart:1},{selectionEnd:1},{selectionDirection:'forward'},{searchMode:{source:4}}]) {
+    assert.equal(f.editor.acknowledgeNavigationWrite(p.token,{...navigationObservation(p),...wrong},f.event,f.options),false);
+  }
+  assert.equal(f.editor.acknowledgeNavigationWrite(p.token,navigationObservation(p),f.event,f.options),true);
+  assert.equal(f.editor.acknowledgeNavigationWrite(p.token,navigationObservation(p),f.event,f.options),false);
+  const ready=f.editor.getAcknowledgedNavigation(p.token,f.event,f.options);
+  assert.equal(ready.userTypedValue,'chosen search');assert.equal(ready.edit.selectionStart,0);
+  assert.equal(ready.edit.selectionRevision,before.selectionRevision+1);
+  f.editor.startEngagement(1,f.q.id,{type:'input',timeStamp:1});
+  f.editor.abandonEngagement(1,f.q.id,{type:'blur',timeStamp:2});
+  assert.equal(f.parent.engagements.find(e=>e.kind==='record').args[1].searchString,'typed');f.editor.close();
+});
+
+test('navigation write authority expires on live policy changes and cannot revive',async()=>{
+  for(const changed of ['target','host','result']) {
+    const f=await navigationWriteFixture(),p=f.begin();
+    if(changed==='result')f.result.payload.query='replacement';
+    const event=changed==='target'?{where:'tab'}:f.event;
+    const options=changed==='host'?{...f.options,selectedTabIsEmpty:true}:f.options;
+    assert.equal(f.editor.getNavigationWrite(p.token,event,options),null);
+    f.result.payload.query='chosen search';
+    assert.equal(f.editor.getNavigationWrite(p.token,f.event,f.options),null);f.editor.close();
+  }
+});
+
+test('acknowledged navigation is revoked by dismissal, edits, cancellation and competing writes',async()=>{
+  for(const action of ['hide','edit','cancel','replace','viewport']) {
+    const f=await navigationWriteFixture(),p=f.begin();
+    f.editor.acknowledgeNavigationWrite(p.token,navigationObservation(p),f.event,f.options);
+    if(action==='hide')f.editor.hideResults(1,f.q.id);
+    if(action==='edit')await f.editor.edit({},edit(2,'new'));
+    if(action==='cancel')f.editor.cancel();
+    if(action==='replace')f.begin();
+    if(action==='viewport'){
+      f.editor.publishPresentation(1,f.q.id,[],false);
+      f.editor.publishPresentation(1,f.q.id,[f.result],true);
+    }
+    assert.equal(f.editor.getAcknowledgedNavigation(p.token,f.event,f.options),null);f.editor.close();
+  }
+});
+
+test('navigation writes reject deferred focus and other-tab preparation without changing editor',async()=>{
+  const f=await navigationWriteFixture(),before=f.editor.snapshot;
+  assert.equal(f.editor.beginNavigationWrite(1,f.q.id,f.result,{where:'tab'},f.options),null);
+  assert.equal(f.editor.beginNavigationWrite(1,f.q.id,f.result,new f.sandbox.KeyboardEvent(),{...f.options,deferEnterFocus:true}),null);
+  assert.equal(f.editor.snapshot,before);f.editor.close();
+});
+
 test('navigation preparation preserves current-load security flags and explicit private overrides',()=>{
   const f=fixture(),model=f.sandbox.UrlbarQueryModel;
   for(const [url,popups] of [['javascript:alert(1)',true],['JavaScript:alert(1)',false],['https://example.test/',false]]) {
