@@ -5309,3 +5309,89 @@ test('query cancellation replacement cannot retain the superseded owned input hi
   await assert.rejects(f.editor.edit(f.state,{...edit(4,'new'),composing:true,compositionHasData:true}),/owned composition/);
   f.editor.close();
 });
+
+
+const observedInputIdentity=p=>({...p.edit,...p});
+
+test('input identity acknowledgment requires exact host metadata and publishes a one-use immutable receipt',async()=>{
+  const f=await editorFixture();await f.editor.edit({},edit(1,'typed'));
+  const before=f.editor.snapshot,started=f.parent.started.length;
+  const p=f.editor.beginInputIdentity(1,{pageProxyValid:true,lastValidURL:'loaded'});
+  assert.equal(p.invalidatePageProxy,true);assert.equal(p.pageProxyValid,false);assert.equal(p.valueIsTyped,true);
+  assert.equal('userTypedValue' in p,false);assert.equal('userSelectionBehavior' in p,false);
+  assert.equal(Object.isFrozen(p),true);assert.equal(f.editor.inputIdentityState,null);
+  const observation=observedInputIdentity(p);
+  for(const wrong of [{text:'other'},{selectionStart:0},{selectionDirection:'backward'},{composing:true},
+    {valueIsTyped:false},{untrimmedValue:'loaded'},{protocolIsTrimmed:true},{wwwIsTrimmed:true},
+    {resultForCurrentValue:{}},{userTyping:false},{actionType:'switchtab'},{pageProxyValid:true},{lastValidURL:'changed'},
+    {valueIsTyped:undefined}]) {
+    assert.equal(f.editor.acknowledgeInputIdentity(p.token,{...observation,...wrong}),false);
+    assert.equal(f.editor.getInputIdentity(p.token),p);assert.equal(f.editor.inputIdentityState,null);
+  }
+  assert.equal(f.editor.acknowledgeInputIdentity(p.token,observation),true);
+  assert.equal(f.editor.inputIdentityState,p);assert.equal(f.editor.acknowledgeInputIdentity(p.token,observation),false);
+  observation.untrimmedValue='mutated';assert.equal(f.editor.inputIdentityState.untrimmedValue,'typed');
+  assert.equal(f.editor.snapshot,before);assert.equal(f.parent.started.length,started);f.editor.close();
+});
+
+test('input identity preserves a matching valid display and never promotes an invalid proxy',async()=>{
+  for(const [text,valid,lastValid,expected] of [['shown',true,'shown',true],['shown',false,'shown',false],['',true,'',true],['',true,undefined,false]]) {
+    const f=await editorFixture();await f.editor.edit({},edit(1,text));
+    const p=f.editor.beginInputIdentity(1,{pageProxyValid:valid,lastValidURL:lastValid});
+    assert.equal(p.pageProxyValid,expected);assert.equal(p.userTyping,!!text);
+    assert.equal(f.editor.acknowledgeInputIdentity(p.token,observedInputIdentity(p)),true);f.editor.close();
+  }
+});
+
+test('composition input identity can acknowledge typed metadata without querying',async()=>{
+  const f=await editorFixture();await f.editor.edit({}, {...edit(1,'composing'),composing:true});
+  const p=f.editor.beginInputIdentity(1,{pageProxyValid:true,lastValidURL:'loaded'});
+  assert.equal(p.edit.composing,true);assert.equal(f.editor.acknowledgeInputIdentity(p.token,observedInputIdentity(p)),true);
+  assert.equal(f.parent.started.length,0);assert.equal(f.editor.inputIdentityState.untrimmedValue,'composing');f.editor.close();
+});
+
+test('caret, edit, cancellation and scope changes revoke pending and acknowledged input identity',async()=>{
+  for(const acknowledged of [false,true]) for(const change of ['caret','edit','cancel','scope']) {
+    const f=await editorFixture();await f.editor.edit({},edit(1,'typed'));
+    const p=f.editor.beginInputIdentity(1,{pageProxyValid:false});
+    if(acknowledged)assert.equal(f.editor.acknowledgeInputIdentity(p.token,observedInputIdentity(p)),true);
+    if(change==='caret')f.editor.select(1,0,0);
+    if(change==='edit')await f.editor.edit({},edit(2,'new'));
+    if(change==='cancel')f.editor.cancel();
+    if(change==='scope')f.loseScope();
+    assert.equal(f.editor.inputIdentityState,null);
+    if(change==='scope')assert.throws(()=>f.editor.getInputIdentity(p.token),/closed/);
+    else assert.equal(f.editor.getInputIdentity(p.token),null);
+    f.editor.close();
+  }
+});
+
+test('replacement requests and observation getter reentry cannot acknowledge an older identity',async()=>{
+  const f=await editorFixture();await f.editor.edit({},edit(1,'typed'));const facts={pageProxyValid:false};
+  const first=f.editor.beginInputIdentity(1,facts),second=f.editor.beginInputIdentity(1,facts);
+  assert.equal(f.editor.acknowledgeInputIdentity(first.token,observedInputIdentity(first)),false);
+  let replacement;const observation=observedInputIdentity(second);
+  Object.defineProperty(observation,'untrimmedValue',{get(){replacement=f.editor.beginInputIdentity(1,facts);return 'typed';}});
+  assert.equal(f.editor.acknowledgeInputIdentity(second.token,observation),false);
+  assert.equal(f.editor.getInputIdentity(replacement.token),replacement);assert.equal(f.editor.inputIdentityState,null);
+  assert.equal(f.editor.acknowledgeInputIdentity(replacement.token,observedInputIdentity(replacement)),true);f.editor.close();
+});
+
+test('invalid facts and fact getter reentry cannot authorize identity for a replaced edit',async()=>{
+  const f=await editorFixture();await f.editor.edit({},edit(1,'typed'));
+  const p=f.editor.beginInputIdentity(1,{pageProxyValid:false});
+  assert.throws(()=>f.editor.beginInputIdentity(1,{pageProxyValid:false,lastValidURL:{}}),/Invalid last valid/);
+  assert.equal(f.editor.getInputIdentity(p.token),p);
+  assert.equal(f.editor.beginInputIdentity(1,{pageProxyValid:false,get lastValidURL(){f.editor.select(1,0,0);return 'typed';}}),null);
+  assert.equal(f.editor.inputIdentityState,null);f.editor.close();
+});
+
+
+test('autofill preview writes cannot retain or acquire observed-input identity authority',async()=>{
+  const f=await completionFixture();
+  const identity=f.editor.beginInputIdentity(1,{pageProxyValid:false});assert.ok(identity);
+  assert.equal(f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal)),true);
+  assert.equal(f.editor.getInputIdentity(identity.token),null);
+  assert.equal(f.editor.beginInputIdentity(1,{pageProxyValid:false}),null);
+  assert.equal(f.editor.inputIdentityState,null);f.editor.close();
+});

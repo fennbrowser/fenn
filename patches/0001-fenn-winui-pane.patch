@@ -9243,10 +9243,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..95254f8282
+index 0000000000..316f3cc8bb
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2067 @@
+@@ -0,0 +1,2131 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9284,6 +9284,8 @@ index 0000000000..95254f8282
 +  #edit = null;
 +  #inputState = null;
 +  #identityEdit = null;
++  #identityRequest = null;
++  #identityState = null;
 +  #compositionPresentation = null;
 +  #compositionStart = null;
 +  #compositionHistory = null;
@@ -9346,6 +9348,62 @@ index 0000000000..95254f8282
 +    this.#check();
 +    if (!this.#identityEdit || this.#edit !== this.#identityEdit || this.#edit.revision !== revision) return null;
 +    return Object.freeze({ revision, ...UrlbarInputIdentity.describe(this.#edit.text, facts) });
++  }
++
++  /** Request host identity metadata for an actual observed edit, not a preview. */
++  beginInputIdentity(revision, facts = {}) {
++    this.#check();
++    const edit = this.#edit;
++    const pageProxyValid = facts.pageProxyValid, lastValidURL = facts.lastValidURL;
++    if (lastValidURL !== undefined && lastValidURL !== null && typeof lastValidURL !== "string") {
++      throw new TypeError("Invalid last valid display");
++    }
++    const description = this.describeInputIdentity(revision, { pageProxyValid, lastValidURL });
++    if (!description || this.#closed || !this.#isCurrent() || this.#edit !== edit || this.#identityEdit !== edit) return null;
++    // Browser text and controller selection effects have their own owned paths.
++    const effects = { ...description };
++    delete effects.userTypedValue;
++    delete effects.userSelectionBehavior;
++    const proposal = Object.freeze({ ...effects, edit, token: Object.freeze({}), lastValidURL });
++    this.#identityRequest = proposal;
++    this.#identityState = null;
++    return proposal;
++  }
++
++  getInputIdentity(token) {
++    this.#check();
++    const request = this.#identityRequest;
++    if (!request || request.token !== token) return null;
++    if (this.#edit !== request.edit || this.#identityEdit !== request.edit) {
++      this.#identityRequest = null;
++      return null;
++    }
++    return request;
++  }
++
++  /** Observe exact host metadata without changing browser state or querying. */
++  acknowledgeInputIdentity(token, observation) {
++    const request = this.getInputIdentity(token);
++    if (!request || !observation) return false;
++    const expected = { ...request.edit, ...request };
++    const keys = ["text", "selectionStart", "selectionEnd", "selectionDirection", "composing",
++      "valueIsTyped", "untrimmedValue", "protocolIsTrimmed", "wwwIsTrimmed", "resultForCurrentValue",
++      "userTyping", "actionType", "pageProxyValid", "lastValidURL"];
++    if (keys.some(key => observation[key] !== expected[key]) ||
++        this.#closed || !this.#isCurrent() || this.#identityRequest !== request ||
++        this.#edit !== request.edit || this.#identityEdit !== request.edit) return false;
++    this.#identityRequest = null;
++    // Publish the validated immutable request, never caller-owned observations.
++    this.#identityState = request;
++    return true;
++  }
++
++  /** Acknowledged host identity is valid only for its exact observed edit. */
++  get inputIdentityState() {
++    if (this.#closed) return null;
++    if (!this.#isCurrent()) { this.close(); return null; }
++    if (this.#identityState?.edit !== this.#edit || this.#identityEdit !== this.#edit) this.#identityState = null;
++    return this.#identityState;
 +  }
 +
 +  /** Prepare end-event host effects from observed IME history, without querying. */
@@ -9726,6 +9784,8 @@ index 0000000000..95254f8282
 +    this.#edit = Object.freeze({ revision, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: 0, composing, ...(composition ? { composition } : {}) });
 +    this.#identityEdit = this.#edit;
++    this.#identityRequest = null;
++    this.#identityState = null;
 +    this.#completion = null;
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
@@ -11245,6 +11305,8 @@ index 0000000000..95254f8282
 +  }
 +
 +  cancel() {
++    this.#identityRequest = null;
++    this.#identityState = null;
 +    this.#compositionHistory = null;
 +    this.#compositionReopen = null;
 +    this.#reopeningComposition = null;
@@ -11278,6 +11340,8 @@ index 0000000000..95254f8282
 +  }
 +
 +  close() {
++    this.#identityRequest = null;
++    this.#identityState = null;
 +    this.#compositionHistory = null;
 +    this.#compositionReopen = null;
 +    this.#reopeningComposition = null;
