@@ -1124,7 +1124,7 @@ async function modeWriteFixture(options={},fixtureOptions={}) {
   const proposal=f.editor.beginResultModeApplication(1,query.id,result,options);
   return {...f,query,result,engine,calls,proposal};
 }
-const observedMode=p=>({...observed(p),searchMode:{...p.searchMode}});
+const observedMode=p=>({...observed(p),searchMode:{...p.searchMode},modeEntry:p.modeEntry,pageProxyValid:p.pageProxyValid});
 
 test('mode writes require exact mode, text and caret acknowledgment before provider notification',async()=>{
   const f=await modeWriteFixture(),p=f.proposal,before=f.editor.snapshot;
@@ -2866,6 +2866,8 @@ function parentLoadFixture() {
     discard:(_b,t)=>{if(t!==stateToken)return false;stateToken=null;return true;}};
   const lazy={independentUrlbarBrowserState:owner,UrlbarUtils:{isPersistedSearchTermsEnabled:()=>true,
     loadRequestToUrl:request=>({url:request.urlLoad?.url,postData:null})}};
+  const modelFixture=fixture();lazy.UrlbarSearchModeModel=modelFixture.sandbox.UrlbarSearchModeModel;modelFixture.session.close();
+  lazy.ReaderMode={getOriginalUrlObjectForDisplay:()=>null};
   const Parent=new Function('lazy','Cr',`return class {
     #currentLoad=null;#currentLoadRecovery=null;#currentLoadGeneration=0;#destroyed=false;#isAddressbar=true;
     #prepareAddressbarLoad(data){this.prepare?.(data);}
@@ -3338,7 +3340,7 @@ test('acknowledged result mode commits pinned browser state once without startin
 
 test('mode-state commit rejects engine, editor and presentation changes after acknowledgment',async()=>{
   for(const change of ['engine','caret','cancel','hidden','removed','selection']) {
-    const f=await modeWriteFixture({startQuery:false},{browserId:42}),p=f.proposal;let calls=0;
+    const f=await modeWriteFixture({startQuery:false,modeEntry:{untrimmedValue:'full',pageProxyValid:false,hasAutofillPlaceholder:false,userTypedValue:null}},{browserId:42}),p=f.proposal;let calls=0;
     f.parent.commitIndependentModeState=()=>{calls++;return {applied:true};};
     f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
     if(change==='engine')f.parent.child.updateEngineStore('removed',f.engine,-1);
@@ -3363,7 +3365,7 @@ test('provider reentry and failure cannot leave an owned-mode commit dispatchabl
 });
 
 test('mode-state live guard rejects removal and re-exposure during commit',async()=>{
-  const f=await modeWriteFixture({startQuery:false},{browserId:42}),p=f.proposal;
+  const f=await modeWriteFixture({startQuery:false,modeEntry:{untrimmedValue:'full',pageProxyValid:false,hasAutofillPlaceholder:false,userTypedValue:null}},{browserId:42}),p=f.proposal;
   f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
   f.parent.commitIndependentModeState=(_id,_mode,_obs,current)=>{
     assert.equal(current(),true);f.editor.publishPresentation(1,f.query.id,[],true);
@@ -3420,7 +3422,7 @@ test('engine previews and unchanged modes still notify usage while local modes h
       commit:()=>true,isCommitted:()=>true,discard:()=>{}};
     p.recordSearchMode=()=>{throw Error('unexpected mode entry');};p.markEngineAsUsed=id=>events.push(id);
     const result=p.commitIndependentModeState(42,engineMode?{engineName:'Engine',isPreview:true}:{source:1},
-      {persistedSearchTerms:false,engineId:engineMode?'engine':null},()=>true);
+      {persistedSearchTerms:false,engineId:engineMode?'engine':null,modeEntry:{untrimmedValue:'old',pageProxyValid:false,hasAutofillPlaceholder:false,userTypedValue:'old'}},()=>true);
     assert.equal(result.modeEntryNotified,false);assert.equal(result.engineUsageNotified,engineMode);
     assert.deepEqual(events,engineMode?['engine']:[]);assert.equal(browser.userTypedValue,'old');
   }
@@ -3444,4 +3446,56 @@ test('throwing mode effects cannot make an editor state commit retryable',async(
   assert.throws(()=>f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),/notification failed/);
   assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),null);
   assert.equal(calls,1);f.editor.close();
+});
+
+
+test('preview commit requires captured full-value facts and exact mode/proxy acknowledgment',async()=>{
+  const missing=await modeWriteFixture({startQuery:false},{browserId:42});
+  missing.editor.acknowledgeResultModeApplication(missing.proposal.token,observedMode(missing.proposal));
+  missing.parent.commitIndependentModeState=()=>{throw Error('missing full value accepted');};
+  assert.equal(missing.editor.commitAcknowledgedModeState(missing.proposal.token,{persistedSearchTerms:false}),null);missing.editor.close();
+  const facts={untrimmedValue:'https://www.full.test/',pageProxyValid:false,hasAutofillPlaceholder:false,userTypedValue:'typed'};
+  const f=await modeWriteFixture({startQuery:false,modeEntry:facts},{browserId:42}),p=f.proposal;
+  facts.untrimmedValue='mutated';assert.equal(p.modeEntry.untrimmedValue,'https://www.full.test/');assert.equal(Object.isFrozen(p.modeEntry),true);
+  for(const wrong of [{modeEntry:undefined},{modeEntry:{...p.modeEntry,untrimmedValue:'changed'}},{pageProxyValid:true}])
+    assert.equal(f.editor.acknowledgeResultModeApplication(p.token,{...observedMode(p),...wrong}),false);
+  assert.equal(f.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),true);
+  f.parent.commitIndependentModeState=(_id,_mode,observation,current)=>{
+    assert.equal(current(),true);assert.equal(observation.modeEntry,p.modeEntry);assert.equal(observation.userTypedValue,undefined);return {applied:true};
+  };
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}).applied,true);
+  assert.equal(f.editor.beginResultModeExit(1,f.query.id).value,'@engine','preview must preserve the query typed basis');f.editor.close();
+});
+
+test('parent preview typed write preserves full text and Firefox page/autofill/Reader Mode policy',()=>{
+  for(const [proxy,autofill,typed,expected] of [[false,false,'typed','https://www.full.test/'],
+    [true,false,'typed',''],[true,true,'reader',''],[false,true,'typed','typed'],
+    [false,true,'reader','https://reader.test/'],[false,true,'','https://www.full.test/'],[false,true,null,'https://www.full.test/']]) {
+    const {p,browser,lazy}=parentLoadFixture();browser.userTypedValue=typed;
+    lazy.ReaderMode.getOriginalUrlObjectForDisplay=value=>value==='reader'?{displaySpec:'https://reader.test/'}:null;
+    lazy.independentUrlbarBrowserState={prepareMode:()=>({token:{},effects:{persistedSearchTerms:false,recordModeEntry:false}}),commit:()=>true,isCommitted:()=>true,discard:()=>{}};
+    const result=p.commitIndependentModeState(42,{engineName:'Engine',isPreview:true},{engineId:'engine',persistedSearchTerms:false,
+      modeEntry:{untrimmedValue:'https://www.full.test/',pageProxyValid:proxy,hasAutofillPlaceholder:autofill,userTypedValue:typed}},()=>true);
+    assert.equal(result.applied,true);assert.equal(browser.userTypedValue,expected);
+  }
+});
+
+test('preview typed-state capture rejects changed browser text and normalization reentry',()=>{
+  for(const change of ['typed','document']) {
+    const {p,browser,lazy}=parentLoadFixture();browser.userTypedValue=change==='typed'?'newer':'reader';let prepared=0;
+    lazy.independentUrlbarBrowserState.prepareMode=()=>{prepared++;throw Error('stale preparation');};
+    lazy.ReaderMode.getOriginalUrlObjectForDisplay=()=>{browser.browsingContext.currentWindowGlobal={};return {displaySpec:'old'};};
+    const result=p.commitIndependentModeState(42,{engineName:'Engine',isPreview:true},{engineId:'engine',persistedSearchTerms:false,
+      modeEntry:{untrimmedValue:'full',pageProxyValid:false,hasAutofillPlaceholder:true,userTypedValue:'reader'}},()=>true);
+    assert.equal(result,null);assert.equal(prepared,0);assert.equal(browser.userTypedValue,change==='typed'?'newer':'reader');
+  }
+});
+
+test('pre-mode facts reject malformed snapshots before provider selection',async()=>{
+  const f=await modeWriteFixture();const before=f.calls.length;
+  for(const modeEntry of [null,{}, {untrimmedValue:3},
+    {untrimmedValue:'full',pageProxyValid:false,hasAutofillPlaceholder:false,userTypedValue:undefined}]) {
+    assert.throws(()=>f.editor.beginResultModeApplication(1,f.query.id,f.result,{modeEntry}),/Invalid pre-mode/);
+  }
+  assert.equal(f.calls.length,before);f.editor.close();
 });

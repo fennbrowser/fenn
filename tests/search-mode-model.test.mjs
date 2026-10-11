@@ -421,3 +421,23 @@ test('retained and independent mode-entry predicate excludes unchanged, preview 
   const source=readFileSync(new URL('UrlbarInputBase.mjs',base),'utf8');
   assert.match(source,/UrlbarSearchModeModel\.shouldRecordModeEntry\(searchMode, areSearchModesSame\)/);
 });
+
+
+test('mode entry typed-value policy matches retained UI clearing order and keeps full values',()=>{
+  const Model=fixture().model.constructor;
+  const source=readFileSync(new URL('UrlbarInputBase.mjs',base),'utf8');const start=source.indexOf('  _updateSearchModeUI(searchMode) {');
+  const method=source.slice(start,source.indexOf('\n  /**',start));
+  const Input=new Function('UrlbarSearchModeModel','lazy','Event',`return class {#navigationEnabled=false;${method}}`)
+    (Model,{UrlbarSearchTermsPersistence:{onSearchModeChanged(){}}},class {});
+  for(const pageProxyValid of [false,true])for(const hasAutofillPlaceholder of [false,true])for(const userTypedValue of [null,'','typed','reader']) {
+    const normalize=v=>v==='reader'?'https://reader.test/':v;
+    const facts={untrimmedValue:'https://www.full.test/',pageProxyValid,hasAutofillPlaceholder,userTypedValue};
+    const input=new Input();Object.assign(input,{untrimmedValue:facts.untrimmedValue,userTypedValue,_autofillPlaceholder:hasAutofillPlaceholder,
+      toggleAttribute(){},getAttribute:()=>pageProxyValid?'valid':'invalid',setPageProxyState(){},dispatchEvent(){}});
+    let typedReads=0;Object.defineProperty(input,'userTypedValue',{get:()=>{typedReads++;return userTypedValue;}});
+    Object.defineProperty(input,'value',{set:v=>{input.untrimmedValue=normalize(v);}});
+    input._updateSearchModeUI({engineName:'Engine'});
+    assert.equal(typedReads,hasAutofillPlaceholder?(userTypedValue?2:1):0);
+    assert.equal(Model.modeEntryTypedValue(facts,normalize),input.untrimmedValue);
+  }
+});
