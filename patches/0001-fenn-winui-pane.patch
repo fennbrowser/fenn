@@ -6860,10 +6860,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..20963a9a8d
+index 0000000000..03c1fdf0ec
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,348 @@
+@@ -0,0 +1,426 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6898,6 +6898,8 @@ index 0000000000..20963a9a8d
 +  #placeholder = null;
 +  #closeRequest = null;
 +  #selectionRequest = null;
++  #resultPreview = null;
++  #searchModePreview = false;
 +  #onPresentationRequest;
 +
 +  constructor({ context, isCurrent, onUpdate, onPresentationRequest = null }) {
@@ -6944,11 +6946,13 @@ index 0000000000..20963a9a8d
 +    }
 +    this.#validateSelection(text, selectionStart, selectionEnd, selectionDirection);
 +    this.#typedText = text;
++    this.#searchModePreview = !!state.searchMode?.isPreview;
 +    this.#edit = Object.freeze({ revision, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: 0, composing });
 +    this.#completion = null;
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
++    this.#resultPreview = null;
 +    this.#autofill = null;
 +    // Revoke old work before any new snapshot can be published.
 +    this.#queries.cancel();
@@ -7030,6 +7034,7 @@ index 0000000000..20963a9a8d
 +    this.#completion = null;
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
++    this.#resultPreview = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#edit = Object.freeze({ ...this.#edit, selectionStart: start,
@@ -7109,6 +7114,7 @@ index 0000000000..20963a9a8d
 +  beginResultSelection(revision, queryId, result) {
 +    this.#check();
 +    this.#selectionRequest = null;
++    this.#resultPreview = null;
 +    const edit = this.#edit;
 +    if (!edit || revision !== edit.revision || edit.composing) {
 +      throw new Error("Stale editor result selection");
@@ -7129,8 +7135,77 @@ index 0000000000..20963a9a8d
 +
 +  /** Acknowledge host row selection only; this grants no editor-write authority. */
 +  acknowledgeResultSelection(token) {
-+    if (!this.getResultSelection(token)) return false;
++    if (!this.getResultSelection(token) || this.#resultPreview?.token === token) return false;
 +    this.#selectionRequest = null;
++    this.#resultPreview = null;
++    return this.#queries.acknowledgeResultSelection(token);
++  }
++
++  #supportsResultPreview(result) {
++    // Search-mode and action-specific transitions need their own host contract.
++    // Do not silently turn them into ordinary text writes.
++    if (this.#searchModePreview || result.autofill || result.payload.providesSearchMode ||
++        result.payload.keyword || result.providerName === "UrlbarProviderGlobalActions" ||
++        ![UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.SEARCH].includes(result.type)) {
++      return null;
++    }
++    return true;
++  }
++
++  #plainResultPreview(result) {
++    return this.#supportsResultPreview(result)
++      ? this.describeResultInput(this.#edit.revision, this.#selectionRequest.queryId, result) : null;
++  }
++
++  /** Propose an ordinary result preview; null means this path is unsupported. */
++  beginResultPreview(revision, queryId, result) {
++    this.#check();
++    this.#resultPreview = null;
++    this.#selectionRequest = null;
++    this.describeResultInput(revision, queryId, result);
++    if (!this.#supportsResultPreview(result)) return null;
++    this.freezeResults(revision, queryId);
++    const request = this.beginResultSelection(revision, queryId, result);
++    if (!request) return null;
++    const description = this.#plainResultPreview(result);
++    if (!description || typeof description.value !== "string") {
++      this.#selectionRequest = null;
++      return null;
++    }
++    const proposal = Object.freeze({ ...description, token: request.token, edit: request.edit,
++      selectionStart: description.value.length, selectionEnd: description.value.length,
++      selectionDirection: "none" });
++    this.#resultPreview = proposal;
++    return proposal;
++  }
++
++  /** Revalidate live result semantics immediately before the host text write. */
++  getResultPreview(token) {
++    const request = this.getResultSelection(token);
++    const proposal = this.#resultPreview;
++    if (!request || !proposal || proposal.token !== token) return null;
++    const live = this.#plainResultPreview(request.result);
++    return live && live.value === proposal.value && live.actionType === proposal.actionType
++      ? proposal : null;
++  }
++
++  /** Observe both row selection and exact preview text, then notify the provider. */
++  acknowledgeResultPreview(token, { text, selectionStart, selectionEnd, selectionDirection }) {
++    const proposal = this.getResultPreview(token);
++    if (!proposal || text !== proposal.value || selectionStart !== proposal.selectionStart ||
++        selectionEnd !== proposal.selectionEnd || selectionDirection !== proposal.selectionDirection) {
++      return false;
++    }
++    this.#validateSelection(text, selectionStart, selectionEnd, selectionDirection);
++    this.#resultPreview = null;
++    this.#selectionRequest = null;
++    this.#completion = null;
++    this.#autofill = null;
++    this.#placeholder = null;
++    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart, selectionEnd,
++      selectionDirection, selectionRevision: this.#edit.selectionRevision + 1 });
++    // Preserve the original typed query and notify only after observing the write.
++    // The provider may synchronously cancel or replace this session afterward.
 +    return this.#queries.acknowledgeResultSelection(token);
 +  }
 +
@@ -7186,6 +7261,7 @@ index 0000000000..20963a9a8d
 +    if (!this.getCloseRequest(token) || open !== false) return false;
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
++    this.#resultPreview = null;
 +    return true;
 +  }
 +
@@ -7194,6 +7270,7 @@ index 0000000000..20963a9a8d
 +    this.#completion = null;
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
++    this.#resultPreview = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#queries.cancel();
@@ -7205,6 +7282,7 @@ index 0000000000..20963a9a8d
 +    this.#completion = null;
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
++    this.#resultPreview = null;
 +    this.#autofill = null;
 +    this.#placeholder = null;
 +    this.#queries.close();

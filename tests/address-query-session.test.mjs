@@ -125,6 +125,69 @@ test('editor selection acknowledgment is bound to the exact observed editor snap
   assert.deepEqual(calls,['before','selected','before']);f.editor.close();
 });
 
+async function previewFixture() {
+  const f=await editorFixture(),query=await f.editor.edit({},edit(1,'typed words'));
+  const result={id:5,type:f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH,payload:{query:'suggested words'}};
+  query.results=[result];f.editor.publishPresentation(1,query.id,[result],true);
+  const calls=[];f.parent.onBeforeSelection=()=>calls.push('before');
+  f.parent.onSelection=()=>calls.push(f.editor.snapshot.text);
+  return {...f,query,result,calls};
+}
+
+test('ordinary result previews observe exact writes before provider selection without requerying',async()=>{
+  const f=await previewFixture(),snapshot=f.editor.snapshot,started=f.parent.started.length;
+  const p=f.editor.beginResultPreview(1,f.query.id,f.result);
+  assert.equal(p.value,'suggested words');assert.equal(p.selectionStart,p.value.length);
+  assert.equal(p.edit,snapshot);assert.equal(f.editor.snapshot,snapshot);
+  assert.equal(f.editor.acknowledgeResultSelection(p.token),false,'row-only ack must not bypass text observation');
+  assert.equal(f.editor.acknowledgeResultPreview(p.token,{...observed(p),text:'wrong'}),false);
+  assert.equal(f.editor.acknowledgeResultPreview(p.token,observed(p)),true);
+  assert.equal(f.editor.acknowledgeResultPreview(p.token,observed(p)),false);
+  assert.deepEqual(f.calls,['before','suggested words']);assert.equal(f.parent.started.length,started);
+  assert.equal(f.query.searchString,'typed words');assert.equal(f.editor.snapshot.selectionRevision,1);
+  f.editor.close();
+});
+
+test('preview writes revalidate live text, result policy, exposure and caret state',async()=>{
+  const f=await previewFixture();let p=f.editor.beginResultPreview(1,f.query.id,f.result);
+  f.result.payload.query='changed';assert.equal(f.editor.getResultPreview(p.token),null);
+  p=f.editor.beginResultPreview(1,f.query.id,f.result);f.result.payload.providesSearchMode=true;
+  assert.equal(f.editor.getResultPreview(p.token),null);delete f.result.payload.providesSearchMode;
+  p=f.editor.beginResultPreview(1,f.query.id,f.result);
+  f.editor.publishPresentation(1,f.query.id,[],false);assert.equal(f.editor.getResultPreview(p.token),null);
+  f.editor.publishPresentation(1,f.query.id,[f.result],true);
+  p=f.editor.beginResultPreview(1,f.query.id,f.result);f.editor.select(1,0,0);
+  assert.equal(f.editor.acknowledgeResultPreview(p.token,observed(p)),false);
+  p=f.editor.beginResultPreview(1,f.query.id,f.result);
+  f.parent.child.notify('onQueryResultRemoved',5,undefined,f.query.id);
+  assert.equal(f.editor.getResultPreview(p.token),null);f.editor.close();
+});
+
+test('unsupported preview transitions return no proposal or provider notification',async()=>{
+  const f=await previewFixture();
+  for (const property of ['keyword','providesSearchMode']) {
+    f.result.payload[property]='mode';assert.equal(f.editor.beginResultPreview(1,f.query.id,f.result),null);
+    delete f.result.payload[property];
+  }
+  f.result.autofill={};assert.equal(f.editor.beginResultPreview(1,f.query.id,f.result),null);delete f.result.autofill;
+  f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.DYNAMIC;
+  assert.equal(f.editor.beginResultPreview(1,f.query.id,f.result),null);
+  assert.deepEqual(f.calls,[]);f.editor.close();
+});
+
+test('URL previews preserve scheme and a reentrant selection hook sees committed text only once',async()=>{
+  const f=await previewFixture();f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.URL;
+  f.result.payload={url:'https://example.test/path'};
+  const p=f.editor.beginResultPreview(1,f.query.id,f.result);assert.equal(p.value,'https://example.test/path');
+  f.parent.onSelection=()=>{
+    assert.equal(f.editor.snapshot.text,p.value);
+    assert.equal(f.editor.acknowledgeResultPreview(p.token,observed(p)),false);
+    f.editor.cancel();
+  };
+  assert.equal(f.editor.acknowledgeResultPreview(p.token,observed(p)),true);
+  assert.equal(f.editor.getResultPreview(p.token),null);f.editor.close();
+});
+
 test('removed frozen results lose identity and exposure even if an old descriptor or late batch retains them',async()=>{
   const requests=[],f=fixture({onPresentationRequest:r=>requests.push(r)});
   const q=await f.session.query({}, {searchString:'remove'}),a={id:1},b={id:2};q.results=[a,b];
