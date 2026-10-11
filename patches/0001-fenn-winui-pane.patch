@@ -9227,10 +9227,10 @@ index 0000000000..759a972e88
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..c5c5640389
+index 0000000000..0028276661
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,583 @@
+@@ -0,0 +1,601 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9538,15 +9538,33 @@ index 0000000000..c5c5640389
 +        !Number.isFinite(event.timeStamp) || event.timeStamp < 0) throw new TypeError("Invalid result engagement event");
 +    if (![UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.SEARCH, UrlbarShared.RESULT_TYPE.KEYWORD].includes(result?.type) ||
 +        result.payload?.providesSearchMode) throw new Error("Unsupported terminal engagement");
-+    const { trackBounce = false } = options ?? {};
++    const { trackBounce = false, recordHistory = false } = options ?? {};
 +    if (typeof trackBounce !== "boolean" || (trackBounce && !this.#context.browserId)) {
 +      throw new TypeError("Bounce tracking requires a pinned browser identity");
 +    }
++    if (typeof recordHistory !== "boolean") throw new TypeError("Invalid history recording flag");
 +    const description = this.describeResultEngagement(queryId, result, options);
++    let history = null;
++    if (recordHistory) {
++      const load = this.describeResultLoad(queryId, result, event, options);
++      if (!load) return false;
++      history = UrlbarQueryModel.resultHistoryEffects(result, load.loadRequest, {
++        searchString: description.details.searchString, isPrivate: this.#context.isPrivate });
++    }
 +    const query = this.#query;
 +    this.#engagementActive = false;
 +    this.#endingEngagement = true;
 +    try {
++      if (history?.inputHistory) {
++        const { url, input, whenReady } = history.inputHistory;
++        if (whenReady) this.#controller.parentController.addToInputHistory(url, input, { whenReady: true });
++        else this.#controller.parentController.addToInputHistory(url, input);
++        if (!this.ownsResult(queryId, result)) return false;
++      }
++      if (history?.reintegrateURL) {
++        this.#controller.parentController.handleAutofillReintegration(history.reintegrateURL);
++        if (!this.ownsResult(queryId, result)) return false;
++      }
 +      if (trackBounce) {
 +        // Capture before record() clears the clock. Only delayed view time is awaited.
 +        try {

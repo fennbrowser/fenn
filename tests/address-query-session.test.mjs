@@ -2597,3 +2597,50 @@ test('bounce setup failures do not prevent terminal recording or cause unhandled
     assert.equal(f.parent.engagements.filter(e=>e.kind==='record').length,1);f.editor.close();
   }
 });
+
+
+async function historyEngagementFixture(isPrivate=false) {
+  const f=await editorFixture({browserId:42,isPrivate}),q=await f.editor.edit({},edit(1,'typed'));
+  const result={id:102,type:f.sandbox.UrlbarShared.RESULT_TYPE.URL,payload:{url:'https://history.test/'}};
+  q.results=[result];f.editor.publishPresentation(1,q.id,[result],true);
+  f.editor.startEngagement(1,q.id,{type:'input',timeStamp:1});
+  const calls=[];
+  f.parent.addToInputHistory=(...args)=>calls.push(['history',...args]);
+  f.parent.handleAutofillReintegration=url=>calls.push(['reintegrate',url]);
+  f.parent.engagementEvent.startTrackingBounceEvent=()=>{calls.push(['bounce']);return Promise.resolve();};
+  f.parent.engagementEvent.record=()=>calls.push(['record']);
+  f.prefs['autoFill.adaptiveHistory.enabled']=true;
+  const event={type:'keydown',key:'Enter',timeStamp:2};
+  const options={selectedTabIsEmpty:false,originalUntrimmedValue:'typed',recordHistory:true,trackBounce:true};
+  return {...f,q,result,calls,event,options};
+}
+
+test('history and reintegration execute once before bounce and terminal recording with owned typed input',async()=>{
+  const f=await historyEngagementFixture();
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,{...f.options,searchString:'spoof'}),true);
+  assert.deepEqual(f.calls,[['history','https://history.test/','typed'],['reintegrate','https://history.test/'],['bounce'],['record']]);
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options),false);assert.equal(f.calls.length,4);f.editor.close();
+});
+
+test('history execution preserves deferred origins and private suppression',async()=>{
+  const f=await historyEngagementFixture();f.result.heuristic=true;f.result.autofill={type:'origin'};
+  f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options);
+  assert.equal(f.calls[0][0],'history');assert.equal(f.calls[0][3].whenReady,true);
+  assert.deepEqual(f.calls.map(c=>c[0]),['history','bounce','record']);f.editor.close();
+  const g=await historyEngagementFixture(true);g.editor.recordResultEngagement(1,g.q.id,g.result,g.event,g.options);
+  assert.deepEqual(g.calls.map(c=>c[0]),['bounce','record']);g.editor.close();
+});
+
+test('history admission and failure do not permit duplicate or retargeted effects',async()=>{
+  const f=await historyEngagementFixture();
+  assert.throws(()=>f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,{...f.options,recordHistory:1}),/Invalid/);
+  assert.equal(f.calls.length,0);
+  f.parent.addToInputHistory=()=>{throw Error('history failure');};
+  assert.throws(()=>f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options),/history failure/);
+  assert.equal(f.editor.recordResultEngagement(1,f.q.id,f.result,f.event,f.options),false);assert.equal(f.calls.length,0);f.editor.close();
+  const g=await historyEngagementFixture();let replacement;
+  g.parent.addToInputHistory=()=>{replacement=g.editor.edit({},edit(2,'replacement'));};
+  assert.equal(g.editor.recordResultEngagement(1,g.q.id,g.result,g.event,g.options),false);
+  const next=await replacement;assert.equal(g.editor.snapshot.text,'replacement');
+  g.editor.publishPresentation(2,next.id,[],false);assert.equal(g.calls.length,0);g.editor.close();
+});
