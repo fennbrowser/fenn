@@ -1904,6 +1904,74 @@ index d9d7f9dd83..d262035073 100644
    getViewTemplate(result) {
      let action = lazy.ActionsProviderQuickActions.getAction(result.payload.key);
      let isInactive = this.#isActionInactive(action);
+diff --git a/browser/components/urlbar/UrlbarProviderQuickSuggestContextualOptIn.sys.mjs b/browser/components/urlbar/UrlbarProviderQuickSuggestContextualOptIn.sys.mjs
+index dc45cb3564..33c1a2c8c4 100644
+--- a/browser/components/urlbar/UrlbarProviderQuickSuggestContextualOptIn.sys.mjs
++++ b/browser/components/urlbar/UrlbarProviderQuickSuggestContextualOptIn.sys.mjs
+@@ -207,31 +207,6 @@ export class UrlbarProviderQuickSuggestContextualOptIn extends UrlbarProvider {
+     };
+   }
+ 
+-  /**
+-   * @param {UrlbarResult} result The result being selected.
+-   * @param {Element} [element] The selected element. Undefined in the message path.
+-   */
+-  onBeforeSelection(result, element) {
+-    if (element.getAttribute("name") == "learn_more") {
+-      this.#a11yAlertRow(element.closest(".urlbarView-row"));
+-    }
+-  }
+-
+-  #a11yAlertRow(row) {
+-    let alertText = row.querySelector(
+-      ".urlbarView-dynamic-quickSuggestContextualOptIn-title"
+-    ).textContent;
+-    let decription = row
+-      .querySelector(
+-        ".urlbarView-dynamic-quickSuggestContextualOptIn-description"
+-      )
+-      .cloneNode(true);
+-    // Remove the "Learn More" link.
+-    decription.firstElementChild?.remove();
+-    alertText += ". " + decription.textContent;
+-    row.ariaNotify(alertText);
+-  }
+-
+   /**
+    * @param {string} state
+    * @param {UrlbarQueryContext} _queryContext
+@@ -271,10 +246,10 @@ export class UrlbarProviderQuickSuggestContextualOptIn extends UrlbarProvider {
+   onEngagement(queryContext, controller, details) {
+     // The clicked control's command rides `selType` (set from its data-command),
+     // so it crosses the actor boundary; `details.element` is content-only.
+-    this._handleCommand(details.selType, controller, details.result);
++    this._handleCommand(details.selType, controller, details.result, queryContext);
+   }
+ 
+-  _handleCommand(command, controller, result, container) {
++  _handleCommand(command, controller, result, queryContext) {
+     switch (command) {
+       case "learn_more":
+         controller.browserWindow.openHelpLink("firefox-suggest");
+@@ -292,17 +267,13 @@ export class UrlbarProviderQuickSuggestContextualOptIn extends UrlbarProvider {
+     // Picking one of these controls resolves the opt-in prompt, so close the
+     // view. elementPicked marks this as an engagement, so the zero-prefix
+     // telemetry and focus border are handled accordingly.
+-    controller.view.close({ elementPicked: true });
++    controller.requestResultsClose(queryContext);
+ 
+     // Remove the result if it shouldn't be active anymore due to above
+     // actions.
+     if (!this.#shouldDisplayContextualOptIn()) {
+       if (result) {
+         controller.removeResult(result);
+-      } else {
+-        // This is for when the UI is outside of standard results, after
+-        // one-off search buttons.
+-        container.hidden = true;
+       }
+     }
+   }
 diff --git a/browser/components/urlbar/UrlbarProvidersManager.sys.mjs b/browser/components/urlbar/UrlbarProvidersManager.sys.mjs
 index bc6837e211..d5ff780b17 100644
 --- a/browser/components/urlbar/UrlbarProvidersManager.sys.mjs
