@@ -3729,3 +3729,91 @@ test('explicit exit notification reentry preserves completed commit but revokes 
   assert.equal(f.editor.commitAcknowledgedSearchModeExit(p.token,{persistedSearchTerms:false}).applied,true);
   await assert.rejects(f.editor.requeryAfterSearchModeExit(p.token,{searchMode:null},{pageProxyValid:false}),/Stale/);f.editor.close();
 });
+
+
+const commandEntry=()=>({untrimmedValue:'previous full value',pageProxyValid:false,
+  hasAutofillPlaceholder:false,userTypedValue:'previous typed value'});
+const observedOwnedCommand=p=>({...observedCommand(p),modeEntry:p.modeEntry,pageProxyValid:p.pageProxyValid});
+async function ownedCommandFixture(value='^ new words',options={},fixtureOptions={}) {
+  const f=await editorFixture({browserId:42,...fixtureOptions});await f.editor.edit({},edit(1,'previous'));
+  f.parent.child.updateEngineStore('changed',{id:'engine',name:'Engine',aliases:['@e'],isGeneralPurposeEngine:true},-1);
+  const proposal=await f.editor.beginSearchCommand(1,value,{modeEntry:commandEntry(),...options});
+  return {...f,proposal};
+}
+
+test('command mode commit requires captured entry and invalidated proxy observation',async()=>{
+  const entry=commandEntry(),f=await ownedCommandFixture('^ words',{modeEntry:entry}),p=f.proposal;
+  entry.untrimmedValue='mutated';assert.equal(p.modeEntry.untrimmedValue,'previous full value');
+  for(const wrong of [{modeEntry:undefined},{pageProxyValid:true},{modeEntry:{...p.modeEntry,userTypedValue:'wrong'}}]) {
+    assert.equal(f.editor.acknowledgeSearchCommand(p.token,{...observedOwnedCommand(p),...wrong}),false);
+  }
+  assert.equal(f.editor.acknowledgeSearchCommand(p.token,observedOwnedCommand(p)),true);f.editor.close();
+  const g=await ownedCommandFixture('^ words',{modeEntry:undefined}),q=g.proposal;
+  g.editor.acknowledgeSearchCommand(q.token,observedOwnedCommand(q));
+  assert.equal(g.editor.commitAcknowledgedSearchCommandMode(q.token,{persistedSearchTerms:false}),null);
+  assert.equal(g.editor.getSearchCommandRequery(q.token),null);g.editor.close();
+});
+
+test('local and engine command commits use initial preview policy and frozen editor notifications once',async()=>{
+  for(const value of ['^ words','@e words']) {
+    const events=[],f=await ownedCommandFixture(value,value.startsWith('@')?{engineId:'engine'}:{},
+      {onModeStateChanged:n=>events.push(n)}),p=f.proposal,calls=[];
+    f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{
+      assert.equal(current(),true);calls.push({id,mode,facts});
+      notify({browserId:id,searchMode:mode,userTypedValue:'previous full value',persistedSearchTerms:false});return {applied:true};
+    };
+    assert.equal(f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false}),null);
+    f.editor.acknowledgeSearchCommand(p.token,observedOwnedCommand(p));
+    assert.equal(f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false}).applied,true);
+    assert.equal(f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false}),null);
+    assert.equal(calls.length,1);assert.equal(calls[0].mode.isPreview,true);
+    assert.equal(calls[0].facts.userTypedValue,undefined);assert.equal(calls[0].facts.modeEntry,p.modeEntry);
+    assert.equal(calls[0].facts.engineId,value.startsWith('@')?'engine':null);
+    assert.equal(events.length,1);assert.equal(events[0].reason,'search-command');assert.equal(events[0].queryId,null);
+    assert.equal(events[0].edit,f.editor.snapshot);assert.equal(events[0].token,p.token);assert.equal(Object.isFrozen(events[0]),true);
+    assert.equal(f.parent.started.length,1);assert.ok(f.editor.getSearchCommandRequery(p.token));f.editor.close();
+  }
+});
+
+test('ordinary commands skip mode effects while unsupported restrictions commit clearing without text writes',async()=>{
+  for(const value of ['ordinary text','#']) {
+    const f=await ownedCommandFixture(value),p=f.proposal;let calls=0;
+    f.parent.commitIndependentModeState=(_id,mode,facts)=>{
+      calls++;assert.equal(mode,null);assert.equal(facts.userTypedValue,undefined);return {applied:true};
+    };
+    f.editor.acknowledgeSearchCommand(p.token,observedOwnedCommand(p));
+    const result=f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false});
+    assert.equal(result.applied,true);assert.equal(calls,value==='#'?1:0);
+    if(value!=='#')assert.equal(result.modeUnchanged,true);
+    assert.ok(f.editor.getSearchCommandRequery(p.token));f.editor.close();
+  }
+});
+
+test('command state commits reject same-name engine replacement and consumed failure cannot requery',async()=>{
+  for(const change of ['replace','reject','throw']) {
+    const f=await ownedCommandFixture('@e words',{engineId:'engine'}),p=f.proposal;let calls=0;
+    f.editor.acknowledgeSearchCommand(p.token,observedOwnedCommand(p));
+    if(change==='replace'){
+      f.parent.child.updateEngineStore('removed',{id:'engine'});
+      f.parent.child.updateEngineStore('changed',{id:'new',name:'Engine',aliases:['@e'],isGeneralPurposeEngine:true},-1);
+    }
+    f.parent.commitIndependentModeState=()=>{calls++;if(change==='throw')throw Error('failure');return null;};
+    assert.throws(()=>f.editor.commitAcknowledgedSearchCommandMode(p.token,{}),/persisted-search/);
+    if(change==='throw')assert.throws(()=>f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false}),/failure/);
+    else assert.equal(f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false}),null);
+    assert.equal(calls,change==='replace'?0:1);assert.equal(f.editor.getSearchCommandRequery(p.token),null);f.editor.close();
+  }
+});
+
+test('new editor work and notification reentry revoke command follow-up without repeating effects',async()=>{
+  for(const revoke of [f=>f.editor.cancel(),f=>f.editor.select(1,0,0),f=>f.editor.edit({},edit(2,'new'))]) {
+    const f=await ownedCommandFixture(),p=f.proposal;
+    f.editor.acknowledgeSearchCommand(p.token,observedOwnedCommand(p));await revoke(f);
+    assert.equal(f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false}),null);f.editor.close();
+  }
+  let f;f=await ownedCommandFixture('^ words',{}, {onModeStateChanged:()=>f.editor.cancel()});const p=f.proposal;
+  f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{notify({browserId:id,searchMode:mode});assert.equal(current(),false);return {applied:true};};
+  f.editor.acknowledgeSearchCommand(p.token,observedOwnedCommand(p));
+  assert.equal(f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false}).applied,true);
+  assert.equal(f.editor.getSearchCommandRequery(p.token),null);f.editor.close();
+});

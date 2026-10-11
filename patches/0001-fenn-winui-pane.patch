@@ -8817,10 +8817,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..2c2360a9db
+index 0000000000..3c1a018974
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1544 @@
+@@ -0,0 +1,1577 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8910,6 +8910,20 @@ index 0000000000..2c2360a9db
 +  #notifyModeState(listener, state, correlation) {
 +    const notification = Object.freeze({ ...state, kind: "mode-state-changed", ...correlation });
 +    try { listener(notification); } catch (error) { console.error(error); }
++  }
++
++  #captureModeEntry(modeEntry) {
++    if (modeEntry !== undefined) {
++      if (!modeEntry || typeof modeEntry.untrimmedValue !== "string" ||
++          typeof modeEntry.pageProxyValid !== "boolean" || typeof modeEntry.hasAutofillPlaceholder !== "boolean" ||
++          (modeEntry.userTypedValue !== null && typeof modeEntry.userTypedValue !== "string")) {
++        throw new TypeError("Invalid pre-mode editor facts");
++      }
++      modeEntry = Object.freeze({ untrimmedValue: modeEntry.untrimmedValue,
++        pageProxyValid: modeEntry.pageProxyValid, hasAutofillPlaceholder: modeEntry.hasAutofillPlaceholder,
++        userTypedValue: modeEntry.userTypedValue });
++    }
++    return modeEntry;
 +  }
 +
 +  #validateSelection(text, start, end, direction) {
@@ -9187,16 +9201,7 @@ index 0000000000..2c2360a9db
 +  beginResultModeApplication(revision, queryId, result, { checkValue = true,
 +    startQuery = true, entry = null, modeEntry = undefined } = {}) {
 +    this.#check();
-+    if (modeEntry !== undefined) {
-+      if (!modeEntry || typeof modeEntry.untrimmedValue !== "string" ||
-+          typeof modeEntry.pageProxyValid !== "boolean" || typeof modeEntry.hasAutofillPlaceholder !== "boolean" ||
-+          (modeEntry.userTypedValue !== null && typeof modeEntry.userTypedValue !== "string")) {
-+        throw new TypeError("Invalid pre-mode editor facts");
-+      }
-+      modeEntry = Object.freeze({ untrimmedValue: modeEntry.untrimmedValue,
-+        pageProxyValid: modeEntry.pageProxyValid, hasAutofillPlaceholder: modeEntry.hasAutofillPlaceholder,
-+        userTypedValue: modeEntry.userTypedValue });
-+    }
++    modeEntry = this.#captureModeEntry(modeEntry);
 +    if (this.#hiddenResults) throw new Error("Hidden result mode application");
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
@@ -10001,17 +10006,18 @@ index 0000000000..2c2360a9db
 +  }
 +
 +  /** Use a current menu key with explicit Firefox page-proxy and modifier facts. */
-+  beginSearchModeMenuCommand(revision, menuKey, { pageProxyValid, where = "current", shiftKey = false } = {}) {
++  beginSearchModeMenuCommand(revision, menuKey, { pageProxyValid, where = "current", shiftKey = false, modeEntry } = {}) {
 +    this.#check();
 +    if (typeof menuKey !== "string" || typeof pageProxyValid !== "boolean" || typeof shiftKey !== "boolean" ||
 +        !["current", "tab", "tabshifted", "window"].includes(where)) throw new TypeError("Invalid menu command facts");
-+    return this.beginSearchCommand(revision, this.#edit?.text, { menuKey, pageProxyValid, where, shiftKey });
++    return this.beginSearchCommand(revision, this.#edit?.text, { menuKey, pageProxyValid, where, shiftKey, modeEntry });
 +  }
 +
 +  /** Propose a search command write, revoking previous results before asynchronous preparation. */
 +  async beginSearchCommand(revision, value, { engineId = null, searchModeEntry = "searchbutton",
-+    menuKey = null, pageProxyValid, where = "current", shiftKey = false } = {}) {
++    menuKey = null, pageProxyValid, where = "current", shiftKey = false, modeEntry } = {}) {
 +    this.#check();
++    modeEntry = this.#captureModeEntry(modeEntry);
 +    const edit = this.#edit, previousMode = this.#searchMode;
 +    if (!edit || revision !== edit.revision || edit.composing) throw new Error("Stale editor search command");
 +    if (typeof value !== "string" || (engineId !== null && (typeof engineId !== "string" || !engineId))) {
@@ -10021,7 +10027,7 @@ index 0000000000..2c2360a9db
 +    this.cancel();
 +    this.#check();
 +    if (this.#edit !== edit || this.#searchMode !== previousMode) return null;
-+    const pending = { token: Object.freeze({}), edit, previousMode, value, options, proposal: null };
++    const pending = { token: Object.freeze({}), edit, previousMode, value, options, modeEntry, proposal: null };
 +    this.#searchCommandRequest = pending;
 +    try {
 +      const description = await this.#queries.prepareSearchCommand(value, options);
@@ -10034,6 +10040,8 @@ index 0000000000..2c2360a9db
 +      }
 +      pending.description = description;
 +      pending.proposal = Object.freeze({ ...description, token: pending.token, edit,
++        modeEntry: description.changeSearchMode && description.searchMode ? modeEntry : undefined,
++        pageProxyValid: description.changeSearchMode && description.searchMode && modeEntry ? false : undefined,
 +        searchMode: description.changeSearchMode ? description.searchMode : previousMode,
 +        selectionStart: description.value.length, selectionEnd: description.value.length,
 +        selectionDirection: "none" });
@@ -10055,19 +10063,44 @@ index 0000000000..2c2360a9db
 +  }
 +
 +  /** Observe exact command mode/text/caret once; input dispatch and browser effects are separate. */
-+  acknowledgeSearchCommand(token, { searchMode, text, selectionStart, selectionEnd, selectionDirection }) {
++  acknowledgeSearchCommand(token, { searchMode, text, selectionStart, selectionEnd, selectionDirection, modeEntry, pageProxyValid }) {
 +    const proposal = this.getSearchCommand(token);
 +    if (!proposal || !UrlbarShared.deepEqual(searchMode, proposal.searchMode) || text !== proposal.value ||
 +        selectionStart !== proposal.selectionStart || selectionEnd !== proposal.selectionEnd ||
 +        selectionDirection !== proposal.selectionDirection) return false;
++    if (proposal.modeEntry && (!UrlbarShared.deepEqual(modeEntry, proposal.modeEntry) || pageProxyValid !== false)) return false;
 +    const pending = this.#searchCommandRequest;
 +    this.#searchCommandRequest = null;
 +    this.#searchMode = proposal.searchMode;
 +    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: this.#edit.selectionRevision + 1 });
 +    this.#searchCommandRequery = { token, edit: this.#edit, queryMode: proposal.searchMode,
-+      value: pending.value, options: pending.options, description: pending.description };
++      value: pending.value, options: pending.options, description: pending.description,
++      modeEntry: proposal.modeEntry, stateReady: true };
 +    return true;
++  }
++
++  /** Commit the initial command mode after observation; confirmation/requery remain separate. */
++  commitAcknowledgedSearchCommandMode(token, { persistedSearchTerms } = {}) {
++    this.#check();
++    if (typeof persistedSearchTerms !== "boolean") throw new TypeError("Missing persisted-search observation");
++    const pending = this.#searchCommandRequery;
++    if (!pending || pending.token !== token || !pending.stateReady) return null;
++    pending.stateReady = false;
++    const current = () => !this.#closed && this.#isCurrent() && this.#searchCommandRequery === pending &&
++      this.#edit === pending.edit && this.#searchMode === pending.queryMode && !this.#edit.composing;
++    const listener = this.#onModeStateChanged;
++    const notify = listener ? state => this.#notifyModeState(listener, state, {
++      reason: "search-command", token, queryId: null, edit: pending.edit,
++    }) : null;
++    let outcome = null;
++    try {
++      if (current()) outcome = this.#queries.commitSearchCommandMode(pending.value, pending.options,
++        pending.description, { persistedSearchTerms, modeEntry: pending.modeEntry }, current, notify);
++      return outcome;
++    } finally {
++      if (!outcome?.applied && this.#searchCommandRequery === pending) this.#searchCommandRequery = null;
++    }
 +  }
 +
 +  /** Describe the mode confirmation required before the command's one-use follow-up. */
@@ -10367,10 +10400,10 @@ index 0000000000..2c2360a9db
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..1327d8e5e3
+index 0000000000..b3bde23258
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,748 @@
+@@ -0,0 +1,765 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10924,8 +10957,25 @@ index 0000000000..1327d8e5e3
 +      }),
 +    });
 +    const engine = command.searchMode?.engineName ? store.getEngineByName(command.searchMode.engineName) : null;
-+    return Object.freeze({ ...command,
++    return Object.freeze({ ...command, engineId: engine?.id ?? null,
 +      searchMode: UrlbarSearchModeModel.normalizeMode(command.searchMode, engine) });
++  }
++
++  /** Commit only the initial mode-changing part of a live acknowledged search command. */
++  commitSearchCommandMode(value, options, description, observation, isCurrent, onCommitted = null) {
++    this.#check();
++    if (!Number.isSafeInteger(this.#context.browserId) || this.#context.browserId <= 0) {
++      throw new Error("Mode state requires a pinned browser");
++    }
++    const current = () => !this.#closed && this.#isCurrent() && isCurrent() &&
++      UrlbarShared.deepEqual(this.describeSearchCommand(value, options), description);
++    if (!current()) return null;
++    // Ordinary text commands preserve mode and do not invoke its setter or effects.
++    if (!description.changeSearchMode) return Object.freeze({ applied: true, modeUnchanged: true });
++    if (description.searchMode && !observation.modeEntry) return null;
++    return this.#controller.parentController.commitIndependentModeState(this.#context.browserId,
++      description.searchMode, { persistedSearchTerms: observation.persistedSearchTerms,
++        engineId: description.engineId, modeEntry: observation.modeEntry }, current, onCommitted);
 +  }
 +
 +  /** Resolve a stored confirmed mode without starting a query or consulting an input. */
