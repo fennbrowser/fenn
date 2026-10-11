@@ -5987,10 +5987,10 @@ index 1e2660589b..5ae3ab4843 100644
    /*
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..b67dac6fb8
+index 0000000000..c5bb09a9a3
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,169 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6003,7 +6003,8 @@ index 0000000000..b67dac6fb8
 + * Independent editor-to-query binding. Owns observed text/selection, not a DOM
 + * editor or a second result store. Host revisions describe committed editor
 + * snapshots; completion proposals never mutate that observed state. The host
-+ * must revalidate both edit and selection revisions before applying a proposal.
++ * validates a one-use token before a write and acknowledges its exact observed
++ * text/selection afterward. Acknowledgment never starts a query.
 + * Active composition cancels queries; the committed edit starts a fresh one.
 + * Undo, speculative placeholders, search-mode transitions and activation are
 + * not implemented here. In particular, this is not a navigation controller.
@@ -6014,6 +6015,8 @@ index 0000000000..b67dac6fb8
 +  #onUpdate;
 +  #edit = null;
 +  #closed = false;
++  #completion = null;
++  #autofill = null;
 +
 +  constructor({ context, isCurrent, onUpdate }) {
 +    if (typeof onUpdate != "function") throw new TypeError("Missing editor listener");
@@ -6054,6 +6057,8 @@ index 0000000000..b67dac6fb8
 +    this.#validateSelection(text, selectionStart, selectionEnd, selectionDirection);
 +    this.#edit = Object.freeze({ revision, text, selectionStart, selectionEnd,
 +      selectionDirection, selectionRevision: 0, composing });
++    this.#completion = null;
++    this.#autofill = null;
 +    // Revoke old work before any new snapshot can be published.
 +    this.#queries.cancel();
 +    if (composing) return null;
@@ -6065,12 +6070,22 @@ index 0000000000..b67dac6fb8
 +    }, update => {
 +      if (this.#closed || !this.#isCurrent() || this.#edit.revision !== revision) return;
 +      const first = update.query.results[0];
-+      const completion = update.kind === "first-result" && allowAutofill &&
++      let completion = null;
++      if (update.kind === "first-result") this.#completion = null;
++      const eligible = update.kind === "first-result" && allowAutofill &&
 +        first?.autofill && !first.payload?.keyword &&
 +        UrlbarAutofillModel.acceptsResult({
++          placeholder: this.#autofill,
 +          searchString: text, selectionStart: this.#edit.selectionStart,
 +          selectionEnd: this.#edit.selectionEnd,
-+        }) ? Object.freeze({ ...first.autofill, selectionDirection: "backward" }) : null;
++        });
++      if (eligible) {
++        const token = Object.freeze({});
++        const descriptor = Object.freeze({ ...first.autofill });
++        completion = Object.freeze({ ...descriptor, selectionDirection: "backward", token });
++        this.#completion = { token, proposal: completion, descriptor,
++          query: update.query, result: first, edit: this.#edit };
++      }
 +      this.#onUpdate(Object.freeze({ ...update, edit: this.#edit, completion }));
 +    });
 +  }
@@ -6081,10 +6096,45 @@ index 0000000000..b67dac6fb8
 +      throw new Error("Stale editor selection");
 +    }
 +    this.#validateSelection(this.#edit.text, start, end, direction);
++    this.#completion = null;
 +    this.#edit = Object.freeze({ ...this.#edit, selectionStart: start,
 +      selectionEnd: end, selectionDirection: direction,
 +      selectionRevision: this.#edit.selectionRevision + 1 });
 +    return this.#edit;
++  }
++
++  /** Validate immediately before a host write; tokens never cross the native ABI. */
++  getCompletion(token) {
++    this.#check();
++    const current = this.#completion;
++    if (!current || token !== current.token || current.edit !== this.#edit ||
++        !this.#queries.ownsResult(current.query.id, current.result) ||
++        current.query.results[0] !== current.result || current.result.payload?.keyword) {
++      return null;
++    }
++    // A provider can update a result in place. Object identity alone is not a
++    // promise that its proposed edit still describes that result.
++    const live = current.result.autofill;
++    if (!live || Object.keys(live).length !== Object.keys(current.descriptor).length ||
++        Object.keys(current.descriptor).some(key => live[key] !== current.descriptor[key])) {
++      return null;
++    }
++    return current.proposal;
++  }
++
++  /** Observe a successful host write without requerying the completed string. */
++  acknowledgeCompletion(token, { text, selectionStart, selectionEnd, selectionDirection }) {
++    const proposal = this.getCompletion(token);
++    if (!proposal || text !== proposal.value || selectionStart !== proposal.selectionStart ||
++        selectionEnd !== proposal.selectionEnd || selectionDirection !== proposal.selectionDirection) {
++      return false;
++    }
++    this.#validateSelection(text, selectionStart, selectionEnd, selectionDirection);
++    this.#autofill = this.#completion.descriptor;
++    this.#completion = null;
++    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart, selectionEnd,
++      selectionDirection, selectionRevision: this.#edit.selectionRevision + 1 });
++    return true;
 +  }
 +
 +  publishPresentation(revision, queryId, visibleResults, open) {
@@ -6097,22 +6147,25 @@ index 0000000000..b67dac6fb8
 +
 +  cancel() {
 +    this.#check();
++    this.#completion = null;
 +    this.#queries.cancel();
 +  }
 +
 +  close() {
 +    if (this.#closed) return;
 +    this.#closed = true;
++    this.#completion = null;
++    this.#autofill = null;
 +    this.#queries.close();
 +    this.#onUpdate = null;
 +  }
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..98398ebecc
+index 0000000000..1849fc2431
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,117 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6190,6 +6243,12 @@ index 0000000000..98398ebecc
 +    this.#check();
 +    if (this.#query !== query) throw new Error("Query superseded or cancelled");
 +    return query;
++  }
++
++  ownsResult(queryId, result) {
++    this.#check();
++    return !!this.#query && queryId === this.#query.id &&
++      this.#query.results.includes(result);
 +  }
 +
 +  publishPresentation(queryId, visibleResults, open) {

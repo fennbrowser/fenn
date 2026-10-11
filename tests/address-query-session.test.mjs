@@ -138,6 +138,59 @@ test('new edits and scope loss revoke older streaming publications and presentat
   await assert.rejects(f.editor.edit({},edit(3,'closed')),/closed/);
 });
 
+async function completionFixture() {
+  const f=await editorFixture();
+  const query=await f.editor.edit({},edit(1,'exam'));
+  const result={payload:{},autofill:{value:'example.test/',selectionStart:4,selectionEnd:13}};
+  query.results.push(result);f.parent.child.notify('onFirstResult',query);
+  return {...f,query,result,proposal:f.updates.at(-1).completion};
+}
+const observed=p=>({text:p.value,selectionStart:p.selectionStart,selectionEnd:p.selectionEnd,
+  selectionDirection:p.selectionDirection});
+
+test('completion acknowledgment observes exactly one host write without issuing a new query',async()=>{
+  const f=await completionFixture(),p=f.proposal,count=f.parent.started.length;
+  assert.equal(f.editor.getCompletion(p.token),p);
+  assert.equal(f.editor.acknowledgeCompletion(p.token,{...observed(p),text:'different'}),false);
+  assert.equal(f.editor.snapshot.text,'exam');
+  assert.equal(f.editor.acknowledgeCompletion(p.token,observed(p)),true);
+  assert.equal(f.editor.snapshot.text,p.value);assert.equal(f.editor.snapshot.revision,1);
+  assert.equal(f.editor.snapshot.selectionRevision,1);assert.equal(f.parent.started.length,count);
+  assert.equal(f.editor.getCompletion(p.token),null);
+  assert.equal(f.editor.acknowledgeCompletion(p.token,observed(p)),false);
+  f.parent.child.notify('onFirstResult',f.query);
+  assert.ok(f.updates.at(-1).completion,'acknowledged suffix is eligible under shared placeholder admission');
+  f.editor.close();
+});
+
+test('same-query replacement, in-place mutations and removed results revoke completion authority',async()=>{
+  for(const mutate of [f=>{f.result.autofill.value='changed.test/';},f=>{f.query.results=[];},
+    f=>{f.query.results=[{...f.result},f.result];},f=>{f.result.payload.keyword='alias';}]) {
+    const f=await completionFixture();mutate(f);
+    assert.equal(f.editor.getCompletion(f.proposal.token),null);
+    assert.equal(f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal)),false);
+    assert.equal(f.editor.snapshot.text,'exam');f.editor.close();
+  }
+  const f=await completionFixture(),old=f.proposal;
+  f.parent.child.notify('onFirstResult',f.query);const current=f.updates.at(-1).completion;
+  assert.notEqual(old.token,current.token);assert.equal(f.editor.getCompletion(old.token),null);
+  assert.equal(f.editor.getCompletion(current.token),current);f.editor.close();
+});
+
+test('edit, caret, cancellation, scope and cross-session tokens cannot acknowledge an old proposal',async()=>{
+  for(const action of [f=>f.editor.select(1,4,4),f=>f.editor.cancel(),
+    f=>f.editor.edit({},edit(2,'new'))]) {
+    const f=await completionFixture();await action(f);
+    assert.equal(f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal)),false);f.editor.close();
+  }
+  const a=await completionFixture(),b=await completionFixture();
+  assert.equal(b.editor.acknowledgeCompletion(a.proposal.token,observed(a.proposal)),false);
+  assert.equal(b.editor.getCompletion(b.proposal.token),b.proposal);a.editor.close();b.editor.close();
+  const f=await completionFixture();f.loseScope();
+  assert.throws(()=>f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal)),/scope changed/);
+  assert.equal(f.parent.destroyed,1);
+});
+
 test('exposure is query-scoped, copied, identity-validated and revoked by cancellation',async()=>{
   const f=fixture(),q=await f.session.query({}, {searchString:'hello'}),row={};q.results.push(row);
   const visible=[row];f.session.publishPresentation(q.id,visible,true);visible.length=0;
