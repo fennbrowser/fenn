@@ -150,6 +150,8 @@ test('both original input bindings use the model before their retained URL fallb
     const context=vm.createContext({URL,UrlbarShared:shared,UrlbarResultActions:{fromElement:e=>e?.action},
       losslessDecodeURL:url=>url.href,losslessDecodeURI:()=>{throw Error('unexpected URL fallback');},
       UrlbarContentUtils:{getFixupPrimitives:()=>({})},SCHEMELESS_INPUT_SCHEMELESS:2});
+    vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarUrlValue.mjs',import.meta.url),'utf8')
+      .replace(/^import .*;$/gm,'').replaceAll('export function ','function '),context);
     vm.runInContext(`this.Binding=class {#isAddressbar=false; #getSchemelessInput(){return 2;}
       ${method}
       value(result,options){return this.#getValueFromResult(result,options);}

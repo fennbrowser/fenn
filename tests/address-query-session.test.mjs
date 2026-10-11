@@ -20,13 +20,15 @@ function fixture({hold=false,uninitializedResults=false}={}) {
     destroy(){this.destroyed=(this.destroyed??0)+1;}
   }
   let id=0;
-  const sandbox=vm.createContext({console,UrlbarQueryLifecycle,
-    UrlbarShared:{getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_TYPE:sharedPolicy.UrlbarShared.RESULT_TYPE,RESULT_SOURCE:sharedPolicy.UrlbarShared.RESULT_SOURCE,canAutofillURL:sharedPolicy.UrlbarShared.canAutofillURL.bind(sharedPolicy.UrlbarShared),NOTIFICATIONS:{
+  const sandbox=vm.createContext({console,URL,UrlbarQueryLifecycle,
+    UrlbarShared:{stripPrefixAndTrim:sharedPolicy.UrlbarShared.stripPrefixAndTrim,getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_TYPE:sharedPolicy.UrlbarShared.RESULT_TYPE,RESULT_SOURCE:sharedPolicy.UrlbarShared.RESULT_SOURCE,canAutofillURL:sharedPolicy.UrlbarShared.canAutofillURL.bind(sharedPolicy.UrlbarShared),NOTIFICATIONS:{
       QUERY_ARMED:'onQueryArmed',QUERY_STARTED:'onQueryStarted',QUERY_CANCELLED:'onQueryCancelled',
       QUERY_FIRST_RESULT:'onFirstResult',QUERY_RESULTS:'onQueryResults',QUERY_FINISHED:'onQueryFinished'}},
-    UrlbarPrefs:{get:key=>prefs[key] ?? 10},UrlbarContentUtils:{usesMessagePath:()=>false},
+    UrlbarPrefs:{get:key=>prefs[key] ?? 10},UrlbarContentUtils:{usesMessagePath:()=>false,getDisplaySpec:spec=>spec,getFixupPrimitives:()=>({})},
     UrlbarQueryContext:class {constructor(options){Object.assign(this,options,{id:++id,results:uninitializedResults?undefined:[]});}},
     ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;}}});
+  vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarUrlValue.mjs',import.meta.url),'utf8')
+    .replace(/^import .*;$/gm,'').replaceAll('export function ','function '),sandbox);
   for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarResultPresentation','UrlbarEditSession']) {
     const source=readFileSync(new URL(`../upstream/firefox/browser/components/urlbar/content/${file}.mjs`,import.meta.url),'utf8');
     vm.runInContext(source.replace(/^import .*;$/gm,'').replaceAll('export class ','class ')+`\nthis.${file}=${file};`,sandbox);
@@ -471,6 +473,19 @@ test('independent result input descriptions require current edit, query and exac
     assert.throws(()=>f.editor.describeResultInput(...args),/Stale/);
   }
   result.payload.suggestion='updated';assert.equal(f.editor.describeResultInput(1,q.id,result).value,'@engine updated');
-  result.type=sharedPolicy.UrlbarShared.RESULT_TYPE.URL;assert.equal(f.editor.describeResultInput(1,q.id,result),null);
+  result.type=sharedPolicy.UrlbarShared.RESULT_TYPE.URL;assert.equal(f.editor.describeResultInput(1,q.id,result).value,'');
   f.editor.cancel();assert.throws(()=>f.editor.describeResultInput(1,q.id,result),/Stale/);f.editor.close();
+});
+
+
+test('independent URL descriptions use typed text and fixed privacy even after completion acknowledgment',async()=>{
+  const f=await completionFixture();f.result.type=sharedPolicy.UrlbarShared.RESULT_TYPE.URL;
+  f.result.heuristic=true;f.result.payload.url='http://example.test/';
+  f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal));
+  const calls=[];f.sandbox.UrlbarContentUtils.getFixupPrimitives=(text,isPrivate)=>{calls.push({text,isPrivate});return {};};
+  assert.equal(f.editor.describeResultInput(1,f.query.id,f.result,{isPrivate:false,userTypedValue:'https://override',isAddressbar:false}).value,'example.test/');
+  assert.deepEqual(calls,[{text:'example.test/',isPrivate:true}]);
+  assert.equal(f.editor.snapshot.text,'example.test/');
+  assert.equal(f.editor.describeResultInput(1,f.query.id,f.result,{urlOverride:'https://safe.test/path'}).value,'https://safe.test/path');
+  assert.equal(calls.length,1,'override bypasses heuristic trimming');f.editor.close();
 });
