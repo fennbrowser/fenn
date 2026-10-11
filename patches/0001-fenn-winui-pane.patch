@@ -6978,10 +6978,10 @@ index 0000000000..599de1afe8
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..31b93d41f4
+index 0000000000..07e25cdeff
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,688 @@
+@@ -0,0 +1,690 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7408,9 +7408,9 @@ index 0000000000..31b93d41f4
 +  }
 +
 +  #supportsResultPreview(result) {
-+    // Search-mode and action-specific transitions need their own host contract.
-+    // Do not silently turn them into ordinary text writes.
-+    if (this.#searchModePreview || result.payload.providesSearchMode ||
++    // Results that enter modes or perform actions need their own host contract.
++    // Moving from a preview to an ordinary row explicitly requests mode clearing.
++    if (result.payload.providesSearchMode ||
 +        result.payload.keyword || result.providerName === "UrlbarProviderGlobalActions" ||
 +        ![UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.SEARCH].includes(result.type)) {
 +      return null;
@@ -7420,6 +7420,7 @@ index 0000000000..31b93d41f4
 +
 +  #describeResultPreview(revision, queryId, result) {
 +    if (!this.#supportsResultPreview(result)) return null;
++    const modeExit = this.#searchModePreview ? { searchMode: null } : {};
 +    if (result.autofill) {
 +      const autofill = Object.freeze({ ...result.autofill });
 +      if (typeof autofill.value !== "string" ||
@@ -7427,13 +7428,13 @@ index 0000000000..31b93d41f4
 +          !Number.isSafeInteger(autofill.selectionEnd) ||
 +          autofill.selectionStart < 0 || autofill.selectionEnd < autofill.selectionStart ||
 +          autofill.selectionEnd > autofill.value.length) return null;
-+      return { kind: "autofill", value: autofill.value,
++      return { ...modeExit, kind: "autofill", value: autofill.value,
 +        selectionStart: autofill.selectionStart, selectionEnd: autofill.selectionEnd,
 +        selectionDirection: "backward", autofill };
 +    }
 +    const text = this.describeResultInput(revision, queryId, result);
 +    if (typeof text.value !== "string") return null;
-+    return { ...text, kind: "text", selectionStart: text.value.length,
++    return { ...text, ...modeExit, kind: "text", selectionStart: text.value.length,
 +      selectionEnd: text.value.length, selectionDirection: "none", autofill: null };
 +  }
 +
@@ -7491,7 +7492,7 @@ index 0000000000..31b93d41f4
 +        proposal.value === this.#typedText ? proposal : null;
 +    }
 +    const live = this.#describeResultPreview(this.#edit.revision, request.queryId, request.result);
-+    if (!live || ["kind", "value", "actionType", "selectionStart", "selectionEnd", "selectionDirection"]
++    if (!live || ["kind", "value", "actionType", "searchMode", "selectionStart", "selectionEnd", "selectionDirection"]
 +      .some(key => live[key] !== proposal[key])) return null;
 +    if (live.autofill && (Object.keys(live.autofill).length !== Object.keys(proposal.autofill).length ||
 +        Object.keys(live.autofill).some(key => live.autofill[key] !== proposal.autofill[key]))) return null;
@@ -7499,9 +7500,9 @@ index 0000000000..31b93d41f4
 +  }
 +
 +  /** Observe both row selection and exact preview text, then notify the provider. */
-+  acknowledgeResultPreview(token, { text, selectionStart, selectionEnd, selectionDirection }) {
++  acknowledgeResultPreview(token, { text, selectionStart, selectionEnd, selectionDirection, searchMode }) {
 +    const proposal = this.getResultPreview(token);
-+    if (!proposal || text !== proposal.value || selectionStart !== proposal.selectionStart ||
++    if (!proposal || (proposal.searchMode === null && searchMode !== null) || text !== proposal.value || selectionStart !== proposal.selectionStart ||
 +        selectionEnd !== proposal.selectionEnd || selectionDirection !== proposal.selectionDirection) {
 +      return false;
 +    }
@@ -7510,6 +7511,7 @@ index 0000000000..31b93d41f4
 +    this.#modeApplication = null;
 +    this.#selectionRequest = null;
 +    this.#completion = null;
++    if (proposal.searchMode === null) this.#searchModePreview = false;
 +    this.#autofill = proposal.autofill;
 +    this.#placeholder = proposal.autofill;
 +    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart, selectionEnd,

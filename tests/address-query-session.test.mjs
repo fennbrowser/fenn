@@ -1302,3 +1302,61 @@ test('preview close acknowledgment cannot survive caret, new edit, cancellation 
   assert.equal(g.editor.beginPreviewModeDismissal(1,g.query.id),null,'confirmed mode does not use preview cleanup');
   assert.throws(()=>g.editor.beginPreviewModeDismissal(0,g.query.id),/Stale/);g.editor.close();
 });
+
+
+async function modeToOrdinaryFixture(autofill=false) {
+  const f=await editorFixture(),query=await f.editor.edit({},edit(1,'@engine'));
+  f.parent.child.updateEngineStore('changed',{id:'engine',name:'Engine',isGeneralPurposeEngine:true},-1);
+  const mode={id:1,type:sharedPolicy.UrlbarShared.RESULT_TYPE.SEARCH,
+    payload:{engine:'Engine',keyword:'@engine',query:'preview words',providesSearchMode:true}};
+  const result={id:2,type:sharedPolicy.UrlbarShared.RESULT_TYPE.URL,payload:{url:'https://example.test/path'}};
+  if(autofill)result.autofill={value:'example.test/',selectionStart:3,selectionEnd:13,
+    untrimmedValue:'https://example.test/',type:'origin'};
+  query.results=[mode,result];f.editor.publishPresentation(1,query.id,[mode,result],true);
+  const calls=[];f.parent.onBeforeSelection=r=>calls.push(['before',r.id]);
+  f.parent.onSelection=r=>calls.push(['selected',r.id]);
+  const entering=f.editor.beginResultModeApplication(1,query.id,mode,{startQuery:false});
+  assert.equal(f.editor.acknowledgeResultModeApplication(entering.token,observedMode(entering)),true);
+  return {...f,query,result,calls};
+}
+
+test('ordinary row selection exits preview mode only after observing both cleared mode and result text',async()=>{
+  for(const search of [false,true]) {
+    const f=await modeToOrdinaryFixture();
+    if(search){f.result.type=sharedPolicy.UrlbarShared.RESULT_TYPE.SEARCH;f.result.payload={query:'suggested words'};}
+    const before=f.editor.snapshot,p=f.editor.beginResultPreview(1,f.query.id,f.result);
+    assert.equal(p.searchMode,null);assert.equal(f.editor.snapshot,before);
+    assert.equal(p.value,search?'suggested words':'https://example.test/path');
+    assert.equal(f.editor.acknowledgeResultSelection(p.token),false);
+    assert.equal(f.editor.acknowledgeResultPreview(p.token,observed(p)),false);
+    assert.equal(f.editor.acknowledgeResultPreview(p.token,{...observed(p),searchMode:{source:1}}),false);
+    assert.equal(f.editor.acknowledgeResultPreview(p.token,{...observed(p),searchMode:null,text:'wrong'}),false);
+    assert.equal(f.editor.acknowledgeResultPreview(p.token,{...observed(p),searchMode:null}),true);
+    assert.equal(f.editor.acknowledgeResultPreview(p.token,{...observed(p),searchMode:null}),false);
+    assert.deepEqual(f.calls,[['before',1],['selected',1],['before',2],['selected',2]]);
+    assert.equal(f.parent.started.length,1);
+    assert.equal(f.editor.beginResultRestore(1,f.query.id).value,'@engine');f.editor.close();
+  }
+});
+
+test('leaving mode preview for autofill keeps its exact suffix and placeholder metadata',async()=>{
+  const f=await modeToOrdinaryFixture(true),p=f.editor.beginResultPreview(1,f.query.id,f.result);
+  assert.equal(p.searchMode,null);assert.equal(p.selectionDirection,'backward');assert.equal(p.selectionStart,3);
+  assert.equal(f.editor.acknowledgeResultPreview(p.token,{...observed(p),searchMode:null}),true);
+  assert.equal(f.editor.snapshot.selectionEnd,13);
+  await f.editor.edit({},edit(2,'exam'));
+  const next=f.updates.find(u=>u.edit.revision===2 && u.kind==='prepared').completion;
+  assert.equal(next.kind,'placeholder');assert.equal(next.value,'example.test/');
+  assert.equal(next.untrimmedValue,'https://example.test/');f.editor.close();
+});
+
+test('mode-exit row writes reject changed semantics, hidden results, and caret replacement',async()=>{
+  for(const mutate of [f=>{f.result.payload.providesSearchMode=true;},
+    f=>{f.result.payload.url='https://changed.test/';},f=>f.editor.select(1,0,0),
+    f=>f.editor.hideResults(1,f.query.id)]) {
+    const f=await modeToOrdinaryFixture(),p=f.editor.beginResultPreview(1,f.query.id,f.result);mutate(f);
+    assert.equal(f.editor.getResultPreview(p.token),null);
+    assert.equal(f.editor.acknowledgeResultPreview(p.token,{...observed(p),searchMode:null}),false);
+    assert.equal(f.calls.some(([kind,id])=>kind==='selected' && id===2),false);f.editor.close();
+  }
+});
