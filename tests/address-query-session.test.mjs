@@ -4133,3 +4133,84 @@ test('parent preservation grants receipt only for matching owned mode, persisten
     assert.equal(browser.userTypedValue,change==='typed'?'new':'unchanged');
   }
 });
+
+
+test('query start effects run once before engine-held queries settle or dispatch',async()=>{
+  for(const allowed of [true,false]) {
+    const f=fixture({hold:true}),events=[];
+    const pending=f.session.query({}, {searchString:'held'},null,()=>allowed,q=>events.push(q.searchString));
+    assert.deepEqual(events,['held']);assert.equal(f.parent.started.length,0);
+    f.parent.child.updateEngineStore('init',[],null);
+    if(allowed)await pending;else await assert.rejects(pending,/dispatch authority/);
+    assert.deepEqual(events,['held']);assert.equal(f.parent.started.length,allowed?1:0);f.session.close();
+  }
+});
+
+test('denied or synchronously superseded query starts do not run stale effects',async()=>{
+  const f=fixture();await f.parent.child.engineStore.init();let effects=0;
+  await assert.rejects(f.session.query({}, {searchString:'denied'},null,()=>false,()=>effects++),/dispatch authority/);
+  assert.equal(effects,0);let next;
+  f.parent.startQuery=q=>{f.parent.started.push(q);if(q.searchString==='old')next=f.session.query({}, {searchString:'new'});return Promise.resolve(q);};
+  await assert.rejects(f.session.query({}, {searchString:'old'},null,null,()=>effects++),/superseded/);
+  await next;assert.equal(effects,0);f.session.close();
+});
+
+test('query start effect errors preserve the running promise and cancellation does not repeat them',async()=>{
+  const f=fixture({hold:true}),errors=[];f.sandbox.console={error:e=>errors.push(e)};let calls=0;
+  const pending=f.session.query({}, {searchString:'held'},null,null,()=>{calls++;throw Error('counter failure');});
+  assert.equal(calls,1);assert.equal(errors.length,1);f.session.cancel();f.parent.child.updateEngineStore('init',[],null);
+  await assert.rejects(pending,/cancelled/);assert.equal(calls,1);
+  const q=await f.session.query({}, {searchString:'new'});
+  await assert.rejects(f.session.query({}, {searchString:'bad'},null,null,1),/Invalid query start/);
+  assert.equal(f.session.ownsQuery(q.id),true);f.session.close();
+});
+
+async function pickedMenuFixture(key,isConfigEngine=false) {
+  const f=await editorFixture({browserId:42});await f.editor.edit({},edit(1,'words'));
+  f.parent.child.updateEngineStore('changed',{id:'engine',name:'Engine',aliases:[],isGeneralPurposeEngine:true,isConfigEngine},-1);
+  const p=await f.editor.beginSearchModeMenuCommand(1,key,{pageProxyValid:false,modeEntry:commandEntry()});
+  f.editor.acknowledgeSearchCommand(p.token,observedOwnedCommand(p));
+  f.parent.commitIndependentModeState=()=>({applied:true,stateToken:{},userTypedValue:'words'});
+  f.parent.commitIndependentInputState=()=>({applied:true,current:true,stateToken:{}});
+  f.editor.commitAcknowledgedSearchCommandMode(p.token,{persistedSearchTerms:false});
+  f.editor.commitAcknowledgedSearchCommandInput(p.token,observedCommandInput(p));
+  const c=f.editor.beginSearchCommandConfirmation(p.token,commandEntry());
+  f.editor.commitSearchCommandConfirmation(c.token,observedConfirmation(c));
+  return {...f,proposal:p,confirmation:c};
+}
+
+test('committed menu queries record shared local, built-in and add-on classifications once',async()=>{
+  for(const [key,builtin,expected] of [['local:^',false,'local_search'],['engine:engine',true,'builtin_search'],['engine:engine',false,'addon_search']]) {
+    const f=await pickedMenuFixture(key,builtin),picked=[];
+    f.parent.recordSearchModeMenuPicked=kind=>{picked.push(kind);return true;};
+    await f.editor.requeryAfterSearchCommand(f.proposal.token,{searchMode:f.confirmation.searchMode});
+    assert.deepEqual(picked,[expected]);
+    await assert.rejects(f.editor.requeryAfterSearchCommand(f.proposal.token,{searchMode:f.confirmation.searchMode}),/Stale/);
+    assert.equal(picked.length,1);f.editor.close();
+  }
+});
+
+test('rejected menu dispatch cannot record a pick',async()=>{
+  const f=await pickedMenuFixture('local:^');let picked=0;
+  f.parent.captureIndependentQueryAuthority=()=>()=>false;
+  f.parent.recordSearchModeMenuPicked=()=>{picked++;};
+  await assert.rejects(f.editor.requeryAfterSearchCommand(f.proposal.token,{searchMode:f.confirmation.searchMode}),/dispatch authority/);
+  assert.equal(picked,0);f.editor.close();
+});
+
+test('menu picked backend validates query categories and matches address-bar SAP gating',()=>{
+  const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarParentController.sys.mjs',import.meta.url),'utf8');
+  const start=source.indexOf('  recordSearchModeMenuPicked(kind) {');
+  const method=source.slice(start,source.indexOf('  /**',start));
+  const calls=[],errors=[];let throws=false;
+  const picked=new Proxy({}, {get:(_t,kind)=>({add:n=>{if(throws)throw Error('Glean failed');calls.push([kind,n]);}})});
+  const Parent=new Function('Glean','console',`return class {#destroyed=false;#isAddressbar;constructor(addressbar){this.#isAddressbar=addressbar;}destroy(){this.#destroyed=true;}${method}}`)
+    ({urlbarUnifiedsearchbutton:{picked}},{error:e=>errors.push(e)});
+  const p=new Parent(true);
+  for(const kind of ['local_search','builtin_search','addon_search'])assert.equal(p.recordSearchModeMenuPicked(kind),true);
+  assert.deepEqual(calls,[['local_search',1],['builtin_search',1],['addon_search',1]]);
+  assert.throws(()=>p.recordSearchModeMenuPicked('settings'),/Invalid/);
+  assert.equal(new Parent(false).recordSearchModeMenuPicked('local_search'),false);
+  throws=true;assert.equal(p.recordSearchModeMenuPicked('local_search'),false);assert.equal(errors.length,1);
+  p.destroy();assert.equal(p.recordSearchModeMenuPicked('local_search'),false);
+});
