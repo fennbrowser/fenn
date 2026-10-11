@@ -4214,3 +4214,92 @@ test('menu picked backend validates query categories and matches address-bar SAP
   throws=true;assert.equal(p.recordSearchModeMenuPicked('local_search'),false);assert.equal(errors.length,1);
   p.destroy();assert.equal(p.recordSearchModeMenuPicked('local_search'),false);
 });
+
+
+function observedInputBackend(f) {
+  const commits=[],captures=[];
+  f.parent.commitIndependentEditState=(id,text,mode,prior,current)=>{
+    if(!current())return null;
+    const outcome={applied:true,current:true,stateToken:{},userTypedValue:text,persistedSearchTerms:false,persistenceChanged:true};
+    commits.push({id,text,mode,prior,outcome});return outcome;
+  };
+  f.parent.captureIndependentQueryAuthority=(id,token,text)=>{captures.push({id,token,text});return ()=>true;};
+  return {commits,captures};
+}
+
+test('observed typing commits input before query and exposes immutable browser effects',async()=>{
+  const f=await editorFixture({browserId:42}),{commits,captures}=observedInputBackend(f);
+  const q=await f.editor.edit({},edit(1,'new words'),{userTypedValue:null});
+  assert.equal(q.searchString,'new words');assert.equal(commits.length,1);assert.equal(commits[0].prior,null);
+  assert.equal(captures[0].token,commits[0].outcome.stateToken);assert.equal(captures[0].text,'new words');
+  assert.equal(f.editor.inputState.revision,1);assert.equal(f.editor.inputState.persistenceChanged,true);
+  assert.equal(Object.isFrozen(f.editor.inputState),true);assert.equal(f.parent.child.userSelectionBehavior,'none');
+  await assert.rejects(f.editor.edit({},edit(1,'repeat'),{userTypedValue:'new words'}),/stale/);
+  assert.equal(commits.length,1);f.editor.close();
+});
+
+test('composition updates browser input without dispatch and its committed edit starts one query',async()=>{
+  const f=await editorFixture({browserId:42}),{commits}=observedInputBackend(f);
+  const mode={source:1,isPreview:true};
+  assert.equal(await f.editor.edit({searchMode:mode},{...edit(1,'composing'),composing:true},{userTypedValue:'prior'}),null);
+  assert.equal(f.parent.started.length,0);assert.equal(f.editor.inputState.userTypedValue,'composing');
+  const q=await f.editor.edit({searchMode:mode},edit(2,'committed'),{userTypedValue:'composing'});
+  assert.equal(commits.length,2);assert.deepEqual({...commits[1].mode},mode);
+  assert.equal(q.searchMode.isPreview,true);assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+test('invalid browser observations preserve the current edit and denied commits cannot dispatch',async()=>{
+  const f=await editorFixture({browserId:42}),q=await f.editor.edit({},edit(1,'old'));
+  await assert.rejects(f.editor.edit({},edit(2,'new'),{}),/Invalid observed/);
+  assert.equal(f.editor.snapshot.revision,1);assert.equal(f.editor.inputState,null);
+  f.parent.commitIndependentEditState=()=>null;
+  await assert.rejects(f.editor.edit({},edit(2,'new'),{userTypedValue:null}),/commit is stale/);
+  assert.equal(f.parent.started.length,1);assert.equal(f.parent.started[0],q);f.editor.close();
+});
+
+test('reentrant observed input commits cannot overwrite or cancel a newer editor query',async()=>{
+  const f=await editorFixture({browserId:42});let newer;
+  f.parent.commitIndependentEditState=()=>{
+    newer=f.editor.edit({},edit(2,'newer'));
+    return {applied:true,current:true,stateToken:{},userTypedValue:'old'};
+  };
+  await assert.rejects(f.editor.edit({},edit(1,'old'),{userTypedValue:null}),/commit is stale/);
+  await newer;assert.equal(f.editor.snapshot.text,'newer');assert.equal(f.editor.inputState,null);
+  assert.equal(f.parent.started.length,1);assert.equal(f.parent.started[0].searchString,'newer');f.editor.close();
+});
+
+test('observed input dispatch checks committed browser authority after engine readiness',async()=>{
+  const f=fixture({hold:true,browserId:42});f.session.close();
+  const editor=new f.sandbox.UrlbarEditSession({context:f.context,isCurrent:()=>true,onUpdate:()=>{}});
+  f.parent=f.parents.at(-1);observedInputBackend(f);let allowed=true;
+  f.parent.captureIndependentQueryAuthority=()=>()=>allowed;
+  const pending=editor.edit({},edit(1,'waiting'),{userTypedValue:null});
+  assert.equal(editor.inputState.userTypedValue,'waiting');allowed=false;
+  f.parent.child.updateEngineStore('init',[],null);
+  await assert.rejects(pending,/dispatch authority/);assert.equal(f.parent.started.length,0);editor.close();
+});
+
+test('parent observed edit validates browser scope and consumes state before typed setter reentry',()=>{
+  for(const change of ['none','prior','mode','document','setter']) {
+    const {p,browser,lazy}=parentLoadFixture(),token={};let committed=false,text='prior';
+    Object.defineProperty(browser,'userTypedValue',{get:()=>text,set:value=>{text=value;if(change==='setter')browser.lastLocationChange++;},configurable:true});
+    lazy.independentUrlbarBrowserState={prepareEditInput:()=>{
+      if(change==='mode')return null;if(change==='document')browser.browsingContext.currentWindowGlobal={};
+      return {token,effects:{userTypedValue:'new',persistedSearchTerms:false,persistenceChanged:true}};
+    },commit:()=>{committed=true;return true;},isCommitted:()=>committed,discard:()=>{}};
+    const result=p.commitIndependentEditState(42,'new',null,change==='prior'?'wrong':'prior',()=>true);
+    assert.equal(!!result,['none','setter'].includes(change));
+    assert.equal(committed,['none','setter'].includes(change));
+    if(result)assert.equal(result.current,change==='none');
+  }
+});
+
+
+test('cancel callback replacement cannot attach an older observed input to the new revision',async()=>{
+  const f=await editorFixture({browserId:42});await f.editor.edit({},edit(1,'initial'));
+  const {commits}=observedInputBackend(f);let newer,replaced=false;
+  f.parent.cancelQuery=()=>{if(!replaced){replaced=true;newer=f.editor.edit({},edit(3,'newest'));}};
+  await assert.rejects(f.editor.edit({},edit(2,'obsolete'),{userTypedValue:null}),/superseded/);
+  await newer;assert.equal(commits.length,0);assert.equal(f.editor.snapshot.revision,3);
+  assert.equal(f.parent.started.at(-1).searchString,'newest');f.editor.close();
+});

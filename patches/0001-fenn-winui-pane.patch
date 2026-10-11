@@ -835,7 +835,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..79f713e472 100644
+index ba254af0c6..90b9bf1227 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,12 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -944,7 +944,7 @@ index ba254af0c6..79f713e472 100644
    }
  
    /**
-@@ -999,6 +1042,332 @@ export class UrlbarParentController {
+@@ -999,6 +1042,357 @@ export class UrlbarParentController {
      }
    }
  
@@ -1164,6 +1164,31 @@ index ba254af0c6..79f713e472 100644
 +    return current() ? current : null;
 +  }
 +
++  /** Apply an actual editor snapshot, including composition, without a command token. */
++  commitIndependentEditState(browserId, value, searchMode, userTypedValue, isCurrent) {
++    if (!Number.isSafeInteger(browserId) || browserId <= 0 || typeof value !== "string" ||
++        typeof isCurrent !== "function" || (userTypedValue !== null && typeof userTypedValue !== "string") ||
++        (searchMode !== null && (!searchMode || typeof searchMode !== "object"))) throw new TypeError("Invalid independent edit state");
++    if (this.#destroyed || this.rendersInContentProcess || !this.#isAddressbar) return null;
++    const browser = this.resolveTargetBrowser(browserId);
++    const document = browser?.browsingContext?.currentWindowGlobal, epoch = browser?.lastLocationChange;
++    const current = (expectedText = userTypedValue) => isCurrent() && !this.#destroyed && !!document &&
++      browser?.browserId === browserId && this.resolveTargetBrowser(browserId) === browser &&
++      this.browserWindow.gBrowser.selectedBrowser === browser && browser.browsingContext?.currentWindowGlobal === document &&
++      browser.lastLocationChange === epoch && browser.userTypedValue === expectedText;
++    if (!current()) return null;
++    const update = lazy.independentUrlbarBrowserState.prepareEditInput(browser, value, searchMode);
++    if (!update) return null;
++    try {
++      if (!current() || !lazy.independentUrlbarBrowserState.commit(browser, update.token)) return null;
++      browser.userTypedValue = value;
++      return Object.freeze({ applied: true, stateToken: update.token, ...update.effects,
++        current: current(value) && lazy.independentUrlbarBrowserState.isCommitted(browser, update.token) });
++    } finally {
++      lazy.independentUrlbarBrowserState.discard(browser, update.token);
++    }
++  }
++
 +  /** Apply acknowledged input text/persistence under the preceding owned-state receipt. */
 +  commitIndependentInputState(browserId, value, { persistedSearchTerms, expectedStateToken, userTypedValue }, isCurrent) {
 +    if (!Number.isSafeInteger(browserId) || browserId <= 0 || typeof value !== "string" ||
@@ -1277,7 +1302,7 @@ index ba254af0c6..79f713e472 100644
    /**
     * Loads a URL in the browser window resolved from the actor. The content
     * child supplies the serializable load parameters; the parent fills in the
-@@ -1027,9 +1396,15 @@ export class UrlbarParentController {
+@@ -1027,9 +1421,15 @@ export class UrlbarParentController {
     *   browser to hand `focusBrowser` on the deferred-Enter keyup -- a
     *   content-process input can't resolve the selected browser itself.
     */
@@ -1294,7 +1319,7 @@ index ba254af0c6..79f713e472 100644
      if (!browser) {
        // The tab was closed before the load got here; don't hand its load to
        // whichever tab is selected now.
-@@ -1040,8 +1415,9 @@ export class UrlbarParentController {
+@@ -1040,8 +1440,9 @@ export class UrlbarParentController {
      }
  
      let { url, postData } = lazy.UrlbarUtils.loadRequestToUrl(loadRequest);
@@ -1305,7 +1330,7 @@ index ba254af0c6..79f713e472 100644
      }
      params.postData = postData;
  
-@@ -1055,6 +1431,7 @@ export class UrlbarParentController {
+@@ -1055,6 +1456,7 @@ export class UrlbarParentController {
        });
      }
  
@@ -1313,7 +1338,7 @@ index ba254af0c6..79f713e472 100644
      if (where == "current") {
        params.targetBrowser = browser;
      } else {
-@@ -1071,6 +1448,7 @@ export class UrlbarParentController {
+@@ -1071,6 +1473,7 @@ export class UrlbarParentController {
        browser.focus();
      }
  
@@ -1321,7 +1346,7 @@ index ba254af0c6..79f713e472 100644
      try {
        this.browserWindow.openTrustedLinkIn(url, where, params);
      } catch (ex) {
-@@ -1079,9 +1457,10 @@ export class UrlbarParentController {
+@@ -1079,9 +1482,10 @@ export class UrlbarParentController {
        return {
          reverted: ex.result != Cr.NS_ERROR_LOAD_SHOWED_ERRORPAGE,
          browserId: browser.browserId,
@@ -1333,7 +1358,7 @@ index ba254af0c6..79f713e472 100644
    }
  
    /**
-@@ -1292,10 +1671,22 @@ export class UrlbarParentController {
+@@ -1292,10 +1696,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -1357,7 +1382,7 @@ index ba254af0c6..79f713e472 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +1723,7 @@ export class UrlbarParentController {
+@@ -1332,6 +1748,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -1365,7 +1390,7 @@ index ba254af0c6..79f713e472 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +1747,10 @@ export class UrlbarParentController {
+@@ -1355,6 +1772,10 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
@@ -1376,7 +1401,7 @@ index ba254af0c6..79f713e472 100644
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +1782,7 @@ export class UrlbarParentController {
+@@ -1386,7 +1807,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -1385,7 +1410,7 @@ index ba254af0c6..79f713e472 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +1790,11 @@ export class UrlbarParentController {
+@@ -1394,10 +1815,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -1398,7 +1423,7 @@ index ba254af0c6..79f713e472 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +1812,7 @@ export class UrlbarParentController {
+@@ -1415,7 +1837,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -1407,7 +1432,7 @@ index ba254af0c6..79f713e472 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +1834,7 @@ export class UrlbarParentController {
+@@ -1437,7 +1859,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -1416,7 +1441,7 @@ index ba254af0c6..79f713e472 100644
          break;
      }
    };
-@@ -1727,8 +2124,12 @@ export class TelemetryEvent {
+@@ -1727,8 +2149,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -1430,7 +1455,7 @@ index ba254af0c6..79f713e472 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +2144,7 @@ export class TelemetryEvent {
+@@ -1743,7 +2169,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -1439,7 +1464,7 @@ index ba254af0c6..79f713e472 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +2170,7 @@ export class TelemetryEvent {
+@@ -1769,7 +2195,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -1448,7 +1473,7 @@ index ba254af0c6..79f713e472 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +2181,13 @@ export class TelemetryEvent {
+@@ -1780,12 +2206,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -1464,7 +1489,7 @@ index ba254af0c6..79f713e472 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +2198,7 @@ export class TelemetryEvent {
+@@ -1796,7 +2223,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -1473,7 +1498,7 @@ index ba254af0c6..79f713e472 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +2266,16 @@ export class TelemetryEvent {
+@@ -1864,17 +2291,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -1495,7 +1520,7 @@ index ba254af0c6..79f713e472 100644
      );
    }
  
-@@ -2009,158 +2410,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2435,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -1654,7 +1679,7 @@ index ba254af0c6..79f713e472 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +2770,27 @@ export class TelemetryEvent {
+@@ -2521,17 +2795,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -1691,7 +1716,7 @@ index ba254af0c6..79f713e472 100644
      );
    }
  
-@@ -2548,14 +2807,19 @@ export class TelemetryEvent {
+@@ -2548,14 +2832,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -1717,7 +1742,7 @@ index ba254af0c6..79f713e472 100644
    }
  
    /**
-@@ -2581,39 +2845,4 @@ export class TelemetryEvent {
+@@ -2581,39 +2870,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -8601,10 +8626,10 @@ index 1e2660589b..5ae3ab4843 100644
    /*
 diff --git a/browser/components/urlbar/content/UrlbarBrowserState.mjs b/browser/components/urlbar/content/UrlbarBrowserState.mjs
 new file mode 100644
-index 0000000000..4fbd583d39
+index 0000000000..34460929de
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarBrowserState.mjs
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,139 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8681,6 +8706,14 @@ index 0000000000..4fbd583d39
 +
 +  preparePersistence(browser, facts) {
 +    return this.#prepare(browser, state => lazy.UrlbarSearchTermsPersistence.updateState(state, facts));
++  }
++
++  /** An observed edit preserves the active owned mode; it is not a mode setter. */
++  prepareEditInput(browser, value, observedMode) {
++    if (typeof value !== "string") throw new TypeError("Invalid browser input value");
++    const snapshot = this.snapshot(browser);
++    if (!UrlbarShared.deepEqual(snapshot.preview ?? snapshot.confirmed, observedMode)) return null;
++    return this.prepareInput(browser, value);
 +  }
 +
 +  /** Prepare input effects without mutating browser text or the committed mode. */
@@ -8947,10 +8980,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..ec1a916b62
+index 0000000000..7e0195af59
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,1678 @@
+@@ -0,0 +1,1705 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8983,6 +9016,7 @@ index 0000000000..ec1a916b62
 +  #isCurrent;
 +  #onUpdate;
 +  #edit = null;
++  #inputState = null;
 +  #closed = false;
 +  #completion = null;
 +  #autofill = null;
@@ -9029,6 +9063,9 @@ index 0000000000..ec1a916b62
 +
 +  get snapshot() { return this.#edit; }
 +
++  /** Last observed edit's committed browser effects; no write/dispatch authority. */
++  get inputState() { return this.#inputState; }
++
 +  #check() {
 +    if (this.#closed) throw new Error("Editor session is closed");
 +    if (!this.#isCurrent()) {
@@ -9064,10 +9101,16 @@ index 0000000000..ec1a916b62
 +    }
 +  }
 +
++  /**
++   * Accept a committed editor snapshot. Supplying browserState opts into owned
++   * browser text/persistence updates; userTypedValue is the observed prior
++   * browser value, including null. Composition commits input without querying.
++   * Rejection leaves the observed editor revision consumed; it cannot be retried.
++   */
 +  async edit(state, {
 +    revision, text, selectionStart, selectionEnd, selectionDirection = "none",
 +    inputType = "insertText", composing = false, pasteLength,
-+  }) {
++  }, browserState = null) {
 +    this.#check();
 +    if (!Number.isSafeInteger(revision) || revision <= (this.#edit?.revision ?? 0) ||
 +        typeof text != "string" || typeof inputType != "string" ||
@@ -9076,6 +9119,12 @@ index 0000000000..ec1a916b62
 +      throw new TypeError("Invalid or stale editor snapshot");
 +    }
 +    this.#validateSelection(text, selectionStart, selectionEnd, selectionDirection);
++    if (browserState !== null && (!browserState || typeof browserState !== "object" ||
++        (browserState.userTypedValue !== null && typeof browserState.userTypedValue !== "string"))) {
++      throw new TypeError("Invalid observed browser input state");
++    }
++    const priorTypedValue = browserState?.userTypedValue;
++    this.#inputState = null;
 +    this.#hiddenResults = null;
 +    this.#typedText = text;
 +    this.#searchMode = state.searchMode ? Object.freeze({ ...state.searchMode }) : null;
@@ -9099,7 +9148,18 @@ index 0000000000..ec1a916b62
 +    this.#modeExitRequery = null;
 +    this.#autofill = null;
 +    // Revoke old work before any new snapshot can be published.
++    const observedEdit = this.#edit;
 +    this.#queries.cancel();
++    if (this.#closed || !this.#isCurrent() || this.#edit !== observedEdit) throw new Error("Observed edit superseded");
++    let authorize = null;
++    if (browserState !== null) {
++      const current = () => !this.#closed && this.#isCurrent() && this.#edit === observedEdit;
++      const outcome = this.#queries.commitObservedInput(text, this.#searchMode, priorTypedValue, current);
++      if (!outcome || !current()) throw new Error("Observed input commit is stale");
++      this.#inputState = Object.freeze({ revision, userTypedValue: outcome.userTypedValue,
++        persistenceChanged: outcome.persistenceChanged, persistedSearchTerms: outcome.persistedSearchTerms });
++      authorize = outcome.authorize;
++    }
 +    if (composing) {
 +      this.#placeholder = null;
 +      return null;
@@ -9132,7 +9192,7 @@ index 0000000000..ec1a916b62
 +        return;
 +      }
 +      this.#publishQueryUpdate(update, { revision, text, allowAutofill });
-+    });
++    }, authorize);
 +  }
 +
 +
@@ -10631,10 +10691,10 @@ index 0000000000..ec1a916b62
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..affa1747ad
+index 0000000000..22f96717d5
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,845 @@
+@@ -0,0 +1,858 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11237,6 +11297,19 @@ index 0000000000..affa1747ad
 +    return this.#controller.parentController.commitIndependentModeState(this.#context.browserId,
 +      description.searchMode, { persistedSearchTerms: observation.persistedSearchTerms,
 +        engineId: description.engineId, modeEntry: observation.modeEntry }, current, onCommitted);
++  }
++
++  /** Commit observed typing without borrowing search-command semantics. */
++  commitObservedInput(value, searchMode, userTypedValue, isCurrent) {
++    this.#check();
++    const current = () => !this.#closed && this.#isCurrent() && isCurrent();
++    const parent = this.#controller.parentController;
++    const outcome = parent.commitIndependentEditState(this.#context.browserId, value, searchMode, userTypedValue, current);
++    if (!outcome?.applied || !outcome.current || !current()) return null;
++    this.#controller.userSelectionBehavior = "none";
++    const authority = parent.captureIndependentQueryAuthority(this.#context.browserId, outcome.stateToken, value);
++    if (!authority || !current()) return null;
++    return Object.freeze({ ...outcome, authorize: () => current() && authority() && current() });
 +  }
 +
 +  /** Record the admitted menu query's shared picked classification, before results complete. */

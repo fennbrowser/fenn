@@ -269,3 +269,18 @@ test('null-mode preservation establishes an empty owner receipt without touching
   assert.equal(owner.commit(browser,preserved.token),true);assert.equal(owner.isCommitted(browser,preserved.token),true);
   assert.equal(owner.snapshot(browser).persistedSearchTerms,false);assert.equal(browser.userTypedValue,'old');
 });
+
+
+test('observed edit preparation preserves matching mode and rejects mismatch before revoking authority',()=>{
+  const {owner,facts}=ownerFixture(),browser={},mode={source:1,isPreview:true};
+  let update=owner.prepareMode(browser,mode);owner.commit(browser,update.token);
+  update=owner.preparePersistence(browser,facts);owner.commit(browser,update.token);
+  assert.equal(owner.prepareEditInput(browser,'new',null),null);
+  assert.equal(owner.isCommitted(browser,update.token),true);
+  const prepared=owner.prepareEditInput(browser,'new',mode);
+  assert.equal(prepared.effects.userTypedValue,'new');assert.equal(prepared.effects.persistedSearchTerms,false);
+  assert.equal(owner.commit(browser,prepared.token),true);
+  assert.deepEqual({...owner.snapshot(browser).preview},mode);
+  assert.equal(owner.snapshot(browser).searchTerms,'chosen words');
+  assert.equal(browser.userTypedValue,undefined);
+});
