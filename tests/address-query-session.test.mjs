@@ -7157,19 +7157,19 @@ test('query-layer destination admission rejects copied, foreign, suppressed and 
 });
 
 
-async function backgroundSourceFixture({confirmedMode={source:5,isPreview:false,entry:'other'},restoreMode=true,background=true}={}){
-  const f=await oneOffSourceEffectsFixture(()=>{},{background}),browser={token:{},typed:'typed words',confirmed:confirmedMode},writes=[];
+async function backgroundSourceFixture({confirmedMode={source:5,isPreview:false,entry:'other'},restoreMode=true,background=true,pageValid=false}={}){
+  const f=await oneOffSourceEffectsFixture(()=>{},{background,pageValid}),browser={token:{},typed:'typed words',confirmed:confirmedMode},writes=[];
   const initial=browser.token;
   f.parent.describeIndependentOneOffSourceRestoration=()=>browser.token===initial&&browser.typed==='typed words'?
     {searchMode:browser.confirmed,restoreMode,userTypedValue:browser.typed,stateToken:initial}:null;
   f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{
     if(!current()||browser.token!==facts.expectedStateToken)return null;
-    browser.token={};browser.confirmed=mode;writes.push(mode);
+    browser.token={};browser.confirmed=mode;if(mode&&facts.modeEntry.pageProxyValid)browser.typed='';writes.push(mode);
     notify?.({browserId:id,searchMode:mode,userTypedValue:browser.typed,persistedSearchTerms:false});
     return {applied:true,current:current(),stateToken:browser.token,userTypedValue:browser.typed};
   };
   const receipt=f.editor.createOneOffSearchTabWithSourceEffects(f.command.token,{userTypedValue:'typed words',persistedSearchTerms:false});
-  const entry={untrimmedValue:'typed words',userTypedValue:'typed words',pageProxyValid:false,hasAutofillPlaceholder:false};
+  const entry={untrimmedValue:'typed words',userTypedValue:'typed words',pageProxyValid:pageValid,hasAutofillPlaceholder:false};
   const proposal=f.editor.beginBackgroundSourceRestoration(f.command.token,entry);
   return {...f,browser,writes,receipt,entry,proposal};
 }
@@ -7249,4 +7249,43 @@ test('background source formatting requires the exact restored display and metad
   const q=g.editor.beginBackgroundSourceRestoration(g.command.token,{...g.entry,hasAutofillPlaceholder:true});
   description={...description,value:'new display'};
   assert.equal(g.editor.commitBackgroundSourceRestoration(q.token,oneOffRestorationObservation(q)),null);assert.equal(g.writes.length,0);g.editor.close();
+});
+
+
+test('valid-page background sources clear text only when restoring a live confirmed mode',async()=>{
+  for(const kind of ['local','engine','absent','removed','inactive']){
+    const confirmedMode=kind==='engine'?{engineName:'Second',isPreview:false,entry:'other'}:kind==='removed'?{engineName:'Removed',isPreview:false,entry:'other'}:
+      ['absent','inactive'].includes(kind)?null:{source:5,isPreview:false,entry:'other'};
+    const f=await backgroundSourceFixture({confirmedMode,restoreMode:kind!=='inactive',pageValid:true}),p=f.proposal;
+    assert.ok(p);const clears=['local','engine'].includes(kind);
+    assert.equal(p.editorWrite?.text,clears?'':undefined);assert.equal(p.pageProxyValid,!clears);
+    const observation={...oneOffRestorationObservation(p),pageProxyValid:p.pageProxyValid};
+    const result=f.editor.commitBackgroundSourceRestoration(p.token,observation);
+    assert.equal(result.applied,true);assert.equal(result.modeRestored,kind!=='inactive');
+    assert.equal(f.editor.snapshot.text,clears?'':'typed words');assert.equal(f.browser.typed,clears?'':'typed words');
+    assert.equal(f.writes.length,kind==='inactive'?0:1);assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('valid-page restoration requires exact cleared text, caret, formatting and proxy observations before effects',async()=>{
+  const f=await backgroundSourceFixture({pageValid:true}),p=f.proposal,valid={...oneOffRestorationObservation(p),pageProxyValid:p.pageProxyValid};
+  for(const patch of [{text:'page address'},{selectionEnd:1},{pageProxyValid:true},{untrimmedValue:'page address'},
+    {protocolIsTrimmed:true},{wwwIsTrimmed:true},{valueIsTyped:true},{modeEntry:{...p.modeEntry,pageProxyValid:false}}]){
+    assert.equal(f.editor.commitBackgroundSourceRestoration(p.token,{...valid,...patch}),null);assert.equal(f.writes.length,0);
+  }
+  assert.equal(f.editor.commitBackgroundSourceRestoration(p.token,valid).applied,true);f.editor.close();
+});
+
+test('source page validity is pinned to the original command and valid-page clearing skips placeholder restoration',async()=>{
+  for(const pageValid of [false,true]){
+    const f=await backgroundSourceFixture({pageValid});
+    assert.equal(f.editor.beginBackgroundSourceRestoration(f.command.token,{...f.entry,pageProxyValid:!pageValid}),null);
+    f.parent.describeIndependentCompositionRestoration=()=>assert.fail('valid page queried placeholder restoration');
+    if(pageValid){
+      const p=f.editor.beginBackgroundSourceRestoration(f.command.token,{...f.entry,hasAutofillPlaceholder:true});
+      assert.equal(p.restoration,null);assert.equal(p.editorWrite.text,'');
+      assert.equal(f.editor.commitBackgroundSourceRestoration(p.token,oneOffRestorationObservation(p)).applied,true);
+    }
+    f.editor.close();
+  }
 });

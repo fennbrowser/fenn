@@ -9772,10 +9772,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..f602596c08
+index 0000000000..328f0154e6
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3082 @@
+@@ -0,0 +1,3084 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11744,23 +11744,25 @@ index 0000000000..f602596c08
 +        pageProxyValid: modeEntry.pageProxyValid, hasAutofillPlaceholder: modeEntry.hasAutofillPlaceholder,
 +        userTypedValue: modeEntry.userTypedValue });
 +      if (!modeEntry) throw new TypeError("Missing background source restoration facts");
-+      if (modeEntry.pageProxyValid || modeEntry.userTypedValue !== description.userTypedValue ||
-+          modeEntry.untrimmedValue !== description.userTypedValue) return null;
++      if (modeEntry.pageProxyValid !== description.pageProxyValid || modeEntry.userTypedValue !== description.userTypedValue ||
++          (!modeEntry.pageProxyValid && modeEntry.untrimmedValue !== description.userTypedValue)) return null;
 +      let restoration = null;
-+      if (description.searchMode && UrlbarSearchModeModel.modeEntryRestoresAutofill(
++      if (description.searchMode && !modeEntry.pageProxyValid && UrlbarSearchModeModel.modeEntryRestoresAutofill(
 +          modeEntry.hasAutofillPlaceholder, modeEntry.userTypedValue)) {
 +        restoration = this.#queries.describeCompositionRestoration(modeEntry);
 +        if (!restoration) return null;
 +      }
-+      const editorWrite = restoration ? Object.freeze({ text: restoration.value,
-+        selectionStart: restoration.value.length, selectionEnd: restoration.value.length, selectionDirection: "none",
-+        untrimmedValue: restoration.untrimmedValue, protocolIsTrimmed: restoration.protocolIsTrimmed,
-+        wwwIsTrimmed: restoration.wwwIsTrimmed, valueIsTyped: false }) : null;
++      const clearPageValue = !!description.searchMode && modeEntry.pageProxyValid;
++      const value = clearPageValue ? "" : restoration?.value;
++      const editorWrite = value === undefined ? null : Object.freeze({ text: value,
++        selectionStart: value.length, selectionEnd: value.length, selectionDirection: "none",
++        untrimmedValue: restoration?.untrimmedValue ?? "", protocolIsTrimmed: restoration?.protocolIsTrimmed ?? false,
++        wwwIsTrimmed: restoration?.wwwIsTrimmed ?? false, valueIsTyped: false });
 +      if (!current() || pending.proposal !== marker ||
 +          !UrlbarShared.deepEqual(description, this.#queries.describeBackgroundSourceRestoration(pending.receipt))) return null;
 +      const proposal = Object.freeze({ token: marker, commandToken, edit: pending.edit,
 +        searchMode: description.searchMode, restoreMode: description.restoreMode, modeEntry, restoration, editorWrite,
-+        pageProxyValid: false, oneOffSelected: false });
++        pageProxyValid: clearPageValue ? false : modeEntry.pageProxyValid, oneOffSelected: false });
 +      pending.proposal = proposal;
 +      pending.description = description;
 +      return proposal;
@@ -11790,7 +11792,7 @@ index 0000000000..f602596c08
 +    if (typeof persistedSearchTerms !== "boolean") throw new TypeError("Missing persisted-search observation");
 +    const expected = proposal.editorWrite ?? proposal.edit;
 +    if (text !== expected.text || selectionStart !== expected.selectionStart || selectionEnd !== expected.selectionEnd ||
-+        selectionDirection !== expected.selectionDirection || composing !== false || pageProxyValid !== false || oneOffSelected !== false ||
++        selectionDirection !== expected.selectionDirection || composing !== false || pageProxyValid !== proposal.pageProxyValid || oneOffSelected !== false ||
 +        !UrlbarShared.deepEqual(searchMode, proposal.searchMode) || !UrlbarShared.deepEqual(modeEntry, proposal.modeEntry) ||
 +        (proposal.editorWrite && (untrimmedValue !== expected.untrimmedValue || protocolIsTrimmed !== expected.protocolIsTrimmed ||
 +          wwwIsTrimmed !== expected.wwwIsTrimmed || valueIsTyped !== false)) || this.getBackgroundSourceRestoration(token) !== proposal) return null;
@@ -12860,10 +12862,10 @@ index 0000000000..f602596c08
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..33c5ba49c4
+index 0000000000..c81a0cb165
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1460 @@
+@@ -0,0 +1,1461 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13617,15 +13619,16 @@ index 0000000000..33c5ba49c4
 +    const searchMode = this.describeSearchModeRestoration(stored.searchMode);
 +    const engineId = searchMode?.engineName ? this.#controller.engineStore.getEngineByName(searchMode.engineName)?.id ?? null : null;
 +    return !record.attempted && record.prepared.isCurrent() ? Object.freeze({ ...stored,
-+      requestedSearchMode: stored.searchMode, searchMode, engineId }) : null;
++      requestedSearchMode: stored.searchMode, searchMode, engineId,
++      pageProxyValid: record.prepared.description.pageProxyValid }) : null;
 +  }
 +
 +  /** Consume background deselection once; a source without any mode needs no setter. */
 +  commitBackgroundSourceRestoration(receipt, description, modeEntry, restoration, observation, isCurrent, onCommitted = null) {
 +    const live = this.describeBackgroundSourceRestoration(receipt);
-+    if (!live || !UrlbarShared.deepEqual(live, description) || !modeEntry || modeEntry.pageProxyValid ||
-+        modeEntry.userTypedValue !== live.userTypedValue || modeEntry.untrimmedValue !== live.userTypedValue) return null;
-+    const needsRestoration = !!live.searchMode && UrlbarSearchModeModel.modeEntryRestoresAutofill(
++    if (!live || !UrlbarShared.deepEqual(live, description) || !modeEntry || modeEntry.pageProxyValid !== live.pageProxyValid ||
++        modeEntry.userTypedValue !== live.userTypedValue || (!modeEntry.pageProxyValid && modeEntry.untrimmedValue !== live.userTypedValue)) return null;
++    const needsRestoration = !!live.searchMode && !modeEntry.pageProxyValid && UrlbarSearchModeModel.modeEntryRestoresAutofill(
 +      modeEntry.hasAutofillPlaceholder, modeEntry.userTypedValue);
 +    if (!!restoration !== needsRestoration || (restoration && !UrlbarShared.deepEqual(restoration,
 +        this.describeCompositionRestoration(modeEntry)))) return null;
