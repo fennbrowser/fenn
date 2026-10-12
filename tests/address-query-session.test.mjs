@@ -3038,7 +3038,7 @@ test('staged activation cleans up before provider selection and requires exact o
 test('activation rejects unsupported destinations and non-activation events before cleanup',async()=>{
   const f=await activationSelectionFixture();
   assert.throws(()=>f.editor.beginNavigationActivation(1,f.q.id,f.result,{type:'mousemove',timeStamp:2},f.options),/Invalid/);
-  assert.equal(f.editor.beginNavigationActivation(1,f.q.id,f.result,{...f.event,where:'window'},f.options),null);
+  assert.equal(f.editor.beginNavigationActivation(1,f.q.id,f.result,{...f.event,where:'save'},f.options),null);
   assert.equal(f.calls.length,0);assert.ok(f.beginActivation());f.editor.close();
 });
 
@@ -9122,7 +9122,7 @@ function urlRevert(f){
 }
 
 test('ordinary URL and keyword new-tab activation restores source, records history once and opens each destination',async()=>{
-  for(const where of ['tab','tabshifted'])for(const type of ['URL','KEYWORD']){
+  for(const where of ['tab','tabshifted','window'])for(const type of ['URL','KEYWORD']){
     const f=await urlTabActivationFixture({where,type}),write=urlInput(f);
     assert.equal(write.phase,'input');assert.equal(write.value,type==='KEYWORD'?'kw words':'https://history.test/');
     assert.equal(f.editor.prepareOneOffExternalRevert(write.token,f.event,{persistedSearchTerms:false,focused:true}),null);
@@ -9154,7 +9154,7 @@ test('ordinary new-tab activation orders selection, history, engagement and noti
 });
 
 test('ordinary new-tab activation rejects other destinations, private results and mode results before any effect',async()=>{
-  const a=await urlTabActivationFixture({where:'window'});assert.equal(a.begin(),null);a.editor.close();
+  const a=await urlTabActivationFixture({where:'save'});assert.equal(a.begin(),null);a.editor.close();
   const b=await urlTabActivationFixture();b.result.payload.inPrivateWindow=true;assert.equal(b.begin(),null);b.editor.close();
   const c=await urlTabActivationFixture();c.sandbox.UrlbarContentUtils.willLoadInBackground=()=>true;
   assert.equal(c.begin(),null);assert.equal(c.calls.length,0);c.editor.close();
