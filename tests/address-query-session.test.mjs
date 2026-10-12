@@ -6992,12 +6992,15 @@ async function oneOffDestinationFixture(options={}){
   const f=await oneOffTabActivationFixture(options);
   const result=f.editor.activateOneOffSearchTab(f.activation.token),destination=result.destination;
   const destinationEngines=f.parent.child.engineStore.getEngines().map(engine=>({...engine}));
+  const sourceProposal=result.sourceDeselection;
+  const deselection=f.editor.acknowledgeOneOffSourceDeselection(sourceProposal.token,
+    {...sourceProposal.edit,searchMode:sourceProposal.searchMode,oneOffSelected:false});
   f.editor.close();
   const updates=[],editor=new f.sandbox.UrlbarEditSession({context:destination.context,isCurrent:destination.isCurrent,onUpdate:u=>updates.push(u)});
   const parent=f.parents.at(-1),observation={revision:1,text:destination.userTypedValue??'',selectionStart:0,
     selectionEnd:0,selectionDirection:'none',composing:false,pageProxyValid:false,searchMode:destination.searchMode};
   parent.initEngineStore=()=>parent.child.updateEngineStore('init',destinationEngines,0);
-  return {...f,source:f.editor,editor,destination,parent,updates,observation,owner:f,destinationEngines};
+  return {...f,source:f.editor,editor,destination,parent,updates,observation,owner:f,destinationEngines,deselection};
 }
 
 test('activated destinations adopt once into matching fresh editors and explicitly query with local or engine policy',async()=>{
@@ -7377,7 +7380,7 @@ test('foreground source deselection acknowledges exactly once after deliberate s
     assert.equal(f.editor.acknowledgeOneOffSourceDeselection(p.token,{...observed,...change}),null);
   assert.equal(f.editor.getOneOffSourceDeselection({...p.token}),null);
   const ack=f.editor.acknowledgeOneOffSourceDeselection(p.token,observed);
-  assert.equal(ack.acknowledged,true);assert.equal(ack.sourceDeselectionPending,false);assert.equal(ack.sourceModeRestorationPending,true);
+  assert.equal(ack.acknowledged,true);assert.equal(ack.sourceDeselectionPending,false);assert.equal(ack.modeRestorationPending,true);
   assert.equal(f.editor.acknowledgeOneOffSourceDeselection(p.token,observed),null);
   assert.equal(f.parent.started.length,1);assert.equal(f.getSelections(),1);f.editor.close();
 });
@@ -7393,6 +7396,43 @@ test('foreground source acknowledgment rejects closed, stale and reentrant clean
     if(mutation==='getter')Object.defineProperty(observed,'oneOffSelected',{get(){f.editor.close();return false;}});
     assert.equal(f.editor.acknowledgeOneOffSourceDeselection(p.token,observed),null,mutation);
     if(mutation!=='destination')assert.equal(result.destination.isReady(),true);
+    assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+
+test('foreground deselection hands restoration to the authentic adopted destination only after its query',async()=>{
+  for(const engine of [false,true]){
+    const f=await oneOffDestinationFixture({engine,pageValid:engine}),ack=f.deselection;
+    assert.equal(ack.modeRestorationBrowserId,18);assert.equal(ack.sourceBrowserId,17);
+    assert.equal('sourceModeRestorationPending' in ack,false);
+    assert.equal(f.editor.getOneOffDestinationRestoration(ack),null);
+    const p=f.editor.adoptOneOffDestination(f.destination,f.observation);
+    assert.equal(f.editor.getOneOffDestinationRestoration(ack),null);
+    const query=await f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode});
+    const restoration=f.editor.getOneOffDestinationRestoration(ack);
+    assert.ok(restoration);assert.equal(restoration.browserId,18);assert.equal(restoration.queryId,query.id);
+    assert.equal(restoration.searchMode,p.searchMode);assert.equal(restoration.engineId,p.engineId);
+    assert.equal(restoration.modeRestorationPending,true);assert.equal(restoration.startQuery,false);
+    assert.equal(Object.isFrozen(restoration),true);assert.equal(f.editor.getOneOffDestinationRestoration(ack),restoration);
+    assert.equal(f.editor.getOneOffDestinationRestoration({...ack}),null);assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('destination restoration descriptions reject foreign sessions and stale editor, query, engine or browser authority',async()=>{
+  for(const mutation of ['caret','cancel','ready','engine','foreign']){
+    const f=await oneOffDestinationFixture({engine:true,pageValid:true});
+    const p=f.editor.adoptOneOffDestination(f.destination,f.observation);
+    await f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode});
+    assert.ok(f.editor.getOneOffDestinationRestoration(f.deselection));
+    if(mutation==='caret')f.editor.select(1,1,1);
+    if(mutation==='cancel')f.editor.cancel();
+    if(mutation==='ready')f.owner.destinationReady=false;
+    if(mutation==='engine')f.parent.child.updateEngineStore('removed',{id:p.engineId});
+    if(mutation==='foreign'){
+      const other=new f.sandbox.UrlbarEditSession({context:f.destination.context,isCurrent:f.destination.isCurrent,onUpdate(){}});
+      assert.equal(other.getOneOffDestinationRestoration(f.deselection),null);other.close();
+    }else assert.equal(f.editor.getOneOffDestinationRestoration(f.deselection),null,mutation);
     assert.equal(f.parent.started.length,1);f.editor.close();
   }
 });

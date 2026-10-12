@@ -9798,10 +9798,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..d8c9c4daec
+index 0000000000..4356b90eb6
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3137 @@
+@@ -0,0 +1,3168 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9831,6 +9831,7 @@ index 0000000000..d8c9c4daec
 + */
 +export class UrlbarEditSession {
 +  static #oneOffDestinations = new WeakMap();
++  static #oneOffDeselections = new WeakMap();
 +  #context;
 +  #oneOffDestinationQuery = null;
 +  #queries;
@@ -11899,7 +11900,7 @@ index 0000000000..d8c9c4daec
 +        commandToken: pending.commandToken, edit: pending.edit, searchMode: pending.previousMode,
 +        sourceBrowserId: outcome.sourceBrowserId, targetBrowserId: outcome.targetBrowserId,
 +        oneOffSelected: false });
-+      this.#oneOffForegroundSource = { proposal: sourceDeselection, isCurrent: outcome.isSourceCleanupCurrent };
++      this.#oneOffForegroundSource = { proposal: sourceDeselection, isCurrent: outcome.isSourceCleanupCurrent, destination: outcome.destination };
 +    }
 +    return outcome ? Object.freeze({ ...outcome, token, commandToken: pending.commandToken, sourceDeselection }) : null;
 +  }
@@ -11924,9 +11925,15 @@ index 0000000000..d8c9c4daec
 +        selectionEnd !== edit.selectionEnd || selectionDirection !== edit.selectionDirection || composing !== edit.composing ||
 +        oneOffSelected !== false || !UrlbarShared.deepEqual(searchMode, proposal.searchMode) ||
 +        this.getOneOffSourceDeselection(token) !== proposal) return null;
++    const { destination } = this.#oneOffForegroundSource;
 +    this.#oneOffForegroundSource = null;
-+    return Object.freeze({ acknowledged: true, token, sourceBrowserId: proposal.sourceBrowserId,
-+      targetBrowserId: proposal.targetBrowserId, sourceDeselectionPending: false, sourceModeRestorationPending: true });
++    // The retained setter restores the currently selected browser, which is now
++    // the destination. Never direct this continuation back to the old source.
++    const receipt = Object.freeze({ acknowledged: true, token, sourceBrowserId: proposal.sourceBrowserId,
++      targetBrowserId: proposal.targetBrowserId, sourceDeselectionPending: false,
++      modeRestorationBrowserId: proposal.targetBrowserId, modeRestorationPending: true });
++    UrlbarEditSession.#oneOffDeselections.set(receipt, { destination, proposal: null });
++    return receipt;
 +  }
 +
 +  /** Adopt observed target state once into a fresh editor; no input, mode write or query is synthesized. */
@@ -11952,6 +11959,8 @@ index 0000000000..d8c9c4daec
 +    this.#edit = Object.freeze({ revision, text, selectionStart, selectionEnd, selectionDirection,
 +      selectionRevision: 0, composing: false });
 +    this.#identityEdit = this.#edit;
++    record.editor = this;
++    record.edit = this.#edit;
 +    const proposal = Object.freeze({ token: Object.freeze({}), edit: this.#edit, searchMode: this.#searchMode,
 +      allowAutofill: record.allowAutofill, engineId: record.engineId, browserId: context.browserId, documentId: destination.documentId });
 +    this.#oneOffDestinationQuery = { proposal, destination };
@@ -12005,8 +12014,30 @@ index 0000000000..d8c9c4daec
 +      this.#searchMode === proposal.searchMode && !this.#hiddenResults && pending.destination.isReady() &&
 +      this.#queries.isDestinationModeCurrent(proposal.searchMode, proposal.engineId);
 +    const onUpdate = update => this.#publishQueryUpdate(update, { revision, text, allowAutofill });
-+    return pending.admission ? this.#queries.queryDestination(pending.admission, onUpdate, authorize)
-+      : this.#queries.query(queryState, { searchString: text, allowAutofill }, onUpdate, authorize);
++    const query = await (pending.admission ? this.#queries.queryDestination(pending.admission, onUpdate, authorize)
++      : this.#queries.query(queryState, { searchString: text, allowAutofill }, onUpdate, authorize));
++    if (authorize() && this.#queries.ownsQuery(query.id)) {
++      UrlbarEditSession.#oneOffDestinations.get(pending.destination).queryId = query.id;
++    }
++    return query;
++  }
++
++  /** Describe post-query restoration for the selected destination, never the old source. */
++  getOneOffDestinationRestoration(receipt) {
++    this.#check();
++    const handoff = UrlbarEditSession.#oneOffDeselections.get(receipt);
++    if (!handoff) return null;
++    const { destination } = handoff, record = UrlbarEditSession.#oneOffDestinations.get(destination);
++    const current = () => !this.#closed && this.#isCurrent() && record?.editor === this &&
++      record.edit === this.#edit && !this.#hiddenResults && this.#searchMode === destination.searchMode &&
++      !!record.queryId && this.#queries.ownsQuery(record.queryId) && destination.isReady() &&
++      this.#queries.isDestinationModeCurrent(destination.searchMode, record.engineId);
++    if (!current()) return null;
++    if (!handoff.proposal) handoff.proposal = Object.freeze({ token: Object.freeze({}), edit: this.#edit,
++      sourceBrowserId: receipt.sourceBrowserId, browserId: destination.context.browserId,
++      documentId: destination.documentId, queryId: record.queryId, searchMode: destination.searchMode,
++      engineId: record.engineId, modeRestorationPending: true, startQuery: false });
++    return current() ? handoff.proposal : null;
 +  }
 +
 +  /** Propose the current-tab mode setter before its separate startQuery step. */
