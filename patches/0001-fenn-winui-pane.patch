@@ -10146,10 +10146,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..a14a5f4ffa
+index 0000000000..9e5cf0cc20
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,4197 @@
+@@ -0,0 +1,4223 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14099,6 +14099,32 @@ index 0000000000..a14a5f4ffa
 +      !request.unsupported && request.search === null ? request : null;
 +  }
 +
++  /** A provider `search()` restart, current against the live editor; it is driven as a search command. */
++  getRestartSearchRequest(token) {
++    this.#check();
++    const request = this.#restartRequest;
++    return request && request.token === token && request.edit === this.#edit && !this.#edit.composing &&
++      !request.unsupported && request.search !== null && !request.startQuery && request.value === null
++      ? request : null;
++  }
++
++  /**
++   * Hand a provider's `search()` restart to the ordinary search-command flow: the proposal this
++   * returns is acknowledged, committed and requeried exactly like a search-button command.
++   */
++  async beginRestartSearchCommand(token, { pageProxyValid, modeEntry } = {}) {
++    this.#check();
++    const request = this.getRestartSearchRequest(token);
++    if (!request || typeof pageProxyValid !== "boolean") return null;
++    const { search } = request;
++    const engineId = search.engineName === null ? null : this.#queries.engineIdForName(search.engineName);
++    if (search.engineName !== null && engineId === null) return null;
++    if (this.#restartRequest !== request) return null;
++    this.#restartRequest = null;
++    return this.beginSearchCommand(request.edit.revision, search.value,
++      { engineId, searchModeEntry: search.entry, pageProxyValid, modeEntry });
++  }
++
 +  /**
 +   * Apply a provider-requested value and/or start its requested query once the host has
 +   * written the value. Search-mode restarts and unsupported options are never acknowledged.
@@ -14349,10 +14375,10 @@ index 0000000000..a14a5f4ffa
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..d1b4665d95
+index 0000000000..587eabdcf9
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,2168 @@
+@@ -0,0 +1,2184 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14487,12 +14513,21 @@ index 0000000000..d1b4665d95
 +        if (options.searchString !== undefined) pending.value = options.searchString;
 +      }
 +    } else {
-+      const engine = call.options?.searchEngine;
-+      if (text(call.value) && typeof engine?.name === "string") {
-+        pending.search = Object.freeze({ value: call.value, engineName: engine.name,
-+          aliases: Object.freeze([...(engine.aliases ?? [])].filter(alias => typeof alias === "string")) });
-+      } else {
++      // input.search(): a value and, optionally, an engine and mode entry. The host
++      // drives it through the ordinary search-command handoff.
++      const options = call.options ?? {};
++      const engine = options.searchEngine, entry = options.searchModeEntry;
++      const known = ["searchEngine", "searchModeEntry", "focus", "startQuery"];
++      if (!text(call.value) || pending.startQuery || pending.value !== null || pending.search !== null ||
++          Object.keys(options).some(key => !known.includes(key) && options[key] !== undefined) ||
++          options.startQuery === false ||
++          (engine !== undefined && (typeof engine?.name !== "string" || !engine.name)) ||
++          (entry !== undefined && !UrlbarShared.SEARCH_MODE_ENTRY.has(entry))) {
 +        pending.unsupported = true;
++      } else {
++        pending.search = Object.freeze({ value: call.value, engineName: engine?.name ?? null,
++          aliases: Object.freeze([...(engine?.aliases ?? [])].filter(alias => typeof alias === "string")),
++          entry: entry ?? null });
 +      }
 +    }
 +    this.#restartRequest = pending;
@@ -15247,6 +15282,13 @@ index 0000000000..d1b4665d95
 +      this.#endingEngagement = false; this.#flushRestart();
 +      if (details.isSessionOngoing && current()) this.#engagementActive = true;
 +    }
++  }
++
++  /** The live engine id for a provider-supplied engine name; null when unknown or not initialized. */
++  engineIdForName(name) {
++    this.#check();
++    const store = this.#controller.engineStore;
++    return typeof name === "string" && name && store.initialized ? store.getEngineByName(name)?.id ?? null : null;
 +  }
 +
 +  /** Pin the engine by identity across separate editor and browser acknowledgments. */

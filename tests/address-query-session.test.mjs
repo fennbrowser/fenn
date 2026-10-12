@@ -9868,6 +9868,63 @@ test('published visible results receive row indexes that telemetry uses to find 
   assert.equal(f.result.rowIndex,0);f.editor.close();
 });
 
+const searchRestartRequests=f=>f.requests.filter(r=>r.kind==='restart-query');
+
+test('provider search restarts run through the ordinary search-command flow after host acknowledgment',async()=>{
+  const f=await restartFixture(port=>{
+    port.search('@e words',{searchEngine:{name:'Engine',aliases:['@e']},searchModeEntry:'oneoff',focus:true});
+  });
+  f.parent.child.updateEngineStore('changed',{id:'engine',name:'Engine',aliases:['@e'],isGeneralPurposeEngine:true},-1);
+  f.run({command:'opt_in'});
+  const [request]=searchRestartRequests(f);
+  assert.ok(request);assert.equal(request.search.value,'@e words');assert.equal(request.search.engineName,'Engine');
+  assert.equal(request.search.entry,'oneoff');assert.equal(request.startQuery,false);
+  assert.equal(f.editor.getRestartRequest(request.token),null);
+  assert.equal(f.editor.getRestartSearchRequest(request.token),request);
+  assert.equal(await f.editor.acknowledgeRestartQuery(request.token,f.observe(request.edit),f.state),null);
+  assert.equal(await f.editor.beginRestartSearchCommand(request.token,{}),null);
+  const proposal=await f.editor.beginRestartSearchCommand(request.token,{pageProxyValid:false});
+  assert.ok(proposal);assert.equal(proposal.searchMode.engineName,'Engine');assert.equal(proposal.value,'words');
+  assert.equal(proposal.changeSearchMode,true);assert.equal(proposal.engineId,'engine');
+  assert.equal(f.editor.getRestartSearchRequest(request.token),null);
+  assert.equal(await f.editor.beginRestartSearchCommand(request.token,{pageProxyValid:false}),null);
+  assert.equal(f.editor.acknowledgeSearchCommand(proposal.token,{searchMode:proposal.searchMode,text:proposal.value,
+    selectionStart:proposal.selectionStart,selectionEnd:proposal.selectionEnd,selectionDirection:proposal.selectionDirection,
+    modeEntry:proposal.modeEntry,pageProxyValid:proposal.pageProxyValid}),true);
+  f.editor.close();
+});
+
+test('provider search restarts without an engine use the token policy and entry defaults',async()=>{
+  const f=await restartFixture(port=>{port.search('^ command words');});
+  f.run({command:'opt_in'});
+  const [request]=searchRestartRequests(f);
+  assert.equal(request.search.engineName,null);assert.equal(request.search.entry,null);
+  const proposal=await f.editor.beginRestartSearchCommand(request.token,{pageProxyValid:false});
+  assert.ok(proposal);assert.equal(proposal.changeSearchMode,true);assert.ok(proposal.searchMode.source);
+  assert.equal(proposal.value,'command words');f.editor.close();
+});
+
+test('provider search restarts are refused for unknown engines, mixed calls, bad options and stale editors',async()=>{
+  const unknown=await restartFixture(port=>{port.search('words',{searchEngine:{name:'Missing',aliases:[]}});});
+  unknown.run({command:'opt_in'});
+  const [missing]=searchRestartRequests(unknown);
+  assert.equal(await unknown.editor.beginRestartSearchCommand(missing.token,{pageProxyValid:false}),null);
+  assert.equal(unknown.editor.getRestartSearchRequest(missing.token),missing,'a refused begin does not consume the request');
+  unknown.editor.close();
+  for(const call of [port=>port.search('words',{startQuery:false}),port=>port.search('words',{searchModeEntry:'nonsense'}),
+    port=>port.search('words',{unknown:true}),port=>port.search(5),port=>port.search('words',{searchEngine:{}}),
+    port=>{port.startQuery({});port.search('words');},port=>{port.setValue('x');port.search('words');}]){
+    const f=await restartFixture(call);f.run({command:'opt_in'});
+    const [bad]=searchRestartRequests(f);
+    assert.ok(bad);
+    assert.equal(f.editor.getRestartSearchRequest(bad.token),null);
+    assert.equal(await f.editor.beginRestartSearchCommand(bad.token,{pageProxyValid:false}),null);f.editor.close();
+  }
+  const stale=await restartFixture(port=>{port.search('^ words');});stale.run({command:'opt_in'});
+  const [request]=searchRestartRequests(stale);stale.editor.select(1,1,1);
+  assert.equal(await stale.editor.beginRestartSearchCommand(request.token,{pageProxyValid:false}),null);stale.editor.close();
+});
+
 test('private opener checks restored source again after preparation and focus callbacks',()=>{
   for(const stage of ['prepare','focus']){
     const f=privateParentFixture(),token=f.p.prepareExternalSearchLoad(f.privateData,f.stateToken);
