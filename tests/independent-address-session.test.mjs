@@ -28,10 +28,11 @@ function load(){
     activateTipButton(request){calls.push(['super.tip',request]);return 'retained-tip';}
     nativeKeywordResult(result){return result.kind==='keyword';}
     nativeOmniboxResult(result){return result.kind==='omnibox';}
+    nativeModeResult(result){return result.kind==='mode';}
     updateSelection(request){calls.push(['super.updateSelection',request]);return {status:'selected'};}
     captureAutofill(active){calls.push(['super.capture']);}
   }
-  const context=vm.createContext({console,ChromeUtils:{importESModule:()=>({UrlbarEditSession:class {}})}});
+  const context=vm.createContext({console,ChromeUtils:{importESModule:()=>({UrlbarEditSession:class {},independentUrlbarBrowserState:{snapshot:()=>({persistedSearchTerms:false})}})}});
   const source=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIIndependentUrlbarSession.sys.mjs',import.meta.url),'utf8')
     .replace(/^import .*;$/m,'').replace('export class WinUIIndependentUrlbarSession','this.Session = class WinUIIndependentUrlbarSession')
     .replace('extends WinUIUrlbarSession','extends Base');
@@ -48,7 +49,8 @@ function fixture({visible=true,page='https://page.test/'}={}){
   const inputField={value:'typed',selectionStart:5,selectionEnd:5,selectionDirection:'none',
     setSelectionRange(start,end,direction='none'){this.selectionStart=start;this.selectionEnd=end;this.selectionDirection=direction;}};
   const input={view,inputField,controller:{visibleResults:[]},untrimmedValue:'typed',
-    setNativeInputValue(v){this.inputField.value=v;calls.push(['native-value',v]);},handleRevert(){calls.push(['revert']);}};
+    setNativeInputValue(v){this.inputField.value=v;calls.push(['native-value',v]);},handleRevert(){calls.push(['revert']);},
+    searchMode:{engineName:'Held'},mirrorSearchMode(mode,browser){calls.push(['mirror',mode,browser]);}};
   const window={gBrowser:{selectedBrowser:browser,selectedTab:{isEmpty:false,userContextId:0}},gURLBar:input,
     KeyboardEvent:class {constructor(type,init){this.type=type;Object.assign(this,init);}},performance:{now:()=>1},
     windowGlobalChild:{getActor:()=>({})},gWinUIPane:{addressFallback(){calls.push(['address-fallback']);}}};
@@ -78,6 +80,12 @@ function fixture({visible=true,page='https://page.test/'}={}){
       selectionDirection:'none',searchMode:null,pageProxyValid:false};},
     getRestartRequest:token=>token.proposal??null,
     acknowledgeRestartQuery:async(token,o,state)=>{calls.push(['restart',o,state]);return token.restarted===false?null:{id:7};},
+    beginResultModeApplication:(...a)=>{calls.push(['mode-begin',a[2],a[3]]);return editor.modeProposal===undefined?{token:{},value:'@',
+      selectionStart:1,selectionEnd:1,selectionDirection:'none',searchMode:{engineName:'E',isPreview:false},modeEntry:undefined,
+      pageProxyValid:undefined}:editor.modeProposal;},
+    acknowledgeResultModeApplication:(token,o)=>{calls.push(['mode-ack',o]);return editor.modeAck!==false;},
+    commitAcknowledgedModeState:(token,o)=>{calls.push(['mode-commit',o]);return editor.modeCommit===undefined?{applied:true}:editor.modeCommit;},
+    requeryAfterModeApplication:async(token,state)=>{calls.push(['mode-requery',state]);return {id:12};},
     getCompletion:token=>token.proposal,
     acknowledgeCompletion:(token,write)=>{calls.push(['ack',write]);return token.accept!==false;},
     observeAutofillSelection:(...a)=>{calls.push(['observe',...a]);return {confirmed:editor.confirms===true};},
@@ -425,4 +433,51 @@ test('provider removals and their acknowledgment text reach the inherited row bu
   const other=fixture();
   other.s.onEditorPresentationRequest({kind:'remove-result',queryId:99,resultId:11});
   assert.equal(other.calls.some(c=>c[0]==='removed'),false);
+});
+
+test('a mode row commits its mode, mirrors it and restarts the query in that mode',async()=>{
+  const f=fixture();f.result.kind='mode';f.s.active.rows[0].modeDocument=2;f.s.editId=6;f.s.modeApplied=0;
+  assert.equal(f.s.activate(1,f.row.id,{}),'activated');
+  assert.equal(f.input.inputField.value,'@');
+  const begin=f.calls.find(c=>c[0]==='mode-begin');
+  assert.equal(begin[2].startQuery,true);assert.equal(begin[2].checkValue,false);assert.ok(begin[2].activation.event);
+  assert.equal(JSON.stringify(f.calls.find(c=>c[0]==='mode-commit')[1]),JSON.stringify({persistedSearchTerms:false}));
+  assert.equal(f.s.modeQueryRestart.text,'@');assert.equal(f.s.modeQueryRestart.editId,6);
+  assert.equal(f.s.modeApplied,1);assert.deepEqual([...f.s.nativeVisible],[]);
+  await new Promise(r=>setTimeout(r,0));
+  const requery=f.calls.find(c=>c[0]==='mode-requery')[1];
+  assert.equal(requery.searchMode.engineName,'E');
+  f.s.onEditorUpdate({kind:'first-result',query:{id:88}});
+  assert.ok(f.calls.some(c=>c[0]==='started'&&c[1]===88),'the mode query rebinds the edit');
+});
+
+test('mode state committed by the editor is mirrored into the original input for the selected browser only',()=>{
+  const f=fixture();
+  f.s.onEditorModeState({kind:'mode-state-changed',browserId:7,searchMode:{engineName:'E'}});
+  assert.equal(f.calls.find(c=>c[0]==='mirror')[1].engineName,'E');
+  const other=fixture();
+  other.s.onEditorModeState({kind:'mode-state-changed',browserId:99,searchMode:{engineName:'E'}});
+  other.s.onEditorModeState({kind:'something-else',browserId:7});
+  assert.equal(other.calls.some(c=>c[0]==='mirror'),false);
+});
+
+test('mode rejections fall back, restore the typed text and keep the stale-row guards',()=>{
+  const last=f=>f.s.constructor.counters.fallbacks.at(-1);
+  const none=fixture();none.result.kind='mode';none.s.active.rows[0].modeDocument=2;none.editor.modeProposal=null;
+  assert.equal(none.s.activate(1,none.row.id,{}),'firefox-fallback');assert.equal(last(none),'unsupported-mode');
+  const rejected=fixture();rejected.result.kind='mode';rejected.s.active.rows[0].modeDocument=2;rejected.editor.modeAck=false;
+  assert.equal(rejected.s.activate(1,rejected.row.id,{}),'firefox-fallback');assert.equal(last(rejected),'mode-rejected');
+  assert.equal(rejected.input.inputField.value,'typed');
+  const refused=fixture();refused.result.kind='mode';refused.s.active.rows[0].modeDocument=2;refused.editor.modeCommit=null;
+  assert.equal(refused.s.activate(1,refused.row.id,{}),'firefox-fallback');assert.equal(last(refused),'mode-commit-rejected');
+  assert.equal(refused.s.modeQueryRestart??null,null);
+  const wrongDocument=fixture();wrongDocument.result.kind='mode';wrongDocument.s.active.rows[0].modeDocument=9;
+  assert.equal(wrongDocument.s.activate(1,wrongDocument.row.id,{}),'stale');
+});
+
+test('edits carry the input search mode so a confirmed mode survives typing',async()=>{
+  const f=fixture();let state=null;
+  f.editor.edit=async s=>{state=s;return null;};
+  await f.s.query('abc',null,{composing:false,selectionStart:3,selectionEnd:3,inputType:'insertText'});
+  assert.equal(state.searchMode.engineName,'Held');
 });
