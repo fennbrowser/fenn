@@ -6248,3 +6248,138 @@ test('one-off malformed observations and engine initialization failures do not l
   store.init=init;const p=await f.editor.beginOneOffCommand(1,f.query.id,'engine:default',oneOffFacts());
   assert.equal(f.editor.getOneOffCommand(p.token),p);f.editor.close();
 });
+
+
+async function oneOffModeFixture({pageValid=false,placeholder=false,engine=true}={}){
+  const f=await oneOffCommandFixture({browserId:17}),calls=[],notifications=[];
+  const entry={untrimmedValue:f.editor.snapshot.text,pageProxyValid:pageValid,
+    hasAutofillPlaceholder:placeholder,userTypedValue:placeholder?'https://www.example.test/':'typed words'};
+  f.parent.describeIndependentCompositionRestoration=()=>f.restoration;
+  f.restoration=Object.freeze({value:'example.test',untrimmedValue:'https://www.example.test/',
+    protocolIsTrimmed:true,wwwIsTrimmed:true,valueIsTyped:false,pageProxyValid:false,formatPolicy:{trimURLs:true}});
+  f.parent.commitIndependentModeState=(browserId,mode,observation,current,onCommitted)=>{
+    if(!current())return null;
+    calls.push({browserId,mode,observation,current});
+    onCommitted?.({browserId,searchMode:mode,persistedSearchTerms:false,userTypedValue:entry.untrimmedValue});
+    return {applied:true,stateToken:{},engineUsageNotified:!!observation.engineId};
+  };
+  const command=await f.editor.beginOneOffCommand(1,f.query.id,engine?'engine:default':`local:${f.local.restrict}`,
+    oneOffFacts({pageProxyValid:pageValid}));
+  const proposal=f.editor.beginOneOffModeApplication(command.token,entry);
+  return {...f,entry,command,proposal,calls,notifications};
+}
+function oneOffModeObservation(p){return {...p.edit,...p.editorWrite,composing:false,searchMode:p.searchMode,
+  modeEntry:p.modeEntry,pageProxyValid:false};}
+
+test('current-tab one-off mode acknowledgment preserves exact text/caret or applies page/autofill writes once',async()=>{
+  for(const pageValid of [false,true])for(const placeholder of [false,true])for(const engine of [false,true]){
+    const f=await oneOffModeFixture({pageValid,placeholder,engine}),p=f.proposal,before=f.parent.started.length;
+    assert.ok(p);assert.equal(p.searchMode.isPreview,true);
+    assert.equal(p.editorWrite?.text,pageValid?'':placeholder?'example.test':undefined);
+    assert.equal(f.editor.commitAcknowledgedOneOffMode(p.token,{persistedSearchTerms:false}),null);
+    const observed=oneOffModeObservation(p);
+    assert.equal(f.editor.acknowledgeOneOffModeApplication(p.token,observed),true);
+    assert.equal(f.editor.acknowledgeOneOffModeApplication(p.token,observed),false);
+    assert.equal(f.editor.getOneOffCommand(f.command.token),null);
+    assert.equal(f.editor.snapshot.text,observed.text);assert.equal(f.calls.length,0);
+    const outcome=f.editor.commitAcknowledgedOneOffMode(p.token,{persistedSearchTerms:false});
+    assert.equal(outcome.applied,true);assert.equal(f.calls.length,1);
+    assert.equal(f.calls[0].browserId,17);assert.equal(f.calls[0].observation.modeEntry,p.modeEntry);
+    assert.equal(f.calls[0].observation.engineId,engine?'default':null);
+    assert.equal(f.editor.commitAcknowledgedOneOffMode(p.token,{persistedSearchTerms:false}),null);
+    assert.equal(f.parent.started.length,before);f.editor.close();
+  }
+});
+
+test('one-off mode acknowledgment rejects inexact mode, editor, formatting and page observations',async()=>{
+  const f=await oneOffModeFixture({placeholder:true}),p=f.proposal,valid=oneOffModeObservation(p);
+  for(const patch of [{text:'wrong'},{selectionStart:0},{selectionDirection:'backward'},{composing:true},
+    {pageProxyValid:true},{searchMode:{...p.searchMode,isPreview:false}},{modeEntry:{...p.modeEntry,userTypedValue:'other'}},
+    {untrimmedValue:'wrong'},{protocolIsTrimmed:false},{wwwIsTrimmed:false},{valueIsTyped:true}]){
+    assert.equal(f.editor.acknowledgeOneOffModeApplication(p.token,{...valid,...patch}),false);
+    assert.equal(f.editor.getOneOffModeApplication(p.token),p);
+  }
+  assert.equal(f.editor.acknowledgeOneOffModeApplication(p.token,valid),true);f.editor.close();
+});
+
+test('one-off mode handoff rejects new-tab and immediate navigation plans and mismatched pre-mode facts',async()=>{
+  const f=await oneOffCommandFixture({browserId:17}),entry={untrimmedValue:'typed words',pageProxyValid:false,
+    hasAutofillPlaceholder:false,userTypedValue:'typed words'};
+  for(const facts of [oneOffFacts({shiftKey:true}),oneOffFacts({keyboardAlt:true,pageProxyValid:true})]){
+    const p=await f.editor.beginOneOffCommand(1,f.query.id,'engine:default',facts);
+    assert.equal(f.editor.beginOneOffModeApplication(p.token,entry),null);
+  }
+  const p=await f.editor.beginOneOffCommand(1,f.query.id,'engine:default',oneOffFacts());
+  assert.throws(()=>f.editor.beginOneOffModeApplication(p.token,null),/Missing/);
+  assert.throws(()=>f.editor.beginOneOffModeApplication(p.token,{...entry,hasAutofillPlaceholder:'yes'}),/Invalid/);
+  assert.equal(f.editor.beginOneOffModeApplication(p.token,{...entry,pageProxyValid:true}),null);f.editor.close();
+});
+
+test('acknowledged one-off modes cannot commit after editor, popup or eligibility changes',async()=>{
+  for(const mutation of ['caret','cancel','popup','engine','pref','new-command','scope']){
+    const f=await oneOffModeFixture(),p=f.proposal;
+    assert.equal(f.editor.acknowledgeOneOffModeApplication(p.token,oneOffModeObservation(p)),true);
+    if(mutation==='caret')f.editor.select(1,0,0);
+    if(mutation==='cancel')f.editor.cancel();
+    if(mutation==='popup'){f.editor.publishPresentation(1,f.query.id,[],false);f.editor.publishPresentation(1,f.query.id,[],true);}
+    if(mutation==='engine')f.parent.child.updateEngineStore('removed',{id:'default'});
+    if(mutation==='pref')f.prefs['scotchBonnet.disableOneOffs']=true;
+    if(mutation==='new-command')await f.editor.beginOneOffCommand(1,f.query.id,'engine:second',oneOffFacts());
+    if(mutation==='scope'){f.loseScope();assert.throws(()=>f.editor.commitAcknowledgedOneOffMode(p.token,{persistedSearchTerms:false}),/scope changed/);}
+    else assert.equal(f.editor.commitAcknowledgedOneOffMode(p.token,{persistedSearchTerms:false}),null,mutation);
+    assert.equal(f.calls.length,0);f.editor.close();
+  }
+});
+
+test('autofill formatting changes revoke one-off application and acknowledged mode state',async()=>{
+  for(const acknowledged of [false,true]){
+    const f=await oneOffModeFixture({placeholder:true}),p=f.proposal;
+    if(acknowledged)f.editor.acknowledgeOneOffModeApplication(p.token,oneOffModeObservation(p));
+    f.parent.describeIndependentCompositionRestoration=()=>({...p.restoration,value:'new formatting'});
+    if(acknowledged)assert.equal(f.editor.commitAcknowledgedOneOffMode(p.token,{persistedSearchTerms:false}),null);
+    else assert.equal(f.editor.getOneOffModeApplication(p.token),null);
+    assert.equal(f.calls.length,0);f.editor.close();
+  }
+});
+
+test('reentrant mode-entry and host acknowledgment getters cannot revive or overwrite another proposal',async()=>{
+  const f=await oneOffModeFixture();let inner;
+  const entry={...f.entry,get untrimmedValue(){inner=f.editor.beginOneOffModeApplication(f.command.token,f.entry);return f.entry.untrimmedValue;}};
+  assert.equal(f.editor.beginOneOffModeApplication(f.command.token,entry),null);
+  assert.equal(f.editor.getOneOffModeApplication(inner.token),inner);
+  const observation={...oneOffModeObservation(inner),get text(){f.editor.select(1,0,0);return inner.edit.text;}};
+  assert.equal(f.editor.acknowledgeOneOffModeApplication(inner.token,observation),false);f.editor.close();
+});
+
+test('one-off browser commit consumes before callbacks, exceptions and changed persistence observations',async()=>{
+  for(const kind of ['reentry','throw','getter']){
+    const f=await oneOffModeFixture(),p=f.proposal;
+    f.editor.acknowledgeOneOffModeApplication(p.token,oneOffModeObservation(p));
+    const commit=f.parent.commitIndependentModeState;
+    f.parent.commitIndependentModeState=(...args)=>{
+      assert.equal(f.editor.commitAcknowledgedOneOffMode(p.token,{persistedSearchTerms:false}),null);
+      if(kind==='throw')throw Error('setter failed');return commit(...args);
+    };
+    assert.throws(()=>f.editor.commitAcknowledgedOneOffMode(p.token,{}),/Missing/);
+    if(kind==='throw')await assert.rejects(async()=>f.editor.commitAcknowledgedOneOffMode(p.token,{persistedSearchTerms:false}),/setter failed/);
+    else if(kind==='getter')assert.equal(f.editor.commitAcknowledgedOneOffMode(p.token,{get persistedSearchTerms(){f.editor.select(1,0,0);return false;}}),null);
+    else assert.equal(f.editor.commitAcknowledgedOneOffMode(p.token,{persistedSearchTerms:false}).applied,true);
+    assert.equal(f.editor.commitAcknowledgedOneOffMode(p.token,{persistedSearchTerms:false}),null);f.editor.close();
+  }
+});
+
+
+test('one-off query-layer commits reject forged and cross-session plans and consume their own plan once',async()=>{
+  const f=fixture({browserId:17});await f.parent.child.engineStore.init();oneOffStore(f,{second:true});
+  const q=await f.session.query({}, {searchString:'words'});f.session.publishPresentation(q.id,[],true);
+  const prepared=await f.session.prepareOneOffCommand(q.id,'engine:default','words',oneOffFacts());
+  const entry={untrimmedValue:'words',pageProxyValid:false,hasAutofillPlaceholder:false,userTypedValue:'words'};
+  let writes=0;f.parent.commitIndependentModeState=()=>{writes++;return {applied:true};};
+  const args=[entry,null,{persistedSearchTerms:false},()=>true];
+  assert.equal(f.session.commitOneOffMode({...prepared},...args),null);
+  const other=new f.sandbox.UrlbarQuerySession({context:f.context,isCurrent:()=>true});
+  assert.equal(other.commitOneOffMode(prepared,...args),null);
+  assert.equal(f.session.commitOneOffMode(prepared,...args).applied,true);
+  assert.equal(f.session.commitOneOffMode(prepared,...args),null);assert.equal(writes,1);
+  other.close();f.session.close();
+});

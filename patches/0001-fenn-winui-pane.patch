@@ -9565,10 +9565,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..e9f0904fd5
+index 0000000000..442af6ad9b
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2485 @@
+@@ -0,0 +1,2599 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9626,6 +9626,8 @@ index 0000000000..e9f0904fd5
 +  #finishedPresentation = null;
 +  #finishedPresentationState = null;
 +  #oneOffCommand = null;
++  #oneOffModeApplication = null;
++  #oneOffModeStateReady = null;
 +  #autofill = null;
 +  #placeholder = null;
 +  #closeRequest = null;
@@ -10188,6 +10190,8 @@ index 0000000000..e9f0904fd5
 +    this.#finishedPresentation = null;
 +    this.#finishedPresentationState = null;
 +    this.#oneOffCommand = null;
++    this.#oneOffModeApplication = null;
++    this.#oneOffModeStateReady = null;
 +    this.#inputPresentation = null;
 +    this.#inputPresentationState = null;
 +    this.#inputPopupClose = null;
@@ -11431,6 +11435,8 @@ index 0000000000..e9f0904fd5
 +    if (!edit || edit.revision !== revision || edit.composing || this.#hiddenResults) return null;
 +    const pending = { token: Object.freeze({}), edit, previousMode, prepared: null, proposal: null };
 +    this.#oneOffCommand = pending;
++    this.#oneOffModeApplication = null;
++    this.#oneOffModeStateReady = null;
 +    try {
 +      pending.prepared = await this.#queries.prepareOneOffCommand(queryId, key, edit.text, facts);
 +      if (this.#closed || !this.#isCurrent() || this.#oneOffCommand !== pending ||
@@ -11451,6 +11457,110 @@ index 0000000000..e9f0904fd5
 +    if (pending.edit !== this.#edit || pending.previousMode !== this.#searchMode || this.#hiddenResults ||
 +        !pending.prepared.isCurrent()) { this.#oneOffCommand = null; return null; }
 +    return pending.proposal;
++  }
++
++  /** Propose the current-tab mode setter before its separate startQuery step. */
++  beginOneOffModeApplication(commandToken, modeEntry) {
++    const command = this.getOneOffCommand(commandToken);
++    if (!command || command.kind !== "query" || command.where !== "current") return null;
++    const pending = { command, prepared: this.#oneOffCommand.prepared, proposal: null };
++    this.#oneOffModeApplication = pending;
++    this.#oneOffModeStateReady = null;
++    // Read host getters once before validation; recheck the command after them.
++    modeEntry = modeEntry && this.#captureModeEntry({ untrimmedValue: modeEntry.untrimmedValue,
++      pageProxyValid: modeEntry.pageProxyValid, hasAutofillPlaceholder: modeEntry.hasAutofillPlaceholder,
++      userTypedValue: modeEntry.userTypedValue });
++    if (!modeEntry) throw new TypeError("Missing one-off pre-mode facts");
++    if (modeEntry.pageProxyValid !== command.pageProxyValid) return null;
++    let restoration = null;
++    if (!modeEntry.pageProxyValid && UrlbarSearchModeModel.modeEntryRestoresAutofill(
++        modeEntry.hasAutofillPlaceholder, modeEntry.userTypedValue)) {
++      // Reuse Firefox's existing typed-value normalization and display policy.
++      restoration = this.#queries.describeCompositionRestoration(modeEntry);
++      if (!restoration) return null;
++    }
++    const value = modeEntry.pageProxyValid ? "" : restoration?.value;
++    const editorWrite = value === undefined ? null : Object.freeze({
++      text: value, selectionStart: value.length, selectionEnd: value.length, selectionDirection: "none",
++      untrimmedValue: restoration?.untrimmedValue ?? "", protocolIsTrimmed: restoration?.protocolIsTrimmed ?? false,
++      wwwIsTrimmed: restoration?.wwwIsTrimmed ?? false, valueIsTyped: false,
++    });
++    if (this.#oneOffModeApplication !== pending || this.getOneOffCommand(commandToken) !== command) return null;
++    const proposal = Object.freeze({ token: Object.freeze({}), commandToken, edit: command.edit,
++      queryId: command.queryId, searchMode: command.searchMode, modeEntry, restoration, editorWrite,
++      pageProxyValid: false });
++    pending.proposal = proposal;
++    return proposal;
++  }
++
++  getOneOffModeApplication(token) {
++    this.#check();
++    const pending = this.#oneOffModeApplication;
++    if (!pending || pending.proposal?.token !== token) return null;
++    const { proposal, command } = pending;
++    const current = () => this.#oneOffModeApplication === pending &&
++      this.getOneOffCommand(proposal.commandToken) === command;
++    if (!current() || (proposal.restoration && !UrlbarShared.deepEqual(proposal.restoration,
++        this.#queries.describeCompositionRestoration(proposal.modeEntry))) || !current()) {
++      if (this.#oneOffModeApplication === pending) this.#oneOffModeApplication = null;
++      return null;
++    }
++    return proposal;
++  }
++
++  /** Acknowledge only the exact mode setter; query/confirmation and selection clearing follow later. */
++  acknowledgeOneOffModeApplication(token, observation) {
++    this.#check();
++    if (!observation) return false;
++    const { text, selectionStart, selectionEnd, selectionDirection, composing, searchMode,
++      pageProxyValid, modeEntry, untrimmedValue, protocolIsTrimmed, wwwIsTrimmed, valueIsTyped } = observation;
++    const proposal = this.getOneOffModeApplication(token);
++    const expected = proposal?.editorWrite ?? proposal?.edit;
++    if (!proposal || text !== expected.text || selectionStart !== expected.selectionStart ||
++        selectionEnd !== expected.selectionEnd || selectionDirection !== expected.selectionDirection ||
++        composing !== false || pageProxyValid !== false ||
++        !UrlbarShared.deepEqual(searchMode, proposal.searchMode) || !UrlbarShared.deepEqual(modeEntry, proposal.modeEntry) ||
++        (proposal.editorWrite && (untrimmedValue !== expected.untrimmedValue ||
++          protocolIsTrimmed !== expected.protocolIsTrimmed || wwwIsTrimmed !== expected.wwwIsTrimmed || valueIsTyped !== false)) ||
++        this.getOneOffModeApplication(token) !== proposal) return false;
++    const pending = this.#oneOffModeApplication;
++    this.#oneOffModeApplication = null;
++    this.#oneOffCommand = null;
++    this.#searchMode = proposal.searchMode;
++    this.#edit = Object.freeze({ ...proposal.edit, text, selectionStart, selectionEnd, selectionDirection,
++      selectionRevision: proposal.edit.selectionRevision + 1 });
++    if (proposal.editorWrite) {
++      this.#typedText = text;
++      this.#completion = null;
++      this.#autofill = null;
++      this.#placeholder = null;
++    }
++    this.#oneOffModeStateReady = { ...pending, edit: this.#edit, attempted: false };
++    return true;
++  }
++
++  /** Apply owned browser mode and setter effects once after host acknowledgment. */
++  commitAcknowledgedOneOffMode(token, observation) {
++    this.#check();
++    const pending = this.#oneOffModeStateReady;
++    if (!pending || pending.proposal.token !== token || pending.attempted) return null;
++    const persistedSearchTerms = observation?.persistedSearchTerms;
++    if (typeof persistedSearchTerms !== "boolean") throw new TypeError("Missing persisted-search observation");
++    const current = () => !this.#closed && this.#isCurrent() && this.#oneOffModeStateReady === pending &&
++      this.#edit === pending.edit && this.#searchMode === pending.proposal.searchMode && !this.#hiddenResults;
++    if (!current()) return null;
++    pending.attempted = true;
++    const listener = this.#onModeStateChanged;
++    const notify = listener ? state => this.#notifyModeState(listener, state, {
++      reason: "one-off-mode", token, commandToken: pending.proposal.commandToken,
++      queryId: pending.proposal.queryId, edit: pending.edit,
++    }) : null;
++    try {
++      return this.#queries.commitOneOffMode(pending.prepared, pending.proposal.modeEntry,
++        pending.proposal.restoration, { persistedSearchTerms }, current, notify);
++    } finally {
++      if (this.#oneOffModeStateReady === pending) this.#oneOffModeStateReady = null;
++    }
 +  }
 +
 +  /** Describe a search-mode command for the exact observed editor, without applying it. */
@@ -11964,6 +12074,8 @@ index 0000000000..e9f0904fd5
 +    this.#finishedPresentation = null;
 +    this.#finishedPresentationState = null;
 +    this.#oneOffCommand = null;
++    this.#oneOffModeApplication = null;
++    this.#oneOffModeStateReady = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
 +    this.#committingPreviewClose = null;
@@ -12009,6 +12121,8 @@ index 0000000000..e9f0904fd5
 +    this.#finishedPresentation = null;
 +    this.#finishedPresentationState = null;
 +    this.#oneOffCommand = null;
++    this.#oneOffModeApplication = null;
++    this.#oneOffModeStateReady = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
 +    this.#committingPreviewClose = null;
@@ -12056,10 +12170,10 @@ index 0000000000..e9f0904fd5
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..50810b1427
+index 0000000000..a5d5deca4e
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1105 @@
+@@ -0,0 +1,1132 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12098,6 +12212,8 @@ index 0000000000..50810b1427
 +  #engagementActive = false;
 +  #endingEngagement = false;
 +  #oneOffDismissalGeneration = 0;
++  #oneOffCommandPlans = new WeakSet();
++  #oneOffModeAttempts = new WeakSet();
 +
 +  constructor({ context, isCurrent, onPresentationRequest = null }) {
 +    if (typeof isCurrent != "function") throw new TypeError("Missing scope check");
@@ -12718,8 +12834,10 @@ index 0000000000..50810b1427
 +    if (!current()) return null;
 +    const description = this.#describeOneOffCommand(key, value, observed);
 +    if (!description) return null;
-+    return Object.freeze({ description, isCurrent: () => current() &&
++    const prepared = Object.freeze({ description, isCurrent: () => current() &&
 +      UrlbarShared.deepEqual(this.#describeOneOffCommand(key, value, observed), description) });
++    this.#oneOffCommandPlans.add(prepared);
++    return prepared;
 +  }
 +
 +  #describeOneOffCommand(key, value, facts) {
@@ -12739,10 +12857,33 @@ index 0000000000..50810b1427
 +    const searchMode = UrlbarSearchModeModel.normalizeMode(
 +      kind === "new-tab" ? { ...rawMode, isPreview: false } : rawMode, engine);
 +    return Object.freeze({ key, kind, engineId: engine?.id ?? null, where, params, searchMode,
++      pageProxyValid: facts.pageProxyValid,
 +      allowAutofill: UrlbarSearchModeModel.oneOffAllowsAutofill(rawMode),
 +      newTabTypedValue: kind === "new-tab" && userTypedSearchString ? value : null,
 +      startQuery: kind === "query" || (kind === "new-tab" && !params?.inBackground),
 +      selectAll: kind === "query" && where !== "current", clearOneOffSelection: true });
++  }
++
++  /** Commit a consumed current-tab one-off mode observation, without querying. */
++  commitOneOffMode(prepared, modeEntry, restoration, observation, isCurrent, onCommitted = null) {
++    this.#check();
++    if (!Number.isSafeInteger(this.#context.browserId) || this.#context.browserId <= 0) {
++      throw new Error("Mode state requires a pinned browser");
++    }
++    if (!this.#oneOffCommandPlans.has(prepared) || this.#oneOffModeAttempts.has(prepared)) return null;
++    const description = prepared.description;
++    if (description.kind !== "query" || description.where !== "current" ||
++        !modeEntry || modeEntry.pageProxyValid !== description.pageProxyValid) return null;
++    const needsRestoration = !modeEntry.pageProxyValid && UrlbarSearchModeModel.modeEntryRestoresAutofill(
++      modeEntry.hasAutofillPlaceholder, modeEntry.userTypedValue);
++    if (!!restoration !== needsRestoration) return null;
++    const current = () => !this.#closed && this.#isCurrent() && isCurrent() && prepared.isCurrent();
++    if (!current() || (restoration && !UrlbarShared.deepEqual(restoration,
++        this.describeCompositionRestoration(modeEntry))) || !current()) return null;
++    this.#oneOffModeAttempts.add(prepared);
++    return this.#controller.parentController.commitIndependentModeState(this.#context.browserId,
++      description.searchMode, { persistedSearchTerms: observation.persistedSearchTerms,
++        engineId: description.engineId, modeEntry }, current, onCommitted);
 +  }
 +
 +  /** Prepare input.search policy using this consumer's live engine store, without dispatch. */
