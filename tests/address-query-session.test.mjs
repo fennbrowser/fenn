@@ -7492,3 +7492,52 @@ test('destination restoration consumes failed setters and closes safely during e
     assert.equal(calls,1);assert.equal(f.modeEvents.length,0);assert.equal(f.parent.started.length,1);f.editor.close();
   }
 });
+
+
+async function destinationFormattingFixture(){
+  const f=await destinationRestorationCommitFixture();
+  f.parent.describeIndependentCompositionRestoration=()=>({value:'formatted.test',untrimmedValue:f.p.edit.text,
+    protocolIsTrimmed:true,wwwIsTrimmed:false});
+  const entry={...f.observed.modeEntry,hasAutofillPlaceholder:true};
+  const application=f.editor.beginOneOffDestinationModeApplication(f.deselection,entry);
+  assert.ok(application);
+  const observation={...application.edit,...application.editorWrite,searchMode:application.searchMode,modeEntry:application.modeEntry,
+    pageProxyValid:false,oneOffSelected:false,persistedSearchTerms:false};
+  return {...f,application,observation};
+}
+
+test('destination formatting separates exact display acknowledgment from the original full browser text',async()=>{
+  const f=await destinationFormattingFixture(),p=f.application;
+  assert.equal(f.editor.snapshot.text,f.p.edit.text);assert.equal(f.writes.length,0);
+  assert.equal(f.editor.getOneOffDestinationModeApplication(f.deselection,p.token),p);
+  for(const change of [{text:'wrong'},{selectionStart:0},{protocolIsTrimmed:false},{wwwIsTrimmed:true},{untrimmedValue:'wrong'},
+    {valueIsTyped:true},{pageProxyValid:true},{oneOffSelected:true},{modeEntry:{...p.modeEntry,userTypedValue:'wrong'}}])
+    assert.equal(f.editor.commitOneOffDestinationModeApplication(f.deselection,p.token,{...f.observation,...change}),null);
+  assert.equal(f.writes.length,0);
+  const result=f.editor.commitOneOffDestinationModeApplication(f.deselection,p.token,f.observation);
+  assert.equal(result.applied,true);assert.equal(result.modeRestorationPending,false);
+  assert.equal(f.editor.snapshot.text,'formatted.test');assert.equal(f.writes[0].facts.modeEntry.untrimmedValue,f.p.edit.text);
+  assert.equal(f.modeEvents.length,1);assert.equal(f.parent.started.length,1);
+  assert.equal(f.editor.commitOneOffDestinationModeApplication(f.deselection,p.token,f.observation),null);
+  assert.equal(f.editor.commitOneOffDestinationRestoration(f.deselection,f.observed),null);f.editor.close();
+});
+
+test('destination formatting rejects changed formatter output, superseded proposals and reentrant host reads',async()=>{
+  for(const mutation of ['formatter','superseded','getter']){
+    const f=await destinationFormattingFixture(),p=f.application;
+    if(mutation==='formatter')f.parent.describeIndependentCompositionRestoration=()=>({value:'different'});
+    if(mutation==='superseded')assert.ok(f.editor.beginOneOffDestinationModeApplication(f.deselection,p.modeEntry));
+    if(mutation==='getter')Object.defineProperty(f.observation,'text',{get(){f.editor.select(1,1,1);return p.editorWrite.text;}});
+    assert.equal(f.editor.commitOneOffDestinationModeApplication(f.deselection,p.token,f.observation),null,mutation);
+    assert.equal(f.writes.length,0);assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('destination mode application keeps valid-page transitions gated and accepts explicit no-format facts',async()=>{
+  const f=await destinationRestorationCommitFixture();
+  assert.equal(f.editor.beginOneOffDestinationModeApplication(f.deselection,{...f.observed.modeEntry,pageProxyValid:true}),null);
+  const p=f.editor.beginOneOffDestinationModeApplication(f.deselection,f.observed.modeEntry);
+  assert.equal(p.editorWrite,null);
+  assert.equal(f.editor.commitOneOffDestinationModeApplication(f.deselection,p.token,{...f.observed,modeEntry:p.modeEntry}).applied,true);
+  assert.equal(f.parent.started.length,1);f.editor.close();
+});

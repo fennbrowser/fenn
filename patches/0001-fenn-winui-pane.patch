@@ -9798,10 +9798,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..4150bd4213
+index 0000000000..629fd9b1f8
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3198 @@
+@@ -0,0 +1,3261 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12070,6 +12070,69 @@ index 0000000000..4150bd4213
 +      destination.stateToken, modeEntry, persistedSearchTerms, current, notify);
 +  }
 +
++  /** Prepare Firefox's formatting before applying a destination restoration mode. */
++  beginOneOffDestinationModeApplication(receipt, modeEntry) {
++    const base = this.getOneOffDestinationRestoration(receipt);
++    if (!base) return null;
++    const handoff = UrlbarEditSession.#oneOffDeselections.get(receipt), marker = Object.freeze({});
++    handoff.application = marker;
++    try {
++      modeEntry = this.#captureModeEntry(modeEntry);
++      if (!modeEntry || modeEntry.pageProxyValid !== false || modeEntry.untrimmedValue !== base.edit.text ||
++          modeEntry.userTypedValue !== handoff.destination.userTypedValue) return null;
++      const needsRestoration = UrlbarSearchModeModel.modeEntryRestoresAutofill(modeEntry.hasAutofillPlaceholder, modeEntry.userTypedValue);
++      const restoration = needsRestoration ? this.#queries.describeCompositionRestoration(modeEntry) : null;
++      if (needsRestoration && !restoration) return null;
++      const editorWrite = restoration ? Object.freeze({ text: restoration.value, selectionStart: restoration.value.length,
++        selectionEnd: restoration.value.length, selectionDirection: "none", untrimmedValue: restoration.untrimmedValue,
++        protocolIsTrimmed: restoration.protocolIsTrimmed, wwwIsTrimmed: restoration.wwwIsTrimmed, valueIsTyped: false }) : null;
++      if (handoff.application !== marker || this.getOneOffDestinationRestoration(receipt) !== base) return null;
++      return handoff.application = Object.freeze({ token: marker, base, edit: base.edit, searchMode: base.searchMode,
++        modeEntry, restoration, editorWrite, pageProxyValid: false, oneOffSelected: false });
++    } finally {
++      if (handoff.application === marker) handoff.application = null;
++    }
++  }
++
++  getOneOffDestinationModeApplication(receipt, token) {
++    const base = this.getOneOffDestinationRestoration(receipt), handoff = UrlbarEditSession.#oneOffDeselections.get(receipt);
++    const proposal = handoff?.application;
++    if (!base || !proposal?.token || proposal.token !== token || proposal.base !== base) return null;
++    if (proposal.restoration && !UrlbarShared.deepEqual(proposal.restoration,
++        this.#queries.describeCompositionRestoration(proposal.modeEntry))) return null;
++    return this.getOneOffDestinationRestoration(receipt) === base && handoff.application === proposal ? proposal : null;
++  }
++
++  /** Acknowledge exact formatted host state, then commit full browser text and mode once. */
++  commitOneOffDestinationModeApplication(receipt, token, observation) {
++    const proposal = this.getOneOffDestinationModeApplication(receipt, token);
++    if (!proposal || !observation) return null;
++    const { revision, text, selectionStart, selectionEnd, selectionDirection, composing, searchMode, modeEntry,
++      pageProxyValid, oneOffSelected, persistedSearchTerms, untrimmedValue, protocolIsTrimmed, wwwIsTrimmed, valueIsTyped } = observation;
++    if (typeof persistedSearchTerms !== "boolean") throw new TypeError("Missing destination persistence observation");
++    const expected = proposal.editorWrite ?? proposal.edit;
++    if (revision !== proposal.edit.revision || text !== expected.text || selectionStart !== expected.selectionStart ||
++        selectionEnd !== expected.selectionEnd || selectionDirection !== expected.selectionDirection || composing !== false ||
++        pageProxyValid !== false || oneOffSelected !== false || !UrlbarShared.deepEqual(searchMode, proposal.searchMode) ||
++        !UrlbarShared.deepEqual(modeEntry, proposal.modeEntry) ||
++        (proposal.editorWrite && (untrimmedValue !== expected.untrimmedValue || protocolIsTrimmed !== expected.protocolIsTrimmed ||
++          wwwIsTrimmed !== expected.wwwIsTrimmed || valueIsTyped !== false)) ||
++        this.getOneOffDestinationModeApplication(receipt, token) !== proposal) return null;
++    const handoff = UrlbarEditSession.#oneOffDeselections.get(receipt), { destination } = handoff;
++    handoff.attempted = true;
++    const edit = this.#edit = Object.freeze({ ...proposal.edit, text, selectionStart, selectionEnd, selectionDirection,
++      selectionRevision: proposal.edit.selectionRevision + 1 });
++    if (proposal.editorWrite) { this.#typedText = text; this.#completion = null; this.#autofill = null; this.#placeholder = null; }
++    const current = () => !this.#closed && this.#isCurrent() && this.#edit === edit &&
++      this.#searchMode === proposal.searchMode && !this.#hiddenResults && destination.isCurrent();
++    const listener = this.#onModeStateChanged;
++    const notify = listener ? state => this.#notifyModeState(listener, state, {
++      reason: "one-off-destination-restoration", token, queryId: proposal.base.queryId, edit,
++    }) : null;
++    return this.#queries.commitDestinationRestoration(proposal.base.queryId, proposal.searchMode, proposal.base.engineId,
++      destination.stateToken, proposal.modeEntry, persistedSearchTerms, current, notify, proposal.restoration);
++  }
++
 +  /** Propose the current-tab mode setter before its separate startQuery step. */
 +  beginOneOffModeApplication(commandToken, modeEntry) {
 +    const command = this.getOneOffCommand(commandToken);
@@ -13002,10 +13065,10 @@ index 0000000000..4150bd4213
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..f01d90a21c
+index 0000000000..58a1fbdd4e
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1497 @@
+@@ -0,0 +1,1499 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13928,10 +13991,12 @@ index 0000000000..f01d90a21c
 +  }
 +
 +  /** Restore an unchanged selected destination through the existing owned-state setter. */
-+  commitDestinationRestoration(queryId, searchMode, engineId, stateToken, modeEntry, persistedSearchTerms, isCurrent, onCommitted = null) {
++  commitDestinationRestoration(queryId, searchMode, engineId, stateToken, modeEntry, persistedSearchTerms, isCurrent, onCommitted = null, restoration = null) {
 +    this.#check();
-+    if (!stateToken || !modeEntry || modeEntry.pageProxyValid !== false || modeEntry.hasAutofillPlaceholder !== false ||
-+        typeof isCurrent !== "function") return null;
++    if (!stateToken || !modeEntry || modeEntry.pageProxyValid !== false || typeof isCurrent !== "function") return null;
++    const needsRestoration = UrlbarSearchModeModel.modeEntryRestoresAutofill(modeEntry.hasAutofillPlaceholder, modeEntry.userTypedValue);
++    if (!!restoration !== needsRestoration || (restoration && !UrlbarShared.deepEqual(restoration,
++        this.describeCompositionRestoration(modeEntry)))) return null;
 +    const current = () => !this.#closed && this.#isCurrent() && this.ownsQuery(queryId) &&
 +      this.isDestinationModeCurrent(searchMode, engineId) && isCurrent();
 +    if (!current()) return null;
