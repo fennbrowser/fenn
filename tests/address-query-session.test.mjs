@@ -5512,3 +5512,53 @@ test('composition still suppresses queries when input presentation permits dispa
   await f.editor.edit({},popupInput(2,'ordinary',{presentation:null}));
   assert.equal(f.editor.inputPresentation,null);assert.equal(f.parent.started.length,1);f.editor.close();
 });
+
+
+const popupEffects={rollupCompleted:true,resultsCleared:true,open:false,accessibleFocusCleared:true};
+
+test('popup effects require exact host observations and consume the request once without dispatch',async()=>{
+  const f=await editorFixture();f.prefs['suggest.topsites']=false;
+  await f.editor.edit({},popupInput(1));const request=f.editor.inputPresentation,observed={...f.editor.snapshot,...popupEffects};
+  assert.equal(f.editor.getInputPresentation({}),null);
+  for(const observation of [null,{...observed,open:true},{...observed,rollupCompleted:false},
+    {...observed,resultsCleared:false},{...observed,open:0},{...observed,text:'pending edit'},{...observed,selectionEnd:1},{...observed,composing:true}]) {
+    assert.equal(f.editor.acknowledgeInputPresentation(request.token,observation),false);
+    assert.equal(f.editor.getInputPresentation(request.token),request);
+  }
+  assert.equal(f.editor.acknowledgeInputPresentation(request.token,{...observed,accessibleFocusCleared:false}),true);
+  assert.equal(f.editor.inputPresentation,null);assert.equal(f.editor.inputPresentationState,request);
+  assert.equal(f.editor.acknowledgeInputPresentation(request.token,observed),false);
+  assert.equal(f.parent.started.length,0);f.editor.close();assert.equal(f.editor.inputPresentationState,null);
+});
+
+test('continuing popup effects require accessible-focus removal but do not require a close',async()=>{
+  const f=await editorFixture();await f.editor.edit({},popupInput(1,'text'));
+  const request=f.editor.inputPresentation,observed={...f.editor.snapshot,...popupEffects},queries=f.parent.started.length;
+  assert.equal(f.editor.acknowledgeInputPresentation(request.token,{...observed,accessibleFocusCleared:false}),false);
+  assert.equal(f.editor.acknowledgeInputPresentation(request.token,{...observed,resultsCleared:false,open:true}),true);
+  assert.equal(f.editor.inputPresentationState,request);assert.equal(f.parent.started.length,queries);
+  f.editor.select(1,0,0);assert.equal(f.editor.inputPresentationState,null);f.editor.close();
+});
+
+test('popup acknowledgments reject getter reentry and preserve a newer request',async()=>{
+  const f=await editorFixture();f.prefs['suggest.topsites']=false;
+  await f.editor.edit({},popupInput(1));const request=f.editor.inputPresentation,observed={...f.editor.snapshot,...popupEffects};
+  let replacement;
+  const observation={...observed,get resultsCleared(){replacement=f.editor.edit({},popupInput(2));return true;}};
+  assert.equal(f.editor.acknowledgeInputPresentation(request.token,observation),false);await replacement;
+  const newer=f.editor.inputPresentation;assert.notEqual(newer,request);
+  assert.equal(f.editor.inputPresentationState,null);
+  assert.equal(f.editor.acknowledgeInputPresentation(newer.token,observed),true);
+  f.editor.cancel();assert.equal(f.editor.inputPresentationState,null);f.editor.close();
+});
+
+test('popup receipt follows edit and scope lifetime and cannot be changed by caller observations',async()=>{
+  const f=await editorFixture();await f.editor.edit({},popupInput(1,'text'));
+  const request=f.editor.inputPresentation,observed={...f.editor.snapshot,...popupEffects},observation={...observed};
+  assert.equal(f.editor.acknowledgeInputPresentation(request.token,observation),true);
+  observation.open=true;assert.equal(f.editor.inputPresentationState,request);assert.equal(Object.isFrozen(request),true);
+  await f.editor.edit({},popupInput(2,'new'));assert.equal(f.editor.inputPresentationState,null);
+  const newer=f.editor.inputPresentation;f.loseScope();
+  assert.equal(f.editor.acknowledgeInputPresentation(newer.token,observed),false);
+  assert.equal(f.editor.inputPresentationState,null);
+});

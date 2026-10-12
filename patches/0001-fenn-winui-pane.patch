@@ -9294,10 +9294,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..73c7d2f682
+index 0000000000..8082859bc3
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2188 @@
+@@ -0,0 +1,2225 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9335,6 +9335,7 @@ index 0000000000..73c7d2f682
 +  #edit = null;
 +  #inputState = null;
 +  #inputPresentation = null;
++  #inputPresentationState = null;
 +  #identityEdit = null;
 +  #identityRequest = null;
 +  #identityState = null;
@@ -9399,7 +9400,39 @@ index 0000000000..73c7d2f682
 +  get inputPresentation() {
 +    if (this.#closed) return null;
 +    if (!this.#isCurrent()) { this.close(); return null; }
-+    return this.#inputPresentation?.edit === this.#edit ? this.#inputPresentation : null;
++    return this.#inputPresentation?.edit === this.#edit &&
++      this.#inputPresentation.searchMode === this.#searchMode ? this.#inputPresentation : null;
++  }
++
++  /** Validate immediately before applying host popup effects. */
++  getInputPresentation(token) {
++    const request = this.inputPresentation;
++    return request?.token === token ? request : null;
++  }
++
++  /** Record observed host effects once, without repeating browser commits or queries. */
++  acknowledgeInputPresentation(token, observation) {
++    const request = this.getInputPresentation(token);
++    if (!request || !observation) return false;
++    const { rollupCompleted, resultsCleared, open, accessibleFocusCleared } = observation;
++    const editKeys = ["text", "selectionStart", "selectionEnd", "selectionDirection", "composing"];
++    if (editKeys.some(key => observation[key] !== request.edit[key]) || typeof open !== "boolean" ||
++        (request.rollupPopups && rollupCompleted !== true) ||
++        (request.clearResults && resultsCleared !== true) ||
++        (request.close && open !== false) ||
++        (request.removeAccessibleFocus && accessibleFocusCleared !== true) ||
++        this.getInputPresentation(token) !== request) return false;
++    this.#inputPresentation = null;
++    // Keep the immutable request, never caller-owned observations.
++    this.#inputPresentationState = request;
++    return true;
++  }
++
++  get inputPresentationState() {
++    if (this.#closed) return null;
++    if (!this.#isCurrent()) { this.close(); return null; }
++    return this.#inputPresentationState?.edit === this.#edit &&
++      this.#inputPresentationState.searchMode === this.#searchMode ? this.#inputPresentationState : null;
 +  }
 +
 +  /** Describe only the exact latest observed edit, never an autofill/preview write. */
@@ -9839,6 +9872,7 @@ index 0000000000..73c7d2f682
 +    const priorTypedValue = browserState?.userTypedValue;
 +    this.#inputState = null;
 +    this.#inputPresentation = null;
++    this.#inputPresentationState = null;
 +    this.#compositionReopen = null;
 +    this.#reopeningComposition = null;
 +    this.#compositionStateReady = null;
@@ -9887,7 +9921,8 @@ index 0000000000..73c7d2f682
 +    if (presentation) {
 +      const effects = UrlbarQueryModel.inputPresentation({ value: text, ...presentation,
 +        suggestTopSites: UrlbarPrefs.get("suggest.topsites"), searchMode: this.#searchMode });
-+      this.#inputPresentation = Object.freeze({ edit: observedEdit, ...effects });
++      this.#inputPresentation = Object.freeze({ edit: observedEdit, searchMode: this.#searchMode,
++        token: Object.freeze({}), ...effects });
 +      if (effects.stopQuery) return null;
 +    }
 +    const keepPanelOpen = composition ? UrlbarPrefs.get("keepPanelOpenDuringImeComposition") : false;
@@ -11412,6 +11447,7 @@ index 0000000000..73c7d2f682
 +
 +  cancel() {
 +    this.#inputPresentation = null;
++    this.#inputPresentationState = null;
 +    this.#identityRequest = null;
 +    this.#identityState = null;
 +    this.#compositionHistory = null;
@@ -11448,6 +11484,7 @@ index 0000000000..73c7d2f682
 +
 +  close() {
 +    this.#inputPresentation = null;
++    this.#inputPresentationState = null;
 +    this.#identityRequest = null;
 +    this.#identityState = null;
 +    this.#compositionHistory = null;
