@@ -8156,3 +8156,82 @@ test('current engine search recording rejects stale and reentrant preflight fact
     assert.equal(calls,0);f.editor.close();
   }
 });
+
+
+function engineDispatchParentFixture(){
+  const f=engineParentTargetFixture(),engine={id:'second',name:'Engine Two'},postData={body:'q=typed'};
+  f.p.sapName='urlbar';f.lazy.SearchService={getEngineById:id=>id==='second'?engine:null};
+  f.lazy.UrlbarUtils.getSearchQueryUrl=(actual,terms)=>{assert.equal(actual,engine);f.terms=terms;return ['https://search.test/?q=typed',postData];};
+  return {...f,engine,postData};
+}
+
+test('parent current engine dispatch preserves submission, POST data, pinned browser and history attribution once',()=>{
+  const f=engineDispatchParentFixture(),target=f.p.prepareIndependentEngineSearchTarget(42,'current','typed words',()=>true);
+  const outcome=f.p.dispatchIndependentCurrentEngineSearch(target.token,{engineId:'second',searchString:'typed words'},()=>true);
+  assert.equal(outcome.dispatched,true);assert.equal(outcome.browserId,42);assert.equal(f.calls.length,1);
+  const load=f.calls[0];assert.equal(load.where,'current');assert.equal(load.params.targetBrowser,f.browser);assert.equal(load.params.postData,f.postData);
+  assert.equal(load.params.globalHistoryOptions.triggeringSource,'urlbar');assert.equal(load.params.globalHistoryOptions.triggeringSearchEngine,'Engine Two');
+  assert.equal(f.p.dispatchIndependentCurrentEngineSearch(target.token,{engineId:'second',searchString:'typed words'},()=>true),null);
+});
+
+test('parent engine dispatch rejects stale submission callbacks and consumes failure before any retry',()=>{
+  for(const action of ['epoch','engine','missing','throw','reentry','lookup','name']){
+    const f=engineDispatchParentFixture(),target=f.p.prepareIndependentEngineSearchTarget(42,'current','typed words',()=>true);
+    const data={engineId:'second',searchString:'typed words'};
+    f.lazy.UrlbarUtils.getSearchQueryUrl=()=>{
+      if(action==='epoch')f.browser.lastLocationChange++;
+      if(action==='engine')f.lazy.SearchService.getEngineById=()=>({id:'second',name:'replacement'});
+      if(action==='throw')throw Error('submission failed');
+      if(action==='reentry')assert.equal(f.p.dispatchIndependentCurrentEngineSearch(target.token,data,()=>true),null);
+      return ['https://search.test/',null];
+    };
+    if(action==='missing')f.lazy.SearchService.getEngineById=()=>null;
+    if(action==='lookup'){let reads=0;f.lazy.SearchService.getEngineById=()=>{if(++reads===2)f.browser.lastLocationChange++;return f.engine;};}
+    if(action==='name')Object.defineProperty(f.engine,'name',{get(){f.browser.lastLocationChange++;return 'Engine Two';}});
+    if(action==='throw')assert.throws(()=>f.p.dispatchIndependentCurrentEngineSearch(target.token,data,()=>true),/submission failed/);
+    else assert.equal(f.p.dispatchIndependentCurrentEngineSearch(target.token,data,()=>true).dispatched,action==='reentry');
+    assert.equal(f.calls.length,action==='reentry'?1:0);assert.equal(f.p.dispatchIndependentCurrentEngineSearch(target.token,data,()=>true),null);
+  }
+});
+
+async function engineDispatchFixture(){
+  const f=await engineSearchRecordingFixture();f.parent.recordSearch=()=>true;
+  const recording=f.editor.recordOneOffCurrentSearch(f.engagement.token,f.attribution);
+  const engine={id:'second',name:'Engine Two'};
+  f.parentTarget.lazy.SearchService={getEngineById:id=>id==='second'?engine:null};
+  f.parentTarget.lazy.UrlbarUtils.getSearchQueryUrl=()=>['https://search.test/',null];f.parentTarget.p.sapName='urlbar';
+  f.parent.dispatchIndependentCurrentEngineSearch=(...args)=>f.parentTarget.p.dispatchIndependentCurrentEngineSearch(...args);
+  return {...f,recording};
+}
+
+test('current engine dispatch requires a search receipt, runs once and releases the original query',async()=>{
+  const f=await engineDispatchFixture();
+  assert.equal(f.editor.dispatchOneOffCurrentSearch(f.engagement.token),null);
+  assert.equal(f.editor.dispatchOneOffCurrentSearch({...f.recording.token}),null);
+  const outcome=f.editor.dispatchOneOffCurrentSearch(f.recording.token);assert.equal(outcome.dispatched,true);
+  assert.equal(f.parentTarget.calls.length,1);assert.equal(f.editor.dispatchOneOffCurrentSearch(f.recording.token),null);
+  assert.throws(()=>f.editor.publishPresentation(2,f.query.id,[],true),/Invalid query presentation/);f.editor.close();
+});
+
+test('current engine dispatch rejects stale targets and preserves callback replacement queries',async()=>{
+  const stale=await engineDispatchFixture();stale.parentTarget.browser.lastLocationChange++;
+  assert.equal(stale.editor.dispatchOneOffCurrentSearch(stale.recording.token),null);assert.deepEqual(stale.parentTarget.calls,[]);stale.editor.close();
+  const f=await engineDispatchFixture();let next;
+  f.parentTarget.p.browserWindow.openTrustedLinkIn=()=>{
+    assert.equal(f.editor.dispatchOneOffCurrentSearch(f.recording.token),null);
+    next=f.editor.edit({},edit(3,'replacement'));
+  };
+  assert.equal(f.editor.dispatchOneOffCurrentSearch(f.recording.token).dispatched,true);
+  const query=await next;f.editor.publishPresentation(3,query.id,[],true);assert.equal(f.editor.snapshot.revision,3);f.editor.close();
+});
+
+
+test('current engine dispatch consumes opener failures and refuses parent tab targets',async()=>{
+  const f=await engineDispatchFixture();let calls=0;
+  f.parentTarget.p.browserWindow.openTrustedLinkIn=()=>{calls++;throw Error('opener failed');};
+  assert.throws(()=>f.editor.dispatchOneOffCurrentSearch(f.recording.token),/opener failed/);
+  assert.equal(f.editor.dispatchOneOffCurrentSearch(f.recording.token),null);assert.equal(calls,1);f.editor.close();
+  const tab=engineDispatchParentFixture(),target=tab.p.prepareIndependentEngineSearchTarget(42,'tab','typed words',()=>true);
+  assert.equal(tab.p.dispatchIndependentCurrentEngineSearch(target.token,{engineId:'second',searchString:'typed words'},()=>true),null);
+  assert.deepEqual(tab.calls,[]);
+});
