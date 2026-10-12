@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {UrlbarQueryLifecycle} from '../upstream/firefox/browser/components/urlbar/content/UrlbarQueryLifecycle.mjs';
 
-const sharedPolicy=vm.createContext({URL,UrlbarContentUtils:{},UrlbarPrefs:{get:()=>false}});
+const sharedPolicy=vm.createContext({structuredClone,URL,UrlbarContentUtils:{},UrlbarPrefs:{get:()=>false}});
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarShared.mjs',import.meta.url),'utf8')
   .replace(/^import .*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),sharedPolicy);
 
@@ -25,7 +25,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     destroy(){this.destroyed=(this.destroyed??0)+1;}
   }
   let id=0;
-  const sandbox=vm.createContext({console,URL,UrlbarQueryLifecycle,UrlbarParentControllerProxy:class {},
+  const sandbox=vm.createContext({structuredClone,console,URL,UrlbarQueryLifecycle,UrlbarParentControllerProxy:class {},
     KeyboardEvent:class {constructor(facts={}){Object.assign(this,{keyCode:13},facts);}getModifierState(key){return key==='AltGraph' && !!this.altGraph;}},KeyEvent:{DOM_VK_RETURN:13},
     UrlbarShared:{COMPOSITION:sharedPolicy.UrlbarShared.COMPOSITION,stripPrefixAndTrim:sharedPolicy.UrlbarShared.stripPrefixAndTrim,getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_TYPE:sharedPolicy.UrlbarShared.RESULT_TYPE,RESULT_SOURCE:sharedPolicy.UrlbarShared.RESULT_SOURCE,canAutofillURL:sharedPolicy.UrlbarShared.canAutofillURL.bind(sharedPolicy.UrlbarShared),NOTIFICATIONS:{
       RESULTS_CLOSE_REQUESTED:'onResultsCloseRequested',QUERY_RESULT_REMOVED:'onQueryResultRemoved',
@@ -905,7 +905,7 @@ test('retained message-path construction still uses its proxy without resolving 
 test('retained presenter handles cache notifications without rebuilding unrelated state',()=>{
   const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarView.mjs',import.meta.url),'utf8');
   const start=source.indexOf('  onPresentationCacheInvalidated('),end=source.indexOf('\n  }',start)+4;
-  const context=vm.createContext({});vm.runInContext('this.Presenter=class {'+source.slice(start,end)+'}',context);
+  const context=vm.createContext({structuredClone,});vm.runInContext('this.Presenter=class {'+source.slice(start,end)+'}',context);
   const presenter=new context.Presenter(),calls=[];
   presenter.clearTopSitesCache=()=>calls.push('topsites');presenter.clearL10nCache=()=>calls.push('l10n');
   for(const name of ['topsites','l10n','unknown'])presenter.onPresentationCacheInvalidated(name);
@@ -2263,7 +2263,7 @@ test('retained attribution binding preserves lazy DOM and browser-state reads',(
   const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarInputBase.mjs',import.meta.url),'utf8');
   const method=source.slice(source.indexOf('  getSearchSource(event) {'),source.indexOf('  // Private methods below.'))
     .replaceAll('this.#isAddressbar','this.isAddressbar').replaceAll('this.#sapName','this.sapName');
-  const context=vm.createContext({UrlbarQueryModel:sandbox.UrlbarQueryModel});
+  const context=vm.createContext({structuredClone,UrlbarQueryModel:sandbox.UrlbarQueryModel});
   const binding=vm.runInContext('({'+method+'})',context);
   for(const [facts,expected,reads] of [
     [{isAddressbar:false},'searchbar',[]],
@@ -2289,7 +2289,7 @@ test('Firefox recorder shares event building for explicit snapshots and retained
   const utils={startInteractionType:()=> 'typed',collectSnapshot:(event,details,start)=>start?{method:'abandonment',internalDetails:details}:null,
     buildRecordedEngagement:(snapshot,data,smartbar)=>{builds.push({data,smartbar});return {built:null,previousSearchWords:new Set()};},
     buildRecordedDisableCandidate:()=>({test:true}),engagementData:input=>input.data,smartbarData:input=>input.smart};
-  const context=vm.createContext({console:{error:(...args)=>errors.push(args)},
+  const context=vm.createContext({structuredClone,console:{error:(...args)=>errors.push(args)},
     Glean:{urlbar:new Proxy({}, {get:()=>({set(){}})})},lazy:{UrlbarPrefs:{addObserver(){},get:()=>true},UrlbarTelemetryUtils:utils}});
   vm.runInContext(source.slice(source.indexOf('export class TelemetryEvent')).replace('export class','class')+';this.Recorder=TelemetryEvent;',context);
   const controller={sapName:'urlbar',_lastQueryContextWrapper:{queryContext:{}},get input(){reads++;return {data:fallback,smart};}};
@@ -8815,4 +8815,142 @@ test('alias mode query admission rejects callback browser replacement before pro
   const before=f.parent.started.length;
   const result=await f.editor.requeryOneOffAliasMode(p.token,{}, {get suppressStartQuery(){f.invalidateBrowser();return false;},inOverflowPanel:false});
   assert.equal(result,null);assert.equal(f.parent.started.length,before);f.editor.close();
+});
+
+
+function privateParentFixture(){
+  const f=parentLoadFixture(),owner=f.lazy.independentUrlbarBrowserState;
+  f.browser.userTypedValue='typed words';
+  f.p.recoveryDescription={value:'source.test/',untrimmedValue:'https://source.test/',pageProxyValid:true,
+    searchMode:null,userTypedValue:null,protocolIsTrimmed:true,wwwIsTrimmed:false};
+  owner.prepareMode=()=>({...owner.prepareRecovery(),effects:{persistedSearchTerms:false,recordModeEntry:false,searchMode:null}});
+  f.lazy.UrlbarUtils.loadRequestToUrl=()=>({url:'https://private.test/?q=private',postData:null});
+  f.privateData={where:'window',browserId:42,loadRequest:{engineSearch:{engine:'Result Engine',query:'private'}},params:{private:true}};
+  const state=owner.prepareRecovery();owner.commit(f.browser,state.token);f.stateToken=state.token;
+  return f;
+}
+
+test('private-window parent requires acknowledged source restoration and preserves private opener flags',()=>{
+  const f=privateParentFixture(),token=f.p.preparePrivateWindowLoad(f.privateData,f.stateToken);
+  const recovery=f.p.preparePrivateWindowSourceRevert(token);
+  assert.equal(recovery.value,'source.test/');assert.equal(f.calls.length,0);
+  assert.equal(f.p.acknowledgeCurrentLoadRecovery(recovery.token),true);assert.equal(f.browser.userTypedValue,null);
+  assert.equal(f.p.commitCurrentLoad(token).attempted,true);
+  const opened=f.calls.find(c=>typeof c==='object');assert.equal(opened.where,'window');assert.equal(opened.params.private,true);
+  assert.equal(opened.params.targetBrowser,undefined);assert.equal(f.p.commitCurrentLoad(token).attempted,false);
+});
+
+test('private-window parent refuses premature dispatch and stale source restoration',()=>{
+  for(const phase of ['before-revert','unacknowledged','document','typed','state','replacement','discard']){
+    const f=privateParentFixture(),token=f.p.preparePrivateWindowLoad(f.privateData,f.stateToken);
+    if(phase==='before-revert'){assert.equal(f.p.commitCurrentLoad(token).attempted,false);continue;}
+    const recovery=f.p.preparePrivateWindowSourceRevert(token);
+    if(phase==='unacknowledged'){assert.equal(f.p.commitCurrentLoad(token).attempted,false);assert.equal(f.p.getCurrentLoadRecovery(recovery.token),null);continue;}
+    if(phase==='discard'){f.p.discardCurrentLoad(token);assert.equal(f.p.getCurrentLoadRecovery(recovery.token),null);continue;}
+    assert.equal(f.p.acknowledgeCurrentLoadRecovery(recovery.token),true);
+    if(phase==='document')f.browser.browsingContext.currentWindowGlobal={};
+    if(phase==='typed')f.browser.userTypedValue='new edit';
+    if(phase==='state')f.lazy.independentUrlbarBrowserState.prepareRecovery();
+    if(phase==='replacement')f.p.prepareCurrentLoad(f.data);
+    assert.equal(f.p.commitCurrentLoad(token).attempted,false,phase);assert.equal(f.calls.length,0);
+  }
+});
+
+async function privateWindowActivationFixture(){
+  const f=await oneOffResultSelectionFixture('private',{browserId:42,isPrivate:false});
+  const selection=f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options);
+  f.receipt=f.editor.acknowledgeOneOffResultSelection(selection.token,f.observation,f.event,f.options);
+  const source=privateParentFixture();
+  for(const name of ['commitIndependentModeState','preparePrivateWindowLoad','preparePrivateWindowSourceRevert',
+    'getCurrentLoadRecovery','acknowledgeCurrentLoadRecovery','commitCurrentLoad','discardCurrentLoad'])f.parent[name]=source.p[name].bind(source.p);
+  f.parent.recordSearch=(data,id)=>{assert.equal(id,42);assert.equal(data.opensInPrivateWindow,true);f.calls.push('search');return true;};
+  f.parent.getSelectedSearchBrowserState=()=>({userContextId:0,currentPage:'https://source.test/'});
+  f.parent.engagementEvent.startTrackingBounceEvent=()=>{f.calls.push('bounce');return Promise.resolve();};
+  f.parent.engagementEvent.record=()=>f.calls.push('engagement');f.parent.notifyStartNavigation=()=>f.calls.push('notify');
+  f.write=f.editor.beginOneOffPrivateWindow(f.receipt.token,f.event,f.options);
+  return {...f,source};
+}
+function preparePrivateRevert(f){
+  assert.equal(f.editor.acknowledgeOneOffPrivateWindow(f.write.token,aliasModeObservation(f.write)),true);
+  return f.editor.prepareOneOffPrivateWindowRevert(f.write.token,f.event,{persistedSearchTerms:false,focused:true});
+}
+function privateRevertObservation(p){return {...aliasModeObservation(p),focused:p.focused,userTypedValue:null,
+  pageProxyValid:p.pageProxyValid,persistedSearchTerms:false};}
+
+test('private result activation records once, restores source and opens a private window without repeating selection',async()=>{
+  const f=await privateWindowActivationFixture(),p=f.write;
+  assert.equal(p.value,'@alias private suggestion');assert.equal(f.editor.getAcknowledgedOneOffResultSelection(f.receipt.token,f.event,f.options),null);
+  assert.equal(f.editor.prepareOneOffPrivateWindowRevert(p.token,f.event,{persistedSearchTerms:false,focused:true}),null);
+  const revert=preparePrivateRevert(f);assert.ok(revert);assert.equal(revert.value,'source.test/');
+  assert.equal(f.source.calls.length,0);assert.equal(f.editor.commitOneOffPrivateWindow(revert.token),null);
+  assert.equal(f.editor.acknowledgeOneOffPrivateWindowRevert(revert.token,privateRevertObservation(revert)),true);
+  assert.equal(f.editor.snapshot.text,'source.test/');assert.equal(f.source.browser.userTypedValue,null);
+  assert.equal(f.editor.commitOneOffPrivateWindow(revert.token).attempted,true);
+  assert.deepEqual(f.calls.filter(c=>c!=='freeze'),['before','selected','search','bounce','engagement','notify']);
+  assert.equal(f.source.calls.find(c=>typeof c==='object').params.private,true);
+  assert.equal(f.editor.commitOneOffPrivateWindow(revert.token),null);f.editor.close();
+});
+
+test('private result activation rejects stale editors, engines and source documents at restoration and dispatch',async()=>{
+  for(const phase of ['input','revert','ready'])for(const mutation of ['caret','engine','document','cancel']){
+    const f=await privateWindowActivationFixture();let p=f.write;
+    if(phase!=='input')p=preparePrivateRevert(f);
+    if(phase==='ready')assert.equal(f.editor.acknowledgeOneOffPrivateWindowRevert(p.token,privateRevertObservation(p)),true);
+    if(mutation==='caret')f.editor.select(2,0,0);
+    if(mutation==='engine')f.parent.child.updateEngineStore('removed',{id:'result-engine'},-1);
+    if(mutation==='document')f.source.browser.browsingContext.currentWindowGlobal={};
+    if(mutation==='cancel')f.editor.cancel();
+    if(phase==='input'&&mutation==='document'){f.editor.close();continue;}
+    if(phase==='input')assert.equal(f.editor.getOneOffPrivateWindow(p.token),null);
+    else if(phase==='revert')assert.equal(f.editor.acknowledgeOneOffPrivateWindowRevert(p.token,privateRevertObservation(p)),false);
+    else assert.equal(f.editor.commitOneOffPrivateWindow(p.token)?.attempted??false,false);
+    assert.equal(f.source.calls.length,0,phase+mutation);f.editor.close();
+  }
+});
+
+test('private input and restore observations reject recursive consumption and copied authority',async()=>{
+  const f=await privateWindowActivationFixture(),write=f.write;let nested;
+  assert.equal(f.editor.getOneOffPrivateWindow({...write.token}),null);
+  const observed={...aliasModeObservation(write),get text(){nested??=f.editor.acknowledgeOneOffPrivateWindow(write.token,aliasModeObservation(write));return write.value;}};
+  const before=f.editor.snapshot;
+  assert.equal(f.editor.acknowledgeOneOffPrivateWindow(write.token,observed),false);assert.equal(nested,true);
+  assert.equal(f.editor.snapshot.selectionRevision,before.selectionRevision+1);
+  const revert=f.editor.prepareOneOffPrivateWindowRevert(write.token,f.event,{persistedSearchTerms:false,focused:true});
+  nested=undefined;const beforeRevert=f.editor.snapshot;
+  const restore={...privateRevertObservation(revert),get text(){nested??=f.editor.acknowledgeOneOffPrivateWindowRevert(revert.token,privateRevertObservation(revert));return revert.value;}};
+  assert.equal(f.editor.acknowledgeOneOffPrivateWindowRevert(revert.token,restore),false);assert.equal(nested,true);
+  assert.equal(f.editor.snapshot.selectionRevision,beforeRevert.selectionRevision+1);
+  assert.equal(f.editor.commitOneOffPrivateWindow(revert.token).attempted,true);f.editor.close();
+});
+
+test('private recording callbacks cancel or replace engines before engagement and never arm a window',async()=>{
+  for(const action of ['cancel','engine','throw']){
+    const f=await privateWindowActivationFixture();
+    f.parent.recordSearch=()=>{
+      if(action==='cancel')f.editor.cancel();
+      if(action==='engine')f.parent.child.updateEngineStore('removed',{id:'result-engine'},-1);
+      if(action==='throw')throw Error('record failed');return true;
+    };
+    if(action==='throw')assert.throws(()=>preparePrivateRevert(f),/record failed/);else assert.equal(preparePrivateRevert(f),null);
+    assert.equal(f.calls.includes('engagement'),false);assert.equal(f.source.calls.length,0);f.editor.close();
+  }
+});
+
+test('private source teardown and hidden results revoke restoration without opening or rewriting browser state',async()=>{
+  const f=await privateWindowActivationFixture();f.editor.acknowledgeOneOffPrivateWindow(f.write.token,aliasModeObservation(f.write));
+  f.editor.publishPresentation(2,f.query.id,[],false);
+  assert.equal(f.editor.prepareOneOffPrivateWindowRevert(f.write.token,f.event,{persistedSearchTerms:false,focused:true}),null);
+  assert.equal(f.source.browser.userTypedValue,'typed words');f.editor.close();
+  const g=await privateWindowActivationFixture(),revert=preparePrivateRevert(g);g.editor.close();
+  assert.equal(g.source.p.getCurrentLoadRecovery(revert.token),null);assert.equal(g.source.calls.length,0);
+});
+
+test('private opener checks restored source again after preparation and focus callbacks',()=>{
+  for(const stage of ['prepare','focus']){
+    const f=privateParentFixture(),token=f.p.preparePrivateWindowLoad(f.privateData,f.stateToken);
+    const recovery=f.p.preparePrivateWindowSourceRevert(token);f.p.acknowledgeCurrentLoadRecovery(recovery.token);
+    if(stage==='prepare')f.p.prepare=()=>{f.browser.userTypedValue='changed';};
+    else f.browser.focus=()=>{f.browser.browsingContext.currentWindowGlobal={};};
+    assert.equal(f.p.commitCurrentLoad(token).attempted,false);assert.equal(f.calls.length,0);
+  }
 });
