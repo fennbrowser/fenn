@@ -168,3 +168,20 @@ test('engine search terms preserve suggestion, query and last-search fallback wi
     [{payload:{suggestion:'',query:' query '}},' query '],[{payload:{suggestion:'',query:''}},' typed ']])
     assert.equal(sandbox.Model.engineSearchTerms(result,' typed '),expected);
 });
+
+
+test('selected navigation policy preserves all retained boolean precedence combinations',()=>{
+  for(let bits=0;bits<64;bits++){
+    const [isComposing,hasSelectedElement,hasSearchModeEngine,hasOneOffEngine,selectedPrivateEngineResult,safeToPickResult]=
+      Array.from({length:6},(_,i)=>!!(bits&(1<<i)));
+    assert.equal(sandbox.Model.pickSelectedNavigationResult({isComposing,hasSelectedElement,hasSearchModeEngine,
+      hasOneOffEngine,selectedPrivateEngineResult,safeToPickResult}),
+      !isComposing&&hasSelectedElement&&!hasSearchModeEngine&&(!hasOneOffEngine||selectedPrivateEngineResult)&&safeToPickResult);
+  }
+});
+
+test('token alias precedence preserves autofill and keyword truthiness',()=>{
+  for(const [result,expected] of [[null,false],[{},false],[{autofill:{},payload:{}},false],
+    [{autofill:{},payload:{keyword:''}},false],[{autofill:{},payload:{keyword:'@example'}},true],
+    [{autofill:null,payload:{keyword:'@example'}},false]])assert.equal(sandbox.Model.pickTokenAliasResult(result),expected);
+});

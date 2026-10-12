@@ -7686,3 +7686,46 @@ test('acknowledged engine candidates expire on mutable results, command policy a
     assert.equal(f.editor.getAcknowledgedOneOffEngineSearch(receipt.token),null,action);f.editor.close();
   }
 });
+
+
+async function enginePrecedenceFixture(text='typed words'){
+  const f=await oneOffCommandFixture();
+  const query=await f.editor.edit({},edit(2,text));
+  const result={id:'precedence-result',type:f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH,
+    payload:{suggestion:'terms',inPrivateWindow:true,isPrivateEngine:true,keyword:'@alias'},autofill:{}};
+  query.results=[result];f.editor.publishPresentation(2,query.id,[result],true);
+  const command=await f.editor.beginOneOffCommand(2,query.id,'engine:second',oneOffFacts({shiftKey:true}));
+  const candidate=f.editor.beginOneOffEngineSearch(command.token,null);
+  const receipt=f.editor.acknowledgeOneOffEngineSearch(candidate.token,{...candidate.edit,resultForCurrentValue:null,searchMode:null,pageProxyValid:false});
+  assert.ok(receipt);return {...f,query,result,command,candidate,receipt};
+}
+
+test('acknowledged one-off precedence describes safe private selection before alias and engine fallback',async()=>{
+  const f=await enginePrecedenceFixture('@alias');
+  const facts={selectedResult:f.result,hasSelectedElement:true,safeToPickResult:true,firstResult:f.result};
+  const describe=overrides=>f.editor.describeOneOffNavigationPrecedence(f.receipt.token,{...facts,...overrides});
+  assert.equal(describe({}).branch,'selected-private-result');
+  assert.equal(describe({safeToPickResult:false}).branch,'engine-search');
+  f.result.payload.isPrivateEngine=false;assert.equal(describe({}).branch,'engine-search');
+  f.result.payload.isPrivateEngine=true;
+  const alias=describe({selectedResult:null,hasSelectedElement:false,safeToPickResult:false});
+  assert.equal(alias.branch,'token-alias-result');assert.equal(alias.selectionAcknowledgmentPending,true);
+  assert.equal(alias.navigationResolutionPending,true);assert.ok(Object.isFrozen(alias));
+  f.result.payload.keyword='';assert.equal(describe({selectedResult:null,hasSelectedElement:false,safeToPickResult:false}).branch,'engine-search');
+  assert.equal(f.parent.started.length,2);assert.equal(f.parent.engagements.length,0);f.editor.close();
+});
+
+test('one-off precedence rejects foreign, reordered or reentrant selection observations and stale host receipts',async()=>{
+  for(const kind of ['copy','wrong-first','hidden','missing-element','safe-null','reentry','caret']){
+    const f=await enginePrecedenceFixture('@alias');
+    const facts={selectedResult:f.result,hasSelectedElement:true,safeToPickResult:true,firstResult:f.result};
+    if(kind==='copy')facts.selectedResult={...f.result};
+    if(kind==='wrong-first')facts.firstResult=null;
+    if(kind==='hidden')f.editor.publishPresentation(2,f.query.id,[],true);
+    if(kind==='missing-element')facts.hasSelectedElement=false;
+    if(kind==='safe-null')facts.selectedResult=null;
+    if(kind==='reentry')Object.defineProperty(facts,'safeToPickResult',{get(){f.editor.select(2,0,0);return true;}});
+    if(kind==='caret')f.editor.select(2,0,0);
+    assert.equal(f.editor.describeOneOffNavigationPrecedence(f.receipt.token,facts),null,kind);f.editor.close();
+  }
+});
