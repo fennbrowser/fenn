@@ -6128,3 +6128,123 @@ test('non-address SAPs hide one-offs without initializing engines',async()=>{
   const plan=await other.prepareOneOffVisibility();assert.equal(plan.willHide,true);assert.equal(plan.isCurrent(),true);
   other.close();assert.equal(plan.isCurrent(),false);f.session.close();
 });
+
+
+const oneOffFacts=(extra={})=>({pageProxyValid:false,keyboardAlt:false,mouseBackground:false,
+  shiftKey:false,selectedTabIsEmpty:false,...extra});
+async function oneOffCommandFixture(options={}){
+  const f=await editorFixture(options);oneOffStore(f,{second:true,local:true});
+  const query=await f.editor.edit({},edit(1,'typed words'));
+  f.editor.publishPresentation(1,query.id,[],true);
+  return {...f,query,local:f.sandbox.UrlbarShared.LOCAL_SEARCH_MODES[0]};
+}
+
+test('independent one-off plans preserve engine/local command, modifier and page-value decisions without effects',async()=>{
+  for(const isPrivate of [false,true]){
+    const f=await oneOffCommandFixture({isPrivate}),snapshot=f.editor.snapshot,before=f.parent.started.length;
+    for(const engine of [false,true])for(const pageProxyValid of [false,true])for(const keyboardAlt of [false,true])
+    for(const shiftKey of [false,true])for(const mouseBackground of [false,true])for(const selectedTabIsEmpty of [false,true]){
+      const key=engine?'engine:default':`local:${f.local.restrict}`;
+      const p=await f.editor.beginOneOffCommand(1,f.query.id,key,oneOffFacts({pageProxyValid,keyboardAlt,shiftKey,mouseBackground,selectedTabIsEmpty}));
+      const tab=mouseBackground||(keyboardAlt&&!selectedTabIsEmpty);
+      const kind=engine&&!pageProxyValid&&(shiftKey||tab)?'navigation':tab?'new-tab':'query';
+      assert.ok(p);assert.equal(p.kind,kind);assert.equal(p.where,tab?'tab':'current');
+      assert.equal(p.engineId,engine?'default':null);assert.equal(p.allowAutofill,!engine);
+      assert.equal(p.params?.inBackground,mouseBackground?true:undefined);
+      assert.equal(p.searchMode.isPreview,kind!=='new-tab');assert.equal(p.searchMode.entry,'oneoff');
+      assert.equal(p.newTabTypedValue,kind==='new-tab'&&!pageProxyValid?'typed words':null);
+      assert.equal(p.startQuery,kind==='query'||(kind==='new-tab'&&!mouseBackground));
+      assert.equal(f.editor.getOneOffCommand(p.token),p);assert.ok(Object.isFrozen(p));assert.ok(Object.isFrozen(p.searchMode));
+      assert.equal(f.editor.snapshot,snapshot);assert.equal(f.parent.started.length,before);assert.equal(f.parent.engagements.length,0);
+    }
+    f.editor.close();
+  }
+});
+
+test('one-off plans apply search-open-in-tab preference and empty-value mode entry',async()=>{
+  const f=await oneOffCommandFixture();f.prefs['browser.search.openintab']=true;
+  for(const keyboardAlt of [false,true]){
+    const p=await f.editor.beginOneOffCommand(1,f.query.id,'engine:default',oneOffFacts({keyboardAlt}));
+    assert.equal(p.where,keyboardAlt?'current':'tab');assert.equal(p.kind,keyboardAlt?'query':'navigation');
+  }
+  const q=await f.editor.edit({},edit(2,''));f.editor.publishPresentation(2,q.id,[],true);
+  const p=await f.editor.beginOneOffCommand(2,q.id,'engine:default',oneOffFacts({shiftKey:true}));
+  assert.equal(p.kind,'new-tab');assert.equal(p.newTabTypedValue,null);assert.equal(p.searchMode.isPreview,false);f.editor.close();
+});
+
+test('one-off plans reject missing, hidden and disabled choices without constructing a selected button',async()=>{
+  for(const choice of ['missing','hidden','local-disabled','all-disabled','closed-popup','wrong-query','wrong-revision']){
+    const f=await oneOffCommandFixture();let key='engine:default',queryId=f.query.id,revision=1;
+    if(choice==='missing')key='engine:missing';
+    if(choice==='hidden')f.parent.child.updateEngineStore('changed',{id:'default',name:'Default',hideOneOffButton:true},0);
+    if(choice==='local-disabled'){key=`local:${f.local.restrict}`;f.prefs[f.local.pref]=false;}
+    if(choice==='all-disabled')f.prefs['scotchBonnet.disableOneOffs']=true;
+    if(choice==='closed-popup')f.editor.publishPresentation(1,queryId,[],false);
+    if(choice==='wrong-query')queryId++;
+    if(choice==='wrong-revision')revision++;
+    assert.equal(await f.editor.beginOneOffCommand(revision,queryId,key,oneOffFacts()),null,choice);f.editor.close();
+  }
+});
+
+test('one-off proposals are scoped to exact caret, query, popup lifetime and current eligibility',async()=>{
+  for(const mutation of ['caret','edit','cancel','close-reopen','replace','engine','default','local','disabled','open-pref','scope']){
+    const f=await oneOffCommandFixture(),p=await f.editor.beginOneOffCommand(1,f.query.id,'engine:default',oneOffFacts());
+    assert.equal(f.editor.getOneOffCommand({}),null);
+    if(mutation==='caret')f.editor.select(1,0,0);
+    if(mutation==='edit')await f.editor.edit({},edit(2,'next'));
+    if(mutation==='cancel')f.editor.cancel();
+    if(mutation==='close-reopen'){f.editor.publishPresentation(1,f.query.id,[],false);f.editor.publishPresentation(1,f.query.id,[],true);}
+    if(mutation==='replace')await f.editor.beginOneOffCommand(1,f.query.id,`local:${f.local.restrict}`,oneOffFacts());
+    if(mutation==='engine')f.parent.child.updateEngineStore('removed',{id:'default'});
+    if(mutation==='default')f.parent.child.updateEngineStore('default',{id:'second'},1);
+    if(mutation==='local')f.prefs[f.local.pref]=false;
+    if(mutation==='disabled')f.prefs['scotchBonnet.disableOneOffs']=true;
+    if(mutation==='open-pref')f.prefs['browser.search.openintab']=true;
+    if(mutation==='scope'){f.loseScope();assert.throws(()=>f.editor.getOneOffCommand(p.token),/scope changed/);}
+    else assert.equal(f.editor.getOneOffCommand(p.token),null,mutation);
+    f.editor.close();
+  }
+});
+
+test('one-off asynchronous engine readiness cannot revive a superseded editor or proposal',async()=>{
+  for(const mutation of ['caret','edit','cancel','close-reopen','replace','disabled','scope','close']){
+    const f=await oneOffCommandFixture(),store=f.parent.child.engineStore,init=store.init;let release;
+    store.init=()=>new Promise(resolve=>{release=resolve;});
+    const pending=f.editor.beginOneOffCommand(1,f.query.id,'engine:default',oneOffFacts());store.init=init;
+    if(mutation==='caret')f.editor.select(1,0,0);
+    if(mutation==='edit')await f.editor.edit({},edit(2,'next'));
+    if(mutation==='cancel')f.editor.cancel();
+    if(mutation==='close-reopen'){f.editor.publishPresentation(1,f.query.id,[],false);f.editor.publishPresentation(1,f.query.id,[],true);}
+    if(mutation==='replace')await f.editor.beginOneOffCommand(1,f.query.id,'engine:second',oneOffFacts());
+    if(mutation==='disabled')f.prefs['scotchBonnet.disableOneOffs']=true;
+    if(mutation==='scope')f.loseScope();
+    if(mutation==='close')f.editor.close();
+    release();
+    if(mutation==='scope'||mutation==='close')await assert.rejects(pending,/scope changed|closed/);
+    else assert.equal(await pending,null,mutation);
+    f.editor.close();
+  }
+});
+
+test('one-off host observations are copied once and reentrant caret changes reject the plan',async()=>{
+  for(const reenter of [false,true]){
+    const f=await oneOffCommandFixture(),facts=oneOffFacts();let reads=0;
+    Object.defineProperty(facts,'shiftKey',{get(){reads++;if(reenter)f.editor.select(1,0,0);return false;}});
+    const p=await f.editor.beginOneOffCommand(1,f.query.id,'engine:default',facts);
+    assert.equal(reads,1);if(reenter)assert.equal(p,null);else {
+      facts.mouseBackground=true;assert.equal(f.editor.getOneOffCommand(p.token),p);assert.equal(p.where,'current');
+    }
+    f.editor.close();
+  }
+});
+
+test('one-off malformed observations and engine initialization failures do not leave a usable plan',async()=>{
+  const f=await oneOffCommandFixture();
+  for(const facts of [null,{},oneOffFacts({shiftKey:'yes'})])await assert.rejects(
+    f.editor.beginOneOffCommand(1,f.query.id,'engine:default',facts),/Invalid one-off command facts/);
+  const store=f.parent.child.engineStore,init=store.init;
+  store.init=async()=>{throw Error('search unavailable');};
+  await assert.rejects(f.editor.beginOneOffCommand(1,f.query.id,'engine:default',oneOffFacts()),/search unavailable/);
+  store.init=init;const p=await f.editor.beginOneOffCommand(1,f.query.id,'engine:default',oneOffFacts());
+  assert.equal(f.editor.getOneOffCommand(p.token),p);f.editor.close();
+});

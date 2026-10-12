@@ -443,7 +443,7 @@ index 311e0d736c..130388d39e 100644
          this.panel,
          anchor,
 diff --git a/browser/components/search/SearchOneOffs.sys.mjs b/browser/components/search/SearchOneOffs.sys.mjs
-index 7f6f1f35b2..d7e75b5f54 100644
+index 7f6f1f35b2..9c8c961302 100644
 --- a/browser/components/search/SearchOneOffs.sys.mjs
 +++ b/browser/components/search/SearchOneOffs.sys.mjs
 @@ -10,6 +10,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -492,6 +492,55 @@ index 7f6f1f35b2..d7e75b5f54 100644
  
      this._engineInfo = { default: defaultEngine, engines };
      return this._engineInfo;
+@@ -584,36 +575,20 @@ export class SearchOneOffs {
+    *          the page should be loaded.
+    */
+   _whereToOpen(aEvent, aForceNewTab = false) {
+-    let where = "current";
+-    let params;
+-    // Open ctrl/cmd clicks on one-off buttons in a new background tab.
++    // Preserve conditional preference/tab/event reads before applying policy.
+     if (aForceNewTab) {
+-      where = "tab";
+-      if (Services.prefs.getBoolPref("browser.tabs.loadInBackground")) {
+-        params = {
+-          inBackground: true,
+-        };
+-      }
+-    } else {
+-      let newTabPref = Services.prefs.getBoolPref("browser.search.openintab");
+-      if (
+-        (KeyboardEvent.isInstance(aEvent) && aEvent.altKey) != newTabPref &&
+-        !this.window.gBrowser.selectedTab.isEmpty
+-      ) {
+-        where = "tab";
+-      }
+-      if (
+-        MouseEvent.isInstance(aEvent) &&
+-        (aEvent.button == 1 || aEvent.getModifierState("Accel"))
+-      ) {
+-        where = "tab";
+-        params = {
+-          inBackground: true,
+-        };
+-      }
++      const { where, params } = lazy.UrlbarSearchModeModel.oneOffOpenPolicy({ forceNewTab: true,
++        loadInBackground: Services.prefs.getBoolPref("browser.tabs.loadInBackground") });
++      // The retained searchbar adds focus options to these parameters.
++      return { where, params: params && { ...params } };
+     }
+-
+-    return { where, params };
++    const newTabPref = Services.prefs.getBoolPref("browser.search.openintab");
++    const wantsNewTab = (KeyboardEvent.isInstance(aEvent) && aEvent.altKey) != newTabPref;
++    const tabIsEmpty = wantsNewTab ? this.window.gBrowser.selectedTab.isEmpty : true;
++    const mouseBackground = MouseEvent.isInstance(aEvent) &&
++      (aEvent.button == 1 || aEvent.getModifierState("Accel"));
++    const { where, params } = lazy.UrlbarSearchModeModel.oneOffOpenPolicy({ wantsNewTab, tabIsEmpty, mouseBackground });
++    return { where, params: params && { ...params } };
+   }
+ 
+   /**
 diff --git a/browser/components/shell/jar.mn b/browser/components/shell/jar.mn
 index 920dbda4df..0816cddd68 100644
 --- a/browser/components/shell/jar.mn
@@ -2093,7 +2142,7 @@ index bc6837e211..d5ff780b17 100644
  
      visibleResults.forEach((result, index) => {
 diff --git a/browser/components/urlbar/UrlbarSearchOneOffs.sys.mjs b/browser/components/urlbar/UrlbarSearchOneOffs.sys.mjs
-index 14414b8033..57e3352738 100644
+index 14414b8033..78801d58d4 100644
 --- a/browser/components/urlbar/UrlbarSearchOneOffs.sys.mjs
 +++ b/browser/components/urlbar/UrlbarSearchOneOffs.sys.mjs
 @@ -8,6 +8,7 @@ import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
@@ -2104,7 +2153,35 @@ index 14414b8033..57e3352738 100644
    UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
  });
  
-@@ -294,17 +295,11 @@ export class UrlbarSearchOneOffs extends SearchOneOffs {
+@@ -193,9 +194,7 @@ export class UrlbarSearchOneOffs extends SearchOneOffs {
+ 
+     // We allow autofill in local but not remote search modes.
+     let startQueryParams = {
+-      allowAutofill:
+-        !searchMode.engineName &&
+-        searchMode.source != lazy.UrlbarShared.RESULT_SOURCE.SEARCH,
++      allowAutofill: lazy.UrlbarSearchModeModel.oneOffAllowsAutofill(searchMode),
+       event,
+     };
+ 
+@@ -207,11 +206,11 @@ export class UrlbarSearchOneOffs extends SearchOneOffs {
+ 
+     // Some key combinations should execute a search immediately. We handle
+     // these here, outside the switch statement.
+-    if (
+-      userTypedSearchString &&
+-      engine &&
+-      (event.shiftKey || where != "current")
+-    ) {
++    const commandKind = lazy.UrlbarSearchModeModel.oneOffCommandKind({
++      userTypedSearchString, hasEngine: !!engine, where,
++      shiftKey: userTypedSearchString && engine ? event.shiftKey : false,
++    });
++    if (commandKind === "navigation") {
+       this.input.handleNavigation({
+         event,
+         oneOffParams: {
+@@ -294,17 +293,11 @@ export class UrlbarSearchOneOffs extends SearchOneOffs {
      // We need to call super.willHide() even when we return false below because
      // it has the necessary side effect of creating this._engineInfo.
      let superWillHide = await super.willHide();
@@ -9488,10 +9565,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..4c4b836754
+index 0000000000..e9f0904fd5
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2452 @@
+@@ -0,0 +1,2485 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9548,6 +9625,7 @@ index 0000000000..4c4b836754
 +  #completion = null;
 +  #finishedPresentation = null;
 +  #finishedPresentationState = null;
++  #oneOffCommand = null;
 +  #autofill = null;
 +  #placeholder = null;
 +  #closeRequest = null;
@@ -10109,6 +10187,7 @@ index 0000000000..4c4b836754
 +    this.#inputState = null;
 +    this.#finishedPresentation = null;
 +    this.#finishedPresentationState = null;
++    this.#oneOffCommand = null;
 +    this.#inputPresentation = null;
 +    this.#inputPresentationState = null;
 +    this.#inputPopupClose = null;
@@ -11345,6 +11424,35 @@ index 0000000000..4c4b836754
 +    this.#queries.discardEngagement();
 +  }
 +
++  /** Propose an eligible one-off command for the exact observed editor/query. */
++  async beginOneOffCommand(revision, queryId, key, facts) {
++    this.#check();
++    const edit = this.#edit, previousMode = this.#searchMode;
++    if (!edit || edit.revision !== revision || edit.composing || this.#hiddenResults) return null;
++    const pending = { token: Object.freeze({}), edit, previousMode, prepared: null, proposal: null };
++    this.#oneOffCommand = pending;
++    try {
++      pending.prepared = await this.#queries.prepareOneOffCommand(queryId, key, edit.text, facts);
++      if (this.#closed || !this.#isCurrent() || this.#oneOffCommand !== pending ||
++          this.#edit !== edit || this.#searchMode !== previousMode || this.#hiddenResults || !pending.prepared?.isCurrent()) return null;
++      pending.proposal = Object.freeze({ token: pending.token, edit, queryId, ...pending.prepared.description });
++      return pending.proposal;
++    } catch (error) {
++      if (this.#oneOffCommand === pending) this.#oneOffCommand = null;
++      throw error;
++    }
++  }
++
++  /** Revalidate a proposal. This grants no browser dispatch or mode-write authority. */
++  getOneOffCommand(token) {
++    this.#check();
++    const pending = this.#oneOffCommand;
++    if (!pending || pending.token !== token || !pending.proposal) return null;
++    if (pending.edit !== this.#edit || pending.previousMode !== this.#searchMode || this.#hiddenResults ||
++        !pending.prepared.isCurrent()) { this.#oneOffCommand = null; return null; }
++    return pending.proposal;
++  }
++
 +  /** Describe a search-mode command for the exact observed editor, without applying it. */
 +  async describeSearchCommand(revision, value, options = {}) {
 +    this.#check();
@@ -11855,6 +11963,7 @@ index 0000000000..4c4b836754
 +  cancel() {
 +    this.#finishedPresentation = null;
 +    this.#finishedPresentationState = null;
++    this.#oneOffCommand = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
 +    this.#committingPreviewClose = null;
@@ -11899,6 +12008,7 @@ index 0000000000..4c4b836754
 +  close() {
 +    this.#finishedPresentation = null;
 +    this.#finishedPresentationState = null;
++    this.#oneOffCommand = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
 +    this.#committingPreviewClose = null;
@@ -11946,10 +12056,10 @@ index 0000000000..4c4b836754
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..f96753a695
+index 0000000000..50810b1427
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1054 @@
+@@ -0,0 +1,1105 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11987,6 +12097,7 @@ index 0000000000..f96753a695
 +  #selectionRequest = null;
 +  #engagementActive = false;
 +  #endingEngagement = false;
++  #oneOffDismissalGeneration = 0;
 +
 +  constructor({ context, isCurrent, onPresentationRequest = null }) {
 +    if (typeof isCurrent != "function") throw new TypeError("Missing scope check");
@@ -12585,6 +12696,55 @@ index 0000000000..f96753a695
 +    this.#controller.engagementEvent.discard();
 +  }
 +
++  /** Prepare an eligible one-off action without a selected DOM button or dispatch. */
++  async prepareOneOffCommand(queryId, key, value, facts) {
++    this.#check();
++    const query = this.#query, dismissalGeneration = this.#oneOffDismissalGeneration;
++    if (typeof key !== "string" || typeof value !== "string" || !facts) {
++      throw new TypeError("Invalid one-off command facts");
++    }
++    // Capture host observations once; getters may reenter the editor/session.
++    const observed = Object.freeze({ pageProxyValid: facts.pageProxyValid, keyboardAlt: facts.keyboardAlt,
++      mouseBackground: facts.mouseBackground, shiftKey: facts.shiftKey, selectedTabIsEmpty: facts.selectedTabIsEmpty });
++    if (Object.values(observed).some(fact => typeof fact !== "boolean")) {
++      throw new TypeError("Invalid one-off command facts");
++    }
++    if (!this.ownsQuery(queryId) || !this.#controller.resultsOpen || this.#context.sapName !== "urlbar") return null;
++    const availability = await this.prepareOneOffVisibility();
++    this.#check();
++    const current = () => !this.#closed && this.#isCurrent() && this.#query === query &&
++      this.#oneOffDismissalGeneration === dismissalGeneration &&
++      this.#controller.resultsOpen && availability?.isCurrent() && !availability.willHide;
++    if (!current()) return null;
++    const description = this.#describeOneOffCommand(key, value, observed);
++    if (!description) return null;
++    return Object.freeze({ description, isCurrent: () => current() &&
++      UrlbarShared.deepEqual(this.#describeOneOffCommand(key, value, observed), description) });
++  }
++
++  #describeOneOffCommand(key, value, facts) {
++    const store = this.#controller.engineStore;
++    const engines = UrlbarSearchModeModel.oneOffEngines(store.getEngines(), store.default, true);
++    const engine = engines.find(item => key === `engine:${item.id}`);
++    const local = !engine && UrlbarShared.LOCAL_SEARCH_MODES.find(
++      item => key === `local:${item.restrict}` && UrlbarPrefs.get(item.pref));
++    if (!engine && !local) return null;
++    const rawMode = engine ? { engineName: engine.name, entry: "oneoff" } : { source: local.source, entry: "oneoff" };
++    const { where, params } = UrlbarSearchModeModel.oneOffOpenPolicy({
++      wantsNewTab: facts.keyboardAlt !== !!UrlbarPrefs.get("browser.search.openintab"),
++      tabIsEmpty: facts.selectedTabIsEmpty, mouseBackground: facts.mouseBackground });
++    const userTypedSearchString = !!value && !facts.pageProxyValid;
++    const kind = UrlbarSearchModeModel.oneOffCommandKind({ userTypedSearchString,
++      hasEngine: !!engine, shiftKey: facts.shiftKey, where });
++    const searchMode = UrlbarSearchModeModel.normalizeMode(
++      kind === "new-tab" ? { ...rawMode, isPreview: false } : rawMode, engine);
++    return Object.freeze({ key, kind, engineId: engine?.id ?? null, where, params, searchMode,
++      allowAutofill: UrlbarSearchModeModel.oneOffAllowsAutofill(rawMode),
++      newTabTypedValue: kind === "new-tab" && userTypedSearchString ? value : null,
++      startQuery: kind === "query" || (kind === "new-tab" && !params?.inBackground),
++      selectAll: kind === "query" && where !== "current", clearOneOffSelection: true });
++  }
++
 +  /** Prepare input.search policy using this consumer's live engine store, without dispatch. */
 +  async prepareSearchCommand(value, { engineId = null, searchModeEntry = "searchbutton",
 +    menuKey = null, pageProxyValid, where = "current", shiftKey = false } = {}) {
@@ -12969,6 +13129,7 @@ index 0000000000..f96753a695
 +        !visibleResults.includes(this.#selectionRequest?.result))) {
 +      this.#selectionRequest = null;
 +    }
++    if (!open) this.#oneOffDismissalGeneration++;
 +    this.#controller.visibleResults = [...visibleResults];
 +    this.#controller.resultsOpen = open;
 +  }
@@ -13545,10 +13706,10 @@ index 0000000000..1fec37fd9e
 +}
 diff --git a/browser/components/urlbar/content/UrlbarSearchModeModel.mjs b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
 new file mode 100644
-index 0000000000..ee1eda87ea
+index 0000000000..812e5f9c00
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
-@@ -0,0 +1,485 @@
+@@ -0,0 +1,503 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13560,6 +13721,24 @@ index 0000000000..ee1eda87ea
 +
 +export class UrlbarSearchModeModel {
 +  static MAX_OPENSEARCH_ENGINES = 3;
++
++  /** One-off destinations differ from generic link modifier policy. */
++  static oneOffOpenPolicy({ forceNewTab = false, loadInBackground = false,
++    wantsNewTab = false, tabIsEmpty = true, mouseBackground = false }) {
++    const where = forceNewTab || (wantsNewTab && !tabIsEmpty) || mouseBackground ? "tab" : "current";
++    const background = forceNewTab ? loadInBackground : mouseBackground;
++    return Object.freeze({ where, params: background ? Object.freeze({ inBackground: true }) : undefined });
++  }
++
++  static oneOffAllowsAutofill(searchMode) {
++    return !searchMode.engineName && searchMode.source !== UrlbarShared.RESULT_SOURCE.SEARCH;
++  }
++
++  /** Keep immediate engine searches distinct from entering a search mode. */
++  static oneOffCommandKind({ userTypedSearchString, hasEngine, shiftKey, where }) {
++    if (userTypedSearchString && hasEngine && (shiftKey || where !== "current")) return "navigation";
++    return where === "tab" ? "new-tab" : "query";
++  }
 +
 +  /** Shared legacy one-off engine eligibility, before any button construction. */
 +  static oneOffEngines(engines, defaultEngine, includeCurrentEngine) {
