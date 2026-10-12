@@ -7825,3 +7825,70 @@ test('verified safe-to-pick keeps heuristic and non-typed short circuits and rej
     f.editor.close();
   }
 });
+
+
+async function engineNavigationFixture(){
+  const f=await enginePrecedenceFixture(),facts=engineSelectionFacts(f,false);
+  const selection=f.editor.beginOneOffNavigationSelection(f.receipt.token,facts);
+  const receipt=f.editor.acknowledgeOneOffNavigationSelection(selection.token,engineSelectionObservation(f,selection,facts));
+  return {...f,facts,selection,selectionReceipt:receipt};
+}
+
+test('resolved engine navigation binds acknowledged terms and destination without recording or dispatch',async()=>{
+  const f=await engineNavigationFixture(),before=f.editor.snapshot;
+  const plan=f.editor.resolveOneOffEngineNavigation(f.selectionReceipt.token);
+  assert.ok(plan);assert.ok(Object.isFrozen(plan));assert.equal(plan.branch,'engine-search');
+  assert.equal(plan.navigationResolutionPending,false);assert.equal(plan.browserTargetPending,true);
+  assert.equal(plan.engagementPending,true);assert.equal(plan.searchRecordingPending,true);assert.equal(plan.dispatchPending,true);
+  for(const key of ['engineId','engineName','searchString','typedValue','where','inBackground','isPrivate','selType'])
+    assert.equal(plan[key],f.candidate[key],key);
+  assert.equal(f.editor.resolveOneOffEngineNavigation(f.selectionReceipt.token),plan);
+  assert.equal(f.editor.getOneOffEngineNavigation(plan.token),plan);
+  assert.equal(f.editor.getOneOffEngineNavigation({...plan.token}),null);
+  assert.equal(f.editor.resolveOneOffEngineNavigation({...f.selectionReceipt.token}),null);
+  assert.equal(f.editor.snapshot,before);assert.equal(f.parent.started.length,2);assert.equal(f.parent.engagements.length,0);f.editor.close();
+});
+
+test('engine navigation resolution refuses unacknowledged and private or token-alias branches',async()=>{
+  for(const branch of ['selected-private-result','token-alias-result']){
+    const f=await enginePrecedenceFixture(branch==='token-alias-result'?'@alias':'typed words'),facts=engineSelectionFacts(f,branch==='selected-private-result');
+    const selection=f.editor.beginOneOffNavigationSelection(f.receipt.token,facts);
+    assert.equal(f.editor.resolveOneOffEngineNavigation(selection.token),null);
+    assert.equal(f.editor.resolveOneOffEngineNavigation(f.receipt.token),null);
+    const receipt=f.editor.acknowledgeOneOffNavigationSelection(selection.token,engineSelectionObservation(f,selection,facts));
+    assert.equal(receipt.branch,branch);assert.equal(f.editor.resolveOneOffEngineNavigation(receipt.token),null);f.editor.close();
+  }
+});
+
+test('resolved engine plans expire with command policy, selection, host receipts and query scope',async()=>{
+  for(const action of ['caret','engine','policy','selection','candidate','cancel','result-order']){
+    const f=await engineNavigationFixture(),plan=f.editor.resolveOneOffEngineNavigation(f.selectionReceipt.token);assert.ok(plan);
+    if(action==='caret')f.editor.select(2,0,0);
+    if(action==='engine')f.parent.child.updateEngineStore('removed',{id:'second'});
+    if(action==='policy')f.prefs['scotchBonnet.disableOneOffs']=true;
+    if(action==='selection')f.editor.beginOneOffNavigationSelection(f.receipt.token,f.facts);
+    if(action==='candidate')f.editor.beginOneOffEngineSearch(f.command.token,null);
+    if(action==='cancel')f.editor.cancel();
+    if(action==='result-order')f.editor.publishPresentation(2,f.query.id,[],true);
+    assert.equal(f.editor.getOneOffEngineNavigation(plan.token),null,action);
+    assert.equal(f.editor.resolveOneOffEngineNavigation(f.selectionReceipt.token),null,action);f.editor.close();
+  }
+});
+
+
+test('engine resolution preserves suggested terms separately from typed text and background destination',async()=>{
+  for(const background of [false,true]){
+    const f=await oneOffEngineSearchFixture();
+    const command=await f.editor.beginOneOffCommand(1,f.query.id,'engine:second',oneOffFacts(background?{mouseBackground:true}:{shiftKey:true}));
+    const candidate=f.editor.beginOneOffEngineSearch(command.token,f.result);
+    const host=f.editor.acknowledgeOneOffEngineSearch(candidate.token,oneOffEngineObservation(f,candidate));
+    const facts={selectedResult:null,firstResult:f.result,hasSelectedElement:false,safeToPickResult:false,valueIsTyped:true};
+    const selection=f.editor.beginOneOffNavigationSelection(host.token,facts);
+    const receipt=f.editor.acknowledgeOneOffNavigationSelection(selection.token,{...selection.edit,...facts,
+      resultForCurrentValue:f.result,searchMode:null,pageProxyValid:false});
+    const plan=f.editor.resolveOneOffEngineNavigation(receipt.token);
+    assert.equal(plan.searchString,'suggested words');assert.equal(plan.typedValue,'typed words');
+    assert.equal(plan.where,background?'tab':'current');assert.equal(plan.inBackground,background?true:undefined);
+    f.result.payload.suggestion='new';assert.equal(f.editor.getOneOffEngineNavigation(plan.token),null);f.editor.close();
+  }
+});

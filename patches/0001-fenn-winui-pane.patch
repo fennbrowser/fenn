@@ -9856,10 +9856,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..b410b285cd
+index 0000000000..5c6f284108
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3402 @@
+@@ -0,0 +1,3428 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11892,6 +11892,32 @@ index 0000000000..b410b285cd
 +    return this.getOneOffNavigationSelection(receipt.selectionToken) === selection.proposal &&
 +      this.#oneOffCommand?.engineSearch === captured && captured.selection === selection && selection.acknowledged === receipt
 +      ? receipt : null;
++  }
++
++  /** Resolve only the engine branch after both host acknowledgments; effects remain pending. */
++  resolveOneOffEngineNavigation(selectionReceiptToken) {
++    const receipt = this.getAcknowledgedOneOffNavigationSelection(selectionReceiptToken);
++    const captured = this.#oneOffCommand?.engineSearch, selection = captured?.selection;
++    if (!receipt || receipt.branch !== "engine-search" || !receipt.safeToPickVerified) return null;
++    if (selection.navigation) return this.getOneOffEngineNavigation(selection.navigation.token);
++    const candidate = this.getOneOffEngineSearch(receipt.candidateToken);
++    if (!candidate || this.getAcknowledgedOneOffNavigationSelection(selectionReceiptToken) !== receipt ||
++        this.#oneOffCommand?.engineSearch !== captured || captured.selection !== selection) return null;
++    const plan = Object.freeze({ ...candidate, token: Object.freeze({}), candidateToken: candidate.token,
++      selectionReceiptToken, branch: "engine-search", navigationResolutionPending: false,
++      browserTargetPending: true, engagementPending: true, searchRecordingPending: true, dispatchPending: true });
++    selection.navigation = plan;
++    return plan;
++  }
++
++  /** Resolved policy grants no effects authority and expires with either acknowledgment. */
++  getOneOffEngineNavigation(token) {
++    const captured = this.#oneOffCommand?.engineSearch, selection = captured?.selection, plan = selection?.navigation;
++    if (!plan || plan.token !== token) return null;
++    const receipt = this.getAcknowledgedOneOffNavigationSelection(plan.selectionReceiptToken);
++    const candidate = this.getOneOffEngineSearch(plan.candidateToken);
++    return receipt?.branch === "engine-search" && receipt.safeToPickVerified && candidate === captured.proposal &&
++      this.#oneOffCommand?.engineSearch === captured && captured.selection === selection && selection.navigation === plan ? plan : null;
 +  }
 +
 +  /** Lower-level target creation only; source notification remains pending. */
