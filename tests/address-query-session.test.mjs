@@ -5706,3 +5706,61 @@ test('owned preview dismissal consumes backend failure and detects cancellation 
     assert.equal(calls,1);f.editor.close();
   }
 });
+
+
+async function closeRecordingFixture({text='',open=true,picked=false}={}) {
+  const f=await editorFixture();
+  const query=await f.editor.edit({searchMode:{source:2,isPreview:true}},edit(1,text));
+  if(open)f.editor.publishPresentation(1,query.id,[],true);
+  let request;
+  if(picked){f.parent.child.notify('onResultsCloseRequested',query.id,true);request=f.requests.at(-1);}
+  else request=f.editor.beginPreviewModeDismissal(1,query.id);
+  const calls=[];f.parent.child.engagementEvent.discard=()=>calls.push('discard');
+  f.parent.child.engagementEvent.record=(event,details)=>calls.push(['record',event,{...details}]);
+  f.parent.recordZeroPrefix=kind=>calls.push(['zero',kind]);
+  return {...f,query,request,calls};
+}
+
+test('close recording requires acknowledgment and records captured zero-prefix abandonment once',async()=>{
+  const f=await closeRecordingFixture();
+  assert.equal(f.editor.recordAcknowledgedClose(f.request.token,{focused:false}),null);
+  f.editor.acknowledgeOwnedPreviewClose(f.request.token,closedPreview(f.request));
+  const result=f.editor.recordAcknowledgedClose(f.request.token,{focused:false});
+  assert.deepEqual(f.calls,['discard',['record',null,{}],['zero','abandonment']]);
+  assert.equal(result.current,true);assert.equal(result.discardedEngagement,true);
+  assert.equal(f.editor.recordAcknowledgedClose(f.request.token,{focused:false}),null);
+  assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+test('picked, focused, nonempty and unopened closes retain Firefox recording policy',async()=>{
+  for(const facts of [{picked:true,focused:false},{focused:true},{text:'words',focused:false},
+    {open:false,focused:false}]){
+    const f=await closeRecordingFixture(facts);
+    f.editor.acknowledgeClose(f.request.token,{open:false,searchMode:null,userTypedValue:null});
+    const result=f.editor.recordAcknowledgedClose(f.request.token,{focused:facts.focused});
+    assert.equal(result.discardedEngagement,!facts.picked&&!facts.focused&&facts.open!==false);
+    assert.equal(result.zeroPrefix,facts.text||facts.open===false?null:facts.picked?'engagement':'abandonment');
+    if(facts.picked)assert.deepEqual(f.calls,[['zero','engagement']]);
+    if(facts.open===false)assert.deepEqual(f.calls,[]);f.editor.close();
+  }
+});
+
+test('new input and cancellation revoke close recording without disturbing the next query',async()=>{
+  for(const action of [f=>f.editor.edit({},edit(2,'new')),f=>f.editor.cancel(),f=>f.editor.select(1,0,0)]){
+    const f=await closeRecordingFixture();f.editor.acknowledgeOwnedPreviewClose(f.request.token,closedPreview(f.request));
+    await action(f);assert.equal(f.editor.recordAcknowledgedClose(f.request.token,{focused:false}),null);
+    assert.deepEqual(f.calls,[]);f.editor.close();
+  }
+});
+
+test('recording consumes throwing hooks and stops further effects after discard reentry',async()=>{
+  for(const throwing of [false,true]){
+    const f=await closeRecordingFixture();f.editor.acknowledgeOwnedPreviewClose(f.request.token,closedPreview(f.request));
+    f.parent.child.engagementEvent.discard=()=>{f.calls.push('discard');
+      if(throwing)throw Error('recorder failure');f.editor.cancel();};
+    if(throwing)assert.throws(()=>f.editor.recordAcknowledgedClose(f.request.token,{focused:false}),/recorder failure/);
+    else assert.equal(f.editor.recordAcknowledgedClose(f.request.token,{focused:false}).current,false);
+    assert.equal(f.editor.recordAcknowledgedClose(f.request.token,{focused:false}),null);
+    assert.deepEqual(f.calls,['discard']);f.parent.child.engagementEvent.discard=()=>{};f.editor.close();
+  }
+});

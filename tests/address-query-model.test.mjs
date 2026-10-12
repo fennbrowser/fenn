@@ -102,3 +102,14 @@ test('retained input rolls up and clears before reading mode, and stops before a
     assert.deepEqual(calls,['rollup','pref','clear','mode',...(mode?['one-offs']:[]),mode&&hasView?'focus':'close']);
   }
 });
+
+
+test('close recording distinguishes unopened surfaces, ignored tips and zero-prefix picks',()=>{
+  for(const open of [false,true]) for(const focused of [false,true])
+  for(const elementPicked of [false,true]) for(const zeroPrefix of [false,true]) {
+    const plan=sandbox.Model.closeRecording({open,focused,elementPicked,zeroPrefix});
+    assert.deepEqual({...plan},{discardEngagement:open&&!focused&&!elementPicked,
+      zeroPrefix:open&&zeroPrefix?(elementPicked?'engagement':'abandonment'):null});
+    assert.equal(Object.isFrozen(plan),true);
+  }
+});
