@@ -6991,11 +6991,13 @@ test('query activation refuses forged or foreign new-tab receipts',async()=>{
 async function oneOffDestinationFixture(options={}){
   const f=await oneOffTabActivationFixture(options);
   const result=f.editor.activateOneOffSearchTab(f.activation.token),destination=result.destination;
+  const destinationEngines=f.parent.child.engineStore.getEngines().map(engine=>({...engine}));
   f.editor.close();
   const updates=[],editor=new f.sandbox.UrlbarEditSession({context:destination.context,isCurrent:destination.isCurrent,onUpdate:u=>updates.push(u)});
   const parent=f.parents.at(-1),observation={revision:1,text:destination.userTypedValue??'',selectionStart:0,
     selectionEnd:0,selectionDirection:'none',composing:false,pageProxyValid:false,searchMode:destination.searchMode};
-  return {...f,source:f.editor,editor,destination,parent,updates,observation,owner:f};
+  parent.initEngineStore=()=>parent.child.updateEngineStore('init',destinationEngines,0);
+  return {...f,source:f.editor,editor,destination,parent,updates,observation,owner:f,destinationEngines};
 }
 
 test('activated destinations adopt once into matching fresh editors and explicitly query with local or engine policy',async()=>{
@@ -7288,4 +7290,50 @@ test('source page validity is pinned to the original command and valid-page clea
     }
     f.editor.close();
   }
+});
+
+
+test('destination dispatch retains activated engine identity across store removal, rename, replacement and policy changes',async()=>{
+  for(const admitted of [false,true])for(const mutation of ['none','removed','renamed','replaced','mode-metadata','irrelevant','one-off-hidden']){
+    const f=await oneOffDestinationFixture({engine:true,pageValid:true}),p=f.editor.adoptOneOffDestination(f.destination,f.observation);
+    assert.equal(p.engineId,'default');await f.parent.child.engineStore.init();
+    if(admitted)assert.ok(f.editor.startOneOffDestinationQuery(p.token,{searchMode:p.searchMode},{suppressStartQuery:false,inOverflowPanel:false}));
+    const child=f.parent.child,engine=child.engineStore.getEngineByName('Default');
+    if(mutation==='removed'||mutation==='replaced')child.updateEngineStore('removed',{id:engine.id});
+    if(mutation==='renamed')child.updateEngineStore('changed',{...engine,name:'Renamed'},-1);
+    if(mutation==='replaced')child.updateEngineStore('changed',{...engine,id:'replacement'},-1);
+    if(mutation==='mode-metadata')child.updateEngineStore('changed',{...engine,isGeneralPurposeEngine:true},-1);
+    if(mutation==='irrelevant')child.updateEngineStore('changed',{id:'unrelated',name:'Unrelated'},-1);
+    if(mutation==='one-off-hidden')child.updateEngineStore('changed',{...engine,hideOneOffButton:true},-1);
+    const rejected=['removed','renamed','replaced','mode-metadata'].includes(mutation);
+    const query=f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode,engineId:'replacement'});
+    if(rejected)await assert.rejects(query,/authority/);else assert.equal((await query).searchMode.engineName,'Default');
+    assert.equal(f.parent.started.length,rejected?0:1,mutation);
+    child.updateEngineStore('changed',{...f.destinationEngines[0]},-1);
+    await assert.rejects(f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode}),/Stale/);f.editor.close();
+  }
+});
+
+test('engine-held destination dispatch validates the resolved store snapshot rather than the old source store',async()=>{
+  for(const admitted of [false,true])for(const mutation of ['none','removed','replaced','renamed','metadata']){
+    const f=await oneOffDestinationFixture({engine:true,pageValid:true}),p=f.editor.adoptOneOffDestination(f.destination,f.observation);
+    if(admitted)f.editor.startOneOffDestinationQuery(p.token,{searchMode:p.searchMode},{suppressStartQuery:false,inOverflowPanel:false});
+    f.parent.initEngineStore=()=>{};
+    const pending=f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode});
+    const rejection=mutation==='none'?null:assert.rejects(pending,/authority/);assert.equal(f.parent.started.length,0);
+    let engines=f.destinationEngines.map(engine=>({...engine}));
+    if(mutation==='removed')engines=engines.filter(engine=>engine.id!=='default');
+    if(mutation==='replaced')engines[0].id='replacement';if(mutation==='renamed')engines[0].name='Renamed';
+    if(mutation==='metadata')engines[0].isGeneralPurposeEngine=true;
+    f.parent.child.updateEngineStore('init',engines,0);
+    if(rejection)await rejection;else await pending;assert.equal(f.parent.started.length,mutation==='none'?1:0);f.editor.close();
+  }
+});
+
+test('activated local destinations remain independent of unrelated engine identity changes',async()=>{
+  const f=await oneOffDestinationFixture(),p=f.editor.adoptOneOffDestination(f.destination,f.observation);
+  assert.equal(p.engineId,null);await f.parent.child.engineStore.init();
+  for(const engine of f.destinationEngines)f.parent.child.updateEngineStore('removed',{id:engine.id});
+  const query=await f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode});
+  assert.equal(query.searchMode.source,p.searchMode.source);assert.equal(f.parent.started.length,1);f.editor.close();
 });

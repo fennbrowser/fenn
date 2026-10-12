@@ -9772,10 +9772,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..328f0154e6
+index 0000000000..bfaf992231
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3084 @@
+@@ -0,0 +1,3085 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11849,7 +11849,7 @@ index 0000000000..328f0154e6
 +    const sourceCurrent = () => unchanged() && this.#isCurrent();
 +    const outcome = this.#queries.activateOneOffSearchTab(pending.receipt, sourceCurrent, unchanged);
 +    if (outcome?.current && outcome.destination) {
-+      UrlbarEditSession.#oneOffDestinations.set(outcome.destination, { allowAutofill: outcome.allowAutofill, claimed: false });
++      UrlbarEditSession.#oneOffDestinations.set(outcome.destination, { allowAutofill: outcome.allowAutofill, engineId: outcome.engineId, claimed: false });
 +    }
 +    return outcome ? Object.freeze({ ...outcome, token, commandToken: pending.commandToken }) : null;
 +  }
@@ -11878,7 +11878,7 @@ index 0000000000..328f0154e6
 +      selectionRevision: 0, composing: false });
 +    this.#identityEdit = this.#edit;
 +    const proposal = Object.freeze({ token: Object.freeze({}), edit: this.#edit, searchMode: this.#searchMode,
-+      allowAutofill: record.allowAutofill, browserId: context.browserId, documentId: destination.documentId });
++      allowAutofill: record.allowAutofill, engineId: record.engineId, browserId: context.browserId, documentId: destination.documentId });
 +    this.#oneOffDestinationQuery = { proposal, destination };
 +    return proposal;
 +  }
@@ -11927,7 +11927,8 @@ index 0000000000..328f0154e6
 +    this.#oneOffDestinationQuery = null;
 +    const { revision, text } = proposal.edit, { allowAutofill } = proposal;
 +    const authorize = () => !this.#closed && this.#isCurrent() && this.#edit === proposal.edit &&
-+      this.#searchMode === proposal.searchMode && !this.#hiddenResults && pending.destination.isReady();
++      this.#searchMode === proposal.searchMode && !this.#hiddenResults && pending.destination.isReady() &&
++      this.#queries.isDestinationModeCurrent(proposal.searchMode, proposal.engineId);
 +    const onUpdate = update => this.#publishQueryUpdate(update, { revision, text, allowAutofill });
 +    return pending.admission ? this.#queries.queryDestination(pending.admission, onUpdate, authorize)
 +      : this.#queries.query(queryState, { searchString: text, allowAutofill }, onUpdate, authorize);
@@ -12862,10 +12863,10 @@ index 0000000000..328f0154e6
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..c81a0cb165
+index 0000000000..c34a22556d
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1461 @@
+@@ -0,0 +1,1472 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13670,6 +13671,7 @@ index 0000000000..c81a0cb165
 +    record.attempted = true;
 +    const outcome = this.#controller.parentController.activateIndependentOneOffSearchTab(record.parentReceipt, sourceCurrent, transferCurrent);
 +    return outcome ? Object.freeze({ ...outcome, allowAutofill: record.prepared.description.allowAutofill,
++      engineId: record.prepared.description.engineId,
 +      sourceDeselectionPending: true, destinationQueryPending: true }) : null;
 +  }
 +
@@ -13763,6 +13765,16 @@ index 0000000000..c81a0cb165
 +    } finally {
 +      if (admission.status === "starting") admission.status = "failed";
 +    }
++  }
++
++  /** Revalidate activated mode identity in the destination store after its engine initialization. */
++  isDestinationModeCurrent(searchMode, engineId) {
++    if (this.#closed || !this.#isCurrent()) return false;
++    const store = this.#controller.engineStore;
++    if (!store.initialized || store.failed) return false;
++    const engine = searchMode?.engineName ? store.getEngineByName(searchMode.engineName) : null;
++    if (searchMode?.engineName ? !engine || engine.id !== engineId : engineId !== null) return false;
++    return UrlbarShared.deepEqual(searchMode, UrlbarSearchModeModel.normalizeMode(searchMode, engine));
 +  }
 +
 +  /** Capture an already confirmed destination query before engagement and host admission decisions. */
