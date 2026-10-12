@@ -15,6 +15,9 @@ param(
     # Build the unsigned release package (FennBrowser.FennBrowser) for upload to
     # Partner Center, in artifacts/msix-store. The Store signs it; it is not installable here.
     [switch]$Store,
+    # Package the PGO/LTO release build (build/firefox-release, configs/mozconfig.release)
+    # in a development lane, to install and test the build that ships. -Store always does.
+    [switch]$ReleaseBuild,
     # Publish the signed package to the local App Installer feed (artifacts/msix-feed);
     # an installation made from the feed then updates itself from it.
     [switch]$Publish,
@@ -34,23 +37,31 @@ $mach = Join-Path $PSScriptRoot 'Invoke-Mach.ps1'
 $python = 'C:\mozilla-build\python3\python.exe'
 $packager = Join-Path $PSScriptRoot 'Package-FennDev.py'
 $started = Get-Date
+# Development builds iterate; only the release build is optimized for shipping.
+$release = $Store -or $ReleaseBuild
+$buildArgs = @()
+if ($Store) { $buildArgs += '--store' }
+elseif ($ReleaseBuild) { $buildArgs += '--release-build' }
 
 $repackage = [bool]$RepackageFirefox
 if (-not $SkipFirefoxPackage -and -not $RepackageFirefox) {
-    & $python $packager --payload-status
+    & $python $packager --payload-status @buildArgs
     if ($LASTEXITCODE -eq 10) { $repackage = $true }
     elseif ($LASTEXITCODE) { throw "Firefox payload check failed: $LASTEXITCODE" }
 }
 if ($repackage) {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $mach package
+    # mach.sh selects the mozconfig, and with it the object directory, from FENN_MOZCONFIG.
+    $previousMozconfig = $env:FENN_MOZCONFIG
+    $env:FENN_MOZCONFIG = $(if ($release) { 'mozconfig.release' } else { 'mozconfig' })
+    try { & powershell -NoProfile -ExecutionPolicy Bypass -File $mach package }
+    finally { $env:FENN_MOZCONFIG = $previousMozconfig }
     if ($LASTEXITCODE) { throw "Firefox packaging failed: $LASTEXITCODE" }
 }
-$packageArgs = @($packager, '--sdk-bin', $SdkBin)
+$packageArgs = @($packager, '--sdk-bin', $SdkBin) + $buildArgs
 if ($Version) { $packageArgs += '--version', $Version }
 if ($KeepIntermediates) { $packageArgs += '--keep-intermediates' }
 if ($Loose) { $packageArgs += '--loose' }
 if ($Unsigned) { $packageArgs += '--unsigned' }
-if ($Store) { $packageArgs += '--store' }
 if ($Publish) { $packageArgs += '--publish' }
 & powershell -NoProfile -ExecutionPolicy Bypass -File $mach python --virtualenv build @packageArgs
 if ($LASTEXITCODE) { throw "MSIX generation failed: $LASTEXITCODE" }

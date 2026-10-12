@@ -408,6 +408,19 @@ class DevPackageTests(unittest.TestCase):
             os.utime(archive, (4000, 4000))  # A later mach package covers it.
             self.assertTrue(package.payload_status(dist, staged)[0])
 
+    def test_store_lane_always_packages_the_release_build(self):
+        self.assertEqual(package.firefox_objdir(package.STORE), package.RELEASE_OBJDIR)
+        self.assertEqual(package.firefox_objdir(package.STORE, release_build=False), package.RELEASE_OBJDIR)
+        for lane in (package.DEV, package.UNSIGNED, package.LOOSE):
+            self.assertEqual(package.firefox_objdir(lane), package.DEV_OBJDIR)
+            self.assertEqual(package.firefox_objdir(lane, release_build=True), package.RELEASE_OBJDIR)
+
+    def test_object_directories_match_the_mozconfigs(self):
+        for name, objdir in (("mozconfig", package.DEV_OBJDIR), ("mozconfig.release", package.RELEASE_OBJDIR)):
+            text = (ROOT / "configs" / name).read_text(encoding="utf-8")
+            self.assertIn(f"mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/../../{objdir.relative_to(ROOT).as_posix()}\n",
+                          text)
+
     def test_latest_record_names_the_lane_and_build(self):
         with tempfile.TemporaryDirectory() as temp:
             lane = package.Lane("Id", "CN=Id", "Id", "id.exe", Path(temp))

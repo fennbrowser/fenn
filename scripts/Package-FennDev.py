@@ -27,7 +27,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 # The browser executable is <APP_NAME>.exe, and `mach package` writes its clean
-# payload to dist/<APP_NAME>; configs/mozconfig sets it (--with-app-name).
+# payload to dist/<APP_NAME>; both mozconfigs set it (--with-app-name).
 APP_NAME = "fenn"
 IDENTITY = "Fenn.Dev"
 DISPLAY_NAME = "Fenn Dev"
@@ -47,6 +47,12 @@ CODE_SIGNING_EKU = "1.3.6.1.5.5.7.3.3"
 # built and tested with, so Windows applies current packaged-app behaviour.
 MAX_VERSION_TESTED = "10.0.26100.0"
 FEED_DIR = ROOT / "artifacts/msix-feed"
+# Firefox object directories of configs/mozconfig and configs/mozconfig.release.
+# Development builds iterate; the release build adds PGO and LTO. The Store
+# package always comes from the release build, and a development lane takes it
+# with --release-build, so the build that ships can be installed and tested.
+DEV_OBJDIR = ROOT / "build/firefox"
+RELEASE_OBJDIR = ROOT / "build/firefox-release"
 APPINSTALLER_NS = "http://schemas.microsoft.com/appx/appinstaller/2021"
 RUNTIME_FRAMEWORK = "Microsoft.WindowsAppRuntime.2"
 RUNTIME_PUBLISHER = "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
@@ -471,6 +477,11 @@ def remove_superseded_runs(lane, current):
 FIREFOX_ZIP = re.compile(rf"{APP_NAME}-[^-]+\.[A-Za-z-]+\.win(32|64|64-aarch64)\.zip")
 
 
+def firefox_objdir(lane, release_build=False):
+    """The Firefox build a lane packages: always the release build for the Store."""
+    return RELEASE_OBJDIR if lane.store or release_build else DEV_OBJDIR
+
+
 def payload_status(dist, staged_names):
     """Whether `mach package` must refresh dist/<APP_NAME> before packaging.
 
@@ -568,19 +579,22 @@ def main():
                        help="build the unsigned fallback, installable only elevated with -AllowUnsigned")
     lanes.add_argument("--store", action="store_true",
                        help=f"build the unsigned {STORE.identity} release package for Partner Center upload")
+    parser.add_argument("--release-build", action="store_true",
+                        help=f"package the PGO/LTO release build ({RELEASE_OBJDIR.name}); --store always does")
     parser.add_argument("--publish", action="store_true",
                         help=f"also publish the signed package to the App Installer feed in {FEED_DIR.name}")
     parser.add_argument("--keep-intermediates", action="store_true",
                         help="keep payload/ (and, when packing, layout/) after a successful build")
     args = parser.parse_args()
+    lane = LOOSE if args.loose else UNSIGNED if args.unsigned else STORE if args.store else DEV
+    objdir = firefox_objdir(lane, args.release_build)
+    build_kind = "release" if objdir == RELEASE_OBJDIR else "development"
     if args.payload_status:
-        current, reason = payload_status(ROOT / "build/firefox/dist",
-                                         staged_pane_names(load_script("Stage-WinUIPane")))
-        print(f"Firefox payload {'current' if current else 'stale'}: {reason}")
+        current, reason = payload_status(objdir / "dist", staged_pane_names(load_script("Stage-WinUIPane")))
+        print(f"Firefox {build_kind} payload {'current' if current else 'stale'}: {reason}")
         raise SystemExit(0 if current else 10)
     if args.sdk_bin is None:
         parser.error("--sdk-bin is required")
-    lane = LOOSE if args.loose else UNSIGNED if args.unsigned else STORE if args.store else DEV
     if args.publish and lane is not DEV:
         parser.error("--publish needs the signed development lane (no --loose, --unsigned or --store)")
     if lane.signed:
@@ -596,13 +610,17 @@ def main():
             raise RuntimeError(f"Close {LOOSE.display_name} first; running process IDs: {state['Running']}")
     makeappx, mt, signtool, makepri = (args.sdk_bin / name for name in
                                         ("makeappx.exe", "mt.exe", "signtool.exe", "makepri.exe"))
-    clean = ROOT / "build/firefox/dist" / APP_NAME
-    msix_server = ROOT / "build/firefox/dist/bin/msixcomserver.dll"
+    clean = objdir / "dist" / APP_NAME
+    msix_server = objdir / "dist/bin/msixcomserver.dll"
     pane_dir = ROOT / "build/winui-pane/x64/Release"
+    if objdir == RELEASE_OBJDIR and not (objdir / "dist/bin" / f"{APP_NAME}.exe").is_file():
+        raise FileNotFoundError(f"No release build in {objdir}; build it with FENN_MOZCONFIG=mozconfig.release "
+                                "(see configs/mozconfig.release)")
     for required in (makeappx, mt, signtool, makepri, clean / f"{APP_NAME}.exe", clean / "omni.ja", msix_server,
                      pane_dir / "FennPane.dll"):
         if not required.is_file():
             raise FileNotFoundError(f"Missing build prerequisite: {required}")
+    print(f"Packaging the Firefox {build_kind} build from {objdir}")
     min_version = runtime_min_version()
     framework = installed_framework(min_version)
     record = framework_record(framework)
@@ -657,7 +675,7 @@ def main():
     shutil.copyfile(layout / "AppxManifest.xml", run / "AppxManifest.xml")
     reindex_package_pri(makepri, layout, run, lane.identity)
     runtime_names = record["files"]
-    common = {"firefoxVersion": browser_version, "runtimeFramework": framework["PackageFullName"],
+    common = {"firefoxVersion": browser_version, "firefoxBuild": build_kind, "runtimeFramework": framework["PackageFullName"],
               "payloadSha256": expected_hashes}
 
     if args.loose:
@@ -668,7 +686,7 @@ def main():
         if not args.keep_intermediates:
             shutil.rmtree(payload)
         remove_superseded_runs(lane, run)
-        write_latest(lane, {"version": args.version, "layout": str(layout)})
+        write_latest(lane, {"version": args.version, "firefoxBuild": build_kind, "layout": str(layout)})
         print(f"Registered {lane.display_name} {args.version} from {layout}")
         print(f"Launch it from Start or with {lane.alias}")
         return
@@ -690,7 +708,7 @@ def main():
     if not args.keep_intermediates:
         for directory in (payload, layout):
             shutil.rmtree(directory)
-    latest = {"version": args.version, "package": str(output)}
+    latest = {"version": args.version, "firefoxBuild": build_kind, "package": str(output)}
     if args.publish:
         latest["feed"] = str(publish_feed(output, lane, args.version))
         print(f"Published to App Installer feed: {latest['feed']}")
