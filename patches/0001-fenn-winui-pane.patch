@@ -442,6 +442,56 @@ index 311e0d736c..130388d39e 100644
        PanelMultiView.openPopup(
          this.panel,
          anchor,
+diff --git a/browser/components/search/SearchOneOffs.sys.mjs b/browser/components/search/SearchOneOffs.sys.mjs
+index 7f6f1f35b2..d7e75b5f54 100644
+--- a/browser/components/search/SearchOneOffs.sys.mjs
++++ b/browser/components/search/SearchOneOffs.sys.mjs
+@@ -10,6 +10,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
+   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
+   SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
+   SearchUIUtils: "moz-src:///browser/components/search/SearchUIUtils.sys.mjs",
++  UrlbarSearchModeModel: "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs",
+ });
+ 
+ /**
+@@ -179,11 +180,8 @@ export class SearchOneOffs {
+       return this._engineInfo.willHide;
+     }
+     let engineInfo = await this.getEngineInfo();
+-    let oneOffCount = engineInfo.engines.length;
+-    engineInfo.willHide =
+-      !oneOffCount ||
+-      (oneOffCount == 1 &&
+-        engineInfo.engines[0].name == engineInfo.default.name);
++    engineInfo.willHide = lazy.UrlbarSearchModeModel.engineOneOffsWillHide(
++      engineInfo.engines, engineInfo.default);
+     return engineInfo.willHide;
+   }
+ 
+@@ -364,18 +362,11 @@ export class SearchOneOffs {
+       defaultEngine = await lazy.SearchService.getDefault();
+     }
+ 
+-    let currentEngineNameToIgnore;
+-    if (!this.getAttribute("includecurrentengine")) {
+-      currentEngineNameToIgnore = defaultEngine.name;
+-    }
+-
+-    let engines = (await lazy.SearchService.getVisibleEngines()).filter(e => {
+-      let name = e.name;
+-      return (
+-        (!currentEngineNameToIgnore || name != currentEngineNameToIgnore) &&
+-        !e.hideOneOffButton
+-      );
+-    });
++    const includeCurrentEngine = !!this.getAttribute("includecurrentengine");
++    // Preserve the ignored name across the asynchronous engine-list lookup.
++    const defaultForFiltering = { name: includeCurrentEngine ? null : defaultEngine.name };
++    let engines = lazy.UrlbarSearchModeModel.oneOffEngines(
++      await lazy.SearchService.getVisibleEngines(), defaultForFiltering, includeCurrentEngine);
+ 
+     this._engineInfo = { default: defaultEngine, engines };
+     return this._engineInfo;
 diff --git a/browser/components/shell/jar.mn b/browser/components/shell/jar.mn
 index 920dbda4df..0816cddd68 100644
 --- a/browser/components/shell/jar.mn
@@ -2042,6 +2092,41 @@ index bc6837e211..d5ff780b17 100644
      const visibleResultsByProviderName = new Map();
  
      visibleResults.forEach((result, index) => {
+diff --git a/browser/components/urlbar/UrlbarSearchOneOffs.sys.mjs b/browser/components/urlbar/UrlbarSearchOneOffs.sys.mjs
+index 14414b8033..57e3352738 100644
+--- a/browser/components/urlbar/UrlbarSearchOneOffs.sys.mjs
++++ b/browser/components/urlbar/UrlbarSearchOneOffs.sys.mjs
+@@ -8,6 +8,7 @@ import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
+ const lazy = XPCOMUtils.declareLazy({
+   SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
+   UrlbarPrefs: "moz-src:///browser/components/urlbar/UrlbarPrefs.sys.mjs",
++  UrlbarSearchModeModel: "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs",
+   UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
+ });
+ 
+@@ -294,17 +295,11 @@ export class UrlbarSearchOneOffs extends SearchOneOffs {
+     // We need to call super.willHide() even when we return false below because
+     // it has the necessary side effect of creating this._engineInfo.
+     let superWillHide = await super.willHide();
+-    if (lazy.UrlbarPrefs.getScotchBonnetPref("scotchBonnet.disableOneOffs")) {
+-      return true;
+-    }
+-    if (
+-      lazy.UrlbarShared.LOCAL_SEARCH_MODES.some(m =>
+-        lazy.UrlbarPrefs.get(m.pref)
+-      )
+-    ) {
+-      return false;
+-    }
+-    return superWillHide;
++    const disabled = lazy.UrlbarPrefs.getScotchBonnetPref("scotchBonnet.disableOneOffs");
++    return lazy.UrlbarSearchModeModel.urlbarOneOffsWillHide(superWillHide, {
++      disabled,
++      localModes: !disabled && lazy.UrlbarShared.LOCAL_SEARCH_MODES.some(m => lazy.UrlbarPrefs.get(m.pref)),
++    });
+   }
+ 
+   /**
 diff --git a/browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs b/browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs
 index 05db07d0ed..fac057f94b 100644
 --- a/browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs
@@ -9403,10 +9488,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..86e61b7e6b
+index 0000000000..4c4b836754
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2438 @@
+@@ -0,0 +1,2452 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10143,7 +10228,8 @@ index 0000000000..86e61b7e6b
 +    if (!pending || pending.proposal.token !== token) return null;
 +    const { proposal, finished } = pending;
 +    if (this.#edit !== proposal.edit || this.#searchMode !== proposal.searchMode || this.#hiddenResults ||
-+        this.#queries.describeFinishedQuery(proposal.queryId) !== finished) {
++        this.#queries.describeFinishedQuery(proposal.queryId) !== finished ||
++        (pending.oneOffVisibility && !pending.oneOffVisibility.isCurrent())) {
 +      this.#finishedPresentation = null;
 +      return null;
 +    }
@@ -10161,6 +10247,18 @@ index 0000000000..86e61b7e6b
 +      searchMode: proposal.searchMode, oneOffsWillHide, open });
 +    const resolved = Object.freeze({ ...proposal, ...policy, oneOffsWillHide, open });
 +    this.#finishedPresentation = { ...this.#finishedPresentation, proposal: resolved };
++    return resolved;
++  }
++
++  /** Use Firefox's engine/local-mode policy without constructing one-off buttons. */
++  async resolveFinishedOneOffs(token, { open } = {}) {
++    if (typeof open !== "boolean") throw new TypeError("Missing finished popup open observation");
++    const proposal = this.getFinishedPresentation(token);
++    if (!proposal || proposal.action !== "resolve-one-offs") return null;
++    const visibility = await this.#queries.prepareOneOffVisibility();
++    if (!visibility?.isCurrent() || this.getFinishedPresentation(token) !== proposal) return null;
++    const resolved = this.resolveFinishedPresentation(token, { oneOffsWillHide: visibility.willHide, open });
++    if (resolved) this.#finishedPresentation = { ...this.#finishedPresentation, oneOffVisibility: visibility };
 +    return resolved;
 +  }
 +
@@ -10187,7 +10285,7 @@ index 0000000000..86e61b7e6b
 +    // the separately published viewport. The host must publish changes first.
 +    if (proposal.rows === "remove-stale" &&
 +        this.#queries.describeCloseRecording(proposal.queryId, false).open !== observed.open) return false;
-+    const finished = this.#finishedPresentation.finished;
++    const { finished, oneOffVisibility } = this.#finishedPresentation;
 +    this.#finishedPresentation = null;
 +    let closeToken = null;
 +    if (proposal.action === "close") {
@@ -10205,7 +10303,7 @@ index 0000000000..86e61b7e6b
 +      // retain the separately validated viewport publication unchanged.
 +      this.#queries.publishPresentation(proposal.queryId, [], observed.open);
 +    }
-+    this.#finishedPresentationState = { finished,
++    this.#finishedPresentationState = { finished, oneOffVisibility,
 +      receipt: Object.freeze({ ...proposal, open: observed.open, closeToken }) };
 +    return true;
 +  }
@@ -10216,6 +10314,7 @@ index 0000000000..86e61b7e6b
 +    if (!this.#isCurrent()) { this.close(); return null; }
 +    const state = this.#finishedPresentationState, receipt = state?.receipt;
 +    return receipt?.edit === this.#edit && receipt.searchMode === this.#searchMode &&
++      (!state.oneOffVisibility || state.oneOffVisibility.isCurrent()) &&
 +      (receipt.action === "close" || this.#queries.describeFinishedQuery(receipt.queryId) === state.finished)
 +      ? receipt : null;
 +  }
@@ -11847,10 +11946,10 @@ index 0000000000..86e61b7e6b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..328564ac40
+index 0000000000..f96753a695
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1020 @@
+@@ -0,0 +1,1054 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11859,6 +11958,7 @@ index 0000000000..328564ac40
 +import { UrlbarResultPresentation } from "chrome://browser/content/urlbar/UrlbarResultPresentation.mjs";
 +import { querySelectedSearch } from "chrome://browser/content/urlbar/UrlbarSelectedSearch.mjs";
 +import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
++import UrlbarPrefs from "chrome://browser/content/urlbar/UrlbarContentPrefs.mjs";
 +import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
 +import { UrlbarSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs";
 +import { UrlbarContentUtils } from "chrome://browser/content/urlbar/UrlbarContentUtils.mjs";
@@ -11961,6 +12061,39 @@ index 0000000000..328564ac40
 +    this.#check();
 +    return this.#query?.id === queryId && this.#finishState?.finished &&
 +      !this.#finishState.cancelled ? this.#finishState.description : null;
++  }
++
++  /** Resolve legacy address one-off visibility from the independent engine store. */
++  async prepareOneOffVisibility() {
++    this.#check();
++    const current = () => !this.#closed && this.#isCurrent();
++    // Non-address SAPs never construct UrlbarSearchOneOffs in the retained view.
++    if (this.#context.sapName !== "urlbar") return Object.freeze({ willHide: true, isCurrent: current });
++    const store = this.#controller.engineStore;
++    // Preserve initialization even when preferences will hide all one-offs.
++    await store.init();
++    this.#check();
++    const facts = this.#oneOffVisibilityFacts();
++    if (!facts) return null;
++    const signature = JSON.stringify(facts);
++    return Object.freeze({ willHide: facts.willHide, isCurrent: () => current() &&
++      store.initialized && !store.failed && JSON.stringify(this.#oneOffVisibilityFacts()) === signature });
++  }
++
++  #oneOffVisibilityFacts() {
++    const store = this.#controller.engineStore, defaultEngine = store.default;
++    const allEngines = store.getEngines();
++    if (allEngines.length && !defaultEngine) return null;
++    // The address bar's legacy markup includes its current/default engine.
++    const engines = UrlbarSearchModeModel.oneOffEngines(allEngines, defaultEngine, true);
++    const disabled = !!UrlbarPrefs.getScotchBonnetPref("scotchBonnet.disableOneOffs");
++    const localSources = disabled ? [] : UrlbarShared.LOCAL_SEARCH_MODES
++      .filter(mode => UrlbarPrefs.get(mode.pref)).map(mode => mode.source);
++    return { defaultEngineId: defaultEngine?.id ?? null,
++      engines: engines.map(engine => ({ id: engine.id, name: engine.name })), disabled, localSources,
++      willHide: UrlbarSearchModeModel.urlbarOneOffsWillHide(
++        UrlbarSearchModeModel.engineOneOffsWillHide(engines, defaultEngine),
++        { disabled, localModes: !!localSources.length }) };
 +  }
 +
 +  #update(kind, query) {
@@ -13412,10 +13545,10 @@ index 0000000000..1fec37fd9e
 +}
 diff --git a/browser/components/urlbar/content/UrlbarSearchModeModel.mjs b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
 new file mode 100644
-index 0000000000..ad8ea7e7af
+index 0000000000..ee1eda87ea
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarSearchModeModel.mjs
-@@ -0,0 +1,470 @@
+@@ -0,0 +1,485 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13427,6 +13560,21 @@ index 0000000000..ad8ea7e7af
 +
 +export class UrlbarSearchModeModel {
 +  static MAX_OPENSEARCH_ENGINES = 3;
++
++  /** Shared legacy one-off engine eligibility, before any button construction. */
++  static oneOffEngines(engines, defaultEngine, includeCurrentEngine) {
++    const ignoredName = includeCurrentEngine ? null : defaultEngine.name;
++    return engines.filter(engine => (!ignoredName || engine.name !== ignoredName) && !engine.hideOneOffButton);
++  }
++
++  static engineOneOffsWillHide(engines, defaultEngine) {
++    return !engines.length || (engines.length === 1 && engines[0].name === defaultEngine.name);
++  }
++
++  /** The address bar additionally includes local modes and its disabling pref. */
++  static urlbarOneOffsWillHide(engineWillHide, { disabled, localModes }) {
++    return !!disabled || (!localModes && engineWillHide);
++  }
 +
 +  /** Resolve Firefox restriction tokens without retaining an input or store. */
 +  static modeForToken(token, { isAddressbar, engineStore }) {

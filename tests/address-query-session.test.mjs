@@ -31,7 +31,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
       RESULTS_CLOSE_REQUESTED:'onResultsCloseRequested',QUERY_RESULT_REMOVED:'onQueryResultRemoved',
       QUERY_ARMED:'onQueryArmed',QUERY_STARTED:'onQueryStarted',QUERY_CANCELLED:'onQueryCancelled',
       QUERY_FIRST_RESULT:'onFirstResult',QUERY_RESULTS:'onQueryResults',QUERY_FINISHED:'onQueryFinished'}},
-    UrlbarPrefs:{get:key=>prefs[key] ?? 10},UrlbarContentUtils:{usesMessagePath:()=>false,getDisplaySpec:spec=>spec,getFixupPrimitives:()=>({}),getPlatform:()=> 'win',whereToOpenLink:e=>e?.where || 'current',willLoadInBackground:(_where,params)=>!params.forceForeground},
+    UrlbarPrefs:{get:key=>prefs[key] ?? 10,getScotchBonnetPref:key=>!!(prefs["scotchBonnet.enableOverride"] || prefs[key])},UrlbarContentUtils:{usesMessagePath:()=>false,getDisplaySpec:spec=>spec,getFixupPrimitives:()=>({}),getPlatform:()=> 'win',whereToOpenLink:e=>e?.where || 'current',willLoadInBackground:(_where,params)=>!params.forceForeground},
     UrlbarQueryContext:class {constructor(options){Object.assign(this,options,{id:++id,results:uninitializedResults?undefined:[]});}},
     ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;target.QuickSuggest={getFeature:()=>sandbox.backend};target.UrlUtils={LOOKS_LIKE_ORIGIN:{NONE:0},looksLikeOrigin:text=>text.includes(".")?1:0};target.UrlbarTokenizer={tokenize:context=>[{value:context.searchString}]};}}});
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarUrlValue.mjs',import.meta.url),'utf8')
@@ -6034,4 +6034,97 @@ test('finished close cancellation reentry cannot acknowledge an obsolete editor'
   assert.equal(f.editor.acknowledgeFinishedPresentation(p.token,finishedObservation(p)),false);
   assert.equal(f.editor.finishedPresentationState,null);
   assert.equal(f.editor.recordAcknowledgedClose(p.token,{focused:false}),null);f.editor.close();
+});
+
+
+function oneOffStore(f,{second=false,local=false,disabled=false}={}){
+  const engine={id:'default',name:'Default',hideOneOffButton:false};
+  f.parent.child.updateEngineStore('changed',engine,-1);f.parent.child.updateEngineStore('default',engine,0);
+  if(second)f.parent.child.updateEngineStore('changed',{id:'second',name:'Second'},-1);
+  f.prefs['scotchBonnet.disableOneOffs']=disabled;f.prefs['scotchBonnet.enableOverride']=false;
+  for(const mode of f.sandbox.UrlbarShared.LOCAL_SEARCH_MODES)f.prefs[mode.pref]=local;
+  return engine;
+}
+
+test('independent one-off visibility uses its private-scoped store and live local preferences',async()=>{
+  for(const isPrivate of [false,true])for(const facts of [{},{second:true},{local:true},{second:true,local:true,disabled:true}]){
+    const f=fixture({isPrivate});await f.parent.child.engineStore.init();oneOffStore(f,facts);
+    const plan=await f.session.prepareOneOffVisibility();
+    assert.equal(plan.willHide,!!facts.disabled||!(facts.second||facts.local));
+    assert.equal(plan.isCurrent(),true);assert.equal(f.parent.child.engineStore.isPrivate,isPrivate);
+    assert.equal(f.parent.started.length,0);f.session.close();assert.equal(plan.isCurrent(),false);
+  }
+});
+
+test('one-off visibility rejects engine/default and policy changes but ignores unrelated prefs',async()=>{
+  for(const mutation of ['engine','hidden','default','local','disabled','override','scope']){
+    const f=fixture();await f.parent.child.engineStore.init();const engine=oneOffStore(f,{second:true});
+    const plan=await f.session.prepareOneOffVisibility();f.prefs['unrelated']=true;assert.equal(plan.isCurrent(),true);
+    if(mutation==='engine')f.parent.child.updateEngineStore('removed',{id:'second'});
+    if(mutation==='hidden')f.parent.child.updateEngineStore('changed',{id:'second',name:'Second',hideOneOffButton:true},1);
+    if(mutation==='default')f.parent.child.updateEngineStore('default',{id:'second'},1);
+    if(mutation==='local')f.prefs[f.sandbox.UrlbarShared.LOCAL_SEARCH_MODES[0].pref]=true;
+    if(mutation==='disabled')f.prefs['scotchBonnet.disableOneOffs']=true;
+    if(mutation==='override')f.prefs['scotchBonnet.enableOverride']=true;
+    if(mutation==='scope')f.invalidate();
+    assert.equal(plan.isCurrent(),false,mutation);f.session.close();
+  }
+});
+
+test('owned finished one-off resolution feeds exact acknowledgment without injecting visibility',async()=>{
+  for(const facts of [{},{second:true},{local:true},{second:true,disabled:true}]){
+    const f=await finishedPresentationFixture({source:2});oneOffStore(f,facts);
+    const proposal=f.editor.beginFinishedPresentation(1,f.query.id);
+    const resolved=await f.editor.resolveFinishedOneOffs(proposal.token,{open:true});
+    const hidden=!!facts.disabled||!(facts.second||facts.local);
+    assert.equal(resolved.action,hidden?'close':'open-one-offs');assert.equal(resolved.oneOffsWillHide,hidden);
+    assert.equal(f.editor.acknowledgeFinishedPresentation(proposal.token,finishedObservation(resolved)),true);
+    assert.equal(await f.editor.resolveFinishedOneOffs(proposal.token,{open:true}),null);
+    assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('resolved engine policy changes revoke host effect authority and receipts',async()=>{
+  for(const acknowledged of [false,true]){
+    const f=await finishedPresentationFixture({source:2});oneOffStore(f,{second:true});
+    const p=f.editor.beginFinishedPresentation(1,f.query.id),resolved=await f.editor.resolveFinishedOneOffs(p.token,{open:true});
+    if(acknowledged)f.editor.acknowledgeFinishedPresentation(p.token,finishedObservation(resolved));
+    f.prefs['scotchBonnet.disableOneOffs']=true;
+    assert.equal(f.editor.getFinishedPresentation(p.token),null);assert.equal(f.editor.finishedPresentationState,null);
+    assert.equal(f.editor.acknowledgeFinishedPresentation(p.token,finishedObservation(resolved)),false);f.editor.close();
+  }
+});
+
+test('asynchronous one-off initialization cannot resolve a replaced edit, query or proposal',async()=>{
+  for(const mutation of ['caret','edit','cancel','results','replace','scope']){
+    const f=await finishedPresentationFixture({source:2});oneOffStore(f,{second:true});
+    const p=f.editor.beginFinishedPresentation(1,f.query.id),store=f.parent.child.engineStore,init=store.init;
+    let release;store.init=()=>new Promise(resolve=>{release=resolve;});
+    const pending=f.editor.resolveFinishedOneOffs(p.token,{open:false});
+    if(mutation==='caret')f.editor.select(1,0,0);
+    if(mutation==='edit'){store.init=init;await f.editor.edit({},edit(2,'next'));}
+    if(mutation==='cancel')f.editor.cancel();
+    if(mutation==='results')f.parent.child.notify('onQueryResults',f.query);
+    if(mutation==='replace')f.editor.beginFinishedPresentation(1,f.query.id);
+    if(mutation==='scope')f.loseScope();
+    release();
+    if(mutation==='scope')await assert.rejects(pending,/scope changed/);else assert.equal(await pending,null);
+    store.init=init;f.editor.close();
+  }
+});
+
+test('engine initialization failures propagate without consuming the pending finish',async()=>{
+  const f=await finishedPresentationFixture({source:2});oneOffStore(f);
+  const p=f.editor.beginFinishedPresentation(1,f.query.id),store=f.parent.child.engineStore,init=store.init;
+  store.init=async()=>{throw Error('search service unavailable');};
+  await assert.rejects(f.editor.resolveFinishedOneOffs(p.token,{open:false}),/search service unavailable/);
+  assert.equal(f.editor.getFinishedPresentation(p.token),p);store.init=init;
+  assert.equal((await f.editor.resolveFinishedOneOffs(p.token,{open:false})).action,'keep');f.editor.close();
+});
+
+test('non-address SAPs hide one-offs without initializing engines',async()=>{
+  const f=fixture(),other=new f.sandbox.UrlbarQuerySession({context:{...f.context,sapName:'searchbar'},isCurrent:()=>true});
+  f.parents.at(-1).child.engineStore.init=()=>{throw Error('unexpected initialization');};
+  const plan=await other.prepareOneOffVisibility();assert.equal(plan.willHide,true);assert.equal(plan.isCurrent(),true);
+  other.close();assert.equal(plan.isCurrent(),false);f.session.close();
 });
