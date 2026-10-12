@@ -205,3 +205,26 @@ test('retained new-tab mode precedes optional text, selection and destination qu
     assert.equal(f.calls[1][1].isPreview,false);assert.equal(f.calls[1][2],f.newTab.linkedBrowser);
   }
 });
+
+
+test('retained background setter refreshes and notifies the source after target mode but before target text',()=>{
+  const inputSource=readFileSync(new URL('urlbar/content/UrlbarInputBase.mjs',root),'utf8');
+  const start=inputSource.indexOf('  async setSearchMode(searchMode, browser) {');assert.ok(start>=0);
+  const method=inputSource.slice(start,inputSource.indexOf('\n  /**',start));
+  for(const background of [false,true]){
+    const f=commandFixture({where:'tab',engine:false,background});
+    const sourceBrowser={};f.browser.selectedBrowser=sourceBrowser;
+    const modeModel={normalizeMode:mode=>mode,writeMode:(_state,mode)=>{f.calls.push(['mode']);return mode;},
+      shouldRecordModeEntry:()=>{throw Error('unselected entry policy');}};
+    const Input=new Function('UrlbarSearchModeModel','UrlbarShared','lazy','Event',`return class {
+      #isAddressbar=true; #getSearchModesObject(){return {};} getSearchMode(){return null;} ${method}
+    }`)(modeModel,{deepEqual:()=>false},{UrlbarSearchTermsPersistence:{onSearchModeChanged:window=>{
+      assert.equal(window.gBrowser.selectedBrowser,sourceBrowser);f.calls.push(['persistence']);}}},Event);
+    const input=new Input();input.window=f.input.window;input.dispatchEvent=event=>{assert.equal(event.type,'searchmodechanged');f.calls.push(['notification']);};
+    input._updateSearchModeUI=()=>{throw Error('unselected mode UI');};f.input.setSearchMode=input.setSearchMode.bind(input);
+    Object.defineProperty(f.newTab.linkedBrowser,'userTypedValue',{set:()=>f.calls.push(['typed'])});
+    Object.defineProperty(f.browser,'selectedTab',{set:()=>f.calls.push(['selected'])});
+    f.view.handleSearchCommand(f.event,f.mode);
+    assert.deepEqual(f.calls.map(c=>c[0]),['tab','mode','persistence','notification','typed',...(background?[]:['selected','new-query'])]);
+  }
+});

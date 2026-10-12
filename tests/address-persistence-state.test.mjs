@@ -341,10 +341,10 @@ test('owned confirmed-mode reader distinguishes null mode from a read invalidate
 
 
 function oneOffTabParentFixture(){
-  const {owner}=ownerFixture(),source=read('UrlbarParentController.sys.mjs');
+  const {owner,service,facts}=ownerFixture(),source=read('UrlbarParentController.sys.mjs');
   const start=source.indexOf('  createIndependentOneOffSearchTab(');assert.ok(start>=0);
   const method=source.slice(start,source.indexOf('\n  /**',start));
-  const Parent=new Function('lazy',`return class { #destroyed=false; #isAddressbar=true; ${method} }`)({independentUrlbarBrowserState:owner});
+  const Parent=new Function('lazy',`return class { #destroyed=false; #isAddressbar=true; ${method} }`)({independentUrlbarBrowserState:owner,UrlbarShared:{deepEqual:(a,b)=>JSON.stringify(a)===JSON.stringify(b)}});
   const parent=new Parent(),browser={browserId:17,userTypedValue:'words',lastLocationChange:2,browsingContext:{currentWindowGlobal:{}}};
   const target={browserId:18,userTypedValue:null,lastLocationChange:0,browsingContext:{currentWindowGlobal:{}}},tab={linkedBrowser:target},calls=[];
   const tabbrowser={selectedBrowser:browser,getTabForBrowser:b=>b===target?tab:null,
@@ -352,7 +352,7 @@ function oneOffTabParentFixture(){
   parent.resolveTargetBrowser=()=>browser;parent.browserWindow={gBrowser:tabbrowser};
   parent.recordSearchMode=()=>{throw Error('unselected mode entry');};parent.markEngineAsUsed=()=>{throw Error('unselected engine usage');};
   const mode={source:5,isPreview:false,entry:'oneoff'};
-  return {owner,parent,browser,target,tab,tabbrowser,calls,mode};
+  return {owner,service,facts,parent,browser,target,tab,tabbrowser,calls,mode};
 }
 
 test('new-tab target initialization installs confirmed mode and optional text without source state or selected-mode effects',()=>{
@@ -428,4 +428,150 @@ test('target typed-value setter reentry preserves partial effects and invalidate
   const result=f.parent.createIndependentOneOffSearchTab(17,f.mode,{sourceUserTypedValue:'words',userTypedValue:'words'},()=>true);
   assert.equal(result.created,true);assert.equal(result.modeCommitted,true);assert.equal(result.typedValueWritten,true);
   assert.equal(result.initialized,false);assert.equal(typed,'words');assert.equal(f.calls.length,1);
+});
+
+
+test('read-only owned revision capture rejects pending, superseding, discarded and forgotten state',()=>{
+  const {owner}=ownerFixture(),browser={};
+  const empty=owner.captureRevision(browser);assert.equal(empty(),true);owner.snapshot(browser);assert.equal(empty(),true);
+  const first=owner.prepareMode(browser,null);assert.equal(empty(),false);assert.equal(owner.captureRevision(browser),null);
+  owner.commit(browser,first.token);const current=owner.captureRevision(browser);assert.equal(current(),true);
+  const next=owner.prepareMode(browser,null);owner.discard(browser,next.token);assert.equal(current(),false);
+  const afterDiscard=owner.captureRevision(browser);assert.equal(afterDiscard(),true);owner.forget(browser);assert.equal(afterDiscard(),false);
+});
+
+test('source notification refreshes confirmed-mode persistence while preserving preview, cache and entry policy',()=>{
+  for(const matching of [false,true]){
+    const {owner,service,facts}=ownerFixture(),browser={};
+    const confirmed={engineName:matching?'engine':'other',isPreview:false},preview={source:5,isPreview:true};
+    let p=owner.prepareMode(browser,confirmed);owner.commit(browser,p.token);
+    p=owner.prepareMode(browser,preview);owner.commit(browser,p.token);
+    const shouldPersist=service.shouldPersist;service.shouldPersist=()=>true;
+    p=owner.preparePersistence(browser,facts);owner.commit(browser,p.token);service.shouldPersist=shouldPersist;
+    const before=owner.snapshot(browser),revision=owner.captureRevision(browser);
+    assert.equal(owner.prepareModeNotification(browser,null,true),null);assert.equal(revision(),true);
+    assert.equal(owner.prepareModeNotification(browser,preview,false),null);assert.equal(revision(),true);
+    p=owner.prepareModeNotification(browser,preview,true);
+    assert.equal(p.effects.persistedSearchTerms,matching);assert.equal(p.effects.persistenceChanged,!matching);
+    assert.equal(p.effects.recordModeEntry,undefined);assert.deepEqual({...p.effects.searchMode},preview);
+    assert.equal(owner.snapshot(browser).persistedSearchTerms,true);assert.equal(owner.commit(browser,p.token),true);
+    const after=owner.snapshot(browser);assert.deepEqual(after.confirmed,before.confirmed);assert.deepEqual(after.preview,before.preview);
+    assert.equal(after.searchTerms,before.searchTerms);assert.equal(after.persistedSearchTerms,matching);
+    assert.equal(owner.commit(browser,p.token),false);
+  }
+});
+
+test('reentrant source-persistence refresh cannot commit superseded or forgotten owned state',()=>{
+  for(const kind of ['replace','forget','throw']){
+    const {owner,service}=ownerFixture(),browser={};const p=owner.prepareMode(browser,null);owner.commit(browser,p.token);
+    let newer;
+    service.updateSearchModeState=()=>{if(kind==='throw')throw Error('refresh failed');
+      if(kind==='forget')owner.forget(browser);else newer=owner.prepareInput(browser,'new');return false;};
+    if(kind==='throw')assert.throws(()=>owner.prepareModeNotification(browser,null,false),/refresh failed/);
+    else assert.equal(owner.prepareModeNotification(browser,null,false),null);
+    assert.equal(owner.snapshot(browser).confirmed,null);
+    if(newer)assert.equal(owner.commit(browser,newer.token),true);
+  }
+});
+
+function sourceTabEffects(f,mode=null,persistedSearchTerms=false){return {
+  sourceUserTypedValue:f.browser.userTypedValue,userTypedValue:'copied words',
+  sourceModeEffects:{searchMode:mode,persistedSearchTerms}};}
+
+test('ordered new-tab creation commits target mode, source persistence and notification before target text',()=>{
+  for(const matching of [false,true]){
+    const f=oneOffTabParentFixture(),confirmed={engineName:matching?'engine':'other',isPreview:false},preview={source:2,isPreview:true};
+    let p=f.owner.prepareMode(f.browser,confirmed);f.owner.commit(f.browser,p.token);
+    p=f.owner.prepareMode(f.browser,preview);f.owner.commit(f.browser,p.token);
+    const shouldPersist=f.service.shouldPersist;f.service.shouldPersist=()=>true;
+    p=f.owner.preparePersistence(f.browser,f.facts);f.owner.commit(f.browser,p.token);f.service.shouldPersist=shouldPersist;
+    const order=[],commit=f.owner.commit.bind(f.owner);let typed=null,notified;
+    f.owner.commit=(browser,token)=>{const applied=commit(browser,token);if(applied)order.push(browser===f.target?'target-mode':'source-persistence');return applied;};
+    Object.defineProperty(f.target,'userTypedValue',{get:()=>typed,set:value=>{order.push('target-text');typed=value;}});
+    const result=f.parent.createIndependentOneOffSearchTab(17,f.mode,sourceTabEffects(f,preview,true),()=>true,state=>{
+      order.push('notification');notified=state;
+      assert.equal(typed,null);assert.equal(f.owner.snapshot(f.target).confirmed.isPreview,false);
+      assert.equal(f.owner.snapshot(f.browser).persistedSearchTerms,matching);assert.deepEqual({...state.searchMode},preview);
+    });
+    assert.equal(result.initialized,true);assert.equal(result.sourceModeStateCommitted,true);assert.equal(result.sourceModeNotified,true);
+    assert.equal(result.sourcePersistenceChanged,!matching);assert.equal(result.sourcePersistedSearchTerms,matching);
+    assert.equal(f.owner.isCommitted(f.browser,result.sourceStateToken),true);
+    assert.equal(notified.browserId,17);assert.equal(notified.targetBrowserId,18);assert.equal(notified.userTypedValue,'words');
+    assert.equal(Object.isFrozen(notified),true);assert.equal(Object.isFrozen(notified.searchMode),true);
+    assert.deepEqual(order,['target-mode','source-persistence','notification','target-text']);assert.equal(typed,'copied words');
+    assert.deepEqual({...f.owner.snapshot(f.browser).confirmed},confirmed);assert.deepEqual({...f.owner.snapshot(f.browser).preview},preview);
+  }
+});
+
+test('ordered new-tab source preflight rejects mismatched mode, persistence and missing listener before creation',()=>{
+  const f=oneOffTabParentFixture();
+  for(const sourceModeEffects of [{searchMode:f.mode,persistedSearchTerms:false},{searchMode:null,persistedSearchTerms:true}]){
+    assert.equal(f.parent.createIndependentOneOffSearchTab(17,f.mode,{...sourceTabEffects(f),sourceModeEffects},()=>true,()=>{}),null);
+    assert.equal(f.calls.length,0);
+  }
+  assert.throws(()=>f.parent.createIndependentOneOffSearchTab(17,f.mode,sourceTabEffects(f),()=>true),/Invalid new-tab source effects/);
+  assert.equal(f.calls.length,0);
+});
+
+test('source revision superseded during tab-open revokes initialization even when mode and persistence look unchanged',()=>{
+  for(const discard of [false,true]){
+    const f=oneOffTabParentFixture(),add=f.tabbrowser.addTrustedTab;
+    const initial=f.owner.prepareMode(f.browser,null);f.owner.commit(f.browser,initial.token);
+    f.tabbrowser.addTrustedTab=url=>{const tab=add(url),p=f.owner.prepareMode(f.browser,null);
+      if(discard)f.owner.discard(f.browser,p.token);else f.owner.commit(f.browser,p.token);return tab;};
+    const result=f.parent.createIndependentOneOffSearchTab(17,f.mode,sourceTabEffects(f),()=>true,()=>{throw Error('stale notification');});
+    assert.equal(result.created,true);assert.equal(result.initialized,false);assert.equal(result.modeCommitted,false);
+    assert.equal(result.sourceModeStateCommitted,false);assert.equal(f.target.userTypedValue,null);
+  }
+});
+
+test('source notification callbacks that replace either browser or receipt prevent the subsequent target text write',()=>{
+  for(const mutation of ['source-state','source-discard','source-typed','target-state','target-typed','target-close','selected','scope']){
+    const f=oneOffTabParentFixture();let active=true,count=0;
+    const result=f.parent.createIndependentOneOffSearchTab(17,f.mode,sourceTabEffects(f),()=>active,()=>{
+      count++;
+      if(mutation==='source-state'){const p=f.owner.prepareMode(f.browser,null);f.owner.commit(f.browser,p.token);}
+      if(mutation==='source-discard'){const p=f.owner.prepareMode(f.browser,null);f.owner.discard(f.browser,p.token);}
+      if(mutation==='source-typed')f.browser.userTypedValue='newer';
+      if(mutation==='target-state'){const p=f.owner.prepareMode(f.target,{source:2,isPreview:false});f.owner.commit(f.target,p.token);}
+      if(mutation==='target-typed')f.target.userTypedValue='newer';
+      if(mutation==='target-close')f.tab.closing=true;
+      if(mutation==='selected')f.tabbrowser.selectedBrowser=f.target;
+      if(mutation==='scope')active=false;
+    });
+    assert.equal(result.initialized,false,mutation);assert.equal(result.sourceModeStateCommitted,true);assert.equal(result.sourceModeNotified,true);
+    assert.equal(result.typedValueWritten,false);assert.equal(f.target.userTypedValue,mutation==='target-typed'?'newer':null);assert.equal(count,1);
+  }
+});
+
+test('source refresh failures leave a partial target without notification, text copy or leaked preparations',()=>{
+  for(const mutation of ['null','target-document','throw']){
+    const f=oneOffTabParentFixture(),prepare=f.owner.prepareModeNotification.bind(f.owner);let notified=0;
+    f.owner.prepareModeNotification=(...args)=>{
+      if(mutation==='throw')throw Error('source refresh failed');if(mutation==='null')return null;
+      const result=prepare(...args);f.target.browsingContext.currentWindowGlobal={};return result;
+    };
+    const run=()=>f.parent.createIndependentOneOffSearchTab(17,f.mode,sourceTabEffects(f),()=>true,()=>{notified++;});
+    if(mutation==='throw')assert.throws(run,/source refresh failed/);
+    else {const result=run();assert.equal(result.initialized,false);assert.equal(result.modeCommitted,true);assert.equal(result.sourceModeNotified,false);}
+    assert.equal(notified,0);assert.equal(f.target.userTypedValue,null);assert.ok(f.owner.captureRevision(f.browser));
+  }
+});
+
+test('null target text still receives ordered source notification and direct callback exceptions do not copy text',()=>{
+  const f=oneOffTabParentFixture();let count=0;
+  const result=f.parent.createIndependentOneOffSearchTab(17,f.mode,{...sourceTabEffects(f),userTypedValue:null},()=>true,()=>{count++;});
+  assert.equal(result.initialized,true);assert.equal(result.typedValueWritten,false);assert.equal(count,1);
+  const g=oneOffTabParentFixture();
+  assert.throws(()=>g.parent.createIndependentOneOffSearchTab(17,g.mode,sourceTabEffects(g),()=>true,()=>{throw Error('host callback failed');}),/host callback failed/);
+  assert.equal(g.target.userTypedValue,null);assert.ok(g.owner.captureRevision(g.browser));assert.ok(g.owner.captureRevision(g.target));
+});
+
+
+test('source notification cannot supersede an existing preparation or a revision changed during observation',()=>{
+  const {owner}=ownerFixture(),browser={};let p=owner.prepareMode(browser,null);
+  assert.equal(owner.prepareModeNotification(browser,null,false),null);assert.equal(owner.isCurrent(browser,p.token),true);
+  owner.commit(browser,p.token);const snapshot=owner.snapshot.bind(owner);let newer;
+  owner.snapshot=value=>{const result=snapshot(value);newer=owner.prepareInput(value,'new');owner.commit(value,newer.token);return result;};
+  assert.equal(owner.prepareModeNotification(browser,null,false),null);assert.equal(owner.isCommitted(browser,newer.token),true);
 });

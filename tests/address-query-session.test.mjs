@@ -6852,3 +6852,67 @@ test('query-layer new-tab creation rejects copied or foreign plans and unpinned 
   assert.equal(f.session.createOneOffSearchTab(prepared,'words',()=>true),null);assert.equal(calls,1);
   other.close();f.session.close();
 });
+
+
+async function oneOffSourceEffectsFixture(listener=()=>{},options={}){
+  const events=[],f=await oneOffNewTabFixture({...options,onModeStateChanged:event=>{events.push(event);listener(event);}});
+  f.parent.createIndependentOneOffSearchTab=(sourceBrowserId,searchMode,facts,current,notify)=>{
+    if(!current())return null;
+    f.created.push({sourceBrowserId,searchMode,facts});
+    notify?.({browserId:sourceBrowserId,targetBrowserId:18,searchMode:facts.sourceModeEffects.searchMode,
+      persistedSearchTerms:false,persistenceChanged:false,userTypedValue:facts.sourceUserTypedValue});
+    return {created:true,initialized:current(),sourceModeStateCommitted:true,sourceModeNotified:true,
+      targetBrowserId:18,typedValueWritten:current()&&facts.userTypedValue!==null};
+  };
+  return {...f,events};
+}
+
+test('ordered source effects publish correlated source mode once while retaining pending activation and deselection',async()=>{
+  for(const background of [false,true]){
+    const f=await oneOffSourceEffectsFixture(()=>{},{background}),before=f.editor.snapshot;let reads=0;
+    const result=f.editor.createOneOffSearchTabWithSourceEffects(f.command.token,{userTypedValue:'typed words',get persistedSearchTerms(){reads++;return false;}});
+    assert.equal(result.initialized,true);assert.equal(result.sourceModeNotificationPending,false);assert.equal(result.sourceDeselectionPending,true);
+    assert.equal(result.requiresActivation,!background);assert.equal(f.events.length,1);assert.equal(reads,1);
+    const event=f.events[0];assert.equal(event.reason,'one-off-new-tab-source');assert.equal(event.kind,'mode-state-changed');
+    assert.equal(event.commandToken,f.command.token);assert.equal(event.queryId,f.query.id);assert.equal(event.edit,before);
+    assert.equal(event.browserId,17);assert.equal(event.targetBrowserId,18);assert.equal(event.searchMode,null);
+    assert.equal(Object.isFrozen(event),true);assert.equal(f.editor.snapshot,before);assert.equal(f.parent.started.length,1);
+    assert.equal(f.editor.createOneOffSearchTabWithSourceEffects(f.command.token,{userTypedValue:'typed words',persistedSearchTerms:false}),null);
+    assert.equal(f.editor.createOneOffSearchTab(f.command.token,{userTypedValue:'typed words'}),null);f.editor.close();
+  }
+});
+
+test('ordered source creation requires a listener and pre-notification persistence facts without consuming malformed calls',async()=>{
+  const f=await oneOffNewTabFixture();
+  assert.throws(()=>f.editor.createOneOffSearchTabWithSourceEffects(f.command.token,{userTypedValue:'typed words',persistedSearchTerms:false}),/listener/);
+  assert.equal(f.editor.getOneOffCommand(f.command.token),f.command);assert.equal(f.created.length,0);f.editor.close();
+  const g=await oneOffSourceEffectsFixture();
+  for(const value of [undefined,null,0,'false'])assert.throws(()=>g.editor.createOneOffSearchTabWithSourceEffects(g.command.token,
+    {userTypedValue:'typed words',persistedSearchTerms:value}),/observed persistence/);
+  assert.equal(g.editor.getOneOffCommand(g.command.token),g.command);assert.equal(g.created.length,0);g.editor.close();
+});
+
+test('source notification listener reentry cannot repeat a tab command or authorize later target text',async()=>{
+  for(const mutation of ['caret','cancel','scope']){
+    let f;f=await oneOffSourceEffectsFixture(()=>{
+      assert.equal(f.editor.createOneOffSearchTab(f.command.token,{userTypedValue:'typed words'}),null);
+      if(mutation==='caret')f.editor.select(1,0,0);
+      if(mutation==='cancel')f.editor.cancel();
+      if(mutation==='scope')f.loseScope();
+    });
+    const result=f.editor.createOneOffSearchTabWithSourceEffects(f.command.token,{userTypedValue:'typed words',persistedSearchTerms:false});
+    assert.equal(result.initialized,false);assert.equal(result.typedValueWritten,false);assert.equal(f.created.length,1);
+    assert.equal(f.events.length,1);assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('source notification listener exceptions are isolated like mode events and persistence getters cannot overwrite newer edits',async()=>{
+  const errors=[],f=await oneOffSourceEffectsFixture(()=>{throw Error('host listener failed');});
+  const old=f.sandbox.console;f.sandbox.console={...old,error:error=>errors.push(error)};
+  const result=f.editor.createOneOffSearchTabWithSourceEffects(f.command.token,{userTypedValue:'typed words',persistedSearchTerms:false});
+  assert.equal(result.initialized,true);assert.equal(result.typedValueWritten,true);assert.equal(errors.length,1);f.editor.close();
+  const g=await oneOffSourceEffectsFixture();
+  assert.equal(g.editor.createOneOffSearchTabWithSourceEffects(g.command.token,{userTypedValue:'typed words',
+    get persistedSearchTerms(){g.editor.select(1,0,0);return false;}}),null);
+  assert.equal(g.created.length,0);assert.equal(g.events.length,0);assert.equal(g.editor.snapshot.selectionStart,0);g.editor.close();
+});
