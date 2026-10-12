@@ -5850,3 +5850,64 @@ test('throwing completion recorder still delivers completion and consumes the at
   f.parent.child.notify('onQueryFinished',query);f.parent.child.notify('onQueryFinished',query);
   assert.equal(calls,1);assert.equal(updates.filter(kind=>kind==='finished').length,1);f.session.close();
 });
+
+
+async function finishedPresentationFixture(mode=null,updated=false){
+  const f=await editorFixture(),query=await f.editor.edit({searchMode:mode},edit(1,'words'));
+  if(updated){query.results=[{id:1,payload:{}}];f.parent.child.notify('onQueryResults',query);query.results=[];}
+  f.parent.child.notify('onQueryFinished',query);
+  return {...f,query};
+}
+
+test('finished presentation uses result-update history rather than final result count',async()=>{
+  for(const updated of [false,true]){
+    const f=await finishedPresentationFixture(null,updated),snapshot=f.editor.snapshot;
+    const proposal=f.editor.beginFinishedPresentation(1,f.query.id);
+    assert.equal(proposal.rows,updated?'remove-stale':'clear');
+    assert.equal(proposal.action,updated?'keep':'close');
+    assert.equal(f.editor.getFinishedPresentation(proposal.token),proposal);
+    assert.equal(Object.isFrozen(proposal),true);assert.equal(f.editor.snapshot,snapshot);
+    assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('finished one-off decisions validate observations and resolve only once',async()=>{
+  for(const open of [false,true])for(const oneOffsWillHide of [false,true]){
+    const f=await finishedPresentationFixture({source:2}),snapshot=f.editor.snapshot;
+    const proposal=f.editor.beginFinishedPresentation(1,f.query.id);
+    assert.equal(proposal.action,'resolve-one-offs');
+    assert.throws(()=>f.editor.resolveFinishedPresentation(proposal.token,{oneOffsWillHide:0,open}),/visibility/);
+    assert.equal(f.editor.getFinishedPresentation(proposal.token),proposal);
+    const resolved=f.editor.resolveFinishedPresentation(proposal.token,{oneOffsWillHide,open});
+    assert.equal(resolved.action,!oneOffsWillHide?'open-one-offs':open?'close':'keep');
+    assert.equal(f.editor.getFinishedPresentation(proposal.token),resolved);
+    assert.equal(f.editor.resolveFinishedPresentation(proposal.token,{oneOffsWillHide,open}),null);
+    assert.equal(f.editor.snapshot,snapshot);assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('late finished presentation is revoked by caret, edit, cancellation and result updates',async()=>{
+  for(const mutation of ['caret','edit','cancel','results']){
+    const f=await finishedPresentationFixture({source:2});
+    const proposal=f.editor.beginFinishedPresentation(1,f.query.id);
+    if(mutation==='caret')f.editor.select(1,0,0);
+    if(mutation==='edit')await f.editor.edit({},edit(2,'next'));
+    if(mutation==='cancel')f.editor.cancel();
+    if(mutation==='results')f.parent.child.notify('onQueryResults',f.query);
+    assert.equal(f.editor.getFinishedPresentation(proposal.token),null);
+    assert.equal(f.editor.resolveFinishedPresentation(proposal.token,{oneOffsWillHide:false,open:true}),null);
+    f.editor.close();
+  }
+});
+
+test('finished presentation requires successful completion and current proposal and scope',async()=>{
+  const f=await editorFixture(),query=await f.editor.edit({},edit(1,'words'));
+  assert.equal(f.editor.beginFinishedPresentation(1,query.id),null);
+  f.parent.child.notify('onQueryCancelled',query);f.parent.child.notify('onQueryFinished',query);
+  assert.equal(f.editor.beginFinishedPresentation(1,query.id),null);f.editor.close();
+  const g=await finishedPresentationFixture({source:2});
+  const old=g.editor.beginFinishedPresentation(1,g.query.id),current=g.editor.beginFinishedPresentation(1,g.query.id);
+  assert.equal(g.editor.getFinishedPresentation(old.token),null);
+  assert.equal(g.editor.getFinishedPresentation(current.token),current);
+  g.loseScope();assert.throws(()=>g.editor.getFinishedPresentation(current.token),/scope changed/);g.editor.close();
+});

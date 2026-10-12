@@ -121,3 +121,15 @@ test('successful zero-prefix completion alone records aggregate exposure',()=>{
       !cancelled&&!searchString?'exposure':null);
   }
 });
+
+
+test('finished presentation preserves updated-results history and asynchronous one-off decisions',()=>{
+  const plan=facts=>({...sandbox.Model.finishedQueryPresentation(facts)});
+  assert.deepEqual(plan({updatedResults:true,searchMode:null}),{rows:'remove-stale',action:'keep'});
+  assert.deepEqual(plan({updatedResults:false,searchMode:null}),{rows:'clear',action:'close'});
+  assert.deepEqual(plan({updatedResults:false,searchMode:{}}),{rows:'clear',action:'resolve-one-offs'});
+  for(const open of [false,true])for(const oneOffsWillHide of [false,true]){
+    assert.deepEqual(plan({updatedResults:false,searchMode:{},open,oneOffsWillHide}),
+      {rows:'clear',action:!oneOffsWillHide?'open-one-offs':open?'close':'keep'});
+  }
+});

@@ -6527,7 +6527,7 @@ index 9596698cf9..77dd6bd175 100644
      method,
      snapshot,
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 278cb5ca71..460c766896 100644
+index 278cb5ca71..9a2bc70c93 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
 @@ -4,6 +4,8 @@
@@ -6912,7 +6912,18 @@ index 278cb5ca71..460c766896 100644
      this.#cancelRemoveStaleRowsTimer();
      if (this.#queryWasCancelled) {
        return;
-@@ -975,9 +885,9 @@ export class UrlbarView {
+@@ -967,7 +877,9 @@ export class UrlbarView {
+ 
+     // At this point the query finished successfully. If it returned some
+     // results, remove stale rows. Otherwise remove all rows.
+-    if (this.#queryUpdatedResults) {
++    const presentation = UrlbarQueryModel.finishedQueryPresentation({
++      updatedResults: this.#queryUpdatedResults, searchMode: null });
++    if (presentation.rows === "remove-stale") {
+       this.#removeStaleRows();
+     } else {
+       this.clear();
+@@ -975,9 +887,9 @@ export class UrlbarView {
  
      // Now that the view has finished updating for this query, record the
      // exposure.
@@ -6925,7 +6936,32 @@ index 278cb5ca71..460c766896 100644
  
      // If the query returned results, we're done.
      if (this.#queryUpdatedResults) {
-@@ -1018,6 +928,7 @@ export class UrlbarView {
+@@ -985,7 +897,8 @@ export class UrlbarView {
+     }
+ 
+     // If search mode isn't active, close the view.
+-    if (!this.input.searchMode) {
++    const searchMode = this.input.searchMode;
++    if (UrlbarQueryModel.finishedQueryPresentation({ updatedResults: false, searchMode }).action === "close") {
+       this.close();
+       return;
+     }
+@@ -998,10 +911,10 @@ export class UrlbarView {
+       if (openPanelInstance != this.#openPanelInstance) {
+         return;
+       }
+-      if (willHide) {
+-        if (this.isOpen) {
+-          this.close();
+-        }
++      const finalPresentation = UrlbarQueryModel.finishedQueryPresentation({
++        updatedResults: false, searchMode, oneOffsWillHide: willHide, open: willHide && this.isOpen });
++      if (finalPresentation.action !== "open-one-offs") {
++        if (finalPresentation.action === "close") this.close();
+         return;
+       }
+       oneOffs.enable(true);
+@@ -1018,6 +931,7 @@ export class UrlbarView {
    onQueryResults(queryContext) {
      this.queryContextCache.put(queryContext);
      this.#queryContext = queryContext;
@@ -6933,7 +6969,7 @@ index 278cb5ca71..460c766896 100644
  
      if (!this.isOpen) {
        this.clear();
-@@ -1057,28 +968,16 @@ export class UrlbarView {
+@@ -1057,28 +971,16 @@ export class UrlbarView {
      }
  
      if (!this.#selectedElement && !this.oneOffSearchButtons?.selectedButton) {
@@ -6972,7 +7008,7 @@ index 278cb5ca71..460c766896 100644
        }
      }
  
-@@ -1139,6 +1038,12 @@ export class UrlbarView {
+@@ -1139,6 +1041,12 @@ export class UrlbarView {
      }
    }
  
@@ -6985,7 +7021,7 @@ index 278cb5ca71..460c766896 100644
    /**
     * Handles removing a result from the view when it is removed from the query,
     * and attempts to select the new result on the same row.
-@@ -1152,6 +1057,10 @@ export class UrlbarView {
+@@ -1152,6 +1060,10 @@ export class UrlbarView {
     *   it. Undefined when the row is removed without acknowledgment.
     */
    onQueryResultRemoved(id, acknowledgeDismissalL10n) {
@@ -6996,7 +7032,7 @@ index 278cb5ca71..460c766896 100644
      let removedIndex = -1;
      let rowToRemove = null;
      for (let i = 0; i < this.#rows.children.length; i++) {
-@@ -1216,12 +1125,17 @@ export class UrlbarView {
+@@ -1216,12 +1128,17 @@ export class UrlbarView {
     *   The UrlbarResult's new menu commands.
     */
    updateResultMenuCommands(resultId, commands) {
@@ -7015,7 +7051,7 @@ index 278cb5ca71..460c766896 100644
    }
  
    /**
-@@ -1258,7 +1172,8 @@ export class UrlbarView {
+@@ -1258,7 +1175,8 @@ export class UrlbarView {
    #queryWasCancelled;
    #removeStaleRowsTimer;
    #resultMenuResult;
@@ -7025,7 +7061,7 @@ index 278cb5ca71..460c766896 100644
    #rows;
    #rawSelectedElement;
    #tail150 = null;
-@@ -1310,6 +1225,7 @@ export class UrlbarView {
+@@ -1310,6 +1228,7 @@ export class UrlbarView {
      this.input.inputField.setAttribute("aria-expanded", "true");
  
      this.input.toggleAttribute("suppress-focus-border", true);
@@ -7033,7 +7069,7 @@ index 278cb5ca71..460c766896 100644
      this.input.toggleAttribute("open", true);
  
      this.window.addEventListener("resize", this);
-@@ -1342,13 +1258,7 @@ export class UrlbarView {
+@@ -1342,13 +1261,7 @@ export class UrlbarView {
    }
  
    #shouldShowHeuristic(result) {
@@ -7048,7 +7084,7 @@ index 278cb5ca71..460c766896 100644
    }
  
    /**
-@@ -2146,13 +2056,7 @@ export class UrlbarView {
+@@ -2146,13 +2059,7 @@ export class UrlbarView {
    }
  
    #updateRowButtons(item, oldResult, result) {
@@ -7063,7 +7099,7 @@ index 278cb5ca71..460c766896 100644
  
      if (!this.#needsNewButtons(item, oldResult, result)) {
        return;
-@@ -2230,12 +2134,7 @@ export class UrlbarView {
+@@ -2230,12 +2137,7 @@ export class UrlbarView {
            "urlbarView-button",
            "urlbarView-button-" + buttonName,
          ],
@@ -7077,7 +7113,7 @@ index 278cb5ca71..460c766896 100644
        },
        item
      );
-@@ -2800,43 +2699,8 @@ export class UrlbarView {
+@@ -2800,43 +2702,8 @@ export class UrlbarView {
    }
  
    #iconForResult(result, iconUrlOverride = null) {
@@ -7123,7 +7159,7 @@ index 278cb5ca71..460c766896 100644
    }
  
    #getBlobUrlForResult(result, blob) {
-@@ -2921,21 +2785,22 @@ export class UrlbarView {
+@@ -2921,21 +2788,22 @@ export class UrlbarView {
  
      let description = item._elements.get("description");
      if (result.payload.descriptionL10n) {
@@ -7161,7 +7197,7 @@ index 278cb5ca71..460c766896 100644
          }
        }
      } else {
-@@ -3011,7 +2876,7 @@ export class UrlbarView {
+@@ -3011,7 +2879,7 @@ export class UrlbarView {
     * deferred until all rows have been updated.
     */
    #updateIndices() {
@@ -7170,7 +7206,7 @@ index 278cb5ca71..460c766896 100644
      this.#overflowObserver.disconnect();
  
      // `lastVisibleLabel` is the l10n object of the last-seen visible row label
-@@ -3033,7 +2898,7 @@ export class UrlbarView {
+@@ -3033,7 +2901,7 @@ export class UrlbarView {
  
        let visible = this.#isElementVisible(item);
        if (visible) {
@@ -7179,7 +7215,7 @@ index 278cb5ca71..460c766896 100644
          seenOnlyHeuristicOrSearchSuggestions &&=
            result.heuristic ||
            (result.type == UrlbarShared.RESULT_TYPE.SEARCH &&
-@@ -3067,7 +2932,7 @@ export class UrlbarView {
+@@ -3067,7 +2935,7 @@ export class UrlbarView {
        selectableElement = this.#getNextSelectableElement(selectableElement);
      }
  
@@ -7188,7 +7224,7 @@ index 278cb5ca71..460c766896 100644
    }
  
    /**
-@@ -3164,71 +3029,7 @@ export class UrlbarView {
+@@ -3164,71 +3032,7 @@ export class UrlbarView {
     *   If the current row should not have a label, returns null. Otherwise
     *   returns an l10n object for the label's l10n string: `{ id, args }`
     */
@@ -7261,7 +7297,7 @@ index 278cb5ca71..460c766896 100644
  
    #setRowVisibility(row, visible) {
      row.toggleAttribute("hidden", !visible);
-@@ -3277,7 +3078,7 @@ export class UrlbarView {
+@@ -3277,7 +3081,7 @@ export class UrlbarView {
      // necessarily imply we are in actions mode, therefore we should check both.
      if (
        this.input.searchMode?.source != UrlbarShared.RESULT_SOURCE.ACTIONS &&
@@ -7270,7 +7306,7 @@ index 278cb5ca71..460c766896 100644
      ) {
        this.#rows.toggleAttribute("actionmode", false);
      }
-@@ -3305,6 +3106,29 @@ export class UrlbarView {
+@@ -3305,6 +3109,29 @@ export class UrlbarView {
      }
    }
  
@@ -7300,7 +7336,7 @@ index 278cb5ca71..460c766896 100644
    #selectElement(
      element,
      { updateInput = true, setAccessibleFocus = true } = {}
-@@ -3340,6 +3164,7 @@ export class UrlbarView {
+@@ -3340,6 +3167,7 @@ export class UrlbarView {
  
      let result = row?.result;
      if (result) {
@@ -7308,7 +7344,7 @@ index 278cb5ca71..460c766896 100644
        this.controller.parentController.onBeforeSelection(result, element);
      }
  
-@@ -3598,55 +3423,13 @@ export class UrlbarView {
+@@ -3598,55 +3426,13 @@ export class UrlbarView {
     *   The DOM node for the result's tile.
     */
    #setResultTitle(result, titleNode) {
@@ -7369,7 +7405,7 @@ index 278cb5ca71..460c766896 100644
        return;
      }
  
-@@ -4160,51 +3943,6 @@ export class UrlbarView {
+@@ -4160,51 +3946,6 @@ export class UrlbarView {
      return idArgs;
    }
  
@@ -7421,7 +7457,7 @@ index 278cb5ca71..460c766896 100644
    #hasMenuButton(result) {
      return (
        (!result.heuristic && this.#canOpenInNewTarget(result)) ||
-@@ -4217,7 +3955,7 @@ export class UrlbarView {
+@@ -4217,7 +3958,7 @@ export class UrlbarView {
     * buttons of the rows that are already built, which would otherwise keep the
     * attribute they got when they were created.
     */
@@ -7430,7 +7466,7 @@ index 278cb5ca71..460c766896 100644
      let inaccessible = !UrlbarPrefs.get("resultMenu.keyboardAccessible");
      for (let button of this.#rows.querySelectorAll(
        ".urlbarView-button-result-menu"
-@@ -4232,98 +3970,9 @@ export class UrlbarView {
+@@ -4232,98 +3973,9 @@ export class UrlbarView {
     * @returns {boolean}
     *   Whether the result's menu offers to open it in a new tab or window.
     */
@@ -7532,7 +7568,7 @@ index 278cb5ca71..460c766896 100644
  
    /**
     * Popuplates the result menu with commands.
-@@ -4333,106 +3982,45 @@ export class UrlbarView {
+@@ -4333,106 +3985,45 @@ export class UrlbarView {
     * @param {UrlbarResultCommand[]} options.commands
     */
    async #populateResultMenu({ panel = this.resultMenu, commands }) {
@@ -7672,7 +7708,7 @@ index 278cb5ca71..460c766896 100644
    }
  
    // Event handlers below.
-@@ -4710,39 +4298,12 @@ export class UrlbarView {
+@@ -4710,39 +4301,12 @@ export class UrlbarView {
    }
  
    on_click(event) {
@@ -7718,7 +7754,7 @@ index 278cb5ca71..460c766896 100644
    }
  
    on_showing(event) {
-@@ -4780,6 +4341,7 @@ export class UrlbarView {
+@@ -4780,6 +4344,7 @@ export class UrlbarView {
      if (event.target != event.currentTarget) {
        return;
      }
@@ -9367,10 +9403,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..61a5162340
+index 0000000000..7400faae66
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2333 @@
+@@ -0,0 +1,2377 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9425,6 +9461,7 @@ index 0000000000..61a5162340
 +  #committingComposition = null;
 +  #closed = false;
 +  #completion = null;
++  #finishedPresentation = null;
 +  #autofill = null;
 +  #placeholder = null;
 +  #closeRequest = null;
@@ -9984,6 +10021,7 @@ index 0000000000..61a5162340
 +    this.#closeRecordingReady = null;
 +    this.#recordingClose = null;
 +    this.#inputState = null;
++    this.#finishedPresentation = null;
 +    this.#inputPresentation = null;
 +    this.#inputPresentationState = null;
 +    this.#inputPopupClose = null;
@@ -10082,6 +10120,46 @@ index 0000000000..61a5162340
 +    }, authorize);
 +  }
 +
++
++  /** Prepare final row/popup effects without manufacturing an old view. */
++  beginFinishedPresentation(revision, queryId) {
++    this.#check();
++    const edit = this.#edit, finished = this.#queries.describeFinishedQuery(queryId);
++    if (!edit || edit.revision !== revision || !finished || this.#hiddenResults ||
++        (edit.composing && !this.#canExposeComposition(revision, queryId))) return null;
++    const searchMode = this.#searchMode;
++    const policy = UrlbarQueryModel.finishedQueryPresentation({ updatedResults: finished.updatedResults, searchMode });
++    const proposal = Object.freeze({ token: Object.freeze({}), edit, queryId, searchMode, ...policy });
++    this.#finishedPresentation = { proposal, finished };
++    return proposal;
++  }
++
++  getFinishedPresentation(token) {
++    this.#check();
++    const pending = this.#finishedPresentation;
++    if (!pending || pending.proposal.token !== token) return null;
++    const { proposal, finished } = pending;
++    if (this.#edit !== proposal.edit || this.#searchMode !== proposal.searchMode || this.#hiddenResults ||
++        this.#queries.describeFinishedQuery(proposal.queryId) !== finished) {
++      this.#finishedPresentation = null;
++      return null;
++    }
++    return proposal;
++  }
++
++  /** Resolve only the pending one-off decision; callers validate again before host work. */
++  resolveFinishedPresentation(token, { oneOffsWillHide, open }) {
++    const proposal = this.getFinishedPresentation(token);
++    if (typeof oneOffsWillHide !== "boolean" || typeof open !== "boolean") {
++      throw new TypeError("Invalid finished one-off visibility");
++    }
++    if (!proposal || proposal.action !== "resolve-one-offs") return null;
++    const policy = UrlbarQueryModel.finishedQueryPresentation({ updatedResults: false,
++      searchMode: proposal.searchMode, oneOffsWillHide, open });
++    const resolved = Object.freeze({ ...proposal, ...policy, oneOffsWillHide, open });
++    this.#finishedPresentation = { ...this.#finishedPresentation, proposal: resolved };
++    return resolved;
++  }
 +
 +  #publishQueryUpdate(update, { revision, text, allowAutofill }) {
 +    if (this.#closed || !this.#isCurrent() || this.#edit.revision !== revision ||
@@ -11617,6 +11695,7 @@ index 0000000000..61a5162340
 +  }
 +
 +  cancel() {
++    this.#finishedPresentation = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
 +    this.#committingPreviewClose = null;
@@ -11659,6 +11738,7 @@ index 0000000000..61a5162340
 +  }
 +
 +  close() {
++    this.#finishedPresentation = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
 +    this.#committingPreviewClose = null;
@@ -11706,10 +11786,10 @@ index 0000000000..61a5162340
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..b973dc543d
+index 0000000000..328564ac40
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1006 @@
+@@ -0,0 +1,1020 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11765,7 +11845,13 @@ index 0000000000..b973dc543d
 +    });
 +    this.#controller.addListener({
 +      onFirstResult: query => this.#update("first-result", query),
-+      onQueryResults: query => this.#update("results", query),
++      onQueryResults: query => {
++        if (this.#finishState?.query === query) {
++          this.#finishState.updatedResults = true;
++          this.#finishState.description = null;
++        }
++        this.#update("results", query);
++      },
 +      onQueryCancelled: query => {
 +        if (this.#finishState?.query === query && !this.#finishState.finished) this.#finishState.cancelled = true;
 +      },
@@ -11798,6 +11884,7 @@ index 0000000000..b973dc543d
 +        this.#closed || !this.#isCurrent() || this.#query !== query) return;
 +    // Consume before the parent recorder can reenter, throw or repeat FINISHED.
 +    state.finished = true;
++    state.description = Object.freeze({ queryId: query.id, updatedResults: state.updatedResults });
 +    const recording = UrlbarQueryModel.finishedQueryRecording({
 +      cancelled: state.cancelled, searchString: query.searchString });
 +    try {
@@ -11806,6 +11893,13 @@ index 0000000000..b973dc543d
 +      // A recorder failure must not hide completion; reentry must not publish old work.
 +      if (this.#finishState === state) this.#update("finished", query);
 +    }
++  }
++
++  /** Identity-stable facts for a successful finish; late result updates revoke them. */
++  describeFinishedQuery(queryId) {
++    this.#check();
++    return this.#query?.id === queryId && this.#finishState?.finished &&
++      !this.#finishState.cancelled ? this.#finishState.description : null;
 +  }
 +
 +  #update(kind, query) {
@@ -11836,7 +11930,7 @@ index 0000000000..b973dc543d
 +      isPrivate: this.#context.isPrivate,
 +    }, request);
 +    this.#query = query;
-+    this.#finishState = { query, finished: false, cancelled: false };
++    this.#finishState = { query, finished: false, cancelled: false, updatedResults: false, description: null };
 +    this.#removedIds.clear();
 +    this.#activationCleanup.clear();
 +    this.#selectionRequest = null;
@@ -12915,10 +13009,10 @@ index 0000000000..ed9a06b8c0
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQueryModel.mjs b/browser/components/urlbar/content/UrlbarQueryModel.mjs
 new file mode 100644
-index 0000000000..61fff8be48
+index 0000000000..748f331090
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQueryModel.mjs
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,254 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12930,6 +13024,19 @@ index 0000000000..61fff8be48
 +
 +/** Firefox query policy over explicit state, without retaining an input/view. */
 +export class UrlbarQueryModel {
++  /** Final row/popup policy; one-off visibility may resolve asynchronously. */
++  static finishedQueryPresentation({ updatedResults, searchMode, oneOffsWillHide = null, open = false }) {
++    const rows = updatedResults ? "remove-stale" : "clear";
++    let action = "keep";
++    if (!updatedResults) {
++      if (!searchMode) action = "close";
++      else if (oneOffsWillHide === null) action = "resolve-one-offs";
++      else if (!oneOffsWillHide) action = "open-one-offs";
++      else if (open) action = "close";
++    }
++    return Object.freeze({ rows, action });
++  }
++
 +  /** Firefox's aggregate zero-prefix counter is tied to successful query completion. */
 +  static finishedQueryRecording({ cancelled, searchString }) {
 +    return !cancelled && !searchString ? "exposure" : null;
