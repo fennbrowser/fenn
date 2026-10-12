@@ -449,9 +449,14 @@ def registration(lane):
     script = f"""
 $p = Get-AppxPackage -Name {lane.identity} | Where-Object Publisher -eq '{lane.publisher}' | Select-Object -First 1
 if ($p) {{
-    $root = $p.InstallLocation.TrimEnd('\\') + '\\'
-    $running = @(Get-Process | Where-Object {{ $_.Path -and
-        $_.Path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) }} | ForEach-Object Id)
+    # A registration whose layout was moved or deleted has no InstallLocation; nothing can run from it,
+    # and a null prefix would otherwise match every process.
+    $running = @()
+    if ($p.InstallLocation) {{
+        $root = $p.InstallLocation.TrimEnd('\\') + '\\'
+        $running = @(Get-Process | Where-Object {{ $_.Path -and
+            $_.Path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) }} | ForEach-Object Id)
+    }}
     ConvertTo-Json -Compress @{{ Version = $p.Version; InstallLocation = $p.InstallLocation; Running = $running }}
 }}"""
     output = subprocess.run(["powershell", "-NoProfile", "-Command", script],
