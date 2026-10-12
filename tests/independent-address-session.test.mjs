@@ -21,6 +21,9 @@ function load(){
     onQueryResults(query){calls.push(['results',query.id]);}
     onQueryFinished(query){calls.push(['finished',query.id]);}
     snapshot(){return {snapshot:true};}
+    canActivate(result){return result.activatable!==false;}
+    nativeKeywordResult(result){return result.kind==='keyword';}
+    nativeOmniboxResult(result){return result.kind==='omnibox';}
     updateSelection(request){calls.push(['super.updateSelection',request]);return {status:'selected'};}
     captureAutofill(active){calls.push(['super.capture']);}
   }
@@ -271,4 +274,30 @@ test('a rejected or unavailable external stage falls back and restores the typed
     assert.equal(f.input.inputField.value,'typed');
     assert.notEqual(f.s.active,null);
   }
+});
+
+test('an omnibox result skips the input write and commits after the source is restored',()=>{
+  const f=fixture();f.result.kind='omnibox';f.s.active.rows[0].keywordDocument=2;
+  f.editor.beginResultOmnibox=()=>({token:{},phase:'input',value:'typed',selectionStart:5,selectionEnd:5,
+    selectionDirection:'none',searchMode:null,pageProxyValid:false});
+  assert.equal(f.s.activate(1,f.row.id,{}),'activated');
+  const names=f.calls.map(c=>c[0]).filter(n=>n.startsWith('external'));
+  assert.deepEqual(names,['external-revert','external-restored','external-commit']);
+});
+
+test('keyword and omnibox rows require the pinned document and an unlocked address',()=>{
+  const wrong=fixture();wrong.result.kind='keyword';wrong.s.active.rows[0].keywordDocument=9;
+  assert.equal(wrong.s.activate(1,wrong.row.id,{}),'stale');
+  const missing=fixture();missing.result.kind='omnibox';
+  assert.equal(missing.s.activate(1,missing.row.id,{}),'stale');
+  const locked=fixture();locked.result.kind='keyword';locked.s.active.rows[0].keywordDocument=2;locked.input.readOnly=true;
+  assert.equal(locked.s.activate(1,locked.row.id,{}),'stale');
+  assert.equal(locked.engagements.length,0);
+});
+
+test('results the original input cannot activate fall back and refocus Firefox',()=>{
+  const f=fixture();f.result.activatable=false;f.input.focus=()=>f.calls.push(['focus']);
+  assert.equal(f.s.activate(1,f.row.id,{}),'firefox-fallback');
+  assert.equal(f.s.constructor.counters.fallbacks.at(-1),'not-activatable');
+  assert.ok(f.calls.some(c=>c[0]==='focus'));
 });
