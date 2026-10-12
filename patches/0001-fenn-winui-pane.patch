@@ -9954,10 +9954,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..75b6b36679
+index 0000000000..f26a1cb143
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3656 @@
+@@ -0,0 +1,3697 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11629,7 +11629,14 @@ index 0000000000..75b6b36679
 +    if (!UrlbarShared.deepEqual(facts, pending.facts)) return false;
 +    try {
 +      const live = this.describeResultNavigation(this.#edit.revision, pending.queryId, pending.result, event, facts);
-+      return !!live && UrlbarShared.deepEqual(live, pending.proposal.plan);
++      if (!live || !UrlbarShared.deepEqual(live, pending.proposal.plan)) return false;
++      // A one-off result handoff pins engine identity, including across the host
++      // editor write; a same-name engine replacement cannot inherit the load.
++      if (pending.resultEngineId !== undefined) {
++        const recording = this.describeResultSearchRecording(this.#edit.revision, pending.queryId, pending.result, event, facts);
++        if (recording?.data.engineId !== pending.resultEngineId) return false;
++      }
++      return true;
 +    } catch { return false; }
 +  }
 +
@@ -12094,6 +12101,40 @@ index 0000000000..75b6b36679
 +    return this.getOneOffResultActivation(pending.plan.token, event, options) === pending.plan &&
 +      this.#oneOffCommand?.engineSearch === captured && captured.selection === selection && selection.resultSelection === pending
 +      ? pending.receipt : null;
++  }
++
++  /** Transfer an acknowledged current result to ordinary editor-write/load authority once. */
++  beginOneOffResultNavigationWrite(selectionToken, event, options = {}) {
++    const receipt = this.getAcknowledgedOneOffResultSelection(selectionToken, event, options);
++    const command = this.#oneOffCommand, captured = command?.engineSearch, selection = captured?.selection;
++    const source = selection?.resultSelection;
++    if (!receipt || source.navigationWriteAttempted || receipt.kind !== "navigation" ||
++        receipt.navigation.where !== "current" || !receipt.navigation.resetSelection ||
++        receipt.navigation.editorValue === undefined || receipt.navigation.revertBeforeLoad) return null;
++    const edit = this.#edit, searchMode = this.#searchMode, generation = this.#selectionGeneration;
++    const facts = Object.freeze({ selectedTabIsEmpty: options.selectedTabIsEmpty,
++      originalUntrimmedValue: options.originalUntrimmedValue, deferEnterFocus: options.deferEnterFocus ?? false });
++    if (this.getAcknowledgedOneOffResultSelection(selectionToken, event, options) !== receipt || source.navigationWriteAttempted) return null;
++    source.navigationWriteAttempted = true;
++    const proposal = this.beginNavigationWrite(edit.revision, receipt.queryId, source.result, event, facts);
++    if (!proposal) return null;
++    const pending = this.#navigationWrite;
++    // beginNavigationWrite intentionally advances selection generation. No other
++    // replacement or callback edit may inherit the already-acknowledged result.
++    if (pending?.proposal !== proposal || this.#oneOffCommand !== command || captured.selection !== selection || selection.resultSelection !== source ||
++        this.#edit !== edit || this.#searchMode !== searchMode || this.#selectionGeneration !== generation + 1 ||
++        !UrlbarShared.deepEqual(proposal.plan, receipt.navigation)) {
++      if (this.#navigationWrite === pending && pending?.proposal === proposal) this.#navigationWrite = null;
++      return null;
++    }
++    pending.resultEngineId = receipt.engineId;
++    const valid = this.getNavigationWrite(proposal.token, event, facts);
++    if (!valid || this.#oneOffCommand !== command || captured.selection !== selection || selection.resultSelection !== source) {
++      if (this.#navigationWrite === pending) this.#navigationWrite = null;
++      return null;
++    }
++    this.#oneOffCommand = null;
++    return proposal;
 +  }
 +
 +  /** Resolve only the engine branch after both host acknowledgments; effects remain pending. */
