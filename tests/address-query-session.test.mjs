@@ -8367,8 +8367,9 @@ test('new-tab editor consumes opener failure and rejects current targets or stal
 });
 
 
-async function oneOffResultActivationFixture(kind='private',contextOptions={}){
+async function oneOffResultActivationFixture(kind='private',contextOptions={},where='tab'){
   const f=await enginePrecedenceFixture(kind==='private'?'typed words':'@alias',contextOptions);
+  if(where==='tabshifted')f.sandbox.UrlbarContentUtils.willLoadInBackground=w=>w==='tabshifted';
   f.parent.child.updateEngineStore('changed',{id:'result-engine',name:'Result Engine',isGeneralPurposeEngine:true,aliases:['@alias']},-1);
   Object.assign(f.result,{source:f.sandbox.UrlbarShared.RESULT_SOURCE.SEARCH,providerName:'UrlbarProviderTokenAliasEngines'});
   Object.assign(f.result.payload,{engine:'Result Engine',query:' alias query ',suggestion:kind==='private'?'private suggestion':undefined,
@@ -8379,7 +8380,7 @@ async function oneOffResultActivationFixture(kind='private',contextOptions={}){
   const facts=engineSelectionFacts(f,kind==='private');
   const proposal=f.editor.beginOneOffNavigationSelection(f.receipt.token,facts);
   const selected=f.editor.acknowledgeOneOffNavigationSelection(proposal.token,engineSelectionObservation(f,proposal,facts));
-  const event={type:'keydown',key:'Enter',timeStamp:1,where:'tab'};
+  const event={type:'keydown',key:'Enter',timeStamp:1,where};
   const options={selectedTabIsEmpty:false,originalUntrimmedValue:kind==='private'?'typed words':'@alias'};
   return {...f,selected,event,options};
 }
@@ -8457,8 +8458,8 @@ test('one-off alias mode plans honor restyling exclusions and normalized restric
 });
 
 
-async function oneOffResultSelectionFixture(kind='private',contextOptions={}){
-  const f=await oneOffResultActivationFixture(kind,contextOptions),calls=[];
+async function oneOffResultSelectionFixture(kind='private',contextOptions={},where='tab'){
+  const f=await oneOffResultActivationFixture(kind,contextOptions,where),calls=[];
   const cancel=f.parent.cancelQuery.bind(f.parent);
   f.parent.cancelQuery=()=>{calls.push('freeze');return cancel();};
   f.parent.onBeforeSelection=(...args)=>{assert.deepEqual(args,[f.result]);calls.push('before');};
@@ -8945,8 +8946,8 @@ test('private source teardown and hidden results revoke restoration without open
   assert.equal(g.source.p.getCurrentLoadRecovery(revert.token),null);assert.equal(g.source.calls.length,0);
 });
 
-async function aliasTabActivationFixture(){
-  const f=await oneOffResultSelectionFixture('load',{browserId:42,isPrivate:false});
+async function aliasTabActivationFixture(where='tab'){
+  const f=await oneOffResultSelectionFixture('load',{browserId:42,isPrivate:false},where);
   const selection=f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options);
   f.receipt=f.editor.acknowledgeOneOffResultSelection(selection.token,f.observation,f.event,f.options);
   const source=privateParentFixture(),listeners=new Set(),recordings=[];
@@ -8995,6 +8996,51 @@ test('alias foreground-tab activation restores source and records exactly its ta
   assert.equal(f.listeners.size,0);assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);f.editor.close();
 });
 
+test('alias background-tab activation restores source, avoids browser focus and records its tagged destination',async()=>{
+  const f=await aliasTabActivationFixture('tabshifted');
+  let focused=0;f.source.browser.focus=()=>focused++;
+  const revert=preparePrivateRevert(f);
+  assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+  const outcome=f.editor.commitOneOffExternalNavigation(revert.token);
+  assert.equal(outcome.attempted,true);assert.equal(outcome.searchRecorderReturned,true);assert.equal(outcome.targetBrowserId,43);
+  assert.equal(f.recordings.length,1);assert.equal(f.recordings[0].browser,f.destination);assert.equal(f.recordings[0].details.isOneOff,false);
+  const opened=f.source.calls.find(c=>typeof c==='object');
+  assert.equal(opened.where,'tabshifted');assert.equal(opened.params.forceForeground,true);
+  assert.equal(opened.params.avoidBrowserFocus,true);assert.equal(opened.params.private,false);assert.equal(focused,0);
+  assert.equal(f.source.browser.userTypedValue,null);assert.equal(f.editor.snapshot.text,'source.test/');
+  assert.equal(f.listeners.size,0);assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);f.editor.close();
+});
+
+test('alias background-tab activation rejects stale authority and unscoped listeners like the foreground path',async()=>{
+  for(const phase of ['restore','dispatch'])for(const action of ['document','tab','engine','edit','typed']){
+    const f=await aliasTabActivationFixture('tabshifted'),revert=preparePrivateRevert(f);
+    if(phase==='dispatch')assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    if(action==='document')f.source.browser.browsingContext.currentWindowGlobal={};
+    if(action==='tab')f.source.p.browserWindow.gBrowser.selectedBrowser={};
+    if(action==='engine'){
+      f.parent.child.updateEngineStore('removed',{id:'result-engine'},-1);
+      f.parent.child.updateEngineStore('changed',{id:'replacement',name:'Result Engine'},-1);
+    }
+    if(action==='edit')f.editor.cancel();
+    if(action==='typed')f.source.browser.userTypedValue='new edit';
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),false,phase+action);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token)?.attempted??false,false,phase+action);
+    assert.equal(f.recordings.length,0);assert.equal(f.listeners.size,0);assert.equal(f.source.calls.length,0);f.editor.close();
+  }
+  for(const action of ['no-event','throw','foreign']){
+    const f=await aliasTabActivationFixture('tabshifted'),revert=preparePrivateRevert(f);let later;
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    f.source.p.browserWindow.openTrustedLinkIn=(_u,_w,params)=>{
+      later=()=>f.emit(params.eventDetail);
+      if(action==='throw')throw {result:1};
+      if(action==='foreign')f.emit(params.eventDetail,{linkedBrowser:{browserId:99}});
+    };
+    const out=f.editor.commitOneOffExternalNavigation(revert.token);
+    assert.equal(out.searchRecorderReturned,false,action);assert.equal(f.recordings.length,0);
+    assert.equal(f.listeners.size,0);later?.();assert.equal(f.recordings.length,0);f.editor.close();
+  }
+});
+
 test('alias new-tab activation rejects stale source, editor and engine authority without recording',async()=>{
   for(const phase of ['restore','dispatch'])for(const action of ['document','epoch','tab','engine','edit','typed']){
     const f=await aliasTabActivationFixture(),revert=preparePrivateRevert(f);
@@ -9032,7 +9078,7 @@ test('alias tab recording listener is scoped to the opener, including failure an
   }
 });
 
-test('external alias handoff rejects background policy without spending acknowledged selection',async()=>{
+test('external alias handoff rejects non-shifted background policy without spending acknowledged selection',async()=>{
   const f=await oneOffResultActivationFixture('load',{browserId:42,isPrivate:false});
   f.sandbox.UrlbarContentUtils.willLoadInBackground=()=>true;
   f.parent.onBeforeSelection=()=>{};f.parent.onSelection=()=>{};

@@ -935,7 +935,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..f4a96ee91c 100644
+index ba254af0c6..c567ea91cc 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -1213,8 +1213,8 @@ index ba254af0c6..f4a96ee91c 100644
 +    if (this.#destroyed || this.rendersInContentProcess || !this.#isAddressbar) return null;
 +    const validExternal = data => !!sourceStateToken && !!data?.loadRequest?.engineSearch &&
 +      (data.where === "window" && data.params?.private === true && tabSearchData === null ||
-+       data.where === "tab" && data.params?.forceForeground === true && !data.params.private &&
-+       !data.params.avoidBrowserFocus && typeof tabSearchData?.engineId === "string" &&
++       (data.where === "tab" || data.where === "tabshifted") && data.params?.forceForeground === true && !data.params.private &&
++       (data.where === "tabshifted") === (data.params.avoidBrowserFocus === true) && typeof tabSearchData?.engineId === "string" &&
 +       tabSearchData.query === data.loadRequest.engineSearch.query && !tabSearchData.opensInPrivateWindow);
 +    if (externalSearch ? !validExternal(loadData) : loadData?.where !== "current") {
 +      throw new TypeError("Invalid result-load target");
@@ -10036,10 +10036,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..22f567e907
+index 0000000000..9fd46a96d8
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3980 @@
+@@ -0,0 +1,3978 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12226,9 +12226,7 @@ index 0000000000..22f567e907
 +        !receipt.navigation.revertBeforeLoad) return null;
 +    const privateWindow = receipt.branch === "selected-private-result" && receipt.navigation.where === "window" &&
 +      receipt.navigation.openParams.private;
-+    const foregroundTab = receipt.branch === "token-alias-result" && receipt.navigation.where === "tab" &&
-+      receipt.navigation.openParams.forceForeground === true && !receipt.navigation.openParams.private &&
-+      !receipt.navigation.openParams.avoidBrowserFocus && receipt.navigation.resetSelection;
++    const foregroundTab = receipt.branch === "token-alias-result" && UrlbarQuerySession.isAliasTabPlan(receipt.navigation);
 +    if (!privateWindow && !foregroundTab) return null;
 +    const input = this.describeResultInput(this.#edit.revision, receipt.queryId, source.result);
 +    const facts = Object.freeze({ selectedTabIsEmpty: options.selectedTabIsEmpty,
@@ -14022,10 +14020,10 @@ index 0000000000..22f567e907
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..714fe539b0
+index 0000000000..edcd2c59d7
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1836 @@
+@@ -0,0 +1,1842 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14494,13 +14492,20 @@ index 0000000000..714fe539b0
 +    }
 +  }
 +
++  /** Foreground tab, or shifted background tab whose view stays open and never takes browser focus. */
++  static isAliasTabPlan(plan) {
++    const params = plan?.openParams;
++    if (!params || params.forceForeground !== true || params.private) return false;
++    return plan.where === "tab" ? !params.avoidBrowserFocus && plan.resetSelection === true
++      : plan.where === "tabshifted" && params.avoidBrowserFocus === true && plan.resetSelection === false;
++  }
++
 +  /** Record external-result effects, retaining only a pinned source-revert/load capability. */
 +  prepareExternalResultNavigation(queryId, result, event, options, plan, sourceStateToken, isEditorCurrent) {
 +    this.#check();
 +    const privateWindow = plan?.where === "window" && plan.openParams.private === true &&
 +      result.payload?.inPrivateWindow && result.payload.isPrivateEngine;
-+    const foregroundTab = plan?.where === "tab" && plan.openParams.forceForeground === true &&
-+      !plan.openParams.private && !plan.openParams.avoidBrowserFocus && plan.resetSelection &&
++    const foregroundTab = UrlbarQuerySession.isAliasTabPlan(plan) &&
 +      !result.payload?.inPrivateWindow && UrlbarQueryModel.pickTokenAliasResult(result);
 +    if (!this.#engagementActive || this.#endingEngagement || !this.#context.browserId ||
 +        !plan || result.type !== UrlbarShared.RESULT_TYPE.SEARCH || result.payload.providesSearchMode ||
@@ -14664,8 +14669,7 @@ index 0000000000..714fe539b0
 +      const load = this.describeResultLoad(queryId, result, event, options);
 +      if (!load || (load.where !== "current" && !(privateWindow && load.where === "window" &&
 +          load.openParams.private === true && result.payload.inPrivateWindow && result.payload.isPrivateEngine) &&
-+          !(deferTabSearch && load.where === "tab" && load.openParams.forceForeground === true &&
-+            !load.openParams.private && !load.openParams.avoidBrowserFocus))) return false;
++          !(deferTabSearch && UrlbarQuerySession.isAliasTabPlan({ ...load, resetSelection: !load.openParams.avoidBrowserFocus })))) return false;
 +      search = this.describeResultSearchRecording(queryId, result, event, options);
 +      if (!search) return false;
 +    }
