@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy · Fenn Browser</title>
+<meta name="description" content="What the Fenn browser and this website do and do not send.">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <a class="name" href="/">Fenn Browser</a>
+    <nav aria-label="Site">
+      <a href="/privacy/" aria-current="page">Privacy</a>
+      <a href="/#source">Source</a>
+      <a href="/#contact">Contact</a>
+    </nav>
+  </div>
+</header>
+<main class="wrap">
+  <h1>Privacy</h1>
+  <p class="note">Draft for owner review before the first release. It describes the build's defaults as of 2026-10-11 and is not yet final policy.</p>
+
+  <h2>What Fenn collects</h2>
+  <p>Fenn does not operate servers that receive data from the browser. It has no telemetry upload, no crash reporter, no update service and no studies or remote experiments, so it sends none of that to Fenn or to Mozilla. Your history, bookmarks, passwords and settings stay in your profile on your device unless you choose to sync them.</p>
+
+  <h2>What is turned off</h2>
+  <ul>
+    <li>Telemetry and usage reporting upload.</li>
+    <li>Crash report submission. The crash reporter is not built.</li>
+    <li>Normandy studies and Nimbus experiments and rollouts.</li>
+    <li>Mozilla's partner codes in search requests. Searches are sent to the engine you choose without Mozilla's attribution parameters.</li>
+    <li>Sponsored address-bar suggestions, sponsored shortcuts and New Tab stories. These are defaults, and Settings may offer opt-in toggles for some of them.</li>
+  </ul>
+
+  <h2>What still contacts third parties</h2>
+  <p>Fenn is a browser, so it sends requests that you or Firefox's own features cause:</p>
+  <ul>
+    <li><strong>Websites you visit</strong> and the search engine you choose receive what any browser sends them. Fenn presents Firefox's user agent to web content.</li>
+    <li><strong>Media components.</strong> At startup Fenn checks Mozilla's servers for the OpenH264 codec and downloads Widevine DRM from Google. These requests include the browser version, build ID and operating system.</li>
+    <li><strong>Add-ons</strong> are installed from, and checked against, addons.mozilla.org.</li>
+    <li><strong>Mozilla accounts and Sync</strong>, if you use them, are operated by Mozilla under Mozilla's own terms.</li>
+    <li><strong>Safe Browsing</strong> runs without Google's v4 lists in this build, because Fenn has no Safe Browsing key.</li>
+  </ul>
+
+  <h2>This website</h2>
+  <p>This site has no analytics, cookies or third-party scripts. It is served through Cloudflare, which may keep ordinary request logs such as IP address and user agent for security and operation.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy: <a href="mailto:contact@fennbrowser.com">contact@fennbrowser.com</a></p>
+</main>
+<footer>
+  <div class="wrap">Fenn Browser · <a href="/">Home</a></div>
+</footer>
+</body>
+</html>

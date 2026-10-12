@@ -1,0 +1,37 @@
+/* Brand-neutral: system colours and fonts only. No logo, accent or wordmark
+   until the owner supplies final brand assets. */
+:root {
+  color-scheme: light dark;
+  --bg: Canvas;
+  --fg: CanvasText;
+  --muted: color-mix(in srgb, CanvasText 65%, Canvas);
+  --rule: color-mix(in srgb, CanvasText 18%, Canvas);
+  --link: LinkText;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 1rem/1.6 system-ui, "Segoe UI", sans-serif;
+}
+.wrap { max-width: 42rem; margin: 0 auto; padding: 0 1rem; }
+header { border-bottom: 1px solid var(--rule); }
+header .wrap { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; align-items: baseline; padding-block: 1rem; }
+header a.name { font-weight: 600; color: var(--fg); text-decoration: none; margin-inline-end: auto; }
+nav { display: flex; gap: 1.25rem; }
+main { padding-block: 2rem 3rem; }
+h1 { font-size: 1.75rem; line-height: 1.25; margin: 0 0 1rem; }
+h2 { font-size: 1.2rem; margin: 2rem 0 0.5rem; }
+p, ul { margin: 0 0 1rem; }
+ul { padding-inline-start: 1.25rem; }
+li + li { margin-top: 0.35rem; }
+a { color: var(--link); }
+a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.note { color: var(--muted); border-inline-start: 3px solid var(--rule); padding-inline-start: 0.75rem; }
+footer { border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.9rem; }
+footer .wrap { padding-block: 1rem; }
+@media (forced-colors: active) {
+  header, footer, .note { border-color: CanvasText; }
+}
