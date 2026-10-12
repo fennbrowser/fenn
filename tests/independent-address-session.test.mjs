@@ -20,8 +20,12 @@ function load(){
     onFirstResult(query){calls.push(['first',query.id]);}
     onQueryResults(query){calls.push(['results',query.id]);}
     onQueryFinished(query){calls.push(['finished',query.id]);}
+    onQueryResultRemoved(id,l10n){calls.push(['removed',id,l10n]);}
     snapshot(){return {snapshot:true};}
     canActivate(result){return result.activatable!==false;}
+    changed(){calls.push(['changed']);}
+    resolveTipButton(request){calls.push(['resolve',request]);return request.resolved??null;}
+    activateTipButton(request){calls.push(['super.tip',request]);return 'retained-tip';}
     nativeKeywordResult(result){return result.kind==='keyword';}
     nativeOmniboxResult(result){return result.kind==='omnibox';}
     updateSelection(request){calls.push(['super.updateSelection',request]);return {status:'selected'};}
@@ -47,7 +51,7 @@ function fixture({visible=true,page='https://page.test/'}={}){
     setNativeInputValue(v){this.inputField.value=v;calls.push(['native-value',v]);},handleRevert(){calls.push(['revert']);}};
   const window={gBrowser:{selectedBrowser:browser,selectedTab:{isEmpty:false,userContextId:0}},gURLBar:input,
     KeyboardEvent:class {constructor(type,init){this.type=type;Object.assign(this,init);}},performance:{now:()=>1},
-    windowGlobalChild:{getActor:()=>({})}};
+    windowGlobalChild:{getActor:()=>({})},gWinUIPane:{addressFallback(){calls.push(['address-fallback']);}}};
   const s=new Session(window);
   view.nativePresentation=s;
   const result={id:11,type:1,payload:{url:'https://result.test/'}};
@@ -69,6 +73,11 @@ function fixture({visible=true,page='https://page.test/'}={}){
     commitOneOffExternalNavigation:()=>{calls.push(['external-commit']);return {attempted:true,reverted:false};},
     commitAcknowledgedNavigation:()=>({attempted:true,reverted:false}),
     cancel:()=>calls.push(['editor.cancel']),close:()=>calls.push(['editor.close']),
+    recordResultCommand:(...a)=>{calls.push(['command',a[4]]);return editor.commandOutcome===undefined?{recorded:true,sessionOngoing:true}:editor.commandOutcome;},
+    beginResultHelp:(...a)=>{calls.push(['help',a[4]]);return {token:{},phase:'input',value:'typed',selectionStart:5,selectionEnd:5,
+      selectionDirection:'none',searchMode:null,pageProxyValid:false};},
+    getRestartRequest:token=>token.proposal??null,
+    acknowledgeRestartQuery:async(token,o,state)=>{calls.push(['restart',o,state]);return token.restarted===false?null:{id:7};},
     getCompletion:token=>token.proposal,
     acknowledgeCompletion:(token,write)=>{calls.push(['ack',write]);return token.accept!==false;},
     observeAutofillSelection:(...a)=>{calls.push(['observe',...a]);return {confirmed:editor.confirms===true};},
@@ -300,4 +309,120 @@ test('results the original input cannot activate fall back and refocus Firefox',
   assert.equal(f.s.activate(1,f.row.id,{}),'firefox-fallback');
   assert.equal(f.s.constructor.counters.fallbacks.at(-1),'not-activatable');
   assert.ok(f.calls.some(c=>c[0]==='focus'));
+});
+
+function tip(f,action,{help=false}={}){
+  const button={action,enabled:true};
+  const resolved={active:f.s.active,row:{id:f.row.id,tipButtons:[{}],helpLink:help?{}:null},button,result:f.result,intent:{},isHelp:help};
+  return {version:1,resolved};
+}
+
+test('a tip URL button activates through the navigation handoff with its exact action',()=>{
+  const f=fixture();let seen=null;
+  f.editor.beginNavigationActivation=(r,q,res,event,options)=>{seen=options.resultAction;return {token:'sel'};};
+  assert.equal(f.s.activateTipButton(tip(f,{url:'https://tip.test/',name:'0'})),'activated');
+  assert.equal(JSON.stringify(seen),JSON.stringify({url:'https://tip.test/',name:'0'}));
+  assert.ok(f.calls.some(c=>c[0]==='changed'));
+});
+
+test('a tip command is recorded as a command and leaves the view to the provider',()=>{
+  const f=fixture();
+  assert.equal(f.s.activateTipButton(tip(f,{command:'main',input:'ignored',name:'1'})),'activated');
+  assert.equal(JSON.stringify(f.calls.find(c=>c[0]==='command')[1].resultAction),JSON.stringify({command:'main',name:'1'}));
+  assert.notEqual(f.s.active,null);
+  const ended=fixture();ended.editor.commandOutcome={recorded:true,sessionOngoing:false};
+  assert.equal(ended.s.activateTipButton(tip(ended,{command:'manage'})),'activated');
+  assert.notEqual(ended.s.active,null,'the retained path leaves the view to the provider');
+  const rejected=fixture();rejected.editor.commandOutcome=null;
+  assert.equal(rejected.s.activateTipButton(tip(rejected,{command:'main'})),'firefox-fallback');
+  assert.ok(rejected.calls.some(c=>c[0]==='address-fallback'));
+});
+
+test('learn-more links navigate, help commands use the help handoff and a command with a URL is not guessed',()=>{
+  const link=fixture();let linkAction=null;
+  link.editor.beginNavigationActivation=(r,q,res,e,o)=>{linkAction=o.resultAction;return {token:'sel'};};
+  assert.equal(link.s.activateTipButton(tip(link,{help:true,url:'https://help.test/'},{help:true})),'activated');
+  assert.equal(JSON.stringify(linkAction),JSON.stringify({url:'https://help.test/'}));
+  assert.equal(link.calls.some(c=>c[0]==='help'),false,'a learn-more link is not a help command');
+  const command=fixture();
+  assert.equal(command.s.activateTipButton(tip(command,{command:'help',name:'0'})),'activated');
+  assert.equal(JSON.stringify(command.calls.find(c=>c[0]==='help')[1].resultAction),JSON.stringify({command:'help',name:'0'}));
+  const guessed=fixture();
+  assert.equal(guessed.s.activateTipButton(tip(guessed,{command:'manage',url:'https://x.test/'})),'firefox-fallback');
+  assert.equal(guessed.s.constructor.counters.fallbacks.at(-1),'unsupported-action');
+  assert.equal(guessed.calls.some(c=>c[0]==='command'),false);
+});
+
+test('stale tip requests and inherited rows keep their retained answers',()=>{
+  const f=fixture();
+  assert.equal(f.s.activateTipButton({version:1}),'stale');
+  const inherited=fixture();inherited.s.active.source=undefined;
+  assert.equal(inherited.s.activateTipButton({version:1}),'retained-tip');
+});
+
+test('a provider restart writes its value, admits that query and is acknowledged once',async()=>{
+  const f=fixture();f.s.editId=3;
+  const proposal={value:'rewritten',edit:{text:'typed',selectionDirection:'none'}};
+  await f.s.onEditorPresentationRequest({kind:'restart-query',token:{proposal}});
+  await new Promise(r=>setTimeout(r,0));
+  assert.equal(f.input.inputField.value,'rewritten');
+  const restart=f.calls.find(c=>c[0]==='restart');
+  assert.equal(restart[1].text,'rewritten');assert.equal(restart[1].selectionStart,9);
+  assert.equal(f.s.tipQueryRestart.text,'rewritten');assert.equal(f.s.tipQueryRestart.editId,3);
+  f.s.onEditorUpdate({kind:'first-result',query:{id:99}});
+  assert.ok(f.calls.some(c=>c[0]==='started'&&c[1]===99),'the restarted query rebinds the active edit');
+});
+
+test('restarts that cannot be hosted hand the surface back',async()=>{
+  const rejected=fixture();
+  await rejected.s.onEditorPresentationRequest({kind:'restart-query',token:{proposal:{value:null,edit:{text:'typed',
+    selectionStart:5,selectionEnd:5,selectionDirection:'none'},restarted:false}}});
+  const search=fixture();
+  search.s.onEditorPresentationRequest({kind:'restart-query',token:{},search:{engineName:'x'}});
+  await new Promise(r=>setTimeout(r,0));
+  assert.ok(search.calls.some(c=>c[0]==='address-fallback'));
+  const other=fixture();
+  other.s.onEditorPresentationRequest({kind:'close'});
+  await new Promise(r=>setTimeout(r,0));
+  assert.equal(other.calls.some(c=>c[0]==='address-fallback'),false);
+});
+
+test('result menu items route to the editor flow that owns their kind',()=>{
+  const event={type:'click'};
+  const open=fixture();let seen=null;
+  open.editor.beginNavigationActivation=(r,q,res,e,options)=>{seen={event:e,action:options.resultAction};return {token:'sel'};};
+  open.s.invokeResultMenu(open.result,{openIn:'container-tab',userContextId:'3'},event);
+  assert.equal(seen.event,event);
+  assert.equal(JSON.stringify(seen.action),JSON.stringify({openIn:'container-tab',userContextId:'3'}));
+  const command=fixture();
+  command.s.invokeResultMenu(command.result,{command:'dismiss'},event);
+  assert.equal(JSON.stringify(command.calls.find(c=>c[0]==='command')[1].resultAction),JSON.stringify({command:'dismiss'}));
+  const help=fixture();help.result.payload.helpUrl='https://help.test/x';
+  help.s.invokeResultMenu(help.result,{command:'help'},event);
+  assert.equal(JSON.stringify(help.calls.find(c=>c[0]==='help')[1].resultAction),
+    JSON.stringify({command:'help',url:'https://help.test/x'}));
+});
+
+test('local menu operations stay with the shared menu model and unknown ones hand the surface back',()=>{
+  const local=fixture();let invoked=null;
+  local.input.resultActions={invokeMenu:(...a)=>{invoked=a;}};
+  local.s.invokeResultMenu(local.result,{command:'toggle-keyboard-accessible'},{});
+  assert.equal(invoked[1].command,'toggle-keyboard-accessible');
+  assert.equal(local.calls.some(c=>c[0]==='command'),false);
+  const unknown=fixture();
+  unknown.s.invokeResultMenu(unknown.result,{operation:'something-else'},{});
+  assert.ok(unknown.calls.some(c=>c[0]==='address-fallback'));
+  assert.equal(unknown.s.constructor.counters.fallbacks.at(-1),'unsupported-menu-action');
+  const inherited=fixture();inherited.s.active.source=undefined;
+  inherited.s.invokeResultMenu(inherited.result,{command:'dismiss'},{});
+  assert.ok(inherited.calls.some(c=>c[0]==='address-fallback'));
+});
+
+test('provider removals and their acknowledgment text reach the inherited row builder for the current query',()=>{
+  const f=fixture();
+  f.s.onEditorPresentationRequest({kind:'remove-result',queryId:5,resultId:11,acknowledgeDismissalL10n:{id:'ack'}});
+  assert.equal(JSON.stringify(f.calls.find(c=>c[0]==='removed').slice(1)),JSON.stringify([11,{id:'ack'}]));
+  const other=fixture();
+  other.s.onEditorPresentationRequest({kind:'remove-result',queryId:99,resultId:11});
+  assert.equal(other.calls.some(c=>c[0]==='removed'),false);
 });

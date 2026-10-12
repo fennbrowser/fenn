@@ -14383,10 +14383,10 @@ index 0000000000..30180b209d
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..587eabdcf9
+index 0000000000..0f5673a832
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,2184 @@
+@@ -0,0 +1,2185 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15167,8 +15167,8 @@ index 0000000000..587eabdcf9
 +        !UrlbarResultActions.advertisedCommands(result).has(action.command)) return null;
 +    const description = this.describeResultEngagement(queryId, result, facts);
 +    const query = this.#query, parent = this.#controller.parentController;
-+    const current = () => !this.#closed && this.#isCurrent() && this.#query === query && isCurrent() &&
-+      this.ownsResult(queryId, result);
++    const queryCurrent = () => !this.#closed && this.#isCurrent() && this.#query === query && isCurrent();
++    const current = () => queryCurrent() && this.ownsResult(queryId, result);
 +    if (!current()) return null;
 +    const details = { ...description.details, selType: action.command, resultAction: action };
 +    this.#engagementActive = false;
@@ -15181,7 +15181,8 @@ index 0000000000..587eabdcf9
 +      afterRecord?.();
 +    } finally {
 +      this.#endingEngagement = false; this.#flushRestart();
-+      if (ongoing && current()) this.#engagementActive = true;
++      // A dismissal removes its own result, which must not end the session it keeps ongoing.
++      if (ongoing && queryCurrent()) this.#engagementActive = true;
 +      else if (this.#query === query) this.cancel();
 +    }
 +    if (!recorded) return null;
@@ -19017,10 +19018,10 @@ index 0000000000..06237d3c52
 +}
 diff --git a/browser/base/content/WinUIResultContextMenu.sys.mjs b/browser/base/content/WinUIResultContextMenu.sys.mjs
 new file mode 100644
-index 0000000000..e778f95a65
+index 0000000000..d73984bfd1
 --- /dev/null
 +++ b/browser/base/content/WinUIResultContextMenu.sys.mjs
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,101 @@
 +// Firefox owns result-menu commands; native receives only scoped opaque IDs.
 +export class WinUIResultContextMenu {
 +  constructor(session) { this.session = session; this.generation = 0; }
@@ -19095,8 +19096,11 @@ index 0000000000..e778f95a65
 +    const find=items=>items?.flatMap(item=>item.children ? find(item.children) : [item]) || [];
 +    const fresh=find(descriptors).find(item=>item.enabled && key(item)===wanted);
 +    try {
-+      if(fresh) s.input.resultActions.invokeMenu(state.result,fresh.action,
-+        new s.window.MouseEvent('click',{bubbles:true,view:s.window,button:0}),state.browser.browserId);
++      if(fresh) {
++        const event=new s.window.MouseEvent('click',{bubbles:true,view:s.window,button:0});
++        if(s.invokeResultMenu) s.invokeResultMenu(state.result,fresh.action,event);
++        else s.input.resultActions.invokeMenu(state.result,fresh.action,event,state.browser.browserId);
++      }
 +    } finally {if(generation===this.generation)this.close();}
 +  }
 +  execute(request) {
@@ -20068,10 +20072,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..9582ef7156
+index 0000000000..e9b230c1e5
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1524 @@
+@@ -0,0 +1,1531 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21126,7 +21130,7 @@ index 0000000000..9582ef7156
 +    this.sequence++;
 +  }
 +
-+  activateTipButton(request) {
++  resolveTipButton(request) {
 +    const active = this.active;
 +    const row = active?.rows.find(item => item.id === request.id);
 +    const button = row?.helpLink?.id === request.actionId ? row.helpLink : row?.tipButtons?.find(item => item.id === request.actionId);
@@ -21134,13 +21138,20 @@ index 0000000000..9582ef7156
 +        this.input.view.nativePresentation !== this || request.revision !== active.revision ||
 +        active.browser !== this.window.gBrowser.selectedBrowser || active.page !== active.browser.currentURI.spec ||
 +        !button.document || button.document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId ||
-+        !this.nativeVisible?.includes(row.id) || this.input.inputField.value !== active.inputValue) return "stale";
++        !this.nativeVisible?.includes(row.id) || this.input.inputField.value !== active.inputValue) return null;
 +    const index = active.resultIndexes[active.rows.indexOf(row)], result = active.results[index];
-+    if (active.context.results[index] !== result || button.signature !== JSON.stringify(result.payload.buttons)) return "stale";
-+    if (button.helpSignature && button.helpSignature !== JSON.stringify([result.payload.descriptionLearnMoreTopic, result.payload.descriptionL10n])) return "stale";
++    if (active.context.results[index] !== result || button.signature !== JSON.stringify(result.payload.buttons)) return null;
++    if (button.helpSignature && button.helpSignature !== JSON.stringify([result.payload.descriptionLearnMoreTopic, result.payload.descriptionL10n])) return null;
 +    const intent = request.intent || {};
 +    if (Object.keys(intent).some(key => !["ctrlKey","altKey","shiftKey","metaKey"].includes(key)) ||
-+        Object.values(intent).some(value => typeof value !== "boolean")) return "stale";
++        Object.values(intent).some(value => typeof value !== "boolean")) return null;
++    return {active, row, button, result, intent, isHelp: row.helpLink?.id === request.actionId};
++  }
++
++  activateTipButton(request) {
++    const resolved = this.resolveTipButton(request);
++    if (!resolved) return "stale";
++    const {active, row, button, result, intent} = resolved;
 +    // A provider may restart a query with the input carried by its button.
 +    // Admit exactly that query while this edit and document remain current.
 +    if (button.action?.input && button.action?.command) {

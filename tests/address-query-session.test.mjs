@@ -9435,6 +9435,19 @@ test('menu commands record Firefox engagement with the command as type and keep 
   f.editor.close();
 });
 
+test('a dismissal that removes its own result keeps the query and presentation alive',async()=>{
+  const f=await commandFixture();
+  const record=f.parent.engagementEvent.record;
+  f.parent.engagementEvent.record=(event,details,state)=>{
+    record(event,details,state);
+    f.q.results=f.q.results.filter(result=>result!==f.result);
+  };
+  const out=f.run({command:'dismiss'});
+  assert.equal(out.sessionOngoing,true);
+  f.editor.publishPresentation(1,f.q.id,[],true);
+  f.editor.close();
+});
+
 test('manage records then opens preferences once and ends the session',async()=>{
   const f=await commandFixture();
   const out=f.run({command:'manage'});
