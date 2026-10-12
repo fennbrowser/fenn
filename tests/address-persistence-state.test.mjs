@@ -285,3 +285,19 @@ test('observed edit preparation preserves matching mode and rejects mismatch bef
   assert.equal(owner.snapshot(browser).searchTerms,'chosen words');
   assert.equal(browser.userTypedValue,undefined);
 });
+
+
+test('preview dismissal validates owned preview before clearing both mode slots',()=>{
+  const {owner}=ownerFixture(),browser={},confirmed={source:1,isPreview:false},preview={source:2,isPreview:true};
+  let update=owner.prepareMode(browser,confirmed);owner.commit(browser,update.token);
+  assert.equal(owner.preparePreviewDismissal(browser,confirmed),null);
+  update=owner.prepareMode(browser,preview);owner.commit(browser,update.token);
+  assert.equal(owner.preparePreviewDismissal(browser,{...preview,source:3}),null);
+  assert.equal(owner.isCommitted(browser,update.token),true);
+  const clear=owner.preparePreviewDismissal(browser,preview);
+  assert.equal(owner.snapshot(browser).preview.source,2);
+  assert.equal(clear.effects.searchMode,null);assert.equal(clear.effects.recordModeEntry,false);
+  assert.equal(owner.commit(browser,clear.token),true);
+  assert.equal(owner.snapshot(browser).preview,null);assert.equal(owner.snapshot(browser).confirmed,null);
+  assert.equal(owner.preparePreviewDismissal(browser,preview),null);
+});

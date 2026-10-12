@@ -5562,3 +5562,80 @@ test('popup receipt follows edit and scope lifetime and cannot be changed by cal
   assert.equal(f.editor.acknowledgeInputPresentation(newer.token,observed),false);
   assert.equal(f.editor.inputPresentationState,null);
 });
+
+
+async function popupCloseFixture(options){
+  const f=await editorFixture({browserId:42,...options});f.prefs['suggest.topsites']=false;
+  await f.editor.edit({searchMode:{source:2,isPreview:true}},popupInput(1));
+  f.request=f.editor.inputPresentation;f.observed={...f.editor.snapshot,...popupEffects};
+  f.commits=[];f.parent.commitIndependentPreviewDismissal=(id,mode,facts,current)=>{
+    assert.equal(current(),true);f.commits.push({id,mode,facts});
+    return {applied:true,current:true,browserId:id,stateToken:{},searchMode:null,userTypedValue:null,persistedSearchTerms:false};};
+  return f;
+}
+const closeFacts={userTypedValue:'',persistedSearchTerms:false};
+
+test('preview close commits only after exact popup acknowledgment and notifies once without querying',async()=>{
+  const events=[],f=await popupCloseFixture({onModeStateChanged:event=>events.push(event)});
+  assert.equal(f.editor.commitInputPopupClose(f.request.token,closeFacts),null);
+  assert.equal(f.editor.acknowledgeInputPresentation(f.request.token,f.observed),true);
+  const result=f.editor.commitInputPopupClose(f.request.token,closeFacts);
+  assert.equal(result.applied,true);assert.equal(result.current,true);assert.equal(result.userTypedValue,null);
+  assert.equal(f.commits.length,1);assert.equal(f.commits[0].mode.isPreview,true);
+  assert.equal(f.editor.inputPresentationState,null);assert.equal(f.editor.beginSearchModeExit(1),null);
+  assert.equal(events.length,1);assert.equal(events[0].reason,'input-popup-preview-close');
+  assert.equal(f.editor.commitInputPopupClose(f.request.token,closeFacts),null);
+  assert.equal(f.parent.started.length,0);f.editor.close();
+});
+
+test('failed, canceled and reentrant preview-close commits cannot retry or overwrite a newer edit',async()=>{
+  for(const phase of ['failure','caret','setter']){
+    const f=await popupCloseFixture();f.editor.acknowledgeInputPresentation(f.request.token,f.observed);
+    let calls=0;f.parent.commitIndependentPreviewDismissal=()=>{calls++;
+      if(phase==='failure')return null;
+      f.editor.select(1,0,0);return {applied:true,current:false};};
+    if(phase==='caret')f.editor.select(1,0,0);
+    const outcome=f.editor.commitInputPopupClose(f.request.token,closeFacts);
+    assert.equal(calls,phase==='caret'?0:1);
+    assert.equal(!!outcome,phase==='setter');if(outcome)assert.equal(outcome.current,false);
+    assert.equal(f.editor.commitInputPopupClose(f.request.token,closeFacts),null);
+    assert.equal(f.parent.started.length,0);f.editor.close();
+  }
+});
+
+test('preview-close notification reentry reports stale browser state after the applied commit',async()=>{
+  let browserCurrent=true;const f=await popupCloseFixture({onModeStateChanged:()=>{browserCurrent=false;}});
+  f.parent.captureIndependentQueryAuthority=()=>()=>browserCurrent;
+  f.editor.acknowledgeInputPresentation(f.request.token,f.observed);
+  const outcome=f.editor.commitInputPopupClose(f.request.token,closeFacts);
+  assert.equal(outcome.applied,true);assert.equal(outcome.current,false);
+  assert.equal('browserCurrent' in outcome,false);f.editor.close();
+});
+
+test('confirmed-mode close and continuing previews do not authorize preview dismissal',async()=>{
+  for(const preview of [false,true]){
+    const f=await editorFixture({browserId:42});f.prefs['suggest.topsites']=false;
+    await f.editor.edit({searchMode:{source:2,isPreview:preview}},popupInput(1,'',
+      {presentation:{open:true,oneOffsHaveView:preview}}));
+    const request=f.editor.inputPresentation;
+    f.editor.acknowledgeInputPresentation(request.token,{...f.editor.snapshot,...popupEffects});
+    assert.equal(f.editor.commitInputPopupClose(request.token,closeFacts),null);f.editor.close();
+  }
+});
+
+test('parent preview dismissal pins browser text, document and persistence around the owned commit',()=>{
+  for(const change of ['none','prior','mode','document','persistence','setter']){
+    const {p,browser,lazy}=parentLoadFixture(),token={};let committed=false,text='prior',discarded=0;
+    Object.defineProperty(browser,'userTypedValue',{get:()=>text,set:value=>{text=value;if(change==='setter')browser.lastLocationChange++;}});
+    lazy.independentUrlbarBrowserState={preparePreviewDismissal:()=>{
+      if(change==='mode')return null;if(change==='document')browser.browsingContext.currentWindowGlobal={};
+      return {token,effects:{searchMode:null,persistedSearchTerms:false}};
+    },commit:()=>{committed=true;return true;},isCommitted:()=>committed,discard:()=>discarded++};
+    const result=p.commitIndependentPreviewDismissal(42,{source:2,isPreview:true},
+      {userTypedValue:change==='prior'?'wrong':'prior',persistedSearchTerms:change==='persistence'},()=>true);
+    const applied=['none','setter'].includes(change);
+    assert.equal(!!result,applied);assert.equal(committed,applied);assert.equal(text,applied?null:'prior');
+    if(result)assert.equal(result.current,change==='none');
+    assert.equal(discarded,['prior','mode'].includes(change)?0:1);
+  }
+});
