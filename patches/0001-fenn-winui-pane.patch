@@ -9837,10 +9837,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..2ad5c80b63
+index 0000000000..f24f2c9a2c
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3336 @@
+@@ -0,0 +1,3391 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11807,6 +11807,61 @@ index 0000000000..2ad5c80b63
 +    const description = this.#queries.describeOneOffNavigationPrecedence(pending.prepared, receipt.edit.text, observation);
 +    return description && this.getAcknowledgedOneOffEngineSearch(receiptToken) === receipt && this.#oneOffCommand === pending
 +      ? Object.freeze({ ...description, candidateToken: receipt.candidateToken }) : null;
++  }
++
++  /** Capture selection facts separately from current-value result acknowledgment. */
++  beginOneOffNavigationSelection(receiptToken, observation) {
++    const receipt = this.getAcknowledgedOneOffEngineSearch(receiptToken), captured = this.#oneOffCommand?.engineSearch;
++    if (!receipt || !observation) return null;
++    const marker = Object.freeze({}), generation = this.#selectionGeneration;
++    captured.selection = marker;
++    const facts = Object.freeze({ selectedResult: observation.selectedResult, firstResult: observation.firstResult,
++      hasSelectedElement: observation.hasSelectedElement, safeToPickResult: observation.safeToPickResult });
++    const description = this.describeOneOffNavigationPrecedence(receiptToken, facts);
++    if (!description || this.#oneOffCommand?.engineSearch !== captured || captured.selection !== marker ||
++        generation !== this.#selectionGeneration || this.getAcknowledgedOneOffEngineSearch(receiptToken) !== receipt) return null;
++    const proposal = Object.freeze({ ...description, token: marker, receiptToken, edit: receipt.edit, queryId: receipt.queryId });
++    captured.selection = { proposal, facts, description, generation };
++    return proposal;
++  }
++
++  /** Revalidate both branch policy and the selection generation before host acknowledgment. */
++  getOneOffNavigationSelection(token) {
++    const captured = this.#oneOffCommand?.engineSearch, selection = captured?.selection, proposal = selection?.proposal;
++    if (!proposal || proposal.token !== token || selection.generation !== this.#selectionGeneration) return null;
++    const live = this.describeOneOffNavigationPrecedence(proposal.receiptToken, selection.facts);
++    return live && UrlbarShared.deepEqual(live, selection.description) && this.#oneOffCommand?.engineSearch === captured &&
++      captured.selection === selection && selection.generation === this.#selectionGeneration ? proposal : null;
++  }
++
++  /** Observe exact selection/current-value facts once; no result activation or recording occurs. */
++  acknowledgeOneOffNavigationSelection(token, observation) {
++    const proposal = this.getOneOffNavigationSelection(token), captured = this.#oneOffCommand?.engineSearch;
++    const selection = captured?.selection;
++    if (!proposal || selection.acknowledged || !observation) return null;
++    const edit = proposal.edit, facts = selection.facts;
++    if (observation.selectedResult !== facts.selectedResult || observation.firstResult !== facts.firstResult ||
++        observation.hasSelectedElement !== facts.hasSelectedElement || observation.safeToPickResult !== facts.safeToPickResult ||
++        observation.resultForCurrentValue !== captured.resultForCurrentValue ||
++        observation.revision !== edit.revision || observation.selectionRevision !== edit.selectionRevision ||
++        observation.text !== edit.text || observation.selectionStart !== edit.selectionStart ||
++        observation.selectionEnd !== edit.selectionEnd || observation.selectionDirection !== edit.selectionDirection ||
++        observation.composing !== false || observation.pageProxyValid !== false ||
++        !UrlbarShared.deepEqual(observation.searchMode, this.#searchMode) ||
++        this.getOneOffNavigationSelection(token) !== proposal || this.#oneOffCommand?.engineSearch !== captured ||
++        captured.selection !== selection || selection.acknowledged) return null;
++    const receipt = Object.freeze({ ...proposal, token: Object.freeze({}), selectionToken: token,
++      selectionAcknowledgmentPending: false, selectionAcknowledged: true, navigationResolutionPending: true });
++    selection.acknowledged = receipt;
++    return receipt;
++  }
++
++  getAcknowledgedOneOffNavigationSelection(token) {
++    const captured = this.#oneOffCommand?.engineSearch, selection = captured?.selection, receipt = selection?.acknowledged;
++    if (!receipt || receipt.token !== token) return null;
++    return this.getOneOffNavigationSelection(receipt.selectionToken) === selection.proposal &&
++      this.#oneOffCommand?.engineSearch === captured && captured.selection === selection && selection.acknowledged === receipt
++      ? receipt : null;
 +  }
 +
 +  /** Lower-level target creation only; source notification remains pending. */

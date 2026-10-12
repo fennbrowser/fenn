@@ -7729,3 +7729,71 @@ test('one-off precedence rejects foreign, reordered or reentrant selection obser
     assert.equal(f.editor.describeOneOffNavigationPrecedence(f.receipt.token,facts),null,kind);f.editor.close();
   }
 });
+
+
+function engineSelectionFacts(f,selected=true){return {selectedResult:selected?f.result:null,firstResult:f.result,
+  hasSelectedElement:selected,safeToPickResult:selected};}
+function engineSelectionObservation(f,p,facts){return {...p.edit,...facts,resultForCurrentValue:null,searchMode:null,pageProxyValid:false};}
+
+test('one-off selection acknowledgment binds each precedence branch once without activation',async()=>{
+  for(const branch of ['selected-private-result','token-alias-result','engine-search']){
+    const f=await enginePrecedenceFixture(branch==='token-alias-result'?'@alias':'typed words');
+    const facts=engineSelectionFacts(f,branch==='selected-private-result');
+    const p=f.editor.beginOneOffNavigationSelection(f.receipt.token,facts);assert.equal(p.branch,branch);
+    const observation=engineSelectionObservation(f,p,facts),before=f.editor.snapshot;
+    const receipt=f.editor.acknowledgeOneOffNavigationSelection(p.token,observation);
+    assert.equal(receipt.selectionAcknowledged,true);assert.equal(receipt.selectionAcknowledgmentPending,false);
+    assert.equal(receipt.navigationResolutionPending,true);assert.ok(Object.isFrozen(receipt));
+    assert.equal(f.editor.getAcknowledgedOneOffNavigationSelection(receipt.token),receipt);
+    assert.equal(f.editor.getAcknowledgedOneOffNavigationSelection({...receipt.token}),null);
+    assert.equal(f.editor.acknowledgeOneOffNavigationSelection(p.token,observation),null);
+    assert.equal(f.editor.snapshot,before);assert.equal(f.parent.started.length,2);assert.equal(f.parent.engagements.length,0);f.editor.close();
+  }
+});
+
+test('one-off selection acknowledgment rejects changed host identity, flags, text, caret and mode',async()=>{
+  const changes={selectedResult:{},firstResult:{},hasSelectedElement:false,safeToPickResult:false,resultForCurrentValue:{},
+    revision:99,selectionRevision:99,text:'other',selectionStart:0,selectionEnd:0,selectionDirection:'backward',
+    composing:true,pageProxyValid:true,searchMode:{engineName:'other'}};
+  for(const [key,value] of Object.entries(changes)){
+    const f=await enginePrecedenceFixture(),facts=engineSelectionFacts(f),p=f.editor.beginOneOffNavigationSelection(f.receipt.token,facts);
+    const observation=engineSelectionObservation(f,p,facts);
+    assert.equal(f.editor.acknowledgeOneOffNavigationSelection(p.token,{...observation,[key]:value}),null,key);
+    assert.ok(f.editor.acknowledgeOneOffNavigationSelection(p.token,observation));f.editor.close();
+  }
+});
+
+test('one-off selection proposals and receipts reject policy changes, replacement and selection generation changes',async()=>{
+  for(const action of ['branch','first','selection','replacement','caret','cancel']){
+    const f=await enginePrecedenceFixture(),facts=engineSelectionFacts(f),p=f.editor.beginOneOffNavigationSelection(f.receipt.token,facts);
+    const receipt=f.editor.acknowledgeOneOffNavigationSelection(p.token,engineSelectionObservation(f,p,facts));assert.ok(receipt);
+    if(action==='branch')f.result.payload.isPrivateEngine=false;
+    if(action==='first'){
+      const other={...f.result};f.query.results.unshift(other);f.editor.publishPresentation(2,f.query.id,[other,f.result],true);
+    }
+    if(action==='selection'){f.parent.onBeforeSelection=()=>{};f.editor.beginResultSelection(2,f.query.id,f.result);}
+    if(action==='replacement')f.editor.beginOneOffNavigationSelection(f.receipt.token,facts);
+    if(action==='caret')f.editor.select(2,0,0);
+    if(action==='cancel')f.editor.cancel();
+    assert.equal(f.editor.getAcknowledgedOneOffNavigationSelection(receipt.token),null,action);f.editor.close();
+  }
+});
+
+test('reentrant selection observations cannot replace or acknowledge a proposal twice',async()=>{
+  for(const action of ['begin','replace','recursive']){
+    const f=await enginePrecedenceFixture(),facts=engineSelectionFacts(f);
+    if(action==='begin'){
+      const observed={...facts,get safeToPickResult(){f.editor.beginOneOffNavigationSelection(f.receipt.token,facts);return true;}};
+      assert.equal(f.editor.beginOneOffNavigationSelection(f.receipt.token,observed),null);f.editor.close();continue;
+    }
+    const p=f.editor.beginOneOffNavigationSelection(f.receipt.token,facts),plain=engineSelectionObservation(f,p,facts);let inner;
+    const observed={...plain,get text(){
+      if(action==='replace')f.editor.beginOneOffNavigationSelection(f.receipt.token,facts);
+      else inner=f.editor.acknowledgeOneOffNavigationSelection(p.token,plain);
+      return plain.text;
+    }};
+    assert.equal(f.editor.acknowledgeOneOffNavigationSelection(p.token,observed),null);
+    if(action==='recursive')assert.equal(f.editor.getAcknowledgedOneOffNavigationSelection(inner.token),inner);
+    f.editor.close();
+  }
+});
