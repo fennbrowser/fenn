@@ -935,7 +935,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..8d0b09377b 100644
+index ba254af0c6..81f56caacf 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -1542,7 +1542,7 @@ index ba254af0c6..8d0b09377b 100644
 +        target.lastLocationChange === targetEpoch;
 +      destination = Object.freeze({ context: Object.freeze({ sapName: "urlbar", isPrivate: this.isPrivate,
 +        browserId: receipt.targetBrowserId, actor: this.#actor }), documentId: targetDocument.innerWindowId ?? null,
-+        searchMode: receipt.searchMode, userTypedValue: receipt.userTypedValue, isCurrent,
++        searchMode: receipt.searchMode, userTypedValue: receipt.userTypedValue, stateToken: receipt.stateToken, isCurrent,
 +        isReady: () => isCurrent() && target.userTypedValue === receipt.userTypedValue && owner.isCommitted(target, receipt.stateToken) });
 +    }
 +    return Object.freeze({ activated, current, sourceBrowserId: receipt.sourceBrowserId,
@@ -9798,10 +9798,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..4356b90eb6
+index 0000000000..4150bd4213
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3168 @@
+@@ -0,0 +1,3198 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12026,7 +12026,7 @@ index 0000000000..4356b90eb6
 +  getOneOffDestinationRestoration(receipt) {
 +    this.#check();
 +    const handoff = UrlbarEditSession.#oneOffDeselections.get(receipt);
-+    if (!handoff) return null;
++    if (!handoff || handoff.attempted) return null;
 +    const { destination } = handoff, record = UrlbarEditSession.#oneOffDestinations.get(destination);
 +    const current = () => !this.#closed && this.#isCurrent() && record?.editor === this &&
 +      record.edit === this.#edit && !this.#hiddenResults && this.#searchMode === destination.searchMode &&
@@ -12038,6 +12038,36 @@ index 0000000000..4356b90eb6
 +      documentId: destination.documentId, queryId: record.queryId, searchMode: destination.searchMode,
 +      engineId: record.engineId, modeRestorationPending: true, startQuery: false });
 +    return current() ? handoff.proposal : null;
++  }
++
++  /** Apply exact unchanged host state once; formatting and page-proxy transitions are not inferred. */
++  commitOneOffDestinationRestoration(receipt, observation) {
++    const proposal = this.getOneOffDestinationRestoration(receipt);
++    if (!proposal || !observation) return null;
++    const handoff = UrlbarEditSession.#oneOffDeselections.get(receipt), { destination } = handoff;
++    const { token, revision, text, selectionStart, selectionEnd, selectionDirection, composing,
++      searchMode, pageProxyValid, oneOffSelected, persistedSearchTerms, modeEntry: suppliedModeEntry } = observation;
++    if (typeof persistedSearchTerms !== "boolean") throw new TypeError("Missing destination persistence observation");
++    const modeEntry = this.#captureModeEntry(suppliedModeEntry);
++    const edit = proposal.edit;
++    if (token !== proposal.token || revision !== edit.revision || text !== edit.text ||
++        selectionStart !== edit.selectionStart || selectionEnd !== edit.selectionEnd || selectionDirection !== edit.selectionDirection ||
++        composing !== false || pageProxyValid !== false || oneOffSelected !== false ||
++        !UrlbarShared.deepEqual(searchMode, proposal.searchMode) || !modeEntry || modeEntry.pageProxyValid !== false ||
++        modeEntry.hasAutofillPlaceholder !== false || modeEntry.untrimmedValue !== edit.text ||
++        modeEntry.userTypedValue !== destination.userTypedValue || this.getOneOffDestinationRestoration(receipt) !== proposal) return null;
++    handoff.attempted = true;
++    // After our owned-state commit, the initial receipt is intentionally stale.
++    // Parent checks it before committing; subsequent effects use document lifetime,
++    // query/editor identity and the newly committed parent receipt instead.
++    const current = () => !this.#closed && this.#isCurrent() && this.#edit === edit &&
++      this.#searchMode === proposal.searchMode && !this.#hiddenResults && destination.isCurrent();
++    const listener = this.#onModeStateChanged;
++    const notify = listener ? state => this.#notifyModeState(listener, state, {
++      reason: "one-off-destination-restoration", token, queryId: proposal.queryId, edit,
++    }) : null;
++    return this.#queries.commitDestinationRestoration(proposal.queryId, proposal.searchMode, proposal.engineId,
++      destination.stateToken, modeEntry, persistedSearchTerms, current, notify);
 +  }
 +
 +  /** Propose the current-tab mode setter before its separate startQuery step. */
@@ -12972,10 +13002,10 @@ index 0000000000..4356b90eb6
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..25b19e6b87
+index 0000000000..f01d90a21c
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1483 @@
+@@ -0,0 +1,1497 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13895,6 +13925,20 @@ index 0000000000..25b19e6b87
 +    const engine = searchMode?.engineName ? store.getEngineByName(searchMode.engineName) : null;
 +    if (searchMode?.engineName ? !engine || engine.id !== engineId : engineId !== null) return false;
 +    return UrlbarShared.deepEqual(searchMode, UrlbarSearchModeModel.normalizeMode(searchMode, engine));
++  }
++
++  /** Restore an unchanged selected destination through the existing owned-state setter. */
++  commitDestinationRestoration(queryId, searchMode, engineId, stateToken, modeEntry, persistedSearchTerms, isCurrent, onCommitted = null) {
++    this.#check();
++    if (!stateToken || !modeEntry || modeEntry.pageProxyValid !== false || modeEntry.hasAutofillPlaceholder !== false ||
++        typeof isCurrent !== "function") return null;
++    const current = () => !this.#closed && this.#isCurrent() && this.ownsQuery(queryId) &&
++      this.isDestinationModeCurrent(searchMode, engineId) && isCurrent();
++    if (!current()) return null;
++    const outcome = this.#controller.parentController.commitIndependentModeState(this.#context.browserId,
++      searchMode, { persistedSearchTerms, engineId, requestedSearchMode: searchMode, modeEntry,
++        expectedStateToken: stateToken }, current, onCommitted);
++    return outcome ? Object.freeze({ ...outcome, modeRestorationPending: !outcome.applied }) : null;
 +  }
 +
 +  /** Capture an already confirmed destination query before engagement and host admission decisions. */

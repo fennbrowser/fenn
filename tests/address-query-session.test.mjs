@@ -6926,7 +6926,7 @@ async function oneOffTabActivationFixture(options={}){
   f.parent.activateIndependentOneOffSearchTab=(receipt,sourceCurrent,transferCurrent)=>{
     if(!sourceCurrent()||!transferCurrent())return null;
     selections++;f.onSelect?.();
-    const current=transferCurrent();return {activated:true,current,sourceBrowserId:17,targetBrowserId:18,isSourceCleanupCurrent:()=>f.sourceCleanupCurrent!==false&&f.destinationCurrent!==false,destination:current?{context:{...f.context,browserId:18},searchMode:f.command.searchMode,userTypedValue:'typed words',documentId:42,isCurrent:()=>f.destinationCurrent!==false,isReady:()=>f.destinationCurrent!==false&&f.destinationReady!==false}:null};
+    const current=transferCurrent();return {activated:true,current,sourceBrowserId:17,targetBrowserId:18,isSourceCleanupCurrent:()=>f.sourceCleanupCurrent!==false&&f.destinationCurrent!==false,destination:current?{stateToken:Object.freeze({}),context:{...f.context,browserId:18},searchMode:f.command.searchMode,userTypedValue:'typed words',documentId:42,isCurrent:()=>f.destinationCurrent!==false,isReady:()=>f.destinationCurrent!==false&&f.destinationReady!==false}:null};
   };
   const activation=f.editor.beginOneOffTabActivation(f.command.token);
   return Object.assign(f,{created,activation,getSelections:()=>selections});
@@ -6996,11 +6996,11 @@ async function oneOffDestinationFixture(options={}){
   const deselection=f.editor.acknowledgeOneOffSourceDeselection(sourceProposal.token,
     {...sourceProposal.edit,searchMode:sourceProposal.searchMode,oneOffSelected:false});
   f.editor.close();
-  const updates=[],editor=new f.sandbox.UrlbarEditSession({context:destination.context,isCurrent:destination.isCurrent,onUpdate:u=>updates.push(u)});
+  const updates=[],modeEvents=[],editor=new f.sandbox.UrlbarEditSession({context:destination.context,isCurrent:destination.isCurrent,onUpdate:u=>updates.push(u),onModeStateChanged:e=>modeEvents.push(e)});
   const parent=f.parents.at(-1),observation={revision:1,text:destination.userTypedValue??'',selectionStart:0,
     selectionEnd:0,selectionDirection:'none',composing:false,pageProxyValid:false,searchMode:destination.searchMode};
   parent.initEngineStore=()=>parent.child.updateEngineStore('init',destinationEngines,0);
-  return {...f,source:f.editor,editor,destination,parent,updates,observation,owner:f,destinationEngines,deselection};
+  return {...f,source:f.editor,editor,destination,parent,updates,modeEvents,observation,owner:f,destinationEngines,deselection};
 }
 
 test('activated destinations adopt once into matching fresh editors and explicitly query with local or engine policy',async()=>{
@@ -7434,5 +7434,61 @@ test('destination restoration descriptions reject foreign sessions and stale edi
       assert.equal(other.getOneOffDestinationRestoration(f.deselection),null);other.close();
     }else assert.equal(f.editor.getOneOffDestinationRestoration(f.deselection),null,mutation);
     assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+
+async function destinationRestorationCommitFixture(options={}){
+  const f=await oneOffDestinationFixture(options),adopted=f.editor.adoptOneOffDestination(f.destination,f.observation);
+  await f.editor.queryOneOffDestination(adopted.token,{searchMode:adopted.searchMode});
+  const p=f.editor.getOneOffDestinationRestoration(f.deselection),writes=[];
+  f.parent.commitIndependentModeState=(browserId,mode,facts,current,notify)=>{
+    if(!current()||facts.expectedStateToken!==f.destination.stateToken)return null;
+    writes.push({browserId,mode,facts});f.owner.destinationReady=false;
+    assert.equal(current(),true,'own state commit must not invalidate remaining effects');
+    f.duringCommit?.();if(current())notify?.({browserId,searchMode:mode,persistedSearchTerms:false,userTypedValue:p.edit.text});
+    return {applied:true,stateToken:{},modeChangeNotified:current(),modeEntryNotified:false,engineUsageNotified:!!p.engineId};
+  };
+  const observed={token:p.token,...p.edit,searchMode:p.searchMode,pageProxyValid:false,oneOffSelected:false,persistedSearchTerms:false,
+    modeEntry:{untrimmedValue:p.edit.text,pageProxyValid:false,hasAutofillPlaceholder:false,userTypedValue:f.destination.userTypedValue}};
+  return {...f,p,writes,observed};
+}
+
+test('destination restoration commits its owned confirmed mode once without another query or source write',async()=>{
+  for(const engine of [false,true]){
+    const f=await destinationRestorationCommitFixture({engine,pageValid:engine});
+    const result=f.editor.commitOneOffDestinationRestoration(f.deselection,f.observed);
+    assert.equal(result.applied,true);assert.equal(result.modeRestorationPending,false);assert.equal(result.engineUsageNotified,engine);
+    assert.equal(f.writes.length,1);assert.equal(f.writes[0].browserId,18);assert.equal(f.writes[0].facts.expectedStateToken,f.destination.stateToken);
+    assert.equal(f.modeEvents.length,1);assert.equal(f.modeEvents[0].reason,'one-off-destination-restoration');
+    assert.equal(f.editor.getOneOffDestinationRestoration(f.deselection),null);
+    assert.equal(f.editor.commitOneOffDestinationRestoration(f.deselection,f.observed),null);
+    assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('destination restoration rejects mismatched host state, formatting and reentrant observations before mutation',async()=>{
+  const f=await destinationRestorationCommitFixture();
+  for(const change of [{token:{}},{revision:99},{text:'other'},{selectionStart:1},{selectionDirection:'backward'},{composing:true},
+    {pageProxyValid:true},{oneOffSelected:true},{searchMode:null},
+    {modeEntry:{...f.observed.modeEntry,hasAutofillPlaceholder:true}},
+    {modeEntry:{...f.observed.modeEntry,userTypedValue:'other'}},{modeEntry:{...f.observed.modeEntry,untrimmedValue:'other'}}])
+    assert.equal(f.editor.commitOneOffDestinationRestoration(f.deselection,{...f.observed,...change}),null);
+  assert.equal(f.writes.length,0);
+  const observed={...f.observed,get oneOffSelected(){f.editor.select(1,1,1);return false;}};
+  assert.equal(f.editor.commitOneOffDestinationRestoration(f.deselection,observed),null);assert.equal(f.writes.length,0);f.editor.close();
+});
+
+test('destination restoration consumes failed setters and closes safely during effects',async()=>{
+  for(const failure of ['null','throw','close']){
+    const f=await destinationRestorationCommitFixture();let calls=0;
+    f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{calls++;
+      assert.equal(f.editor.commitOneOffDestinationRestoration(f.deselection,f.observed),null);
+      if(failure==='throw')throw Error('setter failed');if(failure==='null')return null;
+      f.editor.close();assert.equal(current(),false);return {applied:true,modeChangeNotified:false};};
+    if(failure==='throw')assert.throws(()=>f.editor.commitOneOffDestinationRestoration(f.deselection,f.observed),/setter failed/);
+    else{const outcome=f.editor.commitOneOffDestinationRestoration(f.deselection,f.observed);assert.equal(outcome?.applied??false,failure==='close');}
+    if(failure!=='close')assert.equal(f.editor.commitOneOffDestinationRestoration(f.deselection,f.observed),null);
+    assert.equal(calls,1);assert.equal(f.modeEvents.length,0);assert.equal(f.parent.started.length,1);f.editor.close();
   }
 });
