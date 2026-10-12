@@ -9354,10 +9354,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..e1f211c4a2
+index 0000000000..61a5162340
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2330 @@
+@@ -0,0 +1,2333 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9491,6 +9491,7 @@ index 0000000000..e1f211c4a2
 +    // Keep the immutable request, never caller-owned observations.
 +    this.#inputPresentationState = request;
 +    this.#inputPopupClose = request.close && request.searchMode?.isPreview ? request : null;
++    if (request.close) this.#closeRecordingReady = request;
 +    return true;
 +  }
 +
@@ -9966,6 +9967,7 @@ index 0000000000..e1f211c4a2
 +      this.#compositionHistory = null;
 +    }
 +    const priorTypedValue = browserState?.userTypedValue;
++    const closeRecording = presentation ? this.#queries.describeInputCloseRecording(presentation.open) : null;
 +    this.#closeRecordingReady = null;
 +    this.#recordingClose = null;
 +    this.#inputState = null;
@@ -10023,7 +10025,8 @@ index 0000000000..e1f211c4a2
 +      const effects = UrlbarQueryModel.inputPresentation({ value: text, ...presentation,
 +        suggestTopSites: UrlbarPrefs.get("suggest.topsites"), searchMode: this.#searchMode });
 +      this.#inputPresentation = Object.freeze({ edit: observedEdit, searchMode: this.#searchMode,
-+        token: Object.freeze({}), ...effects });
++        token: Object.freeze({}), ...effects,
++        ...(effects.close ? { recording: closeRecording } : {}) });
 +      if (effects.stopQuery) return null;
 +    }
 +    const keepPanelOpen = composition ? UrlbarPrefs.get("keepPanelOpenDuringImeComposition") : false;
@@ -11690,10 +11693,10 @@ index 0000000000..e1f211c4a2
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..1d19eb88a4
+index 0000000000..cbdd259974
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,975 @@
+@@ -0,0 +1,983 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12211,6 +12214,14 @@ index 0000000000..1d19eb88a4
 +      if (this.#query === query) this.cancel();
 +    }
 +    return true;
++  }
++
++  /** Input closes refer to the preceding query, never the new empty editor value. */
++  describeInputCloseRecording(open) {
++    this.#check();
++    if (typeof open !== "boolean") throw new TypeError("Invalid input popup open observation");
++    return Object.freeze({ open, zeroPrefix: !!this.#query && !this.#query.searchString,
++      elementPicked: false });
 +  }
 +
 +  /** Capture facts before cancellation destroys this query's identity. */

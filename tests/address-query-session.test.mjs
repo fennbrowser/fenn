@@ -5764,3 +5764,50 @@ test('recording consumes throwing hooks and stops further effects after discard 
     assert.deepEqual(f.calls,['discard']);f.parent.child.engagementEvent.discard=()=>{};f.editor.close();
   }
 });
+
+
+test('empty-input close records the preceding query rather than classifying the new empty text',async()=>{
+  for(const prior of ['', 'typed', null]) {
+    const f=await editorFixture();f.prefs['suggest.topsites']=false;
+    if(prior!==null)await f.editor.edit({},edit(1,prior));
+    const queries=f.parent.started.length,calls=[];
+    f.parent.child.engagementEvent.discard=()=>calls.push('discard');
+    f.parent.child.engagementEvent.record=()=>calls.push('record');
+    f.parent.recordZeroPrefix=kind=>calls.push(kind);
+    assert.equal(await f.editor.edit({},popupInput(2)),null);
+    const request=f.editor.inputPresentation;
+    assert.equal(request.recording.open,true,'actual host observation overrides prior logical openness');
+    assert.equal(request.recording.zeroPrefix,prior==='');assert.equal(request.recording.elementPicked,false);
+    assert.equal(Object.isFrozen(request.recording),true);
+    assert.equal(f.editor.recordAcknowledgedClose(request.token,{focused:false}),null);
+    f.editor.acknowledgeInputPresentation(request.token,{...f.editor.snapshot,...popupEffects});
+    const result=f.editor.recordAcknowledgedClose(request.token,{focused:false});
+    assert.equal(result.current,true);assert.equal(result.zeroPrefix,prior===''?'abandonment':null);
+    assert.deepEqual(calls,['discard','record',...(prior===''?['abandonment']:[])]);
+    assert.equal(f.editor.recordAcknowledgedClose(request.token,{focused:false}),null);
+    assert.equal(f.parent.started.length,queries);f.editor.close();
+  }
+});
+
+test('continuing input popup paths never authorize close recording',async()=>{
+  for(const presentation of [{open:false,oneOffsHaveView:false},{open:true,oneOffsHaveView:true}]){
+    const f=await editorFixture();f.prefs['suggest.topsites']=false;
+    await f.editor.edit({searchMode:{source:2}},popupInput(1,'',{presentation}));
+    const request=f.editor.inputPresentation;assert.equal(request.close,false);assert.equal(request.recording,undefined);
+    assert.equal(f.editor.acknowledgeInputPresentation(request.token,{...f.editor.snapshot,...popupEffects}),true);
+    assert.equal(f.editor.recordAcknowledgedClose(request.token,{focused:false}),null);f.editor.close();
+  }
+});
+
+test('input close recording remains one-use after preview cleanup and is revoked by subsequent input',async()=>{
+  for(const newer of [false,true]){
+    const f=await popupCloseFixture(),calls=[];
+    f.parent.child.engagementEvent.discard=()=>calls.push('discard');f.parent.child.engagementEvent.record=()=>calls.push('record');
+    f.editor.acknowledgeInputPresentation(f.request.token,f.observed);
+    assert.equal(f.editor.commitInputPopupClose(f.request.token,closeFacts).current,true);
+    if(newer)await f.editor.edit({},edit(2,'new query'));
+    const result=f.editor.recordAcknowledgedClose(f.request.token,{focused:false});
+    assert.equal(!!result,!newer);assert.deepEqual(calls,newer?[]:['discard','record']);
+    assert.equal(f.editor.recordAcknowledgedClose(f.request.token,{focused:false}),null);f.editor.close();
+  }
+});
