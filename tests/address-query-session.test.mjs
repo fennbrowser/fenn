@@ -9767,6 +9767,107 @@ test('omnibox parent preparation validates its shape',async()=>{
   assert.throws(()=>p.prepareOmniboxEntered(ok,null),/Invalid/);f.editor.close();
 });
 
+async function globalActionFixture(actions){
+  const f=await urlTabActivationFixture({type:'DYNAMIC'});
+  f.result.providerName='UrlbarProviderGlobalActions';
+  f.result.payload={dynamicType:'actions',query:'engine words',actionsResults:actions};
+  f.parent.engagementEvent.record=(_e,details)=>f.calls.push(['record',details.selType,details.pickedActionKey,details.searchString]);
+  return f;
+}
+const quickAction={key:'quickaction-downloads',providerName:'ActionsProviderQuickActions',dataset:{}};
+const immediateAction={key:'contextual-search',providerName:'ActionsProviderContextualSearch',engine:'Engine',
+  dataset:{providesSearchMode:true,immediateSearch:true}};
+const modeAction={key:'search-mode-engine',providerName:'ActionsProviderContextualSearch',engine:'Engine',
+  dataset:{providesSearchMode:true}};
+
+test('global action picks restore the source and record the picked key as an action engagement',async()=>{
+  for(const action of [quickAction,immediateAction]){
+    const f=await globalActionFixture([quickAction,immediateAction,modeAction]);
+    const options={...f.options,pickedActionKey:action.key};
+    const p=f.editor.beginNavigationActivation(1,f.q.id,f.result,f.event,options);
+    assert.ok(p,action.key);assert.equal(p.plan.kind,'terminal');assert.equal(p.plan.pickedActionKey,action.key);
+    const write=f.editor.acknowledgeNavigationActivation(p.token,{queryId:p.queryId,resultId:p.resultId},f.event,options);
+    assert.ok(write);
+    assert.equal(f.editor.acknowledgeOneOffExternalNavigation(write.token,aliasModeObservation(write)),true);
+    const revert=f.editor.prepareOneOffExternalRevert(write.token,f.event,{persistedSearchTerms:false,focused:true});
+    assert.ok(revert);assert.equal(f.calls.filter(c=>c[0]==='record').length,0);
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token).attempted,true);
+    assert.deepEqual(f.calls.find(c=>c[0]==='record'),['record','action',action.key,'typed']);
+    assert.equal(f.source.calls.length,0);assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);
+    f.editor.close();
+  }
+});
+
+test('global action activation refuses mode actions, unknown keys, missing keys and keys on other rows',async()=>{
+  const f=await globalActionFixture([quickAction,modeAction]);
+  for(const key of [modeAction.key,'unknown',undefined,'']){
+    assert.equal(f.editor.beginNavigationActivation(1,f.q.id,f.result,f.event,{...f.options,pickedActionKey:key}),null,String(key));
+  }
+  assert.equal(f.calls.length,0);f.editor.close();
+  const g=await urlTabActivationFixture({type:'DYNAMIC'});
+  assert.equal(g.editor.beginNavigationActivation(1,g.q.id,g.result,g.event,{...g.options,pickedActionKey:'x'}),null);g.editor.close();
+});
+
+test('global action engagement keys cannot be forged through engagement facts',async()=>{
+  const f=await globalActionFixture([quickAction]);
+  const p=f.editor.beginNavigationActivation(1,f.q.id,f.result,f.event,{...f.options,pickedActionKey:quickAction.key});
+  assert.equal(f.editor.getNavigationActivation(p.token,f.event,{...f.options,pickedActionKey:'other'}),null);
+  assert.throws(()=>f.editor.describeResultEngagement(1,f.q.id,f.result,{...f.options,searchString:'typed',selType:'dismiss'}),/Invalid/);
+  assert.throws(()=>f.editor.describeResultEngagement(1,f.q.id,f.result,{...f.options,searchString:'typed',pickedActionKey:''}),/Invalid/);
+  f.editor.close();
+});
+
+async function globalModeFixture(actions,{engine=true}={}){
+  const f=await editorFixture({browserId:42}),query=await f.editor.edit({},edit(1,'engine words'));
+  if(engine)f.parent.child.updateEngineStore('changed',{id:'engine',name:'Engine',isGeneralPurposeEngine:true},-1);
+  const result={id:1,type:f.sandbox.UrlbarShared.RESULT_TYPE.DYNAMIC,providerName:'UrlbarProviderGlobalActions',
+    payload:{dynamicType:'actions',query:' engine words',actionsResults:actions}};
+  query.results=[result];f.editor.publishPresentation(1,query.id,[result],true);
+  f.editor.startEngagement(1,query.id,{type:'input',timeStamp:1});
+  const calls=[];f.parent.onBeforeSelection=()=>calls.push('before');f.parent.onSelection=()=>calls.push('selected');
+  f.parent.commitIndependentModeState=(id,mode,observation,current)=>current()?(calls.push({id,mode,observation}),{applied:true}):null;
+  f.parent.engagementEvent.record=()=>calls.push('record');
+  return {...f,query,result,calls,begin:(extra={})=>f.editor.beginResultModeApplication(1,query.id,result,
+    {checkValue:false,startQuery:false,globalAction:modeAction.key,...extra})};
+}
+
+test('mode-entering global actions confirm their engine without a query or engagement',async()=>{
+  const f=await globalModeFixture([quickAction,modeAction]),p=f.begin();
+  assert.ok(p);assert.equal(p.searchMode.engineName,'Engine');assert.equal(p.searchMode.isPreview,false);
+  assert.equal(p.startQuery,false);assert.equal(p.storeTypedValue,true);assert.equal(p.value,'engine words');
+  assert.deepEqual(f.calls,['before']);
+  assert.equal(f.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),true);
+  const out=f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false});
+  assert.equal(out.applied,true);assert.equal(out.engagement,undefined);
+  assert.equal(f.calls.includes('record'),false);
+  const state=f.calls.find(c=>typeof c==='object');assert.equal(state.id,42);assert.equal(state.mode.engineName,'Engine');
+  assert.equal(f.parent.started.length,1,'no query starts without a requery request');f.editor.close();
+});
+
+test('mode-entering global actions are refused for other actions, rows, query flags and missing engines',async()=>{
+  const cases=[
+    [f=>f.begin({globalAction:'unknown'})],[f=>f.begin({globalAction:quickAction.key})],
+    [f=>f.begin({globalAction:immediateAction.key})],[f=>f.begin({startQuery:true})],
+    [f=>f.begin({activation:{event:{type:'keydown',key:'Enter',timeStamp:2}}})],
+    [f=>{f.result.providerName='UrlbarProviderOther';return f.begin();}]];
+  for(const [run] of cases){
+    const f=await globalModeFixture([quickAction,immediateAction,modeAction]);
+    assert.equal(run(f),null);f.editor.close();
+  }
+  const g=await globalModeFixture([modeAction],{engine:false});
+  assert.equal(g.begin(),null);g.editor.close();
+});
+
+test('published visible results receive row indexes that telemetry uses to find the selected result',async()=>{
+  const f=await historyEngagementFixture(),other={id:500,type:f.result.type,payload:{url:'https://other.test/'}};
+  f.q.results=[other,f.result];
+  f.editor.publishPresentation(1,f.q.id,[other,f.result],true);
+  assert.equal(other.rowIndex,0);assert.equal(f.result.rowIndex,1);
+  f.editor.publishPresentation(1,f.q.id,[f.result],true);
+  assert.equal(f.result.rowIndex,0);f.editor.close();
+});
+
 test('private opener checks restored source again after preparation and focus callbacks',()=>{
   for(const stage of ['prepare','focus']){
     const f=privateParentFixture(),token=f.p.prepareExternalSearchLoad(f.privateData,f.stateToken);

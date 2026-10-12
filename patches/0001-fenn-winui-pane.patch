@@ -10146,10 +10146,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..1fae5d78c7
+index 0000000000..a14a5f4ffa
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,4181 @@
+@@ -0,0 +1,4197 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11203,32 +11203,43 @@ index 0000000000..1fae5d78c7
 +
 +  /** Describe a mode transition using the current observed editor value. */
 +  describeResultModeTransition(revision, queryId, result, { checkValue = true,
-+    startQuery = true, entry = null } = {}) {
++    startQuery = true, entry = null, nativeAction = false, actionEngine = null } = {}) {
 +    this.#check();
 +    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing) {
 +      throw new Error("Stale editor mode transition");
 +    }
 +    return this.#queries.describeResultModeTransition(queryId, result, {
-+      value: this.#edit.text, checkValue, startQuery, entry,
++      value: this.#edit.text, checkValue, startQuery, entry, nativeAction, actionEngine,
 +    });
 +  }
 +
 +  /** Describe canonical mode facts without applying per-tab browser state. */
 +  describeResultModeApplication(revision, queryId, result, { checkValue = true,
-+    startQuery = true, entry = null } = {}) {
++    startQuery = true, entry = null, nativeAction = false, actionEngine = null } = {}) {
 +    this.#check();
 +    if (!this.#edit || revision !== this.#edit.revision || this.#edit.composing) {
 +      throw new Error("Stale editor mode application");
 +    }
 +    return this.#queries.describeResultModeApplication(queryId, result, {
-+      value: this.#edit.text, checkValue, startQuery, entry,
++      value: this.#edit.text, checkValue, startQuery, entry, nativeAction, actionEngine,
 +    });
 +  }
 +
 +  /** Propose a result mode and editor text as one observed host operation. */
 +  beginResultModeApplication(revision, queryId, result, { checkValue = true,
-+    startQuery = true, entry = null, modeEntry = undefined, activation = null } = {}) {
++    startQuery = true, entry = null, modeEntry = undefined, activation = null, globalAction = null } = {}) {
 +    this.#check();
++    let nativeAction = false, actionEngine = null;
++    if (globalAction !== null) {
++      // A mode-entering global action confirms its engine without querying; the host queries afterwards.
++      const action = typeof globalAction === "string" && result?.providerName === "UrlbarProviderGlobalActions" &&
++        result.type === UrlbarShared.RESULT_TYPE.DYNAMIC
++        ? (result.payload?.actionsResults ?? []).find(item => item?.key === globalAction) : null;
++      if (!action?.dataset?.providesSearchMode || action.dataset.immediateSearch || startQuery !== false ||
++          activation !== null || (action.engine !== undefined && typeof action.engine !== "string")) return null;
++      nativeAction = true;
++      actionEngine = action.engine ?? null;
++    }
 +    if (activation !== null) {
 +      if (!UrlbarQueryModel.isResultActivationEvent(activation?.event)) {
 +        throw new TypeError("Invalid mode activation event");
@@ -11253,7 +11264,8 @@ index 0000000000..1fae5d78c7
 +    this.#modeExitRequery = null;
 +    this.#resultPreview = null;
 +    this.#selectionRequest = null;
-+    const options = Object.freeze({ checkValue, startQuery, entry });
++    const options = Object.freeze({ checkValue, startQuery, entry,
++      ...(nativeAction ? { nativeAction, actionEngine } : {}) });
 +    if (!this.describeResultModeApplication(revision, queryId, result, options)) return null;
 +    this.freezeResults(revision, queryId);
 +    const request = this.beginResultSelection(revision, queryId, result);
@@ -11777,7 +11789,8 @@ index 0000000000..1fae5d78c7
 +    const facts = Object.freeze({ selectedTabIsEmpty: options.selectedTabIsEmpty,
 +      originalUntrimmedValue: options.originalUntrimmedValue, deferEnterFocus: options.deferEnterFocus ?? false,
 +      resultAction: action,
-+      ...(plan.kind === "tab-switch" ? { actionOverride: options.actionOverride } : {}) });
++      ...(plan.kind === "tab-switch" ? { actionOverride: options.actionOverride } : {}),
++      ...(plan.pickedActionKey ? { pickedActionKey: options.pickedActionKey } : {}) });
 +    const proposal = Object.freeze({ token: selection.token, queryId, resultId: result.id, edit, plan });
 +    this.#navigationActivation = { proposal, queryId, result, facts, edit, searchMode,
 +      generation: this.#selectionGeneration };
@@ -11865,7 +11878,8 @@ index 0000000000..1fae5d78c7
 +      originalUntrimmedValue: options.originalUntrimmedValue, searchString: this.#typedText, searchMode: null,
 +      isHandoff: options.isHandoff ?? false, persistedSearchTerms: options.persistedSearchTerms ?? false,
 +      resultAction: UrlbarQueryModel.normalizeResultAction(options.resultAction),
-+      ...(plan.kind === "tab-switch" ? { actionOverride: options.actionOverride } : {}) });
++      ...(plan.kind === "tab-switch" ? { actionOverride: options.actionOverride } : {}),
++      ...(plan.pickedActionKey ? { pickedActionKey: options.pickedActionKey } : {}) });
 +    const external = { receipt: Object.freeze({ queryId, engineId: null, navigation: plan }), result, switching,
 +      engineName: undefined, payload: structuredClone(result.payload), facts, edit: this.#edit, mode: this.#searchMode,
 +      generation: this.#selectionGeneration, phase: "input", load: null };
@@ -11890,7 +11904,8 @@ index 0000000000..1fae5d78c7
 +    const facts = { selectedTabIsEmpty: options?.selectedTabIsEmpty,
 +      originalUntrimmedValue: options?.originalUntrimmedValue, deferEnterFocus: options?.deferEnterFocus ?? false,
 +      resultAction: UrlbarQueryModel.normalizeResultAction(options?.resultAction),
-+      ...(kind === "tab-switch" ? { actionOverride: options?.actionOverride } : {}) };
++      ...(kind === "tab-switch" ? { actionOverride: options?.actionOverride } : {}),
++      ...(pending.proposal.plan?.pickedActionKey ? { pickedActionKey: options?.pickedActionKey } : {}) };
 +    if (!UrlbarShared.deepEqual(facts, pending.facts)) return false;
 +    try {
 +      const live = switching
@@ -12124,7 +12139,8 @@ index 0000000000..1fae5d78c7
 +      return this.#queries.describeResultTabSwitch(queryId, result,
 +        { searchString: this.#typedText, actionOverride: options?.actionOverride });
 +    }
-+    return this.#queries.describeResultTerminal(queryId, result, { searchString: this.#typedText });
++    return this.#queries.describeResultTerminal(queryId, result,
++      { searchString: this.#typedText, pickedActionKey: options?.pickedActionKey ?? null });
 +  }
 +
 +  describeResultLoad(revision, queryId, result, event, options) {
@@ -14333,10 +14349,10 @@ index 0000000000..1fae5d78c7
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..2baa9f1d5c
+index 0000000000..d1b4665d95
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,2141 @@
+@@ -0,0 +1,2168 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14778,7 +14794,12 @@ index 0000000000..2baa9f1d5c
 +
 +  /** Primary result engagement facts only; no recording or activation authority. */
 +  describeResultEngagement(queryId, result, { searchString, searchMode = null,
-+    isHandoff = false, persistedSearchTerms = false, resultAction = null } = {}) {
++    isHandoff = false, persistedSearchTerms = false, resultAction = null, pickedActionKey = null,
++    selType: selTypeOverride = null } = {}) {
++    if ((pickedActionKey !== null && (typeof pickedActionKey !== "string" || !pickedActionKey ||
++        pickedActionKey.length > 128)) || (selTypeOverride !== null && selTypeOverride !== "action")) {
++      throw new TypeError("Invalid engagement action facts");
++    }
 +    if (!this.ownsResult(queryId, result) || !this.#controller.resultsOpen ||
 +        !this.#controller.visibleResults.includes(result)) throw new Error("Stale engagement result");
 +    if (this.#context.sapName !== "urlbar") throw new Error("Independent engagement requires urlbar SAP");
@@ -14793,7 +14814,8 @@ index 0000000000..2baa9f1d5c
 +        !this.#controller.visibleResults.includes(result)) throw new Error("Stale engagement result");
 +    const action = resultAction ? Object.freeze({ ...resultAction }) : null;
 +    return Object.freeze({ details: Object.freeze({ result, searchString, searchMode: mode,
-+      selType, searchSource, windowMode: this.#context.isPrivate ? "private" : "classic",
++      selType: selTypeOverride ?? selType, searchSource, windowMode: this.#context.isPrivate ? "private" : "classic",
++      ...(pickedActionKey !== null ? { pickedActionKey } : {}),
 +      ...(action ? { resultAction: action } : {}) }),
 +      state: Object.freeze({ engagementData: Object.freeze({ searchMode: mode, visibleResults,
 +        viewIsOpen: true, searchSource }), smartbarData: Object.freeze({}) }) });
@@ -14899,18 +14921,29 @@ index 0000000000..2baa9f1d5c
 +  }
 +
 +  /** Describe a tip or dynamic row that loads nothing; its activation only restores the source and records. */
-+  describeResultTerminal(queryId, result, { searchString } = {}) {
++  describeResultTerminal(queryId, result, { searchString, pickedActionKey = null } = {}) {
 +    this.#check();
-+    if (typeof searchString !== "string") throw new TypeError("Invalid terminal facts");
++    if (typeof searchString !== "string" || (pickedActionKey !== null && typeof pickedActionKey !== "string")) {
++      throw new TypeError("Invalid terminal facts");
++    }
 +    if (!this.ownsResult(queryId, result) || !this.#controller.resultsOpen ||
 +        !this.#controller.visibleResults.includes(result)) throw new Error("Stale terminal result");
 +    const tip = result.type === UrlbarShared.RESULT_TYPE.TIP;
++    const globalActions = result.providerName === "UrlbarProviderGlobalActions";
 +    if ((!tip && result.type !== UrlbarShared.RESULT_TYPE.DYNAMIC) || result.payload?.providesSearchMode ||
-+        result.providerName === "UrlbarProviderGlobalActions" ||
 +        (tip && result.payload?.type === "dismissalAcknowledgment") ||
 +        UrlbarShared.getLoadRequestFromResult(result)) return null;
-+    return Object.freeze({ kind: "terminal", resultType: tip ? "tip" : "dynamic",
-+      heuristic: !!result.heuristic, searchString });
++    if (!globalActions) {
++      if (pickedActionKey !== null) return null;
++      return Object.freeze({ kind: "terminal", resultType: tip ? "tip" : "dynamic",
++        heuristic: !!result.heuristic, searchString });
++    }
++    // A global action row is picked by its action key; mode-entering actions use the mode path.
++    const action = tip || pickedActionKey === null ? null
++      : (result.payload?.actionsResults ?? []).find(item => item?.key === pickedActionKey);
++    if (!action || (action.dataset?.providesSearchMode && !action.dataset.immediateSearch)) return null;
++    return Object.freeze({ kind: "terminal", resultType: "dynamic", heuristic: !!result.heuristic, searchString,
++      pickedActionKey, selType: "action" });
 +  }
 +
 +  /** Pin a deferred-engagement activation behind acknowledged source restoration. */
@@ -14940,7 +14973,8 @@ index 0000000000..2baa9f1d5c
 +      if (!recovery || !current()) return null;
 +      const receipt = Object.freeze({ token: Object.freeze({}), recovery });
 +      this.#externalResultLoads.set(receipt, { token, parent, current, result, used: false,
-+        tabSwitch: Object.freeze({ queryId, event, options: Object.freeze({ ...options }),
++        tabSwitch: Object.freeze({ queryId, event, options: Object.freeze({ ...options,
++          ...(plan.pickedActionKey ? { pickedActionKey: plan.pickedActionKey, selType: "action" } : {}) }),
 +          type: terminal ? result.type : UrlbarShared.RESULT_TYPE.TAB_SWITCH }) });
 +      return receipt;
 +    } finally {
@@ -15036,7 +15070,13 @@ index 0000000000..2baa9f1d5c
 +      try {
 +        if (!pending.current() || !pending.parent.isCurrentLoadReady(pending.token, pending.current)) return null;
 +        this.#recordResultEngagement(queryId, pending.result, event, options, () => {
-+          if (pending.current()) outcome = pending.parent.commitCurrentLoad(pending.token, pending.current);
++          // A terminal row loads nothing, and its provider action may legitimately move focus or
++          // tabs, so the source freshness gate above is its only dispatch authority.
++          if (type !== UrlbarShared.RESULT_TYPE.TAB_SWITCH) {
++            outcome = Object.freeze({ attempted: true, reverted: false, browserId: this.#context.browserId });
++          } else if (pending.current()) {
++            outcome = pending.parent.commitCurrentLoad(pending.token, pending.current);
++          }
 +        }, false, false, type);
 +        return outcome;
 +      } finally { pending.parent.discardCurrentLoad(pending.token); }
@@ -16311,12 +16351,13 @@ index 0000000000..2baa9f1d5c
 +
 +  /** Describe result-mode transition policy without applying browser state. */
 +  describeResultModeTransition(queryId, result, { value, checkValue = true,
-+    startQuery = true, entry = null } = {}) {
++    startQuery = true, entry = null, nativeAction = false, actionEngine = null } = {}) {
 +    if (!this.ownsResult(queryId, result)) throw new Error("Stale result mode transition");
 +    if (typeof value !== "string" || typeof checkValue !== "boolean" ||
-+        typeof startQuery !== "boolean") throw new TypeError("Invalid mode transition facts");
-+    return UrlbarSearchModeModel.resultTransition(result, { value, checkValue, startQuery,
-+      resolveMode: current => this.describeResultSearchMode(queryId, current, { entry }) });
++        typeof startQuery !== "boolean" || typeof nativeAction !== "boolean" ||
++        (actionEngine !== null && typeof actionEngine !== "string")) throw new TypeError("Invalid mode transition facts");
++    return UrlbarSearchModeModel.resultTransition(result, { value, checkValue, startQuery, nativeAction,
++      resolveMode: current => this.describeResultSearchMode(queryId, current, { entry, actionEngine }) });
 +  }
 +
 +  /** Describe a normalized mode using the current visible-engine store. */
@@ -16443,6 +16484,8 @@ index 0000000000..2baa9f1d5c
 +      this.#selectionRequest = null;
 +    }
 +    if (!open) this.#oneOffDismissalGeneration++;
++    // Engagement telemetry indexes the visible list by `rowIndex`, which only a view assigned.
++    visibleResults.forEach((result, index) => { result.rowIndex = index; });
 +    this.#controller.visibleResults = [...visibleResults];
 +    this.#controller.resultsOpen = open;
 +  }
