@@ -16,7 +16,7 @@ of snapshots.
 | `native/` | The native WinUI pane (C++/WinRT) and the Rust shell core. |
 | `bridge/` | The C ABI headers between Firefox and the native code. |
 | `branding/` | Fenn's branding directory, copied into the Firefox tree before each build. |
-| `configs/` | The mozconfig, toolchain pins and resource-index configuration. |
+| `configs/` | The development and release (PGO/LTO) mozconfigs, toolchain pins and resource-index configuration. |
 | `packaging/` | Defaults for development MSIX packages. |
 | `scripts/` | Bootstrap, build, packaging and staging scripts. |
 | `tests/` | Unit and contract tests. |
@@ -31,7 +31,9 @@ App SDK runtime (`scripts/Install-WindowsAppRuntime.ps1`). In outline:
    revision into `upstream/firefox` and applies the patches.
 2. `scripts/Build-WinUIPane.ps1` builds the native pane.
 3. `scripts/Invoke-Mach.ps1 build` builds Firefox with Fenn's branding
-   (`configs/mozconfig`).
+   (`configs/mozconfig`). For an optimized build, set
+   `FENN_MOZCONFIG=mozconfig.release` first (`configs/mozconfig.release`:
+   profile-guided and link-time optimization, built into `build/firefox-release`).
 4. `scripts/Build-FennDevPackage.ps1` builds a development MSIX package.
 
 ## License
