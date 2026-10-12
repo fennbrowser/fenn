@@ -2860,7 +2860,7 @@ test('backend asynchronous rejection is handled without suppressing terminal rec
 
 function parentLoadFixture() {
   const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarParentController.sys.mjs',import.meta.url),'utf8');
-  const start=source.indexOf('  prepareCurrentLoad(loadData) {');
+  const start=source.indexOf('  prepareIndependentEngineSearchTarget(browserId, where, userTypedValue, isCurrent) {');
   const methods=source.slice(start,source.indexOf('  /**\n   * Focuses the browser',start));
   const calls=[],browser={browserId:42,lastLocationChange:1,browsingContext:{currentWindowGlobal:{}},focus:()=>calls.push('focus')};
   let stateToken=null,lastCommit=null,latest=null;
@@ -2874,7 +2874,7 @@ function parentLoadFixture() {
   lazy.UrlbarCompositionModel=modelFixture.sandbox.UrlbarCompositionModel;lazy.UrlbarShared=modelFixture.sandbox.UrlbarShared;modelFixture.session.close();
   lazy.ReaderMode={getOriginalUrlObjectForDisplay:()=>null};
   const Parent=new Function('lazy','Cr',`return class {
-    #currentLoad=null;#currentLoadRecovery=null;#currentLoadGeneration=0;#destroyed=false;#isAddressbar=true;#oneOffSearchTabs=new WeakMap();#actor={};
+    #currentLoad=null;#currentLoadRecovery=null;#currentLoadGeneration=0;#destroyed=false;#isAddressbar=true;#oneOffSearchTabs=new WeakMap();#independentEngineTargets=new WeakMap();#actor={};
     #prepareAddressbarLoad(data){this.prepare?.(data);}
     destroy(){this.#destroyed=true;this.#currentLoad=null;this.#discardCurrentLoadRecovery();}
     describeCurrentPageRevert(){return this.recoveryDescription??null;}
@@ -7688,8 +7688,8 @@ test('acknowledged engine candidates expire on mutable results, command policy a
 });
 
 
-async function enginePrecedenceFixture(text='typed words'){
-  const f=await oneOffCommandFixture();
+async function enginePrecedenceFixture(text='typed words',options={}){
+  const f=await oneOffCommandFixture(options);
   const query=await f.editor.edit({},edit(2,text));
   const result={id:'precedence-result',type:f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH,
     payload:{suggestion:'terms',inPrivateWindow:true,isPrivateEngine:true,keyword:'@alias'},autofill:{}};
@@ -7827,8 +7827,8 @@ test('verified safe-to-pick keeps heuristic and non-typed short circuits and rej
 });
 
 
-async function engineNavigationFixture(){
-  const f=await enginePrecedenceFixture(),facts=engineSelectionFacts(f,false);
+async function engineNavigationFixture(options={}){
+  const f=await enginePrecedenceFixture('typed words',options),facts=engineSelectionFacts(f,false);
   const selection=f.editor.beginOneOffNavigationSelection(f.receipt.token,facts);
   const receipt=f.editor.acknowledgeOneOffNavigationSelection(selection.token,engineSelectionObservation(f,selection,facts));
   return {...f,facts,selection,selectionReceipt:receipt};
@@ -7890,5 +7890,65 @@ test('engine resolution preserves suggested terms separately from typed text and
     assert.equal(plan.searchString,'suggested words');assert.equal(plan.typedValue,'typed words');
     assert.equal(plan.where,background?'tab':'current');assert.equal(plan.inBackground,background?true:undefined);
     f.result.payload.suggestion='new';assert.equal(f.editor.getOneOffEngineNavigation(plan.token),null);f.editor.close();
+  }
+});
+
+
+function engineParentTargetFixture(){
+  const f=parentLoadFixture();f.browser.userTypedValue='typed words';f.browser.browsingContext.currentWindowGlobal.innerWindowId=17;
+  f.tab={linkedBrowser:f.browser,closing:false};f.p.browserWindow.gBrowser.getTabForBrowser=b=>b===f.browser?f.tab:null;return f;
+}
+
+test('parent engine target preparation pins source lifetime for current and new-tab destinations without effects',()=>{
+  for(const where of ['current','tab']){
+    const f=engineParentTargetFixture(),target=f.p.prepareIndependentEngineSearchTarget(42,where,'typed words',()=>true);
+    assert.equal(target.sourceBrowserId,42);assert.equal(target.targetBrowserId,where==='current'?42:null);assert.equal(target.documentId,17);
+    assert.ok(Object.isFrozen(target));assert.equal(f.p.isIndependentEngineSearchTargetCurrent(target.token),true);
+    assert.equal(f.p.isIndependentEngineSearchTargetCurrent({...target.token}),false);assert.deepEqual(f.calls,[]);
+  }
+});
+
+test('parent engine target rejects stale browser, tab, document, epoch, typed state and scope',()=>{
+  for(const action of ['selection','tab','document','epoch','typed','scope','destroy']){
+    const f=engineParentTargetFixture();let current=true;
+    const target=f.p.prepareIndependentEngineSearchTarget(42,'current','typed words',()=>current);assert.ok(target);
+    if(action==='selection')f.p.browserWindow.gBrowser.selectedBrowser={};
+    if(action==='tab')f.tab.closing=true;
+    if(action==='document')f.browser.browsingContext.currentWindowGlobal={innerWindowId:17};
+    if(action==='epoch')f.browser.lastLocationChange++;
+    if(action==='typed')f.browser.userTypedValue='new';
+    if(action==='scope')current=false;
+    if(action==='destroy')f.p.destroy();
+    assert.equal(f.p.isIndependentEngineSearchTargetCurrent(target.token),false,action);assert.deepEqual(f.calls,[]);
+  }
+});
+
+async function engineTargetFixture(){
+  const f=await engineNavigationFixture({browserId:42}),parentTarget=engineParentTargetFixture();
+  f.parent.prepareIndependentEngineSearchTarget=(...args)=>parentTarget.p.prepareIndependentEngineSearchTarget(...args);
+  f.parent.isIndependentEngineSearchTargetCurrent=(...args)=>parentTarget.p.isIndependentEngineSearchTargetCurrent(...args);
+  const plan=f.editor.resolveOneOffEngineNavigation(f.selectionReceipt.token);return {...f,parentTarget,plan};
+}
+
+test('independent engine targets preserve resolved policy and revoke superseded or stale target preparations',async()=>{
+  const f=await engineTargetFixture(),observation={userTypedValue:'typed words'};
+  const first=f.editor.prepareOneOffEngineTarget(f.plan.token,observation),target=f.editor.prepareOneOffEngineTarget(f.plan.token,observation);
+  assert.ok(target);assert.equal(target.browserTargetPending,false);assert.equal(target.dispatchPending,true);assert.equal(target.engagementPending,true);
+  assert.equal(target.targetBrowserId,42);assert.equal(target.searchString,f.plan.searchString);assert.equal(target.where,f.plan.where);
+  assert.equal(f.editor.getOneOffEngineTarget(first.token),null);assert.equal(f.editor.getOneOffEngineTarget({...target.token}),null);
+  assert.equal(f.editor.getOneOffEngineTarget(target.token),target);
+  f.parentTarget.browser.lastLocationChange++;assert.equal(f.editor.getOneOffEngineTarget(target.token),null);
+  assert.deepEqual(f.parentTarget.calls,[]);assert.equal(f.parent.engagements.length,0);assert.equal(f.parent.started.length,2);f.editor.close();
+});
+
+test('engine target capture rejects contradictory or reentrant observations and later editor changes',async()=>{
+  for(const kind of ['typed','reentry','caret']){
+    const f=await engineTargetFixture();
+    const observation=kind==='reentry'?{get userTypedValue(){f.editor.select(2,0,0);return 'typed words';}}:
+      {userTypedValue:kind==='typed'?'wrong':'typed words'};
+    const target=f.editor.prepareOneOffEngineTarget(f.plan.token,observation);
+    if(kind==='caret'){assert.ok(target);f.editor.select(2,0,0);assert.equal(f.editor.getOneOffEngineTarget(target.token),null);}
+    else assert.equal(target,null);
+    assert.deepEqual(f.parentTarget.calls,[]);f.editor.close();
   }
 });
