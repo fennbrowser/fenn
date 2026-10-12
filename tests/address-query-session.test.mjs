@@ -7447,7 +7447,7 @@ async function destinationRestorationCommitFixture(options={}){
     writes.push({browserId,mode,facts});f.owner.destinationReady=false;
     assert.equal(current(),true,'own state commit must not invalidate remaining effects');
     f.duringCommit?.();if(current())notify?.({browserId,searchMode:mode,persistedSearchTerms:false,userTypedValue:p.edit.text});
-    return {applied:true,stateToken:{},modeChangeNotified:current(),modeEntryNotified:false,engineUsageNotified:!!p.engineId};
+    return {applied:true,stateToken:{},modeChangeNotified:current(),modeEntryNotified:false,engineUsageNotified:!!facts.engineId};
   };
   const observed={token:p.token,...p.edit,searchMode:p.searchMode,pageProxyValid:false,oneOffSelected:false,persistedSearchTerms:false,
     modeEntry:{untrimmedValue:p.edit.text,pageProxyValid:false,hasAutofillPlaceholder:false,userTypedValue:f.destination.userTypedValue}};
@@ -7540,4 +7540,45 @@ test('destination mode application keeps valid-page transitions gated and accept
   assert.equal(p.editorWrite,null);
   assert.equal(f.editor.commitOneOffDestinationModeApplication(f.deselection,p.token,{...f.observed,modeEntry:p.modeEntry}).applied,true);
   assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+
+test('missing destination engines require refreshed proposals and clear mode without engine-use effects',async()=>{
+  const f=await destinationRestorationCommitFixture({engine:true,pageValid:true});
+  f.parent.child.updateEngineStore('removed',{id:f.p.engineId});
+  assert.equal(f.editor.getOneOffDestinationRestoration(f.deselection),null);
+  assert.equal(f.editor.commitOneOffDestinationRestoration(f.deselection,f.observed),null);
+  const p=f.editor.beginOneOffDestinationRestoration(f.deselection);
+  assert.equal(p.searchMode,null);assert.equal(p.engineId,null);assert.equal(p.requestedEngineId,f.p.engineId);
+  assert.notEqual(p.token,f.p.token);
+  const result=f.editor.commitOneOffDestinationRestoration(f.deselection,{...f.observed,token:p.token,searchMode:null});
+  assert.equal(result.applied,true);assert.equal(result.engineUsageNotified,false);assert.equal(f.writes[0].mode,null);
+  assert.equal(f.writes[0].facts.requestedSearchMode,f.p.searchMode);assert.equal(f.modeEvents[0].searchMode,null);
+  assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+test('a returning engine or same-name replacement cannot reuse a missing-engine proposal',async()=>{
+  for(const replacement of [false,true]){
+    const f=await destinationRestorationCommitFixture({engine:true,pageValid:true});
+    const engine=f.destinationEngines.find(engine=>engine.id===f.p.engineId);
+    f.parent.child.updateEngineStore('removed',{id:engine.id});
+    const missing=f.editor.beginOneOffDestinationRestoration(f.deselection);assert.equal(missing.searchMode,null);
+    f.parent.child.updateEngineStore('changed',{...engine,id:replacement?'new-identity':engine.id},-1);
+    assert.equal(f.editor.getOneOffDestinationRestoration(f.deselection),null);
+    assert.equal(f.editor.commitOneOffDestinationRestoration(f.deselection,{...f.observed,token:missing.token,searchMode:null}),null);
+    const refreshed=f.editor.beginOneOffDestinationRestoration(f.deselection);
+    if(replacement)assert.equal(refreshed,null);else assert.equal(refreshed.engineId,engine.id);
+    assert.equal(f.writes.length,0);assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('clearing an unavailable engine does not request autofill formatting and consumes the shared handoff',async()=>{
+  const f=await destinationRestorationCommitFixture({engine:true,pageValid:true});
+  f.parent.child.updateEngineStore('removed',{id:f.p.engineId});f.editor.beginOneOffDestinationRestoration(f.deselection);
+  f.parent.describeIndependentCompositionRestoration=()=>assert.fail('null mode must not restore autofill');
+  const p=f.editor.beginOneOffDestinationModeApplication(f.deselection,{...f.observed.modeEntry,hasAutofillPlaceholder:true});
+  assert.equal(p.searchMode,null);assert.equal(p.editorWrite,null);
+  const outcome=f.editor.commitOneOffDestinationModeApplication(f.deselection,p.token,{...f.observed,searchMode:null,modeEntry:p.modeEntry});
+  assert.equal(outcome.applied,true);assert.equal(outcome.engineUsageNotified,false);
+  assert.equal(f.editor.beginOneOffDestinationRestoration(f.deselection),null);assert.equal(f.parent.started.length,1);f.editor.close();
 });
