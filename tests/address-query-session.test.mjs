@@ -8365,3 +8365,93 @@ test('new-tab editor consumes opener failure and rejects current targets or stal
   const current=await engineSearchRecordingFixture();
   assert.equal(current.editor.dispatchOneOffTabSearch(current.engagement.token,engineRecordingFacts()),null);current.editor.close();
 });
+
+
+async function oneOffResultActivationFixture(kind='private'){
+  const f=await enginePrecedenceFixture(kind==='private'?'typed words':'@alias');
+  f.parent.child.updateEngineStore('changed',{id:'result-engine',name:'Result Engine',isGeneralPurposeEngine:true,aliases:['@alias']},-1);
+  Object.assign(f.result,{source:f.sandbox.UrlbarShared.RESULT_SOURCE.SEARCH,providerName:'UrlbarProviderTokenAliasEngines'});
+  Object.assign(f.result.payload,{engine:'Result Engine',query:' alias query ',suggestion:kind==='private'?'private suggestion':undefined,
+    providesSearchMode:kind==='mode',inPrivateWindow:kind==='private',isPrivateEngine:kind==='private'});
+  const command=await f.editor.beginOneOffCommand(2,f.query.id,'engine:second',oneOffFacts({shiftKey:true}));
+  const candidate=f.editor.beginOneOffEngineSearch(command.token,null);
+  f.receipt=f.editor.acknowledgeOneOffEngineSearch(candidate.token,{...candidate.edit,resultForCurrentValue:null,searchMode:null,pageProxyValid:false});
+  const facts=engineSelectionFacts(f,kind==='private');
+  const proposal=f.editor.beginOneOffNavigationSelection(f.receipt.token,facts);
+  const selected=f.editor.acknowledgeOneOffNavigationSelection(proposal.token,engineSelectionObservation(f,proposal,facts));
+  const event={type:'keydown',key:'Enter',timeStamp:1,where:'tab'};
+  const options={selectedTabIsEmpty:false,originalUntrimmedValue:kind==='private'?'typed words':'@alias'};
+  return {...f,selected,event,options};
+}
+
+test('one-off private result plans keep result engine, private destination and ordinary result recording',async()=>{
+  const f=await oneOffResultActivationFixture();const before=f.editor.snapshot;
+  const plan=f.editor.beginOneOffResultActivation(f.selected.token,f.event,f.options);
+  assert.equal(plan.kind,'navigation');assert.equal(plan.branch,'selected-private-result');assert.equal(plan.resultId,f.result.id);
+  assert.equal(plan.engineId,'result-engine');assert.equal(plan.navigation.where,'window');assert.equal(plan.navigation.openParams.private,true);
+  assert.equal(plan.navigation.revertBeforeLoad,true);assert.equal(plan.searchRecording.data.query,'private suggestion');
+  assert.equal(plan.searchRecording.data.details.isOneOff,false);assert.equal(plan.searchRecording.data.opensInPrivateWindow,true);
+  assert.equal(plan.engagement.details.result,f.result);assert.equal(plan.engagement.details.searchString,'typed words');
+  assert.notEqual(plan.engagement.details.selType,'oneoff');assert.equal(plan.activationPending,true);assert.equal(plan.dispatchPending,true);
+  assert.ok(Object.isFrozen(plan));assert.equal(f.editor.getOneOffResultActivation(plan.token,f.event,f.options),plan);
+  assert.equal(f.editor.snapshot,before);assert.equal(f.parent.engagements.length,0);f.editor.close();
+});
+
+test('one-off alias plans distinguish mode entry from ordinary result load and ignore one-off disposition',async()=>{
+  for(const kind of ['mode','load']){
+    const f=await oneOffResultActivationFixture(kind),plan=f.editor.beginOneOffResultActivation(f.selected.token,f.event,f.options);
+    assert.equal(plan.branch,'token-alias-result');assert.equal(plan.engineId,'result-engine');
+    if(kind==='mode'){
+      assert.equal(plan.kind,'mode');assert.equal(plan.modeApplication.searchMode.engineName,'Result Engine');
+      assert.equal(plan.modeApplication.searchMode.isPreview,false);assert.equal(plan.modeApplication.value,'alias query ');
+      assert.equal(plan.modeApplication.startQuery,true);assert.equal(plan.navigation,null);assert.equal(plan.searchRecording,null);
+      assert.equal(plan.dispatchPending,false);assert.equal(plan.modeApplicationPending,true);
+    }else{
+      assert.equal(plan.kind,'navigation');assert.equal(plan.navigation.where,'tab');
+      assert.equal(plan.searchRecording.method,'recordSearchInOpenedTab');assert.equal(plan.searchRecording.data.details.isOneOff,false);
+      assert.equal(f.editor.getOneOffResultActivation(plan.token,{...f.event,where:'current'},f.options),null);
+    }
+    assert.equal(f.parent.engagements.length,0);f.editor.close();
+  }
+});
+
+test('one-off result plans reject foreign, superseded, hidden and mutated observations',async()=>{
+  for(const action of ['copy','replacement','caret','payload','engine','hidden','selection','mode']){
+    const f=await oneOffResultActivationFixture(),plan=f.editor.beginOneOffResultActivation(f.selected.token,f.event,f.options);
+    let token=plan.token;
+    if(action==='copy')token={...token};
+    if(action==='replacement')assert.ok(f.editor.beginOneOffResultActivation(f.selected.token,f.event,f.options));
+    if(action==='caret')f.editor.select(2,0,0);
+    if(action==='payload')f.result.payload.suggestion='changed';
+    if(action==='engine')f.parent.child.updateEngineStore('changed',{id:'replacement-engine',name:'Result Engine',isGeneralPurposeEngine:true},-1);
+    if(action==='hidden')f.editor.hideResults(2,f.query.id);
+    if(action==='selection')f.editor.beginOneOffNavigationSelection(f.receipt.token,engineSelectionFacts(f,false));
+    if(action==='mode')f.result.payload.providesSearchMode=true;
+    assert.equal(f.editor.getOneOffResultActivation(token,f.event,f.options),null,action);
+    assert.equal(f.parent.engagements.length,0);f.editor.close();
+  }
+});
+
+test('one-off result plan preflight rejects reentrant replacement and engine branch receipts',async()=>{
+  const f=await oneOffResultActivationFixture();let nested;
+  const options={...f.options,get selectedTabIsEmpty(){nested=f.editor.beginOneOffResultActivation(f.selected.token,f.event,f.options);return false;}};
+  assert.equal(f.editor.beginOneOffResultActivation(f.selected.token,f.event,options),null);
+  assert.equal(f.editor.getOneOffResultActivation(nested.token,f.event,f.options),nested);
+  assert.equal(f.editor.beginOneOffResultActivation({},f.event,f.options),null);
+  assert.throws(()=>f.editor.beginOneOffResultActivation(f.selected.token,{type:'mousemove'},f.options),/Invalid/);
+  f.editor.close();
+  const engine=await engineNavigationFixture();assert.equal(engine.editor.beginOneOffResultActivation(engine.selectionReceipt.token,{},{}),null);engine.editor.close();
+});
+
+
+test('one-off alias mode plans honor restyling exclusions and normalized restriction engine identity',async()=>{
+  const f=await oneOffResultActivationFixture('mode');
+  f.result.payload.originalEngine='Other Engine';
+  assert.equal(f.editor.beginOneOffResultActivation(f.selected.token,f.event,f.options),null);
+  f.result.payload.keyword=f.sandbox.UrlbarShared.RESTRICT_TOKENS.SEARCH;
+  const plan=f.editor.beginOneOffResultActivation(f.selected.token,f.event,f.options);
+  const engine=f.parent.child.engineStore.default;
+  assert.equal(plan.kind,'mode');assert.equal(plan.modeApplication.searchMode.engineName,engine.name);assert.equal(plan.engineId,engine.id);
+  f.result.payload.keyword='@alias';
+  assert.equal(f.editor.getOneOffResultActivation(plan.token,f.event,f.options),null);f.editor.close();
+});

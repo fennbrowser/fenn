@@ -9954,10 +9954,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..81094533fb
+index 0000000000..7557295265
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3552 @@
+@@ -0,0 +1,3596 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11992,6 +11992,50 @@ index 0000000000..81094533fb
 +      ? receipt : null;
 +  }
 +
++  /** Prepare result-branch policy after both acknowledgments, without selecting, recording or loading. */
++  beginOneOffResultActivation(selectionReceiptToken, event, options = {}) {
++    const receipt = this.getAcknowledgedOneOffNavigationSelection(selectionReceiptToken);
++    const captured = this.#oneOffCommand?.engineSearch, selection = captured?.selection;
++    if (!receipt || receipt.branch === "engine-search" || !receipt.safeToPickVerified) return null;
++    const pending = { token: Object.freeze({}), description: null, proposal: null };
++    selection.resultActivation = pending;
++    const description = this.#describeOneOffResultActivation(receipt, event, options);
++    if (!description || this.getAcknowledgedOneOffNavigationSelection(selectionReceiptToken) !== receipt ||
++        this.#oneOffCommand?.engineSearch !== captured || captured.selection !== selection || selection.resultActivation !== pending) return null;
++    pending.description = description;
++    pending.proposal = Object.freeze({ ...description, token: pending.token, selectionReceiptToken,
++      edit: receipt.edit, queryId: receipt.queryId });
++    return pending.proposal;
++  }
++
++  getOneOffResultActivation(token, event, options = {}) {
++    const captured = this.#oneOffCommand?.engineSearch, selection = captured?.selection, pending = selection?.resultActivation;
++    if (!pending?.proposal || pending.token !== token) return null;
++    const receipt = this.getAcknowledgedOneOffNavigationSelection(pending.proposal.selectionReceiptToken);
++    if (!receipt) return null;
++    const description = this.#describeOneOffResultActivation(receipt, event, options);
++    return description && UrlbarShared.deepEqual(description, pending.description) &&
++      this.getAcknowledgedOneOffNavigationSelection(receipt.token) === receipt &&
++      this.#oneOffCommand?.engineSearch === captured && captured.selection === selection && selection.resultActivation === pending
++      ? pending.proposal : null;
++  }
++
++  #describeOneOffResultActivation(receipt, event, options) {
++    const command = this.#oneOffCommand, captured = command?.engineSearch, selection = captured?.selection;
++    if (!selection || this.getAcknowledgedOneOffNavigationSelection(receipt.token) !== receipt) return null;
++    // The ordinary result models receive current editor facts, never candidate-engine terms or disposition.
++    const facts = { selectedTabIsEmpty: options.selectedTabIsEmpty, originalUntrimmedValue: options.originalUntrimmedValue,
++      deferEnterFocus: options.deferEnterFocus ?? false, isHandoff: options.isHandoff ?? false,
++      persistedSearchTerms: options.persistedSearchTerms ?? false, newtabSessionId: options.newtabSessionId ?? null,
++      searchString: this.#typedText, searchMode: this.#searchMode };
++    if (this.getAcknowledgedOneOffNavigationSelection(receipt.token) !== receipt || this.#oneOffCommand !== command ||
++        captured.selection !== selection) return null;
++    const description = this.#queries.describeOneOffResultActivation(command.prepared, receipt.edit.text,
++      selection.facts, event, facts);
++    return this.getAcknowledgedOneOffNavigationSelection(receipt.token) === receipt && this.#oneOffCommand === command &&
++      captured.selection === selection ? description : null;
++  }
++
 +  /** Resolve only the engine branch after both host acknowledgments; effects remain pending. */
 +  resolveOneOffEngineNavigation(selectionReceiptToken) {
 +    const receipt = this.getAcknowledgedOneOffNavigationSelection(selectionReceiptToken);
@@ -13512,10 +13556,10 @@ index 0000000000..81094533fb
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..e781cb626c
+index 0000000000..55329183c9
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1675 @@
+@@ -0,0 +1,1708 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14267,6 +14311,39 @@ index 0000000000..e781cb626c
 +      branch = "token-alias-result";
 +    }
 +    return current() ? Object.freeze({ branch, selectionAcknowledgmentPending: true, navigationResolutionPending: true }) : null;
++  }
++
++  /** Resolve an owned precedence result through ordinary result policy, never the clicked one-off engine. */
++  describeOneOffResultActivation(prepared, value, selectionFacts, event, options) {
++    this.#check();
++    if (!UrlbarQueryModel.isResultActivationEvent(event)) throw new TypeError("Invalid result activation event");
++    const precedence = this.describeOneOffNavigationPrecedence(prepared, value, selectionFacts);
++    if (!precedence || precedence.branch === "engine-search") return null;
++    const result = precedence.branch === "selected-private-result" ? selectionFacts.selectedResult : selectionFacts.firstResult;
++    const query = this.#query;
++    const current = () => this.#query === query && this.ownsResult(query.id, result) &&
++      UrlbarShared.deepEqual(this.describeOneOffNavigationPrecedence(prepared, value, selectionFacts), precedence);
++    if (!current() || result.type !== UrlbarShared.RESULT_TYPE.SEARCH) return null;
++    const engagement = this.describeResultEngagement(query.id, result, options);
++    let description, engineName;
++    if (result.payload.providesSearchMode) {
++      const modeApplication = this.describeResultModeApplication(query.id, result, { value, checkValue: false, startQuery: true });
++      if (!modeApplication) return null;
++      engineName = modeApplication.searchMode.engineName;
++      description = { kind: "mode", modeApplication, navigation: null, searchRecording: null };
++    } else {
++      const navigation = this.describeResultNavigation(query.id, result, event, options);
++      const searchRecording = this.describeResultSearchRecording(query.id, result, event, options);
++      if (!navigation || !searchRecording) return null;
++      engineName = result.payload.engine;
++      description = { kind: "navigation", modeApplication: null, navigation, searchRecording };
++    }
++    const engine = engineName ? this.#controller.engineStore.getEngineByName(engineName) : null;
++    if ((engineName && !engine) || !current()) return null;
++    return Object.freeze({ ...description, branch: precedence.branch, resultId: result.id, engineId: engine?.id ?? null,
++      engagement, activationPending: true, selectionPreparationPending: true, engagementPending: true,
++      searchRecordingPending: description.kind === "navigation", dispatchPending: description.kind === "navigation",
++      modeApplicationPending: description.kind === "mode" });
 +  }
 +
 +  /** Capture parent browser lifetime only for an authenticated live engine command. */
