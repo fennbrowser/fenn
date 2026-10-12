@@ -72,3 +72,33 @@ test('query text preserves valid-page zero-prefix and invalid-page restoration p
   assert.equal(resolve('prefix suffix',true,'prefix'),'prefix');
   assert.throws(()=>resolve('different',false,'prefix'),/doesn't start/);
 });
+
+
+test('input popup policy preserves the empty mode/one-off exception and effect ordering',()=>{
+  for(const open of [false,true]) for(const value of ['', 'query'])
+  for(const suggestTopSites of [false,true]) for(const mode of [false,true])
+  for(const oneOffsHaveView of [false,true]) {
+    const plan=sandbox.Model.inputPresentation({open,value,suggestTopSites,
+      searchMode:mode?{source:2}:null,oneOffsHaveView});
+    const clear=!open || (!value && !suggestTopSites);
+    const close=open && !value && !suggestTopSites && !(mode && oneOffsHaveView);
+    assert.deepEqual({...plan},{rollupPopups:open,clearResults:clear,close,
+      removeAccessibleFocus:!close,stopQuery:close});
+    assert.equal(Object.isFrozen(plan),true);
+  }
+});
+
+test('retained input rolls up and clears before reading mode, and stops before accessible focus',()=>{
+  const source=readFileSync(new URL('UrlbarInputBase.mjs',root),'utf8');
+  const start=source.indexOf('    const open = this.view.isOpen;',source.indexOf('  _on_input(event)'));
+  const end=source.indexOf('    // During composition',start);
+  const apply=new Function('UrlbarQueryModel','UrlbarPrefs','value',source.slice(start,end));
+  for(const mode of [null,{source:2}]) for(const hasView of [false,true]) {
+    const calls=[],input={get searchMode(){calls.push('mode');return mode;},view:{
+      isOpen:true,maybeRollupPopups(){calls.push('rollup');},clear(){calls.push('clear');},
+      close(){calls.push('close');},removeAccessibleFocus(){calls.push('focus');},
+      get oneOffSearchButtons(){calls.push('one-offs');return {hasView};}}};
+    apply.call(input,sandbox.Model,{get:()=>{calls.push('pref');return false;}},'');
+    assert.deepEqual(calls,['rollup','pref','clear','mode',...(mode?['one-offs']:[]),mode&&hasView?'focus':'close']);
+  }
+});

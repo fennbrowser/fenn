@@ -4102,7 +4102,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..e6fc3cbcd8 100644
+index a077de625f..789ac9ad3c 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,22 @@
@@ -5874,7 +5874,7 @@ index a077de625f..e6fc3cbcd8 100644
    _on_input(event) {
      // A new input starts a fresh search; bump the epoch so a pending
      // deferred-Enter's async keyup won't reset this search's caret.
-@@ -5505,52 +4978,13 @@ ${
+@@ -5505,70 +4978,33 @@ ${
      }
  
      let value = this.value;
@@ -5889,8 +5889,7 @@ index a077de625f..e6fc3cbcd8 100644
 -    // string, thus there's no valid selection. This is also used by the view
 -    // to set "aria-activedescendant", thus it should never get stale.
 -    this.controller.userSelectionBehavior = "none";
-+    this.#updateTypedValue(value);
- 
+-
 -    let compositionState = this.#compositionState;
 -    let compositionClosedPopup = this.#compositionClosedPopup;
 -
@@ -5899,24 +5898,26 @@ index a077de625f..e6fc3cbcd8 100644
 -      this.#compositionState = UrlbarShared.COMPOSITION.NONE;
 -      this.#compositionClosedPopup = false;
 -    }
--
++    this.#updateTypedValue(value);
+ 
 -    if (compositionState == UrlbarShared.COMPOSITION.COMPOSING && event.data) {
 -      this.#compositionHadText = true;
 -    }
--
++    const composition = this.#composition.input(
++      this.#composition.isComposing && !!event.data
++    );
+ 
 -    this.toggleAttribute("usertyping", value);
 -    this.removeAttribute("actiontype");
--
++    this.#updateTypedIdentity(value);
+ 
 -    if (
 -      this.getAttribute("pageproxystate") == "valid" &&
 -      this.value != this._lastValidURLStr
 -    ) {
 -      this.setPageProxyState("invalid", true);
 -    }
-+    const composition = this.#composition.input(
-+      this.#composition.isComposing && !!event.data
-+    );
- 
+-
 -    if (this.#isAddressbar) {
 -      // Search-terms persistence is an address bar feature.
 -      let state = this.getBrowserState(this.window.gBrowser.selectedBrowser);
@@ -5928,11 +5929,44 @@ index a077de625f..e6fc3cbcd8 100644
 -        this.removeAttribute("persistsearchterms");
 -      }
 -    }
-+    this.#updateTypedIdentity(value);
+-
+-    if (this.view.isOpen) {
+-      // UrlbarView rolls up all popups when it opens, but we should
+-      // do the same for UrlbarInput when it's already open in case
+-      // a tab preview was opened
++    const open = this.view.isOpen;
++    if (open) {
++      // Roll up other popups before inspecting empty-input policy, as on open.
+       this.view.maybeRollupPopups();
+-
+-      if (!value && !UrlbarPrefs.get("suggest.topsites")) {
+-        this.view.clear();
+-        if (!this.searchMode || !this.view.oneOffSearchButtons?.hasView) {
+-          this.view.close();
+-          return;
+-        }
++    }
++    let presentation = UrlbarQueryModel.inputPresentation({ value, open,
++      suggestTopSites: !open || !!value || UrlbarPrefs.get("suggest.topsites"),
++      searchMode: null, oneOffsHaveView: false });
++    if (presentation.clearResults) this.view.clear();
++    if (presentation.close) {
++      // Clearing the view can change mode state. Read it afterward, as before.
++      const searchMode = this.searchMode;
++      presentation = UrlbarQueryModel.inputPresentation({ value, open, suggestTopSites: false,
++        searchMode, oneOffsHaveView: searchMode && this.view.oneOffSearchButtons?.hasView });
++      if (presentation.close) {
++        this.view.close();
++        return;
+       }
+-    } else {
+-      this.view.clear();
+     }
+-
+     this.view.removeAccessibleFocus();
  
-     if (this.view.isOpen) {
-       // UrlbarView rolls up all popups when it opens, but we should
-@@ -5580,10 +5014,9 @@ ${
+     // During composition with an IME, the following events happen in order:
+@@ -5580,10 +5016,9 @@ ${
      // We should do nothing during composition or if composition was canceled
      // and we didn't close the popup on composition start.
      if (
@@ -5946,7 +5980,7 @@ index a077de625f..e6fc3cbcd8 100644
      ) {
        return;
      }
-@@ -5591,11 +5024,10 @@ ${
+@@ -5591,11 +5026,10 @@ ${
      // Don't autofill when the user is explicitly deleting content, pasting, or
      // undoing/redoing.
      const allowAutofill =
@@ -5962,7 +5996,7 @@ index a077de625f..e6fc3cbcd8 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5610,12 +5042,10 @@ ${
+@@ -5610,12 +5044,10 @@ ${
      // Confirm placeholder as user text if it gets explicitly deselected. This
      // happens when the user wants to modify the autofilled text by either
      // clicking on it, or pressing HOME, END, RIGHT, …
@@ -5979,7 +6013,7 @@ index a077de625f..e6fc3cbcd8 100644
        this._autofillPlaceholder = null;
        this.userTypedValue = this.value;
      }
-@@ -5669,33 +5099,20 @@ ${
+@@ -5669,33 +5101,20 @@ ${
    }
  
    _on_paste(event) {
@@ -6021,7 +6055,7 @@ index a077de625f..e6fc3cbcd8 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5126,7 @@ ${
+@@ -5709,7 +5128,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -6030,7 +6064,7 @@ index a077de625f..e6fc3cbcd8 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5157,25 @@ ${
+@@ -5740,51 +5159,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -6098,7 +6132,7 @@ index a077de625f..e6fc3cbcd8 100644
    }
  
    _on_scrollend() {
-@@ -5978,72 +5369,39 @@ ${
+@@ -5978,72 +5371,39 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -6193,7 +6227,7 @@ index a077de625f..e6fc3cbcd8 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,11 +5527,7 @@ ${
+@@ -6169,11 +5529,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -6206,7 +6240,7 @@ index a077de625f..e6fc3cbcd8 100644
    }
  
    get #isOpenedPageInBlankTargetLoading() {
-@@ -6311,111 +5665,6 @@ function getDroppableData(event) {
+@@ -6311,111 +5667,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -6318,7 +6352,7 @@ index a077de625f..e6fc3cbcd8 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +5689,10 @@ class CopyCutController {
+@@ -6440,12 +5691,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -9260,10 +9294,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..30aa77dee4
+index 0000000000..73c7d2f682
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2163 @@
+@@ -0,0 +1,2188 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9300,6 +9334,7 @@ index 0000000000..30aa77dee4
 +  #onUpdate;
 +  #edit = null;
 +  #inputState = null;
++  #inputPresentation = null;
 +  #identityEdit = null;
 +  #identityRequest = null;
 +  #identityState = null;
@@ -9359,6 +9394,13 @@ index 0000000000..30aa77dee4
 +
 +  /** Last observed edit's committed browser effects; no write/dispatch authority. */
 +  get inputState() { return this.#inputState; }
++
++  /** Required host effects for the exact observed edit; this is not an acknowledgment. */
++  get inputPresentation() {
++    if (this.#closed) return null;
++    if (!this.#isCurrent()) { this.close(); return null; }
++    return this.#inputPresentation?.edit === this.#edit ? this.#inputPresentation : null;
++  }
 +
 +  /** Describe only the exact latest observed edit, never an autofill/preview write. */
 +  describeInputIdentity(revision, facts) {
@@ -9753,6 +9795,7 @@ index 0000000000..30aa77dee4
 +  async edit(state, {
 +    revision, text, selectionStart, selectionEnd, selectionDirection = "none",
 +    inputType = "insertText", composing = false, pasteLength, composition = null, compositionHasData,
++    presentation = null,
 +  }, browserState = null) {
 +    this.#check();
 +    if (!Number.isSafeInteger(revision) || revision <= (this.#edit?.revision ?? 0) ||
@@ -9765,6 +9808,13 @@ index 0000000000..30aa77dee4
 +    if (browserState !== null && (!browserState || typeof browserState !== "object" ||
 +        (browserState.userTypedValue !== null && typeof browserState.userTypedValue !== "string"))) {
 +      throw new TypeError("Invalid observed browser input state");
++    }
++    if (presentation !== null) {
++      const { open, oneOffsHaveView } = presentation;
++      if (typeof open !== "boolean" || typeof oneOffsHaveView !== "boolean") {
++        throw new TypeError("Invalid input presentation observation");
++      }
++      presentation = Object.freeze({ open, oneOffsHaveView });
 +    }
 +    if (composition !== null) {
 +      const snapshot = { state: composition?.state, closedPopup: composition?.closedPopup };
@@ -9788,6 +9838,7 @@ index 0000000000..30aa77dee4
 +    }
 +    const priorTypedValue = browserState?.userTypedValue;
 +    this.#inputState = null;
++    this.#inputPresentation = null;
 +    this.#compositionReopen = null;
 +    this.#reopeningComposition = null;
 +    this.#compositionStateReady = null;
@@ -9832,6 +9883,12 @@ index 0000000000..30aa77dee4
 +      this.#inputState = Object.freeze({ revision, userTypedValue: outcome.userTypedValue,
 +        persistenceChanged: outcome.persistenceChanged, persistedSearchTerms: outcome.persistedSearchTerms });
 +      authorize = outcome.authorize;
++    }
++    if (presentation) {
++      const effects = UrlbarQueryModel.inputPresentation({ value: text, ...presentation,
++        suggestTopSites: UrlbarPrefs.get("suggest.topsites"), searchMode: this.#searchMode });
++      this.#inputPresentation = Object.freeze({ edit: observedEdit, ...effects });
++      if (effects.stopQuery) return null;
 +    }
 +    const keepPanelOpen = composition ? UrlbarPrefs.get("keepPanelOpenDuringImeComposition") : false;
 +    if (composition ? !UrlbarCompositionModel.allowsQuery(composition, keepPanelOpen) : composing) {
@@ -11354,6 +11411,7 @@ index 0000000000..30aa77dee4
 +  }
 +
 +  cancel() {
++    this.#inputPresentation = null;
 +    this.#identityRequest = null;
 +    this.#identityState = null;
 +    this.#compositionHistory = null;
@@ -11389,6 +11447,7 @@ index 0000000000..30aa77dee4
 +  }
 +
 +  close() {
++    this.#inputPresentation = null;
 +    this.#identityRequest = null;
 +    this.#identityState = null;
 +    this.#compositionHistory = null;
@@ -12562,10 +12621,10 @@ index 0000000000..ed9a06b8c0
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQueryModel.mjs b/browser/components/urlbar/content/UrlbarQueryModel.mjs
 new file mode 100644
-index 0000000000..dbe645a9e9
+index 0000000000..0a6b333acd
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQueryModel.mjs
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,230 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12577,6 +12636,14 @@ index 0000000000..dbe645a9e9
 +
 +/** Firefox query policy over explicit state, without retaining an input/view. */
 +export class UrlbarQueryModel {
++  /** Input popup policy; host effects remain separate from composition policy. */
++  static inputPresentation({ value, open, suggestTopSites, searchMode, oneOffsHaveView }) {
++    const clearResults = !open || (!value && !suggestTopSites);
++    const close = open && clearResults && !(searchMode && oneOffsHaveView);
++    return Object.freeze({ rollupPopups: !!open, clearResults, close,
++      removeAccessibleFocus: !close, stopQuery: close });
++  }
++
 +  /** Primary user-activation events accepted by independent activation/recording. */
 +  static isResultActivationEvent(event) {
 +    return !!(((event?.type === "keydown" && event.key === "Enter") ||

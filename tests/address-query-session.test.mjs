@@ -5461,3 +5461,54 @@ test('unapplied speculative placeholder and ordinary selection never confirm bro
   assert.equal(f.editor.observeAutofillSelection(2,caret(0),{userTypedValue:'examp'}).confirmed,false);
   assert.equal(f.commits.length,0);assert.equal(f.parent.started.length,before);f.editor.close();
 });
+
+
+const popupInput=(revision,text='',extra={})=>({revision,text,selectionStart:text.length,
+  selectionEnd:text.length,presentation:{open:true,oneOffsHaveView:false},...extra});
+
+test('empty observed input commits browser text but stops dispatch when the open popup must close',async()=>{
+  const f=await editorFixture({browserId:42});f.prefs['suggest.topsites']=false;
+  const calls=[];f.parent.commitIndependentEditState=(_id,value,_mode,prior,current)=>{
+    assert.equal(current(),true);calls.push({value,prior});
+    return {applied:true,current:true,stateToken:{},userTypedValue:value,persistedSearchTerms:false};};
+  assert.equal(await f.editor.edit({},popupInput(1),{userTypedValue:'before'}),null);
+  assert.deepEqual(calls,[{value:'',prior:'before'}]);assert.equal(f.parent.started.length,0);
+  const plan=f.editor.inputPresentation;
+  assert.equal(plan.edit,f.editor.snapshot);assert.equal(plan.stopQuery,true);
+  assert.equal(plan.clearResults,true);assert.equal(plan.close,true);assert.equal(plan.removeAccessibleFocus,false);
+  assert.equal(Object.isFrozen(plan),true);f.editor.close();
+});
+
+test('closed popup, Top Sites and mode with one-off view retain independent query dispatch',async()=>{
+  for(const facts of [{open:false,oneOffsHaveView:false},{open:true,oneOffsHaveView:true},
+    {open:true,oneOffsHaveView:false,topSites:true},{open:true,oneOffsHaveView:false,text:'query'}]) {
+    const f=await editorFixture();f.prefs['suggest.topsites']=facts.topSites??false;
+    const state=facts.oneOffsHaveView?{searchMode:{source:2}}:{};
+    assert.ok(await f.editor.edit(state,popupInput(1,facts.text??'',{presentation:facts})));
+    assert.equal(f.parent.started.length,1);assert.equal(f.editor.inputPresentation.close,false);
+    assert.equal(f.editor.inputPresentation.removeAccessibleFocus,true);f.editor.close();
+  }
+  const f=await editorFixture();f.prefs['suggest.topsites']=false;
+  assert.equal(await f.editor.edit({},popupInput(1,'',{presentation:{open:true,oneOffsHaveView:true}})),null);
+  f.editor.close();
+});
+
+test('input presentation validates before mutation and revokes descriptors on replacement, caret and cancellation',async()=>{
+  const f=await editorFixture();f.prefs['suggest.topsites']=false;
+  await f.editor.edit({},popupInput(1));const plan=f.editor.inputPresentation;
+  for(const presentation of [{},{open:0,oneOffsHaveView:false},{open:true,oneOffsHaveView:null}]) {
+    await assert.rejects(f.editor.edit({},popupInput(2,'',{presentation})),/presentation observation/);
+    assert.equal(f.editor.inputPresentation,plan);
+  }
+  f.editor.select(1,0,0);assert.equal(f.editor.inputPresentation,null);
+  await f.editor.edit({},popupInput(2));f.editor.cancel();assert.equal(f.editor.inputPresentation,null);
+  await f.editor.edit({},popupInput(3));f.loseScope();assert.equal(f.editor.inputPresentation,null);
+});
+
+test('composition still suppresses queries when input presentation permits dispatch',async()=>{
+  const f=await editorFixture();f.prefs['suggest.topsites']=false;
+  assert.equal(await f.editor.edit({},popupInput(1,'ime',{composing:true})),null);
+  assert.equal(f.editor.inputPresentation.stopQuery,false);assert.equal(f.parent.started.length,0);
+  await f.editor.edit({},popupInput(2,'ordinary',{presentation:null}));
+  assert.equal(f.editor.inputPresentation,null);assert.equal(f.parent.started.length,1);f.editor.close();
+});
