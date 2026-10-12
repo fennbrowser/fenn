@@ -5911,3 +5911,127 @@ test('finished presentation requires successful completion and current proposal 
   assert.equal(g.editor.getFinishedPresentation(current.token),current);
   g.loseScope();assert.throws(()=>g.editor.getFinishedPresentation(current.token),/scope changed/);g.editor.close();
 });
+
+
+const finishedObservation=proposal=>({...proposal.edit,open:proposal.action==='open-one-offs',
+  resultsCleared:true,staleRowsRemoved:true,oneOffsEnabled:true,searchMode:null});
+
+async function finishedAckFixture({mode=null,text='words',open=false,hide=true,updated=false}={}){
+  const f=await editorFixture(),query=await f.editor.edit({searchMode:mode},edit(1,text));
+  if(updated){query.results=[{id:1,payload:{}}];f.parent.child.notify('onQueryResults',query);}
+  f.editor.publishPresentation(1,query.id,updated?query.results:[],open);
+  f.parent.child.notify('onQueryFinished',query);
+  let proposal=f.editor.beginFinishedPresentation(1,query.id);
+  if(proposal.action==='resolve-one-offs')proposal=f.editor.resolveFinishedPresentation(proposal.token,{oneOffsWillHide:hide,open});
+  return {...f,query,proposal};
+}
+
+test('finished acknowledgment requires observed row and popup effects and is one-use',async()=>{
+  for(const facts of [{},{mode:{source:2},hide:false},{mode:{source:2},open:false},{updated:true}]){
+    const f=await finishedAckFixture(facts),p=f.proposal,observed=finishedObservation(p);
+    const bad=[{...observed,text:'pending input'},{...observed,selectionStart:0},{...observed,open:null},
+      {...observed,[p.rows==='clear'?'resultsCleared':'staleRowsRemoved']:false}];
+    if(p.action==='open-one-offs')bad.push({...observed,open:false},{...observed,oneOffsEnabled:false});
+    if(p.action==='close'||(p.action==='keep'&&p.open===false))bad.push({...observed,open:true});
+    if(facts.updated)bad.push({...observed,open:true});
+    for(const observation of bad){
+      assert.equal(f.editor.acknowledgeFinishedPresentation(p.token,observation),false);
+      assert.equal(f.editor.getFinishedPresentation(p.token),p);
+    }
+    assert.equal(f.editor.acknowledgeFinishedPresentation(p.token,observed),true);
+    const receipt=f.editor.finishedPresentationState;
+    assert.equal(receipt.token,p.token);assert.equal(Object.isFrozen(receipt),true);
+    assert.equal(f.editor.acknowledgeFinishedPresentation(p.token,observed),false);
+    assert.equal(f.editor.beginFinishedPresentation(1,f.query.id),null);
+    assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('unresolved one-off proposals cannot acknowledge effects',async()=>{
+  const f=await finishedPresentationFixture({source:2}),p=f.editor.beginFinishedPresentation(1,f.query.id);
+  assert.equal(f.editor.acknowledgeFinishedPresentation(p.token,finishedObservation(p)),false);
+  assert.equal(f.editor.getFinishedPresentation(p.token),p);f.editor.close();
+});
+
+test('finished one-off acknowledgment publishes no result exposure and row cleanup preserves viewport authority',async()=>{
+  for(const facts of [{mode:{source:2},hide:false},{mode:{source:2},hide:true},{updated:true,open:true}]){
+    const f=await finishedAckFixture(facts),p=f.proposal,before=[...f.parent.child.visibleResults];
+    assert.equal(f.editor.acknowledgeFinishedPresentation(p.token,{...finishedObservation(p),open:facts.updated||!facts.hide}),true);
+    assert.equal(f.parent.child.resultsOpen,!!(facts.updated||!facts.hide));
+    assert.deepEqual([...f.parent.child.visibleResults],facts.updated?before:[]);
+    assert.equal(f.editor.finishedPresentationState.closeToken,null);f.editor.close();
+  }
+});
+
+test('finished close grants one-use recording only after host acknowledgment and revokes query authority',async()=>{
+  for(const text of ['','words'])for(const open of [false,true]){
+    const f=await finishedAckFixture({text,open}),p=f.proposal,calls=[];
+    f.parent.child.engagementEvent.discard=()=>calls.push('discard');
+    f.parent.child.engagementEvent.record=()=>calls.push('record');f.parent.recordZeroPrefix=kind=>calls.push(kind);
+    assert.equal(f.editor.recordAcknowledgedClose(p.token,{focused:false}),null);
+    assert.equal(f.editor.acknowledgeFinishedPresentation(p.token,finishedObservation(p)),true);
+    const receipt=f.editor.finishedPresentationState;
+    assert.ok(receipt.closeToken);assert.equal(f.parent.child.resultsOpen,false);
+    assert.deepEqual([...f.parent.child.visibleResults],[]);
+    assert.equal(f.editor.beginFinishedPresentation(1,f.query.id),null);
+    const recorded=f.editor.recordAcknowledgedClose(receipt.closeToken,{focused:false});
+    assert.equal(recorded.current,true);assert.equal(recorded.zeroPrefix,open&&!text?'abandonment':null);
+    assert.deepEqual(calls,open?['discard','record',...(!text?['abandonment']:[])]:[]);
+    assert.equal(f.editor.recordAcknowledgedClose(receipt.closeToken,{focused:false}),null);
+    assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('finished preview close shares owned browser cleanup without implicitly writing browser state',async()=>{
+  const f=await finishedAckFixture({mode:{source:2,isPreview:true},open:true}),p=f.proposal,calls=ownedDismissalBackend(f);
+  assert.equal(f.editor.acknowledgeFinishedPresentation(p.token,{...finishedObservation(p),searchMode:p.searchMode}),false);
+  assert.equal(f.editor.acknowledgeFinishedPresentation(p.token,finishedObservation(p)),true);
+  const receipt=f.editor.finishedPresentationState;assert.equal(calls.length,0);
+  const outcome=f.editor.commitAcknowledgedPreviewClose(receipt.closeToken,closeFacts);
+  assert.equal(outcome.current,true);assert.equal(calls.length,1);assert.equal(calls[0].mode.isPreview,true);
+  assert.equal(f.editor.commitAcknowledgedPreviewClose(receipt.closeToken,closeFacts),null);
+  assert.equal(f.editor.finishedPresentationState,null);assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+test('finished acknowledgment rejects stale observations and getter reentry without granting effects',async()=>{
+  for(const mutation of ['caret','cancel','edit','results','replace','scope']){
+    const f=await finishedAckFixture({mode:{source:2},hide:false}),p=f.proposal;let pending=null;
+    const observed={...finishedObservation(p),get text(){
+      if(mutation==='caret')f.editor.select(1,0,0);
+      if(mutation==='cancel')f.editor.cancel();
+      if(mutation==='edit')pending=f.editor.edit({},edit(2,'next'));
+      if(mutation==='results')f.parent.child.notify('onQueryResults',f.query);
+      if(mutation==='replace')f.editor.beginFinishedPresentation(1,f.query.id);
+      if(mutation==='scope')f.loseScope();
+      return p.edit.text;
+    }};
+    if(mutation==='scope')assert.throws(()=>f.editor.acknowledgeFinishedPresentation(p.token,observed),/scope changed/);
+    else assert.equal(f.editor.acknowledgeFinishedPresentation(p.token,observed),false);
+    if(pending)await pending;
+    assert.equal(f.editor.finishedPresentationState,null);f.editor.close();
+  }
+});
+
+test('finished receipt cannot survive later edits, caret movement, results, cancellation or scope loss',async()=>{
+  for(const mutation of ['caret','edit','results','cancel','scope']){
+    const f=await finishedAckFixture({mode:{source:2},hide:false}),p=f.proposal;
+    f.editor.acknowledgeFinishedPresentation(p.token,finishedObservation(p));
+    if(mutation==='caret')f.editor.select(1,0,0);
+    if(mutation==='edit')await f.editor.edit({},edit(2,'next'));
+    if(mutation==='results')f.parent.child.notify('onQueryResults',f.query);
+    if(mutation==='cancel')f.editor.cancel();
+    if(mutation==='scope')f.loseScope();
+    assert.equal(f.editor.finishedPresentationState,null);
+    if(mutation==='caret')assert.equal(f.editor.beginFinishedPresentation(1,f.query.id),null,'same finish cannot acknowledge twice after caret movement');
+    f.editor.close();
+  }
+});
+
+test('finished close cancellation reentry cannot acknowledge an obsolete editor',async()=>{
+  const f=await finishedAckFixture({open:true}),p=f.proposal;
+  const cancel=f.parent.child.cancelQuery.bind(f.parent.child);
+  f.parent.child.cancelQuery=()=>{cancel();f.editor.select(1,0,0);};
+  assert.equal(f.editor.acknowledgeFinishedPresentation(p.token,finishedObservation(p)),false);
+  assert.equal(f.editor.finishedPresentationState,null);
+  assert.equal(f.editor.recordAcknowledgedClose(p.token,{focused:false}),null);f.editor.close();
+});

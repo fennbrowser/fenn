@@ -9403,10 +9403,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..7400faae66
+index 0000000000..86e61b7e6b
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2377 @@
+@@ -0,0 +1,2438 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9462,6 +9462,7 @@ index 0000000000..7400faae66
 +  #closed = false;
 +  #completion = null;
 +  #finishedPresentation = null;
++  #finishedPresentationState = null;
 +  #autofill = null;
 +  #placeholder = null;
 +  #closeRequest = null;
@@ -10022,6 +10023,7 @@ index 0000000000..7400faae66
 +    this.#recordingClose = null;
 +    this.#inputState = null;
 +    this.#finishedPresentation = null;
++    this.#finishedPresentationState = null;
 +    this.#inputPresentation = null;
 +    this.#inputPresentationState = null;
 +    this.#inputPopupClose = null;
@@ -10125,7 +10127,8 @@ index 0000000000..7400faae66
 +  beginFinishedPresentation(revision, queryId) {
 +    this.#check();
 +    const edit = this.#edit, finished = this.#queries.describeFinishedQuery(queryId);
-+    if (!edit || edit.revision !== revision || !finished || this.#hiddenResults ||
++    if (!edit || edit.revision !== revision || !finished ||
++        this.#finishedPresentationState?.finished === finished || this.#hiddenResults ||
 +        (edit.composing && !this.#canExposeComposition(revision, queryId))) return null;
 +    const searchMode = this.#searchMode;
 +    const policy = UrlbarQueryModel.finishedQueryPresentation({ updatedResults: finished.updatedResults, searchMode });
@@ -10159,6 +10162,62 @@ index 0000000000..7400faae66
 +    const resolved = Object.freeze({ ...proposal, ...policy, oneOffsWillHide, open });
 +    this.#finishedPresentation = { ...this.#finishedPresentation, proposal: resolved };
 +    return resolved;
++  }
++
++  /** Observe completed row/popup effects; never acknowledge an enqueued command. */
++  acknowledgeFinishedPresentation(token, observation) {
++    const proposal = this.getFinishedPresentation(token);
++    if (!proposal || proposal.action === "resolve-one-offs" || !observation) return false;
++    // Snapshot caller-owned observations before the final token check. Getters
++    // may reenter the editor; no observation is retained as dispatch authority.
++    const observed = {};
++    for (const key of ["text", "selectionStart", "selectionEnd", "selectionDirection", "composing",
++      "open", "resultsCleared", "staleRowsRemoved", "oneOffsEnabled", "searchMode"]) {
++      observed[key] = observation[key];
++    }
++    const editKeys = ["text", "selectionStart", "selectionEnd", "selectionDirection", "composing"];
++    if (editKeys.some(key => observed[key] !== proposal.edit[key]) || typeof observed.open !== "boolean" ||
++        (proposal.rows === "clear" ? observed.resultsCleared !== true : observed.staleRowsRemoved !== true) ||
++        (proposal.action === "close" && (observed.open !== false ||
++          (!proposal.edit.composing && proposal.searchMode?.isPreview && observed.searchMode !== null))) ||
++        (proposal.action === "open-one-offs" && (observed.open !== true || observed.oneOffsEnabled !== true)) ||
++        (proposal.action === "keep" && proposal.open !== undefined && observed.open !== proposal.open) ||
++        this.getFinishedPresentation(token) !== proposal) return false;
++    // A row-only cleanup cannot acknowledge a popup state that contradicts
++    // the separately published viewport. The host must publish changes first.
++    if (proposal.rows === "remove-stale" &&
++        this.#queries.describeCloseRecording(proposal.queryId, false).open !== observed.open) return false;
++    const finished = this.#finishedPresentation.finished;
++    this.#finishedPresentation = null;
++    let closeToken = null;
++    if (proposal.action === "close") {
++      // Capture query recording facts and revoke result authority through the
++      // existing close path before granting browser cleanup or recording.
++      const close = this.#prepareClose({ kind: "close", queryId: proposal.queryId, elementPicked: false });
++      if (!close || this.#searchMode !== proposal.searchMode) return false;
++      const acknowledged = close.previousSearchMode?.isPreview
++        ? this.acknowledgeOwnedPreviewClose(close.token, observed)
++        : this.acknowledgeClose(close.token, { open: false });
++      if (!acknowledged) return false;
++      closeToken = close.token;
++    } else if (proposal.rows === "clear") {
++      // A one-off-only surface cannot expose result rows. Row-bearing finishes
++      // retain the separately validated viewport publication unchanged.
++      this.#queries.publishPresentation(proposal.queryId, [], observed.open);
++    }
++    this.#finishedPresentationState = { finished,
++      receipt: Object.freeze({ ...proposal, open: observed.open, closeToken }) };
++    return true;
++  }
++
++  /** Correlation receipt only; closeToken uses the existing one-use close APIs. */
++  get finishedPresentationState() {
++    if (this.#closed) return null;
++    if (!this.#isCurrent()) { this.close(); return null; }
++    const state = this.#finishedPresentationState, receipt = state?.receipt;
++    return receipt?.edit === this.#edit && receipt.searchMode === this.#searchMode &&
++      (receipt.action === "close" || this.#queries.describeFinishedQuery(receipt.queryId) === state.finished)
++      ? receipt : null;
 +  }
 +
 +  #publishQueryUpdate(update, { revision, text, allowAutofill }) {
@@ -11696,6 +11755,7 @@ index 0000000000..7400faae66
 +
 +  cancel() {
 +    this.#finishedPresentation = null;
++    this.#finishedPresentationState = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
 +    this.#committingPreviewClose = null;
@@ -11739,6 +11799,7 @@ index 0000000000..7400faae66
 +
 +  close() {
 +    this.#finishedPresentation = null;
++    this.#finishedPresentationState = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
 +    this.#committingPreviewClose = null;
