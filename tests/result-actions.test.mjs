@@ -18,9 +18,9 @@ function fixture() {
   const input={handlesOpenInCommands:true,document:{l10n:{formatMessages:async specs=>specs.map(({id})=>({value:'Localized '+id,attributes:[{name:'accesskey',value:'L'}]}))}},
     window:{getHelpLinkURL:topic=>'https://help.test/'+topic},
     view:{updateMenuButtonKeyboardAccessibility(){calls.push('accessibility');}},
-    controller:{parentController:{openContainerCreationPanel:arg=>calls.push(['create',arg]),openPreferences:(...args)=>calls.push(['preferences',...args])}},
+    controller:{engineStore:{default:{name:'Default Engine'}},parentController:{openContainerCreationPanel:arg=>calls.push(['create',arg]),openPreferences:(...args)=>calls.push(['preferences',...args])}},
     pickResult:options=>calls.push(options)};
-  return {model:new context.Actions(input),Actions:context.Actions,input,prefs,calls};
+  return {model:context.Actions.forInput(input),Actions:context.Actions,input,prefs,calls};
 }
 test('shared menu preserves Firefox order, containers, policy and keyboard checkbox',async()=>{
   const f=fixture(),result={type:1,payload:{url:'https://example.test',isBlockable:true,helpUrl:'https://help.test',isManageable:true}};
@@ -113,4 +113,33 @@ test('shared Firefox menu semantics do not inherit native presentation capacity 
   const f=fixture();
   const commands=Array.from({length:129},(_,index)=>({name:String(index),l10n:{id:'item'}}));
   assert.equal((await f.model.describeCommands(commands)).length,129);
+});
+test('result actions run against an explicit host with no input, view or controller',async()=>{
+  const f=fixture(),calls=[];
+  const host={
+    getHelpLinkURL:topic=>'https://native.test/'+topic,
+    formatMessages:async specs=>specs.map(({id})=>({value:'Native '+id,attributes:[]})),
+    formatValue:async id=>'value '+id,
+    updateMenuButtonKeyboardAccessibility:()=>calls.push('accessibility'),
+    openContainerCreationPanel:source=>calls.push(['create',source]),
+    openPreferences:(pane,options)=>calls.push(['preferences',pane,options]),
+    pickResult:options=>calls.push(['pick',options]),
+    isPrivate:false,handlesOpenInCommands:true,defaultEngineName:()=>'Native Engine'};
+  const model=new f.Actions(host),result={type:1,payload:{url:'https://example.test',isBlockable:true,helpUrl:'https://help.test'}};
+  const items=await model.describeMenu(result);
+  assert.equal(items[0].label,'Native urlbar-view-context-menu-open-in-tab2');
+  assert.equal(model.rowLabel({payload:{trending:true},providerName:'x',type:1},{results:[{}],searchString:'q'}).args.engine,'Native Engine');
+  model.invokeMenu(result,{command:'dismiss'},{type:'click'},7);
+  model.invokeMenu(result,{operation:'manage-containers'},{type:'click'});
+  model.invokeMenu(result,{command:'toggle-keyboard-accessible'},{type:'click'});
+  assert.equal(calls[0][0],'pick');assert.equal(calls[0][1].browserId,7);
+  assert.equal(calls[1][0],'preferences');assert.equal(calls.at(-1),'accessibility');
+  host.isPrivate=true;host.handlesOpenInCommands=false;
+  assert.equal((await model.describeMenu(result)).some(i=>i.action?.openIn),false);
+});
+test('result actions reject a host that omits a method and an input passed as a host',()=>{
+  const f=fixture();
+  assert.throws(()=>new f.Actions({}),/Missing result action host method/);
+  assert.throws(()=>new f.Actions(f.input),/Missing result action host method/);
+  assert.ok(f.Actions.forInput(f.input));
 });

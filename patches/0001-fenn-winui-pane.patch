@@ -3151,7 +3151,7 @@ index 30f5aa6556..6198840503 100644
 +
  }
 diff --git a/browser/components/urlbar/content/SmartbarInput.mjs b/browser/components/urlbar/content/SmartbarInput.mjs
-index e5dcc2c923..083ed9b511 100644
+index e5dcc2c923..79a0c0f6b8 100644
 --- a/browser/components/urlbar/content/SmartbarInput.mjs
 +++ b/browser/components/urlbar/content/SmartbarInput.mjs
 @@ -2,6 +2,15 @@
@@ -3210,7 +3210,7 @@ index e5dcc2c923..083ed9b511 100644
 +
 +  #resultActions;
 +  get resultActions() {
-+    return (this.#resultActions ??= new UrlbarResultActions(this));
++    return (this.#resultActions ??= UrlbarResultActions.forInput(this));
 +  }
 +
    static get #markup() {
@@ -4736,7 +4736,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..2643122f2f 100644
+index a077de625f..3d85023c4e 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,22 @@
@@ -4819,7 +4819,7 @@ index a077de625f..2643122f2f 100644
 +
 +  #resultActions;
 +  get resultActions() {
-+    return (this.#resultActions ??= new UrlbarResultActions(this));
++    return (this.#resultActions ??= UrlbarResultActions.forInput(this));
 +  }
 +
    static get #markup() {
@@ -17744,10 +17744,10 @@ index 0000000000..4df5efe958
 +}
 diff --git a/browser/components/urlbar/content/UrlbarResultActions.mjs b/browser/components/urlbar/content/UrlbarResultActions.mjs
 new file mode 100644
-index 0000000000..cd182f9217
+index 0000000000..7a72f0e418
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarResultActions.mjs
-@@ -0,0 +1,314 @@
+@@ -0,0 +1,354 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17760,8 +17760,48 @@ index 0000000000..cd182f9217
 +const RESULT_MENU_COMMANDS = {DISMISS:"dismiss",HELP:"help",MANAGE:"manage",TOGGLE_KEYBOARD_ACCESSIBLE:"toggle-keyboard-accessible"};
 +const CONTAINER_SOURCE = "urlbar_result_context_menu";
 +
++/**
++ * @typedef {object} UrlbarResultActionsHost
++ *   Everything result actions need from their consumer. A native session supplies
++ *   its own host; the original inputs adapt themselves through `forInput`.
++ * @property {(topic: string) => string} getHelpLinkURL
++ * @property {(specs: object[]) => Promise<object[]>} formatMessages
++ * @property {(id: string, args?: object) => Promise<string>} formatValue
++ * @property {() => void} updateMenuButtonKeyboardAccessibility
++ * @property {(source: string) => any} openContainerCreationPanel
++ * @property {(pane: string, options?: object) => any} openPreferences
++ * @property {(options: object) => any} pickResult
++ * @property {boolean} isPrivate
++ * @property {boolean} handlesOpenInCommands
++ * @property {() => ?string} defaultEngineName
++ */
++const HOST_METHODS = ["getHelpLinkURL", "formatMessages", "formatValue", "updateMenuButtonKeyboardAccessibility",
++  "openContainerCreationPanel", "openPreferences", "pickResult", "defaultEngineName"];
++
 +export class UrlbarResultActions {
-+  constructor(input) { this.input=input; this.commandsCache=new WeakMap(); }
++  /** @param {UrlbarResultActionsHost} host */
++  constructor(host) {
++    for (const name of HOST_METHODS) {
++      if (typeof host?.[name] !== "function") throw new TypeError(`Missing result action host method: ${name}`);
++    }
++    this.host=host;
++    this.commandsCache=new WeakMap();
++  }
++  /** Adapt an original input; every member is read live, never captured. */
++  static forInput(input) {
++    return new UrlbarResultActions({
++      getHelpLinkURL: topic => input.window.getHelpLinkURL(topic),
++      formatMessages: specs => input.document.l10n.formatMessages(specs),
++      formatValue: (id, args) => input.document.l10n.formatValue(id, args),
++      updateMenuButtonKeyboardAccessibility: () => input.view.updateMenuButtonKeyboardAccessibility(),
++      openContainerCreationPanel: source => input.controller.parentController.openContainerCreationPanel(source),
++      openPreferences: (pane, options) => input.controller.parentController.openPreferences(pane, options),
++      pickResult: options => input.pickResult(options),
++      get isPrivate() { return input.isPrivate; },
++      get handlesOpenInCommands() { return input.handlesOpenInCommands; },
++      defaultEngineName: () => input.controller.engineStore.default?.name,
++    });
++  }
 +  invalidate(result) { this.commandsCache.delete(result); }
 +  buttons(result) {
 +    for (const [index, button] of (result.payload.buttons || []).entries()) button.name ??= String(index);
@@ -17777,11 +17817,11 @@ index 0000000000..cd182f9217
 +    return {name:button.name,command:button.command,url:button.url,input:button.input};
 +  }
 +  helpAction(result) {
-+    return {help:true,url:this.input.window.getHelpLinkURL(result.payload.descriptionLearnMoreTopic)};
++    return {help:true,url:this.host.getHelpLinkURL(result.payload.descriptionLearnMoreTopic)};
 +  }
 +  async label(l10n) {
 +    if (!l10n) return {label:"",accessKey:""};
-+    const [message]=await this.input.document.l10n.formatMessages([l10n]);
++    const [message]=await this.host.formatMessages([l10n]);
 +    const attrs=Object.fromEntries((message?.attributes || []).map(a=>[a.name,a.value]));
 +    return {label:message?.value || attrs.label || attrs["aria-label"] || "",accessKey:attrs.accesskey || ""};
 +  }
@@ -17817,13 +17857,13 @@ index 0000000000..cd182f9217
 +  invokeMenu(result, action, event, browserId=null) {
 +    if (action.command===RESULT_MENU_COMMANDS.TOGGLE_KEYBOARD_ACCESSIBLE) {
 +      UrlbarPrefs.toggleResultMenuKeyboardAccessible();
-+      this.input.view.updateMenuButtonKeyboardAccessibility();
++      this.host.updateMenuButtonKeyboardAccessibility();
 +      return;
 +    }
-+    if (action.operation==="add-container") return this.input.controller.parentController.openContainerCreationPanel(CONTAINER_SOURCE);
-+    if (action.operation==="manage-containers") return this.input.controller.parentController.openPreferences("paneContainers",{urlParams:{entrypoint:CONTAINER_SOURCE}});
++    if (action.operation==="add-container") return this.host.openContainerCreationPanel(CONTAINER_SOURCE);
++    if (action.operation==="manage-containers") return this.host.openPreferences("paneContainers",{urlParams:{entrypoint:CONTAINER_SOURCE}});
 +    if (action.command==="help") action={...action,url:result.payload.helpUrl || UrlbarContentUtils.getSupportUrl("awesome-bar-result-menu")};
-+    return this.input.pickResult({result,event,browserId,resultAction:action});
++    return this.host.pickResult({result,event,browserId,resultAction:action});
 +  }
 +  async describeButtons(result, acknowledgment=false) {
 +    if (result.type!==UrlbarShared.RESULT_TYPE.TIP || (!acknowledgment && result.payload.type==="dismissalAcknowledgment") ||
@@ -17853,7 +17893,7 @@ index 0000000000..cd182f9217
 +  async describeDescription(result) {
 +    if (result.type!==UrlbarShared.RESULT_TYPE.TIP || !result.payload.descriptionLearnMoreTopic || !result.payload.descriptionL10n) return null;
 +    const {id,args}=result.payload.descriptionL10n;
-+    return this.description(result,await this.input.document.l10n.formatValue(id,args));
++    return this.description(result,await this.host.formatValue(id,args));
 +  }
 +  get openInCommands() {
 +    /** @type {UrlbarResultCommand[]} */
@@ -17864,7 +17904,7 @@ index 0000000000..cd182f9217
 +      },
 +    ];
 +    if (
-+      !this.input.isPrivate &&
++      !this.host.isPrivate &&
 +      UrlbarPrefs.get("privacy.userContext.enabled")
 +    ) {
 +      commands.push({
@@ -17889,7 +17929,7 @@ index 0000000000..cd182f9217
 +  canOpenInNewTarget(result) {
 +    return (
 +      UrlbarPrefs.get("contextMenu.featureGate") &&
-+      this.input.handlesOpenInCommands &&
++      this.host.handlesOpenInCommands &&
 +      result.type != UrlbarShared.RESULT_TYPE.TAB_SWITCH &&
 +      !!UrlbarShared.getLoadRequestFromResult(result)
 +    );
@@ -17989,7 +18029,7 @@ index 0000000000..cd182f9217
 +    }
 +
 +    let engineName =
-+      result.payload.engine || this.input.controller.engineStore.default?.name;
++      result.payload.engine || this.host.defaultEngineName();
 +
 +    if (result.payload.trending) {
 +      return {
