@@ -8697,3 +8697,122 @@ test('alias navigation acknowledgment rechecks pinned engine after reading host 
   assert.equal(f.editor.commitAcknowledgedNavigation(p.token,f.event,f.options),null);
   assert.equal(f.calls.includes('search'),false);assert.equal(f.calls.includes('load'),false);f.editor.close();
 });
+
+
+async function aliasModeActivationFixture(){
+  const f=await oneOffResultSelectionFixture('mode',{browserId:42,isPrivate:false});
+  const selection=f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options);
+  f.receipt=f.editor.acknowledgeOneOffResultSelection(selection.token,f.observation,f.event,f.options);
+  let stateToken=null,valid=true;f.modeWrites=[];
+  f.parent.commitIndependentModeState=(browserId,mode,facts,current)=>{
+    assert.equal(browserId,42);if(!current())return null;
+    f.calls.push(mode?'mode-confirmed':'mode-cleared');stateToken={};
+    const outcome={applied:true,stateToken,userTypedValue:facts.userTypedValue??'@alias',searchMode:mode};
+    f.modeWrites.push(outcome);return outcome;
+  };
+  f.parent.captureIndependentQueryAuthority=(_id,token)=>valid&&token===stateToken?()=>valid&&token===stateToken:null;
+  f.invalidateBrowser=()=>{valid=false;};
+  f.parent.engagementEvent.record=(_event,details)=>{f.calls.push('engagement');f.engagementDetails=details;details.isSessionOngoing=true;};
+  f.write=f.editor.beginOneOffAliasMode(f.receipt.token,f.event,f.options);
+  return f;
+}
+function aliasModeObservation(p){return {text:p.value,selectionStart:p.selectionStart,selectionEnd:p.selectionEnd,
+  selectionDirection:p.selectionDirection,searchMode:p.searchMode,pageProxyValid:false};}
+function commitAliasStage(f,p){
+  assert.equal(f.editor.acknowledgeOneOffAliasMode(p.token,aliasModeObservation(p)),true);
+  return f.editor.commitOneOffAliasMode(p.token,{persistedSearchTerms:false},f.event);
+}
+
+test('alias mode activation completes editor, browser state, ongoing engagement and engine-scoped requery once',async()=>{
+  const f=await aliasModeActivationFixture(),p=f.write;
+  assert.equal(p.phase,'input');assert.equal(p.searchMode,null);assert.equal(p.value,'@alias  alias query ');
+  assert.equal(f.editor.getAcknowledgedOneOffResultSelection(f.receipt.token,f.event,f.options),null);
+  assert.equal(f.editor.commitOneOffAliasMode(p.token,{persistedSearchTerms:false},f.event),null);
+  const confirmed=commitAliasStage(f,p);assert.equal(confirmed.phase,'confirmed');assert.equal(confirmed.searchMode.isPreview,false);
+  assert.equal(f.engagementDetails.searchMode,null);assert.equal(f.engagementDetails.searchString,'@alias');
+  assert.equal(f.editor.commitOneOffAliasMode(p.token,{persistedSearchTerms:false},f.event),null);
+  assert.equal(await f.editor.requeryOneOffAliasMode(confirmed.token,{},{}),null);
+  assert.equal(commitAliasStage(f,confirmed).applied,true);
+  const result=await f.editor.requeryOneOffAliasMode(confirmed.token,{}, {suppressStartQuery:false,inOverflowPanel:false});
+  assert.equal(result.query.searchString,'alias query ');assert.equal(result.query.searchMode.engineName,'Result Engine');
+  assert.equal(result.query.allowAutofill,false);assert.equal(result.query.id,result.admission.queryId);
+  assert.deepEqual(f.calls.filter(c=>c!=='freeze'),['before','selected','mode-cleared','engagement','mode-confirmed']);
+  assert.equal(await f.editor.requeryOneOffAliasMode(confirmed.token,{},{}),null);f.editor.close();
+});
+
+test('alias mode stages reject stale editor, browser, engine and result facts without later effects',async()=>{
+  for(const stage of ['input','confirmed','ready'])for(const invalidation of ['caret','browser','engine','payload','cancel','hide','modeflag','autofill']){
+    const f=await aliasModeActivationFixture();let p=f.write;
+    if(stage!=='input')p=commitAliasStage(f,p);
+    if(stage==='ready')commitAliasStage(f,p);
+    if(invalidation==='caret')f.editor.select(2,0,0);
+    if(invalidation==='browser')f.invalidateBrowser();
+    if(invalidation==='engine'){
+      f.parent.child.updateEngineStore('removed',{id:'result-engine'},-1);
+      f.parent.child.updateEngineStore('changed',{id:'replacement',name:'Result Engine',isGeneralPurposeEngine:true},-1);
+    }
+    if(invalidation==='payload')f.result.payload.query='different';
+    if(invalidation==='modeflag')f.result.payload.providesSearchMode=false;
+    if(invalidation==='autofill')f.result.autofill=null;
+    if(invalidation==='cancel')f.editor.cancel();
+    if(invalidation==='hide')f.editor.publishPresentation(2,f.query.id,[],false);
+    // Browser authority is first captured by the input-stage commit.
+    if(invalidation==='browser'&&stage==='input'){
+      assert.equal(f.editor.acknowledgeOneOffAliasMode(p.token,aliasModeObservation(p)),true);
+      assert.equal(f.editor.commitOneOffAliasMode(p.token,{persistedSearchTerms:false},f.event),null);
+    }else if(stage==='ready')assert.equal(await f.editor.requeryOneOffAliasMode(p.token,{},{}),null,stage+invalidation);
+    else assert.equal(f.editor.getOneOffAliasMode(p.token),null,stage+invalidation);
+    f.editor.close();
+  }
+});
+
+test('alias mode acknowledgment consumes nested host observation once and requires matching mode/text',async()=>{
+  const f=await aliasModeActivationFixture(),p=f.write,before=f.editor.snapshot;let nested;
+  assert.equal(f.editor.acknowledgeOneOffAliasMode(p.token,{...aliasModeObservation(p),text:'wrong'}),false);
+  const observed={...aliasModeObservation(p),get text(){nested??=f.editor.acknowledgeOneOffAliasMode(p.token,aliasModeObservation(p));return p.value;}};
+  assert.equal(f.editor.acknowledgeOneOffAliasMode(p.token,observed),false);assert.equal(nested,true);
+  assert.equal(f.editor.snapshot.selectionRevision,before.selectionRevision+1);f.editor.close();
+});
+
+test('alias mode callbacks cannot repeat a stage or continue after cancellation',async()=>{
+  for(const stage of ['input','engagement','confirmed']){
+    const f=await aliasModeActivationFixture();let p=f.write;
+    if(stage==='confirmed')p=commitAliasStage(f,p);
+    if(stage==='engagement')f.parent.engagementEvent.record=()=>{f.editor.cancel();};
+    else {const commit=f.parent.commitIndependentModeState;f.parent.commitIndependentModeState=(...args)=>{
+      assert.equal(f.editor.commitOneOffAliasMode(p.token,{persistedSearchTerms:false},f.event),null);
+      const out=commit(...args);f.editor.cancel();return out;
+    };}
+    assert.equal(commitAliasStage(f,p),null);assert.equal(await f.editor.requeryOneOffAliasMode(p.token,{},{}),null);f.editor.close();
+  }
+});
+
+test('alias mode requery obeys suppression and overflow without starting providers or replaying',async()=>{
+  for(const disposition of ['suppressed','overflow']){
+    const f=await aliasModeActivationFixture(),p=commitAliasStage(f,f.write);commitAliasStage(f,p);
+    const count=f.parent.started.length;
+    const out=await f.editor.requeryOneOffAliasMode(p.token,{}, {suppressStartQuery:disposition==='suppressed',inOverflowPanel:disposition==='overflow'});
+    assert.equal(out.admission.disposition,disposition);assert.equal(out.query,null);assert.equal(f.parent.started.length,count);
+    assert.equal(await f.editor.requeryOneOffAliasMode(p.token,{},{}),null);f.editor.close();
+  }
+});
+
+
+test('alias mode handoff rejects copied, wrong-branch and replacement-command authority',async()=>{
+  for(const kind of ['private','load']){
+    const f=await oneOffResultSelectionFixture(kind),selection=f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options);
+    const receipt=f.editor.acknowledgeOneOffResultSelection(selection.token,f.observation,f.event,f.options);
+    assert.equal(f.editor.beginOneOffAliasMode(receipt.token,f.event,f.options),null);f.editor.close();
+  }
+  const f=await aliasModeActivationFixture();
+  assert.equal(f.editor.getOneOffAliasMode({...f.write.token}),null);
+  await f.editor.beginOneOffCommand(2,f.query.id,'engine:second',oneOffFacts({shiftKey:true}));
+  assert.equal(f.editor.getOneOffAliasMode(f.write.token),null);f.editor.close();
+});
+
+test('alias mode query admission rejects callback browser replacement before provider dispatch',async()=>{
+  const f=await aliasModeActivationFixture(),p=commitAliasStage(f,f.write);commitAliasStage(f,p);
+  const before=f.parent.started.length;
+  const result=await f.editor.requeryOneOffAliasMode(p.token,{}, {get suppressStartQuery(){f.invalidateBrowser();return false;},inOverflowPanel:false});
+  assert.equal(result,null);assert.equal(f.parent.started.length,before);f.editor.close();
+});

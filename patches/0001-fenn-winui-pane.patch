@@ -9954,10 +9954,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..4bffed69d6
+index 0000000000..11c2bc5f5c
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3709 @@
+@@ -0,0 +1,3846 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10035,6 +10035,7 @@ index 0000000000..4bffed69d6
 +  #modeApplication = null;
 +  #modeRequery = null;
 +  #modeStateReady = null;
++  #aliasModeActivation = null;
 +  #committingModeState = null;
 +  #searchCommandRequery = null;
 +  #searchCommandRequest = null;
@@ -10588,6 +10589,7 @@ index 0000000000..4bffed69d6
 +    this.#finishedPresentation = null;
 +    this.#finishedPresentationState = null;
 +    this.#oneOffCommand = null;
++    this.#aliasModeActivation = null;
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
@@ -11856,6 +11858,7 @@ index 0000000000..4bffed69d6
 +    const edit = this.#edit, previousMode = this.#searchMode;
 +    if (!edit || edit.revision !== revision || edit.composing || this.#hiddenResults) return null;
 +    const pending = { token: Object.freeze({}), edit, previousMode, prepared: null, proposal: null };
++    this.#aliasModeActivation = null;
 +    this.#oneOffCommand = pending;
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffModeStateReady = null;
@@ -12115,6 +12118,136 @@ index 0000000000..4bffed69d6
 +      ? pending.receipt : null;
 +  }
 +
++  /** Complete the unselected token-alias branch without replaying provider selection. */
++  beginOneOffAliasMode(selectionToken, event, options = {}) {
++    const receipt = this.getAcknowledgedOneOffResultSelection(selectionToken, event, options);
++    const command = this.#oneOffCommand, source = command?.engineSearch?.selection?.resultSelection;
++    if (!receipt || receipt.branch !== "token-alias-result" || receipt.kind !== "mode" || source.modeAttempted) return null;
++    const edit = this.#edit, mode = this.#searchMode, generation = this.#selectionGeneration;
++    const input = this.describeResultInput(edit.revision, receipt.queryId, source.result);
++    const facts = Object.freeze({ searchString: this.#typedText, searchMode: null,
++      isHandoff: options.isHandoff ?? false, persistedSearchTerms: options.persistedSearchTerms ?? false });
++    if (this.getAcknowledgedOneOffResultSelection(selectionToken, event, options) !== receipt ||
++        this.#edit !== edit || this.#searchMode !== mode || this.#selectionGeneration !== generation || source.modeAttempted) return null;
++    source.modeAttempted = true;
++    const pending = { receipt, result: source.result, edit, mode, generation, input, facts,
++      phase: "input", acknowledged: false, browserCurrent: null };
++    // Transfer authority before any host operation. The original one-off receipt expires.
++    this.#oneOffCommand = null;
++    this.#aliasModeActivation = pending;
++    this.#completion = this.#autofill = this.#placeholder = null;
++    pending.proposal = this.#aliasModeProposal(pending, input.value, null);
++    return this.getOneOffAliasMode(pending.proposal.token);
++  }
++
++  #aliasModeProposal(pending, value, searchMode) {
++    return Object.freeze({ token: Object.freeze({}), phase: pending.phase, value, searchMode,
++      selectionStart: value.length, selectionEnd: value.length, selectionDirection: "none", pageProxyValid: false });
++  }
++
++  #aliasModeCurrent(pending, requireResult = true) {
++    if (!pending || this.#aliasModeActivation !== pending || this.#closed || !this.#isCurrent() || this.#hiddenResults ||
++        pending.edit !== this.#edit || pending.mode !== this.#searchMode || pending.generation !== this.#selectionGeneration ||
++        !this.#queries.isModeEngineCurrent(pending.receipt.modeApplication.searchMode, pending.receipt.engineId) ||
++        (pending.browserCurrent && !pending.browserCurrent())) return false;
++    if (requireResult) {
++      if (!this.#queries.isAliasModeResultCurrent(pending.receipt.queryId, pending.result,
++          pending.receipt.modeApplication.searchMode, pending.receipt.engineId)) return false;
++      try {
++        const live = this.describeResultModeApplication(this.#edit.revision, pending.receipt.queryId, pending.result,
++          { checkValue: false, startQuery: true });
++        if (!UrlbarShared.deepEqual(live, pending.receipt.modeApplication) ||
++            !UrlbarShared.deepEqual(this.describeResultInput(this.#edit.revision, pending.receipt.queryId, pending.result), pending.input)) return false;
++      } catch { return false; }
++    }
++    return this.#aliasModeActivation === pending && pending.edit === this.#edit && pending.mode === this.#searchMode &&
++      pending.generation === this.#selectionGeneration && !this.#hiddenResults &&
++      this.#queries.isModeEngineCurrent(pending.receipt.modeApplication.searchMode, pending.receipt.engineId) &&
++      (!pending.browserCurrent || pending.browserCurrent());
++  }
++
++  getOneOffAliasMode(token) {
++    const pending = this.#aliasModeActivation;
++    return pending?.proposal.token === token && ["input", "confirmed"].includes(pending.phase) &&
++      !pending.acknowledged && this.#aliasModeCurrent(pending) ? pending.proposal : null;
++  }
++
++  acknowledgeOneOffAliasMode(token, observation) {
++    const proposal = this.getOneOffAliasMode(token), pending = this.#aliasModeActivation;
++    if (!proposal || observation?.text !== proposal.value || observation.selectionStart !== proposal.selectionStart ||
++        observation.selectionEnd !== proposal.selectionEnd || observation.selectionDirection !== proposal.selectionDirection ||
++        observation.pageProxyValid !== false || !UrlbarShared.deepEqual(observation.searchMode, proposal.searchMode) ||
++        this.getOneOffAliasMode(token) !== proposal) return false;
++    pending.acknowledged = true;
++    this.#searchMode = pending.mode = proposal.searchMode;
++    this.#edit = pending.edit = Object.freeze({ ...this.#edit, text: proposal.value,
++      selectionStart: proposal.selectionStart, selectionEnd: proposal.selectionEnd,
++      selectionDirection: proposal.selectionDirection, selectionRevision: this.#edit.selectionRevision + 1 });
++    if (pending.phase === "confirmed") this.#typedText = proposal.value;
++    return true;
++  }
++
++  /** Clear input mode, record ongoing engagement, then offer confirmed text/mode. */
++  commitOneOffAliasMode(token, observation, event) {
++    const pending = this.#aliasModeActivation;
++    if (!pending || pending.proposal.token !== token || !pending.acknowledged ||
++        !["input", "confirmed"].includes(pending.phase) || !this.#aliasModeCurrent(pending)) return null;
++    const persistedSearchTerms = observation?.persistedSearchTerms;
++    if (typeof persistedSearchTerms !== "boolean" || !this.#aliasModeCurrent(pending)) return null;
++    const phase = pending.phase;
++    if (phase === "input" && !UrlbarQueryModel.isResultActivationEvent(event)) return null;
++    if (!this.#aliasModeCurrent(pending)) return null;
++    pending.phase = "committing"; // Consume before browser setters and provider callbacks.
++    const current = () => this.#aliasModeCurrent(pending);
++    const notify = state => this.#notifyModeState(this.#onModeStateChanged, state,
++      { reason: "one-off-alias-" + phase, token, queryId: pending.receipt.queryId, edit: pending.edit });
++    // The next mode setter intentionally replaces the preceding state token.
++    const priorBrowserCurrent = pending.browserCurrent;
++    if (priorBrowserCurrent && !priorBrowserCurrent()) return null;
++    pending.browserCurrent = null;
++    const outcome = phase === "input"
++      ? this.#queries.commitAliasInputState({ persistedSearchTerms }, current, this.#onModeStateChanged ? notify : null)
++      : this.#queries.commitAcknowledgedModeState(pending.receipt.queryId, pending.result,
++        pending.receipt.modeApplication, { value: pending.edit.text, checkValue: false, startQuery: true },
++        { persistedSearchTerms }, current, this.#onModeStateChanged ? notify : null);
++    if (!outcome?.applied || !current()) return null;
++    pending.browserCurrent = this.#queries.captureModeQueryAuthority(outcome);
++    if (!pending.browserCurrent || !current()) return null;
++    if (phase === "input") {
++      const engagement = this.#queries.recordAliasModeEngagement(pending.receipt.queryId, pending.result,
++        event, pending.facts, current);
++      if (!engagement?.recorded || !engagement.sessionOngoing || !current()) return null;
++      pending.phase = "confirmed";
++      pending.acknowledged = false;
++      pending.proposal = this.#aliasModeProposal(pending, pending.receipt.modeApplication.value,
++        pending.receipt.modeApplication.searchMode);
++      return pending.proposal;
++    }
++    pending.phase = "ready";
++    return Object.freeze({ token, applied: true, searchMode: pending.mode, value: pending.edit.text });
++  }
++
++  /** Dispatch the confirmed mode query under the committed browser/document authority. */
++  async requeryOneOffAliasMode(token, state, options) {
++    const pending = this.#aliasModeActivation;
++    if (!pending || pending.phase !== "ready" || pending.proposal.token !== token || !this.#aliasModeCurrent(pending)) return null;
++    pending.phase = "dispatching";
++    const current = () => this.#aliasModeCurrent(pending, false);
++    const admission = this.#queries.startDestinationQuery({ ...state, searchMode: pending.mode },
++      { searchString: pending.edit.text, allowAutofill: false }, options, current);
++    if (!admission || !current()) return null;
++    if (admission.disposition !== "dispatch") return Object.freeze({ admission, query: null });
++    this.#queries.cancel();
++    if (!current()) return null;
++    const query = await this.#queries.queryDestination(admission, update => {
++      if (current() && update.kind !== "prepared") this.#publishQueryUpdate(update,
++        { revision: pending.edit.revision, text: pending.edit.text, allowAutofill: false });
++    }, current);
++    if (!current()) return null;
++    pending.phase = "complete";
++    return Object.freeze({ admission, query });
++  }
++
 +  /** Transfer an acknowledged current result to ordinary editor-write/load authority once. */
 +  beginOneOffResultNavigationWrite(selectionToken, event, options = {}) {
 +    const receipt = this.getAcknowledgedOneOffResultSelection(selectionToken, event, options);
@@ -12146,6 +12279,7 @@ index 0000000000..4bffed69d6
 +      return null;
 +    }
 +    this.#oneOffCommand = null;
++    this.#aliasModeActivation = null;
 +    return proposal;
 +  }
 +
@@ -12809,6 +12943,7 @@ index 0000000000..4bffed69d6
 +    const pending = this.#oneOffModeApplication;
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffCommand = null;
++    this.#aliasModeActivation = null;
 +    this.#searchMode = proposal.searchMode;
 +    this.#edit = Object.freeze({ ...proposal.edit, text, selectionStart, selectionEnd, selectionDirection,
 +      selectionRevision: proposal.edit.selectionRevision + 1 });
@@ -13563,6 +13698,7 @@ index 0000000000..4bffed69d6
 +    this.#finishedPresentation = null;
 +    this.#finishedPresentationState = null;
 +    this.#oneOffCommand = null;
++    this.#aliasModeActivation = null;
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
@@ -13615,6 +13751,7 @@ index 0000000000..4bffed69d6
 +    this.#finishedPresentation = null;
 +    this.#finishedPresentationState = null;
 +    this.#oneOffCommand = null;
++    this.#aliasModeActivation = null;
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
@@ -13669,10 +13806,10 @@ index 0000000000..4bffed69d6
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..55329183c9
+index 0000000000..52c386bbd8
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1708 @@
+@@ -0,0 +1,1756 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13709,6 +13846,7 @@ index 0000000000..55329183c9
 +  #activationCleanup = new Set();
 +  #selectionRequest = null;
 +  #engagementActive = false;
++  #aliasModeEngagements = new WeakSet();
 +  #endingEngagement = false;
 +  #oneOffDismissalGeneration = 0;
 +  #oneOffCommandPlans = new WeakSet();
@@ -14148,6 +14286,53 @@ index 0000000000..55329183c9
 +    this.#check();
 +    return this.#controller.parentController.acknowledgeCurrentLoadRecovery(token, applyEditor,
 +      () => !this.#closed && this.#isCurrent() && editorIsCurrent(), onCommitted);
++  }
++
++  /** Alias-mode engagement keeps the query alive for the subsequent mode setter. */
++  recordAliasModeEngagement(queryId, result, event, facts, isCurrent) {
++    this.#check();
++    if (!this.#engagementActive || this.#endingEngagement || !isCurrent() || this.#aliasModeEngagements.has(result) ||
++        result?.type !== UrlbarShared.RESULT_TYPE.SEARCH || !result.payload.providesSearchMode ||
++        !UrlbarQueryModel.isResultActivationEvent(event)) return null;
++    const description = this.describeResultEngagement(queryId, result, facts), query = this.#query;
++    const current = () => !this.#closed && this.#isCurrent() && this.#query === query && isCurrent();
++    if (!current()) return null;
++    this.#aliasModeEngagements.add(result);
++    const details = { ...description.details };
++    this.#engagementActive = false;
++    this.#endingEngagement = true;
++    try {
++      this.#controller.engagementEvent.record(event, details, description.state);
++      return current() ? Object.freeze({ recorded: true, sessionOngoing: !!details.isSessionOngoing }) : null;
++    } finally {
++      this.#endingEngagement = false;
++      if (details.isSessionOngoing && current()) this.#engagementActive = true;
++    }
++  }
++
++  /** Pin the engine by identity across separate editor and browser acknowledgments. */
++  isModeEngineCurrent(searchMode, engineId) {
++    return !this.#closed && this.#isCurrent() && (searchMode?.engineName
++      ? this.#controller.engineStore.getEngineByName(searchMode.engineName)?.id === engineId : engineId === null);
++  }
++
++  isAliasModeResultCurrent(queryId, result, searchMode, engineId) {
++    return this.ownsResult(queryId, result) && this.#controller.resultsOpen &&
++      result.payload?.providesSearchMode === true && UrlbarQueryModel.pickTokenAliasResult(result) &&
++      this.#controller.visibleResults.includes(result) && this.isModeEngineCurrent(searchMode, engineId);
++  }
++
++  /** Clear the unselected alias result's previous mode before its engagement. */
++  commitAliasInputState(observation, isCurrent, onCommitted) {
++    this.#check();
++    return this.#controller.parentController.commitIndependentModeState(this.#context.browserId,
++      null, observation, () => !this.#closed && this.#isCurrent() && isCurrent(), onCommitted);
++  }
++
++  captureModeQueryAuthority(outcome) {
++    this.#check();
++    return outcome?.applied ? this.#controller.parentController.captureIndependentQueryAuthority(
++      this.#context.browserId, outcome.stateToken, outcome.userTypedValue) : null;
 +  }
 +
 +  /** Record an actual primary-result engagement; activation/load execution is separate. */
