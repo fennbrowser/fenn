@@ -59,6 +59,11 @@ function fixture({visible=true,page='https://page.test/'}={}){
     beginNavigationActivation:()=>({token:'sel'}),
     acknowledgeNavigationActivation:()=>({token:'write',value:'https://result.test/',searchMode:null}),
     acknowledgeNavigationWrite:()=>true,
+    acknowledgeOneOffExternalNavigation:(token,o)=>{calls.push(['external-input',o]);return token.external!==false;},
+    prepareOneOffExternalRevert:(token,event,o)=>{calls.push(['external-revert',event,o]);
+      return token.revert===null?null:{token:{...token},value:'https://page.test/',selectionStart:0,selectionEnd:0,focused:o.focused,pageProxyValid:true};},
+    acknowledgeOneOffExternalRevert:(token,o)=>{calls.push(['external-restored',o]);return token.restore!==false;},
+    commitOneOffExternalNavigation:()=>{calls.push(['external-commit']);return {attempted:true,reverted:false};},
     commitAcknowledgedNavigation:()=>({attempted:true,reverted:false}),
     cancel:()=>calls.push(['editor.cancel']),close:()=>calls.push(['editor.close']),
     getCompletion:token=>token.proposal,
@@ -95,9 +100,6 @@ test('Enter without a row id uses the selected or heuristic result',()=>{
 
 test('modified intents, hidden rows and rejected handoffs fall back with a reason',()=>{
   const last=f=>f.s.constructor.counters.fallbacks.at(-1);
-  const modified=fixture();
-  assert.equal(modified.s.activate(1,modified.row.id,{ctrlKey:true}),'firefox-fallback');
-  assert.equal(last(modified),'modified-intent');
   const hidden=fixture({visible:false});
   assert.equal(hidden.s.activate(1,hidden.row.id,{}),'firefox-fallback');
   assert.equal(last(hidden),'not-visible');
@@ -227,4 +229,46 @@ test('caret acceptance is observed by the editor and confirms the typed value on
   const inherited=fixture();inherited.s.active.source=undefined;
   inherited.s.updateSelection({start:1,end:1,direction:'none'});
   assert.equal(inherited.calls.some(c=>c[0]==='observe'),false);
+});
+
+function externalFixture(extra={}){
+  const f=fixture();
+  const write={token:{...extra},phase:'input',value:'https://result.test/',selectionStart:20,selectionEnd:20,
+    selectionDirection:'none',searchMode:null,pageProxyValid:false};
+  f.editor.acknowledgeNavigationActivation=()=>write;
+  return f;
+}
+
+test('modified intents reach the editor as activation modifiers on the Enter event',()=>{
+  const f=fixture();let seen=null;
+  f.editor.beginNavigationActivation=(r,q,res,event)=>{seen=event;return {token:'sel'};};
+  f.s.activate(1,f.row.id,{ctrlKey:true,shiftKey:true});
+  assert.equal(seen.key,'Enter');assert.equal(seen.ctrlKey,true);assert.equal(seen.shiftKey,true);assert.equal(seen.altKey,undefined);
+});
+
+test('a new-tab activation writes the result, restores the source and commits one external load',()=>{
+  const f=externalFixture(),counters=f.s.constructor.counters,before=counters.activations;
+  assert.equal(f.s.activate(1,f.row.id,{ctrlKey:true}),'activated');
+  assert.equal(counters.activations,before+1);
+  const names=f.calls.map(c=>c[0]).filter(n=>n.startsWith('external')||n==='revert');
+  assert.deepEqual(names,['external-input','external-revert','external-restored','external-commit','revert']);
+  const input=f.calls.find(c=>c[0]==='external-input')[1];
+  assert.equal(input.text,'https://result.test/');assert.equal(input.pageProxyValid,false);assert.equal(input.searchMode,null);
+  const restored=f.calls.find(c=>c[0]==='external-restored')[1];
+  assert.equal(restored.text,'https://page.test/');assert.equal(restored.userTypedValue,null);assert.equal(restored.pageProxyValid,true);
+  assert.equal(restored.persistedSearchTerms,false);
+  assert.equal(f.s.active,null);assert.equal(f.s.revision,2);
+  assert.ok(f.calls.some(c=>c[0]==='view.close'&&c[1].elementPicked===true));
+});
+
+test('a rejected or unavailable external stage falls back and restores the typed text',()=>{
+  const last=f=>f.s.constructor.counters.fallbacks.at(-1);
+  for(const [extra,reason] of [[{external:false},'input-rejected'],[{revert:null},'revert-unavailable'],[{restore:false},'revert-rejected']]){
+    const f=externalFixture(extra);
+    assert.equal(f.s.activate(1,f.row.id,{ctrlKey:true}),'firefox-fallback');
+    assert.equal(last(f),reason);
+    assert.equal(f.calls.some(c=>c[0]==='external-commit'),false);
+    assert.equal(f.input.inputField.value,'typed');
+    assert.notEqual(f.s.active,null);
+  }
 });
