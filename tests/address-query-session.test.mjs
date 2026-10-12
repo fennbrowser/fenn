@@ -2874,7 +2874,7 @@ function parentLoadFixture() {
   lazy.UrlbarCompositionModel=modelFixture.sandbox.UrlbarCompositionModel;lazy.UrlbarShared=modelFixture.sandbox.UrlbarShared;modelFixture.session.close();
   lazy.ReaderMode={getOriginalUrlObjectForDisplay:()=>null};
   const Parent=new Function('lazy','Cr',`return class {
-    #currentLoad=null;#currentLoadRecovery=null;#currentLoadGeneration=0;#destroyed=false;#isAddressbar=true;
+    #currentLoad=null;#currentLoadRecovery=null;#currentLoadGeneration=0;#destroyed=false;#isAddressbar=true;#oneOffSearchTabs=new WeakMap();#actor={};
     #prepareAddressbarLoad(data){this.prepare?.(data);}
     destroy(){this.#destroyed=true;this.#currentLoad=null;this.#discardCurrentLoadRecovery();}
     describeCurrentPageRevert(){return this.recoveryDescription??null;}
@@ -6915,4 +6915,74 @@ test('source notification listener exceptions are isolated like mode events and 
   assert.equal(g.editor.createOneOffSearchTabWithSourceEffects(g.command.token,{userTypedValue:'typed words',
     get persistedSearchTerms(){g.editor.select(1,0,0);return false;}}),null);
   assert.equal(g.created.length,0);assert.equal(g.events.length,0);assert.equal(g.editor.snapshot.selectionStart,0);g.editor.close();
+});
+
+
+async function oneOffTabActivationFixture(options={}){
+  const f=await oneOffSourceEffectsFixture(()=>{},options);let selections=0;
+  const created=f.editor.createOneOffSearchTabWithSourceEffects(f.command.token,{userTypedValue:'typed words',persistedSearchTerms:false});
+  assert.equal(created.initialized,true);
+  f.parent.describeIndependentOneOffTabActivation=receipt=>({sourceBrowserId:17,targetBrowserId:18,searchMode:f.command.searchMode,userTypedValue:'typed words'});
+  f.parent.activateIndependentOneOffSearchTab=(receipt,sourceCurrent,transferCurrent)=>{
+    if(!sourceCurrent()||!transferCurrent())return null;
+    selections++;f.onSelect?.();
+    const current=transferCurrent();return {activated:true,current,destination:current?{context:{browserId:18},isCurrent:()=>true,isReady:()=>true}:null};
+  };
+  const activation=f.editor.beginOneOffTabActivation(f.command.token);
+  return Object.assign(f,{created,activation,getSelections:()=>selections});
+}
+
+test('foreground activation consumes once, tolerates deliberate source scope loss and never starts a query',async()=>{
+  const f=await oneOffTabActivationFixture(),p=f.activation;
+  assert.ok(p);assert.equal(p.targetBrowserId,18);assert.equal(f.editor.getOneOffTabActivation(p.token),p);
+  f.onSelect=()=>{assert.equal(f.editor.activateOneOffSearchTab(p.token),null);f.loseScope();};
+  const result=f.editor.activateOneOffSearchTab(p.token);
+  assert.equal(result.current,true);assert.equal(result.destination.context.browserId,18);
+  assert.equal(result.sourceDeselectionPending,true);assert.equal(result.destinationQueryPending,true);
+  assert.equal(result.allowAutofill,true);assert.equal(f.getSelections(),1);assert.equal(f.parent.started.length,1);
+  assert.equal(f.editor.activateOneOffSearchTab(p.token),null);f.editor.close();
+});
+
+test('background and target-only new-tab commands do not offer foreground activation',async()=>{
+  const f=await oneOffTabActivationFixture({background:true});assert.equal(f.activation,null);assert.equal(f.getSelections(),0);f.editor.close();
+  const g=await oneOffNewTabFixture();g.editor.createOneOffSearchTab(g.command.token,{userTypedValue:'typed words'});
+  assert.equal(g.editor.beginOneOffTabActivation(g.command.token),null);g.editor.close();
+});
+
+test('activation preparation rejects stale caret, popup, engine policy, source and target receipts',async()=>{
+  for(const mutation of ['caret','cancel','popup','engine','policy','parent','scope']){
+    const f=await oneOffTabActivationFixture(),p=f.activation;
+    if(mutation==='caret')f.editor.select(1,0,0);
+    if(mutation==='cancel')f.editor.cancel();
+    if(mutation==='popup'){f.editor.publishPresentation(1,f.query.id,[],false);f.editor.publishPresentation(1,f.query.id,[],true);}
+    if(mutation==='engine')f.parent.child.updateEngineStore('removed',{id:'second'});
+    if(mutation==='policy')f.prefs['scotchBonnet.disableOneOffs']=true;
+    if(mutation==='parent')f.parent.describeIndependentOneOffTabActivation=()=>null;
+    if(mutation==='scope'){f.loseScope();assert.throws(()=>f.editor.activateOneOffSearchTab(p.token),/scope changed/);}
+    else assert.equal(f.editor.activateOneOffSearchTab(p.token),null,mutation);
+    assert.equal(f.getSelections(),0);f.editor.close();
+  }
+});
+
+test('activation rechecks editor, query and engine eligibility during selection callbacks',async()=>{
+  for(const mutation of ['caret','cancel','engine','policy','close','throw']){
+    const f=await oneOffTabActivationFixture(),p=f.activation;
+    f.onSelect=()=>{
+      if(mutation==='caret')f.editor.select(1,0,0);
+      if(mutation==='cancel')f.editor.cancel();
+      if(mutation==='engine')f.parent.child.updateEngineStore('removed',{id:'second'});
+      if(mutation==='policy')f.prefs['scotchBonnet.disableOneOffs']=true;
+      if(mutation==='close')f.editor.close();
+      if(mutation==='throw')throw Error('activation callback failed');
+    };
+    if(mutation==='throw')assert.throws(()=>f.editor.activateOneOffSearchTab(p.token),/callback failed/);
+    else {const result=f.editor.activateOneOffSearchTab(p.token);assert.equal(result.current,false);assert.equal(result.destination,null);}
+    assert.equal(f.editor.activateOneOffSearchTab(p.token),null);assert.equal(f.getSelections(),1);assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('query activation refuses forged or foreign new-tab receipts',async()=>{
+  const f=fixture({browserId:17});
+  assert.equal(f.session.describeOneOffTabActivation({initialized:true,sourceModeNotified:true,requiresActivation:true}),null);
+  assert.equal(f.session.activateOneOffSearchTab({},()=>true,()=>true),null);f.session.close();
 });
