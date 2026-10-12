@@ -9468,6 +9468,104 @@ test('advertised commands are pure over the result and exclude open-in and keybo
   assert.equal(A.advertisedCommands({payload:{}}).size,0);
 });
 
+test('tip button URL actions load once in a tab or window after restoration with Firefox tip engagement',async()=>{
+  for(const where of ['current','tab','window']){
+    const f=await urlTabActivationFixture({type:'TIP',where,action:{name:'0',url:'https://tip.test/'}});
+    f.parent.engagementEvent.record=(_e,details)=>f.calls.push(['record',details.selType,details.resultAction?.url,details.resultAction?.name]);
+    const write=urlInput(f);
+    assert.equal(write.value,'https://tip.test/');
+    assert.equal(f.editor.acknowledgeOneOffExternalNavigation(write.token,aliasModeObservation(write)),true);
+    const revert=f.editor.prepareOneOffExternalRevert(write.token,f.event,{persistedSearchTerms:false,focused:true});
+    assert.ok(revert,where);
+    assert.equal(f.calls.filter(c=>c[0]==='history').length,1,where);
+    assert.deepEqual(f.calls.find(c=>c[0]==='record'),['record','tip','https://tip.test/','0']);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    const outcome=f.editor.commitOneOffExternalNavigation(revert.token);
+    assert.equal(outcome.attempted,true,where);
+    const opened=f.source.calls.find(c=>typeof c==='object');
+    assert.equal(opened.where,where==='window'?'window':'tab');assert.equal(opened.params.forceForeground,true);
+    assert.equal(f.calls.filter(c=>c[0]==='notify').length,1);
+    f.editor.close();
+  }
+});
+
+test('tip button URL actions are limited to tip results and valid URLs',async()=>{
+  const a=await urlTabActivationFixture({type:'URL',where:'tab',action:{url:'https://tip.test/'}});
+  assert.equal(a.begin(),null);assert.equal(a.calls.length,0);a.editor.close();
+  const b=await urlTabActivationFixture({type:'TIP',where:'tab'});
+  for(const bad of [{url:'not a url'},{url:'https://a.test/',openIn:'tab'},{url:5},{url:'https://a.test/',userContextId:'3'},{name:'0'}]){
+    assert.throws(()=>b.editor.beginNavigationActivation(1,b.q.id,b.result,b.event,{...b.options,resultAction:bad}),/result action/i,JSON.stringify(bad));
+  }
+  b.editor.close();
+  const c=await urlTabActivationFixture({type:'TIP',where:'tab'});
+  assert.equal(c.editor.beginNavigationActivation(1,c.q.id,c.result,c.event,{...c.options,resultAction:{url:'https://tip.test/'}})!==null,true);
+  c.editor.close();
+});
+
+async function helpFixture({where='current',helpUrl='https://help.test/',url}={}){
+  const f=await urlTabActivationFixture({type:'URL',where});
+  f.result.payload={url:'https://history.test/',...(helpUrl?{helpUrl}:{})};
+  f.parent.engagementEvent.record=(_e,details)=>f.calls.push(['record',details.selType,details.resultAction?.command,details.resultAction?.url]);
+  const click={type:'click',button:0,timeStamp:3,where};
+  const begin=(extra={})=>f.editor.beginResultHelp(1,f.q.id,f.result,click,{...f.options,resultAction:{command:'help',...(url?{url}:{})},...extra});
+  return {...f,click,begin};
+}
+
+test('help records its command, restores the source and opens its URL once in a tab or window',async()=>{
+  for(const where of ['current','tab','window']){
+    const f=await helpFixture({where,url:'https://support.test/'}),proposal=f.begin();
+    assert.ok(proposal,where);assert.equal(proposal.phase,'input');
+    const revert=f.editor.prepareOneOffExternalRevert(proposal.token,f.click,{persistedSearchTerms:false,focused:true});
+    assert.ok(revert,where);
+    assert.equal(f.calls.filter(c=>c[0]==='record').length,1);
+    assert.deepEqual(f.calls.find(c=>c[0]==='record').slice(1,3),['help','help']);
+    assert.equal(f.source.calls.length,0);assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    assert.equal(f.calls.filter(c=>c[0]==='notify').length,0);
+    const outcome=f.editor.commitOneOffExternalNavigation(revert.token);
+    assert.equal(outcome.attempted,true,where);
+    const opened=f.source.calls.find(c=>typeof c==='object');
+    assert.equal(opened.where,where==='window'?'window':'tab');
+    assert.equal(opened.params.forceForeground,false);assert.equal(opened.params.private,false);
+    assert.equal(opened.params.allowInheritPrincipal,false);
+    assert.equal(f.calls.filter(c=>c[0]==='notify').length,1);assert.equal(f.calls.filter(c=>c[0]==='history').length,0);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);f.editor.close();
+  }
+});
+
+test('help is refused for unsupported destinations, missing or unadvertised URLs and private contexts',async()=>{
+  const a=await helpFixture({where:'save',url:'https://support.test/'}),pa=a.begin();
+  assert.equal(a.editor.prepareOneOffExternalRevert(pa.token,a.click,{persistedSearchTerms:false,focused:true}),null);
+  assert.equal(a.calls.filter(c=>c[0]==='record').length,0);a.editor.close();
+  const b=await helpFixture({helpUrl:'',url:undefined}),pb=b.begin();
+  assert.equal(b.editor.prepareOneOffExternalRevert(pb.token,b.click,{persistedSearchTerms:false,focused:true}),null);b.editor.close();
+  const c=await helpFixture({url:'https://support.test/'});c.result.payload.helpUrl=undefined;c.result.commands=[{name:'dismiss',l10n:{id:'d'}}];
+  const pc=c.begin();assert.equal(c.editor.prepareOneOffExternalRevert(pc.token,c.click,{persistedSearchTerms:false,focused:true}),null);
+  assert.equal(c.calls.filter(x=>x[0]==='record').length,0);c.editor.close();
+  const d=await helpFixture();
+  assert.throws(()=>d.editor.beginResultHelp(1,d.q.id,d.result,d.click,{...d.options,resultAction:{command:'help',input:'x'}}),/help action/i);
+  assert.throws(()=>d.editor.beginResultHelp(1,d.q.id,d.result,d.click,{...d.options,resultAction:{command:'dismiss'}}),/help action/i);
+  assert.throws(()=>d.editor.beginResultHelp(1,d.q.id,d.result,d.click,{...d.options,resultAction:{command:'help',url:'nope'}}),/help action/i);
+  d.editor.close();
+});
+
+test('help rejects stale source and result authority without loading',async()=>{
+  for(const phase of ['restore','dispatch'])for(const action of ['document','edit','typed','payload']){
+    const f=await helpFixture({url:'https://support.test/'}),proposal=f.begin();
+    const revert=f.editor.prepareOneOffExternalRevert(proposal.token,f.click,{persistedSearchTerms:false,focused:true});
+    assert.ok(revert);
+    if(phase==='dispatch')assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    if(action==='document')f.source.browser.browsingContext.currentWindowGlobal={};
+    if(action==='edit')f.editor.cancel();
+    if(action==='typed')f.source.browser.userTypedValue='new edit';
+    if(action==='payload')f.result.payload.extra='changed';
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),false,phase+action);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token)?.attempted??false,false,phase+action);
+    assert.equal(f.source.calls.length,0);f.editor.close();
+  }
+});
+
 test('private opener checks restored source again after preparation and focus callbacks',()=>{
   for(const stage of ['prepare','focus']){
     const f=privateParentFixture(),token=f.p.prepareExternalSearchLoad(f.privateData,f.stateToken);

@@ -10106,10 +10106,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..6b629f1952
+index 0000000000..1fe1ddbdd0
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,4051 @@
+@@ -0,0 +1,4084 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11698,9 +11698,10 @@ index 0000000000..6b629f1952
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
 +    if (!UrlbarQueryModel.isResultActivationEvent(event)) throw new TypeError("Invalid result activation event");
-+    const switching = [UrlbarShared.RESULT_TYPE.TAB_SWITCH, UrlbarShared.RESULT_TYPE.TIP,
-+      UrlbarShared.RESULT_TYPE.DYNAMIC].includes(result?.type);
 +    const action = UrlbarQueryModel.normalizeResultAction(options.resultAction);
++    const switching = [UrlbarShared.RESULT_TYPE.TAB_SWITCH, UrlbarShared.RESULT_TYPE.TIP,
++      UrlbarShared.RESULT_TYPE.DYNAMIC].includes(result?.type) &&
++      !(result.type === UrlbarShared.RESULT_TYPE.TIP && typeof action?.url === "string");
 +    const plan = switching
 +      ? (this.#searchMode === null && !action ? this.describeResultDeferred(revision, queryId, result, options) : null)
 +      : this.describeResultNavigation(revision, queryId, result, event, options);
@@ -11799,7 +11800,8 @@ index 0000000000..6b629f1952
 +    const switching = plan.kind === "tab-switch" || plan.kind === "terminal";
 +    if (this.#searchMode !== null || (!switching && !UrlbarQuerySession.isExternalUrlPlan(plan, result)) ||
 +        !this.#queries.ownsVisibleResult(queryId, result)) return null;
-+    const input = this.describeResultInput(this.#edit.revision, queryId, result);
++    const input = this.describeResultInput(this.#edit.revision, queryId, result,
++      { resultAction: plan.resultAction ?? null });
 +    if (typeof input.value !== "string") return null;
 +    const facts = Object.freeze({ selectedTabIsEmpty: options.selectedTabIsEmpty,
 +      originalUntrimmedValue: options.originalUntrimmedValue, searchString: this.#typedText, searchMode: null,
@@ -11985,6 +11987,35 @@ index 0000000000..6b629f1952
 +    this.#check();
 +    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing) throw new Error("Stale editor navigation");
 +    return this.#queries.describeResultNavigation(queryId, result, event, { ...options, searchString: this.#typedText });
++  }
++
++  /** Begin Help for a visible result: record, restore the source, then load its URL once. */
++  beginResultHelp(revision, queryId, result, event, options = {}) {
++    this.#check();
++    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing || this.#hiddenResults ||
++        this.#searchMode !== null || !this.#queries.ownsVisibleResult(queryId, result) ||
++        !UrlbarQueryModel.isResultActivationEvent(event)) return null;
++    const action = UrlbarQueryModel.normalizeHelpAction(options.resultAction);
++    const facts = Object.freeze({ selectedTabIsEmpty: options.selectedTabIsEmpty,
++      originalUntrimmedValue: options.originalUntrimmedValue, searchString: this.#typedText, searchMode: null,
++      isHandoff: options.isHandoff ?? false, persistedSearchTerms: options.persistedSearchTerms ?? false,
++      resultAction: action });
++    const external = { receipt: Object.freeze({ queryId, engineId: null, navigation: Object.freeze({ kind: "help" }) }),
++      result, help: true, acknowledged: true, engineName: undefined, payload: structuredClone(result.payload), facts,
++      edit: this.#edit, mode: this.#searchMode, generation: this.#selectionGeneration, phase: "input", load: null };
++    this.#discardExternalNavigationActivation();
++    this.#closeRequest = this.#selectionRequest = this.#resultPreview = this.#modeApplication = null;
++    this.#modeRequery = this.#modeStateReady = this.#searchCommandRequest = this.#searchCommandRequery = null;
++    this.#modeRestoreRequest = this.#modeExitRequest = this.#modeExitRequery = null;
++    this.#navigationWrite = this.#navigationReady = this.#navigationRecovery = this.#navigationActivation = null;
++    this.#oneOffCommand = null;
++    this.#aliasModeActivation = null;
++    this.#externalNavigationActivation = external;
++    this.#completion = this.#autofill = this.#placeholder = null;
++    external.proposal = Object.freeze({ token: Object.freeze({}), phase: "input", value: this.#edit.text, searchMode: null,
++      selectionStart: this.#edit.selectionStart, selectionEnd: this.#edit.selectionEnd,
++      selectionDirection: this.#edit.selectionDirection, pageProxyValid: false });
++    return external.proposal;
 +  }
 +
 +  /** Record a menu command on a visible result; the host supplies the validated command descriptor. */
@@ -12421,7 +12452,9 @@ index 0000000000..6b629f1952
 +      { reason: "external-result-input", token, queryId: pending.receipt.queryId, edit: pending.edit }) : null;
 +    const state = this.#queries.commitResultInputState({ persistedSearchTerms }, current, notify);
 +    if (!state?.applied || !current()) return null;
-+    pending.load = pending.switching
++    pending.load = pending.help
++      ? this.#queries.prepareExternalHelp(pending.receipt.queryId, pending.result, event, pending.facts, state.stateToken, current)
++      : pending.switching
 +      ? this.#queries.prepareExternalDeferredActivation(pending.receipt.queryId, pending.result, event,
 +        { ...pending.facts, searchString: pending.facts.searchString }, pending.receipt.navigation, state.stateToken, current)
 +      : this.#queries.prepareExternalResultNavigation(pending.receipt.queryId, pending.result, event,
@@ -14163,10 +14196,10 @@ index 0000000000..6b629f1952
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..da06b0fa3a
+index 0000000000..bf6dfd9dcd
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1998 @@
+@@ -0,0 +1,2056 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14486,9 +14519,13 @@ index 0000000000..da06b0fa3a
 +    if (typeof originalUntrimmedValue !== "string") throw new TypeError("Missing untrimmed input fact");
 +    const opening = this.describeResultOpenPolicy(queryId, result, event, { selectedTabIsEmpty, resultAction });
 +    if (this.#controller.isCanonizeKeyboardEvent(event)) return null;
-+    if (![UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.KEYWORD, UrlbarShared.RESULT_TYPE.SEARCH].includes(result.type) ||
-+        result.payload?.providesSearchMode) return null;
-+    const request = UrlbarShared.getLoadRequestFromResult(result);
++    const actionUrl = opening.resultAction?.url ?? null;
++    const tipButtonLoad = actionUrl !== null && result.type === UrlbarShared.RESULT_TYPE.TIP;
++    if (actionUrl !== null && !tipButtonLoad) return null;
++    if ((!tipButtonLoad && ![UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.KEYWORD,
++        UrlbarShared.RESULT_TYPE.SEARCH].includes(result.type)) || result.payload?.providesSearchMode) return null;
++    const request = tipButtonLoad ? { urlLoad: { url: actionUrl, postData: null } }
++      : UrlbarShared.getLoadRequestFromResult(result);
 +    if (!request) return null;
 +    const policy = UrlbarQueryModel.resultLoadPolicy(result, request, originalUntrimmedValue);
 +    if (!this.ownsResult(queryId, result) || !this.#controller.resultsOpen ||
@@ -14553,7 +14590,7 @@ index 0000000000..da06b0fa3a
 +
 +  /** Primary result engagement facts only; no recording or activation authority. */
 +  describeResultEngagement(queryId, result, { searchString, searchMode = null,
-+    isHandoff = false, persistedSearchTerms = false } = {}) {
++    isHandoff = false, persistedSearchTerms = false, resultAction = null } = {}) {
 +    if (!this.ownsResult(queryId, result) || !this.#controller.resultsOpen ||
 +        !this.#controller.visibleResults.includes(result)) throw new Error("Stale engagement result");
 +    if (this.#context.sapName !== "urlbar") throw new Error("Independent engagement requires urlbar SAP");
@@ -14566,8 +14603,10 @@ index 0000000000..da06b0fa3a
 +    const visibleResults = Object.freeze([...this.#controller.visibleResults]);
 +    if (!this.ownsResult(queryId, result) || !this.#controller.resultsOpen ||
 +        !this.#controller.visibleResults.includes(result)) throw new Error("Stale engagement result");
++    const action = resultAction ? Object.freeze({ ...resultAction }) : null;
 +    return Object.freeze({ details: Object.freeze({ result, searchString, searchMode: mode,
-+      selType, searchSource, windowMode: this.#context.isPrivate ? "private" : "classic" }),
++      selType, searchSource, windowMode: this.#context.isPrivate ? "private" : "classic",
++      ...(action ? { resultAction: action } : {}) }),
 +      state: Object.freeze({ engagementData: Object.freeze({ searchMode: mode, visibleResults,
 +        viewIsOpen: true, searchSource }), smartbarData: Object.freeze({}) }) });
 +  }
@@ -14726,7 +14765,9 @@ index 0000000000..da06b0fa3a
 +    const params = plan?.openParams;
 +    if (plan?.where !== "window" || !params || params.avoidBrowserFocus || plan.resetSelection !== true) return false;
 +    const openIn = plan.resultAction?.openIn;
-+    if (params.forceForeground === true) return !params.private && !plan.resultAction;
++    if (params.forceForeground === true) {
++      return !params.private && (!plan.resultAction || (allowAction && typeof plan.resultAction.url === "string"));
++    }
 +    return allowAction && params.forceForeground === false &&
 +      (openIn === "window" ? !params.private : openIn === "private-window" && params.private === true);
 +  }
@@ -14736,7 +14777,8 @@ index 0000000000..da06b0fa3a
 +    return (UrlbarQuerySession.isExternalTabPlan(plan, { allowAction: true }) ||
 +        UrlbarQuerySession.isExternalWindowPlan(plan, { allowAction: true })) &&
 +      plan.revertBeforeLoad === true && plan.editorValue === undefined &&
-+      [UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.KEYWORD].includes(result?.type) &&
++      ([UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.KEYWORD].includes(result?.type) ||
++        (result?.type === UrlbarShared.RESULT_TYPE.TIP && typeof plan.resultAction?.url === "string")) &&
 +      !result.payload?.providesSearchMode && !result.payload?.inPrivateWindow;
 +  }
 +
@@ -14840,10 +14882,14 @@ index 0000000000..da06b0fa3a
 +   * their engagement callbacks, and the session ends unless Firefox says it is ongoing.
 +   */
 +  recordResultCommandEngagement(queryId, result, event, facts, resultAction, isCurrent) {
++    return this.#recordCommand(queryId, result, event, facts,
++      UrlbarQueryModel.normalizeResultCommand(resultAction), isCurrent, null);
++  }
++
++  #recordCommand(queryId, result, event, facts, action, isCurrent, afterRecord) {
 +    this.#check();
 +    if (typeof isCurrent !== "function") throw new TypeError("Missing command scope check");
 +    if (!UrlbarQueryModel.isResultActivationEvent(event)) throw new TypeError("Invalid result command event");
-+    const action = UrlbarQueryModel.normalizeResultCommand(resultAction);
 +    if (!this.#engagementActive || this.#endingEngagement || !this.#context.browserId || !isCurrent() ||
 +        !this.ownsResult(queryId, result) || !this.#controller.resultsOpen ||
 +        !this.#controller.visibleResults.includes(result) ||
@@ -14861,6 +14907,7 @@ index 0000000000..da06b0fa3a
 +      this.#controller.engagementEvent.record(event, details, description.state);
 +      ongoing = !!details.isSessionOngoing;
 +      recorded = true;
++      afterRecord?.();
 +    } finally {
 +      this.#endingEngagement = false;
 +      if (ongoing && current()) this.#engagementActive = true;
@@ -14873,6 +14920,49 @@ index 0000000000..da06b0fa3a
 +      managed = true;
 +    }
 +    return Object.freeze({ recorded: true, sessionOngoing: ongoing, command: action.command, openedPreferences: managed });
++  }
++
++  /**
++   * Help: record the command, then open its URL in a tab or window after the source
++   * is restored, with the same pinned capability as other external loads.
++   */
++  prepareExternalHelp(queryId, result, event, options, sourceStateToken, isEditorCurrent) {
++    this.#check();
++    const action = UrlbarQueryModel.normalizeHelpAction(options.resultAction);
++    const url = typeof result.payload?.helpUrl === "string" && result.payload.helpUrl
++      ? result.payload.helpUrl : action.url;
++    if (this.#context.isPrivate || !this.#engagementActive || this.#endingEngagement || !this.#context.browserId ||
++        typeof url !== "string" || !URL.parse(url) || !UrlbarResultActions.advertisedCommands(result).has("help") ||
++        !UrlbarQueryModel.isResultActivationEvent(event)) return null;
++    let where = this.#controller.whereToOpen(event, { selectedTabIsEmpty: options.selectedTabIsEmpty });
++    if (where === "current") where = "tab";
++    if (where !== "tab" && where !== "window") return null;
++    const plan = UrlbarQueryModel.navigationPlan({ loadRequest: { urlLoad: { url, postData: null } }, where,
++      params: { allowInheritPrincipal: false, private: false, forceForeground: false, avoidBrowserFocus: false },
++      sapName: this.#context.sapName, isPrivate: false });
++    if (!plan.revertBeforeLoad || !plan.resetSelection) return null;
++    const payload = structuredClone(result.payload), query = this.#query;
++    const parent = this.#controller.parentController;
++    const current = () => !this.#closed && this.#isCurrent() && isEditorCurrent() &&
++      UrlbarShared.deepEqual(result.payload, payload) && isEditorCurrent();
++    const queryCurrent = () => current() && this.#query === query && this.ownsResult(queryId, result) &&
++      this.#controller.resultsOpen && this.#controller.visibleResults.includes(result);
++    if (!queryCurrent()) return null;
++    const token = parent.prepareExternalUrlLoad({ loadRequest: { urlLoad: { url, postData: null } }, where,
++      params: plan.openParams, browserId: this.#context.browserId, userTypedValue: options.searchString }, sourceStateToken);
++    if (!token) return null;
++    let recovery = null;
++    try {
++      const recorded = this.#recordCommand(queryId, result, event, options, action, queryCurrent, () => {
++        if (queryCurrent()) recovery = parent.prepareExternalSourceRevert(token);
++      });
++      if (!recorded || !recovery || !current()) return null;
++      const receipt = Object.freeze({ token: Object.freeze({}), recovery });
++      this.#externalResultLoads.set(receipt, { token, parent, current, result, used: false });
++      return receipt;
++    } finally {
++      if (!recovery || !current()) parent.discardCurrentLoad(token);
++    }
 +  }
 +
 +  /** Alias-mode engagement keeps the query alive for the subsequent mode setter. */
@@ -14937,7 +15027,8 @@ index 0000000000..da06b0fa3a
 +    if (!this.#engagementActive || this.#endingEngagement) return false;
 +    if (!UrlbarQueryModel.isResultActivationEvent(event)) throw new TypeError("Invalid result engagement event");
 +    const terminalTypes = terminalType !== null ? [terminalType]
-+      : [UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.SEARCH, UrlbarShared.RESULT_TYPE.KEYWORD];
++      : [UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.SEARCH, UrlbarShared.RESULT_TYPE.KEYWORD,
++        ...(typeof options?.resultAction?.url === "string" ? [UrlbarShared.RESULT_TYPE.TIP] : [])];
 +    if (!terminalTypes.includes(result?.type) || result.payload?.providesSearchMode) {
 +      throw new Error("Unsupported terminal engagement");
 +    }
@@ -16364,10 +16455,10 @@ index 0000000000..ed9a06b8c0
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQueryModel.mjs b/browser/components/urlbar/content/UrlbarQueryModel.mjs
 new file mode 100644
-index 0000000000..ce760c92ec
+index 0000000000..a0b709376a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQueryModel.mjs
-@@ -0,0 +1,325 @@
+@@ -0,0 +1,343 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16531,9 +16622,17 @@ index 0000000000..ce760c92ec
 +    if (action === null || action === undefined) return null;
 +    if (typeof action !== "object") throw new TypeError("Invalid result action");
 +    const unsupported = Object.keys(action).filter(key =>
-+      !["openIn", "userContextId"].includes(key) && action[key] !== undefined);
++      !["openIn", "userContextId", "url", "name"].includes(key) && action[key] !== undefined);
 +    if (unsupported.length) throw new TypeError("Unsupported result action");
-+    const { openIn, userContextId } = action;
++    const { openIn, userContextId, url, name } = action;
++    if (url !== undefined) {
++      if (openIn !== undefined || userContextId !== undefined || typeof url !== "string" ||
++          url.length > 8192 || !URL.parse(url) || (name !== undefined && typeof name !== "string")) {
++        throw new TypeError("Invalid result action URL");
++      }
++      return Object.freeze(name === undefined ? { url } : { url, name });
++    }
++    if (name !== undefined) throw new TypeError("Unsupported result action");
 +    if (!["tab", "container-tab", "window", "private-window"].includes(openIn)) {
 +      throw new TypeError("Invalid result action destination");
 +    }
@@ -16545,6 +16644,16 @@ index 0000000000..ce760c92ec
 +    }
 +    if (userContextId !== undefined) throw new TypeError("Unexpected result action container");
 +    return Object.freeze({ openIn });
++  }
++
++  /** Validate the help command fact: the host supplies the URL Firefox's menu computed. */
++  static normalizeHelpAction(action) {
++    if (!action || typeof action !== "object") throw new TypeError("Invalid help action");
++    const unsupported = Object.keys(action).filter(key => !["command", "url", "name"].includes(key) && action[key] !== undefined);
++    if (unsupported.length || action.command !== "help" ||
++        (action.url !== undefined && (typeof action.url !== "string" || action.url.length > 8192 || !URL.parse(action.url))) ||
++        (action.name !== undefined && typeof action.name !== "string")) throw new TypeError("Invalid help action");
++    return Object.freeze({ command: "help", ...(action.url === undefined ? {} : { url: action.url }) });
 +  }
 +
 +  /**
