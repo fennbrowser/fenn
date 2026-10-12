@@ -9566,6 +9566,84 @@ test('help rejects stale source and result authority without loading',async()=>{
   }
 });
 
+async function restartFixture(calls){
+  const f=await commandFixture();
+  f.result.commands=[{name:'opt_in',l10n:{id:'o'}},{name:'dismiss',l10n:{id:'d'}}];
+  f.result.payload.isBlockable=false;
+  const port=f.parent.child.restartPort;
+  f.parent.engagementEvent.record=(_e,details)=>{details.isSessionOngoing=true;calls(port,details);};
+  const observe=(edit,patch={})=>({text:edit.text,selectionStart:edit.selectionStart,selectionEnd:edit.selectionEnd,
+    selectionDirection:edit.selectionDirection,searchMode:null,...patch});
+  const state={browser:{userContextId:0,currentPage:'https://source.test/'},searchMode:null};
+  return {...f,port,observe,state,click:{type:'click',button:0,timeStamp:3}};
+}
+const restartRequests=f=>f.requests.filter(r=>r.kind==='restart-query');
+
+test('provider query restarts become one editor proposal that starts a query only after host acknowledgment',async()=>{
+  const f=await restartFixture((port)=>{port.startQuery({allowAutofill:false});});
+  const startedBefore=f.parent.started.length,oldId=f.q.id;
+  assert.equal(f.run({command:'opt_in'}).recorded,true);
+  const [request]=restartRequests(f);
+  assert.equal(restartRequests(f).length,1);
+  assert.equal(request.startQuery,true);assert.equal(request.allowAutofill,false);assert.equal(request.value,null);
+  assert.equal(f.parent.started.length,startedBefore);
+  assert.equal(f.editor.getRestartRequest(request.token),request);
+  assert.equal(await f.editor.acknowledgeRestartQuery(request.token,f.observe(request.edit,{text:'other'}),f.state),null);
+  assert.equal(f.editor.getRestartRequest(request.token),request);
+  const query=await f.editor.acknowledgeRestartQuery(request.token,f.observe(request.edit),f.state);
+  assert.ok(query);assert.notEqual(query.id,oldId);
+  assert.equal(f.parent.started.length,startedBefore+1);assert.equal(f.parent.started.at(-1).allowAutofill,false);
+  assert.equal(f.parent.started.at(-1).searchString,'typed');
+  assert.equal(await f.editor.acknowledgeRestartQuery(request.token,f.observe(request.edit),f.state),null);
+  f.editor.close();
+});
+
+test('autofill-style restarts require the host to write the value first and then query it',async()=>{
+  const f=await restartFixture(port=>{port.setValue('typed words');port.startQuery({allowAutofill:false});});
+  f.run({command:'opt_in'});
+  const [request]=restartRequests(f);
+  assert.equal(request.value,'typed words');assert.equal(request.startQuery,true);
+  assert.equal(await f.editor.acknowledgeRestartQuery(request.token,f.observe(request.edit),f.state),null);
+  const wrong=f.observe(request.edit,{text:'typed words',selectionStart:0,selectionEnd:0});
+  assert.equal(await f.editor.acknowledgeRestartQuery(request.token,wrong,f.state),null);
+  const ok=f.observe(request.edit,{text:'typed words',selectionStart:11,selectionEnd:11,selectionDirection:'none'});
+  const query=await f.editor.acknowledgeRestartQuery(request.token,ok,f.state);
+  assert.ok(query);assert.equal(f.editor.snapshot.text,'typed words');
+  assert.equal(f.parent.started.at(-1).searchString,'typed words');f.editor.close();
+});
+
+test('value-only restarts update the editor without a query and unsupported requests are never acknowledged',async()=>{
+  const f=await restartFixture(port=>{port.setValue('replaced');});
+  const before=f.parent.started.length;f.run({command:'opt_in'});
+  const [request]=restartRequests(f);
+  const out=await f.editor.acknowledgeRestartQuery(request.token,f.observe(request.edit,{text:'replaced',selectionStart:8,selectionEnd:8}),f.state);
+  assert.deepEqual({...out},{applied:true,query:null});assert.equal(f.editor.snapshot.text,'replaced');
+  assert.equal(f.parent.started.length,before);f.editor.close();
+  for(const call of [port=>port.startQuery({searchMode:{engineName:'E'}}),port=>port.startQuery({allowAutofill:'yes'}),
+    port=>port.setValue(5),port=>port.search('x',{searchEngine:{name:'E',aliases:['@e']}}),port=>port.search('x',{})]){
+    const g=await restartFixture(call);g.run({command:'opt_in'});
+    const [bad]=restartRequests(g);
+    assert.ok(bad);assert.equal(g.editor.getRestartRequest(bad.token),null);
+    assert.equal(await g.editor.acknowledgeRestartQuery(bad.token,g.observe(bad.edit),g.state),null);g.editor.close();
+  }
+});
+
+test('restart ports only record during an ending engagement and proposals die with stale editor state',async()=>{
+  const f=await restartFixture(port=>{port.startQuery({});});
+  await f.port.startQuery({allowAutofill:false});
+  assert.equal(restartRequests(f).length,0);
+  f.run({command:'opt_in'});
+  const [request]=restartRequests(f);
+  f.editor.select(1,1,1);
+  assert.equal(f.editor.getRestartRequest(request.token),null);
+  assert.equal(await f.editor.acknowledgeRestartQuery(request.token,f.observe(f.editor.snapshot),f.state),null);
+  f.editor.close();
+  const g=await restartFixture(port=>{port.startQuery({});});
+  g.run({command:'opt_in'});const [late]=restartRequests(g);g.editor.close();
+  await assert.rejects(()=>g.editor.acknowledgeRestartQuery(late.token,g.observe(late.edit),g.state));
+  await g.port.startQuery({});assert.equal(restartRequests(g).length,1);
+});
+
 test('private opener checks restored source again after preparation and focus callbacks',()=>{
   for(const stage of ['prepare','focus']){
     const f=privateParentFixture(),token=f.p.prepareExternalSearchLoad(f.privateData,f.stateToken);

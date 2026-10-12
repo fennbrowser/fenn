@@ -935,7 +935,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..47d07e8a56 100644
+index ba254af0c6..ccf60b93fa 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -965,7 +965,7 @@ index ba254af0c6..47d07e8a56 100644
  
    // The owning JSWindowActor, used to resolve the chrome window parent-side
    // (see `browserWindow`). Unlike the input and view, the browser window is a
-@@ -171,6 +184,12 @@ export class UrlbarParentController {
+@@ -171,13 +184,19 @@ export class UrlbarParentController {
      return AppConstants.platform;
    }
  
@@ -978,6 +978,14 @@ index ba254af0c6..47d07e8a56 100644
    /**
     * The input or an object that can forward calls to the input.
     *
+    * @type {UrlbarInputProxy | UrlbarInput}
+    */
+   get input() {
+-    return this.#child?.input;
++    return this.#child?.restartPort ?? this.#child?.input;
+   }
+ 
+   /**
 @@ -607,9 +626,15 @@ export class UrlbarParentController {
     *   not added to form history. If this is false but the current window
     *   is private, it's not added either.
@@ -4285,7 +4293,7 @@ index e5dcc2c923..79a0c0f6b8 100644
        let event = new UIEvent("input", {
          bubbles: true,
 diff --git a/browser/components/urlbar/content/UrlbarChildController.mjs b/browser/components/urlbar/content/UrlbarChildController.mjs
-index b679c5cf1b..f02f564770 100644
+index b679c5cf1b..1f7f6b848d 100644
 --- a/browser/components/urlbar/content/UrlbarChildController.mjs
 +++ b/browser/components/urlbar/content/UrlbarChildController.mjs
 @@ -8,6 +8,7 @@ import { UrlbarChildTelemetry } from "chrome://browser/content/urlbar/UrlbarChil
@@ -4313,10 +4321,11 @@ index b679c5cf1b..f02f564770 100644
    get logger() {
      if (!UrlbarChildController.#logger) {
        UrlbarChildController.#logger = UrlbarShared.getLogger({
-@@ -62,6 +73,10 @@ export class UrlbarChildController {
+@@ -62,6 +73,11 @@ export class UrlbarChildController {
    #parentController;
  
    #input;
++  #restartPort = null;
 +  #context;
 +  #destroyed = false;
 +  #isCurrent = () => true;
@@ -4324,7 +4333,7 @@ index b679c5cf1b..f02f564770 100644
  
    /** @type {UrlbarView} */
    #view = null;
-@@ -76,19 +91,7 @@ export class UrlbarChildController {
+@@ -76,19 +92,7 @@ export class UrlbarChildController {
  
    #userSelectionBehavior = /** @type {"arrow"|"tab"|"none"} */ ("none");
  
@@ -4345,7 +4354,7 @@ index b679c5cf1b..f02f564770 100644
  
    /**
     * The content-side engagement-telemetry collector, created lazily on the
-@@ -100,27 +103,64 @@ export class UrlbarChildController {
+@@ -100,27 +104,71 @@ export class UrlbarChildController {
  
    /**
     * @param {object} options
@@ -4375,6 +4384,7 @@ index b679c5cf1b..f02f564770 100644
 +      throw new Error("Specify input or context, not both");
 +    }
 +    this.#input = options.input ?? null;
++    this.#restartPort = options.restartPort ?? null;
 +    if (!this.#input && options.isCurrent) this.#isCurrent = options.isCurrent;
 +    const messagePath = this.#input && UrlbarContentUtils.usesMessagePath();
 +    const context = options.context ?? {
@@ -4414,6 +4424,12 @@ index b679c5cf1b..f02f564770 100644
 +    });
    }
  
++  /**
++   * Provider-facing request channel of an independent consumer. It can only record a
++   * restart request; it is not an input and exposes no editor or view state.
++   */
++  get restartPort() { return this.#restartPort; }
++
 +  get sapName() { return this.#context.sapName; }
 +  get isPrivate() { return this.#context.isPrivate; }
 +
@@ -4422,7 +4438,7 @@ index b679c5cf1b..f02f564770 100644
      return this.#input;
    }
  
-@@ -129,10 +169,11 @@ export class UrlbarChildController {
+@@ -129,10 +177,11 @@ export class UrlbarChildController {
     * browser window; for a content-process one it's the content window.
     */
    get window() {
@@ -4435,7 +4451,7 @@ index b679c5cf1b..f02f564770 100644
      return this.#view;
    }
  
-@@ -180,13 +221,14 @@ export class UrlbarChildController {
+@@ -180,13 +229,14 @@ export class UrlbarChildController {
    }
  
    setView(view) {
@@ -4451,7 +4467,7 @@ index b679c5cf1b..f02f564770 100644
      return this.#parentController.resolveFallbackNavigation(details);
    }
  
-@@ -232,6 +274,17 @@ export class UrlbarChildController {
+@@ -232,6 +282,17 @@ export class UrlbarChildController {
     *   context.
     */
    notify(notification, ...params) {
@@ -4469,7 +4485,7 @@ index b679c5cf1b..f02f564770 100644
      // Drop the results and the end of a query nobody is waiting for anymore.
      // Its end, read against results the listeners never saw, would tell the
      // view that the query produced nothing: the view would clear its rows and
-@@ -242,7 +295,7 @@ export class UrlbarChildController {
+@@ -242,7 +303,7 @@ export class UrlbarChildController {
        (notification === UrlbarShared.NOTIFICATIONS.QUERY_FIRST_RESULT ||
          notification === UrlbarShared.NOTIFICATIONS.QUERY_RESULTS ||
          notification === UrlbarShared.NOTIFICATIONS.QUERY_FINISHED) &&
@@ -4478,7 +4494,7 @@ index b679c5cf1b..f02f564770 100644
      ) {
        return;
      }
-@@ -286,68 +339,16 @@ export class UrlbarChildController {
+@@ -286,68 +347,16 @@ export class UrlbarChildController {
     *   Resolves with the finished context, or with the untouched one if the
     *   query was cancelled or superseded while waiting for the engine store.
     */
@@ -4554,7 +4570,7 @@ index b679c5cf1b..f02f564770 100644
    }
  
    /**
-@@ -362,7 +363,8 @@ export class UrlbarChildController {
+@@ -362,7 +371,8 @@ export class UrlbarChildController {
     *   The context of the query being discarded.
     */
    discardResults(queryContext) {
@@ -4564,7 +4580,7 @@ index b679c5cf1b..f02f564770 100644
      this.notify(UrlbarShared.NOTIFICATIONS.QUERY_CANCELLED, queryContext);
    }
  
-@@ -767,7 +769,7 @@ export class UrlbarChildController {
+@@ -767,7 +777,7 @@ export class UrlbarChildController {
     *   Whether the event is a KeyboardEvent that triggers canonization.
     */
    isCanonizeKeyboardEvent(event) {
@@ -4573,7 +4589,7 @@ index b679c5cf1b..f02f564770 100644
        return false;
      }
      if (!UrlbarShared.isInstance(event, KeyboardEvent)) {
-@@ -792,9 +794,16 @@ export class UrlbarChildController {
+@@ -792,9 +802,16 @@ export class UrlbarChildController {
     *
     * @param {KeyboardEvent | MouseEvent} event
     *   The event that triggered the opening.
@@ -4591,7 +4607,7 @@ index b679c5cf1b..f02f564770 100644
      let isKeyboardEvent = UrlbarShared.isInstance(event, KeyboardEvent);
      let reuseEmpty = isKeyboardEvent;
      /** @type {"current" | "tabshifted" | "tab" | "save" | "window"} */
-@@ -814,7 +823,7 @@ export class UrlbarChildController {
+@@ -814,7 +831,7 @@ export class UrlbarChildController {
        where = UrlbarContentUtils.whereToOpenLink(event);
      }
      let openInTabPref =
@@ -4600,7 +4616,7 @@ index b679c5cf1b..f02f564770 100644
          ? UrlbarPrefs.get("browser.search.openintab")
          : UrlbarPrefs.get("openintab");
      if (openInTabPref) {
-@@ -830,7 +839,7 @@ export class UrlbarChildController {
+@@ -830,7 +847,7 @@ export class UrlbarChildController {
      if (
        where == "tab" &&
        reuseEmpty &&
@@ -4609,7 +4625,7 @@ index b679c5cf1b..f02f564770 100644
      ) {
        where = "current";
      }
-@@ -879,10 +888,22 @@ export class UrlbarChildController {
+@@ -879,10 +896,22 @@ export class UrlbarChildController {
      return this.#parentController.maybeInitEngineStore();
    }
  
@@ -10106,10 +10122,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..1fe1ddbdd0
+index 0000000000..2df6f5df2a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,4084 @@
+@@ -0,0 +1,4135 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10204,6 +10220,7 @@ index 0000000000..1fe1ddbdd0
 +  #activationSelecting = null;
 +  #hiddenResults = null;
 +  #onPresentationRequest;
++  #restartRequest = null;
 +  #onModeStateChanged;
 +
 +  constructor({ context, isCurrent, onUpdate, onPresentationRequest = null, onModeStateChanged = null }) {
@@ -13975,10 +13992,60 @@ index 0000000000..1fe1ddbdd0
 +      this.#onPresentationRequest?.(Object.freeze({ ...request, edit }));
 +      return;
 +    }
++    if (request.kind === "restart-query") {
++      if (edit.composing) return;
++      const proposal = Object.freeze({ ...request, token: Object.freeze({}), edit });
++      this.#restartRequest = proposal;
++      this.#onPresentationRequest?.(proposal);
++      return;
++    }
 +    if (request.kind !== "close" ||
 +        (edit.composing && !this.#canExposeComposition(edit.revision, request.queryId))) return;
 +    const proposal = this.#prepareClose(request);
 +    if (proposal) this.#onPresentationRequest?.(proposal);
++  }
++
++  /** Validate a provider restart proposal against the live editor; tokens stay in JS. */
++  getRestartRequest(token) {
++    this.#check();
++    const request = this.#restartRequest;
++    return request && request.token === token && request.edit === this.#edit && !this.#edit.composing &&
++      !request.unsupported && request.search === null ? request : null;
++  }
++
++  /**
++   * Apply a provider-requested value and/or start its requested query once the host has
++   * written the value. Search-mode restarts and unsupported options are never acknowledged.
++   */
++  async acknowledgeRestartQuery(token, observation, state) {
++    this.#check();
++    const request = this.getRestartRequest(token);
++    if (!request || (!request.startQuery && request.value === null)) return null;
++    const text = request.value ?? request.edit.text;
++    const start = request.value === null ? request.edit.selectionStart : text.length;
++    const end = request.value === null ? request.edit.selectionEnd : text.length;
++    const direction = request.value === null ? request.edit.selectionDirection : "none";
++    if (observation?.text !== text || observation.selectionStart !== start || observation.selectionEnd !== end ||
++        observation.selectionDirection !== direction ||
++        !UrlbarShared.deepEqual(observation.searchMode ?? null, this.#searchMode) ||
++        this.getRestartRequest(token) !== request) return null;
++    if (request.startQuery && (!state || !UrlbarShared.deepEqual(state.searchMode ?? null, this.#searchMode))) {
++      throw new Error("Restart query state does not match the editor mode");
++    }
++    this.#restartRequest = null;
++    const searchMode = this.#searchMode;
++    this.cancel();
++    if (this.#closed || !this.#isCurrent()) return null;
++    this.#autofill = null;
++    this.#placeholder = null;
++    this.#typedText = text;
++    this.#edit = Object.freeze({ ...this.#edit, text, selectionStart: start, selectionEnd: end,
++      selectionDirection: direction, selectionRevision: this.#edit.selectionRevision + 1 });
++    if (!request.startQuery) return Object.freeze({ applied: true, query: null });
++    const revision = this.#edit.revision, allowAutofill = request.allowAutofill;
++    return this.#queries.query({ ...state, searchMode }, { searchString: text, allowAutofill }, update => {
++      this.#publishQueryUpdate(update, { revision, text, allowAutofill });
++    });
 +  }
 +
 +  #prepareClose(request) {
@@ -14196,10 +14263,10 @@ index 0000000000..1fe1ddbdd0
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..bf6dfd9dcd
+index 0000000000..847af804ad
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,2056 @@
+@@ -0,0 +1,2107 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14233,6 +14300,7 @@ index 0000000000..bf6dfd9dcd
 +  #frozen = null;
 +  #finishState = null;
 +  #onPresentationRequest;
++  #restartRequest = null;
 +  #removedIds = new Set();
 +  #activationCleanup = new Set();
 +  #selectionRequest = null;
@@ -14267,6 +14335,11 @@ index 0000000000..bf6dfd9dcd
 +    this.#controller = new UrlbarChildController({
 +      context: this.#context,
 +      isCurrent: () => !this.#closed && this.#isCurrent(),
++      restartPort: Object.freeze({
++        startQuery: options => this.#requestRestart({ kind: "query", options }),
++        setValue: value => this.#requestRestart({ kind: "value", value }),
++        search: (value, options) => this.#requestRestart({ kind: "search", value, options }),
++      }),
 +    });
 +    this.#controller.addListener({
 +      onFirstResult: query => this.#update("first-result", query),
@@ -14301,6 +14374,51 @@ index 0000000000..bf6dfd9dcd
 +        }
 +      },
 +    });
++  }
++
++  /**
++   * Providers restart queries from engagement callbacks through the controller's
++   * input. Here that only records a request, valid while an engagement is ending,
++   * which the editor surfaces as a proposal for the host to acknowledge.
++   */
++  #requestRestart(call) {
++    if (this.#closed || !this.#endingEngagement || !this.#isCurrent()) return Promise.resolve();
++    const pending = this.#restartRequest ?? { queryId: this.#query?.id ?? null, value: null, startQuery: false,
++      allowAutofill: true, search: null, unsupported: false };
++    const text = value => typeof value === "string" && value.length <= 4096;
++    if (call.kind === "value") {
++      if (text(call.value)) pending.value = call.value; else pending.unsupported = true;
++    } else if (call.kind === "query") {
++      const options = call.options ?? {};
++      const known = ["allowAutofill", "searchString", "event"];
++      if (Object.keys(options).some(key => !known.includes(key) && options[key] !== undefined) ||
++          (options.allowAutofill !== undefined && typeof options.allowAutofill !== "boolean") ||
++          (options.searchString !== undefined && !text(options.searchString))) {
++        pending.unsupported = true;
++      } else {
++        pending.startQuery = true;
++        if (options.allowAutofill !== undefined) pending.allowAutofill = options.allowAutofill;
++        if (options.searchString !== undefined) pending.value = options.searchString;
++      }
++    } else {
++      const engine = call.options?.searchEngine;
++      if (text(call.value) && typeof engine?.name === "string") {
++        pending.search = Object.freeze({ value: call.value, engineName: engine.name,
++          aliases: Object.freeze([...(engine.aliases ?? [])].filter(alias => typeof alias === "string")) });
++      } else {
++        pending.unsupported = true;
++      }
++    }
++    this.#restartRequest = pending;
++    return Promise.resolve();
++  }
++
++  #flushRestart() {
++    const request = this.#restartRequest;
++    this.#restartRequest = null;
++    if (request && !this.#closed && this.#isCurrent()) {
++      this.#onPresentationRequest?.(Object.freeze({ kind: "restart-query", ...request }));
++    }
 +  }
 +
 +  #finish(query) {
@@ -14909,7 +15027,7 @@ index 0000000000..bf6dfd9dcd
 +      recorded = true;
 +      afterRecord?.();
 +    } finally {
-+      this.#endingEngagement = false;
++      this.#endingEngagement = false; this.#flushRestart();
 +      if (ongoing && current()) this.#engagementActive = true;
 +      else if (this.#query === query) this.cancel();
 +    }
@@ -14982,7 +15100,7 @@ index 0000000000..bf6dfd9dcd
 +      this.#controller.engagementEvent.record(event, details, description.state);
 +      return current() ? Object.freeze({ recorded: true, sessionOngoing: !!details.isSessionOngoing }) : null;
 +    } finally {
-+      this.#endingEngagement = false;
++      this.#endingEngagement = false; this.#flushRestart();
 +      if (details.isSessionOngoing && current()) this.#engagementActive = true;
 +    }
 +  }
@@ -15117,7 +15235,7 @@ index 0000000000..bf6dfd9dcd
 +      this.#controller.engagementEvent.record(event, { ...description.details }, description.state);
 +      afterRecord?.();
 +    } finally {
-+      this.#endingEngagement = false;
++      this.#endingEngagement = false; this.#flushRestart();
 +      // Provider callbacks can start another query; never cancel its ownership.
 +      if (this.#query === query) this.cancel();
 +    }
@@ -15148,7 +15266,7 @@ index 0000000000..bf6dfd9dcd
 +        windowMode: this.#context.isPrivate ? "private" : "classic",
 +      }, explicitState);
 +    } finally {
-+      this.#endingEngagement = false;
++      this.#endingEngagement = false; this.#flushRestart();
 +      // Provider notifications may have begun another query; do not cancel it.
 +      if (this.#query === query) this.cancel();
 +    }
@@ -15191,7 +15309,7 @@ index 0000000000..bf6dfd9dcd
 +        zeroPrefix = plan.zeroPrefix;
 +      }
 +      return Object.freeze({ discardedEngagement, zeroPrefix, current: current() });
-+    } finally { this.#endingEngagement = false; }
++    } finally { this.#endingEngagement = false; this.#flushRestart(); }
 +  }
 +
 +  /** Drop measurement without recording abandonment or changing the current query. */
@@ -15401,7 +15519,7 @@ index 0000000000..bf6dfd9dcd
 +      this.#controller.engagementEvent.record(event, details, description.engagement.state);
 +      return Object.freeze({ recorderReturned: true, sessionOngoing: !!details.isSessionOngoing, scopeCurrent: current() });
 +    } finally {
-+      this.#endingEngagement = false;
++      this.#endingEngagement = false; this.#flushRestart();
 +      if (details.isSessionOngoing && current()) this.#engagementActive = true;
 +      // Unlike ordinary result activation, do not cancel here: ordered search/load steps remain pending.
 +    }
