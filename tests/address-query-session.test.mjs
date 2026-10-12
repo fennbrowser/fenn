@@ -6383,3 +6383,130 @@ test('one-off query-layer commits reject forged and cross-session plans and cons
   assert.equal(f.session.commitOneOffMode(prepared,...args),null);assert.equal(writes,1);
   other.close();f.session.close();
 });
+
+
+async function oneOffRequeryFixture(options={}){
+  const f=await oneOffModeFixture(options),browser={token:null,typed:f.entry.userTypedValue},writes=[];
+  f.parent.captureIndependentQueryAuthority=(_id,token,typed)=>{
+    const current=()=>browser.token===token&&browser.typed===typed;
+    return current()?current:null;
+  };
+  f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{
+    if(!current()||(facts.expectedStateToken&&browser.token!==facts.expectedStateToken)||browser.typed!==facts.modeEntry.userTypedValue)return null;
+    browser.typed=facts.modeEntry.pageProxyValid?'':facts.modeEntry.hasAutofillPlaceholder&&facts.modeEntry.userTypedValue?
+      facts.modeEntry.userTypedValue:facts.modeEntry.untrimmedValue;
+    browser.token={};writes.push(mode);
+    notify?.({browserId:id,searchMode:mode,userTypedValue:browser.typed,persistedSearchTerms:false});
+    return {applied:true,stateToken:browser.token,userTypedValue:browser.typed};
+  };
+  f.editor.acknowledgeOneOffModeApplication(f.proposal.token,oneOffModeObservation(f.proposal));
+  const receipt=f.editor.commitAcknowledgedOneOffMode(f.proposal.token,{persistedSearchTerms:false});
+  const entry={untrimmedValue:browser.typed,userTypedValue:browser.typed,pageProxyValid:false,hasAutofillPlaceholder:false};
+  const confirmation=f.editor.beginOneOffConfirmation(f.proposal.token,entry);
+  return {...f,browser,writes,receipt,confirmation};
+}
+function oneOffConfirmationObservation(p){return {...p.edit,composing:false,searchMode:p.searchMode,
+  modeEntry:p.modeEntry,pageProxyValid:false,oneOffSelected:false,persistedSearchTerms:false};}
+
+test('current-tab one-off continuation confirms once then dispatches the captured preview query once',async()=>{
+  for(const engine of [false,true])for(const pageValid of [false,true]){
+    const f=await oneOffRequeryFixture({engine,pageValid}),c=f.confirmation;
+    assert.ok(c);assert.equal(c.searchMode.isPreview,false);
+    await assert.rejects(f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:c.searchMode}),/Stale/);
+    f.parent.child.userSelectionBehavior='arrow';
+    assert.equal(f.editor.commitOneOffConfirmation(c.token,oneOffConfirmationObservation(c)).applied,true);
+    assert.equal(f.parent.child.userSelectionBehavior,'arrow');
+    assert.equal(f.editor.commitOneOffConfirmation(c.token,oneOffConfirmationObservation(c)),null);
+    assert.equal(f.parent.started.length,1);assert.deepEqual(f.writes.map(mode=>mode.isPreview),[true,false]);
+    const query=await f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:c.searchMode});
+    assert.equal(query.searchMode.isPreview,true);assert.equal(query.searchMode.entry,'oneoff');
+    assert.equal(query.allowAutofill,!engine);assert.equal(query.searchString,pageValid?'':'typed words');
+    assert.equal(f.parent.started.length,2);assert.equal(f.editor.getOneOffRequery(f.proposal.token),null);
+    await assert.rejects(f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:c.searchMode}),/Stale/);f.editor.close();
+  }
+});
+
+test('one-off confirmation requires exact editor, mode, cleared selection and pre-mode observations',async()=>{
+  const f=await oneOffRequeryFixture(),c=f.confirmation,valid=oneOffConfirmationObservation(c);
+  for(const patch of [{text:'other'},{selectionStart:0},{selectionDirection:'backward'},{composing:true},
+    {pageProxyValid:true},{oneOffSelected:true},{searchMode:{...c.searchMode,isPreview:true}},
+    {modeEntry:{...c.modeEntry,userTypedValue:'other'}}]){
+    assert.equal(f.editor.commitOneOffConfirmation(c.token,{...valid,...patch}),null);
+    assert.equal(f.writes.length,1);
+  }
+  assert.equal(f.editor.commitOneOffConfirmation(c.token,valid).applied,true);f.editor.close();
+});
+
+test('one-off confirmation rejects stale browser receipts, editor and engine policy',async()=>{
+  for(const mutation of ['typed','receipt','caret','engine','policy','close-reopen','scope']){
+    const f=await oneOffRequeryFixture(),c=f.confirmation;
+    if(mutation==='typed')f.browser.typed='newer';
+    if(mutation==='receipt')f.browser.token={};
+    if(mutation==='caret')f.editor.select(1,0,0);
+    if(mutation==='engine')f.parent.child.updateEngineStore('removed',{id:'default'});
+    if(mutation==='policy')f.prefs['scotchBonnet.disableOneOffs']=true;
+    if(mutation==='close-reopen'){f.editor.publishPresentation(1,f.query.id,[],false);f.editor.publishPresentation(1,f.query.id,[],true);}
+    if(mutation==='scope'){f.loseScope();assert.throws(()=>f.editor.commitOneOffConfirmation(c.token,oneOffConfirmationObservation(c)),/scope changed/);}
+    else assert.equal(f.editor.commitOneOffConfirmation(c.token,oneOffConfirmationObservation(c)),null,mutation);
+    assert.equal(f.writes.length,1);f.editor.close();
+  }
+});
+
+test('one-off confirmation consumes before reentrant setters or exceptions',async()=>{
+  for(const failure of [false,true]){
+    const f=await oneOffRequeryFixture(),c=f.confirmation,commit=f.parent.commitIndependentModeState;
+    f.parent.commitIndependentModeState=(...args)=>{
+      assert.equal(f.editor.commitOneOffConfirmation(c.token,oneOffConfirmationObservation(c)),null);
+      if(failure)throw Error('confirmation setter failed');return commit(...args);
+    };
+    if(failure)assert.throws(()=>f.editor.commitOneOffConfirmation(c.token,oneOffConfirmationObservation(c)),/setter failed/);
+    else assert.equal(f.editor.commitOneOffConfirmation(c.token,oneOffConfirmationObservation(c)).applied,true);
+    assert.equal(f.editor.commitOneOffConfirmation(c.token,oneOffConfirmationObservation(c)),null);f.editor.close();
+  }
+});
+
+test('one-off confirmation and dispatch getters cannot replace a newer editor or command',async()=>{
+  const f=await oneOffRequeryFixture(),c=f.confirmation;
+  assert.equal(f.editor.commitOneOffConfirmation(c.token,{...oneOffConfirmationObservation(c),get text(){f.editor.select(1,0,0);return c.edit.text;}}),null);
+  f.editor.close();
+  const g=await oneOffRequeryFixture(),d=g.confirmation;
+  g.editor.commitOneOffConfirmation(d.token,oneOffConfirmationObservation(d));
+  await assert.rejects(g.editor.requeryAfterOneOffMode(g.proposal.token,{get searchMode(){g.editor.select(1,0,0);return d.searchMode;}}),/superseded/);
+  assert.equal(g.parent.started.length,1);g.editor.close();
+});
+
+test('one-off dispatch rechecks browser, editor and engine policy after waiting for engine readiness',async()=>{
+  for(const mutation of ['typed','receipt','caret','policy','engine','none']){
+    const f=await oneOffRequeryFixture(),c=f.confirmation;
+    f.editor.commitOneOffConfirmation(c.token,oneOffConfirmationObservation(c));
+    const store=f.parent.child.engineStore,gate=Promise.withResolvers(),cancel=f.parent.cancelQuery.bind(f.parent);let held=false;
+    f.parent.cancelQuery=()=>{
+      if(!held){held=true;Object.defineProperty(store,'initialized',{value:false,configurable:true});store.init=()=>gate.promise;}
+      return cancel();
+    };
+    const pending=f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:c.searchMode});
+    assert.equal(held,true);assert.equal(f.parent.started.length,1);
+    Object.defineProperty(store,'initialized',{value:true,configurable:true});
+    if(mutation==='typed')f.browser.typed='newer';
+    if(mutation==='receipt')f.browser.token={};
+    if(mutation==='caret')f.editor.select(1,0,0);
+    if(mutation==='policy')f.prefs['scotchBonnet.disableOneOffs']=true;
+    if(mutation==='engine')f.parent.child.updateEngineStore('removed',{id:'default'});
+    gate.resolve();
+    if(mutation==='none'){await pending;assert.equal(f.parent.started.length,2);}
+    else {await assert.rejects(pending,/dispatch authority/);assert.equal(f.parent.started.length,1,mutation);}
+    f.editor.close();
+  }
+});
+
+
+test('one-off continuation rejects cancellation reentry and requires cleared placeholder facts',async()=>{
+  const f=await oneOffRequeryFixture(),c=f.confirmation;
+  assert.equal(f.editor.beginOneOffConfirmation(f.proposal.token,{...c.modeEntry,hasAutofillPlaceholder:true}),null);
+  const replacement=f.editor.beginOneOffConfirmation(f.proposal.token,c.modeEntry);
+  f.editor.commitOneOffConfirmation(replacement.token,oneOffConfirmationObservation(replacement));
+  const cancel=f.parent.cancelQuery.bind(f.parent);
+  f.parent.cancelQuery=()=>{cancel();f.editor.select(1,0,0);};
+  await assert.rejects(f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:replacement.searchMode}),/superseded/);
+  assert.equal(f.parent.started.length,1);f.parent.cancelQuery=cancel;f.editor.close();
+});

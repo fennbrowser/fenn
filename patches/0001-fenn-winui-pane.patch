@@ -9565,10 +9565,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..442af6ad9b
+index 0000000000..970873a08a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2599 @@
+@@ -0,0 +1,2697 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9628,6 +9628,7 @@ index 0000000000..442af6ad9b
 +  #oneOffCommand = null;
 +  #oneOffModeApplication = null;
 +  #oneOffModeStateReady = null;
++  #oneOffRequery = null;
 +  #autofill = null;
 +  #placeholder = null;
 +  #closeRequest = null;
@@ -10192,6 +10193,7 @@ index 0000000000..442af6ad9b
 +    this.#oneOffCommand = null;
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffModeStateReady = null;
++    this.#oneOffRequery = null;
 +    this.#inputPresentation = null;
 +    this.#inputPresentationState = null;
 +    this.#inputPopupClose = null;
@@ -11437,6 +11439,7 @@ index 0000000000..442af6ad9b
 +    this.#oneOffCommand = pending;
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffModeStateReady = null;
++    this.#oneOffRequery = null;
 +    try {
 +      pending.prepared = await this.#queries.prepareOneOffCommand(queryId, key, edit.text, facts);
 +      if (this.#closed || !this.#isCurrent() || this.#oneOffCommand !== pending ||
@@ -11466,6 +11469,7 @@ index 0000000000..442af6ad9b
 +    const pending = { command, prepared: this.#oneOffCommand.prepared, proposal: null };
 +    this.#oneOffModeApplication = pending;
 +    this.#oneOffModeStateReady = null;
++    this.#oneOffRequery = null;
 +    // Read host getters once before validation; recheck the command after them.
 +    modeEntry = modeEntry && this.#captureModeEntry({ untrimmedValue: modeEntry.untrimmedValue,
 +      pageProxyValid: modeEntry.pageProxyValid, hasAutofillPlaceholder: modeEntry.hasAutofillPlaceholder,
@@ -11556,11 +11560,103 @@ index 0000000000..442af6ad9b
 +      queryId: pending.proposal.queryId, edit: pending.edit,
 +    }) : null;
 +    try {
-+      return this.#queries.commitOneOffMode(pending.prepared, pending.proposal.modeEntry,
++      const outcome = this.#queries.commitOneOffMode(pending.prepared, pending.proposal.modeEntry,
 +        pending.proposal.restoration, { persistedSearchTerms }, current, notify);
++      if (outcome?.applied && outcome.stateToken && current()) {
++        this.#oneOffRequery = { token, edit: pending.edit, previewMode: pending.proposal.searchMode,
++          receipt: outcome, confirmation: null, confirmationAttempted: false };
++      }
++      return outcome;
 +    } finally {
 +      if (this.#oneOffModeStateReady === pending) this.#oneOffModeStateReady = null;
 +    }
++  }
++
++  /** Describe the next phase only while the committed mode receipt and editor remain current. */
++  getOneOffRequery(modeToken) {
++    this.#check();
++    const pending = this.#oneOffRequery;
++    const current = () => this.#oneOffRequery === pending && pending?.token === modeToken &&
++      pending.edit === this.#edit && !this.#edit.composing && !this.#hiddenResults &&
++      this.#searchMode === (pending.confirmedMode ?? pending.previewMode);
++    if (!current()) return null;
++    const request = this.#queries.describeOneOffRequery(pending.receipt);
++    if (!request || !current()) return null;
++    return Object.freeze({ ...request, token: modeToken, edit: pending.edit });
++  }
++
++  beginOneOffConfirmation(modeToken, modeEntry) {
++    const request = this.getOneOffRequery(modeToken), pending = this.#oneOffRequery;
++    if (!request || request.confirmed || pending.confirmationAttempted) return null;
++    const token = Object.freeze({});
++    pending.confirmation = token;
++    modeEntry = modeEntry && this.#captureModeEntry({ untrimmedValue: modeEntry.untrimmedValue,
++      pageProxyValid: modeEntry.pageProxyValid, hasAutofillPlaceholder: modeEntry.hasAutofillPlaceholder,
++      userTypedValue: modeEntry.userTypedValue });
++    if (!modeEntry) throw new TypeError("Missing one-off confirmation facts");
++    if (modeEntry.pageProxyValid || modeEntry.untrimmedValue !== request.userTypedValue ||
++        modeEntry.userTypedValue !== request.userTypedValue ||
++        modeEntry.hasAutofillPlaceholder !== false ||
++        this.#oneOffRequery !== pending || pending.confirmation !== token || !this.getOneOffRequery(modeToken)) return null;
++    const proposal = Object.freeze({ token, modeToken, edit: request.edit, searchMode: request.searchMode,
++      modeEntry, pageProxyValid: false, oneOffSelected: false });
++    pending.confirmation = proposal;
++    return proposal;
++  }
++
++  /** Observe confirmation and one-off deselection, then run the second mode setter once. */
++  commitOneOffConfirmation(token, observation) {
++    this.#check();
++    const pending = this.#oneOffRequery, proposal = pending?.confirmation;
++    if (!proposal || proposal.token !== token || !observation || !this.getOneOffRequery(pending.token)) return null;
++    const { text, selectionStart, selectionEnd, selectionDirection, composing, searchMode,
++      modeEntry, pageProxyValid, oneOffSelected, persistedSearchTerms } = observation;
++    if (typeof persistedSearchTerms !== "boolean") throw new TypeError("Missing persisted-search observation");
++    if (text !== proposal.edit.text || selectionStart !== proposal.edit.selectionStart || selectionEnd !== proposal.edit.selectionEnd ||
++        selectionDirection !== proposal.edit.selectionDirection || composing !== false || pageProxyValid !== false || oneOffSelected !== false ||
++        !UrlbarShared.deepEqual(searchMode, proposal.searchMode) || !UrlbarShared.deepEqual(modeEntry, proposal.modeEntry) ||
++        this.#oneOffRequery !== pending || pending.confirmation !== proposal || !this.getOneOffRequery(pending.token)) return null;
++    pending.confirmation = null;
++    pending.confirmationAttempted = true;
++    this.#placeholder = null;
++    this.#searchMode = proposal.searchMode;
++    pending.confirmedMode = proposal.searchMode;
++    const current = () => !this.#closed && this.#isCurrent() && this.#oneOffRequery === pending &&
++      this.#edit === proposal.edit && this.#searchMode === proposal.searchMode && !this.#hiddenResults;
++    const listener = this.#onModeStateChanged;
++    const notify = listener ? state => this.#notifyModeState(listener, state, {
++      reason: "one-off-confirmation", token, modeToken: pending.token, queryId: null, edit: pending.edit,
++    }) : null;
++    let outcome = null;
++    try {
++      outcome = this.#queries.commitOneOffConfirmation(pending.receipt, proposal.modeEntry,
++        { persistedSearchTerms }, current, notify);
++      if (outcome?.applied && outcome.stateToken && current()) pending.receipt = outcome;
++      return outcome;
++    } finally {
++      if ((!outcome?.applied || !current()) && this.#oneOffRequery === pending) this.#oneOffRequery = null;
++    }
++  }
++
++  /** Start the captured preview query once, after confirmed host/browser state. */
++  async requeryAfterOneOffMode(modeToken, state) {
++    const request = this.getOneOffRequery(modeToken), pending = this.#oneOffRequery;
++    if (!request?.confirmed || !UrlbarShared.deepEqual(state?.searchMode, request.searchMode)) {
++      throw new Error("Stale one-off requery");
++    }
++    const queryState = { ...state, searchMode: request.queryMode };
++    const current = () => !this.#closed && this.#isCurrent() && this.#edit === request.edit &&
++      this.#searchMode === pending.confirmedMode && !this.#hiddenResults;
++    if (this.#oneOffRequery !== pending || !current()) throw new Error("One-off requery superseded");
++    const authorize = this.#queries.createOneOffQueryAuthority(pending.receipt, current);
++    if (!authorize || !current()) throw new Error("One-off browser state superseded");
++    this.cancel();
++    if (!current()) throw new Error("One-off requery superseded");
++    this.#typedText = request.edit.text;
++    const { revision, text } = request.edit;
++    return this.#queries.query(queryState, { searchString: text, allowAutofill: request.allowAutofill }, update => {
++      this.#publishQueryUpdate(update, { revision, text, allowAutofill: request.allowAutofill });
++    }, authorize);
 +  }
 +
 +  /** Describe a search-mode command for the exact observed editor, without applying it. */
@@ -12076,6 +12172,7 @@ index 0000000000..442af6ad9b
 +    this.#oneOffCommand = null;
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffModeStateReady = null;
++    this.#oneOffRequery = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
 +    this.#committingPreviewClose = null;
@@ -12123,6 +12220,7 @@ index 0000000000..442af6ad9b
 +    this.#oneOffCommand = null;
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffModeStateReady = null;
++    this.#oneOffRequery = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
 +    this.#committingPreviewClose = null;
@@ -12170,10 +12268,10 @@ index 0000000000..442af6ad9b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..a5d5deca4e
+index 0000000000..b324ad4984
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1132 @@
+@@ -0,0 +1,1191 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12214,6 +12312,8 @@ index 0000000000..a5d5deca4e
 +  #oneOffDismissalGeneration = 0;
 +  #oneOffCommandPlans = new WeakSet();
 +  #oneOffModeAttempts = new WeakSet();
++  #oneOffEligibility = new WeakMap();
++  #oneOffModeReceipts = new WeakMap();
 +
 +  constructor({ context, isCurrent, onPresentationRequest = null }) {
 +    if (typeof isCurrent != "function") throw new TypeError("Missing scope check");
@@ -12837,6 +12937,8 @@ index 0000000000..a5d5deca4e
 +    const prepared = Object.freeze({ description, isCurrent: () => current() &&
 +      UrlbarShared.deepEqual(this.#describeOneOffCommand(key, value, observed), description) });
 +    this.#oneOffCommandPlans.add(prepared);
++    this.#oneOffEligibility.set(prepared, () => availability.isCurrent() && !availability.willHide &&
++      UrlbarShared.deepEqual(this.#describeOneOffCommand(key, value, observed), description));
 +    return prepared;
 +  }
 +
@@ -12881,9 +12983,64 @@ index 0000000000..a5d5deca4e
 +    if (!current() || (restoration && !UrlbarShared.deepEqual(restoration,
 +        this.describeCompositionRestoration(modeEntry))) || !current()) return null;
 +    this.#oneOffModeAttempts.add(prepared);
-+    return this.#controller.parentController.commitIndependentModeState(this.#context.browserId,
++    const outcome = this.#controller.parentController.commitIndependentModeState(this.#context.browserId,
 +      description.searchMode, { persistedSearchTerms: observation.persistedSearchTerms,
 +        engineId: description.engineId, modeEntry }, current, onCommitted);
++    return this.#recordOneOffMode(outcome, prepared, "preview", current);
++  }
++
++  #recordOneOffMode(outcome, prepared, phase, current) {
++    if (!outcome?.applied || !outcome.stateToken || !current()) return outcome;
++    const receipt = Object.freeze({ ...outcome });
++    this.#oneOffModeReceipts.set(receipt, { prepared, phase, attempted: false });
++    return receipt;
++  }
++
++  /** The preview and confirmed receipts are session-owned, never caller-supplied authority. */
++  describeOneOffRequery(receipt) {
++    this.#check();
++    const record = this.#oneOffModeReceipts.get(receipt);
++    if (!record || record.attempted || !record.prepared.isCurrent() ||
++        (receipt.userTypedValue !== null && typeof receipt.userTypedValue !== "string")) return null;
++    const browserCurrent = this.#controller.parentController.captureIndependentQueryAuthority(
++      this.#context.browserId, receipt.stateToken, receipt.userTypedValue);
++    if (!browserCurrent || !browserCurrent() || record.attempted || !record.prepared.isCurrent()) return null;
++    const description = record.prepared.description;
++    return Object.freeze({ queryMode: description.searchMode,
++      searchMode: UrlbarSearchModeModel.confirmedMode(description.searchMode),
++      allowAutofill: description.allowAutofill, userTypedValue: receipt.userTypedValue,
++      confirmed: record.phase === "confirmed" });
++  }
++
++  /** Confirm the captured preview, preserving its original query-mode snapshot. */
++  commitOneOffConfirmation(receipt, modeEntry, observation, isCurrent, onCommitted = null) {
++    const request = this.describeOneOffRequery(receipt);
++    const record = this.#oneOffModeReceipts.get(receipt);
++    if (!request || request.confirmed || !modeEntry || modeEntry.pageProxyValid ||
++        modeEntry.userTypedValue !== request.userTypedValue || modeEntry.untrimmedValue !== request.userTypedValue ||
++        modeEntry.hasAutofillPlaceholder !== false) return null;
++    const current = () => !this.#closed && this.#isCurrent() && isCurrent() && record.prepared.isCurrent();
++    if (!current() || record.attempted) return null;
++    record.attempted = true;
++    const outcome = this.#controller.parentController.commitIndependentModeState(this.#context.browserId,
++      request.searchMode, { persistedSearchTerms: observation.persistedSearchTerms,
++        engineId: record.prepared.description.engineId, modeEntry, expectedStateToken: receipt.stateToken }, current, onCommitted);
++    return this.#recordOneOffMode(outcome, record.prepared, "confirmed", current);
++  }
++
++  /** Transfer confirmed authority across deliberate old-query cancellation, once. */
++  createOneOffQueryAuthority(receipt, isCurrent) {
++    const request = this.describeOneOffRequery(receipt);
++    const record = this.#oneOffModeReceipts.get(receipt);
++    if (!request?.confirmed || !isCurrent()) return null;
++    const browserCurrent = this.#controller.parentController.captureIndependentQueryAuthority(
++      this.#context.browserId, receipt.stateToken, receipt.userTypedValue);
++    if (!browserCurrent || !browserCurrent() || !isCurrent() || record.attempted) return null;
++    const eligible = this.#oneOffEligibility.get(record.prepared);
++    const dismissalGeneration = this.#oneOffDismissalGeneration;
++    record.attempted = true;
++    return () => !this.#closed && this.#isCurrent() && isCurrent() && browserCurrent() && eligible() &&
++      this.#oneOffDismissalGeneration === dismissalGeneration;
 +  }
 +
 +  /** Prepare input.search policy using this consumer's live engine store, without dispatch. */
