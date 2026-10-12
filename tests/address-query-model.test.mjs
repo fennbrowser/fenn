@@ -161,3 +161,10 @@ test('retained startQuery preserves capture, engagement, suppression, confirmati
     assert.deepEqual(calls,['capture','engagement','suppression',...(!suppressed?['reset','confirm','overflow',...(!overflow?['dispatch']:[])]:[])]);
   }
 });
+
+
+test('engine search terms preserve suggestion, query and last-search fallback without trimming',()=>{
+  for(const [result,expected] of [[null,' typed '],[{payload:{}},' typed '],[{payload:{suggestion:' suggestion ',query:'query'}},' suggestion '],
+    [{payload:{suggestion:'',query:' query '}},' query '],[{payload:{suggestion:'',query:''}},' typed ']])
+    assert.equal(sandbox.Model.engineSearchTerms(result,' typed '),expected);
+});

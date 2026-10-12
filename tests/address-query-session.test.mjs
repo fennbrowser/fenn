@@ -7582,3 +7582,50 @@ test('clearing an unavailable engine does not request autofill formatting and co
   assert.equal(outcome.applied,true);assert.equal(outcome.engineUsageNotified,false);
   assert.equal(f.editor.beginOneOffDestinationRestoration(f.deselection),null);assert.equal(f.parent.started.length,1);f.editor.close();
 });
+
+
+async function oneOffEngineSearchFixture(){
+  const f=await oneOffCommandFixture();
+  const result={id:'engine-search-result',type:f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH,payload:{suggestion:'suggested words',query:'provider query'}};
+  f.query.results=[result];f.editor.publishPresentation(1,f.query.id,[result],true);
+  const command=await f.editor.beginOneOffCommand(1,f.query.id,'engine:second',oneOffFacts({shiftKey:true}));
+  assert.equal(command.kind,'navigation');return {...f,result,command};
+}
+
+test('one-off engine candidates bind genuine query results and preserve typed versus suggested terms without effects',async()=>{
+  const f=await oneOffEngineSearchFixture(),before=f.parent.started.length;
+  const candidate=f.editor.beginOneOffEngineSearch(f.command.token,f.result);
+  assert.equal(candidate.searchString,'suggested words');assert.equal(candidate.typedValue,'typed words');
+  assert.equal(candidate.engineId,'second');assert.equal(candidate.selType,'oneoff');assert.equal(candidate.navigationResolutionPending,true);
+  assert.equal(Object.isFrozen(candidate),true);assert.equal(f.editor.getOneOffEngineSearch(candidate.token),candidate);
+  assert.equal(f.editor.getOneOffEngineSearch({...candidate.token}),null);
+  assert.equal(f.editor.beginOneOffEngineSearch(f.command.token,{...f.result}),null);
+  const fallback=f.editor.beginOneOffEngineSearch(f.command.token,null);assert.equal(fallback.searchString,'typed words');
+  assert.equal(f.editor.getOneOffEngineSearch(candidate.token),null);
+  assert.equal(f.parent.started.length,before);assert.equal(f.parent.engagements.length,0);f.editor.close();
+});
+
+test('engine search candidates reject changed payload, result ownership, editor and command eligibility',async()=>{
+  for(const mutation of ['payload','removed','caret','cancel','engine','policy','reentry']){
+    const f=await oneOffEngineSearchFixture(),p=f.editor.beginOneOffEngineSearch(f.command.token,f.result);
+    if(mutation==='payload')f.result.payload.suggestion='new suggestion';
+    if(mutation==='removed')f.query.results=[];
+    if(mutation==='caret')f.editor.select(1,0,0);
+    if(mutation==='cancel')f.editor.cancel();
+    if(mutation==='engine')f.parent.child.updateEngineStore('removed',{id:'second'});
+    if(mutation==='policy')f.prefs['scotchBonnet.disableOneOffs']=true;
+    if(mutation==='reentry')Object.defineProperty(f.result.payload,'suggestion',{get(){f.editor.select(1,0,0);return 'suggested words';}});
+    assert.equal(f.editor.getOneOffEngineSearch(p.token),null,mutation);assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('engine search candidates preserve current/background destination facts and exclude mode-only commands',async()=>{
+  const f=await oneOffCommandFixture();
+  for(const facts of [oneOffFacts({shiftKey:true}),oneOffFacts({keyboardAlt:true}),oneOffFacts({mouseBackground:true})]){
+    const command=await f.editor.beginOneOffCommand(1,f.query.id,'engine:second',facts);
+    const p=f.editor.beginOneOffEngineSearch(command.token,null);
+    assert.ok(p);assert.equal(p.where,command.where);assert.equal(p.inBackground,command.params?.inBackground);assert.equal(p.isPrivate,true);
+  }
+  const command=await f.editor.beginOneOffCommand(1,f.query.id,'engine:second',oneOffFacts());
+  assert.equal(f.editor.beginOneOffEngineSearch(command.token,null),null);f.editor.close();
+});
