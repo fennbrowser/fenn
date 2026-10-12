@@ -9810,10 +9810,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..143d0d332a
+index 0000000000..011747f9af
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3299 @@
+@@ -0,0 +1,3327 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11743,6 +11743,34 @@ index 0000000000..143d0d332a
 +    const live = this.#queries.describeOneOffEngineSearch(pending.prepared, captured.resultForCurrentValue);
 +    return live && UrlbarShared.deepEqual(live, captured.description) && this.#oneOffCommand === pending &&
 +      pending.engineSearch === captured && this.getOneOffCommand(pending.token) ? captured.proposal : null;
++  }
++
++  /** Bind a candidate to an exact host observation without granting navigation authority. */
++  acknowledgeOneOffEngineSearch(token, observation) {
++    const proposal = this.getOneOffEngineSearch(token);
++    const pending = this.#oneOffCommand, captured = pending?.engineSearch;
++    if (!proposal || captured.acknowledged || !observation) return null;
++    const edit = proposal.edit;
++    if (observation.resultForCurrentValue !== captured.resultForCurrentValue ||
++        observation.revision !== edit.revision || observation.selectionRevision !== edit.selectionRevision ||
++        observation.text !== edit.text || observation.selectionStart !== edit.selectionStart ||
++        observation.selectionEnd !== edit.selectionEnd || observation.selectionDirection !== edit.selectionDirection ||
++        observation.composing !== false || observation.pageProxyValid !== false ||
++        !UrlbarShared.deepEqual(observation.searchMode, this.#searchMode) ||
++        this.getOneOffEngineSearch(token) !== proposal || this.#oneOffCommand !== pending ||
++        pending.engineSearch !== captured || captured.acknowledged) return null;
++    const receipt = Object.freeze({ ...proposal, token: Object.freeze({}), candidateToken: token,
++      hostBindingAcknowledged: true, navigationResolutionPending: true });
++    captured.acknowledged = receipt;
++    return receipt;
++  }
++
++  /** A host receipt remains usable only while its original candidate is current. */
++  getAcknowledgedOneOffEngineSearch(token) {
++    const captured = this.#oneOffCommand?.engineSearch, receipt = captured?.acknowledged;
++    if (!receipt || receipt.token !== token) return null;
++    return this.getOneOffEngineSearch(receipt.candidateToken) === captured.proposal &&
++      this.#oneOffCommand?.engineSearch === captured && captured.acknowledged === receipt ? receipt : null;
 +  }
 +
 +  /** Lower-level target creation only; source notification remains pending. */

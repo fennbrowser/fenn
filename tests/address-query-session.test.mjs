@@ -7629,3 +7629,60 @@ test('engine search candidates preserve current/background destination facts and
   const command=await f.editor.beginOneOffCommand(1,f.query.id,'engine:second',oneOffFacts());
   assert.equal(f.editor.beginOneOffEngineSearch(command.token,null),null);f.editor.close();
 });
+
+
+function oneOffEngineObservation(f, candidate) {
+  return {...candidate.edit, resultForCurrentValue:f.result ?? null, searchMode:null, pageProxyValid:false};
+}
+
+test('engine candidate host acknowledgment binds exact text and result once without dispatch',async()=>{
+  for(const useResult of [true,false]){
+    const f=await oneOffEngineSearchFixture();if(!useResult)f.result=null;
+    const p=f.editor.beginOneOffEngineSearch(f.command.token,f.result),before=f.editor.snapshot;
+    const receipt=f.editor.acknowledgeOneOffEngineSearch(p.token,oneOffEngineObservation(f,p));
+    assert.ok(receipt);assert.equal(receipt.hostBindingAcknowledged,true);assert.equal(receipt.navigationResolutionPending,true);
+    assert.equal(receipt.searchString,useResult?'suggested words':'typed words');assert.ok(Object.isFrozen(receipt));
+    assert.equal(f.editor.getAcknowledgedOneOffEngineSearch(receipt.token),receipt);
+    assert.equal(f.editor.getAcknowledgedOneOffEngineSearch({...receipt.token}),null);
+    assert.equal(f.editor.acknowledgeOneOffEngineSearch(p.token,oneOffEngineObservation(f,p)),null);
+    assert.equal(f.editor.snapshot,before);assert.equal(f.parent.started.length,1);assert.equal(f.parent.engagements.length,0);
+    f.editor.select(1,0,0);assert.equal(f.editor.getAcknowledgedOneOffEngineSearch(receipt.token),null);f.editor.close();
+  }
+});
+
+test('engine candidate host acknowledgment rejects mismatched and reentrant host observations',async()=>{
+  const changes={resultForCurrentValue:{},revision:2,selectionRevision:1,text:'other',selectionStart:0,
+    selectionEnd:0,selectionDirection:'backward',composing:true,pageProxyValid:true,searchMode:{engineName:'other'}};
+  for(const [key,value] of Object.entries(changes)){
+    const f=await oneOffEngineSearchFixture(),p=f.editor.beginOneOffEngineSearch(f.command.token,f.result);
+    assert.equal(f.editor.acknowledgeOneOffEngineSearch(p.token,{...oneOffEngineObservation(f,p),[key]:value}),null,key);
+    assert.ok(f.editor.acknowledgeOneOffEngineSearch(p.token,oneOffEngineObservation(f,p)));f.editor.close();
+  }
+  for(const action of ['caret','replacement','recursive']){
+    const f=await oneOffEngineSearchFixture(),p=f.editor.beginOneOffEngineSearch(f.command.token,f.result);
+    const observation=oneOffEngineObservation(f,p);let inner=null;
+    Object.defineProperty(observation,'text',{get(){
+      if(action==='caret')f.editor.select(1,0,0);
+      if(action==='replacement')f.editor.beginOneOffEngineSearch(f.command.token,null);
+      if(action==='recursive')inner=f.editor.acknowledgeOneOffEngineSearch(p.token,oneOffEngineObservation(f,p));
+      return p.edit.text;
+    }});
+    assert.equal(f.editor.acknowledgeOneOffEngineSearch(p.token,observation),null,action);
+    if(action==='recursive')assert.equal(f.editor.getAcknowledgedOneOffEngineSearch(inner.token),inner);
+    f.editor.close();
+  }
+});
+
+test('acknowledged engine candidates expire on mutable results, command policy and candidate replacement',async()=>{
+  for(const action of ['payload','removed','engine','policy','cancel','replacement']){
+    const f=await oneOffEngineSearchFixture(),p=f.editor.beginOneOffEngineSearch(f.command.token,f.result);
+    const receipt=f.editor.acknowledgeOneOffEngineSearch(p.token,oneOffEngineObservation(f,p));assert.ok(receipt);
+    if(action==='payload')f.result.payload.suggestion='changed';
+    if(action==='removed')f.query.results=[];
+    if(action==='engine')f.parent.child.updateEngineStore('removed',{id:'second'});
+    if(action==='policy')f.prefs['scotchBonnet.disableOneOffs']=true;
+    if(action==='cancel')f.editor.cancel();
+    if(action==='replacement')f.editor.beginOneOffEngineSearch(f.command.token,null);
+    assert.equal(f.editor.getAcknowledgedOneOffEngineSearch(receipt.token),null,action);f.editor.close();
+  }
+});
