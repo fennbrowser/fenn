@@ -6386,15 +6386,18 @@ test('one-off query-layer commits reject forged and cross-session plans and cons
 
 
 async function oneOffRequeryFixture(options={}){
-  const f=await oneOffModeFixture(options),browser={token:null,typed:f.entry.userTypedValue},writes=[];
+  const f=await oneOffModeFixture(options),browser={token:null,typed:f.entry.userTypedValue,confirmed:options.confirmedMode??null},writes=[];
   f.parent.captureIndependentQueryAuthority=(_id,token,typed)=>{
     const current=()=>browser.token===token&&browser.typed===typed;
     return current()?current:null;
   };
+  f.parent.describeIndependentConfirmedMode=(id,token,typed)=>
+    f.parent.captureIndependentQueryAuthority(id,token,typed)?Object.freeze({searchMode:browser.confirmed}):null;
   f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{
     if(!current()||(facts.expectedStateToken&&browser.token!==facts.expectedStateToken)||browser.typed!==facts.modeEntry.userTypedValue)return null;
-    browser.typed=facts.modeEntry.pageProxyValid?'':facts.modeEntry.hasAutofillPlaceholder&&facts.modeEntry.userTypedValue?
+    if(mode)browser.typed=facts.modeEntry.pageProxyValid?'':facts.modeEntry.hasAutofillPlaceholder&&facts.modeEntry.userTypedValue?
       facts.modeEntry.userTypedValue:facts.modeEntry.untrimmedValue;
+    if(!mode || !mode.isPreview)browser.confirmed=mode;
     browser.token={};writes.push(mode);
     notify?.({browserId:id,searchMode:mode,userTypedValue:browser.typed,persistedSearchTerms:false});
     return {applied:true,stateToken:browser.token,userTypedValue:browser.typed};
@@ -6578,4 +6581,174 @@ test('invalid or failed engagement starts cannot leave a dispatchable one-off ad
     assert.equal(f.editor.getOneOffRequery(f.proposal.token),null);
     assert.equal(f.parent.started.length,1);f.editor.close();
   }
+});
+
+
+async function oneOffSelectionFixture({suppressed=false,...options}={}){
+  const f=await oneOffRequeryFixture(options);
+  const admission=f.editor.startOneOffQuery(f.proposal.token,{}, {event:{type:'click',timeStamp:8},suppressStartQuery:suppressed});
+  if(!suppressed){
+    const c=f.editor.beginOneOffConfirmation(f.proposal.token,f.confirmation.modeEntry);
+    assert.equal(f.editor.commitOneOffConfirmation(c.token,oneOffConfirmationObservation(c)).applied,true);
+  }
+  const entry={untrimmedValue:f.browser.typed,userTypedValue:f.browser.typed,pageProxyValid:false,hasAutofillPlaceholder:false};
+  const restoration=f.editor.beginOneOffSelectionRestoration(f.proposal.token,entry);
+  return {...f,admission,restoration,restoreEntry:entry};
+}
+function oneOffRestorationObservation(p){return {...oneOffConfirmationObservation(p),...p.editorWrite};}
+
+test('deselection repeats the confirmed setter once before overflow or identical captured provider dispatch',async()=>{
+  for(const engine of [false,true])for(const overflow of [false,true]){
+    const f=await oneOffSelectionFixture({engine}),p=f.restoration;
+    assert.ok(p);assert.equal(p.terminal,false);assert.equal(p.editorWrite,null);
+    assert.equal(f.editor.getOneOffSelectionRestoration(p.token),p);
+    await assert.rejects(f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:p.searchMode},{inOverflowPanel:false}),/Stale/);
+    const captured=f.parent.engagements.at(-1).args[1];
+    assert.equal(f.editor.commitOneOffSelectionRestoration(p.token,oneOffRestorationObservation(p)).applied,true);
+    assert.deepEqual(f.writes.map(mode=>mode.isPreview),[true,false,false]);
+    assert.equal(f.editor.commitOneOffSelectionRestoration(p.token,oneOffRestorationObservation(p)),null);
+    assert.equal(f.editor.beginOneOffSelectionRestoration(f.proposal.token,f.restoreEntry),null);
+    const cancelled=f.parent.cancelled;
+    const result=await f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:p.searchMode},{get inOverflowPanel(){
+      assert.equal(f.writes.length,3);return overflow;}});
+    if(overflow){assert.equal(result,null);assert.equal(f.parent.cancelled,cancelled);}
+    else {assert.equal(result,captured);assert.equal(result.searchMode.isPreview,true);assert.equal(result.allowAutofill,!engine);}
+    assert.equal(f.parent.engagements.length,1);assert.equal(f.parent.started.length,overflow?1:2);f.editor.close();
+  }
+});
+
+test('suppressed deselection restores owned local, engine or null state without confirming or querying',async()=>{
+  for(const confirmedMode of [null,{source:5,isPreview:false,entry:'other'},
+    {engineName:'Second',isPreview:false,entry:'searchbutton'},{engineName:'Removed',isPreview:false,entry:'other'}]){
+    const f=await oneOffSelectionFixture({suppressed:true,confirmedMode}),p=f.restoration;
+    assert.ok(p);assert.equal(p.terminal,true);assert.equal(p.editorWrite,null);
+    const before=f.editor.snapshot,typed=f.browser.typed,cancelled=f.parent.cancelled;
+    const expected=confirmedMode?.engineName==='Removed'?null:confirmedMode;
+    assert.equal(p.searchMode?.engineName,expected?.engineName);assert.equal(p.searchMode?.source,expected?.source);
+    assert.equal(f.editor.commitOneOffSelectionRestoration(p.token,oneOffRestorationObservation(p)).applied,true);
+    assert.equal(f.writes.length,2);assert.deepEqual(f.writes[1],p.searchMode);assert.deepEqual(f.browser.confirmed,p.searchMode);
+    assert.equal(f.editor.snapshot.text,before.text);assert.equal(f.browser.typed,typed);
+    assert.equal(f.editor.getOneOffRequery(f.proposal.token),null);
+    assert.equal(f.editor.beginOneOffConfirmation(f.proposal.token,f.restoreEntry),null);
+    assert.equal(f.editor.commitOneOffSelectionRestoration(p.token,oneOffRestorationObservation(p)),null);
+    assert.equal(f.parent.cancelled,cancelled);assert.equal(f.parent.started.length,1);assert.equal(f.parent.engagements.length,1);f.editor.close();
+  }
+});
+
+test('restoration requires exact editor, mode, selection and setter observations',async()=>{
+  const f=await oneOffSelectionFixture(),p=f.restoration,valid=oneOffRestorationObservation(p);
+  for(const patch of [{text:'other'},{selectionStart:0},{selectionEnd:0},{selectionDirection:'backward'},
+    {composing:true},{pageProxyValid:true},{oneOffSelected:true},{searchMode:null},
+    {modeEntry:{...p.modeEntry,userTypedValue:'other'}}]){
+    assert.equal(f.editor.commitOneOffSelectionRestoration(p.token,{...valid,...patch}),null);
+    assert.equal(f.writes.length,2);assert.equal(f.editor.getOneOffSelectionRestoration(p.token),p);
+  }
+  assert.throws(()=>f.editor.commitOneOffSelectionRestoration(p.token,{...valid,persistedSearchTerms:undefined}),/Missing/);
+  assert.equal(f.editor.commitOneOffSelectionRestoration({},valid),null);
+  assert.equal(f.editor.commitOneOffSelectionRestoration(p.token,valid).applied,true);f.editor.close();
+});
+
+test('restoration rejects stale browser receipt, owned mode, caret, popup, engine and scope',async()=>{
+  for(const mutation of ['typed','receipt','stored-mode','caret','cancel','popup','engine','policy','scope']){
+    const f=await oneOffSelectionFixture(),p=f.restoration;
+    if(mutation==='typed')f.browser.typed='newer';
+    if(mutation==='receipt')f.browser.token={};
+    if(mutation==='stored-mode')f.browser.confirmed=null;
+    if(mutation==='caret')f.editor.select(1,0,0);
+    if(mutation==='cancel')f.editor.cancel();
+    if(mutation==='popup'){f.editor.publishPresentation(1,f.query.id,[],false);f.editor.publishPresentation(1,f.query.id,[],true);}
+    if(mutation==='engine')f.parent.child.updateEngineStore('removed',{id:'default'});
+    if(mutation==='policy')f.prefs['scotchBonnet.disableOneOffs']=true;
+    if(mutation==='scope'){f.loseScope();assert.throws(()=>f.editor.commitOneOffSelectionRestoration(p.token,oneOffRestorationObservation(p)),/scope changed/);}
+    else assert.equal(f.editor.commitOneOffSelectionRestoration(p.token,oneOffRestorationObservation(p)),null,mutation);
+    assert.equal(f.writes.length,2);assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('suppressed restoration normalizes a missing stored engine but never accepts an engine change after proposal',async()=>{
+  const f=await oneOffSelectionFixture({suppressed:true,confirmedMode:{engineName:'Second',isPreview:false,entry:'other'}});
+  const p=f.restoration;assert.equal(p.searchMode.engineName,'Second');
+  f.parent.child.updateEngineStore('removed',{id:'second'});
+  assert.equal(f.editor.getOneOffSelectionRestoration(p.token),null);
+  assert.equal(f.editor.commitOneOffSelectionRestoration(p.token,oneOffRestorationObservation(p)),null);
+  assert.equal(f.writes.length,1);f.editor.close();
+});
+
+test('restoration consumes before reentrant setters, throws and rejected persistence effects',async()=>{
+  for(const kind of ['reenter','throw','reject','edit']){
+    const f=await oneOffSelectionFixture(),p=f.restoration,commit=f.parent.commitIndependentModeState;
+    f.parent.commitIndependentModeState=(...args)=>{
+      assert.equal(f.editor.commitOneOffSelectionRestoration(p.token,oneOffRestorationObservation(p)),null);
+      assert.equal(f.editor.beginOneOffSelectionRestoration(f.proposal.token,f.restoreEntry),null);
+      if(kind==='throw')throw Error('restoration setter failed');
+      if(kind==='reject')return null;
+      if(kind==='edit')f.editor.select(1,0,0);
+      return commit(...args);
+    };
+    if(kind==='throw')assert.throws(()=>f.editor.commitOneOffSelectionRestoration(p.token,oneOffRestorationObservation(p)),/setter failed/);
+    else {
+      const result=f.editor.commitOneOffSelectionRestoration(p.token,oneOffRestorationObservation(p));
+      if(kind==='reenter')assert.equal(result.applied,true);else assert.equal(result,null);
+    }
+    assert.equal(f.editor.commitOneOffSelectionRestoration(p.token,oneOffRestorationObservation(p)),null);
+    assert.equal(f.writes.length,kind==='reenter'?3:2);f.editor.close();
+  }
+});
+
+test('restoration getter reentry preserves a newer proposal and cannot overwrite a new caret',async()=>{
+  const f=await oneOffSelectionFixture();let inner,reads=0;
+  const outer=f.editor.beginOneOffSelectionRestoration(f.proposal.token,{...f.restoreEntry,
+    get untrimmedValue(){reads++;inner=f.editor.beginOneOffSelectionRestoration(f.proposal.token,f.restoreEntry);return f.restoreEntry.untrimmedValue;}});
+  assert.equal(outer,null);assert.equal(reads,1);assert.equal(f.editor.getOneOffSelectionRestoration(inner.token),inner);
+  assert.equal(f.editor.commitOneOffSelectionRestoration(inner.token,{...oneOffRestorationObservation(inner),
+    get text(){f.editor.select(1,0,0);return inner.edit.text;}}),null);
+  assert.equal(f.editor.snapshot.selectionStart,0);assert.equal(f.writes.length,2);f.editor.close();
+});
+
+test('suppressed nonnull restoration acknowledges Firefox formatting while null mode preserves the editor',async()=>{
+  for(const confirmedMode of [null,{source:5,isPreview:false,entry:'other'}]){
+    const f=await oneOffSelectionFixture({suppressed:true,placeholder:true,confirmedMode});
+    const p=f.editor.beginOneOffSelectionRestoration(f.proposal.token,{...f.restoreEntry,hasAutofillPlaceholder:true});
+    assert.ok(p);assert.equal(!!p.editorWrite,!!confirmedMode);
+    if(confirmedMode){
+      assert.equal(p.editorWrite.text,'example.test');
+      for(const patch of [{text:'wrong'},{untrimmedValue:'wrong'},{protocolIsTrimmed:false},{wwwIsTrimmed:false},{valueIsTyped:true}]){
+        assert.equal(f.editor.commitOneOffSelectionRestoration(p.token,{...oneOffRestorationObservation(p),...patch}),null);
+      }
+    }
+    assert.equal(f.editor.commitOneOffSelectionRestoration(p.token,oneOffRestorationObservation(p)).applied,true);
+    assert.equal(f.browser.typed,'https://www.example.test/');assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('formatting and browser-reader callbacks cannot revive a stale restoration',async()=>{
+  const f=await oneOffSelectionFixture({suppressed:true,placeholder:true,confirmedMode:{source:5,isPreview:false,entry:'other'}});
+  const p=f.editor.beginOneOffSelectionRestoration(f.proposal.token,{...f.restoreEntry,hasAutofillPlaceholder:true});
+  f.parent.describeIndependentCompositionRestoration=()=>({...f.restoration,value:'new format'});
+  assert.equal(f.editor.getOneOffSelectionRestoration(p.token),null);assert.equal(f.writes.length,1);f.editor.close();
+  const g=await oneOffSelectionFixture(),read=g.parent.describeIndependentConfirmedMode;
+  g.parent.describeIndependentConfirmedMode=(...args)=>{const value=read(...args);g.editor.select(1,0,0);return value;};
+  assert.equal(g.editor.getOneOffSelectionRestoration(g.restoration.token),null);assert.equal(g.writes.length,2);g.editor.close();
+});
+
+test('restoration rejects foreign receipts at the query layer and cannot begin before suppression or confirmation',async()=>{
+  const f=await oneOffRequeryFixture();
+  assert.equal(f.editor.beginOneOffSelectionRestoration(f.proposal.token,f.confirmation.modeEntry),null);
+  const other=new f.sandbox.UrlbarQuerySession({context:f.context,isCurrent:()=>true});
+  assert.equal(other.describeOneOffSelectionRestoration(f.receipt),null);
+  assert.equal(other.commitOneOffSelectionRestoration({...f.receipt},{},f.confirmation.modeEntry,null,
+    {persistedSearchTerms:false},()=>true),null);
+  other.close();f.editor.close();
+});
+
+
+test('failed replacement of a restoration proposal cannot bypass required deselection before dispatch',async()=>{
+  const f=await oneOffSelectionFixture(),old=f.restoration;
+  assert.equal(f.editor.beginOneOffSelectionRestoration(f.proposal.token,{...f.restoreEntry,pageProxyValid:true}),null);
+  assert.equal(f.editor.getOneOffSelectionRestoration(old.token),null);
+  await assert.rejects(f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:old.searchMode},{inOverflowPanel:false}),/Stale/);
+  const replacement=f.editor.beginOneOffSelectionRestoration(f.proposal.token,f.restoreEntry);
+  assert.equal(f.editor.commitOneOffSelectionRestoration(replacement.token,oneOffRestorationObservation(replacement)).applied,true);
+  const query=await f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:replacement.searchMode},{inOverflowPanel:false});
+  assert.equal(query.id,f.admission.queryId);assert.equal(f.writes.length,3);f.editor.close();
 });

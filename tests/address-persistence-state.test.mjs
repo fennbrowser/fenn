@@ -301,3 +301,40 @@ test('preview dismissal validates owned preview before clearing both mode slots'
   assert.equal(owner.snapshot(browser).preview,null);assert.equal(owner.snapshot(browser).confirmed,null);
   assert.equal(owner.preparePreviewDismissal(browser,preview),null);
 });
+
+
+function confirmedModeReaderFixture(){
+  const {owner}=ownerFixture(),source=read('UrlbarParentController.sys.mjs');
+  const methods=['captureIndependentQueryAuthority','describeIndependentConfirmedMode'].map(name=>{
+    const start=source.indexOf('  '+name+'(');assert.ok(start>=0);return source.slice(start,source.indexOf('\n  /**',start));
+  }).join('\n');
+  const Parent=new Function('lazy',`return class { #destroyed=false; #isAddressbar=true; ${methods} }`)({independentUrlbarBrowserState:owner});
+  const parent=new Parent(),browser={browserId:17,userTypedValue:'words',lastLocationChange:2,browsingContext:{currentWindowGlobal:{}}};
+  parent.resolveTargetBrowser=()=>browser;parent.browserWindow={gBrowser:{selectedBrowser:browser}};
+  const mode={source:5,isPreview:false,entry:'other'},setup=owner.prepareMode(browser,mode);owner.commit(browser,setup.token);
+  const preview=owner.prepareMode(browser,{engineName:'preview',isPreview:true});owner.commit(browser,preview.token);
+  return {parent,browser,owner,token:preview.token,mode};
+}
+
+test('owned confirmed-mode reader ignores preview and rechecks browser lifetime and receipt',()=>{
+  for(const mutation of ['none','typed','token','selected','document','location','target','content']){
+    const f=confirmedModeReaderFixture(),read=()=>f.parent.describeIndependentConfirmedMode(17,f.token,'words');
+    const valid=read();assert.equal(valid.searchMode.source,5);assert.equal(Object.isFrozen(valid.searchMode),true);
+    if(mutation==='typed')f.browser.userTypedValue='changed';
+    if(mutation==='token'){const p=f.owner.prepareMode(f.browser,null);f.owner.commit(f.browser,p.token);}
+    if(mutation==='selected')f.parent.browserWindow.gBrowser.selectedBrowser={};
+    if(mutation==='document')f.browser.browsingContext.currentWindowGlobal=null;
+    if(mutation==='location'){let epoch=2;Object.defineProperty(f.browser,'lastLocationChange',{get(){return epoch++;}});}
+    if(mutation==='target'){let count=0;f.parent.resolveTargetBrowser=()=>count++?{}:f.browser;}
+    if(mutation==='content')f.parent.rendersInContentProcess=true;
+    if(mutation==='none')assert.equal(read().searchMode.source,5);else assert.equal(read(),null,mutation);
+  }
+});
+
+test('owned confirmed-mode reader distinguishes null mode from a read invalidated during snapshot',()=>{
+  const f=confirmedModeReaderFixture(),p=f.owner.prepareMode(f.browser,null);f.owner.commit(f.browser,p.token);
+  assert.equal(f.parent.describeIndependentConfirmedMode(17,p.token,'words').searchMode,null);
+  const snapshot=f.owner.snapshot.bind(f.owner);
+  f.owner.snapshot=browser=>{const result=snapshot(browser);browser.userTypedValue='new';return result;};
+  assert.equal(f.parent.describeIndependentConfirmedMode(17,p.token,'words'),null);
+});

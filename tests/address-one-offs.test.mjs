@@ -177,3 +177,19 @@ test('settings and add-engine one-offs retain their special command/discard path
     assert.deepEqual(f.calls.map(c=>c[0]),['discard','command']);assert.equal(f.view.selectedButton,null);
   }
 });
+
+
+test('retained deselection restores confirmed state once for a selected mode, including null restoration',()=>{
+  // Exercise the subclass setter with a minimal base, avoiding unrelated DOM effects.
+  class Base {get selectedButton(){return this.button;}set selectedButton(value){this.button=value;}}
+  const c=vm.createContext({SearchOneOffs:Base,XPCOMUtils:{declareLazy:()=>({})}});
+  vm.runInContext(source('urlbar/UrlbarSearchOneOffs.sys.mjs')+';this.Child=UrlbarSearchOneOffs;',c);
+  for(const confirmed of [null,{source:5,isPreview:false}]){
+    const oneOff=Object.create(c.Child.prototype),writes=[];let mode={source:5,isPreview:true};
+    oneOff.view={oneOffSearchButtons:{settingsButton:{}}};oneOff.button={};
+    oneOff.input={get searchMode(){return mode;},set searchMode(value){writes.push(value);mode=value;},
+      restoreSearchModeState(){this.searchMode=confirmed;}};
+    oneOff.selectedButton=null;assert.equal(writes.length,1);assert.equal(mode,confirmed);
+    oneOff.selectedButton=null;assert.equal(writes.length,1);
+  }
+});
