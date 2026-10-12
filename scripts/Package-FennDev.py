@@ -130,6 +130,13 @@ def firefox_series(version):
     return tuple(int(part) for part in match.groups())
 
 
+def is_release_version(version):
+    """Whether a Firefox version is a release-channel one: 159.0 or 159.0.1, not
+    159.0a1 (Nightly), 159.0b3 (beta) or 159.0esr. Fenn pins Firefox to release
+    tags, and the Store package must come from one."""
+    return re.fullmatch(r"\d+\.\d+(?:\.\d+)?", version) is not None
+
+
 def next_version(series, *known):
     """The next package of this Firefox series: <major>.<minor>.<build>.0.
 
@@ -625,6 +632,9 @@ def main():
     framework = installed_framework(min_version)
     record = framework_record(framework)
     browser_version = firefox_version(clean)
+    if lane.store and not is_release_version(browser_version):
+        raise RuntimeError(f"The Store package needs Firefox from a release tag; {objdir} is {browser_version}. "
+                           "Rebase the Firefox pin to a release tag first.")
     installed = installed_version(lane)
     if args.version is None:
         # The loose lane's registration is its only record; its runs are superseded.

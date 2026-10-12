@@ -67,6 +67,12 @@ class DevPackageTests(unittest.TestCase):
             with self.subTest(version=version), self.assertRaises(ValueError):
                 package.firefox_series(version)
 
+    def test_only_release_channel_versions_count_as_releases(self):
+        for version in ("159.0", "159.0.1", "160.1"):
+            self.assertTrue(package.is_release_version(version), version)
+        for version in ("159.0a1", "159.0b3", "159.0rc1", "159.0esr", "159", "159.0.1.0"):
+            self.assertFalse(package.is_release_version(version), version)
+
     def test_firefox_version_reads_packaged_application_ini(self):
         with tempfile.TemporaryDirectory() as temp:
             (Path(temp) / "application.ini").write_text("[App]\nName=Firefox\nVersion=159.0a1\n")
