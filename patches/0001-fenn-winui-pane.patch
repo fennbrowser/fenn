@@ -4486,7 +4486,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..f8e326654c 100644
+index a077de625f..2643122f2f 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,22 @@
@@ -4650,6 +4650,25 @@ index a077de625f..f8e326654c 100644
    }
  
    /**
+@@ -1423,12 +1419,12 @@ ${
+     // Whether the user has been editing the value in the URL bar after selecting
+     // the result. However, if the result type is tip, pick as it is. The result
+     // heuristic is also kept the behavior as is for safety.
+-    let safeToPickResult =
+-      result &&
+-      (result.heuristic ||
+-        !this.valueIsTyped ||
+-        result.type == UrlbarShared.RESULT_TYPE.TIP ||
+-        this.value == this.#getValueFromResult(result));
++    const input = this;
++    let safeToPickResult = UrlbarQueryModel.safeToPickNavigationResult(result, {
++      get valueIsTyped() { return input.valueIsTyped; },
++      get value() { return input.value; },
++      getResultValue: selected => this.#getValueFromResult(selected),
++    });
+ 
+     // In an engine search mode the selected engine is authoritative at Enter
+     // (see #searchModeEngineForEnterKey); a stale heuristic must not be picked.
 @@ -1438,13 +1434,10 @@ ${
        oneOffParams
      );
@@ -9837,10 +9856,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..f24f2c9a2c
+index 0000000000..b410b285cd
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3391 @@
+@@ -0,0 +1,3402 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11804,9 +11823,19 @@ index 0000000000..f24f2c9a2c
 +  describeOneOffNavigationPrecedence(receiptToken, observation) {
 +    const receipt = this.getAcknowledgedOneOffEngineSearch(receiptToken), pending = this.#oneOffCommand;
 +    if (!receipt || !observation) return null;
-+    const description = this.#queries.describeOneOffNavigationPrecedence(pending.prepared, receipt.edit.text, observation);
++    const { selectedResult, firstResult, hasSelectedElement, safeToPickResult, valueIsTyped } = observation;
++    if (typeof valueIsTyped !== "boolean" || this.getAcknowledgedOneOffEngineSearch(receiptToken) !== receipt ||
++        (selectedResult !== null && !this.#queries.ownsResult(receipt.queryId, selectedResult))) return null;
++    const computedSafeToPick = UrlbarQueryModel.safeToPickNavigationResult(selectedResult, {
++      valueIsTyped, value: receipt.edit.text,
++      getResultValue: result => this.getAcknowledgedOneOffEngineSearch(receiptToken) === receipt
++        ? this.describeResultInput(receipt.edit.revision, receipt.queryId, result).value : null,
++    });
++    if (computedSafeToPick !== safeToPickResult || this.getAcknowledgedOneOffEngineSearch(receiptToken) !== receipt) return null;
++    const description = this.#queries.describeOneOffNavigationPrecedence(pending.prepared, receipt.edit.text,
++      { selectedResult, firstResult, hasSelectedElement, safeToPickResult });
 +    return description && this.getAcknowledgedOneOffEngineSearch(receiptToken) === receipt && this.#oneOffCommand === pending
-+      ? Object.freeze({ ...description, candidateToken: receipt.candidateToken }) : null;
++      ? Object.freeze({ ...description, candidateToken: receipt.candidateToken, safeToPickVerified: true, valueIsTyped }) : null;
 +  }
 +
 +  /** Capture selection facts separately from current-value result acknowledgment. */
@@ -11816,7 +11845,7 @@ index 0000000000..f24f2c9a2c
 +    const marker = Object.freeze({}), generation = this.#selectionGeneration;
 +    captured.selection = marker;
 +    const facts = Object.freeze({ selectedResult: observation.selectedResult, firstResult: observation.firstResult,
-+      hasSelectedElement: observation.hasSelectedElement, safeToPickResult: observation.safeToPickResult });
++      hasSelectedElement: observation.hasSelectedElement, safeToPickResult: observation.safeToPickResult, valueIsTyped: observation.valueIsTyped });
 +    const description = this.describeOneOffNavigationPrecedence(receiptToken, facts);
 +    if (!description || this.#oneOffCommand?.engineSearch !== captured || captured.selection !== marker ||
 +        generation !== this.#selectionGeneration || this.getAcknowledgedOneOffEngineSearch(receiptToken) !== receipt) return null;
@@ -11842,6 +11871,7 @@ index 0000000000..f24f2c9a2c
 +    const edit = proposal.edit, facts = selection.facts;
 +    if (observation.selectedResult !== facts.selectedResult || observation.firstResult !== facts.firstResult ||
 +        observation.hasSelectedElement !== facts.hasSelectedElement || observation.safeToPickResult !== facts.safeToPickResult ||
++        observation.valueIsTyped !== facts.valueIsTyped ||
 +        observation.resultForCurrentValue !== captured.resultForCurrentValue ||
 +        observation.revision !== edit.revision || observation.selectionRevision !== edit.selectionRevision ||
 +        observation.text !== edit.text || observation.selectionStart !== edit.selectionStart ||
@@ -14988,10 +15018,10 @@ index 0000000000..ed9a06b8c0
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQueryModel.mjs b/browser/components/urlbar/content/UrlbarQueryModel.mjs
 new file mode 100644
-index 0000000000..e608f7939f
+index 0000000000..d76aa67401
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQueryModel.mjs
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,282 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15006,6 +15036,12 @@ index 0000000000..e608f7939f
 +  /** Retained engine-search terms prefer the current-value result's suggestion/query. */
 +  static engineSearchTerms(result, lastSearchString) {
 +    return (result && (result.payload.suggestion || result.payload.query)) || lastSearchString;
++  }
++
++  /** Preserve retained short-circuiting: result text is read only for typed non-tip, non-heuristic results. */
++  static safeToPickNavigationResult(result, state) {
++    return !!(result && (result.heuristic || !state.valueIsTyped || result.type == UrlbarShared.RESULT_TYPE.TIP ||
++      state.value == state.getResultValue(result)));
 +  }
 +
 +  /** Retained selected-element precedence, including the private-engine exception. */

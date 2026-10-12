@@ -7,7 +7,7 @@ const root=new URL('../upstream/firefox/browser/components/urlbar/content/',impo
 const prefs={'maxRichResults':10,'smartbar.maxResults':5,'maxCharsForSearchSuggestions':8,
   'unifiedSearchButton.historyInSearchMode':false};
 const sandbox=vm.createContext({UrlbarPrefs:{get:key=>prefs[key]},
-  UrlbarShared:{RESULT_SOURCE:{ACTIONS:7},isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank'},
+  UrlbarShared:{RESULT_TYPE:{TIP:9},RESULT_SOURCE:{ACTIONS:7},isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank'},
   UrlbarQueryContext:class {constructor(options){Object.assign(this,options);}}});
 vm.runInContext(readFileSync(new URL('UrlbarQueryModel.mjs',root),'utf8').replace(/^import .*;$/gm,'')
   .replace('export class UrlbarQueryModel','this.Model = class UrlbarQueryModel'),sandbox);
@@ -184,4 +184,17 @@ test('token alias precedence preserves autofill and keyword truthiness',()=>{
   for(const [result,expected] of [[null,false],[{},false],[{autofill:{},payload:{}},false],
     [{autofill:{},payload:{keyword:''}},false],[{autofill:{},payload:{keyword:'@example'}},true],
     [{autofill:null,payload:{keyword:'@example'}},false]])assert.equal(sandbox.Model.pickTokenAliasResult(result),expected);
+});
+
+
+test('safe-to-pick policy preserves lazy editor and result-text reads',()=>{
+  for(const [result,typed,value,expected,reads] of [[null,true,'different',false,[]],
+    [{heuristic:true},true,'different',true,[]],[{type:1},false,'different',true,['typed']],
+    [{type:9},true,'different',true,['typed']],[{type:1},true,'same',true,['typed','value','result']],
+    [{type:1},true,'different',false,['typed','value','result']]]){
+    const actual=[];
+    assert.equal(sandbox.Model.safeToPickNavigationResult(result,{get valueIsTyped(){actual.push('typed');return typed;},
+      get value(){actual.push('value');return value;},getResultValue:()=>{actual.push('result');return 'same';}}),expected);
+    assert.deepEqual(actual,reads);
+  }
 });

@@ -7702,10 +7702,10 @@ async function enginePrecedenceFixture(text='typed words'){
 
 test('acknowledged one-off precedence describes safe private selection before alias and engine fallback',async()=>{
   const f=await enginePrecedenceFixture('@alias');
-  const facts={selectedResult:f.result,hasSelectedElement:true,safeToPickResult:true,firstResult:f.result};
+  const facts={selectedResult:f.result,hasSelectedElement:true,safeToPickResult:true,valueIsTyped:false,firstResult:f.result};
   const describe=overrides=>f.editor.describeOneOffNavigationPrecedence(f.receipt.token,{...facts,...overrides});
   assert.equal(describe({}).branch,'selected-private-result');
-  assert.equal(describe({safeToPickResult:false}).branch,'engine-search');
+  assert.equal(describe({safeToPickResult:false,valueIsTyped:true}).branch,'engine-search');
   f.result.payload.isPrivateEngine=false;assert.equal(describe({}).branch,'engine-search');
   f.result.payload.isPrivateEngine=true;
   const alias=describe({selectedResult:null,hasSelectedElement:false,safeToPickResult:false});
@@ -7718,7 +7718,7 @@ test('acknowledged one-off precedence describes safe private selection before al
 test('one-off precedence rejects foreign, reordered or reentrant selection observations and stale host receipts',async()=>{
   for(const kind of ['copy','wrong-first','hidden','missing-element','safe-null','reentry','caret']){
     const f=await enginePrecedenceFixture('@alias');
-    const facts={selectedResult:f.result,hasSelectedElement:true,safeToPickResult:true,firstResult:f.result};
+    const facts={selectedResult:f.result,hasSelectedElement:true,safeToPickResult:true,valueIsTyped:false,firstResult:f.result};
     if(kind==='copy')facts.selectedResult={...f.result};
     if(kind==='wrong-first')facts.firstResult=null;
     if(kind==='hidden')f.editor.publishPresentation(2,f.query.id,[],true);
@@ -7732,7 +7732,7 @@ test('one-off precedence rejects foreign, reordered or reentrant selection obser
 
 
 function engineSelectionFacts(f,selected=true){return {selectedResult:selected?f.result:null,firstResult:f.result,
-  hasSelectedElement:selected,safeToPickResult:selected};}
+  hasSelectedElement:selected,safeToPickResult:selected,valueIsTyped:false};}
 function engineSelectionObservation(f,p,facts){return {...p.edit,...facts,resultForCurrentValue:null,searchMode:null,pageProxyValid:false};}
 
 test('one-off selection acknowledgment binds each precedence branch once without activation',async()=>{
@@ -7752,7 +7752,7 @@ test('one-off selection acknowledgment binds each precedence branch once without
 });
 
 test('one-off selection acknowledgment rejects changed host identity, flags, text, caret and mode',async()=>{
-  const changes={selectedResult:{},firstResult:{},hasSelectedElement:false,safeToPickResult:false,resultForCurrentValue:{},
+  const changes={selectedResult:{},firstResult:{},hasSelectedElement:false,safeToPickResult:false,valueIsTyped:true,resultForCurrentValue:{},
     revision:99,selectionRevision:99,text:'other',selectionStart:0,selectionEnd:0,selectionDirection:'backward',
     composing:true,pageProxyValid:true,searchMode:{engineName:'other'}};
   for(const [key,value] of Object.entries(changes)){
@@ -7794,6 +7794,34 @@ test('reentrant selection observations cannot replace or acknowledge a proposal 
     }};
     assert.equal(f.editor.acknowledgeOneOffNavigationSelection(p.token,observed),null);
     if(action==='recursive')assert.equal(f.editor.getAcknowledgedOneOffNavigationSelection(inner.token),inner);
+    f.editor.close();
+  }
+});
+
+
+test('one-off precedence recomputes typed result text and rejects false safe-to-pick claims',async()=>{
+  const f=await enginePrecedenceFixture('@alias terms'),facts={...engineSelectionFacts(f),valueIsTyped:true};
+  const p=f.editor.beginOneOffNavigationSelection(f.receipt.token,facts);
+  assert.equal(p.branch,'selected-private-result');assert.equal(p.safeToPickVerified,true);
+  const receipt=f.editor.acknowledgeOneOffNavigationSelection(p.token,engineSelectionObservation(f,p,facts));assert.ok(receipt);
+  f.result.payload.suggestion='changed';
+  assert.equal(f.editor.getAcknowledgedOneOffNavigationSelection(receipt.token),null);
+  assert.equal(f.editor.describeOneOffNavigationPrecedence(f.receipt.token,facts),null);
+  const unsafe=f.editor.describeOneOffNavigationPrecedence(f.receipt.token,{...facts,safeToPickResult:false});
+  assert.equal(unsafe.branch,'engine-search');assert.equal(unsafe.safeToPickVerified,true);
+  assert.equal(f.editor.describeOneOffNavigationPrecedence(f.receipt.token,{...facts,valueIsTyped:undefined}),null);f.editor.close();
+});
+
+test('verified safe-to-pick keeps heuristic and non-typed short circuits and rejects reentrant result text',async()=>{
+  for(const kind of ['heuristic','not-typed','reentry']){
+    const f=await enginePrecedenceFixture('@alias terms'),facts={...engineSelectionFacts(f),valueIsTyped:kind!=='not-typed'};
+    if(kind==='heuristic')f.result.heuristic=true;
+    Object.defineProperty(f.result.payload,'suggestion',{get(){
+      if(kind!=='reentry')assert.fail('short-circuited result text read');
+      f.editor.select(2,0,0);return 'terms';
+    }});
+    const result=f.editor.describeOneOffNavigationPrecedence(f.receipt.token,facts);
+    if(kind==='reentry')assert.equal(result,null);else assert.equal(result.branch,'selected-private-result');
     f.editor.close();
   }
 });
