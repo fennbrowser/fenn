@@ -10106,10 +10106,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..225c67c384
+index 0000000000..6b629f1952
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,4038 @@
+@@ -0,0 +1,4051 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11985,6 +11985,19 @@ index 0000000000..225c67c384
 +    this.#check();
 +    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing) throw new Error("Stale editor navigation");
 +    return this.#queries.describeResultNavigation(queryId, result, event, { ...options, searchString: this.#typedText });
++  }
++
++  /** Record a menu command on a visible result; the host supplies the validated command descriptor. */
++  recordResultCommand(revision, queryId, result, event, options = {}) {
++    this.#check();
++    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing || this.#hiddenResults) {
++      throw new Error("Stale editor command");
++    }
++    const edit = this.#edit, mode = this.#searchMode;
++    const facts = Object.freeze({ searchString: this.#typedText, searchMode: mode,
++      isHandoff: options.isHandoff ?? false, persistedSearchTerms: options.persistedSearchTerms ?? false });
++    return this.#queries.recordResultCommandEngagement(queryId, result, event, facts, options.resultAction,
++      () => !this.#closed && this.#isCurrent() && this.#edit === edit && this.#searchMode === mode && !this.#hiddenResults);
 +  }
 +
 +  /** Describe results whose activation records after source restoration and loads nothing itself. */
@@ -14150,10 +14163,10 @@ index 0000000000..225c67c384
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..d8cf281f69
+index 0000000000..da06b0fa3a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1956 @@
+@@ -0,0 +1,1998 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14166,6 +14179,7 @@ index 0000000000..d8cf281f69
 +import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
 +import { UrlbarSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs";
 +import { UrlbarContentUtils } from "chrome://browser/content/urlbar/UrlbarContentUtils.mjs";
++import { UrlbarResultActions } from "chrome://browser/content/urlbar/UrlbarResultActions.mjs";
 +
 +/**
 + * Independent query consumer. No editor or view is constructed or emulated.
@@ -14818,6 +14832,47 @@ index 0000000000..d8cf281f69
 +    this.#check();
 +    return this.#controller.parentController.acknowledgeCurrentLoadRecovery(token, applyEditor,
 +      () => !this.#closed && this.#isCurrent() && editorIsCurrent(), onCommitted);
++  }
++
++  /**
++   * Record a result menu command (dismiss, manage or a provider command) exactly as
++   * Firefox does: the engagement uses the command as its type, providers react in
++   * their engagement callbacks, and the session ends unless Firefox says it is ongoing.
++   */
++  recordResultCommandEngagement(queryId, result, event, facts, resultAction, isCurrent) {
++    this.#check();
++    if (typeof isCurrent !== "function") throw new TypeError("Missing command scope check");
++    if (!UrlbarQueryModel.isResultActivationEvent(event)) throw new TypeError("Invalid result command event");
++    const action = UrlbarQueryModel.normalizeResultCommand(resultAction);
++    if (!this.#engagementActive || this.#endingEngagement || !this.#context.browserId || !isCurrent() ||
++        !this.ownsResult(queryId, result) || !this.#controller.resultsOpen ||
++        !this.#controller.visibleResults.includes(result) ||
++        !UrlbarResultActions.advertisedCommands(result).has(action.command)) return null;
++    const description = this.describeResultEngagement(queryId, result, facts);
++    const query = this.#query, parent = this.#controller.parentController;
++    const current = () => !this.#closed && this.#isCurrent() && this.#query === query && isCurrent() &&
++      this.ownsResult(queryId, result);
++    if (!current()) return null;
++    const details = { ...description.details, selType: action.command, resultAction: action };
++    this.#engagementActive = false;
++    this.#endingEngagement = true;
++    let ongoing = false, recorded = false;
++    try {
++      this.#controller.engagementEvent.record(event, details, description.state);
++      ongoing = !!details.isSessionOngoing;
++      recorded = true;
++    } finally {
++      this.#endingEngagement = false;
++      if (ongoing && current()) this.#engagementActive = true;
++      else if (this.#query === query) this.cancel();
++    }
++    if (!recorded) return null;
++    let managed = false;
++    if (action.command === "manage" && !ongoing && !this.#closed && this.#isCurrent() && isCurrent()) {
++      parent.openPreferences("search-locationBar");
++      managed = true;
++    }
++    return Object.freeze({ recorded: true, sessionOngoing: ongoing, command: action.command, openedPreferences: managed });
 +  }
 +
 +  /** Alias-mode engagement keeps the query alive for the subsequent mode setter. */
@@ -16309,10 +16364,10 @@ index 0000000000..ed9a06b8c0
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQueryModel.mjs b/browser/components/urlbar/content/UrlbarQueryModel.mjs
 new file mode 100644
-index 0000000000..365c09e9a7
+index 0000000000..ce760c92ec
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQueryModel.mjs
-@@ -0,0 +1,306 @@
+@@ -0,0 +1,325 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16490,6 +16545,25 @@ index 0000000000..365c09e9a7
 +    }
 +    if (userContextId !== undefined) throw new TypeError("Unexpected result action container");
 +    return Object.freeze({ openIn });
++  }
++
++  /**
++   * Validate a menu-command fact. Only record-and-return commands are supported
++   * here; destinations belong to `normalizeResultAction` and URL, input and help
++   * actions are unsupported.
++   */
++  static normalizeResultCommand(action) {
++    if (!action || typeof action !== "object") throw new TypeError("Invalid result command");
++    const unsupported = Object.keys(action).filter(key =>
++      !["command", "name"].includes(key) && action[key] !== undefined);
++    if (unsupported.length) throw new TypeError("Unsupported result command");
++    const { command, name } = action;
++    if (typeof command !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(command)) {
++      throw new TypeError("Invalid result command name");
++    }
++    if (command === "help") throw new TypeError("Unsupported result command");
++    if (name !== undefined && typeof name !== "string") throw new TypeError("Invalid result command button");
++    return Object.freeze(name === undefined ? { command } : { command, name });
 +  }
 +
 +  /** Initial result-opening policy; result-specific actions and loads run later. */
@@ -17744,10 +17818,10 @@ index 0000000000..4df5efe958
 +}
 diff --git a/browser/components/urlbar/content/UrlbarResultActions.mjs b/browser/components/urlbar/content/UrlbarResultActions.mjs
 new file mode 100644
-index 0000000000..7a72f0e418
+index 0000000000..a210dd1dda
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarResultActions.mjs
-@@ -0,0 +1,354 @@
+@@ -0,0 +1,373 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17978,13 +18052,34 @@ index 0000000000..7a72f0e418
 +    if (this.commandsCache.has(result)) {
 +      return this.commandsCache.get(result);
 +    }
++    const rv = UrlbarResultActions.resultMenuCommands(result);
++    this.commandsCache.set(result, rv);
++    return rv;
++  }
 +
++  /** Command names a result itself advertises in its menu or buttons; no host or cache involved. */
++  static advertisedCommands(result) {
++    const names = new Set();
++    for (const command of UrlbarResultActions.resultMenuCommands(result) ?? []) {
++      if (command.name && command.name !== "separator") names.add(command.name);
++    }
++    for (const button of result.payload?.buttons ?? []) {
++      if (button.command) names.add(button.command);
++      for (const item of button.menu ?? []) if (item.name) names.add(item.name);
++    }
++    return names;
++  }
++
++  /**
++   * @param {UrlbarResult} result
++   * @returns {?UrlbarResultCommand[]}
++   */
++  static resultMenuCommands(result) {
 +    /**
 +     * @type {?UrlbarResultCommand[]}
 +     */
 +    let commands = result.commands;
 +    if (commands) {
-+      this.commandsCache.set(result, commands);
 +      return commands;
 +    }
 +
@@ -18014,9 +18109,7 @@ index 0000000000..7a72f0e418
 +      });
 +    }
 +
-+    let rv = commands.length ? commands : null;
-+    this.commandsCache.set(result, rv);
-+    return rv;
++    return commands.length ? commands : null;
 +  }
 +
 +  rowLabel(result, context) {

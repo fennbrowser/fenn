@@ -8,6 +8,11 @@ const sharedPolicy=vm.createContext({structuredClone,URL,UrlbarContentUtils:{},U
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarShared.mjs',import.meta.url),'utf8')
   .replace(/^import .*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),sharedPolicy);
 
+const resultActionsContext=vm.createContext({UrlbarPrefs:{get:()=>false},UrlbarContentUtils:{},UrlbarShared:{RESULT_TYPE:{}},UrlbarResult:class {}});
+vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarResultActions.mjs',import.meta.url),'utf8')
+  .replace(/^import .*;\r?$/gm,'').replace('export class UrlbarResultActions','this.UrlbarResultActions = class UrlbarResultActions'),resultActionsContext);
+const UrlbarResultActionsClass=resultActionsContext.UrlbarResultActions;
+
 function fixture({hold=false,uninitializedResults=false,onPresentationRequest=null,isPrivate=true,browserId}={}) {
   const parents=[];
   const prefs={"keepPanelOpenDuringImeComposition":false,"experimental.hideHeuristic":false,openintab:false,ctrlCanonizesURLs:false,"browser.search.openintab":false};
@@ -25,7 +30,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     destroy(){this.destroyed=(this.destroyed??0)+1;}
   }
   let id=0;
-  const sandbox=vm.createContext({structuredClone,console,URL,UrlbarQueryLifecycle,UrlbarParentControllerProxy:class {},
+  const sandbox=vm.createContext({structuredClone,console,URL,UrlbarQueryLifecycle,UrlbarResultActions:UrlbarResultActionsClass,UrlbarParentControllerProxy:class {},
     KeyboardEvent:class {constructor(facts={}){Object.assign(this,{keyCode:13},facts);}getModifierState(key){return key==='AltGraph' && !!this.altGraph;}},KeyEvent:{DOM_VK_RETURN:13},
     UrlbarShared:{COMPOSITION:sharedPolicy.UrlbarShared.COMPOSITION,stripPrefixAndTrim:sharedPolicy.UrlbarShared.stripPrefixAndTrim,getLogger:()=>({debug(){}}),isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank',RESULT_TYPE:sharedPolicy.UrlbarShared.RESULT_TYPE,RESULT_SOURCE:sharedPolicy.UrlbarShared.RESULT_SOURCE,canAutofillURL:sharedPolicy.UrlbarShared.canAutofillURL.bind(sharedPolicy.UrlbarShared),NOTIFICATIONS:{
       RESULTS_CLOSE_REQUESTED:'onResultsCloseRequested',QUERY_RESULT_REMOVED:'onQueryResultRemoved',
@@ -9388,6 +9393,79 @@ test('parent URL preparation validates open-in container and window shapes',asyn
   assert.throws(()=>p.prepareExternalSearchLoad({loadRequest:{engineSearch:{engine:'x',query:'q'}},browserId:42,where:'tab',
     params:{forceForeground:false,avoidBrowserFocus:false,private:false}},t,{engineId:'x',query:'q',opensInPrivateWindow:false}),/Invalid/);
   f.editor.close();
+});
+
+async function commandFixture(){
+  const f=await historyEngagementFixture();
+  f.result.payload={url:'https://history.test/',isBlockable:true,isManageable:true,helpUrl:'https://help.test/'};
+  f.result.commands=[{name:'dismiss',l10n:{id:'d'}},{name:'show_less_frequently',l10n:{id:'s'}},{name:'manage',l10n:{id:'m'}}];
+  const records=[],prefs=[];
+  f.parent.engagementEvent.record=(event,details,state)=>{
+    details.isSessionOngoing=['dismiss','show_less_frequently'].includes(details.selType);
+    records.push({event,details:{...details},state});
+  };
+  f.parent.openPreferences=(...args)=>prefs.push(args);
+  const click={type:'click',button:0,timeStamp:3};
+  return {...f,records,prefs,click,run:(action,event=click,opts={})=>f.editor.recordResultCommand(1,f.q.id,f.result,event,{...opts,resultAction:action})};
+}
+
+test('menu commands record Firefox engagement with the command as type and keep dismissal sessions alive',async()=>{
+  const f=await commandFixture();
+  const first=f.run({command:'dismiss'});
+  assert.deepEqual({...first},{recorded:true,sessionOngoing:true,command:'dismiss',openedPreferences:false});
+  assert.equal(f.records[0].details.selType,'dismiss');assert.equal(f.records[0].details.resultAction.command,'dismiss');
+  assert.equal(f.records[0].details.result,f.result);assert.equal(f.records[0].details.searchString,'typed');
+  assert.equal(f.records[0].state.engagementData.viewIsOpen,true);
+  const second=f.run({command:'show_less_frequently',name:'0'});
+  assert.equal(second.sessionOngoing,true);assert.equal(f.records.length,2);assert.equal(f.prefs.length,0);
+  f.editor.close();
+});
+
+test('manage records then opens preferences once and ends the session',async()=>{
+  const f=await commandFixture();
+  const out=f.run({command:'manage'});
+  assert.deepEqual({...out},{recorded:true,sessionOngoing:false,command:'manage',openedPreferences:true});
+  assert.deepEqual(f.prefs,[['search-locationBar']]);
+  assert.equal(f.records[0].details.selType,'manage');
+  assert.equal(f.run({command:'manage'}),null);assert.equal(f.prefs.length,1);f.editor.close();
+});
+
+test('menu command facts are rejected unless the result advertises them and nothing else is supplied',async()=>{
+  const f=await commandFixture();
+  for(const bad of [{command:'help'},{command:'dismiss',url:'https://a.test/'},{command:'dismiss',input:'x'},
+    {command:'dismiss',openIn:'tab'},{command:'Dismiss'},{command:''},{},null,'dismiss']){
+    assert.throws(()=>f.run(bad),/command/i,JSON.stringify(bad));
+  }
+  assert.throws(()=>f.run({command:'dismiss'},{type:'mousemove',timeStamp:1}),/Invalid/);
+  assert.throws(()=>f.run({command:'dismiss',name:5}),/command/i);
+  assert.equal(f.run({command:'not_advertised'}),null);
+  assert.equal(f.records.length,0);f.editor.close();
+  const g=await commandFixture();g.result.commands=undefined;g.result.payload.isBlockable=false;
+  assert.equal(g.editor.recordResultCommand(1,g.q.id,g.result,g.click,{resultAction:{command:'dismiss'}}),null);
+  g.result.payload.buttons=[{l10n:{id:'b'},command:'opt_in',menu:[{name:'not_now',l10n:{id:'n'}}]}];
+  assert.equal(g.editor.recordResultCommand(1,g.q.id,g.result,g.click,{resultAction:{command:'opt_in'}}).command,'opt_in');
+  g.editor.close();
+});
+
+test('menu commands require a live engagement, current editor and visible result, and run once per session end',async()=>{
+  const a=await commandFixture();a.editor.discardEngagement();assert.equal(a.run({command:'dismiss'}),null);a.editor.close();
+  const b=await commandFixture();b.editor.publishPresentation(1,b.q.id,[],false);
+  assert.equal(b.run({command:'dismiss'}),null);assert.equal(b.records.length,0);b.editor.close();
+  const c=await commandFixture();
+  c.parent.engagementEvent.record=(_e,details)=>{details.isSessionOngoing=true;c.editor.cancel();c.records.push(1);};
+  assert.equal(c.run({command:'dismiss'}).recorded,true);assert.equal(c.records.length,1);
+  assert.equal(c.run({command:'dismiss'}),null);assert.equal(c.records.length,1);c.editor.close();
+  const d=await commandFixture();d.parent.engagementEvent.record=()=>{throw Error('record failure');};
+  assert.throws(()=>d.run({command:'dismiss'}),/record failure/);assert.equal(d.run({command:'dismiss'}),null);d.editor.close();
+});
+
+test('advertised commands are pure over the result and exclude open-in and keyboard entries',()=>{
+  const A=UrlbarResultActionsClass;
+  const names=A.advertisedCommands({payload:{isBlockable:true,helpUrl:'u',isManageable:true,
+    buttons:[{command:'opt_in',menu:[{name:'x'}]},{}]}});
+  assert.deepEqual([...names].sort(),['dismiss','help','manage','opt_in','x']);
+  assert.deepEqual([...A.advertisedCommands({payload:{},commands:[{name:'separator'},{name:'a'},{openIn:'tab'}]})],['a']);
+  assert.equal(A.advertisedCommands({payload:{}}).size,0);
 });
 
 test('private opener checks restored source again after preparation and focus callbacks',()=>{
