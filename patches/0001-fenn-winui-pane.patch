@@ -935,7 +935,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..8ba601e7cf 100644
+index ba254af0c6..6832206532 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -1047,7 +1047,7 @@ index ba254af0c6..8ba601e7cf 100644
    }
  
    /**
-@@ -999,6 +1045,872 @@ export class UrlbarParentController {
+@@ -999,6 +1045,906 @@ export class UrlbarParentController {
      }
    }
  
@@ -1206,12 +1206,17 @@ index ba254af0c6..8ba601e7cf 100644
 +    return this.#prepareResultLoad(loadData, sourceStateToken, true, tabSearchData);
 +  }
 +
++  /** A tab-switch result reuses the acknowledged source restoration, then switches once. */
++  prepareTabSwitch(switchData, sourceStateToken) {
++    return this.#prepareResultLoad(switchData, sourceStateToken, true, null, false, true);
++  }
++
 +  /** URL and keyword results open a new tab only after the same acknowledged source restoration. */
 +  prepareExternalUrlLoad(loadData, sourceStateToken) {
 +    return this.#prepareResultLoad(loadData, sourceStateToken, true, null, true);
 +  }
 +
-+  #prepareResultLoad(loadData, sourceStateToken = null, externalSearch = false, tabSearchData = null, urlLoad = false) {
++  #prepareResultLoad(loadData, sourceStateToken = null, externalSearch = false, tabSearchData = null, urlLoad = false, switchTab = false) {
 +    this.#currentLoad = null;
 +    this.#discardCurrentLoadRecovery();
 +    const generation = ++this.#currentLoadGeneration;
@@ -1221,7 +1226,12 @@ index ba254af0c6..8ba601e7cf 100644
 +      (data.where === "tabshifted") === (data.params.avoidBrowserFocus === true);
 +    const validWindow = data => data.where === "window" && data.params?.forceForeground === true &&
 +      !data.params.private && !data.params.avoidBrowserFocus;
-+    const validExternal = data => !!sourceStateToken && (urlLoad
++    const validSwitch = data => data?.switchTab === true && typeof data.url === "string" && !!data.url &&
++      !data.loadRequest && data.where === undefined && typeof data.heuristic === "boolean" &&
++      typeof data.searchString === "string" &&
++      (data.userContextId === undefined || (Number.isSafeInteger(data.userContextId) && data.userContextId >= 0)) &&
++      (data.tabGroup === undefined || data.tabGroup === null || typeof data.tabGroup === "string");
++    const validExternal = data => !!sourceStateToken && (switchTab ? validSwitch(data) : urlLoad
 +      ? typeof data?.loadRequest?.urlLoad?.url === "string" && !data.loadRequest.engineSearch &&
 +        tabSearchData === null && (validTab(data) || validWindow(data))
 +      : !!data?.loadRequest?.engineSearch &&
@@ -1305,15 +1315,39 @@ index ba254af0c6..8ba601e7cf 100644
 +      if (this.#currentLoadRecovery?.ownerLoad === pending) this.#discardCurrentLoadRecovery();
 +      return { attempted: false, reverted: false, browserId: pending.data.browserId };
 +    }
-+    const dispatch = () => this.#loadURL(pending.data, browser => current(browser) &&
++    const targetCurrent = browser => current(browser) &&
 +      (!pending.sourceStateToken || (pending.sourceCurrent?.() &&
-+        lazy.independentUrlbarBrowserState.isCommitted(browser, pending.sourceStateToken))));
++        lazy.independentUrlbarBrowserState.isCommitted(browser, pending.sourceStateToken)));
++    const dispatch = () => pending.data.switchTab
++      ? this.#dispatchTabSwitch(pending.data, targetCurrent) : this.#loadURL(pending.data, targetCurrent);
 +    const outcome = pending.tabSearchData ? this.#dispatchRecordedResultTab(pending, dispatch) : dispatch();
 +    if (outcome.reverted && !pending.sourceStateToken && current(pending.browser)) {
 +      const recovery = this.#prepareSourceRecovery(pending);
 +      if (recovery) return { ...outcome, recovery };
 +    }
 +    return outcome;
++  }
++
++  /** Whether a prepared, restored load would still dispatch now; consumes nothing. */
++  isCurrentLoadReady(token, isCurrent = () => true) {
++    const pending = this.#currentLoad;
++    if (!pending || pending.token !== token || !pending.sourceRestored || this.#destroyed ||
++        pending.generation !== this.#currentLoadGeneration || typeof isCurrent !== "function" || !isCurrent()) return false;
++    const browser = this.resolveTargetBrowser(pending.data.browserId);
++    return !!browser && browser === pending.browser && browser.browserId === pending.data.browserId &&
++      this.browserWindow.gBrowser.selectedBrowser === browser &&
++      browser.browsingContext?.currentWindowGlobal === pending.document &&
++      browser.lastLocationChange === pending.epoch &&
++      (!pending.sourceStateToken || (!!pending.sourceCurrent?.() &&
++        lazy.independentUrlbarBrowserState.isCommitted(browser, pending.sourceStateToken)));
++  }
++
++  #dispatchTabSwitch(data, targetIsCurrent) {
++    const browser = this.resolveTargetBrowser(data.browserId);
++    if (!browser || !targetIsCurrent(browser)) return { reverted: false, browserId: data.browserId, attempted: false };
++    this.switchToTab({ url: data.url, searchString: data.searchString, userContextId: data.userContextId,
++      tabGroup: data.tabGroup, heuristic: data.heuristic });
++    return { reverted: false, browserId: data.browserId, attempted: true };
 +  }
 +
 +  /** The listener exists only inside this consumed dispatch and accepts its exact tab. */
@@ -1920,7 +1954,7 @@ index ba254af0c6..8ba601e7cf 100644
    /**
     * Loads a URL in the browser window resolved from the actor. The content
     * child supplies the serializable load parameters; the parent fills in the
-@@ -1027,9 +1939,15 @@ export class UrlbarParentController {
+@@ -1027,9 +1973,15 @@ export class UrlbarParentController {
     *   browser to hand `focusBrowser` on the deferred-Enter keyup -- a
     *   content-process input can't resolve the selected browser itself.
     */
@@ -1937,7 +1971,7 @@ index ba254af0c6..8ba601e7cf 100644
      if (!browser) {
        // The tab was closed before the load got here; don't hand its load to
        // whichever tab is selected now.
-@@ -1040,8 +1958,9 @@ export class UrlbarParentController {
+@@ -1040,8 +1992,9 @@ export class UrlbarParentController {
      }
  
      let { url, postData } = lazy.UrlbarUtils.loadRequestToUrl(loadRequest);
@@ -1948,7 +1982,7 @@ index ba254af0c6..8ba601e7cf 100644
      }
      params.postData = postData;
  
-@@ -1055,6 +1974,7 @@ export class UrlbarParentController {
+@@ -1055,6 +2008,7 @@ export class UrlbarParentController {
        });
      }
  
@@ -1956,7 +1990,7 @@ index ba254af0c6..8ba601e7cf 100644
      if (where == "current") {
        params.targetBrowser = browser;
      } else {
-@@ -1071,6 +1991,7 @@ export class UrlbarParentController {
+@@ -1071,6 +2025,7 @@ export class UrlbarParentController {
        browser.focus();
      }
  
@@ -1964,7 +1998,7 @@ index ba254af0c6..8ba601e7cf 100644
      try {
        this.browserWindow.openTrustedLinkIn(url, where, params);
      } catch (ex) {
-@@ -1079,9 +2000,10 @@ export class UrlbarParentController {
+@@ -1079,9 +2034,10 @@ export class UrlbarParentController {
        return {
          reverted: ex.result != Cr.NS_ERROR_LOAD_SHOWED_ERRORPAGE,
          browserId: browser.browserId,
@@ -1976,7 +2010,7 @@ index ba254af0c6..8ba601e7cf 100644
    }
  
    /**
-@@ -1292,10 +2214,22 @@ export class UrlbarParentController {
+@@ -1292,10 +2248,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -2000,7 +2034,7 @@ index ba254af0c6..8ba601e7cf 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +2266,7 @@ export class UrlbarParentController {
+@@ -1332,6 +2300,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -2008,7 +2042,7 @@ index ba254af0c6..8ba601e7cf 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +2290,10 @@ export class UrlbarParentController {
+@@ -1355,6 +2324,10 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
@@ -2019,7 +2053,7 @@ index ba254af0c6..8ba601e7cf 100644
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +2325,7 @@ export class UrlbarParentController {
+@@ -1386,7 +2359,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -2028,7 +2062,7 @@ index ba254af0c6..8ba601e7cf 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +2333,11 @@ export class UrlbarParentController {
+@@ -1394,10 +2367,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -2041,7 +2075,7 @@ index ba254af0c6..8ba601e7cf 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +2355,7 @@ export class UrlbarParentController {
+@@ -1415,7 +2389,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -2050,7 +2084,7 @@ index ba254af0c6..8ba601e7cf 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +2377,7 @@ export class UrlbarParentController {
+@@ -1437,7 +2411,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -2059,7 +2093,7 @@ index ba254af0c6..8ba601e7cf 100644
          break;
      }
    };
-@@ -1727,8 +2667,12 @@ export class TelemetryEvent {
+@@ -1727,8 +2701,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -2073,7 +2107,7 @@ index ba254af0c6..8ba601e7cf 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +2687,7 @@ export class TelemetryEvent {
+@@ -1743,7 +2721,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -2082,7 +2116,7 @@ index ba254af0c6..8ba601e7cf 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +2713,7 @@ export class TelemetryEvent {
+@@ -1769,7 +2747,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -2091,7 +2125,7 @@ index ba254af0c6..8ba601e7cf 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +2724,13 @@ export class TelemetryEvent {
+@@ -1780,12 +2758,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -2107,7 +2141,7 @@ index ba254af0c6..8ba601e7cf 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +2741,7 @@ export class TelemetryEvent {
+@@ -1796,7 +2775,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -2116,7 +2150,7 @@ index ba254af0c6..8ba601e7cf 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +2809,16 @@ export class TelemetryEvent {
+@@ -1864,17 +2843,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -2138,7 +2172,7 @@ index ba254af0c6..8ba601e7cf 100644
      );
    }
  
-@@ -2009,158 +2953,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2987,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -2297,7 +2331,7 @@ index ba254af0c6..8ba601e7cf 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +3313,27 @@ export class TelemetryEvent {
+@@ -2521,17 +3347,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -2334,7 +2368,7 @@ index ba254af0c6..8ba601e7cf 100644
      );
    }
  
-@@ -2548,14 +3350,19 @@ export class TelemetryEvent {
+@@ -2548,14 +3384,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -2360,7 +2394,7 @@ index ba254af0c6..8ba601e7cf 100644
    }
  
    /**
-@@ -2581,39 +3388,4 @@ export class TelemetryEvent {
+@@ -2581,39 +3422,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -10048,10 +10082,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..437254d9a7
+index 0000000000..7ce72f95cc
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,4007 @@
+@@ -0,0 +1,4027 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11640,10 +11674,14 @@ index 0000000000..437254d9a7
 +    this.#navigationReady = null;
 +    this.#navigationRecovery = null;
 +    if (!UrlbarQueryModel.isResultActivationEvent(event)) throw new TypeError("Invalid result activation event");
-+    const plan = this.describeResultNavigation(revision, queryId, result, event, options);
-+    const currentTab = plan && plan.where === "current" && plan.resetSelection && plan.editorValue !== undefined &&
-+      !plan.revertBeforeLoad;
-+    if (!currentTab && !(plan && this.#searchMode === null && UrlbarQuerySession.isExternalUrlPlan(plan, result))) return null;
++    const switching = result?.type === UrlbarShared.RESULT_TYPE.TAB_SWITCH;
++    const plan = switching
++      ? (this.#searchMode === null ? this.describeResultTabSwitch(revision, queryId, result, options) : null)
++      : this.describeResultNavigation(revision, queryId, result, event, options);
++    const currentTab = !switching && plan && plan.where === "current" && plan.resetSelection &&
++      plan.editorValue !== undefined && !plan.revertBeforeLoad;
++    const external = switching ? !!plan : plan && this.#searchMode === null && UrlbarQuerySession.isExternalUrlPlan(plan, result);
++    if (!currentTab && !external) return null;
 +    const edit = this.#edit, searchMode = this.#searchMode, generation = this.#selectionGeneration;
 +    this.freezeResults(revision, queryId);
 +    if (generation !== this.#selectionGeneration || edit !== this.#edit || searchMode !== this.#searchMode ||
@@ -11652,7 +11690,8 @@ index 0000000000..437254d9a7
 +    const selection = this.beginResultSelection(revision, queryId, result);
 +    if (!selection) return null;
 +    const facts = Object.freeze({ selectedTabIsEmpty: options.selectedTabIsEmpty,
-+      originalUntrimmedValue: options.originalUntrimmedValue, deferEnterFocus: options.deferEnterFocus ?? false });
++      originalUntrimmedValue: options.originalUntrimmedValue, deferEnterFocus: options.deferEnterFocus ?? false,
++      ...(switching ? { actionOverride: options.actionOverride } : {}) });
 +    const proposal = Object.freeze({ token: selection.token, queryId, resultId: result.id, edit, plan });
 +    this.#navigationActivation = { proposal, queryId, result, facts, edit, searchMode,
 +      generation: this.#selectionGeneration };
@@ -11728,15 +11767,16 @@ index 0000000000..437254d9a7
 +
 +  /** Begin a new-tab URL/keyword handoff; the ordinary editor write does not apply to it. */
 +  #beginUrlExternalNavigation(pending, options) {
-+    const { queryId, result } = pending, plan = pending.proposal.plan;
-+    if (this.#searchMode !== null || !UrlbarQuerySession.isExternalUrlPlan(plan, result) ||
++    const { queryId, result } = pending, plan = pending.proposal.plan, switching = plan.kind === "tab-switch";
++    if (this.#searchMode !== null || (!switching && !UrlbarQuerySession.isExternalUrlPlan(plan, result)) ||
 +        !this.#queries.ownsVisibleResult(queryId, result)) return null;
 +    const input = this.describeResultInput(this.#edit.revision, queryId, result);
 +    if (typeof input.value !== "string") return null;
 +    const facts = Object.freeze({ selectedTabIsEmpty: options.selectedTabIsEmpty,
 +      originalUntrimmedValue: options.originalUntrimmedValue, searchString: this.#typedText, searchMode: null,
-+      isHandoff: options.isHandoff ?? false, persistedSearchTerms: options.persistedSearchTerms ?? false });
-+    const external = { receipt: Object.freeze({ queryId, engineId: null, navigation: plan }), result,
++      isHandoff: options.isHandoff ?? false, persistedSearchTerms: options.persistedSearchTerms ?? false,
++      ...(switching ? { actionOverride: options.actionOverride } : {}) });
++    const external = { receipt: Object.freeze({ queryId, engineId: null, navigation: plan }), result, switching,
 +      engineName: undefined, payload: structuredClone(result.payload), facts, edit: this.#edit, mode: this.#searchMode,
 +      generation: this.#selectionGeneration, phase: "input", load: null };
 +    this.#discardExternalNavigationActivation();
@@ -11756,11 +11796,15 @@ index 0000000000..437254d9a7
 +  #navigationIsCurrent(pending, event, options) {
 +    if (!pending || pending.edit !== this.#edit || this.#edit.composing || this.#hiddenResults ||
 +        pending.searchMode !== this.#searchMode) return false;
++    const switching = pending.proposal.plan?.kind === "tab-switch";
 +    const facts = { selectedTabIsEmpty: options?.selectedTabIsEmpty,
-+      originalUntrimmedValue: options?.originalUntrimmedValue, deferEnterFocus: options?.deferEnterFocus ?? false };
++      originalUntrimmedValue: options?.originalUntrimmedValue, deferEnterFocus: options?.deferEnterFocus ?? false,
++      ...(switching ? { actionOverride: options?.actionOverride } : {}) };
 +    if (!UrlbarShared.deepEqual(facts, pending.facts)) return false;
 +    try {
-+      const live = this.describeResultNavigation(this.#edit.revision, pending.queryId, pending.result, event, facts);
++      const live = switching
++        ? this.describeResultTabSwitch(this.#edit.revision, pending.queryId, pending.result, facts)
++        : this.describeResultNavigation(this.#edit.revision, pending.queryId, pending.result, event, facts);
 +      if (!live || !UrlbarShared.deepEqual(live, pending.proposal.plan)) return false;
 +      // A one-off result handoff pins engine identity, including across the host
 +      // editor write; a same-name engine replacement cannot inherit the load.
@@ -11910,6 +11954,13 @@ index 0000000000..437254d9a7
 +    this.#check();
 +    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing) throw new Error("Stale editor navigation");
 +    return this.#queries.describeResultNavigation(queryId, result, event, { ...options, searchString: this.#typedText });
++  }
++
++  describeResultTabSwitch(revision, queryId, result, options) {
++    this.#check();
++    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing) throw new Error("Stale editor tab switch");
++    return this.#queries.describeResultTabSwitch(queryId, result,
++      { searchString: this.#typedText, actionOverride: options?.actionOverride });
 +  }
 +
 +  describeResultLoad(revision, queryId, result, event, options) {
@@ -12322,8 +12373,11 @@ index 0000000000..437254d9a7
 +      { reason: "external-result-input", token, queryId: pending.receipt.queryId, edit: pending.edit }) : null;
 +    const state = this.#queries.commitResultInputState({ persistedSearchTerms }, current, notify);
 +    if (!state?.applied || !current()) return null;
-+    pending.load = this.#queries.prepareExternalResultNavigation(pending.receipt.queryId, pending.result, event,
-+      pending.facts, pending.receipt.navigation, state.stateToken, current);
++    pending.load = pending.switching
++      ? this.#queries.prepareExternalTabSwitch(pending.receipt.queryId, pending.result, event,
++        { ...pending.facts, searchString: pending.facts.searchString }, pending.receipt.navigation, state.stateToken, current)
++      : this.#queries.prepareExternalResultNavigation(pending.receipt.queryId, pending.result, event,
++        pending.facts, pending.receipt.navigation, state.stateToken, current);
 +    if (!pending.load || !current()) return null;
 +    const recovery = this.#queries.getExternalResultRevert(pending.load);
 +    if (!recovery || !current()) return null;
@@ -14061,10 +14115,10 @@ index 0000000000..437254d9a7
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..a5352a1423
+index 0000000000..8e645e10ff
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1860 @@
+@@ -0,0 +1,1922 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14541,6 +14595,53 @@ index 0000000000..a5352a1423
 +      : plan.where === "tabshifted" && params.avoidBrowserFocus === true && plan.resetSelection === false;
 +  }
 +
++  /** Describe a default-behavior switch to an open tab; the host must state that no action override is held. */
++  describeResultTabSwitch(queryId, result, { searchString, actionOverride } = {}) {
++    this.#check();
++    if (typeof actionOverride !== "boolean" || typeof searchString !== "string") throw new TypeError("Invalid tab-switch facts");
++    if (!this.ownsResult(queryId, result) || !this.#controller.resultsOpen ||
++        !this.#controller.visibleResults.includes(result)) throw new Error("Stale tab-switch result");
++    const payload = result.payload;
++    const userContextId = payload?.userContext?.id, tabGroup = payload?.tabGroup ?? null;
++    if (result.type !== UrlbarShared.RESULT_TYPE.TAB_SWITCH || actionOverride ||
++        UrlbarPrefs.get("secondaryActions.switchToTab") || payload.providesSearchMode ||
++        typeof payload.url !== "string" || !payload.url ||
++        (userContextId !== undefined && !(Number.isSafeInteger(userContextId) && userContextId >= 0)) ||
++        (tabGroup !== null && typeof tabGroup !== "string")) return null;
++    return Object.freeze({ kind: "tab-switch", url: payload.url, userContextId: userContextId ?? 0,
++      tabGroup, heuristic: !!result.heuristic, searchString });
++  }
++
++  /** Pin a tab switch behind acknowledged source restoration; engagement is recorded at commit. */
++  prepareExternalTabSwitch(queryId, result, event, options, plan, sourceStateToken, isEditorCurrent) {
++    this.#check();
++    if (!this.#engagementActive || this.#endingEngagement || !this.#context.browserId ||
++        plan?.kind !== "tab-switch" || !UrlbarQueryModel.isResultActivationEvent(event) ||
++        !UrlbarShared.deepEqual(this.describeResultTabSwitch(queryId, result, options), plan)) return null;
++    const parent = this.#controller.parentController;
++    const payload = structuredClone(result.payload), query = this.#query;
++    const current = () => !this.#closed && this.#isCurrent() && isEditorCurrent() && this.#query === query &&
++      this.ownsResult(queryId, result) && this.#controller.resultsOpen &&
++      this.#controller.visibleResults.includes(result) && UrlbarShared.deepEqual(result.payload, payload) && isEditorCurrent();
++    if (!current()) return null;
++    const token = parent.prepareTabSwitch({ switchTab: true, url: plan.url, userContextId: plan.userContextId,
++      tabGroup: plan.tabGroup, heuristic: plan.heuristic, searchString: plan.searchString,
++      browserId: this.#context.browserId }, sourceStateToken);
++    if (!token) return null;
++    let recovery = null;
++    try {
++      if (!current()) return null;
++      recovery = parent.prepareExternalSourceRevert(token);
++      if (!recovery || !current()) return null;
++      const receipt = Object.freeze({ token: Object.freeze({}), recovery });
++      this.#externalResultLoads.set(receipt, { token, parent, current, result, used: false,
++        tabSwitch: Object.freeze({ queryId, event, options: Object.freeze({ ...options }) }) });
++      return receipt;
++    } finally {
++      if (!recovery || !current()) parent.discardCurrentLoad(token);
++    }
++  }
++
 +  /** A new, non-private, focused window opened by a plain Shift+Enter style activation. */
 +  static isExternalWindowPlan(plan) {
 +    const params = plan?.openParams;
@@ -14616,6 +14717,17 @@ index 0000000000..a5352a1423
 +    const pending = this.#externalResultLoads.get(receipt);
 +    if (!pending || pending.used) return null;
 +    pending.used = true;
++    if (pending.tabSwitch) {
++      const { queryId, event, options } = pending.tabSwitch;
++      let outcome = null;
++      try {
++        if (!pending.current() || !pending.parent.isCurrentLoadReady(pending.token, pending.current)) return null;
++        this.#recordResultEngagement(queryId, pending.result, event, options, () => {
++          if (pending.current()) outcome = pending.parent.commitCurrentLoad(pending.token, pending.current);
++        }, false, false, true);
++        return outcome;
++      } finally { pending.parent.discardCurrentLoad(pending.token); }
++    }
 +    try {
 +      if (!pending.current()) return null;
 +      pending.parent.notifyStartNavigation(pending.result);
@@ -14695,12 +14807,16 @@ index 0000000000..a5352a1423
 +    return this.#recordResultEngagement(queryId, result, event, options);
 +  }
 +
-+  #recordResultEngagement(queryId, result, event, options, afterRecord = null, privateWindow = false, deferTabSearch = false) {
++  #recordResultEngagement(queryId, result, event, options, afterRecord = null, privateWindow = false, deferTabSearch = false,
++    tabSwitch = false) {
 +    this.#check();
 +    if (!this.#engagementActive || this.#endingEngagement) return false;
 +    if (!UrlbarQueryModel.isResultActivationEvent(event)) throw new TypeError("Invalid result engagement event");
-+    if (![UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.SEARCH, UrlbarShared.RESULT_TYPE.KEYWORD].includes(result?.type) ||
-+        result.payload?.providesSearchMode) throw new Error("Unsupported terminal engagement");
++    const terminalTypes = tabSwitch ? [UrlbarShared.RESULT_TYPE.TAB_SWITCH]
++      : [UrlbarShared.RESULT_TYPE.URL, UrlbarShared.RESULT_TYPE.SEARCH, UrlbarShared.RESULT_TYPE.KEYWORD];
++    if (!terminalTypes.includes(result?.type) || result.payload?.providesSearchMode) {
++      throw new Error("Unsupported terminal engagement");
++    }
 +    const { trackBounce = false, recordHistory = false, recordSearch = false, checkSearchDNS = false, querySearchBackend = false } = options ?? {};
 +    if (typeof trackBounce !== "boolean" || (trackBounce && !this.#context.browserId)) {
 +      throw new TypeError("Bounce tracking requires a pinned browser identity");

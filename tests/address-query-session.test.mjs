@@ -9095,11 +9095,16 @@ async function urlTabActivationFixture({where='tab',type='URL'}={}){
   const f=await historyEngagementFixture();
   if(where==='tabshifted')f.sandbox.UrlbarContentUtils.willLoadInBackground=w=>w==='tabshifted';
   if(type==='KEYWORD'){f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.KEYWORD;f.result.payload.input='kw words';}
+  if(type==='SWITCH'){
+    f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.TAB_SWITCH;f.result.payload={url:'https://open.test/',userContext:{id:3},tabGroup:'g1'};
+    f.prefs['secondaryActions.switchToTab']=false;
+  }
   const source=privateParentFixture(),listeners=new Set(),postData={post:'kw'};
   source.lazy.UrlbarUtils.loadRequestToUrl=()=>({url:'https://history.test/',postData:type==='KEYWORD'?postData:null});
   source.p.browserWindow.gBrowser.tabContainer={addEventListener:(_n,cb)=>listeners.add(cb),removeEventListener:(_n,cb)=>listeners.delete(cb)};
   source.p.browserWindow.openTrustedLinkIn=(url,w,params)=>source.calls.push({url,where:w,params});
-  for(const name of ['commitIndependentModeState','prepareExternalUrlLoad','prepareExternalSourceRevert',
+  const switches=[];source.p.switchToTab=data=>{switches.push(data);};
+  for(const name of ['commitIndependentModeState','prepareExternalUrlLoad','prepareTabSwitch','isCurrentLoadReady','prepareExternalSourceRevert',
     'getCurrentLoadRecovery','acknowledgeCurrentLoadRecovery','commitCurrentLoad','discardCurrentLoad'])f.parent[name]=source.p[name].bind(source.p);
   f.parent.prepareExternalSearchLoad=()=>assert.fail('search load used for URL result');
   f.parent.recordSearch=()=>assert.fail('URL result recorded a search');
@@ -9107,10 +9112,10 @@ async function urlTabActivationFixture({where='tab',type='URL'}={}){
   f.parent.onBeforeSelection=()=>f.calls.push(['before']);f.parent.onSelection=()=>f.calls.push(['selected']);
   f.parent.notifyStartNavigation=r=>{assert.equal(r,f.result);f.calls.push(['notify']);};
   f.parent.clearAutofillBackspaceEntryForUrl=()=>{};
-  const event={...f.event,where},options=f.options;
+  const event={...f.event,where},options={...f.options,...(type==='SWITCH'?{actionOverride:false}:{})};
   const begin=()=>f.editor.beginNavigationActivation(1,f.q.id,f.result,event,options);
   const ack=p=>f.editor.acknowledgeNavigationActivation(p.token,{queryId:p.queryId,resultId:p.resultId},event,options);
-  return {...f,source,listeners,postData,event,begin,ack};
+  return {...f,source,listeners,postData,event,options,begin,ack,switches};
 }
 function urlInput(f){
   const p=f.begin();assert.ok(p);const write=f.ack(p);assert.ok(write);return write;
@@ -9189,6 +9194,56 @@ test('ordinary new-tab activation rejects stale source, editor and result author
     assert.equal(f.editor.commitOneOffExternalNavigation(revert.token)?.attempted??false,false,phase+action);
     assert.equal(f.source.calls.length,0,phase+action);f.editor.close();
   }
+});
+
+test('tab-switch activation restores source, records engagement after restoration and switches once',async()=>{
+  const f=await urlTabActivationFixture({type:'SWITCH'}),revert=urlRevert(f);
+  assert.equal(f.write?.value??revert.value,'source.test/');
+  assert.deepEqual(f.calls.map(c=>c[0]),['before','selected']);
+  assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);assert.equal(f.switches.length,0);
+  assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+  assert.deepEqual(f.calls.map(c=>c[0]),['before','selected']);assert.equal(f.source.browser.userTypedValue,null);
+  const outcome=f.editor.commitOneOffExternalNavigation(revert.token);
+  assert.equal(outcome.attempted,true);assert.equal(f.switches.length,1);
+  assert.deepEqual(f.switches[0],{url:'https://open.test/',searchString:'typed',userContextId:3,tabGroup:'g1',heuristic:false});
+  assert.deepEqual(f.calls.map(c=>c[0]),['before','selected','record']);
+  assert.equal(f.source.calls.length,0);assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);f.editor.close();
+});
+
+test('tab-switch activation requires an explicit no-override fact and the default switch behavior',async()=>{
+  const f=await urlTabActivationFixture({type:'SWITCH'});
+  assert.throws(()=>f.editor.beginNavigationActivation(1,f.q.id,f.result,f.event,{...f.options,actionOverride:undefined}),/Invalid/);
+  assert.equal(f.editor.beginNavigationActivation(1,f.q.id,f.result,f.event,{...f.options,actionOverride:true}),null);
+  f.prefs['secondaryActions.switchToTab']=true;assert.equal(f.begin(),null);assert.equal(f.calls.length,0);f.editor.close();
+  const g=await urlTabActivationFixture({type:'SWITCH'});g.result.payload.url='';assert.equal(g.begin(),null);g.editor.close();
+  const h=await urlTabActivationFixture({type:'SWITCH'});h.result.payload.userContext={id:-1};assert.equal(h.begin(),null);h.editor.close();
+});
+
+test('tab-switch activation rejects stale source, editor and result authority without recording or switching',async()=>{
+  for(const phase of ['restore','dispatch'])for(const action of ['document','tab','edit','typed','payload']){
+    const f=await urlTabActivationFixture({type:'SWITCH'}),revert=urlRevert(f);
+    if(phase==='dispatch')assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    if(action==='document')f.source.browser.browsingContext.currentWindowGlobal={};
+    if(action==='tab')f.source.p.browserWindow.gBrowser.selectedBrowser={};
+    if(action==='edit')f.editor.cancel();
+    if(action==='typed')f.source.browser.userTypedValue='new edit';
+    if(action==='payload')f.result.payload.url='https://changed.test/';
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),false,phase+action);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token)?.attempted??false,false,phase+action);
+    assert.equal(f.switches.length,0,phase+action);assert.equal(f.calls.filter(c=>c[0]==='record').length,0,phase+action);f.editor.close();
+  }
+});
+
+test('tab-switch parent preparation validates its shape and consumes once',async()=>{
+  const f=await urlTabActivationFixture({type:'SWITCH'}),p=f.source.p,t=f.source.stateToken;
+  const ok={switchTab:true,url:'https://open.test/',userContextId:0,tabGroup:null,heuristic:false,searchString:'x',browserId:42};
+  for(const bad of [{...ok,url:''},{...ok,switchTab:false},{...ok,heuristic:1},{...ok,searchString:1},{...ok,userContextId:-1},
+    {...ok,tabGroup:5},{...ok,where:'tab'},{...ok,loadRequest:{urlLoad:{url:'https://a.test/'}}}]){
+    assert.throws(()=>p.prepareTabSwitch(bad,t),/Invalid/);
+  }
+  assert.throws(()=>p.prepareTabSwitch(ok,null),/Invalid/);
+  const token=p.prepareTabSwitch(ok,t);assert.ok(token);assert.equal(p.isCurrentLoadReady(token),false);
+  assert.equal(p.commitCurrentLoad(token).attempted,false);assert.equal(f.switches.length,0);f.editor.close();
 });
 
 test('private opener checks restored source again after preparation and focus callbacks',()=>{
