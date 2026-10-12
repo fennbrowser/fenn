@@ -935,7 +935,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..890380ddfa 100644
+index ba254af0c6..f4a96ee91c 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -1047,7 +1047,7 @@ index ba254af0c6..890380ddfa 100644
    }
  
    /**
-@@ -999,6 +1045,826 @@ export class UrlbarParentController {
+@@ -999,6 +1045,860 @@ export class UrlbarParentController {
      }
    }
  
@@ -1201,26 +1201,33 @@ index ba254af0c6..890380ddfa 100644
 +    return this.#prepareResultLoad(loadData);
 +  }
 +
-+  /** Private search results keep source restoration separate from the eventual opener. */
-+  preparePrivateWindowLoad(loadData, sourceStateToken) {
-+    return this.#prepareResultLoad(loadData, sourceStateToken, true);
++  /** External search results restore the source before a private window or foreground tab opens. */
++  prepareExternalSearchLoad(loadData, sourceStateToken, tabSearchData = null) {
++    return this.#prepareResultLoad(loadData, sourceStateToken, true, tabSearchData);
 +  }
 +
-+  #prepareResultLoad(loadData, sourceStateToken = null, privateWindow = false) {
++  #prepareResultLoad(loadData, sourceStateToken = null, externalSearch = false, tabSearchData = null) {
 +    this.#currentLoad = null;
 +    this.#discardCurrentLoadRecovery();
 +    const generation = ++this.#currentLoadGeneration;
 +    if (this.#destroyed || this.rendersInContentProcess || !this.#isAddressbar) return null;
-+    if (privateWindow ? loadData?.where !== "window" || loadData.params?.private !== true ||
-+        !loadData.loadRequest?.engineSearch || !sourceStateToken : loadData?.where !== "current") {
++    const validExternal = data => !!sourceStateToken && !!data?.loadRequest?.engineSearch &&
++      (data.where === "window" && data.params?.private === true && tabSearchData === null ||
++       data.where === "tab" && data.params?.forceForeground === true && !data.params.private &&
++       !data.params.avoidBrowserFocus && typeof tabSearchData?.engineId === "string" &&
++       tabSearchData.query === data.loadRequest.engineSearch.query && !tabSearchData.opensInPrivateWindow);
++    if (externalSearch ? !validExternal(loadData) : loadData?.where !== "current") {
 +      throw new TypeError("Invalid result-load target");
 +    }
 +    if (!Number.isSafeInteger(loadData.browserId) || loadData.browserId <= 0) throw new TypeError("Invalid current-load target");
 +    const data = structuredClone(loadData);
 +    if (!Number.isSafeInteger(data.browserId) || data.browserId <= 0 ||
-+        (privateWindow ? data.where !== "window" || data.params?.private !== true || !data.loadRequest?.engineSearch : data.where !== "current")) {
++        (externalSearch ? !validExternal(data) : data.where !== "current")) {
 +      throw new TypeError("Changed result-load target");
 +    }
++    const recording = tabSearchData ? structuredClone(tabSearchData) : null;
++    if (recording && (typeof recording.engineId !== "string" || recording.query !== data.loadRequest.engineSearch.query ||
++        recording.opensInPrivateWindow)) throw new TypeError("Changed tab search recording");
 +    const browser = this.resolveTargetBrowser(data.browserId);
 +    const document = browser?.browsingContext?.currentWindowGlobal;
 +    if (!browser || browser.browserId !== data.browserId || !document ||
@@ -1228,14 +1235,14 @@ index ba254af0c6..890380ddfa 100644
 +        (sourceStateToken && !lazy.independentUrlbarBrowserState.isCommitted(browser, sourceStateToken))) return null;
 +    const token = Object.freeze({});
 +    this.#currentLoad = { token, data, browser, document, epoch: browser.lastLocationChange, generation,
-+      sourceStateToken, sourceRestored: !sourceStateToken };
++      sourceStateToken, sourceRestored: !sourceStateToken, tabSearchData: recording };
 +    return token;
 +  }
 +
-+  /** Prepare the real source-page restore after engagement, before opening another window. */
-+  preparePrivateWindowSourceRevert(token) {
++  /** Prepare the real source-page restore after engagement, before the external load. */
++  prepareExternalSourceRevert(token) {
 +    const pending = this.#currentLoad;
-+    if (!pending || pending.token !== token || pending.data.where !== "window" || pending.sourceRestored ||
++    if (!pending || pending.token !== token || !pending.sourceStateToken || pending.sourceRestored ||
 +        !lazy.independentUrlbarBrowserState.isCommitted(pending.browser, pending.sourceStateToken)) return null;
 +    return this.#prepareSourceRecovery(pending, true);
 +  }
@@ -1286,14 +1293,41 @@ index ba254af0c6..890380ddfa 100644
 +      if (this.#currentLoadRecovery?.ownerLoad === pending) this.#discardCurrentLoadRecovery();
 +      return { attempted: false, reverted: false, browserId: pending.data.browserId };
 +    }
-+    const outcome = this.#loadURL(pending.data, browser => current(browser) &&
++    const dispatch = () => this.#loadURL(pending.data, browser => current(browser) &&
 +      (!pending.sourceStateToken || (pending.sourceCurrent?.() &&
 +        lazy.independentUrlbarBrowserState.isCommitted(browser, pending.sourceStateToken))));
++    const outcome = pending.tabSearchData ? this.#dispatchRecordedResultTab(pending, dispatch) : dispatch();
 +    if (outcome.reverted && !pending.sourceStateToken && current(pending.browser)) {
 +      const recovery = this.#prepareSourceRecovery(pending);
 +      if (recovery) return { ...outcome, recovery };
 +    }
 +    return outcome;
++  }
++
++  /** The listener exists only inside this consumed dispatch and accepts its exact tab. */
++  #dispatchRecordedResultTab(pending, dispatch) {
++    const tabbrowser = this.browserWindow.gBrowser, container = tabbrowser.tabContainer;
++    const identity = Object.freeze({});
++    pending.data.params.eventDetail = { ...pending.data.params.eventDetail, independentResultSearch: identity };
++    let active = true, seen = false, recorded = false, targetBrowserId = null;
++    const onOpen = event => {
++      if (!active || seen || event.detail?.independentResultSearch !== identity) return;
++      seen = true;
++      container.removeEventListener("TabOpen", onOpen);
++      const tab = event.target, browser = tab?.linkedBrowser;
++      if (this.#destroyed || this.browserWindow.gBrowser !== tabbrowser || !browser || browser === pending.browser ||
++          tab.closing || tabbrowser.getTabForBrowser(browser) !== tab || !Number.isSafeInteger(browser.browserId) || browser.browserId <= 0) return;
++      targetBrowserId = browser.browserId;
++      this.#recordSearchForBrowser({ ...pending.tabSearchData, details: { ...pending.tabSearchData.details }, browser });
++      recorded = true;
++    };
++    try {
++      container.addEventListener("TabOpen", onOpen);
++      return { ...dispatch(), searchRecorderReturned: recorded, targetBrowserId };
++    } finally {
++      active = false;
++      container.removeEventListener("TabOpen", onOpen);
++    }
 +  }
 +
 +  /** Revalidate a failure-owned recovery without retaining the activation callback. */
@@ -1874,7 +1908,7 @@ index ba254af0c6..890380ddfa 100644
    /**
     * Loads a URL in the browser window resolved from the actor. The content
     * child supplies the serializable load parameters; the parent fills in the
-@@ -1027,9 +1893,15 @@ export class UrlbarParentController {
+@@ -1027,9 +1927,15 @@ export class UrlbarParentController {
     *   browser to hand `focusBrowser` on the deferred-Enter keyup -- a
     *   content-process input can't resolve the selected browser itself.
     */
@@ -1891,7 +1925,7 @@ index ba254af0c6..890380ddfa 100644
      if (!browser) {
        // The tab was closed before the load got here; don't hand its load to
        // whichever tab is selected now.
-@@ -1040,8 +1912,9 @@ export class UrlbarParentController {
+@@ -1040,8 +1946,9 @@ export class UrlbarParentController {
      }
  
      let { url, postData } = lazy.UrlbarUtils.loadRequestToUrl(loadRequest);
@@ -1902,7 +1936,7 @@ index ba254af0c6..890380ddfa 100644
      }
      params.postData = postData;
  
-@@ -1055,6 +1928,7 @@ export class UrlbarParentController {
+@@ -1055,6 +1962,7 @@ export class UrlbarParentController {
        });
      }
  
@@ -1910,7 +1944,7 @@ index ba254af0c6..890380ddfa 100644
      if (where == "current") {
        params.targetBrowser = browser;
      } else {
-@@ -1071,6 +1945,7 @@ export class UrlbarParentController {
+@@ -1071,6 +1979,7 @@ export class UrlbarParentController {
        browser.focus();
      }
  
@@ -1918,7 +1952,7 @@ index ba254af0c6..890380ddfa 100644
      try {
        this.browserWindow.openTrustedLinkIn(url, where, params);
      } catch (ex) {
-@@ -1079,9 +1954,10 @@ export class UrlbarParentController {
+@@ -1079,9 +1988,10 @@ export class UrlbarParentController {
        return {
          reverted: ex.result != Cr.NS_ERROR_LOAD_SHOWED_ERRORPAGE,
          browserId: browser.browserId,
@@ -1930,7 +1964,7 @@ index ba254af0c6..890380ddfa 100644
    }
  
    /**
-@@ -1292,10 +2168,22 @@ export class UrlbarParentController {
+@@ -1292,10 +2202,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -1954,7 +1988,7 @@ index ba254af0c6..890380ddfa 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +2220,7 @@ export class UrlbarParentController {
+@@ -1332,6 +2254,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -1962,7 +1996,7 @@ index ba254af0c6..890380ddfa 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +2244,10 @@ export class UrlbarParentController {
+@@ -1355,6 +2278,10 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
@@ -1973,7 +2007,7 @@ index ba254af0c6..890380ddfa 100644
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +2279,7 @@ export class UrlbarParentController {
+@@ -1386,7 +2313,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -1982,7 +2016,7 @@ index ba254af0c6..890380ddfa 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +2287,11 @@ export class UrlbarParentController {
+@@ -1394,10 +2321,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -1995,7 +2029,7 @@ index ba254af0c6..890380ddfa 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +2309,7 @@ export class UrlbarParentController {
+@@ -1415,7 +2343,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -2004,7 +2038,7 @@ index ba254af0c6..890380ddfa 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +2331,7 @@ export class UrlbarParentController {
+@@ -1437,7 +2365,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -2013,7 +2047,7 @@ index ba254af0c6..890380ddfa 100644
          break;
      }
    };
-@@ -1727,8 +2621,12 @@ export class TelemetryEvent {
+@@ -1727,8 +2655,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -2027,7 +2061,7 @@ index ba254af0c6..890380ddfa 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +2641,7 @@ export class TelemetryEvent {
+@@ -1743,7 +2675,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -2036,7 +2070,7 @@ index ba254af0c6..890380ddfa 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +2667,7 @@ export class TelemetryEvent {
+@@ -1769,7 +2701,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -2045,7 +2079,7 @@ index ba254af0c6..890380ddfa 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +2678,13 @@ export class TelemetryEvent {
+@@ -1780,12 +2712,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -2061,7 +2095,7 @@ index ba254af0c6..890380ddfa 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +2695,7 @@ export class TelemetryEvent {
+@@ -1796,7 +2729,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -2070,7 +2104,7 @@ index ba254af0c6..890380ddfa 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +2763,16 @@ export class TelemetryEvent {
+@@ -1864,17 +2797,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -2092,7 +2126,7 @@ index ba254af0c6..890380ddfa 100644
      );
    }
  
-@@ -2009,158 +2907,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2941,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -2251,7 +2285,7 @@ index ba254af0c6..890380ddfa 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +3267,27 @@ export class TelemetryEvent {
+@@ -2521,17 +3301,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -2271,14 +2305,14 @@ index ba254af0c6..890380ddfa 100644
 +    const smartbarData = explicitState ? explicitState.smartbarData : this.#smartbarData;
 +    const snapshot = lazy.UrlbarTelemetryUtils.collectBounceSnapshot(
 +      event, details, this._startEventInfo, engagementData.visibleResults
-+    );
+     );
+-    let sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
 +    if (snapshot && this._controller.sapName === "smartbar" && !snapshot.location) {
 +      throw new Error("Telemetry extra_key `location` is required for smartbar");
 +    }
 +    const built = lazy.UrlbarTelemetryUtils.buildRecordedBounce(
 +      snapshot, engagementData, smartbarData, this.#previousSearchWordsSet
-     );
--    let sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
++    );
 +    const sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
 +    // Preserve direct-path replacement: even an unrecordable candidate triggers
 +    // any older bounce in this tab before replacing it with a no-op candidate.
@@ -2288,7 +2322,7 @@ index ba254af0c6..890380ddfa 100644
      );
    }
  
-@@ -2548,14 +3304,19 @@ export class TelemetryEvent {
+@@ -2548,14 +3338,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -2314,7 +2348,7 @@ index ba254af0c6..890380ddfa 100644
    }
  
    /**
-@@ -2581,39 +3342,4 @@ export class TelemetryEvent {
+@@ -2581,39 +3376,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -10002,10 +10036,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..4e8d42ba7b
+index 0000000000..22f567e907
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3975 @@
+@@ -0,0 +1,3980 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10084,7 +10118,7 @@ index 0000000000..4e8d42ba7b
 +  #modeRequery = null;
 +  #modeStateReady = null;
 +  #aliasModeActivation = null;
-+  #privateWindowActivation = null;
++  #externalNavigationActivation = null;
 +  #committingModeState = null;
 +  #searchCommandRequery = null;
 +  #searchCommandRequest = null;
@@ -10639,7 +10673,7 @@ index 0000000000..4e8d42ba7b
 +    this.#finishedPresentationState = null;
 +    this.#oneOffCommand = null;
 +    this.#aliasModeActivation = null;
-+    this.#discardPrivateWindowActivation();
++    this.#discardExternalNavigationActivation();
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
@@ -11909,7 +11943,7 @@ index 0000000000..4e8d42ba7b
 +    if (!edit || edit.revision !== revision || edit.composing || this.#hiddenResults) return null;
 +    const pending = { token: Object.freeze({}), edit, previousMode, prepared: null, proposal: null };
 +    this.#aliasModeActivation = null;
-+    this.#discardPrivateWindowActivation();
++    this.#discardExternalNavigationActivation();
 +    this.#oneOffCommand = pending;
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffModeStateReady = null;
@@ -12169,59 +12203,64 @@ index 0000000000..4e8d42ba7b
 +      ? pending.receipt : null;
 +  }
 +
-+  #discardPrivateWindowActivation() {
-+    const pending = this.#privateWindowActivation;
-+    this.#privateWindowActivation = null;
-+    if (pending?.load) this.#queries.discardPrivateResultNavigation(pending.load);
++  #discardExternalNavigationActivation() {
++    const pending = this.#externalNavigationActivation;
++    this.#externalNavigationActivation = null;
++    if (pending?.load) this.#queries.discardExternalResultNavigation(pending.load);
 +  }
 +
-+  #privateWindowCurrent(pending) {
-+    return !!pending && this.#privateWindowActivation === pending && !this.#closed && this.#isCurrent() &&
++  #externalNavigationCurrent(pending) {
++    return !!pending && this.#externalNavigationActivation === pending && !this.#closed && this.#isCurrent() &&
 +      this.#edit === pending.edit && this.#searchMode === pending.mode && this.#selectionGeneration === pending.generation &&
 +      !this.#hiddenResults && this.#queries.isModeEngineCurrent({ engineName: pending.engineName }, pending.receipt.engineId) &&
 +      UrlbarShared.deepEqual(pending.result.payload, pending.payload) &&
-+      this.#privateWindowActivation === pending && this.#edit === pending.edit && this.#searchMode === pending.mode &&
++      this.#externalNavigationActivation === pending && this.#edit === pending.edit && this.#searchMode === pending.mode &&
 +      this.#selectionGeneration === pending.generation && !this.#closed;
 +  }
 +
-+  /** Prepare the selected private result's input write; no recording or window creation yet. */
-+  beginOneOffPrivateWindow(selectionToken, event, options = {}) {
++  /** Prepare private-window or foreground-tab result input; restoration must precede dispatch. */
++  beginOneOffExternalNavigation(selectionToken, event, options = {}) {
 +    const receipt = this.getAcknowledgedOneOffResultSelection(selectionToken, event, options);
 +    const source = this.#oneOffCommand?.engineSearch?.selection?.resultSelection;
-+    if (!receipt || source.privateWindowAttempted || receipt.branch !== "selected-private-result" ||
-+        receipt.kind !== "navigation" || receipt.navigation.where !== "window" || !receipt.navigation.openParams.private ||
++    if (!receipt || source.externalNavigationAttempted || receipt.kind !== "navigation" ||
 +        !receipt.navigation.revertBeforeLoad) return null;
++    const privateWindow = receipt.branch === "selected-private-result" && receipt.navigation.where === "window" &&
++      receipt.navigation.openParams.private;
++    const foregroundTab = receipt.branch === "token-alias-result" && receipt.navigation.where === "tab" &&
++      receipt.navigation.openParams.forceForeground === true && !receipt.navigation.openParams.private &&
++      !receipt.navigation.openParams.avoidBrowserFocus && receipt.navigation.resetSelection;
++    if (!privateWindow && !foregroundTab) return null;
 +    const input = this.describeResultInput(this.#edit.revision, receipt.queryId, source.result);
 +    const facts = Object.freeze({ selectedTabIsEmpty: options.selectedTabIsEmpty,
 +      originalUntrimmedValue: options.originalUntrimmedValue, searchString: this.#typedText, searchMode: null,
 +      isHandoff: options.isHandoff ?? false, persistedSearchTerms: options.persistedSearchTerms ?? false });
 +    const payload = structuredClone(source.result.payload);
-+    if (this.getAcknowledgedOneOffResultSelection(selectionToken, event, options) !== receipt || source.privateWindowAttempted) return null;
-+    source.privateWindowAttempted = true;
-+    this.#discardPrivateWindowActivation();
++    if (this.getAcknowledgedOneOffResultSelection(selectionToken, event, options) !== receipt || source.externalNavigationAttempted) return null;
++    source.externalNavigationAttempted = true;
++    this.#discardExternalNavigationActivation();
 +    const pending = { receipt, result: source.result, engineName: source.result.payload.engine, payload, facts,
 +      edit: this.#edit, mode: this.#searchMode, generation: this.#selectionGeneration, phase: "input", load: null };
 +    this.#oneOffCommand = null;
 +    this.#aliasModeActivation = null;
-+    this.#privateWindowActivation = pending;
++    this.#externalNavigationActivation = pending;
 +    this.#completion = this.#autofill = this.#placeholder = null;
 +    pending.proposal = Object.freeze({ token: Object.freeze({}), phase: "input", value: input.value, searchMode: null,
 +      selectionStart: input.value.length, selectionEnd: input.value.length, selectionDirection: "none", pageProxyValid: false });
-+    return this.getOneOffPrivateWindow(pending.proposal.token);
++    return this.getOneOffExternalNavigation(pending.proposal.token);
 +  }
 +
-+  getOneOffPrivateWindow(token) {
-+    const pending = this.#privateWindowActivation;
++  getOneOffExternalNavigation(token) {
++    const pending = this.#externalNavigationActivation;
 +    if (!pending || pending.proposal.token !== token || pending.phase !== "input" || pending.acknowledged ||
-+        !this.#privateWindowCurrent(pending) || !this.#queries.ownsVisibleResult(pending.receipt.queryId, pending.result)) return null;
++        !this.#externalNavigationCurrent(pending) || !this.#queries.ownsVisibleResult(pending.receipt.queryId, pending.result)) return null;
 +    return pending.proposal;
 +  }
 +
-+  acknowledgeOneOffPrivateWindow(token, observation) {
-+    const proposal = this.getOneOffPrivateWindow(token), pending = this.#privateWindowActivation;
++  acknowledgeOneOffExternalNavigation(token, observation) {
++    const proposal = this.getOneOffExternalNavigation(token), pending = this.#externalNavigationActivation;
 +    if (!proposal || observation?.text !== proposal.value || observation.selectionStart !== proposal.selectionStart ||
 +        observation.selectionEnd !== proposal.selectionEnd || observation.selectionDirection !== "none" ||
-+        observation.searchMode !== null || observation.pageProxyValid !== false || this.getOneOffPrivateWindow(token) !== proposal) return false;
++        observation.searchMode !== null || observation.pageProxyValid !== false || this.getOneOffExternalNavigation(token) !== proposal) return false;
 +    pending.acknowledged = true;
 +    this.#searchMode = pending.mode = null;
 +    this.#edit = pending.edit = Object.freeze({ ...this.#edit, text: proposal.value, selectionStart: proposal.selectionStart,
@@ -12229,25 +12268,25 @@ index 0000000000..4e8d42ba7b
 +    return true;
 +  }
 +
-+  /** Record once, then require the source-page restore before the private opener. */
-+  prepareOneOffPrivateWindowRevert(token, event, observation) {
-+    const pending = this.#privateWindowActivation;
++  /** Record engagement once, then require source restoration before the external load. */
++  prepareOneOffExternalRevert(token, event, observation) {
++    const pending = this.#externalNavigationActivation;
 +    if (!pending || pending.proposal.token !== token || pending.phase !== "input" || !pending.acknowledged ||
-+        !this.#privateWindowCurrent(pending)) return null;
++        !this.#externalNavigationCurrent(pending)) return null;
 +    if (!UrlbarQueryModel.isResultActivationEvent(event) ||
 +        !this.#queries.ownsVisibleResult(pending.receipt.queryId, pending.result)) return null;
 +    const persistedSearchTerms = observation?.persistedSearchTerms, focused = observation?.focused;
-+    if (typeof persistedSearchTerms !== "boolean" || typeof focused !== "boolean" || !this.#privateWindowCurrent(pending)) return null;
++    if (typeof persistedSearchTerms !== "boolean" || typeof focused !== "boolean" || !this.#externalNavigationCurrent(pending)) return null;
 +    pending.phase = "recording";
-+    const current = () => this.#privateWindowCurrent(pending);
++    const current = () => this.#externalNavigationCurrent(pending);
 +    const notify = this.#onModeStateChanged ? state => this.#notifyModeState(this.#onModeStateChanged, state,
-+      { reason: "private-result-input", token, queryId: pending.receipt.queryId, edit: pending.edit }) : null;
++      { reason: "external-result-input", token, queryId: pending.receipt.queryId, edit: pending.edit }) : null;
 +    const state = this.#queries.commitResultInputState({ persistedSearchTerms }, current, notify);
 +    if (!state?.applied || !current()) return null;
-+    pending.load = this.#queries.preparePrivateResultNavigation(pending.receipt.queryId, pending.result, event,
++    pending.load = this.#queries.prepareExternalResultNavigation(pending.receipt.queryId, pending.result, event,
 +      pending.facts, pending.receipt.navigation, state.stateToken, current);
 +    if (!pending.load || !current()) return null;
-+    const recovery = this.#queries.getPrivateResultRevert(pending.load);
++    const recovery = this.#queries.getExternalResultRevert(pending.load);
 +    if (!recovery || !current()) return null;
 +    pending.phase = "revert";
 +    pending.proposal = Object.freeze({ ...recovery, phase: "revert", focused,
@@ -12255,16 +12294,16 @@ index 0000000000..4e8d42ba7b
 +    return pending.proposal;
 +  }
 +
-+  acknowledgeOneOffPrivateWindowRevert(token, observation) {
-+    const pending = this.#privateWindowActivation, proposal = pending?.proposal;
-+    if (!proposal || proposal.token !== token || pending.phase !== "revert" || !this.#privateWindowCurrent(pending) ||
-+        !this.#queries.getPrivateResultRevert(pending.load) || observation?.text !== proposal.value ||
++  acknowledgeOneOffExternalRevert(token, observation) {
++    const pending = this.#externalNavigationActivation, proposal = pending?.proposal;
++    if (!proposal || proposal.token !== token || pending.phase !== "revert" || !this.#externalNavigationCurrent(pending) ||
++        !this.#queries.getExternalResultRevert(pending.load) || observation?.text !== proposal.value ||
 +        observation.selectionStart !== proposal.selectionStart || observation.selectionEnd !== proposal.selectionEnd ||
 +        observation.selectionDirection !== "none" || observation.focused !== proposal.focused || observation.searchMode !== null ||
 +        observation.userTypedValue !== null || observation.pageProxyValid !== proposal.pageProxyValid ||
-+        observation.persistedSearchTerms !== false || !this.#privateWindowCurrent(pending) || pending.phase !== "revert") return false;
++        observation.persistedSearchTerms !== false || !this.#externalNavigationCurrent(pending) || pending.phase !== "revert") return false;
 +    pending.phase = "restoring";
-+    const current = () => this.#privateWindowCurrent(pending);
++    const current = () => this.#externalNavigationCurrent(pending);
 +    const applyEditor = browserCurrent => {
 +      if (!current() || !browserCurrent()) return false;
 +      this.#selectionGeneration++;
@@ -12277,18 +12316,18 @@ index 0000000000..4e8d42ba7b
 +      return current() && browserCurrent();
 +    };
 +    const notify = this.#onModeStateChanged ? state => this.#notifyModeState(this.#onModeStateChanged, state,
-+      { reason: "private-result-revert", token, queryId: pending.receipt.queryId, edit: pending.edit }) : null;
-+    if (!this.#queries.acknowledgePrivateResultRevert(pending.load, applyEditor, current, notify) || !current()) return false;
++      { reason: "external-result-revert", token, queryId: pending.receipt.queryId, edit: pending.edit }) : null;
++    if (!this.#queries.acknowledgeExternalResultRevert(pending.load, applyEditor, current, notify) || !current()) return false;
 +    pending.phase = "ready";
 +    return true;
 +  }
 +
-+  commitOneOffPrivateWindow(token) {
-+    const pending = this.#privateWindowActivation;
-+    if (!pending || pending.proposal.token !== token || pending.phase !== "ready" || !this.#privateWindowCurrent(pending)) return null;
++  commitOneOffExternalNavigation(token) {
++    const pending = this.#externalNavigationActivation;
++    if (!pending || pending.proposal.token !== token || pending.phase !== "ready" || !this.#externalNavigationCurrent(pending)) return null;
 +    pending.phase = "loading";
-+    try { return this.#queries.commitPrivateResultNavigation(pending.load); }
-+    finally { if (this.#privateWindowActivation === pending) this.#discardPrivateWindowActivation(); }
++    try { return this.#queries.commitExternalResultNavigation(pending.load); }
++    finally { if (this.#externalNavigationActivation === pending) this.#discardExternalNavigationActivation(); }
 +  }
 +
 +  /** Complete the unselected token-alias branch without replaying provider selection. */
@@ -12453,7 +12492,7 @@ index 0000000000..4e8d42ba7b
 +    }
 +    this.#oneOffCommand = null;
 +    this.#aliasModeActivation = null;
-+    this.#discardPrivateWindowActivation();
++    this.#discardExternalNavigationActivation();
 +    return proposal;
 +  }
 +
@@ -13118,7 +13157,7 @@ index 0000000000..4e8d42ba7b
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffCommand = null;
 +    this.#aliasModeActivation = null;
-+    this.#discardPrivateWindowActivation();
++    this.#discardExternalNavigationActivation();
 +    this.#searchMode = proposal.searchMode;
 +    this.#edit = Object.freeze({ ...proposal.edit, text, selectionStart, selectionEnd, selectionDirection,
 +      selectionRevision: proposal.edit.selectionRevision + 1 });
@@ -13874,7 +13913,7 @@ index 0000000000..4e8d42ba7b
 +    this.#finishedPresentationState = null;
 +    this.#oneOffCommand = null;
 +    this.#aliasModeActivation = null;
-+    this.#discardPrivateWindowActivation();
++    this.#discardExternalNavigationActivation();
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
@@ -13928,7 +13967,7 @@ index 0000000000..4e8d42ba7b
 +    this.#finishedPresentationState = null;
 +    this.#oneOffCommand = null;
 +    this.#aliasModeActivation = null;
-+    this.#discardPrivateWindowActivation();
++    this.#discardExternalNavigationActivation();
 +    this.#oneOffModeApplication = null;
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
@@ -13983,10 +14022,10 @@ index 0000000000..4e8d42ba7b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..a606cbce19
+index 0000000000..714fe539b0
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1826 @@
+@@ -0,0 +1,1836 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14024,7 +14063,7 @@ index 0000000000..a606cbce19
 +  #selectionRequest = null;
 +  #engagementActive = false;
 +  #aliasModeEngagements = new WeakSet();
-+  #privateWindowLoads = new WeakMap();
++  #externalResultLoads = new WeakMap();
 +  #endingEngagement = false;
 +  #oneOffDismissalGeneration = 0;
 +  #oneOffCommandPlans = new WeakSet();
@@ -14455,16 +14494,21 @@ index 0000000000..a606cbce19
 +    }
 +  }
 +
-+  /** Record private-result effects, retaining only a pinned source-revert/load capability. */
-+  preparePrivateResultNavigation(queryId, result, event, options, plan, sourceStateToken, isEditorCurrent) {
++  /** Record external-result effects, retaining only a pinned source-revert/load capability. */
++  prepareExternalResultNavigation(queryId, result, event, options, plan, sourceStateToken, isEditorCurrent) {
 +    this.#check();
++    const privateWindow = plan?.where === "window" && plan.openParams.private === true &&
++      result.payload?.inPrivateWindow && result.payload.isPrivateEngine;
++    const foregroundTab = plan?.where === "tab" && plan.openParams.forceForeground === true &&
++      !plan.openParams.private && !plan.openParams.avoidBrowserFocus && plan.resetSelection &&
++      !result.payload?.inPrivateWindow && UrlbarQueryModel.pickTokenAliasResult(result);
 +    if (!this.#engagementActive || this.#endingEngagement || !this.#context.browserId ||
-+        !result.payload?.inPrivateWindow || !result.payload.isPrivateEngine || result.payload.providesSearchMode ||
-+        plan.where !== "window" || plan.openParams.private !== true || !plan.revertBeforeLoad ||
++        !plan || result.type !== UrlbarShared.RESULT_TYPE.SEARCH || result.payload.providesSearchMode ||
++        (!privateWindow && !foregroundTab) || !plan.revertBeforeLoad ||
 +        !UrlbarShared.deepEqual(this.describeResultNavigation(queryId, result, event, options), plan)) return null;
 +    const parent = this.#controller.parentController;
 +    const recording = this.describeResultSearchRecording(queryId, result, event, options);
-+    if (!recording?.data.opensInPrivateWindow) return null;
++    if (!recording || (privateWindow ? !recording.data.opensInPrivateWindow : recording.method !== "recordSearchInOpenedTab")) return null;
 +    const engineName = result.payload.engine, engineId = recording.data.engineId;
 +    const payload = structuredClone(result.payload), query = this.#query;
 +    const current = () => !this.#closed && this.#isCurrent() && isEditorCurrent() &&
@@ -14473,38 +14517,39 @@ index 0000000000..a606cbce19
 +    const queryCurrent = () => current() && this.#query === query && this.ownsResult(queryId, result) &&
 +      this.#controller.resultsOpen && this.#controller.visibleResults.includes(result);
 +    if (!queryCurrent()) return null;
-+    const token = parent.preparePrivateWindowLoad({ loadRequest: plan.loadRequest, where: plan.where,
-+      params: plan.openParams, browserId: this.#context.browserId, userTypedValue: options.searchString }, sourceStateToken);
++    const token = parent.prepareExternalSearchLoad({ loadRequest: plan.loadRequest, where: plan.where,
++      params: plan.openParams, browserId: this.#context.browserId, userTypedValue: options.searchString }, sourceStateToken,
++      foregroundTab ? recording.data : null);
 +    if (!token) return null;
 +    let recovery = null;
 +    try {
 +      if (!queryCurrent()) return null;
 +      this.#recordResultEngagement(queryId, result, event, { ...options,
 +        trackBounce: true, recordHistory: true, recordSearch: true, checkSearchDNS: true, querySearchBackend: true },
-+        () => { if (queryCurrent()) recovery = parent.preparePrivateWindowSourceRevert(token); }, true);
++        () => { if (queryCurrent()) recovery = parent.prepareExternalSourceRevert(token); }, privateWindow, foregroundTab);
 +      if (!recovery || !current()) return null;
 +      const receipt = Object.freeze({ token: Object.freeze({}), recovery });
-+      this.#privateWindowLoads.set(receipt, { token, parent, current, result, used: false });
++      this.#externalResultLoads.set(receipt, { token, parent, current, result, used: false });
 +      return receipt;
 +    } finally {
 +      if (!recovery || !current()) parent.discardCurrentLoad(token);
 +    }
 +  }
 +
-+  getPrivateResultRevert(receipt) {
-+    const pending = this.#privateWindowLoads.get(receipt);
++  getExternalResultRevert(receipt) {
++    const pending = this.#externalResultLoads.get(receipt);
 +    return pending && !pending.used && pending.current() ? pending.parent.getCurrentLoadRecovery(receipt.recovery.token) : null;
 +  }
 +
-+  acknowledgePrivateResultRevert(receipt, applyEditor, editorCurrent, notify) {
-+    const pending = this.#privateWindowLoads.get(receipt);
-+    if (!this.getPrivateResultRevert(receipt)) return false;
++  acknowledgeExternalResultRevert(receipt, applyEditor, editorCurrent, notify) {
++    const pending = this.#externalResultLoads.get(receipt);
++    if (!this.getExternalResultRevert(receipt)) return false;
 +    return pending.parent.acknowledgeCurrentLoadRecovery(receipt.recovery.token, applyEditor,
 +      () => pending.current() && editorCurrent(), notify);
 +  }
 +
-+  commitPrivateResultNavigation(receipt) {
-+    const pending = this.#privateWindowLoads.get(receipt);
++  commitExternalResultNavigation(receipt) {
++    const pending = this.#externalResultLoads.get(receipt);
 +    if (!pending || pending.used) return null;
 +    pending.used = true;
 +    try {
@@ -14514,8 +14559,8 @@ index 0000000000..a606cbce19
 +    } finally { pending.parent.discardCurrentLoad(pending.token); }
 +  }
 +
-+  discardPrivateResultNavigation(receipt) {
-+    const pending = this.#privateWindowLoads.get(receipt);
++  discardExternalResultNavigation(receipt) {
++    const pending = this.#externalResultLoads.get(receipt);
 +    if (pending) { pending.used = true; pending.parent.discardCurrentLoad(pending.token); }
 +  }
 +
@@ -14586,7 +14631,7 @@ index 0000000000..a606cbce19
 +    return this.#recordResultEngagement(queryId, result, event, options);
 +  }
 +
-+  #recordResultEngagement(queryId, result, event, options, afterRecord = null, privateWindow = false) {
++  #recordResultEngagement(queryId, result, event, options, afterRecord = null, privateWindow = false, deferTabSearch = false) {
 +    this.#check();
 +    if (!this.#engagementActive || this.#endingEngagement) return false;
 +    if (!UrlbarQueryModel.isResultActivationEvent(event)) throw new TypeError("Invalid result engagement event");
@@ -14618,7 +14663,9 @@ index 0000000000..a606cbce19
 +    if (recordSearch) {
 +      const load = this.describeResultLoad(queryId, result, event, options);
 +      if (!load || (load.where !== "current" && !(privateWindow && load.where === "window" &&
-+          load.openParams.private === true && result.payload.inPrivateWindow && result.payload.isPrivateEngine))) return false;
++          load.openParams.private === true && result.payload.inPrivateWindow && result.payload.isPrivateEngine) &&
++          !(deferTabSearch && load.where === "tab" && load.openParams.forceForeground === true &&
++            !load.openParams.private && !load.openParams.avoidBrowserFocus))) return false;
 +      search = this.describeResultSearchRecording(queryId, result, event, options);
 +      if (!search) return false;
 +    }
@@ -14632,9 +14679,11 @@ index 0000000000..a606cbce19
 +            search.effects.fixupHost, this.#context.browserId, true
 +          ) || !this.ownsResult(queryId, result)) return false;
 +        }
-+        if (!this.#controller.parentController.recordSearch(
++        // New-tab attribution belongs to the tagged destination at dispatch, not
++        // this source browser or a listener surviving an abandoned preparation.
++        if ((!deferTabSearch && !this.#controller.parentController.recordSearch(
 +          { ...search.data, details: { ...search.data.details } }, this.#context.browserId
-+        ) || !this.ownsResult(queryId, result)) return false;
++        )) || !this.ownsResult(queryId, result)) return false;
 +        if (querySearchBackend) {
 +          const store = this.#controller.engineStore;
 +          const engine = store.getEngineByName(result.payload.engine);
