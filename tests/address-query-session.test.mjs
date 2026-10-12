@@ -9091,9 +9091,10 @@ test('external alias handoff rejects non-shifted background policy without spend
   assert.equal(f.editor.getAcknowledgedOneOffResultSelection(receipt.token,f.event,f.options),receipt);f.editor.close();
 });
 
-async function urlTabActivationFixture({where='tab',type='URL'}={}){
+async function urlTabActivationFixture({where='tab',type='URL',action=null,prefBackground=false}={}){
   const f=await historyEngagementFixture();
   if(where==='tabshifted')f.sandbox.UrlbarContentUtils.willLoadInBackground=w=>w==='tabshifted';
+  if(action)f.sandbox.UrlbarContentUtils.willLoadInBackground=(w,p)=>w==='tab'&&!p.forceForeground&&prefBackground;
   if(type==='KEYWORD'){f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.KEYWORD;f.result.payload.input='kw words';}
   if(type==='SWITCH'){
     f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.TAB_SWITCH;f.result.payload={url:'https://open.test/',userContext:{id:3},tabGroup:'g1'};
@@ -9114,7 +9115,7 @@ async function urlTabActivationFixture({where='tab',type='URL'}={}){
   f.parent.onBeforeSelection=()=>f.calls.push(['before']);f.parent.onSelection=()=>f.calls.push(['selected']);
   f.parent.notifyStartNavigation=r=>{assert.equal(r,f.result);f.calls.push(['notify']);};
   f.parent.clearAutofillBackspaceEntryForUrl=()=>{};
-  const event={...f.event,where},options={...f.options,...(type==='SWITCH'?{actionOverride:false}:{})};
+  const event={...f.event,where},options={...f.options,...(type==='SWITCH'?{actionOverride:false}:{}),...(action?{resultAction:action}:{})};
   const begin=()=>f.editor.beginNavigationActivation(1,f.q.id,f.result,event,options);
   const ack=p=>f.editor.acknowledgeNavigationActivation(p.token,{queryId:p.queryId,resultId:p.resultId},event,options);
   return {...f,source,listeners,postData,event,options,begin,ack,switches};
@@ -9305,6 +9306,88 @@ test('revert-only parent preparation validates its shape and never dispatches a 
   assert.throws(()=>p.prepareTerminalRevert({revertOnly:true,browserId:42},null),/Invalid/);
   const token=p.prepareTerminalRevert({revertOnly:true,browserId:42},t);assert.ok(token);
   assert.equal(p.commitCurrentLoad(token).attempted,false);assert.equal(f.source.calls.length,0);f.editor.close();
+});
+
+test('open-in result actions choose tab, container tab, window and private window with the background preference',async()=>{
+  const cases=[
+    {action:{openIn:'tab'},prefBackground:false,where:'tab',avoid:false},
+    {action:{openIn:'tab'},prefBackground:true,where:'tab',avoid:true},
+    {action:{openIn:'container-tab',userContextId:'5'},prefBackground:false,where:'tab',avoid:false,container:5},
+    {action:{openIn:'container-tab',userContextId:'5'},prefBackground:true,where:'tab',avoid:true,container:5},
+    {action:{openIn:'window'},where:'window',avoid:false,private:false},
+    {action:{openIn:'private-window'},where:'window',avoid:false,private:true}];
+  for(const c of cases)for(const type of ['URL','KEYWORD']){
+    const f=await urlTabActivationFixture({where:'current',type,action:c.action,prefBackground:!!c.prefBackground});
+    const revert=urlRevert(f),name=JSON.stringify(c)+type;
+    assert.ok(revert,name);
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true,name);
+    const outcome=f.editor.commitOneOffExternalNavigation(revert.token);
+    assert.equal(outcome.attempted,true,name);
+    const opened=f.source.calls.find(x=>typeof x==='object');
+    assert.equal(opened.where,c.where,name);assert.equal(opened.params.forceForeground,false,name);
+    assert.equal(opened.params.avoidBrowserFocus,c.avoid,name);assert.equal(opened.params.private,c.private??false,name);
+    assert.equal(opened.params.userContextId,c.container,name);
+    assert.equal(opened.params.eventDetail?.containerSource,c.container?'urlbar_result_context_menu':undefined,name);
+    assert.equal(f.calls.filter(x=>x[0]==='record').length,1,name);assert.equal(f.calls.filter(x=>x[0]==='notify').length,1,name);
+    f.editor.close();
+  }
+});
+
+test('result action facts accept only open-in destinations and are not honored by deferred or search paths',async()=>{
+  for(const bad of ['tab',{command:'dismiss'},{openIn:'tab',url:'https://a.test/'},{openIn:'tab',input:'x'},{openIn:'tab',help:true},
+    {openIn:'tab',name:'0'},{openIn:'other'},{openIn:'container-tab'},{openIn:'container-tab',userContextId:'0'},
+    {openIn:'container-tab',userContextId:5},{openIn:'tab',userContextId:'5'},{}]){
+    const f=await urlTabActivationFixture({where:'current'});
+    assert.throws(()=>f.editor.beginNavigationActivation(1,f.q.id,f.result,f.event,{...f.options,resultAction:bad}),/result action/i,JSON.stringify(bad));
+    assert.equal(f.calls.length,0);f.editor.close();
+  }
+  for(const type of ['SWITCH','TIP','DYNAMIC']){
+    const f=await urlTabActivationFixture({type,where:'current'});
+    assert.equal(f.editor.beginNavigationActivation(1,f.q.id,f.result,f.event,{...f.options,actionOverride:false,resultAction:{openIn:'tab'}}),null,type);
+    assert.equal(f.calls.length,0);f.editor.close();
+  }
+  const g=await urlTabActivationFixture({where:'tab'});g.result.payload.inPrivateWindow=true;
+  assert.equal(g.editor.beginNavigationActivation(1,g.q.id,g.result,g.event,{...g.options,resultAction:{openIn:'tab'}}),null);g.editor.close();
+});
+
+test('open-in actions keep stale source and action authority from dispatching',async()=>{
+  for(const phase of ['restore','dispatch'])for(const action of ['document','edit','typed']){
+    const f=await urlTabActivationFixture({where:'current',action:{openIn:'container-tab',userContextId:'7'}}),revert=urlRevert(f);
+    if(phase==='dispatch')assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    if(action==='document')f.source.browser.browsingContext.currentWindowGlobal={};
+    if(action==='edit')f.editor.cancel();
+    if(action==='typed')f.source.browser.userTypedValue='new edit';
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),false,phase+action);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token)?.attempted??false,false,phase+action);
+    assert.equal(f.source.calls.length,0);f.editor.close();
+  }
+  const f=await urlTabActivationFixture({where:'current',action:{openIn:'tab'}});
+  const p=f.begin();assert.ok(p);
+  assert.equal(f.editor.getNavigationActivation(p.token,f.event,{...f.options,resultAction:{openIn:'window'}}),null);f.editor.close();
+});
+
+test('parent URL preparation validates open-in container and window shapes',async()=>{
+  const f=await urlTabActivationFixture({where:'tab'}),p=f.source.p,t=f.source.stateToken;
+  const load={loadRequest:{urlLoad:{url:'https://a.test/'}},browserId:42,userTypedValue:null};
+  const ok=[{where:'tab',params:{forceForeground:false,avoidBrowserFocus:true,private:false}},
+    {where:'tab',params:{forceForeground:false,avoidBrowserFocus:false,private:false,userContextId:3,
+      eventDetail:{containerSource:'urlbar_result_context_menu'}}},
+    {where:'window',params:{forceForeground:false,avoidBrowserFocus:false,private:true}}];
+  for(const shape of ok){const token=p.prepareExternalUrlLoad({...load,...shape},t);assert.ok(token,JSON.stringify(shape));p.discardCurrentLoad(token);}
+  for(const shape of [
+    {where:'tab',params:{forceForeground:false,private:false,userContextId:0,eventDetail:{containerSource:'urlbar_result_context_menu'}}},
+    {where:'tab',params:{forceForeground:false,private:false,userContextId:3,eventDetail:{containerSource:'other'}}},
+    {where:'tab',params:{forceForeground:false,private:false,userContextId:3}},
+    {where:'tab',params:{forceForeground:false,private:true}},
+    {where:'tabshifted',params:{forceForeground:false,avoidBrowserFocus:true,private:false}},
+    {where:'window',params:{forceForeground:false,avoidBrowserFocus:true,private:false}},
+    {where:'window',params:{forceForeground:false,private:false,userContextId:3,eventDetail:{containerSource:'urlbar_result_context_menu'}}},
+    {where:'window',params:{private:false}}]){
+    assert.throws(()=>p.prepareExternalUrlLoad({...load,...shape},t),/Invalid/,JSON.stringify(shape));
+  }
+  assert.throws(()=>p.prepareExternalSearchLoad({loadRequest:{engineSearch:{engine:'x',query:'q'}},browserId:42,where:'tab',
+    params:{forceForeground:false,avoidBrowserFocus:false,private:false}},t,{engineId:'x',query:'q',opensInPrivateWindow:false}),/Invalid/);
+  f.editor.close();
 });
 
 test('private opener checks restored source again after preparation and focus callbacks',()=>{
