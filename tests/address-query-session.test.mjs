@@ -7337,3 +7337,32 @@ test('activated local destinations remain independent of unrelated engine identi
   const query=await f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode});
   assert.equal(query.searchMode.source,p.searchMode.source);assert.equal(f.parent.started.length,1);f.editor.close();
 });
+
+
+test('editor readiness observations require the genuine live foreground continuation and do not consume activation',async()=>{
+  const f=await oneOffTabActivationFixture(),facts=Object.freeze({phase:'initial-document',documentId:42,requiresScopeTransfer:false});
+  f.parent.describeIndependentOneOffTargetReadiness=()=>facts;
+  assert.equal(f.editor.getOneOffTargetReadiness({}),null);assert.equal(f.editor.getOneOffTargetReadiness(f.command.token),facts);
+  assert.equal(f.editor.getOneOffTargetReadiness(f.command.token),facts);assert.equal(f.parent.started.length,1);assert.equal(f.getSelections(),0);
+  assert.equal(f.editor.activateOneOffSearchTab(f.activation.token).current,true);
+  assert.equal(f.editor.getOneOffTargetReadiness(f.command.token),null);f.editor.close();
+  const g=await oneOffTabActivationFixture({background:true});
+  g.parent.describeIndependentOneOffTargetReadiness=()=>assert.fail('background receipt used foreground readiness');
+  assert.equal(g.editor.getOneOffTargetReadiness(g.command.token),null);g.editor.close();
+});
+
+test('readiness facts cannot replace an editor or authorize activation of a changed document',async()=>{
+  for(const mutation of ['caret','cancel','policy','parent-reentry','scope']){
+    const f=await oneOffTabActivationFixture();f.parent.describeIndependentOneOffTargetReadiness=()=>{
+      if(mutation==='parent-reentry')f.editor.select(1,0,0);return Object.freeze({phase:'scope-transfer-required',requiresScopeTransfer:true});};
+    if(mutation==='caret')f.editor.select(1,0,0);if(mutation==='cancel')f.editor.cancel();
+    if(mutation==='policy')f.prefs['scotchBonnet.disableOneOffs']=true;
+    if(mutation==='scope'){f.loseScope();assert.throws(()=>f.editor.getOneOffTargetReadiness(f.command.token),/scope changed/);}
+    else assert.equal(f.editor.getOneOffTargetReadiness(f.command.token),null);
+    assert.equal(f.getSelections(),0);assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+  const f=await oneOffTabActivationFixture();f.parent.describeIndependentOneOffTargetReadiness=()=>Object.freeze({phase:'scope-transfer-required',requiresScopeTransfer:true});
+  f.parent.describeIndependentOneOffTabActivation=()=>null;
+  assert.equal(f.editor.getOneOffTargetReadiness(f.command.token).requiresScopeTransfer,true);
+  assert.equal(f.editor.activateOneOffSearchTab(f.activation.token),null);assert.equal(f.getSelections(),0);f.editor.close();
+});

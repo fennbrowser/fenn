@@ -343,7 +343,7 @@ test('owned confirmed-mode reader distinguishes null mode from a read invalidate
 function oneOffTabParentFixture(){
   const {owner,service,facts}=ownerFixture(),source=read('UrlbarParentController.sys.mjs');
   const method=['createIndependentOneOffSearchTab','#oneOffTabActivationCurrent','describeIndependentOneOffTabActivation',
-    'activateIndependentOneOffSearchTab','describeIndependentOneOffSourceRestoration'].map(name=>{const start=source.indexOf('  '+name+'(');assert.ok(start>=0);
+    'activateIndependentOneOffSearchTab','describeIndependentOneOffSourceRestoration','describeIndependentOneOffTargetReadiness'].map(name=>{const start=source.indexOf('  '+name+'(');assert.ok(start>=0);
       return source.slice(start,source.indexOf('\n  /**',start));}).join('\n');
   const Parent=new Function('lazy',`return class { #destroyed=false; #isAddressbar=true; #oneOffSearchTabs=new WeakMap(); #actor={};
     destroyForTest(){this.#destroyed=true;} ${method} }`)({independentUrlbarBrowserState:owner,UrlbarShared:{deepEqual:(a,b)=>JSON.stringify(a)===JSON.stringify(b)}});
@@ -686,5 +686,38 @@ test('background source descriptors revoke on source document, location, text, s
     if(mutation==='state'){const p=f.owner.prepareMode(f.browser,null);f.owner.commit(f.browser,p.token);}
     if(mutation==='destroy')f.parent.destroyForTest();if(mutation==='browser')f.parent.resolveTargetBrowser=()=>null;
     assert.equal(f.parent.describeIndependentOneOffSourceRestoration(f.receipt),null,mutation);
+  }
+});
+
+
+test('target readiness distinguishes initial, loading, ready and replacement documents without granting scope transfer',()=>{
+  const f=initializedOneOffTabFixture(),document=f.target.browsingContext.currentWindowGlobal;
+  document.innerWindowId=42;document.isInitialDocument=true;f.target.webProgress={isLoadingDocument:true};
+  let d=f.parent.describeIndependentOneOffTargetReadiness(f.receipt);
+  assert.equal(d.phase,'initial-document');assert.equal(d.originalScopeCurrent,true);assert.equal(d.documentId,42);assert.equal(Object.isFrozen(d),true);
+  document.isInitialDocument=false;d=f.parent.describeIndependentOneOffTargetReadiness(f.receipt);assert.equal(d.phase,'loading');
+  f.target.webProgress.isLoadingDocument=false;d=f.parent.describeIndependentOneOffTargetReadiness(f.receipt);assert.equal(d.phase,'ready');
+  const location=f.target.lastLocationChange;f.target.lastLocationChange++;
+  d=f.parent.describeIndependentOneOffTargetReadiness(f.receipt);
+  assert.equal(d.phase,'scope-transfer-required');assert.equal(d.documentId,42);assert.equal(d.originalDocumentId,42);
+  assert.equal(f.parent.describeIndependentOneOffTabActivation(f.receipt),null);
+  f.target.lastLocationChange=location;
+  f.target.browsingContext.currentWindowGlobal={innerWindowId:43,isInitialDocument:false};f.target.lastLocationChange++;
+  d=f.parent.describeIndependentOneOffTargetReadiness(f.receipt);assert.equal(d.phase,'scope-transfer-required');
+  assert.equal(d.documentId,43);assert.equal(d.originalDocumentId,42);assert.equal(d.requiresScopeTransfer,true);
+  assert.equal(f.parent.describeIndependentOneOffTabActivation(f.receipt),null);assert.equal(f.tabbrowser.selectedBrowser,f.browser);
+});
+
+test('target readiness rejects forged receipts, stale source/target state and changes during observation',()=>{
+  for(const mutation of ['copy','target-mode','source-mode','typed','tab','missing-document','source-selection','getter']){
+    const f=initializedOneOffTabFixture();let receipt=f.receipt;
+    if(mutation==='copy')receipt={...receipt};
+    if(mutation==='target-mode'){const p=f.owner.prepareMode(f.target,f.mode);f.owner.commit(f.target,p.token);}
+    if(mutation==='source-mode'){const p=f.owner.prepareMode(f.browser,null);f.owner.commit(f.browser,p.token);}
+    if(mutation==='typed')f.target.userTypedValue='changed';if(mutation==='tab')f.tab.closing=true;
+    if(mutation==='missing-document')f.target.browsingContext.currentWindowGlobal=null;
+    if(mutation==='source-selection')f.tabbrowser.selectedBrowser=f.target;
+    if(mutation==='getter')f.target.webProgress={get isLoadingDocument(){f.target.browsingContext.currentWindowGlobal={};return false;}};
+    assert.equal(f.parent.describeIndependentOneOffTargetReadiness(receipt),null,mutation);
   }
 });
