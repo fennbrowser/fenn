@@ -19,6 +19,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     initEngineStore(){if(!hold)this.child.updateEngineStore('init',[],null);}
     startQuery(query){query.results??=[];this.started.push(query);return Promise.resolve(query);}
     cancelQuery(){this.cancelled=(this.cancelled??0)+1;}
+    recordZeroPrefix(kind){(this.zeroPrefix??=[]).push(kind);}
     captureIndependentQueryAuthority(){return ()=>true;}
     commitIndependentModePreservation(_id,mode,persisted,current){return current()?{applied:true,modeUnchanged:true,stateToken:{},searchMode:mode,persistedSearchTerms:persisted}:null;}
     destroy(){this.destroyed=(this.destroyed??0)+1;}
@@ -5810,4 +5811,42 @@ test('input close recording remains one-use after preview cleanup and is revoked
     assert.equal(!!result,!newer);assert.deepEqual(calls,newer?[]:['discard','record']);
     assert.equal(f.editor.recordAcknowledgedClose(f.request.token,{focused:false}),null);f.editor.close();
   }
+});
+
+
+test('independent finished zero-prefix query records once before completion publication',async()=>{
+  const f=fixture(),calls=[];f.parent.recordZeroPrefix=kind=>calls.push(kind);
+  const query=await f.session.query({}, {searchString:''},update=>{if(update.kind==='finished')calls.push('finished');});
+  f.parent.child.notify('onQueryFinished',query);f.parent.child.notify('onQueryFinished',query);
+  assert.deepEqual(calls,['exposure','finished']);assert.equal(f.parent.child.resultsOpen,false);
+  assert.deepEqual([...f.parent.child.visibleResults],[]);f.session.close();
+});
+
+test('nonempty, canceled, frozen, replaced and scope-lost queries cannot record stale completion',async()=>{
+  for(const kind of ['nonempty','cancelled','frozen','replaced','scope']){
+    const f=fixture(),query=await f.session.query({}, {searchString:kind==='nonempty'?'typed':''});
+    if(kind==='cancelled')f.parent.child.notify('onQueryCancelled',query);
+    if(kind==='frozen'){query.results=[{id:1}];f.session.freezeResults(query.id);}
+    if(kind==='replaced')await f.session.query({}, {searchString:'new'});
+    if(kind==='scope')f.invalidate();
+    f.parent.child.notify('onQueryFinished',query);assert.deepEqual(f.parent.zeroPrefix??[],[]);f.session.close();
+  }
+});
+
+test('completion recorder reentry suppresses old updates and cannot duplicate exposure',async()=>{
+  for(const cancel of [false,true]){
+    const f=fixture(),updates=[];let calls=0;
+    const query=await f.session.query({}, {searchString:''},update=>updates.push(update.kind));
+    f.parent.recordZeroPrefix=()=>{calls++;if(cancel)f.session.cancel();else f.parent.child.notify('onQueryFinished',query);};
+    f.parent.child.notify('onQueryFinished',query);
+    assert.equal(calls,1);assert.equal(updates.filter(kind=>kind==='finished').length,cancel?0:1);f.session.close();
+  }
+});
+
+test('throwing completion recorder still delivers completion and consumes the attempt',async()=>{
+  const f=fixture(),updates=[];let calls=0;
+  const query=await f.session.query({}, {searchString:''},update=>updates.push(update.kind));
+  f.parent.recordZeroPrefix=()=>{calls++;throw Error('expected completion recorder failure');};
+  f.parent.child.notify('onQueryFinished',query);f.parent.child.notify('onQueryFinished',query);
+  assert.equal(calls,1);assert.equal(updates.filter(kind=>kind==='finished').length,1);f.session.close();
 });

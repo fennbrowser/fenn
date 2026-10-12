@@ -6527,7 +6527,7 @@ index 9596698cf9..77dd6bd175 100644
      method,
      snapshot,
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 278cb5ca71..b2fe5a02f0 100644
+index 278cb5ca71..460c766896 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
 @@ -4,6 +4,8 @@
@@ -6912,6 +6912,19 @@ index 278cb5ca71..b2fe5a02f0 100644
      this.#cancelRemoveStaleRowsTimer();
      if (this.#queryWasCancelled) {
        return;
+@@ -975,9 +885,9 @@ export class UrlbarView {
+ 
+     // Now that the view has finished updating for this query, record the
+     // exposure.
+-    if (!queryContext.searchString) {
+-      this.controller.parentController.recordZeroPrefix("exposure");
+-    }
++    const recording = UrlbarQueryModel.finishedQueryRecording({
++      cancelled: this.#queryWasCancelled, searchString: queryContext.searchString });
++    if (recording) this.controller.parentController.recordZeroPrefix(recording);
+ 
+     // If the query returned results, we're done.
+     if (this.#queryUpdatedResults) {
 @@ -1018,6 +928,7 @@ export class UrlbarView {
    onQueryResults(queryContext) {
      this.queryContextCache.put(queryContext);
@@ -7301,18 +7314,18 @@ index 278cb5ca71..b2fe5a02f0 100644
    #setResultTitle(result, titleNode) {
 -    if (result.payload.titleL10n) {
 -      this.#l10nCache.setElementL10n(titleNode, result.payload.titleL10n);
--      return;
--    }
--
--    // TODO: `text` is intended only for WebExtensions. We should remove it and
--    // the WebExtensions urlbar API since we're no longer using it.
--    if (result.payload.text) {
--      titleNode.textContent = result.payload.text;
 +    const descriptor = this.input.resultPresentation.title(result);
 +    if (descriptor?.l10n) {
 +      this.#l10nCache.setElementL10n(titleNode, descriptor.l10n);
        return;
      }
+-
+-    // TODO: `text` is intended only for WebExtensions. We should remove it and
+-    // the WebExtensions urlbar API since we're no longer using it.
+-    if (result.payload.text) {
+-      titleNode.textContent = result.payload.text;
+-      return;
+-    }
 -
 -    if (result.payload.providesSearchMode) {
 -      if (result.type == UrlbarShared.RESULT_TYPE.RESTRICT) {
@@ -11693,10 +11706,10 @@ index 0000000000..61a5162340
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..cbdd259974
+index 0000000000..b973dc543d
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,983 @@
+@@ -0,0 +1,1006 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11726,6 +11739,7 @@ index 0000000000..cbdd259974
 +  #controller;
 +  #onUpdate = null;
 +  #frozen = null;
++  #finishState = null;
 +  #onPresentationRequest;
 +  #removedIds = new Set();
 +  #activationCleanup = new Set();
@@ -11752,7 +11766,10 @@ index 0000000000..cbdd259974
 +    this.#controller.addListener({
 +      onFirstResult: query => this.#update("first-result", query),
 +      onQueryResults: query => this.#update("results", query),
-+      onQueryFinished: query => this.#update("finished", query),
++      onQueryCancelled: query => {
++        if (this.#finishState?.query === query && !this.#finishState.finished) this.#finishState.cancelled = true;
++      },
++      onQueryFinished: query => this.#finish(query),
 +      onQueryResultRemoved: (resultId, acknowledgeDismissalL10n, queryId) => {
 +        if (this.#closed || !this.#isCurrent() || !this.#query || this.#query.id !== queryId ||
 +            resultId === undefined || this.#removedIds.has(resultId)) return;
@@ -11773,6 +11790,22 @@ index 0000000000..cbdd259974
 +        }
 +      },
 +    });
++  }
++
++  #finish(query) {
++    const state = this.#finishState;
++    if (!state || state.query !== query || state.finished || state.cancelled || this.#frozen ||
++        this.#closed || !this.#isCurrent() || this.#query !== query) return;
++    // Consume before the parent recorder can reenter, throw or repeat FINISHED.
++    state.finished = true;
++    const recording = UrlbarQueryModel.finishedQueryRecording({
++      cancelled: state.cancelled, searchString: query.searchString });
++    try {
++      if (recording) this.#controller.parentController.recordZeroPrefix(recording);
++    } finally {
++      // A recorder failure must not hide completion; reentry must not publish old work.
++      if (this.#finishState === state) this.#update("finished", query);
++    }
 +  }
 +
 +  #update(kind, query) {
@@ -11803,6 +11836,7 @@ index 0000000000..cbdd259974
 +      isPrivate: this.#context.isPrivate,
 +    }, request);
 +    this.#query = query;
++    this.#finishState = { query, finished: false, cancelled: false };
 +    this.#removedIds.clear();
 +    this.#activationCleanup.clear();
 +    this.#selectionRequest = null;
@@ -12654,6 +12688,7 @@ index 0000000000..cbdd259974
 +  cancel() {
 +    if (this.#closed) return;
 +    this.#query = null;
++    this.#finishState = null;
 +    this.#removedIds.clear();
 +    this.#activationCleanup.clear();
 +    this.#selectionRequest = null;
@@ -12669,6 +12704,7 @@ index 0000000000..cbdd259974
 +    if (this.#closed) return;
 +    this.#closed = true;
 +    this.#query = null;
++    this.#finishState = null;
 +    this.#removedIds.clear();
 +    this.#activationCleanup.clear();
 +    this.#selectionRequest = null;
@@ -12879,10 +12915,10 @@ index 0000000000..ed9a06b8c0
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQueryModel.mjs b/browser/components/urlbar/content/UrlbarQueryModel.mjs
 new file mode 100644
-index 0000000000..79f5f6317e
+index 0000000000..61fff8be48
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQueryModel.mjs
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,241 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12894,6 +12930,11 @@ index 0000000000..79f5f6317e
 +
 +/** Firefox query policy over explicit state, without retaining an input/view. */
 +export class UrlbarQueryModel {
++  /** Firefox's aggregate zero-prefix counter is tied to successful query completion. */
++  static finishedQueryRecording({ cancelled, searchString }) {
++    return !cancelled && !searchString ? "exposure" : null;
++  }
++
 +  /** Measurement policy for a surface that was actually open before closing. */
 +  static closeRecording({ open, focused, elementPicked, zeroPrefix }) {
 +    return Object.freeze({ discardEngagement: !!(open && !focused && !elementPicked),

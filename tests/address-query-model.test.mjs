@@ -113,3 +113,11 @@ test('close recording distinguishes unopened surfaces, ignored tips and zero-pre
     assert.equal(Object.isFrozen(plan),true);
   }
 });
+
+
+test('successful zero-prefix completion alone records aggregate exposure',()=>{
+  for(const cancelled of [false,true]) for(const searchString of ['', 'typed']) {
+    assert.equal(sandbox.Model.finishedQueryRecording({cancelled,searchString}),
+      !cancelled&&!searchString?'exposure':null);
+  }
+});
