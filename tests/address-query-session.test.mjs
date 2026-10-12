@@ -9099,12 +9099,14 @@ async function urlTabActivationFixture({where='tab',type='URL'}={}){
     f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.TAB_SWITCH;f.result.payload={url:'https://open.test/',userContext:{id:3},tabGroup:'g1'};
     f.prefs['secondaryActions.switchToTab']=false;
   }
+  if(type==='TIP'){f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.TIP;f.result.payload={type:'intervention_clear'};}
+  if(type==='DYNAMIC'){f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.DYNAMIC;f.result.payload={dynamicType:'weather'};}
   const source=privateParentFixture(),listeners=new Set(),postData={post:'kw'};
   source.lazy.UrlbarUtils.loadRequestToUrl=()=>({url:'https://history.test/',postData:type==='KEYWORD'?postData:null});
   source.p.browserWindow.gBrowser.tabContainer={addEventListener:(_n,cb)=>listeners.add(cb),removeEventListener:(_n,cb)=>listeners.delete(cb)};
   source.p.browserWindow.openTrustedLinkIn=(url,w,params)=>source.calls.push({url,where:w,params});
   const switches=[];source.p.switchToTab=data=>{switches.push(data);};
-  for(const name of ['commitIndependentModeState','prepareExternalUrlLoad','prepareTabSwitch','isCurrentLoadReady','prepareExternalSourceRevert',
+  for(const name of ['commitIndependentModeState','prepareExternalUrlLoad','prepareTabSwitch','prepareTerminalRevert','isCurrentLoadReady','prepareExternalSourceRevert',
     'getCurrentLoadRecovery','acknowledgeCurrentLoadRecovery','commitCurrentLoad','discardCurrentLoad'])f.parent[name]=source.p[name].bind(source.p);
   f.parent.prepareExternalSearchLoad=()=>assert.fail('search load used for URL result');
   f.parent.recordSearch=()=>assert.fail('URL result recorded a search');
@@ -9244,6 +9246,65 @@ test('tab-switch parent preparation validates its shape and consumes once',async
   assert.throws(()=>p.prepareTabSwitch(ok,null),/Invalid/);
   const token=p.prepareTabSwitch(ok,t);assert.ok(token);assert.equal(p.isCurrentLoadReady(token),false);
   assert.equal(p.commitCurrentLoad(token).attempted,false);assert.equal(f.switches.length,0);f.editor.close();
+});
+
+test('tip and dynamic activation without a load restores source, then records only the terminal engagement',async()=>{
+  for(const type of ['TIP','DYNAMIC']){
+    const f=await urlTabActivationFixture({type});
+    f.parent.engagementEvent.record=(_e,details)=>f.calls.push(['record',details.selType,details.searchString]);
+    const revert=urlRevert(f);
+    assert.deepEqual(f.calls.map(c=>c[0]),['before','selected']);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    assert.deepEqual(f.calls.map(c=>c[0]),['before','selected']);assert.equal(f.source.browser.userTypedValue,null);
+    const outcome=f.editor.commitOneOffExternalNavigation(revert.token);
+    assert.equal(outcome.attempted,true,type);
+    assert.deepEqual(f.calls.slice(2),[['record',type==='TIP'?'tip':'dynamic','typed']]);
+    assert.equal(f.source.calls.length,0);assert.equal(f.switches.length,0);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);f.editor.close();
+  }
+});
+
+test('tip and dynamic activation refuses results that load, dismiss, enter modes or belong to global actions',async()=>{
+  const cases=[
+    ['TIP',r=>{r.payload.url='https://tip.test/';}],
+    ['TIP',r=>{r.payload.type='dismissalAcknowledgment';}],
+    ['TIP',r=>{r.payload.providesSearchMode=true;}],
+    ['DYNAMIC',r=>{r.payload.url='https://dynamic.test/';}],
+    ['DYNAMIC',r=>{r.payload.engine='Engine';r.payload.query='q';}],
+    ['DYNAMIC',r=>{r.payload.providesSearchMode=true;}],
+    ['DYNAMIC',r=>{r.providerName='UrlbarProviderGlobalActions';}]];
+  for(const [type,mutate] of cases){
+    const f=await urlTabActivationFixture({type});mutate(f.result);
+    assert.equal(f.begin(),null,type);assert.equal(f.calls.length,0);f.editor.close();
+  }
+});
+
+test('tip and dynamic activation rejects stale source and result authority without recording',async()=>{
+  for(const type of ['TIP','DYNAMIC'])for(const phase of ['restore','dispatch'])for(const action of ['document','tab','edit','typed','payload']){
+    const f=await urlTabActivationFixture({type}),revert=urlRevert(f);
+    if(phase==='dispatch')assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    if(action==='document')f.source.browser.browsingContext.currentWindowGlobal={};
+    if(action==='tab')f.source.p.browserWindow.gBrowser.selectedBrowser={};
+    if(action==='edit')f.editor.cancel();
+    if(action==='typed')f.source.browser.userTypedValue='new edit';
+    if(action==='payload')f.result.payload.extra='changed';
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),false,type+phase+action);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token)?.attempted??false,false,type+phase+action);
+    assert.equal(f.calls.filter(c=>c[0]==='record').length,0,type+phase+action);f.editor.close();
+  }
+});
+
+test('revert-only parent preparation validates its shape and never dispatches a load',async()=>{
+  const f=await urlTabActivationFixture({type:'TIP'}),p=f.source.p,t=f.source.stateToken;
+  for(const bad of [{revertOnly:false,browserId:42},{revertOnly:true,browserId:42,url:'https://a.test/'},
+    {revertOnly:true,browserId:42,where:'tab'},{revertOnly:true,browserId:42,switchTab:true},
+    {revertOnly:true,browserId:42,loadRequest:{urlLoad:{url:'https://a.test/'}}},{revertOnly:true,browserId:0}]){
+    assert.throws(()=>p.prepareTerminalRevert(bad,t),/Invalid|Changed/);
+  }
+  assert.throws(()=>p.prepareTerminalRevert({revertOnly:true,browserId:42},null),/Invalid/);
+  const token=p.prepareTerminalRevert({revertOnly:true,browserId:42},t);assert.ok(token);
+  assert.equal(p.commitCurrentLoad(token).attempted,false);assert.equal(f.source.calls.length,0);f.editor.close();
 });
 
 test('private opener checks restored source again after preparation and focus callbacks',()=>{
