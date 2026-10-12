@@ -9330,10 +9330,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..20a01455b9
+index 0000000000..b3aee8ae0a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2256 @@
+@@ -0,0 +1,2302 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9373,6 +9373,8 @@ index 0000000000..20a01455b9
 +  #inputPresentation = null;
 +  #inputPresentationState = null;
 +  #inputPopupClose = null;
++  #previewCloseReady = null;
++  #committingPreviewClose = null;
 +  #identityEdit = null;
 +  #identityRequest = null;
 +  #identityState = null;
@@ -9476,20 +9478,24 @@ index 0000000000..20a01455b9
 +    this.#inputPopupClose = null;
 +    const current = () => !this.#closed && this.#isCurrent() && this.#edit === request.edit &&
 +      this.#searchMode === request.searchMode && this.#inputPresentationState === request;
++    return this.#commitPreviewClose(request, request.searchMode,
++      { userTypedValue, persistedSearchTerms }, current, "input-popup-preview-close");
++  }
++
++  #commitPreviewClose(request, previousMode, observation, current, reason, stillOwned = () => true) {
 +    if (!current()) return null;
-+    const outcome = this.#queries.commitPreviewDismissal(request.searchMode,
-+      { userTypedValue, persistedSearchTerms }, current);
++    const outcome = this.#queries.commitPreviewDismissal(previousMode, observation, current);
 +    if (!outcome?.applied) return null;
 +    const { browserCurrent, ...status } = outcome;
 +    if (!outcome.current || !browserCurrent?.() || !current()) return Object.freeze({ ...status, current: false });
 +    this.#searchMode = null;
-+    this.#inputPresentationState = null;
++    if (this.#inputPresentationState === request) this.#inputPresentationState = null;
 +    const listener = this.#onModeStateChanged;
 +    if (listener) this.#notifyModeState(listener, status, {
-+      reason: "input-popup-preview-close", token, queryId: null, edit: request.edit,
++      reason, token: request.token, queryId: request.queryId ?? null, edit: request.edit,
 +    });
 +    return Object.freeze({ ...status, current: !this.#closed && this.#isCurrent() &&
-+      this.#edit === request.edit && this.#searchMode === null && browserCurrent() });
++      this.#edit === request.edit && this.#searchMode === null && browserCurrent() && stillOwned() });
 +  }
 +
 +  get inputPresentationState() {
@@ -9938,6 +9944,8 @@ index 0000000000..20a01455b9
 +    this.#inputPresentation = null;
 +    this.#inputPresentationState = null;
 +    this.#inputPopupClose = null;
++    this.#previewCloseReady = null;
++    this.#committingPreviewClose = null;
 +    this.#compositionReopen = null;
 +    this.#reopeningComposition = null;
 +    this.#compositionStateReady = null;
@@ -11473,7 +11481,7 @@ index 0000000000..20a01455b9
 +    this.#check();
 +    if (this.#edit !== edit) return null;
 +    const proposal = Object.freeze({ ...request,
-+      ...(clearPreview ? { searchMode: null, userTypedValue: null } : {}),
++      ...(clearPreview ? { previousSearchMode: this.#searchMode, searchMode: null, userTypedValue: null } : {}),
 +      token: Object.freeze({}), edit });
 +    this.#closeRequest = proposal;
 +    return proposal;
@@ -11484,6 +11492,40 @@ index 0000000000..20a01455b9
 +    this.#check();
 +    const request = this.#closeRequest;
 +    return request && request.token === token && request.edit === this.#edit ? request : null;
++  }
++
++  /** Acknowledge only the host surface/mode UI; owned browser cleanup follows. */
++  acknowledgeOwnedPreviewClose(token, observation) {
++    const request = this.getCloseRequest(token);
++    if (!request?.previousSearchMode?.isPreview || !observation) return false;
++    const keys = ["text", "selectionStart", "selectionEnd", "selectionDirection", "composing"];
++    if (observation.open !== false || observation.searchMode !== null ||
++        keys.some(key => observation[key] !== request.edit[key]) || this.#closed || !this.#isCurrent() ||
++        this.#closeRequest !== request || this.#edit !== request.edit ||
++        this.#searchMode !== request.previousSearchMode) return false;
++    this.#closeRequest = null;
++    this.#previewCloseReady = request;
++    return true;
++  }
++
++  /** Consume acknowledged dismissal once, with browser text still owned by Firefox. */
++  commitAcknowledgedPreviewClose(token, { userTypedValue, persistedSearchTerms } = {}) {
++    this.#check();
++    if ((userTypedValue !== null && typeof userTypedValue !== "string") ||
++        typeof persistedSearchTerms !== "boolean") throw new TypeError("Invalid preview close browser facts");
++    const request = this.#previewCloseReady;
++    if (!request || request.token !== token) return null;
++    this.#previewCloseReady = null;
++    this.#committingPreviewClose = request;
++    const stillOwned = () => this.#committingPreviewClose === request;
++    const current = () => !this.#closed && this.#isCurrent() && stillOwned() && this.#edit === request.edit &&
++      this.#searchMode === request.previousSearchMode;
++    try {
++      return this.#commitPreviewClose(request, request.previousSearchMode,
++        { userTypedValue, persistedSearchTerms }, current, "preview-popup-close", stillOwned);
++    } finally {
++      if (stillOwned()) this.#committingPreviewClose = null;
++    }
 +  }
 +
 +  /** Observe a completed host close, not merely an enqueued native command. */
@@ -11511,6 +11553,8 @@ index 0000000000..20a01455b9
 +  }
 +
 +  cancel() {
++    this.#committingPreviewClose = null;
++    this.#previewCloseReady = null;
 +    this.#inputPopupClose = null;
 +    this.#inputPresentation = null;
 +    this.#inputPresentationState = null;
@@ -11549,6 +11593,8 @@ index 0000000000..20a01455b9
 +  }
 +
 +  close() {
++    this.#committingPreviewClose = null;
++    this.#previewCloseReady = null;
 +    this.#inputPopupClose = null;
 +    this.#inputPresentation = null;
 +    this.#inputPresentationState = null;

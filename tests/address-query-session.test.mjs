@@ -5639,3 +5639,70 @@ test('parent preview dismissal pins browser text, document and persistence aroun
     assert.equal(discarded,['prior','mode'].includes(change)?0:1);
   }
 });
+
+
+const closedPreview=request=>({...request.edit,open:false,searchMode:null});
+function ownedDismissalBackend(f){
+  const calls=[];f.parent.commitIndependentPreviewDismissal=(id,mode,observation,current)=>{
+    assert.equal(current(),true);calls.push({id,mode,observation});
+    return {applied:true,current:true,stateToken:{},searchMode:null,userTypedValue:null,persistedSearchTerms:false};
+  };return calls;
+}
+
+test('owned preview dismissal separates surface acknowledgment from one-use browser cleanup',async()=>{
+  const f=await previewDismissalFixture(),request=f.proposal,calls=ownedDismissalBackend(f),queries=f.parent.started.length;
+  assert.equal(f.editor.commitAcknowledgedPreviewClose(request.token,closeFacts),null);
+  for(const observation of [{...closedPreview(request),open:true},{...closedPreview(request),searchMode:{}},
+    {...closedPreview(request),text:'pending edit'},{...closedPreview(request),selectionEnd:0}]){
+    assert.equal(f.editor.acknowledgeOwnedPreviewClose(request.token,observation),false);
+    assert.equal(f.editor.getCloseRequest(request.token),request);
+  }
+  assert.equal(f.editor.acknowledgeOwnedPreviewClose(request.token,closedPreview(request)),true);
+  assert.equal(f.editor.acknowledgeOwnedPreviewClose(request.token,closedPreview(request)),false);
+  assert.equal(f.editor.acknowledgeClose(request.token,{open:false,searchMode:null,userTypedValue:null}),false);
+  const result=f.editor.commitAcknowledgedPreviewClose(request.token,closeFacts);
+  assert.equal(result.applied,true);assert.equal(result.current,true);assert.equal(calls.length,1);
+  assert.equal(calls[0].mode.isPreview,true);assert.equal(f.editor.beginSearchModeExit(1),null);
+  assert.equal(f.editor.commitAcknowledgedPreviewClose(request.token,closeFacts),null);
+  assert.equal(f.parent.started.length,queries);f.editor.close();
+});
+
+test('focus-loss and provider closes share owned cleanup while the legacy acknowledgment grants none',async()=>{
+  for(const kind of ['hide','provider','legacy']){
+    const f=await modeWriteFixture({startQuery:false});f.editor.acknowledgeResultModeApplication(f.proposal.token,observedMode(f.proposal));
+    const calls=ownedDismissalBackend(f);
+    if(kind==='hide')f.editor.hideResults(1,f.query.id);else f.parent.child.notify('onResultsCloseRequested',f.query.id,true);
+    const request=f.requests.at(-1);
+    assert.equal(request.previousSearchMode.isPreview,true);
+    if(kind==='legacy')f.editor.acknowledgeClose(request.token,{open:false,searchMode:null,userTypedValue:null});
+    else assert.equal(f.editor.acknowledgeOwnedPreviewClose(request.token,closedPreview(request)),true);
+    const result=f.editor.commitAcknowledgedPreviewClose(request.token,closeFacts);
+    assert.equal(!!result,kind!=='legacy');assert.equal(calls.length,kind==='legacy'?0:1);f.editor.close();
+  }
+});
+
+test('owned preview close rejects acknowledgment reentry and cancellation after acknowledgment',async()=>{
+  const f=await previewDismissalFixture(),request=f.proposal;
+  const observation={...closedPreview(request),get text(){f.editor.select(1,0,0);return request.edit.text;}};
+  assert.equal(f.editor.acknowledgeOwnedPreviewClose(request.token,observation),false);
+  assert.equal(f.editor.commitAcknowledgedPreviewClose(request.token,closeFacts),null);f.editor.close();
+  for(const revoke of [f=>f.editor.cancel(),f=>f.editor.select(1,0,0),f=>f.editor.edit({},edit(2,'new'))]){
+    const f=await previewDismissalFixture(),calls=ownedDismissalBackend(f);
+    f.editor.acknowledgeOwnedPreviewClose(f.proposal.token,closedPreview(f.proposal));await revoke(f);
+    assert.equal(f.editor.commitAcknowledgedPreviewClose(f.proposal.token,closeFacts),null);
+    assert.equal(calls.length,0);f.editor.close();
+  }
+});
+
+test('owned preview dismissal consumes backend failure and detects cancellation during commit',async()=>{
+  for(const reenter of [false,true]){
+    const f=await previewDismissalFixture();let calls=0;
+    f.editor.acknowledgeOwnedPreviewClose(f.proposal.token,closedPreview(f.proposal));
+    f.parent.commitIndependentPreviewDismissal=()=>{calls++;if(!reenter)return null;
+      f.editor.cancel();return {applied:true,current:true,stateToken:{}};};
+    const result=f.editor.commitAcknowledgedPreviewClose(f.proposal.token,closeFacts);
+    assert.equal(!!result,reenter);if(result)assert.equal(result.current,false);
+    assert.equal(f.editor.commitAcknowledgedPreviewClose(f.proposal.token,closeFacts),null);
+    assert.equal(calls,1);f.editor.close();
+  }
+});
