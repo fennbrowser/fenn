@@ -7952,3 +7952,65 @@ test('engine target capture rejects contradictory or reentrant observations and 
     assert.deepEqual(f.parentTarget.calls,[]);f.editor.close();
   }
 });
+
+
+const engineRecordingFacts=(extra={})=>({isHandoff:false,switcherItem:false,isOneOff:true,persistedSearchTerms:false,newtabSessionId:null,...extra});
+
+test('engine recording descriptions preserve order, one-off attribution and typed versus search strings without effects',async()=>{
+  const f=await engineTargetFixture(),target=f.editor.prepareOneOffEngineTarget(f.plan.token,{userTypedValue:'typed words'});
+  const description=f.editor.describeOneOffEngineRecording(target.token,engineRecordingFacts());
+  assert.deepEqual(Array.from(description.effectOrder),['engagement','search-recording','open-serp']);
+  assert.equal(description.engagement.details.result,null);assert.equal(description.engagement.details.selType,'oneoff');
+  assert.equal(description.engagement.details.searchString,f.plan.typedValue);assert.equal(description.engagement.details.windowMode,'private');
+  assert.equal(description.search.method,'recordSearch');assert.equal(description.search.data.engineId,f.plan.engineId);
+  assert.equal(description.search.data.query,f.plan.searchString);assert.equal(description.search.data.details.isOneOff,true);
+  assert.equal(description.search.data.opensInPrivateWindow,false);assert.equal(description.recordingPending,true);assert.equal(description.dispatchPending,true);
+  assert.ok(Object.isFrozen(description.search.data.details));assert.deepEqual(f.parentTarget.calls,[]);assert.equal(f.parent.engagements.length,0);f.editor.close();
+});
+
+test('engine recording attribution preserves handoff, switcher and persisted precedence with explicit event-target facts',async()=>{
+  const f=await engineTargetFixture(),target=f.editor.prepareOneOffEngineTarget(f.plan.token,{userTypedValue:'typed words'});
+  for(const [facts,source] of [[{},'urlbar'],[{isHandoff:true,newtabSessionId:'handoff'},'urlbar_handoff'],
+    [{switcherItem:true},'urlbar_searchmode'],[{isOneOff:false,persistedSearchTerms:true},'urlbar_persisted']]){
+    const p=f.editor.describeOneOffEngineRecording(target.token,engineRecordingFacts(facts));
+    assert.equal(p.engagement.details.searchSource,source);assert.equal(p.search.data.searchSource,source);
+    assert.equal(p.search.data.details.newtabSessionId,facts.newtabSessionId??null);
+    assert.equal(p.search.data.details.isOneOff,facts.isOneOff??true);
+  }
+  assert.throws(()=>f.editor.describeOneOffEngineRecording(target.token,{}),/Invalid/);
+  assert.deepEqual(f.parentTarget.calls,[]);f.editor.close();
+});
+
+test('engine recording descriptions reject copied, stale and reentrant target facts',async()=>{
+  for(const action of ['copy','epoch','caret','reentry']){
+    const f=await engineTargetFixture(),target=f.editor.prepareOneOffEngineTarget(f.plan.token,{userTypedValue:'typed words'});
+    const facts=engineRecordingFacts();
+    if(action==='epoch')f.parentTarget.browser.lastLocationChange++;
+    if(action==='caret')f.editor.select(2,0,0);
+    if(action==='reentry')Object.defineProperty(facts,'isHandoff',{get(){f.editor.select(2,0,0);return false;}});
+    assert.equal(f.editor.describeOneOffEngineRecording(action==='copy'?{...target.token}:target.token,facts),null,action);
+    assert.deepEqual(f.parentTarget.calls,[]);assert.equal(f.parent.engagements.length,0);f.editor.close();
+  }
+});
+
+
+test('engine recording uses current-value result before selected fallback and defers tab search recording',async()=>{
+  for(const currentValue of [false,true])for(const newTab of [false,true]){
+    const f=await engineTargetFixture();f.result.payload.isPrivateEngine=false;
+    const result=currentValue?{id:'current-value',type:f.sandbox.UrlbarShared.RESULT_TYPE.SEARCH,payload:{suggestion:'chosen suggestion'}}:null;
+    if(result)f.query.results.push(result);
+    const command=await f.editor.beginOneOffCommand(2,f.query.id,'engine:second',oneOffFacts(newTab?{keyboardAlt:true}:{shiftKey:true}));
+    const candidate=f.editor.beginOneOffEngineSearch(command.token,result);
+    const observation={...candidate.edit,resultForCurrentValue:result,searchMode:null,pageProxyValid:false};
+    const host=f.editor.acknowledgeOneOffEngineSearch(candidate.token,observation),facts=engineSelectionFacts(f);
+    const selection=f.editor.beginOneOffNavigationSelection(host.token,facts);
+    const receipt=f.editor.acknowledgeOneOffNavigationSelection(selection.token,{...observation,...facts});
+    const plan=f.editor.resolveOneOffEngineNavigation(receipt.token),target=f.editor.prepareOneOffEngineTarget(plan.token,{userTypedValue:'typed words'});
+    const d=f.editor.describeOneOffEngineRecording(target.token,engineRecordingFacts());
+    assert.equal(d.engagement.details.result,result||f.result);assert.equal(d.engagement.details.searchString,'typed words');
+    assert.equal(d.search.data.query,currentValue?'chosen suggestion':'typed words');
+    assert.equal(d.search.method,newTab?'recordSearchInOpenedTab':'recordSearch');
+    assert.equal(d.engagement.state.engagementData.visibleResults[0],f.result);
+    assert.deepEqual(f.parentTarget.calls,[]);assert.equal(f.parent.engagements.length,0);f.editor.close();
+  }
+});

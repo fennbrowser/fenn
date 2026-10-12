@@ -9885,10 +9885,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..23c49064aa
+index 0000000000..c8231479bf
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3453 @@
+@@ -0,0 +1,3464 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11974,6 +11974,17 @@ index 0000000000..23c49064aa
 +      this.#oneOffCommand?.engineSearch?.selection === selection && selection.target === pending ? pending.proposal : null;
 +  }
 +
++  /** Live recording facts only; this does not record engagement or arm a TabOpen listener. */
++  describeOneOffEngineRecording(targetToken, facts) {
++    const target = this.getOneOffEngineTarget(targetToken), command = this.#oneOffCommand;
++    const captured = command?.engineSearch, selection = captured?.selection;
++    if (!target || !facts) return null;
++    const description = this.#queries.describeOneOffEngineRecording(command.prepared, captured.resultForCurrentValue,
++      selection.facts.selectedResult, this.#searchMode, facts);
++    return description && this.getOneOffEngineTarget(targetToken) === target && this.#oneOffCommand === command &&
++      captured.selection === selection ? Object.freeze({ ...description, targetToken, recordingPending: true, dispatchPending: true }) : null;
++  }
++
 +  /** Lower-level target creation only; source notification remains pending. */
 +  createOneOffSearchTab(commandToken, observation) {
 +    return this.#createOneOffSearchTab(commandToken, observation, false);
@@ -13344,10 +13355,10 @@ index 0000000000..23c49064aa
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..8204c68c39
+index 0000000000..2a792a83d5
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1565 @@
+@@ -0,0 +1,1599 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14112,6 +14123,40 @@ index 0000000000..8204c68c39
 +    return Object.freeze({ sourceBrowserId: target.sourceBrowserId, targetBrowserId: target.targetBrowserId,
 +      documentId: target.documentId, where: target.where,
 +      isCurrent: () => current() && parent.isIndependentEngineSearchTargetCurrent(target.token) });
++  }
++
++  /** Describe the retained engine-search recording order without installing listeners or recording. */
++  describeOneOffEngineRecording(prepared, resultForCurrentValue, selectedResult, searchMode, facts) {
++    this.#check();
++    const engine = this.describeOneOffEngineSearch(prepared, resultForCurrentValue);
++    if (!engine || this.#context.sapName !== "urlbar") return null;
++    const { isHandoff, switcherItem, isOneOff, persistedSearchTerms, newtabSessionId } = facts;
++    if ([isHandoff, switcherItem, isOneOff, persistedSearchTerms].some(value => typeof value !== "boolean") ||
++        (newtabSessionId !== null && typeof newtabSessionId !== "string")) throw new TypeError("Invalid engine recording attribution");
++    const query = this.#query;
++    const current = () => prepared.isCurrent() && this.#query === query &&
++      (selectedResult === null || (this.ownsResult(query.id, selectedResult) && this.#controller.visibleResults.includes(selectedResult))) &&
++      UrlbarShared.deepEqual(this.describeOneOffEngineSearch(prepared, resultForCurrentValue), engine);
++    if (!current()) return null;
++    const mode = searchMode ? Object.freeze({ ...searchMode }) : null;
++    const searchSource = UrlbarQueryModel.searchSource({ sapName: this.#context.sapName, isAddressbar: true,
++      isHandoff, switcherItem, isOneOff, persistedSearchTerms, searchMode: mode });
++    // In the one-off engine branch the explicit result is _resultForCurrentValue;
++    // the retained fallback then uses the view's selected result before null.
++    const result = resultForCurrentValue || selectedResult || null;
++    const visibleResults = Object.freeze([...this.#controller.visibleResults]);
++    const recording = UrlbarQueryModel.searchRecording({ engineId: engine.engineId, query: engine.searchString,
++      where: engine.where, searchSource, isOneOff, newtabSessionId });
++    const description = Object.freeze({
++      engagement: Object.freeze({ details: Object.freeze({ result, searchString: engine.typedValue, searchMode: mode,
++        selType: "oneoff", searchSource, windowMode: this.#context.isPrivate ? "private" : "classic" }),
++        state: Object.freeze({ engagementData: Object.freeze({ searchMode: mode, visibleResults,
++          viewIsOpen: this.#controller.resultsOpen, searchSource }), smartbarData: Object.freeze({}) }) }),
++      search: Object.freeze({ method: recording.method, data: Object.freeze({ ...recording.data,
++        details: Object.freeze(recording.data.details) }) }),
++      effectOrder: Object.freeze(["engagement", "search-recording", "open-serp"]),
++    });
++    return current() ? description : null;
 +  }
 +
 +  /** Create only the target of a genuine new-tab mode command, once. */
