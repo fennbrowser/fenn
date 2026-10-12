@@ -9954,10 +9954,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..f26a1cb143
+index 0000000000..4bffed69d6
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3697 @@
+@@ -0,0 +1,3709 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11108,21 +11108,26 @@ index 0000000000..f26a1cb143
 +    }
 +    const live = this.describeResultModeApplication(this.#edit.revision,
 +      request.queryId, request.result, pending.options);
-+    return live && UrlbarShared.deepEqual(live, pending.description) ? pending.proposal : null;
++    return live && UrlbarShared.deepEqual(live, pending.description) && this.#modeApplication === pending &&
++      this.getResultSelection(token) === request && this.#modeApplication === pending && this.#selectionRequest === request
++      ? pending.proposal : null;
 +  }
 +
 +  /** Observe mode, row and text together; no query or browser effects run here. */
 +  acknowledgeResultModeApplication(token, { searchMode, text, selectionStart,
 +    selectionEnd, selectionDirection, modeEntry, pageProxyValid }) {
 +    const proposal = this.getResultModeApplication(token);
++    const pending = this.#modeApplication, request = this.#selectionRequest;
 +    if (!proposal || !UrlbarShared.deepEqual(searchMode, proposal.searchMode) ||
 +        !UrlbarShared.deepEqual(modeEntry, proposal.modeEntry) ||
 +        (proposal.modeEntry && pageProxyValid !== false) || text !== proposal.value || selectionStart !== proposal.selectionStart ||
-+        selectionEnd !== proposal.selectionEnd || selectionDirection !== proposal.selectionDirection) {
++        selectionEnd !== proposal.selectionEnd || selectionDirection !== proposal.selectionDirection ||
++        this.#modeApplication !== pending || this.#selectionRequest !== request ||
++        this.getResultModeApplication(token) !== proposal) {
 +      return false;
 +    }
-+    const pending = this.#modeApplication;
-+    const request = this.#selectionRequest;
++    // Host mode comparisons can invoke getters. Consume only the proposal that
++    // survived those reads, without clearing a replacement or notifying twice.
 +    this.#modeApplication = null;
 +    this.#modeRequery = null;
 +    this.#modeStateReady = null;
@@ -11636,7 +11641,7 @@ index 0000000000..f26a1cb143
 +        const recording = this.describeResultSearchRecording(this.#edit.revision, pending.queryId, pending.result, event, facts);
 +        if (recording?.data.engineId !== pending.resultEngineId) return false;
 +      }
-+      return true;
++      return !this.#closed && pending.edit === this.#edit && pending.searchMode === this.#searchMode && !this.#hiddenResults;
 +    } catch { return false; }
 +  }
 +
@@ -11644,16 +11649,20 @@ index 0000000000..f26a1cb143
 +    this.#check();
 +    const pending = this.#navigationWrite;
 +    if (!pending || pending.proposal.token !== token) return null;
-+    if (!this.#navigationIsCurrent(pending, event, options)) { this.#navigationWrite = null; return null; }
++    if (!this.#navigationIsCurrent(pending, event, options) || this.#navigationWrite !== pending) {
++      if (this.#navigationWrite === pending) this.#navigationWrite = null;
++      return null;
++    }
 +    return pending.proposal;
 +  }
 +
 +  acknowledgeNavigationWrite(token, observation, event, options) {
-+    const proposal = this.getNavigationWrite(token, event, options);
++    const proposal = this.getNavigationWrite(token, event, options), pending = this.#navigationWrite;
 +    if (!proposal || observation?.text !== proposal.value || observation.selectionStart !== 0 ||
 +        observation.selectionEnd !== 0 || observation.selectionDirection !== "none" ||
-+        !UrlbarShared.deepEqual(observation.searchMode, proposal.searchMode)) return false;
-+    const pending = this.#navigationWrite;
++        !UrlbarShared.deepEqual(observation.searchMode, proposal.searchMode) || this.#navigationWrite !== pending ||
++        this.getNavigationWrite(token, event, options) !== proposal) return false;
++    // Validate again after reading host fields, then consume before changing the editor.
 +    this.#navigationWrite = null;
 +    this.#edit = Object.freeze({ ...this.#edit, text: proposal.value, selectionStart: 0, selectionEnd: 0,
 +      selectionDirection: "none", selectionRevision: this.#edit.selectionRevision + 1 });
@@ -11666,7 +11675,10 @@ index 0000000000..f26a1cb143
 +    this.#check();
 +    const pending = this.#navigationReady;
 +    if (!pending || pending.proposal.token !== token) return null;
-+    if (!this.#navigationIsCurrent(pending, event, options)) { this.#navigationReady = null; return null; }
++    if (!this.#navigationIsCurrent(pending, event, options) || this.#navigationReady !== pending) {
++      if (this.#navigationReady === pending) this.#navigationReady = null;
++      return null;
++    }
 +    return Object.freeze({ token, edit: this.#edit, plan: pending.proposal.plan, userTypedValue: this.#edit.text });
 +  }
 +

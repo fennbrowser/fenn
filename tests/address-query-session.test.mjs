@@ -8638,3 +8638,62 @@ test('alias handoff rejects a same-name engine replacement during navigation not
   assert.equal(f.calls.includes('load'),false);assert.equal(f.calls.filter(c=>c==='search').length,1);
   assert.equal(f.editor.commitAcknowledgedNavigation(write.token,f.event,f.options),null);f.editor.close();
 });
+
+
+test('navigation acknowledgment rejects recursive consumption without writing the editor twice',async()=>{
+  const f=await navigationWriteFixture(),p=f.begin(),before=f.editor.snapshot;let nested;
+  const observation={...navigationObservation(p),get text(){nested??=f.editor.acknowledgeNavigationWrite(p.token,navigationObservation(p),f.event,f.options);return p.value;}};
+  assert.equal(f.editor.acknowledgeNavigationWrite(p.token,observation,f.event,f.options),false);
+  assert.equal(nested,true);assert.equal(f.editor.snapshot.selectionRevision,before.selectionRevision+1);
+  assert.ok(f.editor.getAcknowledgedNavigation(p.token,f.event,f.options));f.editor.close();
+});
+
+test('navigation acknowledgment preserves replacement writes and rejects payload changes from observed fields',async()=>{
+  for(const action of ['replacement','payload','caret']){
+    const f=await navigationWriteFixture(),p=f.begin(),before=f.editor.snapshot;let replacement;
+    const observation={...navigationObservation(p),get text(){
+      if(action==='replacement')replacement??=f.begin();
+      if(action==='payload')f.result.payload.query='changed';
+      if(action==='caret')f.editor.select(1,0,0);
+      return p.value;
+    }};
+    assert.equal(f.editor.acknowledgeNavigationWrite(p.token,observation,f.event,f.options),false,action);
+    assert.equal(f.editor.snapshot.text,before.text);
+    if(replacement)assert.equal(f.editor.getNavigationWrite(replacement.token,f.event,f.options),replacement);
+    f.editor.close();
+  }
+});
+
+test('mode acknowledgment rejects recursive mode-field consumption and preserves one provider notification',async()=>{
+  const f=await modeWriteFixture(),p=f.proposal,before=f.editor.snapshot;let nested;
+  const searchMode={...p.searchMode,get engineName(){nested??=f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));return p.searchMode.engineName;}};
+  assert.equal(f.editor.acknowledgeResultModeApplication(p.token,{...observedMode(p),searchMode}),false);
+  assert.equal(nested,true);assert.equal(f.editor.snapshot.selectionRevision,before.selectionRevision+1);
+  assert.deepEqual(f.calls,['before','selected']);f.editor.close();
+});
+
+test('mode acknowledgment preserves replacement proposals and rejects result changes during observed mode comparison',async()=>{
+  for(const action of ['replacement','payload','caret']){
+    const f=await modeWriteFixture(),p=f.proposal;let replacement;
+    const searchMode={...p.searchMode,get engineName(){
+      if(action==='replacement')replacement??=f.editor.beginResultModeApplication(1,f.query.id,f.result);
+      if(action==='payload')f.result.payload.query='changed';
+      if(action==='caret')f.editor.select(1,0,0);
+      return p.searchMode.engineName;
+    }};
+    assert.equal(f.editor.acknowledgeResultModeApplication(p.token,{...observedMode(p),searchMode}),false,action);
+    assert.equal(f.editor.snapshot.text,'@engine');assert.equal(f.calls.includes('selected'),false);
+    if(replacement)assert.equal(f.editor.getResultModeApplication(replacement.token),replacement);f.editor.close();
+  }
+});
+
+test('alias navigation acknowledgment rechecks pinned engine after reading host fields',async()=>{
+  const f=await oneOffAliasNavigationFixture(),p=f.editor.beginOneOffResultNavigationWrite(f.receipt.token,f.event,f.options);
+  const observation={...navigationObservation(p),get text(){
+    f.parent.child.updateEngineStore('removed',{id:'result-engine'},-1);
+    f.parent.child.updateEngineStore('changed',{id:'replacement',name:'Result Engine',isGeneralPurposeEngine:true},-1);return p.value;
+  }};
+  assert.equal(f.editor.acknowledgeNavigationWrite(p.token,observation,f.event,f.options),false);
+  assert.equal(f.editor.commitAcknowledgedNavigation(p.token,f.event,f.options),null);
+  assert.equal(f.calls.includes('search'),false);assert.equal(f.calls.includes('load'),false);f.editor.close();
+});
