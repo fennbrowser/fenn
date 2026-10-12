@@ -721,3 +721,20 @@ test('target readiness rejects forged receipts, stale source/target state and ch
     assert.equal(f.parent.describeIndependentOneOffTargetReadiness(receipt),null,mutation);
   }
 });
+
+
+test('foreground cleanup authority retains both browser lifetimes and cannot outlive source teardown',()=>{
+  for(const mutation of ['source-document','source-text','source-receipt','target-document','target-receipt','selection','destroy']){
+    const f=initializedOneOffTabFixture(),result=f.parent.activateIndependentOneOffSearchTab(f.receipt,()=>true,()=>true);
+    assert.equal(result.isSourceCleanupCurrent(),true);
+    if(mutation==='source-document')f.browser.browsingContext.currentWindowGlobal={};
+    if(mutation==='source-text')f.browser.userTypedValue='new source';
+    if(mutation==='source-receipt'){const p=f.owner.prepareMode(f.browser,null);f.owner.commit(f.browser,p.token);}
+    if(mutation==='target-document')f.target.browsingContext.currentWindowGlobal={};
+    if(mutation==='target-receipt'){const p=f.owner.prepareMode(f.target,null);f.owner.commit(f.target,p.token);}
+    if(mutation==='selection')f.tabbrowser.selectedBrowser=f.browser;
+    if(mutation==='destroy')f.parent.destroyForTest();
+    assert.equal(result.isSourceCleanupCurrent(),false,mutation);
+    if(mutation.startsWith('source-')||mutation==='destroy')assert.equal(result.destination.isReady(),true);
+  }
+});

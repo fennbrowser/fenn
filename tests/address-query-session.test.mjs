@@ -6926,7 +6926,7 @@ async function oneOffTabActivationFixture(options={}){
   f.parent.activateIndependentOneOffSearchTab=(receipt,sourceCurrent,transferCurrent)=>{
     if(!sourceCurrent()||!transferCurrent())return null;
     selections++;f.onSelect?.();
-    const current=transferCurrent();return {activated:true,current,destination:current?{context:{...f.context,browserId:18},searchMode:f.command.searchMode,userTypedValue:'typed words',documentId:42,isCurrent:()=>f.destinationCurrent!==false,isReady:()=>f.destinationCurrent!==false&&f.destinationReady!==false}:null};
+    const current=transferCurrent();return {activated:true,current,sourceBrowserId:17,targetBrowserId:18,isSourceCleanupCurrent:()=>f.sourceCleanupCurrent!==false&&f.destinationCurrent!==false,destination:current?{context:{...f.context,browserId:18},searchMode:f.command.searchMode,userTypedValue:'typed words',documentId:42,isCurrent:()=>f.destinationCurrent!==false,isReady:()=>f.destinationCurrent!==false&&f.destinationReady!==false}:null};
   };
   const activation=f.editor.beginOneOffTabActivation(f.command.token);
   return Object.assign(f,{created,activation,getSelections:()=>selections});
@@ -7365,4 +7365,34 @@ test('readiness facts cannot replace an editor or authorize activation of a chan
   f.parent.describeIndependentOneOffTabActivation=()=>null;
   assert.equal(f.editor.getOneOffTargetReadiness(f.command.token).requiresScopeTransfer,true);
   assert.equal(f.editor.activateOneOffSearchTab(f.activation.token),null);assert.equal(f.getSelections(),0);f.editor.close();
+});
+
+
+test('foreground source deselection acknowledges exactly once after deliberate source scope loss',async()=>{
+  const f=await oneOffTabActivationFixture();f.onSelect=()=>f.loseScope();
+  const result=f.editor.activateOneOffSearchTab(f.activation.token),p=result.sourceDeselection;
+  assert.ok(p);assert.equal(Object.isFrozen(p),true);assert.equal(f.editor.getOneOffSourceDeselection(p.token),p);
+  const observed={...p.edit,searchMode:p.searchMode,oneOffSelected:false};
+  for(const change of [{revision:99},{text:'other'},{selectionStart:0},{selectionDirection:'backward'},{composing:true},{searchMode:{}},{oneOffSelected:true}])
+    assert.equal(f.editor.acknowledgeOneOffSourceDeselection(p.token,{...observed,...change}),null);
+  assert.equal(f.editor.getOneOffSourceDeselection({...p.token}),null);
+  const ack=f.editor.acknowledgeOneOffSourceDeselection(p.token,observed);
+  assert.equal(ack.acknowledged,true);assert.equal(ack.sourceDeselectionPending,false);assert.equal(ack.sourceModeRestorationPending,true);
+  assert.equal(f.editor.acknowledgeOneOffSourceDeselection(p.token,observed),null);
+  assert.equal(f.parent.started.length,1);assert.equal(f.getSelections(),1);f.editor.close();
+});
+
+test('foreground source acknowledgment rejects closed, stale and reentrant cleanup without revoking destination scope',async()=>{
+  for(const mutation of ['source','destination','close','getter']){
+    const f=await oneOffTabActivationFixture();f.onSelect=()=>f.loseScope();
+    const result=f.editor.activateOneOffSearchTab(f.activation.token),p=result.sourceDeselection;
+    const observed={...p.edit,searchMode:p.searchMode,oneOffSelected:false};
+    if(mutation==='source')f.sourceCleanupCurrent=false;
+    if(mutation==='destination')f.destinationCurrent=false;
+    if(mutation==='close')f.editor.close();
+    if(mutation==='getter')Object.defineProperty(observed,'oneOffSelected',{get(){f.editor.close();return false;}});
+    assert.equal(f.editor.acknowledgeOneOffSourceDeselection(p.token,observed),null,mutation);
+    if(mutation!=='destination')assert.equal(result.destination.isReady(),true);
+    assert.equal(f.parent.started.length,1);f.editor.close();
+  }
 });
