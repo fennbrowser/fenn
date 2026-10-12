@@ -9756,10 +9756,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..55e47eba1f
+index 0000000000..134d077015
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2892 @@
+@@ -0,0 +1,2960 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9788,6 +9788,9 @@ index 0000000000..55e47eba1f
 + * In particular, this is not a navigation controller.
 + */
 +export class UrlbarEditSession {
++  static #oneOffDestinations = new WeakMap();
++  #context;
++  #oneOffDestinationQuery = null;
 +  #queries;
 +  #isPrivate;
 +  #typedText = "";
@@ -9856,6 +9859,7 @@ index 0000000000..55e47eba1f
 +    if (onModeStateChanged !== null && typeof onModeStateChanged !== "function") {
 +      throw new TypeError("Invalid mode-state listener");
 +    }
++    this.#context = Object.freeze({ ...context });
 +    this.#onModeStateChanged = onModeStateChanged;
 +    this.#isCurrent = isCurrent;
 +    this.#onUpdate = onUpdate;
@@ -10387,6 +10391,7 @@ index 0000000000..55e47eba1f
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
 +    this.#oneOffTabContinuation = null;
++    this.#oneOffDestinationQuery = null;
 +    this.#inputPresentation = null;
 +    this.#inputPresentationState = null;
 +    this.#inputPopupClose = null;
@@ -11634,6 +11639,7 @@ index 0000000000..55e47eba1f
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
 +    this.#oneOffTabContinuation = null;
++    this.#oneOffDestinationQuery = null;
 +    try {
 +      pending.prepared = await this.#queries.prepareOneOffCommand(queryId, key, edit.text, facts);
 +      if (this.#closed || !this.#isCurrent() || this.#oneOffCommand !== pending ||
@@ -11724,11 +11730,70 @@ index 0000000000..55e47eba1f
 +    const proposal = this.getOneOffTabActivation(token), pending = this.#oneOffTabContinuation;
 +    if (!proposal || !pending) return null;
 +    this.#oneOffTabContinuation = null;
++    this.#oneOffDestinationQuery = null;
 +    const unchanged = () => !this.#closed && this.#edit === pending.edit &&
 +      this.#searchMode === pending.previousMode && !this.#hiddenResults && !this.#oneOffTabContinuation && !this.#oneOffCommand;
 +    const sourceCurrent = () => unchanged() && this.#isCurrent();
 +    const outcome = this.#queries.activateOneOffSearchTab(pending.receipt, sourceCurrent, unchanged);
++    if (outcome?.current && outcome.destination) {
++      UrlbarEditSession.#oneOffDestinations.set(outcome.destination, { allowAutofill: outcome.allowAutofill, claimed: false });
++    }
 +    return outcome ? Object.freeze({ ...outcome, token, commandToken: pending.commandToken }) : null;
++  }
++
++  /** Adopt observed target state once into a fresh editor; no input, mode write or query is synthesized. */
++  adoptOneOffDestination(destination, observation) {
++    this.#check();
++    const record = UrlbarEditSession.#oneOffDestinations.get(destination);
++    const fresh = () => !this.#closed && this.#isCurrent() && !this.#edit && !record?.claimed;
++    if (!record || !fresh() || !destination.isReady()) return null;
++    const context = destination.context;
++    if (["sapName", "isPrivate", "browserId", "actor"].some(key => this.#context[key] !== context[key])) return null;
++    const { revision, text, selectionStart, selectionEnd, selectionDirection = "none", composing,
++      searchMode, pageProxyValid } = observation ?? {};
++    if (!Number.isSafeInteger(revision) || revision <= 0 || typeof text !== "string") {
++      throw new TypeError("Invalid destination editor snapshot");
++    }
++    this.#validateSelection(text, selectionStart, selectionEnd, selectionDirection);
++    if (text !== (destination.userTypedValue ?? "") || composing !== false || pageProxyValid !== false ||
++        !UrlbarShared.deepEqual(searchMode, destination.searchMode) || !destination.isReady() || !fresh()) return null;
++    // Consume shared authority before installing state; another fresh session cannot reuse it.
++    record.claimed = true;
++    this.#typedText = text;
++    this.#searchMode = destination.searchMode;
++    this.#edit = Object.freeze({ revision, text, selectionStart, selectionEnd, selectionDirection,
++      selectionRevision: 0, composing: false });
++    this.#identityEdit = this.#edit;
++    const proposal = Object.freeze({ token: Object.freeze({}), edit: this.#edit, searchMode: this.#searchMode,
++      allowAutofill: record.allowAutofill, browserId: context.browserId, documentId: destination.documentId });
++    this.#oneOffDestinationQuery = { proposal, destination };
++    return proposal;
++  }
++
++  getOneOffDestinationQuery(token) {
++    this.#check();
++    const pending = this.#oneOffDestinationQuery;
++    if (!pending || pending.proposal.token !== token) return null;
++    const { proposal, destination } = pending;
++    return this.#edit === proposal.edit && this.#searchMode === proposal.searchMode && !this.#hiddenResults &&
++      destination.isReady() && this.#oneOffDestinationQuery === pending ? proposal : null;
++  }
++
++  /** Dispatch the activated target's query once, rechecking initial browser authority after engine waits. */
++  async queryOneOffDestination(token, state) {
++    const proposal = this.getOneOffDestinationQuery(token), pending = this.#oneOffDestinationQuery;
++    if (!proposal || !UrlbarShared.deepEqual(state?.searchMode, proposal.searchMode)) {
++      throw new Error("Stale one-off destination query");
++    }
++    const queryState = { ...state, searchMode: proposal.searchMode };
++    if (this.getOneOffDestinationQuery(token) !== proposal) throw new Error("Stale one-off destination query");
++    this.#oneOffDestinationQuery = null;
++    const { revision, text } = proposal.edit, { allowAutofill } = proposal;
++    const authorize = () => !this.#closed && this.#isCurrent() && this.#edit === proposal.edit &&
++      this.#searchMode === proposal.searchMode && !this.#hiddenResults && pending.destination.isReady();
++    return this.#queries.query(queryState, { searchString: text, allowAutofill }, update => {
++      this.#publishQueryUpdate(update, { revision, text, allowAutofill });
++    }, authorize);
 +  }
 +
 +  /** Propose the current-tab mode setter before its separate startQuery step. */
@@ -11740,6 +11805,7 @@ index 0000000000..55e47eba1f
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
 +    this.#oneOffTabContinuation = null;
++    this.#oneOffDestinationQuery = null;
 +    // Read host getters once before validation; recheck the command after them.
 +    modeEntry = modeEntry && this.#captureModeEntry({ untrimmedValue: modeEntry.untrimmedValue,
 +      pageProxyValid: modeEntry.pageProxyValid, hasAutofillPlaceholder: modeEntry.hasAutofillPlaceholder,
@@ -12558,6 +12624,7 @@ index 0000000000..55e47eba1f
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
 +    this.#oneOffTabContinuation = null;
++    this.#oneOffDestinationQuery = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
 +    this.#committingPreviewClose = null;
@@ -12607,6 +12674,7 @@ index 0000000000..55e47eba1f
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
 +    this.#oneOffTabContinuation = null;
++    this.#oneOffDestinationQuery = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
 +    this.#committingPreviewClose = null;

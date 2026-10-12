@@ -6926,7 +6926,7 @@ async function oneOffTabActivationFixture(options={}){
   f.parent.activateIndependentOneOffSearchTab=(receipt,sourceCurrent,transferCurrent)=>{
     if(!sourceCurrent()||!transferCurrent())return null;
     selections++;f.onSelect?.();
-    const current=transferCurrent();return {activated:true,current,destination:current?{context:{browserId:18},isCurrent:()=>true,isReady:()=>true}:null};
+    const current=transferCurrent();return {activated:true,current,destination:current?{context:{...f.context,browserId:18},searchMode:f.command.searchMode,userTypedValue:'typed words',documentId:42,isCurrent:()=>f.destinationCurrent!==false,isReady:()=>f.destinationCurrent!==false&&f.destinationReady!==false}:null};
   };
   const activation=f.editor.beginOneOffTabActivation(f.command.token);
   return Object.assign(f,{created,activation,getSelections:()=>selections});
@@ -6985,4 +6985,91 @@ test('query activation refuses forged or foreign new-tab receipts',async()=>{
   const f=fixture({browserId:17});
   assert.equal(f.session.describeOneOffTabActivation({initialized:true,sourceModeNotified:true,requiresActivation:true}),null);
   assert.equal(f.session.activateOneOffSearchTab({},()=>true,()=>true),null);f.session.close();
+});
+
+
+async function oneOffDestinationFixture(options={}){
+  const f=await oneOffTabActivationFixture(options);
+  const result=f.editor.activateOneOffSearchTab(f.activation.token),destination=result.destination;
+  f.editor.close();
+  const updates=[],editor=new f.sandbox.UrlbarEditSession({context:destination.context,isCurrent:destination.isCurrent,onUpdate:u=>updates.push(u)});
+  const parent=f.parents.at(-1),observation={revision:1,text:destination.userTypedValue??'',selectionStart:0,
+    selectionEnd:0,selectionDirection:'none',composing:false,pageProxyValid:false,searchMode:destination.searchMode};
+  return {...f,source:f.editor,editor,destination,parent,updates,observation,owner:f};
+}
+
+test('activated destinations adopt once into matching fresh editors and explicitly query with local or engine policy',async()=>{
+  for(const engine of [false,true]){
+    const f=await oneOffDestinationFixture({engine,pageValid:engine});
+    assert.equal(f.editor.snapshot,null);assert.equal(f.parent.started.length,0);
+    assert.equal(f.editor.adoptOneOffDestination({...f.destination},f.observation),null);
+    const p=f.editor.adoptOneOffDestination(f.destination,f.observation);
+    assert.ok(p);assert.equal(p.allowAutofill,!engine);assert.equal(f.editor.getOneOffDestinationQuery(p.token),p);
+    assert.equal(f.editor.snapshot.text,f.observation.text);assert.equal(f.parent.started.length,0);assert.equal(f.parent.engagements.length,0);
+    const other=new f.sandbox.UrlbarEditSession({context:f.destination.context,isCurrent:()=>true,onUpdate(){}});
+    assert.equal(other.adoptOneOffDestination(f.destination,f.observation),null);other.close();
+    const query=await f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode,isPrivate:false});
+    assert.equal(query.searchString,f.observation.text);assert.equal(query.allowAutofill,!engine);assert.equal(query.isPrivate,true);
+    assert.deepEqual(query.searchMode,p.searchMode);assert.equal(f.parent.started.length,1);assert.equal(f.parent.engagements.length,0);
+    await assert.rejects(f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode}),/Stale/);f.editor.close();
+  }
+});
+
+test('destination adoption rejects wrong context, host state, composition and stale browser receipts without claiming them',async()=>{
+  for(const mutation of ['browserId','actor','isPrivate','sapName']){
+    const f=await oneOffDestinationFixture(),context={...f.destination.context};context[mutation]=mutation==='actor'?{browsingContext:{isContent:false}}:mutation==='browserId'?19:mutation==='isPrivate'?false:'searchbar';
+    const other=new f.sandbox.UrlbarEditSession({context,isCurrent:()=>true,onUpdate(){}});
+    assert.equal(other.adoptOneOffDestination(f.destination,f.observation),null);other.close();
+    assert.ok(f.editor.adoptOneOffDestination(f.destination,f.observation));f.editor.close();
+  }
+  for(const changes of [{text:'different'},{composing:true},{pageProxyValid:true},{searchMode:null}]){
+    const f=await oneOffDestinationFixture();assert.equal(f.editor.adoptOneOffDestination(f.destination,{...f.observation,...changes}),null);
+    assert.equal(f.editor.snapshot,null);assert.ok(f.editor.adoptOneOffDestination(f.destination,f.observation));f.editor.close();
+  }
+  const f=await oneOffDestinationFixture();f.owner.destinationReady=false;
+  assert.equal(f.editor.adoptOneOffDestination(f.destination,f.observation),null);assert.equal(f.editor.snapshot,null);f.editor.close();
+});
+
+test('destination observation getters cannot claim twice or overwrite an intervening editor',async()=>{
+  for(const mutation of ['claim','edit','close','ready']){
+    const f=await oneOffDestinationFixture();let claimed;
+    const observation={...f.observation,get text(){
+      if(mutation==='claim')claimed=f.editor.adoptOneOffDestination(f.destination,f.observation);
+      if(mutation==='edit')void f.editor.edit({}, {revision:2,text:'new',selectionStart:3,selectionEnd:3,composing:true});
+      if(mutation==='close')f.editor.close();if(mutation==='ready')f.owner.destinationReady=false;
+      return f.observation.text;
+    }};
+    assert.equal(f.editor.adoptOneOffDestination(f.destination,observation),null);
+    if(mutation==='claim')assert.equal(f.editor.getOneOffDestinationQuery(claimed.token),claimed);
+    if(mutation==='edit')assert.equal(f.editor.snapshot.text,'new');
+    assert.equal(f.parent.started.length,0);f.editor.close();
+  }
+});
+
+test('destination query rejects stale caret, cancellation, mode observations, browser state and scope',async()=>{
+  for(const mutation of ['caret','cancel','state','ready','scope','getter']){
+    const f=await oneOffDestinationFixture(),p=f.editor.adoptOneOffDestination(f.destination,f.observation);
+    let state={searchMode:p.searchMode};
+    if(mutation==='caret')f.editor.select(1,1,1);
+    if(mutation==='cancel')f.editor.cancel();if(mutation==='state')state={searchMode:null};
+    if(mutation==='ready')f.owner.destinationReady=false;if(mutation==='scope')f.owner.destinationCurrent=false;
+    if(mutation==='getter')state={searchMode:p.searchMode,get currentPage(){f.editor.select(1,1,1);return 'about:newtab';}};
+    await assert.rejects(f.editor.queryOneOffDestination(p.token,state),/Stale|scope changed/);
+    assert.equal(f.parent.started.length,0);f.editor.close();
+  }
+});
+
+test('engine-held destination queries recheck target authority and editor lifetime before provider dispatch',async()=>{
+  for(const mutation of ['none','ready','caret','cancel','close','scope']){
+    const f=await oneOffDestinationFixture(),p=f.editor.adoptOneOffDestination(f.destination,f.observation);
+    f.parent.initEngineStore=()=>{};
+    const pending=f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode});
+    const rejected=mutation==='none'?null:assert.rejects(pending,/authority|cancelled|closed|scope/);
+    assert.equal(f.parent.started.length,0);
+    if(mutation==='ready')f.owner.destinationReady=false;if(mutation==='caret')f.editor.select(1,1,1);
+    if(mutation==='cancel')f.editor.cancel();if(mutation==='close')f.editor.close();if(mutation==='scope')f.owner.destinationCurrent=false;
+    f.parent.child.updateEngineStore('init',[],null);
+    if(rejected)await rejected;else await pending;
+    assert.equal(f.parent.started.length,mutation==='none'?1:0,mutation);f.editor.close();
+  }
 });
