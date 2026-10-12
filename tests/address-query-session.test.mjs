@@ -8014,3 +8014,76 @@ test('engine recording uses current-value result before selected fallback and de
     assert.deepEqual(f.parentTarget.calls,[]);assert.equal(f.parent.engagements.length,0);f.editor.close();
   }
 });
+
+
+async function engineEngagementFixture(){
+  const f=await engineTargetFixture(),target=f.editor.prepareOneOffEngineTarget(f.plan.token,{userTypedValue:'typed words'});
+  f.editor.startEngagement(2,f.query.id,{type:'input',timeStamp:1});
+  return {...f,target,event:{type:'keydown',key:'Enter',timeStamp:2},attribution:engineRecordingFacts()};
+}
+
+test('engine engagement records the original event once and keeps guarded search/load continuation pending',async()=>{
+  const f=await engineEngagementFixture();let recordedEvent,details,state;
+  f.parent.engagementEvent.record=(...args)=>{[recordedEvent,details,state]=args;f.parent.engagements.push({kind:'record'});};
+  const receipt=f.editor.recordOneOffEngineEngagement(f.target.token,f.event,f.attribution);
+  assert.ok(receipt);assert.equal(receipt.engagementPending,false);assert.equal(receipt.engagementRecorderReturned,true);
+  assert.equal(receipt.searchRecordingPending,true);assert.equal(receipt.dispatchPending,true);assert.equal(recordedEvent,f.event);
+  assert.equal(details.selType,'oneoff');assert.equal(details.searchString,'typed words');assert.equal(details.result,null);
+  assert.equal(state.engagementData.viewIsOpen,true);assert.equal(f.editor.getOneOffEngineEngagement(receipt.token),receipt);
+  assert.equal(f.editor.getOneOffEngineEngagement({...receipt.token}),null);
+  assert.equal(f.editor.recordOneOffEngineEngagement(f.target.token,f.event,f.attribution),null);
+  const replacement=f.editor.prepareOneOffEngineTarget(f.plan.token,{userTypedValue:'typed words'});
+  assert.equal(f.editor.getOneOffEngineEngagement(receipt.token),null);
+  assert.equal(f.editor.recordOneOffEngineEngagement(replacement.token,f.event,f.attribution),null);
+  assert.equal(f.parent.engagements.filter(e=>e.kind==='record').length,1);assert.equal(f.parent.started.length,2);
+  assert.deepEqual(f.parentTarget.calls,[]);f.editor.close();
+});
+
+test('engine engagement consumes attempts before recorder reentry and retains no continuation after failure or invalidation',async()=>{
+  for(const action of ['reentry','throw','caret','epoch']){
+    const f=await engineEngagementFixture();let calls=0;
+    f.parent.engagementEvent.record=()=>{
+      calls++;
+      if(action==='reentry')assert.equal(f.editor.recordOneOffEngineEngagement(f.target.token,f.event,f.attribution),null);
+      if(action==='throw')throw Error('recorder failed');
+      if(action==='caret')f.editor.select(2,0,0);
+      if(action==='epoch')f.parentTarget.browser.lastLocationChange++;
+    };
+    if(action==='throw')assert.throws(()=>f.editor.recordOneOffEngineEngagement(f.target.token,f.event,f.attribution),/recorder failed/);
+    else {
+      const receipt=f.editor.recordOneOffEngineEngagement(f.target.token,f.event,f.attribution);
+      if(action==='reentry')assert.ok(receipt);else assert.equal(receipt,null);
+    }
+    assert.equal(f.editor.recordOneOffEngineEngagement(f.target.token,f.event,f.attribution),null);assert.equal(calls,1);
+    assert.deepEqual(f.parentTarget.calls,[]);f.editor.close();
+  }
+});
+
+test('engine engagement preflight rejects invalid events and stale attribution before recorder effects',async()=>{
+  for(const action of ['event','attribution','reentry','inactive']){
+    const f=await engineEngagementFixture();let calls=0;f.parent.engagementEvent.record=()=>calls++;
+    if(action==='event')assert.throws(()=>f.editor.recordOneOffEngineEngagement(f.target.token,{type:'blur',timeStamp:2},f.attribution),/Invalid/);
+    if(action==='attribution')assert.throws(()=>f.editor.recordOneOffEngineEngagement(f.target.token,f.event,{}),/Invalid/);
+    if(action==='reentry'){
+      const facts={...f.attribution,get isHandoff(){f.editor.select(2,0,0);return false;}};
+      assert.equal(f.editor.recordOneOffEngineEngagement(f.target.token,f.event,facts),null);
+    }
+    if(action==='inactive'){
+      const other=await engineTargetFixture(),target=other.editor.prepareOneOffEngineTarget(other.plan.token,{userTypedValue:'typed words'});
+      assert.equal(other.editor.recordOneOffEngineEngagement(target.token,f.event,f.attribution),null);other.editor.close();
+    }
+    assert.equal(calls,0);f.editor.close();
+  }
+});
+
+
+test('engine engagement preserves recorder ongoing-session facts and never cancels callback replacement queries',async()=>{
+  const f=await engineEngagementFixture();f.parent.engagementEvent.record=(_event,details)=>{details.isSessionOngoing=true;};
+  const receipt=f.editor.recordOneOffEngineEngagement(f.target.token,f.event,f.attribution);
+  assert.equal(receipt.sessionOngoing,true);assert.equal(f.editor.getOneOffEngineEngagement(receipt.token),receipt);f.editor.close();
+  const replacement=await engineEngagementFixture();let next;
+  replacement.parent.engagementEvent.record=()=>{next=replacement.editor.edit({},edit(3,'replacement query'));};
+  assert.equal(replacement.editor.recordOneOffEngineEngagement(replacement.target.token,replacement.event,replacement.attribution),null);
+  const query=await next;assert.equal(replacement.editor.snapshot.revision,3);
+  replacement.editor.publishPresentation(3,query.id,[],true);assert.equal(replacement.parent.started.length,3);replacement.editor.close();
+});

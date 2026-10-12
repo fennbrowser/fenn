@@ -9885,10 +9885,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..c8231479bf
+index 0000000000..5062ca7548
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3464 @@
+@@ -0,0 +1,3494 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11985,6 +11985,36 @@ index 0000000000..c8231479bf
 +      captured.selection === selection ? Object.freeze({ ...description, targetToken, recordingPending: true, dispatchPending: true }) : null;
 +  }
 +
++  /** Consume the engine plan's engagement attempt before calling Firefox's recorder. */
++  recordOneOffEngineEngagement(targetToken, event, facts) {
++    const target = this.getOneOffEngineTarget(targetToken), command = this.#oneOffCommand;
++    const captured = command?.engineSearch, selection = captured?.selection;
++    if (!target || selection.engagementAttempted || !facts) return null;
++    if (!UrlbarQueryModel.isResultActivationEvent(event)) throw new TypeError("Invalid engine engagement event");
++    const attribution = Object.freeze({ isHandoff: facts.isHandoff, switcherItem: facts.switcherItem,
++      isOneOff: facts.isOneOff, persistedSearchTerms: facts.persistedSearchTerms, newtabSessionId: facts.newtabSessionId });
++    const description = this.describeOneOffEngineRecording(targetToken, attribution);
++    const current = () => this.getOneOffEngineTarget(targetToken) === target && this.#oneOffCommand === command &&
++      captured.selection === selection;
++    if (!description || !current() || selection.engagementAttempted) return null;
++    selection.engagementAttempted = true;
++    const outcome = this.#queries.recordOneOffEngineEngagement(command.prepared, captured.resultForCurrentValue,
++      selection.facts.selectedResult, this.#searchMode, event, attribution, current);
++    if (!outcome?.recorderReturned || !outcome.scopeCurrent || !current()) return null;
++    const receipt = Object.freeze({ ...target, token: Object.freeze({}), engineTargetToken: targetToken,
++      engagementPending: false, engagementRecorderReturned: true, sessionOngoing: outcome.sessionOngoing,
++      searchRecordingPending: true, dispatchPending: true });
++    selection.engagement = receipt;
++    return receipt;
++  }
++
++  getOneOffEngineEngagement(token) {
++    const selection = this.#oneOffCommand?.engineSearch?.selection, receipt = selection?.engagement;
++    if (!receipt || receipt.token !== token) return null;
++    return this.getOneOffEngineTarget(receipt.engineTargetToken) && this.#oneOffCommand?.engineSearch?.selection === selection &&
++      selection.engagement === receipt ? receipt : null;
++  }
++
 +  /** Lower-level target creation only; source notification remains pending. */
 +  createOneOffSearchTab(commandToken, observation) {
 +    return this.#createOneOffSearchTab(commandToken, observation, false);
@@ -13355,10 +13385,10 @@ index 0000000000..c8231479bf
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..2a792a83d5
+index 0000000000..4513a393b4
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1599 @@
+@@ -0,0 +1,1622 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14157,6 +14187,29 @@ index 0000000000..2a792a83d5
 +      effectOrder: Object.freeze(["engagement", "search-recording", "open-serp"]),
 +    });
 +    return current() ? description : null;
++  }
++
++  /** Record only the first retained engine-search effect, preserving the live query for later steps. */
++  recordOneOffEngineEngagement(prepared, resultForCurrentValue, selectedResult, searchMode, event, facts, isCurrent) {
++    this.#check();
++    if (!this.#engagementActive || this.#endingEngagement || typeof isCurrent !== "function") return null;
++    if (!UrlbarQueryModel.isResultActivationEvent(event)) throw new TypeError("Invalid engine engagement event");
++    const description = this.describeOneOffEngineRecording(prepared, resultForCurrentValue, selectedResult, searchMode, facts);
++    const query = this.#query;
++    const current = () => !this.#closed && this.#isCurrent() && this.#query === query && prepared.isCurrent() && isCurrent();
++    if (!description || !current()) return null;
++    const details = { ...description.engagement.details };
++    this.#engagementActive = false;
++    this.#endingEngagement = true;
++    try {
++      // Pass the actual host event: Firefox distinguishes MouseEvent and modifier state.
++      this.#controller.engagementEvent.record(event, details, description.engagement.state);
++      return Object.freeze({ recorderReturned: true, sessionOngoing: !!details.isSessionOngoing, scopeCurrent: current() });
++    } finally {
++      this.#endingEngagement = false;
++      if (details.isSessionOngoing && current()) this.#engagementActive = true;
++      // Unlike ordinary result activation, do not cancel here: ordered search/load steps remain pending.
++    }
 +  }
 +
 +  /** Create only the target of a genuine new-tab mode command, once. */
