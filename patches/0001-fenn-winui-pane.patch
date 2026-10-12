@@ -9756,10 +9756,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..134d077015
+index 0000000000..728890f118
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2960 @@
+@@ -0,0 +1,2984 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11773,10 +11773,31 @@ index 0000000000..134d077015
 +  getOneOffDestinationQuery(token) {
 +    this.#check();
 +    const pending = this.#oneOffDestinationQuery;
-+    if (!pending || pending.proposal.token !== token) return null;
++    if (!pending || pending.proposal.token !== token || ["starting", "failed"].includes(pending.admissionStatus)) return null;
 +    const { proposal, destination } = pending;
 +    return this.#edit === proposal.edit && this.#searchMode === proposal.searchMode && !this.#hiddenResults &&
 +      destination.isReady() && this.#oneOffDestinationQuery === pending ? proposal : null;
++  }
++
++  /** Begin optional retained startQuery ordering; once attempted, admission cannot be bypassed. */
++  startOneOffDestinationQuery(token, state, options) {
++    const proposal = this.getOneOffDestinationQuery(token), pending = this.#oneOffDestinationQuery;
++    if (!proposal || pending.admissionStatus) return null;
++    pending.admissionStatus = "starting";
++    const current = () => !this.#closed && this.#isCurrent() && this.#oneOffDestinationQuery === pending &&
++      this.#edit === proposal.edit && this.#searchMode === proposal.searchMode && !this.#hiddenResults &&
++      pending.destination.isReady();
++    try {
++      if (!UrlbarShared.deepEqual(state?.searchMode, proposal.searchMode)) return null;
++      const admission = this.#queries.startDestinationQuery({ ...state, searchMode: proposal.searchMode },
++        { searchString: proposal.edit.text, allowAutofill: proposal.allowAutofill }, options, current);
++      if (!admission || !current()) return null;
++      pending.admission = admission;
++      pending.admissionStatus = admission.disposition;
++      return admission;
++    } finally {
++      if (pending.admissionStatus === "starting") pending.admissionStatus = "failed";
++    }
 +  }
 +
 +  /** Dispatch the activated target's query once, rechecking initial browser authority after engine waits. */
@@ -11785,15 +11806,18 @@ index 0000000000..134d077015
 +    if (!proposal || !UrlbarShared.deepEqual(state?.searchMode, proposal.searchMode)) {
 +      throw new Error("Stale one-off destination query");
 +    }
++    if (pending.admission && pending.admission.disposition !== "dispatch") {
++      throw new Error(`One-off destination query is ${pending.admission.disposition}`);
++    }
 +    const queryState = { ...state, searchMode: proposal.searchMode };
 +    if (this.getOneOffDestinationQuery(token) !== proposal) throw new Error("Stale one-off destination query");
 +    this.#oneOffDestinationQuery = null;
 +    const { revision, text } = proposal.edit, { allowAutofill } = proposal;
 +    const authorize = () => !this.#closed && this.#isCurrent() && this.#edit === proposal.edit &&
 +      this.#searchMode === proposal.searchMode && !this.#hiddenResults && pending.destination.isReady();
-+    return this.#queries.query(queryState, { searchString: text, allowAutofill }, update => {
-+      this.#publishQueryUpdate(update, { revision, text, allowAutofill });
-+    }, authorize);
++    const onUpdate = update => this.#publishQueryUpdate(update, { revision, text, allowAutofill });
++    return pending.admission ? this.#queries.queryDestination(pending.admission, onUpdate, authorize)
++      : this.#queries.query(queryState, { searchString: text, allowAutofill }, onUpdate, authorize);
 +  }
 +
 +  /** Propose the current-tab mode setter before its separate startQuery step. */
@@ -12722,10 +12746,10 @@ index 0000000000..134d077015
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..21ba4fe4ad
+index 0000000000..e983da7402
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1370 @@
+@@ -0,0 +1,1419 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12771,6 +12795,7 @@ index 0000000000..21ba4fe4ad
 +  #oneOffDispatches = new WeakMap();
 +  #oneOffNewTabReceipts = new WeakMap();
 +  #oneOffTabTransferEligibility = new WeakMap();
++  #destinationQueryAdmissions = new WeakMap();
 +
 +  constructor({ context, isCurrent, onPresentationRequest = null }) {
 +    if (typeof isCurrent != "function") throw new TypeError("Missing scope check");
@@ -13580,6 +13605,54 @@ index 0000000000..21ba4fe4ad
 +    } finally {
 +      if (admission.status === "starting") admission.status = "failed";
 +    }
++  }
++
++  /** Capture an already confirmed destination query before engagement and host admission decisions. */
++  startDestinationQuery(state, request, options, isCurrent) {
++    this.#check();
++    if (typeof isCurrent !== "function") throw new TypeError("Missing destination query guard");
++    const current = () => !this.#closed && this.#isCurrent() && isCurrent();
++    if (!current()) return null;
++    const query = UrlbarQueryModel.create({ ...state,
++      sapName: this.#context.sapName, isPrivate: this.#context.isPrivate }, request);
++    const event = options?.event;
++    const facts = event == null ? null : Object.freeze({ type: event.type, timeStamp: event.timeStamp, inputType: event.inputType });
++    const interactionType = options?.interactionType ?? null;
++    if ((facts && (!["input", "focus", "click", "command", "drop", "keydown", "mousedown", "paste", "tabswitch"].includes(facts.type) ||
++        !Number.isFinite(facts.timeStamp) || facts.timeStamp < 0 ||
++        (facts.inputType !== undefined && typeof facts.inputType !== "string"))) ||
++        ![null, "returned"].includes(interactionType)) throw new TypeError("Invalid engagement start facts");
++    if (!current()) return null;
++    if (facts) {
++      if (this.#endingEngagement) throw new Error("Engagement is ending");
++      this.#controller.engagementEvent.start(facts, query, query.searchString, interactionType);
++      if (!current()) return null;
++      this.#engagementActive = true;
++    }
++    const suppressStartQuery = options?.suppressStartQuery;
++    if (typeof suppressStartQuery !== "boolean") throw new TypeError("Missing query suppression observation");
++    if (!current()) return null;
++    let disposition = UrlbarQueryModel.startQueryDisposition({ suppressStartQuery });
++    if (disposition !== "suppressed") {
++      const inOverflowPanel = options?.inOverflowPanel;
++      if (typeof inOverflowPanel !== "boolean") throw new TypeError("Missing query overflow observation");
++      if (!current()) return null;
++      disposition = UrlbarQueryModel.startQueryDisposition({ inOverflowPanel });
++    }
++    const description = Object.freeze({ queryId: query.id, searchString: query.searchString,
++      queryMode: Object.freeze({ ...query.searchMode }), allowAutofill: query.allowAutofill,
++      engagementStarted: !!facts, disposition });
++    this.#destinationQueryAdmissions.set(description, { query, used: false });
++    return description;
++  }
++
++  /** Dispatch the exact query passed to engagement; admission capabilities cannot be copied or replayed. */
++  async queryDestination(admission, onUpdate, authorize) {
++    this.#check();
++    const record = this.#destinationQueryAdmissions.get(admission);
++    if (!record || record.used || admission.disposition !== "dispatch") throw new Error("Stale destination query admission");
++    record.used = true;
++    return this.#runQuery(record.query, onUpdate, authorize, null);
 +  }
 +
 +  /** Overflow is observed after confirmation; it does not cancel the original query. */

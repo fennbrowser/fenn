@@ -7073,3 +7073,85 @@ test('engine-held destination queries recheck target authority and editor lifeti
     assert.equal(f.parent.started.length,mutation==='none'?1:0,mutation);f.editor.close();
   }
 });
+
+
+test('destination admission records engagement before suppression and overflow and reuses the exact captured query',async()=>{
+  for(const kind of ['dispatch','suppressed','overflow','programmatic']){
+    const f=await oneOffDestinationFixture(),p=f.editor.adoptOneOffDestination(f.destination,f.observation),order=[];
+    const original=f.parent.engagementEvent.start;let captured;
+    f.parent.engagementEvent.start=(...args)=>{order.push('engagement');captured=args[1];original(...args);};
+    const admission=f.editor.startOneOffDestinationQuery(p.token,{searchMode:p.searchMode,browser:{currentPage:'about:newtab',userContextId:4}},{
+      event:kind==='programmatic'?null:{type:'click',timeStamp:10},
+      get suppressStartQuery(){order.push('suppression');return kind==='suppressed';},
+      get inOverflowPanel(){order.push('overflow');return kind==='overflow';}});
+    assert.equal(admission.disposition,kind==='programmatic'?'dispatch':kind);
+    assert.deepEqual(order,kind==='programmatic'?['suppression','overflow']:kind==='suppressed'?['engagement','suppression']:['engagement','suppression','overflow']);
+    assert.equal(f.parent.started.length,0);assert.equal(f.editor.startOneOffDestinationQuery(p.token,{searchMode:p.searchMode},{}),null);
+    if(kind==='suppressed'||kind==='overflow'){
+      await assert.rejects(f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode}),new RegExp(kind));
+      assert.equal(f.parent.started.length,0);
+    }else{
+      const q=await f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode,browser:{currentPage:'https://ignored.example/'}});
+      assert.equal(q.id,admission.queryId);assert.equal(q.currentPage,'about:newtab');assert.equal(q.userContextId,4);
+      if(captured)assert.equal(q,captured);assert.equal(f.parent.started.length,1);
+    }
+    f.editor.close();
+  }
+});
+
+test('destination admission cannot be bypassed during callbacks or after malformed and throwing observations',async()=>{
+  for(const mutation of ['event','suppression','overflow','throw','reentry']){
+    const f=await oneOffDestinationFixture(),p=f.editor.adoptOneOffDestination(f.destination,f.observation);let rejected;
+    const options={event:{type:'click',timeStamp:1},suppressStartQuery:false,inOverflowPanel:false};
+    if(mutation==='event')options.event={type:'bad',timeStamp:1};
+    if(mutation==='suppression')delete options.suppressStartQuery;if(mutation==='overflow')delete options.inOverflowPanel;
+    if(mutation==='throw')f.parent.engagementEvent.start=()=>{throw Error('recorder failed');};
+    if(mutation==='reentry')f.parent.engagementEvent.start=()=>{
+      assert.equal(f.editor.startOneOffDestinationQuery(p.token,{searchMode:p.searchMode},options),null);
+      rejected=assert.rejects(f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode}),/Stale/);
+    };
+    if(mutation==='reentry')assert.ok(f.editor.startOneOffDestinationQuery(p.token,{searchMode:p.searchMode},options));
+    else assert.throws(()=>f.editor.startOneOffDestinationQuery(p.token,{searchMode:p.searchMode},options),/Invalid|Missing|recorder failed/);
+    if(rejected)await rejected;
+    assert.equal(f.editor.startOneOffDestinationQuery(p.token,{searchMode:p.searchMode},options),null);
+    if(mutation!=='reentry')await assert.rejects(f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode}),/Stale/);
+    assert.equal(f.parent.started.length,0);f.editor.close();
+  }
+});
+
+test('destination admission rechecks browser and editor lifetime after recorder and option getters',async()=>{
+  for(const phase of ['engagement','suppression','overflow','state'])for(const mutation of ['ready','caret','cancel']){
+    const f=await oneOffDestinationFixture(),p=f.editor.adoptOneOffDestination(f.destination,f.observation);
+    const change=()=>{if(mutation==='ready')f.owner.destinationReady=false;if(mutation==='caret')f.editor.select(1,0,0);if(mutation==='cancel')f.editor.cancel();};
+    const options={event:{type:'click',timeStamp:1},get suppressStartQuery(){if(phase==='suppression')change();return false;},
+      get inOverflowPanel(){if(phase==='overflow')change();return false;}};
+    if(phase==='engagement')f.parent.engagementEvent.start=change;
+    const state={searchMode:p.searchMode,get browser(){if(phase==='state')change();return {};}};
+    assert.equal(f.editor.startOneOffDestinationQuery(p.token,state,options),null);
+    await assert.rejects(f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode}),/Stale/);
+    assert.equal(f.parent.started.length,0);f.editor.close();
+  }
+});
+
+test('admitted destination queries preserve captured identity through engine waits and still reject stale target state',async()=>{
+  for(const stale of [false,true]){
+    const f=await oneOffDestinationFixture(),p=f.editor.adoptOneOffDestination(f.destination,f.observation);
+    const admission=f.editor.startOneOffDestinationQuery(p.token,{searchMode:p.searchMode},{event:{type:'click',timeStamp:1},suppressStartQuery:false,inOverflowPanel:false});
+    f.parent.initEngineStore=()=>{};
+    const pending=f.editor.queryOneOffDestination(p.token,{searchMode:p.searchMode});
+    const failure=stale?assert.rejects(pending,/authority/):null;
+    if(stale)f.owner.destinationReady=false;f.parent.child.updateEngineStore('init',[],null);
+    if(failure)await failure;else assert.equal((await pending).id,admission.queryId);
+    assert.equal(f.parent.started.length,stale?0:1);f.editor.close();
+  }
+});
+
+test('query-layer destination admission rejects copied, foreign, suppressed and replayed capabilities',async()=>{
+  const f=fixture();const admission=f.session.startDestinationQuery({}, {searchString:'one-off',allowAutofill:true},
+    {suppressStartQuery:false,inOverflowPanel:false},()=>true);
+  await assert.rejects(f.session.queryDestination({...admission},()=>{},()=>true),/Stale/);
+  const other=new f.sandbox.UrlbarQuerySession({context:f.context,isCurrent:()=>true});
+  await assert.rejects(other.queryDestination(admission,()=>{},()=>true),/Stale/);other.close();
+  assert.equal((await f.session.queryDestination(admission,()=>{},()=>true)).id,admission.queryId);
+  await assert.rejects(f.session.queryDestination(admission,()=>{},()=>true),/Stale/);f.session.close();
+});
