@@ -935,7 +935,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..f9450f1198 100644
+index ba254af0c6..56289343cf 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -1047,7 +1047,7 @@ index ba254af0c6..f9450f1198 100644
    }
  
    /**
-@@ -999,6 +1045,729 @@ export class UrlbarParentController {
+@@ -999,6 +1045,778 @@ export class UrlbarParentController {
      }
    }
  
@@ -1136,6 +1136,55 @@ index ba254af0c6..f9450f1198 100644
 +    if (typeof url !== "string" || !url || lazy.SearchService.getEngineById(engineId) !== engine || !current()) return outcome(false);
 +    this.browserWindow.openTrustedLinkIn(url, "current", options);
 +    return outcome(true);
++  }
++
++  /** Couple recording to the tagged TabOpen emitted inside this one-use load. */
++  dispatchIndependentTabEngineSearch(token, { engineId, searchString, inBackground = false }, searchData, isCurrent) {
++    const target = this.#independentEngineTargets.get(token);
++    if (!target || target.attempted || target.description.where !== "tab") return null;
++    if (typeof engineId !== "string" || typeof searchString !== "string" || typeof inBackground !== "boolean" ||
++        typeof isCurrent !== "function" || searchData?.engineId !== engineId || searchData.query !== searchString) {
++      throw new TypeError("Invalid new-tab engine dispatch");
++    }
++    const data = { ...searchData };
++    data.details = { ...data.details };
++    const current = () => isCurrent() && target.current();
++    if (!current() || target.attempted) return null;
++    target.attempted = true;
++    let recorded = false, browserId = null;
++    const outcome = dispatched => Object.freeze({ attempted: true, dispatched, searchRecorderReturned: recorded,
++      sourceBrowserId: target.description.sourceBrowserId, browserId });
++    const engine = lazy.SearchService.getEngineById(engineId);
++    if (!engine || !current()) return outcome(false);
++    const [url, postData] = lazy.UrlbarUtils.getSearchQueryUrl(engine, searchString);
++    const tabbrowser = this.browserWindow.gBrowser, container = tabbrowser.tabContainer;
++    const identity = Object.freeze({});
++    const options = { inBackground, postData, targetBrowser: null,
++      eventDetail: { independentEngineSearch: identity },
++      globalHistoryOptions: { triggeringSource: this.sapName, triggeringSearchEngine: engine.name } };
++    let active = true, seen = false;
++    const onOpen = event => {
++      if (!active || seen || event.detail?.independentEngineSearch !== identity) return;
++      seen = true;
++      // Consume before recording: telemetry callbacks may open another tab.
++      container.removeEventListener("TabOpen", onOpen);
++      const tab = event.target, browser = tab?.linkedBrowser;
++      if (this.#destroyed || this.browserWindow.gBrowser !== tabbrowser || !browser || browser === target.browser ||
++          tab.closing || tabbrowser.getTabForBrowser(browser) !== tab || !Number.isSafeInteger(browser.browserId) || browser.browserId <= 0) return;
++      browserId = browser.browserId;
++      this.#recordSearchForBrowser({ ...data, browser });
++      recorded = true;
++    };
++    try {
++      if (typeof url !== "string" || !url || lazy.SearchService.getEngineById(engineId) !== engine || !current()) return outcome(false);
++      container.addEventListener("TabOpen", onOpen);
++      if (!current()) return outcome(false);
++      this.browserWindow.openTrustedLinkIn(url, "tab", options);
++      return outcome(true);
++    } finally {
++      active = false;
++      container.removeEventListener("TabOpen", onOpen);
++    }
 +  }
 +
 +  isIndependentEngineSearchTargetCurrent(token) {
@@ -1777,7 +1826,7 @@ index ba254af0c6..f9450f1198 100644
    /**
     * Loads a URL in the browser window resolved from the actor. The content
     * child supplies the serializable load parameters; the parent fills in the
-@@ -1027,9 +1796,15 @@ export class UrlbarParentController {
+@@ -1027,9 +1845,15 @@ export class UrlbarParentController {
     *   browser to hand `focusBrowser` on the deferred-Enter keyup -- a
     *   content-process input can't resolve the selected browser itself.
     */
@@ -1794,7 +1843,7 @@ index ba254af0c6..f9450f1198 100644
      if (!browser) {
        // The tab was closed before the load got here; don't hand its load to
        // whichever tab is selected now.
-@@ -1040,8 +1815,9 @@ export class UrlbarParentController {
+@@ -1040,8 +1864,9 @@ export class UrlbarParentController {
      }
  
      let { url, postData } = lazy.UrlbarUtils.loadRequestToUrl(loadRequest);
@@ -1805,7 +1854,7 @@ index ba254af0c6..f9450f1198 100644
      }
      params.postData = postData;
  
-@@ -1055,6 +1831,7 @@ export class UrlbarParentController {
+@@ -1055,6 +1880,7 @@ export class UrlbarParentController {
        });
      }
  
@@ -1813,7 +1862,7 @@ index ba254af0c6..f9450f1198 100644
      if (where == "current") {
        params.targetBrowser = browser;
      } else {
-@@ -1071,6 +1848,7 @@ export class UrlbarParentController {
+@@ -1071,6 +1897,7 @@ export class UrlbarParentController {
        browser.focus();
      }
  
@@ -1821,7 +1870,7 @@ index ba254af0c6..f9450f1198 100644
      try {
        this.browserWindow.openTrustedLinkIn(url, where, params);
      } catch (ex) {
-@@ -1079,9 +1857,10 @@ export class UrlbarParentController {
+@@ -1079,9 +1906,10 @@ export class UrlbarParentController {
        return {
          reverted: ex.result != Cr.NS_ERROR_LOAD_SHOWED_ERRORPAGE,
          browserId: browser.browserId,
@@ -1833,7 +1882,7 @@ index ba254af0c6..f9450f1198 100644
    }
  
    /**
-@@ -1292,10 +2071,22 @@ export class UrlbarParentController {
+@@ -1292,10 +2120,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -1857,7 +1906,7 @@ index ba254af0c6..f9450f1198 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +2123,7 @@ export class UrlbarParentController {
+@@ -1332,6 +2172,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -1865,7 +1914,7 @@ index ba254af0c6..f9450f1198 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +2147,10 @@ export class UrlbarParentController {
+@@ -1355,6 +2196,10 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
@@ -1876,7 +1925,7 @@ index ba254af0c6..f9450f1198 100644
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +2182,7 @@ export class UrlbarParentController {
+@@ -1386,7 +2231,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -1885,7 +1934,7 @@ index ba254af0c6..f9450f1198 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +2190,11 @@ export class UrlbarParentController {
+@@ -1394,10 +2239,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -1898,7 +1947,7 @@ index ba254af0c6..f9450f1198 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +2212,7 @@ export class UrlbarParentController {
+@@ -1415,7 +2261,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -1907,7 +1956,7 @@ index ba254af0c6..f9450f1198 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +2234,7 @@ export class UrlbarParentController {
+@@ -1437,7 +2283,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -1916,7 +1965,7 @@ index ba254af0c6..f9450f1198 100644
          break;
      }
    };
-@@ -1727,8 +2524,12 @@ export class TelemetryEvent {
+@@ -1727,8 +2573,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -1930,7 +1979,7 @@ index ba254af0c6..f9450f1198 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +2544,7 @@ export class TelemetryEvent {
+@@ -1743,7 +2593,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -1939,7 +1988,7 @@ index ba254af0c6..f9450f1198 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +2570,7 @@ export class TelemetryEvent {
+@@ -1769,7 +2619,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -1948,7 +1997,7 @@ index ba254af0c6..f9450f1198 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +2581,13 @@ export class TelemetryEvent {
+@@ -1780,12 +2630,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -1964,7 +2013,7 @@ index ba254af0c6..f9450f1198 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +2598,7 @@ export class TelemetryEvent {
+@@ -1796,7 +2647,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -1973,7 +2022,7 @@ index ba254af0c6..f9450f1198 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +2666,16 @@ export class TelemetryEvent {
+@@ -1864,17 +2715,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -1995,7 +2044,7 @@ index ba254af0c6..f9450f1198 100644
      );
    }
  
-@@ -2009,158 +2810,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2859,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -2154,7 +2203,7 @@ index ba254af0c6..f9450f1198 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +3170,27 @@ export class TelemetryEvent {
+@@ -2521,17 +3219,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -2174,14 +2223,14 @@ index ba254af0c6..f9450f1198 100644
 +    const smartbarData = explicitState ? explicitState.smartbarData : this.#smartbarData;
 +    const snapshot = lazy.UrlbarTelemetryUtils.collectBounceSnapshot(
 +      event, details, this._startEventInfo, engagementData.visibleResults
-+    );
+     );
+-    let sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
 +    if (snapshot && this._controller.sapName === "smartbar" && !snapshot.location) {
 +      throw new Error("Telemetry extra_key `location` is required for smartbar");
 +    }
 +    const built = lazy.UrlbarTelemetryUtils.buildRecordedBounce(
 +      snapshot, engagementData, smartbarData, this.#previousSearchWordsSet
-     );
--    let sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
++    );
 +    const sap = snapshot && this.#searchSourceToSap(snapshot.searchSource);
 +    // Preserve direct-path replacement: even an unrecordable candidate triggers
 +    // any older bounce in this tab before replacing it with a no-op candidate.
@@ -2191,7 +2240,7 @@ index ba254af0c6..f9450f1198 100644
      );
    }
  
-@@ -2548,14 +3207,19 @@ export class TelemetryEvent {
+@@ -2548,14 +3256,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -2217,7 +2266,7 @@ index ba254af0c6..f9450f1198 100644
    }
  
    /**
-@@ -2581,39 +3245,4 @@ export class TelemetryEvent {
+@@ -2581,39 +3294,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -9905,10 +9954,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..cc7dd5f58b
+index 0000000000..81094533fb
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3535 @@
+@@ -0,0 +1,3552 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12076,6 +12125,23 @@ index 0000000000..cc7dd5f58b
 +    return this.#queries.dispatchOneOffCurrentSearch(command.prepared, target, captured.resultForCurrentValue, current);
 +  }
 +
++  /** After engagement, consume new-tab recording and navigation together. */
++  dispatchOneOffTabSearch(engagementToken, facts) {
++    const engagement = this.getOneOffEngineEngagement(engagementToken), command = this.#oneOffCommand;
++    const captured = command?.engineSearch, selection = captured?.selection;
++    if (!engagement || engagement.where !== "tab" || selection.searchAttempted || selection.dispatchAttempted || !facts) return null;
++    const attribution = Object.freeze({ isHandoff: facts.isHandoff, switcherItem: facts.switcherItem,
++      isOneOff: facts.isOneOff, persistedSearchTerms: facts.persistedSearchTerms, newtabSessionId: facts.newtabSessionId });
++    const description = this.describeOneOffEngineRecording(engagement.engineTargetToken, attribution);
++    const current = () => this.getOneOffEngineEngagement(engagementToken) === engagement &&
++      this.#oneOffCommand === command && captured.selection === selection;
++    if (!description || !current() || selection.searchAttempted || selection.dispatchAttempted) return null;
++    const target = selection.target.target;
++    selection.searchAttempted = selection.dispatchAttempted = true;
++    return this.#queries.dispatchOneOffTabSearch(command.prepared, target, captured.resultForCurrentValue,
++      selection.facts.selectedResult, this.#searchMode, attribution, current);
++  }
++
 +  /** Lower-level target creation only; source notification remains pending. */
 +  createOneOffSearchTab(commandToken, observation) {
 +    return this.#createOneOffSearchTab(commandToken, observation, false);
@@ -13446,10 +13512,10 @@ index 0000000000..cc7dd5f58b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..ed968b2269
+index 0000000000..e781cb626c
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1657 @@
+@@ -0,0 +1,1675 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14303,6 +14369,24 @@ index 0000000000..ed968b2269
 +      return record.parent.dispatchIndependentCurrentEngineSearch(record.token, {
 +        engineId: candidate.engineId, searchString: candidate.searchString, inBackground: !!candidate.inBackground,
 +      }, current);
++    } finally {
++      if (this.#query === query) this.cancel();
++    }
++  }
++
++  /** Arm recording and open its new tab in one parent operation; never leave a listener pending. */
++  dispatchOneOffTabSearch(prepared, target, resultForCurrentValue, selectedResult, searchMode, facts, isCurrent) {
++    this.#check();
++    const record = this.#oneOffEngineTargets.get(target);
++    if (!record || record.prepared !== prepared || typeof isCurrent !== "function" || target.where !== "tab") return null;
++    const candidate = this.describeOneOffEngineSearch(prepared, resultForCurrentValue), query = this.#query;
++    const description = this.describeOneOffEngineRecording(prepared, resultForCurrentValue, selectedResult, searchMode, facts);
++    const current = () => this.#query === query && target.isCurrent() && isCurrent();
++    if (!candidate || description?.search.method !== "recordSearchInOpenedTab" || !current()) return null;
++    try {
++      return record.parent.dispatchIndependentTabEngineSearch(record.token, {
++        engineId: candidate.engineId, searchString: candidate.searchString, inBackground: !!candidate.inBackground,
++      }, { ...description.search.data, details: { ...description.search.data.details } }, current);
 +    } finally {
 +      if (this.#query === query) this.cancel();
 +    }

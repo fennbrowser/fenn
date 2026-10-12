@@ -2875,6 +2875,7 @@ function parentLoadFixture() {
   lazy.ReaderMode={getOriginalUrlObjectForDisplay:()=>null};
   const Parent=new Function('lazy','Cr',`return class {
     #currentLoad=null;#currentLoadRecovery=null;#currentLoadGeneration=0;#destroyed=false;#isAddressbar=true;#oneOffSearchTabs=new WeakMap();#independentEngineTargets=new WeakMap();#actor={};
+    #recordSearchForBrowser(data){this.recorded?.(data);}
     #prepareAddressbarLoad(data){this.prepare?.(data);}
     destroy(){this.#destroyed=true;this.#currentLoad=null;this.#discardCurrentLoadRecovery();}
     describeCurrentPageRevert(){return this.recoveryDescription??null;}
@@ -8234,4 +8235,133 @@ test('current engine dispatch consumes opener failures and refuses parent tab ta
   const tab=engineDispatchParentFixture(),target=tab.p.prepareIndependentEngineSearchTarget(42,'tab','typed words',()=>true);
   assert.equal(tab.p.dispatchIndependentCurrentEngineSearch(target.token,{engineId:'second',searchString:'typed words'},()=>true),null);
   assert.deepEqual(tab.calls,[]);
+});
+
+
+function tabEngineDispatchParentFixture(){
+  const f=engineDispatchParentFixture(),listeners=new Set(),recordings=[];
+  const destination={browserId:43},tab={linkedBrowser:destination,closing:false};
+  const g=f.p.browserWindow.gBrowser;
+  g.getTabForBrowser=b=>b===f.browser?f.tab:b===destination?tab:null;
+  g.tabContainer={addEventListener:(_n,cb)=>listeners.add(cb),removeEventListener:(_n,cb)=>listeners.delete(cb)};
+  f.p.recorded=data=>recordings.push(data);
+  const emit=(detail,target=tab)=>{for(const cb of [...listeners])cb({detail,target});};
+  f.p.browserWindow.openTrustedLinkIn=(url,where,params)=>{
+    f.calls.push({url,where,params});emit({});emit(params.eventDetail);
+  };
+  const target=f.p.prepareIndependentEngineSearchTarget(42,'tab','typed words',()=>true);
+  const load={engineId:'second',searchString:'typed words',inBackground:true};
+  const data={engineId:'second',query:'typed words',searchSource:'urlbar',details:{isOneOff:true}};
+  return {...f,listeners,recordings,destination,tab,emit,target,load,data};
+}
+
+test('new-tab engine dispatch records only its tagged browser and removes the listener before recorder reentry',()=>{
+  const f=tabEngineDispatchParentFixture();
+  f.p.recorded=data=>{
+    assert.equal(f.listeners.size,0);f.recordings.push(data);
+    assert.equal(f.p.dispatchIndependentTabEngineSearch(f.target.token,f.load,f.data,()=>true),null);
+    f.emit(f.calls[0].params.eventDetail);
+  };
+  const outcome=f.p.dispatchIndependentTabEngineSearch(f.target.token,f.load,f.data,()=>true);
+  assert.equal(outcome.dispatched,true);assert.equal(outcome.searchRecorderReturned,true);assert.equal(outcome.browserId,43);
+  assert.equal(f.recordings.length,1);assert.equal(f.recordings[0].browser,f.destination);
+  assert.notEqual(f.recordings[0].details,f.data.details);assert.equal(f.calls[0].params.postData,f.postData);
+  assert.equal(f.calls[0].params.inBackground,true);assert.equal(f.calls[0].params.targetBrowser,null);
+  assert.equal(f.calls[0].params.globalHistoryOptions.triggeringSearchEngine,'Engine Two');
+  assert.equal(f.listeners.size,0);assert.equal(f.p.dispatchIndependentTabEngineSearch(f.target.token,f.load,f.data,()=>true),null);
+});
+
+test('new-tab engine dispatch cleans listeners after absent events, throws, stale registration and delayed events',()=>{
+  for(const action of ['none','throw','late','stale','record-throw']){
+    const f=tabEngineDispatchParentFixture();let delayed;
+    if(action==='stale')f.p.browserWindow.gBrowser.tabContainer.addEventListener=(_n,cb)=>{f.listeners.add(cb);f.browser.lastLocationChange++;};
+    else if(action==='record-throw')f.p.recorded=()=>{throw Error('record failed');};
+    else f.p.browserWindow.openTrustedLinkIn=(_u,_w,p)=>{
+      delayed=[...f.listeners][0];f.detail=p.eventDetail;if(action==='throw')throw Error('open failed');
+    };
+    if(action==='throw'||action==='record-throw')assert.throws(()=>f.p.dispatchIndependentTabEngineSearch(f.target.token,f.load,f.data,()=>true),/failed/);
+    else {const result=f.p.dispatchIndependentTabEngineSearch(f.target.token,f.load,f.data,()=>true);
+      assert.equal(result.dispatched,action!=='stale');assert.equal(result.searchRecorderReturned,false);}
+    if(action==='late')delayed({detail:f.detail,target:f.tab});
+    assert.equal(f.listeners.size,0);assert.equal(f.recordings.length,0);
+    assert.equal(f.p.dispatchIndependentTabEngineSearch(f.target.token,f.load,f.data,()=>true),null);
+  }
+});
+
+test('new-tab engine dispatch rejects foreign targets, invalid attribution and changed engine submission',()=>{
+  for(const action of ['copy','current','data','engine','document','scope']){
+    const f=tabEngineDispatchParentFixture();let token=f.target.token;
+    if(action==='copy')token={...token};
+    if(action==='current')token=f.p.prepareIndependentEngineSearchTarget(42,'current','typed words',()=>true).token;
+    if(action==='data')f.data.query='other';
+    if(action==='engine')f.lazy.UrlbarUtils.getSearchQueryUrl=()=>{f.lazy.SearchService.getEngineById=()=>null;return ['https://search.test/',null];};
+    if(action==='document')f.browser.browsingContext.currentWindowGlobal={};
+    const invoke=()=>f.p.dispatchIndependentTabEngineSearch(token,f.load,f.data,()=>action!=='scope');
+    if(action==='data')assert.throws(invoke,/Invalid/);else assert.equal(invoke()?.dispatched??false,false);
+    assert.equal(f.listeners.size,0);assert.deepEqual(f.recordings,[]);assert.deepEqual(f.calls,[]);
+  }
+});
+
+async function tabEngineDispatchFixture(){
+  const f=await engineTargetFixture(),parentTarget=tabEngineDispatchParentFixture();
+  f.parent.prepareIndependentEngineSearchTarget=(...args)=>parentTarget.p.prepareIndependentEngineSearchTarget(...args);
+  f.parent.isIndependentEngineSearchTargetCurrent=(...args)=>parentTarget.p.isIndependentEngineSearchTargetCurrent(...args);
+  f.parent.dispatchIndependentTabEngineSearch=(...args)=>parentTarget.p.dispatchIndependentTabEngineSearch(...args);
+  const command=await f.editor.beginOneOffCommand(2,f.query.id,'engine:second',oneOffFacts({keyboardAlt:true}));
+  const c=f.editor.beginOneOffEngineSearch(command.token,null),obs={...c.edit,resultForCurrentValue:null,searchMode:null,pageProxyValid:false};
+  const host=f.editor.acknowledgeOneOffEngineSearch(c.token,obs),facts=engineSelectionFacts(f,false);
+  const selection=f.editor.beginOneOffNavigationSelection(host.token,facts),selected=f.editor.acknowledgeOneOffNavigationSelection(selection.token,{...obs,...facts});
+  const plan=f.editor.resolveOneOffEngineNavigation(selected.token),target=f.editor.prepareOneOffEngineTarget(plan.token,{userTypedValue:'typed words'});
+  f.editor.startEngagement(2,f.query.id,{type:'input',timeStamp:1});
+  const engagement=f.editor.recordOneOffEngineEngagement(target.token,{type:'keydown',key:'Enter',timeStamp:2},engineRecordingFacts());
+  assert.ok(engagement);return {...f,parentTarget,engagement};
+}
+
+test('new-tab engine editor couples recording/load after engagement once and releases its query',async()=>{
+  const f=await tabEngineDispatchFixture();
+  assert.equal(f.editor.dispatchOneOffTabSearch({},engineRecordingFacts()),null);
+  const outcome=f.editor.dispatchOneOffTabSearch(f.engagement.token,engineRecordingFacts({isHandoff:true,newtabSessionId:'fresh'}));
+  assert.equal(outcome.dispatched,true);assert.equal(outcome.searchRecorderReturned,true);
+  assert.equal(f.parentTarget.recordings.length,1);assert.equal(f.parentTarget.recordings[0].searchSource,'urlbar_handoff');
+  assert.equal(f.parentTarget.recordings[0].details.newtabSessionId,'fresh');
+  assert.equal(f.editor.dispatchOneOffTabSearch(f.engagement.token,engineRecordingFacts()),null);
+  assert.equal(f.editor.getOneOffEngineEngagement(f.engagement.token),null);f.editor.close();
+});
+
+test('new-tab engine editor rejects stale receipts and preserves replacement queries during opener reentry',async()=>{
+  const stale=await tabEngineDispatchFixture();stale.parentTarget.browser.lastLocationChange++;
+  assert.equal(stale.editor.dispatchOneOffTabSearch(stale.engagement.token,engineRecordingFacts()),null);
+  assert.equal(stale.parentTarget.listeners.size,0);stale.editor.close();
+  const f=await tabEngineDispatchFixture();let next;
+  f.parentTarget.p.browserWindow.openTrustedLinkIn=()=>{
+    assert.equal(f.editor.dispatchOneOffTabSearch(f.engagement.token,engineRecordingFacts()),null);
+    next=f.editor.edit({},edit(3,'replacement'));
+  };
+  assert.equal(f.editor.dispatchOneOffTabSearch(f.engagement.token,engineRecordingFacts()).dispatched,true);
+  const query=await next;f.editor.publishPresentation(3,query.id,[],true);assert.equal(f.editor.snapshot.revision,3);
+  assert.equal(f.parentTarget.listeners.size,0);f.editor.close();
+});
+
+
+test('new-tab engine dispatch preflight cannot repeat a reentrant consumed target',()=>{
+  const f=tabEngineDispatchParentFixture();let nested;
+  const data={...f.data,get details(){
+    nested=f.p.dispatchIndependentTabEngineSearch(f.target.token,f.load,f.data,()=>true);
+    return f.data.details;
+  }};
+  assert.equal(f.p.dispatchIndependentTabEngineSearch(f.target.token,f.load,data,()=>true),null);
+  assert.equal(nested.dispatched,true);assert.equal(f.calls.length,1);assert.equal(f.recordings.length,1);assert.equal(f.listeners.size,0);
+});
+
+test('new-tab editor consumes opener failure and rejects current targets or stale attribution getters',async()=>{
+  const f=await tabEngineDispatchFixture();f.parentTarget.p.browserWindow.openTrustedLinkIn=()=>{throw Error('opener failed');};
+  assert.throws(()=>f.editor.dispatchOneOffTabSearch(f.engagement.token,engineRecordingFacts()),/opener failed/);
+  assert.equal(f.editor.dispatchOneOffTabSearch(f.engagement.token,engineRecordingFacts()),null);
+  assert.equal(f.parentTarget.listeners.size,0);f.editor.close();
+  const stale=await tabEngineDispatchFixture();
+  assert.equal(stale.editor.dispatchOneOffTabSearch(stale.engagement.token,{...engineRecordingFacts(),
+    get isHandoff(){stale.editor.select(2,0,0);return false;}}),null);
+  assert.deepEqual(stale.parentTarget.calls,[]);stale.editor.close();
+  const current=await engineSearchRecordingFixture();
+  assert.equal(current.editor.dispatchOneOffTabSearch(current.engagement.token,engineRecordingFacts()),null);current.editor.close();
 });
