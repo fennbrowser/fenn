@@ -8087,3 +8087,72 @@ test('engine engagement preserves recorder ongoing-session facts and never cance
   const query=await next;assert.equal(replacement.editor.snapshot.revision,3);
   replacement.editor.publishPresentation(3,query.id,[],true);assert.equal(replacement.parent.started.length,3);replacement.editor.close();
 });
+
+
+async function engineSearchRecordingFixture(){
+  const f=await engineEngagementFixture(),order=[];
+  f.parent.engagementEvent.record=()=>order.push('engagement');
+  const engagement=f.editor.recordOneOffEngineEngagement(f.target.token,f.event,f.attribution);
+  assert.ok(engagement);return {...f,engagement,order};
+}
+
+test('current engine search recording follows engagement once and pins the original browser',async()=>{
+  const f=await engineSearchRecordingFixture();let recorded;
+  f.parent.recordSearch=(data,browserId)=>{recorded={data,browserId};f.order.push('search');data.details.mutated=true;return true;};
+  const receipt=f.editor.recordOneOffCurrentSearch(f.engagement.token,f.attribution);
+  assert.ok(receipt);assert.equal(receipt.searchRecordingPending,false);assert.equal(receipt.dispatchPending,true);
+  assert.equal(recorded.browserId,42);assert.equal(recorded.data.engineId,f.plan.engineId);assert.equal(recorded.data.query,f.plan.searchString);
+  assert.deepEqual(f.order,['engagement','search']);assert.equal(f.editor.getOneOffCurrentSearchRecording(receipt.token),receipt);
+  assert.equal(f.editor.getOneOffCurrentSearchRecording({...receipt.token}),null);
+  assert.equal(f.editor.recordOneOffCurrentSearch(f.engagement.token,f.attribution),null);
+  assert.equal(f.editor.recordOneOffCurrentSearch(f.target.token,f.attribution),null);
+  assert.deepEqual(f.parentTarget.calls,[]);assert.equal(f.parent.started.length,2);f.editor.close();
+});
+
+test('current engine search recording consumes failed, reentrant and scope-losing attempts',async()=>{
+  for(const action of ['false','throw','reentry','epoch','caret']){
+    const f=await engineSearchRecordingFixture();let count=0;
+    f.parent.recordSearch=()=>{
+      count++;
+      if(action==='false')return false;
+      if(action==='throw')throw Error('search recorder failed');
+      if(action==='reentry')assert.equal(f.editor.recordOneOffCurrentSearch(f.engagement.token,f.attribution),null);
+      if(action==='epoch')f.parentTarget.browser.lastLocationChange++;
+      if(action==='caret')f.editor.select(2,0,0);
+      return true;
+    };
+    if(action==='throw')assert.throws(()=>f.editor.recordOneOffCurrentSearch(f.engagement.token,f.attribution),/search recorder failed/);
+    else {const r=f.editor.recordOneOffCurrentSearch(f.engagement.token,f.attribution);if(action==='reentry')assert.ok(r);else assert.equal(r,null);}
+    assert.equal(f.editor.recordOneOffCurrentSearch(f.engagement.token,f.attribution),null);assert.equal(count,1);assert.deepEqual(f.parentTarget.calls,[]);f.editor.close();
+  }
+});
+
+test('current engine search recording rereads attribution and rejects new-tab continuations without a listener',async()=>{
+  const f=await engineSearchRecordingFixture();let data;
+  f.parent.recordSearch=d=>{data=d;return true;};
+  const receipt=f.editor.recordOneOffCurrentSearch(f.engagement.token,engineRecordingFacts({isHandoff:true,newtabSessionId:'fresh'}));
+  assert.ok(receipt);assert.equal(data.searchSource,'urlbar_handoff');assert.equal(data.details.newtabSessionId,'fresh');f.editor.close();
+  const tab=await engineTargetFixture();
+  const command=await tab.editor.beginOneOffCommand(2,tab.query.id,'engine:second',oneOffFacts({keyboardAlt:true}));
+  const c=tab.editor.beginOneOffEngineSearch(command.token,null),obs={...c.edit,resultForCurrentValue:null,searchMode:null,pageProxyValid:false};
+  const host=tab.editor.acknowledgeOneOffEngineSearch(c.token,obs),facts=engineSelectionFacts(tab,false);
+  const selection=tab.editor.beginOneOffNavigationSelection(host.token,facts),selected=tab.editor.acknowledgeOneOffNavigationSelection(selection.token,{...obs,...facts});
+  const plan=tab.editor.resolveOneOffEngineNavigation(selected.token),target=tab.editor.prepareOneOffEngineTarget(plan.token,{userTypedValue:'typed words'});
+  tab.editor.startEngagement(2,tab.query.id,{type:'input',timeStamp:1});
+  const engagement=tab.editor.recordOneOffEngineEngagement(target.token,{type:'keydown',key:'Enter',timeStamp:2},engineRecordingFacts());
+  tab.parent.recordSearch=()=>assert.fail('tab search recorded against source');tab.parent.recordSearchInOpenedTab=()=>assert.fail('TabOpen listener armed');
+  assert.equal(tab.editor.recordOneOffCurrentSearch(engagement.token,engineRecordingFacts()),null);
+  assert.equal(tab.editor.getOneOffEngineEngagement(engagement.token),engagement);tab.editor.close();
+});
+
+
+test('current engine search recording rejects stale and reentrant preflight facts before effects',async()=>{
+  for(const action of ['invalid','reentry','stale']){
+    const f=await engineSearchRecordingFixture();let calls=0;f.parent.recordSearch=()=>{calls++;return true;};
+    if(action==='invalid')assert.throws(()=>f.editor.recordOneOffCurrentSearch(f.engagement.token,{}),/Invalid/);
+    if(action==='reentry')assert.equal(f.editor.recordOneOffCurrentSearch(f.engagement.token,{...f.attribution,
+      get isHandoff(){f.editor.select(2,0,0);return false;}}),null);
+    if(action==='stale'){f.parentTarget.browser.lastLocationChange++;assert.equal(f.editor.recordOneOffCurrentSearch(f.engagement.token,f.attribution),null);}
+    assert.equal(calls,0);f.editor.close();
+  }
+});

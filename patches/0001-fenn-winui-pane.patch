@@ -9885,10 +9885,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..5062ca7548
+index 0000000000..4d2954a60b
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3494 @@
+@@ -0,0 +1,3522 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12015,6 +12015,34 @@ index 0000000000..5062ca7548
 +      selection.engagement === receipt ? receipt : null;
 +  }
 +
++  /** Record a current-tab search once after engagement; do not open the SERP. */
++  recordOneOffCurrentSearch(engagementToken, facts) {
++    const engagement = this.getOneOffEngineEngagement(engagementToken), command = this.#oneOffCommand;
++    const captured = command?.engineSearch, selection = captured?.selection;
++    if (!engagement || engagement.where !== "current" || selection.searchAttempted || !facts) return null;
++    const attribution = Object.freeze({ isHandoff: facts.isHandoff, switcherItem: facts.switcherItem,
++      isOneOff: facts.isOneOff, persistedSearchTerms: facts.persistedSearchTerms, newtabSessionId: facts.newtabSessionId });
++    const description = this.describeOneOffEngineRecording(engagement.engineTargetToken, attribution);
++    const current = () => this.getOneOffEngineEngagement(engagementToken) === engagement && this.#oneOffCommand === command &&
++      captured.selection === selection;
++    if (!description || !current() || selection.searchAttempted) return null;
++    selection.searchAttempted = true;
++    const outcome = this.#queries.recordOneOffCurrentSearch(command.prepared, captured.resultForCurrentValue,
++      selection.facts.selectedResult, this.#searchMode, attribution, current);
++    if (!outcome?.recorderReturned || !outcome.scopeCurrent || !current()) return null;
++    const receipt = Object.freeze({ ...engagement, token: Object.freeze({}), engagementToken,
++      searchRecordingPending: false, searchRecorderReturned: true, dispatchPending: true });
++    selection.searchRecording = receipt;
++    return receipt;
++  }
++
++  getOneOffCurrentSearchRecording(token) {
++    const selection = this.#oneOffCommand?.engineSearch?.selection, receipt = selection?.searchRecording;
++    if (!receipt || receipt.token !== token) return null;
++    return this.getOneOffEngineEngagement(receipt.engagementToken) && this.#oneOffCommand?.engineSearch?.selection === selection &&
++      selection.searchRecording === receipt ? receipt : null;
++  }
++
 +  /** Lower-level target creation only; source notification remains pending. */
 +  createOneOffSearchTab(commandToken, observation) {
 +    return this.#createOneOffSearchTab(commandToken, observation, false);
@@ -13385,10 +13413,10 @@ index 0000000000..5062ca7548
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..4513a393b4
+index 0000000000..fae423da7a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1622 @@
+@@ -0,0 +1,1637 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14210,6 +14238,21 @@ index 0000000000..4513a393b4
 +      if (details.isSessionOngoing && current()) this.#engagementActive = true;
 +      // Unlike ordinary result activation, do not cancel here: ordered search/load steps remain pending.
 +    }
++  }
++
++  /** Current-tab search recording only; new-tab recording must stay coupled to its load. */
++  recordOneOffCurrentSearch(prepared, resultForCurrentValue, selectedResult, searchMode, facts, isCurrent) {
++    this.#check();
++    if (prepared?.description.where !== "current" || typeof isCurrent !== "function") return null;
++    const description = this.describeOneOffEngineRecording(prepared, resultForCurrentValue, selectedResult, searchMode, facts);
++    const query = this.#query;
++    const current = () => !this.#closed && this.#isCurrent() && this.#query === query && prepared.isCurrent() && isCurrent();
++    if (!description || description.search.method !== "recordSearch" || !Number.isSafeInteger(this.#context.browserId) ||
++        this.#context.browserId <= 0 || !current()) return null;
++    const search = description.search;
++    const recorded = this.#controller.parentController.recordSearch(
++      { ...search.data, details: { ...search.data.details } }, this.#context.browserId);
++    return Object.freeze({ recorderReturned: !!recorded, scopeCurrent: current() });
 +  }
 +
 +  /** Create only the target of a genuine new-tab mode command, once. */
