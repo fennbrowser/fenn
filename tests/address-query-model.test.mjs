@@ -133,3 +133,31 @@ test('finished presentation preserves updated-results history and asynchronous o
       {rows:'clear',action:!oneOffsWillHide?'open-one-offs':open?'close':'keep'});
   }
 });
+
+
+test('query admission distinguishes suppression before confirmation from overflow afterward',()=>{
+  for(const suppressStartQuery of [false,true])for(const inOverflowPanel of [false,true]){
+    assert.equal(sandbox.Model.startQueryDisposition({suppressStartQuery,inOverflowPanel}),
+      suppressStartQuery?'suppressed':inOverflowPanel?'overflow':'dispatch');
+  }
+});
+
+test('retained startQuery preserves capture, engagement, suppression, confirmation and overflow read order',()=>{
+  const source=readFileSync(new URL('UrlbarInputBase.mjs',root),'utf8');
+  const start=source.indexOf('  startQuery({'),end=source.indexOf('\n  /**',start);
+  const Retained=new Function('UrlbarQueryModel',`return class {
+    #makeQueryContext(options){this.calls.push('capture');return {...options,searchMode:{...this.searchMode}};}
+    ${source.slice(start,end)}
+  }`)(sandbox.Model);
+  for(const suppressed of [false,true])for(const overflow of [false,true]){
+    const input=new Retained(),calls=input.calls=[];input.value='words';input.getAttribute=()=> 'invalid';
+    input.searchMode={isPreview:true};input._resetSearchState=()=>calls.push('reset');
+    input.confirmSearchMode=()=>{calls.push('confirm');input.searchMode={isPreview:false};};
+    Object.defineProperty(input,'_suppressStartQuery',{get(){calls.push('suppression');return suppressed;}});
+    Object.defineProperty(input,'inOverflowPanel',{get(){calls.push('overflow');return overflow;}});
+    input.controller={engagementEvent:{start:(_event,query)=>{calls.push('engagement');assert.equal(query.searchMode.isPreview,true);}},
+      startQuery:query=>{calls.push('dispatch');assert.equal(query.searchMode.isPreview,true);return Promise.resolve(query);}};
+    input.startQuery({event:{type:'click'},allowAutofill:false});
+    assert.deepEqual(calls,['capture','engagement','suppression',...(!suppressed?['reset','confirm','overflow',...(!overflow?['dispatch']:[])]:[])]);
+  }
+});

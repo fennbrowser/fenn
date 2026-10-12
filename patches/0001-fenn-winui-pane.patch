@@ -4293,7 +4293,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..789ac9ad3c 100644
+index a077de625f..c0fb274f25 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,22 @@
@@ -4968,6 +4968,24 @@ index a077de625f..789ac9ad3c 100644
  
      let queryContext = this.#makeQueryContext({
        allowAutofill,
+@@ -2556,7 +2398,7 @@ ${
+       );
+     }
+ 
+-    if (this._suppressStartQuery) {
++    if (UrlbarQueryModel.startQueryDisposition({ suppressStartQuery: this._suppressStartQuery }) === "suppressed") {
+       return;
+     }
+ 
+@@ -2569,7 +2411,7 @@ ${
+       this.confirmSearchMode();
+     }
+ 
+-    if (this.inOverflowPanel) {
++    if (UrlbarQueryModel.startQueryDisposition({ inOverflowPanel: this.inOverflowPanel }) === "overflow") {
+       return;
+     }
+ 
 @@ -2608,9 +2450,7 @@ ${
      if (options.focus ?? true) {
        this.focus();
@@ -9565,10 +9583,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..970873a08a
+index 0000000000..badb662e44
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2697 @@
+@@ -0,0 +1,2713 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11585,9 +11603,20 @@ index 0000000000..970873a08a
 +    return Object.freeze({ ...request, token: modeToken, edit: pending.edit });
 +  }
 +
++  /** Start the command's future engagement/query snapshot before mode confirmation. */
++  startOneOffQuery(modeToken, state, options) {
++    const request = this.getOneOffRequery(modeToken), pending = this.#oneOffRequery;
++    if (!request || request.confirmed || request.admission || pending.confirmationAttempted) return null;
++    pending.confirmation = null;
++    const current = () => !this.#closed && this.#isCurrent() && this.#oneOffRequery === pending &&
++      this.#edit === request.edit && this.#searchMode === pending.previewMode && !this.#hiddenResults;
++    const admission = this.#queries.startOneOffQuery(pending.receipt, state, request.edit.text, options, current);
++    return admission && current() ? Object.freeze({ ...admission, modeToken, edit: request.edit }) : null;
++  }
++
 +  beginOneOffConfirmation(modeToken, modeEntry) {
 +    const request = this.getOneOffRequery(modeToken), pending = this.#oneOffRequery;
-+    if (!request || request.confirmed || pending.confirmationAttempted) return null;
++    if (!request || request.confirmed || request.admission?.disposition === "suppressed" || pending.confirmationAttempted) return null;
 +    const token = Object.freeze({});
 +    pending.confirmation = token;
 +    modeEntry = modeEntry && this.#captureModeEntry({ untrimmedValue: modeEntry.untrimmedValue,
@@ -11639,22 +11668,27 @@ index 0000000000..970873a08a
 +  }
 +
 +  /** Start the captured preview query once, after confirmed host/browser state. */
-+  async requeryAfterOneOffMode(modeToken, state) {
++  async requeryAfterOneOffMode(modeToken, state, observation = {}) {
 +    const request = this.getOneOffRequery(modeToken), pending = this.#oneOffRequery;
 +    if (!request?.confirmed || !UrlbarShared.deepEqual(state?.searchMode, request.searchMode)) {
 +      throw new Error("Stale one-off requery");
 +    }
 +    const queryState = { ...state, searchMode: request.queryMode };
++    const inOverflowPanel = observation.inOverflowPanel ?? (request.admission ? undefined : false);
 +    const current = () => !this.#closed && this.#isCurrent() && this.#edit === request.edit &&
 +      this.#searchMode === pending.confirmedMode && !this.#hiddenResults;
 +    if (this.#oneOffRequery !== pending || !current()) throw new Error("One-off requery superseded");
++    if (!this.#queries.admitOneOffDispatch(pending.receipt, inOverflowPanel)) {
++      if (this.#oneOffRequery === pending) this.#oneOffRequery = null;
++      return null;
++    }
 +    const authorize = this.#queries.createOneOffQueryAuthority(pending.receipt, current);
 +    if (!authorize || !current()) throw new Error("One-off browser state superseded");
 +    this.cancel();
 +    if (!current()) throw new Error("One-off requery superseded");
 +    this.#typedText = request.edit.text;
 +    const { revision, text } = request.edit;
-+    return this.#queries.query(queryState, { searchString: text, allowAutofill: request.allowAutofill }, update => {
++    return this.#queries.queryOneOff(queryState, { searchString: text, allowAutofill: request.allowAutofill }, update => {
 +      this.#publishQueryUpdate(update, { revision, text, allowAutofill: request.allowAutofill });
 +    }, authorize);
 +  }
@@ -12268,10 +12302,10 @@ index 0000000000..970873a08a
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..b324ad4984
+index 0000000000..f0923046fa
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1191 @@
+@@ -0,0 +1,1268 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12314,6 +12348,7 @@ index 0000000000..b324ad4984
 +  #oneOffModeAttempts = new WeakSet();
 +  #oneOffEligibility = new WeakMap();
 +  #oneOffModeReceipts = new WeakMap();
++  #oneOffDispatches = new WeakMap();
 +
 +  constructor({ context, isCurrent, onPresentationRequest = null }) {
 +    if (typeof isCurrent != "function") throw new TypeError("Missing scope check");
@@ -12444,12 +12479,20 @@ index 0000000000..b324ad4984
 +    }
 +    if (authorize !== null && typeof authorize !== "function") throw new TypeError("Invalid query dispatch guard");
 +    if (afterStart !== null && typeof afterStart !== "function") throw new TypeError("Invalid query start listener");
-+    let dispatched = false, dispatchDenied = false;
 +    const query = UrlbarQueryModel.create({
 +      ...state,
 +      sapName: this.#context.sapName,
 +      isPrivate: this.#context.isPrivate,
 +    }, request);
++    return this.#runQuery(query, onUpdate, authorize, afterStart);
++  }
++
++  async #runQuery(query, onUpdate, authorize, afterStart) {
++    this.#check();
++    if (onUpdate !== null && typeof onUpdate !== "function") throw new TypeError("Invalid query update callback");
++    if (authorize !== null && typeof authorize !== "function") throw new TypeError("Invalid query dispatch guard");
++    if (afterStart !== null && typeof afterStart !== "function") throw new TypeError("Invalid query start listener");
++    let dispatched = false, dispatchDenied = false;
 +    this.#query = query;
 +    this.#finishState = { query, finished: false, cancelled: false, updatedResults: false, description: null };
 +    this.#removedIds.clear();
@@ -12989,10 +13032,10 @@ index 0000000000..b324ad4984
 +    return this.#recordOneOffMode(outcome, prepared, "preview", current);
 +  }
 +
-+  #recordOneOffMode(outcome, prepared, phase, current) {
++  #recordOneOffMode(outcome, prepared, phase, current, admission = null) {
 +    if (!outcome?.applied || !outcome.stateToken || !current()) return outcome;
 +    const receipt = Object.freeze({ ...outcome });
-+    this.#oneOffModeReceipts.set(receipt, { prepared, phase, attempted: false });
++    this.#oneOffModeReceipts.set(receipt, { prepared, phase, attempted: false, admission });
 +    return receipt;
 +  }
 +
@@ -13000,7 +13043,7 @@ index 0000000000..b324ad4984
 +  describeOneOffRequery(receipt) {
 +    this.#check();
 +    const record = this.#oneOffModeReceipts.get(receipt);
-+    if (!record || record.attempted || !record.prepared.isCurrent() ||
++    if (!record || record.attempted || ["starting", "failed"].includes(record.admission?.status) || !record.prepared.isCurrent() ||
 +        (receipt.userTypedValue !== null && typeof receipt.userTypedValue !== "string")) return null;
 +    const browserCurrent = this.#controller.parentController.captureIndependentQueryAuthority(
 +      this.#context.browserId, receipt.stateToken, receipt.userTypedValue);
@@ -13009,14 +13052,80 @@ index 0000000000..b324ad4984
 +    return Object.freeze({ queryMode: description.searchMode,
 +      searchMode: UrlbarSearchModeModel.confirmedMode(description.searchMode),
 +      allowAutofill: description.allowAutofill, userTypedValue: receipt.userTypedValue,
-+      confirmed: record.phase === "confirmed" });
++      confirmed: record.phase === "confirmed", admission: record.admission?.description ?? null });
++  }
++
++  /** Capture the future query and start its engagement before reading suppression. */
++  startOneOffQuery(receipt, state, text, options, isCurrent) {
++    const request = this.describeOneOffRequery(receipt), record = this.#oneOffModeReceipts.get(receipt);
++    if (!request || request.confirmed || record.admission) return null;
++    const browserCurrent = this.#controller.parentController.captureIndependentQueryAuthority(
++      this.#context.browserId, receipt.stateToken, receipt.userTypedValue);
++    if (!browserCurrent) return null;
++    const admission = { status: "starting", query: null, description: null };
++    record.admission = admission;
++    const current = () => !this.#closed && this.#isCurrent() && isCurrent() && browserCurrent() &&
++      !record.attempted && record.prepared.isCurrent();
++    try {
++      const query = UrlbarQueryModel.create({ ...state, searchMode: request.queryMode,
++        sapName: this.#context.sapName, isPrivate: this.#context.isPrivate },
++        { searchString: text, allowAutofill: request.allowAutofill });
++      const event = options?.event;
++      const facts = event == null ? null : Object.freeze({ type: event.type, timeStamp: event.timeStamp, inputType: event.inputType });
++      const interactionType = options?.interactionType ?? null;
++      if ((facts && (!["input", "focus", "click", "command", "drop", "keydown", "mousedown", "paste", "tabswitch"].includes(facts.type) ||
++          !Number.isFinite(facts.timeStamp) || facts.timeStamp < 0 ||
++          (facts.inputType !== undefined && typeof facts.inputType !== "string"))) ||
++          ![null, "returned"].includes(interactionType)) throw new TypeError("Invalid engagement start facts");
++      if (!current()) return null;
++      if (facts) {
++        if (this.#endingEngagement) throw new Error("Engagement is ending");
++        this.#controller.engagementEvent.start(facts, query, query.searchString, interactionType);
++        if (!current()) return null;
++        this.#engagementActive = true;
++      }
++      // Retained startQuery reads this after the potentially reentrant recorder.
++      const suppressStartQuery = options?.suppressStartQuery;
++      if (typeof suppressStartQuery !== "boolean") throw new TypeError("Missing query suppression observation");
++      if (!current()) return null;
++      const disposition = UrlbarQueryModel.startQueryDisposition({ suppressStartQuery });
++      admission.query = query;
++      admission.status = disposition;
++      admission.description = Object.freeze({ queryId: query.id, searchString: query.searchString,
++        queryMode: Object.freeze({ ...query.searchMode }), allowAutofill: query.allowAutofill,
++        engagementStarted: !!facts, disposition });
++      return admission.description;
++    } finally {
++      if (admission.status === "starting") admission.status = "failed";
++    }
++  }
++
++  /** Overflow is observed after confirmation; it does not cancel the original query. */
++  admitOneOffDispatch(receipt, inOverflowPanel) {
++    const request = this.describeOneOffRequery(receipt), record = this.#oneOffModeReceipts.get(receipt);
++    if (!request?.confirmed) return false;
++    if (typeof inOverflowPanel !== "boolean") throw new TypeError("Missing query overflow observation");
++    if (UrlbarQueryModel.startQueryDisposition({ inOverflowPanel }) !== "overflow") return true;
++    record.attempted = true;
++    return false;
++  }
++
++  /** Use the captured engagement query, or the explicitly unscheduled lower-level path. */
++  async queryOneOff(state, request, onUpdate, authorize) {
++    this.#check();
++    const dispatch = this.#oneOffDispatches.get(authorize);
++    if (!dispatch || dispatch.used) throw new Error("Invalid one-off query authority");
++    dispatch.used = true;
++    return dispatch.record.admission
++      ? this.#runQuery(dispatch.record.admission.query, onUpdate, authorize, null)
++      : this.query(state, request, onUpdate, authorize);
 +  }
 +
 +  /** Confirm the captured preview, preserving its original query-mode snapshot. */
 +  commitOneOffConfirmation(receipt, modeEntry, observation, isCurrent, onCommitted = null) {
 +    const request = this.describeOneOffRequery(receipt);
 +    const record = this.#oneOffModeReceipts.get(receipt);
-+    if (!request || request.confirmed || !modeEntry || modeEntry.pageProxyValid ||
++    if (!request || request.confirmed || request.admission?.disposition === "suppressed" || !modeEntry || modeEntry.pageProxyValid ||
 +        modeEntry.userTypedValue !== request.userTypedValue || modeEntry.untrimmedValue !== request.userTypedValue ||
 +        modeEntry.hasAutofillPlaceholder !== false) return null;
 +    const current = () => !this.#closed && this.#isCurrent() && isCurrent() && record.prepared.isCurrent();
@@ -13025,7 +13134,7 @@ index 0000000000..b324ad4984
 +    const outcome = this.#controller.parentController.commitIndependentModeState(this.#context.browserId,
 +      request.searchMode, { persistedSearchTerms: observation.persistedSearchTerms,
 +        engineId: record.prepared.description.engineId, modeEntry, expectedStateToken: receipt.stateToken }, current, onCommitted);
-+    return this.#recordOneOffMode(outcome, record.prepared, "confirmed", current);
++    return this.#recordOneOffMode(outcome, record.prepared, "confirmed", current, record.admission);
 +  }
 +
 +  /** Transfer confirmed authority across deliberate old-query cancellation, once. */
@@ -13039,8 +13148,10 @@ index 0000000000..b324ad4984
 +    const eligible = this.#oneOffEligibility.get(record.prepared);
 +    const dismissalGeneration = this.#oneOffDismissalGeneration;
 +    record.attempted = true;
-+    return () => !this.#closed && this.#isCurrent() && isCurrent() && browserCurrent() && eligible() &&
++    const authorize = () => !this.#closed && this.#isCurrent() && isCurrent() && browserCurrent() && eligible() &&
 +      this.#oneOffDismissalGeneration === dismissalGeneration;
++    this.#oneOffDispatches.set(authorize, { record, used: false });
++    return authorize;
 +  }
 +
 +  /** Prepare input.search policy using this consumer's live engine store, without dispatch. */
@@ -13662,10 +13773,10 @@ index 0000000000..ed9a06b8c0
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQueryModel.mjs b/browser/components/urlbar/content/UrlbarQueryModel.mjs
 new file mode 100644
-index 0000000000..748f331090
+index 0000000000..6a8e723aeb
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQueryModel.mjs
-@@ -0,0 +1,254 @@
+@@ -0,0 +1,259 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13677,6 +13788,11 @@ index 0000000000..748f331090
 +
 +/** Firefox query policy over explicit state, without retaining an input/view. */
 +export class UrlbarQueryModel {
++  /** Query start stops before reset/confirmation when suppressed, after them in overflow. */
++  static startQueryDisposition({ suppressStartQuery = false, inOverflowPanel = false } = {}) {
++    return suppressStartQuery ? "suppressed" : inOverflowPanel ? "overflow" : "dispatch";
++  }
++
 +  /** Final row/popup policy; one-off visibility may resolve asynchronously. */
 +  static finishedQueryPresentation({ updatedResults, searchMode, oneOffsWillHide = null, open = false }) {
 +    const rows = updatedResults ? "remove-stale" : "clear";

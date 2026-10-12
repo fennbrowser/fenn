@@ -6510,3 +6510,72 @@ test('one-off continuation rejects cancellation reentry and requires cleared pla
   await assert.rejects(f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:replacement.searchMode}),/superseded/);
   assert.equal(f.parent.started.length,1);f.parent.cancelQuery=cancel;f.editor.close();
 });
+
+
+test('one-off start engages and dispatches the identical captured query after confirmation',async()=>{
+  for(const withEvent of [false,true]){
+    const f=await oneOffRequeryFixture(),state={searchMode:f.proposal.searchMode,browser:{userContextId:4,currentPage:'https://before.test/'}};
+    const admission=f.editor.startOneOffQuery(f.proposal.token,state,{event:withEvent?{type:'keydown',timeStamp:123}:null,suppressStartQuery:false});
+    assert.equal(admission.disposition,'dispatch');assert.equal(admission.engagementStarted,withEvent);
+    assert.equal(f.parent.started.length,1);assert.equal(f.writes.length,1);
+    assert.equal(f.editor.startOneOffQuery(f.proposal.token,state,{suppressStartQuery:false}),null);
+    const future=withEvent?f.parent.engagements.at(-1).args[1]:null;
+    if(future){assert.equal(future.id,admission.queryId);assert.equal(future.searchMode.isPreview,true);}
+    state.browser.currentPage='https://later.test/';
+    const c=f.editor.beginOneOffConfirmation(f.proposal.token,f.confirmation.modeEntry);
+    f.editor.commitOneOffConfirmation(c.token,oneOffConfirmationObservation(c));
+    await assert.rejects(f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:c.searchMode}),/overflow/);
+    const query=await f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:c.searchMode},{inOverflowPanel:false});
+    assert.equal(query.id,admission.queryId);assert.equal(query.currentPage,'https://before.test/');
+    if(future)assert.equal(query,future);
+    assert.equal(f.parent.engagements.length,withEvent?1:0);assert.equal(f.parent.started.length,2);f.editor.close();
+  }
+});
+
+test('suppression is read after engagement and stops before confirmation without canceling the old query',async()=>{
+  const f=await oneOffRequeryFixture(),order=[];let suppressed=false;
+  f.parent.engagementEvent.start=()=>{order.push('engagement');suppressed=true;};
+  const before=f.parent.cancelled;
+  const p=f.editor.startOneOffQuery(f.proposal.token,{}, {event:{type:'click',timeStamp:4},
+    get suppressStartQuery(){order.push('suppression');return suppressed;},
+    get inOverflowPanel(){throw Error('read overflow before confirmation');}});
+  assert.deepEqual(order,['engagement','suppression']);assert.equal(p.disposition,'suppressed');
+  assert.equal(f.editor.beginOneOffConfirmation(f.proposal.token,f.confirmation.modeEntry),null);
+  await assert.rejects(f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:f.confirmation.searchMode},{inOverflowPanel:false}),/Stale/);
+  assert.equal(f.parent.started.length,1);assert.equal(f.writes.length,1);assert.equal(f.parent.cancelled,before);f.editor.close();
+});
+
+test('overflow is observed after real confirmation and stops without dispatch or old-query cancellation',async()=>{
+  const f=await oneOffRequeryFixture();
+  f.editor.startOneOffQuery(f.proposal.token,{}, {event:{type:'click',timeStamp:4},suppressStartQuery:false});
+  const c=f.editor.beginOneOffConfirmation(f.proposal.token,f.confirmation.modeEntry);
+  f.editor.commitOneOffConfirmation(c.token,oneOffConfirmationObservation(c));
+  const before=f.parent.cancelled;
+  const result=await f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:c.searchMode},{get inOverflowPanel(){
+    assert.equal(f.writes.length,2);return true;}});
+  assert.equal(result,null);assert.equal(f.parent.cancelled,before);assert.equal(f.parent.started.length,1);
+  assert.equal(f.parent.engagements.length,1);assert.equal(f.editor.getOneOffRequery(f.proposal.token),null);f.editor.close();
+});
+
+test('reentrant engagement or suppression observations revoke the prepared one-off start',async()=>{
+  for(const mutation of ['engagement','suppression','state']){
+    const f=await oneOffRequeryFixture();let starts=0;
+    f.parent.engagementEvent.start=()=>{starts++;if(mutation==='engagement')f.editor.select(1,0,0);};
+    const state=mutation==='state'?{get browser(){f.editor.select(1,0,0);return {};}}:{};
+    const result=f.editor.startOneOffQuery(f.proposal.token,state,{event:{type:'click',timeStamp:4},
+      get suppressStartQuery(){if(mutation==='suppression')f.editor.select(1,0,0);return false;}});
+    assert.equal(result,null);assert.equal(starts,mutation==='state'?0:1);
+    assert.equal(f.editor.getOneOffRequery(f.proposal.token),null);assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
+
+test('invalid or failed engagement starts cannot leave a dispatchable one-off admission',async()=>{
+  for(const kind of ['event','suppression','recorder']){
+    const f=await oneOffRequeryFixture();
+    if(kind==='recorder')f.parent.engagementEvent.start=()=>{throw Error('recorder failed');};
+    assert.throws(()=>f.editor.startOneOffQuery(f.proposal.token,{},
+      {event:{type:kind==='event'?'bad':'click',timeStamp:4},suppressStartQuery:kind==='suppression'?undefined:false}),/Invalid|Missing|recorder/);
+    assert.equal(f.editor.getOneOffRequery(f.proposal.token),null);
+    assert.equal(f.parent.started.length,1);f.editor.close();
+  }
+});
