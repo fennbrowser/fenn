@@ -6752,3 +6752,103 @@ test('failed replacement of a restoration proposal cannot bypass required desele
   const query=await f.editor.requeryAfterOneOffMode(f.proposal.token,{searchMode:replacement.searchMode},{inOverflowPanel:false});
   assert.equal(query.id,f.admission.queryId);assert.equal(f.writes.length,3);f.editor.close();
 });
+
+
+async function oneOffNewTabFixture({engine=false,pageValid=false,background=false,...options}={}){
+  const f=await oneOffCommandFixture({browserId:17,...options}),created=[];
+  const command=await f.editor.beginOneOffCommand(1,f.query.id,engine?'engine:default':`local:${f.local.restrict}`,
+    oneOffFacts({pageProxyValid:pageValid,keyboardAlt:!background,mouseBackground:background}));
+  f.parent.createIndependentOneOffSearchTab=(sourceBrowserId,searchMode,facts,current)=>{
+    if(!current())return null;
+    created.push({sourceBrowserId,searchMode,facts});
+    return Object.freeze({created:true,initialized:true,targetBrowserId:18,stateToken:{},searchMode,userTypedValue:facts.userTypedValue});
+  };
+  return {...f,command,created};
+}
+
+test('new-tab one-off commands create confirmed local or engine targets once without source editor or query effects',async()=>{
+  for(const background of [false,true])for(const pageValid of [false,true])for(const engine of [false,true]){
+    if(engine&&!pageValid)continue;
+    const f=await oneOffNewTabFixture({engine,pageValid,background}),before=f.editor.snapshot;
+    assert.equal(f.command.kind,'new-tab');
+    const result=f.editor.createOneOffSearchTab(f.command.token,{userTypedValue:pageValid?null:'typed words'});
+    assert.equal(result.initialized,true);assert.equal(result.inBackground,background);
+    assert.equal(result.requiresActivation,!background);assert.equal(result.startQuery,!background);
+    assert.equal(result.sourceModeNotificationPending,true);assert.equal(result.sourceDeselectionPending,true);
+    assert.equal(result.commandToken,f.command.token);assert.equal(result.queryId,f.query.id);
+    assert.equal(result.searchMode.isPreview,false);assert.equal(result.userTypedValue,pageValid?null:'typed words');
+    assert.equal(f.created.length,1);assert.equal(f.created[0].sourceBrowserId,17);
+    assert.equal(f.editor.snapshot,before);assert.equal(f.parent.started.length,1);assert.equal(f.parent.engagements.length,0);
+    assert.equal(f.editor.getOneOffCommand(f.command.token),null);
+    assert.equal(f.editor.createOneOffSearchTab(f.command.token,{userTypedValue:'typed words'}),null);
+    assert.equal(f.created.length,1);f.editor.close();
+  }
+});
+
+test('new-tab creation excludes immediate engine navigation and current-tab commands',async()=>{
+  const f=await oneOffNewTabFixture({engine:true});assert.equal(f.command.kind,'navigation');
+  assert.equal(f.editor.createOneOffSearchTab(f.command.token,{userTypedValue:'typed words'}),null);
+  const command=await f.editor.beginOneOffCommand(1,f.query.id,`local:${f.local.restrict}`,oneOffFacts());
+  assert.equal(command.kind,'query');assert.equal(f.editor.createOneOffSearchTab(command.token,{userTypedValue:'typed words'}),null);
+  assert.equal(f.created.length,0);f.editor.close();
+});
+
+test('new-tab creation rejects stale editor, popup, engine policy and scope before effects',async()=>{
+  for(const mutation of ['caret','cancel','popup','engine','policy','scope','getter']){
+    const f=await oneOffNewTabFixture();
+    if(mutation==='caret')f.editor.select(1,0,0);
+    if(mutation==='cancel')f.editor.cancel();
+    if(mutation==='popup'){f.editor.publishPresentation(1,f.query.id,[],false);f.editor.publishPresentation(1,f.query.id,[],true);}
+    if(mutation==='engine')f.parent.child.updateEngineStore('removed',{id:'second'});
+    if(mutation==='policy')f.prefs['scotchBonnet.disableOneOffs']=true;
+    const facts={get userTypedValue(){if(mutation==='getter')f.editor.select(1,0,0);return 'typed words';}};
+    if(mutation==='scope'){f.loseScope();assert.throws(()=>f.editor.createOneOffSearchTab(f.command.token,facts),/scope changed/);}
+    else assert.equal(f.editor.createOneOffSearchTab(f.command.token,facts),null,mutation);
+    assert.equal(f.created.length,0);f.editor.close();
+  }
+});
+
+test('new-tab command consumes before creation callbacks, throws or partial outcomes',async()=>{
+  for(const kind of ['success','throw','partial','null']){
+    const f=await oneOffNewTabFixture(),create=f.parent.createIndependentOneOffSearchTab;let calls=0;
+    f.parent.createIndependentOneOffSearchTab=(...args)=>{
+      calls++;assert.equal(f.editor.getOneOffCommand(f.command.token),null);
+      assert.equal(f.editor.createOneOffSearchTab(f.command.token,{userTypedValue:'typed words'}),null);
+      if(kind==='throw')throw Error('tab creation failed');
+      if(kind==='null')return null;
+      const result=create(...args);return kind==='partial'?{...result,initialized:false}:result;
+    };
+    if(kind==='throw')assert.throws(()=>f.editor.createOneOffSearchTab(f.command.token,{userTypedValue:'typed words'}),/creation failed/);
+    else {const result=f.editor.createOneOffSearchTab(f.command.token,{userTypedValue:'typed words'});
+      assert.equal(result?.initialized,kind==='null'?undefined:kind==='success');}
+    assert.equal(f.editor.createOneOffSearchTab(f.command.token,{userTypedValue:'typed words'}),null);assert.equal(calls,1);f.editor.close();
+  }
+});
+
+test('new-tab source observations are read once and reentrant creation cannot erase a newer command',async()=>{
+  const f=await oneOffNewTabFixture();let reads=0,newer;
+  assert.throws(()=>f.editor.createOneOffSearchTab(f.command.token,{}),/Missing/);
+  const create=f.parent.createIndependentOneOffSearchTab;
+  f.parent.createIndependentOneOffSearchTab=(...args)=>{
+    newer=f.editor.beginOneOffCommand(1,f.query.id,`local:${f.local.restrict}`,oneOffFacts({keyboardAlt:true}));
+    return create(...args);
+  };
+  assert.equal(f.editor.createOneOffSearchTab(f.command.token,{get userTypedValue(){reads++;return 'typed words';}}),null);
+  const next=await newer;assert.ok(next);assert.equal(f.editor.getOneOffCommand(next.token),next);assert.equal(reads,1);
+  f.parent.createIndependentOneOffSearchTab=create;
+  assert.equal(f.editor.createOneOffSearchTab(next.token,{userTypedValue:'typed words'}).initialized,true);f.editor.close();
+});
+
+test('query-layer new-tab creation rejects copied or foreign plans and unpinned sources',async()=>{
+  const f=fixture({browserId:17});await f.parent.child.engineStore.init();oneOffStore(f,{second:true,local:true});
+  const q=await f.session.query({}, {searchString:'words'});f.session.publishPresentation(q.id,[],true);
+  const key=`local:${f.sandbox.UrlbarShared.LOCAL_SEARCH_MODES[0].restrict}`;
+  const prepared=await f.session.prepareOneOffCommand(q.id,key,'words',oneOffFacts({keyboardAlt:true}));let calls=0;
+  f.parent.createIndependentOneOffSearchTab=()=>{calls++;return {created:true,initialized:true};};
+  assert.equal(f.session.createOneOffSearchTab({...prepared},'words',()=>true),null);
+  const other=new f.sandbox.UrlbarQuerySession({context:f.context,isCurrent:()=>true});
+  assert.equal(other.createOneOffSearchTab(prepared,'words',()=>true),null);
+  assert.equal(f.session.createOneOffSearchTab(prepared,'words',()=>true).initialized,true);
+  assert.equal(f.session.createOneOffSearchTab(prepared,'words',()=>true),null);assert.equal(calls,1);
+  other.close();f.session.close();
+});

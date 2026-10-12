@@ -193,3 +193,15 @@ test('retained deselection restores confirmed state once for a selected mode, in
     oneOff.selectedButton=null;assert.equal(writes.length,1);
   }
 });
+
+
+test('retained new-tab mode precedes optional text, selection and destination query',()=>{
+  for(const background of [false,true])for(const pageValid of [false,true]){
+    const f=commandFixture({where:'tab',engine:false,background,pageValid});
+    Object.defineProperty(f.newTab.linkedBrowser,'userTypedValue',{set:value=>f.calls.push(['typed',value])});
+    Object.defineProperty(f.browser,'selectedTab',{set:tab=>f.calls.push(['selected',tab])});
+    f.view.handleSearchCommand(f.event,f.mode);
+    assert.deepEqual(f.calls.map(c=>c[0]),['tab','mode',...(pageValid?[]:['typed']),...(background?[]:['selected','new-query'])]);
+    assert.equal(f.calls[1][1].isPreview,false);assert.equal(f.calls[1][2],f.newTab.linkedBrowser);
+  }
+});

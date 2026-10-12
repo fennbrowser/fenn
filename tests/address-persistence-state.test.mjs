@@ -338,3 +338,94 @@ test('owned confirmed-mode reader distinguishes null mode from a read invalidate
   f.owner.snapshot=browser=>{const result=snapshot(browser);browser.userTypedValue='new';return result;};
   assert.equal(f.parent.describeIndependentConfirmedMode(17,p.token,'words'),null);
 });
+
+
+function oneOffTabParentFixture(){
+  const {owner}=ownerFixture(),source=read('UrlbarParentController.sys.mjs');
+  const start=source.indexOf('  createIndependentOneOffSearchTab(');assert.ok(start>=0);
+  const method=source.slice(start,source.indexOf('\n  /**',start));
+  const Parent=new Function('lazy',`return class { #destroyed=false; #isAddressbar=true; ${method} }`)({independentUrlbarBrowserState:owner});
+  const parent=new Parent(),browser={browserId:17,userTypedValue:'words',lastLocationChange:2,browsingContext:{currentWindowGlobal:{}}};
+  const target={browserId:18,userTypedValue:null,lastLocationChange:0,browsingContext:{currentWindowGlobal:{}}},tab={linkedBrowser:target},calls=[];
+  const tabbrowser={selectedBrowser:browser,getTabForBrowser:b=>b===target?tab:null,
+    addTrustedTab:url=>{calls.push(url);return tab;}};
+  parent.resolveTargetBrowser=()=>browser;parent.browserWindow={gBrowser:tabbrowser};
+  parent.recordSearchMode=()=>{throw Error('unselected mode entry');};parent.markEngineAsUsed=()=>{throw Error('unselected engine usage');};
+  const mode={source:5,isPreview:false,entry:'oneoff'};
+  return {owner,parent,browser,target,tab,tabbrowser,calls,mode};
+}
+
+test('new-tab target initialization installs confirmed mode and optional text without source state or selected-mode effects',()=>{
+  for(const value of [null,'','typed words'])for(const engine of [false,true]){
+    const f=oneOffTabParentFixture(),mode=engine?{engineName:'Engine',isPreview:false,entry:'oneoff'}:f.mode;
+    const sourceState=f.owner.prepareMode(f.browser,{source:2,isPreview:true});f.owner.commit(f.browser,sourceState.token);
+    const before=JSON.stringify(f.owner.snapshot(f.browser));
+    const result=f.parent.createIndependentOneOffSearchTab(17,mode,{sourceUserTypedValue:'words',userTypedValue:value},()=>true);
+    assert.equal(result.created,true);assert.equal(result.initialized,true);assert.equal(result.targetBrowserId,18);
+    assert.equal(result.typedValueWritten,value!==null);assert.equal(f.target.userTypedValue,value);
+    assert.equal(f.owner.isCommitted(f.target,result.stateToken),true);
+    assert.equal(f.owner.snapshot(f.target).confirmed.isPreview,false);assert.equal(f.owner.snapshot(f.target).preview,null);
+    assert.equal(JSON.stringify(f.owner.snapshot(f.browser)),before);assert.equal(f.browser.userTypedValue,'words');
+    assert.equal(f.tabbrowser.selectedBrowser,f.browser);assert.deepEqual(f.calls,['about:newtab']);
+  }
+});
+
+test('new-tab source browser, document, typed value and controller guards reject before tab creation',()=>{
+  for(const mutation of ['typed','document','selected','scope','content','browser-id']){
+    const f=oneOffTabParentFixture();
+    if(mutation==='typed')f.browser.userTypedValue='other';
+    if(mutation==='document')f.browser.browsingContext.currentWindowGlobal=null;
+    if(mutation==='selected')f.tabbrowser.selectedBrowser=f.target;
+    if(mutation==='content')f.parent.rendersInContentProcess=true;
+    if(mutation==='browser-id')f.browser.browserId=19;
+    assert.equal(f.parent.createIndependentOneOffSearchTab(17,f.mode,{sourceUserTypedValue:'words',userTypedValue:'words'},()=>mutation!=='scope'),null);
+    assert.equal(f.calls.length,0);
+  }
+});
+
+test('tab-open reentry reports the created tab but stops initialization without removing or selecting it',()=>{
+  for(const mutation of ['source-typed','source-location','source-document','target-mode','target-closing','target-detached','same-browser','selected','scope']){
+    const f=oneOffTabParentFixture(),add=f.tabbrowser.addTrustedTab;let active=true;
+    f.tabbrowser.addTrustedTab=url=>{const tab=add(url);
+      if(mutation==='source-typed')f.browser.userTypedValue='other';
+      if(mutation==='source-location')f.browser.lastLocationChange++;
+      if(mutation==='source-document')f.browser.browsingContext.currentWindowGlobal={};
+      if(mutation==='target-mode'){const p=f.owner.prepareMode(f.target,{source:2,isPreview:false});f.owner.commit(f.target,p.token);}
+      if(mutation==='target-closing')f.tab.closing=true;
+      if(mutation==='target-detached')f.tabbrowser.getTabForBrowser=()=>null;
+      if(mutation==='same-browser')f.tab.linkedBrowser=f.browser;
+      if(mutation==='selected')f.tabbrowser.selectedBrowser=f.target;
+      if(mutation==='scope')active=false;
+      return tab;
+    };
+    const result=f.parent.createIndependentOneOffSearchTab(17,f.mode,{sourceUserTypedValue:'words',userTypedValue:'words'},()=>active);
+    assert.equal(result.created,true);assert.equal(result.initialized,false,mutation);assert.equal(result.modeCommitted,false);
+    assert.equal(f.target.userTypedValue,null);assert.equal(f.calls.length,1);
+    assert.equal(f.owner.snapshot(f.target).confirmed?.source,mutation==='target-mode'?2:undefined);
+  }
+});
+
+test('target state preparation reentry cannot commit into a replaced or navigated new tab',()=>{
+  for(const mutation of ['document','typed','receipt','source']){
+    const f=oneOffTabParentFixture(),prepare=f.owner.prepareMode.bind(f.owner);
+    f.owner.prepareMode=(browser,mode)=>{const update=prepare(browser,mode);
+      if(mutation==='document')f.target.browsingContext.currentWindowGlobal={};
+      if(mutation==='typed')f.target.userTypedValue='newer';
+      if(mutation==='receipt'){const newer=prepare(browser,{source:2,isPreview:false});f.owner.commit(browser,newer.token);}
+      if(mutation==='source')f.browser.userTypedValue='changed';
+      return update;
+    };
+    const result=f.parent.createIndependentOneOffSearchTab(17,f.mode,{sourceUserTypedValue:'words',userTypedValue:'words'},()=>true);
+    assert.equal(result.created,true);assert.equal(result.initialized,false);assert.equal(result.modeCommitted,false);
+    assert.equal(f.target.userTypedValue,mutation==='typed'?'newer':null);
+    assert.equal(f.owner.snapshot(f.target).confirmed?.source,mutation==='receipt'?2:undefined);
+  }
+});
+
+test('target typed-value setter reentry preserves partial effects and invalidates further authority',()=>{
+  const f=oneOffTabParentFixture();let typed=null;
+  Object.defineProperty(f.target,'userTypedValue',{get:()=>typed,set:value=>{typed=value;f.target.browsingContext.currentWindowGlobal={};}});
+  const result=f.parent.createIndependentOneOffSearchTab(17,f.mode,{sourceUserTypedValue:'words',userTypedValue:'words'},()=>true);
+  assert.equal(result.created,true);assert.equal(result.modeCommitted,true);assert.equal(result.typedValueWritten,true);
+  assert.equal(result.initialized,false);assert.equal(typed,'words');assert.equal(f.calls.length,1);
+});
