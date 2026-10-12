@@ -24,6 +24,7 @@ function fixture(expectNative = true) {
   const events=[],publications=[],view={nativePresentation:null};
   const tab={},browser={currentURI:{spec:'new-page'},browsingContext:{currentWindowGlobal:{innerWindowId:2}}};
   class Session {
+    get engine(){return 'retained';}
     constructor(){events.push('construct');this.sessionId='new';}
     beginNativePresentation(options){events.push('bind');view.nativePresentation=this;this.nativeOpen=options.open;}
     snapshot(){assert.equal(view.nativePresentation,expectNative ? this : null);events.push('snapshot');return null;}
@@ -42,10 +43,10 @@ function fixture(expectNative = true) {
   const source=readFileSync(new URL('../upstream/firefox/browser/base/content/browser-winui-pane.js',import.meta.url),'utf8');
   const start=source.indexOf('  syncAddress() {'),end=source.indexOf('\n  // One native address intent',start);
   vm.runInContext('this.syncAddress = ({'+source.slice(start,end)+'}).syncAddress;',sandbox);
-  const old={close(){events.push('close-old');view.nativePresentation=null;}};
+  const old={engine:'retained',close(){events.push('close-old');view.nativePresentation=null;}};
   const owner={attached:true,addressSession:old,addressTab:tab,addressDocument:1,
     addressToolbar:{update:()=>true,activate(){events.push('activate');}},
-    nativeLabels:()=>({}),invalidateAddress(){}};
+    nativeLabels:()=>({}),addressEngine:()=>'retained',invalidateAddress(){}};
   view.nativePresentation=old;
   return {owner,sandbox,view,events,publications};
 }
@@ -102,4 +103,22 @@ test('picked close captures exposure and closes logical presentation after cance
   s.cancel=()=>{assert.equal(controller.resultsOpen,true);controller.visibleResults=[];};
   s.onNativeViewClosed(true);
   assert.equal(controller.resultsOpen,false);assert.equal(controller.visibleResults,visible);
+});
+
+test('a session whose engine differs from the selected engine is replaced, and the pane chooses the class',()=>{
+  const f=fixture();
+  f.owner.addressSession=Object.assign(f.owner.addressSession,{engine:'independent'});
+  f.sandbox.syncAddress.call(f.owner);
+  assert.deepEqual(f.events.slice(0,3),['close-old','construct','bind']);
+  const source=readFileSync(new URL('../upstream/firefox/browser/base/content/browser-winui-pane.js',import.meta.url),'utf8');
+  const start=source.indexOf('  addressEngine() {'),end=source.indexOf('  syncAddress() {',start);
+  const context=vm.createContext({window:{},PrivateBrowsingUtils:{isWindowPrivate:win=>win.private},
+    Services:{prefs:{getBoolPref:(name,fallback)=>context.prefs[name] ?? fallback}},prefs:{}});
+  vm.runInContext('this.addressEngine = ({'+source.slice(start,end).replace(/,\s*$/,'')+'}).addressEngine;',context);
+  const owner={addressIndependentPref:'fenn.winui.address.independent'};
+  assert.equal(context.addressEngine.call(owner),'retained');
+  context.prefs['fenn.winui.address.independent']=true;
+  assert.equal(context.addressEngine.call(owner),'independent');
+  context.window.private=true;
+  assert.equal(context.addressEngine.call(owner),'retained','private windows keep the retained engine');
 });

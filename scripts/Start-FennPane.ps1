@@ -1,4 +1,4 @@
-param([switch]$NativeAddressBar, [switch]$NativeNavigationToolbar, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$CaptureCrash, [string]$DiagnosticsLog,
+param([switch]$NativeAddressBar, [switch]$IndependentAddress, [switch]$NativeNavigationToolbar, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$CaptureCrash, [string]$DiagnosticsLog,
       [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight,
       [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop,
       [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach,
@@ -35,7 +35,7 @@ $switchPrefs = [ordered]@{
     NativeTabStrip = 'pane.enabled'; ContainerDots = 'tabstrip.containerDot'; TabGlows = 'tabstrip.glows'
     GroupHover = 'tabstrip.groupHover'; GroupHalo = 'tabstrip.groupHalo'
     GroupGlowAnimations = 'tabstrip.groupGlowAnimations'; GroupGlowFadeOut = 'tabstrip.groupGlowFadeOut'
-    NativeAddressBar = 'address.toolbar.enabled'
+    NativeAddressBar = 'address.toolbar.enabled'; IndependentAddress = 'address.independent'
     NativeHistoryMenu = 'navigation.history.menu.enabled'; NativeNavigationToolbar = 'navigation.toolbar.enabled'
 }
 # The native History menu lives on the native navigation toolbar.
