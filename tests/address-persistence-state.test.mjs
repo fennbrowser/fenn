@@ -343,7 +343,7 @@ test('owned confirmed-mode reader distinguishes null mode from a read invalidate
 function oneOffTabParentFixture(){
   const {owner,service,facts}=ownerFixture(),source=read('UrlbarParentController.sys.mjs');
   const method=['createIndependentOneOffSearchTab','#oneOffTabActivationCurrent','describeIndependentOneOffTabActivation',
-    'activateIndependentOneOffSearchTab'].map(name=>{const start=source.indexOf('  '+name+'(');assert.ok(start>=0);
+    'activateIndependentOneOffSearchTab','describeIndependentOneOffSourceRestoration'].map(name=>{const start=source.indexOf('  '+name+'(');assert.ok(start>=0);
       return source.slice(start,source.indexOf('\n  /**',start));}).join('\n');
   const Parent=new Function('lazy',`return class { #destroyed=false; #isAddressbar=true; #oneOffSearchTabs=new WeakMap(); #actor={};
     destroyForTest(){this.#destroyed=true;} ${method} }`)({independentUrlbarBrowserState:owner,UrlbarShared:{deepEqual:(a,b)=>JSON.stringify(a)===JSON.stringify(b)}});
@@ -663,5 +663,28 @@ test('destination lifetime and initial readiness have separate guards after a su
     if(mutation==='window-close')f.parent.browserWindow.closed=true;
     assert.equal(d.isCurrent(),['source-close','source-state','target-state','typed'].includes(mutation),mutation);
     assert.equal(d.isReady(),['source-close','source-state'].includes(mutation),mutation);
+  }
+});
+
+
+test('background source descriptors bind actual creation receipts and ignore later target loading',()=>{
+  const f=initializedOneOffTabFixture();
+  assert.equal(f.parent.describeIndependentOneOffSourceRestoration({...f.receipt}),null);
+  const foreign=oneOffTabParentFixture();assert.equal(foreign.parent.describeIndependentOneOffSourceRestoration(f.receipt),null);
+  const descriptor=f.parent.describeIndependentOneOffSourceRestoration(f.receipt);
+  assert.equal(descriptor.restoreMode,false);assert.equal(descriptor.stateToken,f.receipt.sourceStateToken);
+  f.target.browsingContext.currentWindowGlobal={};f.target.lastLocationChange++;f.target.userTypedValue='new target value';
+  f.owner.forget(f.target);f.tab.closing=true;
+  assert.deepEqual(f.parent.describeIndependentOneOffSourceRestoration(f.receipt),descriptor);
+});
+
+test('background source descriptors revoke on source document, location, text, selection, state or parent changes',()=>{
+  for(const mutation of ['document','location','text','selection','state','destroy','browser']){
+    const f=initializedOneOffTabFixture();
+    if(mutation==='document')f.browser.browsingContext.currentWindowGlobal={};if(mutation==='location')f.browser.lastLocationChange++;
+    if(mutation==='text')f.browser.userTypedValue='changed';if(mutation==='selection')f.tabbrowser.selectedBrowser=f.target;
+    if(mutation==='state'){const p=f.owner.prepareMode(f.browser,null);f.owner.commit(f.browser,p.token);}
+    if(mutation==='destroy')f.parent.destroyForTest();if(mutation==='browser')f.parent.resolveTargetBrowser=()=>null;
+    assert.equal(f.parent.describeIndependentOneOffSourceRestoration(f.receipt),null,mutation);
   }
 });

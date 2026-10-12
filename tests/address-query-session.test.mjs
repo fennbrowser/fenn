@@ -7155,3 +7155,98 @@ test('query-layer destination admission rejects copied, foreign, suppressed and 
   assert.equal((await f.session.queryDestination(admission,()=>{},()=>true)).id,admission.queryId);
   await assert.rejects(f.session.queryDestination(admission,()=>{},()=>true),/Stale/);f.session.close();
 });
+
+
+async function backgroundSourceFixture({confirmedMode={source:5,isPreview:false,entry:'other'},restoreMode=true,background=true}={}){
+  const f=await oneOffSourceEffectsFixture(()=>{},{background}),browser={token:{},typed:'typed words',confirmed:confirmedMode},writes=[];
+  const initial=browser.token;
+  f.parent.describeIndependentOneOffSourceRestoration=()=>browser.token===initial&&browser.typed==='typed words'?
+    {searchMode:browser.confirmed,restoreMode,userTypedValue:browser.typed,stateToken:initial}:null;
+  f.parent.commitIndependentModeState=(id,mode,facts,current,notify)=>{
+    if(!current()||browser.token!==facts.expectedStateToken)return null;
+    browser.token={};browser.confirmed=mode;writes.push(mode);
+    notify?.({browserId:id,searchMode:mode,userTypedValue:browser.typed,persistedSearchTerms:false});
+    return {applied:true,current:current(),stateToken:browser.token,userTypedValue:browser.typed};
+  };
+  const receipt=f.editor.createOneOffSearchTabWithSourceEffects(f.command.token,{userTypedValue:'typed words',persistedSearchTerms:false});
+  const entry={untrimmedValue:'typed words',userTypedValue:'typed words',pageProxyValid:false,hasAutofillPlaceholder:false};
+  const proposal=f.editor.beginBackgroundSourceRestoration(f.command.token,entry);
+  return {...f,browser,writes,receipt,entry,proposal};
+}
+
+test('background source deselection restores owned confirmed local, engine, absent and removed modes without querying',async()=>{
+  for(const confirmedMode of [{source:5,isPreview:false,entry:'other'},{engineName:'Second',isPreview:false,entry:'other'},null,
+    {engineName:'Removed',isPreview:false,entry:'other'}]){
+    const f=await backgroundSourceFixture({confirmedMode}),p=f.proposal,before=f.parent.started.length,cancelled=f.parent.cancelled;
+    assert.ok(p);assert.equal(f.editor.getBackgroundSourceRestoration(p.token),p);
+    const expected=confirmedMode?.engineName==='Removed'?null:confirmedMode;assert.deepEqual(JSON.parse(JSON.stringify(p.searchMode)),expected);
+    const outcome=f.editor.commitBackgroundSourceRestoration(p.token,oneOffRestorationObservation(p));
+    assert.equal(outcome.applied,true);assert.equal(outcome.modeRestored,true);assert.equal(outcome.sourceDeselectionPending,false);
+    assert.deepEqual(JSON.parse(JSON.stringify(f.browser.confirmed)),expected);assert.equal(f.writes.length,1);assert.equal(f.events.length,2);
+    assert.equal(f.events[1].reason,'one-off-background-source-restoration');assert.equal(f.editor.snapshot.text,'typed words');
+    assert.equal(f.parent.started.length,before);assert.equal(f.parent.cancelled,cancelled);assert.equal(f.parent.engagements.length,0);
+    assert.equal(f.editor.commitBackgroundSourceRestoration(p.token,oneOffRestorationObservation(p)),null);f.editor.close();
+  }
+});
+
+test('background source with no active mode acknowledges deselection without setter or notification; foreground commands are excluded',async()=>{
+  const f=await backgroundSourceFixture({confirmedMode:null,restoreMode:false}),p=f.proposal,token=f.browser.token;
+  const result=f.editor.commitBackgroundSourceRestoration(p.token,oneOffRestorationObservation(p));
+  assert.equal(result.applied,true);assert.equal(result.modeRestored,false);assert.equal(f.browser.token,token);
+  assert.equal(f.writes.length,0);assert.equal(f.events.length,1);assert.equal(f.parent.started.length,1);f.editor.close();
+  const g=await backgroundSourceFixture({background:false});assert.equal(g.proposal,null);assert.equal(g.writes.length,0);g.editor.close();
+});
+
+test('background deselection requires exact host observations and source lifetime, and rejects forged receipts',async()=>{
+  const f=await backgroundSourceFixture(),p=f.proposal,valid=oneOffRestorationObservation(p);
+  for(const patch of [{text:'other'},{selectionStart:0},{composing:true},{pageProxyValid:true},{oneOffSelected:true},{searchMode:null}]){
+    assert.equal(f.editor.commitBackgroundSourceRestoration(p.token,{...valid,...patch}),null);assert.equal(f.writes.length,0);
+  }
+  assert.throws(()=>f.editor.commitBackgroundSourceRestoration(p.token,{...valid,persistedSearchTerms:undefined}),/Missing/);
+  assert.equal(f.editor.commitBackgroundSourceRestoration({},valid),null);
+  assert.equal(f.editor.commitBackgroundSourceRestoration(p.token,valid).applied,true);f.editor.close();
+  for(const mutation of ['caret','cancel','popup','typed','token','engine','policy','scope']){
+    const g=await backgroundSourceFixture(),q=g.proposal;
+    if(mutation==='caret')g.editor.select(1,0,0);if(mutation==='cancel')g.editor.cancel();
+    if(mutation==='popup')g.editor.publishPresentation(1,g.query.id,[],false);
+    if(mutation==='typed')g.browser.typed='newer';if(mutation==='token')g.browser.token={};
+    if(mutation==='engine')g.parent.child.updateEngineStore('removed',{id:'second'});
+    if(mutation==='policy')g.prefs['scotchBonnet.disableOneOffs']=true;
+    if(mutation==='scope'){g.loseScope();assert.throws(()=>g.editor.commitBackgroundSourceRestoration(q.token,oneOffRestorationObservation(q)),/scope changed/);}
+    else assert.equal(g.editor.commitBackgroundSourceRestoration(q.token,oneOffRestorationObservation(q)),null,mutation);
+    assert.equal(g.writes.length,0);g.editor.close();
+  }
+  const h=fixture({browserId:17});assert.equal(h.session.describeBackgroundSourceRestoration({inBackground:true}),null);h.session.close();
+});
+
+test('background restoration consumes before reentrant setters and exceptions, while host getters cannot overwrite new edits',async()=>{
+  for(const throws of [false,true]){
+    const f=await backgroundSourceFixture(),p=f.proposal,commit=f.parent.commitIndependentModeState;
+    f.parent.commitIndependentModeState=(...args)=>{
+      assert.equal(f.editor.commitBackgroundSourceRestoration(p.token,oneOffRestorationObservation(p)),null);
+      if(throws)throw Error('source setter failed');return commit(...args);
+    };
+    if(throws)assert.throws(()=>f.editor.commitBackgroundSourceRestoration(p.token,oneOffRestorationObservation(p)),/setter failed/);
+    else assert.equal(f.editor.commitBackgroundSourceRestoration(p.token,oneOffRestorationObservation(p)).applied,true);
+    assert.equal(f.editor.commitBackgroundSourceRestoration(p.token,oneOffRestorationObservation(p)),null);f.editor.close();
+  }
+  const f=await backgroundSourceFixture(),p=f.proposal;
+  assert.equal(f.editor.commitBackgroundSourceRestoration(p.token,{...oneOffRestorationObservation(p),get text(){f.editor.select(1,0,0);return p.edit.text;}}),null);
+  assert.equal(f.writes.length,0);assert.equal(f.editor.snapshot.selectionStart,0);f.editor.close();
+});
+
+
+test('background source formatting requires the exact restored display and metadata before mode effects',async()=>{
+  const f=await backgroundSourceFixture();let description={value:'display words',untrimmedValue:'typed words',protocolIsTrimmed:true,wwwIsTrimmed:false};
+  f.parent.describeIndependentCompositionRestoration=()=>({...description});
+  const p=f.editor.beginBackgroundSourceRestoration(f.command.token,{...f.entry,hasAutofillPlaceholder:true});
+  assert.equal(p.editorWrite.text,'display words');
+  assert.equal(f.editor.commitBackgroundSourceRestoration(p.token,{...oneOffRestorationObservation(p),protocolIsTrimmed:false}),null);
+  assert.equal(f.writes.length,0);
+  const result=f.editor.commitBackgroundSourceRestoration(p.token,oneOffRestorationObservation(p));
+  assert.equal(result.applied,true);assert.equal(f.editor.snapshot.text,'display words');assert.equal(f.writes.length,1);f.editor.close();
+  const g=await backgroundSourceFixture();g.parent.describeIndependentCompositionRestoration=()=>({...description});
+  const q=g.editor.beginBackgroundSourceRestoration(g.command.token,{...g.entry,hasAutofillPlaceholder:true});
+  description={...description,value:'new display'};
+  assert.equal(g.editor.commitBackgroundSourceRestoration(q.token,oneOffRestorationObservation(q)),null);assert.equal(g.writes.length,0);g.editor.close();
+});

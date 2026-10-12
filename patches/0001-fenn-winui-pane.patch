@@ -935,7 +935,7 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..b54eceaa68 100644
+index ba254af0c6..bb555b44f0 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -25,6 +25,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -1046,7 +1046,7 @@ index ba254af0c6..b54eceaa68 100644
    }
  
    /**
-@@ -999,6 +1044,639 @@ export class UrlbarParentController {
+@@ -999,6 +1044,655 @@ export class UrlbarParentController {
      }
    }
  
@@ -1471,6 +1471,22 @@ index ba254af0c6..b54eceaa68 100644
 +      target.userTypedValue === receipt.userTypedValue && owner.isCommitted(target, receipt.stateToken);
 +  }
 +
++  /** Source deselection after background creation does not depend on the target finishing its load. */
++  describeIndependentOneOffSourceRestoration(receipt) {
++    const record = this.#oneOffSearchTabs.get(receipt);
++    if (!record || record.attempted) return null;
++    const { source, tabbrowser } = record, owner = lazy.independentUrlbarBrowserState;
++    const current = () => !this.#destroyed && this.browserWindow?.gBrowser === tabbrowser &&
++      tabbrowser.selectedBrowser === source && this.resolveTargetBrowser(receipt.sourceBrowserId) === source &&
++      source.browsingContext?.currentWindowGlobal === record.document && source.lastLocationChange === record.epoch &&
++      source.userTypedValue === record.sourceUserTypedValue && owner.isCommitted(source, receipt.sourceStateToken);
++    if (!current()) return null;
++    const snapshot = owner.snapshot(source);
++    return current() ? Object.freeze({ searchMode: snapshot.confirmed,
++      restoreMode: !!(snapshot.preview ?? snapshot.confirmed), userTypedValue: record.sourceUserTypedValue,
++      stateToken: receipt.sourceStateToken }) : null;
++  }
++
 +  /** Activation authority belongs to the actual fully initialized creation receipt. */
 +  describeIndependentOneOffTabActivation(receipt) {
 +    const record = this.#oneOffSearchTabs.get(receipt);
@@ -1686,7 +1702,7 @@ index ba254af0c6..b54eceaa68 100644
    /**
     * Loads a URL in the browser window resolved from the actor. The content
     * child supplies the serializable load parameters; the parent fills in the
-@@ -1027,9 +1705,15 @@ export class UrlbarParentController {
+@@ -1027,9 +1721,15 @@ export class UrlbarParentController {
     *   browser to hand `focusBrowser` on the deferred-Enter keyup -- a
     *   content-process input can't resolve the selected browser itself.
     */
@@ -1703,7 +1719,7 @@ index ba254af0c6..b54eceaa68 100644
      if (!browser) {
        // The tab was closed before the load got here; don't hand its load to
        // whichever tab is selected now.
-@@ -1040,8 +1724,9 @@ export class UrlbarParentController {
+@@ -1040,8 +1740,9 @@ export class UrlbarParentController {
      }
  
      let { url, postData } = lazy.UrlbarUtils.loadRequestToUrl(loadRequest);
@@ -1714,7 +1730,7 @@ index ba254af0c6..b54eceaa68 100644
      }
      params.postData = postData;
  
-@@ -1055,6 +1740,7 @@ export class UrlbarParentController {
+@@ -1055,6 +1756,7 @@ export class UrlbarParentController {
        });
      }
  
@@ -1722,7 +1738,7 @@ index ba254af0c6..b54eceaa68 100644
      if (where == "current") {
        params.targetBrowser = browser;
      } else {
-@@ -1071,6 +1757,7 @@ export class UrlbarParentController {
+@@ -1071,6 +1773,7 @@ export class UrlbarParentController {
        browser.focus();
      }
  
@@ -1730,7 +1746,7 @@ index ba254af0c6..b54eceaa68 100644
      try {
        this.browserWindow.openTrustedLinkIn(url, where, params);
      } catch (ex) {
-@@ -1079,9 +1766,10 @@ export class UrlbarParentController {
+@@ -1079,9 +1782,10 @@ export class UrlbarParentController {
        return {
          reverted: ex.result != Cr.NS_ERROR_LOAD_SHOWED_ERRORPAGE,
          browserId: browser.browserId,
@@ -1742,7 +1758,7 @@ index ba254af0c6..b54eceaa68 100644
    }
  
    /**
-@@ -1292,10 +1980,22 @@ export class UrlbarParentController {
+@@ -1292,10 +1996,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -1766,7 +1782,7 @@ index ba254af0c6..b54eceaa68 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +2032,7 @@ export class UrlbarParentController {
+@@ -1332,6 +2048,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -1774,7 +1790,7 @@ index ba254af0c6..b54eceaa68 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +2056,10 @@ export class UrlbarParentController {
+@@ -1355,6 +2072,10 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
@@ -1785,7 +1801,7 @@ index ba254af0c6..b54eceaa68 100644
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +2091,7 @@ export class UrlbarParentController {
+@@ -1386,7 +2107,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -1794,7 +1810,7 @@ index ba254af0c6..b54eceaa68 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +2099,11 @@ export class UrlbarParentController {
+@@ -1394,10 +2115,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -1807,7 +1823,7 @@ index ba254af0c6..b54eceaa68 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +2121,7 @@ export class UrlbarParentController {
+@@ -1415,7 +2137,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -1816,7 +1832,7 @@ index ba254af0c6..b54eceaa68 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +2143,7 @@ export class UrlbarParentController {
+@@ -1437,7 +2159,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -1825,7 +1841,7 @@ index ba254af0c6..b54eceaa68 100644
          break;
      }
    };
-@@ -1727,8 +2433,12 @@ export class TelemetryEvent {
+@@ -1727,8 +2449,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -1839,7 +1855,7 @@ index ba254af0c6..b54eceaa68 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +2453,7 @@ export class TelemetryEvent {
+@@ -1743,7 +2469,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -1848,7 +1864,7 @@ index ba254af0c6..b54eceaa68 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +2479,7 @@ export class TelemetryEvent {
+@@ -1769,7 +2495,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -1857,7 +1873,7 @@ index ba254af0c6..b54eceaa68 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +2490,13 @@ export class TelemetryEvent {
+@@ -1780,12 +2506,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -1873,7 +1889,7 @@ index ba254af0c6..b54eceaa68 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +2507,7 @@ export class TelemetryEvent {
+@@ -1796,7 +2523,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -1882,7 +1898,7 @@ index ba254af0c6..b54eceaa68 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +2575,16 @@ export class TelemetryEvent {
+@@ -1864,17 +2591,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -1904,7 +1920,7 @@ index ba254af0c6..b54eceaa68 100644
      );
    }
  
-@@ -2009,158 +2719,6 @@ export class TelemetryEvent {
+@@ -2009,158 +2735,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -2063,7 +2079,7 @@ index ba254af0c6..b54eceaa68 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +3079,27 @@ export class TelemetryEvent {
+@@ -2521,17 +3095,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -2100,7 +2116,7 @@ index ba254af0c6..b54eceaa68 100644
      );
    }
  
-@@ -2548,14 +3116,19 @@ export class TelemetryEvent {
+@@ -2548,14 +3132,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -2126,7 +2142,7 @@ index ba254af0c6..b54eceaa68 100644
    }
  
    /**
-@@ -2581,39 +3154,4 @@ export class TelemetryEvent {
+@@ -2581,39 +3170,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -9756,10 +9772,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..728890f118
+index 0000000000..f602596c08
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2984 @@
+@@ -0,0 +1,3082 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9824,6 +9840,7 @@ index 0000000000..728890f118
 +  #oneOffModeStateReady = null;
 +  #oneOffRequery = null;
 +  #oneOffTabContinuation = null;
++  #oneOffBackgroundSource = null;
 +  #autofill = null;
 +  #placeholder = null;
 +  #closeRequest = null;
@@ -10391,6 +10408,7 @@ index 0000000000..728890f118
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
 +    this.#oneOffTabContinuation = null;
++    this.#oneOffBackgroundSource = null;
 +    this.#oneOffDestinationQuery = null;
 +    this.#inputPresentation = null;
 +    this.#inputPresentationState = null;
@@ -11639,6 +11657,7 @@ index 0000000000..728890f118
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
 +    this.#oneOffTabContinuation = null;
++    this.#oneOffBackgroundSource = null;
 +    this.#oneOffDestinationQuery = null;
 +    try {
 +      pending.prepared = await this.#queries.prepareOneOffCommand(queryId, key, edit.text, facts);
@@ -11694,6 +11713,10 @@ index 0000000000..728890f118
 +      this.#edit === pending.edit && this.#searchMode === pending.previousMode && !this.#hiddenResults;
 +    try {
 +      const outcome = this.#queries.createOneOffSearchTab(pending.prepared, sourceUserTypedValue, current, sourceModeEffects, notify);
++      if (outcome?.initialized && outcome.sourceModeNotified && outcome.inBackground && current()) {
++        this.#oneOffBackgroundSource = { commandToken, receipt: outcome, edit: pending.edit,
++          previousMode: pending.previousMode, proposal: null, attempted: false };
++      }
 +      if (outcome?.initialized && outcome.sourceModeNotified && outcome.requiresActivation && current()) {
 +        this.#oneOffTabContinuation = { commandToken, receipt: outcome, edit: pending.edit,
 +          previousMode: pending.previousMode, activation: null };
@@ -11701,6 +11724,93 @@ index 0000000000..728890f118
 +      return outcome ? Object.freeze({ ...outcome, commandToken, queryId: command.queryId, edit: pending.edit }) : null;
 +    } finally {
 +      if (this.#oneOffCommand === pending) this.#oneOffCommand = null;
++    }
++  }
++
++  /** Propose background source deselection from owned confirmed state, without touching the target. */
++  beginBackgroundSourceRestoration(commandToken, modeEntry) {
++    this.#check();
++    const pending = this.#oneOffBackgroundSource;
++    if (!pending || pending.commandToken !== commandToken || pending.attempted) return null;
++    const current = () => this.#oneOffBackgroundSource === pending && this.#edit === pending.edit &&
++      this.#searchMode === pending.previousMode && !this.#hiddenResults;
++    if (!current()) return null;
++    const marker = Object.freeze({});
++    pending.proposal = marker;
++    try {
++      const description = this.#queries.describeBackgroundSourceRestoration(pending.receipt);
++      if (!description) return null;
++      modeEntry = modeEntry && this.#captureModeEntry({ untrimmedValue: modeEntry.untrimmedValue,
++        pageProxyValid: modeEntry.pageProxyValid, hasAutofillPlaceholder: modeEntry.hasAutofillPlaceholder,
++        userTypedValue: modeEntry.userTypedValue });
++      if (!modeEntry) throw new TypeError("Missing background source restoration facts");
++      if (modeEntry.pageProxyValid || modeEntry.userTypedValue !== description.userTypedValue ||
++          modeEntry.untrimmedValue !== description.userTypedValue) return null;
++      let restoration = null;
++      if (description.searchMode && UrlbarSearchModeModel.modeEntryRestoresAutofill(
++          modeEntry.hasAutofillPlaceholder, modeEntry.userTypedValue)) {
++        restoration = this.#queries.describeCompositionRestoration(modeEntry);
++        if (!restoration) return null;
++      }
++      const editorWrite = restoration ? Object.freeze({ text: restoration.value,
++        selectionStart: restoration.value.length, selectionEnd: restoration.value.length, selectionDirection: "none",
++        untrimmedValue: restoration.untrimmedValue, protocolIsTrimmed: restoration.protocolIsTrimmed,
++        wwwIsTrimmed: restoration.wwwIsTrimmed, valueIsTyped: false }) : null;
++      if (!current() || pending.proposal !== marker ||
++          !UrlbarShared.deepEqual(description, this.#queries.describeBackgroundSourceRestoration(pending.receipt))) return null;
++      const proposal = Object.freeze({ token: marker, commandToken, edit: pending.edit,
++        searchMode: description.searchMode, restoreMode: description.restoreMode, modeEntry, restoration, editorWrite,
++        pageProxyValid: false, oneOffSelected: false });
++      pending.proposal = proposal;
++      pending.description = description;
++      return proposal;
++    } finally {
++      if (pending.proposal === marker) pending.proposal = null;
++    }
++  }
++
++  getBackgroundSourceRestoration(token) {
++    this.#check();
++    const pending = this.#oneOffBackgroundSource, proposal = pending?.proposal;
++    if (!proposal?.token || proposal.token !== token || pending.attempted || this.#edit !== pending.edit ||
++        this.#searchMode !== pending.previousMode || this.#hiddenResults) return null;
++    return UrlbarShared.deepEqual(pending.description, this.#queries.describeBackgroundSourceRestoration(pending.receipt)) &&
++      (!proposal.restoration || UrlbarShared.deepEqual(proposal.restoration, this.#queries.describeCompositionRestoration(proposal.modeEntry))) &&
++      this.#oneOffBackgroundSource === pending && pending.proposal === proposal && this.#edit === pending.edit &&
++      this.#searchMode === pending.previousMode && !this.#hiddenResults ? proposal : null;
++  }
++
++  /** Observe exact deselection and optional formatting before restoring the source mode once. */
++  commitBackgroundSourceRestoration(token, observation) {
++    const proposal = this.getBackgroundSourceRestoration(token);
++    if (!proposal || !observation) return null;
++    const pending = this.#oneOffBackgroundSource;
++    const { text, selectionStart, selectionEnd, selectionDirection, composing, searchMode, modeEntry,
++      pageProxyValid, oneOffSelected, persistedSearchTerms, untrimmedValue, protocolIsTrimmed, wwwIsTrimmed, valueIsTyped } = observation;
++    if (typeof persistedSearchTerms !== "boolean") throw new TypeError("Missing persisted-search observation");
++    const expected = proposal.editorWrite ?? proposal.edit;
++    if (text !== expected.text || selectionStart !== expected.selectionStart || selectionEnd !== expected.selectionEnd ||
++        selectionDirection !== expected.selectionDirection || composing !== false || pageProxyValid !== false || oneOffSelected !== false ||
++        !UrlbarShared.deepEqual(searchMode, proposal.searchMode) || !UrlbarShared.deepEqual(modeEntry, proposal.modeEntry) ||
++        (proposal.editorWrite && (untrimmedValue !== expected.untrimmedValue || protocolIsTrimmed !== expected.protocolIsTrimmed ||
++          wwwIsTrimmed !== expected.wwwIsTrimmed || valueIsTyped !== false)) || this.getBackgroundSourceRestoration(token) !== proposal) return null;
++    pending.attempted = true;
++    this.#searchMode = proposal.searchMode;
++    this.#edit = Object.freeze({ ...proposal.edit, text, selectionStart, selectionEnd, selectionDirection,
++      selectionRevision: proposal.edit.selectionRevision + 1 });
++    pending.edit = this.#edit;
++    if (proposal.editorWrite) { this.#typedText = text; this.#completion = null; this.#autofill = null; this.#placeholder = null; }
++    const current = () => !this.#closed && this.#isCurrent() && this.#oneOffBackgroundSource === pending &&
++      this.#edit === pending.edit && this.#searchMode === proposal.searchMode && !this.#hiddenResults;
++    const listener = this.#onModeStateChanged;
++    const notify = listener ? state => this.#notifyModeState(listener, state, {
++      reason: "one-off-background-source-restoration", token, commandToken: pending.commandToken, edit: pending.edit,
++    }) : null;
++    try {
++      return this.#queries.commitBackgroundSourceRestoration(pending.receipt, pending.description, proposal.modeEntry,
++        proposal.restoration, { persistedSearchTerms }, current, notify);
++    } finally {
++      if (this.#oneOffBackgroundSource === pending) this.#oneOffBackgroundSource = null;
 +    }
 +  }
 +
@@ -11730,6 +11840,7 @@ index 0000000000..728890f118
 +    const proposal = this.getOneOffTabActivation(token), pending = this.#oneOffTabContinuation;
 +    if (!proposal || !pending) return null;
 +    this.#oneOffTabContinuation = null;
++    this.#oneOffBackgroundSource = null;
 +    this.#oneOffDestinationQuery = null;
 +    const unchanged = () => !this.#closed && this.#edit === pending.edit &&
 +      this.#searchMode === pending.previousMode && !this.#hiddenResults && !this.#oneOffTabContinuation && !this.#oneOffCommand;
@@ -11829,6 +11940,7 @@ index 0000000000..728890f118
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
 +    this.#oneOffTabContinuation = null;
++    this.#oneOffBackgroundSource = null;
 +    this.#oneOffDestinationQuery = null;
 +    // Read host getters once before validation; recheck the command after them.
 +    modeEntry = modeEntry && this.#captureModeEntry({ untrimmedValue: modeEntry.untrimmedValue,
@@ -12648,6 +12760,7 @@ index 0000000000..728890f118
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
 +    this.#oneOffTabContinuation = null;
++    this.#oneOffBackgroundSource = null;
 +    this.#oneOffDestinationQuery = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
@@ -12698,6 +12811,7 @@ index 0000000000..728890f118
 +    this.#oneOffModeStateReady = null;
 +    this.#oneOffRequery = null;
 +    this.#oneOffTabContinuation = null;
++    this.#oneOffBackgroundSource = null;
 +    this.#oneOffDestinationQuery = null;
 +    this.#recordingClose = null;
 +    this.#closeRecordingReady = null;
@@ -12746,10 +12860,10 @@ index 0000000000..728890f118
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..e983da7402
+index 0000000000..33c5ba49c4
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,1419 @@
+@@ -0,0 +1,1460 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12794,6 +12908,7 @@ index 0000000000..e983da7402
 +  #oneOffModeReceipts = new WeakMap();
 +  #oneOffDispatches = new WeakMap();
 +  #oneOffNewTabReceipts = new WeakMap();
++  #backgroundSourceReceipts = new WeakMap();
 +  #oneOffTabTransferEligibility = new WeakMap();
 +  #destinationQueryAdmissions = new WeakMap();
 +
@@ -13486,7 +13601,47 @@ index 0000000000..e983da7402
 +    if (outcome.initialized && outcome.sourceModeNotified && receipt.requiresActivation && current()) {
 +      this.#oneOffNewTabReceipts.set(receipt, { prepared, parentReceipt: outcome, attempted: false });
 +    }
++    if (outcome.initialized && outcome.sourceModeNotified && receipt.inBackground && current()) {
++      this.#backgroundSourceReceipts.set(receipt, { prepared, parentReceipt: outcome, attempted: false });
++    }
 +    return receipt;
++  }
++
++  /** Read the selected source's owned confirmed state after a completed background command. */
++  describeBackgroundSourceRestoration(receipt) {
++    this.#check();
++    const record = this.#backgroundSourceReceipts.get(receipt);
++    if (!record || record.attempted || !record.prepared.isCurrent()) return null;
++    const stored = this.#controller.parentController.describeIndependentOneOffSourceRestoration(record.parentReceipt);
++    if (!stored) return null;
++    const searchMode = this.describeSearchModeRestoration(stored.searchMode);
++    const engineId = searchMode?.engineName ? this.#controller.engineStore.getEngineByName(searchMode.engineName)?.id ?? null : null;
++    return !record.attempted && record.prepared.isCurrent() ? Object.freeze({ ...stored,
++      requestedSearchMode: stored.searchMode, searchMode, engineId }) : null;
++  }
++
++  /** Consume background deselection once; a source without any mode needs no setter. */
++  commitBackgroundSourceRestoration(receipt, description, modeEntry, restoration, observation, isCurrent, onCommitted = null) {
++    const live = this.describeBackgroundSourceRestoration(receipt);
++    if (!live || !UrlbarShared.deepEqual(live, description) || !modeEntry || modeEntry.pageProxyValid ||
++        modeEntry.userTypedValue !== live.userTypedValue || modeEntry.untrimmedValue !== live.userTypedValue) return null;
++    const needsRestoration = !!live.searchMode && UrlbarSearchModeModel.modeEntryRestoresAutofill(
++      modeEntry.hasAutofillPlaceholder, modeEntry.userTypedValue);
++    if (!!restoration !== needsRestoration || (restoration && !UrlbarShared.deepEqual(restoration,
++        this.describeCompositionRestoration(modeEntry)))) return null;
++    const record = this.#backgroundSourceReceipts.get(receipt);
++    const current = () => !this.#closed && this.#isCurrent() && isCurrent() && record.prepared.isCurrent() &&
++      UrlbarShared.deepEqual(live.searchMode, this.describeSearchModeRestoration(live.requestedSearchMode)) &&
++      (!live.searchMode?.engineName || this.#controller.engineStore.getEngineByName(live.searchMode.engineName)?.id === live.engineId);
++    if (!current() || !UrlbarShared.deepEqual(live, this.describeBackgroundSourceRestoration(receipt))) return null;
++    record.attempted = true;
++    if (!live.restoreMode) return Object.freeze({ applied: true, current: true, modeRestored: false,
++      searchMode: null, userTypedValue: live.userTypedValue, sourceDeselectionPending: false });
++    const outcome = this.#controller.parentController.commitIndependentModeState(this.#context.browserId,
++      live.searchMode, { persistedSearchTerms: observation.persistedSearchTerms, engineId: live.engineId,
++        requestedSearchMode: live.requestedSearchMode, modeEntry, expectedStateToken: live.stateToken }, current, onCommitted);
++    return outcome ? Object.freeze({ ...outcome, modeRestored: !!outcome.applied,
++      sourceDeselectionPending: !outcome.applied }) : null;
 +  }
 +
 +  describeOneOffTabActivation(receipt) {
