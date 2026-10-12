@@ -1,0 +1,30 @@
+# Release build: configs/mozconfig plus the optimizations Mozilla's own Windows
+# release builds use. Select it with FENN_MOZCONFIG=mozconfig.release (see
+# scripts/mach.sh). It is several times slower to build than configs/mozconfig,
+# so keep that one for iteration.
+#
+# Every option of configs/mozconfig is repeated here rather than sourced, so the
+# file stands on its own; tests/test_mozconfig.py keeps the two in step.
+#
+# A separate object directory: switching between the two configurations must not
+# clobber either build. Packaging and launch scripts still read build/firefox.
+mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/../../build/firefox-release
+mk_add_options MOZ_MAKE_FLAGS=-j16
+ac_add_options --enable-application=browser
+ac_add_options --with-branding=browser/branding/fenn
+ac_add_options MOZ_APP_REMOTINGNAME=fenn
+ac_add_options --with-app-name=fenn
+ac_add_options --disable-updater
+ac_add_options --disable-crashreporter
+ac_add_options --enable-optimize
+ac_add_options --disable-debug-symbols
+# Release-engineering defaults instead of developer ones (on a Nightly pin
+# configure would otherwise choose developer options).
+ac_add_options --enable-release
+# Profile-guided optimization: mach builds an instrumented browser, runs
+# build/pgo/profileserver.py against it, then rebuilds with the profile. The
+# profile run opens a browser window, so it needs an interactive desktop.
+ac_add_options MOZ_PGO=1
+# Link-time optimization across the C++ and Rust boundary, as Mozilla ships.
+# The final xul.dll link is memory-heavy; lower -j above if the machine swaps.
+ac_add_options --enable-lto=cross

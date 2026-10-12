@@ -12,6 +12,10 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 PATCHES = ("0001-fenn-winui-pane.patch",)
+# Firefox directories the fast checks read beyond the patch targets. A sparse
+# verification checks out only these and each patched file's directory.
+SPARSE_DIRECTORIES = ("browser", "toolkit", "devtools/startup", "devtools/client/performance-new/popup",
+                      "third_party/node/node_modules/acorn")
 
 
 def git_env():
@@ -51,7 +55,19 @@ def inputs(root):
     return config, patches, hashes
 
 
-def prepare(root, reference=None):
+def sparse_directories(patches):
+    """Cone-mode directories: the checked Firefox areas plus every patch target's directory."""
+    directories = set(SPARSE_DIRECTORIES)
+    for patch in patches:
+        for line in patch.read_text(encoding="utf-8").splitlines():
+            if line.startswith(("--- a/", "+++ b/")):
+                parent = Path(line[6:]).parent.as_posix()
+                if parent != ".":
+                    directories.add(parent)
+    return sorted(directories)
+
+
+def prepare(root, reference=None, sparse=False):
     config, patches, hashes = inputs(root)
     target = root / "upstream/firefox"
     if os.path.lexists(target):
@@ -79,7 +95,17 @@ def prepare(root, reference=None):
             git(target, "remote", "add", "origin", config["repository"])
             phase = "fetching pinned commit"
             print(f"Fetching {config['commit']} (independent object database)", flush=True)
-            git(target, "fetch", "--no-tags", "--depth=1", "origin", config["commit"])
+            if sparse:
+                # Blobless: checkout fetches only the sparse files' contents.
+                git(target, "config", "remote.origin.promisor", "true")
+                git(target, "config", "remote.origin.partialclonefilter", "blob:none")
+                git(target, "fetch", "--no-tags", "--depth=1", "--filter=blob:none", "origin", config["commit"])
+            else:
+                git(target, "fetch", "--no-tags", "--depth=1", "origin", config["commit"])
+        if sparse:
+            phase = "restricting checkout"
+            print("Checking out only the directories the fast checks read", flush=True)
+            git(target, "sparse-checkout", "set", "--cone", *sparse_directories(patches))
         phase = "checking out pinned commit"
         print("Checking out Firefox source", flush=True)
         git(target, "checkout", "--detach", config["commit"])
@@ -114,6 +140,8 @@ def prepare(root, reference=None):
             index.unlink(missing_ok=True)
         report = {"firefox_commit": config["commit"], "patch_sha256": hashes,
                   "patched_tree": git(target, "write-tree"), "status": "passed"}
+        if sparse:
+            report["sparse_directories"] = sparse_directories(patches)
         (target / ".git/firefox-winui-bootstrap.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print("Pinned source and ordered patches verified. Changes remain staged in Firefox.", flush=True)
         return report
@@ -123,7 +151,7 @@ def prepare(root, reference=None):
                            "aside before retrying. No automatic reset, deletion or resume was attempted.") from error
 
 
-def verify(root, destination, reference=None):
+def verify(root, destination, reference=None, sparse=False):
     revision = git(root, "rev-parse", "HEAD")
     reserve(destination)
     report = {"project_commit": revision, "destination": str(destination), "status": "failed"}
@@ -134,7 +162,7 @@ def verify(root, destination, reference=None):
         git(destination, "config", "core.longpaths", "true")
         git(destination, "config", "core.autocrlf", "false")
         git(destination, "checkout", "--detach", revision)
-        report["source"] = prepare(destination, reference)
+        report["source"] = prepare(destination, reference, sparse)
         report_path.parent.mkdir(parents=True, exist_ok=True)
         env = git_env()
         env["FENN_SHARED_CACHE"] = os.environ.get("FENN_SHARED_CACHE") or str(root / ".cache")
@@ -168,15 +196,17 @@ def main():
     parser.add_argument("mode", choices=("prepare", "verify"))
     parser.add_argument("--reference", type=Path, help="Read pinned Git objects from an existing Firefox repository instead of the network")
     parser.add_argument("--destination", type=Path, help="New verification project directory (verify only)")
+    parser.add_argument("--sparse", action="store_true",
+                        help="Check out only the Firefox directories the fast checks read (verify only; not buildable)")
     args = parser.parse_args()
-    if args.mode == "prepare" and args.destination:
-        parser.error("--destination is only supported for verify; prepare uses this project's upstream/firefox")
+    if args.mode == "prepare" and (args.destination or args.sparse):
+        parser.error("--destination and --sparse are only supported for verify; prepare uses this project's upstream/firefox")
     try:
         if args.mode == "prepare":
             prepare(ROOT, args.reference)
         else:
             destination = (args.destination or ROOT / "artifacts" / f"reconstruct-{uuid.uuid4().hex[:8]}").absolute()
-            verify(ROOT, destination, args.reference)
+            verify(ROOT, destination, args.reference, args.sparse)
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"FAIL: {error}", file=sys.stderr)

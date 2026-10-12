@@ -64,6 +64,35 @@ class BootstrapTests(unittest.TestCase):
         bootstrap.prepare(self.project)
         self.assertEqual((self.project / "upstream/firefox/sample.txt").read_bytes(), b"second\n")
 
+    def test_sparse_checkout_holds_checked_areas_and_patch_targets(self):
+        for name in ("browser/kept.txt", "nested/target/patched.txt", "outside/skipped.txt"):
+            (self.source / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.source / name).write_bytes(b"base\n")
+        bootstrap.git(self.source, "add", ".")
+        self.commit(self.source)
+        bootstrap.git(self.source, "config", "uploadpack.allowFilter", "true")
+        config = self.project / "configs/toolchain-baseline.json"
+        data = json.loads(config.read_text())
+        data["firefox"]["commit"] = bootstrap.git(self.source, "rev-parse", "HEAD")
+        config.write_text(json.dumps(data))
+        (self.project / "patches" / bootstrap.PATCHES[0]).write_bytes(
+            b"diff --git a/nested/target/patched.txt b/nested/target/patched.txt\n"
+            b"--- a/nested/target/patched.txt\n+++ b/nested/target/patched.txt\n@@ -1 +1 @@\n-base\n+second\n")
+        full = self.root / "full"
+        (full / "configs").mkdir(parents=True)
+        (full / "configs/toolchain-baseline.json").write_bytes(config.read_bytes())
+        (full / "patches").mkdir()
+        (full / "patches" / bootstrap.PATCHES[0]).write_bytes((self.project / "patches" / bootstrap.PATCHES[0]).read_bytes())
+        report = bootstrap.prepare(self.project, sparse=True)
+        target = self.project / "upstream/firefox"
+        self.assertEqual((target / "nested/target/patched.txt").read_bytes(), b"second\n")
+        self.assertEqual((target / "browser/kept.txt").read_bytes(), b"base\n")
+        self.assertTrue((target / "sample.txt").exists())
+        self.assertFalse((target / "outside").exists())
+        self.assertIn("nested/target", report["sparse_directories"])
+        # The patched tree still covers the whole pinned revision.
+        self.assertEqual(report["patched_tree"], bootstrap.prepare(full)["patched_tree"])
+
     def test_existing_checkout_is_never_overwritten(self):
         target = self.project / "upstream/firefox"
         target.mkdir(parents=True)
