@@ -9644,6 +9644,129 @@ test('restart ports only record during an ending engagement and proposals die wi
   await g.port.startQuery({});assert.equal(restartRequests(g).length,1);
 });
 
+async function restrictFixture(){
+  const f=await editorFixture({browserId:42}),query=await f.editor.edit({},edit(1,'* words'));
+  const T=f.sandbox.UrlbarShared.RESULT_TYPE;
+  const result={id:1,type:T.RESTRICT,providerName:'UrlbarProviderRestrictKeywords',
+    payload:{keyword:f.sandbox.UrlbarShared.RESTRICT_TOKENS.BOOKMARK,providesSearchMode:true}};
+  query.results=[result];f.editor.publishPresentation(1,query.id,[result],true);
+  f.editor.startEngagement(1,query.id,{type:'input',timeStamp:1});
+  const calls=[];
+  f.parent.onBeforeSelection=()=>calls.push(['before']);f.parent.onSelection=()=>calls.push(['selected']);
+  f.parent.commitIndependentModeState=(_id,_mode,_obs,current)=>current()?{applied:true}:null;
+  f.parent.engagementEvent.record=(_e,details)=>{
+    details.isSessionOngoing=!!details.result.payload.providesSearchMode;
+    calls.push(['record',details.selType,details.searchString,details.searchMode]);
+  };
+  const event={type:'keydown',key:'Enter',timeStamp:2};
+  return {...f,query,result,calls,event,begin:(extra={})=>f.editor.beginResultModeApplication(1,query.id,result,
+    {checkValue:false,startQuery:true,activation:{event},...extra})};
+}
+
+test('restrict-keyword picks apply the mode, then record one ongoing engagement before the query',async()=>{
+  const f=await restrictFixture(),p=f.begin();
+  assert.ok(p);assert.equal(p.searchMode.restrictType,'keyword');
+  assert.deepEqual(f.calls,[['before']]);
+  assert.equal(f.editor.acknowledgeResultModeApplication(p.token,observedMode(p)),true);
+  assert.deepEqual(f.calls,[['before'],['selected']]);
+  const out=f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false});
+  assert.equal(out.applied,true);assert.equal(out.engagement.recorded,true);assert.equal(out.engagement.sessionOngoing,true);
+  assert.deepEqual(f.calls.at(-1),['record','restrict_keyword_bookmarks','* words',null]);
+  assert.equal(f.calls.filter(c=>c[0]==='record').length,1);
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),null);
+  const q=await f.editor.requeryAfterModeApplication(p.token,{browser:{userContextId:0,currentPage:'https://source.test/'},searchMode:p.searchMode});
+  assert.ok(q);f.editor.close();
+});
+
+test('mode confirmation without an activation records nothing and activation is limited to restrict results',async()=>{
+  const f=await restrictFixture(),p=f.begin({activation:null});
+  f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
+  const out=f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false});
+  assert.equal(out.applied,true);assert.equal(out.engagement,undefined);
+  assert.equal(f.calls.filter(c=>c[0]==='record').length,0);f.editor.close();
+  const g=await modeWriteFixture({activation:{event:{type:'keydown',key:'Enter',timeStamp:2}}});
+  assert.equal(g.proposal,null);g.editor.close();
+  const h=await restrictFixture();
+  assert.throws(()=>h.begin({activation:{event:{type:'mousemove',timeStamp:1}}}),/activation event/);h.editor.close();
+});
+
+test('restrict engagement is revoked by a stale editor and a failing recorder cannot repeat',async()=>{
+  const f=await restrictFixture(),p=f.begin();
+  f.editor.acknowledgeResultModeApplication(p.token,observedMode(p));
+  f.editor.select(1,0,0);
+  assert.equal(f.editor.commitAcknowledgedModeState(p.token,{persistedSearchTerms:false}),null);
+  assert.equal(f.calls.filter(c=>c[0]==='record').length,0);f.editor.close();
+  const g=await restrictFixture(),q=g.begin();
+  g.editor.acknowledgeResultModeApplication(q.token,observedMode(q));
+  g.parent.engagementEvent.record=()=>{throw Error('record failure');};
+  assert.throws(()=>g.editor.commitAcknowledgedModeState(q.token,{persistedSearchTerms:false}),/record failure/);
+  assert.equal(g.editor.commitAcknowledgedModeState(q.token,{persistedSearchTerms:false}),null);g.editor.close();
+});
+
+async function omniboxFixture({where='current',keyword='nox',content='nox words'}={}){
+  const f=await urlTabActivationFixture({type:'URL',where});
+  const T=f.sandbox.UrlbarShared.RESULT_TYPE;
+  f.result.type=T.OMNIBOX;f.result.payload={keyword,content,title:'t'};
+  const entered=[];
+  f.source.p.browserWindow.gBrowser.tabContainer={addEventListener(){},removeEventListener(){}};
+  f.parent.prepareOmniboxEntered=(...args)=>f.source.p.prepareOmniboxEntered(...args);
+  f.source.lazy.ExtensionSearchHandler={handleInputEntered:(...args)=>entered.push(args)};
+  f.parent.engagementEvent.record=(_e,details)=>f.calls.push(['record',details.selType,details.searchString]);
+  const click={type:'keydown',key:'Enter',timeStamp:3,where};
+  const begin=()=>f.editor.beginResultOmnibox(1,f.q.id,f.result,click,f.options);
+  return {...f,entered,click,begin};
+}
+
+test('omnibox entries record, restore the source, then notify the extension once with its destination',async()=>{
+  for(const where of ['current','tab','tabshifted','window']){
+    const f=await omniboxFixture({where}),proposal=f.begin();
+    assert.ok(proposal,where);
+    const revert=f.editor.prepareOneOffExternalRevert(proposal.token,f.click,{persistedSearchTerms:false,focused:true});
+    assert.ok(revert,where);
+    assert.deepEqual(f.calls.find(c=>c[0]==='record'),['record','extension','typed']);
+    assert.equal(f.entered.length,0);assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    assert.equal(f.entered.length,0);
+    const outcome=f.editor.commitOneOffExternalNavigation(revert.token);
+    assert.equal(outcome.attempted,true,where);
+    assert.deepEqual(f.entered,[['nox','nox words',where]]);
+    assert.equal(f.calls.filter(c=>c[0]==='notify').length,0,'omnibox has no navigation notification');
+    assert.equal(f.source.calls.length,0);assert.equal(f.calls.filter(c=>c[0]==='history').length,0);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);f.editor.close();
+  }
+});
+
+test('omnibox entries refuse other result types, unsupported destinations and stale authority',async()=>{
+  const a=await omniboxFixture();a.result.type=a.sandbox.UrlbarShared.RESULT_TYPE.URL;assert.equal(a.begin(),null);a.editor.close();
+  const b=await omniboxFixture({where:'save'}),pb=b.begin();
+  assert.equal(b.editor.prepareOneOffExternalRevert(pb.token,b.click,{persistedSearchTerms:false,focused:true}),null);
+  assert.equal(b.calls.filter(c=>c[0]==='record').length,0);b.editor.close();
+  for(const phase of ['restore','dispatch'])for(const action of ['document','edit','typed','payload']){
+    const f=await omniboxFixture(),proposal=f.begin();
+    const revert=f.editor.prepareOneOffExternalRevert(proposal.token,f.click,{persistedSearchTerms:false,focused:true});
+    assert.ok(revert);
+    if(phase==='dispatch')assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    if(action==='document')f.source.browser.browsingContext.currentWindowGlobal={};
+    if(action==='edit')f.editor.cancel();
+    if(action==='typed')f.source.browser.userTypedValue='new edit';
+    if(action==='payload')f.result.payload.content='changed';
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),false,phase+action);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token)?.attempted??false,false,phase+action);
+    assert.equal(f.entered.length,0,phase+action);f.editor.close();
+  }
+});
+
+test('omnibox parent preparation validates its shape',async()=>{
+  const f=await urlTabActivationFixture({type:'URL'}),p=f.source.p,t=f.source.stateToken;
+  const ok={omnibox:true,keyword:'nox',content:'x',where:'current',browserId:42};
+  const token=p.prepareOmniboxEntered(ok,t);assert.ok(token);p.discardCurrentLoad(token);
+  for(const bad of [{...ok,omnibox:false},{...ok,keyword:''},{...ok,content:5},{...ok,where:'save'},
+    {...ok,url:'https://a.test/'},{...ok,loadRequest:{urlLoad:{url:'https://a.test/'}}},{...ok,switchTab:true},{...ok,revertOnly:true}]){
+    assert.throws(()=>p.prepareOmniboxEntered(bad,t),/Invalid|Changed/,JSON.stringify(bad));
+  }
+  assert.throws(()=>p.prepareOmniboxEntered(ok,null),/Invalid/);f.editor.close();
+});
+
 test('private opener checks restored source again after preparation and focus callbacks',()=>{
   for(const stage of ['prepare','focus']){
     const f=privateParentFixture(),token=f.p.prepareExternalSearchLoad(f.privateData,f.stateToken);

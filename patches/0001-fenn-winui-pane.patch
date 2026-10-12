@@ -935,10 +935,16 @@ index ce4dc0f5e3..dbaa9db04a 100644
    "flightStatus.featureGate": {
      defaultValues: {
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6..ccf60b93fa 100644
+index ba254af0c6..16dca05b1f 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
-@@ -25,6 +25,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
+@@ -20,11 +20,19 @@ const lazy = {};
+ 
+ ChromeUtils.defineESModuleGetters(lazy, {
+   AboutNewTab: "resource:///modules/AboutNewTab.sys.mjs",
++  ExtensionSearchHandler: "resource://gre/modules/ExtensionSearchHandler.sys.mjs",
+   AppProvidedConfigEngine:
+     "moz-src:///toolkit/components/search/ConfigSearchEngine.sys.mjs",
    ASRouter: "resource:///modules/asrouter/ASRouter.sys.mjs",
    ConfigSearchEngine:
      "moz-src:///toolkit/components/search/ConfigSearchEngine.sys.mjs",
@@ -952,7 +958,7 @@ index ba254af0c6..ccf60b93fa 100644
    BrowserSearchTelemetry:
      "moz-src:///browser/components/search/BrowserSearchTelemetry.sys.mjs",
    ContainerCreationPanel:
-@@ -114,6 +121,12 @@ export class UrlbarParentController {
+@@ -114,6 +122,12 @@ export class UrlbarParentController {
     * @type {UrlbarChildControllerProxy | UrlbarChildController}
     */
    #child = null;
@@ -965,7 +971,7 @@ index ba254af0c6..ccf60b93fa 100644
  
    // The owning JSWindowActor, used to resolve the chrome window parent-side
    // (see `browserWindow`). Unlike the input and view, the browser window is a
-@@ -171,13 +184,19 @@ export class UrlbarParentController {
+@@ -171,13 +185,19 @@ export class UrlbarParentController {
      return AppConstants.platform;
    }
  
@@ -986,7 +992,7 @@ index ba254af0c6..ccf60b93fa 100644
    }
  
    /**
-@@ -607,9 +626,15 @@ export class UrlbarParentController {
+@@ -607,9 +627,15 @@ export class UrlbarParentController {
     *   not added to form history. If this is false but the current window
     *   is private, it's not added either.
     */
@@ -1004,7 +1010,7 @@ index ba254af0c6..ccf60b93fa 100644
    }
  
    /**
-@@ -711,6 +736,17 @@ export class UrlbarParentController {
+@@ -711,6 +737,17 @@ export class UrlbarParentController {
      Glean.urlbarZeroprefix2[kind][this.sapName].add(1);
    }
  
@@ -1022,7 +1028,7 @@ index ba254af0c6..ccf60b93fa 100644
    /**
     * Runs the single-word keyword URI fixup DNS check for a search picked in the
     * address bar. When a single word is turned directly into a search (bypassing
-@@ -723,11 +759,20 @@ export class UrlbarParentController {
+@@ -723,11 +760,20 @@ export class UrlbarParentController {
     *   The string being searched.
     * @param {?number} browserId
     *   The browser the search loads into, or null for the selected browser.
@@ -1047,7 +1053,7 @@ index ba254af0c6..ccf60b93fa 100644
      let fixupInfo = lazy.UrlbarUtils.getURIFixupInfo(
        searchString,
        this.isPrivate
-@@ -735,6 +780,7 @@ export class UrlbarParentController {
+@@ -735,6 +781,7 @@ export class UrlbarParentController {
      if (fixupInfo) {
        this.browserWindow.gKeywordURIFixup.check(browser, fixupInfo);
      }
@@ -1055,7 +1061,7 @@ index ba254af0c6..ccf60b93fa 100644
    }
  
    /**
-@@ -999,6 +1045,930 @@ export class UrlbarParentController {
+@@ -999,6 +1046,948 @@ export class UrlbarParentController {
      }
    }
  
@@ -1219,6 +1225,11 @@ index ba254af0c6..ccf60b93fa 100644
 +    return this.#prepareResultLoad(switchData, sourceStateToken, true, null, false, true);
 +  }
 +
++  /** An extension omnibox entry restores the source, then notifies the extension's input handler once. */
++  prepareOmniboxEntered(omniboxData, sourceStateToken) {
++    return this.#prepareResultLoad(omniboxData, sourceStateToken, true, null, false, false, false, true);
++  }
++
 +  /** A result with no load restores the source, then records its terminal engagement without dispatching. */
 +  prepareTerminalRevert(revertData, sourceStateToken) {
 +    return this.#prepareResultLoad(revertData, sourceStateToken, true, null, false, false, true);
@@ -1229,7 +1240,7 @@ index ba254af0c6..ccf60b93fa 100644
 +    return this.#prepareResultLoad(loadData, sourceStateToken, true, null, true);
 +  }
 +
-+  #prepareResultLoad(loadData, sourceStateToken = null, externalSearch = false, tabSearchData = null, urlLoad = false, switchTab = false, revertOnly = false) {
++  #prepareResultLoad(loadData, sourceStateToken = null, externalSearch = false, tabSearchData = null, urlLoad = false, switchTab = false, revertOnly = false, omnibox = false) {
 +    this.#currentLoad = null;
 +    this.#discardCurrentLoadRecovery();
 +    const generation = ++this.#currentLoadGeneration;
@@ -1255,7 +1266,11 @@ index ba254af0c6..ccf60b93fa 100644
 +      (data.tabGroup === undefined || data.tabGroup === null || typeof data.tabGroup === "string");
 +    const validRevert = data => data?.revertOnly === true && data.url === undefined && !data.loadRequest &&
 +      data.where === undefined && data.switchTab === undefined;
-+    const validExternal = data => !!sourceStateToken && (revertOnly ? validRevert(data) : switchTab ? validSwitch(data) : urlLoad
++    const validOmnibox = data => data?.omnibox === true && typeof data.keyword === "string" && !!data.keyword &&
++      data.keyword.length <= 256 && typeof data.content === "string" && data.content.length <= 4096 &&
++      ["current", "tab", "tabshifted", "window"].includes(data.where) && !data.loadRequest && data.url === undefined &&
++      data.switchTab === undefined && data.revertOnly === undefined;
++    const validExternal = data => !!sourceStateToken && (omnibox ? validOmnibox(data) : revertOnly ? validRevert(data) : switchTab ? validSwitch(data) : urlLoad
 +      ? typeof data?.loadRequest?.urlLoad?.url === "string" && !data.loadRequest.engineSearch &&
 +        tabSearchData === null && (validTab(data) || validWindow(data))
 +      : !!data?.loadRequest?.engineSearch &&
@@ -1342,7 +1357,9 @@ index ba254af0c6..ccf60b93fa 100644
 +    const targetCurrent = browser => current(browser) &&
 +      (!pending.sourceStateToken || (pending.sourceCurrent?.() &&
 +        lazy.independentUrlbarBrowserState.isCommitted(browser, pending.sourceStateToken)));
-+    const dispatch = () => pending.data.revertOnly
++    const dispatch = () => pending.data.omnibox
++      ? this.#dispatchOmnibox(pending.data, targetCurrent)
++      : pending.data.revertOnly
 +      ? this.#dispatchRevertOnly(pending.data, targetCurrent)
 +      : pending.data.switchTab ? this.#dispatchTabSwitch(pending.data, targetCurrent)
 +        : this.#loadURL(pending.data, targetCurrent);
@@ -1366,6 +1383,13 @@ index ba254af0c6..ccf60b93fa 100644
 +      browser.lastLocationChange === pending.epoch &&
 +      (!pending.sourceStateToken || (!!pending.sourceCurrent?.() &&
 +        lazy.independentUrlbarBrowserState.isCommitted(browser, pending.sourceStateToken)));
++  }
++
++  #dispatchOmnibox(data, targetIsCurrent) {
++    const browser = this.resolveTargetBrowser(data.browserId);
++    if (!browser || !targetIsCurrent(browser)) return { reverted: false, browserId: data.browserId, attempted: false };
++    lazy.ExtensionSearchHandler.handleInputEntered(data.keyword, data.content, data.where);
++    return { reverted: false, browserId: data.browserId, attempted: true };
 +  }
 +
 +  #dispatchRevertOnly(data, targetIsCurrent) {
@@ -1986,7 +2010,7 @@ index ba254af0c6..ccf60b93fa 100644
    /**
     * Loads a URL in the browser window resolved from the actor. The content
     * child supplies the serializable load parameters; the parent fills in the
-@@ -1027,9 +1997,15 @@ export class UrlbarParentController {
+@@ -1027,9 +2016,15 @@ export class UrlbarParentController {
     *   browser to hand `focusBrowser` on the deferred-Enter keyup -- a
     *   content-process input can't resolve the selected browser itself.
     */
@@ -2003,7 +2027,7 @@ index ba254af0c6..ccf60b93fa 100644
      if (!browser) {
        // The tab was closed before the load got here; don't hand its load to
        // whichever tab is selected now.
-@@ -1040,8 +2016,9 @@ export class UrlbarParentController {
+@@ -1040,8 +2035,9 @@ export class UrlbarParentController {
      }
  
      let { url, postData } = lazy.UrlbarUtils.loadRequestToUrl(loadRequest);
@@ -2014,7 +2038,7 @@ index ba254af0c6..ccf60b93fa 100644
      }
      params.postData = postData;
  
-@@ -1055,6 +2032,7 @@ export class UrlbarParentController {
+@@ -1055,6 +2051,7 @@ export class UrlbarParentController {
        });
      }
  
@@ -2022,7 +2046,7 @@ index ba254af0c6..ccf60b93fa 100644
      if (where == "current") {
        params.targetBrowser = browser;
      } else {
-@@ -1071,6 +2049,7 @@ export class UrlbarParentController {
+@@ -1071,6 +2068,7 @@ export class UrlbarParentController {
        browser.focus();
      }
  
@@ -2030,7 +2054,7 @@ index ba254af0c6..ccf60b93fa 100644
      try {
        this.browserWindow.openTrustedLinkIn(url, where, params);
      } catch (ex) {
-@@ -1079,9 +2058,10 @@ export class UrlbarParentController {
+@@ -1079,9 +2077,10 @@ export class UrlbarParentController {
        return {
          reverted: ex.result != Cr.NS_ERROR_LOAD_SHOWED_ERRORPAGE,
          browserId: browser.browserId,
@@ -2042,7 +2066,7 @@ index ba254af0c6..ccf60b93fa 100644
    }
  
    /**
-@@ -1292,10 +2272,22 @@ export class UrlbarParentController {
+@@ -1292,10 +2291,22 @@ export class UrlbarParentController {
      this.notify(
        lazy.UrlbarShared.NOTIFICATIONS.QUERY_RESULT_REMOVED,
        result.id,
@@ -2066,7 +2090,7 @@ index ba254af0c6..ccf60b93fa 100644
    /**
     * Set the query context cache.
     *
-@@ -1332,6 +2324,7 @@ export class UrlbarParentController {
+@@ -1332,6 +2343,7 @@ export class UrlbarParentController {
     * @param {object} params Parameters to pass with the notification.
     */
    notify(name, ...params) {
@@ -2074,7 +2098,7 @@ index ba254af0c6..ccf60b93fa 100644
      if (this.#child.isProxy === true) {
        this.#child.notifyFromWire(
          name,
-@@ -1355,6 +2348,10 @@ export class UrlbarParentController {
+@@ -1355,6 +2367,10 @@ export class UrlbarParentController {
     * it once the input it serves is gone.
     */
    destroy() {
@@ -2085,7 +2109,7 @@ index ba254af0c6..ccf60b93fa 100644
      if (this.#engineObserverRegistered) {
        Services.obs.removeObserver(this, "browser-search-engine-modified");
        this.#engineObserverRegistered = false;
-@@ -1386,7 +2383,7 @@ export class UrlbarParentController {
+@@ -1386,7 +2402,7 @@ export class UrlbarParentController {
    }
  
    async initEngineStore() {
@@ -2094,7 +2118,7 @@ index ba254af0c6..ccf60b93fa 100644
        return;
      }
      this.#engineStoreInitStarted = true;
-@@ -1394,10 +2391,11 @@ export class UrlbarParentController {
+@@ -1394,10 +2410,11 @@ export class UrlbarParentController {
        try {
          await lazy.SearchService.init();
        } catch {
@@ -2107,7 +2131,7 @@ index ba254af0c6..ccf60b93fa 100644
      let engines = lazy.SearchService.visibleEngines;
      let engineInfos = engines.map(engineToEngineInfo);
      let defaultEngine = this.isPrivate
-@@ -1415,7 +2413,7 @@ export class UrlbarParentController {
+@@ -1415,7 +2432,7 @@ export class UrlbarParentController {
    }
  
    #topSitesListener = () => {
@@ -2116,7 +2140,7 @@ index ba254af0c6..ccf60b93fa 100644
    };
  
    QueryInterface = ChromeUtils.generateQI([
-@@ -1437,7 +2435,7 @@ export class UrlbarParentController {
+@@ -1437,7 +2454,7 @@ export class UrlbarParentController {
          );
          break;
        case "intl:app-locales-changed":
@@ -2125,7 +2149,7 @@ index ba254af0c6..ccf60b93fa 100644
          break;
      }
    };
-@@ -1727,8 +2725,12 @@ export class TelemetryEvent {
+@@ -1727,8 +2744,12 @@ export class TelemetryEvent {
     *   A DOM event. Note: event can be null, that usually happens for paste&go
     *   or drop&go. If there's no _startEventInfo this is a no-op.
     * @param {ActionDetails} details
@@ -2139,7 +2163,7 @@ index ba254af0c6..ccf60b93fa 100644
      // Prevent re-entering `record()`. This can happen because
      // `#internalRecord()` will notify an engagement to the provider, that may
      // execute an action blurring the input field. Then both an engagement
-@@ -1743,7 +2745,7 @@ export class TelemetryEvent {
+@@ -1743,7 +2764,7 @@ export class TelemetryEvent {
      // This should never throw, or it may break the urlbar.
      try {
        this.#handlingRecord = true;
@@ -2148,7 +2172,7 @@ index ba254af0c6..ccf60b93fa 100644
      } catch (ex) {
        console.error("Could not record event: ", ex);
      } finally {
-@@ -1769,7 +2771,7 @@ export class TelemetryEvent {
+@@ -1769,7 +2790,7 @@ export class TelemetryEvent {
     * @param {Event} event
     * @param {ActionDetails} details
     */
@@ -2157,7 +2181,7 @@ index ba254af0c6..ccf60b93fa 100644
      let snapshot = lazy.UrlbarTelemetryUtils.collectSnapshot(
        event,
        details,
-@@ -1780,12 +2782,13 @@ export class TelemetryEvent {
+@@ -1780,12 +2801,13 @@ export class TelemetryEvent {
      }
  
      // `details.isSessionOngoing` was set by collectSnapshot() above.
@@ -2173,7 +2197,7 @@ index ba254af0c6..ccf60b93fa 100644
          this.#previousSearchWordsSet
        );
      this.#previousSearchWordsSet = previousSearchWords;
-@@ -1796,7 +2799,7 @@ export class TelemetryEvent {
+@@ -1796,7 +2818,7 @@ export class TelemetryEvent {
        ? lazy.UrlbarTelemetryUtils.buildRecordedDisableCandidate(
            snapshot,
            engagementData,
@@ -2182,7 +2206,7 @@ index ba254af0c6..ccf60b93fa 100644
            this.#previousSearchWordsSet
          )
        : null;
-@@ -1864,17 +2867,16 @@ export class TelemetryEvent {
+@@ -1864,17 +2886,16 @@ export class TelemetryEvent {
    }
  
    /**
@@ -2204,7 +2228,7 @@ index ba254af0c6..ccf60b93fa 100644
      );
    }
  
-@@ -2009,158 +3011,6 @@ export class TelemetryEvent {
+@@ -2009,158 +3030,6 @@ export class TelemetryEvent {
      }
    }
  
@@ -2363,7 +2387,7 @@ index ba254af0c6..ccf60b93fa 100644
    /**
     * Retrieves available semantic search sources.
     * Ensure it is the provider initializing the semantic manager, since it
-@@ -2521,17 +3371,27 @@ export class TelemetryEvent {
+@@ -2521,17 +3390,27 @@ export class TelemetryEvent {
     *   A DOM event.
     * @param {ActionDetails} details
     *   An object describing interaction details.
@@ -2400,7 +2424,7 @@ index ba254af0c6..ccf60b93fa 100644
      );
    }
  
-@@ -2548,14 +3408,19 @@ export class TelemetryEvent {
+@@ -2548,14 +3427,19 @@ export class TelemetryEvent {
    async startTrackingBuiltBounce(payload) {
      let { built, searchSource, browserId } = payload;
      let sap = this.#searchSourceToSap(searchSource);
@@ -2426,7 +2450,7 @@ index ba254af0c6..ccf60b93fa 100644
    }
  
    /**
-@@ -2581,39 +3446,4 @@ export class TelemetryEvent {
+@@ -2581,39 +3465,4 @@ export class TelemetryEvent {
      gTrackedBounces.set(browser, { startTime: Date.now(), record });
    }
  
@@ -10122,10 +10146,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..2df6f5df2a
+index 0000000000..1fae5d78c7
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,4135 @@
+@@ -0,0 +1,4181 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11203,8 +11227,16 @@ index 0000000000..2df6f5df2a
 +
 +  /** Propose a result mode and editor text as one observed host operation. */
 +  beginResultModeApplication(revision, queryId, result, { checkValue = true,
-+    startQuery = true, entry = null, modeEntry = undefined } = {}) {
++    startQuery = true, entry = null, modeEntry = undefined, activation = null } = {}) {
 +    this.#check();
++    if (activation !== null) {
++      if (!UrlbarQueryModel.isResultActivationEvent(activation?.event)) {
++        throw new TypeError("Invalid mode activation event");
++      }
++      // Only restrict-keyword picks have an activation engagement here; other
++      // mode results record through their own handoffs.
++      if (result?.type !== UrlbarShared.RESULT_TYPE.RESTRICT || !result.payload?.providesSearchMode) return null;
++    }
 +    modeEntry = this.#captureModeEntry(modeEntry);
 +    if (this.#hiddenResults) throw new Error("Hidden result mode application");
 +    this.#modeApplication = null;
@@ -11232,7 +11264,8 @@ index 0000000000..2df6f5df2a
 +    const proposal = Object.freeze({ ...description, token: request.token, edit: request.edit, modeEntry,
 +      pageProxyValid: modeEntry ? false : undefined, selectionStart: description.value.length, selectionEnd: description.value.length,
 +      selectionDirection: "none" });
-+    this.#modeApplication = { proposal, description, options };
++    this.#modeApplication = { proposal, description, options,
++      activation: activation === null ? null : Object.freeze({ event: activation.event, searchString: this.#typedText }) };
 +    return proposal;
 +  }
 +
@@ -11329,7 +11362,7 @@ index 0000000000..2df6f5df2a
 +    // the follow-up query; a failing provider must not leave it dispatchable.
 +    const ready = { token, edit: this.#edit, generation: this.#selectionGeneration,
 +      queryId: request.queryId, result: request.result, proposal,
-+      description: pending.description ?? proposal, options: pending.options };
++      description: pending.description ?? proposal, options: pending.options, activation: pending.activation ?? null };
 +    this.#modeStateReady = ready;
 +    try {
 +      const acknowledged = this.#queries.acknowledgeResultSelection(token);
@@ -11363,9 +11396,17 @@ index 0000000000..2df6f5df2a
 +        token, queryId: pending.queryId, edit: pending.edit });
 +    } : null;
 +    try {
-+      return this.#queries.commitAcknowledgedModeState(pending.queryId, pending.result,
++      const outcome = this.#queries.commitAcknowledgedModeState(pending.queryId, pending.result,
 +        pending.description, { ...pending.options, value: pending.proposal.edit.text },
 +        { persistedSearchTerms, modeEntry: pending.proposal.modeEntry }, current, notify);
++      if (!pending.activation || !outcome?.applied) return outcome;
++      if (!current()) return null;
++      // The pick's engagement follows the committed mode and keeps the session ongoing for the query.
++      const engagement = this.#queries.recordAliasModeEngagement(pending.queryId, pending.result,
++        pending.activation.event, Object.freeze({ searchString: pending.activation.searchString, searchMode: null,
++          isHandoff: false, persistedSearchTerms }), current);
++      if (!engagement?.recorded || !engagement.sessionOngoing || !current()) return null;
++      return Object.freeze({ ...outcome, engagement });
 +    } finally {
 +      if (this.#committingModeState === pending) this.#committingModeState = null;
 +    }
@@ -12006,6 +12047,33 @@ index 0000000000..2df6f5df2a
 +    return this.#queries.describeResultNavigation(queryId, result, event, { ...options, searchString: this.#typedText });
 +  }
 +
++  /** Begin an extension omnibox entry: record, restore the source, then notify the extension once. */
++  beginResultOmnibox(revision, queryId, result, event, options = {}) {
++    this.#check();
++    if (!this.#edit || this.#edit.revision !== revision || this.#edit.composing || this.#hiddenResults ||
++        this.#searchMode !== null || result?.type !== UrlbarShared.RESULT_TYPE.OMNIBOX ||
++        !this.#queries.ownsVisibleResult(queryId, result) || !UrlbarQueryModel.isResultActivationEvent(event)) return null;
++    const facts = Object.freeze({ selectedTabIsEmpty: options.selectedTabIsEmpty,
++      originalUntrimmedValue: options.originalUntrimmedValue, searchString: this.#typedText, searchMode: null,
++      isHandoff: options.isHandoff ?? false, persistedSearchTerms: options.persistedSearchTerms ?? false });
++    const external = { receipt: Object.freeze({ queryId, engineId: null, navigation: Object.freeze({ kind: "omnibox" }) }),
++      result, omnibox: true, acknowledged: true, engineName: undefined, payload: structuredClone(result.payload), facts,
++      edit: this.#edit, mode: this.#searchMode, generation: this.#selectionGeneration, phase: "input", load: null };
++    this.#discardExternalNavigationActivation();
++    this.#closeRequest = this.#selectionRequest = this.#resultPreview = this.#modeApplication = null;
++    this.#modeRequery = this.#modeStateReady = this.#searchCommandRequest = this.#searchCommandRequery = null;
++    this.#modeRestoreRequest = this.#modeExitRequest = this.#modeExitRequery = null;
++    this.#navigationWrite = this.#navigationReady = this.#navigationRecovery = this.#navigationActivation = null;
++    this.#oneOffCommand = null;
++    this.#aliasModeActivation = null;
++    this.#externalNavigationActivation = external;
++    this.#completion = this.#autofill = this.#placeholder = null;
++    external.proposal = Object.freeze({ token: Object.freeze({}), phase: "input", value: this.#edit.text, searchMode: null,
++      selectionStart: this.#edit.selectionStart, selectionEnd: this.#edit.selectionEnd,
++      selectionDirection: this.#edit.selectionDirection, pageProxyValid: false });
++    return external.proposal;
++  }
++
 +  /** Begin Help for a visible result: record, restore the source, then load its URL once. */
 +  beginResultHelp(revision, queryId, result, event, options = {}) {
 +    this.#check();
@@ -12469,7 +12537,9 @@ index 0000000000..2df6f5df2a
 +      { reason: "external-result-input", token, queryId: pending.receipt.queryId, edit: pending.edit }) : null;
 +    const state = this.#queries.commitResultInputState({ persistedSearchTerms }, current, notify);
 +    if (!state?.applied || !current()) return null;
-+    pending.load = pending.help
++    pending.load = pending.omnibox
++      ? this.#queries.prepareExternalOmnibox(pending.receipt.queryId, pending.result, event, pending.facts, state.stateToken, current)
++      : pending.help
 +      ? this.#queries.prepareExternalHelp(pending.receipt.queryId, pending.result, event, pending.facts, state.stateToken, current)
 +      : pending.switching
 +      ? this.#queries.prepareExternalDeferredActivation(pending.receipt.queryId, pending.result, event,
@@ -14263,10 +14333,10 @@ index 0000000000..2df6f5df2a
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..847af804ad
+index 0000000000..2baa9f1d5c
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,2107 @@
+@@ -0,0 +1,2141 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14973,7 +15043,7 @@ index 0000000000..847af804ad
 +    }
 +    try {
 +      if (!pending.current()) return null;
-+      pending.parent.notifyStartNavigation(pending.result);
++      if (!pending.silent) pending.parent.notifyStartNavigation(pending.result);
 +      return pending.current() ? pending.parent.commitCurrentLoad(pending.token, pending.current) : null;
 +    } finally { pending.parent.discardCurrentLoad(pending.token); }
 +  }
@@ -15040,6 +15110,39 @@ index 0000000000..847af804ad
 +    return Object.freeze({ recorded: true, sessionOngoing: ongoing, command: action.command, openedPreferences: managed });
 +  }
 +
++  /** An extension omnibox entry: record, restore the source, then hand its content to the extension once. */
++  prepareExternalOmnibox(queryId, result, event, options, sourceStateToken, isEditorCurrent) {
++    this.#check();
++    const payload = result?.payload;
++    if (result?.type !== UrlbarShared.RESULT_TYPE.OMNIBOX || typeof payload?.keyword !== "string" ||
++        typeof payload.content !== "string" || !this.#engagementActive || this.#endingEngagement ||
++        !this.#context.browserId || !UrlbarQueryModel.isResultActivationEvent(event)) return null;
++    const where = this.#controller.whereToOpen(event, { selectedTabIsEmpty: options.selectedTabIsEmpty });
++    if (!["current", "tab", "tabshifted", "window"].includes(where)) return null;
++    const snapshot = structuredClone(payload), query = this.#query;
++    const parent = this.#controller.parentController;
++    const current = () => !this.#closed && this.#isCurrent() && isEditorCurrent() &&
++      UrlbarShared.deepEqual(result.payload, snapshot) && isEditorCurrent();
++    const queryCurrent = () => current() && this.#query === query && this.ownsResult(queryId, result) &&
++      this.#controller.resultsOpen && this.#controller.visibleResults.includes(result);
++    if (!queryCurrent()) return null;
++    const token = parent.prepareOmniboxEntered({ omnibox: true, keyword: snapshot.keyword, content: snapshot.content,
++      where, browserId: this.#context.browserId }, sourceStateToken);
++    if (!token) return null;
++    let recovery = null;
++    try {
++      const recorded = this.#recordResultEngagement(queryId, result, event, options, () => {
++        if (queryCurrent()) recovery = parent.prepareExternalSourceRevert(token);
++      }, false, false, UrlbarShared.RESULT_TYPE.OMNIBOX);
++      if (!recorded || !recovery || !current()) return null;
++      const receipt = Object.freeze({ token: Object.freeze({}), recovery });
++      this.#externalResultLoads.set(receipt, { token, parent, current, result, used: false, silent: true });
++      return receipt;
++    } finally {
++      if (!recovery || !current()) parent.discardCurrentLoad(token);
++    }
++  }
++
 +  /**
 +   * Help: record the command, then open its URL in a tab or window after the source
 +   * is restored, with the same pinned capability as other external loads.
@@ -15087,7 +15190,8 @@ index 0000000000..847af804ad
 +  recordAliasModeEngagement(queryId, result, event, facts, isCurrent) {
 +    this.#check();
 +    if (!this.#engagementActive || this.#endingEngagement || !isCurrent() || this.#aliasModeEngagements.has(result) ||
-+        result?.type !== UrlbarShared.RESULT_TYPE.SEARCH || !result.payload.providesSearchMode ||
++        ![UrlbarShared.RESULT_TYPE.SEARCH, UrlbarShared.RESULT_TYPE.RESTRICT].includes(result?.type) ||
++        !result.payload.providesSearchMode ||
 +        !UrlbarQueryModel.isResultActivationEvent(event)) return null;
 +    const description = this.describeResultEngagement(queryId, result, facts), query = this.#query;
 +    const current = () => !this.#closed && this.#isCurrent() && this.#query === query && isCurrent();
