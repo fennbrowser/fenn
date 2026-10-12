@@ -8455,3 +8455,105 @@ test('one-off alias mode plans honor restyling exclusions and normalized restric
   f.result.payload.keyword='@alias';
   assert.equal(f.editor.getOneOffResultActivation(plan.token,f.event,f.options),null);f.editor.close();
 });
+
+
+async function oneOffResultSelectionFixture(kind='private'){
+  const f=await oneOffResultActivationFixture(kind),calls=[];
+  const cancel=f.parent.cancelQuery.bind(f.parent);
+  f.parent.cancelQuery=()=>{calls.push('freeze');return cancel();};
+  f.parent.onBeforeSelection=(...args)=>{assert.deepEqual(args,[f.result]);calls.push('before');};
+  f.parent.onSelection=(...args)=>{assert.deepEqual(args,[f.result]);calls.push('selected');};
+  f.editor.startEngagement(2,f.query.id,{type:'input',timeStamp:1});
+  const plan=f.editor.beginOneOffResultActivation(f.selected.token,f.event,f.options);
+  const observation={...plan.edit,queryId:plan.queryId,resultId:plan.resultId,selectedResult:f.result,searchMode:null,pageProxyValid:false};
+  return {...f,calls,plan,observation};
+}
+
+test('one-off private and alias result selection freezes then notifies providers only after exact acknowledgment',async()=>{
+  for(const kind of ['private','mode','load']){
+    const f=await oneOffResultSelectionFixture(kind),snapshot=f.editor.snapshot;
+    const prepared=f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options);
+    assert.ok(prepared);assert.equal(prepared.selectionPreparationPending,false);assert.equal(prepared.selectionAcknowledgmentPending,true);
+    assert.deepEqual(f.calls,['freeze','before']);assert.equal(f.editor.getOneOffResultSelection(prepared.token,f.event,f.options),prepared);
+    assert.equal(f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options),null);
+    const receipt=f.editor.acknowledgeOneOffResultSelection(prepared.token,f.observation,f.event,f.options);
+    assert.equal(receipt.selectionAcknowledged,true);assert.equal(receipt.engagementPending,true);assert.equal(receipt.activationPending,true);
+    assert.equal(f.editor.getAcknowledgedOneOffResultSelection(receipt.token,f.event,f.options),receipt);
+    assert.deepEqual(f.calls,['freeze','before','selected']);assert.equal(f.editor.snapshot,snapshot);
+    assert.equal(f.editor.acknowledgeOneOffResultSelection(prepared.token,f.observation,f.event,f.options),null);
+    assert.equal(f.editor.getOneOffResultSelection(prepared.token,f.event,f.options),null);
+    assert.equal(f.parent.engagements.filter(x=>x.kind==='record').length,0);f.editor.close();
+  }
+});
+
+test('one-off result selection rejects wrong host identity, text, caret, mode and copied tokens',async()=>{
+  const changes={queryId:99,resultId:'other',selectedResult:{},revision:99,selectionRevision:99,text:'wrong',selectionStart:0,
+    selectionEnd:0,selectionDirection:'backward',composing:true,pageProxyValid:true,searchMode:{engineName:'other'}};
+  for(const [key,value] of Object.entries(changes)){
+    const f=await oneOffResultSelectionFixture(),prepared=f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options);
+    assert.equal(f.editor.getOneOffResultSelection({...prepared.token},f.event,f.options),null);
+    assert.equal(f.editor.acknowledgeOneOffResultSelection(prepared.token,{...f.observation,[key]:value},f.event,f.options),null,key);
+    assert.deepEqual(f.calls,['freeze','before']);
+    assert.ok(f.editor.acknowledgeOneOffResultSelection(prepared.token,f.observation,f.event,f.options));f.editor.close();
+  }
+});
+
+test('one-off result preparation is consumed before callback reentry, failure and superseding policy',async()=>{
+  for(const action of ['reentry','throw','caret','payload','replace-plan']){
+    const f=await oneOffResultSelectionFixture();let beforeCalls=0;
+    f.parent.onBeforeSelection=()=>{
+      beforeCalls++;
+      if(action==='reentry')assert.equal(f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options),null);
+      if(action==='throw')throw Error('before failed');
+      if(action==='caret')f.editor.select(2,0,0);
+      if(action==='payload')f.result.payload.suggestion='changed';
+      if(action==='replace-plan')f.editor.beginOneOffResultActivation(f.selected.token,f.event,f.options);
+    };
+    if(action==='throw')assert.throws(()=>f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options),/before failed/);
+    else assert.equal(!!f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options),action==='reentry',action);
+    assert.equal(f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options),null);assert.equal(beforeCalls,1);f.editor.close();
+  }
+});
+
+test('one-off result selection consumes provider acknowledgment before reentry or exceptions and rejects changed scope',async()=>{
+  for(const action of ['reentry','throw','caret','hidden']){
+    const f=await oneOffResultSelectionFixture(),prepared=f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options);let calls=0;
+    f.parent.onSelection=()=>{
+      calls++;
+      if(action==='reentry')assert.equal(f.editor.acknowledgeOneOffResultSelection(prepared.token,f.observation,f.event,f.options),null);
+      if(action==='throw')throw Error('selection failed');
+      if(action==='caret')f.editor.select(2,0,0);
+      if(action==='hidden')f.editor.hideResults(2,f.query.id);
+    };
+    if(action==='throw')assert.throws(()=>f.editor.acknowledgeOneOffResultSelection(prepared.token,f.observation,f.event,f.options),/selection failed/);
+    else assert.equal(!!f.editor.acknowledgeOneOffResultSelection(prepared.token,f.observation,f.event,f.options),action==='reentry');
+    assert.equal(f.editor.acknowledgeOneOffResultSelection(prepared.token,f.observation,f.event,f.options),null);assert.equal(calls,1);f.editor.close();
+  }
+});
+
+test('one-off result selection receipts expire on plan replacement and cannot bypass cleanup engagement gating',async()=>{
+  const f=await oneOffResultSelectionFixture('mode'),prepared=f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options);
+  const receipt=f.editor.acknowledgeOneOffResultSelection(prepared.token,f.observation,f.event,f.options);
+  const next=f.editor.beginOneOffResultActivation(f.selected.token,f.event,f.options);assert.ok(next);
+  assert.equal(f.editor.getAcknowledgedOneOffResultSelection(receipt.token,f.event,f.options),null);
+  assert.equal(f.editor.prepareOneOffResultSelection(next.token,f.event,f.options),null);f.editor.close();
+  const inactive=await oneOffResultActivationFixture();
+  const plan=inactive.editor.beginOneOffResultActivation(inactive.selected.token,inactive.event,inactive.options);
+  inactive.parent.onBeforeSelection=()=>assert.fail('pre-selection without engagement');
+  assert.equal(inactive.editor.prepareOneOffResultSelection(plan.token,inactive.event,inactive.options),null);inactive.editor.close();
+});
+
+
+test('one-off result selection guards freeze callbacks and recursive host-observation getters',async()=>{
+  const stale=await oneOffResultSelectionFixture();
+  stale.parent.cancelQuery=()=>stale.editor.select(2,0,0);
+  assert.equal(stale.editor.prepareOneOffResultSelection(stale.plan.token,stale.event,stale.options),null);
+  assert.deepEqual(stale.calls,[]);stale.parent.cancelQuery=()=>{};stale.editor.close();
+  const f=await oneOffResultSelectionFixture(),prepared=f.editor.prepareOneOffResultSelection(f.plan.token,f.event,f.options);let nested;
+  const observation={...f.observation,get selectedResult(){
+    nested=f.editor.acknowledgeOneOffResultSelection(prepared.token,f.observation,f.event,f.options);return f.result;
+  }};
+  assert.equal(f.editor.acknowledgeOneOffResultSelection(prepared.token,observation,f.event,f.options),null);
+  assert.ok(nested);assert.equal(f.editor.getAcknowledgedOneOffResultSelection(nested.token,f.event,f.options),nested);
+  assert.deepEqual(f.calls,['freeze','before','selected']);f.editor.close();
+});

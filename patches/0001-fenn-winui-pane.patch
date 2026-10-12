@@ -9954,10 +9954,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..7557295265
+index 0000000000..75b6b36679
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,3596 @@
+@@ -0,0 +1,3656 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12034,6 +12034,66 @@ index 0000000000..7557295265
 +      selection.facts, event, facts);
 +    return this.getAcknowledgedOneOffNavigationSelection(receipt.token) === receipt && this.#oneOffCommand === command &&
 +      captured.selection === selection ? description : null;
++  }
++
++  /** Consume result-selection preparation before freeze, cleanup and provider callbacks. */
++  prepareOneOffResultSelection(activationToken, event, options = {}) {
++    const plan = this.getOneOffResultActivation(activationToken, event, options);
++    const captured = this.#oneOffCommand?.engineSearch, selection = captured?.selection;
++    if (!plan || selection.resultSelectionAttempted) return null;
++    const result = plan.branch === "selected-private-result" ? selection.facts.selectedResult : selection.facts.firstResult;
++    const pending = { plan, result, request: null, proposal: null, acknowledgmentAttempted: false, receipt: null };
++    selection.resultSelectionAttempted = true;
++    selection.resultSelection = pending;
++    const current = () => this.getOneOffResultActivation(activationToken, event, options) === plan &&
++      this.#oneOffCommand?.engineSearch === captured && captured.selection === selection && selection.resultSelection === pending;
++    this.freezeResults(plan.edit.revision, plan.queryId);
++    if (!current() || !this.clearResultAutofillBackspace(plan.edit.revision, plan.queryId, result) || !current()) return null;
++    const request = this.#queries.beginResultSelection(plan.queryId, result);
++    if (!request || !current() || !this.#queries.getResultSelection(request.token)) return null;
++    pending.request = request;
++    pending.proposal = Object.freeze({ ...plan, token: Object.freeze({}), activationToken,
++      selectionPreparationPending: false, selectionAcknowledgmentPending: true });
++    return pending.proposal;
++  }
++
++  getOneOffResultSelection(token, event, options = {}) {
++    const captured = this.#oneOffCommand?.engineSearch, selection = captured?.selection, pending = selection?.resultSelection;
++    if (!pending?.proposal || pending.proposal.token !== token || pending.acknowledgmentAttempted) return null;
++    return this.getOneOffResultActivation(pending.plan.token, event, options) === pending.plan &&
++      this.#queries.getResultSelection(pending.request.token) === pending.request &&
++      this.#oneOffCommand?.engineSearch === captured && captured.selection === selection && selection.resultSelection === pending
++      ? pending.proposal : null;
++  }
++
++  /** Observe selection of the exact result with unchanged editor state, then notify its provider once. */
++  acknowledgeOneOffResultSelection(token, observation, event, options = {}) {
++    const proposal = this.getOneOffResultSelection(token, event, options);
++    const captured = this.#oneOffCommand?.engineSearch, selection = captured?.selection, pending = selection?.resultSelection;
++    if (!proposal || !observation) return null;
++    const edit = proposal.edit;
++    if (observation.queryId !== proposal.queryId || observation.resultId !== proposal.resultId ||
++        observation.selectedResult !== pending.result || observation.revision !== edit.revision ||
++        observation.selectionRevision !== edit.selectionRevision || observation.text !== edit.text ||
++        observation.selectionStart !== edit.selectionStart || observation.selectionEnd !== edit.selectionEnd ||
++        observation.selectionDirection !== edit.selectionDirection || observation.composing !== false ||
++        observation.pageProxyValid !== false || !UrlbarShared.deepEqual(observation.searchMode, this.#searchMode) ||
++        this.getOneOffResultSelection(token, event, options) !== proposal) return null;
++    pending.acknowledgmentAttempted = true;
++    if (!this.#queries.acknowledgeResultSelection(pending.request.token) ||
++        this.getOneOffResultActivation(pending.plan.token, event, options) !== pending.plan ||
++        this.#oneOffCommand?.engineSearch !== captured || captured.selection !== selection || selection.resultSelection !== pending) return null;
++    pending.receipt = Object.freeze({ ...proposal, token: Object.freeze({}), selectionToken: token,
++      selectionAcknowledgmentPending: false, selectionAcknowledged: true });
++    return pending.receipt;
++  }
++
++  getAcknowledgedOneOffResultSelection(token, event, options = {}) {
++    const captured = this.#oneOffCommand?.engineSearch, selection = captured?.selection, pending = selection?.resultSelection;
++    if (!pending?.receipt || pending.receipt.token !== token) return null;
++    return this.getOneOffResultActivation(pending.plan.token, event, options) === pending.plan &&
++      this.#oneOffCommand?.engineSearch === captured && captured.selection === selection && selection.resultSelection === pending
++      ? pending.receipt : null;
 +  }
 +
 +  /** Resolve only the engine branch after both host acknowledgments; effects remain pending. */
