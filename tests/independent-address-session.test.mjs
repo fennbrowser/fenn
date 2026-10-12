@@ -21,6 +21,8 @@ function load(){
     onQueryResults(query){calls.push(['results',query.id]);}
     onQueryFinished(query){calls.push(['finished',query.id]);}
     snapshot(){return {snapshot:true};}
+    updateSelection(request){calls.push(['super.updateSelection',request]);return {status:'selected'};}
+    captureAutofill(active){calls.push(['super.capture']);}
   }
   const context=vm.createContext({console,ChromeUtils:{importESModule:()=>({UrlbarEditSession:class {}})}});
   const source=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIIndependentUrlbarSession.sys.mjs',import.meta.url),'utf8')
@@ -36,7 +38,9 @@ function fixture({visible=true,page='https://page.test/'}={}){
   const browser={browserId:7,currentURI:{spec:page},browsingContext:{currentWindowGlobal:{innerWindowId:2}}};
   const published=[],engagements=[];
   const view={nativePresentation:null,close:o=>calls.push(['view.close',o])};
-  const input={view,inputField:{value:'typed',setSelectionRange(){}},controller:{visibleResults:[]},untrimmedValue:'typed',
+  const inputField={value:'typed',selectionStart:5,selectionEnd:5,selectionDirection:'none',
+    setSelectionRange(start,end,direction='none'){this.selectionStart=start;this.selectionEnd=end;this.selectionDirection=direction;}};
+  const input={view,inputField,controller:{visibleResults:[]},untrimmedValue:'typed',
     setNativeInputValue(v){this.inputField.value=v;calls.push(['native-value',v]);},handleRevert(){calls.push(['revert']);}};
   const window={gBrowser:{selectedBrowser:browser,selectedTab:{isEmpty:false,userContextId:0}},gURLBar:input,
     KeyboardEvent:class {constructor(type,init){this.type=type;Object.assign(this,init);}},performance:{now:()=>1},
@@ -57,6 +61,9 @@ function fixture({visible=true,page='https://page.test/'}={}){
     acknowledgeNavigationWrite:()=>true,
     commitAcknowledgedNavigation:()=>({attempted:true,reverted:false}),
     cancel:()=>calls.push(['editor.cancel']),close:()=>calls.push(['editor.close']),
+    getCompletion:token=>token.proposal,
+    acknowledgeCompletion:(token,write)=>{calls.push(['ack',write]);return token.accept!==false;},
+    observeAutofillSelection:(...a)=>{calls.push(['observe',...a]);return {confirmed:editor.confirms===true};},
   };
   s.editor=editor;
   return {s,calls,published,engagements,editor,result,row,window,input,browser};
@@ -166,4 +173,58 @@ test('lifecycle cancels and closes the editor around the inherited behavior',()=
   assert.equal(f.s.editor,null);
   f.s.close();
   assert.equal(f.calls.filter(c=>c[0]==='super.close').length,1);
+});
+
+function completion(f,proposal,accept=true){
+  const token={proposal,accept};
+  return {kind:'first-result',query:{id:5},edit:{revision:f.s.editorRevision},completion:{...proposal,token}};
+}
+const suffix={kind:'autofill',value:'typed.test/',selectionStart:5,selectionEnd:11,selectionDirection:'backward'};
+
+test('an autofill proposal is written, acknowledged and published as the native completion',()=>{
+  const f=fixture();f.s.editId=4;
+  const update=completion(f,suffix);
+  f.s.onEditorUpdate(update);
+  assert.equal(f.input.inputField.value,'typed.test/');
+  assert.deepEqual([f.input.inputField.selectionStart,f.input.inputField.selectionEnd,f.input.inputField.selectionDirection],[5,11,'backward']);
+  assert.equal(f.s.active.inputValue,'typed.test/');
+  assert.deepEqual(JSON.parse(JSON.stringify(f.s.autofillResult)),{serial:1,editId:4,before:'typed',text:'typed.test/',start:5,end:11});
+  assert.equal(f.calls.some(c=>c[0]==='super.capture'),false);
+  assert.equal(f.calls.find(c=>c[0]==='ack')[1].selectionDirection,'backward');
+});
+
+test('a completion that is stale, unacknowledged or restoring does not leave a native completion',()=>{
+  const staleText=fixture();staleText.input.inputField.value='changed';
+  staleText.s.onEditorUpdate(completion(staleText,suffix));
+  assert.equal(staleText.input.inputField.value,'changed');
+  const staleEdit=fixture();const old=completion(staleEdit,suffix);old.edit.revision=1;
+  staleEdit.s.onEditorUpdate(old);
+  assert.equal(staleEdit.input.inputField.value,'typed');
+  const rejected=fixture();
+  rejected.s.onEditorUpdate(completion(rejected,suffix,false));
+  assert.equal(rejected.input.inputField.value,'typed');
+  assert.equal(rejected.s.active.inputValue,'typed');
+  assert.equal(rejected.s.autofillResult??null,null);
+  const restore=fixture();restore.s.autofillResult={serial:1};
+  restore.s.onEditorUpdate(completion(restore,{kind:'restore',value:'typed',selectionStart:5,selectionEnd:5,selectionDirection:'none'}));
+  assert.equal(restore.s.autofillResult,null);
+});
+
+test('activation after a completion uses the completed value as the observed text',()=>{
+  const f=fixture();
+  f.s.onEditorUpdate(completion(f,suffix));
+  assert.equal(f.s.activate(1,f.row.id,{}),'activated');
+});
+
+test('caret acceptance is observed by the editor and confirms the typed value once',()=>{
+  const f=fixture();f.editor.confirms=true;f.window.gBrowser.selectedBrowser.userTypedValue='typed';
+  assert.equal(f.s.updateSelection({start:11,end:11,direction:'none'}).status,'selected');
+  const observe=f.calls.find(c=>c[0]==='observe');
+  assert.equal(observe[1],3);
+  assert.equal(JSON.stringify(observe[2]),JSON.stringify({selectionStart:11,selectionEnd:11,selectionDirection:'none'}));
+  assert.equal(JSON.stringify(observe[3]),JSON.stringify({userTypedValue:'typed'}));
+  assert.equal(f.input.userTypedValue,f.input.inputField.value);
+  const inherited=fixture();inherited.s.active.source=undefined;
+  inherited.s.updateSelection({start:1,end:1,direction:'none'});
+  assert.equal(inherited.calls.some(c=>c[0]==='observe'),false);
 });

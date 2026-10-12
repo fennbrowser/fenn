@@ -708,6 +708,20 @@ test('streamed completion proposals use live selection, immutable stamps and nev
   f.editor.cancel();assert.throws(()=>f.editor.publishPresentation(1,query.id,[result],true),/Invalid/);f.editor.close();
 });
 
+test('token alias results that provide search mode still propose completions',async()=>{
+  const f=await editorFixture();let query;const gate=Promise.withResolvers();
+  f.parent.startQuery=q=>{query=q;return gate.promise;};
+  const pending=f.editor.edit({},edit(1,'@nativef'));
+  const alias={payload:{keyword:'@NATIVEFixture',providesSearchMode:true},
+    autofill:{value:'@NATIVEFixture ',selectionStart:8,selectionEnd:15}};
+  query.results.push(alias);f.parent.child.notify('onFirstResult',query);
+  const proposed=f.updates.at(-1).completion;
+  assert.equal(proposed.value,'@NATIVEFixture ');assert.equal(f.editor.getCompletion(proposed.token),proposed);
+  alias.payload.providesSearchMode=false;
+  assert.equal(f.editor.getCompletion(proposed.token),null,'a plain keyword result is no longer a completion');
+  gate.resolve(query);await pending;f.editor.close();
+});
+
 test('new edits and scope loss revoke older streaming publications and presentation',async()=>{
   const f=await editorFixture();const old=await f.editor.edit({},edit(1,'old'));
   const current=await f.editor.edit({},edit(2,'new'));

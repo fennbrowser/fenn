@@ -10150,10 +10150,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..9e5cf0cc20
+index 0000000000..30180b209d
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,4223 @@
+@@ -0,0 +1,4227 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11006,6 +11006,10 @@ index 0000000000..9e5cf0cc20
 +      ? receipt : null;
 +  }
 +
++  static #entersKeywordMode(result) {
++    return !!result.payload?.keyword && !result.payload.providesSearchMode;
++  }
++
 +  #publishQueryUpdate(update, { revision, text, allowAutofill }) {
 +    if (this.#closed || !this.#isCurrent() || this.#edit.revision !== revision ||
 +        this.#hiddenResults || update.kind === "prepared") return;
@@ -11013,7 +11017,7 @@ index 0000000000..9e5cf0cc20
 +    let completion = null;
 +    if (update.kind === "first-result") this.#completion = null;
 +    const eligible = !this.#edit.composing && update.kind === "first-result" && allowAutofill &&
-+      first?.autofill && !first.payload?.keyword &&
++      first?.autofill && !UrlbarEditSession.#entersKeywordMode(first) &&
 +      UrlbarAutofillModel.acceptsResult({
 +        placeholder: this.#autofill,
 +        searchString: text, selectionStart: this.#edit.selectionStart,
@@ -11030,7 +11034,7 @@ index 0000000000..9e5cf0cc20
 +    // Only propose restoration while that exact suffix is still selected;
 +    // user edits and caret observations revoke our authority over it.
 +    if (!this.#edit.composing && update.kind === "first-result" && first && !first.autofill &&
-+        !first.payload?.keyword && this.#autofill &&
++        !UrlbarEditSession.#entersKeywordMode(first) && this.#autofill &&
 +        this.#edit.text === this.#autofill.value &&
 +        !this.#edit.text.endsWith(" ") &&
 +        this.#edit.selectionStart === this.#autofill.selectionStart &&
@@ -11150,7 +11154,7 @@ index 0000000000..9e5cf0cc20
 +      return current.query.results?.length ? null : current.proposal;
 +    }
 +    if (!this.#queries.ownsResult(current.query.id, current.result) ||
-+        current.query.results[0] !== current.result || current.result.payload?.keyword) {
++        current.query.results[0] !== current.result || UrlbarEditSession.#entersKeywordMode(current.result)) {
 +      return null;
 +    }
 +    // A provider can update a result in place. Object identity alone is not a
