@@ -1,0 +1,3 @@
+# Deployment files, not site content.
+wrangler.jsonc
+.assetsignore

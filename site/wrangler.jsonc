@@ -1,0 +1,13 @@
+{
+  // Cloudflare Workers static assets: serves this directory as-is, no Worker
+  // script and no build step. Deploy from here with `npx wrangler deploy`.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fenn-site",
+  "compatibility_date": "2026-10-11",
+  "assets": {
+    "directory": "./",
+    // `/privacy/` serves `privacy/index.html`; unknown paths get Cloudflare's 404.
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "none"
+  }
+}
