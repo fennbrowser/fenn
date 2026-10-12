@@ -87,3 +87,26 @@ test('both actual input bindings apply plans through their existing editor metho
     }
   }
 });
+
+
+test('explicit autofill deselection requires the displayed placeholder and changed range',()=>{
+  const base={placeholder,value:placeholder.value,selectionStart:placeholder.selectionStart,selectionEnd:placeholder.selectionEnd};
+  assert.equal(M.confirmsSelection(base),false);
+  assert.equal(M.confirmsSelection({...base,selectionStart:0}),true);
+  assert.equal(M.confirmsSelection({...base,selectionEnd:placeholder.selectionEnd-1}),true);
+  assert.equal(M.confirmsSelection({...base,value:'other',selectionStart:0}),false);
+  assert.equal(M.confirmsSelection({...base,placeholder:null,selectionStart:0}),false);
+});
+
+test('retained selection confirmation clears the placeholder before committing displayed text',()=>{
+  const source=readFileSync(new URL('UrlbarInputBase.mjs',root),'utf8');
+  const start=source.indexOf('  _on_selectionchange() {');const method=source.slice(start,source.indexOf('  _on_select()',start));
+  const Input=new Function('UrlbarAutofillModel',`return class {${method}}`)(M),input=new Input(),writes=[];
+  input._autofillPlaceholder=placeholder;input.value=placeholder.value;
+  input.selectionStart=placeholder.selectionStart;input.selectionEnd=placeholder.selectionEnd;
+  Object.defineProperty(input,'userTypedValue',{set:value=>writes.push([value,input._autofillPlaceholder])});
+  input._on_selectionchange();assert.equal(writes.length,0);
+  input.selectionStart=0;input._on_selectionchange();assert.deepEqual(writes,[[placeholder.value,null]]);
+  Object.defineProperty(input,'value',{get:()=>assert.fail('no placeholder must not read the field')});
+  input._on_selectionchange();assert.equal(writes.length,1);
+});

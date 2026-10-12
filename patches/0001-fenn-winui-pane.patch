@@ -4102,7 +4102,7 @@ index 4172241eaf..ce3917f8f7 100644
      // populated on the parent's own copy over the message path.
      this.#lastQuery.context = queryContext;
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f..7855ee1589 100644
+index a077de625f..e6fc3cbcd8 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -2,12 +2,22 @@
@@ -5889,7 +5889,8 @@ index a077de625f..7855ee1589 100644
 -    // string, thus there's no valid selection. This is also used by the view
 -    // to set "aria-activedescendant", thus it should never get stale.
 -    this.controller.userSelectionBehavior = "none";
--
++    this.#updateTypedValue(value);
+ 
 -    let compositionState = this.#compositionState;
 -    let compositionClosedPopup = this.#compositionClosedPopup;
 -
@@ -5902,8 +5903,7 @@ index a077de625f..7855ee1589 100644
 -    if (compositionState == UrlbarShared.COMPOSITION.COMPOSING && event.data) {
 -      this.#compositionHadText = true;
 -    }
-+    this.#updateTypedValue(value);
- 
+-
 -    this.toggleAttribute("usertyping", value);
 -    this.removeAttribute("actiontype");
 -
@@ -5962,7 +5962,24 @@ index a077de625f..7855ee1589 100644
        this._maybeAutofillPlaceholder(value);
  
      this.startQuery({
-@@ -5669,33 +5101,20 @@ ${
+@@ -5610,12 +5042,10 @@ ${
+     // Confirm placeholder as user text if it gets explicitly deselected. This
+     // happens when the user wants to modify the autofilled text by either
+     // clicking on it, or pressing HOME, END, RIGHT, …
+-    if (
+-      this._autofillPlaceholder &&
+-      this._autofillPlaceholder.value == this.value &&
+-      (this._autofillPlaceholder.selectionStart != this.selectionStart ||
+-        this._autofillPlaceholder.selectionEnd != this.selectionEnd)
+-    ) {
++    if (this._autofillPlaceholder && UrlbarAutofillModel.confirmsSelection({
++      placeholder: this._autofillPlaceholder, value: this.value,
++      selectionStart: this.selectionStart, selectionEnd: this.selectionEnd,
++    })) {
+       this._autofillPlaceholder = null;
+       this.userTypedValue = this.value;
+     }
+@@ -5669,33 +5099,20 @@ ${
    }
  
    _on_paste(event) {
@@ -6004,7 +6021,7 @@ index a077de625f..7855ee1589 100644
        this.setValue(value, { valueIsTyped: true });
        this.userTypedValue = value;
  
-@@ -5709,7 +5128,7 @@ ${
+@@ -5709,7 +5126,7 @@ ${
        this.toggleAttribute("usertyping", this._untrimmedValue);
  
        // Fix up cursor/selection:
@@ -6013,7 +6030,7 @@ index a077de625f..7855ee1589 100644
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
  
        this.startQuery({
-@@ -5740,51 +5159,25 @@ ${
+@@ -5740,51 +5157,25 @@ ${
      searchString = null,
      event = null,
    } = {}) {
@@ -6081,7 +6098,7 @@ index a077de625f..7855ee1589 100644
    }
  
    _on_scrollend() {
-@@ -5978,72 +5371,39 @@ ${
+@@ -5978,72 +5369,39 @@ ${
     * @returns {boolean}
     */
    get isComposing() {
@@ -6176,7 +6193,7 @@ index a077de625f..7855ee1589 100644
        this.startQuery({ resetSearchState: false, event });
      }
    }
-@@ -6169,11 +5529,7 @@ ${
+@@ -6169,11 +5527,7 @@ ${
     *   file://). Returns `SchemelessInputTypeSchemeful` if it does have a scheme.
     */
    #getSchemelessInput(value) {
@@ -6189,7 +6206,7 @@ index a077de625f..7855ee1589 100644
    }
  
    get #isOpenedPageInBlankTargetLoading() {
-@@ -6311,111 +5667,6 @@ function getDroppableData(event) {
+@@ -6311,111 +5665,6 @@ function getDroppableData(event) {
    return event.dataTransfer.getData("text/plain");
  }
  
@@ -6301,7 +6318,7 @@ index a077de625f..7855ee1589 100644
  /**
   * Handles copy and cut commands for the urlbar.
   */
-@@ -6440,12 +5691,10 @@ class CopyCutController {
+@@ -6440,12 +5689,10 @@ class CopyCutController {
      }
  
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
@@ -9243,10 +9260,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..316f3cc8bb
+index 0000000000..30aa77dee4
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,2131 @@
+@@ -0,0 +1,2163 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9927,12 +9944,44 @@ index 0000000000..316f3cc8bb
 +    });
 +  }
 +
++  /** Observe actual caret movement and confirm a deselected placeholder once. */
++  observeAutofillSelection(revision, { selectionStart, selectionEnd, selectionDirection = "none" },
++    { userTypedValue } = {}) {
++    this.#check();
++    if (userTypedValue !== null && typeof userTypedValue !== "string") {
++      throw new TypeError("Invalid selection browser typed value");
++    }
++    const edit = this.#edit, placeholder = this.#placeholder, autofill = this.#autofill;
++    if (!edit || edit.revision !== revision) throw new Error("Stale editor selection");
++    this.#validateSelection(edit.text, selectionStart, selectionEnd, selectionDirection);
++    const confirms = UrlbarAutofillModel.confirmsSelection({ placeholder, value: edit.text,
++      selectionStart, selectionEnd });
++    const observedEdit = this.#selectObserved(selectionStart, selectionEnd, selectionDirection);
++    if (!confirms) {
++      // Direction-only changes and stale/non-displayed placeholders do not confirm.
++      this.#placeholder = placeholder;
++      this.#autofill = autofill;
++      return Object.freeze({ edit: observedEdit, confirmed: false });
++    }
++    const mode = this.#searchMode;
++    const current = () => !this.#closed && this.#isCurrent() && this.#edit === observedEdit && this.#searchMode === mode;
++    const outcome = this.#queries.commitAutofillSelection(observedEdit.text, mode, userTypedValue, current);
++    if (!outcome?.applied) throw new Error("Autofill selection browser commit is stale");
++    const stillCurrent = outcome.current && current();
++    if (stillCurrent) this.#typedText = observedEdit.text;
++    return Object.freeze({ edit: observedEdit, confirmed: true, ...outcome, current: stillCurrent });
++  }
++
 +  select(revision, start, end, direction = "none") {
 +    this.#check();
 +    if (!this.#edit || revision !== this.#edit.revision) {
 +      throw new Error("Stale editor selection");
 +    }
 +    this.#validateSelection(this.#edit.text, start, end, direction);
++    return this.#selectObserved(start, end, direction);
++  }
++
++  #selectObserved(start, end, direction) {
 +    this.#completion = null;
 +    this.#closeRequest = null;
 +    this.#selectionRequest = null;
@@ -11380,10 +11429,10 @@ index 0000000000..316f3cc8bb
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..fd9b7fd407
+index 0000000000..838699fd0a
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,922 @@
+@@ -0,0 +1,930 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12065,6 +12114,14 @@ index 0000000000..fd9b7fd407
 +    return Object.freeze({ ...outcome, authorize: () => current() && authority() && current() });
 +  }
 +
++  /** Confirm an observed autofill deselection without input/query/selection effects. */
++  commitAutofillSelection(value, searchMode, userTypedValue, isCurrent) {
++    this.#check();
++    const current = () => !this.#closed && this.#isCurrent() && isCurrent();
++    return this.#controller.parentController.commitIndependentEditState(
++      this.#context.browserId, value, searchMode, userTypedValue, current);
++  }
++
 +  /** Record the admitted menu query's shared picked classification, before results complete. */
 +  recordSearchModeMenuPicked(queryId, kind) {
 +    if (!this.ownsQuery(queryId)) return false;
@@ -12415,10 +12472,10 @@ index 0000000000..139c755f55
 +}
 diff --git a/browser/components/urlbar/content/UrlbarAutofillModel.mjs b/browser/components/urlbar/content/UrlbarAutofillModel.mjs
 new file mode 100644
-index 0000000000..83b4b88af9
+index 0000000000..ed9a06b8c0
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarAutofillModel.mjs
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,84 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12431,6 +12488,12 @@ index 0000000000..83b4b88af9
 +  static allowsInput(inputType, isPaste) {
 +    return !inputType?.startsWith("delete") &&
 +      !inputType?.startsWith("history") && !isPaste;
++  }
++
++  /** Explicit deselection confirms only the currently displayed placeholder. */
++  static confirmsSelection({ placeholder, value, selectionStart, selectionEnd }) {
++    return !!(placeholder && placeholder.value === value &&
++      (placeholder.selectionStart !== selectionStart || placeholder.selectionEnd !== selectionEnd));
 +  }
 +
 +  /** Whether a first result may replace the current selection. */

@@ -714,8 +714,8 @@ test('new edits and scope loss revoke older streaming publications and presentat
   await assert.rejects(f.editor.edit({},edit(3,'closed')),/closed/);
 });
 
-async function completionFixture() {
-  const f=await editorFixture();
+async function completionFixture(options) {
+  const f=await editorFixture(options);
   const query=await f.editor.edit({},edit(1,'exam'));
   const result={payload:{},autofill:{value:'example.test/',selectionStart:4,selectionEnd:13}};
   query.results.push(result);f.parent.child.notify('onFirstResult',query);
@@ -5394,4 +5394,70 @@ test('autofill preview writes cannot retain or acquire observed-input identity a
   assert.equal(f.editor.getInputIdentity(identity.token),null);
   assert.equal(f.editor.beginInputIdentity(1,{pageProxyValid:false}),null);
   assert.equal(f.editor.inputIdentityState,null);f.editor.close();
+});
+
+
+async function deselectionFixture() {
+  const f=await completionFixture({browserId:42});
+  assert.equal(f.editor.acknowledgeCompletion(f.proposal.token,observed(f.proposal)),true);
+  const commits=[];f.parent.commitIndependentEditState=(browserId,value,mode,prior,current)=>{
+    commits.push({browserId,value,mode,prior});assert.equal(current(),true);
+    return Object.freeze({applied:true,current:current(),userTypedValue:value,persistenceChanged:false,persistedSearchTerms:false,stateToken:{}});
+  };
+  return Object.assign(f,{commits});
+}
+const caret=(start,end=start,direction='none')=>({selectionStart:start,selectionEnd:end,selectionDirection:direction});
+
+test('autofill deselection commits displayed text once without querying or resetting selection history',async()=>{
+  const f=await deselectionFixture();f.parent.child.userSelectionBehavior='tab';
+  const result=f.editor.observeAutofillSelection(1,caret(13),{userTypedValue:'exam'});
+  assert.equal(result.confirmed,true);assert.equal(result.applied,true);assert.equal(result.current,true);
+  assert.equal(result.edit,f.editor.snapshot);assert.equal(result.edit.text,'example.test/');
+  assert.deepEqual(f.commits,[{browserId:42,value:'example.test/',mode:null,prior:'exam'}]);
+  assert.equal(f.parent.child.userSelectionBehavior,'tab');assert.equal(f.parent.started.length,1);
+  assert.equal(f.editor.observeAutofillSelection(1,caret(0),{userTypedValue:'example.test/'}).confirmed,false);
+  assert.equal(f.commits.length,1);assert.equal(f.editor.beginInputIdentity(1,{pageProxyValid:false}),null);f.editor.close();
+});
+
+test('unchanged range and direction-only selection preserve the placeholder until actual deselection',async()=>{
+  const f=await deselectionFixture();
+  assert.equal(f.editor.observeAutofillSelection(1,caret(4,13,'forward'),{userTypedValue:'exam'}).confirmed,false);
+  assert.equal(f.commits.length,0);
+  assert.equal(f.editor.observeAutofillSelection(1,caret(3,13),{userTypedValue:'exam'}).confirmed,true);
+  assert.equal(f.commits.length,1);f.editor.close();
+});
+
+test('invalid selection observations do not consume the placeholder or write browser state',async()=>{
+  const f=await deselectionFixture(),before=f.editor.snapshot;
+  assert.throws(()=>f.editor.observeAutofillSelection(1,caret(0),{}),/Invalid selection browser/);
+  assert.throws(()=>f.editor.observeAutofillSelection(0,caret(0),{userTypedValue:'exam'}),/Stale/);
+  assert.throws(()=>f.editor.observeAutofillSelection(1,caret(99),{userTypedValue:'exam'}),/Invalid editor selection/);
+  assert.equal(f.editor.snapshot,before);assert.equal(f.commits.length,0);
+  assert.equal(f.editor.observeAutofillSelection(1,caret(0),{userTypedValue:'exam'}).confirmed,true);f.editor.close();
+});
+
+test('a stale browser commit consumes the observed deselection without retrying its write',async()=>{
+  const f=await deselectionFixture();let calls=0;
+  f.parent.commitIndependentEditState=()=>{calls++;return null;};
+  assert.throws(()=>f.editor.observeAutofillSelection(1,caret(0),{userTypedValue:'stale'}),/browser commit is stale/);
+  assert.equal(f.editor.snapshot.selectionStart,0);
+  assert.equal(f.editor.observeAutofillSelection(1,caret(1),{userTypedValue:'exam'}).confirmed,false);
+  assert.equal(calls,1);f.editor.close();
+});
+
+test('browser-setter reentry reports the applied selection confirmation without overwriting newer caret state',async()=>{
+  const f=await deselectionFixture();
+  f.parent.commitIndependentEditState=(_id,value,_mode,_prior,current)=>{
+    assert.equal(current(),true);f.editor.select(1,2,2);return {applied:true,current:current(),userTypedValue:value};
+  };
+  const result=f.editor.observeAutofillSelection(1,caret(13),{userTypedValue:'exam'});
+  assert.equal(result.applied,true);assert.equal(result.current,false);assert.equal(f.editor.snapshot.selectionStart,2);
+  assert.equal(f.parent.started.length,1);f.editor.close();
+});
+
+test('unapplied speculative placeholder and ordinary selection never confirm browser text',async()=>{
+  const f=await deselectionFixture();await f.editor.edit({},edit(2,'examp'));
+  const before=f.parent.started.length;
+  assert.equal(f.editor.observeAutofillSelection(2,caret(0),{userTypedValue:'examp'}).confirmed,false);
+  assert.equal(f.commits.length,0);assert.equal(f.parent.started.length,before);f.editor.close();
 });
