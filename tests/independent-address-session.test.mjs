@@ -436,6 +436,16 @@ test('provider removals and their acknowledgment text reach the inherited row bu
   assert.equal(other.calls.some(c=>c[0]==='removed'),false);
 });
 
+test('a provider-requested close of the current query closes the view as an element pick',()=>{
+  const f=fixture();
+  f.s.onEditorPresentationRequest({kind:'close',queryId:99,elementPicked:true});
+  f.s.onEditorPresentationRequest({kind:'close',queryId:5,elementPicked:false});
+  assert.equal(f.calls.some(c=>c[0]==='view.close'),false);
+  f.s.onEditorPresentationRequest({kind:'close',queryId:5,elementPicked:true});
+  assert.equal(JSON.stringify(f.calls.find(c=>c[0]==='view.close')[1]),JSON.stringify({elementPicked:true}));
+  assert.equal(f.calls.some(c=>c[0]==='address-fallback'),false);
+});
+
 test('a mode row commits its mode, mirrors it and restarts the query in that mode',async()=>{
   const f=fixture();f.result.kind='mode';f.s.active.rows[0].modeDocument=2;f.s.editId=6;f.s.modeApplied=0;
   assert.equal(f.s.activate(1,f.row.id,{}),'activated');
