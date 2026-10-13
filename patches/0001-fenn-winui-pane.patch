@@ -17,7 +17,7 @@ index 934bad0d61..81cd6e7ab6 100644
  
  if CONFIG["MOZ_ASAN"] or CONFIG["MOZ_DEBUG"]:
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 4f50c25976..92bc784115 100644
+index 4f50c25976..90fcc51b8e 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -320,7 +320,8 @@ pref("browser.shell.focusSetDefaultBrowserButton", false);
@@ -76,7 +76,7 @@ index 4f50c25976..92bc784115 100644
  
  // Multi-lingual preferences:
  //  *.enabled - Are langpacks available for the build of Firefox?
-@@ -3870,6 +3872,47 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3870,6 +3872,48 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -108,9 +108,10 @@ index 4f50c25976..92bc784115 100644
 +pref("fenn.winui.tabstrip.groupGlowFadeOut", false);
 +pref("fenn.winui.address.toolbar.enabled", false);
 +pref("fenn.winui.navigation.toolbar.enabled", false);
-+// Opt-in: drive the native address surface with the independent query/editor
-+// session instead of the retained input session. Non-private windows only.
-+pref("fenn.winui.address.independent", false);
++// Drive the native address surface with the independent query/editor session
++// instead of the retained input session. Non-private windows only; false
++// selects the retained session.
++pref("fenn.winui.address.independent", true);
 +
 +// Fenn (firefox-winui): no sponsored content or stories. Sponsored suggestions,
 +// shortcuts and stories come from Mozilla's advertising partners, and New Tab
@@ -22049,7 +22050,7 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..01b8def059
+index 0000000000..3465f5c926
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,2160 @@
@@ -22699,7 +22700,7 @@ index 0000000000..01b8def059
 +  // The engine that should drive the native address surface in this window.
 +  // Private windows keep the retained session.
 +  addressEngine() {
-+    return Services.prefs.getBoolPref(this.addressIndependentPref, false) &&
++    return Services.prefs.getBoolPref(this.addressIndependentPref, true) &&
 +      !PrivateBrowsingUtils.isWindowPrivate(window) ? "independent" : "retained";
 +  },
 +

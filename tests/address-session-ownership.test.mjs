@@ -116,6 +116,8 @@ test('a session whose engine differs from the selected engine is replaced, and t
     Services:{prefs:{getBoolPref:(name,fallback)=>context.prefs[name] ?? fallback}},prefs:{}});
   vm.runInContext('this.addressEngine = ({'+source.slice(start,end).replace(/,\s*$/,'')+'}).addressEngine;',context);
   const owner={addressIndependentPref:'fenn.winui.address.independent'};
+  assert.equal(context.addressEngine.call(owner),'independent','the independent engine is the default');
+  context.prefs['fenn.winui.address.independent']=false;
   assert.equal(context.addressEngine.call(owner),'retained');
   context.prefs['fenn.winui.address.independent']=true;
   assert.equal(context.addressEngine.call(owner),'independent');
