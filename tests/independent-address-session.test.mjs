@@ -26,6 +26,7 @@ function load(){
     changed(){calls.push(['changed']);}
     resolveTipButton(request){calls.push(['resolve',request]);return request.resolved??null;}
     activateTipButton(request){calls.push(['super.tip',request]);return 'retained-tip';}
+    activateGlobalAction(request){calls.push(['super.global',request]);return 'retained-global';}
     nativeKeywordResult(result){return result.kind==='keyword';}
     nativeOmniboxResult(result){return result.kind==='omnibox';}
     nativeModeResult(result){return result.kind==='mode';}
@@ -438,6 +439,45 @@ test('provider removals and their acknowledgment text reach the inherited row bu
   assert.equal(other.calls.some(c=>c[0]==='removed'),false);
 });
 
+function globalActionFixture(dataset){
+  const f=fixture({heuristic:false});
+  const action={key:'contextual-search',dataset};
+  f.result.providerName='UrlbarProviderGlobalActions';f.result.payload.actionsResults=[action];
+  f.s.active.rows[0].globalActions=[{id:'a1',key:'contextual-search'}];
+  f.s.active.revision=1;f.s.nativeOpen=true;
+  f.request={id:f.row.id,actionId:'a1',revision:1,intent:{}};
+  f.options=[];f.editor.beginNavigationActivation=(rev,q,res,event,options)=>{f.options.push(options);return {token:'sel'};};
+  return f;
+}
+
+test('an immediate global action is hosted on the editor with its picked action key',()=>{
+  const f=globalActionFixture({providesSearchMode:true,immediateSearch:true});
+  f.s.activateGlobalAction(f.request);
+  assert.equal(f.options[0].pickedActionKey,'contextual-search');
+  assert.equal(f.calls.some(c=>c[0]==='super.global'),false);
+  assert.equal(f.calls.some(c=>c[0]==='address-fallback'),false);
+});
+
+test('mode-entering, stale and unsupported global actions use the inherited path or hand back',()=>{
+  const mode=globalActionFixture({providesSearchMode:true});
+  mode.s.activateGlobalAction(mode.request);
+  assert.ok(mode.calls.some(c=>c[0]==='super.global'));
+  const stale=globalActionFixture({providesSearchMode:true,immediateSearch:true});
+  stale.request.revision=9;
+  assert.equal(stale.s.activateGlobalAction(stale.request),'stale');
+  const badIntent=globalActionFixture({providesSearchMode:true,immediateSearch:true});
+  badIntent.request.intent={ctrlKey:'yes'};
+  assert.equal(badIntent.s.activateGlobalAction(badIntent.request),'stale');
+  const rejected=globalActionFixture({providesSearchMode:true,immediateSearch:true});
+  rejected.editor.beginNavigationActivation=()=>null;
+  rejected.s.activateGlobalAction(rejected.request);
+  assert.ok(rejected.calls.some(c=>c[0]==='address-fallback'));
+  const tip=globalActionFixture({providesSearchMode:true,immediateSearch:true});
+  tip.request.id='s:1:1:0:ack:x';
+  tip.s.activateGlobalAction(tip.request);
+  assert.ok(tip.calls.some(c=>c[0]==='super.global'));
+});
+
 test('exposures reach the editor that records the engagement, once per result',()=>{
   const f=fixture();f.result.exposureTelemetry=true;f.s.active.exposed=new Set();f.s.sequence=1;
   const request={session:'s',revision:1,sequence:1,ids:[f.row.id]};
@@ -505,6 +545,14 @@ test('mode rejections fall back, restore the typed text and keep the stale-row g
   assert.equal(refused.s.modeQueryRestart??null,null);
   const wrongDocument=fixture({heuristic:false});wrongDocument.result.kind='mode';wrongDocument.s.active.rows[0].modeDocument=9;
   assert.equal(wrongDocument.s.activate(1,wrongDocument.row.id,{}),'stale');
+});
+
+test('an edit records the search string on the original input for its inherited pick paths',async()=>{
+  const f=fixture();f.input.value='abc';f.editor.edit=async()=>null;
+  f.input._lastSearchString='';
+  await f.s.query('abc',null,{composing:false,selectionStart:3,selectionEnd:3,inputType:'insertText'});
+  assert.equal(f.input._lastSearchString,'abc');
+  assert.equal(f.input._valueOnLastSearch,'abc');
 });
 
 test('edits carry the input search mode so a confirmed mode survives typing',async()=>{
