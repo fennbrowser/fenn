@@ -2905,6 +2905,7 @@ function parentLoadFixture() {
   lazy.UrlbarCompositionModel=modelFixture.sandbox.UrlbarCompositionModel;lazy.UrlbarShared=modelFixture.sandbox.UrlbarShared;modelFixture.session.close();
   lazy.ReaderMode={getOriginalUrlObjectForDisplay:()=>null};
   const Parent=new Function('lazy','Cr',`return class {
+    isPrivate=false;
     #currentLoad=null;#currentLoadRecovery=null;#currentLoadGeneration=0;#destroyed=false;#isAddressbar=true;#oneOffSearchTabs=new WeakMap();#independentEngineTargets=new WeakMap();#actor={};
     #recordSearchForBrowser(data){this.recorded?.(data);}
     #prepareAddressbarLoad(data){this.prepare?.(data);}
@@ -9122,8 +9123,8 @@ test('external alias handoff rejects non-shifted background policy without spend
   assert.equal(f.editor.getAcknowledgedOneOffResultSelection(receipt.token,f.event,f.options),receipt);f.editor.close();
 });
 
-async function urlTabActivationFixture({where='tab',type='URL',action=null,prefBackground=false}={}){
-  const f=await historyEngagementFixture();
+async function urlTabActivationFixture({where='tab',type='URL',action=null,prefBackground=false,isPrivate=false}={}){
+  const f=await historyEngagementFixture(isPrivate);
   if(where==='tabshifted')f.sandbox.UrlbarContentUtils.willLoadInBackground=w=>w==='tabshifted';
   if(action)f.sandbox.UrlbarContentUtils.willLoadInBackground=(w,p)=>w==='tab'&&!p.forceForeground&&prefBackground;
   if(type==='KEYWORD'){f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.KEYWORD;f.result.payload.input='kw words';}
@@ -9134,6 +9135,7 @@ async function urlTabActivationFixture({where='tab',type='URL',action=null,prefB
   if(type==='TIP'){f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.TIP;f.result.payload={type:'intervention_clear'};}
   if(type==='DYNAMIC'){f.result.type=f.sandbox.UrlbarShared.RESULT_TYPE.DYNAMIC;f.result.payload={dynamicType:'weather'};}
   const source=privateParentFixture(),listeners=new Set(),postData={post:'kw'};
+  source.p.isPrivate=isPrivate;
   source.lazy.UrlbarUtils.loadRequestToUrl=()=>({url:'https://history.test/',postData:type==='KEYWORD'?postData:null});
   source.p.browserWindow.gBrowser.tabContainer={addEventListener:(_n,cb)=>listeners.add(cb),removeEventListener:(_n,cb)=>listeners.delete(cb)};
   source.p.browserWindow.openTrustedLinkIn=(url,w,params)=>source.calls.push({url,where:w,params});
@@ -9180,6 +9182,48 @@ test('ordinary URL and keyword new-tab activation restores source, records histo
     assert.equal(f.calls.filter(c=>c[0]==='history').length,1);assert.equal(f.calls.filter(c=>c[0]==='record').length,1);
     assert.equal(f.calls.filter(c=>c[0]==='notify').length,1);assert.equal(f.listeners.size,0);
     assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);f.editor.close();
+  }
+});
+
+test('a private source opens URL and keyword results in private tabs and windows, without history',async()=>{
+  for(const where of ['tab','tabshifted','window'])for(const type of ['URL','KEYWORD']){
+    const f=await urlTabActivationFixture({where,type,isPrivate:true}),write=urlInput(f);
+    assert.equal(write.phase,'input',where+type);
+    assert.equal(f.editor.acknowledgeOneOffExternalNavigation(write.token,aliasModeObservation(write)),true);
+    const revert=f.editor.prepareOneOffExternalRevert(write.token,f.event,{persistedSearchTerms:false,focused:true});
+    assert.ok(revert,'a private source gets its source restored before the load: '+where+type);
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token).attempted,true,where+type);
+    const opened=f.source.calls.find(c=>typeof c==='object');
+    assert.equal(opened.where,where);assert.equal(opened.params.private,true,'the destination stays private');
+    assert.equal(f.calls.filter(c=>c[0]==='history').length,0,'private browsing records no input history');
+    assert.equal(f.calls.filter(c=>c[0]==='record').length,1);f.editor.close();
+  }
+});
+
+test('a source window never gets a destination of the other privacy',async()=>{
+  const plan=(extra={})=>({where:'tab',resetSelection:true,revertBeforeLoad:true,
+    openParams:{forceForeground:true,avoidBrowserFocus:false,...extra}});
+  const S=(await historyEngagementFixture()).sandbox.UrlbarQuerySession;
+  assert.equal(S.isExternalTabPlan(plan({private:true}),{isPrivate:true}),true);
+  assert.equal(S.isExternalTabPlan(plan({private:false}),{isPrivate:true}),false,'a private source cannot open a non-private tab');
+  assert.equal(S.isExternalTabPlan(plan({private:true}),{isPrivate:false}),false,'a non-private source cannot claim a private tab');
+  assert.equal(S.isExternalTabPlan(plan({}),{isPrivate:false}),true);
+  const windowPlan=(extra={})=>({where:'window',resetSelection:true,openParams:{forceForeground:true,...extra}});
+  assert.equal(S.isExternalWindowPlan(windowPlan({private:true}),{isPrivate:true}),true);
+  assert.equal(S.isExternalWindowPlan(windowPlan({private:false}),{isPrivate:true}),false);
+  assert.equal(S.isExternalWindowPlan(windowPlan({private:true}),{isPrivate:false}),false);
+  for(const isPrivate of [false,true]){
+    const f=privateParentFixture();f.p.isPrivate=isPrivate;
+    const load=params=>({loadRequest:{urlLoad:{url:'https://leak.test/'}},where:'tab',browserId:42,params,userTypedValue:'x'});
+    assert.throws(()=>f.p.prepareExternalUrlLoad(load({forceForeground:true,avoidBrowserFocus:false,private:!isPrivate}),f.stateToken),
+      /Invalid result-load target/,'the parent refuses a tab of the other privacy');
+    assert.ok(f.p.prepareExternalUrlLoad(load({forceForeground:true,avoidBrowserFocus:false,private:isPrivate}),f.stateToken));
+    const g=privateParentFixture();g.p.isPrivate=isPrivate;
+    const win=private_=>({loadRequest:{urlLoad:{url:'https://leak.test/'}},where:'window',browserId:42,
+      params:{forceForeground:false,private:private_},userTypedValue:'x'});
+    if(isPrivate)assert.throws(()=>g.p.prepareExternalUrlLoad(win(false),g.stateToken),/Invalid result-load target/,
+      'a private source cannot open a non-private window');
   }
 });
 
@@ -9542,8 +9586,8 @@ test('tip button URL actions are limited to tip results and valid URLs',async()=
   c.editor.close();
 });
 
-async function helpFixture({where='current',helpUrl='https://help.test/',url}={}){
-  const f=await urlTabActivationFixture({type:'URL',where});
+async function helpFixture({where='current',helpUrl='https://help.test/',url,isPrivate=false}={}){
+  const f=await urlTabActivationFixture({type:'URL',where,isPrivate});
   f.result.payload={url:'https://history.test/',...(helpUrl?{helpUrl}:{})};
   f.parent.engagementEvent.record=(_e,details)=>f.calls.push(['record',details.selType,details.resultAction?.command,details.resultAction?.url]);
   const click={type:'click',button:0,timeStamp:3,where};
@@ -9570,6 +9614,20 @@ test('help records its command, restores the source and opens its URL once in a 
     assert.equal(opened.params.allowInheritPrincipal,false);
     assert.equal(f.calls.filter(c=>c[0]==='notify').length,1);assert.equal(f.calls.filter(c=>c[0]==='history').length,0);
     assert.equal(f.editor.commitOneOffExternalNavigation(revert.token),null);f.editor.close();
+  }
+});
+
+test('help in a private source opens its URL in that private window, once',async()=>{
+  for(const where of ['tab','window']){
+    const f=await helpFixture({where,url:'https://support.test/',isPrivate:true}),proposal=f.begin();
+    assert.ok(proposal,where);
+    const revert=f.editor.prepareOneOffExternalRevert(proposal.token,f.click,{persistedSearchTerms:false,focused:true});
+    assert.ok(revert,'a private source can open help: '+where);
+    assert.equal(f.editor.acknowledgeOneOffExternalRevert(revert.token,privateRevertObservation(revert)),true);
+    assert.equal(f.editor.commitOneOffExternalNavigation(revert.token).attempted,true,where);
+    const opened=f.source.calls.find(c=>typeof c==='object');
+    assert.equal(opened.params.private,true,'the help page stays in private browsing');
+    assert.equal(f.calls.filter(c=>c[0]==='history').length,0);f.editor.close();
   }
 });
 

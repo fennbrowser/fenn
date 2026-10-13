@@ -28,6 +28,7 @@ function fixture() {
   const prefs = new Map([["fenn.winui.address.toolbar.enabled",true]]);
   const owner = {attached:true,element:element(),schedule() {},invalidateAddress() {},
     addressSession:{releaseNativePresentation() {calls.push(["release"]);}},
+    addressEngine() {return prefs.get("fenn.winui.address.private") ? "independent" : "retained";},
     addressFallback() {calls.push(["fallback"]); toolbar.restore();}};
   const window = {document:{documentElement:root,querySelectorAll:()=>[...elements.values()],createElementNS:element,getElementById:id=>elements.get(id)},
     gURLBar:{inputField:input,querySelector:()=>switcher,focus() {calls.push(["firefox-focus"]);}},
@@ -97,6 +98,16 @@ test("layout and preference fallback detach only the address host", () => {
     assert.equal(f.switcher.inert,false);
     assert.ok(f.calls.some(c=>c[0]==="host" && c[5]===false));
   }
+});
+
+test("a private window is native only when the private preference selects the independent engine", () => {
+  const off=fixture(); off.window.PrivateBrowsingUtils.isWindowPrivate=()=>true;
+  assert.equal(off.toolbar.supported(),false);
+  const on=fixture(); on.window.PrivateBrowsingUtils.isWindowPrivate=()=>true;
+  on.prefs.set("fenn.winui.address.private",true);
+  assert.equal(on.toolbar.supported(),true);
+  const normal=fixture(); normal.prefs.set("fenn.winui.address.private",true);
+  assert.equal(normal.toolbar.supported(),true);
 });
 
 test("failed focus hands the same interaction to Firefox", () => {

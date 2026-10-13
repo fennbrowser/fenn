@@ -112,6 +112,14 @@ test('the editor is rebuilt when the browser or document it was pinned to change
   assert.notEqual(f.s.ensureEditor(),second,'a tab switch gets its own editor');
 });
 
+test('the editor context carries the window privacy',()=>{
+  const normal=fixture();normal.s.editor=null;
+  assert.equal(normal.s.ensureEditor().options.context.isPrivate,false);
+  const priv=fixture();priv.s.editor=null;
+  priv.window.PrivateBrowsingUtils={isWindowPrivate:win=>win===priv.window};
+  assert.equal(priv.s.ensureEditor().options.context.isPrivate,true);
+});
+
 test('an editor whose scope was lost is not reused when the scope comes back',()=>{
   const f=fixture();f.s.editor=null;
   const first=f.s.ensureEditor();

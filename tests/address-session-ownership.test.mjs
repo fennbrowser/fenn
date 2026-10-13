@@ -115,12 +115,16 @@ test('a session whose engine differs from the selected engine is replaced, and t
   const context=vm.createContext({window:{},PrivateBrowsingUtils:{isWindowPrivate:win=>win.private},
     Services:{prefs:{getBoolPref:(name,fallback)=>context.prefs[name] ?? fallback}},prefs:{}});
   vm.runInContext('this.addressEngine = ({'+source.slice(start,end).replace(/,\s*$/,'')+'}).addressEngine;',context);
-  const owner={addressIndependentPref:'fenn.winui.address.independent'};
+  const owner={addressIndependentPref:'fenn.winui.address.independent',addressPrivatePref:'fenn.winui.address.private'};
   assert.equal(context.addressEngine.call(owner),'independent','the independent engine is the default');
   context.prefs['fenn.winui.address.independent']=false;
   assert.equal(context.addressEngine.call(owner),'retained');
   context.prefs['fenn.winui.address.independent']=true;
   assert.equal(context.addressEngine.call(owner),'independent');
   context.window.private=true;
-  assert.equal(context.addressEngine.call(owner),'retained','private windows keep the retained engine');
+  assert.equal(context.addressEngine.call(owner),'retained','a private window is not native unless the private preference is on');
+  context.prefs['fenn.winui.address.private']=true;
+  assert.equal(context.addressEngine.call(owner),'independent','private windows get the independent engine when enabled');
+  context.prefs['fenn.winui.address.independent']=false;
+  assert.equal(context.addressEngine.call(owner),'retained','the private preference never selects the retained session');
 });
