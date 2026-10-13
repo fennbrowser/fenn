@@ -41,7 +41,7 @@ function load(){
   return {Session:context.Session,calls};
 }
 
-function fixture({visible=true,page='https://page.test/'}={}){
+function fixture({visible=true,page='https://page.test/',heuristic=true}={}){
   const {Session,calls}=load();
   const browser={browserId:7,currentURI:{spec:page},browsingContext:{currentWindowGlobal:{innerWindowId:2}}};
   const published=[],engagements=[];
@@ -49,7 +49,7 @@ function fixture({visible=true,page='https://page.test/'}={}){
   const inputField={value:'typed',selectionStart:5,selectionEnd:5,selectionDirection:'none',
     setSelectionRange(start,end,direction='none'){this.selectionStart=start;this.selectionEnd=end;this.selectionDirection=direction;}};
   const input={view,inputField,controller:{visibleResults:[]},untrimmedValue:'typed',
-    setNativeInputValue(v){this.inputField.value=v;calls.push(['native-value',v]);},handleRevert(){calls.push(['revert']);},
+    setNativeInputValue(v){this.inputField.value=v;calls.push(['native-value',v]);},handleRevert(){calls.push(['revert']);},handleCommand(e){calls.push(['handleCommand',e]);},
     searchMode:{engineName:'Held'},mirrorSearchMode(mode,browser){calls.push(['mirror',mode,browser]);}};
   const window={gBrowser:{selectedBrowser:browser,selectedTab:{isEmpty:false,userContextId:0}},gURLBar:input,
     KeyboardEvent:class {constructor(type,init){this.type=type;Object.assign(this,init);}},performance:{now:()=>1},
@@ -58,7 +58,7 @@ function fixture({visible=true,page='https://page.test/'}={}){
   view.nativePresentation=s;
   const result={id:11,type:1,payload:{url:'https://result.test/'}};
   const row={id:'s:1:1:0'};
-  s.active={revision:1,text:'typed',inputValue:'typed',source:'independent',browser,page,context:{id:5,results:[result],heuristicResult:result},
+  s.active={revision:1,text:'typed',inputValue:'typed',source:'independent',browser,page,context:{id:5,results:[result],heuristicResult:heuristic?result:null},
     rows:[row],results:[result],resultIndexes:[0]};
   s.nativeVisible=visible?[row.id]:[];
   s.editorRevision=3;
@@ -114,24 +114,24 @@ test('Enter without a row id uses the selected or heuristic result',()=>{
   const f=fixture();
   assert.equal(f.s.activate(1,'',{}),'activated');
   const g=fixture();g.s.active.context.heuristicResult=null;
-  assert.equal(g.s.activate(1,'',{}),'retained-activated','an Enter the editor cannot host is completed by Firefox');
+  assert.equal(g.s.activate(1,'',{}),'activated','an Enter the editor cannot host is completed by Firefox');
   assert.equal(g.s.constructor.counters.fallbacks.at(-1),'no-result');
 });
 
 test('modified intents, hidden rows and rejected handoffs fall back with a reason',()=>{
   const last=f=>f.s.constructor.counters.fallbacks.at(-1);
-  const hidden=fixture({visible:false});
+  const hidden=fixture({visible:false,heuristic:false});
   assert.equal(hidden.s.activate(1,hidden.row.id,{}),'firefox-fallback');
   assert.equal(last(hidden),'not-visible');
   for(const [method,reason] of [['beginNavigationActivation','unsupported-plan'],['acknowledgeNavigationActivation','selection-rejected'],
     ['acknowledgeNavigationWrite','write-rejected']]){
-    const f=fixture();f.editor[method]=()=>null;
+    const f=fixture({heuristic:false});f.editor[method]=()=>null;
     assert.equal(f.s.activate(1,f.row.id,{}),'firefox-fallback');
     assert.equal(last(f),reason);
     assert.deepEqual(f.engagements.at(-1),['discard']);
     assert.notEqual(f.s.active,null,'a fallback before consumption keeps the query');
   }
-  const thrown=fixture();thrown.editor.beginNavigationActivation=()=>{throw Error('boom');};
+  const thrown=fixture({heuristic:false});thrown.editor.beginNavigationActivation=()=>{throw Error('boom');};
   assert.equal(thrown.s.activate(1,thrown.row.id,{}),'firefox-fallback');assert.equal(last(thrown),'error');
 });
 
@@ -251,8 +251,8 @@ test('caret acceptance is observed by the editor and confirms the typed value on
   assert.equal(inherited.calls.some(c=>c[0]==='observe'),false);
 });
 
-function externalFixture(extra={}){
-  const f=fixture();
+function externalFixture(extra={},options={}){
+  const f=fixture(options);
   const write={token:{...extra},phase:'input',value:'https://result.test/',selectionStart:20,selectionEnd:20,
     selectionDirection:'none',searchMode:null,pageProxyValid:false};
   f.editor.acknowledgeNavigationActivation=()=>write;
@@ -284,7 +284,7 @@ test('a new-tab activation writes the result, restores the source and commits on
 test('a rejected or unavailable external stage falls back and restores the typed text',()=>{
   const last=f=>f.s.constructor.counters.fallbacks.at(-1);
   for(const [extra,reason] of [[{external:false},'input-rejected'],[{revert:null},'revert-unavailable'],[{restore:false},'revert-rejected']]){
-    const f=externalFixture(extra);
+    const f=externalFixture(extra,{heuristic:false});
     assert.equal(f.s.activate(1,f.row.id,{ctrlKey:true}),'firefox-fallback');
     assert.equal(last(f),reason);
     assert.equal(f.calls.some(c=>c[0]==='external-commit'),false);
@@ -313,7 +313,7 @@ test('keyword and omnibox rows require the pinned document and an unlocked addre
 });
 
 test('results the original input cannot activate fall back and refocus Firefox',()=>{
-  const f=fixture();f.result.activatable=false;f.input.focus=()=>f.calls.push(['focus']);
+  const f=fixture({heuristic:false});f.result.activatable=false;f.input.focus=()=>f.calls.push(['focus']);
   assert.equal(f.s.activate(1,f.row.id,{}),'firefox-fallback');
   assert.equal(f.s.constructor.counters.fallbacks.at(-1),'not-activatable');
   assert.ok(f.calls.some(c=>c[0]==='focus'));
@@ -464,15 +464,15 @@ test('mode state committed by the editor is mirrored into the original input for
 
 test('mode rejections fall back, restore the typed text and keep the stale-row guards',()=>{
   const last=f=>f.s.constructor.counters.fallbacks.at(-1);
-  const none=fixture();none.result.kind='mode';none.s.active.rows[0].modeDocument=2;none.editor.modeProposal=null;
+  const none=fixture({heuristic:false});none.result.kind='mode';none.s.active.rows[0].modeDocument=2;none.editor.modeProposal=null;
   assert.equal(none.s.activate(1,none.row.id,{}),'firefox-fallback');assert.equal(last(none),'unsupported-mode');
-  const rejected=fixture();rejected.result.kind='mode';rejected.s.active.rows[0].modeDocument=2;rejected.editor.modeAck=false;
+  const rejected=fixture({heuristic:false});rejected.result.kind='mode';rejected.s.active.rows[0].modeDocument=2;rejected.editor.modeAck=false;
   assert.equal(rejected.s.activate(1,rejected.row.id,{}),'firefox-fallback');assert.equal(last(rejected),'mode-rejected');
   assert.equal(rejected.input.inputField.value,'typed');
-  const refused=fixture();refused.result.kind='mode';refused.s.active.rows[0].modeDocument=2;refused.editor.modeCommit=null;
+  const refused=fixture({heuristic:false});refused.result.kind='mode';refused.s.active.rows[0].modeDocument=2;refused.editor.modeCommit=null;
   assert.equal(refused.s.activate(1,refused.row.id,{}),'firefox-fallback');assert.equal(last(refused),'mode-commit-rejected');
   assert.equal(refused.s.modeQueryRestart??null,null);
-  const wrongDocument=fixture();wrongDocument.result.kind='mode';wrongDocument.s.active.rows[0].modeDocument=9;
+  const wrongDocument=fixture({heuristic:false});wrongDocument.result.kind='mode';wrongDocument.s.active.rows[0].modeDocument=9;
   assert.equal(wrongDocument.s.activate(1,wrongDocument.row.id,{}),'stale');
 });
 
@@ -483,34 +483,38 @@ test('edits carry the input search mode so a confirmed mode survives typing',asy
   assert.equal(state.searchMode.engineName,'Held');
 });
 
-test('an unsupported Enter with no chosen row is replayed once through the retained Enter branch',()=>{
-  const f=fixture(),counters=f.s.constructor.counters,before=counters.replays;
-  f.editor.beginNavigationActivation=()=>null;
-  assert.equal(f.s.activate(1,'',{altKey:true}),'retained-activated');
-  assert.equal(counters.replays,before+1);
-  assert.equal(counters.fallbacks.at(-1),'unsupported-plan','the reason is still recorded');
-  const replay=f.calls.filter(c=>c[0]==='super.activate');
-  assert.equal(replay.length,1);assert.equal(replay[0][2],'');assert.equal(JSON.stringify(replay[0][3]),JSON.stringify({altKey:true}));
-  assert.equal(f.input._lastSearchString,'typed','telemetry sees the typed text, not an older search');
-  assert.deepEqual(f.engagements.at(-1),['discard']);
+test('an unsupported Enter on the heuristic or with no row is completed once by Firefox',()=>{
+  for(const id of ['','row']){
+    const f=fixture(),counters=f.s.constructor.counters,before=counters.replays;
+    f.editor.beginNavigationActivation=()=>null;
+    assert.equal(f.s.activate(1,id==='row'?f.row.id:'',{altKey:true}),'activated');
+    assert.equal(counters.replays,before+1);
+    assert.equal(counters.fallbacks.at(-1),'unsupported-plan','the reason is still recorded');
+    const commands=f.calls.filter(c=>c[0]==='handleCommand');
+    assert.equal(commands.length,1);
+    assert.equal(commands[0][1].key,'Enter');assert.equal(commands[0][1].altKey,true);assert.equal('keyCode' in commands[0][1],false);
+    assert.equal(f.input._lastSearchString,'typed','telemetry sees the typed text, not an older search');
+    assert.deepEqual(f.engagements.at(-1),['discard']);
+    assert.equal(f.s.active,null);assert.equal(f.s.revision,2);
+  }
 });
 
-test('a row activation, a selected row and a consumed edit are never replayed',()=>{
-  const row=fixture();row.editor.beginNavigationActivation=()=>null;
+test('a non-heuristic row, a selected row and a consumed edit are never replayed',()=>{
+  const row=fixture();row.editor.beginNavigationActivation=()=>null;row.s.active.context.heuristicResult=null;
   assert.equal(row.s.activate(1,row.row.id,{altKey:true}),'firefox-fallback');
-  assert.equal(row.calls.some(c=>c[0]==='super.activate'),false);
+  assert.equal(row.calls.some(c=>c[0]==='handleCommand'),false);
   const selected=fixture();selected.editor.beginNavigationActivation=()=>null;selected.s.nativeSelected=selected.result;
   assert.equal(selected.s.activate(1,'',{}),'firefox-fallback');
-  assert.equal(selected.calls.some(c=>c[0]==='super.activate'),false);
+  assert.equal(selected.calls.some(c=>c[0]==='handleCommand'),false);
   const consumed=fixture();consumed.editor.commitAcknowledgedNavigation=()=>({attempted:false,reverted:false});
   assert.equal(consumed.s.activate(1,'',{}),'firefox-fallback');
-  assert.equal(consumed.calls.some(c=>c[0]==='super.activate'),false,'a load that was attempted must not run twice');
+  assert.equal(consumed.calls.some(c=>c[0]==='handleCommand'),false,'a load that was attempted must not run twice');
   assert.equal(consumed.s.active,null);
 });
 
-test('a result Firefox cannot activate is replayed for Enter without refocusing, and refocuses for a row',()=>{
+test('a result Firefox cannot activate is replayed for Enter without refocusing, and refocuses for a named non-heuristic row',()=>{
   const enter=fixture();enter.result.activatable=false;enter.input.focus=()=>enter.calls.push(['focus']);
-  assert.equal(enter.s.activate(1,'',{}),'retained-activated');
+  assert.equal(enter.s.activate(1,'',{}),'activated');
   assert.equal(enter.calls.some(c=>c[0]==='focus'),false);
   assert.equal(enter.s.constructor.counters.fallbacks.at(-1),'not-activatable');
 });
