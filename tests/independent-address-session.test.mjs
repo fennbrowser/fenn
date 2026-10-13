@@ -32,7 +32,7 @@ function load(){
     updateSelection(request){calls.push(['super.updateSelection',request]);return {status:'selected'};}
     captureAutofill(active){calls.push(['super.capture']);}
   }
-  const context=vm.createContext({console,ChromeUtils:{importESModule:()=>({UrlbarEditSession:class {},independentUrlbarBrowserState:{snapshot:()=>({persistedSearchTerms:false})}})}});
+  const context=vm.createContext({console,ChromeUtils:{importESModule:()=>({UrlbarEditSession:class {},independentUrlbarBrowserState:{snapshot:()=>({persistedSearchTerms:globalThis.r2Persisted===true})}})}});
   const source=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIIndependentUrlbarSession.sys.mjs',import.meta.url),'utf8')
     .replace(/^import .*;$/m,'').replace('export class WinUIIndependentUrlbarSession','this.Session = class WinUIIndependentUrlbarSession')
     .replace('extends WinUIUrlbarSession','extends Base');
@@ -524,4 +524,41 @@ test('the activation event carries no keyCode so Ctrl is not a canonization requ
   f.editor.beginNavigationActivation=(r,q,res,event)=>{seen=event;return {token:'sel'};};
   f.s.activate(1,f.row.id,{ctrlKey:true});
   assert.equal(seen.key,'Enter');assert.equal(seen.ctrlKey,true);assert.equal('keyCode' in seen,false);
+});
+
+test('the external handoff reports the owned persisted-search-terms state, not a constant',()=>{
+  const f=externalFixture();
+  globalThis.r2Persisted=true;
+  f.s.activate(1,f.row.id,{ctrlKey:true});
+  const seen=f.calls.find(c=>c[0]==='external-revert')[2];
+  globalThis.r2Persisted=false;
+  assert.equal(seen.persistedSearchTerms,true);
+});
+
+test('a heuristic row the host has not yet reported visible is completed by Firefox, a suggestion row is not',()=>{
+  const heuristic=fixture({visible:false});
+  assert.equal(heuristic.s.activate(1,heuristic.row.id,{}),'activated');
+  assert.equal(heuristic.s.constructor.counters.fallbacks.at(-1),'not-visible');
+  assert.equal(heuristic.calls.filter(c=>c[0]==='handleCommand').length,1);
+  const suggestion=fixture({visible:false,heuristic:false});
+  assert.equal(suggestion.s.activate(1,suggestion.row.id,{}),'firefox-fallback');
+});
+
+test('an activation before the first streamed update, and a restart that throws, hand the surface back',async()=>{
+  const early=fixture({heuristic:false});early.s.active.context=null;early.s.active.results=[early.result];early.s.active.resultIndexes=[0];
+  early.s.invokeResultMenu(early.result,{command:'dismiss'},{});
+  assert.equal(early.s.constructor.counters.fallbacks.at(-1),'no-context');
+  assert.ok(early.calls.some(c=>c[0]==='address-fallback'));
+  const f=fixture();f.s.tipQueryRestart=null;
+  f.editor.acknowledgeRestartQuery=async()=>{throw Error('mode state mismatch');};
+  f.s.onEditorPresentationRequest({kind:'restart-query',token:{proposal:{value:'x',edit:{text:'typed',selectionDirection:'none'}}}});
+  await new Promise(r=>setTimeout(r,5));
+  assert.equal(f.s.tipQueryRestart,null,'the admission does not outlive a failed restart');
+  assert.ok(f.calls.some(c=>c[0]==='address-fallback'));
+});
+
+test('diagnostic lists keep only the most recent entries',()=>{
+  const f=fixture();
+  for(let i=0;i<450;i++)f.s.onEditorPresentationRequest({kind:'close'});
+  assert.equal(f.s.constructor.counters.requests.length,200);
 });
