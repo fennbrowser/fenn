@@ -7,7 +7,7 @@ import vm from 'node:vm';
 // exercised without a browser: what it owns, when it falls back, and what it
 // delegates unchanged.
 function load(){
-  const calls=[];
+  const calls=[],created=[];
   class Base {
     constructor(window){this.window=window;this.closed=false;this.sessionId='s';this.revision=1;this.sequence=1;this.active=null;
       this.nativeOpen=true;this.input=window.gURLBar;this.nativeVisible=[];}
@@ -34,17 +34,17 @@ function load(){
     captureAutofill(active){calls.push(['super.capture']);}
     exposureRecorder(){return {addExposure(){calls.push(['retained-exposure']);},discardTentativeExposures(){}};}
   }
-  const context=vm.createContext({console,ChromeUtils:{importESModule:()=>({UrlbarEditSession:class {},independentUrlbarBrowserState:{snapshot:()=>({persistedSearchTerms:globalThis.r2Persisted===true})}})}});
+  const context=vm.createContext({console,UrlbarShared:{RESULT_TYPE:{DYNAMIC:8}},ChromeUtils:{importESModule:()=>({UrlbarEditSession:class {constructor(options){this.options=options;created.push(this);}close(){calls.push(['stale-editor-close']);}},independentUrlbarBrowserState:{snapshot:()=>({persistedSearchTerms:globalThis.r2Persisted===true})}})}});
   const source=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIIndependentUrlbarSession.sys.mjs',import.meta.url),'utf8')
-    .replace(/^import .*;$/m,'').replace('export class WinUIIndependentUrlbarSession','this.Session = class WinUIIndependentUrlbarSession')
+    .replace(/^import .*;\r?$/gm,'').replace('export class WinUIIndependentUrlbarSession','this.Session = class WinUIIndependentUrlbarSession')
     .replace('extends WinUIUrlbarSession','extends Base');
   context.Base=Base;
   vm.runInContext(source,context);
-  return {Session:context.Session,calls};
+  return {Session:context.Session,calls,created};
 }
 
 function fixture({visible=true,page='https://page.test/',heuristic=true}={}){
-  const {Session,calls}=load();
+  const {Session,calls,created}=load();
   const browser={browserId:7,currentURI:{spec:page},browsingContext:{currentWindowGlobal:{innerWindowId:2}}};
   const published=[],engagements=[];
   const view={nativePresentation:null,close:o=>calls.push(['view.close',o])};
@@ -93,9 +93,36 @@ function fixture({visible=true,page='https://page.test/',heuristic=true}={}){
     acknowledgeCompletion:(token,write)=>{calls.push(['ack',write]);return token.accept!==false;},
     observeAutofillSelection:(...a)=>{calls.push(['observe',...a]);return {confirmed:editor.confirms===true};},
   };
-  s.editor=editor;
-  return {s,calls,published,engagements,editor,result,row,window,input,browser};
+  s.editor=editor;s.editorScope={browser,documentId:2,lost:false};
+  return {s,calls,created,published,engagements,editor,result,row,window,input,browser};
 }
+
+test('the editor is rebuilt when the browser or document it was pinned to changes',()=>{
+  const f=fixture();f.s.editor=null;
+  const first=f.s.ensureEditor();
+  assert.equal(f.s.ensureEditor(),first,'the same scope keeps the editor');
+  assert.equal(f.created.length,1);
+  f.browser.browsingContext.currentWindowGlobal.innerWindowId=3;
+  const second=f.s.ensureEditor();
+  assert.notEqual(second,first);
+  assert.equal(f.calls.filter(c=>c[0]==='stale-editor-close').length,1,'the old editor is closed');
+  assert.equal(first.options.isCurrent(),false,'the old scope is over');
+  assert.equal(second.options.isCurrent(),true);
+  f.window.gBrowser.selectedBrowser={browserId:8,currentURI:{spec:'https://other.test/'},browsingContext:{currentWindowGlobal:{innerWindowId:9}}};
+  assert.notEqual(f.s.ensureEditor(),second,'a tab switch gets its own editor');
+});
+
+test('an editor whose scope was lost is not reused when the scope comes back',()=>{
+  const f=fixture();f.s.editor=null;
+  const first=f.s.ensureEditor();
+  const original=f.window.gBrowser.selectedBrowser;
+  f.window.gBrowser.selectedBrowser={browserId:8,browsingContext:{currentWindowGlobal:{innerWindowId:9}}};
+  assert.equal(first.options.isCurrent(),false,'the editor sees another tab selected and closes itself');
+  f.window.gBrowser.selectedBrowser=original;
+  const again=f.s.ensureEditor();
+  assert.notEqual(again,first,'switching back must not hand out the closed editor');
+  assert.equal(again.options.isCurrent(),true);
+});
 
 test('the staged session reports its engine and the operations it owns',()=>{
   const {s}=fixture();
@@ -444,7 +471,7 @@ function globalActionFixture(dataset){
   const action={key:'contextual-search',dataset};
   f.result.providerName='UrlbarProviderGlobalActions';f.result.payload.actionsResults=[action];
   f.s.active.rows[0].globalActions=[{id:'a1',key:'contextual-search'}];
-  f.s.active.revision=1;f.s.nativeOpen=true;
+  f.s.active.revision=1;f.s.nativeOpen=true;f.input.searchMode=null;
   f.request={id:f.row.id,actionId:'a1',revision:1,intent:{}};
   f.options=[];f.editor.beginNavigationActivation=(rev,q,res,event,options)=>{f.options.push(options);return {token:'sel'};};
   return f;
@@ -462,6 +489,11 @@ test('mode-entering, stale and unsupported global actions use the inherited path
   const mode=globalActionFixture({providesSearchMode:true});
   mode.s.activateGlobalAction(mode.request);
   assert.ok(mode.calls.some(c=>c[0]==='super.global'));
+  const inMode=globalActionFixture({providesSearchMode:true,immediateSearch:true});
+  inMode.input.searchMode={engineName:'Held'};
+  inMode.s.activateGlobalAction(inMode.request);
+  assert.ok(inMode.calls.some(c=>c[0]==='super.global'),'a pick inside a search mode keeps the inherited path');
+  assert.equal(inMode.options.length,0);
   const stale=globalActionFixture({providesSearchMode:true,immediateSearch:true});
   stale.request.revision=9;
   assert.equal(stale.s.activateGlobalAction(stale.request),'stale');
@@ -476,6 +508,16 @@ test('mode-entering, stale and unsupported global actions use the inherited path
   tip.request.id='s:1:1:0:ack:x';
   tip.s.activateGlobalAction(tip.request);
   assert.ok(tip.calls.some(c=>c[0]==='super.global'));
+});
+
+test('a dynamic provider pick inside a search mode uses the inherited pick',()=>{
+  const f=fixture({heuristic:false});f.result.type=8;
+  f.s.activate(1,f.row.id,{});
+  assert.ok(f.calls.some(c=>c[0]==='super.activate'));
+  assert.equal(f.s.constructor.counters.requests.at(-1),'dynamic-pick-in-mode');
+  const plain=fixture({heuristic:false});plain.result.type=8;plain.input.searchMode=null;
+  plain.s.activate(1,plain.row.id,{});
+  assert.equal(plain.calls.some(c=>c[0]==='super.activate'),false,'outside a mode the editor hosts it');
 });
 
 test('exposures reach the editor that records the engagement, once per result',()=>{
