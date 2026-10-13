@@ -114,7 +114,7 @@ test('Enter without a row id uses the selected or heuristic result',()=>{
   const f=fixture();
   assert.equal(f.s.activate(1,'',{}),'activated');
   const g=fixture();g.s.active.context.heuristicResult=null;
-  assert.equal(g.s.activate(1,'',{}),'firefox-fallback');
+  assert.equal(g.s.activate(1,'',{}),'retained-activated','an Enter the editor cannot host is completed by Firefox');
   assert.equal(g.s.constructor.counters.fallbacks.at(-1),'no-result');
 });
 
@@ -481,4 +481,43 @@ test('edits carry the input search mode so a confirmed mode survives typing',asy
   f.editor.edit=async s=>{state=s;return null;};
   await f.s.query('abc',null,{composing:false,selectionStart:3,selectionEnd:3,inputType:'insertText'});
   assert.equal(state.searchMode.engineName,'Held');
+});
+
+test('an unsupported Enter with no chosen row is replayed once through the retained Enter branch',()=>{
+  const f=fixture(),counters=f.s.constructor.counters,before=counters.replays;
+  f.editor.beginNavigationActivation=()=>null;
+  assert.equal(f.s.activate(1,'',{altKey:true}),'retained-activated');
+  assert.equal(counters.replays,before+1);
+  assert.equal(counters.fallbacks.at(-1),'unsupported-plan','the reason is still recorded');
+  const replay=f.calls.filter(c=>c[0]==='super.activate');
+  assert.equal(replay.length,1);assert.equal(replay[0][2],'');assert.equal(JSON.stringify(replay[0][3]),JSON.stringify({altKey:true}));
+  assert.equal(f.input._lastSearchString,'typed','telemetry sees the typed text, not an older search');
+  assert.deepEqual(f.engagements.at(-1),['discard']);
+});
+
+test('a row activation, a selected row and a consumed edit are never replayed',()=>{
+  const row=fixture();row.editor.beginNavigationActivation=()=>null;
+  assert.equal(row.s.activate(1,row.row.id,{altKey:true}),'firefox-fallback');
+  assert.equal(row.calls.some(c=>c[0]==='super.activate'),false);
+  const selected=fixture();selected.editor.beginNavigationActivation=()=>null;selected.s.nativeSelected=selected.result;
+  assert.equal(selected.s.activate(1,'',{}),'firefox-fallback');
+  assert.equal(selected.calls.some(c=>c[0]==='super.activate'),false);
+  const consumed=fixture();consumed.editor.commitAcknowledgedNavigation=()=>({attempted:false,reverted:false});
+  assert.equal(consumed.s.activate(1,'',{}),'firefox-fallback');
+  assert.equal(consumed.calls.some(c=>c[0]==='super.activate'),false,'a load that was attempted must not run twice');
+  assert.equal(consumed.s.active,null);
+});
+
+test('a result Firefox cannot activate is replayed for Enter without refocusing, and refocuses for a row',()=>{
+  const enter=fixture();enter.result.activatable=false;enter.input.focus=()=>enter.calls.push(['focus']);
+  assert.equal(enter.s.activate(1,'',{}),'retained-activated');
+  assert.equal(enter.calls.some(c=>c[0]==='focus'),false);
+  assert.equal(enter.s.constructor.counters.fallbacks.at(-1),'not-activatable');
+});
+
+test('the activation event carries no keyCode so Ctrl is not a canonization request',()=>{
+  const f=fixture();let seen=null;
+  f.editor.beginNavigationActivation=(r,q,res,event)=>{seen=event;return {token:'sel'};};
+  f.s.activate(1,f.row.id,{ctrlKey:true});
+  assert.equal(seen.key,'Enter');assert.equal(seen.ctrlKey,true);assert.equal('keyCode' in seen,false);
 });
