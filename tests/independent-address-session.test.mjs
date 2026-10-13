@@ -678,6 +678,19 @@ test('an activation before the first streamed update, and a restart that throws,
   assert.ok(f.calls.some(c=>c[0]==='address-fallback'));
 });
 
+test('the fallback readout counts every fallback by reason and reports a rate per 200 activations',()=>{
+  const f=fixture({visible:false,heuristic:false});
+  const C=f.s.constructor,before=C.report();
+  f.s.activate(1,f.row.id,{});
+  C.counters.activations+=3;
+  const after=C.report();
+  assert.equal(after.fallbackTotal,before.fallbackTotal+1);
+  assert.equal(after.fallbackReasons['not-visible'],(before.fallbackReasons['not-visible']??0)+1);
+  assert.equal(after.fallbacksPer200Activations,Math.round(1/3*200*100)/100);
+  assert.equal(after.errorFallbacks,before.errorFallbacks);
+  assert.equal(JSON.stringify(Object.keys(after)),JSON.stringify(Object.keys(before)));
+});
+
 test('diagnostic lists keep only the most recent entries',()=>{
   const f=fixture();
   for(let i=0;i<450;i++)f.s.onEditorPresentationRequest({kind:'close'});
