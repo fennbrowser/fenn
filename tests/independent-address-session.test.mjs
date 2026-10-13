@@ -374,6 +374,7 @@ test('a provider restart writes its value, admits that query and is acknowledged
   await f.s.onEditorPresentationRequest({kind:'restart-query',token:{proposal}});
   await new Promise(r=>setTimeout(r,0));
   assert.equal(f.input.inputField.value,'rewritten');
+  assert.equal(f.calls.some(c=>c[0]==='native-value'&&c[1]==='rewritten'),false,'a provider value write is not typed text');
   const restart=f.calls.find(c=>c[0]==='restart');
   assert.equal(restart[1].text,'rewritten');assert.equal(restart[1].selectionStart,9);
   assert.equal(f.s.tipQueryRestart.text,'rewritten');assert.equal(f.s.tipQueryRestart.editId,3);
