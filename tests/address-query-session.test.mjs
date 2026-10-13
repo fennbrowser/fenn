@@ -19,7 +19,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
   class Parent {
     constructor(identity){this.identity=identity;this.started=[];this.engagements=[];
       this.engagementEvent={start:(...args)=>this.engagements.push({kind:'start',args}),
-        record:(...args)=>this.engagements.push({kind:'record',args}),discard:()=>this.engagements.push({kind:'discard'})};parents.push(this);}
+        record:(...args)=>this.engagements.push({kind:'record',args}),addExposure:(...args)=>this.engagements.push({kind:'exposure',args}),discard:()=>this.engagements.push({kind:'discard'})};parents.push(this);}
     setChild(child){this.child=child;}
     initEngineStore(){if(!hold)this.child.updateEngineStore('init',[],null);}
     startQuery(query){query.results??=[];this.started.push(query);return Promise.resolve(query);}
@@ -137,6 +137,18 @@ test('editor selection acknowledgment is bound to the exact observed editor snap
   f.parent.onBeforeSelection=()=>f.editor.select(1,1,1);
   assert.equal(f.editor.beginResultSelection(1,f.query.id,f.result),null);
   assert.deepEqual(calls,['before','selected','before']);f.editor.close();
+});
+
+test('exposures are queued on the session recorder for owned results of the current edit only',async()=>{
+  const f=await completionFixture();
+  f.editor.addExposure(1,f.query.id,f.result);
+  const exposures=f.parent.engagements.filter(e=>e.kind==='exposure');
+  assert.equal(exposures.length,1);
+  assert.equal(exposures[0].args[0],f.result);assert.equal(exposures[0].args[1].id,f.query.id);
+  assert.throws(()=>f.editor.addExposure(1,f.query.id,{id:999}),/Stale exposure/);
+  assert.throws(()=>f.editor.addExposure(1,f.query.id+100,f.result),/Stale exposure/);
+  assert.throws(()=>f.editor.addExposure(99,f.query.id,f.result),/Stale editor exposure/);
+  f.editor.close();
 });
 
 async function previewFixture() {

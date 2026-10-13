@@ -10188,10 +10188,10 @@ index 0000000000..56df21727b
 +}
 diff --git a/browser/components/urlbar/content/UrlbarEditSession.mjs b/browser/components/urlbar/content/UrlbarEditSession.mjs
 new file mode 100644
-index 0000000000..c2b5e4b2fe
+index 0000000000..e4a912370c
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarEditSession.mjs
-@@ -0,0 +1,4231 @@
+@@ -0,0 +1,4237 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11772,6 +11772,12 @@ index 0000000000..c2b5e4b2fe
 +  #canExposeComposition(revision, queryId) {
 +    return this.#compositionPresentation?.revision === revision &&
 +      this.#compositionPresentation.queryId === queryId;
++  }
++
++  addExposure(revision, queryId, result) {
++    this.#check();
++    if (!this.#edit || revision !== this.#edit.revision) throw new Error("Stale editor exposure");
++    this.#queries.addExposure(queryId, result);
 +  }
 +
 +  publishPresentation(revision, queryId, visibleResults, open) {
@@ -14425,10 +14431,10 @@ index 0000000000..c2b5e4b2fe
 +}
 diff --git a/browser/components/urlbar/content/UrlbarQuerySession.mjs b/browser/components/urlbar/content/UrlbarQuerySession.mjs
 new file mode 100644
-index 0000000000..0f5673a832
+index 0000000000..b77ae4d757
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarQuerySession.mjs
-@@ -0,0 +1,2185 @@
+@@ -0,0 +1,2192 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16581,6 +16587,13 @@ index 0000000000..0f5673a832
 +    visibleResults.forEach((result, index) => { result.rowIndex = index; });
 +    this.#controller.visibleResults = [...visibleResults];
 +    this.#controller.resultsOpen = open;
++  }
++
++  /** Queue Firefox's exposure telemetry for a result of this exact query, on this session's recorder. */
++  addExposure(queryId, result) {
++    this.#check();
++    if (!this.ownsResult(queryId, result)) throw new Error("Stale exposure result");
++    this.#controller.engagementEvent.addExposure(result, this.#query);
 +  }
 +
 +  cancel() {
@@ -20114,10 +20127,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..e9b230c1e5
+index 0000000000..848aa202d2
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1531 @@
+@@ -0,0 +1,1536 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20355,6 +20368,11 @@ index 0000000000..e9b230c1e5
 +    this.input.controller.visibleResults = [];
 +  }
 +
++  // The recorder an exposure must reach is the one that records the engagement.
++  exposureRecorder() {
++    return this.input.controller.engagementEvent;
++  }
++
 +  resumeNativePresentation() {
 +    if (this.nativeOpen) return;
 +    const active = this.active;
@@ -20367,7 +20385,7 @@ index 0000000000..e9b230c1e5
 +    // only when presentation resumes, once per retained publication.
 +    for (const result of active.results || []) {
 +      if (result.isHiddenExposure && !active.exposed.has(result)) {
-+        this.input.controller.engagementEvent.addExposure(result, active.context);
++        this.exposureRecorder().addExposure(result, active.context);
 +        active.exposed.add(result);
 +      }
 +    }
@@ -20517,7 +20535,7 @@ index 0000000000..e9b230c1e5
 +      active.context.deferUserSelectionProviders?.delete(result.providerName);
 +      if (result.exposureTelemetry && !active.exposed.has(result)) {
 +        active.exposed.add(result);
-+        this.input.controller.engagementEvent.addExposure(
++        this.exposureRecorder().addExposure(
 +          result,
 +          active.context
 +        );
@@ -20936,10 +20954,10 @@ index 0000000000..e9b230c1e5
 +      this.nativeVisible = [];
 +      active.exposed = new Set();
 +      this.input.controller.visibleResults = [];
-+      this.input.controller.engagementEvent.discardTentativeExposures();
++      this.exposureRecorder().discardTentativeExposures();
 +      for (const result of context.results) {
 +        if (result.isHiddenExposure && this.nativeOpen) {
-+          this.input.controller.engagementEvent.addExposure(result, context);
++          this.exposureRecorder().addExposure(result, context);
 +          active.exposed.add(result);
 +        }
 +      }

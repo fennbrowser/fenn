@@ -31,6 +31,7 @@ function load(){
     nativeModeResult(result){return result.kind==='mode';}
     updateSelection(request){calls.push(['super.updateSelection',request]);return {status:'selected'};}
     captureAutofill(active){calls.push(['super.capture']);}
+    exposureRecorder(){return {addExposure(){calls.push(['retained-exposure']);},discardTentativeExposures(){}};}
   }
   const context=vm.createContext({console,ChromeUtils:{importESModule:()=>({UrlbarEditSession:class {},independentUrlbarBrowserState:{snapshot:()=>({persistedSearchTerms:globalThis.r2Persisted===true})}})}});
   const source=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIIndependentUrlbarSession.sys.mjs',import.meta.url),'utf8')
@@ -64,6 +65,7 @@ function fixture({visible=true,page='https://page.test/',heuristic=true}={}){
   s.editorRevision=3;
   const editor={
     publishPresentation:(...a)=>published.push(a),
+    addExposure:(...a)=>{calls.push(['editor-exposure',...a]);if(editor.exposureThrows)throw new Error('stale');},
     startEngagement:(...a)=>engagements.push(['start',...a]),discardEngagement:()=>engagements.push(['discard']),
     beginNavigationActivation:()=>({token:'sel'}),
     acknowledgeNavigationActivation:()=>({token:'write',value:'https://result.test/',searchMode:null}),
@@ -434,6 +436,25 @@ test('provider removals and their acknowledgment text reach the inherited row bu
   const other=fixture();
   other.s.onEditorPresentationRequest({kind:'remove-result',queryId:99,resultId:11});
   assert.equal(other.calls.some(c=>c[0]==='removed'),false);
+});
+
+test('exposures reach the editor that records the engagement, once per result',()=>{
+  const f=fixture();f.result.exposureTelemetry=true;f.s.active.exposed=new Set();f.s.sequence=1;
+  const request={session:'s',revision:1,sequence:1,ids:[f.row.id]};
+  assert.equal(f.s.reportNativeVisibility(request),'visible');
+  assert.equal(f.s.reportNativeVisibility(request),'visible');
+  const exposures=f.calls.filter(c=>c[0]==='editor-exposure');
+  assert.equal(exposures.length,1);
+  assert.deepEqual(exposures[0].slice(1,3),[3,5]);
+  assert.equal(f.calls.some(c=>c[0]==='retained-exposure'),false);
+  f.s.exposureRecorder().addExposure({id:12},{id:5});
+  assert.equal(f.calls.filter(c=>c[0]==='editor-exposure').length,2,'hidden exposures use the same recorder');
+  const stale=fixture();stale.editor.exposureThrows=true;
+  stale.s.exposureRecorder().addExposure({id:12},{id:5});
+  assert.equal(stale.s.constructor.counters.visibilityErrors.at(-1),'stale');
+  const inherited=fixture();inherited.s.active.source=undefined;
+  inherited.s.exposureRecorder().addExposure({id:12},{id:5});
+  assert.ok(inherited.calls.some(c=>c[0]==='retained-exposure'));
 });
 
 test('a provider-requested close of the current query closes the view as an element pick',()=>{
