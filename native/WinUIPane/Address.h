@@ -302,6 +302,10 @@ struct NativeAddress {
         root.Spacing(4);
         root.Margin({0, 0, 0, 12});
         field.PlaceholderText(L"Search or enter address");
+        // An address is not prose: no Windows spell check or text prediction,
+        // as Firefox's own URL bar has neither, in any window.
+        field.IsSpellCheckEnabled(false);
+        field.IsTextPredictionEnabled(false);
         field.MaxLength(int32_t(NativeJson::kMaxFieldText));
         field.Loaded([](auto const& sender, auto const&) {
             auto editor = sender.template as<TextBox>();
