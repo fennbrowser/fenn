@@ -18995,7 +18995,7 @@ index 0000000000..8eb1307b8c
 +}
 diff --git a/browser/base/content/WinUIDismissalAcknowledgments.sys.mjs b/browser/base/content/WinUIDismissalAcknowledgments.sys.mjs
 new file mode 100644
-index 0000000000..06237d3c52
+index 0000000000..b4c3140dd9
 --- /dev/null
 +++ b/browser/base/content/WinUIDismissalAcknowledgments.sys.mjs
 @@ -0,0 +1,86 @@
@@ -19022,7 +19022,7 @@ index 0000000000..06237d3c52
 +    const originalRow = active.rows[index];
 +    index = this.decorate(active.rows).findIndex(row => row.id === originalRow.id);
 +    const id = `${s.sessionId}:ack:${++this.serial}`;
-+    const tip = s.input.resultActions.createDismissalAcknowledgment(result, message, active.context);
++    const tip = s.resultActions.createDismissalAcknowledgment(result, message, active.context);
 +    const entry = {id, active, tip, index, focus:s.nativeSelected === result, editId:s.editId,
 +      document:active.browser.browsingContext.currentWindowGlobal?.innerWindowId};
 +    this.entries.set(id, entry);
@@ -19030,7 +19030,7 @@ index 0000000000..06237d3c52
 +    try {
 +      [title, buttons] = await Promise.all([
 +      s.window.document.l10n.formatValue(message.id, message.args),
-+      s.input.resultActions.describeButtons(tip, true),
++      s.resultActions.describeButtons(tip, true),
 +      ]);
 +    } catch (error) {
 +      this.entries.delete(id);
@@ -19087,7 +19087,7 @@ index 0000000000..06237d3c52
 +}
 diff --git a/browser/base/content/WinUIResultContextMenu.sys.mjs b/browser/base/content/WinUIResultContextMenu.sys.mjs
 new file mode 100644
-index 0000000000..d73984bfd1
+index 0000000000..d1c0607e10
 --- /dev/null
 +++ b/browser/base/content/WinUIResultContextMenu.sys.mjs
 @@ -0,0 +1,101 @@
@@ -19133,7 +19133,7 @@ index 0000000000..d73984bfd1
 +      page:active.browser.currentURI?.spec,
 +      editId:s.editId,text:s.input.inputField.value,actions:new Map()};
 +    if (!this.current(state)) return;
-+    const descriptors=await s.input.resultActions.describeMenu(result, button?.name ?? null);
++    const descriptors=await s.resultActions.describeMenu(result, button?.name ?? null);
 +    if (generation!==this.generation || !this.current(state) || !descriptors) return;
 +    let count=0;
 +    const read=(descriptors,depth=0)=>{
@@ -19159,7 +19159,7 @@ index 0000000000..d73984bfd1
 +    const s=this.session;
 +    const key=item => JSON.stringify(item.action);
 +    const wanted=key(descriptor);
-+    const descriptors=await s.input.resultActions.describeMenu(state.result, state.button?.name ?? null);
++    const descriptors=await s.resultActions.describeMenu(state.result, state.button?.name ?? null);
 +    if(generation!==this.generation) return;
 +    if(!this.current(state)) {this.close();return;}
 +    const find=items=>items?.flatMap(item=>item.children ? find(item.children) : [item]) || [];
@@ -19168,7 +19168,7 @@ index 0000000000..d73984bfd1
 +      if(fresh) {
 +        const event=new s.window.MouseEvent('click',{bubbles:true,view:s.window,button:0});
 +        if(s.invokeResultMenu) s.invokeResultMenu(state.result,fresh.action,event);
-+        else s.input.resultActions.invokeMenu(state.result,fresh.action,event,state.browser.browserId);
++        else s.resultActions.invokeMenu(state.result,fresh.action,event,state.browser.browserId);
 +      }
 +    } finally {if(generation===this.generation)this.close();}
 +  }
@@ -20141,10 +20141,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..33cf214ae7
+index 0000000000..136dcef075
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1540 @@
+@@ -0,0 +1,1568 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20170,6 +20170,34 @@ index 0000000000..33cf214ae7
 +      "chrome://browser/content/WinUIAddressHost.sys.mjs"
 +    );
 +    this.input = new WinUIAddressHost(window.gURLBar);
++    // Result policy and actions are Firefox's shared models over services, built
++    // for this session instead of borrowed from the original input.
++    const { UrlbarResultPresentation } = ChromeUtils.importESModule(
++      "chrome://browser/content/urlbar/UrlbarResultPresentation.mjs"
++    );
++    const { UrlbarResultActions } = ChromeUtils.importESModule(
++      "chrome://browser/content/urlbar/UrlbarResultActions.mjs"
++    );
++    this.resultPresentation = new UrlbarResultPresentation(window.document.l10n);
++    const session = this;
++    this.resultActions = new UrlbarResultActions({
++      getHelpLinkURL: topic => window.getHelpLinkURL(topic),
++      formatMessages: specs => window.document.l10n.formatMessages(specs),
++      formatValue: (id, args) => window.document.l10n.formatValue(id, args),
++      // The original view's menu buttons are not shown; the native menu reads the
++      // preference when it opens.
++      updateMenuButtonKeyboardAccessibility: () => {},
++      openContainerCreationPanel: source =>
++        session.input.controller.parentController.openContainerCreationPanel(source),
++      openPreferences: (pane, options) =>
++        session.input.controller.parentController.openPreferences(pane, options),
++      pickResult: options => session.input.pickResult(options),
++      get isPrivate() {
++        return !!window.PrivateBrowsingUtils?.isWindowPrivate(window);
++      },
++      handlesOpenInCommands: true,
++      defaultEngineName: () => session.input.controller.engineStore.default?.name,
++    });
 +    // Every mutation that changes what a publication would say already advances
 +    // one of these two counters -- including the asynchronous label and image
 +    // completions, which have no event of their own. Routing them through
@@ -20985,7 +21013,7 @@ index 0000000000..33cf214ae7
 +    active.results = [...context.results];
 +    const nativeCandidates =
 +      this.input.view.nativePresentation === this
-+        ? new Set(this.input.resultPresentation.candidates(context))
++        ? new Set(this.resultPresentation.candidates(context))
 +        : null;
 +    active.resultIndexes = [];
 +    active.rows = active.results.flatMap((result, index) => {
@@ -21080,7 +21108,7 @@ index 0000000000..33cf214ae7
 +      // Otherwise follow Firefox's heuristic/empty-selection decision.
 +      this.nativeSelected = nativeCandidates.has(previousSelection)
 +        ? previousSelection
-+        : !this.input.resultPresentation.allowEmptySelection(context) && nativeCandidates.has(context.heuristicResult)
++        : !this.resultPresentation.allowEmptySelection(context) && nativeCandidates.has(context.heuristicResult)
 +          ? context.heuristicResult : null;
 +    }
 +    // Reuse Firefox's localized action label and the engine on its result.
@@ -21164,7 +21192,7 @@ index 0000000000..33cf214ae7
 +    if (result.type !== UrlbarShared.RESULT_TYPE.TIP || !result.payload.descriptionLearnMoreTopic) return;
 +    const document = active.browser.browsingContext.currentWindowGlobal?.innerWindowId;
 +    const helpSignature = JSON.stringify([result.payload.descriptionLearnMoreTopic, result.payload.descriptionL10n]);
-+    const help = await this.input.resultActions.describeDescription(result);
++    const help = await this.resultActions.describeDescription(result);
 +    if (!help || !document || this.closed || this.active !== active || !active.rows.includes(row) ||
 +        active.browser !== this.window.gBrowser.selectedBrowser || active.page !== active.browser.currentURI.spec ||
 +        document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId ||
@@ -21181,9 +21209,9 @@ index 0000000000..33cf214ae7
 +  async loadNativeTipButtons(active, row, result) {
 +    if (result.type !== UrlbarShared.RESULT_TYPE.TIP) return;
 +    const document = active.browser.browsingContext.currentWindowGlobal?.innerWindowId;
-+    this.input.resultActions.buttons(result);
++    this.resultActions.buttons(result);
 +    const signature = JSON.stringify(result.payload.buttons);
-+    const buttons = await this.input.resultActions.describeButtons(result);
++    const buttons = await this.resultActions.describeButtons(result);
 +    if (!buttons || signature !== JSON.stringify(result.payload.buttons) || !document || this.closed || this.active !== active || !active.rows.includes(row) ||
 +        active.browser !== this.window.gBrowser.selectedBrowser || active.page !== active.browser.currentURI.spec ||
 +        document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId) return;
@@ -21486,13 +21514,13 @@ index 0000000000..33cf214ae7
 +      onlySuggestions &&= result.heuristic ||
 +        (result.type == UrlbarShared.RESULT_TYPE.SEARCH && result.payload.suggestion);
 +      let label = onlySuggestions && result.type == UrlbarShared.RESULT_TYPE.SEARCH &&
-+        result.payload.suggestion ? null : this.input.resultActions.rowLabel(result, context);
++        result.payload.suggestion ? null : this.resultActions.rowLabel(result, context);
 +      if (result.hideRowLabel || !label || UrlbarShared.deepEqual(label, lastLabel)) {
 +        label = null;
 +      } else {
 +        lastLabel = label;
 +      }
-+      const icon = this.input.resultPresentation.icon(result);
++      const icon = this.resultPresentation.icon(result);
 +      const builtin = Object.values(UrlbarShared.ICON).includes(icon);
 +      return {
 +        label,
@@ -21514,7 +21542,7 @@ index 0000000000..33cf214ae7
 +  async loadNativeModeResult(active, row, result) {
 +    if (!this.nativeModeResult(result)) return;
 +    const document = active.browser.browsingContext.currentWindowGlobal?.innerWindowId;
-+    const title = await this.input.resultPresentation.searchModeTitle(result);
++    const title = await this.resultPresentation.searchModeTitle(result);
 +    if (!document || this.closed || this.active !== active || !active.rows.includes(row) ||
 +        active.browser !== this.window.gBrowser.selectedBrowser || active.page !== active.browser.currentURI.spec ||
 +        document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId ||

@@ -452,7 +452,7 @@ test('result menu items route to the editor flow that owns their kind',()=>{
 
 test('local menu operations stay with the shared menu model and unknown ones hand the surface back',()=>{
   const local=fixture();let invoked=null;
-  local.input.resultActions={invokeMenu:(...a)=>{invoked=a;}};
+  local.s.resultActions={invokeMenu:(...a)=>{invoked=a;}};
   local.s.invokeResultMenu(local.result,{command:'toggle-keyboard-accessible'},{});
   assert.equal(invoked[1].command,'toggle-keyboard-accessible');
   assert.equal(local.calls.some(c=>c[0]==='command'),false);

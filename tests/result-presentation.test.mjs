@@ -111,7 +111,7 @@ test('original renderer and native adapter share policy and delete native view h
   const view=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarView.mjs',import.meta.url),'utf8');
   const session=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIUrlbarSession.sys.mjs',import.meta.url),'utf8');
   for(const method of ['title','icon','allowEmptySelection','shouldShowHeuristic','defaultSelection','arrowSelection']) assert.ok(view.includes(`this.input.resultPresentation.${method}(`));
-  for(const method of ['searchModeTitle','icon','allowEmptySelection','candidates']) assert.ok(session.includes(`this.input.resultPresentation.${method}(`));
+  for(const method of ['searchModeTitle','icon','allowEmptySelection','candidates']) assert.ok(session.includes(`this.resultPresentation.${method}(`));
   assert.doesNotMatch(view,/prepareNativeSearchModeTitle|nativePresentationResults|nativeResultPresentation/);
 });
 

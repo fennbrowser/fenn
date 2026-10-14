@@ -19,6 +19,7 @@ function fixture(type=2,providerName='UrlbarProviderTokenAliasEngines') {
   active:{revision:2,rows:[row],results:[result],resultIndexes:[0],context:{id:8,results:[result]},inputValue:'@',text:'@',browser,page:'page'}});
  s.input.controller ??= {};
  s.input.view.nativePresentation=s;
+ s.resultPresentation=s.input.resultPresentation;
  s.nativeOpen=true;
  const request={version:1,session:'s',revision:2,id:'r'};
  return {s,row,result,browser,request,get picked(){return picked;}};
@@ -51,7 +52,7 @@ test('an older edit cannot admit a replacement mode query',async()=>{
 });
 test('stale mode labels and hidden/document-replaced activations are rejected',async()=>{
  for(const change of [f=>f.s.active={},f=>f.browser.currentURI.spec='new',f=>f.browser.browsingContext.currentWindowGlobal.innerWindowId++]) {
-  const f=fixture();let resolve;f.s.input.resultPresentation.searchModeTitle=()=>new Promise(r=>resolve=r);
+  const f=fixture();let resolve;f.s.resultPresentation.searchModeTitle=()=>new Promise(r=>resolve=r);
   const pending=f.s.loadNativeModeResult(f.s.active,f.row,f.result);change(f);resolve('Firefox');await pending;
   assert.equal(f.row.modeDocument,undefined);
  }

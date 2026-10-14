@@ -16,6 +16,7 @@ function fixture(){
   active:{revision:2,rows:[row],results:[result],resultIndexes:[0],context:{results:[result]},inputValue:'tip',browser,page:'page'}});
  s.input.controller ??= {};
  s.input.view.nativePresentation=s;
+ s.resultActions=s.input.resultActions;
  s.nativeOpen=true;
  const request={version:1,session:'s',revision:2,id:'r',actionId:'r:tip:0'};
  return {s,row,result,element,browser,request,get picked(){return picked;}};
@@ -27,7 +28,7 @@ test('tip descriptors use Firefox actions, labels and title',async()=>{
  assert.equal(f.s.activateTipButton(f.request),'stale');
 });
 test('late tip preparation cannot update another query',async()=>{
- const f=fixture();let resolve;f.s.input.resultActions.describeButtons=()=>new Promise(r=>resolve=r);
+ const f=fixture();let resolve;f.s.resultActions.describeButtons=()=>new Promise(r=>resolve=r);
  const promise=f.s.loadNativeTipButtons(f.s.active,f.row,f.result);f.s.active={};resolve([f.element]);await promise;
  assert.equal(f.row.tipButtons,undefined);
 });
@@ -42,7 +43,7 @@ test('hidden, changed, stale and disabled tip actions are rejected',async()=>{
 });
 
 test('a document replacement during tip preparation cannot publish old buttons',async()=>{
- const f=fixture();let resolve;f.s.input.resultActions.describeButtons=()=>new Promise(r=>resolve=r);
+ const f=fixture();let resolve;f.s.resultActions.describeButtons=()=>new Promise(r=>resolve=r);
  const promise=f.s.loadNativeTipButtons(f.s.active,f.row,f.result);
  f.browser.browsingContext.currentWindowGlobal.innerWindowId++;resolve([f.element]);await promise;
  assert.equal(f.row.tipButtons,undefined);
@@ -83,7 +84,7 @@ test('Firefox input-button restart preserves native presentation only for its sc
 
 test('inline help retains localized ordering and uses the shared Firefox action',async()=>{
  const f=fixture();f.result.payload.descriptionLearnMoreTopic='topic';f.result.payload.descriptionL10n={id:'description'};
- f.s.input.resultActions.describeDescription=async()=>({before:'Before ',after:' after',label:'Learn more',action:f.element.action});
+ f.s.resultActions.describeDescription=async()=>({before:'Before ',after:' after',label:'Learn more',action:f.element.action});
  await f.s.loadNativeTipDescription(f.s.active,f.row,f.result);
  assert.equal(f.row.description,'Before Learn more after');
  assert.equal(f.s.activateTipButton({...f.request,actionId:f.row.helpLink.id}),'activated');assert.equal(f.picked,1);
@@ -91,12 +92,12 @@ test('inline help retains localized ordering and uses the shared Firefox action'
 });
 test('inline help rejects changed topics and late document replacements',async()=>{
  const f=fixture();f.result.payload.descriptionLearnMoreTopic='topic';f.result.payload.descriptionL10n={id:'description'};
- f.s.input.resultActions.describeDescription=async()=>({before:'',after:'',label:'Help',action:f.element.action});
+ f.s.resultActions.describeDescription=async()=>({before:'',after:'',label:'Help',action:f.element.action});
  await f.s.loadNativeTipDescription(f.s.active,f.row,f.result);const id=f.row.helpLink.id;
  f.result.payload.descriptionLearnMoreTopic='other';
  assert.equal(f.s.activateTipButton({...f.request,actionId:id}),'stale');assert.equal(f.picked,0);
  f.row.helpLink=null;let resolve;
- f.s.input.resultActions.describeDescription=()=>new Promise(r=>resolve=r);
+ f.s.resultActions.describeDescription=()=>new Promise(r=>resolve=r);
  const pending=f.s.loadNativeTipDescription(f.s.active,f.row,f.result);
  f.browser.browsingContext.currentWindowGlobal.innerWindowId++;
  resolve({before:'',after:'',label:'Help',action:f.element.action});await pending;assert.equal(f.row.helpLink,null);
@@ -104,7 +105,7 @@ test('inline help rejects changed topics and late document replacements',async()
 
 test('changed payload during localization cannot publish an action for newer metadata',async()=>{
  const f=fixture();let resolve;
- f.s.input.resultActions.describeButtons=()=>new Promise(r=>resolve=r);
+ f.s.resultActions.describeButtons=()=>new Promise(r=>resolve=r);
  const pending=f.s.loadNativeTipButtons(f.s.active,f.row,f.result);
  f.result.payload.buttons[0].url='https://changed.test';resolve([f.element]);await pending;
  assert.equal(f.row.tipButtons,undefined);
@@ -115,7 +116,7 @@ test('unsupported rich help restores Firefox only for the still-current document
   const f=fixture();let resolve,restored=0;
   f.result.payload.descriptionLearnMoreTopic='topic';f.result.payload.descriptionL10n={id:'description'};
   f.s.window.gWinUIPane={addressFallback(){restored++;}};
-  f.s.input.resultActions.describeDescription=()=>new Promise(r=>resolve=r);
+  f.s.resultActions.describeDescription=()=>new Promise(r=>resolve=r);
   const pending=f.s.loadNativeTipDescription(f.s.active,f.row,f.result);
   if(stale)f.browser.browsingContext.currentWindowGlobal.innerWindowId++;
   resolve({unsupported:true});await pending;
