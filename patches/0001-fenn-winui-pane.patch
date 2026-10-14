@@ -222,10 +222,10 @@ index a182468fce..428407c54a 100644
  </body>
  </html>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..d55c14b7c2 100644
+index b2b5db6040..6bb6e5315d 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -33,6 +33,21 @@ browser.jar:
+@@ -33,6 +33,22 @@ browser.jar:
          content/browser/aboutTabCrashed.xhtml         (content/aboutTabCrashed.xhtml)
          content/browser/blanktab.html                 (content/blanktab.html)
          content/browser/browser.js                    (content/browser.js)
@@ -234,6 +234,7 @@ index b2b5db6040..d55c14b7c2 100644
 +        content/browser/WinUITabStripSession.sys.mjs     (content/WinUITabStripSession.sys.mjs)
 +        content/browser/WinUIUrlbarSession.sys.mjs      (content/WinUIUrlbarSession.sys.mjs)
 +        content/browser/WinUIIndependentUrlbarSession.sys.mjs      (content/WinUIIndependentUrlbarSession.sys.mjs)
++        content/browser/WinUIAddressHost.sys.mjs       (content/WinUIAddressHost.sys.mjs)
 +        content/browser/WinUIToolbarCustomization.sys.mjs (content/WinUIToolbarCustomization.sys.mjs)
 +        content/browser/WinUIPinnedExtensions.sys.mjs  (content/WinUIPinnedExtensions.sys.mjs)
 +        content/browser/WinUIDismissalAcknowledgments.sys.mjs  (content/WinUIDismissalAcknowledgments.sys.mjs)
@@ -247,7 +248,7 @@ index b2b5db6040..d55c14b7c2 100644
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
-@@ -104,3 +119,19 @@ browser.jar:
+@@ -104,3 +120,19 @@ browser.jar:
  
  # L10n resources and overrides.
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
@@ -20140,10 +20141,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..848aa202d2
+index 0000000000..33cf214ae7
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1536 @@
+@@ -0,0 +1,1540 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20164,7 +20165,11 @@ index 0000000000..848aa202d2
 +      throw new Error("An attached browser pane is required");
 +    this.sessionId = String(++nextSession);
 +    this.window = window;
-+    this.input = window.gURLBar;
++    // Every use of the original input goes through the host's declared surface.
++    const { WinUIAddressHost } = ChromeUtils.importESModule(
++      "chrome://browser/content/WinUIAddressHost.sys.mjs"
++    );
++    this.input = new WinUIAddressHost(window.gURLBar);
 +    // Every mutation that changes what a publication would say already advances
 +    // one of these two counters -- including the asynchronous label and image
 +    // completions, which have no event of their own. Routing them through
