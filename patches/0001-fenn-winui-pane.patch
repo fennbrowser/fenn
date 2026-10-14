@@ -20137,10 +20137,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIAddressSession.sys.mjs b/browser/base/content/WinUIAddressSession.sys.mjs
 new file mode 100644
-index 0000000000..b3903ef31d
+index 0000000000..432c509e18
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressSession.sys.mjs
-@@ -0,0 +1,2625 @@
+@@ -0,0 +1,2636 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22271,6 +22271,7 @@ index 0000000000..b3903ef31d
 +    // The editor hosts a deferred terminal pick only outside a search mode.
 +    if ((picked.dataset?.providesSearchMode && !picked.dataset.immediateSearch) || this.input.searchMode) {
 +      this.#count("inherited");
++      this.#adoptQueryContext(active);
 +      return this.legacyActivateGlobalAction(request);
 +    }
 +    const outcome = this.#activateResult(active, result, intent, { pickedActionKey: action.key });
@@ -22363,14 +22364,24 @@ index 0000000000..b3903ef31d
 +      return this.#fallback("not-activatable");
 +    }
 +    // The editor hosts no dynamic-provider pick inside a search mode (its
-+    // deferred sequence assumes none), so the inherited pick runs it. Its
-+    // engagement lands on the original controller's last query context.
++    // deferred sequence assumes none), so the inherited pick runs it, after the
++    // original controller is given the query the row belongs to.
 +    if (result.type === UrlbarShared.RESULT_TYPE.DYNAMIC && this.input.searchMode) {
 +      WinUIAddressSession.#note(WinUIAddressSession.counters.requests, "dynamic-pick-in-mode");
 +      this.#count("inherited");
++      this.#adoptQueryContext(active);
 +      return this.legacyActivate(active.revision, id, intent);
 +    }
 +    return this.#activateResult(active, result, intent);
++  }
++
++  // The editor queries through its own controller, so the original controller's
++  // last context is a focus or mode query; providers read it on engagement.
++  #adoptQueryContext(active) {
++    const parent = this.input.controller.parentController;
++    if (active?.context && typeof parent?.setLastQueryContextCache === "function") {
++      parent.setLastQueryContextCache(active.context);
++    }
 +  }
 +
 +  #activateResult(active, result, intent, { resultAction = null, kind = "navigate", event = null, pickedActionKey = null } = {}) {

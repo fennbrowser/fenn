@@ -559,8 +559,10 @@ test('mode-entering, stale and unsupported global actions use the inherited path
 
 test('a dynamic provider pick inside a search mode uses the inherited pick',()=>{
   const f=fixture({heuristic:false});f.result.type=8;
+  const cached=[];f.input.controller.parentController={setLastQueryContextCache:c=>cached.push(c)};
   f.s.activate(1,f.row.id,{});
   assert.ok(f.calls.some(c=>c[0]==='super.activate'));
+  assert.deepEqual(cached,[f.s.active.context],'the inherited pick records against the editor query');
   assert.equal(f.s.constructor.counters.requests.at(-1),'dynamic-pick-in-mode');
   const plain=fixture({heuristic:false});plain.result.type=8;plain.input.searchMode=null;
   plain.s.activate(1,plain.row.id,{});
