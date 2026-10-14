@@ -25684,6 +25684,239 @@ index 0000000000..cf68f6fb6f
 +void InitializeWinUIRuntime();
 +}  // namespace mozilla::widget
 +#endif
+diff --git a/browser/base/content/WinUIAddressHost.sys.mjs b/browser/base/content/WinUIAddressHost.sys.mjs
+new file mode 100644
+index 0000000000..5be5c4331c
+--- /dev/null
++++ b/browser/base/content/WinUIAddressHost.sys.mjs
+@@ -0,0 +1,227 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++/**
++ * The native address session's only route to Firefox's original URL bar.
++ *
++ * `WinUIAddressSession` and its subclass, the edit-menu and result-menu adapters
++ * and the dismissal acknowledgments reach the original input, its view and its
++ * controller through this object and nothing else. Each member below is a
++ * dependency that retiring the original presenter must remove or replace; the
++ * list is checked against the sessions' source by `tests/test_address_host_surface.py`,
++ * so a new use of the original input has to be declared here first.
++ *
++ * It is a pass-through. It adds no behavior, and the original input's own
++ * methods run unchanged. See the native address retirement plan.
++ */
++
++// What the session observes and drives about the presentation.
++class WinUIAddressViewPort {
++  #view;
++  constructor(view) {
++    this.#view = view;
++  }
++  get nativePresentation() {
++    return this.#view.nativePresentation;
++  }
++  set nativePresentation(owner) {
++    this.#view.nativePresentation = owner;
++  }
++  get isOpen() {
++    return this.#view.isOpen;
++  }
++  get selectedResult() {
++    return this.#view.selectedResult;
++  }
++  get selectedRowIndex() {
++    return this.#view.selectedRowIndex;
++  }
++  set selectedRowIndex(index) {
++    this.#view.selectedRowIndex = index;
++  }
++  get oneOffSearchButtons() {
++    return this.#view.oneOffSearchButtons;
++  }
++  close(...args) {
++    return this.#view.close(...args);
++  }
++  clearSelection(...args) {
++    return this.#view.clearSelection(...args);
++  }
++}
++
++// The controller state the native presentation shares with the query.
++class WinUIAddressControllerPort {
++  #controller;
++  constructor(controller) {
++    this.#controller = controller;
++  }
++  get visibleResults() {
++    return this.#controller.visibleResults;
++  }
++  set visibleResults(results) {
++    this.#controller.visibleResults = results;
++  }
++  get resultsOpen() {
++    return this.#controller.resultsOpen;
++  }
++  set resultsOpen(open) {
++    this.#controller.resultsOpen = open;
++  }
++  get parentController() {
++    return this.#controller.parentController;
++  }
++  get engineStore() {
++    return this.#controller.engineStore;
++  }
++  get engagementEvent() {
++    return this.#controller.engagementEvent;
++  }
++  addListener(listener) {
++    return this.#controller.addListener(listener);
++  }
++  removeListener(listener) {
++    return this.#controller.removeListener(listener);
++  }
++  cancelQuery(...args) {
++    return this.#controller.cancelQuery(...args);
++  }
++}
++
++export class WinUIAddressHost {
++  #input;
++  #view = null;
++  #controller = null;
++
++  constructor(input) {
++    this.#input = input;
++  }
++
++  // Text and selection (the original field mirrors the native editor's text).
++  get inputField() {
++    return this.#input.inputField;
++  }
++  get value() {
++    return this.#input.value;
++  }
++  get untrimmedValue() {
++    return this.#input.untrimmedValue;
++  }
++  get userTypedValue() {
++    return this.#input.userTypedValue;
++  }
++  set userTypedValue(value) {
++    this.#input.userTypedValue = value;
++  }
++  get focused() {
++    return this.#input.focused;
++  }
++  setNativeInputValue(...args) {
++    return this.#input.setNativeInputValue(...args);
++  }
++  setValueFromResult(...args) {
++    return this.#input.setValueFromResult(...args);
++  }
++  focus(...args) {
++    return this.#input.focus(...args);
++  }
++  getAttribute(name) {
++    return this.#input.getAttribute(name);
++  }
++  get readOnly() {
++    return this.#input.readOnly;
++  }
++  get inOverflowPanel() {
++    return this.#input.inOverflowPanel;
++  }
++
++  // Search mode.
++  get searchMode() {
++    return this.#input.searchMode;
++  }
++  set searchMode(mode) {
++    this.#input.searchMode = mode;
++  }
++  get searchModeModel() {
++    return this.#input.searchModeModel;
++  }
++  get addSearchEngineHelper() {
++    return this.#input.addSearchEngineHelper;
++  }
++  mirrorSearchMode(...args) {
++    return this.#input.mirrorSearchMode(...args);
++  }
++
++  // Query and engagement state the original input keeps for its own paths.
++  get lastQueryContextPromise() {
++    return this.#input.lastQueryContextPromise;
++  }
++  get _lastSearchString() {
++    return this.#input._lastSearchString;
++  }
++  set _lastSearchString(value) {
++    this.#input._lastSearchString = value;
++  }
++  get _valueOnLastSearch() {
++    return this.#input._valueOnLastSearch;
++  }
++  set _valueOnLastSearch(value) {
++    this.#input._valueOnLastSearch = value;
++  }
++  get _autofillPlaceholder() {
++    return this.#input._autofillPlaceholder;
++  }
++  set _autofillPlaceholder(value) {
++    this.#input._autofillPlaceholder = value;
++  }
++  startQuery(...args) {
++    return this.#input.startQuery(...args);
++  }
++
++  // Result policy and actions the native rows are built from.
++  pickResult(...args) {
++    return this.#input.pickResult(...args);
++  }
++
++  // Firefox's own commands run on the mirrored original input.
++  handleCommand(...args) {
++    return this.#input.handleCommand(...args);
++  }
++  handleRevert(...args) {
++    return this.#input.handleRevert(...args);
++  }
++  canPasteAndGo(...args) {
++    return this.#input.canPasteAndGo(...args);
++  }
++  pasteAndGo(...args) {
++    return this.#input.pasteAndGo(...args);
++  }
++  getCutEdit(...args) {
++    return this.#input.getCutEdit(...args);
++  }
++  _getSelectedValueForClipboard(...args) {
++    return this.#input._getSelectedValueForClipboard(...args);
++  }
++  _on_input(...args) {
++    return this.#input._on_input(...args);
++  }
++  _on_selectionchange(...args) {
++    return this.#input._on_selectionchange(...args);
++  }
++
++  // Events on the original input element.
++  addEventListener(...args) {
++    return this.#input.addEventListener(...args);
++  }
++  removeEventListener(...args) {
++    return this.#input.removeEventListener(...args);
++  }
++
++  get view() {
++    return (this.#view ??= new WinUIAddressViewPort(this.#input.view));
++  }
++  get controller() {
++    return (this.#controller ??= new WinUIAddressControllerPort(this.#input.controller));
++  }
++}
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
 index 0000000000..4c2af64a22
