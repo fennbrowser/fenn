@@ -122,7 +122,9 @@ test('a session whose engine differs from the selected engine is replaced, and t
   context.prefs['fenn.winui.address.independent']=true;
   assert.equal(context.addressEngine.call(owner),'independent');
   context.window.private=true;
-  assert.equal(context.addressEngine.call(owner),'retained','a private window is not native unless the private preference is on');
+  assert.equal(context.addressEngine.call(owner),'independent','private windows are native by default');
+  context.prefs['fenn.winui.address.private']=false;
+  assert.equal(context.addressEngine.call(owner),'retained','a private window is not native when the private preference is off');
   context.prefs['fenn.winui.address.private']=true;
   assert.equal(context.addressEngine.call(owner),'independent','private windows get the independent engine when enabled');
   context.prefs['fenn.winui.address.independent']=false;

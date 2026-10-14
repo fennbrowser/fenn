@@ -17,7 +17,7 @@ index 934bad0d61..81cd6e7ab6 100644
  
  if CONFIG["MOZ_ASAN"] or CONFIG["MOZ_DEBUG"]:
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 4f50c25976..328d463c3b 100644
+index 4f50c25976..b2f9bc3b2b 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -320,7 +320,8 @@ pref("browser.shell.focusSetDefaultBrowserButton", false);
@@ -112,8 +112,8 @@ index 4f50c25976..328d463c3b 100644
 +// instead of the retained input session; false selects the retained session.
 +pref("fenn.winui.address.independent", true);
 +// Show the native address (always the independent session) in private windows.
-+// Off: private windows use Firefox's own URL bar.
-+pref("fenn.winui.address.private", false);
++// False: private windows use Firefox's own URL bar.
++pref("fenn.winui.address.private", true);
 +
 +// Fenn (firefox-winui): no sponsored content or stories. Sponsored suggestions,
 +// shortcuts and stories come from Mozilla's advertising partners, and New Tab
@@ -22062,7 +22062,7 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..22197d75f6
+index 0000000000..d8dbdc9813
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,2164 @@
@@ -22717,7 +22717,7 @@ index 0000000000..22197d75f6
 +  addressEngine() {
 +    return Services.prefs.getBoolPref(this.addressIndependentPref, true) &&
 +      (!PrivateBrowsingUtils.isWindowPrivate(window) ||
-+        Services.prefs.getBoolPref(this.addressPrivatePref, false)) ? "independent" : "retained";
++        Services.prefs.getBoolPref(this.addressPrivatePref, true)) ? "independent" : "retained";
 +  },
 +
 +  syncAddress() {
