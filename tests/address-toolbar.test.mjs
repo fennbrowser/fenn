@@ -28,7 +28,9 @@ function fixture() {
   const prefs = new Map([["fenn.winui.address.toolbar.enabled",true]]);
   const owner = {attached:true,element:element(),schedule() {},invalidateAddress() {},
     addressSession:{releaseNativePresentation() {calls.push(["release"]);}},
-    addressEngine() {return prefs.get("fenn.winui.address.private") ? "independent" : "retained";},
+    addressAvailable() {
+      return !window.PrivateBrowsingUtils.isWindowPrivate(window) || prefs.get("fenn.winui.address.private") !== false;
+    },
     addressFallback() {calls.push(["fallback"]); toolbar.restore();}};
   const window = {document:{documentElement:root,querySelectorAll:()=>[...elements.values()],createElementNS:element,getElementById:id=>elements.get(id)},
     gURLBar:{inputField:input,querySelector:()=>switcher,focus() {calls.push(["firefox-focus"]);}},
@@ -88,7 +90,7 @@ test("host refusal preserves original editable presentation", () => {
 test("layout and preference fallback detach only the address host", () => {
   for (const unsupported of [f=>f.window.fullScreen=true,
     f=>f.root.setAttribute("customizing",""),
-    f=>f.window.PrivateBrowsingUtils.isWindowPrivate=()=>true,
+    f=>{f.window.PrivateBrowsingUtils.isWindowPrivate=()=>true;f.prefs.set("fenn.winui.address.private",false);},
     f=>f.prefs.set("sidebar.verticalTabs",true),
     f=>f.prefs.set("fenn.winui.address.toolbar.enabled",false)]) {
     const f=fixture(); f.toolbar.update(); f.toolbar.activate(); unsupported(f);
@@ -102,6 +104,7 @@ test("layout and preference fallback detach only the address host", () => {
 
 test("a private window is native only when the private preference selects the independent engine", () => {
   const off=fixture(); off.window.PrivateBrowsingUtils.isWindowPrivate=()=>true;
+  off.prefs.set("fenn.winui.address.private",false);
   assert.equal(off.toolbar.supported(),false);
   const on=fixture(); on.window.PrivateBrowsingUtils.isWindowPrivate=()=>true;
   on.prefs.set("fenn.winui.address.private",true);
@@ -179,7 +182,7 @@ test("navigation toolbar reserves a full row independently of the original input
 test("navigation refusal and unsupported contexts release reserved space", () => {
   for (const reject of [f=>f.window.acceptHost=false, f=>f.window.fullScreen=true,
     f=>f.root.setAttribute("customizing", ""),
-    f=>f.window.PrivateBrowsingUtils.isWindowPrivate=()=>true,
+    f=>{f.window.PrivateBrowsingUtils.isWindowPrivate=()=>true;f.prefs.set("fenn.winui.address.private",false);},
     f=>f.toolbar.row.getBoundingClientRect=()=>({x:0,y:40,width:240,height:48})]) {
     const f = navigationFixture();
     reject(f);

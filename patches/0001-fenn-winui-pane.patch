@@ -17,7 +17,7 @@ index 934bad0d61..81cd6e7ab6 100644
  
  if CONFIG["MOZ_ASAN"] or CONFIG["MOZ_DEBUG"]:
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 4f50c25976..b2f9bc3b2b 100644
+index 4f50c25976..0b046fd832 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -320,7 +320,8 @@ pref("browser.shell.focusSetDefaultBrowserButton", false);
@@ -76,7 +76,7 @@ index 4f50c25976..b2f9bc3b2b 100644
  
  // Multi-lingual preferences:
  //  *.enabled - Are langpacks available for the build of Firefox?
-@@ -3870,6 +3872,50 @@ pref("browser.referrals.pingSubmitted", false);
+@@ -3870,6 +3872,47 @@ pref("browser.referrals.pingSubmitted", false);
  // When enabled, Firefox ignores the distribution.ini file if global.id is MozillaOnline.
  pref("distribution.mozillaonline.ignore", true);
  
@@ -108,11 +108,8 @@ index 4f50c25976..b2f9bc3b2b 100644
 +pref("fenn.winui.tabstrip.groupGlowFadeOut", false);
 +pref("fenn.winui.address.toolbar.enabled", false);
 +pref("fenn.winui.navigation.toolbar.enabled", false);
-+// Drive the native address surface with the independent query/editor session
-+// instead of the retained input session; false selects the retained session.
-+pref("fenn.winui.address.independent", true);
-+// Show the native address (always the independent session) in private windows.
-+// False: private windows use Firefox's own URL bar.
++// Show the native address in private windows. False: private windows use
++// Firefox's own URL bar.
 +pref("fenn.winui.address.private", true);
 +
 +// Fenn (firefox-winui): no sponsored content or stories. Sponsored suggestions,
@@ -20141,10 +20138,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
 new file mode 100644
-index 0000000000..136dcef075
+index 0000000000..6b140869c0
 --- /dev/null
 +++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1568 @@
+@@ -0,0 +1,1563 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20250,11 +20247,6 @@ index 0000000000..136dcef075
 +    this.originalFocus = () => this.releaseNativePresentation();
 +    this.input.inputField.addEventListener("focus", this.originalFocus);
 +    Services.prefs.addObserver(window.gWinUIPane.pref, this);
-+  }
-+
-+  // Which engine produces this session's results; the pane selects the class.
-+  get engine() {
-+    return "retained";
 +  }
 +
 +  // The current presenter owns the controller's logical open state. A released
@@ -21715,7 +21707,7 @@ index 0000000000..136dcef075
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 0000000000..058737b40e
+index 0000000000..95d582550f
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
 @@ -0,0 +1,347 @@
@@ -21814,7 +21806,7 @@ index 0000000000..058737b40e
 +      !window.fullScreen && !window.document.fullscreenElement &&
 +      !window.document.documentElement.hasAttribute("customizing") &&
 +      !Services.prefs.getBoolPref("sidebar.verticalTabs", false) &&
-+      (!window.PrivateBrowsingUtils.isWindowPrivate(window) || owner.addressEngine() === "independent") &&
++      owner.addressAvailable() &&
 +      !window.gURLBar.readOnly && !window.gURLBar.inOverflowPanel;
 +  }
 +  navigationState() {
@@ -22095,10 +22087,10 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..d8dbdc9813
+index 0000000000..de7d81cc68
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2164 @@
+@@ -0,0 +1,2153 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22106,7 +22098,6 @@ index 0000000000..d8dbdc9813
 +var gWinUIPane = {
 +  pref: "fenn.winui.pane.enabled",
 +  addressToolbarPref: "fenn.winui.address.toolbar.enabled",
-+  addressIndependentPref: "fenn.winui.address.independent",
 +  addressPrivatePref: "fenn.winui.address.private",
 +  navigationToolbarPref: "fenn.winui.navigation.toolbar.enabled",
 +  replaceTabsPref: "fenn.winui.tabstrip.replaceFirefoxTabs",
@@ -22425,7 +22416,6 @@ index 0000000000..d8dbdc9813
 +    Services.prefs.addObserver(this.groupGlowFadeOutPref, this);
 +    for (const pref of this.groupingPrefs) Services.prefs.addObserver(pref, this);
 +    Services.prefs.addObserver(this.addressToolbarPref, this);
-+    Services.prefs.addObserver(this.addressIndependentPref, this);
 +    Services.prefs.addObserver(this.addressPrivatePref, this);
 +    Services.prefs.addObserver(this.navigationToolbarPref, this);
 +    this.schedule();
@@ -22744,13 +22734,11 @@ index 0000000000..d8dbdc9813
 +    }, this.unblockDelay);
 +  },
 +
-+  // The engine that should drive the native address surface in this window.
-+  // A private window is native only when the private preference is on, and then
-+  // only the independent session runs there.
-+  addressEngine() {
-+    return Services.prefs.getBoolPref(this.addressIndependentPref, true) &&
-+      (!PrivateBrowsingUtils.isWindowPrivate(window) ||
-+        Services.prefs.getBoolPref(this.addressPrivatePref, true)) ? "independent" : "retained";
++  // Whether this window may show the native address. A private window does
++  // only under the private preference; otherwise it keeps Firefox's URL bar.
++  addressAvailable() {
++    return !PrivateBrowsingUtils.isWindowPrivate(window) ||
++      Services.prefs.getBoolPref(this.addressPrivatePref, true);
 +  },
 +
 +  syncAddress() {
@@ -22777,8 +22765,7 @@ index 0000000000..d8dbdc9813
 +      this.addressDocument !== gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +      (this.addressSession?.active &&
 +        this.addressSession.active.page !==
-+          gBrowser.selectedBrowser.currentURI.spec) ||
-+      (this.addressSession && this.addressSession.engine !== this.addressEngine())
++          gBrowser.selectedBrowser.currentURI.spec)
 +    ) {
 +      retainNativePresentation = !!this.addressSession &&
 +        gURLBar.view.nativePresentation === this.addressSession;
@@ -22792,16 +22779,10 @@ index 0000000000..d8dbdc9813
 +      return;
 +    }
 +    if (!this.addressSession) {
-+      const independent = this.addressEngine() === "independent";
-+      const { WinUIUrlbarSession } = ChromeUtils.importESModule(
-+        "chrome://browser/content/WinUIUrlbarSession.sys.mjs"
++      const { WinUIIndependentUrlbarSession } = ChromeUtils.importESModule(
++        "chrome://browser/content/WinUIIndependentUrlbarSession.sys.mjs"
 +      );
-+      const { WinUIIndependentUrlbarSession } = independent
-+        ? ChromeUtils.importESModule("chrome://browser/content/WinUIIndependentUrlbarSession.sys.mjs")
-+        : {};
-+      this.addressSession = independent
-+        ? new WinUIIndependentUrlbarSession(window)
-+        : new WinUIUrlbarSession(window);
++      this.addressSession = new WinUIIndependentUrlbarSession(window);
 +      // Native ownership survives navigation/session replacement even while
 +      // suggestions are closed. Otherwise a late provider result can construct
 +      // original rows before the next native edit claims the new session.
@@ -24032,8 +24013,8 @@ index 0000000000..d8dbdc9813
 +      }
 +      return;
 +    }
-+    if (data === this.addressIndependentPref || data === this.addressPrivatePref) {
-+      // The next publication recreates the session with the selected engine.
++    if (data === this.addressPrivatePref) {
++      // The next publication shows or hides the native address for private windows.
 +      this.invalidateAddress();
 +      return;
 +    }

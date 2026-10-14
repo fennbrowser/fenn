@@ -34,7 +34,7 @@ function fixture(expectNative = true) {
   }
   const sandbox=vm.createContext({
     Services:{prefs:{getBoolPref:()=>true}},
-    ChromeUtils:{importESModule:()=>({WinUIUrlbarSession:Session})},
+    ChromeUtils:{importESModule:()=>({WinUIIndependentUrlbarSession:Session})},
     window:{fullScreen:false,windowUtils:{syncWinUIAddress:state=>publications.push(JSON.parse(state))}},
     document:{fullscreenElement:null,documentElement:{matches:()=>false}},
     gBrowser:{selectedTab:tab,selectedBrowser:browser},
@@ -43,10 +43,10 @@ function fixture(expectNative = true) {
   const source=readFileSync(new URL('../upstream/firefox/browser/base/content/browser-winui-pane.js',import.meta.url),'utf8');
   const start=source.indexOf('  syncAddress() {'),end=source.indexOf('\n  // One native address intent',start);
   vm.runInContext('this.syncAddress = ({'+source.slice(start,end)+'}).syncAddress;',sandbox);
-  const old={engine:'retained',close(){events.push('close-old');view.nativePresentation=null;}};
+  const old={engine:'independent',close(){events.push('close-old');view.nativePresentation=null;}};
   const owner={attached:true,addressSession:old,addressTab:tab,addressDocument:1,
     addressToolbar:{update:()=>true,activate(){events.push('activate');}},
-    nativeLabels:()=>({}),addressEngine:()=>'retained',invalidateAddress(){}};
+    nativeLabels:()=>({}),addressAvailable:()=>true,invalidateAddress(){}};
   view.nativePresentation=old;
   return {owner,sandbox,view,events,publications};
 }
@@ -105,28 +105,22 @@ test('picked close captures exposure and closes logical presentation after cance
   assert.equal(controller.resultsOpen,false);assert.equal(controller.visibleResults,visible);
 });
 
-test('a session whose engine differs from the selected engine is replaced, and the pane chooses the class',()=>{
+test('the pane always constructs the one session class and shows the native address by preference',()=>{
   const f=fixture();
-  f.owner.addressSession=Object.assign(f.owner.addressSession,{engine:'independent'});
   f.sandbox.syncAddress.call(f.owner);
   assert.deepEqual(f.events.slice(0,3),['close-old','construct','bind']);
   const source=readFileSync(new URL('../upstream/firefox/browser/base/content/browser-winui-pane.js',import.meta.url),'utf8');
-  const start=source.indexOf('  addressEngine() {'),end=source.indexOf('  syncAddress() {',start);
+  assert.doesNotMatch(source,/address\.independent|addressEngine|addressIndependentPref/);
+  const start=source.indexOf('  addressAvailable() {'),end=source.indexOf('  syncAddress() {',start);
   const context=vm.createContext({window:{},PrivateBrowsingUtils:{isWindowPrivate:win=>win.private},
     Services:{prefs:{getBoolPref:(name,fallback)=>context.prefs[name] ?? fallback}},prefs:{}});
-  vm.runInContext('this.addressEngine = ({'+source.slice(start,end).replace(/,\s*$/,'')+'}).addressEngine;',context);
-  const owner={addressIndependentPref:'fenn.winui.address.independent',addressPrivatePref:'fenn.winui.address.private'};
-  assert.equal(context.addressEngine.call(owner),'independent','the independent engine is the default');
-  context.prefs['fenn.winui.address.independent']=false;
-  assert.equal(context.addressEngine.call(owner),'retained');
-  context.prefs['fenn.winui.address.independent']=true;
-  assert.equal(context.addressEngine.call(owner),'independent');
+  vm.runInContext('this.addressAvailable = ({'+source.slice(start,end).replace(/,\s*$/,'')+'}).addressAvailable;',context);
+  const owner={addressPrivatePref:'fenn.winui.address.private'};
+  assert.equal(context.addressAvailable.call(owner),true,'a normal window is native');
   context.window.private=true;
-  assert.equal(context.addressEngine.call(owner),'independent','private windows are native by default');
+  assert.equal(context.addressAvailable.call(owner),true,'private windows are native by default');
   context.prefs['fenn.winui.address.private']=false;
-  assert.equal(context.addressEngine.call(owner),'retained','a private window is not native when the private preference is off');
-  context.prefs['fenn.winui.address.private']=true;
-  assert.equal(context.addressEngine.call(owner),'independent','private windows get the independent engine when enabled');
-  context.prefs['fenn.winui.address.independent']=false;
-  assert.equal(context.addressEngine.call(owner),'retained','the private preference never selects the retained session');
+  assert.equal(context.addressAvailable.call(owner),false,'a private window keeps Firefox\'s URL bar when the preference is off');
+  context.window.private=false;
+  assert.equal(context.addressAvailable.call(owner),true,'the private preference does not affect normal windows');
 });
