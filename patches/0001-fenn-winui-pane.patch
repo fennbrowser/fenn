@@ -219,18 +219,17 @@ index a182468fce..428407c54a 100644
  </body>
  </html>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040..6bb6e5315d 100644
+index b2b5db6040..ee8017ef35 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -33,6 +33,22 @@ browser.jar:
+@@ -33,6 +33,21 @@ browser.jar:
          content/browser/aboutTabCrashed.xhtml         (content/aboutTabCrashed.xhtml)
          content/browser/blanktab.html                 (content/blanktab.html)
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
 +        content/browser/WinUITabStripSession.sys.mjs     (content/WinUITabStripSession.sys.mjs)
-+        content/browser/WinUIUrlbarSession.sys.mjs      (content/WinUIUrlbarSession.sys.mjs)
-+        content/browser/WinUIIndependentUrlbarSession.sys.mjs      (content/WinUIIndependentUrlbarSession.sys.mjs)
++        content/browser/WinUIAddressSession.sys.mjs      (content/WinUIAddressSession.sys.mjs)
 +        content/browser/WinUIAddressHost.sys.mjs       (content/WinUIAddressHost.sys.mjs)
 +        content/browser/WinUIToolbarCustomization.sys.mjs (content/WinUIToolbarCustomization.sys.mjs)
 +        content/browser/WinUIPinnedExtensions.sys.mjs  (content/WinUIPinnedExtensions.sys.mjs)
@@ -245,7 +244,7 @@ index b2b5db6040..6bb6e5315d 100644
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
          content/browser/browser-a11yUtils.js          (content/browser-a11yUtils.js)
          content/browser/browser-addons.js             (content/browser-addons.js)
-@@ -104,3 +120,19 @@ browser.jar:
+@@ -104,3 +119,19 @@ browser.jar:
  
  # L10n resources and overrides.
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
@@ -20136,12 +20135,12 @@ index 0000000000..961c3b61a4
 +    return true;
 +  }
 +}
-diff --git a/browser/base/content/WinUIUrlbarSession.sys.mjs b/browser/base/content/WinUIUrlbarSession.sys.mjs
+diff --git a/browser/base/content/WinUIAddressSession.sys.mjs b/browser/base/content/WinUIAddressSession.sys.mjs
 new file mode 100644
-index 0000000000..6b140869c0
+index 0000000000..b3903ef31d
 --- /dev/null
-+++ b/browser/base/content/WinUIUrlbarSession.sys.mjs
-@@ -0,0 +1,1563 @@
++++ b/browser/base/content/WinUIAddressSession.sys.mjs
+@@ -0,0 +1,2625 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20152,7 +20151,78 @@ index 0000000000..6b140869c0
 +
 +let nextSession = 0;
 +
-+export class WinUIUrlbarSession {
++const TALLY_FILE = "fenn-address-engine.json";
++const TALLY_DELAY_MS = 10000;
++const TALLY_DAYS = 60;
++// The bar for retiring the retained session (the native address host binding plan).
++const BAR = Object.freeze({ minAttempts: 200, maxDroppedPer200: 1, maxErrors: 0 });
++
++function emptyTotals() {
++  return { queries: 0, activations: 0, commands: 0, modes: 0, restarts: 0, replays: 0, inherited: 0,
++    fallbackTotal: 0, fallbackReasons: {} };
++}
++
++function addTotals(into, from) {
++  for (const key of Object.keys(emptyTotals())) {
++    if (key === "fallbackReasons") continue;
++    into[key] = (Number.isFinite(into[key]) ? into[key] : 0) + (Number.isFinite(from[key]) ? from[key] : 0);
++  }
++  into.fallbackReasons ??= {};
++  for (const [reason, n] of Object.entries(from.fallbackReasons ?? {})) {
++    if (Number.isFinite(n)) into.fallbackReasons[reason] = (into.fallbackReasons[reason] ?? 0) + n;
++  }
++  return into;
++}
++
++function isEmptyTotals(totals) {
++  return Object.entries(totals).every(([key, value]) =>
++    key === "fallbackReasons" ? Object.keys(value).length === 0 : value === 0);
++}
++
++/** Read totals into the readout: attempts, dropped actions, rates per 200 and the bar. */
++function summarize(totals) {
++  const attempts = totals.activations + totals.commands + totals.modes + totals.inherited + totals.fallbackTotal;
++  const dropped = Math.max(0, totals.fallbackTotal - totals.replays);
++  const per200 = n => (attempts ? Math.round((n / attempts) * 200 * 100) / 100 : null);
++  const errorFallbacks = totals.fallbackReasons.error ?? 0;
++  return {
++    queries: totals.queries,
++    activations: totals.activations,
++    commands: totals.commands,
++    modes: totals.modes,
++    restarts: totals.restarts,
++    replays: totals.replays,
++    inherited: totals.inherited,
++    attempts,
++    fallbackTotal: totals.fallbackTotal,
++    dropped,
++    fallbackReasons: { ...totals.fallbackReasons },
++    fallbacksPer200: per200(totals.fallbackTotal),
++    droppedPer200: per200(dropped),
++    errorFallbacks,
++    bar: {
++      ...BAR,
++      enoughAttempts: attempts >= BAR.minAttempts,
++      met: attempts >= BAR.minAttempts && per200(dropped) <= BAR.maxDroppedPer200 &&
++        errorFallbacks <= BAR.maxErrors,
++    },
++  };
++}
++
++/**
++ * The native address session.
++ *
++ * It is staged: it inherits the retained session's native protocol, publication
++ * and fallback behavior, and takes over individual operations as they gain
++ * independent coverage (the native address host binding plan). Operations
++ * listed in `independentOperations` run on a `UrlbarEditSession`; everything
++ * else is the retained behavior, which is also the per-operation fallback.
++ *
++ * Results produced here carry `active.source === "independent"`. Rows built by
++ * inherited paths (focus queries, tip restarts) keep `source` undefined and are
++ * activated by the retained code, which owns their query context.
++ */
++export class WinUIAddressSession {
 +  constructor(window) {
 +    if (
 +      window.document.documentURI !==
@@ -20247,6 +20317,10 @@ index 0000000000..6b140869c0
 +    this.originalFocus = () => this.releaseNativePresentation();
 +    this.input.inputField.addEventListener("focus", this.originalFocus);
 +    Services.prefs.addObserver(window.gWinUIPane.pref, this);
++    this.windowPrivate = !!window.PrivateBrowsingUtils?.isWindowPrivate(window);
++    this.editor = null;
++    this.editorScope = null;
++    this.editorRevision = 0;
 +  }
 +
 +  // The current presenter owns the controller's logical open state. A released
@@ -20407,7 +20481,7 @@ index 0000000000..6b140869c0
 +  }
 +
 +  // The recorder an exposure must reach is the one that records the engagement.
-+  exposureRecorder() {
++  legacyExposureRecorder() {
 +    return this.input.controller.engagementEvent;
 +  }
 +
@@ -20537,7 +20611,7 @@ index 0000000000..6b140869c0
 +    this.nativeOpen = false;
 +  }
 +
-+  reportNativeVisibility(request) {
++  legacyReportNativeVisibility(request) {
 +    const active = this.active;
 +    if (
 +      !active ||
@@ -20611,7 +20685,7 @@ index 0000000000..6b140869c0
 +    };
 +  }
 +
-+  updateSelection(request) {
++  legacyUpdateSelection(request) {
 +    if (this.closed) return { status: "closed" };
 +    const edit = this.editState;
 +    if (
@@ -20882,7 +20956,7 @@ index 0000000000..6b140869c0
 +    };
 +  }
 +
-+  async query(text, event = null, edit = null) {
++  async legacyQuery(text, event = null, edit = null) {
 +    if (this.closed) throw new Error("Session is closed");
 +    if (typeof text !== "string" || text.length > 32768)
 +      throw new TypeError("Invalid query text");
@@ -20921,7 +20995,7 @@ index 0000000000..6b140869c0
 +    return this.active === active ? this.snapshot() : null;
 +  }
 +
-+  captureAutofill(active = this.active) {
++  legacyCaptureAutofill(active = this.active) {
 +    if (!active || this.closed || this.active !== active) return;
 +    const field = this.input.inputField;
 +    active.inputValue = field.value;
@@ -21246,7 +21320,7 @@ index 0000000000..6b140869c0
 +    return {active, row, button, result, intent, isHelp: row.helpLink?.id === request.actionId};
 +  }
 +
-+  activateTipButton(request) {
++  legacyActivateTipButton(request) {
 +    const resolved = this.resolveTipButton(request);
 +    if (!resolved) return "stale";
 +    const {active, row, button, result, intent} = resolved;
@@ -21443,7 +21517,7 @@ index 0000000000..6b140869c0
 +    };
 +  }
 +
-+  activateGlobalAction(request) {
++  legacyActivateGlobalAction(request) {
 +    if (request.id?.includes(":ack:")) return this.dismissalAcknowledgments?.activate(request) || "stale";
 +    if (this.active?.rows.some(row => row.id === request.id && (row.tipButtons || row.helpLink))) return this.activateTipButton(request);
 +    const active=this.active;
@@ -21585,7 +21659,7 @@ index 0000000000..6b140869c0
 +    );
 +  }
 +
-+  activate(revision, id, intent = {}) {
++  legacyActivate(revision, id, intent = {}) {
 +    const active = this.active;
 +    if (
 +      !active ||
@@ -21658,7 +21732,7 @@ index 0000000000..6b140869c0
 +    return "activated";
 +  }
 +
-+  cancel() {
++  legacyCancel() {
 +    this.tipQueryRestart = null;
 +    this.modeQueryRestart = null;
 +    this.dismissalAcknowledgments?.clear();
@@ -21679,7 +21753,7 @@ index 0000000000..6b140869c0
 +    if (active && !this.closed) this.input.controller.cancelQuery();
 +  }
 +
-+  close() {
++  legacyClose() {
 +    if (this.closed) return;
 +    this.contextAdapter?.close();
 +    this.resultMenuAdapter?.close();
@@ -21703,6 +21777,993 @@ index 0000000000..6b140869c0
 +    this.input.inputField.removeEventListener("focus", this.originalFocus);
 +    this.input = null;
 +    this.window = null;
++  }
++
++  /**
++   * Observable counters for diagnostics and tests; never read for behavior. The
++   * lists keep the most recent entries so a long session cannot grow them.
++   */
++  static counters = {
++    queries: 0,
++    activations: 0,
++    commands: 0,
++    restarts: 0,
++    modes: 0,
++    replays: 0,
++    inherited: 0,
++    requests: [],
++    visibilityErrors: [],
++    fallbacks: [],
++    fallbackTotal: 0,
++    fallbackReasons: {},
++  };
++
++  static #note(list, value) {
++    list.push(value);
++    if (list.length > 200) list.splice(0, list.length - 200);
++  }
++
++  // Aggregate counts from non-private windows not yet written to the profile.
++  static #staged = emptyTotals();
++  static #timer = null;
++  static #flushing = Promise.resolve();
++
++  /**
++   * Where the rolling tally lives. Replaceable so tests need no profile.
++   */
++  static persistence = {
++    enabled: () => typeof IOUtils !== "undefined" && typeof PathUtils !== "undefined",
++    path: () => PathUtils.join(PathUtils.profileDir, TALLY_FILE),
++    read: async path => {
++      try {
++        return await IOUtils.readJSON(path);
++      } catch (_) {
++        return null;
++      }
++    },
++    write: (path, state) => IOUtils.writeJSON(path, state, { tmpPath: path + ".tmp" }),
++    setTimer: (callback, ms) => {
++      const { setTimeout } = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
++      return setTimeout(callback, ms);
++    },
++    now: () => Date.now(),
++  };
++
++  static #stage(field, reason = null) {
++    const S = WinUIAddressSession;
++    if (field === "fallbackTotal") {
++      S.#staged.fallbackTotal++;
++      S.#staged.fallbackReasons[reason] = (S.#staged.fallbackReasons[reason] ?? 0) + 1;
++    } else {
++      S.#staged[field]++;
++    }
++    if (S.#timer || !S.persistence.enabled()) return;
++    try {
++      S.#timer = S.persistence.setTimer(() => {
++        S.#timer = null;
++        S.flush().catch(console.error);
++      }, TALLY_DELAY_MS);
++    } catch (_) {
++      // The tally is best effort; the in-memory counters still work.
++    }
++  }
++
++  /**
++   * Add the staged counts to the profile's tally. Only counts, reasons and a
++   * per-day aggregate are stored: no text, URLs or timing of single events, and
++   * nothing from a private window. Calls are serialized.
++   */
++  static flush() {
++    const S = WinUIAddressSession;
++    S.#flushing = S.#flushing.then(async () => {
++      if (!S.persistence.enabled() || isEmptyTotals(S.#staged)) return false;
++      const delta = S.#staged;
++      S.#staged = emptyTotals();
++      try {
++        const path = S.persistence.path();
++        const stored = S.#normalize(await S.persistence.read(path), S.persistence.now());
++        addTotals(stored.totals, delta);
++        const day = new Date(S.persistence.now()).toISOString().slice(0, 10);
++        const bucket = (stored.days[day] ??= { attempts: 0, fallbackTotal: 0, dropped: 0 });
++        const before = summarize({ ...emptyTotals(), ...delta });
++        bucket.attempts += before.attempts;
++        bucket.fallbackTotal += delta.fallbackTotal;
++        bucket.dropped += before.dropped;
++        for (const old of Object.keys(stored.days).sort().slice(0, -TALLY_DAYS)) delete stored.days[old];
++        stored.lastUpdated = S.persistence.now();
++        await S.persistence.write(path, stored);
++        return true;
++      } catch (error) {
++        console.error("Independent address tally write failed", error);
++        addTotals(S.#staged, delta);
++        return false;
++      }
++    });
++    return S.#flushing;
++  }
++
++  static #normalize(raw, now) {
++    const stored = { version: 1, since: now, lastUpdated: now, totals: emptyTotals(), days: {} };
++    if (raw && typeof raw === "object" && raw.version === 1) {
++      if (Number.isFinite(raw.since)) stored.since = raw.since;
++      if (raw.totals && typeof raw.totals === "object") addTotals(stored.totals, raw.totals);
++      if (raw.days && typeof raw.days === "object") {
++        for (const [day, bucket] of Object.entries(raw.days)) {
++          if (/^\d{4}-\d{2}-\d{2}$/.test(day) && bucket && typeof bucket === "object") {
++            stored.days[day] = {
++              attempts: Number.isFinite(bucket.attempts) ? bucket.attempts : 0,
++              fallbackTotal: Number.isFinite(bucket.fallbackTotal) ? bucket.fallbackTotal : 0,
++              dropped: Number.isFinite(bucket.dropped) ? bucket.dropped : 0,
++            };
++          }
++        }
++      }
++    }
++    return stored;
++  }
++
++  /**
++   * The local fallback readout for this browser run, all windows (no telemetry
++   * leaves the machine). A fallback Firefox then completed (`replays`) is still
++   * a fallback; a *dropped* action is a fallback that was not. Rates divide by
++   * every activation attempt however it finished. Use `history()` for the
++   * non-private tally across runs, which is what the bar is applied to.
++   */
++  static report() {
++    return summarize(WinUIAddressSession.counters);
++  }
++
++  /** The persisted tally across browser runs, plus what has not been written yet. */
++  static async history() {
++    const S = WinUIAddressSession;
++    await S.flush();
++    const stored = S.#normalize(S.persistence.enabled() ? await S.persistence.read(S.persistence.path()) : null,
++      S.persistence.now());
++    return { since: stored.since, lastUpdated: stored.lastUpdated, days: stored.days, ...summarize(stored.totals) };
++  }
++
++  // Counts are staged for the profile's tally only for non-private windows.
++  #count(field) {
++    WinUIAddressSession.counters[field]++;
++    if (!this.windowPrivate) WinUIAddressSession.#stage(field);
++  }
++
++  get engine() {
++    return "independent";
++  }
++
++  get independentOperations() {
++    return ["query", "visibility", "activate"];
++  }
++
++  // The editor is pinned to one browser and document, and closes itself the
++  // first time a call finds that scope lost (a navigation, or another tab being
++  // selected), even if the scope comes back. The next edit gets a new editor.
++  ensureEditor() {
++    const browser = this.window.gBrowser.selectedBrowser;
++    const documentId = browser.browsingContext.currentWindowGlobal?.innerWindowId;
++    if (this.editor) {
++      const scope = this.editorScope;
++      if (scope && !scope.lost && scope.browser === browser && scope.documentId === documentId) {
++        return this.editor;
++      }
++      const stale = this.editor;
++      this.editor = null;
++      try {
++        stale.close();
++      } catch (_) {
++        // Already closed with its scope.
++      }
++    }
++    const { UrlbarEditSession } = ChromeUtils.importESModule(
++      "chrome://browser/content/urlbar/UrlbarEditSession.mjs"
++    );
++    const scope = (this.editorScope = { browser, documentId, lost: false });
++    this.editor = new UrlbarEditSession({
++      context: {
++        sapName: "urlbar",
++        isPrivate: !!this.window.PrivateBrowsingUtils?.isWindowPrivate(this.window),
++        browserId: browser.browserId,
++        actor: this.window.windowGlobalChild.getActor("Urlbar"),
++      },
++      isCurrent: () => {
++        const current =
++          !this.closed &&
++          this.window.gBrowser.selectedBrowser === browser &&
++          browser.browsingContext.currentWindowGlobal?.innerWindowId === documentId;
++        if (!current) scope.lost = true;
++        return current;
++      },
++      onUpdate: update => this.onEditorUpdate(update),
++      onPresentationRequest: request => this.onEditorPresentationRequest(request),
++      onModeStateChanged: state => this.onEditorModeState(state),
++    });
++    return this.editor;
++  }
++
++  // The editor's parent controller owns the committed mode (entry telemetry,
++  // engine usage, typed value); the original input mirrors it for the rest of
++  // the pane, which still reads its search mode.
++  onEditorModeState(state) {
++    const browser = this.window.gBrowser.selectedBrowser;
++    if (this.closed || state?.kind !== "mode-state-changed" || state.browserId !== browser.browserId) return;
++    this.input.mirrorSearchMode(state.searchMode, browser);
++  }
++
++  // The inherited row builder is a controller listener; the editor's streaming
++  // updates carry the same query contexts, so they feed it unchanged.
++  onEditorUpdate(update) {
++    const query = update?.query;
++    if (!query || this.closed) return;
++    // The editor does not publish its "prepared" step, so the first streamed
++    // update binds the query to the active edit, as onQueryStarted does for the
++    // retained controller.
++    const restarting =
++      (this.tipQueryRestart || this.modeQueryRestart) &&
++      this.active?.context &&
++      query.id !== this.active.context.id;
++    if (
++      this.active?.source === "independent" &&
++      update.kind !== "prepared" &&
++      (!this.active.context || restarting)
++    ) {
++      this.onQueryStarted(query);
++    }
++    if (update.kind === "prepared") this.onQueryStarted(query);
++    this.#applyCompletion(update);
++    switch (update.kind) {
++      case "first-result":
++        this.onFirstResult(query);
++        break;
++      case "results":
++        this.onQueryResults(query);
++        break;
++      case "finished":
++        this.onQueryFinished(query);
++        break;
++    }
++  }
++
++  // The editor proposes completions; this host writes them into the native
++  // text, mirrors the original input, and acknowledges the write. The original
++  // input never saw the edit, so it has no placeholder to capture.
++  #applyCompletion(update) {
++    const completion = update.completion;
++    const active = this.active;
++    if (!completion || active?.source !== "independent" || !this.editor) return;
++    const field = this.input.inputField;
++    if (
++      active.context?.id !== update.query.id ||
++      update.edit?.revision !== this.editorRevision ||
++      field.value !== active.inputValue ||
++      !this.nativeOpen
++    ) {
++      return;
++    }
++    const proposal = this.editor.getCompletion(completion.token);
++    if (!proposal) return;
++    const typed = field.value;
++    const [start, end, direction] = [field.selectionStart, field.selectionEnd, field.selectionDirection];
++    field.value = proposal.value;
++    field.setSelectionRange(proposal.selectionStart, proposal.selectionEnd, proposal.selectionDirection);
++    let acknowledged = false;
++    try {
++      acknowledged = this.editor.acknowledgeCompletion(completion.token, {
++        text: field.value,
++        selectionStart: field.selectionStart,
++        selectionEnd: field.selectionEnd,
++        selectionDirection: proposal.selectionDirection,
++      });
++    } catch (error) {
++      console.error("Independent address completion failed", error);
++    }
++    if (!acknowledged) {
++      field.value = typed;
++      field.setSelectionRange(start, end, direction);
++      return;
++    }
++    active.inputValue = field.value;
++    this.autofillResult =
++      proposal.kind === "restore" || field.selectionStart === field.selectionEnd
++        ? null
++        : {
++            serial: (this.autofillSerial = (this.autofillSerial || 0) + 1),
++            editId: this.editId,
++            before: active.text,
++            text: field.value,
++            start: field.selectionStart,
++            end: field.selectionEnd,
++          };
++    this.sequence++;
++  }
++
++  captureAutofill(active = this.active) {
++    if (active?.source !== "independent") this.legacyCaptureAutofill(active);
++  }
++
++  updateSelection(request) {
++    const outcome = this.legacyUpdateSelection(request);
++    if (outcome.status !== "selected" || this.active?.source !== "independent" || !this.editor) return outcome;
++    try {
++      const observed = this.editor.observeAutofillSelection(
++        this.editorRevision,
++        { selectionStart: request.start, selectionEnd: request.end, selectionDirection: request.direction },
++        { userTypedValue: this.window.gBrowser.selectedBrowser.userTypedValue ?? null }
++      );
++      if (observed.confirmed) this.input.userTypedValue = this.input.inputField.value;
++    } catch (error) {
++      console.error("Independent address selection observation failed", error);
++    }
++    return outcome;
++  }
++
++  async query(text, event = null, edit = null) {
++    if (
++      this.closed ||
++      !edit ||
++      edit.composing ||
++      this.input.view.nativePresentation !== this ||
++      !this.window.gBrowser.selectedBrowser.browserId
++    ) {
++      return this.legacyQuery(text, event, edit);
++    }
++    if (typeof text !== "string" || text.length > 32768) {
++      throw new TypeError("Invalid query text");
++    }
++    this.cancel();
++    const browser = this.window.gBrowser.selectedBrowser;
++    const active = (this.active = {
++      revision: this.revision,
++      text,
++      inputValue: text,
++      nativeEdit: true,
++      source: "independent",
++      browser,
++      page: browser.currentURI.spec,
++      context: null,
++      rows: [],
++      done: false,
++    });
++    this.autofillResult = null;
++    this.input._autofillPlaceholder = null;
++    // Firefox's original input stays the mirror other browser code reads.
++    this.input.setNativeInputValue(text);
++    this.input.inputField.setSelectionRange(edit.selectionStart, edit.selectionEnd);
++    // The original input's startQuery records the search string; its inherited
++    // pick paths (contextual search, engine-page loads, telemetry) read it.
++    this.input._lastSearchString = text;
++    this.input._valueOnLastSearch = this.input.value;
++    const editor = this.ensureEditor();
++    const revision = ++this.editorRevision;
++    this.#count("queries");
++    let context;
++    try {
++      context = await editor.edit(
++        {
++          browser: {
++            userContextId: this.window.gBrowser.selectedTab.userContextId || 0,
++            currentPage: active.page,
++          },
++          searchMode: this.input.searchMode ?? null,
++        },
++        {
++          revision,
++          text,
++          selectionStart: edit.selectionStart,
++          selectionEnd: edit.selectionEnd,
++          selectionDirection: "none",
++          inputType: edit.inputType,
++        }
++      );
++    } catch (error) {
++      WinUIAddressSession.#note(WinUIAddressSession.counters.requests,
++        "edit-error:" + String(error?.message ?? error).slice(0, 120));
++      throw error;
++    }
++    if (!context) return null;
++    return this.active === active ? this.snapshot() : null;
++  }
++
++  // Exposures join the engagement the editor records, not the original input's.
++  exposureRecorder() {
++    const active = this.active;
++    if (active?.source !== "independent" || !this.editor) return this.legacyExposureRecorder();
++    const editor = this.editor;
++    const revision = this.editorRevision;
++    return {
++      addExposure: (result, context) => {
++        try {
++          editor.addExposure(revision, context.id, result);
++        } catch (error) {
++          WinUIAddressSession.#note(WinUIAddressSession.counters.visibilityErrors,
++            String(error?.message ?? error));
++        }
++      },
++      discardTentativeExposures() {},
++    };
++  }
++
++  reportNativeVisibility(request) {
++    const active = this.active;
++    if (active?.source !== "independent") return this.legacyReportNativeVisibility(request);
++    if (
++      !active.context ||
++      active.browser !== this.window.gBrowser.selectedBrowser ||
++      active.page !== active.browser.currentURI.spec ||
++      this.input.view.nativePresentation !== this ||
++      !this.nativeOpen ||
++      request.session !== this.sessionId ||
++      request.revision !== active.revision ||
++      request.sequence !== this.sequence ||
++      !Array.isArray(request.ids) ||
++      request.ids.length > 100 ||
++      new Set(request.ids).size !== request.ids.length
++    ) {
++      return "stale";
++    }
++    const results = [];
++    for (const id of request.ids) {
++      const rowIndex = active.rows.findIndex(item => item.id === id);
++      if (rowIndex < 0) {
++        if (this.dismissalAcknowledgments?.hasVisibleRow(id)) continue;
++        return "stale";
++      }
++      const result = active.results[active.resultIndexes[rowIndex]];
++      if (!result || result.isHiddenExposure) return "stale";
++      results.push(result);
++    }
++    try {
++      this.editor.publishPresentation(this.editorRevision, active.context.id, results, true);
++    } catch (error) {
++      // A superseded or cancelled query: the host's report is simply stale.
++      WinUIAddressSession.#note(WinUIAddressSession.counters.visibilityErrors, String(error?.message ?? error));
++      return "stale";
++    }
++    this.nativeVisible = [...request.ids];
++    this.input.controller.visibleResults = results;
++    for (const result of results) {
++      if (result.exposureTelemetry && !active.exposed?.has(result)) {
++        active.exposed?.add(result);
++        this.exposureRecorder().addExposure(result, active.context);
++      }
++    }
++    return "visible";
++  }
++
++  // A picked global action is a deferred activation on the editor, recorded on
++  // its engagement with the picked action's key; the provider then runs it from
++  // that engagement's query context. Mode-entering actions stay with the
++  // inherited mode path.
++  activateGlobalAction(request) {
++    const active = this.active;
++    const rowIndex = active?.source === "independent" && this.editor && active.context
++      ? active.rows.findIndex(item => item.id === request?.id)
++      : -1;
++    const row = rowIndex >= 0 ? active.rows[rowIndex] : null;
++    const action = row?.globalActions?.find(item => item.id === request.actionId);
++    if (!action || request.id.includes(":ack:")) return this.legacyActivateGlobalAction(request);
++    const index = active.resultIndexes[rowIndex];
++    const result = active.results[index];
++    if (
++      this.closed ||
++      !this.nativeOpen ||
++      this.input.view.nativePresentation !== this ||
++      request.revision !== active.revision ||
++      active.browser !== this.window.gBrowser.selectedBrowser ||
++      active.page !== active.browser.currentURI.spec ||
++      !this.nativeVisible?.includes(request.id) ||
++      active.context.results[index] !== result ||
++      result.providerName !== "UrlbarProviderGlobalActions"
++    ) {
++      return "stale";
++    }
++    const intent = request.intent || {};
++    if (
++      Object.keys(intent).some(key => !["ctrlKey", "altKey", "shiftKey", "metaKey"].includes(key)) ||
++      Object.values(intent).some(value => typeof value !== "boolean")
++    ) {
++      return "stale";
++    }
++    const picked = result.payload.actionsResults?.find(item => item.key === action.key);
++    if (!picked) return "stale";
++    WinUIAddressSession.#note(WinUIAddressSession.counters.requests,
++      this.input.searchMode ? "global-action-in-mode" : "global-action");
++    // The editor hosts a deferred terminal pick only outside a search mode.
++    if ((picked.dataset?.providesSearchMode && !picked.dataset.immediateSearch) || this.input.searchMode) {
++      this.#count("inherited");
++      return this.legacyActivateGlobalAction(request);
++    }
++    const outcome = this.#activateResult(active, result, intent, { pickedActionKey: action.key });
++    if (outcome !== "activated") this.window.gWinUIPane.addressFallback();
++    return outcome;
++  }
++
++  activate(revision, id, intent = {}) {
++    const active = this.active;
++    if (active?.source !== "independent") return this.legacyActivate(revision, id, intent);
++    const outcome = this.#activateIndependent(active, revision, id, intent);
++    // An Enter on the heuristic row (or with no chosen row) that the editor
++    // cannot host is completed the way Firefox completes any Enter: its own
++    // handleCommand acts on the mirrored text and search mode. Nothing was
++    // consumed (the active edit is still this one), so it happens exactly once.
++    // Other rows have no Firefox-side equivalent and keep the fallback.
++    if (
++      outcome === "firefox-fallback" &&
++      !this.closed &&
++      this.active === active &&
++      this.#isEnterTarget(active, id)
++    ) {
++      this.#count("replays");
++      this.input._lastSearchString = active.text;
++      this.active = null;
++      this.revision++;
++      this.input.handleCommand(new this.window.KeyboardEvent("keydown", { key: "Enter", ...intent }));
++      return "activated";
++    }
++    return outcome;
++  }
++
++  #isEnterTarget(active, id) {
++    if (!id) return !this.nativeSelected;
++    const index = active.resultIndexes?.[active.rows.findIndex(row => row.id === id)];
++    const result = index === undefined ? null : active.results?.[index];
++    return !!result && result === active.context?.heuristicResult;
++  }
++
++  #activateIndependent(active, revision, id, intent) {
++    if (
++      this.closed ||
++      !this.nativeOpen ||
++      revision !== active.revision ||
++      active.browser !== this.window.gBrowser.selectedBrowser ||
++      active.page !== active.browser.currentURI.spec ||
++      this.input.inputField.value !== active.inputValue
++    ) {
++      return "stale";
++    }
++    if (
++      !intent ||
++      typeof intent !== "object" ||
++      Object.keys(intent).some(key => !["ctrlKey", "altKey", "shiftKey", "metaKey"].includes(key)) ||
++      Object.values(intent).some(value => typeof value !== "boolean")
++    ) {
++      return "invalid-intent";
++    }
++    let result = null;
++    let rowIndex = -1;
++    if (id) {
++      rowIndex = active.rows.findIndex(row => row.id === id);
++      result = active.results?.[active.resultIndexes?.[rowIndex]] ?? null;
++      if (!result || rowIndex < 0 || active.context.results[active.resultIndexes[rowIndex]] !== result) {
++        return "stale";
++      }
++    } else {
++      result = this.nativeSelected || active.context?.heuristicResult || null;
++      rowIndex = result ? active.resultIndexes.indexOf(active.results.indexOf(result)) : -1;
++    }
++    if (!result || rowIndex < 0 || active.context.results[active.resultIndexes[rowIndex]] !== result) {
++      return this.#fallback("no-result");
++    }
++    const row = active.rows[rowIndex];
++    if (!this.nativeVisible?.includes(row.id)) return this.#fallback("not-visible");
++    const isMode = this.nativeModeResult(result);
++    if (isMode || this.nativeKeywordResult(result) || this.nativeOmniboxResult(result)) {
++      const pinned = isMode ? row.modeDocument : row.keywordDocument;
++      if (
++        this.input.readOnly ||
++        this.window.gDialogBox?.isOpen ||
++        !pinned ||
++        pinned !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId
++      ) {
++        return "stale";
++      }
++    }
++    if (!this.canActivate(result)) {
++      if (id) this.input.focus();
++      return this.#fallback("not-activatable");
++    }
++    // The editor hosts no dynamic-provider pick inside a search mode (its
++    // deferred sequence assumes none), so the inherited pick runs it. Its
++    // engagement lands on the original controller's last query context.
++    if (result.type === UrlbarShared.RESULT_TYPE.DYNAMIC && this.input.searchMode) {
++      WinUIAddressSession.#note(WinUIAddressSession.counters.requests, "dynamic-pick-in-mode");
++      this.#count("inherited");
++      return this.legacyActivate(active.revision, id, intent);
++    }
++    return this.#activateResult(active, result, intent);
++  }
++
++  #activateResult(active, result, intent, { resultAction = null, kind = "navigate", event = null, pickedActionKey = null } = {}) {
++    const editor = this.editor;
++    // A menu item or tip button can arrive before the first streamed update.
++    if (!active.context || !editor) return this.#fallback("no-context");
++    const queryId = active.context.id;
++    const revision = this.editorRevision;
++    // Built as the retained session builds it: no keyCode, so Ctrl is a new-tab
++    // modifier and not a canonization request the editor would refuse.
++    event ??= new this.window.KeyboardEvent("keydown", { key: "Enter", ...intent });
++    const options = {
++      selectedTabIsEmpty: !!this.window.gBrowser.selectedTab.isEmpty,
++      originalUntrimmedValue:
++        typeof this.input.untrimmedValue === "string" ? this.input.untrimmedValue : active.text,
++      ...(resultAction ? { resultAction } : {}),
++      ...(pickedActionKey ? { pickedActionKey } : {}),
++    };
++    try {
++      editor.startEngagement(revision, queryId, { type: "keydown", timeStamp: this.window.performance.now() });
++      if (kind === "help") {
++        const proposal = editor.beginResultHelp(revision, queryId, result, event, options);
++        if (!proposal) return this.#fallback("unsupported-plan");
++        return this.#completeExternal(active, proposal, event, false);
++      }
++      if (kind === "command") {
++        const outcome = editor.recordResultCommand(revision, queryId, result, event, options);
++        if (!outcome) return this.#fallback("command-rejected");
++        this.#count("commands");
++        return "activated";
++      }
++      if (this.nativeModeResult(result)) return this.#applyMode(active, result, event);
++      if (this.nativeOmniboxResult(result)) {
++        const proposal = editor.beginResultOmnibox(revision, queryId, result, event, options);
++        if (!proposal) return this.#fallback("unsupported-plan");
++        return this.#completeExternal(active, proposal, event, false);
++      }
++      const selection = editor.beginNavigationActivation(revision, queryId, result, event, options);
++      if (!selection) return this.#fallback("unsupported-plan");
++      const write = editor.acknowledgeNavigationActivation(
++        selection.token,
++        { queryId, resultId: result.id },
++        event,
++        options
++      );
++      if (!write) return this.#fallback("selection-rejected");
++      if (write.phase === "input") return this.#completeExternal(active, write, event, true);
++      // This session is the host: its native editor adopts the proposed text,
++      // and the original input mirrors it for Firefox-owned readers.
++      this.input.setNativeInputValue(write.value);
++      this.input.inputField.setSelectionRange(0, 0);
++      const acknowledged = editor.acknowledgeNavigationWrite(
++        write.token,
++        {
++          text: write.value,
++          selectionStart: 0,
++          selectionEnd: 0,
++          selectionDirection: "none",
++          searchMode: write.searchMode,
++        },
++        event,
++        options
++      );
++      if (!acknowledged) return this.#fallback("write-rejected");
++      // Consume before the load can run nested event loops, as the retained path does.
++      this.active = null;
++      this.revision++;
++      const outcome = editor.commitAcknowledgedNavigation(write.token, event, options);
++      this.#count("activations");
++      if (outcome?.reverted || !outcome?.attempted) this.input.handleRevert?.();
++      this.input.view.close({ elementPicked: true });
++      return outcome?.attempted ? "activated" : "firefox-fallback";
++    } catch (error) {
++      console.error("Independent address activation failed", error);
++      return this.#fallback("error");
++    }
++  }
++
++  // A mode row confirms its mode instead of loading: the host writes the mode's
++  // text, the editor commits the browser state (and the pick's engagement), and
++  // the follow-up query runs as a restart of this edit in the new mode.
++  #applyMode(active, result, event) {
++    const editor = this.editor;
++    const field = this.input.inputField;
++    const proposal = editor.beginResultModeApplication(this.editorRevision, active.context.id, result, {
++      checkValue: false,
++      startQuery: true,
++      activation: { event },
++    });
++    if (!proposal) return this.#fallback("unsupported-mode");
++    let consumed = false;
++    try {
++      this.input.setNativeInputValue(proposal.value);
++      field.setSelectionRange(proposal.selectionStart, proposal.selectionEnd);
++      const acknowledged = editor.acknowledgeResultModeApplication(proposal.token, {
++        searchMode: proposal.searchMode,
++        text: proposal.value,
++        selectionStart: proposal.selectionStart,
++        selectionEnd: proposal.selectionEnd,
++        selectionDirection: proposal.selectionDirection,
++        modeEntry: proposal.modeEntry,
++        pageProxyValid: proposal.pageProxyValid,
++      });
++      if (!acknowledged) return this.#fallback("mode-rejected");
++      const { independentUrlbarBrowserState } = ChromeUtils.importESModule(
++        "chrome://browser/content/urlbar/UrlbarBrowserState.mjs"
++      );
++      const committed = editor.commitAcknowledgedModeState(proposal.token, {
++        persistedSearchTerms: independentUrlbarBrowserState.snapshot(active.browser).persistedSearchTerms,
++      });
++      if (!committed?.applied) return this.#fallback("mode-commit-rejected");
++      consumed = true;
++      this.modeQueryRestart = {
++        active,
++        editId: this.editId,
++        document: active.browser.browsingContext.currentWindowGlobal?.innerWindowId,
++        text: proposal.value,
++      };
++      active.inputValue = field.value;
++      this.nativeVisible = [];
++      this.nativeSelected = null;
++      this.input.controller.visibleResults = [];
++      this.modeApplied++;
++      this.sequence++;
++      this.#count("modes");
++      editor
++        .requeryAfterModeApplication(proposal.token, {
++          browser: {
++            userContextId: this.window.gBrowser.selectedTab.userContextId || 0,
++            currentPage: active.page,
++          },
++          searchMode: proposal.searchMode,
++        })
++        .catch(error => {
++          console.error("Independent address mode query failed", error);
++          this.window.gWinUIPane.addressFallback();
++        });
++      return "activated";
++    } catch (error) {
++      console.error("Independent address mode activation failed", error);
++      return this.#fallback("error");
++    } finally {
++      if (!consumed && this.active === active) {
++        this.input.setNativeInputValue(active.text);
++        field.setSelectionRange(active.text.length, active.text.length);
++      }
++    }
++  }
++
++  // New-tab, background-tab, window and omnibox loads: the source address is
++  // restored before the load, so the host writes the result's text (not needed
++  // for omnibox, whose input stage is pre-acknowledged) and then the source
++  // text, each acknowledged to the editor, and the load is committed once.
++  #completeExternal(active, write, event, writesInput) {
++    const editor = this.editor;
++    const field = this.input.inputField;
++    const observe = proposal => ({
++      text: proposal.value,
++      selectionStart: proposal.selectionStart,
++      selectionEnd: proposal.selectionEnd,
++      selectionDirection: "none",
++      searchMode: null,
++      pageProxyValid: proposal.pageProxyValid,
++    });
++    let consumed = false;
++    try {
++      if (writesInput) {
++        this.input.setNativeInputValue(write.value);
++        field.setSelectionRange(write.selectionStart, write.selectionEnd);
++        if (!editor.acknowledgeOneOffExternalNavigation(write.token, observe(write))) {
++          return this.#fallback("input-rejected");
++        }
++      }
++      const focused = !!this.input.focused;
++      const { independentUrlbarBrowserState } = ChromeUtils.importESModule(
++        "chrome://browser/content/urlbar/UrlbarBrowserState.mjs"
++      );
++      const revert = editor.prepareOneOffExternalRevert(write.token, event, {
++        persistedSearchTerms: independentUrlbarBrowserState.snapshot(active.browser).persistedSearchTerms,
++        focused,
++      });
++      if (!revert) return this.#fallback("revert-unavailable");
++      field.value = revert.value;
++      field.setSelectionRange(revert.selectionStart, revert.selectionEnd);
++      const restored = editor.acknowledgeOneOffExternalRevert(revert.token, {
++        ...observe(revert),
++        focused: revert.focused,
++        userTypedValue: null,
++        persistedSearchTerms: false,
++      });
++      if (!restored) return this.#fallback("revert-rejected");
++      consumed = true;
++      this.active = null;
++      this.revision++;
++      const outcome = editor.commitOneOffExternalNavigation(revert.token);
++      this.#count("activations");
++      this.input.handleRevert?.();
++      this.input.view.close({ elementPicked: true });
++      return outcome?.attempted ? "activated" : "firefox-fallback";
++    } catch (error) {
++      console.error("Independent address external activation failed", error);
++      return this.#fallback("error");
++    } finally {
++      if (!consumed && this.active === active) {
++        this.input.setNativeInputValue(active.inputValue);
++        field.setSelectionRange(active.text.length, active.text.length);
++      }
++    }
++  }
++
++  activateTipButton(request) {
++    if (this.active?.source !== "independent") return this.legacyActivateTipButton(request);
++    const resolved = this.resolveTipButton(request);
++    if (!resolved) return "stale";
++    const { active, row, button, result, intent, isHelp } = resolved;
++    const action = button.action || {};
++    const name = typeof action.name === "string" ? action.name : undefined;
++    const clean = fields => Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
++    let plan;
++    if (isHelp) {
++      // The description's learn-more link is a plain URL load from a tip, which
++      // Firefox's open policy moves out of the current tab.
++      plan = { kind: "navigate", resultAction: clean({ url: action.url }) };
++    } else if (action.command === "help") {
++      plan = { kind: "help", resultAction: clean({ command: "help", url: action.url, name }) };
++    } else if (action.command) {
++      plan = action.url
++        ? null
++        : { kind: "command", resultAction: clean({ command: action.command, name }) };
++    } else if (action.url) {
++      plan = { kind: "navigate", resultAction: clean({ url: action.url, name }) };
++    } else {
++      plan = { kind: "navigate", resultAction: null };
++    }
++    row.tipButtons = [];
++    row.helpLink = null;
++    this.changed();
++    const outcome = plan ? this.#activateResult(active, result, intent, plan) : this.#fallback("unsupported-action");
++    if (outcome !== "activated") this.window.gWinUIPane.addressFallback();
++    return outcome === "activated" ? "activated" : "firefox-fallback";
++  }
++
++  // A result-menu item: Firefox's own menu model chose the action, and this
++  // session routes it to the editor flow that owns that kind of command.
++  invokeResultMenu(result, action, event) {
++    const active = this.active;
++    if (active?.source !== "independent" || !this.editor) {
++      this.window.gWinUIPane.addressFallback();
++      return;
++    }
++    const local =
++      action.command === "toggle-keyboard-accessible" ||
++      action.operation === "add-container" ||
++      action.operation === "manage-containers";
++    if (local) {
++      this.resultActions.invokeMenu(result, action, event, active.browser.browserId);
++      return;
++    }
++    const clean = fields => Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
++    let plan = null;
++    const openIn = action.openIn ?? (action.userContextId ? "container-tab" : undefined);
++    if (openIn) {
++      plan = { kind: "navigate", resultAction: clean({ openIn, userContextId: action.userContextId }) };
++    } else if (action.command === "help") {
++      const { UrlbarContentUtils } = ChromeUtils.importESModule(
++        "chrome://browser/content/urlbar/UrlbarContentUtils.mjs"
++      );
++      const url = result.payload.helpUrl || UrlbarContentUtils.getSupportUrl("awesome-bar-result-menu");
++      plan = { kind: "help", resultAction: { command: "help", url } };
++    } else if (action.command) {
++      plan = { kind: "command", resultAction: { command: action.command } };
++    }
++    const outcome = plan
++      ? this.#activateResult(active, result, {}, { ...plan, event })
++      : this.#fallback("unsupported-menu-action");
++    if (outcome !== "activated") this.window.gWinUIPane.addressFallback();
++  }
++
++  // Provider restarts arrive as editor proposals; the host writes the value,
++  // admits exactly that query as a restart of this edit, and acknowledges it.
++  onEditorPresentationRequest(request) {
++    WinUIAddressSession.#note(WinUIAddressSession.counters.requests, request?.kind ?? null);
++    if (request?.kind === "remove-result" && !this.closed) {
++      if (this.active?.source === "independent" && this.active.context?.id === request.queryId) {
++        this.onQueryResultRemoved(request.resultId, request.acknowledgeDismissalL10n);
++      }
++      return;
++    }
++    if (request?.kind === "close" && !this.closed) {
++      if (request.elementPicked === true && this.active?.source === "independent" &&
++          this.active.context?.id === request.queryId) {
++        this.input.view.close({ elementPicked: true });
++      }
++      return;
++    }
++    if (request?.kind !== "restart-query" || this.closed) return;
++    Promise.resolve().then(() => this.#restartQuery(request)).catch(error => {
++      console.error("Independent address restart failed", error);
++    });
++  }
++
++  async #restartQuery(request) {
++    const active = this.active;
++    const editor = this.editor;
++    if (!editor || active?.source !== "independent" || this.closed || !this.nativeOpen) {
++      WinUIAddressSession.#note(WinUIAddressSession.counters.requests, "restart-unowned");
++      return;
++    }
++    const proposal = editor.getRestartRequest(request.token);
++    WinUIAddressSession.#note(
++      WinUIAddressSession.counters.requests,
++      proposal ? "restart-current" : "restart-stale"
++    );
++    if (!proposal) {
++      if (request.search !== null || request.unsupported) this.window.gWinUIPane.addressFallback();
++      return;
++    }
++    const field = this.input.inputField;
++    const text = proposal.value ?? proposal.edit.text;
++    if (proposal.value !== null) {
++      // Firefox's setValue writes the field only; the typed value stays what
++      // the user typed, so a fallback hands back the same state.
++      field.value = text;
++      field.setSelectionRange(text.length, text.length);
++    }
++    this.tipQueryRestart = {
++      active,
++      editId: this.editId,
++      document: active.browser.browsingContext.currentWindowGlobal?.innerWindowId,
++      text,
++    };
++    this.#count("restarts");
++    const observation = {
++      text,
++      selectionStart: field.selectionStart,
++      selectionEnd: field.selectionEnd,
++      selectionDirection: proposal.value === null ? proposal.edit.selectionDirection : "none",
++      searchMode: null,
++    };
++    const state = {
++      browser: {
++        userContextId: this.window.gBrowser.selectedTab.userContextId || 0,
++        currentPage: active.page,
++      },
++      searchMode: this.input.searchMode ?? null,
++    };
++    let context = null;
++    try {
++      context = await editor.acknowledgeRestartQuery(request.token, observation, state);
++    } catch (error) {
++      console.error("Independent address restart failed", error);
++    }
++    if (!context) {
++      // The old rows must not stay on screen as if the provider's restart ran.
++      this.tipQueryRestart = null;
++      this.window.gWinUIPane.addressFallback();
++    }
++  }
++
++  #fallback(reason) {
++    const counters = WinUIAddressSession.counters;
++    WinUIAddressSession.#note(counters.fallbacks, reason);
++    counters.fallbackTotal++;
++    counters.fallbackReasons[reason] = (counters.fallbackReasons[reason] ?? 0) + 1;
++    if (!this.windowPrivate) WinUIAddressSession.#stage("fallbackTotal", reason);
++    try {
++      this.editor?.discardEngagement();
++    } catch (_) {
++      // No engagement was started.
++    }
++    return "firefox-fallback";
++  }
++
++  cancel() {
++    try {
++      this.editor?.cancel();
++    } catch (_) {
++      // A closed editor has nothing left to cancel.
++    }
++    this.legacyCancel();
++  }
++
++  close() {
++    if (this.closed) return;
++    const editor = this.editor;
++    this.editor = null;
++    this.legacyClose();
++    try {
++      editor?.close();
++    } catch (_) {
++      // Already closed with its scope.
++    }
++    WinUIAddressSession.flush().catch(console.error);
 +  }
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
@@ -22087,7 +23148,7 @@ index 0000000000..96f7a7b234
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..de7d81cc68
+index 0000000000..f3d2cd30cc
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,2153 @@
@@ -22779,10 +23840,10 @@ index 0000000000..de7d81cc68
 +      return;
 +    }
 +    if (!this.addressSession) {
-+      const { WinUIIndependentUrlbarSession } = ChromeUtils.importESModule(
-+        "chrome://browser/content/WinUIIndependentUrlbarSession.sys.mjs"
++      const { WinUIAddressSession } = ChromeUtils.importESModule(
++        "chrome://browser/content/WinUIAddressSession.sys.mjs"
 +      );
-+      this.addressSession = new WinUIIndependentUrlbarSession(window);
++      this.addressSession = new WinUIAddressSession(window);
 +      // Native ownership survives navigation/session replacement even while
 +      // suggestions are closed. Otherwise a late provider result can construct
 +      // original rows before the next native edit claims the new session.
@@ -23278,7 +24339,7 @@ index 0000000000..de7d81cc68
 +  // Bounds distinct favicon URLs retained across a browsing session; oldest
 +  // entries are evicted first, matching this project's other bounded caches.
 +  kMaxFaviconCache: 1000,
-+  // Fire-and-forget decode, matching WinUIUrlbarSession's loadNativeImage:
++  // Fire-and-forget decode, matching WinUIAddressSession's loadNativeImage:
 +  // Gecko decodes/resamples, native code only ever sees bounded raw pixels.
 +  // Failures are cached too so a broken icon isn't retried every frame.
 +  loadTabFavicon(url) {
@@ -23293,7 +24354,7 @@ index 0000000000..de7d81cc68
 +          this.faviconCache.set(url, null);
 +          return;
 +        }
-+        // Decode at 2x the 16px on-screen size, matching WinUIUrlbarSession's
++        // Decode at 2x the 16px on-screen size, matching WinUIAddressSession's
 +        // retina headroom convention, so HiDPI scaling upsamples a real
 +        // source instead of blowing up a native-resolution 16x16 bitmap.
 +        const size = 32;

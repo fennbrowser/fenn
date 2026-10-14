@@ -6,8 +6,8 @@ import vm from 'node:vm';
 const root=new URL('../upstream/firefox/',import.meta.url);
 const read=name=>readFileSync(new URL(name,root),'utf8');
 const context=vm.createContext({console});
-vm.runInContext(read('browser/base/content/WinUIUrlbarSession.sys.mjs')
-  .replace(/^import .*;$/m,'').replace('export class WinUIUrlbarSession','this.Session = class WinUIUrlbarSession'),context);
+vm.runInContext(read('browser/base/content/WinUIAddressSession.sys.mjs')
+  .replace(/^import .*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),context);
 
 function fixture() {
   const s=Object.create(context.Session.prototype), exposures=[];

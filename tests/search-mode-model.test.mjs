@@ -139,7 +139,7 @@ test('both input implementations own and dispose the binding, and the native ada
   const switcher=readFileSync(new URL('SearchModeSwitcher.mjs',base),'utf8');
   assert.doesNotMatch(switcher,/nativeSnapshot|nativeActivate|nativeOpened|nativeVisibility/);
   for(const name of ['localSearch','remoteSearch','install','displayedEngineDetails','populateEngines'])assert.ok(switcher.includes(`searchModeModel.${name}(`));
-  const session=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIUrlbarSession.sys.mjs',import.meta.url),'utf8');
+  const session=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs',import.meta.url),'utf8');
   assert.match(session,/searchModeModel\.snapshot\(/);assert.match(session,/searchModeModel\.activate\(/);
 });
 

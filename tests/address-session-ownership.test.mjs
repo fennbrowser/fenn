@@ -4,8 +4,8 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
 const sessionContext=vm.createContext({console});
-vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIUrlbarSession.sys.mjs',import.meta.url),'utf8')
-  .replace(/^import .*;$/m,'').replace('export class WinUIUrlbarSession','this.Session = class WinUIUrlbarSession'),sessionContext);
+vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs',import.meta.url),'utf8')
+  .replace(/^import .*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),sessionContext);
 
 test('a new native owner can suppress DOM results without opening suggestions',()=>{
   const s=Object.create(sessionContext.Session.prototype),calls=[];
@@ -34,7 +34,7 @@ function fixture(expectNative = true) {
   }
   const sandbox=vm.createContext({
     Services:{prefs:{getBoolPref:()=>true}},
-    ChromeUtils:{importESModule:()=>({WinUIIndependentUrlbarSession:Session})},
+    ChromeUtils:{importESModule:()=>({WinUIAddressSession:Session})},
     window:{fullScreen:false,windowUtils:{syncWinUIAddress:state=>publications.push(JSON.parse(state))}},
     document:{fullscreenElement:null,documentElement:{matches:()=>false}},
     gBrowser:{selectedTab:tab,selectedBrowser:browser},

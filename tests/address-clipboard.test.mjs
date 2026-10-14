@@ -4,8 +4,8 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {planUrlbarCut} from '../upstream/firefox/browser/components/urlbar/content/UrlbarClipboardText.mjs';
 const context=vm.createContext({console});
-vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIUrlbarSession.sys.mjs',import.meta.url),'utf8')
- .replace(/^import .*;$/m,'').replace('export class WinUIUrlbarSession','this.Session = class WinUIUrlbarSession'),context);
+vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs',import.meta.url),'utf8')
+ .replace(/^import .*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),context);
 function fixture() {
  const session=Object.create(context.Session.prototype), commands=[], queries=[], copies=[];
  context.Cc={'@mozilla.org/widget/clipboardhelper;1':{getService:()=>({copyString:value=>copies.push(value)})}};

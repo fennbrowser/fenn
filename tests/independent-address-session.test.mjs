@@ -3,44 +3,83 @@ import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
-// Load the staged subclass over a fake retained base so its own decisions are
-// exercised without a browser: what it owns, when it falls back, and what it
-// delegates unchanged.
+// Load the session and stub the retained behavior it inherited, so the
+// session's own decisions are exercised without a browser: what it owns, when
+// it falls back, and what it delegates unchanged to the inherited paths.
 function load(){
   const calls=[],created=[];
-  class Base {
-    constructor(window){this.window=window;this.closed=false;this.sessionId='s';this.revision=1;this.sequence=1;this.active=null;
-      this.nativeOpen=true;this.input=window.gURLBar;this.nativeVisible=[];}
-    query(...args){calls.push(['super.query',...args]);return Promise.resolve('retained');}
-    activate(...args){calls.push(['super.activate',...args]);return 'retained-activated';}
-    reportNativeVisibility(...args){calls.push(['super.visibility',...args]);return 'retained-visible';}
-    cancel(){calls.push(['super.cancel']);}
-    close(){calls.push(['super.close']);this.closed=true;}
-    onQueryStarted(query){this.active.context=query;calls.push(['started',query.id]);}
-    onFirstResult(query){calls.push(['first',query.id]);}
-    onQueryResults(query){calls.push(['results',query.id]);}
-    onQueryFinished(query){calls.push(['finished',query.id]);}
-    onQueryResultRemoved(id,l10n){calls.push(['removed',id,l10n]);}
-    snapshot(){return {snapshot:true};}
-    canActivate(result){return result.activatable!==false;}
-    changed(){calls.push(['changed']);}
-    resolveTipButton(request){calls.push(['resolve',request]);return request.resolved??null;}
-    activateTipButton(request){calls.push(['super.tip',request]);return 'retained-tip';}
-    activateGlobalAction(request){calls.push(['super.global',request]);return 'retained-global';}
-    nativeKeywordResult(result){return result.kind==='keyword';}
-    nativeOmniboxResult(result){return result.kind==='omnibox';}
-    nativeModeResult(result){return result.kind==='mode';}
-    updateSelection(request){calls.push(['super.updateSelection',request]);return {status:'selected'};}
-    captureAutofill(active){calls.push(['super.capture']);}
-    exposureRecorder(){return {addExposure(){calls.push(['retained-exposure']);},discardTentativeExposures(){}};}
-  }
-  const context=vm.createContext({console,UrlbarShared:{RESULT_TYPE:{DYNAMIC:8}},ChromeUtils:{importESModule:()=>({UrlbarEditSession:class {constructor(options){this.options=options;created.push(this);}close(){calls.push(['stale-editor-close']);}},independentUrlbarBrowserState:{snapshot:()=>({persistedSearchTerms:globalThis.r2Persisted===true})}})}});
-  const source=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIIndependentUrlbarSession.sys.mjs',import.meta.url),'utf8')
-    .replace(/^import .*;\r?$/gm,'').replace('export class WinUIIndependentUrlbarSession','this.Session = class WinUIIndependentUrlbarSession')
-    .replace('extends WinUIUrlbarSession','extends Base');
-  context.Base=Base;
+  const inherited={
+    legacyQuery(...args){calls.push(['super.query',...args]);return Promise.resolve('retained');},
+    legacyActivate(...args){calls.push(['super.activate',...args]);return 'retained-activated';},
+    legacyReportNativeVisibility(...args){calls.push(['super.visibility',...args]);return 'retained-visible';},
+    legacyCancel(){calls.push(['super.cancel']);},
+    legacyClose(){calls.push(['super.close']);this.closed=true;},
+    onQueryStarted(query){this.active.context=query;calls.push(['started',query.id]);},
+    onFirstResult(query){calls.push(['first',query.id]);},
+    onQueryResults(query){calls.push(['results',query.id]);},
+    onQueryFinished(query){calls.push(['finished',query.id]);},
+    onQueryResultRemoved(id,l10n){calls.push(['removed',id,l10n]);},
+    snapshot(){return {snapshot:true};},
+    canActivate(result){return result.activatable!==false;},
+    changed(){calls.push(['changed']);},
+    resolveTipButton(request){calls.push(['resolve',request]);return request.resolved??null;},
+    legacyActivateTipButton(request){calls.push(['super.tip',request]);return 'retained-tip';},
+    legacyActivateGlobalAction(request){calls.push(['super.global',request]);return 'retained-global';},
+    nativeKeywordResult(result){return result.kind==='keyword';},
+    nativeOmniboxResult(result){return result.kind==='omnibox';},
+    nativeModeResult(result){return result.kind==='mode';},
+    legacyUpdateSelection(request){calls.push(['super.updateSelection',request]);return {status:'selected'};},
+    legacyCaptureAutofill(active){calls.push(['super.capture']);},
+    legacyExposureRecorder(){return {addExposure(){calls.push(['retained-exposure']);},discardTentativeExposures(){}};},
+  };
+  const noop=()=>{};
+  const context=vm.createContext({console,UrlbarShared:{RESULT_TYPE:{DYNAMIC:8}},
+    Services:{prefs:{addObserver:noop,removeObserver:noop,getBoolPref:()=>false}},
+    ChromeUtils:{importESModule:()=>({
+      UrlbarEditSession:class {constructor(options){this.options=options;created.push(this);}close(){calls.push(['stale-editor-close']);}},
+      independentUrlbarBrowserState:{snapshot:()=>({persistedSearchTerms:globalThis.r2Persisted===true})},
+      // The host is a pass-through; the fixtures' input object stands in for it.
+      WinUIAddressHost:class {constructor(input){return input;}},
+      UrlbarResultPresentation:class {},UrlbarResultActions:class {},
+    })}});
+  const source=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs',import.meta.url),'utf8')
+    .replace(/^import .*;\r?$/gm,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession');
   vm.runInContext(source,context);
-  return {Session:context.Session,calls,created};
+  Object.assign(context.Session.prototype,inherited);
+  // The retained class exposes these as accessors over the original input; the
+  // fixtures want plain fields, as the faked base class gave them.
+  class Session {
+    constructor(window){
+      // The real constructor brands the private members; give it the listener
+      // surface of the original input it registers on.
+      const input=window.gURLBar;
+      input.addEventListener??=noop;input.removeEventListener??=noop;
+      input.controller??={};
+      input.controller.engineStore??={addObserver:noop,removeObserver:noop};
+      input.controller.addListener??=noop;input.controller.removeListener??=noop;
+      input.inputField.addEventListener??=noop;input.inputField.removeEventListener??=noop;
+      window.document??={};window.document.l10n??={};
+      window.document.documentURI??='chrome://browser/content/browser.xhtml';
+      window.gBrowser.tabContainer??={addEventListener:noop,removeEventListener:noop};
+      window.addEventListener??=noop;window.removeEventListener??=noop;
+      window.gWinUIPane??={};window.gWinUIPane.pref??='fenn.winui.pane.enabled';window.gWinUIPane.attached??=true;
+      const s=new context.Session(window);
+      // The retained class exposes these as accessors over the original input;
+      // the fixtures want plain fields, as the faked base class gave them.
+      for(const name of ['nativeOpen','revision','sequence'])
+        Object.defineProperty(s,name,{value:undefined,writable:true,configurable:true,enumerable:true});
+      Object.assign(s,{closed:false,sessionId:'s',revision:1,sequence:1,active:null,nativeOpen:true,
+        input,nativeVisible:[],editor:null,editorScope:null,editorRevision:0});
+      return s;
+    }
+    static get counters(){return context.Session.counters;}
+    static report(){return context.Session.report();}
+    static history(){return context.Session.history();}
+    static flush(){return context.Session.flush();}
+    static get persistence(){return context.Session.persistence;}
+    static set persistence(value){context.Session.persistence=value;}
+  }
+  return {Session,calls,created,SessionClass:context.Session};
 }
 
 function fixture({visible=true,page='https://page.test/',heuristic=true}={}){
@@ -94,7 +133,7 @@ function fixture({visible=true,page='https://page.test/',heuristic=true}={}){
     observeAutofillSelection:(...a)=>{calls.push(['observe',...a]);return {confirmed:editor.confirms===true};},
   };
   s.editor=editor;s.editorScope={browser,documentId:2,lost:false};
-  return {s,calls,created,published,engagements,editor,result,row,window,input,browser};
+  return {s,Session,calls,created,published,engagements,editor,result,row,window,input,browser};
 }
 
 test('the editor is rebuilt when the browser or document it was pinned to changes',()=>{
@@ -724,7 +763,7 @@ test('the tally persists aggregates for non-private windows only and merges them
   assert.equal(JSON.stringify(Object.keys(file).sort()),JSON.stringify(['days','lastUpdated','since','totals','version']),
     'only counts are stored: no text, URL or per-event timing');
   const privateWindow={...f.window,PrivateBrowsingUtils:{isWindowPrivate:()=>true}};
-  const priv=new C(privateWindow);
+  const priv=new f.Session(privateWindow);
   priv.active={...f.s.active};priv.nativeVisible=[];priv.editor=f.editor;priv.editorRevision=3;
   priv.activate(1,f.row.id,{});
   assert.equal(C.counters.fallbackTotal,2,'the in-memory counters still see the private window');

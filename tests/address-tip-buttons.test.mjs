@@ -3,8 +3,8 @@ import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const context=vm.createContext({console,UrlbarShared:{RESULT_TYPE:{TIP:7}}});
-vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIUrlbarSession.sys.mjs',import.meta.url),'utf8')
- .replace(/^import .*;$/m,'').replace('export class WinUIUrlbarSession','this.Session = class WinUIUrlbarSession'),context);
+vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs',import.meta.url),'utf8')
+ .replace(/^import .*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),context);
 function fixture(){
  const s=Object.create(context.Session.prototype),row={id:'r'},result={type:7,payload:{buttons:[{name:'0'}],text:'Firefox tip'}};
  const element={label:'Localized button',name:'0',enabled:true,action:{name:'0'}};

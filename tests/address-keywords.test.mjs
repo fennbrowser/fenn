@@ -3,8 +3,8 @@ import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const context=vm.createContext({console,UrlbarShared:{RESULT_TYPE:{URL:3,TAB_SWITCH:4,KEYWORD:5,OMNIBOX:9,SEARCH:2,DYNAMIC:6}}});
-vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIUrlbarSession.sys.mjs',import.meta.url),'utf8')
- .replace(/^import .*;$/m,'').replace('export class WinUIUrlbarSession','this.Session = class WinUIUrlbarSession'),context);
+vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs',import.meta.url),'utf8')
+ .replace(/^import .*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),context);
 function fixture() {
  const s=Object.create(context.Session.prototype),calls=[];
  const result={type:5,providerName:'UrlbarProviderBookmarkKeywords',payload:{url:'https://example.test/',postData:'q=a%2Bb',input:'kw a+b',keyword:'kw'}};
