@@ -171,3 +171,16 @@ test('palette labels can refresh without revoking Firefox customization commands
  assert.deepEqual(after.items,before.items);assert.notDeepEqual(after.labels,before.labels);
  assert.equal(f.c.execute(command),1);assert.equal(f.order().includes('fxa-toolbar-menu-button'),false);
 });
+
+test('an unplaced widget is labelled from the localization its node names, once',()=>{
+ const f=fixture();let lookups=0;
+ const base=f.c.toolbar.owner.localization;
+ f.c.toolbar.owner.localization=()=>({...base(),formatMessagesSync:([{id}])=>{lookups++;
+  return [id==='navbar-home'?{attributes:[{name:'tooltiptext',value:'Home Page'},{name:'label',value:'Home'}]}:{value:'Plain'}];}});
+ const node={getAttribute:name=>name==='data-l10n-id'?'navbar-home':null};
+ assert.equal(f.c.l10nLabel(node),'Home');assert.equal(f.c.l10nLabel(node),'Home');assert.equal(lookups,1);
+ assert.equal(f.c.l10nLabel({getAttribute:name=>name==='data-l10n-id'?'other':null}),'Plain');
+ assert.equal(f.c.l10nLabel({getAttribute:()=>null}),'');assert.equal(f.c.l10nLabel(null),'');
+ f.c.toolbar.owner.localization=()=>({formatMessagesSync(){throw new Error('missing');}});
+ assert.equal(f.c.l10nLabel({getAttribute:name=>name==='data-l10n-id'?'broken':null}),'');
+});

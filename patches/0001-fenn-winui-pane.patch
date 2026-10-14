@@ -17251,10 +17251,10 @@ index 00000000000..e4be8e911db
 +}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 00000000000..8eb1307b8c0
+index 00000000000..c2b45d23c7c
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,193 @@
 +// Firefox owns widget eligibility and durable placement; native owns the editor.
 +import { readActionStamp, actionStampMatches } from "chrome://browser/content/WinUIActionStamp.sys.mjs";
 +export class WinUIToolbarCustomization {
@@ -17264,6 +17264,7 @@ index 00000000000..8eb1307b8c0
 +    this.widgetStrings = Services.strings.createBundle('chrome://browser/locale/customizableui/customizableWidgets.properties');
 +    this.editorOpen = false; this.ownsReset = false; this.resetting = false;
 +    this.nativeOverflow = new Set();
++    this.l10nLabels = new Map();
 +    this.entries = new Map(); this.nextId = 0; this.revision = 0; this.signature = '';
 +    this.invalidate = () => toolbar.owner.invalidateAddress();
 +    this.listener = Object.fromEntries(['onWidgetAdded','onWidgetRemoved','onWidgetMoved','onWidgetDestroyed','onWidgetAfterDOMChange','onWidgetOverflow','onWidgetUnderflow','onAreaReset'].map(k=>[k,this.invalidate]));
@@ -17304,7 +17305,7 @@ index 00000000000..8eb1307b8c0
 +        control = pinned?.id || toolbar.pinned?.paletteEntries?.get(widget)?.id || '';
 +        label = button.getAttribute('tooltiptext') || policy.extension.name;
 +      } else {
-+        label = navigation[control]?.label || node?.getAttribute('label') || wrapper?.label || '';
++        label = navigation[control]?.label || node?.getAttribute('label') || wrapper?.label || this.l10nLabel(node);
 +        if (control === 'address') label = toolbar.owner.localization().formatValueSync('winui-toolbar-address');
 +      }
 +      if (!label || items.length >= 59) continue;
@@ -17341,6 +17342,20 @@ index 00000000000..8eb1307b8c0
 +    const labels=Object.fromEntries(['title','available','earlier','later','add','remove','done','hint','reset','undo-reset','reset-hint','overflow','drop'].map(k=>[k,toolbar.owner.localization().formatValueSync('winui-toolbar-customize-'+k)]));
 +    this.current={revision:this.revision,items,labels,canReset,canUndoReset};
 +    return this.current;
++  }
++  // A widget that is not placed has a detached node that Firefox has not
++  // localized, so its label comes from the localization the node names.
++  l10nLabel(node) {
++    const id = node?.getAttribute('data-l10n-id');
++    if (!id) return '';
++    if (this.l10nLabels.has(id)) return this.l10nLabels.get(id);
++    let label = '';
++    try {
++      const [message] = this.toolbar.owner.localization().formatMessagesSync([{id}]);
++      label = message?.attributes?.find(attribute => attribute.name === 'label')?.value || message?.value || '';
++    } catch {}
++    this.l10nLabels.set(id, label);
++    return label;
 +  }
 +  endEditor() {
 +    if (!this.editorOpen && !this.ownsReset) return;
