@@ -6163,7 +6163,7 @@ index 9596698cf94..77dd6bd1755 100644
 +
    static #buildRecorded(
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 278cb5ca71a..51863287a2d 100644
+index 278cb5ca71a..9a2bc70c93f 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
 @@ -6,2 +6,4 @@ import UrlbarPrefs from "chrome://browser/content/urlbar/UrlbarContentPrefs.mjs"
@@ -6184,6 +6184,11 @@ index 278cb5ca71a..51863287a2d 100644
 -const CONTAINER_SOURCE = "urlbar_result_context_menu";
 -
  const getBoundsWithoutFlushing = UrlbarShared.getBoundsWithoutFlushing;
+@@ -60,3 +52,3 @@ export class UrlbarView {
+     this.resultMenu = this.panel.querySelector(".urlbarView-result-menu");
+-    this.#resultMenuCommands = new WeakMap();
++    this.#menuActions = new WeakMap();
+ 
 @@ -87,2 +79,3 @@ export class UrlbarView {
    get oneOffSearchButtons() {
 +    if (this.nativePresentation) return null;
@@ -6558,18 +6563,17 @@ index 278cb5ca71a..51863287a2d 100644
 -    this.#resultMenuCommands.delete(row.result);
 +    this.input.resultActions.invalidate(row.result);
    }
-@@ -1260,3 +1177,6 @@ export class UrlbarView {
+@@ -1260,3 +1177,4 @@ export class UrlbarView {
    #resultMenuResult;
-+  // Holds each menu item's validated action (item -> action), not the upstream
-+  // per-result command cache. The name is kept so rebases do not fail on it.
-   #resultMenuCommands;
+-  #resultMenuCommands;
++  #menuActions;
 +  #menuBuilds = new WeakMap();
    #rows;
-@@ -1312,2 +1232,3 @@ export class UrlbarView {
+@@ -1312,2 +1230,3 @@ export class UrlbarView {
      this.input.toggleAttribute("suppress-focus-border", true);
 +    this.controller.resultsOpen = true;
      this.input.toggleAttribute("open", true);
-@@ -1344,9 +1265,3 @@ export class UrlbarView {
+@@ -1344,9 +1263,3 @@ export class UrlbarView {
    #shouldShowHeuristic(result) {
 -    if (!result?.heuristic) {
 -      throw new Error("A heuristic result must be given");
@@ -6580,7 +6584,7 @@ index 278cb5ca71a..51863287a2d 100644
 -    );
 +    return this.input.resultPresentation.shouldShowHeuristic(result);
    }
-@@ -2148,9 +2063,3 @@ export class UrlbarView {
+@@ -2148,9 +2061,3 @@ export class UrlbarView {
    #updateRowButtons(item, oldResult, result) {
 -    for (let i = 0; i < result.payload.buttons?.length; i++) {
 -      // We hold the name to each button data in payload to enable to get the
@@ -6591,7 +6595,7 @@ index 278cb5ca71a..51863287a2d 100644
 -    }
 +    this.input.resultActions.buttons(result);
  
-@@ -2232,8 +2141,3 @@ export class UrlbarView {
+@@ -2232,8 +2139,3 @@ export class UrlbarView {
          ],
 -        dataset: {
 -          name: buttonName,
@@ -6601,7 +6605,7 @@ index 278cb5ca71a..51863287a2d 100644
 -        },
 +        dataset: this.input.resultActions.buttonAction({name:buttonName,command,url,input}),
        },
-@@ -2802,39 +2706,4 @@ export class UrlbarView {
+@@ -2802,39 +2704,4 @@ export class UrlbarView {
    #iconForResult(result, iconUrlOverride = null) {
 -    if (
 -      result.source == UrlbarShared.RESULT_SOURCE.HISTORY &&
@@ -6643,7 +6647,7 @@ index 278cb5ca71a..51863287a2d 100644
 +    return this.input.resultPresentation.icon(result, iconUrlOverride,
 +      (owner, blob) => this.#getBlobUrlForResult(owner, blob));
    }
-@@ -2923,17 +2792,18 @@ export class UrlbarView {
+@@ -2923,17 +2790,18 @@ export class UrlbarView {
      if (result.payload.descriptionL10n) {
 -      this.#l10nCache.setElementL10n(
 -        description,
@@ -6677,22 +6681,22 @@ index 278cb5ca71a..51863287a2d 100644
 +          const link = description.querySelector("[data-l10n-name=learn-more-link]");
 +          if (link) link.dataset.url = this.input.resultActions.helpAction(result).url;
          }
-@@ -3013,3 +2883,3 @@ export class UrlbarView {
+@@ -3013,3 +2881,3 @@ export class UrlbarView {
    #updateIndices() {
 -    this.visibleResults = [];
 +    this.controller.visibleResults = [];
      this.#overflowObserver.disconnect();
-@@ -3035,3 +2905,3 @@ export class UrlbarView {
+@@ -3035,3 +2903,3 @@ export class UrlbarView {
        if (visible) {
 -        this.visibleResults.push(result);
 +        this.controller.visibleResults.push(result);
          seenOnlyHeuristicOrSearchSuggestions &&=
-@@ -3069,3 +2939,3 @@ export class UrlbarView {
+@@ -3069,3 +2937,3 @@ export class UrlbarView {
  
 -    this.input.toggleAttribute("noresults", !this.visibleResults.length);
 +    this.input.toggleAttribute("noresults", !this.controller.visibleResults.length);
    }
-@@ -3166,67 +3036,3 @@ export class UrlbarView {
+@@ -3166,67 +3034,3 @@ export class UrlbarView {
     */
 -  #rowLabel(row) {
 -    if (!UrlbarPrefs.get("groupLabels.enabled")) {
@@ -6761,12 +6765,12 @@ index 278cb5ca71a..51863287a2d 100644
 -  }
 +  #rowLabel(row) { return this.input.resultActions.rowLabel(row.result, this.#queryContext); }
  
-@@ -3279,3 +3085,3 @@ export class UrlbarView {
+@@ -3279,3 +3083,3 @@ export class UrlbarView {
        this.input.searchMode?.source != UrlbarShared.RESULT_SOURCE.ACTIONS &&
 -      this.visibleResults[0]?.source != UrlbarShared.RESULT_SOURCE.ACTIONS
 +      this.controller.visibleResults[0]?.source != UrlbarShared.RESULT_SOURCE.ACTIONS
      ) {
-@@ -3307,2 +3113,25 @@ export class UrlbarView {
+@@ -3307,2 +3111,25 @@ export class UrlbarView {
  
 +  /**
 +   * Announce presentation text for the contextual opt-in's Learn More control.
@@ -6792,11 +6796,11 @@ index 278cb5ca71a..51863287a2d 100644
 +  }
 +
    #selectElement(
-@@ -3342,2 +3171,3 @@ export class UrlbarView {
+@@ -3342,2 +3169,3 @@ export class UrlbarView {
      if (result) {
 +      this.announceSelection(result, element);
        this.controller.parentController.onBeforeSelection(result, element);
-@@ -3600,51 +3430,9 @@ export class UrlbarView {
+@@ -3600,51 +3428,9 @@ export class UrlbarView {
    #setResultTitle(result, titleNode) {
 -    if (result.payload.titleL10n) {
 -      this.#l10nCache.setElementL10n(titleNode, result.payload.titleL10n);
@@ -6853,7 +6857,7 @@ index 278cb5ca71a..51863287a2d 100644
 +    if (descriptor?.text !== undefined) {
 +      titleNode.textContent = descriptor.text;
        return;
-@@ -4162,47 +3950,2 @@ export class UrlbarView {
+@@ -4162,47 +3948,2 @@ export class UrlbarView {
  
 -  /**
 -   * The commands that open a result in a new tab or window. They're offered
@@ -6901,12 +6905,12 @@ index 278cb5ca71a..51863287a2d 100644
 -   *   second row.
 -   */
    #hasMenuButton(result) {
-@@ -4219,3 +3962,3 @@ export class UrlbarView {
+@@ -4219,3 +3960,3 @@ export class UrlbarView {
     */
 -  #updateMenuButtonKeyboardAccessibility() {
 +  updateMenuButtonKeyboardAccessibility() {
      let inaccessible = !UrlbarPrefs.get("resultMenu.keyboardAccessible");
-@@ -4234,94 +3977,5 @@ export class UrlbarView {
+@@ -4234,94 +3975,5 @@ export class UrlbarView {
     */
 -  #canOpenInNewTarget(result) {
 -    return (
@@ -7004,7 +7008,7 @@ index 278cb5ca71a..51863287a2d 100644
 +  #getMenuCommands(result) { return this.input.resultActions.getMenuCommands(result); }
 +  #getResultMenuCommands(result) { return this.input.resultActions.getResultMenuCommands(result); }
  
-@@ -4335,40 +3989,33 @@ export class UrlbarView {
+@@ -4335,40 +3987,33 @@ export class UrlbarView {
    async #populateResultMenu({ panel = this.resultMenu, commands }) {
 +    const generation = {};
 +    this.#menuBuilds.set(panel, generation);
@@ -7045,7 +7049,7 @@ index 278cb5ca71a..51863287a2d 100644
 +      if (data.separator) { panel.appendChild(this.document.createElement("hr")); continue; }
 +      const item = this.document.createElement("panel-item");
 +      item.classList.add("urlbarView-result-menuitem");
-+      this.#resultMenuCommands.set(item, data.action);
++      this.#menuActions.set(item, data.action);
 +      if (data.action.command) item.dataset.command = data.action.command;
 +      if (data.action.openIn) item.dataset.openIn = data.action.openIn;
 +      if (data.action.userContextId) item.dataset.usercontextid = data.action.userContextId;
@@ -7074,7 +7078,7 @@ index 278cb5ca71a..51863287a2d 100644
 +      } else { item.textContent = data.label; }
 +      panel.appendChild(item);
      }
-@@ -4376,61 +4023,7 @@ export class UrlbarView {
+@@ -4376,61 +4021,7 @@ export class UrlbarView {
  
 -  /**
 -   * Fills the submenu of the command that opens a result in a container tab
@@ -7140,7 +7144,7 @@ index 278cb5ca71a..51863287a2d 100644
 +    const items = await this.input.resultActions.describeContainers();
 +    if (this.#menuBuilds.get(panel) === generation) this.#renderResultMenu(panel, items);
    }
-@@ -4712,35 +4305,8 @@ export class UrlbarView {
+@@ -4712,35 +4303,8 @@ export class UrlbarView {
    on_click(event) {
 -    let menuitem = event
 -      .composedPath()
@@ -7176,13 +7180,13 @@ index 278cb5ca71a..51863287a2d 100644
 -    }
 -    this.input.pickResult({ result, event, element: menuitem });
 +    const item = event.composedPath().find(node => node.localName === "panel-item");
-+    const action = item && this.#resultMenuCommands.get(item);
++    const action = item && this.#menuActions.get(item);
 +    if (!action || item.hasSubmenu || item.disabled) return;
 +    const result = this.#resultMenuResult;
 +    if (action.command !== "toggle-keyboard-accessible") this.#resultMenuResult = null;
 +    this.input.resultActions.invokeMenu(result, action, event);
    }
-@@ -4782,2 +4348,3 @@ export class UrlbarView {
+@@ -4782,2 +4346,3 @@ export class UrlbarView {
      }
 +    this.#menuBuilds.delete(event.currentTarget);
      event.currentTarget.lastAnchorNode
