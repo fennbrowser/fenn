@@ -141,6 +141,8 @@ def fast(checks, tools):
                missing=problem or (None if tools["node"] else "Node is missing; run the doctor."))
     checks.run("Address session contract", [python, "scripts/Check-AddressSessionContract.py"],
                missing=problem)
+    checks.run("Navigation toolbar ledger", [python, "scripts/Check-NavigationToolbarLedger.py"],
+               missing=problem)
     checks.run("ShellCore", [tools["cargo"], "test", "--offline", "--locked",
                              "--manifest-path", "native/ShellCore/Cargo.toml"],
                missing=None if tools["cargo"] else "Cargo is missing; run the doctor.")
