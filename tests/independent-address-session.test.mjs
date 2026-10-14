@@ -686,7 +686,7 @@ test('an activation before the first streamed update, and a restart that throws,
   assert.ok(f.calls.some(c=>c[0]==='address-fallback'));
 });
 
-test('the fallback readout counts every fallback by reason and reports a rate per 200 activations',()=>{
+test('the fallback readout separates dropped actions from replays and applies the bar',()=>{
   const f=fixture({visible:false,heuristic:false});
   const C=f.s.constructor,before=C.report();
   f.s.activate(1,f.row.id,{});
@@ -694,9 +694,62 @@ test('the fallback readout counts every fallback by reason and reports a rate pe
   const after=C.report();
   assert.equal(after.fallbackTotal,before.fallbackTotal+1);
   assert.equal(after.fallbackReasons['not-visible'],(before.fallbackReasons['not-visible']??0)+1);
-  assert.equal(after.fallbacksPer200Activations,Math.round(1/3*200*100)/100);
-  assert.equal(after.errorFallbacks,before.errorFallbacks);
-  assert.equal(JSON.stringify(Object.keys(after)),JSON.stringify(Object.keys(before)));
+  assert.equal(after.attempts,4);
+  assert.equal(after.dropped,1,'a fallback that was not replayed is a dropped action');
+  assert.equal(after.fallbacksPer200,50);assert.equal(after.droppedPer200,50);
+  assert.equal(after.bar.enoughAttempts,false);assert.equal(after.bar.met,false);
+  C.counters.replays+=1;
+  assert.equal(C.report().dropped,0,'a fallback Firefox completed is not dropped');
+  C.counters.activations+=400;
+  const clean=C.report();
+  assert.equal(clean.bar.enoughAttempts,true);assert.equal(clean.bar.met,true);
+  C.counters.fallbackReasons.error=1;C.counters.fallbackTotal+=1;
+  assert.equal(C.report().bar.met,false,'one error fallback fails the bar');
+});
+
+test('the tally persists aggregates for non-private windows only and merges them with this run',async()=>{
+  const f=fixture({visible:false,heuristic:false});
+  const C=f.s.constructor,writes=[],timers=[];let file=null;
+  C.persistence={enabled:()=>true,path:()=>'tally.json',read:async()=>file,
+    write:async(_p,state)=>{file=JSON.parse(JSON.stringify(state));writes.push(file);},
+    setTimer:callback=>{timers.push(callback);return timers.length;},now:()=>Date.UTC(2026,9,14,12)};
+  f.s.activate(1,f.row.id,{});
+  assert.equal(timers.length,1,'one debounced write is scheduled');
+  await C.flush();
+  assert.equal(writes.length,1);
+  assert.equal(file.totals.fallbackTotal,1);
+  assert.equal(file.totals.fallbackReasons['not-visible'],1);
+  assert.equal(file.days['2026-10-14'].fallbackTotal,1);
+  assert.equal(file.days['2026-10-14'].dropped,1);
+  assert.equal(JSON.stringify(Object.keys(file).sort()),JSON.stringify(['days','lastUpdated','since','totals','version']),
+    'only counts are stored: no text, URL or per-event timing');
+  const privateWindow={...f.window,PrivateBrowsingUtils:{isWindowPrivate:()=>true}};
+  const priv=new C(privateWindow);
+  priv.active={...f.s.active};priv.nativeVisible=[];priv.editor=f.editor;priv.editorRevision=3;
+  priv.activate(1,f.row.id,{});
+  assert.equal(C.counters.fallbackTotal,2,'the in-memory counters still see the private window');
+  await C.flush();
+  assert.equal(writes.length,1,'nothing from a private window is written');
+  C.counters.activations+=0;
+  f.s.activate(1,f.row.id,{});
+  const history=await C.history();
+  assert.equal(history.fallbackTotal,2,'the tally merges this run with the stored runs');
+  assert.equal(history.fallbackReasons['not-visible'],2);
+  assert.equal(history.since,file.since);
+});
+
+test('a tally that cannot be written is kept and retried, and a damaged file is ignored',async()=>{
+  const f=fixture({visible:false,heuristic:false});
+  const C=f.s.constructor;let fail=true,file='not json';
+  C.persistence={enabled:()=>true,path:()=>'tally.json',read:async()=>file,
+    write:async(_p,state)=>{if(fail)throw new Error('disk');file=state;},
+    setTimer:()=>1,now:()=>Date.UTC(2026,9,14)};
+  f.s.activate(1,f.row.id,{});
+  assert.equal(await C.flush(),false);
+  fail=false;
+  assert.equal(await C.flush(),true);
+  assert.equal(file.totals.fallbackTotal,1,'the failed write was not lost');
+  assert.equal(file.version,1);
 });
 
 test('diagnostic lists keep only the most recent entries',()=>{
