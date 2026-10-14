@@ -17,6 +17,9 @@ TRACKED = ["browser/components/search/SearchOneOffs.sys.mjs", "browser/component
 ADDED = ["browser/components/urlbar/content/UrlbarInputIdentity.mjs", "browser/components/urlbar/content/UrlbarBrowserState.mjs", "browser/components/urlbar/content/UrlbarSelectedSearch.mjs", "browser/components/urlbar/content/UrlbarUrlValue.mjs", "browser/components/urlbar/content/UrlbarEditSession.mjs", "browser/components/urlbar/content/UrlbarQuerySession.mjs", "browser/components/urlbar/content/UrlbarCompositionModel.mjs", "browser/components/urlbar/content/UrlbarAutofillModel.mjs", "browser/components/urlbar/content/UrlbarQueryModel.mjs", "browser/components/urlbar/content/UrlbarQueryLifecycle.mjs", "browser/components/urlbar/content/UrlbarSearchModeModel.mjs", "browser/components/urlbar/content/UrlbarSearchModeBinding.mjs", "browser/components/urlbar/content/UrlbarClipboardText.mjs", "browser/components/urlbar/content/UrlbarResultPresentation.mjs", "browser/components/urlbar/content/UrlbarResultActions.mjs", "browser/base/content/WinUIActionStamp.sys.mjs", "browser/base/content/WinUIHistoryMenu.sys.mjs", "browser/base/content/WinUIToolbarCustomization.sys.mjs", "browser/base/content/WinUIDismissalAcknowledgments.sys.mjs", "browser/base/content/WinUIResultContextMenu.sys.mjs", "browser/base/content/WinUIAddressContextMenu.sys.mjs", "browser/base/content/WinUIOmnibarActions.sys.mjs", "browser/base/content/WinUIPinnedExtensions.sys.mjs", "browser/base/content/WinUITabStripSession.sys.mjs", "browser/base/content/WinUITabMenuSession.sys.mjs", "browser/base/content/WinUIAddressSession.sys.mjs", "browser/base/content/WinUIAddressToolbar.sys.mjs", "browser/base/content/WinUIAddressToolbar.css", "browser/base/content/browser-winui-pane.js", "widget/windows/WinUIPrototype.cpp", "widget/windows/WinUIPrototype.h", "browser/base/content/WinUIAddressHost.sys.mjs", "widget/windows/WinUIPaneApi.h"]
 
 
+CONTEXT_LINES = 1
+
+
 def git(*args, **kwargs):
     return subprocess.run(["git", *args], cwd=CHECKOUT, check=True,
                           stdout=subprocess.PIPE, **kwargs).stdout
@@ -43,7 +46,9 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="pane-index-", dir=ROOT / "artifacts") as temporary:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / "index"))
         git("read-tree", BASE, env=env)
-        patch = git("diff", "--binary", "--", *TRACKED, env=env)
+        # One context line keeps a hunk from failing on churn two or three lines away;
+        # `git apply` places it by line number and the checks below confirm it.
+        patch = git("diff", "--binary", f"-U{CONTEXT_LINES}", "--", *TRACKED, env=env)
         for path in ADDED:
             result = subprocess.run(["git", "diff", "--no-index", "--binary", "--", "/dev/null", path],
                                     cwd=CHECKOUT, stdout=subprocess.PIPE)
