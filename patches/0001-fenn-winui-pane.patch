@@ -20137,10 +20137,10 @@ index 0000000000..961c3b61a4
 +}
 diff --git a/browser/base/content/WinUIAddressSession.sys.mjs b/browser/base/content/WinUIAddressSession.sys.mjs
 new file mode 100644
-index 0000000000..432c509e18
+index 0000000000..380a3b8df7
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressSession.sys.mjs
-@@ -0,0 +1,2636 @@
+@@ -0,0 +1,2639 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21077,6 +21077,9 @@ index 0000000000..432c509e18
 +    // Every publication gets new opaque IDs: updated/reordered results cannot
 +    // accidentally be activated using an earlier snapshot's index.
 +    active.results = [...context.results];
++    // A provider may update a result in place; its cached menu commands are
++    // only valid for the publication they were read from.
++    for (const result of active.results) this.resultActions.invalidate(result);
 +    const nativeCandidates =
 +      this.input.view.nativePresentation === this
 +        ? new Set(this.resultPresentation.candidates(context))
