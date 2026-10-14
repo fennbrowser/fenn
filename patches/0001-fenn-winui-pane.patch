@@ -17251,7 +17251,7 @@ index 00000000000..e4be8e911db
 +}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 00000000000..c2b45d23c7c
+index 00000000000..12fc54687db
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 @@ -0,0 +1,193 @@
@@ -17284,7 +17284,7 @@ index 00000000000..c2b45d23c7c
 +  snapshot(navigation) {
 +    const {ui,toolbar} = this, {window} = toolbar;
 +    const fixed = new Map([['back-button','back'],['forward-button','forward'],['stop-reload-button','reload'],
-+      ['urlbar-container','address'],['fxa-toolbar-menu-button','profile'],['unified-extensions-button','extensions'],['home-button','home'],['downloads-button','downloads'],['history-panelmenu','history'],['bookmarks-menu-button','bookmarks']]);
++      ['urlbar-container','address'],['fxa-toolbar-menu-button','profile'],['unified-extensions-button','extensions'],['home-button','home'],['downloads-button','downloads'],['history-panelmenu','history'],['bookmarks-menu-button','bookmarks'],['reset-pbm-toolbar-button','reset-pbm']]);
 +    const placements = ui.getWidgetIdsInArea(ui.AREA_NAVBAR);
 +    const candidates = [...new Set([...placements,...ui.getWidgetIdsInArea(ui.AREA_FIXED_OVERFLOW_PANEL),...fixed.keys(),...ui.getWidgetIdsInArea(ui.AREA_ADDONS),'spring'])];
 +    const items = [], keep = new Set();
@@ -21241,10 +21241,10 @@ index 00000000000..380a3b8df73
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..95d582550f3
+index 00000000000..7cab1f07045
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,347 @@
+@@ -0,0 +1,351 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -21289,6 +21289,7 @@ index 00000000000..95d582550f3
 +      {id:"downloads", element:"downloads-button", menu:true},
 +      {id:"history", element:"history-panelmenu", menu:true},
 +      {id:"bookmarks", element:"bookmarks-menu-button", menu:true},
++      {id:"reset-pbm", element:"reset-pbm-toolbar-button", menu:true},
 +      {id:"back", command:"Browser:Back", element:"back-button", method:"back"},
 +      {id:"forward", command:"Browser:Forward", element:"forward-button", method:"forward"},
 +      {id:"reload", command:"Browser:Reload", element:"reload-button", method:"reloadOrDuplicate"},
@@ -21448,11 +21449,11 @@ index 00000000000..95d582550f3
 +    const document = window.document;
 +    const anchor = this.menuAnchor(id, bounds);
 +    if (!anchor) return 2;
-+    if (id === "history" || id === "bookmarks") {
++    if (id === "history" || id === "bookmarks" || id === "reset-pbm") {
 +      // PanelUI derives the popup's accessible name from its anchor.
 +      anchor.setAttribute("aria-label", this.navigationState()[id].label);
 +    }
-+    if ((id === "history" || id === "bookmarks") && bounds.keyboard) {
++    if ((id === "history" || id === "bookmarks" || id === "reset-pbm") && bounds.keyboard) {
 +      event = new window.KeyboardEvent("keypress", {key:"Enter", ctrlKey:event.ctrlKey,
 +        altKey:event.altKey, shiftKey:event.shiftKey, metaKey:event.metaKey});
 +    }
@@ -21470,6 +21471,9 @@ index 00000000000..95d582550f3
 +      if (!popup) return 2;
 +      if (["open", "showing"].includes(popup.state)) popup.hidePopup();
 +      else popup.openPopup(anchor, popup.getAttribute("position") || "bottomright topright", 0, 0, false, false, event);
++    } else if (id === "reset-pbm") {
++      if (anchor.open) document.getElementById("customizationui-widget-panel")?.hidePopup();
++      else window.PanelUI.showSubView("reset-pbm-panel", anchor, event);
 +    } else if (id === "profile") {
 +      if (anchor.hasAttribute("open")) document.getElementById("customizationui-widget-panel")?.hidePopup();
 +      else window.gSync.toggleAccountPanel(anchor, event).catch(console.error);
