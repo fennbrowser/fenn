@@ -168,10 +168,10 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..ee8017ef35d 100644
+index b2b5db6040b..e0652e74b39 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,17 @@ browser.jar:
+@@ -35,2 +35,18 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -187,9 +187,10 @@ index b2b5db6040b..ee8017ef35d 100644
 +        content/browser/WinUIHistoryMenu.sys.mjs     (content/WinUIHistoryMenu.sys.mjs)
 +        content/browser/WinUIActionStamp.sys.mjs     (content/WinUIActionStamp.sys.mjs)
 +        content/browser/WinUIAddressToolbar.sys.mjs     (content/WinUIAddressToolbar.sys.mjs)
++        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +121,17 @@ browser.jar:
+@@ -106 +122,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -21241,10 +21242,10 @@ index 00000000000..380a3b8df73
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..7cab1f07045
+index 00000000000..23a3c5f27cc
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,351 @@
+@@ -0,0 +1,323 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -21284,28 +21285,16 @@ index 00000000000..7cab1f07045
 +    // Progress alone can fire before command disabled states are updated.
 +    const {WinUIHistoryMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIHistoryMenu.sys.mjs");
 +    this.historyMenu=new WinUIHistoryMenu(this);
-+    this.navigationCommands = [
-+      {id:"home", element:"home-button", method:"home"},
-+      {id:"downloads", element:"downloads-button", menu:true},
-+      {id:"history", element:"history-panelmenu", menu:true},
-+      {id:"bookmarks", element:"bookmarks-menu-button", menu:true},
-+      {id:"reset-pbm", element:"reset-pbm-toolbar-button", menu:true},
-+      {id:"back", command:"Browser:Back", element:"back-button", method:"back"},
-+      {id:"forward", command:"Browser:Forward", element:"forward-button", method:"forward"},
-+      {id:"reload", command:"Browser:Reload", element:"reload-button", method:"reloadOrDuplicate"},
-+      {id:"stop", command:"Browser:Stop", element:"stop-button", method:"stop"},
-+      {id:"profile", element:"fxa-toolbar-menu-button", menu:true},
-+      {id:"extensions", element:"unified-extensions-button", menu:true},
-+      {id:"overflow", element:"nav-bar-overflow-button", menu:true},
-+      {id:"appmenu", element:"PanelUI-menu-button", menu:true},
-+    ];
++    const { WinUINavigationState, NAVIGATION_COMMANDS } = ChromeUtils.importESModule(
++      "chrome://browser/content/WinUINavigationState.sys.mjs");
++    this.navigationCommands = NAVIGATION_COMMANDS;
++    this.navigationModel = new WinUINavigationState(window,
++      id => this.owner.nativeLabels?.().navigation?.[id]?.label || "");
 +    this.navigationObserver = new window.MutationObserver(() => owner.invalidateAddress());
-+    for (const item of this.navigationCommands) {
-+      for (const id of [item.command, item.element].filter(Boolean)) {
-+        const element = document.getElementById(id);
-+        if (element) this.navigationObserver.observe(element,
-+          {attributes:true,attributeFilter:["disabled","label","tooltiptext","aria-label","hidden","progress","attention","style"]});
-+      }
++    for (const id of this.navigationModel.observedIds()) {
++      const element = document.getElementById(id);
++      if (element) this.navigationObserver.observe(element,
++        {attributes:true,attributeFilter:["disabled","label","tooltiptext","aria-label","hidden","progress","attention","style"]});
 +    }
 +    this.navigationObserver.observe(document.getElementById("nav-bar"), {subtree:true,childList:true,attributes:true,attributeFilter:["hidden","progress","attention","style","label","tooltiptext"]});
 +    for (const id of ["widget-overflow-list", "widget-overflow-fixed-list"]) {
@@ -21346,23 +21335,7 @@ index 00000000000..7cab1f07045
 +  }
 +  navigationState() {
 +    const document = this.window.document;
-+    const stop = document.getElementById("Browser:Stop");
-+    const stopping = !!stop && !stop.hasAttribute("disabled");
-+    const state = Object.fromEntries(this.navigationCommands.filter(item => item.id !== "stop").map(slot => {
-+      const item = slot.id === "reload" && stopping ? this.navigationCommands.find(entry => entry.id === "stop") : slot;
-+      const command = document.getElementById(item.command || item.element);
-+      const button = document.getElementById(item.element);
-+      const label = button?.getAttribute("label") || button?.getAttribute("aria-label") ||
-+        this.owner.nativeLabels?.().navigation?.[item.id]?.label || "";
-+      return [slot.id, {...(slot.id === "reload" ? {stopping} : {}), enabled:!!command && command.getAttribute("disabled") !== "true",
-+        label:label || button?.getAttribute("tooltiptext") || "", tooltip:button?.getAttribute("tooltiptext") || label}];
-+    }));
-+    const downloads=document.getElementById("downloads-button");
-+    if(state.downloads) Object.assign(state.downloads, {shown:!!downloads && !downloads.hidden,
-+      progress:downloads?.hasAttribute("progress") ? Math.max(0,Math.min(100,this.window.DownloadsIndicatorView._percentComplete)) : -1,
-+      attention:downloads?.getAttribute("attention") || ""});
-+    const overflowLists = ["widget-overflow-list", "widget-overflow-fixed-list"];
-+    state.overflow.enabled = overflowLists.some(id => [...(document.getElementById(id)?.children || [])].some(node => !node.hidden));
++    const state = this.navigationModel.snapshot();
 +    state.historyMenu=this.historyMenu.snapshot();
 +    state.pinned = this.pinned?.snapshot() || [];
 +    Object.assign(state, this.omnibar?.snapshot() || {});
@@ -21594,6 +21567,96 @@ index 00000000000..7cab1f07045
 +    this.menuAnchors?.clear();
 +    this.row.remove();
 +    this.link.remove();
++  }
++}
+diff --git a/browser/base/content/WinUINavigationState.sys.mjs b/browser/base/content/WinUINavigationState.sys.mjs
+new file mode 100644
+index 00000000000..9f282df768b
+--- /dev/null
++++ b/browser/base/content/WinUINavigationState.sys.mjs
+@@ -0,0 +1,84 @@
++// Command state and labels the native navigation toolbar publishes. Firefox owns
++// the commands and their availability; this module is the one place the native
++// toolbar reads them, so a command can move from its DOM source to a model
++// without touching the toolbar.
++
++// `command` is the Firefox command element that carries availability, `element`
++// the toolbar widget that carries label and visibility, `method` the
++// BrowserCommands entry and `menu` whether activation opens a Firefox panel.
++export const NAVIGATION_COMMANDS = Object.freeze([
++  { id: "home", element: "home-button", method: "home" },
++  { id: "downloads", element: "downloads-button", menu: true },
++  { id: "history", element: "history-panelmenu", menu: true },
++  { id: "bookmarks", element: "bookmarks-menu-button", menu: true },
++  { id: "reset-pbm", element: "reset-pbm-toolbar-button", menu: true },
++  { id: "back", command: "Browser:Back", element: "back-button", method: "back" },
++  { id: "forward", command: "Browser:Forward", element: "forward-button", method: "forward" },
++  { id: "reload", command: "Browser:Reload", element: "reload-button", method: "reloadOrDuplicate" },
++  { id: "stop", command: "Browser:Stop", element: "stop-button", method: "stop" },
++  { id: "profile", element: "fxa-toolbar-menu-button", menu: true },
++  { id: "extensions", element: "unified-extensions-button", menu: true },
++  { id: "overflow", element: "nav-bar-overflow-button", menu: true },
++  { id: "appmenu", element: "PanelUI-menu-button", menu: true },
++].map(Object.freeze));
++
++// Every element the state reads, by id. The tripwire test compares a run
++// against this list, so a new read has to be declared here.
++export const NAVIGATION_STATE_READS = Object.freeze([
++  "Browser:Stop",
++  ...NAVIGATION_COMMANDS.flatMap(item => [item.command, item.element].filter(Boolean)),
++  "downloads-button",
++  "widget-overflow-list",
++  "widget-overflow-fixed-list",
++]);
++
++const OVERFLOW_LISTS = ["widget-overflow-list", "widget-overflow-fixed-list"];
++
++export class WinUINavigationState {
++  /**
++   * @param {Window} window
++   * @param {(id: string) => string} fallbackLabel Localized label used when the
++   *   widget has none of its own.
++   */
++  constructor(window, fallbackLabel = () => "") {
++    this.window = window;
++    this.fallbackLabel = fallbackLabel;
++  }
++
++  // Element ids whose attributes change the published state.
++  observedIds() {
++    return [...new Set(NAVIGATION_COMMANDS.flatMap(item => [item.command, item.element].filter(Boolean)))];
++  }
++
++  snapshot() {
++    const document = this.window.document;
++    const stop = document.getElementById("Browser:Stop");
++    const stopping = !!stop && !stop.hasAttribute("disabled");
++    const state = Object.fromEntries(NAVIGATION_COMMANDS.filter(item => item.id !== "stop").map(slot => {
++      const item = slot.id === "reload" && stopping ? NAVIGATION_COMMANDS.find(entry => entry.id === "stop") : slot;
++      const command = document.getElementById(item.command || item.element);
++      const button = document.getElementById(item.element);
++      const label = button?.getAttribute("label") || button?.getAttribute("aria-label") ||
++        this.fallbackLabel(item.id) || "";
++      return [slot.id, {
++        ...(slot.id === "reload" ? { stopping } : {}),
++        enabled: !!command && command.getAttribute("disabled") !== "true",
++        label: label || button?.getAttribute("tooltiptext") || "",
++        tooltip: button?.getAttribute("tooltiptext") || label,
++      }];
++    }));
++    const downloads = document.getElementById("downloads-button");
++    if (state.downloads) {
++      Object.assign(state.downloads, {
++        shown: !!downloads && !downloads.hidden,
++        progress: downloads?.hasAttribute("progress")
++          ? Math.max(0, Math.min(100, this.window.DownloadsIndicatorView._percentComplete))
++          : -1,
++        attention: downloads?.getAttribute("attention") || "",
++      });
++    }
++    state.overflow.enabled = OVERFLOW_LISTS.some(id =>
++      [...(document.getElementById(id)?.children || [])].some(node => !node.hidden));
++    return state;
 +  }
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.css b/browser/base/content/WinUIAddressToolbar.css

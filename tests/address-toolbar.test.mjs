@@ -44,7 +44,9 @@ function fixture() {
   const context = vm.createContext({Services:{prefs:{getBoolPref:(k,fallback)=>prefs.get(k) ?? fallback,addObserver(){},removeObserver(){}}},console});
   Object.assign(context,{readActionStamp,actionStampMatches});
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIHistoryMenu.sys.mjs",import.meta.url),"utf8").replace(/^import .*;$/m,"").replace("export class WinUIHistoryMenu","this.WinUIHistoryMenu=class WinUIHistoryMenu"),context);
-  context.ChromeUtils={importESModule:()=>({WinUIHistoryMenu:context.WinUIHistoryMenu})};
+  vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUINavigationState.sys.mjs",import.meta.url),"utf8").replace(/^export /gm,"")+";this.WinUINavigationState=WinUINavigationState;this.NAVIGATION_COMMANDS=NAVIGATION_COMMANDS;",context);
+  context.ChromeUtils={importESModule:()=>({WinUIHistoryMenu:context.WinUIHistoryMenu,
+    WinUINavigationState:context.WinUINavigationState,NAVIGATION_COMMANDS:context.NAVIGATION_COMMANDS})};
   vm.runInContext(source, context);
   const toolbar = new context.WinUIAddressToolbar(window, owner);
   calls.length = 0;
