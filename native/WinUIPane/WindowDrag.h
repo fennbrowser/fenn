@@ -64,6 +64,19 @@ struct NativeWindowDrag {
                 for (auto r : self->caption) if (Contains(r, p)) return HTCAPTION;
                 return normal;
             }
+            // Empty strip space is HTCAPTION. Gecko's custom-titlebar handling
+            // turns non-client moves into DOM mouse moves at the same client
+            // point, which lights up whatever retained toolbar control sits
+            // beneath the native strip. The strip owns that space: keep the
+            // move from reaching Gecko, but leave buttons and passthrough rects
+            // (and the SDK's system-caption tracking) on the normal path.
+            if (msg == WM_NCMOUSEMOVE && self->visible && w == HTCAPTION &&
+                self->SystemButtonAt(ScreenPoint(l)) == HTNOWHERE) {
+                POINT p = ScreenPoint(l); ScreenToClient(hwnd, &p);
+                const bool passthrough = std::any_of(self->pass.begin(), self->pass.end(),
+                    [&](auto rect) { return Contains(rect, p); });
+                if (!passthrough) return 0;
+            }
             if (msg == WM_NCRBUTTONUP || msg == WM_CONTEXTMENU) {
                 if (self->visible && self->SystemButtonAt(ScreenPoint(l)) == HTNOWHERE) {
                     POINT point = ScreenPoint(l);

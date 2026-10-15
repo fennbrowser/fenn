@@ -365,6 +365,7 @@ struct Pane {
     RECT addressBounds{};
     bool addressBoundsApplied{};
     bool navigationBackdrop{};
+    bool toolbarHitTestVisible{true};
     static void SetBackdrop(DesktopWindowXamlSource const& target, NativeTabStrip::Backdrop kind) {
         if (kind == NativeTabStrip::Backdrop::Acrylic) {
             target.SystemBackdrop(Media::DesktopAcrylicBackdrop());
@@ -1978,6 +1979,17 @@ BOOL WINAPI Translate(MSG* message) noexcept {
                 GetForegroundWindow() == pane.parent) {
                 POINT point{};
                 if (GetCursorPos(&point)) pane.strip->inlineGroups.PointerAt(pane.ScreenToStrip(point),pane.strip->view);
+            }
+            // Over the SDK caption buttons the pointer is non-client, yet the
+            // toolbar island still hovers the control at the same x. Take the
+            // island out of hit testing while the cursor is on a caption button.
+            if (pane.address && pane.address->toolbarRoot) {
+                POINT cursor{};
+                const bool overCaption = GetCursorPos(&cursor) && pane.windowDrag.SystemButtonAt(cursor) != HTNOWHERE;
+                if (overCaption == pane.toolbarHitTestVisible) {
+                    pane.toolbarHitTestVisible = !overCaption;
+                    pane.address->toolbarRoot.IsHitTestVisible(!overCaption);
+                }
             }
             if (!pane.childWindow) {
                 pane.childWindow = GetWindowFromWindowId(pane.source.SiteBridge().WindowId());
