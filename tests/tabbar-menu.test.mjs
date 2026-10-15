@@ -74,6 +74,7 @@ test("tab-bar session rejects a toolbar toggle after its displayed state changed
 
 test("a stale native replacement toggle cannot undo another window's choice", () => {
   const f = fixture(), target = {};
+  f.state[f.pane.replaceTabsPref] = false; // start from the opt-out; the shipped default is on
   const session = new WinUITabMenuSession({resolveTab: () => target,
     describe: () => f.pane.describeTabBarMenu(),
     execute: (_tab, id) => f.pane.runTabBarCommand(id)});

@@ -34,6 +34,7 @@ function fixture() {
   pane.occlusions = () => [];
   pane.publishState = () => {state.published++; pane.nativeRevision = state.revision;};
   pane.uninit = () => {pane.setReplacementActive(false); pane.element = null; pane.attached = false; pane.nativeRevision = 0;};
+  prefs.set(pane.replaceTabsPref, false); // the shipped default is on; these tests start from the opt-out
   return {pane, context, prefs, observers, posted, root, menu, state};
 }
 
@@ -92,12 +93,10 @@ test("the option survives disabled native UI and schedules reinitialization outs
   f.pane.element = null;
   f.pane.initOptions();
   assert(f.observers.has(f.pane.replaceTabsPref));
-  f.menu.listeners.get("popupshowing")({target: f.menu});
-  assert.equal(f.pane.replacementOption.attributes.get("label"), "Localized native tabs");
-  assert.equal(f.pane.replacementOption.attributes.get("checked"), "false");
+  assert.equal(f.menu.listeners.has("popupshowing"), false, "no toolbar-context item is installed");
   let initialized = 0;
   f.pane.init = () => initialized++;
-  f.pane.replacementOption.listeners.get("command")();
+  f.pane.toggleReplacement();
   assert.equal(f.prefs.get(f.pane.replaceTabsPref), true);
   assert.equal(initialized, 0);
   assert.equal(f.posted.length, 1);
@@ -159,4 +158,24 @@ test("a preference notification delivered inside a nested native drain waits for
   assert.equal(f.posted.length, 1);
   f.posted.shift()();
   assert.equal(f.pane.element, null);
+});
+
+test("the retained Firefox toolbar hides only while the native navigation row is active", () => {
+  const f = fixture(), {pane, root} = f;
+  const hidden = () => root.hasAttribute("winui-hides-nav-bar");
+  pane.attached = true;
+  pane.addressToolbar = {active: true, navigation: true};
+  pane.updateToolbarHidden();
+  assert.equal(hidden(), false, "off by default");
+  f.prefs.set(pane.hideToolbarPref, true);
+  pane.updateToolbarHidden();
+  assert.equal(hidden(), true);
+  pane.addressToolbar.navigation = false;
+  pane.updateToolbarHidden();
+  assert.equal(hidden(), false, "input-slot mode keeps the toolbar");
+  pane.addressToolbar.navigation = true;
+  pane.updateToolbarHidden();
+  root.toggleAttribute("customizing", true);
+  pane.updateToolbarHidden();
+  assert.equal(hidden(), false, "customization shows the toolbar");
 });
