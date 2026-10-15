@@ -13,7 +13,7 @@ index 934bad0d61f..81cd6e7ab6b 100644
 +        CONFIG["MOZ_BRANDING_DIRECTORY"],
      )
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 4f50c25976a..0b046fd8329 100644
+index 4f50c25976a..56ef87e5eb7 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -42,7 +42,7 @@ index 4f50c25976a..0b046fd8329 100644
 +// runtime and also changes first-startup initialization.
 +pref("app.normandy.enabled", false);
  pref("app.normandy.first_run", true);
-@@ -3094,7 +3098,5 @@ pref("app.normandy.last_seen_buildid", "");
+@@ -3094,7 +3098,8 @@ pref("app.normandy.last_seen_buildid", "");
  pref("app.normandy.onsync_skew_sec", 600);
 -#ifdef MOZ_DATA_REPORTING
 -  pref("app.shield.optoutstudies.enabled", true);
@@ -52,15 +52,18 @@ index 4f50c25976a..0b046fd8329 100644
 +// Fenn (firefox-winui): no studies or remote experiments; Mozilla targets them at
 +// Firefox.
 +pref("app.shield.optoutstudies.enabled", false);
++
++// Fenn (firefox-winui): no Start Menu Private Browsing shortcut is created.
++pref("browser.privacySegmentation.createdShortcut", true);
  
-@@ -3872,2 +3874,43 @@ pref("distribution.mozillaonline.ignore", true);
+@@ -3872,2 +3877,48 @@ pref("distribution.mozillaonline.ignore", true);
  
 +// The native tab strip is on by default in every lane (unpackaged launcher and
 +// MSIX alike); turn it off to fall back to Firefox's own UI. Firefox keeps its
-+// original tab and navigation UI beside the strip unless replaceFirefoxTabs is set.
++// original tab and navigation UI beside the strip when replaceFirefoxTabs is off.
 +pref("fenn.winui.pane.enabled", true);
 +// Replace the horizontal Firefox tab row after native attachment succeeds.
-+pref("fenn.winui.tabstrip.replaceFirefoxTabs", false);
++pref("fenn.winui.tabstrip.replaceFirefoxTabs", true);
 +// Native top-bar height: 32 compact, 40 current design, 48 tall.
 +pref("fenn.winui.tabstrip.height", 40);
 +// Container dots suppress container glow, so with both on only groups glow.
@@ -83,6 +86,11 @@ index 4f50c25976a..0b046fd8329 100644
 +pref("fenn.winui.tabstrip.groupGlowFadeOut", false);
 +pref("fenn.winui.address.toolbar.enabled", false);
 +pref("fenn.winui.navigation.toolbar.enabled", true);
++// Hide Firefox's retained toolbar below the native navigation row while that row
++// is active. Off by default: controls the row does not yet host (for example
++// unplaced items and some extensions) are reachable only through the toolbar.
++// Customization mode and fullscreen show it again.
++pref("fenn.winui.navigation.hideFirefoxToolbar", false);
 +// Show the native address in private windows. False: private windows use
 +// Firefox's own URL bar.
 +pref("fenn.winui.address.private", true);
@@ -7676,6 +7684,18 @@ index 7744ae446c2..ce98b5fb422 100644
 +  &[mode-exit] {
 +    display: revert;
    }
+diff --git a/config/rules.mk b/config/rules.mk
+index b5ed380f179..84de0e70ef0 100644
+--- a/config/rules.mk
++++ b/config/rules.mk
+@@ -152,3 +152,7 @@ $(foreach category,$(INSTALL_TARGETS),\
+   $(eval $(category)_FILES := $(foreach file,$($(category)_FILES),$(if $(filter $(SIMPLE_PROGRAMS),$(notdir $(file))),,$(file)))))
++PGO_SKIPPED_PROGRAMS := $(SIMPLE_PROGRAMS)
+ SIMPLE_PROGRAMS :=
++# Install manifests still depend on these files; an empty stand-in satisfies them.
++$(PGO_SKIPPED_PROGRAMS):
++	@touch $@
+ endif
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
 index 994aac6c3a1..cbbfb20a014 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
@@ -21242,10 +21262,10 @@ index 00000000000..380a3b8df73
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..23a3c5f27cc
+index 00000000000..ac05b5572c3
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,325 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -21502,6 +21522,7 @@ index 00000000000..23a3c5f27cc
 +    const editorHadFocus = this.window.document.activeElement === this.input;
 +    this.active = true;
 +    this.window.document.documentElement.setAttribute("winui-address-active", "");
++    this.owner.updateToolbarHidden?.();
 +    this.input.setAttribute("aria-hidden", "true");
 +    this.switcher.setAttribute("aria-hidden", "true");
 +    this.switcher.inert = true;
@@ -21537,6 +21558,7 @@ index 00000000000..23a3c5f27cc
 +    this.customization?.endEditor();
 +    this.row.hidden = true;
 +    this.window.document.documentElement.removeAttribute("winui-address-active");
++    this.owner.updateToolbarHidden?.();
 +    this.input.removeAttribute("aria-hidden");
 +    this.switcher.removeAttribute("aria-hidden");
 +    this.switcher.inert = !!this.switcherWasInert;
@@ -21688,10 +21710,10 @@ index 00000000000..96f7a7b2347
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..f3d2cd30cc2
+index 00000000000..99822706350
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2153 @@
+@@ -0,0 +1,2175 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21701,6 +21723,7 @@ index 00000000000..f3d2cd30cc2
 +  addressToolbarPref: "fenn.winui.address.toolbar.enabled",
 +  addressPrivatePref: "fenn.winui.address.private",
 +  navigationToolbarPref: "fenn.winui.navigation.toolbar.enabled",
++  hideToolbarPref: "fenn.winui.navigation.hideFirefoxToolbar",
 +  replaceTabsPref: "fenn.winui.tabstrip.replaceFirefoxTabs",
 +  containerDotPref: "fenn.winui.tabstrip.containerDot",
 +  tabGlowsPref: "fenn.winui.tabstrip.glows",
@@ -21837,7 +21860,7 @@ index 00000000000..f3d2cd30cc2
 +            this.optionsRefreshDeferred = true;
 +            return;
 +          }
-+          const replace = Services.prefs.getBoolPref(this.replaceTabsPref, false);
++          const replace = Services.prefs.getBoolPref(this.replaceTabsPref, true);
 +          const enabled = replace || Services.prefs.getBoolPref(this.pref, true);
 +          if (this.element && enabled) {
 +            this.schedule();
@@ -21868,21 +21891,20 @@ index 00000000000..f3d2cd30cc2
 +         display: flex !important;
 +       }`;
 +    document.documentElement.appendChild(this.replacementStyle);
-+    const menu = document.getElementById("toolbar-context-menu");
-+    this.replacementOption = document.createXULElement("menuitem");
-+    this.replacementOption.id = "toolbar-context-winui-tabs";
-+    this.replacementOption.setAttribute("type", "checkbox");
-+    menu.appendChild(this.replacementOption);
-+    this.replacementOption.addEventListener("command", () => this.toggleReplacement());
-+    this.optionsShowing = event => {
-+      if (event.target !== menu) return;
-+      const [message] = this.localization().formatMessagesSync([{id: "winui-use-native-tab-strip"}]);
-+      this.replacementOption.setAttribute("label", message.attributes.find(a => a.name === "label").value);
-+      this.replacementOption.setAttribute("checked", Services.prefs.getBoolPref(this.replaceTabsPref, false));
-+      this.replacementOption.disabled = Services.prefs.prefIsLocked(this.replaceTabsPref) || gDialogBox.isOpen;
-+      this.replacementOption.hidden = false;
-+    };
-+    menu.addEventListener("popupshowing", this.optionsShowing);
++    // The retained toolbar is taken out of flow, not display:none, so the
++    // address proxy, ResizeObservers and Firefox popup anchors keep layout.
++    this.hideToolbarStyle = document.createElementNS("http://www.w3.org/1999/xhtml", "style");
++    this.hideToolbarStyle.textContent =
++      `:root[winui-hides-nav-bar] #nav-bar {
++         position: fixed !important;
++         inset-block-start: 0;
++         inset-inline-start: -200vw;
++         inline-size: 100vw;
++         pointer-events: none;
++       }`;
++    document.documentElement.appendChild(this.hideToolbarStyle);
++    this.hideToolbarObserver = {observe: () => this.updateToolbarHidden()};
++    Services.prefs.addObserver(this.hideToolbarPref, this.hideToolbarObserver);
 +  },
 +
 +  uninitOptions() {
@@ -21891,15 +21913,16 @@ index 00000000000..f3d2cd30cc2
 +      Services.prefs.removeObserver(pref, this.optionsObserver);
 +    }
 +    this.optionsObserver = null;
-+    document.getElementById("toolbar-context-menu").removeEventListener("popupshowing", this.optionsShowing);
-+    this.replacementOption.remove();
 +    this.replacementStyle.remove();
++    Services.prefs.removeObserver(this.hideToolbarPref, this.hideToolbarObserver);
++    this.hideToolbarStyle.remove();
++    this.setToolbarHidden(false);
 +  },
 +
 +  toggleReplacement() {
 +    if (gDialogBox.isOpen || Services.prefs.prefIsLocked(this.replaceTabsPref)) return;
 +    Services.prefs.setBoolPref(this.replaceTabsPref,
-+      !Services.prefs.getBoolPref(this.replaceTabsPref, false));
++      !Services.prefs.getBoolPref(this.replaceTabsPref, true));
 +  },
 +
 +  setReplacementActive(active) {
@@ -21907,6 +21930,25 @@ index 00000000000..f3d2cd30cc2
 +    if (root.hasAttribute("winui-replaces-tabs") !== active) {
 +      root.toggleAttribute("winui-replaces-tabs", active);
 +    }
++  },
++
++  setToolbarHidden(hidden) {
++    const root = document.documentElement;
++    if (root.hasAttribute("winui-hides-nav-bar") !== hidden) {
++      root.toggleAttribute("winui-hides-nav-bar", hidden);
++    }
++  },
++
++  // Hide Firefox's retained toolbar only while the native navigation row is
++  // attached and active, so every control has a presentation, and never in
++  // fullscreen or customization, which is the way back to the toolbar.
++  updateToolbarHidden() {
++    const toolbar = this.addressToolbar;
++    this.setToolbarHidden(
++      Services.prefs.getBoolPref(this.hideToolbarPref, false) &&
++      !!toolbar?.active && toolbar.navigation && this.attached &&
++      !window.fullScreen && !document.fullscreenElement &&
++      !document.documentElement.hasAttribute("customizing"));
 +  },
 +
 +  hasUnreplacedTabControls() {
@@ -21920,7 +21962,7 @@ index 00000000000..f3d2cd30cc2
 +  init() {
 +    if (
 +      !(Services.prefs.getBoolPref(this.pref, true) ||
-+        Services.prefs.getBoolPref(this.replaceTabsPref, false)) ||
++        Services.prefs.getBoolPref(this.replaceTabsPref, true)) ||
 +      !window.toolbar.visible
 +    ) {
 +      return;
@@ -23192,7 +23234,7 @@ index 00000000000..f3d2cd30cc2
 +      command("bar-restore", "toolbar-context-menu-reopen-closed-tabs", closed > 0), separator()];
 +    items.push(command("bar-native-tabs", "winui-use-native-tab-strip",
 +      !Services.prefs.prefIsLocked(this.replaceTabsPref),
-+      {checked: Services.prefs.getBoolPref(this.replaceTabsPref, false)}));
++      {checked: Services.prefs.getBoolPref(this.replaceTabsPref, true)}));
 +    const menubar = document.getElementById("toolbar-menubar");
 +    if (menubar?.hasAttribute("toolbarname")) items.push({kind: "command", id: "bar-menubar",
 +      label: menubar.getAttribute("toolbarname"), accessKey: menubar.getAttribute("accesskey") || "",
@@ -23718,7 +23760,7 @@ index 00000000000..f3d2cd30cc2
 +
 +  update(focus = false) {
 +    if (!this.element) return;
-+    const replace = Services.prefs.getBoolPref(this.replaceTabsPref, false);
++    const replace = Services.prefs.getBoolPref(this.replaceTabsPref, true);
 +    const hidden = window.fullScreen || !!document.fullscreenElement ||
 +      (replace && (document.documentElement.hasAttribute("customizing") ||
 +        Services.prefs.getBoolPref("sidebar.verticalTabs", false) || this.hasUnreplacedTabControls()));
@@ -23745,6 +23787,7 @@ index 00000000000..f3d2cd30cc2
 +        }
 +        this.publish();
 +        this.setReplacementActive(replace && this.attached && !hidden && !!this.nativeRevision);
++        this.updateToolbarHidden();
 +      }
 +      // Geometry/visibility work often runs right after a modal dialog closes,
 +      // which is the natural moment to tell the pane it may proceed again.
@@ -23758,6 +23801,7 @@ index 00000000000..f3d2cd30cc2
 +
 +  uninit() {
 +    this.setReplacementActive(false);
++    this.setToolbarHidden(false);
 +    if (!this.element) return;
 +    if (this.unblockTimer) window.clearTimeout(this.unblockTimer);
 +    this.unblockTimer = 0;
@@ -24069,7 +24113,7 @@ index 00000000000..3c26bffa40d
 +  if (aVisible && !Preferences::GetBool(
 +          "fenn.winui.address.toolbar.enabled", false) &&
 +      !Preferences::GetBool(
-+          "fenn.winui.navigation.toolbar.enabled", true)) return false;
++          "fenn.winui.navigation.toolbar.enabled", false)) return false;
 +  HRESULT hr = sPaneApi.updateAddress(aWindow, &aRect, aVisible);
 +  if (SUCCEEDED(hr) && aVisible && aFocus)
 +    hr = sPaneApi.focusAddress(aWindow, aSelectAll);
