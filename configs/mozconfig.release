@@ -26,5 +26,8 @@ ac_add_options --enable-release
 # profile run opens a browser window, so it needs an interactive desktop.
 ac_add_options MOZ_PGO=1
 # Link-time optimization across the C++ and Rust boundary, as Mozilla ships.
+# It needs a Rust whose LLVM major matches the bootstrapped clang (22.x): the
+# stable toolchain (1.99, LLVM 23) fails to link, so this build pins 1.95.0.
 # The final xul.dll link is memory-heavy; lower -j above if the machine swaps.
+export RUSTUP_TOOLCHAIN=1.95.0
 ac_add_options --enable-lto=cross

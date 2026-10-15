@@ -4,7 +4,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_ONLY = {"ac_add_options --enable-release", "ac_add_options MOZ_PGO=1",
-                "ac_add_options --enable-lto=cross"}
+                "ac_add_options --enable-lto=cross", "export RUSTUP_TOOLCHAIN=1.95.0"}
 
 
 def options(name):
