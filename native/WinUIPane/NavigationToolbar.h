@@ -228,19 +228,42 @@ struct NativeNavigationToolbar {
                 }
                 customization.Hide();
             })), true);
-        // Empty space and buttons without a menu of their own offer the editor
-        // as an item in a context menu.
+        // Buttons without a menu of their own offer to hide themselves, and every
+        // such request offers the editor, as items in a native context menu.
         host.ContextRequested([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
             if (alive.expired() || args.Handled() || !visible || customization.editing ||
                 !customization.state.revision || !customization.state.labels.contains(L"open")) return;
             args.Handled(true);
+            winrt::hstring sourceId;
+            auto node = args.OriginalSource().try_as<Microsoft::UI::Xaml::DependencyObject>();
+            while (node && node != host && sourceId.empty()) {
+                for (auto const& [id, control] : customization.placedControls)
+                    if (node == control) { sourceId = id; break; }
+                node = Microsoft::UI::Xaml::Media::VisualTreeHelper::GetParent(node);
+            }
+            contextMenu = Controls::MenuFlyout();
+            if (!sourceId.empty() && customization.state.labels.contains(L"remove")) {
+                auto found = std::find_if(customization.state.items.begin(), customization.state.items.end(),
+                    [&](auto const& item) { return item.id == sourceId; });
+                if (found != customization.state.items.end() && found->placed && found->removable && found->control != L"address") {
+                    Controls::MenuFlyoutItem hide;
+                    hide.Text(customization.state.labels.at(L"remove"));
+                    Microsoft::UI::Xaml::Automation::AutomationProperties::SetAutomationId(hide, L"FennToolbarRemove");
+                    const auto revision = customization.state.revision;
+                    hide.Click([this, alive, sourceId, revision](auto const&, auto const&) {
+                        if (alive.expired() || !visible || customization.state.revision != revision) return;
+                        if (!customization.anchor) customization.anchor = buttons[0];
+                        customization.Send(sourceId, L"remove", {}, revision);
+                    });
+                    contextMenu.Items().Append(hide);
+                }
+            }
             Controls::MenuFlyoutItem open;
             open.Text(customization.state.labels.at(L"open"));
             Microsoft::UI::Xaml::Automation::AutomationProperties::SetAutomationId(open, L"FennCustomizeOpen");
             open.Click([this, alive](auto const&, auto const&) {
                 if (!alive.expired() && visible && !customization.editing) customization.Open(buttons[0]);
             });
-            contextMenu = Controls::MenuFlyout();
             contextMenu.Items().Append(open);
             Windows::Foundation::Point point;
             Controls::Primitives::FlyoutShowOptions options;
