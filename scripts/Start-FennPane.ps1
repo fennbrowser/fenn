@@ -1,4 +1,4 @@
-param([switch]$NativeAddressBar, [switch]$NativeNavigationToolbar, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$HideFirefoxToolbar, [switch]$CaptureCrash, [string]$DiagnosticsLog,
+param([switch]$NativeAddressBar, [switch]$NativeNavigationToolbar, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$HideFirefoxToolbar, [switch]$ProductMenu, [switch]$CaptureCrash, [string]$DiagnosticsLog,
       [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight,
       [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop,
       [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach,
@@ -37,7 +37,7 @@ $switchPrefs = [ordered]@{
     GroupGlowAnimations = 'tabstrip.groupGlowAnimations'; GroupGlowFadeOut = 'tabstrip.groupGlowFadeOut'
     NativeAddressBar = 'address.toolbar.enabled'
     NativeHistoryMenu = 'navigation.history.menu.enabled'; NativeNavigationToolbar = 'navigation.toolbar.enabled'
-    HideFirefoxToolbar = 'navigation.hideFirefoxToolbar'
+    HideFirefoxToolbar = 'navigation.hideFirefoxToolbar'; ProductMenu = 'productmenu.enabled'
 }
 # The native History menu lives on the native navigation toolbar.
 if ($NativeHistoryMenu -and -not $PSBoundParameters.ContainsKey('NativeNavigationToolbar')) {

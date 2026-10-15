@@ -645,7 +645,7 @@ struct NativeAddress {
             action.SetNamedValue(L"command", JValue::CreateStringValue(command));
             action.SetNamedValue(L"keyboard", JValue::CreateBooleanValue(navigation->keyboardActivation));
             action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
-            if (wcscmp(command, L"back-history") == 0 || wcscmp(command, L"forward-history") == 0 || wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcscmp(command, L"overflow") == 0 || wcscmp(command, L"downloads") == 0 || wcscmp(command, L"history") == 0 || wcsncmp(command,L"history-menu:open:",18)==0 || wcscmp(command, L"bookmarks") == 0 || wcscmp(command, L"reset-pbm") == 0 || wcsncmp(command, L"extension", 9) == 0 || wcsncmp(command,L"widget-menu:",12)==0 || wcsncmp(command, L"omni", 4) == 0) {
+            if (wcsncmp(command, L"product:", 8) == 0 || wcscmp(command, L"back-history") == 0 || wcscmp(command, L"forward-history") == 0 || wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcscmp(command, L"overflow") == 0 || wcscmp(command, L"downloads") == 0 || wcscmp(command, L"history") == 0 || wcsncmp(command,L"history-menu:open:",18)==0 || wcscmp(command, L"bookmarks") == 0 || wcscmp(command, L"reset-pbm") == 0 || wcsncmp(command, L"extension", 9) == 0 || wcsncmp(command,L"widget-menu:",12)==0 || wcsncmp(command, L"omni", 4) == 0) {
                 auto local = button.TransformToVisual(nullptr).TransformBounds(
                     {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
                 auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
@@ -853,6 +853,7 @@ struct NativeAddress {
         const auto navigationToolbar = snapshot.GetNamedBoolean(L"navigationToolbar", false);
         auto customizationState = NativeToolbarCustomization::Read(snapshot);
         const auto historyMenuState = NativeHistoryMenu::Read(snapshot);
+        const auto productMenuState = NativeProductMenu::Read(snapshot);
         const auto navigationState = NativeNavigationToolbar::Read(snapshot);
         const auto pinnedState = PinnedExtensionButtons::Read(snapshot);
         const auto paletteState = PinnedExtensionButtons::Read(snapshot,L"palette");
@@ -1072,6 +1073,7 @@ struct NativeAddress {
             navigation->pinned.externalLayout = customizationState.revision != 0;
             navigation->pinned.Apply(pinnedState, navigationToolbar);
             navigation->historyMenu.Apply(historyMenuState,navigationToolbar && !navigation->customization.editing,navigation->buttons[9],applyHistory);
+            navigation->productMenu.Apply(productMenuState,navigationToolbar && !navigation->customization.editing);
             navigation->Layout(customizationState);
             navigation->UpdatePalette(paletteState);
             navigation->customization.Apply(customizationState, navigationToolbar);

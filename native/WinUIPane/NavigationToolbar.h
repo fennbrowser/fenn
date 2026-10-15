@@ -10,6 +10,7 @@
 #include "ToolbarCustomization.h"
 #include "ToolbarDragPreview.h"
 #include "HistoryMenu.h"
+#include "ProductMenu.h"
 
 // WinUI presentation only. Firefox owns eligibility, labels and commands.
 struct NativeNavigationToolbar {
@@ -35,6 +36,7 @@ struct NativeNavigationToolbar {
     PinnedExtensionButtons pinned;
     NativeToolbarCustomization customization;
     NativeHistoryMenu historyMenu;
+    NativeProductMenu productMenu;
     ToolbarDragPreview preview;
     bool keyboardActivation{};
     bool stopping{}, hasOverflow{}, requiredOverflow{}, overflowQueued{}, rootObserved{};
@@ -93,6 +95,7 @@ struct NativeNavigationToolbar {
         customization.clearPreviews=[this]{paletteRenderers.clear();};
         customization.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         pinned.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
+        productMenu.dispatch = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh, Symbol::Contact, Symbol::Library, Symbol::More, Symbol::Forward, Symbol::Home, Symbol::Download, Symbol::Clock, Symbol::OutlineStar, Symbol::Delete};
         const wchar_t* names[] = {L"Back", L"Forward", L"Reload", L"Account", L"Extensions", L"Application menu", L"More tools", L"Home", L"Downloads", L"History", L"Bookmarks", L"Clear private session"};
         const wchar_t* ids[] = {L"FennBack", L"FennForward", L"FennReload", L"FennProfile", L"FennExtensions", L"FennAppMenu", L"FennOverflow", L"FennHome", L"FennDownloads", L"FennHistory", L"FennBookmarks", L"FennResetPrivate"};
@@ -321,6 +324,7 @@ struct NativeNavigationToolbar {
             desired.push_back(address);desired.push_back(buttons[3]);desired.push_back(buttons[4]);
             desired.push_back(pinned.panel);if(hasOverflow)desired.push_back(buttons[6]);desired.push_back(buttons[5]);
         } else desired.push_back(address);
+        if(visible && productMenu.enabled)desired.insert(desired.begin(),productMenu.button);
         for(auto it=dragHosts.begin();it!=dragHosts.end();) {
             if(!keepDrag.contains(it->first)){if(it->second.Children().Size())it->second.Children().GetAt(0).IsHitTestVisible(true);it->second.Children().Clear();it=dragHosts.erase(it);}else ++it;
         }
@@ -389,7 +393,7 @@ struct NativeNavigationToolbar {
     void Apply(States const& state, bool visible) {
         using namespace Microsoft::UI::Xaml;
         this->visible=visible;commandState=state;
-        if (!visible) { historyMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
+        if (!visible) { historyMenu.Close(); productMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
         hasOverflow = visible && state[6].enabled;
         requiredOverflow = visible && state[6].required;
         const bool downloading=visible && state[8].progress>=0 && !customization.editing;

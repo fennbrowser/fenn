@@ -13,7 +13,7 @@ index 934bad0d61f..81cd6e7ab6b 100644
 +        CONFIG["MOZ_BRANDING_DIRECTORY"],
      )
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 4f50c25976a..cc00180a35a 100644
+index 4f50c25976a..9390f79e5c3 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -56,7 +56,7 @@ index 4f50c25976a..cc00180a35a 100644
 +// Fenn (firefox-winui): no Start Menu Private Browsing shortcut is created.
 +pref("browser.privacySegmentation.createdShortcut", true);
  
-@@ -3872,2 +3877,48 @@ pref("distribution.mozillaonline.ignore", true);
+@@ -3872,2 +3877,50 @@ pref("distribution.mozillaonline.ignore", true);
  
 +// The native tab strip is on by default in every lane (unpackaged launcher and
 +// MSIX alike); turn it off to fall back to Firefox's own UI. Firefox keeps its
@@ -91,6 +91,8 @@ index 4f50c25976a..cc00180a35a 100644
 +// unplaced items and some extensions) are reachable only in customization mode,
 +// which, like fullscreen, shows the toolbar again.
 +pref("fenn.winui.navigation.hideFirefoxToolbar", true);
++// Native product menu button (logo, top left of the navigation row).
++pref("fenn.winui.productmenu.enabled", false);
 +// Show the native address in private windows. False: private windows use
 +// Firefox's own URL bar.
 +pref("fenn.winui.address.private", true);
@@ -176,10 +178,10 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..e0652e74b39 100644
+index b2b5db6040b..7306ccaf76d 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,18 @@ browser.jar:
+@@ -35,2 +35,19 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -188,6 +190,7 @@ index b2b5db6040b..e0652e74b39 100644
 +        content/browser/WinUIAddressHost.sys.mjs       (content/WinUIAddressHost.sys.mjs)
 +        content/browser/WinUIToolbarCustomization.sys.mjs (content/WinUIToolbarCustomization.sys.mjs)
 +        content/browser/WinUIPinnedExtensions.sys.mjs  (content/WinUIPinnedExtensions.sys.mjs)
++        content/browser/WinUIProductMenu.sys.mjs  (content/WinUIProductMenu.sys.mjs)
 +        content/browser/WinUIDismissalAcknowledgments.sys.mjs  (content/WinUIDismissalAcknowledgments.sys.mjs)
 +        content/browser/WinUIResultContextMenu.sys.mjs  (content/WinUIResultContextMenu.sys.mjs)
 +        content/browser/WinUIAddressContextMenu.sys.mjs  (content/WinUIAddressContextMenu.sys.mjs)
@@ -198,7 +201,7 @@ index b2b5db6040b..e0652e74b39 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +122,17 @@ browser.jar:
+@@ -106 +123,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -18132,6 +18135,191 @@ index 00000000000..c2927f9a1dd
 +    this.images.clear();
 +  }
 +}
+diff --git a/browser/base/content/WinUIProductMenu.sys.mjs b/browser/base/content/WinUIProductMenu.sys.mjs
+new file mode 100644
+index 00000000000..9cbfa27bb7d
+--- /dev/null
++++ b/browser/base/content/WinUIProductMenu.sys.mjs
+@@ -0,0 +1,179 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Model and commands for the native product menu. Firefox owns what the menu
++// offers and every command; native code renders this bounded model as a
++// cascading MenuFlyout and reports an opaque item id back.
++
++export const PRODUCT_MENU_PREF = "fenn.winui.productmenu.enabled";
++
++const BOOKMARKS_VISIBILITY_PREF = "browser.toolbars.bookmarks.visibility";
++const RESOURCES = [
++  "browser/appmenu.ftl",
++  "browser/menubar.ftl",
++  "browser/toolbarContextMenu.ftl",
++  "browser/browser.ftl",
++];
++
++// Keep in step with the native validator in ProductMenu.h.
++export const PRODUCT_MENU_LIMITS = Object.freeze({
++  items: 32,
++  depth: 3,
++  label: 256,
++  idPattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
++});
++
++export class WinUIProductMenu {
++  constructor(window, host) {
++    this.window = window;
++    this.host = host;
++    this.observer = { observe: () => this.host.invalidate() };
++    for (const pref of [PRODUCT_MENU_PREF, BOOKMARKS_VISIBILITY_PREF]) {
++      Services.prefs.addObserver(pref, this.observer);
++    }
++  }
++
++  close() {
++    for (const pref of [PRODUCT_MENU_PREF, BOOKMARKS_VISIBILITY_PREF]) {
++      Services.prefs.removeObserver(pref, this.observer);
++    }
++    this.l10n = null;
++  }
++
++  get enabled() {
++    return Services.prefs.getBoolPref(PRODUCT_MENU_PREF, false);
++  }
++
++  localization() {
++    this.l10n ??= new this.window.Localization(RESOURCES, true);
++    return this.l10n;
++  }
++
++  label(id, attribute = "label", args = undefined) {
++    try {
++      const [message] = this.localization().formatMessagesSync([{ id, args }]);
++      const found = message?.attributes?.find(a => a.name === attribute);
++      return String(found?.value ?? message?.value ?? "").slice(0, PRODUCT_MENU_LIMITS.label);
++    } catch {
++      return "";
++    }
++  }
++
++  shortcut(keyId) {
++    try {
++      const key = this.window.document.getElementById(keyId);
++      if (!key || !this.window.ShortcutUtils) return "";
++      return String(this.window.ShortcutUtils.prettifyShortcut(key)).slice(0, 64);
++    } catch {
++      return "";
++    }
++  }
++
++  model() {
++    if (!this.enabled) return { enabled: false };
++    const { window } = this;
++    const dialog = !!window.gDialogBox?.isOpen;
++    const closedTabs = Math.max(0,
++      window.SessionStore?.getLastClosedTabCount?.(window) || 0);
++    const bookmarksVisibility = Services.prefs.getCharPref(BOOKMARKS_VISIBILITY_PREF, "newtab");
++    const command = (id, resource, extra = {}) => {
++      const label = this.label(resource, "label", extra.args);
++      delete extra.args;
++      return label ? { id, kind: "item", label, enabled: !dialog, ...extra } : null;
++    };
++    const separator = () => ({ kind: "separator" });
++    const submenu = (id, resource, items) => {
++      const label = this.label(resource);
++      const kept = items.filter(Boolean);
++      return label && kept.length ? { id, kind: "submenu", label, enabled: !dialog, items: kept } : null;
++    };
++    const items = [
++      command("new-tab", "appmenuitem-new-tab", { shortcut: this.shortcut("key_newNavigatorTab") }),
++      command("new-window", "appmenuitem-new-window", { shortcut: this.shortcut("key_newNavigator") }),
++      command("new-private-window", "appmenuitem-new-private-window",
++        { shortcut: this.shortcut("key_privatebrowsing") }),
++      separator(),
++      submenu("history", "appmenuitem-history", [
++        command("history-show-all", "menu-history-show-all-history",
++          { shortcut: this.shortcut("showAllHistoryKb") }),
++        command("history-restore-tab", "menu-history-undo-menu", { enabled: !dialog && closedTabs > 0 }),
++      ]),
++      command("downloads", "appmenuitem-downloads", { shortcut: this.shortcut("key_openDownloads") }),
++      submenu("bookmarks", "menu-bookmarks-menu", [
++        command("bookmarks-bookmark-tab", "toolbar-context-menu-bookmark-selected-tab",
++          { shortcut: this.shortcut("addBookmarkAsKb") }),
++        submenu("bookmarks-toolbar", "menu-bookmarks-toolbar", [
++          ["always", "always-show"], ["newtab", "on-new-tab"], ["never", "never-show"],
++        ].map(([value, suffix]) => command(`bookmarks-toolbar-${value}`,
++          `toolbar-context-menu-bookmarks-toolbar-${suffix}-2`,
++          { checked: bookmarksVisibility === value }))),
++        separator(),
++        command("bookmarks-show-all", "library-bookmarks-menu", { shortcut: this.shortcut("manBookmarkKb") }),
++      ]),
++      separator(),
++      command("settings", "appmenuitem-settings"),
++      separator(),
++      command("close-window", "menu-file-close-window", { shortcut: this.shortcut("key_closeWindow") }),
++      command("quit", "appmenuitem-exit2", { shortcut: this.shortcut("key_quitApplication") }),
++    ].filter(Boolean);
++    return {
++      enabled: true,
++      label: this.label("appmenu-menu-button-closed2") || "Menu",
++      tooltip: this.label("appmenu-menu-button-closed2", "tooltiptext"),
++      items: tidy(items),
++    };
++  }
++
++  find(id, items = this.model().items || []) {
++    for (const item of items) {
++      if (item.id === id && item.kind !== "separator") return item;
++      const inner = item.items && this.find(id, item.items);
++      if (inner) return inner;
++    }
++    return null;
++  }
++
++  // Returns 1 when handled and 2 when refused. The id must name an enabled
++  // item of the current model.
++  execute(id, action, event) {
++    if (!this.enabled || typeof id !== "string" || !PRODUCT_MENU_LIMITS.idPattern.test(id)) return 2;
++    const item = this.find(id);
++    if (!item || item.kind === "submenu" || !item.enabled) return 2;
++    const { window } = this;
++    switch (id) {
++      case "new-tab": window.BrowserCommands.openTab(); break;
++      case "new-window": window.OpenBrowserWindow(); break;
++      case "new-private-window": window.OpenBrowserWindow({ private: true }); break;
++      case "history-show-all": window.PlacesCommandHook.showPlacesOrganizer("History"); break;
++      case "history-restore-tab": window.SessionWindowUI.undoCloseTab(window); break;
++      case "downloads": return this.host.openMenu("downloads", action, event);
++      case "bookmarks-bookmark-tab":
++        window.PlacesCommandHook.bookmarkTabs(Array.from(window.gBrowser.selectedTabs));
++        break;
++      case "bookmarks-show-all": window.PlacesCommandHook.showPlacesOrganizer("BookmarksMenu"); break;
++      case "settings": window.openPreferences(); break;
++      case "close-window": window.BrowserCommands.tryToCloseWindow(event); break;
++      case "quit": window.goQuitApplication(event); break;
++      default: {
++        const match = /^bookmarks-toolbar-(always|newtab|never)$/.exec(id);
++        if (!match) return 2;
++        Services.prefs.setCharPref(BOOKMARKS_VISIBILITY_PREF, match[1]);
++        window.CustomizableUI.setToolbarVisibility("PersonalToolbar", match[1]);
++        window.BrowserUsageTelemetry?.recordToolbarVisibility("PersonalToolbar", match[1], "product-menu");
++      }
++    }
++    return 1;
++  }
++}
++
++function tidy(items) {
++  const out = [];
++  for (const item of items) {
++    if (item.items) item.items = tidy(item.items);
++    if (item.kind === "separator" && (!out.length || out.at(-1).kind === "separator")) continue;
++    out.push(item);
++  }
++  while (out.at(-1)?.kind === "separator") out.pop();
++  return out;
++}
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
 index 00000000000..5dd7b096625
@@ -21285,10 +21473,10 @@ index 00000000000..380a3b8df73
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..ac05b5572c3
+index 00000000000..5b639b63ea0
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,325 @@
+@@ -0,0 +1,340 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -21354,6 +21542,11 @@ index 00000000000..ac05b5572c3
 +    const {WinUIToolbarCustomization} = ChromeUtils.importESModule("chrome://browser/content/WinUIToolbarCustomization.sys.mjs");
 +    this.customization = new WinUIToolbarCustomization(this);
 +    }
++    const {WinUIProductMenu} = ChromeUtils.importESModule("chrome://browser/content/WinUIProductMenu.sys.mjs");
++    this.productMenu = new WinUIProductMenu(window, {
++      invalidate: () => owner.invalidateAddress(),
++      openMenu: (id, bounds, event) => this.openMenu(id, bounds, event),
++    });
 +    this.progress = {
 +      onLocationChange: browser => {
 +        if (browser === window.gBrowser.selectedBrowser) owner.invalidateAddress();
@@ -21383,6 +21576,7 @@ index 00000000000..ac05b5572c3
 +    state.pinned = this.pinned?.snapshot() || [];
 +    Object.assign(state, this.omnibar?.snapshot() || {});
 +    state.palette = this.pinned?.snapshot(true) || [];
++    state.productMenu = this.productMenu.model();
 +    state.customization = this.customization?.snapshot(state);
 +    const represented = new Set([...(this.customization?.entries?.values() || [])].map(entry => entry.widget));
 +    state.overflow.required = !!document.getElementById("widget-overflow-fixed-list")?.childElementCount ||
@@ -21397,21 +21591,29 @@ index 00000000000..ac05b5572c3
 +    const customization = typeof action?.command === "string" && action.command.startsWith("customize:");
 +    const extension = typeof action?.command === "string" && /^(extension|extension-menu):pinned-[0-9]+$/.test(action.command);
 +    const omnibar = typeof action?.command === "string" && /^(omni|omni-menu):action-[0-9]+$/.test(action.command);
++    const product = typeof action?.command === "string" && /^product:[a-z0-9]+(?:-[a-z0-9]+)*$/.test(action.command);
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!nativeHistory && !customization && !extension && !omnibar && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
 +    if (nativeHistory) return this.navigationState().history.enabled && !this.customization?.nativeOverflow.has("history-panelmenu") ? this.historyMenu.execute(action) : 2;
 +    if (customization) return this.customization.execute(action.command);
++    if (product) {
++      if (window.gDialogBox?.isOpen) return 2;
++      const modifiers = new window.MouseEvent("click", {view:window, button:0,
++        ctrlKey:!!(action.modifiers & 1), altKey:!!(action.modifiers & 2),
++        shiftKey:!!(action.modifiers & 4), metaKey:!!(action.modifiers & 8)});
++      return this.productMenu.execute(action.command.slice(8), action, modifiers);
++    }
 +    if(item.id === "downloads" && !this.navigationState().downloads.shown)return 2;
 +    if (this.customization?.nativeOverflow.has(item.element)) return 2;
 +    // Use the actual Firefox command handler, including its modifier policy.
@@ -21605,6 +21807,7 @@ index 00000000000..ac05b5572c3
 +    this.customization?.close();
 +    this.pinned?.close();
 +    this.omnibar?.close();
++    this.productMenu?.close();
 +    this.window.gBrowser.removeTabsProgressListener(this.progress);
 +    this.input.removeEventListener("beforefocus", this.beforeFocus);
 +    this.input.removeEventListener("beforeselect", this.beforeFocus);

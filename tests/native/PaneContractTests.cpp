@@ -5197,6 +5197,18 @@ int wmain(int argc, wchar_t** argv) {
             Require(Automation::AutomationProperties::GetName(navigation.Children().GetAt(2))==L"Localized reload", "Firefox navigation label");
             Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":4,"text":"bad","rows":[],"navigation":{"back":{"enabled":"bad"}}})")), "reject malformed navigation atomically");
             Require(field.Text()==L"initial" && navigation.Children().GetAt(1).as<Controls::Button>().IsEnabled(), "malformed navigation preserves editor and buttons");
+            {
+                auto productMenu=[](wchar_t const* body,int sequence) {
+                    return std::wstring(L"{\"version\":1,\"enabled\":true,\"navigationToolbar\":true,\"session\":\"toolbar-contract\",\"revision\":1,\"sequence\":")+
+                        std::to_wstring(sequence)+L",\"text\":\"initial\",\"rows\":[],\"navigation\":{\"productMenu\":"+body+L"}}";
+                };
+                Require(FAILED(api.syncAddress(first, productMenu(LR"({"enabled":true,"items":[{"kind":"item","id":"Bad Id","label":"x"}]})",4).c_str())), "reject a malformed product menu id");
+                Require(FAILED(api.syncAddress(first, productMenu(LR"({"enabled":true,"items":[{"kind":"item","id":"a","label":"x"},{"kind":"item","id":"a","label":"y"}]})",5).c_str())), "reject duplicate product menu ids");
+                Require(FAILED(api.syncAddress(first, productMenu(LR"({"enabled":true,"items":[{"kind":"submenu","id":"a","label":"x","items":[]}]})",6).c_str())), "reject an empty submenu");
+                Require(FAILED(api.syncAddress(first, productMenu(LR"({"enabled":true,"items":[{"kind":"submenu","id":"a","label":"a","items":[{"kind":"submenu","id":"b","label":"b","items":[{"kind":"submenu","id":"c","label":"c","items":[{"kind":"item","id":"d","label":"d"}]}]}]}]})",7).c_str())), "reject a product menu nested beyond its depth");
+                Require(SUCCEEDED(api.syncAddress(first, productMenu(LR"({"enabled":true,"label":"Fenn","items":[{"kind":"item","id":"new-tab","label":"New Tab","shortcut":"Ctrl+T"},{"kind":"separator"},{"kind":"submenu","id":"bookmarks","label":"Bookmarks","items":[{"kind":"item","id":"bookmarks-toolbar-never","label":"Never Show","checked":true}]}]})",8).c_str())), "publish a valid product menu");
+                Require(SUCCEEDED(api.syncAddress(first, productMenu(LR"({"enabled":false})",9).c_str())), "disable the product menu");
+            }
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":false})")), "disable navigation with address");
             Require(!addressBackdrop(), "disabling navigation releases its system backdrop");
             Require(menus.Visibility()==Visibility::Collapsed && !menus.Children().GetAt(0).as<Controls::Button>().IsEnabled(), "disable revokes trailing menu buttons");
