@@ -27,6 +27,7 @@ struct NativeProductMenu {
     std::function<void(wchar_t const*, uint32_t, Button const&)> dispatch;
     // Items the native toolbar handles itself instead of reporting to Firefox.
     std::function<void()> customize;
+    std::function<bool()> closeEditor;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
     static bool ValidId(winrt::hstring const& id) {
@@ -103,6 +104,7 @@ struct NativeProductMenu {
         Automation::AutomationProperties::SetName(button, L"Menu");
         button.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired() || !enabled) return;
+            if (closeEditor && closeEditor()) return;
             Open();
         });
     }

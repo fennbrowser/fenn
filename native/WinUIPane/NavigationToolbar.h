@@ -100,6 +100,12 @@ struct NativeNavigationToolbar {
         pinned.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         productMenu.dispatch = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         productMenu.customize = [this] { if (visible && !customization.editing) customization.Open(buttons[0]); };
+        // With the application menu button gone, the product button also closes the editor.
+        productMenu.closeEditor = [this] {
+            if (!customization.editing) return false;
+            customization.Hide();
+            return true;
+        };
         const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh, Symbol::Contact, Symbol::Library, Symbol::More, Symbol::Forward, Symbol::Home, Symbol::Download, Symbol::Clock, Symbol::OutlineStar, Symbol::Delete};
         const wchar_t* names[] = {L"Back", L"Forward", L"Reload", L"Account", L"Extensions", L"Application menu", L"More tools", L"Home", L"Downloads", L"History", L"Bookmarks", L"Clear private session"};
         const wchar_t* ids[] = {L"FennBack", L"FennForward", L"FennReload", L"FennProfile", L"FennExtensions", L"FennAppMenu", L"FennOverflow", L"FennHome", L"FennDownloads", L"FennHistory", L"FennBookmarks", L"FennResetPrivate"};
@@ -333,11 +339,11 @@ struct NativeNavigationToolbar {
                 }
             }
             if(hasOverflow)desired.push_back(buttons[6]);
-            desired.push_back(buttons[5]);
+            if(!productMenu.enabled)desired.push_back(buttons[5]);
         } else if(visible) {
             for(size_t i=0;i<3;i++)desired.push_back(buttons[i]);
             desired.push_back(address);desired.push_back(buttons[3]);desired.push_back(buttons[4]);
-            desired.push_back(pinned.panel);if(hasOverflow)desired.push_back(buttons[6]);desired.push_back(buttons[5]);
+            desired.push_back(pinned.panel);if(hasOverflow)desired.push_back(buttons[6]);if(!productMenu.enabled)desired.push_back(buttons[5]);
         } else desired.push_back(address);
         for(auto it=dragHosts.begin();it!=dragHosts.end();) {
             if(!keepDrag.contains(it->first)){if(it->second.Children().Size())it->second.Children().GetAt(0).IsHitTestVisible(true);it->second.Children().Clear();it=dragHosts.erase(it);}else ++it;

@@ -1124,7 +1124,7 @@ struct NativeAddress {
             navigation->pinned.externalLayout = customizationState.revision != 0;
             navigation->pinned.Apply(pinnedState, navigationToolbar);
             navigation->historyMenu.Apply(historyMenuState,navigationToolbar && !navigation->customization.editing,navigation->buttons[9],applyHistory);
-            navigation->productMenu.Apply(productMenuState,navigationToolbar && !navigation->customization.editing);
+            navigation->productMenu.Apply(productMenuState,navigationToolbar);
             navigation->Layout(customizationState);
             navigation->UpdatePalette(paletteState);
             navigation->customization.Apply(customizationState, navigationToolbar);
