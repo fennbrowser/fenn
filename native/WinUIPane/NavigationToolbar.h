@@ -335,7 +335,7 @@ struct NativeNavigationToolbar {
         for(auto it=dragHosts.begin();it!=dragHosts.end();) {
             if(!keepDrag.contains(it->first)){if(it->second.Children().Size())it->second.Children().GetAt(0).IsHitTestVisible(true);it->second.Children().Clear();it=dragHosts.erase(it);}else ++it;
         }
-        if(desired==ordered)return;
+        if(desired==ordered && arrangedCollapsed==!customization.editing)return;
         // Retain the editor and flyout anchor while changing placement columns.
         for(uint32_t i=host.Children().Size();i>0;i--) {
             auto child=host.Children().GetAt(i-1);
@@ -352,25 +352,36 @@ struct NativeNavigationToolbar {
         Arrange(desired,false);
         ordered=std::move(desired);
     }
+    // Flexible spaces take no width outside customization: the default layout
+    // is the controls and the address field with fixed gaps.
+    bool arrangedCollapsed{true};
     void Arrange(std::vector<Microsoft::UI::Xaml::UIElement> const& desired,bool extra) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
+        const bool collapsed=!customization.editing;
+        arrangedCollapsed=collapsed;
+        auto isSpring=[&](UIElement const& element){
+            for(auto const& [id,grid]:spacers)if(element==grid)return true;
+            return false;
+        };
         host.ColumnDefinitions().Clear();
         auto column=[&](GridLength width,double min=0,double max=INFINITY) {
             ColumnDefinition c;c.Width(width);c.MinWidth(min);c.MaxWidth(max);host.ColumnDefinitions().Append(c);
         };
         if(visible)column(GridLengthHelper::FromPixels(8));
         for(size_t i=0;i<desired.size();i++) {
-            auto child=desired[i];bool spring=false;
-            for(auto const& [id,grid]:spacers)if(child==grid){spring=true;break;}
+            auto child=desired[i];const bool spring=isSpring(child);
             Grid::SetColumn(child.as<FrameworkElement>(),int(host.ColumnDefinitions().Size()));
             if(child==address)column(GridLengthHelper::FromValueAndType(5,GridUnitType::Star),visible?(extra?220:256):0);
+            else if(spring&&collapsed)column(GridLengthHelper::FromPixels(0));
             else if(spring)column(GridLengthHelper::FromValueAndType(1,GridUnitType::Star),1,112);
             else column(GridLengthHelper::Auto());
-            if(visible && i+1<desired.size() && child!=address && desired[i+1]!=address && !spring) {
-                bool nextSpring=false;
-                for(auto const& [id,grid]:spacers)if(desired[i+1]==grid){nextSpring=true;break;}
-                if(!nextSpring)column(GridLengthHelper::FromPixels(ToolbarMetrics::kGap));
+            if(spring&&collapsed)continue;
+            // The next control, skipping flexible spaces that take no width.
+            size_t next=i+1;
+            while(collapsed && next<desired.size() && isSpring(desired[next]))next++;
+            if(visible && next<desired.size() && child!=address && desired[next]!=address && !spring) {
+                if(!isSpring(desired[next]))column(GridLengthHelper::FromPixels(ToolbarMetrics::kGap));
             }
         }
         if(visible)column(GridLengthHelper::FromPixels(8));
