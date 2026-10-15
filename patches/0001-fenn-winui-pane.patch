@@ -7564,7 +7564,7 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..6eef850525e 100644
+index 4f28e62c7b5..1a984f09f73 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
 @@ -21,3 +21,3 @@ tabbrowser-tab-tooltip-container = { $containerName }
@@ -7605,7 +7605,7 @@ index 4f28e62c7b5..6eef850525e 100644
 -tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. We’ll save your groups here so they’re easy to find later.
 +tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. Weâ€™ll save your groups here so theyâ€™re easy to find later.
  tab-groups-list-empty-button = Create a tab group
-@@ -520 +520,38 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,39 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -7626,6 +7626,7 @@ index 4f28e62c7b5..6eef850525e 100644
 +
 +winui-toolbar-address = Address bar
 +winui-toolbar-customize-title = Customize native toolbar
++winui-toolbar-customize-open = Customize Toolbar…
 +winui-toolbar-customize-available = Available and overflow items
 +winui-toolbar-customize-earlier = Move earlier
 +winui-toolbar-customize-later = Move later
@@ -17316,10 +17317,10 @@ index 00000000000..e4be8e911db
 +}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 00000000000..7a88d0669af
+index 00000000000..e27959762f7
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,193 @@
 +// Firefox owns widget eligibility and durable placement; native owns the editor.
 +import { readActionStamp, actionStampMatches } from "chrome://browser/content/WinUIActionStamp.sys.mjs";
 +export class WinUIToolbarCustomization {
@@ -17404,9 +17405,7 @@ index 00000000000..7a88d0669af
 +    const areas = this.editorOpen ? ui.areas.map(area => [area,ui.getWidgetIdsInArea(area)]) : [[ui.AREA_NAVBAR,placements],[ui.AREA_FIXED_OVERFLOW_PANEL,ui.getWidgetIdsInArea(ui.AREA_FIXED_OVERFLOW_PANEL)]];
 +    const signature=JSON.stringify([areas,items,settings,canReset,canUndoReset]);
 +    if (signature !== this.signature) {this.signature=signature;this.revision++;}
-+    const labels=Object.fromEntries(['title','available','earlier','later','add','remove','done','hint','reset','undo-reset','reset-hint','overflow','drop'].map(k=>[k,toolbar.owner.localization().formatValueSync('winui-toolbar-customize-'+k)]));
-+    const [openMessage] = toolbar.owner.localization().formatMessagesSync([{id:'toolbar-context-menu-view-customize-toolbar-2'}]);
-+    labels.open = openMessage?.attributes?.find(a => a.name === 'label')?.value || labels.title;
++    const labels=Object.fromEntries(['title','available','earlier','later','add','remove','done','hint','reset','undo-reset','reset-hint','overflow','drop','open'].map(k=>[k,toolbar.owner.localization().formatValueSync('winui-toolbar-customize-'+k)]));
 +    this.current={revision:this.revision,items,labels,canReset,canUndoReset};
 +    return this.current;
 +  }
