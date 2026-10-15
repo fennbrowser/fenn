@@ -392,6 +392,13 @@ struct Pane {
         if (tabMenu.active) tabMenu.Dismiss();
         if (strip) strip->inlineGroups.hover.Dismiss();
         if (address && address->mode.flyout.IsOpen()) address->mode.flyout.Hide();
+        CloseCustomization();
+    }
+    // The editor is not light-dismissed (that would block the toolbar it edits),
+    // so it joins the same outside-press and deactivation paths as the menus.
+    void CloseCustomization() {
+        if (address && address->navigation && address->navigation->customization.editing &&
+            !address->navigation->customization.dragging) address->navigation->customization.Hide();
     }
     void LeaveAddress() {
         if (!address) return;
@@ -431,6 +438,7 @@ struct Pane {
             (InWindow(childWindow, GetFocus()) || InWindow(addressWindow, GetFocus()) ||
              InPopups(contentIsland, GetFocus()) || InPopups(addressIsland, GetFocus())) &&
             InWindow(parent, target)) SetFocus(parent);
+        if (!InWindow(addressHost, target) && !addressPopup) CloseCustomization();
         if (address) address->ScheduleFocusObservation();
     }
     void CloseAddressHost() {

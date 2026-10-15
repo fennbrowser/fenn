@@ -1128,8 +1128,6 @@ struct NativeAddress {
             if (snapshot.HasKey(L"navigation")) {
                 auto request = snapshot.GetNamedObject(L"navigation").GetNamedNumber(L"editorRequest", 0);
                 if (std::isfinite(request) && request >= 0 && request <= NativeJson::kMaxSafeInteger) navigation->RequestEditor(request);
-                auto close = snapshot.GetNamedObject(L"navigation").GetNamedNumber(L"editorClose", 0);
-                if (std::isfinite(close) && close >= 0 && close <= NativeJson::kMaxSafeInteger) navigation->RequestClose(close);
             }
             navigation->Layout(customizationState);
             navigation->UpdatePalette(paletteState);

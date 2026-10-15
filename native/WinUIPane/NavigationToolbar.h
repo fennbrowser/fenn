@@ -397,13 +397,7 @@ struct NativeNavigationToolbar {
     bool arrangedCollapsed{true};
     Microsoft::UI::Xaml::Controls::MenuFlyout contextMenu{nullptr};
     // Firefox's Customize Toolbar command arrives as a counter in the snapshot.
-    double editorRequest{-1}, editorClose{-1};
-    void RequestClose(double value) {
-        if (editorClose < 0) { editorClose = value; return; }
-        if (value <= editorClose) return;
-        editorClose = value;
-        if (customization.editing && !customization.dragging) customization.Hide();
-    }
+    double editorRequest{-1};
     void RequestEditor(double value) {
         if (editorRequest < 0) { editorRequest = value; return; }
         if (value <= editorRequest) return;
