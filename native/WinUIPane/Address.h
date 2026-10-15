@@ -1080,7 +1080,7 @@ struct NativeAddress {
             omnibarLeft.Apply(omnibarLeftState, navigationToolbar);
             omnibarRight.Apply(omnibarRightState, navigationToolbar);
             toolbarSurface.Visibility(navigationToolbar ? Visibility::Visible : Visibility::Collapsed);
-            root.Margin(navigationToolbar ? Thickness{8, 8, 8, 8} : Thickness{0, 0, 0, 0});
+            root.Margin(navigationToolbar ? Thickness{8, 4, 8, 4} : Thickness{0, 0, 0, 0});
         }
         if (!applyAddress) return L"";
         Edit();  // Observe text synchronously before an older snapshot can replace it.
