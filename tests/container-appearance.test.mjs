@@ -149,7 +149,7 @@ test("group halo is opt-in and its preference publishes a live delta", () => {
   }
 });
 
-test("group glow animations are opt-in and their preference publishes a live delta", () => {
+test("group glow animations default on and their preference publishes a live delta", () => {
   let animations;
   const key = "fenn.winui.tabstrip.groupGlowAnimations";
   const context = {
@@ -168,8 +168,8 @@ test("group glow animations are opt-in and their preference publishes a live del
   pane.visibleTabs = () => [];
   pane.schedule = () => {};
   const session = new WinUITabStripSession({read:() => pane.describeStrip()});
-  assert.equal(session.update().strip.groupGlowAnimations, false);
-  for (const value of [true, false]) {
+  assert.equal(session.update().strip.groupGlowAnimations, true);
+  for (const value of [false, true]) {
     animations = value;
     pane.stripDirty = false;
     pane.observe(null, "nsPref:changed", key);

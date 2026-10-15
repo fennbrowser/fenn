@@ -71,18 +71,18 @@ index 4f50c25976a..0b046fd8329 100644
 +// Group outline reach past outer members: "none", "small", "medium" or "large";
 +// "large" also moves the native New Tab button by that reach.
 +pref("fenn.winui.tabstrip.groupReach", "none");
-+// Opt-in: hovering a group header washes the whole group, not only the header.
-+pref("fenn.winui.tabstrip.groupHover", false);
++// Hovering a group header washes the whole group, not only the header.
++pref("fenn.winui.tabstrip.groupHover", true);
 +// Opt-in: with group glow, a soft halo extends past each group's outline.
 +pref("fenn.winui.tabstrip.groupHalo", false);
-+// Opt-in: group glow lights up gradually where it appears or moves, and dims
++// Group glow lights up gradually where it appears or moves, and dims
 +// when it goes out.
-+pref("fenn.winui.tabstrip.groupGlowAnimations", false);
++pref("fenn.winui.tabstrip.groupGlowAnimations", true);
 +// Opt-in: with glow animations, extinguished glow dims out instead of
 +// disappearing at once.
 +pref("fenn.winui.tabstrip.groupGlowFadeOut", false);
 +pref("fenn.winui.address.toolbar.enabled", false);
-+pref("fenn.winui.navigation.toolbar.enabled", false);
++pref("fenn.winui.navigation.toolbar.enabled", true);
 +// Show the native address in private windows. False: private windows use
 +// Firefox's own URL bar.
 +pref("fenn.winui.address.private", true);
@@ -21486,7 +21486,7 @@ index 00000000000..23a3c5f27cc
 +    return true;
 +  }
 +  get navigationRequested() {
-+    return Services.prefs.getBoolPref("fenn.winui.navigation.toolbar.enabled", false);
++    return Services.prefs.getBoolPref("fenn.winui.navigation.toolbar.enabled", true);
 +  }
 +  activate() {
 +    if (this.active || this.activationFrame) return;
@@ -22345,7 +22345,7 @@ index 00000000000..f3d2cd30cc2
 +  syncAddress() {
 +    if (!this.attached || this.processingAction) return;
 +    const toolbarRequested = Services.prefs.getBoolPref(this.addressToolbarPref, false) ||
-+      Services.prefs.getBoolPref(this.navigationToolbarPref, false);
++      Services.prefs.getBoolPref(this.navigationToolbarPref, true);
 +    if (toolbarRequested && !this.addressToolbar) {
 +      const { WinUIAddressToolbar } = ChromeUtils.importESModule(
 +        "chrome://browser/content/WinUIAddressToolbar.sys.mjs"
@@ -23123,9 +23123,9 @@ index 00000000000..f3d2cd30cc2
 +      containerDot: this.containerDotsEnabled(),
 +      backdrop: this.stripBackdrop(),
 +      groupReach: this.groupReach(),
-+      groupHover: Services.prefs.getBoolPref(this.groupHoverPref, false),
++      groupHover: Services.prefs.getBoolPref(this.groupHoverPref, true),
 +      groupHalo: Services.prefs.getBoolPref(this.groupHaloPref, false),
-+      groupGlowAnimations: Services.prefs.getBoolPref(this.groupGlowAnimationsPref, false),
++      groupGlowAnimations: Services.prefs.getBoolPref(this.groupGlowAnimationsPref, true),
 +      groupGlowFadeOut: Services.prefs.getBoolPref(this.groupGlowFadeOutPref, false),
 +      rtl: document.documentElement.matches(":dir(rtl)"),
 +      windowDragPrivate: PrivateBrowsingUtils.isWindowPrivate(window),
@@ -23740,7 +23740,7 @@ index 00000000000..f3d2cd30cc2
 +      if (!ok) this.uninit();
 +      else {
 +        if (this.addressToolbar || Services.prefs.getBoolPref(this.addressToolbarPref, false) ||
-+            Services.prefs.getBoolPref(this.navigationToolbarPref, false)) {
++            Services.prefs.getBoolPref(this.navigationToolbarPref, true)) {
 +          this.addressDirty = true;
 +        }
 +        this.publish();
@@ -24069,7 +24069,7 @@ index 00000000000..3c26bffa40d
 +  if (aVisible && !Preferences::GetBool(
 +          "fenn.winui.address.toolbar.enabled", false) &&
 +      !Preferences::GetBool(
-+          "fenn.winui.navigation.toolbar.enabled", false)) return false;
++          "fenn.winui.navigation.toolbar.enabled", true)) return false;
 +  HRESULT hr = sPaneApi.updateAddress(aWindow, &aRect, aVisible);
 +  if (SUCCEEDED(hr) && aVisible && aFocus)
 +    hr = sPaneApi.focusAddress(aWindow, aSelectAll);

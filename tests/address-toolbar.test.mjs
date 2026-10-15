@@ -25,7 +25,7 @@ function fixture() {
   const slot = element(), input = element(), switcher = element(), root = element();
   input.closest = () => slot;
   input.setAttribute("placeholder", "Localized address");
-  const prefs = new Map([["fenn.winui.address.toolbar.enabled",true]]);
+  const prefs = new Map([["fenn.winui.address.toolbar.enabled",true],["fenn.winui.navigation.toolbar.enabled",false]]);
   const owner = {attached:true,element:element(),schedule() {},invalidateAddress() {},
     addressSession:{releaseNativePresentation() {calls.push(["release"]);}},
     addressAvailable() {
