@@ -163,7 +163,7 @@ function navigationFixture() {
   const f = fixture();
   f.prefs.set("fenn.winui.address.toolbar.enabled", false);
   f.prefs.set("fenn.winui.navigation.toolbar.enabled", true);
-  f.toolbar.row.getBoundingClientRect = () => ({x:0,y:40,width:1000,height:48});
+  f.toolbar.row.getBoundingClientRect = () => ({x:0,y:40,width:1000,height:40});
   return f;
 }
 
@@ -172,7 +172,7 @@ test("navigation toolbar reserves a full row independently of the original input
   assert.equal(f.toolbar.update(), true);
   assert.equal(f.toolbar.row.hidden, false);
   assert.equal(f.toolbar.bounds().width, 1000);
-  assert.equal(f.toolbar.bounds().height, 48);
+  assert.equal(f.toolbar.bounds().height, 40);
   assert.equal(f.input.attributes.has("aria-hidden"), false);
   f.toolbar.activate();
   assert.equal(f.input.attributes.has("aria-hidden"), true);
@@ -186,7 +186,7 @@ test("navigation refusal and unsupported contexts release reserved space", () =>
   for (const reject of [f=>f.window.acceptHost=false, f=>f.window.fullScreen=true,
     f=>f.root.setAttribute("customizing", ""),
     f=>{f.window.PrivateBrowsingUtils.isWindowPrivate=()=>true;f.prefs.set("fenn.winui.address.private",false);},
-    f=>f.toolbar.row.getBoundingClientRect=()=>({x:0,y:40,width:240,height:48})]) {
+    f=>f.toolbar.row.getBoundingClientRect=()=>({x:0,y:40,width:240,height:40})]) {
     const f = navigationFixture();
     reject(f);
     assert.equal(f.toolbar.update(), false);
