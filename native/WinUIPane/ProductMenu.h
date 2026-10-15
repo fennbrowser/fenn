@@ -93,6 +93,9 @@ struct NativeProductMenu {
         Viewbox host;
         host.Width(ToolbarMetrics::kIcon);
         host.Height(ToolbarMetrics::kIcon);
+        // The stock glyph draws about 1.5 DIP above the button's centre; a 3-DIP top
+        // margin moves the centred glyph down by that much, as in Dia.
+        host.Margin({0, 3, 0, 0});
         host.Child(SymbolIcon(Symbol::GlobalNavigationButton));
         button.Content(host);
         button.VerticalAlignment(VerticalAlignment::Center);
