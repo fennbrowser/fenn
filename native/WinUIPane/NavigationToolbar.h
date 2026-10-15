@@ -324,7 +324,6 @@ struct NativeNavigationToolbar {
             desired.push_back(address);desired.push_back(buttons[3]);desired.push_back(buttons[4]);
             desired.push_back(pinned.panel);if(hasOverflow)desired.push_back(buttons[6]);desired.push_back(buttons[5]);
         } else desired.push_back(address);
-        if(visible && productMenu.enabled)desired.insert(desired.begin(),productMenu.button);
         for(auto it=dragHosts.begin();it!=dragHosts.end();) {
             if(!keepDrag.contains(it->first)){if(it->second.Children().Size())it->second.Children().GetAt(0).IsHitTestVisible(true);it->second.Children().Clear();it=dragHosts.erase(it);}else ++it;
         }

@@ -132,6 +132,34 @@ struct NativeTabStrip {
     std::map<uint32_t, Presentation> presentation;
     TabGroupsButton groupsButton;
     AllTabsButton allTabs;
+    // Left of the first tab: an optional control owned by another surface
+    // (the product menu button), then the retained groups button.
+    Controls::StackPanel header{nullptr};
+    UIElement leading{nullptr};
+    // The header is the groups button alone until another surface supplies a
+    // leading control; the panel exists only while one is attached.
+    void SetLeadingControl(UIElement const& control) {
+        if (leading == control) return;
+        leading = control;
+        if (!view) return;
+        if (!leading) {
+            if (header) {
+                header.Children().Clear();
+                header = nullptr;
+            }
+            view.TabStripHeader(groupsButton.button);
+            return;
+        }
+        if (!header) {
+            view.TabStripHeader(nullptr);
+            header = Controls::StackPanel();
+            header.Orientation(Controls::Orientation::Horizontal);
+            header.VerticalAlignment(VerticalAlignment::Center);
+            header.Children().Append(groupsButton.button);
+            view.TabStripHeader(header);
+        }
+        header.Children().InsertAt(0, leading);
+    }
     InlineTabGroups inlineGroups;
     // The tab order of the last full Sync.
     std::vector<uint32_t> publishedOrder;

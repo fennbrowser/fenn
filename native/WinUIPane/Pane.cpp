@@ -441,6 +441,7 @@ struct Pane {
         addressSource.SystemBackdrop(nullptr);
         navigationBackdrop = false;
         addressSource.Content(nullptr);
+        if (strip) strip->SetLeadingControl(nullptr);
         address.reset();
         shell.ResetAddress();
         shell.ResetAddressPublication();
@@ -452,6 +453,11 @@ struct Pane {
         addressSource = nullptr;
     }
     void WireAddress() {
+        if (strip) {
+            auto menuButton = address->navigation->productMenu.button;
+            menuButton.Margin({6, 0, 2, 0});
+            strip->SetLeadingControl(menuButton);
+        }
         address->releaseMenuFocus = [this] { SetFocus(parent); };
         address->navigate = [this](hstring const& action) {
             Enqueue(NativeShellCore::NavigationAction, 0, 0, action);
@@ -643,6 +649,7 @@ struct Pane {
         externalDropRevoker.revoke();
         source.SystemBackdrop(nullptr);
         source.Content(nullptr);
+        if (strip) strip->SetLeadingControl(nullptr);
         address.reset();
         strip.reset();
         shell.Close();

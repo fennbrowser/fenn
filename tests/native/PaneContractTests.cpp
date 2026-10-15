@@ -1818,7 +1818,13 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         L"width", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(1000));
     Require(FAILED(api.syncTabMenu(host, oversizedImage.Stringify().c_str())),
             "oversized favicon dimensions are rejected before native mutation");
-    auto groups = view.TabStripHeader().as<Controls::DropDownButton>();
+    // The header is the groups button, or a panel holding it beside a leading control.
+    Controls::DropDownButton groups{nullptr};
+    if (auto direct = view.TabStripHeader().try_as<Controls::DropDownButton>()) groups = direct;
+    else if (auto panel = view.TabStripHeader().try_as<Controls::Panel>())
+        for (auto child : panel.Children())
+            if (auto candidate = child.try_as<Controls::DropDownButton>()) groups = candidate;
+    Require(bool(groups), "the tab-groups button is the tab strip header");
     Require(groups.Visibility() == Visibility::Visible, "group controls expose collapsed groups independently of tabs");
     auto groupMenu = groups.Flyout().as<Controls::MenuFlyout>();
     bool groupOpened = false;
