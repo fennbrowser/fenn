@@ -214,6 +214,20 @@ struct NativeNavigationToolbar {
         customization.dragEnded=[this]{preview.Reset();};
         preview.arrange=[this](auto const& order,bool extra){Arrange(order,extra);};
         host.AllowDrop(true);
+        // The editor is not light-dismissed, so a press on anything in the row
+        // other than a placed control (which can be dragged or edited) closes it.
+        host.AddHandler(UIElement::PointerPressedEvent(), winrt::box_value(
+            Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
+                if (alive.expired() || !visible || !customization.editing || customization.dragging) return;
+                auto node = args.OriginalSource().try_as<Microsoft::UI::Xaml::DependencyObject>();
+                while (node) {
+                    for (auto const& element : ordered)
+                        if (node == element && element != address) return;
+                    if (node == host) break;
+                    node = Microsoft::UI::Xaml::Media::VisualTreeHelper::GetParent(node);
+                }
+                customization.Hide();
+            })), true);
         // Empty space and buttons without a menu of their own offer the editor
         // as an item in a context menu.
         host.ContextRequested([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
@@ -383,7 +397,13 @@ struct NativeNavigationToolbar {
     bool arrangedCollapsed{true};
     Microsoft::UI::Xaml::Controls::MenuFlyout contextMenu{nullptr};
     // Firefox's Customize Toolbar command arrives as a counter in the snapshot.
-    double editorRequest{-1};
+    double editorRequest{-1}, editorClose{-1};
+    void RequestClose(double value) {
+        if (editorClose < 0) { editorClose = value; return; }
+        if (value <= editorClose) return;
+        editorClose = value;
+        if (customization.editing && !customization.dragging) customization.Hide();
+    }
     void RequestEditor(double value) {
         if (editorRequest < 0) { editorRequest = value; return; }
         if (value <= editorRequest) return;

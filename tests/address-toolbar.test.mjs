@@ -186,6 +186,22 @@ test("Firefox's Customize Toolbar command requests the native editor only while 
   assert.equal(f.toolbar.editorRequests, 1);
 });
 
+test("page focus and tab selection ask the native editor to close, only while the native toolbar is active", () => {
+  const f = fixture();
+  const focus = f.window.commandListeners.find(e => e.type === "focus").listener;
+  const tabSelect = f.window.commandListeners.find(e => e.type === "TabSelect").listener;
+  focus({type: "focus", target: {localName: "browser"}});
+  assert.equal(f.toolbar.editorCloses, 0, "inactive toolbar ignores focus");
+  f.toolbar.navigation = true;
+  f.toolbar.active = true;
+  focus({type: "focus", target: {localName: "input"}});
+  assert.equal(f.toolbar.editorCloses, 0, "focus on other elements does not close the editor");
+  focus({type: "focus", target: {localName: "browser"}});
+  assert.equal(f.toolbar.editorCloses, 1);
+  tabSelect({type: "TabSelect", target: {}});
+  assert.equal(f.toolbar.editorCloses, 2);
+});
+
 function navigationFixture() {
   const f = fixture();
   f.prefs.set("fenn.winui.address.toolbar.enabled", false);

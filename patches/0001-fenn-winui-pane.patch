@@ -21494,10 +21494,10 @@ index 00000000000..380a3b8df73
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..c0dcd8c6a49
+index 00000000000..28071190bd2
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,355 @@
+@@ -0,0 +1,370 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -21569,8 +21569,20 @@ index 00000000000..c0dcd8c6a49
 +      openMenu: (id, bounds, event) => this.openMenu(id, bounds, event),
 +    });
 +    this.editorRequests = 0;
++    this.editorCloses = 0;
 +    this.customizeListener = event => this.onCustomizeCommand(event);
 +    window.addEventListener("command", this.customizeListener, true);
++    // The native editor is not light-dismissed (dragging toolbar items needs the
++    // toolbar to stay live), so interaction elsewhere asks it to close: focus
++    // moving into page content or another tab being selected.
++    this.dismissListener = event => {
++      if (!this.active || !this.navigation) return;
++      if (event.type === "focus" && event.target?.localName !== "browser") return;
++      this.editorCloses++;
++      owner.invalidateAddress();
++    };
++    window.addEventListener("focus", this.dismissListener, true);
++    window.addEventListener("TabSelect", this.dismissListener, true);
 +    this.progress = {
 +      onLocationChange: browser => {
 +        if (browser === window.gBrowser.selectedBrowser) owner.invalidateAddress();
@@ -21602,6 +21614,7 @@ index 00000000000..c0dcd8c6a49
 +    state.palette = this.pinned?.snapshot(true) || [];
 +    state.productMenu = this.productMenu.model();
 +    state.editorRequest = this.editorRequests;
++    state.editorClose = this.editorCloses;
 +    state.customization = this.customization?.snapshot(state);
 +    const represented = new Set([...(this.customization?.entries?.values() || [])].map(entry => entry.widget));
 +    state.overflow.required = !!document.getElementById("widget-overflow-fixed-list")?.childElementCount ||
@@ -21844,6 +21857,8 @@ index 00000000000..c0dcd8c6a49
 +    this.omnibar?.close();
 +    this.productMenu?.close();
 +    this.window.removeEventListener("command", this.customizeListener, true);
++    this.window.removeEventListener("focus", this.dismissListener, true);
++    this.window.removeEventListener("TabSelect", this.dismissListener, true);
 +    this.window.gBrowser.removeTabsProgressListener(this.progress);
 +    this.input.removeEventListener("beforefocus", this.beforeFocus);
 +    this.input.removeEventListener("beforeselect", this.beforeFocus);
