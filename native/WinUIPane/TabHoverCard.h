@@ -99,6 +99,10 @@ struct TabHoverCard {
   <Setter Property="MaxWidth" Value="320"/>
   <Setter Property="CornerRadius" Value="8"/>
   <Setter Property="IsTabStop" Value="False"/>
+  <!-- The card is display-only. When it overlaps the row (pointer near the
+       row's bottom edge) it must not take the pointer: that exits the row,
+       closes the card, re-enters and reopens it, in a loop. -->
+  <Setter Property="IsHitTestVisible" Value="False"/>
   <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
   <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Disabled"/>
 </Style>)").as<Style>();
@@ -179,7 +183,14 @@ struct TabHoverCard {
         // menu or panel the user opened takes precedence.
         for (auto popup : Media::VisualTreeHelper::GetOpenPopupsForXamlRoot(row.XamlRoot())) {
             auto presenter = popup.Child().try_as<Controls::FlyoutPresenter>();
-            if (!presenter || presenter.Content() != found->second.flyout.Content()) return;
+            if (!presenter) return;
+            // Any of this strip's own cards is not "another popup": a card
+            // just hidden is still in the open list while it animates out,
+            // and moving between tabs would otherwise silently open nothing.
+            bool ours = false;
+            for (auto const& [otherId, other] : cards)
+                if (presenter.Content() == other.flyout.Content()) { ours = true; break; }
+            if (!ours) return;
         }
         // Queuing can wake a host that republishes at once and drops rows, so
         // nothing from the map is held across the request.
@@ -255,11 +266,16 @@ struct TabHoverCard {
         // the pointer stays on the row; only a real departure ends the press.
         row.PointerExited([this, alive, id](auto const& sender, auto const& args) {
             if (alive.expired()) return;
-            Hide(id);
             auto element = sender.template as<FrameworkElement>();
             auto at = args.GetCurrentPoint(element).Position();
-            if (pressed == id && (at.X < 0 || at.Y < 0 || at.X >= element.ActualWidth() || at.Y >= element.ActualHeight()))
-                pressed = 0;
+            const bool outside = at.X < 0 || at.Y < 0 || at.X >= element.ActualWidth() || at.Y >= element.ActualHeight();
+            // The card's own dismissal layer (and a layout shift) raises
+            // PointerExited with the pointer still on the row. Closing here
+            // lost the card for good: no PointerEntered follows, so it never
+            // reopened until the pointer left and came back.
+            if (!outside) return;
+            Hide(id);
+            if (pressed == id) pressed = 0;
         });
         row.PointerCanceled(leave);
         row.PointerCaptureLost(leave);

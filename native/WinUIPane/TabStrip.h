@@ -3707,7 +3707,13 @@ struct NativeTabStrip {
                         row.PointerEntered([state, apply](auto const& sender, auto&&) {
                             state->hover = true; apply(sender);
                         });
-                        row.PointerExited([state, apply](auto const& sender, auto&&) {
+                        row.PointerExited([state, apply](auto const& sender, auto const& args) {
+                            // A spurious exit (popup dismissal layer) with the
+                            // pointer still on the row keeps its hover state.
+                            auto element = sender.template as<FrameworkElement>();
+                            auto at = args.GetCurrentPoint(element).Position();
+                            if (at.X >= 0 && at.Y >= 0 && at.X < element.ActualWidth() && at.Y < element.ActualHeight())
+                                return;
                             state->hover = false; apply(sender);
                         });
                         row.GotFocus([state, apply](auto const& sender, RoutedEventArgs const&) {
