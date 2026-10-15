@@ -1566,7 +1566,9 @@ struct NativeTabStrip {
         });
         header = Controls::StackPanel();
         header.Orientation(Controls::Orientation::Horizontal);
-        header.VerticalAlignment(VerticalAlignment::Center);
+        // Tabs sit on the strip's bottom edge, so align the controls with them
+        // rather than with the strip's centre.
+        header.VerticalAlignment(VerticalAlignment::Bottom);
         allTabs.button.Margin({0, 0, 4, 0});
         header.Children().Append(allTabs.button);
         header.Children().Append(groupsButton.button);
