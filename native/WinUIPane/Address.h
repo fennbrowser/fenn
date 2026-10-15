@@ -671,15 +671,13 @@ struct NativeAddress {
                 <ResourceDictionary.ThemeDictionaries>
                     <ResourceDictionary x:Key="Default">
                         <SolidColorBrush x:Key="TextControlBackground" Color="Transparent"/>
-                        <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent"/>
-                        <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource ControlStrokeColorDefault}"/>
-                        <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource ControlStrokeColorDefault}"/>
+                        <SolidColorBrush x:Key="TextControlBorderBrush" Color="Transparent"/>
+                        <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent"/>
                     </ResourceDictionary>
                     <ResourceDictionary x:Key="Light">
                         <SolidColorBrush x:Key="TextControlBackground" Color="Transparent"/>
-                        <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent"/>
-                        <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource ControlStrokeColorDefault}"/>
-                        <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource ControlStrokeColorDefault}"/>
+                        <SolidColorBrush x:Key="TextControlBorderBrush" Color="Transparent"/>
+                        <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent"/>
                     </ResourceDictionary>
                     <ResourceDictionary x:Key="HighContrast">
                         <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource SystemColorButtonTextColor}"/>
