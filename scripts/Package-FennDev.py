@@ -5,7 +5,7 @@ no private copy of its runtime. It is signed with the self-signed certificate
 that Initialize-DevSigning.ps1 creates and trusts once; --unsigned builds the
 elevation-only unsigned fallback instead. With --loose, the same layout is
 registered in place under Developer Mode instead of packed, as a separate
-identity. Run via Build-FennDevPackage.ps1, which selects Mach's build
+identity. Run via Package-Fenn.ps1, which selects Mach's build
 Python environment.
 """
 
@@ -570,7 +570,7 @@ def publish_feed(package, lane, version, feed_dir=FEED_DIR):
 
 
 def write_latest(lane, entry):
-    """What the last successful build produced, for Build-FennDevPackage.ps1."""
+    """What the last successful build produced, for Package-Fenn.ps1."""
     (lane.runs_dir / "latest.json").write_text(json.dumps(
         {"identity": lane.identity, "alias": lane.alias, "loose": lane is LOOSE, "store": lane.store, **entry},
         indent=2) + "\n",

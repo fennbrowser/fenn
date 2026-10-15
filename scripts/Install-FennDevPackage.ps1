@@ -1,5 +1,5 @@
 [CmdletBinding(SupportsShouldProcess)]
-# An .msix installs that package. An .appinstaller feed (Build-FennDevPackage.ps1
+# An .msix installs that package. An .appinstaller feed (Package-Fenn.ps1
 # -Publish) installs its package and makes the feed the installation's automatic
 # update source.
 param([Parameter(Mandatory = $true)][string]$PackagePath)

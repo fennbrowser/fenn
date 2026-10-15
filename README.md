@@ -34,7 +34,7 @@ App SDK runtime (`scripts/Install-WindowsAppRuntime.ps1`). In outline:
    (`configs/mozconfig`). For an optimized build, set
    `FENN_MOZCONFIG=mozconfig.release` first (`configs/mozconfig.release`:
    profile-guided and link-time optimization, built into `build/firefox-release`).
-4. `scripts/Build-FennDevPackage.ps1` builds a development MSIX package.
+4. `scripts/Package-Fenn.ps1` builds a development MSIX package.
 
 ## License
 

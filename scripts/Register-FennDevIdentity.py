@@ -68,7 +68,7 @@ def newest_msix_manifest():
         identity = ET.parse(path).getroot().find(f"{{{FOUNDATION}}}Identity")
         if identity is not None and identity.get("Name") == "Fenn.Dev":
             return path
-    raise FileNotFoundError("Build the MSIX once (Build-FennDevPackage.ps1) so its Firefox "
+    raise FileNotFoundError("Build the MSIX once (Package-Fenn.ps1) so its Firefox "
                             "declarations can be reused")
 
 

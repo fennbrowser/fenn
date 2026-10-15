@@ -3,7 +3,7 @@
 # Creates (or reuses) a self-signed code-signing certificate whose subject is
 # the signed development publisher, with its private key non-exportable in your
 # CurrentUser\My store, and trusts only its public certificate in
-# LocalMachine\TrustedPeople. After this, Build-FennDevPackage.ps1 signs the
+# LocalMachine\TrustedPeople. After this, Package-Fenn.ps1 signs the
 # MSIX and Install-FennDevPackage.ps1 installs and updates it without
 # elevation. Run from an elevated PowerShell under your own account, so the key
 # lands in your user store. -Remove deletes both again.
