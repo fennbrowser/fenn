@@ -17316,10 +17316,10 @@ index 00000000000..e4be8e911db
 +}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 00000000000..12fc54687db
+index 00000000000..7a88d0669af
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,195 @@
 +// Firefox owns widget eligibility and durable placement; native owns the editor.
 +import { readActionStamp, actionStampMatches } from "chrome://browser/content/WinUIActionStamp.sys.mjs";
 +export class WinUIToolbarCustomization {
@@ -17405,6 +17405,8 @@ index 00000000000..12fc54687db
 +    const signature=JSON.stringify([areas,items,settings,canReset,canUndoReset]);
 +    if (signature !== this.signature) {this.signature=signature;this.revision++;}
 +    const labels=Object.fromEntries(['title','available','earlier','later','add','remove','done','hint','reset','undo-reset','reset-hint','overflow','drop'].map(k=>[k,toolbar.owner.localization().formatValueSync('winui-toolbar-customize-'+k)]));
++    const [openMessage] = toolbar.owner.localization().formatMessagesSync([{id:'toolbar-context-menu-view-customize-toolbar-2'}]);
++    labels.open = openMessage?.attributes?.find(a => a.name === 'label')?.value || labels.title;
 +    this.current={revision:this.revision,items,labels,canReset,canUndoReset};
 +    return this.current;
 +  }
@@ -21493,10 +21495,10 @@ index 00000000000..380a3b8df73
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..6b67ab57957
+index 00000000000..c0dcd8c6a49
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,350 @@
+@@ -0,0 +1,355 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -21567,6 +21569,9 @@ index 00000000000..6b67ab57957
 +      invalidate: () => owner.invalidateAddress(),
 +      openMenu: (id, bounds, event) => this.openMenu(id, bounds, event),
 +    });
++    this.editorRequests = 0;
++    this.customizeListener = event => this.onCustomizeCommand(event);
++    window.addEventListener("command", this.customizeListener, true);
 +    this.progress = {
 +      onLocationChange: browser => {
 +        if (browser === window.gBrowser.selectedBrowser) owner.invalidateAddress();
@@ -21597,6 +21602,7 @@ index 00000000000..6b67ab57957
 +    Object.assign(state, this.omnibar?.snapshot() || {});
 +    state.palette = this.pinned?.snapshot(true) || [];
 +    state.productMenu = this.productMenu.model();
++    state.editorRequest = this.editorRequests;
 +    state.customization = this.customization?.snapshot(state);
 +    const represented = new Set([...(this.customization?.entries?.values() || [])].map(entry => entry.widget));
 +    state.overflow.required = !!document.getElementById("widget-overflow-fixed-list")?.childElementCount ||
@@ -21767,7 +21773,6 @@ index 00000000000..6b67ab57957
 +    const editorHadFocus = this.window.document.activeElement === this.input;
 +    this.active = true;
 +    this.window.document.documentElement.setAttribute("winui-address-active", "");
-+    this.setFirefoxCustomizeMode(false);
 +    this.owner.updateToolbarHidden?.();
 +    this.input.setAttribute("aria-hidden", "true");
 +    this.switcher.setAttribute("aria-hidden", "true");
@@ -21804,7 +21809,6 @@ index 00000000000..6b67ab57957
 +    this.customization?.endEditor();
 +    this.row.hidden = true;
 +    this.window.document.documentElement.removeAttribute("winui-address-active");
-+    this.setFirefoxCustomizeMode(true);
 +    this.owner.updateToolbarHidden?.();
 +    this.input.removeAttribute("aria-hidden");
 +    this.switcher.removeAttribute("aria-hidden");
@@ -21813,13 +21817,15 @@ index 00000000000..6b67ab57957
 +    try { this.window.windowUtils.updateWinUIAddress(0, 0, 0, 0, false, false, false); } catch {}
 +    if (hadFocus) this.window.gURLBar.focus();
 +  }
-+  // The native editor is the only customization surface while it is active;
-+  // the shared command disables every Firefox menu item that observes it.
-+  setFirefoxCustomizeMode(enabled) {
-+    const command = this.window.document.getElementById("cmd_CustomizeToolbars");
-+    if (!command) return;
-+    if (enabled) command.removeAttribute("disabled");
-+    else command.setAttribute("disabled", "true");
++  // While the native toolbar is active, Firefox's Customize Toolbar command
++  // (from any of its menus) opens the native editor instead of Firefox's mode.
++  // The request counter travels with the navigation snapshot.
++  onCustomizeCommand(event) {
++    if (event.target?.id !== "cmd_CustomizeToolbars" || !this.active || !this.navigation) return;
++    event.stopImmediatePropagation();
++    event.preventDefault();
++    this.editorRequests++;
++    this.owner.invalidateAddress();
 +  }
 +  bounds() {
 +    if (this.navigation) return this.row.getBoundingClientRect();
@@ -21838,6 +21844,7 @@ index 00000000000..6b67ab57957
 +    this.pinned?.close();
 +    this.omnibar?.close();
 +    this.productMenu?.close();
++    this.window.removeEventListener("command", this.customizeListener, true);
 +    this.window.gBrowser.removeTabsProgressListener(this.progress);
 +    this.input.removeEventListener("beforefocus", this.beforeFocus);
 +    this.input.removeEventListener("beforeselect", this.beforeFocus);

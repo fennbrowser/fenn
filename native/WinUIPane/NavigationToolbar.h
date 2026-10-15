@@ -214,11 +214,24 @@ struct NativeNavigationToolbar {
         customization.dragEnded=[this]{preview.Reset();};
         preview.arrange=[this](auto const& order,bool extra){Arrange(order,extra);};
         host.AllowDrop(true);
-        // Empty space and buttons without a menu of their own open the editor.
+        // Empty space and buttons without a menu of their own offer the editor
+        // as an item in a context menu.
         host.ContextRequested([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
-            if (alive.expired() || args.Handled() || !visible || customization.editing) return;
+            if (alive.expired() || args.Handled() || !visible || customization.editing ||
+                !customization.state.revision || !customization.state.labels.contains(L"open")) return;
             args.Handled(true);
-            customization.Open(buttons[0]);
+            Controls::MenuFlyoutItem open;
+            open.Text(customization.state.labels.at(L"open"));
+            Microsoft::UI::Xaml::Automation::AutomationProperties::SetAutomationId(open, L"FennCustomizeOpen");
+            open.Click([this, alive](auto const&, auto const&) {
+                if (!alive.expired() && visible && !customization.editing) customization.Open(buttons[0]);
+            });
+            contextMenu = Controls::MenuFlyout();
+            contextMenu.Items().Append(open);
+            Windows::Foundation::Point point;
+            Controls::Primitives::FlyoutShowOptions options;
+            if (args.TryGetPosition(host, point)) options.Position(point);
+            contextMenu.ShowAt(host, options);
         });
         auto updatePreview=[this](auto const& args) {
             if(!customization.Accept(args)){preview.Reset();return false;}
@@ -368,6 +381,15 @@ struct NativeNavigationToolbar {
     // Flexible spaces take no width outside customization: the default layout
     // is the controls and the address field with fixed gaps.
     bool arrangedCollapsed{true};
+    Microsoft::UI::Xaml::Controls::MenuFlyout contextMenu{nullptr};
+    // Firefox's Customize Toolbar command arrives as a counter in the snapshot.
+    double editorRequest{-1};
+    void RequestEditor(double value) {
+        if (editorRequest < 0) { editorRequest = value; return; }
+        if (value <= editorRequest) return;
+        editorRequest = value;
+        if (visible && !customization.editing && customization.state.revision) customization.Open(buttons[0]);
+    }
     void Arrange(std::vector<Microsoft::UI::Xaml::UIElement> const& desired,bool extra) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;

@@ -34,6 +34,9 @@ function fixture() {
     addressFallback() {calls.push(["fallback"]); toolbar.restore();}};
   const window = {document:{documentElement:root,querySelectorAll:()=>[...elements.values()],createElementNS:element,getElementById:id=>elements.get(id)},
     gURLBar:{inputField:input,querySelector:()=>switcher,focus() {calls.push(["firefox-focus"]);}},
+    commandListeners:[],
+    addEventListener(type,listener,capture) {this.commandListeners.push({type,listener,capture});},
+    removeEventListener(type,listener) {this.commandListeners=this.commandListeners.filter(e=>e.listener!==listener);},
     gBrowser:{addTabsProgressListener() {},removeTabsProgressListener() {}},
     windowUtils:{updateWinUIAddress(...args) {calls.push(["host",...args]); return window.acceptHost;}},
     acceptHost:true,requestAnimationFrame(callback) {callback(); return 0;},cancelAnimationFrame() {},
@@ -159,15 +162,28 @@ test("restoring Gecko widget focus does not reenter an already owned native fiel
   assert.ok(f.calls.some(c=>c[0]==="host" && c[6]===true),"keyboard entry after a real blur still enters WinUI");
 });
 
-test("Firefox's customize command is disabled only while the native toolbar is active", () => {
+test("Firefox's Customize Toolbar command requests the native editor only while the native toolbar is active", () => {
   const f = fixture();
-  const command = f.element();
-  f.elements.set("cmd_CustomizeToolbars", command);
+  const event = () => {
+    const e = {target: {id: "cmd_CustomizeToolbars"}, stopped: false, prevented: false,
+      stopImmediatePropagation() { this.stopped = true; }, preventDefault() { this.prevented = true; }};
+    return e;
+  };
+  const listener = f.window.commandListeners.find(entry => entry.type === "command").listener;
+  const before = event();
+  listener(before);
+  assert.equal(f.toolbar.editorRequests, 0, "inactive toolbar leaves Firefox's own mode alone");
+  assert.equal(before.stopped, false);
   assert.equal(f.toolbar.update(), true);
-  f.toolbar.activate();
-  assert.equal(command.getAttribute("disabled"), "true");
-  f.toolbar.restore();
-  assert.equal(command.hasAttribute("disabled"), false);
+  f.toolbar.navigation = true;
+  f.toolbar.active = true;
+  const active = event();
+  listener(active);
+  assert.equal(f.toolbar.editorRequests, 1);
+  assert.equal(active.stopped && active.prevented, true);
+  const other = {target: {id: "cmd_other"}, stopImmediatePropagation() { assert.fail(); }, preventDefault() { assert.fail(); }};
+  listener(other);
+  assert.equal(f.toolbar.editorRequests, 1);
 });
 
 function navigationFixture() {

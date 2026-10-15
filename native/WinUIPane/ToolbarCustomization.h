@@ -62,7 +62,7 @@ struct NativeToolbarCustomization {
         }
         if(address && !state.revision) throw winrt::hresult_invalid_argument();
         auto labels=obj.GetNamedObject(L"labels");
-        for(auto key:{L"title",L"available",L"earlier",L"later",L"add",L"remove",L"done",L"hint",L"reset",L"undo-reset",L"reset-hint",L"overflow",L"drop"}) {
+        for(auto key:{L"title",L"available",L"earlier",L"later",L"add",L"remove",L"done",L"hint",L"reset",L"undo-reset",L"reset-hint",L"overflow",L"drop",L"open"}) {
             auto value=labels.GetNamedString(key);NativeJson::RequireLength(value,4096);state.labels[key]=value;
         }
         if(!address) return {};

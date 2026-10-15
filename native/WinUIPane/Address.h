@@ -1125,6 +1125,10 @@ struct NativeAddress {
             navigation->pinned.Apply(pinnedState, navigationToolbar);
             navigation->historyMenu.Apply(historyMenuState,navigationToolbar && !navigation->customization.editing,navigation->buttons[9],applyHistory);
             navigation->productMenu.Apply(productMenuState,navigationToolbar);
+            if (snapshot.HasKey(L"navigation")) {
+                auto request = snapshot.GetNamedObject(L"navigation").GetNamedNumber(L"editorRequest", 0);
+                if (std::isfinite(request) && request >= 0 && request <= NativeJson::kMaxSafeInteger) navigation->RequestEditor(request);
+            }
             navigation->Layout(customizationState);
             navigation->UpdatePalette(paletteState);
             navigation->customization.Apply(customizationState, navigationToolbar);
