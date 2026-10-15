@@ -50,7 +50,7 @@ struct ToolbarDragPreview {
             auto e=slots[i].second;geometry.push_back({e.ActualOffset().x,e.ActualWidth()});
             if(slots[i].first==id){sourceIndex=i;source=e;}
         }
-        if(!source){gap=Grid();gap.Width(28);gap.IsHitTestVisible(false);host.Children().Append(gap);}
+        if(!source){gap=Grid();gap.Width(32);gap.IsHitTestVisible(false);host.Children().Append(gap);}
         active=true;target=UINT32_MAX;
     }
     bool Hit(double x,bool rtl,uint32_t& index) {

@@ -455,7 +455,7 @@ struct Pane {
     void WireAddress() {
         if (strip) {
             auto menuButton = address->navigation->productMenu.button;
-            menuButton.Margin({12, 0, 4, 0});
+            menuButton.Margin({6, 0, 4, 0});
             strip->SetLeadingControl(menuButton);
         }
         address->releaseMenuFocus = [this] { SetFocus(parent); };

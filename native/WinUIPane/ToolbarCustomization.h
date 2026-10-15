@@ -317,7 +317,7 @@ struct NativeToolbarCustomization {
                 Automation::AutomationProperties::SetAutomationId(row,L"FennCustomize-"+(found->control.empty()?found->id:found->control));
                 Automation::AutomationProperties::SetName(row,found->label);
                 ToolTipService::SetToolTip(row,winrt::box_value(found->label));
-                row.Padding({0,0,0,0});row.Margin({2,2,2,2});row.MinWidth(28);row.MinHeight(28);
+                row.Padding({0,0,0,0});row.Margin({2,2,2,2});row.MinWidth(32);row.MinHeight(32);
                 if(!row.Tag())row.DragStarting([this,alive](auto const& sender,auto const& args){
                     if(alive.expired())return;auto id=winrt::unbox_value<winrt::hstring>(sender.template as<FrameworkElement>().Tag());
                     if(previews.contains(id))CaptureDrag(args,previews.at(id),id);

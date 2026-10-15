@@ -82,7 +82,7 @@ struct NativeNavigationToolbar {
             auto button=renderer->rows.at(state.id).button;renderer->panel.Children().Clear();button.IsEnabled(true);
             paletteRenderers[item.id]=renderer;return button;
         }
-        auto spacer=Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="28" Height="28" BorderThickness="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" CornerRadius="4"><SymbolIcon Symbol="More"/></Border>)").as<Border>();return spacer;
+        auto spacer=Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="32" Height="32" BorderThickness="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" CornerRadius="4"><SymbolIcon Symbol="More"/></Border>)").as<Border>();return spacer;
     }
     void UpdatePalette(std::vector<PinnedExtensionButtons::State> const& next) {
         paletteState=next;
