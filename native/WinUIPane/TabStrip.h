@@ -1569,7 +1569,9 @@ struct NativeTabStrip {
         // Tabs sit on the strip's bottom edge, so align the controls with them
         // rather than with the strip's centre.
         header.VerticalAlignment(VerticalAlignment::Bottom);
-        allTabs.button.Margin({0, 0, 4, 0});
+        // TabView leaves about 6.5 DIP after its header; a negative margin takes
+        // the chevron-to-first-tab distance to Dia's (centre to tab edge 20.5).
+        allTabs.button.Margin({0, 0, -2, 0});
         header.Children().Append(allTabs.button);
         header.Children().Append(groupsButton.button);
         if (leading) header.Children().InsertAt(0, leading);
