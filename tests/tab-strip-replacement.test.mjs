@@ -166,7 +166,10 @@ test("the retained Firefox toolbar hides only while the native navigation row is
   pane.attached = true;
   pane.addressToolbar = {active: true, navigation: true};
   pane.updateToolbarHidden();
-  assert.equal(hidden(), false, "off by default");
+  assert.equal(hidden(), true, "on by default");
+  f.prefs.set(pane.hideToolbarPref, false);
+  pane.updateToolbarHidden();
+  assert.equal(hidden(), false, "opt-out keeps the toolbar");
   f.prefs.set(pane.hideToolbarPref, true);
   pane.updateToolbarHidden();
   assert.equal(hidden(), true);

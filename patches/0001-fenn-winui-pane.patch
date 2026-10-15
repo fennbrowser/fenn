@@ -13,7 +13,7 @@ index 934bad0d61f..81cd6e7ab6b 100644
 +        CONFIG["MOZ_BRANDING_DIRECTORY"],
      )
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 4f50c25976a..56ef87e5eb7 100644
+index 4f50c25976a..cc00180a35a 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -87,10 +87,10 @@ index 4f50c25976a..56ef87e5eb7 100644
 +pref("fenn.winui.address.toolbar.enabled", false);
 +pref("fenn.winui.navigation.toolbar.enabled", true);
 +// Hide Firefox's retained toolbar below the native navigation row while that row
-+// is active. Off by default: controls the row does not yet host (for example
-+// unplaced items and some extensions) are reachable only through the toolbar.
-+// Customization mode and fullscreen show it again.
-+pref("fenn.winui.navigation.hideFirefoxToolbar", false);
++// is active. Controls the row does not yet host (for example
++// unplaced items and some extensions) are reachable only in customization mode,
++// which, like fullscreen, shows the toolbar again.
++pref("fenn.winui.navigation.hideFirefoxToolbar", true);
 +// Show the native address in private windows. False: private windows use
 +// Firefox's own URL bar.
 +pref("fenn.winui.address.private", true);
@@ -21733,7 +21733,7 @@ index 00000000000..96f7a7b2347
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..24fd6285673
+index 00000000000..ed551ae2e6e
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,2185 @@
@@ -21978,7 +21978,7 @@ index 00000000000..24fd6285673
 +  updateToolbarHidden() {
 +    const toolbar = this.addressToolbar;
 +    this.setToolbarHidden(
-+      Services.prefs.getBoolPref(this.hideToolbarPref, false) &&
++      Services.prefs.getBoolPref(this.hideToolbarPref, true) &&
 +      !!toolbar?.active && toolbar.navigation && this.attached &&
 +      !window.fullScreen && !document.fullscreenElement &&
 +      !document.documentElement.hasAttribute("customizing"));
