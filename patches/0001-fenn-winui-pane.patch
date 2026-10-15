@@ -13,7 +13,7 @@ index 934bad0d61f..81cd6e7ab6b 100644
 +        CONFIG["MOZ_BRANDING_DIRECTORY"],
      )
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 4f50c25976a..9390f79e5c3 100644
+index 4f50c25976a..37e7d7a6021 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -56,7 +56,7 @@ index 4f50c25976a..9390f79e5c3 100644
 +// Fenn (firefox-winui): no Start Menu Private Browsing shortcut is created.
 +pref("browser.privacySegmentation.createdShortcut", true);
  
-@@ -3872,2 +3877,50 @@ pref("distribution.mozillaonline.ignore", true);
+@@ -3872,2 +3877,54 @@ pref("distribution.mozillaonline.ignore", true);
  
 +// The native tab strip is on by default in every lane (unpackaged launcher and
 +// MSIX alike); turn it off to fall back to Firefox's own UI. Firefox keeps its
@@ -93,6 +93,10 @@ index 4f50c25976a..9390f79e5c3 100644
 +pref("fenn.winui.navigation.hideFirefoxToolbar", true);
 +// Native product menu button (logo, top left of the navigation row).
 +pref("fenn.winui.productmenu.enabled", false);
++// The window backdrop shows around the content area, as in Edge and Dia. Mica Alt
++// (TABBEDWINDOW) matches the strip and toolbar islands' system backdrop.
++pref("widget.windows.mica", true);
++pref("widget.windows.mica.toplevel-backdrop", 3);
 +// Show the native address in private windows. False: private windows use
 +// Firefox's own URL bar.
 +pref("fenn.winui.address.private", true);
@@ -21945,10 +21949,10 @@ index 00000000000..9f282df768b
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.css b/browser/base/content/WinUIAddressToolbar.css
 new file mode 100644
-index 00000000000..2517cf26eac
+index 00000000000..23057b35fa9
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.css
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,33 @@
 +#winui-address-focus { display: none; }
 +#winui-navigation-toolbar:not([hidden]) {
 +  display: block;
@@ -21970,6 +21974,18 @@ index 00000000000..2517cf26eac
 +}
 +
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
++
++/* With the native navigation row active, the window backdrop frames the page:
++   the content area is inset from the window edges and rounded, as in Edge and
++   Dia. Fullscreen and DOM fullscreen keep the full-bleed layout. */
++:root[winui-address-active]:not([inDOMFullscreen], [fullscreenNavToolboxHidden]) #browser {
++  padding: 0 var(--winui-content-frame, 8px) var(--winui-content-frame, 8px);
++  background-color: transparent;
++}
++:root[winui-address-active]:not([inDOMFullscreen], [fullscreenNavToolboxHidden]) #tabbrowser-tabbox {
++  border-radius: var(--winui-content-radius, 8px);
++  overflow: clip;
++}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
 index 00000000000..ed551ae2e6e
