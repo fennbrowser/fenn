@@ -11,6 +11,7 @@
 #include "ToolbarDragPreview.h"
 #include "HistoryMenu.h"
 #include "ProductMenu.h"
+#include "ToolbarMetrics.h"
 
 // WinUI presentation only. Firefox owns eligibility, labels and commands.
 struct NativeNavigationToolbar {
@@ -51,12 +52,14 @@ struct NativeNavigationToolbar {
     static Button CreateButton(size_t i,Microsoft::UI::Xaml::Controls::Symbol symbol) {
         using namespace Microsoft::UI::Xaml;using namespace Microsoft::UI::Xaml::Controls;
         auto button = Markup::XamlReader::Load(
-            LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" Width="32" Height="32" MinWidth="0" MinHeight="0" Padding="0"/>)").as<Button>();
+            LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" MinWidth="0" MinHeight="0" Padding="0"/>)").as<Button>();
+        button.Width(ToolbarMetrics::kButton);
+        button.Height(ToolbarMetrics::kButton);
         SymbolIcon icon(symbol);
         // Firefox-like density with stock icons and generous button targets.
         Viewbox iconHost;
-        iconHost.Width(16);
-        iconHost.Height(16);
+        iconHost.Width(ToolbarMetrics::kIcon);
+        iconHost.Height(ToolbarMetrics::kIcon);
         iconHost.Child(icon);
         if (i == 6) {
             iconHost.Child(Markup::XamlReader::Load(
@@ -79,7 +82,7 @@ struct NativeNavigationToolbar {
             auto button=renderer->rows.at(state.id).button;renderer->panel.Children().Clear();button.IsEnabled(true);
             paletteRenderers[item.id]=renderer;return button;
         }
-        auto spacer=Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="32" Height="32" BorderThickness="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" CornerRadius="4"><SymbolIcon Symbol="More"/></Border>)").as<Border>();return spacer;
+        auto spacer=Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="28" Height="28" BorderThickness="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" CornerRadius="4"><SymbolIcon Symbol="More"/></Border>)").as<Border>();return spacer;
     }
     void UpdatePalette(std::vector<PinnedExtensionButtons::State> const& next) {
         paletteState=next;
@@ -105,9 +108,14 @@ struct NativeNavigationToolbar {
             if(i==8) {
                 // Firefox owns the percentage; XAML supplies a persistent outline and a filled pie.
                 // Badge placement is relative to the button interior, independent of the progress graphic.
-                Grid contents;contents.Width(28);contents.Height(28);downloadIcon=button.Content().as<Viewbox>();button.Content(nullptr);downloadIcon.HorizontalAlignment(HorizontalAlignment::Center);downloadIcon.VerticalAlignment(VerticalAlignment::Center);contents.Children().Append(downloadIcon);
+                Grid contents;contents.Width(ToolbarMetrics::kButton);contents.Height(ToolbarMetrics::kButton);downloadIcon=button.Content().as<Viewbox>();button.Content(nullptr);downloadIcon.HorizontalAlignment(HorizontalAlignment::Center);downloadIcon.VerticalAlignment(VerticalAlignment::Center);contents.Children().Append(downloadIcon);
                 downloadProgress=Markup::XamlReader::Load(LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="16" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"><Path Fill="{ThemeResource TextFillColorPrimaryBrush}"><Path.Data><PathGeometry><PathFigure StartPoint="8,8" IsClosed="True"><LineSegment Point="8,1.5"/><ArcSegment Point="8,1.5" Size="6.5,6.5" SweepDirection="Clockwise"/><ArcSegment Point="8,1.5" Size="6.5,6.5" SweepDirection="Clockwise"/></PathFigure></PathGeometry></Path.Data></Path><Ellipse Width="16" Height="16" StrokeThickness="1" Stroke="{ThemeResource TextFillColorPrimaryBrush}"/></Grid>)").as<Grid>();contents.Children().Append(downloadProgress);
                 downloadPie=downloadProgress.Children().GetAt(0).as<Shapes::Path>();
+                // The ring geometry is drawn for a 16-DIP icon; scale it to the toolbar icon size.
+                downloadProgress.RenderTransformOrigin({0.5f,0.5f});
+                Media::ScaleTransform ringScale;
+                ringScale.ScaleX(ToolbarMetrics::kIcon/16.0);ringScale.ScaleY(ToolbarMetrics::kIcon/16.0);
+                downloadProgress.RenderTransform(ringScale);
                 auto segments=downloadPie.Data().as<Media::PathGeometry>().Figures().GetAt(0).Segments();
                 for(size_t j=0;j<downloadArcs.size();j++)downloadArcs[j]=segments.GetAt(uint32_t(j+1)).as<Media::ArcSegment>();
                 const wchar_t* brushes[]={L"SystemFillColorAttentionBrush",L"SystemFillColorCautionBrush",L"SystemFillColorCriticalBrush"};
@@ -362,7 +370,7 @@ struct NativeNavigationToolbar {
             if(visible && i+1<desired.size() && child!=address && desired[i+1]!=address && !spring) {
                 bool nextSpring=false;
                 for(auto const& [id,grid]:spacers)if(desired[i+1]==grid){nextSpring=true;break;}
-                if(!nextSpring)column(GridLengthHelper::FromPixels(4));
+                if(!nextSpring)column(GridLengthHelper::FromPixels(ToolbarMetrics::kGap));
             }
         }
         if(visible)column(GridLengthHelper::FromPixels(8));

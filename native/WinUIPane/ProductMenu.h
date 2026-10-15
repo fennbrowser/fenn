@@ -4,6 +4,7 @@
 #include <set>
 #include <string>
 #include "JsonValidation.h"
+#include "ToolbarMetrics.h"
 
 // WinUI presentation only. Firefox owns the menu's contents, state and every
 // command; this validates the bounded model and reports an opaque item id.
@@ -86,10 +87,12 @@ struct NativeProductMenu {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         button = Markup::XamlReader::Load(
-            LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" Width="32" Height="32" MinWidth="0" MinHeight="0" Padding="0"/>)").as<Button>();
+            LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" MinWidth="0" MinHeight="0" Padding="0"/>)").as<Button>();
+        button.Width(ToolbarMetrics::kButton);
+        button.Height(ToolbarMetrics::kButton);
         Viewbox host;
-        host.Width(16);
-        host.Height(16);
+        host.Width(ToolbarMetrics::kIcon);
+        host.Height(ToolbarMetrics::kIcon);
         host.Child(SymbolIcon(Symbol::GlobalNavigationButton));
         button.Content(host);
         button.VerticalAlignment(VerticalAlignment::Center);
