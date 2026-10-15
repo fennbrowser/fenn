@@ -132,33 +132,18 @@ struct NativeTabStrip {
     std::map<uint32_t, Presentation> presentation;
     TabGroupsButton groupsButton;
     AllTabsButton allTabs;
-    // Left of the first tab: an optional control owned by another surface
-    // (the product menu button), then the retained groups button.
+    // Left of the first tab: an optional control owned by another surface (the
+    // product menu button), then the list-all-tabs button and the groups button.
     Controls::StackPanel header{nullptr};
     UIElement leading{nullptr};
-    // The header is the groups button alone until another surface supplies a
-    // leading control; the panel exists only while one is attached.
     void SetLeadingControl(UIElement const& control) {
         if (leading == control) return;
+        if (leading && header) {
+            uint32_t index{};
+            if (header.Children().IndexOf(leading, index)) header.Children().RemoveAt(index);
+        }
         leading = control;
-        if (!view) return;
-        if (!leading) {
-            if (header) {
-                header.Children().Clear();
-                header = nullptr;
-            }
-            view.TabStripHeader(groupsButton.button);
-            return;
-        }
-        if (!header) {
-            view.TabStripHeader(nullptr);
-            header = Controls::StackPanel();
-            header.Orientation(Controls::Orientation::Horizontal);
-            header.VerticalAlignment(VerticalAlignment::Center);
-            header.Children().Append(groupsButton.button);
-            view.TabStripHeader(header);
-        }
-        header.Children().InsertAt(0, leading);
+        if (leading && header) header.Children().InsertAt(0, leading);
     }
     InlineTabGroups inlineGroups;
     // The tab order of the last full Sync.
@@ -1579,7 +1564,14 @@ struct NativeTabStrip {
         groupTimer.Tick([this, timerLife](auto const&, auto const&) {
             if (!timerLife.expired() && IsDragging() && tickDragSession) tickDragSession();
         });
-        view.TabStripHeader(groupsButton.button);
+        header = Controls::StackPanel();
+        header.Orientation(Controls::Orientation::Horizontal);
+        header.VerticalAlignment(VerticalAlignment::Center);
+        allTabs.button.Margin({0, 0, 4, 0});
+        header.Children().Append(allTabs.button);
+        header.Children().Append(groupsButton.button);
+        if (leading) header.Children().InsertAt(0, leading);
+        view.TabStripHeader(header);
         allTabs.button.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (!alive.expired()) OpenAllTabs();
         });

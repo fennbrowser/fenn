@@ -242,7 +242,7 @@ struct NativeWindowDrag {
     }
     void Open(HWND hwnd, NativeTabStrip* value) {
         owner = hwnd; strip = value;
-        windowCaption.Open(hwnd, strip->root, strip->allTabs.button, AllTabsButton::kWidth);
+        windowCaption.Open(hwnd, strip->root);
         // Caption buttons activate an inactive window on press; a XAML Button
         // otherwise waits for its release. The Button handles Pressed itself.
         strip->allTabs.button.AddHandler(UIElement::PointerPressedEvent(),

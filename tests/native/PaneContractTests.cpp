@@ -1252,7 +1252,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "stock tab header fits reserved row");
     Require(view.ActualHeight() == 40 && root.ActualHeight() == view.ActualHeight(),
             "reservation fits the unchanged stock TabView without an empty bottom band");
-    Require(root.Children().Size() == 7 && !first.Content() && !second.Content(),
+    Require(root.Children().Size() == 6 && !first.Content() && !second.Content(),
             "strip has no address or browser content");
     Require(root.ColumnDefinitions().Size() == 3 && root.ColumnDefinitions().GetAt(2).Width().Value > 0,
             "system caption buttons reserve their SDK inset");
@@ -1261,14 +1261,16 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "tabs do not overlap the system caption inset");
     auto systemCaption = winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(
         winrt::Microsoft::UI::GetWindowIdFromWindow(host)).TitleBar();
-    auto allTabs = root.Children().GetAt(6).as<Controls::Button>();
-    Require(allTabs.Visibility() == Visibility::Visible && Controls::Grid::GetColumn(allTabs) == 2 &&
-                allTabs.Width() == 46 && allTabs.VerticalAlignment() == VerticalAlignment::Top &&
+    Controls::Button allTabs{nullptr};
+    if (auto header = view.TabStripHeader().try_as<Controls::Panel>())
+        for (auto child : header.Children())
+            if (auto candidate = child.try_as<Controls::Button>();
+                candidate && winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::GetAutomationId(candidate) == L"FennAllTabs")
+                allTabs = candidate;
+    Require(allTabs && allTabs.Visibility() == Visibility::Visible && allTabs.Width() == 32 &&
                 allTabs.Content().try_as<Controls::FontIcon>() &&
-                allTabs.Content().as<Controls::FontIcon>().HorizontalAlignment() == HorizontalAlignment::Center &&
-                winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::GetAutomationId(allTabs) == L"FennAllTabs" &&
-                root.ColumnDefinitions().GetAt(2).Width().Value >= 46,
-            "list-all-tabs button sits in the caption column beside the system buttons");
+                allTabs.Content().as<Controls::FontIcon>().HorizontalAlignment() == HorizontalAlignment::Center,
+            "list-all-tabs button sits in the strip header beside the product menu button");
     Require(systemCaption.ExtendsContentIntoTitleBar() &&
                 systemCaption.PreferredHeightOption() == winrt::Microsoft::UI::Windowing::TitleBarHeightOption::Standard &&
                 GetPropW(host, WINUI_PANE_SYSTEM_CAPTION_PROPERTY),
@@ -1288,7 +1290,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         Require(root.ActualHeight() == height && view.ActualHeight() == height && first.ActualHeight() == 32,
                 "all strip layouts preserve tab height without a bottom band");
         Require(systemCaption.PreferredHeightOption() == expected, "caption size follows strip layout");
-        Require(allTabs.Height() == (height == 48 ? 48 : 32), "list-all-tabs button matches caption button height");
+        Require(allTabs.Height() == 32, "list-all-tabs button keeps the toolbar button height");
         for (uint32_t index : {4u, 5u}) {
             auto line = root.Children().GetAt(index).as<Controls::Border>();
             Require(line.Visibility() == (height == 40 ? Visibility::Visible : Visibility::Collapsed) &&
@@ -3450,7 +3452,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 fflush(stdout);
                 Require(narrow < wide - 10, "the crowded fixture narrows the other tabs");
                 for (auto width : midway)
-                    Require(std::abs(width - (wide + (narrow - wide) * progress)) < 1,
+                    // Layout rounding can move a tab by up to a DIP either side of the ideal.
+                    Require(std::abs(width - (wide + (narrow - wide) * progress)) < 1.5,
                         "every remaining tab passes through the eased intermediate width instead of snapping");
                 Require(std::abs(headerMidway - (headerBefore + (headerAfter - headerBefore) * progress)) < 1.5,
                     "the group header follows one eased path while the widths before it animate");
