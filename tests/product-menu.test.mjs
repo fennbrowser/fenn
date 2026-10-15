@@ -12,6 +12,7 @@ const LABELS = {
   "toolbar-context-menu-bookmarks-toolbar-on-new-tab-2": "Only Show on New Tab",
   "toolbar-context-menu-bookmarks-toolbar-never-show-2": "Never Show",
   "library-bookmarks-menu": "Manage Bookmarks", "appmenuitem-settings": "Settings",
+  "toolbar-context-menu-view-customize-toolbar-2": "Customize Toolbar…",
   "menu-file-close-window": "Close Window", "appmenuitem-exit2": "Exit",
   "appmenu-menu-button-closed2": "Fenn",
 };
@@ -66,7 +67,7 @@ test("the model is a bounded cascading menu with History and Bookmarks as submen
   const top = model.items.filter(item => item.kind !== "separator").map(item => [item.id, item.kind]);
   assert.deepEqual(top, [["new-tab", "item"], ["new-window", "item"], ["new-private-window", "item"],
     ["history", "submenu"], ["downloads", "item"], ["bookmarks", "submenu"], ["settings", "item"],
-    ["close-window", "item"], ["quit", "item"]]);
+    ["customize-toolbar", "item"], ["close-window", "item"], ["quit", "item"]]);
   const bookmarks = model.items.find(item => item.id === "bookmarks");
   const toolbar = bookmarks.items.find(item => item.id === "bookmarks-toolbar");
   assert.equal(toolbar.kind, "submenu");
@@ -135,6 +136,13 @@ test("submenu parents, unknown, malformed and stale ids are refused", () => {
     "bookmarks-toolbar-sometimes"]) {
     assert.equal(f.menu.execute(id, {}, {}), 2, String(id));
   }
+  assert.deepEqual(f.calls, []);
+});
+
+test("the customize item is native-only and never runs a Firefox command", () => {
+  const f = fixture();
+  assert.equal(f.menu.find("customize-toolbar").kind, "item");
+  assert.equal(f.menu.execute("customize-toolbar", {}, {}), 2);
   assert.deepEqual(f.calls, []);
 });
 

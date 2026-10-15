@@ -159,6 +159,17 @@ test("restoring Gecko widget focus does not reenter an already owned native fiel
   assert.ok(f.calls.some(c=>c[0]==="host" && c[6]===true),"keyboard entry after a real blur still enters WinUI");
 });
 
+test("Firefox's customize command is disabled only while the native toolbar is active", () => {
+  const f = fixture();
+  const command = f.element();
+  f.elements.set("cmd_CustomizeToolbars", command);
+  assert.equal(f.toolbar.update(), true);
+  f.toolbar.activate();
+  assert.equal(command.getAttribute("disabled"), "true");
+  f.toolbar.restore();
+  assert.equal(command.hasAttribute("disabled"), false);
+});
+
 function navigationFixture() {
   const f = fixture();
   f.prefs.set("fenn.winui.address.toolbar.enabled", false);

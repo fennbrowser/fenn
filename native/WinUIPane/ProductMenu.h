@@ -25,6 +25,8 @@ struct NativeProductMenu {
     Object model;
     bool enabled{};
     std::function<void(wchar_t const*, uint32_t, Button const&)> dispatch;
+    // Items the native toolbar handles itself instead of reporting to Firefox.
+    std::function<void()> customize;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
     static bool ValidId(winrt::hstring const& id) {
@@ -159,7 +161,12 @@ struct NativeProductMenu {
             const bool checkable = entry.HasKey(L"checked");
             const bool checked = entry.GetNamedBoolean(L"checked", false);
             auto invoke = [this, id, alive = std::weak_ptr<int>(lifetime)] {
-                if (alive.expired() || !dispatch || !enabled) return;
+                if (alive.expired() || !enabled) return;
+                if (id == L"customize-toolbar") {
+                    if (customize) customize();
+                    return;
+                }
+                if (!dispatch) return;
                 dispatch((std::wstring(L"product:") + id.c_str()).c_str(), Modifiers(), button);
             };
             MenuFlyoutItemBase base{nullptr};

@@ -99,6 +99,7 @@ struct NativeNavigationToolbar {
         customization.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         pinned.activate = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
         productMenu.dispatch = [this](auto command, auto modifiers, auto const& button) { if (activate) activate(command, modifiers, button); };
+        productMenu.customize = [this] { if (visible && !customization.editing) customization.Open(buttons[0]); };
         const Symbol symbols[] = {Symbol::Back, Symbol::Forward, Symbol::Refresh, Symbol::Contact, Symbol::Library, Symbol::More, Symbol::Forward, Symbol::Home, Symbol::Download, Symbol::Clock, Symbol::OutlineStar, Symbol::Delete};
         const wchar_t* names[] = {L"Back", L"Forward", L"Reload", L"Account", L"Extensions", L"Application menu", L"More tools", L"Home", L"Downloads", L"History", L"Bookmarks", L"Clear private session"};
         const wchar_t* ids[] = {L"FennBack", L"FennForward", L"FennReload", L"FennProfile", L"FennExtensions", L"FennAppMenu", L"FennOverflow", L"FennHome", L"FennDownloads", L"FennHistory", L"FennBookmarks", L"FennResetPrivate"};
@@ -207,6 +208,12 @@ struct NativeNavigationToolbar {
         customization.dragEnded=[this]{preview.Reset();};
         preview.arrange=[this](auto const& order,bool extra){Arrange(order,extra);};
         host.AllowDrop(true);
+        // Empty space and buttons without a menu of their own open the editor.
+        host.ContextRequested([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
+            if (alive.expired() || args.Handled() || !visible || customization.editing) return;
+            args.Handled(true);
+            customization.Open(buttons[0]);
+        });
         auto updatePreview=[this](auto const& args) {
             if(!customization.Accept(args)){preview.Reset();return false;}
             preview.Begin(host,ordered,dropSlots,customization.dragId,customization.dragRevision);

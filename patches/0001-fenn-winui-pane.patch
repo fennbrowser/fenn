@@ -18137,10 +18137,10 @@ index 00000000000..c2927f9a1dd
 +}
 diff --git a/browser/base/content/WinUIProductMenu.sys.mjs b/browser/base/content/WinUIProductMenu.sys.mjs
 new file mode 100644
-index 00000000000..9cbfa27bb7d
+index 00000000000..19392476dca
 --- /dev/null
 +++ b/browser/base/content/WinUIProductMenu.sys.mjs
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,181 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18256,6 +18256,8 @@ index 00000000000..9cbfa27bb7d
 +      ]),
 +      separator(),
 +      command("settings", "appmenuitem-settings"),
++      // Opened by the native editor itself; Firefox only supplies the label.
++      command("customize-toolbar", "toolbar-context-menu-view-customize-toolbar-2"),
 +      separator(),
 +      command("close-window", "menu-file-close-window", { shortcut: this.shortcut("key_closeWindow") }),
 +      command("quit", "appmenuitem-exit2", { shortcut: this.shortcut("key_quitApplication") }),
@@ -21473,10 +21475,10 @@ index 00000000000..380a3b8df73
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..292d141c673
+index 00000000000..6b67ab57957
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,350 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -21747,6 +21749,7 @@ index 00000000000..292d141c673
 +    const editorHadFocus = this.window.document.activeElement === this.input;
 +    this.active = true;
 +    this.window.document.documentElement.setAttribute("winui-address-active", "");
++    this.setFirefoxCustomizeMode(false);
 +    this.owner.updateToolbarHidden?.();
 +    this.input.setAttribute("aria-hidden", "true");
 +    this.switcher.setAttribute("aria-hidden", "true");
@@ -21783,6 +21786,7 @@ index 00000000000..292d141c673
 +    this.customization?.endEditor();
 +    this.row.hidden = true;
 +    this.window.document.documentElement.removeAttribute("winui-address-active");
++    this.setFirefoxCustomizeMode(true);
 +    this.owner.updateToolbarHidden?.();
 +    this.input.removeAttribute("aria-hidden");
 +    this.switcher.removeAttribute("aria-hidden");
@@ -21790,6 +21794,14 @@ index 00000000000..292d141c673
 +    this.owner.addressSession?.releaseNativePresentation();
 +    try { this.window.windowUtils.updateWinUIAddress(0, 0, 0, 0, false, false, false); } catch {}
 +    if (hadFocus) this.window.gURLBar.focus();
++  }
++  // The native editor is the only customization surface while it is active;
++  // the shared command disables every Firefox menu item that observes it.
++  setFirefoxCustomizeMode(enabled) {
++    const command = this.window.document.getElementById("cmd_CustomizeToolbars");
++    if (!command) return;
++    if (enabled) command.removeAttribute("disabled");
++    else command.setAttribute("disabled", "true");
 +  }
 +  bounds() {
 +    if (this.navigation) return this.row.getBoundingClientRect();
