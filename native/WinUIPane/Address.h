@@ -93,6 +93,27 @@ struct NativeAddress {
     }
     double revision{}, sequence{-1}, selectionId{};
     bool syncing{}, composing{}, observedComposing{}, focusWithin{};
+    // In the navigation row the field's embedded buttons stay hidden until the
+    // pointer is over the field, or keyboard focus or an open menu is within it.
+    bool hideEmbeddedControls{}, pointerOverField{};
+    Microsoft::UI::Xaml::Controls::Grid fieldHeader{nullptr};
+    bool FocusInsideField() const {
+        if (!fieldHeader || !fieldHeader.XamlRoot()) return false;
+        auto focused = Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(fieldHeader.XamlRoot()).try_as<winrt::Microsoft::UI::Xaml::DependencyObject>();
+        while (focused) {
+            if (focused == fieldHeader) return true;
+            focused = winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetParent(focused);
+        }
+        return false;
+    }
+    void UpdateEmbeddedControls() {
+        const bool reveal = !hideEmbeddedControls || pointerOverField || FocusInsideField() ||
+                            mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen();
+        for (auto const& element : {winrt::Microsoft::UI::Xaml::UIElement(omnibarLeft.panel), winrt::Microsoft::UI::Xaml::UIElement(omnibarRight.panel),
+                                    winrt::Microsoft::UI::Xaml::UIElement(mode.button), winrt::Microsoft::UI::Xaml::UIElement(mode.exit)}) {
+            element.Opacity(reveal ? 1.0 : 0.0);
+        }
+    }
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     ~NativeAddress() { lifetime.reset(); if (popup) popup.IsOpen(false); }
 
@@ -616,6 +637,32 @@ struct NativeAddress {
             }
         });
         root.Children().Append(header);
+        fieldHeader = header;
+        header.PointerEntered([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (alive.expired()) return;
+            pointerOverField = true;
+            UpdateEmbeddedControls();
+        });
+        for (auto leave : {&UIElement::PointerExitedEvent, &UIElement::PointerCanceledEvent}) {
+            header.AddHandler((*leave)(), winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
+                    if (alive.expired()) return;
+                    // Exited also bubbles from children as the pointer moves between them.
+                    auto point = args.GetCurrentPoint(fieldHeader).Position();
+                    if (point.X >= 0 && point.Y >= 0 && point.X < fieldHeader.ActualWidth() && point.Y < fieldHeader.ActualHeight()) return;
+                    pointerOverField = false;
+                    UpdateEmbeddedControls();
+                })), true);
+        }
+        header.GotFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) UpdateEmbeddedControls();
+        });
+        header.LostFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) UpdateEmbeddedControls();
+        });
+        mode.flyout.Closed([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) UpdateEmbeddedControls();
+        });
         // Flatten the unfocused/hover border; leave the stock focused accent
         // and thickness intact. High contrast keeps its system borders.
         field.Resources(Markup::XamlReader::Load(LR"(
@@ -623,10 +670,14 @@ struct NativeAddress {
                                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
                 <ResourceDictionary.ThemeDictionaries>
                     <ResourceDictionary x:Key="Default">
+                        <SolidColorBrush x:Key="TextControlBackground" Color="Transparent"/>
+                        <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent"/>
                         <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource ControlStrokeColorDefault}"/>
                         <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource ControlStrokeColorDefault}"/>
                     </ResourceDictionary>
                     <ResourceDictionary x:Key="Light">
+                        <SolidColorBrush x:Key="TextControlBackground" Color="Transparent"/>
+                        <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent"/>
                         <SolidColorBrush x:Key="TextControlBorderBrush" Color="{ThemeResource ControlStrokeColorDefault}"/>
                         <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource ControlStrokeColorDefault}"/>
                     </ResourceDictionary>
@@ -1081,6 +1132,8 @@ struct NativeAddress {
             omnibarRight.Apply(omnibarRightState, navigationToolbar);
             toolbarSurface.Visibility(navigationToolbar ? Visibility::Visible : Visibility::Collapsed);
             root.Margin(navigationToolbar ? Thickness{8, 4, 8, 4} : Thickness{0, 0, 0, 0});
+            hideEmbeddedControls = navigationToolbar;
+            UpdateEmbeddedControls();
         }
         if (!applyAddress) return L"";
         Edit();  // Observe text synchronously before an older snapshot can replace it.
