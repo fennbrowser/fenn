@@ -220,16 +220,34 @@ index b2b5db6040b..7306ccaf76d 100644
 +    content/browser/urlbar/UrlbarInputIdentity.mjs (../components/urlbar/content/UrlbarInputIdentity.mjs)
 +    content/browser/urlbar/UrlbarEditSession.mjs (../components/urlbar/content/UrlbarEditSession.mjs)
 diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
-index 76cab7f8e46..ac118274494 100644
+index 76cab7f8e46..8ae93f53085 100644
 --- a/browser/components/customizableui/CustomizableUI.sys.mjs
 +++ b/browser/components/customizableui/CustomizableUI.sys.mjs
-@@ -3072,2 +3072,5 @@ var CustomizableUIInternal = {
+@@ -359,4 +359,5 @@ var CustomizableUIInternal = {
+ 
++    // Fenn: no sidebar button, flexible spaces or vertical spacer by default,
++    // and the profile button at the far right after the extensions button.
+     let navbarPlacements = [
+-      lazy.sidebarRevampEnabled ? "sidebar-button" : null,
+       "back-button",
+@@ -367,6 +368,3 @@ var CustomizableUIInternal = {
+         : "home-button",
+-      "spring",
+-      "vertical-spacer",
+       "urlbar-container",
+-      "spring",
+       "downloads-button",
+@@ -374,2 +372,3 @@ var CustomizableUIInternal = {
+       lazy.ippEnabled ? "ipprotection-button" : null,
++      "unified-extensions-button",
+       "fxa-toolbar-menu-button",
+@@ -3072,2 +3071,5 @@ var CustomizableUIInternal = {
      }
 +    // A native toolbar activation retains the real widget command path, but
 +    // opens its view at the native button. Only adapter-registered events qualify.
 +    anchor = ownerWindow.gWinUIPane?.addressToolbar?.pinned?.events.get(aEvent) || anchor;
      ownerWindow.PanelUI.showSubView(aWidget.viewId, anchor, aEvent);
-@@ -7851,2 +7854,12 @@ class OverflowableToolbar {
+@@ -7851,2 +7853,12 @@ class OverflowableToolbar {
  
 +  #nativeOverflow = null;
 +
@@ -242,18 +260,18 @@ index 76cab7f8e46..ac118274494 100644
 +  }
 +
    /**
-@@ -7858,3 +7871,3 @@ class OverflowableToolbar {
+@@ -7858,3 +7870,3 @@ class OverflowableToolbar {
     */
 -  show(aEvent) {
 +  show(aEvent, nativeAnchor = null) {
      if (this.#defaultListPanel.state == "open") {
-@@ -7873,3 +7886,4 @@ class OverflowableToolbar {
+@@ -7873,3 +7885,4 @@ class OverflowableToolbar {
        });
 -      let anchor = this.#defaultListButton.icon;
 +      // A native activation supplies a per-call anchor; normal Firefox input keeps its own.
 +      let anchor = nativeAnchor || this.#defaultListButton.icon;
  
-@@ -8066,7 +8080,7 @@ class OverflowableToolbar {
+@@ -8066,7 +8079,7 @@ class OverflowableToolbar {
      let child = this.#target.lastElementChild;
 -    while (child && isOverflowing) {
 +    while (child && (isOverflowing || this.#nativeOverflow?.size)) {
@@ -264,15 +282,15 @@ index 76cab7f8e46..ac118274494 100644
 +      if ((isOverflowing || this.#nativeOverflow?.has(child.id)) && child.getAttribute("overflows") != "false") {
 +        this.#overflowedInfo.set(child.id, isOverflowing ? targetContentWidth : 0);
          let { width: childWidth } =
-@@ -8104,2 +8118,3 @@ class OverflowableToolbar {
+@@ -8104,2 +8117,3 @@ class OverflowableToolbar {
        child = prevChild;
 +      if (!isOverflowing && ![...this.#target.children].some(node => this.#nativeOverflow?.has(node.id) && node.getAttribute("overflows") != "false")) break;
        ({ isOverflowing, targetContentWidth } = await this.#getOverflowInfo());
-@@ -8227,2 +8242,3 @@ class OverflowableToolbar {
+@@ -8227,2 +8241,3 @@ class OverflowableToolbar {
        let [childID, minSize] = overflowedItemStack[i];
 +      if (!shouldMoveAllItems && this.#nativeOverflow?.has(childID)) continue;
  
-@@ -8350,4 +8366,12 @@ class OverflowableToolbar {
+@@ -8350,4 +8365,12 @@ class OverflowableToolbar {
  
 -    if (isOverflowing) {
 +    const needsNativeOverflow = this.#nativeOverflow?.size &&
