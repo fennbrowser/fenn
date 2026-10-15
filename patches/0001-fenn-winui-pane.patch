@@ -650,19 +650,21 @@ index be3252ae5f2..2fed4aa835b 100644
 +    gBrowser.selectedTab = contextTabs[0];
  
 diff --git a/browser/components/tabbrowser/content/tabgroup-menu.js b/browser/components/tabbrowser/content/tabgroup-menu.js
-index 1902d2d4088..b8abe05e5fa 100644
+index 1902d2d4088..2c603501ceb 100644
 --- a/browser/components/tabbrowser/content/tabgroup-menu.js
 +++ b/browser/components/tabbrowser/content/tabgroup-menu.js
-@@ -956,3 +956,3 @@
+@@ -911,2 +911,29 @@
  
--    openEditModal(group) {
-+    openEditModal(group, screenRect = null) {
-       this.activeGroup = group;
-@@ -965,5 +965,17 @@
- 
--      this.#panel.openPopup(group.firstChild, {
--        position: this.#panelPosition,
--      });
++    /**
++     * Opens the editor at an explicit screen rect, or at the group's label.
++     * A hidden Firefox tab row (the native strip replaces it) leaves the label
++     * without a frame, so the popup falls back to the native strip's rect.
++     */
++    #openPanel(group, screenRect = null) {
++      const label = group.firstChild;
++      if (!screenRect && !label?.getClientRects().length) {
++        screenRect = window.gWinUIPane?.groupMenuFallbackRect?.() ?? null;
++      }
 +      if (screenRect) {
 +        this.#panel.openPopupAtScreenRect(
 +          "after_start",
@@ -674,10 +676,31 @@ index 1902d2d4088..b8abe05e5fa 100644
 +          false
 +        );
 +      } else {
-+        this.#panel.openPopup(group.firstChild, {
++        this.#panel.openPopup(label, {
 +          position: this.#panelPosition,
 +        });
 +      }
++    }
++
+     openCreateModal(group) {
+@@ -920,5 +947,3 @@
+ 
+-      this.#panel.openPopup(group.firstChild, {
+-        position: this.#panelPosition,
+-      });
++      this.#openPanel(group);
+       if (!this.smartTabGroupsOptin) {
+@@ -956,3 +981,3 @@
+ 
+-    openEditModal(group) {
++    openEditModal(group, screenRect = null) {
+       this.activeGroup = group;
+@@ -965,5 +990,3 @@
+ 
+-      this.#panel.openPopup(group.firstChild, {
+-        position: this.#panelPosition,
+-      });
++      this.#openPanel(group, screenRect);
        document.getElementById("tabGroupEditor_moveGroupToNewWindow").disabled =
 diff --git a/browser/components/tabbrowser/content/tabgroup.mjs b/browser/components/tabbrowser/content/tabgroup.mjs
 index 3d25b8afa3b..39c7484036e 100644
@@ -21710,10 +21733,10 @@ index 00000000000..96f7a7b2347
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..99822706350
+index 00000000000..24fd6285673
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2175 @@
+@@ -0,0 +1,2185 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21930,6 +21953,16 @@ index 00000000000..99822706350
 +    if (root.hasAttribute("winui-replaces-tabs") !== active) {
 +      root.toggleAttribute("winui-replaces-tabs", active);
 +    }
++  },
++
++  // Screen CSS rect of the native strip's reserved row. Tab-group popups that
++  // would anchor to a Firefox label use it while the Firefox tab row is hidden.
++  groupMenuFallbackRect() {
++    if (!this.element || this.element.style.display === "none") return null;
++    const r = this.element.getBoundingClientRect();
++    if (!r.width || !r.height) return null;
++    return {x: window.mozInnerScreenX + r.x, y: window.mozInnerScreenY + r.y,
++            width: r.width, height: r.height};
 +  },
 +
 +  setToolbarHidden(hidden) {

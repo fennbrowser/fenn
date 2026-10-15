@@ -179,3 +179,12 @@ test("the retained Firefox toolbar hides only while the native navigation row is
   pane.updateToolbarHidden();
   assert.equal(hidden(), false, "customization shows the toolbar");
 });
+
+test("group popups anchor to the native strip when Firefox's label has no frame", () => {
+  const f = fixture(), {pane} = f;
+  f.context.window.mozInnerScreenX = 100;
+  f.context.window.mozInnerScreenY = 50;
+  assert.deepEqual({...pane.groupMenuFallbackRect()}, {x: 100, y: 50, width: 900, height: 40});
+  pane.element.style.display = "none";
+  assert.equal(pane.groupMenuFallbackRect(), null);
+});
