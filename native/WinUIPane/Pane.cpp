@@ -1636,6 +1636,7 @@ HRESULT WINAPI UpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept
             pane.addressSource = DesktopWindowXamlSource();
             pane.addressSource.Initialize(GetWindowIdFromWindow(hwnd));
             pane.address = std::make_unique<NativeAddress>(pane.shell);
+            pane.address->navigation->productMenu.updates->owner = hwnd;
             pane.WireAddress();
             pane.addressTakeFocus = pane.addressSource.TakeFocusRequested([&pane](auto const&, auto const&) {
                 pane.address->focusWithin = false;

@@ -7568,7 +7568,7 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..1a984f09f73 100644
+index 4f28e62c7b5..d9fb4b67079 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
 @@ -21,3 +21,3 @@ tabbrowser-tab-tooltip-container = { $containerName }
@@ -7609,7 +7609,7 @@ index 4f28e62c7b5..1a984f09f73 100644
 -tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. We’ll save your groups here so they’re easy to find later.
 +tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. Weâ€™ll save your groups here so theyâ€™re easy to find later.
  tab-groups-list-empty-button = Create a tab group
-@@ -520 +520,39 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,52 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -7649,6 +7649,19 @@ index 4f28e62c7b5..1a984f09f73 100644
 +
 +winui-history-open-firefox = Open full history menu
 +winui-history-empty = No recent history
++
++winui-update-check =
++    .label = Check for updates
++winui-update-title = { -brand-short-name } updates
++winui-update-checking = Checking for updates…
++winui-update-current = You’re up to date.
++winui-update-available-store = An update is available from Microsoft Store. Open the Store to install it. Save your work before closing the browser to apply an update.
++winui-update-available-feed = An update is available from this installation’s App Installer feed. Open the feed, then open the downloaded .appinstaller file if prompted. Save your work before closing the browser to apply an update.
++winui-update-unavailable = This installation has no supported update source. Install through Microsoft Store or an App Installer feed to enable update checks.
++winui-update-failed = Couldn’t check for updates or open the update source. Check your connection and try again.
++winui-update-open-store = Open Microsoft Store
++winui-update-open-feed = Open update feed
++winui-update-close = Close
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -18160,17 +18173,18 @@ index 00000000000..c2927f9a1dd
 +}
 diff --git a/browser/base/content/WinUIProductMenu.sys.mjs b/browser/base/content/WinUIProductMenu.sys.mjs
 new file mode 100644
-index 00000000000..19392476dca
+index 00000000000..e309ee62f41
 --- /dev/null
 +++ b/browser/base/content/WinUIProductMenu.sys.mjs
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,188 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +// Model and commands for the native product menu. Firefox owns what the menu
-+// offers and every command; native code renders this bounded model as a
-+// cascading MenuFlyout and reports an opaque item id back.
++// offers and its browser commands; native code renders this bounded model as a
++// cascading MenuFlyout and reports an opaque item id back. The native editor
++// and Windows package-update host use Firefox's labels but handle their own UI.
 +
 +export const PRODUCT_MENU_PREF = "fenn.winui.productmenu.enabled";
 +
@@ -18180,6 +18194,7 @@ index 00000000000..19392476dca
 +  "browser/menubar.ftl",
 +  "browser/toolbarContextMenu.ftl",
 +  "browser/browser.ftl",
++  "browser/tabbrowser.ftl",
 +];
 +
 +// Keep in step with the native validator in ProductMenu.h.
@@ -18281,6 +18296,8 @@ index 00000000000..19392476dca
 +      command("settings", "appmenuitem-settings"),
 +      // Opened by the native editor itself; Firefox only supplies the label.
 +      command("customize-toolbar", "toolbar-context-menu-view-customize-toolbar-2"),
++      // Windows owns package servicing; the native host handles this item.
++      command("check-updates", "winui-update-check"),
 +      separator(),
 +      command("close-window", "menu-file-close-window", { shortcut: this.shortcut("key_closeWindow") }),
 +      command("quit", "appmenuitem-exit2", { shortcut: this.shortcut("key_quitApplication") }),
@@ -18290,6 +18307,9 @@ index 00000000000..19392476dca
 +      label: this.label("appmenu-menu-button-closed2") || "Menu",
 +      tooltip: this.label("appmenu-menu-button-closed2", "tooltiptext"),
 +      items: tidy(items),
++      updateLabels: Object.fromEntries(["title", "checking", "current", "available-store",
++        "available-feed", "unavailable", "failed", "open-store", "open-feed", "close"]
++        .map(key => [key, this.label(`winui-update-${key}`, "value")])),
 +    };
 +  }
 +
@@ -18853,10 +18873,10 @@ index 00000000000..961c3b61a43
 +}
 diff --git a/browser/base/content/WinUIAddressSession.sys.mjs b/browser/base/content/WinUIAddressSession.sys.mjs
 new file mode 100644
-index 00000000000..380a3b8df73
+index 00000000000..0111c38b89c
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressSession.sys.mjs
-@@ -0,0 +1,2639 @@
+@@ -0,0 +1,2670 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18875,7 +18895,7 @@ index 00000000000..380a3b8df73
 +
 +function emptyTotals() {
 +  return { queries: 0, activations: 0, commands: 0, modes: 0, restarts: 0, replays: 0, inherited: 0,
-+    fallbackTotal: 0, fallbackReasons: {} };
++    fallbackTotal: 0, handoffs: 0, fallbackReasons: {} };
 +}
 +
 +function addTotals(into, from) {
@@ -18897,10 +18917,12 @@ index 00000000000..380a3b8df73
 +
 +/** Read totals into the readout: attempts, dropped actions, rates per 200 and the bar. */
 +function summarize(totals) {
-+  const attempts = totals.activations + totals.commands + totals.modes + totals.inherited + totals.fallbackTotal;
-+  const dropped = Math.max(0, totals.fallbackTotal - totals.replays);
++  const handoffs = totals.handoffs ?? 0;
++  const attempts = totals.activations + totals.commands + totals.modes + totals.inherited + totals.fallbackTotal - handoffs;
++  const dropped = Math.max(0, totals.fallbackTotal - totals.replays - handoffs);
 +  const per200 = n => (attempts ? Math.round((n / attempts) * 200 * 100) / 100 : null);
-+  const errorFallbacks = totals.fallbackReasons.error ?? 0;
++  const errorFallbacks = Object.entries(totals.fallbackReasons)
++    .reduce((sum, [reason, count]) => sum + (reason === "error" || reason.endsWith("-error") ? count : 0), 0);
 +  return {
 +    queries: totals.queries,
 +    activations: totals.activations,
@@ -18911,6 +18933,7 @@ index 00000000000..380a3b8df73
 +    inherited: totals.inherited,
 +    attempts,
 +    fallbackTotal: totals.fallbackTotal,
++    handoffs,
 +    dropped,
 +    fallbackReasons: { ...totals.fallbackReasons },
 +    fallbacksPer200: per200(totals.fallbackTotal),
@@ -19544,7 +19567,7 @@ index 00000000000..380a3b8df73
 +      // Its input event may already have canceled the previous native query.
 +      const text = field.value, start = field.selectionStart, end = field.selectionEnd;
 +      if (text.length > 32768) {
-+        this.window.gWinUIPane.addressFallback();
++        this.window.gWinUIPane.addressFallback("clipboard-text-too-long");
 +        return 1;
 +      }
 +      // Preserve paste-specific provider/remote-suggestion policy too.
@@ -19982,7 +20005,7 @@ index 00000000000..380a3b8df73
 +        active.browser !== this.window.gBrowser.selectedBrowser || active.page !== active.browser.currentURI.spec ||
 +        document !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        helpSignature !== JSON.stringify([result.payload.descriptionLearnMoreTopic, result.payload.descriptionL10n])) return;
-+    if (help.unsupported) { this.window.gWinUIPane.addressFallback(); return; }
++    if (help.unsupported) { this.window.gWinUIPane.addressFallback("unsupported-tip-description"); return; }
 +    if ([help.before, help.after, help.label].some(value => typeof value !== "string" || value.length > 1024)) return;
 +    if ((help.before + help.label + help.after).length > 1024) return;
 +    row.helpLink = {...help, id:`${row.id}:help`, document, helpSignature, enabled:true,
@@ -20422,6 +20445,7 @@ index 00000000000..380a3b8df73
 +         active.rows[rowIndex].copyDocument !== active.browser.browsingContext.currentWindowGlobal?.innerWindowId)) return "stale";
 +    if (!this.canActivate(result)) {
 +      this.input.focus();
++      WinUIAddressSession.recordFallback("retained-not-activatable", { privateWindow: this.windowPrivate });
 +      return "firefox-fallback";
 +    }
 +    const event = new this.window.KeyboardEvent("keydown", {
@@ -20514,12 +20538,30 @@ index 00000000000..380a3b8df73
 +    visibilityErrors: [],
 +    fallbacks: [],
 +    fallbackTotal: 0,
++    handoffs: 0,
 +    fallbackReasons: {},
 +  };
 +
 +  static #note(list, value) {
 +    list.push(value);
 +    if (list.length > 200) list.splice(0, list.length - 200);
++  }
++
++  // Shared by editor failures and direct surface handoffs, including failures
++  // before a session exists. Reasons are fixed code labels, never browser data.
++  static recordFallback(reason, { privateWindow = true, handoff = false } = {}) {
++    const S = WinUIAddressSession;
++    if (typeof reason !== "string" || !/^[a-z][a-z0-9-]{0,79}$/.test(reason)) {
++      reason = "unspecified-handoff";
++    }
++    S.#note(S.counters.fallbacks, reason);
++    S.counters.fallbackTotal++;
++    S.counters.fallbackReasons[reason] = (S.counters.fallbackReasons[reason] ?? 0) + 1;
++    if (handoff) S.counters.handoffs++;
++    if (!privateWindow) {
++      S.#stage("fallbackTotal", reason);
++      if (handoff) S.#stage("handoffs");
++    }
 +  }
 +
 +  // Aggregate counts from non-private windows not yet written to the profile.
@@ -20994,11 +21036,24 @@ index 00000000000..380a3b8df73
 +      return this.legacyActivateGlobalAction(request);
 +    }
 +    const outcome = this.#activateResult(active, result, intent, { pickedActionKey: action.key });
-+    if (outcome !== "activated") this.window.gWinUIPane.addressFallback();
++    if (outcome !== "activated") this.window.gWinUIPane.addressFallback(null);
 +    return outcome;
 +  }
 +
 +  activate(revision, id, intent = {}) {
++    // firefox-fallback already carries a detailed recorded editor failure.
++    // Other refused activations also hand the surface back in the dispatcher.
++    const outcome = this.activateWithReplay(revision, id, intent);
++    if (outcome !== "activated" && outcome !== "firefox-fallback") {
++      WinUIAddressSession.recordFallback(
++        outcome === "stale" ? "activation-stale" :
++          outcome === "invalid-intent" ? "activation-invalid-intent" : "activation-rejected",
++        { privateWindow: this.windowPrivate });
++    }
++    return outcome;
++  }
++
++  activateWithReplay(revision, id, intent = {}) {
 +    const active = this.active;
 +    if (active?.source !== "independent") return this.legacyActivate(revision, id, intent);
 +    const outcome = this.#activateIndependent(active, revision, id, intent);
@@ -21169,10 +21224,10 @@ index 00000000000..380a3b8df73
 +      this.active = null;
 +      this.revision++;
 +      const outcome = editor.commitAcknowledgedNavigation(write.token, event, options);
-+      this.#count("activations");
++      if (outcome?.attempted) this.#count("activations");
 +      if (outcome?.reverted || !outcome?.attempted) this.input.handleRevert?.();
 +      this.input.view.close({ elementPicked: true });
-+      return outcome?.attempted ? "activated" : "firefox-fallback";
++      return outcome?.attempted ? "activated" : this.#fallback("navigation-not-attempted");
 +    } catch (error) {
 +      console.error("Independent address activation failed", error);
 +      return this.#fallback("error");
@@ -21236,7 +21291,7 @@ index 00000000000..380a3b8df73
 +        })
 +        .catch(error => {
 +          console.error("Independent address mode query failed", error);
-+          this.window.gWinUIPane.addressFallback();
++          this.window.gWinUIPane.addressFallback("mode-query-error");
 +        });
 +      return "activated";
 +    } catch (error) {
@@ -21296,10 +21351,10 @@ index 00000000000..380a3b8df73
 +      this.active = null;
 +      this.revision++;
 +      const outcome = editor.commitOneOffExternalNavigation(revert.token);
-+      this.#count("activations");
++      if (outcome?.attempted) this.#count("activations");
 +      this.input.handleRevert?.();
 +      this.input.view.close({ elementPicked: true });
-+      return outcome?.attempted ? "activated" : "firefox-fallback";
++      return outcome?.attempted ? "activated" : this.#fallback("external-navigation-not-attempted");
 +    } catch (error) {
 +      console.error("Independent address external activation failed", error);
 +      return this.#fallback("error");
@@ -21339,7 +21394,7 @@ index 00000000000..380a3b8df73
 +    row.helpLink = null;
 +    this.changed();
 +    const outcome = plan ? this.#activateResult(active, result, intent, plan) : this.#fallback("unsupported-action");
-+    if (outcome !== "activated") this.window.gWinUIPane.addressFallback();
++    if (outcome !== "activated") this.window.gWinUIPane.addressFallback(null);
 +    return outcome === "activated" ? "activated" : "firefox-fallback";
 +  }
 +
@@ -21348,7 +21403,7 @@ index 00000000000..380a3b8df73
 +  invokeResultMenu(result, action, event) {
 +    const active = this.active;
 +    if (active?.source !== "independent" || !this.editor) {
-+      this.window.gWinUIPane.addressFallback();
++      this.window.gWinUIPane.addressFallback("result-menu-no-editor");
 +      return;
 +    }
 +    const local =
@@ -21376,7 +21431,7 @@ index 00000000000..380a3b8df73
 +    const outcome = plan
 +      ? this.#activateResult(active, result, {}, { ...plan, event })
 +      : this.#fallback("unsupported-menu-action");
-+    if (outcome !== "activated") this.window.gWinUIPane.addressFallback();
++    if (outcome !== "activated") this.window.gWinUIPane.addressFallback(null);
 +  }
 +
 +  // Provider restarts arrive as editor proposals; the host writes the value,
@@ -21415,7 +21470,7 @@ index 00000000000..380a3b8df73
 +      proposal ? "restart-current" : "restart-stale"
 +    );
 +    if (!proposal) {
-+      if (request.search !== null || request.unsupported) this.window.gWinUIPane.addressFallback();
++      if (request.search !== null || request.unsupported) this.window.gWinUIPane.addressFallback("restart-no-proposal");
 +      return;
 +    }
 +    const field = this.input.inputField;
@@ -21456,16 +21511,12 @@ index 00000000000..380a3b8df73
 +    if (!context) {
 +      // The old rows must not stay on screen as if the provider's restart ran.
 +      this.tipQueryRestart = null;
-+      this.window.gWinUIPane.addressFallback();
++      this.window.gWinUIPane.addressFallback("restart-not-acknowledged");
 +    }
 +  }
 +
 +  #fallback(reason) {
-+    const counters = WinUIAddressSession.counters;
-+    WinUIAddressSession.#note(counters.fallbacks, reason);
-+    counters.fallbackTotal++;
-+    counters.fallbackReasons[reason] = (counters.fallbackReasons[reason] ?? 0) + 1;
-+    if (!this.windowPrivate) WinUIAddressSession.#stage("fallbackTotal", reason);
++    WinUIAddressSession.recordFallback(reason, { privateWindow: this.windowPrivate });
 +    try {
 +      this.editor?.discardEngagement();
 +    } catch (_) {
@@ -21498,10 +21549,10 @@ index 00000000000..380a3b8df73
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..c0dcd8c6a49
+index 00000000000..0af19c34468
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,355 @@
+@@ -0,0 +1,373 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -21739,7 +21790,17 @@ index 00000000000..c0dcd8c6a49
 +    return 1;
 +  }
 +  update() {
-+    if (!this.supported()) { this.restore(); return false; }
++    if (!this.supported()) {
++      if (this.active || this.activationFrame) {
++        const { window } = this;
++        this.noteFallback(window.fullScreen || window.document.fullscreenElement ? "toolbar-fullscreen" :
++          window.document.documentElement.hasAttribute("customizing") ? "toolbar-customizing" :
++          Services.prefs.getBoolPref("sidebar.verticalTabs", false) ? "toolbar-vertical-tabs" :
++          window.gURLBar.readOnly ? "toolbar-read-only" :
++          window.gURLBar.inOverflowPanel ? "toolbar-overflow" : "toolbar-unavailable");
++      }
++      this.restore(); return false;
++    }
 +    const navigation = this.navigationRequested;
 +    if (this.navigation !== navigation) {
 +      this.restore();
@@ -21748,16 +21809,24 @@ index 00000000000..c0dcd8c6a49
 +    this.row.hidden = !navigation;
 +    const rect = this.bounds();
 +    if (rect.width < (navigation ? 528 : 240) || rect.height < (navigation ? 40 : 32)) {
++      this.noteFallback("toolbar-insufficient-space");
 +      this.restore();
 +      return false;
 +    }
 +    if (!this.window.windowUtils.updateWinUIAddress(rect.x, rect.y, rect.width, rect.height,
 +                                                   true, false, false)) {
 +      this.failed = true;
++      this.noteFallback("toolbar-host-refused");
 +      this.restore();
 +      return false;
 +    }
++    this.fallbackReason = null;
 +    return true;
++  }
++  noteFallback(reason) {
++    // Layout retries are still the same handoff until native hosting succeeds.
++    if (this.fallbackReason !== reason) this.owner.recordAddressFallback(reason);
++    this.fallbackReason = reason;
 +  }
 +  get navigationRequested() {
 +    return Services.prefs.getBoolPref("fenn.winui.navigation.toolbar.enabled", true);
@@ -21795,7 +21864,7 @@ index 00000000000..c0dcd8c6a49
 +    } catch (error) { console.error(error); }
 +    finally { this.focusing = false; }
 +    this.failed = true;
-+    this.owner.addressFallback();
++    this.owner.addressFallback("toolbar-focus-failed");
 +    return false;
 +  }
 +  restore() {
@@ -21991,10 +22060,10 @@ index 00000000000..f52d7b201b3
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..ed551ae2e6e
+index 00000000000..1448f9613af
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2185 @@
+@@ -0,0 +1,2198 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22836,7 +22905,7 @@ index 00000000000..ed551ae2e6e
 +        // Firefox's own one-off buttons own the interaction: hand the
 +        // surface back rather than editing underneath it. The intent was
 +        // answered, not lost, so it is a rejection and not a failure.
-+        this.addressFallback();
++        this.addressFallback("edit-firefox-one-off-selected");
 +        return 2;
 +      }
 +      session.beginNativePresentation();
@@ -22854,14 +22923,14 @@ index 00000000000..ed551ae2e6e
 +      session.reportNativeVisibility(action);
 +    } else if (action.kind === "select") {
 +      const result = session.selectResult({ ...action, id: action.id || "" });
-+      if (result.status === "firefox-fallback") this.addressFallback();
++      if (result.status === "firefox-fallback") this.addressFallback("selection-not-presentable", { handoff: false });
 +    } else if (action.kind === "activate") {
 +      const result = session.activate(
 +        action.revision,
 +        action.id || "",
 +        action.intent || {}
 +      );
-+      if (result !== "activated") this.addressFallback();
++      if (result !== "activated") this.addressFallback(null);
 +    } else if (action.kind === "blur") {
 +      if (this.addressToolbar) this.addressToolbar.focusOwned = false;
 +      session.suspendNativePresentation();
@@ -22873,14 +22942,14 @@ index 00000000000..ed551ae2e6e
 +    } else if (action.kind === "focus") {
 +      if (this.addressToolbar) this.addressToolbar.focusOwned = true;
 +      if (gURLBar.view.oneOffSearchButtons?.selectedButton) {
-+        this.addressFallback();
++        this.addressFallback("focus-firefox-one-off-selected");
 +        return 2;
 +      }
 +      session.focusNativePresentation();
 +    } else if (action.kind === "dismiss") {
 +      session.dismiss({ ...action, reason: "escape" });
 +    } else if (action.kind === "fallback") {
-+      this.addressFallback();
++      this.addressFallback(action.clipboard ? "native-clipboard-handoff" : "native-requested-handoff");
 +      if (["cmd_copy", "cmd_cut", "cmd_paste"].includes(action.clipboard)) goDoCommand(action.clipboard);
 +    } else if (action.kind !== "visibility") {
 +      return 2;
@@ -22888,7 +22957,10 @@ index 00000000000..ed551ae2e6e
 +    return 1;
 +  },
 +
-+  addressFallback() {
++  addressFallback(reason = "unspecified-handoff", { handoff = true } = {}) {
++    // null is reserved for a synchronous action whose session already recorded
++    // the detailed failure. Every direct handoff supplies its own fixed reason.
++    if (reason !== null) this.recordAddressFallback(reason, { handoff });
 +    if (this.addressToolbar) {
 +      this.addressToolbar.failed = true;
 +      this.addressToolbar.restore();
@@ -22898,6 +22970,15 @@ index 00000000000..ed551ae2e6e
 +    gURLBar.startQuery({
 +      searchString: gURLBar.inputField.value,
 +      allowAutofill: false,
++    });
++  },
++
++  recordAddressFallback(reason, { handoff = true } = {}) {
++    const { WinUIAddressSession } = ChromeUtils.importESModule(
++      "chrome://browser/content/WinUIAddressSession.sys.mjs"
++    );
++    WinUIAddressSession.recordFallback(reason, {
++      privateWindow: PrivateBrowsingUtils.isWindowPrivate(window), handoff,
 +    });
 +  },
 +
@@ -23746,6 +23827,7 @@ index 00000000000..ed551ae2e6e
 +        // publication disables that surface and leaves the rest of the pane
 +        // running, rather than taking the window down with it.
 +        console.error("Native address synchronization failed", error);
++        this.recordAddressFallback("address-publication-error");
 +        this.addressSession?.close();
 +        this.addressSession = null;
 +        this.addressFailed = true;

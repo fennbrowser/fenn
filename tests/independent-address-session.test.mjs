@@ -793,8 +793,95 @@ test('a tally that cannot be written is kept and retried, and a damaged file is 
   assert.equal(file.version,1);
 });
 
+function wirePaneFallback(f) {
+  const source=readFileSync(new URL('../upstream/firefox/browser/base/content/browser-winui-pane.js',import.meta.url),'utf8');
+  const start=source.indexOf('  executeAddressRequest(action) {');
+  const end=source.indexOf('\n  // Shared by the tab-menu resolver',start);
+  const context=vm.createContext({window:f.window,gURLBar:f.input,
+    console:{error(){}},PrivateBrowsingUtils:{isWindowPrivate:()=>!!f.s.windowPrivate},
+    ChromeUtils:{importESModule:()=>({WinUIAddressSession:f.s.constructor})}});
+  vm.runInContext('this.pane = ({'+source.slice(start,end)+'});',context);
+  const pane=context.pane;
+  pane.addressSession=f.s; f.window.gWinUIPane=pane;
+  f.input.focus=()=>{};f.input.startQuery=()=>{};f.s.releaseNativePresentation=()=>{};
+  return pane;
+}
+
+test('direct handoffs persist reasons, omit private windows and do not count as lost actions',async()=>{
+  const f=fixture(),C=f.s.constructor,pane=wirePaneFallback(f);let file=null;
+  C.persistence={enabled:()=>true,path:()=>'tally.json',read:async()=>file,
+    write:async(_p,state)=>{file=JSON.parse(JSON.stringify(state));},setTimer:()=>1,now:()=>Date.UTC(2026,9,15)};
+  pane.addressFallback('toolbar-focus-failed');
+  pane.addressSession=null;
+  pane.addressFallback(); // Future callers still leave an identifiable reason.
+  await C.flush();
+  assert.equal(file.totals.fallbackReasons['toolbar-focus-failed'],1);
+  assert.equal(file.totals.fallbackReasons['unspecified-handoff'],1);
+  assert.equal(C.report().handoffs,2);
+  assert.equal(C.report().dropped,0);
+  assert.equal(C.report().attempts,0,'surface handoffs cannot satisfy the activation sample gate');
+  f.s.windowPrivate=true;
+  pane.addressFallback('native-requested-handoff');
+  assert.equal(C.report().fallbackTotal,3);
+  assert.equal((await C.history()).fallbackTotal,2);
+});
+
+test('dispatcher counts an editor fallback once and records stale activation handoffs',()=>{
+  const f=fixture({visible:false,heuristic:false}),pane=wirePaneFallback(f),C=f.s.constructor;
+  const action={version:1,session:f.s.sessionId,kind:'activate',revision:1,id:f.row.id};
+  pane.executeAddressRequest(action);
+  assert.equal(C.report().fallbackTotal,1);
+  assert.equal(C.report().fallbackReasons['not-visible'],1);
+  assert.equal(C.report().handoffs,0);
+  pane.executeAddressRequest({...action,revision:0});
+  assert.equal(C.report().fallbackTotal,2);
+  assert.equal(C.report().fallbackReasons['activation-stale'],1);
+});
+
+test('selection and native requested handoffs carry distinct reasons',()=>{
+  const f=fixture(),pane=wirePaneFallback(f),C=f.s.constructor;
+  f.s.selectResult=()=>({status:'firefox-fallback'});
+  pane.executeAddressRequest({version:1,session:f.s.sessionId,kind:'select',id:f.row.id});
+  pane.executeAddressRequest({version:1,session:f.s.sessionId,kind:'fallback'});
+  assert.equal(C.report().fallbackReasons['selection-not-presentable'],1);
+  assert.equal(C.report().fallbackReasons['native-requested-handoff'],1);
+  assert.equal(C.report().dropped,1);
+  assert.equal(C.report().handoffs,1);
+});
+
+test('navigation that was not attempted records its reason even after consuming the edit',()=>{
+  const f=fixture({heuristic:false});
+  f.editor.commitAcknowledgedNavigation=()=>({attempted:false});
+  f.s.activate(1,f.row.id,{});
+  assert.equal(f.s.constructor.report().fallbackReasons['navigation-not-attempted'],1);
+});
+
+test('publication failure records a reason before preserving the existing cleanup',()=>{
+  const f=fixture(),pane=wirePaneFallback(f),C=f.s.constructor,disabled=[];
+  f.window.windowUtils={syncWinUIAddress:state=>disabled.push(JSON.parse(state))};
+  const source=readFileSync(new URL('../upstream/firefox/browser/base/content/browser-winui-pane.js',import.meta.url),'utf8');
+  const start=source.indexOf('  publishState(force = false) {'),end=source.indexOf('\n  // Anything that could change',start);
+  const context=vm.createContext({window:f.window,console:{error(){}}});
+  vm.runInContext('this.publish = ({'+source.slice(start,end)+'}).publishState;',context);
+  let closed=0,restored=0;
+  Object.assign(pane,{element:{},attached:true,nativeRevision:1,dirtyTitles:new Set(),addressDirty:true,
+    syncAddress(){throw new Error('refused');},addressToolbar:{restore(){restored++;}}});
+  f.s.close=()=>closed++;
+  context.publish.call(pane);
+  assert.equal(C.report().fallbackReasons['address-publication-error'],1);
+  assert.equal(C.report().errorFallbacks,1);
+  assert.equal(C.report().dropped,0);
+  assert.equal(closed,1);assert.equal(restored,1);assert.equal(pane.addressSession,null);
+  assert.deepEqual(disabled,[{version:1,enabled:false}]);
+  context.publish.call(pane);
+  assert.equal(C.report().fallbackTotal,1,'a clean frame cannot repeat the failure');
+});
+
 test('diagnostic lists keep only the most recent entries',()=>{
   const f=fixture();
   for(let i=0;i<450;i++)f.s.onEditorPresentationRequest({kind:'close'});
   assert.equal(f.s.constructor.counters.requests.length,200);
+  for(let i=0;i<450;i++)f.s.constructor.recordFallback('toolbar-focus-failed');
+  assert.equal(f.s.constructor.counters.fallbacks.length,200);
+  assert.equal(f.s.constructor.counters.fallbackTotal,450);
 });

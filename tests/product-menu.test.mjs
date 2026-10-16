@@ -15,6 +15,10 @@ const LABELS = {
   "toolbar-context-menu-view-customize-toolbar-2": "Customize Toolbar…",
   "menu-file-close-window": "Close Window", "appmenuitem-exit2": "Exit",
   "appmenu-menu-button-closed2": "Fenn",
+  "winui-update-check": "Check for updates",
+  ...Object.fromEntries(["title", "checking", "current", "available-store", "available-feed",
+    "unavailable", "failed", "open-store", "open-feed", "close"]
+    .map(key => [`winui-update-${key}`, `Localized update ${key}`])),
 };
 
 function fixture(overrides = {}) {
@@ -44,7 +48,7 @@ function fixture(overrides = {}) {
       formatMessagesSync([{id}]) {
         const value = LABELS[id];
         if (value === undefined) throw new Error(`missing ${id}`);
-        return [{attributes: [{name: "label", value}, {name: "tooltiptext", value: `${value} menu`}]}];
+        return [{value, attributes: [{name: "label", value}, {name: "tooltiptext", value: `${value} menu`}]}];
       }
     },
   };
@@ -67,7 +71,7 @@ test("the model is a bounded cascading menu with History and Bookmarks as submen
   const top = model.items.filter(item => item.kind !== "separator").map(item => [item.id, item.kind]);
   assert.deepEqual(top, [["new-tab", "item"], ["new-window", "item"], ["new-private-window", "item"],
     ["history", "submenu"], ["downloads", "item"], ["bookmarks", "submenu"], ["settings", "item"],
-    ["customize-toolbar", "item"], ["close-window", "item"], ["quit", "item"]]);
+    ["customize-toolbar", "item"], ["check-updates", "item"], ["close-window", "item"], ["quit", "item"]]);
   const bookmarks = model.items.find(item => item.id === "bookmarks");
   const toolbar = bookmarks.items.find(item => item.id === "bookmarks-toolbar");
   assert.equal(toolbar.kind, "submenu");
@@ -144,6 +148,18 @@ test("the customize item is native-only and never runs a Firefox command", () =>
   assert.equal(f.menu.find("customize-toolbar").kind, "item");
   assert.equal(f.menu.execute("customize-toolbar", {}, {}), 2);
   assert.deepEqual(f.calls, []);
+});
+
+test("update checks publish localized Windows UI and never invoke Firefox's updater", () => {
+  const f = fixture();
+  assert.equal(f.menu.find("check-updates").label, "Check for updates");
+  const labels = f.menu.model().updateLabels;
+  assert.equal(Object.keys(labels).length, 10);
+  for (const [key, value] of Object.entries(labels)) assert.equal(value, `Localized update ${key}`);
+  assert.equal(f.menu.execute("check-updates", {}, {}), 2, "handled by the native package host");
+  assert.deepEqual(f.calls, []);
+  f.window.gDialogBox.isOpen = true;
+  assert.equal(f.menu.find("check-updates").enabled, false);
 });
 
 test("an open Firefox dialog disables every command", () => {

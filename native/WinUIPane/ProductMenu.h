@@ -5,9 +5,10 @@
 #include <string>
 #include "JsonValidation.h"
 #include "ToolbarMetrics.h"
+#include "PackageUpdates.h"
 
-// WinUI presentation only. Firefox owns the menu's contents, state and every
-// command; this validates the bounded model and reports an opaque item id.
+// Firefox owns menu contents, state and browser commands. The native editor
+// and Windows servicing host handle their own UI; other items report an id.
 struct NativeProductMenu {
     using Object = winrt::Windows::Data::Json::JsonObject;
     using Array = winrt::Windows::Data::Json::JsonArray;
@@ -23,6 +24,7 @@ struct NativeProductMenu {
     Button button{nullptr};
     Microsoft::UI::Xaml::Controls::MenuFlyout flyout{nullptr};
     Object model;
+    std::shared_ptr<NativePackageUpdates> updates = std::make_shared<NativePackageUpdates>();
     bool enabled{};
     std::function<void(wchar_t const*, uint32_t, Button const&)> dispatch;
     // Items the native toolbar handles itself instead of reporting to Firefox.
@@ -83,6 +85,16 @@ struct NativeProductMenu {
         uint32_t total = 0;
         std::set<winrt::hstring> ids;
         ValidateItems(menu.GetNamedArray(L"items"), 1, total, ids);
+        if (ids.count(L"check-updates") && !menu.HasKey(L"updateLabels")) winrt::throw_hresult(E_INVALIDARG);
+        if (menu.HasKey(L"updateLabels")) {
+            auto labels = menu.GetNamedObject(L"updateLabels");
+            for (auto key : {L"title", L"checking", L"current", L"available-store", L"available-feed",
+                             L"unavailable", L"failed", L"open-store", L"open-feed", L"close"}) {
+                const auto label = labels.GetNamedString(key);
+                if (label.empty()) winrt::throw_hresult(E_INVALIDARG);
+                NativeJson::RequireLength(label, kMaxLabel);
+            }
+        }
         return menu;
     }
 
@@ -108,7 +120,7 @@ struct NativeProductMenu {
             Open();
         });
     }
-    ~NativeProductMenu() { lifetime.reset(); Close(); }
+    ~NativeProductMenu() { lifetime.reset(); updates->Cancel(); Close(); }
 
     void Close() {
         if (flyout) flyout.Hide();
@@ -119,6 +131,7 @@ struct NativeProductMenu {
         using namespace Microsoft::UI::Xaml;
         enabled = visible && next.Size() != 0 && next.GetNamedBoolean(L"enabled", false);
         if (!enabled) {
+            updates->Cancel();
             Close();
             model = Object();
             button.Visibility(Visibility::Collapsed);
@@ -166,6 +179,25 @@ struct NativeProductMenu {
                 if (alive.expired() || !enabled) return;
                 if (id == L"customize-toolbar") {
                     if (customize) customize();
+                    return;
+                }
+                if (id == L"check-updates") {
+                    if (!model.HasKey(L"updateLabels")) return;
+                    bool offered = false;
+                    for (auto item : model.GetNamedArray(L"items")) {
+                        auto current = item.GetObject();
+                        if (current.GetNamedString(L"id", L"") == id && current.GetNamedBoolean(L"enabled", true)) offered = true;
+                    }
+                    if (!offered) return;
+                    NativePackageUpdates::Labels labels;
+                    auto published = model.GetNamedObject(L"updateLabels");
+                    for (auto key : {L"title", L"checking", L"current", L"available-store", L"available-feed",
+                                     L"unavailable", L"failed", L"open-store", L"open-feed", L"close"})
+                        labels.emplace(key, published.GetNamedString(key));
+                    const auto epoch = updates->generation;
+                    button.DispatcherQueue().TryEnqueue([state = updates, alive, epoch, labels = std::move(labels)] {
+                        if (!alive.expired() && state->generation == epoch) NativePackageUpdates::Check(state, labels);
+                    });
                     return;
                 }
                 if (!dispatch) return;

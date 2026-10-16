@@ -31,7 +31,8 @@ function fixture() {
     addressAvailable() {
       return !window.PrivateBrowsingUtils.isWindowPrivate(window) || prefs.get("fenn.winui.address.private") !== false;
     },
-    addressFallback() {calls.push(["fallback"]); toolbar.restore();}};
+    recordAddressFallback(reason) {calls.push(["fallback-reason",reason]);},
+    addressFallback(reason) {calls.push(["fallback"]); this.recordAddressFallback(reason); toolbar.restore();}};
   const window = {document:{documentElement:root,querySelectorAll:()=>[...elements.values()],createElementNS:element,getElementById:id=>elements.get(id)},
     gURLBar:{inputField:input,querySelector:()=>switcher,focus() {calls.push(["firefox-focus"]);}},
     commandListeners:[],
@@ -91,6 +92,19 @@ test("host refusal preserves original editable presentation", () => {
   assert.equal(f.toolbar.failed,true);
   assert.equal(f.input.attributes.has("aria-hidden"),false);
   assert.equal(f.toolbar.active,false);
+  assert.deepEqual(f.calls.filter(c=>c[0]==="fallback-reason"),[["fallback-reason","toolbar-host-refused"]]);
+  f.toolbar.update();
+  assert.equal(f.calls.filter(c=>c[0]==="fallback-reason").length,1);
+});
+
+test("undersized layout records one handoff until native hosting succeeds again",()=>{
+  const f=fixture(),bounds=f.toolbar.bounds.bind(f.toolbar);
+  f.toolbar.bounds=()=>({x:0,y:0,width:100,height:32});
+  f.toolbar.update();f.toolbar.update();
+  assert.deepEqual(f.calls.filter(c=>c[0]==="fallback-reason"),[["fallback-reason","toolbar-insufficient-space"]]);
+  f.toolbar.bounds=bounds;assert.equal(f.toolbar.update(),true);
+  f.toolbar.bounds=()=>({x:0,y:0,width:100,height:32});f.toolbar.update();
+  assert.equal(f.calls.filter(c=>c[0]==="fallback-reason").length,2);
 });
 
 test("layout and preference fallback detach only the address host", () => {

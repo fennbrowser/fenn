@@ -29,6 +29,8 @@
 #include <winrt/Microsoft.UI.Interop.h>
 #include <UIAutomation.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include "../../native/WinUIPane/PackageUpdates.h"
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <wrl/client.h>
 #include "GlowFrameProbe.h"
@@ -85,7 +87,7 @@ static LRESULT CALLBACK DragCreateProbe(int code, WPARAM w, LPARAM l) {
 }
 // UIA must run off the XAML STA; the host keeps pumping provider requests.
 static void WithTab(HWND hwnd, const wchar_t* id, const wchar_t* title, bool select = false, bool close = false,
-                    int input = 0, int expectedMatches = 1, int matchIndex = 0) {
+                    int input = 0, int expectedMatches = 1, int matchIndex = 0, bool focus = false) {
     fwprintf(stderr, L"UIA inspect id=%s title=%s select=%d close=%d input=%d\n", id, title, select, close, input);
     // Snapshot changes realize/recycle containers asynchronously. Let XAML finish
     // layout before querying a row's descendant accessibility properties.
@@ -209,6 +211,12 @@ static void WithTab(HWND hwnd, const wchar_t* id, const wchar_t* title, bool sel
                 } else {
                     Require(SUCCEEDED(invoke->Invoke()), "invoke native close button");
                 }
+            }
+            if (focus) {
+                Require(SUCCEEDED(item->SetFocus()), "focus the exact tab through accessibility");
+                BOOL focused{};
+                Require(SUCCEEDED(item->get_CurrentHasKeyboardFocus(&focused)) && focused,
+                        "the requested tab owns keyboard focus");
             }
             if (select) {
                 ComPtr<IUIAutomationSelectionItemPattern> pattern;
@@ -3636,6 +3644,106 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
     return bounds;
 }
 
+static void CheckPackageUpdates(HWND owner) {
+    using Updates = NativePackageUpdates;
+    using namespace winrt::Microsoft::UI::Xaml;
+    Require(Updates::Select(true, true) == Updates::Source::Store &&
+            Updates::Select(true, false) == Updates::Source::Store &&
+            Updates::Select(false, true) == Updates::Source::Feed &&
+            Updates::Select(false, false) == Updates::Source::None, "update source follows package provenance");
+    Updates::Labels labels;
+    for (auto key : {L"title", L"checking", L"current", L"available-store", L"available-feed",
+                     L"unavailable", L"failed", L"open-store", L"open-feed", L"close"})
+        labels.emplace(key, winrt::hstring(std::wstring(L"Localized ") + key));
+    auto settle = [] { for (int i = 0; i < 30; ++i) { Pump(); Sleep(10); } };
+    auto state = std::make_shared<Updates>();
+    state->owner = owner;
+    int queries = 0, launches = 0;
+    for (auto status : {L"current", L"unavailable", L"failed", L"available-store", L"available-feed"}) {
+        const bool available = wcsncmp(status, L"available", 9) == 0;
+        state->query = [&, status, available](HWND, std::shared_ptr<Updates::Result> result) -> Updates::Action {
+            ++queries;
+            result->status = status;
+            result->available = available;
+            result->source = wcscmp(status, L"available-store") == 0 ? Updates::Source::Store : Updates::Source::Feed;
+            co_return;
+        };
+        state->launch = [&](std::shared_ptr<Updates::Result>) -> Updates::Action { ++launches; co_return; };
+        Updates::Check(state, labels);
+        settle();
+        Require(bool(state->window), "update window opens outside the narrow toolbar island");
+        const int count = queries;
+        Updates::Check(state, labels);
+        Require(queries == count, "repeated activation coalesces while the window is open");
+        auto panel = state->window.Content().as<Controls::ScrollViewer>().Content().as<Controls::StackPanel>();
+        panel.RequestedTheme(wcscmp(status, L"available-store") == 0 ? ElementTheme::Dark : ElementTheme::Light);
+        Require(panel.Children().GetAt(0).as<Controls::TextBlock>().Text() == Updates::Text(labels, status),
+                "update outcome uses the published localized text");
+        const auto hwnd = winrt::Microsoft::UI::GetWindowFromWindowId(state->window.AppWindow().Id());
+        Require(GetWindow(hwnd, GW_OWNER) == owner, "update window belongs to its browser window");
+        if (available) {
+            auto primary = panel.Children().GetAt(1).as<Controls::Button>();
+            Require(primary.Visibility() == Visibility::Visible, "available update exposes Windows handoff");
+            const auto bounds = TabScreenBounds(hwnd, L"FennUpdateOpen");
+            Require(bounds.right > bounds.left, "update handoff has accessible bounds");
+            SetForegroundWindow(hwnd);
+            Require(primary.Focus(FocusState::Keyboard), "handoff accepts keyboard focus");
+            INPUT keys[2]{};
+            keys[0].type = keys[1].type = INPUT_KEYBOARD;
+            keys[0].ki.wVk = keys[1].ki.wVk = VK_RETURN;
+            keys[1].ki.dwFlags = KEYEVENTF_KEYUP;
+            const int before = launches;
+            Require(SendInput(2, keys, sizeof(INPUT)) == 2, "physical keyboard update handoff");
+            settle();
+            Require(launches == before + 1, "keyboard activation requests exactly one Windows handoff");
+        } else Require(panel.Children().GetAt(1).Visibility() == Visibility::Collapsed,
+                       "no install action for no-update, unavailable or failed checks");
+        const auto bounds = TabScreenBounds(hwnd, L"FennUpdateClose");
+        SetForegroundWindow(hwnd);
+        SetCursorPos((bounds.left + bounds.right) / 2, (bounds.top + bounds.bottom) / 2);
+        INPUT mouse[2]{};
+        mouse[0].type = mouse[1].type = INPUT_MOUSE;
+        mouse[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+        mouse[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        Require(SendInput(2, mouse, sizeof(INPUT)) == 2, "physical close click");
+        settle();
+        Require(!state->window && !state->running, "mouse dismissal releases the update window");
+    }
+    state->query = [](HWND, std::shared_ptr<Updates::Result> result) -> Updates::Action {
+        result->available = true; result->source = Updates::Source::Store; result->status = L"available-store";
+        co_return;
+    };
+    state->launch = [](std::shared_ptr<Updates::Result>) -> Updates::Action {
+        co_await winrt::resume_after(std::chrono::milliseconds(1));
+        winrt::throw_hresult(E_ACCESSDENIED);
+    };
+    Updates::Check(state, labels);
+    settle();
+    Require(bool(state->window), "handoff failure fixture opens");
+    auto panel = state->window.Content().as<Controls::ScrollViewer>().Content().as<Controls::StackPanel>();
+    auto status = panel.Children().GetAt(0).as<Controls::TextBlock>();
+    auto primary = panel.Children().GetAt(1).as<Controls::Button>();
+    Updates::Handoff(state, state->generation, state->current, labels, status, primary);
+    settle();
+    Require(status.Text() == Updates::Text(labels, L"failed") && primary.IsEnabled(),
+            "failed Windows handoff is visible and retryable");
+    state->Cancel();
+    state->query = [](HWND, std::shared_ptr<Updates::Result>) -> Updates::Action {
+        co_await winrt::resume_after(std::chrono::milliseconds(150));
+        winrt::throw_hresult(E_FAIL);
+    };
+    Updates::Check(state, labels);
+    state->Cancel();
+    settle();
+    Require(!state->window && !state->running, "late failed check cannot reopen a detached window");
+    auto result = std::make_shared<Updates::Result>();
+    auto query = Updates::Query(owner, result);
+    for (int i = 0; i < 100 && query.Status() == winrt::Windows::Foundation::AsyncStatus::Started; ++i) { Pump(); Sleep(10); }
+    query.GetResults();
+    Require(result->status == L"unavailable", "unpackaged test host has no real Windows update source");
+    puts("CHECKS PASSED: update provenance, localized outcomes, duplicate activation, UIA bounds, physical keyboard/mouse, deferred teardown");
+}
+
 static RECT ElementScreenBounds(winrt::Microsoft::UI::Xaml::FrameworkElement const& element) {
     const auto local = element.TransformToVisual(nullptr).TransformBounds(
         {0, 0, float(element.ActualWidth()), float(element.ActualHeight())});
@@ -5079,7 +5187,7 @@ int wmain(int argc, wchar_t** argv) {
                 }) != nullptr,
             "install teardown exception guard");
     Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 || wcscmp(argv[2], L"--address-host") == 0 ||
-                                        wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 ||
+                                        wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--updates") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 ||
                                         wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
                                         wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))),
             "DLL path and optional --inspect required");
@@ -5124,6 +5232,40 @@ int wmain(int argc, wchar_t** argv) {
     Require(compositor != nullptr, "compositor sibling");
     Require(api.updateTabStrip(first, nullptr, TRUE) == E_INVALIDARG, "reject null geometry");
     Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "first island");
+    if (argc == 3 && wcscmp(argv[2], L"--updates") == 0) {
+        ShowWindow(first, SW_SHOW);
+        Pump();
+        RECT addressRect{0, 44, 640, 84};
+        Require(SUCCEEDED(api.updateAddress(first, &addressRect, TRUE)), "update-menu address host");
+        auto snapshot = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"updates-model","revision":1,"sequence":1,"text":"initial","rows":[],"navigation":{"back":{"enabled":false},"forward":{"enabled":false},"reload":{"enabled":true},"productMenu":{"enabled":true,"items":[{"kind":"item","id":"check-updates","label":"Check for updates"}]}}})");
+        Require(FAILED(api.syncAddress(first, snapshot.Stringify().c_str())), "update command requires localized labels");
+        auto menu = snapshot.GetNamedObject(L"navigation").GetNamedObject(L"productMenu");
+        winrt::Windows::Data::Json::JsonObject labels;
+        for (auto key : {L"title", L"checking", L"current", L"available-store", L"available-feed",
+                         L"unavailable", L"failed", L"open-store", L"open-feed", L"close"})
+            labels.SetNamedValue(key, winrt::Windows::Data::Json::JsonValue::CreateStringValue(key));
+        menu.SetNamedValue(L"updateLabels", labels);
+        auto navigation = snapshot.GetNamedObject(L"navigation");
+        navigation.SetNamedValue(L"productMenu", menu);
+        snapshot.SetNamedValue(L"navigation", navigation);
+        const auto accepted = api.syncAddress(first, snapshot.Stringify().c_str());
+        if (FAILED(accepted)) fwprintf(stderr, L"Update model hr=0x%08lx JSON=%s\n", accepted, snapshot.Stringify().c_str());
+        Require(SUCCEEDED(accepted), "accept fully localized update menu");
+        labels.SetNamedValue(L"title", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(42));
+        menu.SetNamedValue(L"updateLabels", labels);
+        navigation.SetNamedValue(L"productMenu", menu);
+        snapshot.SetNamedValue(L"navigation", navigation);
+        snapshot.SetNamedValue(L"sequence", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(2));
+        Require(FAILED(api.syncAddress(first, snapshot.Stringify().c_str())), "reject malformed update label before native mutation");
+        Require(SUCCEEDED(api.updateAddress(first, &addressRect, FALSE)), "detach update-menu fixture host");
+        CheckPackageUpdates(first);
+        Require(SUCCEEDED(api.destroy(first)), "update fixture pane teardown");
+        DestroyWindow(first);
+        Require(SUCCEEDED(api.shutdown()), "update fixture shutdown");
+        FreeLibrary(module);
+        CoUninitialize();
+        return 0;
+    }
     if (argc == 3 && wcscmp(argv[2], L"--address-host") == 0) {
         using namespace winrt::Microsoft::UI::Xaml;
         RECT stripRect{0,0,640,40}, addressRect{100,44,570,76};
@@ -5183,7 +5325,8 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":2,"text":"initial","rows":[]})")), "navigation publication");
             toolbarRoot.UpdateLayout();
             Pump();
-            Require(root.Margin().Left == 8 && root.Margin().Top == 8 && field.ActualHeight() >= 32,
+            Require(root.Margin().Left == 8 && root.Margin().Right == 8 &&
+                    root.Margin().Top == 4 && root.Margin().Bottom == 4 && field.ActualHeight() >= 32,
                     "navigation row retains stock editor with native padding");
             Require(toolbarRoot.Children().GetAt(0).Visibility() == Visibility::Visible,
                     "navigation surface owns its background");
@@ -5192,31 +5335,50 @@ int wmain(int argc, wchar_t** argv) {
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":3,"text":"initial","rows":[],"navigation":{"back":{"enabled":false,"label":"Localized back"},"forward":{"enabled":true,"label":"Localized forward"},"reload":{"enabled":true,"label":"Localized reload"},"profile":{"enabled":true,"label":"Localized account"},"extensions":{"enabled":true,"label":"Localized extensions"},"appmenu":{"enabled":true,"label":"Localized menu"},"omnibarLeft":[{"id":"action-contract","label":"Site information","enabled":true,"background":[0,0,0,0],"foreground":[0,0,0,255]}],"pinned":[{"id":"pinned-contract","label":"Localized extension","enabled":true,"badge":"7","background":[180,0,0,255],"foreground":[255,255,255,255],"image":{"width":1,"height":1,"pixels":"0000ffff"}}]}})")), "publish navigation buttons");
             auto embedded=header.Children().GetAt(0).as<Controls::StackPanel>();
             Require(embedded.Children().Size()==1 && embedded.Children().GetAt(0).as<Controls::Button>().Width()==28, "embedded site button published");
-            auto navigation=toolbarRoot.Children().GetAt(1).as<Controls::StackPanel>();
-            auto menus=toolbarRoot.Children().GetAt(3).as<Controls::StackPanel>();
-            Require(menus.Children().Size()==4 && Controls::Grid::GetColumn(menus)==2, "menu buttons and pinned slot follow the address field");
-            Require(Automation::AutomationProperties::GetName(menus.Children().GetAt(0))==L"Localized account" &&
-                    Automation::AutomationProperties::GetName(menus.Children().GetAt(3))==L"Localized menu", "Firefox menu labels applied");
-            auto pinned=menus.Children().GetAt(2).as<Controls::StackPanel>();
+            // The customization-aware toolbar lays out controls individually.
+            // Find their stable identities instead of assuming old wrapper panels.
+            std::function<FrameworkElement(DependencyObject const&, wchar_t const*)> findControl =
+                [&](DependencyObject const& node, wchar_t const* id) -> FrameworkElement {
+                    if (auto element = node.try_as<FrameworkElement>(); element &&
+                        Automation::AutomationProperties::GetAutomationId(element) == id) return element;
+                    for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+                        if (auto found = findControl(Media::VisualTreeHelper::GetChild(node, i), id)) return found;
+                    return nullptr;
+                };
+            auto button = [&](wchar_t const* id) {
+                auto element = findControl(toolbarRoot, id);
+                Require(element != nullptr, "published toolbar control exists by AutomationId");
+                return element.as<Controls::Button>();
+            };
+            auto back = button(L"FennBack"), forward = button(L"FennForward"), reload = button(L"FennReload");
+            auto profile = button(L"FennProfile"), extensions = button(L"FennExtensions"), appMenu = button(L"FennAppMenu");
+            auto pinnedButton = button(L"FennExtension-pinned-contract");
+            auto pinned = pinnedButton.Parent().as<Controls::StackPanel>();
+            const std::vector<FrameworkElement> ordered{back, forward, reload, root, profile, extensions, pinned, appMenu};
+            for (size_t i = 1; i < ordered.size(); ++i)
+                Require(Controls::Grid::GetColumn(ordered[i - 1]) < Controls::Grid::GetColumn(ordered[i]),
+                        "navigation, address, menu and pinned controls retain their published order");
+            Require(Automation::AutomationProperties::GetName(profile)==L"Localized account" &&
+                    Automation::AutomationProperties::GetName(appMenu)==L"Localized menu", "Firefox menu labels applied");
             Require(pinned.Children().Size()==1, "pinned extension appears between Extensions and Application menu");
-            auto pinnedButton=pinned.Children().GetAt(0).as<Controls::Button>();
             Require(Automation::AutomationProperties::GetName(pinnedButton)==L"Localized extension" &&
                     Automation::AutomationProperties::GetItemStatus(pinnedButton)==L"7", "extension title and badge accessible");
             Require(pinnedButton.Content().as<Controls::Grid>().Children().GetAt(0).as<Controls::Image>().Source()!=nullptr,
                     "extension raw pixels decoded by native presentation");
-            Require(navigation.Visibility()==Visibility::Visible && navigation.Children().Size()==3, "three native navigation buttons");
+            for (auto const& control : {back, forward, reload})
+                Require(control.Visibility()==Visibility::Visible && control.Parent()==toolbarRoot &&
+                        control.Width()==32 && control.Height()==32, "three native navigation buttons retain stock targets");
             auto mica = addressBackdrop().try_as<Media::MicaBackdrop>();
             Require(mica && mica.Kind()==winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::BaseAlt,
                     "navigation toolbar shares default strip Mica Alt material");
-            Require(!navigation.Children().GetAt(0).as<Controls::Button>().IsEnabled() &&
-                    navigation.Children().GetAt(1).as<Controls::Button>().IsEnabled(), "Firefox controls navigation availability");
-            Require(Automation::AutomationProperties::GetName(navigation.Children().GetAt(2))==L"Localized reload", "Firefox navigation label");
+            Require(!back.IsEnabled() && forward.IsEnabled(), "Firefox controls navigation availability");
+            Require(Automation::AutomationProperties::GetName(reload)==L"Localized reload", "Firefox navigation label");
             Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":4,"text":"bad","rows":[],"navigation":{"back":{"enabled":"bad"}}})")), "reject malformed navigation atomically");
-            Require(field.Text()==L"initial" && navigation.Children().GetAt(1).as<Controls::Button>().IsEnabled(), "malformed navigation preserves editor and buttons");
+            Require(field.Text()==L"initial" && forward.IsEnabled(), "malformed navigation preserves editor and buttons");
             {
                 auto productMenu=[](wchar_t const* body,int sequence) {
                     return std::wstring(L"{\"version\":1,\"enabled\":true,\"navigationToolbar\":true,\"session\":\"toolbar-contract\",\"revision\":1,\"sequence\":")+
-                        std::to_wstring(sequence)+L",\"text\":\"initial\",\"rows\":[],\"navigation\":{\"productMenu\":"+body+L"}}";
+                        std::to_wstring(sequence)+L",\"text\":\"initial\",\"rows\":[],\"navigation\":{\"back\":{\"enabled\":false},\"forward\":{\"enabled\":true},\"reload\":{\"enabled\":true},\"productMenu\":"+body+L"}}";
                 };
                 Require(FAILED(api.syncAddress(first, productMenu(LR"({"enabled":true,"items":[{"kind":"item","id":"Bad Id","label":"x"}]})",4).c_str())), "reject a malformed product menu id");
                 Require(FAILED(api.syncAddress(first, productMenu(LR"({"enabled":true,"items":[{"kind":"item","id":"a","label":"x"},{"kind":"item","id":"a","label":"y"}]})",5).c_str())), "reject duplicate product menu ids");
@@ -5227,9 +5389,11 @@ int wmain(int argc, wchar_t** argv) {
             }
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":false})")), "disable navigation with address");
             Require(!addressBackdrop(), "disabling navigation releases its system backdrop");
-            Require(menus.Visibility()==Visibility::Collapsed && !menus.Children().GetAt(0).as<Controls::Button>().IsEnabled(), "disable revokes trailing menu buttons");
+            for (auto const& control : {profile, extensions, appMenu})
+                Require(!control.Parent() && !control.IsEnabled(), "disable detaches and revokes trailing menu buttons");
             Require(pinned.Children().Size()==0 && embedded.Children().Size()==0, "disable revokes pinned and embedded controls");
-            Require(navigation.Visibility()==Visibility::Collapsed && !navigation.Children().GetAt(1).as<Controls::Button>().IsEnabled(), "disable hides and revokes navigation controls");
+            for (auto const& control : {back, forward, reload})
+                Require(!control.Parent() && !control.IsEnabled(), "disable detaches and revokes navigation controls");
             Require(SUCCEEDED(api.updateAddress(first,&addressRect,FALSE)), "address-only detach");
             Require(SUCCEEDED(api.updateTabStrip(first,&stripRect,TRUE)), "strip survives address teardown");
             Require(inspect(first,winrt::put_abi(content))==E_NOT_VALID_STATE, "detached host no longer publishes");
@@ -5520,6 +5684,10 @@ int wmain(int argc, wchar_t** argv) {
     MenuPublish(api, first, MenuState({11, 22}).Stringify().c_str());
     Require(SUCCEEDED(api.focus(first, FALSE)), "focus native tab list");
     Pump();
+    // Forward island entry includes the strip-header controls. Arrow selection
+    // is a tab-row contract, so establish that exact focus without selecting it.
+    WithTab(first, tabs[0].title, tabs[0].title, false, false, 0, 1, 0, true);
+    Require(noSelectionRequest(first), "focusing the active tab does not emit a selection request");
     auto key = [&](WPARAM value) {
         MSG message{GetFocus(), WM_KEYDOWN, value, 1};
         if (!api.translate(&message)) {
