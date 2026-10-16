@@ -783,8 +783,10 @@ struct NativeAddress {
             element.SizeChanged(reserveControls);
             element.RegisterPropertyChangedCallback(UIElement::VisibilityProperty(), reserveControls);
         }
+        // Match TabViewItem's live radius and its stock top-corner filter.
+        // The square bottom edge joins the page below without a seam.
         toolbarSurface = Markup::XamlReader::Load(
-            LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}"/>)").as<Grid>();
+            LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}" CornerRadius="{Binding Source={ThemeResource OverlayCornerRadius}, Converter={StaticResource TopCornerRadiusFilterConverter}}"/>)").as<Grid>();
         toolbarSurface.Visibility(Visibility::Collapsed);
 
         toolbarRoot.Children().Append(toolbarSurface);

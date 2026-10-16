@@ -956,6 +956,13 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         return nullptr;
     };
     AwaitLiveTree(content.as<FrameworkElement>());
+    auto toolbarSurface = content.as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>();
+    auto toolbarCorners = toolbarSurface.CornerRadius();
+    auto tabCorners = winrt::unbox_value<CornerRadius>(Application::Current().Resources().Lookup(winrt::box_value(L"OverlayCornerRadius")));
+    Require(toolbarCorners.TopLeft == tabCorners.TopLeft && toolbarCorners.TopRight == tabCorners.TopRight &&
+            toolbarCorners.BottomLeft == 0 && toolbarCorners.BottomRight == 0 && toolbarCorners.TopLeft > 0 &&
+            toolbarSurface.GetBindingExpression(Controls::Grid::CornerRadiusProperty()),
+            "navigation background keeps live tab-matching top corners and square bottom corners");
     auto field = byId(content, L"FennAddress").as<Controls::TextBox>();
     // The editor's header holds the mode button and the field; the suggestions
     // and global actions float in the address's popup below it.

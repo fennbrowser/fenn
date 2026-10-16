@@ -21949,10 +21949,10 @@ index 00000000000..9f282df768b
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.css b/browser/base/content/WinUIAddressToolbar.css
 new file mode 100644
-index 00000000000..23057b35fa9
+index 00000000000..f52d7b201b3
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.css
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,36 @@
 +#winui-address-focus { display: none; }
 +#winui-navigation-toolbar:not([hidden]) {
 +  display: block;
@@ -21975,15 +21975,18 @@ index 00000000000..23057b35fa9
 +
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
 +
-+/* With the native navigation row active, the window backdrop frames the page:
-+   the content area is inset from the window edges and rounded, as in Edge and
-+   Dia. Fullscreen and DOM fullscreen keep the full-bleed layout. */
++/* The window backdrop frames the native navigation row and page together.
++   Keep their side insets aligned; the toolbar's bounds also position its native
++   island. Fullscreen and DOM fullscreen keep the full-bleed layout. */
++:root[winui-address-active]:not([inDOMFullscreen], [fullscreenNavToolboxHidden]) #winui-navigation-toolbar:not([hidden]) {
++  margin-inline: var(--winui-content-frame, 4px);
++}
 +:root[winui-address-active]:not([inDOMFullscreen], [fullscreenNavToolboxHidden]) #browser {
-+  padding: 0 var(--winui-content-frame, 8px) var(--winui-content-frame, 8px);
++  padding: 0 var(--winui-content-frame, 4px) var(--winui-content-frame, 4px);
 +  background-color: transparent;
 +}
 +:root[winui-address-active]:not([inDOMFullscreen], [fullscreenNavToolboxHidden]) #tabbrowser-tabbox {
-+  border-radius: var(--winui-content-radius, 8px);
++  border-radius: 0 0 var(--winui-content-radius, 8px) var(--winui-content-radius, 8px);
 +  overflow: clip;
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
