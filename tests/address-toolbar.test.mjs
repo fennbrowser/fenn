@@ -45,7 +45,7 @@ function fixture() {
     MutationObserver:class {observe() {} disconnect() {}},
     MouseEvent:class {constructor(type, args) {this.type=type;Object.assign(this,args);}}};
   root.hasAttribute = k => root.attributes.has(k);
-  const context = vm.createContext({Services:{prefs:{getBoolPref:(k,fallback)=>prefs.get(k) ?? fallback,addObserver(){},removeObserver(){}}},console});
+  const context = vm.createContext({Services:{prefs:{getBoolPref:(k,fallback)=>prefs.get(k) ?? fallback,getCharPref:(k,fallback)=>prefs.get(k) ?? fallback,addObserver(){},removeObserver(){}}},console});
   Object.assign(context,{readActionStamp,actionStampMatches});
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIHistoryMenu.sys.mjs",import.meta.url),"utf8").replace(/^import .*;$/m,"").replace("export class WinUIHistoryMenu","this.WinUIHistoryMenu=class WinUIHistoryMenu"),context);
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUINavigationState.sys.mjs",import.meta.url),"utf8").replace(/^export /gm,"")+";this.WinUINavigationState=WinUINavigationState;this.NAVIGATION_COMMANDS=NAVIGATION_COMMANDS;",context);
