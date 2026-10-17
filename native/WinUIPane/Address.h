@@ -98,10 +98,10 @@ struct NativeAddress {
     bool syncing{}, composing{}, observedComposing{}, focusWithin{};
     // In the navigation row the field's embedded buttons stay hidden until the
     // pointer is over the field, or keyboard focus or an open menu is within it.
-    bool hideEmbeddedControls{}, pointerOverField{};
+    bool hideEmbeddedControls{}, islandFocusOwned{};
     Microsoft::UI::Xaml::Controls::Grid fieldHeader{nullptr};
     bool FocusInsideField() const {
-        if (!fieldHeader || !fieldHeader.XamlRoot()) return false;
+        if (!islandFocusOwned || !fieldHeader || !fieldHeader.XamlRoot()) return false;
         auto focused = Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(fieldHeader.XamlRoot()).try_as<winrt::Microsoft::UI::Xaml::DependencyObject>();
         while (focused) {
             if (focused == fieldHeader) return true;
@@ -109,9 +109,18 @@ struct NativeAddress {
         }
         return false;
     }
+    bool PointerInsideField() const {
+        if (!fieldHeader || !fieldHeader.XamlRoot()) return false;
+        POINT cursor{};
+        if (!GetCursorPos(&cursor)) return false;
+        auto point = fieldHeader.XamlRoot().ContentIsland().CoordinateConverter().ConvertScreenToLocal(
+            winrt::Windows::Graphics::PointInt32{cursor.x,cursor.y});
+        point = fieldHeader.TransformToVisual(nullptr).Inverse().TransformPoint(point);
+        return point.X >= 0 && point.Y >= 0 && point.X < fieldHeader.ActualWidth() && point.Y < fieldHeader.ActualHeight();
+    }
     void UpdateEmbeddedControls() {
-        const bool reveal = !hideEmbeddedControls || pointerOverField || FocusInsideField() ||
-                            mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen() || pageActions.open;
+        const bool reveal = !hideEmbeddedControls || PointerInsideField() || (islandFocusOwned &&
+                            (FocusInsideField() || mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen() || pageActions.open));
         omnibarLeft.SetRevealed(reveal);
         omnibarRight.SetRevealed(reveal);
         for (auto const& element : {winrt::Microsoft::UI::Xaml::UIElement(mode.button), winrt::Microsoft::UI::Xaml::UIElement(mode.exit),
@@ -295,6 +304,10 @@ struct NativeAddress {
         Stage(value, NativeShellCore::ContextMenu);
     }
     void ObserveFocus(bool islandHasFocus) {
+        // FocusManager retains a logical target after Win32 focus leaves this
+        // island. Only the owning pane's live island/popup focus can reveal it.
+        islandFocusOwned = islandHasFocus;
+        UpdateEmbeddedControls();
         if ((mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen() || pageActions.open) && islandHasFocus) return;
         bool inside = false;
         if (root.XamlRoot() && islandHasFocus) {
@@ -645,25 +658,22 @@ struct NativeAddress {
         fieldHeader = header;
         header.PointerEntered([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
-            pointerOverField = true;
             UpdateEmbeddedControls();
         });
         for (auto leave : {&UIElement::PointerExitedEvent, &UIElement::PointerCanceledEvent}) {
             header.AddHandler((*leave)(), winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
                 [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
                     if (alive.expired()) return;
-                    // Exited also bubbles from children as the pointer moves between them.
-                    auto point = args.GetCurrentPoint(fieldHeader).Position();
-                    if (point.X >= 0 && point.Y >= 0 && point.X < fieldHeader.ActualWidth() && point.Y < fieldHeader.ActualHeight()) return;
-                    pointerOverField = false;
+                    // Child exits bubble too, and cross-HWND exits can retain
+                    // the last in-field event position. Read live coordinates.
                     UpdateEmbeddedControls();
                 })), true);
         }
         header.GotFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-            if (!alive.expired()) UpdateEmbeddedControls();
+            if (!alive.expired()) ScheduleFocusObservation();
         });
         header.LostFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-            if (!alive.expired()) UpdateEmbeddedControls();
+            if (!alive.expired()) ScheduleFocusObservation();
         });
         mode.flyout.Closed([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (!alive.expired()) UpdateEmbeddedControls();
