@@ -17949,10 +17949,10 @@ index 00000000000..78194ca8878
 +}
 diff --git a/browser/base/content/WinUIOmnibarActions.sys.mjs b/browser/base/content/WinUIOmnibarActions.sys.mjs
 new file mode 100644
-index 00000000000..d3c6a113adc
+index 00000000000..a869dd9e6a8
 --- /dev/null
 +++ b/browser/base/content/WinUIOmnibarActions.sys.mjs
-@@ -0,0 +1,235 @@
+@@ -0,0 +1,298 @@
 +// Presentation adapter for Firefox-owned address-bar controls. No browser policy lives here.
 +const PAGE_ACTIONS = [
 +  ['connection', 'identity-icon-box'],
@@ -18037,14 +18037,75 @@ index 00000000000..d3c6a113adc
 +    return ['notSecure','mixedActiveContent','mixedDisplayContent','mixedDisplayContentLoadedActiveBlocked',
 +      'weakCipher','certErrorPage','httpsOnlyErrorPage','certUserOverridden'].some(c => box?.classList.contains(c));
 +  }
++  nativePresentation(node, imageNode) {
++    // Read Firefox's rendered feature state, never URLs, labels or image names.
++    // Extension page actions alone retain their author-provided artwork.
++    const document = this.window.document;
++    const has = (target, name) => !!target?.hasAttribute(name);
++    const classes = (target, name) => !!target?.classList.contains(name);
++    let icon = '', iconState = 'normal';
++    const kinds = {
++      'reader-mode-button':'reader', 'picture-in-picture-button':'pip',
++      'taskbar-tabs-button':'taskbar', 'translations-button':'translation',
++      'urlbar-zoom-button':'zoom', 'split-view-button':'split', 'share-button':'share',
++      'star-button-box':'bookmark', 'urlbar-revert-button':'revert',
++    };
++    const permissions = {'desktop-notification':'notification', 'loopback-network':'network',
++      'local-network':'network', 'persistent-storage':'storage', 'autoplay-media':'autoplay'};
++    if (node.id === 'identity-permission-box') {
++      // This button presents the first visible child, which is omitted as a
++      // separate action below. Preserve its permission type and blocked state.
++      return imageNode !== node && imageNode.id !== 'permissions-granted-icon' ?
++        this.nativePresentation(imageNode, imageNode) : {icon:'permissions', iconState:'normal'};
++    }
++    if (node.matches('.blocked-permission-icon')) {
++      const permission = node.getAttribute('data-permission-id');
++      icon = permissions[permission] || permission || 'permissions';
++      iconState = 'blocked';
++    } else if (node.matches('.sharing-icon')) {
++      icon = node.id === 'webrtc-sharing-icon' ? node.getAttribute('sharing') :
++        ({'geo-sharing-icon':'geo','xr-sharing-icon':'xr','serial-sharing-icon':'serial'}[node.id] || 'permissions');
++      iconState = has(node, 'paused') ? 'paused' : 'recording';
++    } else if (node.matches('.notification-anchor-icon')) {
++      icon = ({'default':'notification', 'geo':'geo', 'loopback-network':'network',
++        'local-network':'network', 'xr':'xr', 'autoplay-media':'autoplay', 'addons':'install',
++        'canvas':'canvas', 'indexedDB':'storage', 'password':'password',
++        'web-notifications':'notification', 'webRTC-shareDevices':'camera',
++        'webRTC-shareMicrophone':'microphone', 'webRTC-shareScreen':'screen',
++        'webRTC-shareSpeaker':'speaker', 'servicesInstall':'service', 'eme':'drm',
++        'persistent-storage':'storage', 'midi':'midi', 'serial':'serial',
++        'webauthn':'password', 'identity-credential':'credential', 'storage-access':'storage-access',
++      })[node.id.replace(/-notification-icon$/, '')] || 'notification';
++    } else if (node.id === 'trust-icon-container' || node.id === 'identity-icon-box') {
++      const identity = node.id === 'trust-icon-container' ? node : document.getElementById('identity-box');
++      iconState = ['breached','certErrorPage','httpsOnlyErrorPage'].some(c => classes(identity,c)) ? 'danger' :
++        this.connectionWarning(node) ? 'warning' : 'normal';
++      icon = iconState === 'normal' ? 'connection' : iconState;
++    } else if (node.id === 'tracking-protection-icon-container') {
++      const box = document.getElementById('tracking-protection-icon-box');
++      icon = 'protection';
++      iconState = has(box,'hasException') ? 'blocked' : has(box,'active') ? 'active' : 'normal';
++    } else if (node.id === 'userContext-icons') {
++      icon = ['fingerprint','briefcase','dollar','cart','vacation','gift','food','fruit','pet','tree','chill','circle','fence']
++        .find(name => classes(imageNode, `identity-icon-${name}`)) || 'circle';
++    } else if (kinds[node.id]) {
++      icon = kinds[node.id];
++      if (icon === 'bookmark' && has(document.getElementById('star-button'),'starred')) icon = 'bookmark-filled';
++      if (icon === 'bookmark-filled' || node.getAttribute('readeractive') === 'true' ||
++          has(node,'pipactive') || has(node,'translationsactive')) iconState = 'active';
++      if (icon === 'translation' && this.visible(document.getElementById('translations-button-circle-arrows')))
++        iconState = 'busy';
++    }
++    return {icon, iconState, ...(node.id === 'userContext-icons' ? {iconColored:true} : {})};
++  }
 +  snapshot() {
 +    const document = this.window.document;
 +    const left = ['trust-icon-container', 'tracking-protection-icon-container', 'identity-icon-box', 'identity-permission-box']
 +      .map(id => document.getElementById(id));
 +    // Notification indicators and extension page actions are dynamic Firefox children.
 +    left.push(...document.querySelectorAll('#identity-permission-box .sharing-icon, #identity-permission-box .blocked-permission-icon, #notification-popup-box > [role="button"]'));
-+    const right = [...document.querySelectorAll('#page-action-buttons > [role="button"], #page-action-buttons > toolbarbutton')]
-+      .filter(node => node.id !== 'pageActionButton');
++    const right = [document.getElementById('urlbar-revert-button'), ...document.querySelectorAll('#page-action-buttons > [role="button"], #page-action-buttons > toolbarbutton')]
++      .filter(node => node && node.id !== 'pageActionButton');
 +    // Keep the star directly before the fixed native ellipsis, including when
 +    // extensions insert page-action nodes after Firefox's star.
 +    right.sort((a,b) => Number(a.id === 'star-button-box') - Number(b.id === 'star-button-box'));
@@ -18074,14 +18135,16 @@ index 00000000000..d3c6a113adc
 +        const url = imageNode.getAttribute('src') || /^url\(["']?(.*?)["']?\)$/.exec(style.listStyleImage)?.[1];
 +        const color = style.fill === 'currentcolor' || style.fill === 'currentColor' ? style.color : style.fill;
 +        const imageKey = JSON.stringify([url, color, style.stroke, style.filter]);
-+        if (url && !this.images.has(imageKey)) this.loadImage(imageKey, url, color, style.stroke, style.filter);
++        const presentation = this.nativePresentation(node, imageNode);
++        const foreground = presentation.iconColored ? color : style.color;
++        if (!presentation.icon && url && !this.images.has(imageKey)) this.loadImage(imageKey, url, color, style.stroke, style.filter);
 +        const tooltip = document.getElementById(node.getAttribute('tooltip'));
 +        const label = node.getAttribute('aria-label') || node.getAttribute('tooltiptext') || node.getAttribute('label') ||
 +          imageNode.getAttribute('tooltiptext') || tooltip?.textContent?.trim() || node.textContent.trim();
-+        output[key].push({id:entry.id, label:(label || '').slice(0,4096), enabled:node.getAttribute('disabled') !== 'true', alwaysVisible,
++        output[key].push({...presentation, id:entry.id, label:(label || '').slice(0,4096), enabled:node.getAttribute('disabled') !== 'true', alwaysVisible,
 +          text:(node.id === 'urlbar-zoom-button' ? node.getAttribute('label') : '').slice(0,16),
 +          badge:(node.querySelector('#translations-button-locale')?.textContent || '').slice(0,4096),
-+          background:[0,0,0,0], foreground:(style.color.match(/[\d.]+/g)?.slice(0,3).map(value=>Math.round(Math.max(0,Math.min(255,Number(value)*(style.color.startsWith('color(srgb') ? 255 : 1))))) || [128,128,128]).concat(255), image:this.images.get(imageKey) || null});
++          background:[0,0,0,0], foreground:(foreground.match(/[\d.]+/g)?.slice(0,3).map(value=>Math.round(Math.max(0,Math.min(255,Number(value)*(foreground.startsWith('color(srgb') ? 255 : 1))))) || [128,128,128]).concat(255), image:presentation.icon ? null : this.images.get(imageKey) || null});
 +      }
 +    }
 +    for (const [node, entry] of this.entries) if (!keep.has(node)) {

@@ -1,5 +1,7 @@
 #pragma once
 #include "JsonValidation.h"
+#include "OmnibarIcons.h"
+#include <winrt/Microsoft.UI.Xaml.Data.h>
 #include <map>
 #include <set>
 
@@ -8,8 +10,8 @@ struct PinnedExtensionButtons {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using Button = winrt::Microsoft::UI::Xaml::Controls::Button;
     struct State {
-        winrt::hstring id, label, badge, text;
-        bool enabled{}, genericIcon{}, alwaysVisible{};
+        winrt::hstring id, label, badge, text, icon, iconState{L"normal"};
+        bool enabled{}, genericIcon{}, alwaysVisible{}, iconColored{};
         JObject image{nullptr};
         winrt::Windows::UI::Color background{}, foreground{};
     };
@@ -21,7 +23,15 @@ struct PinnedExtensionButtons {
         winrt::Microsoft::UI::Xaml::Controls::TextBlock badge{nullptr};
         winrt::Microsoft::UI::Xaml::Controls::Border badgeBorder{nullptr};
         winrt::Microsoft::UI::Xaml::Media::SolidColorBrush background{nullptr}, foreground{nullptr};
-        winrt::hstring imageKey;
+        winrt::hstring imageKey, iconKey;
+        winrt::Microsoft::UI::Xaml::Media::SolidColorBrush iconColor{nullptr};
+        winrt::Microsoft::UI::Xaml::Controls::FontIcon coloredIcon{nullptr};
+        winrt::Microsoft::UI::Xaml::Controls::Grid nativeHost{nullptr};
+        winrt::Microsoft::UI::Xaml::Controls::FontIcon nativeIcon{nullptr};
+        winrt::Microsoft::UI::Xaml::Controls::PathIcon blocked{nullptr}, nativeVector{nullptr};
+        winrt::Microsoft::UI::Xaml::Shapes::Ellipse active{nullptr}, recording{nullptr};
+        winrt::Microsoft::UI::Xaml::Controls::ProgressRing busy{nullptr};
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock nativeText{nullptr};
     };
     winrt::Microsoft::UI::Xaml::Controls::StackPanel panel;
     std::map<winrt::hstring, Row> rows;
@@ -68,6 +78,11 @@ struct PinnedExtensionButtons {
             next.label = item.GetNamedString(L"label");
             next.badge = item.GetNamedString(L"badge", L"");
             next.text = item.GetNamedString(L"text", L"");
+            next.icon = item.GetNamedString(L"icon", L"");
+            next.iconColored = item.GetNamedBoolean(L"iconColored", false);
+            next.iconState = item.GetNamedString(L"iconState", L"normal");
+            if ((!next.icon.empty() && !OmnibarIcons::Glyph(next.icon)) || !OmnibarIcons::ValidState(next.iconState))
+                throw winrt::hresult_invalid_argument();
             if (next.id.empty() || next.id.size() > 64 || !ids.insert(next.id).second ||
                 next.label.size() > 4096 || next.badge.size() > 4096 || next.text.size() > 16) throw winrt::hresult_invalid_argument();
             next.enabled = item.GetNamedBoolean(L"enabled");
@@ -78,6 +93,7 @@ struct PinnedExtensionButtons {
             NativeJson::ValidateImage(item, pixels, {32, 32768});
             if (item.HasKey(L"image") && item.GetNamedValue(L"image").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null)
                 next.image = item.GetNamedObject(L"image");
+            if (!next.icon.empty() && (next.image || next.genericIcon)) throw winrt::hresult_invalid_argument();
             result.push_back(std::move(next));
         }
         return result;
@@ -102,6 +118,21 @@ struct PinnedExtensionButtons {
                 row.badge = row.badgeBorder.Child().as<TextBlock>();
                 row.genericIcon = Markup::XamlReader::Load(LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xEA86;" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>)").as<FontIcon>();
                 grid.Children().Append(row.genericIcon);
+                // Built-ins inherit the stock button foreground (including disabled
+                // and high contrast). State marks carry meaning without color.
+                row.nativeHost = Markup::XamlReader::Load(LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="20" Height="20" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"><Grid.Resources><ResourceDictionary><ResourceDictionary.ThemeDictionaries><ResourceDictionary x:Key="Default" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="NativeIconColor" Color="Transparent"/></ResourceDictionary><ResourceDictionary x:Key="HighContrast" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="NativeIconColor" Color="{ThemeResource SystemColorButtonTextColor}"/></ResourceDictionary></ResourceDictionary.ThemeDictionaries></ResourceDictionary></Grid.Resources><FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="16"/><PathIcon Width="16" Height="16" Data="M 0,14 L 14,0 16,2 2,16 Z"/><Ellipse Width="3" Height="3" Fill="{ThemeResource TextFillColorPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Bottom"/><ProgressRing Width="16" Height="16" MinWidth="0" MinHeight="0" IsActive="False"/><FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="16" Foreground="{ThemeResource NativeIconColor}"/><Ellipse Width="5" Height="5" Fill="{ThemeResource SystemFillColorCriticalBrush}" HorizontalAlignment="Right" VerticalAlignment="Top"/></Grid>)").as<Grid>();
+                row.nativeIcon = row.nativeHost.Children().GetAt(0).as<FontIcon>();
+                row.blocked = row.nativeHost.Children().GetAt(1).as<PathIcon>();
+                row.active = row.nativeHost.Children().GetAt(2).as<Shapes::Ellipse>();
+                row.busy = row.nativeHost.Children().GetAt(3).as<ProgressRing>();
+                row.coloredIcon=row.nativeHost.Children().GetAt(4).as<FontIcon>();
+                row.recording = row.nativeHost.Children().GetAt(5).as<Shapes::Ellipse>();
+                row.nativeVector = PathIcon(); row.nativeVector.Width(16); row.nativeVector.Height(16);
+                row.nativeHost.Children().InsertAt(0, row.nativeVector);
+                row.iconColor=row.nativeHost.Resources().ThemeDictionaries().Lookup(winrt::box_value(L"Default")).as<ResourceDictionary>().Lookup(winrt::box_value(L"NativeIconColor")).as<Media::SolidColorBrush>();
+                grid.Children().Append(row.nativeHost);
+                row.nativeText = Markup::XamlReader::Load(LR"(<TextBlock xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"/>)").as<TextBlock>();
+                grid.Children().Append(row.nativeText);
                 Canvas::SetZIndex(row.badgeBorder,1);
                 auto resources = grid.Resources().ThemeDictionaries().Lookup(winrt::box_value(L"Default")).as<ResourceDictionary>();
                 row.background = resources.Lookup(winrt::box_value(L"BadgeBackground")).as<Media::SolidColorBrush>();
@@ -133,14 +164,54 @@ struct PinnedExtensionButtons {
             row.badge.Text(item.text.empty() ? item.badge : item.text);
             const auto width = item.text.empty() ? buttonSize : std::max(buttonSize, double(item.text.size() * 7 + 12));
             row.button.Width(width);
-            row.image.Visibility(item.text.empty() && !item.genericIcon ? Visibility::Visible : Visibility::Collapsed);
-            row.genericIcon.Visibility(item.text.empty() && item.genericIcon ? Visibility::Visible : Visibility::Collapsed);
+            const bool builtin = !item.icon.empty();
+            row.image.Visibility(!builtin && item.text.empty() && !item.genericIcon ? Visibility::Visible : Visibility::Collapsed);
+            row.genericIcon.Visibility(!builtin && item.text.empty() && item.genericIcon ? Visibility::Visible : Visibility::Collapsed);
             row.badge.FontSize(item.text.empty() ? 9 : 12);
             row.badgeBorder.MaxWidth(item.text.empty() ? 30 : width);
             row.badgeBorder.HorizontalAlignment(item.text.empty() ? HorizontalAlignment::Right : HorizontalAlignment::Center);
             row.badgeBorder.VerticalAlignment(item.text.empty() ? VerticalAlignment::Top : VerticalAlignment::Center);
-            row.badgeBorder.Visibility((item.badge.empty() && item.text.empty()) ? Visibility::Collapsed : Visibility::Visible);
+            row.badgeBorder.Visibility((builtin || item.badge.empty() && item.text.empty()) ? Visibility::Collapsed : Visibility::Visible);
             row.background.Color(item.background); row.foreground.Color(item.foreground);
+            row.nativeHost.Visibility(builtin && item.text.empty() ? Visibility::Visible : Visibility::Collapsed);
+            if (builtin) { row.nativeIcon.Glyph(OmnibarIcons::Glyph(item.icon)); row.coloredIcon.Glyph(OmnibarIcons::Glyph(item.icon)); }
+            const auto path=builtin ? OmnibarIcons::Path(item.icon) : nullptr;
+            if (row.iconKey != item.icon) {
+                row.iconKey=item.icon;
+                if (path) {
+                    auto xaml=winrt::hstring(L"<PathIcon xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Data=\"")+path+L"\"/>";
+                    // Keep geometry with its owning PathIcon. Reparenting Data
+                    // from a temporary icon can fail with E_INVALIDARG.
+                    auto next=Markup::XamlReader::Load(xaml).as<PathIcon>();
+                    next.Width(16); next.Height(16);
+                    uint32_t position=0;
+                    if (row.nativeHost.Children().IndexOf(row.nativeVector,position)) row.nativeHost.Children().SetAt(position,next);
+                    row.nativeVector=next;
+                }
+            }
+            row.iconColor.Color(item.foreground);
+
+            row.nativeIcon.Visibility(!item.iconColored && !path && item.iconState != L"busy" ? Visibility::Visible : Visibility::Collapsed);
+            if (item.iconColored) {
+                Data::Binding binding;
+                binding.Source(row.coloredIcon);
+                binding.Path(PropertyPath(L"Foreground"));
+                row.nativeVector.SetBinding(IconElement::ForegroundProperty(),binding);
+            } else row.nativeVector.ClearValue(IconElement::ForegroundProperty());
+            row.nativeVector.Visibility(path && item.iconState != L"busy" ? Visibility::Visible : Visibility::Collapsed);
+            row.coloredIcon.Visibility(item.iconColored && !path && item.iconState != L"busy" ? Visibility::Visible : Visibility::Collapsed);
+            row.blocked.Visibility(builtin && item.iconState == L"blocked" ? Visibility::Visible : Visibility::Collapsed);
+            row.recording.Visibility(builtin && item.iconState == L"recording" ? Visibility::Visible : Visibility::Collapsed);
+            row.active.Visibility(builtin && item.iconState == L"active" ? Visibility::Visible : Visibility::Collapsed);
+            row.busy.IsActive(builtin && visible && item.iconState == L"busy");
+            row.busy.Visibility(builtin && item.iconState == L"busy" ? Visibility::Visible : Visibility::Collapsed);
+            row.nativeText.Text(item.text.empty() ? item.badge : item.text);
+            row.nativeText.FontSize(item.text.empty() ? 9 : 12);
+            row.nativeText.MaxWidth(item.text.empty() ? 30 : width);
+            row.nativeText.TextTrimming(TextTrimming::CharacterEllipsis);
+            row.nativeText.HorizontalAlignment(item.text.empty() ? HorizontalAlignment::Right : HorizontalAlignment::Center);
+            row.nativeText.VerticalAlignment(item.text.empty() ? VerticalAlignment::Top : VerticalAlignment::Center);
+            row.nativeText.Visibility(builtin && (!item.text.empty() || !item.badge.empty()) ? Visibility::Visible : Visibility::Collapsed);
             auto imageKey = item.image ? item.image.GetNamedString(L"pixels") : winrt::hstring{};
             if (imageKey != row.imageKey) {
                 row.image.Source(item.image ? NativeJson::DecodeImage(item.image) : nullptr);

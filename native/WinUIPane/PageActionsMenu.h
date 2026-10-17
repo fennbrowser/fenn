@@ -1,5 +1,6 @@
 #pragma once
 #include "JsonValidation.h"
+#include "OmnibarIcons.h"
 #include <array>
 
 // WinUI presentation only. Firefox owns availability, security, commands and pins.
@@ -11,7 +12,8 @@ struct NativePageActionsMenu {
     struct Row {
         Microsoft::UI::Xaml::Controls::ListViewItem host{nullptr};
         Button action{nullptr}, pin{nullptr};
-        Microsoft::UI::Xaml::Controls::FontIcon icon{nullptr};
+        Microsoft::UI::Xaml::Controls::FontIcon icon{nullptr}, actionIcon{nullptr};
+        Microsoft::UI::Xaml::Controls::TextBlock label{nullptr};
     };
     Button button{nullptr};
     Microsoft::UI::Xaml::Controls::Flyout flyout{nullptr};
@@ -104,6 +106,15 @@ struct NativePageActionsMenu {
             row.host.Margin({0,0,0,0});
             auto grid = Markup::XamlReader::Load(LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Margin="{ThemeResource MenuFlyoutItemMargin}"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Button Style="{StaticResource SubtleButtonStyle}" MinWidth="0" MinHeight="{ThemeResource MenuFlyoutThemeMinHeight}" Padding="{ThemeResource MenuFlyoutItemThemePaddingNarrow}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" IsTabStop="False"/><Button Grid.Column="1" Style="{StaticResource SubtleButtonStyle}" Width="32" Height="32" MinWidth="0" MinHeight="0" Padding="0" Opacity="0"><FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="14"/></Button></Grid>)").as<Grid>();
             row.action=grid.Children().GetAt(0).as<Button>();
+            auto content=Markup::XamlReader::Load(LR"(<StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Orientation="Horizontal" Spacing="12"><FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="16"/><TextBlock VerticalAlignment="Center"/></StackPanel>)").as<StackPanel>();
+            row.actionIcon=content.Children().GetAt(0).as<FontIcon>();
+            if (i == 2) {
+                auto xaml=winrt::hstring(L"<PathIcon xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Width=\"16\" Height=\"16\" Data=\"")+OmnibarIcons::Path(L"pip")+L"\"/>";
+                content.Children().SetAt(0,Markup::XamlReader::Load(xaml).as<PathIcon>());
+                row.actionIcon=nullptr;
+            }
+            row.label=content.Children().GetAt(1).as<TextBlock>();
+            row.action.Content(content);
             row.pin=grid.Children().GetAt(1).as<Button>();
             row.icon=row.pin.Content().as<FontIcon>();
             row.host.Content(grid);
@@ -146,7 +157,9 @@ struct NativePageActionsMenu {
         ToolTipService::SetToolTip(button,winrt::box_value(next.label));
         for (size_t i=0; i<next.items.size(); ++i) {
             auto const& item=next.items[i]; auto& row=rows[i];
-            row.action.Content(winrt::box_value(item.label)); row.action.IsEnabled(item.enabled);
+            row.label.Text(item.label); row.action.IsEnabled(item.enabled);
+            if (row.actionIcon) row.actionIcon.Glyph(OmnibarIcons::Glyph(item.key));
+            Automation::AutomationProperties::SetName(row.action,item.label);
             Automation::AutomationProperties::SetName(row.host,item.label);
             Automation::AutomationProperties::SetHelpText(row.host,item.reason);
             Automation::AutomationProperties::SetHelpText(row.action,item.reason);

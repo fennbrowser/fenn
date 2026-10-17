@@ -70,7 +70,7 @@ function menuFixture() {
     getAttribute(name){return this.attrs[name] || '';},hasAttribute(name){return name in this.attrs;},querySelectorAll(){return [];},querySelector(){return null;},matches(){return false;}}]));
   nodes.get('trust-icon-container').hidden=true;
   const document={getElementById:id=>nodes.get(id),querySelectorAll:selector=>selector.startsWith('#page-action-buttons') ?
-    [...nodes.values()].filter(n=>!['trust-icon-container','identity-icon-box','identity-box','tracking-protection-icon-container','identity-permission-box'].includes(n.id)) : []};
+    [...nodes.values()].filter(n=>!['trust-icon-container','identity-icon-box','identity-box','tracking-protection-icon-container','identity-permission-box','star-button'].includes(n.id)) : []};
   const adapter=Object.create(context.Actions.prototype);
   Object.assign(adapter,{entries:new Map(),nextId:0,images:new Map(),events:new WeakSet(),label:key=>key,context:()=>17,
     toolbar:{menuAnchor:()=>({}),menuAnchors:new Map()},window:{document,gURLBar:{parentNode:{}},
@@ -148,4 +148,80 @@ test('Firefox indicators remain persistent; ordinary actions only reveal on hove
   assert.ok(!adapter.snapshot().omnibarLeft.some(i=>i.label==='identity-icon-box'));
   nodes.set('urlbar-zoom-button',{...nodes.get('share-button'),id:'urlbar-zoom-button',attrs:{label:'120%'}});
   assert.equal(adapter.snapshot().omnibarRight.find(i=>i.text==='120%')?.alwaysVisible,true);
+});
+
+function indicator(id, classes = [], attrs = {}) {
+  return {id, isConnected:true, attrs, classList:{contains:name=>classes.includes(name)},
+    matches:selector=>selector.split(',').some(s=>classes.includes(s.trim().slice(1))),
+    getAttribute:name=>attrs[name] || '', hasAttribute:name=>name in attrs};
+}
+
+test('native artwork covers the pinned markup inventory, including every permission and notification',()=>{
+  const {adapter,nodes}=menuFixture();
+  const markup=readFileSync(new URL('../upstream/firefox/browser/base/content/navigator-toolbox.inc.xhtml',import.meta.url),'utf8');
+  const native=readFileSync(new URL('../native/WinUIPane/OmnibarIcons.h',import.meta.url),'utf8');
+  let count=0;
+  for (const match of markup.matchAll(/<image\b([^>]+)>/g)) {
+    const attributes=Object.fromEntries(Array.from(match[1].matchAll(/([\w-]+)="([^"]*)"/g),m=>[m[1],m[2]]));
+    const classes=(attributes.class || '').split(' ');
+    if (!classes.some(c=>['blocked-permission-icon','notification-anchor-icon','sharing-icon'].includes(c))) continue;
+    const node=indicator(attributes.id || '',classes,attributes);
+    if (node.id==='webrtc-sharing-icon') node.attrs.sharing='camera';
+    const result=adapter.nativePresentation(node,node);
+    assert.ok(result.icon && native.includes(`{L"${result.icon}"`),JSON.stringify(attributes));
+    if (classes.includes('blocked-permission-icon')) assert.equal(result.iconState,'blocked');
+    count++;
+  }
+  assert.ok(count>=40,count);
+  const page=markup.slice(markup.indexOf('<hbox id="page-action-buttons"'),markup.indexOf('<html:div class="search-one-offs"'));
+  for (const match of page.matchAll(/<(?:hbox|toolbarbutton) id="([^"]+)"/g)) {
+    if (['page-action-buttons','pageActionButton'].includes(match[1])) continue;
+    const node=nodes.get(match[1]) || indicator(match[1]);
+    assert.ok(adapter.nativePresentation(node,node).icon,match[1]);
+  }
+});
+
+test('built-ins never request Gecko artwork; extensions retain the exact pixel payload',()=>{
+  const {adapter,nodes}=menuFixture(); const loads=[];
+  adapter.loadImage=(...args)=>loads.push(args);
+  adapter.window.getComputedStyle=()=>({display:'block',visibility:'visible',fill:'currentColor',color:'rgb(0,0,0)',listStyleImage:'url("test.svg")'});
+  let state=adapter.snapshot();
+  assert.equal(loads.length,1); // The only extension in this fixture.
+  const pixels={width:1,height:1,pixels:'000000ff'};
+  adapter.images.set(loads[0][0],pixels);
+  state=adapter.snapshot();
+  const builtin=state.omnibarRight.find(i=>i.label==='reader-mode-button');
+  assert.equal(builtin.icon,'reader'); assert.equal(builtin.image,null);
+  const extension=state.omnibarRight.find(i=>i.label==='extension-action');
+  assert.equal(extension.icon,''); assert.equal(extension.image,pixels);
+  const star=indicator('star-button',[],{starred:'true'}); nodes.set(star.id,star);
+  assert.equal(adapter.snapshot().omnibarRight.at(-1).icon,'bookmark-filled');
+  delete star.attrs.starred;
+  assert.equal(adapter.snapshot().omnibarRight.at(-1).icon,'bookmark');
+});
+
+test('permission wrapper carries the actual first child state; sharing and protection states stay distinct',()=>{
+  const {adapter,nodes}=menuFixture();
+  const camera=indicator('', ['blocked-permission-icon'], {'data-permission-id':'camera'});
+  assert.deepEqual({...adapter.nativePresentation(nodes.get('identity-permission-box'),camera)}, {icon:'camera',iconState:'blocked'});
+  const sharing=indicator('webrtc-sharing-icon',['sharing-icon'],{sharing:'microphone'});
+  assert.deepEqual({...adapter.nativePresentation(sharing,sharing)}, {icon:'microphone',iconState:'recording'});
+  for (const type of ['camera','microphone','screen']) {
+    sharing.attrs.sharing=type;
+    assert.equal(adapter.nativePresentation(sharing,sharing).iconState,'recording');
+  }
+  sharing.attrs.sharing='microphone';
+  const allowed=indicator('webRTC-shareMicrophone-notification-icon',['notification-anchor-icon']);
+  assert.equal(adapter.nativePresentation(allowed,allowed).iconState,'normal');
+  sharing.attrs.paused='';
+  assert.deepEqual({...adapter.nativePresentation(sharing,sharing)}, {icon:'microphone',iconState:'paused'});
+  sharing.attrs.sharing='screen';
+  assert.equal(adapter.nativePresentation(sharing,sharing).icon,'screen');
+  const protection=indicator('tracking-protection-icon-box',[],{hasException:'true'});
+  nodes.set(protection.id,protection);
+  assert.equal(adapter.nativePresentation(nodes.get('tracking-protection-icon-container'),protection).iconState,'blocked');
+  delete protection.attrs.hasException; protection.attrs.active='true';
+  assert.equal(adapter.nativePresentation(nodes.get('tracking-protection-icon-container'),protection).iconState,'active');
+  nodes.get('trust-icon-container').classes.add('breached');
+  assert.equal(adapter.nativePresentation(nodes.get('trust-icon-container'),null).icon,'danger');
 });

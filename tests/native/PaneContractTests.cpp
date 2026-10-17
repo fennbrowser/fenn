@@ -937,6 +937,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         PinnedExtensionButtons indicators;
         auto state= PinnedExtensionButtons::Read(winrt::Windows::Data::Json::JsonObject::Parse(
             LR"({"navigation":{"omnibarLeft":[{"id":"warning","label":"Warning","enabled":true,"alwaysVisible":true,"background":[0,0,0,0],"foreground":[0,0,0,255]},{"id":"ordinary","label":"Action","enabled":true,"background":[0,0,0,0],"foreground":[0,0,0,255]}]}})"),L"omnibarLeft");
+        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
         indicators.Apply(state,true);
         indicators.SetRevealed(false);
         Require(indicators.panel.Opacity()==1 && indicators.rows.at(L"warning").button.Opacity()==1 &&
@@ -945,8 +946,56 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         indicators.SetRevealed(true);
         Require(indicators.rows.at(L"ordinary").button.Opacity()==1, "hover reveals ordinary action");
         state[0].alwaysVisible=false;
+        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
         indicators.Apply(state,true); indicators.SetRevealed(false);
         Require(indicators.rows.at(L"warning").button.Opacity()==0, "cleared active state returns to hover-only presentation");
+        auto retained=indicators.rows.at(L"warning").button;
+        state[0].icon=L"camera"; state[0].iconState=L"blocked";
+        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
+        indicators.Apply(state,true);
+        auto& native=indicators.rows.at(L"warning");
+        Require(native.button==retained && native.image.Visibility()==Visibility::Collapsed &&
+            native.nativeHost.Visibility()==Visibility::Visible && native.blocked.Visibility()==Visibility::Visible,
+            "built-in blocked icon replaces pixels without rebuilding the control");
+        for (auto kind : {L"microphone", L"camera", L"screen"}) {
+            state[0].icon=kind; state[0].iconState=L"recording";
+            indicators.Apply(state,true);
+            Require(native.button==retained && native.recording.Visibility()==Visibility::Visible &&
+                native.active.Visibility()==Visibility::Collapsed, "active capture has a separate recording cue");
+            state[0].iconState=L"normal";
+            indicators.Apply(state,true);
+            Require(native.recording.Visibility()==Visibility::Collapsed, "permission alone has no recording cue");
+        }
+        state[0].icon=L"microphone"; state[0].iconState=L"paused";
+        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
+        indicators.Apply(state,true);
+        Require(native.nativeIcon.Glyph()==OmnibarIcons::Glyph(L"microphone") &&
+            native.blocked.Visibility()==Visibility::Collapsed && native.active.Visibility()==Visibility::Collapsed &&
+            native.recording.Visibility()==Visibility::Collapsed,
+            "paused sharing keeps its device icon without an activity badge");
+        state[0].icon=L"translation"; state[0].iconState=L"busy";
+        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
+        indicators.Apply(state,true);
+        Require(native.busy.IsActive() && native.nativeIcon.Visibility()==Visibility::Collapsed,
+            "translation loading uses the native progress ring");
+        state[0].iconState=L"active"; state[0].badge=L"fr";
+        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
+        indicators.Apply(state,true);
+        Require(!native.busy.IsActive() && native.active.Visibility()==Visibility::Visible &&
+            native.nativeText.Text()==L"fr" && native.badgeBorder.Visibility()==Visibility::Collapsed,
+            "translation completion retains locale with native themed text");
+        state[0].icon=L"pip"; state[0].badge=L"";
+        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
+        indicators.Apply(state,true);
+        Require(native.nativeVector.Data() && native.nativeVector.Visibility()==Visibility::Visible,
+            "built-in vector icon is native geometry");
+        state[0].icon=L""; state[0].iconState=L"normal";
+        state[0].image=winrt::Windows::Data::Json::JsonObject::Parse(LR"({"width":1,"height":1,"pixels":"000000ff"})");
+        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
+        indicators.Apply(state,true);
+        Require(native.nativeHost.Visibility()==Visibility::Collapsed && native.image.Source() &&
+            native.image.Visibility()==Visibility::Visible && native.button==retained,
+            "extension image path stays intact and clears native presentation");
         indicators.Apply({},true);
         Require(indicators.rows.empty() && indicators.panel.Visibility()==Visibility::Collapsed,
                 "Firefox removal revokes persistent indicators");
@@ -985,6 +1034,50 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         return nullptr;
     };
     AwaitLiveTree(content.as<FrameworkElement>());
+    {
+        // Exercise every custom vector in a loaded tree and live theme changes,
+        // including the semantic container-color binding.
+        PinnedExtensionButtons icons;
+        std::vector<PinnedExtensionButtons::State> states;
+        for (auto kind : {L"bookmark",L"pip",L"fruit",L"pet",L"tree",L"fence",L"fingerprint",L"translation"}) {
+            PinnedExtensionButtons::State next;
+            next.id=kind; next.label=kind; next.icon=kind;
+            next.enabled=true; next.alwaysVisible=true;
+            next.iconColored=next.icon!=L"bookmark" && next.icon!=L"pip" && next.icon!=L"translation";
+            next.foreground={255,34,102,170};
+            states.push_back(next);
+        }
+        icons.Apply(states,true);
+        auto root=content.as<Controls::Grid>();
+        auto original=root.RequestedTheme();
+        root.Children().Append(icons.panel);
+        root.UpdateLayout();
+        AwaitLiveTree(icons.rows.at(L"fence").nativeVector);
+        winrt::Windows::UI::Color light{};
+        for (auto theme : {ElementTheme::Light,ElementTheme::Dark,ElementTheme::Light}) {
+            root.RequestedTheme(theme);
+            for (int i=0;i<20;++i) { Pump(); Sleep(10); }
+            auto color=icons.rows.at(L"bookmark").nativeIcon.Foreground().as<Media::SolidColorBrush>().Color();
+            Require(icons.rows.at(L"bookmark").nativeIcon.ActualTheme()==theme,"native icon follows live root theme");
+            if (theme==ElementTheme::Light) light=color;
+            else if (!winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast())
+                Require(color!=light,"native glyph foreground changes between light and dark");
+            for (auto const& next : states) {
+                auto& row=icons.rows.at(next.id);
+                if (OmnibarIcons::Path(next.icon)) {
+                    fwprintf(stderr,L"Live vector %s: data=%d loaded=%d button=%d host=%d panel=%d width=%f\n",next.icon.c_str(),bool(row.nativeVector.Data()),row.nativeVector.IsLoaded(),row.button.IsLoaded(),row.nativeHost.IsLoaded(),icons.panel.IsLoaded(),row.nativeVector.ActualWidth());
+                    Require(row.nativeVector.Data() && row.nativeVector.IsLoaded(),"custom vector realizes in live XAML");
+                }
+                if (next.iconColored && !winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast()) {
+                    Require(row.coloredIcon.Foreground().as<Media::SolidColorBrush>().Color()==next.foreground,"container font preserves semantic color across themes");
+                    if (OmnibarIcons::Path(next.icon)) Require(row.nativeVector.Foreground().as<Media::SolidColorBrush>().Color()==next.foreground,"container vector follows the live color binding");
+                }
+            }
+        }
+        uint32_t index=0;
+        if (root.Children().IndexOf(icons.panel,index)) root.Children().RemoveAt(index);
+        root.RequestedTheme(original);
+    }
     auto toolbarSurface = content.as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>();
     auto toolbarCorners = toolbarSurface.CornerRadius();
     auto tabCorners = winrt::unbox_value<CornerRadius>(Application::Current().Resources().Lookup(winrt::box_value(L"OverlayCornerRadius")));
