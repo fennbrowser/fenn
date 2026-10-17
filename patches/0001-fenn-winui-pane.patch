@@ -7654,7 +7654,7 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..f1b9da56f27 100644
+index 4f28e62c7b5..663b5e5a6e0 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
 @@ -21,3 +21,3 @@ tabbrowser-tab-tooltip-container = { $containerName }
@@ -7695,7 +7695,7 @@ index 4f28e62c7b5..f1b9da56f27 100644
 -tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. We’ll save your groups here so they’re easy to find later.
 +tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. Weâ€™ll save your groups here so theyâ€™re easy to find later.
  tab-groups-list-empty-button = Create a tab group
-@@ -520 +520,72 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,74 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -7720,8 +7720,10 @@ index 4f28e62c7b5..f1b9da56f27 100644
 +winui-page-actions-pip = Picture-in-Picture
 +winui-page-actions-taskbar = Taskbar tabs
 +winui-page-actions-translation = Translation
++winui-page-actions-permissions = Site permissions
 +winui-page-actions-pin = Pin to address bar
 +winui-page-actions-unpin = Unpin from address bar
++winui-page-actions-permissions-unavailable = No site permissions are available on this page.
 +winui-page-actions-connection-unavailable = Connection details aren’t available on this page.
 +winui-page-actions-reader-unavailable = Reader View isn’t available on this page.
 +winui-page-actions-pip-unavailable = Picture-in-Picture isn’t available on this page.
@@ -17949,10 +17951,10 @@ index 00000000000..78194ca8878
 +}
 diff --git a/browser/base/content/WinUIOmnibarActions.sys.mjs b/browser/base/content/WinUIOmnibarActions.sys.mjs
 new file mode 100644
-index 00000000000..a869dd9e6a8
+index 00000000000..2febe0ecc1d
 --- /dev/null
 +++ b/browser/base/content/WinUIOmnibarActions.sys.mjs
-@@ -0,0 +1,298 @@
+@@ -0,0 +1,297 @@
 +// Presentation adapter for Firefox-owned address-bar controls. No browser policy lives here.
 +const PAGE_ACTIONS = [
 +  ['connection', 'identity-icon-box'],
@@ -17960,6 +17962,7 @@ index 00000000000..a869dd9e6a8
 +  ['pip', 'picture-in-picture-button'],
 +  ['taskbar', 'taskbar-tabs-button'],
 +  ['translation', 'translations-button'],
++  ['permissions', 'identity-permission-box'],
 +];
 +const PIN_PREF = 'fenn.winui.address.actions.';
 +
@@ -18026,7 +18029,7 @@ index 00000000000..a869dd9e6a8
 +      const entry = node ? this.entry(node) : null;
 +      return {key, id:entry?.id || `unavailable-${key}`, label:this.label(key), enabled,
 +        reason:enabled ? '' : this.label(`${key}-unavailable`),
-+        pinnable:key !== 'connection', pinned:key !== 'connection' && Services.prefs.getBoolPref(PIN_PREF + key, true)};
++        pinnable:!['connection','permissions'].includes(key), pinned:!['connection','permissions'].includes(key) && Services.prefs.getBoolPref(PIN_PREF + key, true)};
 +    });
 +    return {label:this.label('menu'), pinLabel:this.label('pin'), unpinLabel:this.label('unpin'), context:String(this.context() || ''), items};
 +  }
@@ -18100,7 +18103,7 @@ index 00000000000..a869dd9e6a8
 +  }
 +  snapshot() {
 +    const document = this.window.document;
-+    const left = ['trust-icon-container', 'tracking-protection-icon-container', 'identity-icon-box', 'identity-permission-box']
++    const left = ['trust-icon-container', 'tracking-protection-icon-container', 'identity-icon-box']
 +      .map(id => document.getElementById(id));
 +    // Notification indicators and extension page actions are dynamic Firefox children.
 +    left.push(...document.querySelectorAll('#identity-permission-box .sharing-icon, #identity-permission-box .blocked-permission-icon, #notification-popup-box > [role="button"]'));
@@ -18126,8 +18129,6 @@ index 00000000000..a869dd9e6a8
 +          (node.id === 'translations-button' && node.hasAttribute('translationsactive'));
 +        const action = pageActions.items.find(item => item.id === this.entries.get(node)?.id);
 +        if (action?.pinnable && !action.pinned && !alwaysVisible) continue;
-+        if (node.matches('.sharing-icon, .blocked-permission-icon') &&
-+            [...document.querySelectorAll('#identity-permission-box image')].find(child=>this.visible(child)) === node) continue;
 +        const entry = this.entry(node);
 +        keep.add(node);
 +        const imageNode = [...node.querySelectorAll('image, img, .urlbar-icon')].find(child => this.visible(child)) || node;

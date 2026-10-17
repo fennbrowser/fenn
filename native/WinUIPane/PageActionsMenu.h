@@ -18,7 +18,7 @@ struct NativePageActionsMenu {
     Button button{nullptr};
     Microsoft::UI::Xaml::Controls::Flyout flyout{nullptr};
     Microsoft::UI::Xaml::Controls::ListView list{nullptr};
-    std::array<Row, 5> rows;
+    std::array<Row, 6> rows;
     Model model;
     bool enabled{}, open{};
     std::function<void(wchar_t const*, uint32_t, Button const&)> dispatch;
@@ -45,16 +45,16 @@ struct NativePageActionsMenu {
         for (auto const& text : {result.label, result.pinLabel, result.unpinLabel, result.context})
             NativeJson::RequireLength(text, 4096);
         auto items = menu.GetNamedArray(L"items");
-        if (items.Size() != 5) winrt::throw_hresult(E_INVALIDARG);
-        constexpr wchar_t const* keys[] = {L"connection", L"reader", L"pip", L"taskbar", L"translation"};
+        if (items.Size() != 6) winrt::throw_hresult(E_INVALIDARG);
+        constexpr wchar_t const* keys[] = {L"connection", L"reader", L"pip", L"taskbar", L"translation", L"permissions"};
         std::set<winrt::hstring> ids;
-        for (uint32_t i = 0; i < 5; ++i) {
+        for (uint32_t i = 0; i < 6; ++i) {
             auto value = items.GetObjectAt(i);
             Item item{value.GetNamedString(L"key"), value.GetNamedString(L"id"), value.GetNamedString(L"label"),
                 value.GetNamedString(L"reason"), value.GetNamedBoolean(L"enabled"),
                 value.GetNamedBoolean(L"pinnable"), value.GetNamedBoolean(L"pinned")};
             if (item.key != keys[i] || item.id.empty() || item.id.size() > 64 || !ids.insert(item.id).second ||
-                item.pinnable != (i != 0) || (i == 0 && item.pinned)) winrt::throw_hresult(E_INVALIDARG);
+                item.pinnable != (i != 0 && i != 5) || ((i == 0 || i == 5) && item.pinned)) winrt::throw_hresult(E_INVALIDARG);
             NativeJson::RequireLength(item.label, 4096);
             NativeJson::RequireLength(item.reason, 4096);
             result.items.push_back(std::move(item));
@@ -147,7 +147,7 @@ struct NativePageActionsMenu {
     void Apply(Model const& next, bool visible) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
-        enabled=visible && next.items.size()==5;
+        enabled=visible && next.items.size()==6;
         if (!button) Create();
         if (!enabled || model.context!=next.context) Close();
         model=next;

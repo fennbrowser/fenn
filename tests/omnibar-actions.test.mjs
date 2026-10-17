@@ -78,13 +78,13 @@ function menuFixture() {
   return {adapter,nodes};
 }
 
-test('page menu has exactly five rows, four default pins and disabled explanations',()=>{
+test('page menu has exactly six rows, four default pins and disabled explanations',()=>{
   const {adapter,nodes}=menuFixture();
   nodes.get('picture-in-picture-button').hidden=true;
   const menu=adapter.snapshot().pageActions;
-  assert.deepEqual(Array.from(menu.items,i=>i.key),['connection','reader','pip','taskbar','translation']);
+  assert.deepEqual(Array.from(menu.items,i=>i.key),['connection','reader','pip','taskbar','translation','permissions']);
   assert.equal(menu.items[0].pinnable,false); assert.equal(menu.items[0].pinned,false);
-  assert.ok(menu.items.slice(1).every(i=>i.pinned && i.pinnable));
+  assert.ok(menu.items.slice(1,5).every(i=>i.pinned && i.pinnable));
   assert.equal(menu.items[2].enabled,false); assert.equal(menu.items[2].reason,'pip-unavailable');
 });
 
@@ -224,4 +224,25 @@ test('permission wrapper carries the actual first child state; sharing and prote
   assert.equal(adapter.nativePresentation(nodes.get('tracking-protection-icon-container'),protection).iconState,'active');
   nodes.get('trust-icon-container').classes.add('breached');
   assert.equal(adapter.nativePresentation(nodes.get('trust-icon-container'),null).icon,'danger');
+});
+
+
+test('permissions are menu-only while the first sharing indicator stays inline',()=>{
+  const {adapter,nodes}=menuFixture();
+  const sharing=indicator('webrtc-sharing-icon',['sharing-icon'],{sharing:'microphone'});
+  Object.assign(sharing,{querySelectorAll:()=>[],querySelector:()=>null,textContent:'Microphone'});
+  const original=adapter.window.document.querySelectorAll;
+  adapter.window.document.querySelectorAll=selector=>selector.startsWith('#identity-permission-box') ? [sharing] : original(selector);
+  let state=adapter.snapshot();
+  const permission=state.pageActions.items.find(i=>i.key==='permissions');
+  assert.equal(permission.enabled,true);
+  assert.equal(permission.pinnable,false);
+  assert.equal(permission.pinned,false);
+  assert.ok(!state.omnibarLeft.some(i=>i.id===permission.id));
+  assert.equal(state.omnibarLeft.find(i=>i.icon==='microphone').iconState,'recording');
+  assert.equal(adapter.activate('omni-pin:'+permission.id,{},{}),2);
+  nodes.get('identity-permission-box').hidden=true;
+  state=adapter.snapshot();
+  assert.equal(state.pageActions.items.find(i=>i.key==='permissions').enabled,false);
+  assert.equal(adapter.activate('omni:'+permission.id,{},{}),2);
 });
