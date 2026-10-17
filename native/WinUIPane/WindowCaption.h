@@ -12,6 +12,74 @@ struct NativeWindowCaption {
     Controls::Grid root{nullptr};
     Controls::ColumnDefinition leftInset{nullptr}, rightInset{nullptr};
     Controls::Border leftBottomLine{nullptr}, rightBottomLine{nullptr};
+    Controls::Grid toolbarSurface{nullptr};
+    FrameworkElement borderTemplate{nullptr};
+    std::vector<Controls::Border> bottomLines;
+    int64_t toolbarRadiusToken{}, toolbarVisibilityToken{};
+    void UpdateBottomLines() {
+        if (!root || !root.IsLoaded()) return;
+        auto tabs = root.Children().GetAt(0).as<Controls::TabView>();
+        if (!Media::VisualTreeHelper::GetChildrenCount(tabs)) return;
+        auto current = Media::VisualTreeHelper::GetChild(tabs, 0).as<FrameworkElement>();
+        if (borderTemplate != current) {
+            borderTemplate = current;
+            bottomLines = {leftBottomLine, rightBottomLine};
+            // Only the stock strip's straight segments; selected-tab feet,
+            // arcs and interactive elements retain their original rendering.
+            std::function<void(DependencyObject const&)> collect = [&](DependencyObject const& node) {
+                if (node.try_as<Controls::TabViewItem>()) return;
+                if (auto line = node.try_as<Controls::Border>(); line &&
+                    (line.Name() == L"LeftBottomBorderLine" || line.Name() == L"RightBottomBorderLine"))
+                    bottomLines.push_back(line);
+                for (int i=0; i<Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+                    collect(Media::VisualTreeHelper::GetChild(node, i));
+            };
+            collect(current);
+        }
+        bool trim = toolbarSurface && toolbarSurface.Visibility() == Visibility::Visible &&
+                    toolbarSurface.IsLoaded() && toolbarSurface.ActualWidth() > 0;
+        double left{}, right{};
+        if (trim) {
+            // The toolbar is in another island. Use its real screen bounds,
+            // then convert to strip DIPs rather than duplicating frame insets.
+            auto bounds = toolbarSurface.TransformToVisual(nullptr).TransformBounds(
+                {0,0,float(toolbarSurface.ActualWidth()),float(toolbarSurface.ActualHeight())});
+            auto screen = toolbarSurface.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(bounds);
+            auto converter = root.XamlRoot().ContentIsland().CoordinateConverter();
+            auto inverse = root.TransformToVisual(nullptr).Inverse();
+            auto start = inverse.TransformPoint(converter.ConvertScreenToLocal(Windows::Graphics::PointInt32{screen.X,screen.Y}));
+            auto end = inverse.TransformPoint(converter.ConvertScreenToLocal(Windows::Graphics::PointInt32{screen.X+screen.Width,screen.Y}));
+            auto radius = toolbarSurface.CornerRadius();
+            left = start.X + radius.TopLeft;
+            right = end.X - radius.TopRight;
+        }
+        for (auto const& line : bottomLines) {
+            if (!trim) { if (line.Clip()) line.Clip(nullptr); continue; }
+            auto origin = line.TransformToVisual(root).TransformPoint({0,0});
+            const double begin = std::clamp(left-origin.X, 0.0, line.ActualWidth());
+            const double end = std::clamp(right-origin.X, begin, line.ActualWidth());
+            Windows::Foundation::Rect bounds{float(begin),0,float(end-begin),float(line.ActualHeight())};
+            auto clip = line.Clip();
+            if (!clip) { clip = Media::RectangleGeometry(); line.Clip(clip); }
+            auto old = clip.Rect();
+            if (old.X != bounds.X || old.Width != bounds.Width || old.Height != bounds.Height) clip.Rect(bounds);
+        }
+    }
+    void SetToolbarSurface(Controls::Grid const& surface) {
+        if (toolbarSurface == surface) return;
+        if (toolbarSurface) {
+            toolbarSurface.UnregisterPropertyChangedCallback(Controls::Grid::CornerRadiusProperty(), toolbarRadiusToken);
+            toolbarSurface.UnregisterPropertyChangedCallback(UIElement::VisibilityProperty(), toolbarVisibilityToken);
+        }
+        toolbarSurface = surface;
+        if (surface) {
+            auto weak = std::weak_ptr<int>(lifetime);
+            auto update = [this,weak](auto const&,auto const&) { if (!weak.expired()) UpdateBottomLines(); };
+            toolbarRadiusToken = surface.RegisterPropertyChangedCallback(Controls::Grid::CornerRadiusProperty(), update);
+            toolbarVisibilityToken = surface.RegisterPropertyChangedCallback(UIElement::VisibilityProperty(), update);
+        }
+        UpdateBottomLines();
+    }
     // An optional element beside the system buttons, on the side they occupy.
     FrameworkElement trailing{nullptr};
     double trailingWidth{};
@@ -154,9 +222,11 @@ struct NativeWindowCaption {
         }
         if (leftInset.Width().Value != left) leftInset.Width({left, GridUnitType::Pixel});
         if (rightInset.Width().Value != right) rightInset.Width({right, GridUnitType::Pixel});
+        UpdateBottomLines();
     }
     void Close(bool restore = true) noexcept {
         lifetime.reset();
+        try { SetToolbarSurface(nullptr); } catch (...) {}
         if (owner) RemovePropW(owner, WINUI_PANE_SYSTEM_CAPTION_PROPERTY);
         try { if (restore && owner && IsWindow(owner)) SetVisible(false); } catch (...) {}
         trailing = nullptr;

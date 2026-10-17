@@ -16,6 +16,7 @@
 #include <winrt/Windows.UI.ViewManagement.h>
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/Microsoft.UI.Xaml.h>
+#include <winrt/Microsoft.UI.Xaml.Data.h>
 #include <winrt/Microsoft.UI.Xaml.Markup.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
@@ -991,6 +992,58 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
             toolbarCorners.BottomLeft == 0 && toolbarCorners.BottomRight == 0 && toolbarCorners.TopLeft > 0 &&
             toolbarSurface.GetBindingExpression(Controls::Grid::CornerRadiusProperty()),
             "navigation background keeps live tab-matching top corners and square bottom corners");
+    {
+        auto stripInspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
+        UIElement stripContent{nullptr};
+        Require(stripInspect && SUCCEEDED(stripInspect(hwnd, put_abi(stripContent))), "inspect strip border geometry");
+        auto stripRoot = stripContent.as<Controls::Grid>();
+        auto stripView = StripView(module, hwnd);
+        auto originalHeader = stripView.TabStripHeader();
+        Controls::Border header;
+        header.Width(160); header.Height(32);
+        stripView.TabStripHeader(header);
+        auto originalVisibility = toolbarSurface.Visibility();
+        auto radiusBinding = toolbarSurface.GetBindingExpression(Controls::Grid::CornerRadiusProperty()).ParentBinding();
+        toolbarSurface.Visibility(Visibility::Visible);
+        auto extent = [&] {
+            content.as<FrameworkElement>().UpdateLayout();
+            stripRoot.UpdateLayout();
+            for (int i=0; i<20; ++i) { Pump(); Sleep(10); }
+            double left=1e9, right=-1e9;
+            unsigned clipped{};
+            std::function<void(DependencyObject const&)> visit = [&](DependencyObject const& node) {
+                if (node.try_as<Controls::TabViewItem>()) return;
+                if (auto line=node.try_as<Controls::Border>(); line && line.Clip() && line.ActualHeight()==1) {
+                    auto box=line.Clip().Rect();
+                    ++clipped;
+                    if (box.Width>0) {
+                        auto start=line.TransformToVisual(stripRoot).TransformPoint({box.X,0});
+                        left=std::min(left,double(start.X)); right=std::max(right,double(start.X+box.Width));
+                    }
+                }
+                for (int i=0; i<Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+                    visit(Media::VisualTreeHelper::GetChild(node,i));
+            };
+            visit(stripRoot);
+            fprintf(stderr,"Border trim: segments=%u extent=%.1f..%.1f surface=%.1fx%.1f loaded=%d\n",
+                    clipped,left,right,toolbarSurface.ActualWidth(),toolbarSurface.ActualHeight(),toolbarSurface.IsLoaded());
+            Require(clipped>=2 && right>left, "corner trim retains the stock interior border and caption continuations");
+            return std::pair{left,right};
+        };
+        auto before=extent();
+        toolbarSurface.CornerRadius({toolbarCorners.TopLeft+6,toolbarCorners.TopRight+6,0,0});
+        auto after=extent();
+        Require(after.first>=before.first+5 && after.second<=before.second-5,
+                "both border ends follow live toolbar corner radius changes");
+        toolbarSurface.SetBinding(Controls::Grid::CornerRadiusProperty(),radiusBinding);
+        toolbarSurface.Visibility(Visibility::Collapsed);
+        Pump();
+        for (uint32_t i : {4u,5u})
+            Require(!stripRoot.Children().GetAt(i).as<Controls::Border>().Clip(),
+                    "hiding native toolbar restores untrimmed caption borders");
+        toolbarSurface.Visibility(originalVisibility);
+        stripView.TabStripHeader(originalHeader);
+    }
     auto field = byId(content, L"FennAddress").as<Controls::TextBox>();
     // The editor's header holds the mode button and the field; the suggestions
     // and global actions float in the address's popup below it.

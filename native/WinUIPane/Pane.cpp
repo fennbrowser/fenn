@@ -449,6 +449,7 @@ struct Pane {
         addressSource.SystemBackdrop(nullptr);
         navigationBackdrop = false;
         addressSource.Content(nullptr);
+        windowDrag.windowCaption.SetToolbarSurface(nullptr);
         if (strip) strip->SetLeadingControl(nullptr);
         address.reset();
         shell.ResetAddress();
@@ -461,6 +462,7 @@ struct Pane {
         addressSource = nullptr;
     }
     void WireAddress() {
+        windowDrag.windowCaption.SetToolbarSurface(address->toolbarSurface);
         if (strip) {
             auto menuButton = address->navigation->productMenu.button;
             menuButton.Margin({6, 0, 4, 0});
