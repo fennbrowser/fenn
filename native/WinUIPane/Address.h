@@ -775,7 +775,32 @@ struct NativeAddress {
         mode.button.Padding({8, 0, 6, 0});
         mode.button.VerticalAlignment(VerticalAlignment::Center);
         mode.button.BorderThickness({0, 0, 0, 0});
-        mode.button.CornerRadius({12, 12, 12, 12});
+        // Keep the stock rectangular corners and dropdown template, with the
+        // same themed interaction fills as the neighboring subtle buttons.
+        mode.button.Resources(Markup::XamlReader::Load(LR"(
+            <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                                xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                <ResourceDictionary.ThemeDictionaries>
+                    <ResourceDictionary x:Key="Default">
+                        <StaticResource x:Key="ButtonBackground" ResourceKey="SubtleButtonBackground"/>
+                        <StaticResource x:Key="ButtonBackgroundPointerOver" ResourceKey="SubtleButtonBackgroundPointerOver"/>
+                        <StaticResource x:Key="ButtonBackgroundPressed" ResourceKey="SubtleButtonBackgroundPressed"/>
+                        <StaticResource x:Key="ButtonBackgroundDisabled" ResourceKey="SubtleButtonBackgroundDisabled"/>
+                    </ResourceDictionary>
+                    <ResourceDictionary x:Key="Light">
+                        <StaticResource x:Key="ButtonBackground" ResourceKey="SubtleButtonBackground"/>
+                        <StaticResource x:Key="ButtonBackgroundPointerOver" ResourceKey="SubtleButtonBackgroundPointerOver"/>
+                        <StaticResource x:Key="ButtonBackgroundPressed" ResourceKey="SubtleButtonBackgroundPressed"/>
+                        <StaticResource x:Key="ButtonBackgroundDisabled" ResourceKey="SubtleButtonBackgroundDisabled"/>
+                    </ResourceDictionary>
+                    <ResourceDictionary x:Key="HighContrast">
+                        <StaticResource x:Key="ButtonBackground" ResourceKey="SubtleButtonBackground"/>
+                        <StaticResource x:Key="ButtonBackgroundPointerOver" ResourceKey="SubtleButtonBackgroundPointerOver"/>
+                        <StaticResource x:Key="ButtonBackgroundPressed" ResourceKey="SubtleButtonBackgroundPressed"/>
+                        <StaticResource x:Key="ButtonBackgroundDisabled" ResourceKey="SubtleButtonBackgroundDisabled"/>
+                    </ResourceDictionary>
+                </ResourceDictionary.ThemeDictionaries>
+            </ResourceDictionary>)").as<ResourceDictionary>());
         auto modeContent = mode.button.Content().as<StackPanel>();
         // Compact the stock template's arrow gap without shrinking the
         // content presenter's layout slot (negative margins overflow it).
