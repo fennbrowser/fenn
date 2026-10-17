@@ -2154,6 +2154,23 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneGetApi(uint32_t version
 }
 
 #ifdef WINUI_PANE_TESTING
+// Borrow the servicing host only while this address host is alive. The test
+// retains shared_from_this() before replacing OS operations. The menu item is
+// returned as an ordinary AddRef'd WinRT control. Neither export ships.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetPackageUpdates(
+    HWND hwnd, void** service, void** item) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        if (!service || !item) return E_POINTER;
+        auto& pane = *state().panes.at(hwnd);
+        if (!pane.address) return E_NOT_VALID_STATE;
+        auto& menu = pane.address->navigation->productMenu;
+        *service = menu.updates.get();
+        auto control = menu.updateItem;
+        *item = detach_abi(control);
+        return S_OK;
+    } catch (...) { return to_hresult(); }
+}
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetAddressContent(HWND hwnd, void** output) noexcept {
     try {
         check_hresult(Check(hwnd));

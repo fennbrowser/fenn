@@ -3594,7 +3594,7 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
             Require(SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
                                                IID_PPV_ARGS(&automation))), "bounds UIA client");
             ComPtr<IUIAutomationElement> root, row;
-            Require(SUCCEEDED(automation->ElementFromHandle(window, &root)), "bounds UIA host");
+            Require(SUCCEEDED(window ? automation->ElementFromHandle(window, &root) : automation->GetRootElement(&root)), "bounds UIA host");
             VARIANT value{};
             value.vt = VT_BSTR;
             value.bstrVal = SysAllocString(id);
@@ -3602,6 +3602,14 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
             Require(SUCCEEDED(automation->CreatePropertyCondition(UIA_AutomationIdPropertyId, value, &condition)),
                     "bounds UIA condition");
             VariantClear(&value);
+            if (!window) {
+                value.vt = VT_I4;
+                value.lVal = GetCurrentProcessId();
+                ComPtr<IUIAutomationCondition> process, scoped;
+                Require(SUCCEEDED(automation->CreatePropertyCondition(UIA_ProcessIdPropertyId, value, &process)) &&
+                        SUCCEEDED(automation->CreateAndCondition(condition.Get(), process.Get(), &scoped)), "scope popup UIA to fixture process");
+                condition = scoped;
+            }
             for (int attempt = 0; attempt < 100 && !row; ++attempt) {
                 const auto result=root->FindFirst(TreeScope_Descendants, condition.Get(), &row);
                 if (FAILED(result)) {
@@ -3653,11 +3661,13 @@ static void CheckPackageUpdates(HWND owner) {
             Updates::Select(false, false) == Updates::Source::None, "update source follows package provenance");
     Updates::Labels labels;
     for (auto key : {L"title", L"checking", L"current", L"available-store", L"available-feed",
-                     L"unavailable", L"failed", L"open-store", L"open-feed", L"close"})
+                     L"unavailable", L"failed", L"open-store", L"open-feed", L"close",
+                     L"downloading", L"ready", L"install", L"installing"})
         labels.emplace(key, winrt::hstring(std::wstring(L"Localized ") + key));
     auto settle = [] { for (int i = 0; i < 30; ++i) { Pump(); Sleep(10); } };
     auto state = std::make_shared<Updates>();
     state->owner = owner;
+    state->download = [](HWND, std::shared_ptr<Updates::Result>) -> Updates::Action { co_return; };
     int queries = 0, launches = 0;
     for (auto status : {L"current", L"unavailable", L"failed", L"available-store", L"available-feed"}) {
         const bool available = wcsncmp(status, L"available", 9) == 0;
@@ -3708,6 +3718,7 @@ static void CheckPackageUpdates(HWND owner) {
         Require(SendInput(2, mouse, sizeof(INPUT)) == 2, "physical close click");
         settle();
         Require(!state->window && !state->running, "mouse dismissal releases the update window");
+        state->Cancel(); // Next scenario must not inherit the result cooldown.
     }
     state->query = [](HWND, std::shared_ptr<Updates::Result> result) -> Updates::Action {
         result->available = true; result->source = Updates::Source::Store; result->status = L"available-store";
@@ -3751,6 +3762,147 @@ static RECT ElementScreenBounds(winrt::Microsoft::UI::Xaml::FrameworkElement con
     RECT bounds{LONG(screen.X), LONG(screen.Y), LONG(screen.X + screen.Width), LONG(screen.Y + screen.Height)};
     Require(bounds.right > bounds.left && bounds.bottom > bounds.top, "island converter reports nonempty screen bounds");
     return bounds;
+}
+
+static void CheckInlinePackageUpdates(HMODULE module, HWND owner) {
+    using Updates = NativePackageUpdates;
+    using namespace winrt::Microsoft::UI::Xaml;
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**, void**)>(
+        GetProcAddress(module, "WinUIPaneTestGetPackageUpdates"));
+    void* raw{};
+    Controls::MenuFlyoutItem item{nullptr};
+    Require(inspect && SUCCEEDED(inspect(owner, &raw, winrt::put_abi(item))) && raw, "inspect inline update host");
+    auto state = static_cast<Updates*>(raw)->shared_from_this();
+    auto savedPrepare = state->prepare;
+    state->prepare = []() -> Updates::Action { co_return; };
+    auto wait = [&](auto predicate, char const* message) {
+        for (int i = 0; i < 500 && !predicate(); ++i) { Pump(); Sleep(10); }
+        Require(predicate(), message);
+    };
+    auto escape = [&] {
+        INPUT keys[2]{}; keys[0].type = keys[1].type = INPUT_KEYBOARD;
+        keys[0].ki.wVk = keys[1].ki.wVk = VK_ESCAPE; keys[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        Require(SendInput(2, keys, sizeof(INPUT)) == 2, "dismiss inline flyout with keyboard");
+        for (int i = 0; i < 30; ++i) { Pump(); Sleep(10); }
+    };
+    auto click = [&](RECT bounds) {
+        SetCursorPos((bounds.left + bounds.right) / 2, (bounds.top + bounds.bottom) / 2);
+        INPUT mouse[2]{}; mouse[0].type = mouse[1].type = INPUT_MOUSE;
+        mouse[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN; mouse[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        Require(SendInput(2, mouse, sizeof(INPUT)) == 2, "physical inline update click");
+        Pump();
+    };
+    auto open = [&] {
+        Controls::MenuFlyoutItem before{nullptr};
+        Require(SUCCEEDED(inspect(owner, &raw, winrt::put_abi(before))), "inspect previous update item");
+        SetForegroundWindow(owner);
+        for (int i = 0; i < 20; ++i) { Pump(); Sleep(10); }
+        click(TabScreenBounds(owner, L"FennProductMenu"));
+        wait([&] {
+            Controls::MenuFlyoutItem after{nullptr};
+            return SUCCEEDED(inspect(owner, &raw, winrt::put_abi(after))) && after && after != before;
+        }, "physical menu click creates the current flyout item");
+    };
+    auto readItem = [&] {
+        item = nullptr;
+        Require(SUCCEEDED(inspect(owner, &raw, winrt::put_abi(item))) && item, "real menu contains update item");
+    };
+    int queries = 0, downloads = 0, installs = 0;
+    state->query = [&](HWND, std::shared_ptr<Updates::Result> result) -> Updates::Action {
+        ++queries; result->available = true; result->source = Updates::Source::Store;
+        result->status = L"available-store"; co_return;
+    };
+    auto finish = std::make_shared<std::atomic_bool>(false);
+    state->download = [&, finish](HWND, std::shared_ptr<Updates::Result> result) -> Updates::Action {
+        ++downloads;
+        Updates::DownloadStarted(result);
+        winrt::apartment_context ui;
+        while (!*finish && !result->revoked) co_await winrt::resume_after(std::chrono::milliseconds(10));
+        co_await ui;
+        if (!result->revoked) result->ready = true;
+    };
+    state->install = [&](HWND, std::shared_ptr<Updates::Result>) -> Updates::Action { ++installs; co_return; };
+    open();
+    wait([&] { return state->checking && state->current && state->current->status == L"downloading"; },
+         "opening product menu starts background download");
+    readItem();
+    Require(!state->window && item.Text() == L"downloading" && !item.IsEnabled(),
+            "downloading uses the localized disabled menu item without a separate window");
+    escape(); open(); readItem();
+    Require(queries == 1 && downloads == 1, "reopening while downloading coalesces the servicing operation");
+    auto retainedItem = item;
+    *finish = true;
+    wait([&] { return state->current->ready && !state->checking; }, "download completes");
+    Require(item == retainedItem && item.Text() == L"install" && item.IsEnabled() && !state->window,
+            "ready state updates the same menu item in place");
+    wait([&] { return item.ActualWidth() > 0 && item.ActualHeight() > 0; }, "inline install item is rendered");
+    auto peer = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(item);
+    Require(peer.GetName() == L"install", "inline update state is exposed to accessibility");
+    click(TabScreenBounds(nullptr, L"FennProductMenu-check-updates"));
+    wait([&] { return installs == 1; }, "physical install click starts exactly one Windows installation");
+    Require(!state->window && !state->installing && !state->current->ready,
+            "inline install does not create the Fenn update window");
+    state->current->ready = true;
+    state->prepare = []() -> Updates::Action { winrt::throw_hresult(E_ABORT); co_return; };
+    Updates::InstallReady(state);
+    wait([&] { return !state->installing; }, "refused session preparation completes");
+    Require(installs == 1 && state->current->ready && state->current->status == L"failed",
+            "session preparation refusal keeps the ready update without invoking Windows");
+    state->prepare = []() -> Updates::Action { co_return; };
+    state->Cancel();
+    auto finishCheck = std::make_shared<std::atomic_bool>(false);
+    state->query = [&, finishCheck](HWND, std::shared_ptr<Updates::Result> result) -> Updates::Action {
+        ++queries;
+        winrt::apartment_context ui;
+        while (!*finishCheck && !result->revoked) co_await winrt::resume_after(std::chrono::milliseconds(10));
+        co_await ui;
+        result->status = L"current";
+    };
+    open();
+    wait([&] { return state->checking; }, "no-update check starts");
+    readItem();
+    Require(item.Text() == L"Check for updates" && item.IsEnabled() && !state->window,
+            "automatic checking keeps the normal menu label");
+    *finishCheck = true;
+    wait([&] { return !state->checking; }, "automatic no-update check completes");
+    Require(!state->showingResult && !state->resultTimer && item.Text() == L"Check for updates" && item.IsEnabled(),
+            "automatic no-update completion is silent and creates no result timer");
+    *finishCheck = false;
+    escape(); open(); readItem();
+    wait([&] { return state->checking; }, "reopening begins another quiet check");
+    const auto checksBeforeAdoption = queries;
+    click(TabScreenBounds(nullptr, L"FennProductMenu-check-updates"));
+    wait([&] { return state->manualCheck; }, "manual click exposes the existing background check");
+    Require(queries == checksBeforeAdoption && item.Text() == L"checking" && !item.IsEnabled(),
+            "manual activation adopts the quiet check without a duplicate OS request");
+    *finishCheck = true;
+    wait([&] { return state->showingResult; }, "no-update result is displayed");
+    Require(item.Text() == L"current" && !item.IsEnabled() && !state->window,
+            "no-update result stays inline during the cooldown");
+    const auto resultAt = GetTickCount64();
+    const auto countBeforeReopen = queries;
+    escape(); open(); readItem();
+    Require(queries == countBeforeReopen && item.Text() == L"current", "reopening preserves the result cooldown");
+    wait([&] { return !state->showingResult; }, "no-update notice expires");
+    Require(GetTickCount64() - resultAt >= 2500 && item.Text() == L"Check for updates" && item.IsEnabled(),
+            "result holds for three seconds then restores the check item");
+    *finishCheck = false;
+    const auto checksBeforeClick = queries;
+    const auto checkBounds = TabScreenBounds(nullptr, L"FennProductMenu-check-updates");
+    click(checkBounds);
+    wait([&] { return state->checking; }, "explicit click checks inline");
+    for (int i = 0; i < 3; ++i) { click(checkBounds); Updates::Probe(state); }
+    Require(queries == checksBeforeClick + 1 && !state->window && item.Text() == L"checking" && !item.IsEnabled(),
+            "repeated activation starts exactly one check and creates no window");
+    Require(item.IsLoaded() && item.ActualWidth() > 0, "explicit check retains the visible menu item");
+    *finishCheck = true;
+    wait([&] { return state->showingResult; }, "explicit no-update result completes inline");
+    escape();
+    state->Cancel();
+    // No retained callbacks may refer to this test's stack after host teardown.
+    state->query = Updates::Query; state->download = Updates::Download; state->install = Updates::Install;
+    state->prepare = savedPrepare;
+    puts("CHECKS PASSED: product-menu background download, in-place localized progress, reopen coalescing, physical install, inline checks and timed no-update feedback");
 }
 
 static void CheckGroupNeighbors(WinUIPaneApi& api, HWND host) {
@@ -5215,6 +5367,8 @@ int wmain(int argc, wchar_t** argv) {
     Require(get(WINUI_PANE_ABI_VERSION, sizeof(api), nullptr) == E_POINTER, "reject null output");
     Require(SUCCEEDED(get(WINUI_PANE_ABI_VERSION, sizeof(api), &api)), "ABI handshake");
     translatePane = api.translate;
+    Require((GetProcAddress(module, "WinUIPaneTestGetPackageUpdates") != nullptr) == (argc == 3),
+            "update operation injection exists only in the test DLL");
     Require((GetProcAddress(module, "WinUIPaneTestGetContent") != nullptr) == (argc == 3),
             "inspection export exists only in the test DLL");
     Require((GetProcAddress(module, "WinUIPaneTestGetGeometryWork") != nullptr) == (argc == 3),
@@ -5242,7 +5396,8 @@ int wmain(int argc, wchar_t** argv) {
         auto menu = snapshot.GetNamedObject(L"navigation").GetNamedObject(L"productMenu");
         winrt::Windows::Data::Json::JsonObject labels;
         for (auto key : {L"title", L"checking", L"current", L"available-store", L"available-feed",
-                         L"unavailable", L"failed", L"open-store", L"open-feed", L"close"})
+                         L"unavailable", L"failed", L"open-store", L"open-feed", L"close",
+                     L"downloading", L"ready", L"install", L"installing"})
             labels.SetNamedValue(key, winrt::Windows::Data::Json::JsonValue::CreateStringValue(key));
         menu.SetNamedValue(L"updateLabels", labels);
         auto navigation = snapshot.GetNamedObject(L"navigation");
@@ -5257,6 +5412,7 @@ int wmain(int argc, wchar_t** argv) {
         snapshot.SetNamedValue(L"navigation", navigation);
         snapshot.SetNamedValue(L"sequence", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(2));
         Require(FAILED(api.syncAddress(first, snapshot.Stringify().c_str())), "reject malformed update label before native mutation");
+        CheckInlinePackageUpdates(module, first);
         Require(SUCCEEDED(api.updateAddress(first, &addressRect, FALSE)), "detach update-menu fixture host");
         CheckPackageUpdates(first);
         Require(SUCCEEDED(api.destroy(first)), "update fixture pane teardown");

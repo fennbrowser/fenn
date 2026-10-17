@@ -24,13 +24,17 @@ struct NativeProductMenu {
     Button button{nullptr};
     Microsoft::UI::Xaml::Controls::MenuFlyout flyout{nullptr};
     Object model;
+    Microsoft::UI::Xaml::Controls::MenuFlyoutItem updateItem{nullptr};
     std::shared_ptr<NativePackageUpdates> updates = std::make_shared<NativePackageUpdates>();
     bool enabled{};
+    bool keepOpenForCheck{};
     std::function<void(wchar_t const*, uint32_t, Button const&)> dispatch;
     // Items the native toolbar handles itself instead of reporting to Firefox.
     std::function<void()> customize;
     std::function<bool()> closeEditor;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
+    struct Approval { winrt::hstring token; winrt::hstring status; };
+    std::shared_ptr<Approval> approval = std::make_shared<Approval>();
 
     static bool ValidId(winrt::hstring const& id) {
         if (id.empty() || id.size() > NativeJson::kMaxOpaqueId) return false;
@@ -80,6 +84,13 @@ struct NativeProductMenu {
         auto menu = navigation.GetNamedObject(L"productMenu");
         if (!menu.GetNamedBoolean(L"enabled", false)) return Object();
         if (menu.Stringify().size() > kMaxModelBytes) winrt::throw_hresult(E_INVALIDARG);
+        if (menu.HasKey(L"updateInstall")) {
+            auto grant = menu.GetNamedObject(L"updateInstall");
+            auto token = grant.GetNamedString(L"token");
+            if (!ValidId(token)) winrt::throw_hresult(E_INVALIDARG);
+            auto status = grant.GetNamedString(L"status");
+            if (status != L"pending" && status != L"ready" && status != L"failed") winrt::throw_hresult(E_INVALIDARG);
+        }
         NativeJson::RequireLength(menu.GetNamedString(L"label", L""), kMaxLabel);
         NativeJson::RequireLength(menu.GetNamedString(L"tooltip", L""), kMaxLabel);
         uint32_t total = 0;
@@ -89,7 +100,8 @@ struct NativeProductMenu {
         if (menu.HasKey(L"updateLabels")) {
             auto labels = menu.GetNamedObject(L"updateLabels");
             for (auto key : {L"title", L"checking", L"current", L"available-store", L"available-feed",
-                             L"unavailable", L"failed", L"open-store", L"open-feed", L"close"}) {
+                             L"unavailable", L"failed", L"open-store", L"open-feed", L"close",
+                             L"downloading", L"ready", L"install", L"installing"}) {
                 const auto label = labels.GetNamedString(key);
                 if (label.empty()) winrt::throw_hresult(E_INVALIDARG);
                 NativeJson::RequireLength(label, kMaxLabel);
@@ -98,9 +110,65 @@ struct NativeProductMenu {
         return menu;
     }
 
+    NativePackageUpdates::Labels UpdateLabels() const {
+        NativePackageUpdates::Labels labels;
+        if (model && model.HasKey(L"updateLabels"))
+            for (auto const& pair : model.GetNamedObject(L"updateLabels"))
+                if (pair.Value().ValueType() == winrt::Windows::Data::Json::JsonValueType::String)
+                    labels.emplace(std::wstring(pair.Key()), pair.Value().GetString());
+        return labels;
+    }
+    void RefreshUpdateItem() {
+        if (!updateItem || !flyout || !model) return;
+        auto labels = UpdateLabels();
+        const auto state = updates->current;
+        if (updates->installing) updateItem.Text(NativePackageUpdates::Text(labels, L"installing"));
+        else if (state && state->ready) updateItem.Text(NativePackageUpdates::Text(labels, L"install"));
+        else if (updates->checking && state && state->status == L"downloading")
+            updateItem.Text(NativePackageUpdates::Text(labels, L"downloading"));
+        else if (updates->checking && updates->manualCheck) updateItem.Text(NativePackageUpdates::Text(labels, L"checking"));
+        else if (updates->showingResult && state) updateItem.Text(NativePackageUpdates::Text(labels, state->status.c_str()));
+        else {
+            for (auto entry : model.GetNamedArray(L"items")) {
+                auto item = entry.GetObject();
+                if (item.GetNamedString(L"id", L"") == L"check-updates") updateItem.Text(item.GetNamedString(L"label"));
+            }
+        }
+        bool offered = false;
+        for (auto entry : model.GetNamedArray(L"items")) {
+            auto item = entry.GetObject();
+            if (item.GetNamedString(L"id", L"") == L"check-updates") offered = item.GetNamedBoolean(L"enabled", true);
+        }
+        const bool busy = updates->checking && (updates->manualCheck || (state && state->status == L"downloading"));
+        updateItem.IsEnabled(enabled && offered && !updates->installing && !busy && !updates->showingResult);
+    }
+
     NativeProductMenu() {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
+        updates->changed = [this, alive = std::weak_ptr<int>(lifetime)] {
+            if (!alive.expired()) RefreshUpdateItem();
+        };
+        updates->prepare = [this, alive = std::weak_ptr<int>(lifetime), grant = approval]() -> NativePackageUpdates::Action {
+            if (alive.expired() || !enabled || !dispatch) winrt::throw_hresult(E_ABORT);
+            static uint64_t serial = 0; // UI thread only; unique across browser windows.
+            grant->token = winrt::to_hstring(GetTickCount64()) + L"-" + winrt::to_hstring(++serial);
+            grant->status = L"pending";
+            dispatch((std::wstring(L"product:prepare-update-") + grant->token.c_str()).c_str(), 0, button);
+            winrt::apartment_context ui;
+            const auto deadline = GetTickCount64() + 60000;
+            while (!alive.expired() && grant->status == L"pending" && GetTickCount64() < deadline) {
+                co_await winrt::resume_after(std::chrono::milliseconds(25));
+                co_await ui;
+            }
+            if (alive.expired() || grant->status != L"ready") winrt::throw_hresult(E_ABORT);
+            grant->status = L"consumed";
+        };
+        updates->installFailed = [this, alive = std::weak_ptr<int>(lifetime), grant = approval] {
+            if (!alive.expired() && dispatch && !grant->token.empty())
+                dispatch((std::wstring(L"product:update-failed-") + grant->token.c_str()).c_str(), 0, button);
+            grant->status = L"failed";
+        };
         button = Markup::XamlReader::Load(
             LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" MinWidth="0" MinHeight="0" Padding="0"/>)").as<Button>();
         button.Width(ToolbarMetrics::kButton);
@@ -123,8 +191,10 @@ struct NativeProductMenu {
     ~NativeProductMenu() { lifetime.reset(); updates->Cancel(); Close(); }
 
     void Close() {
+        keepOpenForCheck = false;
         if (flyout) flyout.Hide();
         flyout = nullptr;
+        updateItem = nullptr;
     }
 
     void Apply(Object const& next, bool visible) {
@@ -138,11 +208,16 @@ struct NativeProductMenu {
             return;
         }
         model = next;
+        if (next.HasKey(L"updateInstall") && approval->status == L"pending") {
+            auto grant = next.GetNamedObject(L"updateInstall");
+            if (grant.GetNamedString(L"token") == approval->token) approval->status = grant.GetNamedString(L"status");
+        }
         button.Visibility(Visibility::Visible);
         const auto label = next.GetNamedString(L"label", L"");
         const auto tooltip = next.GetNamedString(L"tooltip", L"");
         if (!label.empty()) Automation::AutomationProperties::SetName(button, label);
         Controls::ToolTipService::SetToolTip(button, winrt::box_value(tooltip.empty() ? label : tooltip));
+        RefreshUpdateItem();
     }
 
     static uint32_t Modifiers() {
@@ -183,20 +258,24 @@ struct NativeProductMenu {
                 }
                 if (id == L"check-updates") {
                     if (!model.HasKey(L"updateLabels")) return;
+                    if (updates->showingResult || updates->installing ||
+                        (updates->checking && (updates->manualCheck || (updates->current && updates->current->status == L"downloading")))) return;
                     bool offered = false;
                     for (auto item : model.GetNamedArray(L"items")) {
                         auto current = item.GetObject();
                         if (current.GetNamedString(L"id", L"") == id && current.GetNamedBoolean(L"enabled", true)) offered = true;
                     }
                     if (!offered) return;
-                    NativePackageUpdates::Labels labels;
-                    auto published = model.GetNamedObject(L"updateLabels");
-                    for (auto key : {L"title", L"checking", L"current", L"available-store", L"available-feed",
-                                     L"unavailable", L"failed", L"open-store", L"open-feed", L"close"})
-                        labels.emplace(key, published.GetNamedString(key));
+                    if (!updates->current || !updates->current->ready) {
+                        keepOpenForCheck = true;
+                        NativePackageUpdates::Probe(updates, true);
+                        return;
+                    }
+                    auto labels = UpdateLabels();
                     const auto epoch = updates->generation;
                     button.DispatcherQueue().TryEnqueue([state = updates, alive, epoch, labels = std::move(labels)] {
-                        if (!alive.expired() && state->generation == epoch) NativePackageUpdates::Check(state, labels);
+                        if (alive.expired() || state->generation != epoch) return;
+                        if (state->current && state->current->ready) NativePackageUpdates::InstallReady(state);
                     });
                     return;
                 }
@@ -222,6 +301,7 @@ struct NativeProductMenu {
                 MenuFlyoutItem item;
                 item.Text(entry.GetNamedString(L"label"));
                 item.IsEnabled(itemEnabled);
+                if (id == L"check-updates") updateItem = item;
                 item.Click([invoke](auto const&, auto const&) { invoke(); });
                 const auto shortcut = entry.GetNamedString(L"shortcut", L"");
                 if (!shortcut.empty()) item.KeyboardAcceleratorTextOverride(shortcut);
@@ -241,10 +321,19 @@ struct NativeProductMenu {
         }
         if (!enabled || !model || model.Size() == 0) return;
         flyout = MenuFlyout();
+        keepOpenForCheck = false;
+        flyout.Closing([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
+            if (!alive.expired() && keepOpenForCheck) {
+                keepOpenForCheck = false;
+                args.Cancel(true);
+            }
+        });
         flyout.Placement(button.FlowDirection() == FlowDirection::RightToLeft
             ? Primitives::FlyoutPlacementMode::BottomEdgeAlignedRight
             : Primitives::FlyoutPlacementMode::BottomEdgeAlignedLeft);
         Fill(flyout.Items(), model.GetNamedArray(L"items"));
+        RefreshUpdateItem();
         flyout.ShowAt(button);
+        if (model.HasKey(L"updateLabels")) NativePackageUpdates::Probe(updates);
     }
 };

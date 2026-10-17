@@ -446,6 +446,87 @@ index 7f6f1f35b2a..9c8c9613021 100644
 +    const { where, params } = lazy.UrlbarSearchModeModel.oneOffOpenPolicy({ wantsNewTab, tabIsEmpty, mouseBackground });
 +    return { where, params: params && { ...params } };
    }
+diff --git a/browser/components/sessionstore/SessionFile.sys.mjs b/browser/components/sessionstore/SessionFile.sys.mjs
+index 5ed858536ad..20a4545a28f 100644
+--- a/browser/components/sessionstore/SessionFile.sys.mjs
++++ b/browser/components/sessionstore/SessionFile.sys.mjs
+@@ -56,4 +56,4 @@ export var SessionFile = {
+    */
+-  write(aData) {
+-    return SessionFileInternal.write(aData);
++  write(aData, { rejectOnFailure = false } = {}) {
++    return SessionFileInternal.write(aData, rejectOnFailure);
+   },
+@@ -471,4 +471,4 @@ var SessionFileInternal = {
+   },
+-
+-  write(aData) {
++  // Update-triggered shutdown opts into errors; ordinary shutdown remains infallible.
++  write(aData, rejectOnFailure = false) {
+     if (lazy.RunState.isClosed) {
+@@ -493,2 +493,3 @@ var SessionFileInternal = {
+     // Wait until the write is done.
++    let writeError;
+     let promise = write.then(
+@@ -525,2 +526,3 @@ var SessionFileInternal = {
+         this._failures++;
++        writeError = err;
+         // By not doing anything special here we ensure that |promise| cannot
+@@ -559,2 +561,7 @@ var SessionFileInternal = {
+       }
++      // Update-triggered shutdown must be able to refuse termination when
++      // persistence failed. Keep the existing shutdown blocker infallible.
++      if (rejectOnFailure && writeError) {
++        throw writeError;
++      }
+     });
+diff --git a/browser/components/sessionstore/SessionSaver.sys.mjs b/browser/components/sessionstore/SessionSaver.sys.mjs
+index 1b99e507311..9b128e9f6dc 100644
+--- a/browser/components/sessionstore/SessionSaver.sys.mjs
++++ b/browser/components/sessionstore/SessionSaver.sys.mjs
+@@ -58,3 +58,3 @@ export var SessionSaver = Object.freeze({
+    */
+-  run() {
++  run({ rejectOnFailure = false } = {}) {
+     if (!lazy.RunState.isRunning) {
+@@ -62,3 +62,3 @@ export var SessionSaver = Object.freeze({
+     }
+-    return SessionSaverInternal.run();
++    return SessionSaverInternal.run(rejectOnFailure);
+   },
+@@ -153,4 +153,4 @@ var SessionSaverInternal = {
+    */
+-  run() {
+-    return this._saveState(true /* force-update all windows */);
++  run(rejectOnFailure = false) {
++    return this._saveState(true /* force-update all windows */, rejectOnFailure);
+   },
+@@ -248,3 +248,3 @@ var SessionSaverInternal = {
+    */
+-  _saveState(forceUpdateAllWindows = false) {
++  _saveState(forceUpdateAllWindows = false, rejectOnFailure = false) {
+     // Cancel any pending timeouts.
+@@ -307,3 +307,3 @@ var SessionSaverInternal = {
+     Glean.sessionRestore.collectData.stopAndAccumulate(timerId);
+-    return this._writeState(state);
++    return this._writeState(state, rejectOnFailure);
+   },
+@@ -359,3 +359,3 @@ var SessionSaverInternal = {
+    */
+-  _writeState(state) {
++  _writeState(state, rejectOnFailure = false) {
+     if (!lazy.RunState.isRunning) {
+@@ -374,3 +374,3 @@ var SessionSaverInternal = {
+     // notify the observers.
+-    return lazy.SessionFile.write(state).then(
++    return lazy.SessionFile.write(state, { rejectOnFailure }).then(
+       () => {
+@@ -389,2 +389,5 @@ var SessionSaverInternal = {
+         );
++        if (rejectOnFailure) {
++          throw err;
++        }
+       }
 diff --git a/browser/components/shell/jar.mn b/browser/components/shell/jar.mn
 index 920dbda4dfa..0816cddd68c 100644
 --- a/browser/components/shell/jar.mn
@@ -7568,7 +7649,7 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..d9fb4b67079 100644
+index 4f28e62c7b5..febac1b699d 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
 @@ -21,3 +21,3 @@ tabbrowser-tab-tooltip-container = { $containerName }
@@ -7609,7 +7690,7 @@ index 4f28e62c7b5..d9fb4b67079 100644
 -tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. We’ll save your groups here so they’re easy to find later.
 +tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. Weâ€™ll save your groups here so theyâ€™re easy to find later.
  tab-groups-list-empty-button = Create a tab group
-@@ -520 +520,52 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,57 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -7654,7 +7735,7 @@ index 4f28e62c7b5..d9fb4b67079 100644
 +    .label = Check for updates
 +winui-update-title = { -brand-short-name } updates
 +winui-update-checking = Checking for updates…
-+winui-update-current = You’re up to date.
++winui-update-current = No updates found
 +winui-update-available-store = An update is available from Microsoft Store. Open the Store to install it. Save your work before closing the browser to apply an update.
 +winui-update-available-feed = An update is available from this installation’s App Installer feed. Open the feed, then open the downloaded .appinstaller file if prompted. Save your work before closing the browser to apply an update.
 +winui-update-unavailable = This installation has no supported update source. Install through Microsoft Store or an App Installer feed to enable update checks.
@@ -7662,6 +7743,11 @@ index 4f28e62c7b5..d9fb4b67079 100644
 +winui-update-open-store = Open Microsoft Store
 +winui-update-open-feed = Open update feed
 +winui-update-close = Close
++
++winui-update-downloading = Downloading update
++winui-update-ready = An update is ready. Install it to restart { -brand-short-name } and restore your session.
++winui-update-install = Install update
++winui-update-installing = Installing update…
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -18173,10 +18259,10 @@ index 00000000000..c2927f9a1dd
 +}
 diff --git a/browser/base/content/WinUIProductMenu.sys.mjs b/browser/base/content/WinUIProductMenu.sys.mjs
 new file mode 100644
-index 00000000000..e309ee62f41
+index 00000000000..b955da218dd
 --- /dev/null
 +++ b/browser/base/content/WinUIProductMenu.sys.mjs
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,256 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18189,6 +18275,9 @@ index 00000000000..e309ee62f41
 +export const PRODUCT_MENU_PREF = "fenn.winui.productmenu.enabled";
 +
 +const BOOKMARKS_VISIBILITY_PREF = "browser.toolbars.bookmarks.visibility";
++const UPDATE_RESTORE_PREF = "browser.sessionstore.resume_session_once";
++// Only one browser window may authorize package replacement at a time.
++let updateOwner = null;
 +const RESOURCES = [
 +  "browser/appmenu.ftl",
 +  "browser/menubar.ftl",
@@ -18216,6 +18305,14 @@ index 00000000000..e309ee62f41
 +  }
 +
 +  close() {
++    this.closed = true;
++    if (this.updateInstall?.status === "ready") {
++      // Windows may already be closing us to replace the package. Keep the
++      // persisted one-time restore preference through that shutdown.
++      if (updateOwner === this) updateOwner = null;
++    } else {
++      this.cancelUpdate();
++    }
 +    for (const pref of [PRODUCT_MENU_PREF, BOOKMARKS_VISIBILITY_PREF]) {
 +      Services.prefs.removeObserver(pref, this.observer);
 +    }
@@ -18307,8 +18404,10 @@ index 00000000000..e309ee62f41
 +      label: this.label("appmenu-menu-button-closed2") || "Menu",
 +      tooltip: this.label("appmenu-menu-button-closed2", "tooltiptext"),
 +      items: tidy(items),
++      ...(this.updateInstall ? { updateInstall: { ...this.updateInstall } } : {}),
 +      updateLabels: Object.fromEntries(["title", "checking", "current", "available-store",
-+        "available-feed", "unavailable", "failed", "open-store", "open-feed", "close"]
++        "available-feed", "unavailable", "failed", "open-store", "open-feed", "close",
++        "downloading", "ready", "install", "installing"]
 +        .map(key => [key, this.label(`winui-update-${key}`, "value")])),
 +    };
 +  }
@@ -18326,6 +18425,19 @@ index 00000000000..e309ee62f41
 +  // item of the current model.
 +  execute(id, action, event) {
 +    if (!this.enabled || typeof id !== "string" || !PRODUCT_MENU_LIMITS.idPattern.test(id)) return 2;
++    const update = /^(prepare-update|update-failed)-([0-9]+-[0-9]+)$/.exec(id);
++    if (update) {
++      if (update[1] === "update-failed") {
++        if (this.updateInstall?.token !== update[2]) return 2;
++        this.cancelUpdate();
++        return 1;
++      }
++      if (!this.find("check-updates")?.enabled || updateOwner) return 2;
++      this.updateInstall = { token: update[2], status: "pending" };
++      updateOwner = this;
++      void this.prepareUpdate(this.updateInstall);
++      return 1; // Receipt only; native waits for the matching persisted grant.
++    }
 +    const item = this.find(id);
 +    if (!item || item.kind === "submenu" || !item.enabled) return 2;
 +    const { window } = this;
@@ -18352,6 +18464,48 @@ index 00000000000..e309ee62f41
 +      }
 +    }
 +    return 1;
++  }
++
++  cancelUpdate() {
++    if (updateOwner !== this) return;
++    updateOwner = null;
++    if (this.updateInstall) this.updateInstall.status = "failed";
++    if (this.restoreBeforeUpdate !== undefined) {
++      try {
++        Services.prefs.setBoolPref(UPDATE_RESTORE_PREF, this.restoreBeforeUpdate);
++        Services.prefs.savePrefFile(null);
++      } catch (error) {
++        console.error("Package update preference rollback failed", error);
++      }
++      this.restoreBeforeUpdate = undefined;
++    }
++    this.host.invalidate();
++  }
++
++  async prepareUpdate(request) {
++    try {
++      if (!this.window.canQuitApplication("restart")) throw new Error("Restart declined");
++      const windows = Array.from(Services.wm.getEnumerator("navigator:browser"));
++      if (windows.some(window => window.closed || !window.CanCloseWindow())) throw new Error("Unload declined");
++      const { TabStateFlusher } = ChromeUtils.importESModule("moz-src:///browser/components/sessionstore/TabStateFlusher.sys.mjs");
++      const { SessionSaver } = ChromeUtils.importESModule("moz-src:///browser/components/sessionstore/SessionSaver.sys.mjs");
++      await Promise.all(windows.map(window => TabStateFlusher.flushWindow(window)));
++      if (this.closed || updateOwner !== this || this.updateInstall !== request || !this.enabled) throw new Error("Restart revoked");
++      const current = Array.from(Services.wm.getEnumerator("navigator:browser"));
++      if (current.length !== windows.length || current.some(window => !windows.includes(window))) throw new Error("Windows changed");
++      this.restoreBeforeUpdate = Services.prefs.getBoolPref(UPDATE_RESTORE_PREF, false);
++      Services.prefs.setBoolPref(UPDATE_RESTORE_PREF, true);
++      Services.prefs.savePrefFile(null);
++      // SessionSaver applies Firefox's private-window/tab and storage filters.
++      // Its normal shutdown path logs disk errors; this path must reject them.
++      await SessionSaver.run({ rejectOnFailure: true });
++      if (this.closed || updateOwner !== this || this.updateInstall !== request || !this.enabled) throw new Error("Restart revoked");
++      request.status = "ready";
++      this.host.invalidate();
++    } catch (error) {
++      this.cancelUpdate();
++      console.error("Package update session preparation failed", error);
++    }
 +  }
 +}
 +

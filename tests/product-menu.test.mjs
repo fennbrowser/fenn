@@ -17,7 +17,8 @@ const LABELS = {
   "appmenu-menu-button-closed2": "Fenn",
   "winui-update-check": "Check for updates",
   ...Object.fromEntries(["title", "checking", "current", "available-store", "available-feed",
-    "unavailable", "failed", "open-store", "open-feed", "close"]
+    "unavailable", "failed", "open-store", "open-feed", "close",
+    "downloading", "ready", "install", "installing"]
     .map(key => [`winui-update-${key}`, `Localized update ${key}`])),
 };
 
@@ -154,7 +155,7 @@ test("update checks publish localized Windows UI and never invoke Firefox's upda
   const f = fixture();
   assert.equal(f.menu.find("check-updates").label, "Check for updates");
   const labels = f.menu.model().updateLabels;
-  assert.equal(Object.keys(labels).length, 10);
+  assert.equal(Object.keys(labels).length, 14);
   for (const [key, value] of Object.entries(labels)) assert.equal(value, `Localized update ${key}`);
   assert.equal(f.menu.execute("check-updates", {}, {}), 2, "handled by the native package host");
   assert.deepEqual(f.calls, []);
@@ -175,4 +176,86 @@ test("preference changes invalidate the address publication and close removes ob
   assert.deepEqual(f.calls.at(-1), ["invalidate"]);
   f.menu.close();
   assert.equal(f.observers.size, 0);
+});
+
+function updateFixture({ refuse = false, saveError = false } = {}) {
+  const f = fixture();
+  f.window.canQuitApplication = reason => { f.calls.push(["quit-check", reason]); return !refuse; };
+  f.window.CanCloseWindow = () => { f.calls.push(["unload"]); return true; };
+  Services.wm = { getEnumerator: () => [f.window] };
+  Services.prefs.setBoolPref = (key, value) => { f.prefs.set(key, value); f.calls.push(["restore", value]); };
+  Services.prefs.savePrefFile = () => f.calls.push(["prefs-saved"]);
+  globalThis.ChromeUtils = { importESModule: name => name.includes("TabStateFlusher")
+    ? { TabStateFlusher: { flushWindow: async window => { assert.equal(window, f.window); f.calls.push(["flush"]); } } }
+    : { SessionSaver: { run: async options => {
+      assert.deepEqual(options, { rejectOnFailure: true });
+      f.calls.push(["save"]);
+      if (saveError) throw new Error("Disk full");
+    } } } };
+  return f;
+}
+
+async function updateSettled(menu) {
+  for (let i = 0; i < 20 && menu.updateInstall?.status === "pending"; ++i) await Promise.resolve();
+  assert.notEqual(menu.updateInstall?.status, "pending");
+}
+
+test("update approval follows unload checks, content flush and durable session save", async () => {
+  const f = updateFixture();
+  assert.equal(f.menu.execute("prepare-update-123-1", {}, {}), 1);
+  assert.equal(f.menu.model().updateInstall.status, "pending");
+  assert.equal(f.menu.execute("prepare-update-123-2", {}, {}), 2);
+  await updateSettled(f.menu);
+  assert.deepEqual(f.menu.model().updateInstall, { token: "123-1", status: "ready" });
+  assert.deepEqual(f.calls.map(call => call[0]), ["quit-check", "unload", "flush", "restore", "prefs-saved", "save", "invalidate"]);
+  assert.equal(f.menu.execute("update-failed-999-1", {}, {}), 2);
+  assert.equal(f.menu.execute("update-failed-123-1", {}, {}), 1);
+  assert.equal(f.prefs.get("browser.sessionstore.resume_session_once"), false);
+  f.menu.close();
+});
+
+test("a failed session save refuses installation and restores the prior preference", async () => {
+  const f = updateFixture({ saveError: true });
+  f.menu.execute("prepare-update-123-3", {}, {});
+  await updateSettled(f.menu);
+  assert.equal(f.menu.model().updateInstall.status, "failed");
+  assert.equal(f.prefs.get("browser.sessionstore.resume_session_once"), false);
+  f.menu.close();
+});
+
+test("declined quit never flushes or grants an update", async () => {
+  const f = updateFixture({ refuse: true });
+  f.menu.execute("prepare-update-123-4", {}, {});
+  await updateSettled(f.menu);
+  assert.equal(f.menu.model().updateInstall.status, "failed");
+  assert.equal(f.calls.some(call => call[0] === "save" || call[0] === "flush"), false);
+  f.menu.close();
+});
+
+test("teardown during preparation cannot publish a late install grant", async () => {
+  const f = updateFixture();
+  f.menu.execute("prepare-update-123-5", {}, {});
+  f.menu.close();
+  await updateSettled(f.menu);
+  assert.equal(f.menu.updateInstall.status, "failed");
+  assert.equal(f.calls.some(call => call[0] === "save"), false);
+});
+
+test("update shutdown retains one-time session restoration", async () => {
+  const f = updateFixture();
+  f.menu.execute("prepare-update-123-6", {}, {});
+  await updateSettled(f.menu);
+  f.menu.close();
+  assert.equal(f.prefs.get("browser.sessionstore.resume_session_once"), true);
+});
+
+
+test("preference persistence failure refuses installation even when rollback also fails", async () => {
+  const f = updateFixture();
+  Services.prefs.savePrefFile = () => { throw new Error("Preferences are read-only"); };
+  f.menu.execute("prepare-update-123-7", {}, {});
+  await updateSettled(f.menu);
+  assert.equal(f.menu.updateInstall.status, "failed");
+  assert.equal(f.calls.some(call => call[0] === "save"), false);
+  f.menu.close();
 });
