@@ -93,9 +93,9 @@ inline void ValidateImage(JsonObject const& item, size_t& totalPixels, ImageLimi
 // from the JsonObject overload below so callers that cache the decoded
 // fields across snapshots (rather than the original JSON) can decode
 // without reconstructing a throwaway JsonObject.
-inline Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap DecodeImage(int width, int height,
+inline winrt::Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap DecodeImage(int width, int height,
                                                                         winrt::hstring const& pixels) {
-    Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap bitmap(width, height);
+    winrt::Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap bitmap(width, height);
     auto bytes = bitmap.PixelBuffer().data();
     auto nibble = [](wchar_t c) { return c <= L'9' ? c - L'0' : c - L'a' + 10; };
     for (uint32_t j = 0; j < pixels.size() / 2; ++j)
@@ -105,7 +105,7 @@ inline Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap DecodeImage(int widt
 }
 
 // Decodes a "width"/"height"/"pixels" object already checked by ValidateImage.
-inline Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap DecodeImage(JsonObject const& data) {
+inline winrt::Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap DecodeImage(JsonObject const& data) {
     return DecodeImage(int(data.GetNamedNumber(L"width")), int(data.GetNamedNumber(L"height")),
                        data.GetNamedString(L"pixels"));
 }

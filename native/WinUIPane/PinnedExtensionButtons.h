@@ -6,24 +6,24 @@
 // Retained WinUI controls only; Firefox owns placement and extension behavior.
 struct PinnedExtensionButtons {
     using JObject = winrt::Windows::Data::Json::JsonObject;
-    using Button = Microsoft::UI::Xaml::Controls::Button;
+    using Button = winrt::Microsoft::UI::Xaml::Controls::Button;
     struct State {
         winrt::hstring id, label, badge, text;
-        bool enabled{}, genericIcon{};
+        bool enabled{}, genericIcon{}, alwaysVisible{};
         JObject image{nullptr};
         winrt::Windows::UI::Color background{}, foreground{};
     };
     struct Row {
-        bool enabled{};
+        bool enabled{}, alwaysVisible{};
         Button button{nullptr};
-        Microsoft::UI::Xaml::Controls::Image image{nullptr};
-        Microsoft::UI::Xaml::Controls::FontIcon genericIcon{nullptr};
-        Microsoft::UI::Xaml::Controls::TextBlock badge{nullptr};
-        Microsoft::UI::Xaml::Controls::Border badgeBorder{nullptr};
-        Microsoft::UI::Xaml::Media::SolidColorBrush background{nullptr}, foreground{nullptr};
+        winrt::Microsoft::UI::Xaml::Controls::Image image{nullptr};
+        winrt::Microsoft::UI::Xaml::Controls::FontIcon genericIcon{nullptr};
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock badge{nullptr};
+        winrt::Microsoft::UI::Xaml::Controls::Border badgeBorder{nullptr};
+        winrt::Microsoft::UI::Xaml::Media::SolidColorBrush background{nullptr}, foreground{nullptr};
         winrt::hstring imageKey;
     };
-    Microsoft::UI::Xaml::Controls::StackPanel panel;
+    winrt::Microsoft::UI::Xaml::Controls::StackPanel panel;
     std::map<winrt::hstring, Row> rows;
     std::function<void(wchar_t const*, uint32_t, Button const&)> activate;
     winrt::hstring commandPrefix{L"extension:"}, contextPrefix{L"extension-menu:"}, automationPrefix{L"FennExtension-"};
@@ -31,12 +31,16 @@ struct PinnedExtensionButtons {
     bool externalLayout{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     PinnedExtensionButtons() {
-        using namespace Microsoft::UI::Xaml;
+        using namespace winrt::Microsoft::UI::Xaml;
         panel.Orientation(Controls::Orientation::Horizontal);
         panel.Spacing(4);
         panel.Visibility(Visibility::Collapsed);
     }
     ~PinnedExtensionButtons() { lifetime.reset(); }
+    void SetRevealed(bool reveal) {
+        panel.Opacity(1);
+        for (auto const& [id,row] : rows) row.button.Opacity(reveal || row.alwaysVisible ? 1.0 : 0.0);
+    }
     static std::vector<State> Read(JObject const& snapshot, wchar_t const* key = L"pinned") {
         std::vector<State> result;
         if (!snapshot.HasKey(L"navigation")) return result;
@@ -68,6 +72,7 @@ struct PinnedExtensionButtons {
                 next.label.size() > 4096 || next.badge.size() > 4096 || next.text.size() > 16) throw winrt::hresult_invalid_argument();
             next.enabled = item.GetNamedBoolean(L"enabled");
             next.genericIcon = item.GetNamedBoolean(L"genericIcon",false);
+            next.alwaysVisible = item.GetNamedBoolean(L"alwaysVisible",false);
             next.background = color(item, L"background");
             next.foreground = color(item, L"foreground");
             NativeJson::ValidateImage(item, pixels, {32, 32768});
@@ -78,8 +83,8 @@ struct PinnedExtensionButtons {
         return result;
     }
     void Apply(std::vector<State> const& state, bool visible) {
-        using namespace Microsoft::UI::Xaml;
-        using namespace Microsoft::UI::Xaml::Controls;
+        using namespace winrt::Microsoft::UI::Xaml;
+        using namespace winrt::Microsoft::UI::Xaml::Controls;
         std::set<winrt::hstring> keep;
         uint32_t index = 0;
         for (auto const& item : state) {
@@ -121,7 +126,7 @@ struct PinnedExtensionButtons {
             } else panel.Children().InsertAt(index, row.button);
             ++index;
             }
-            row.enabled=item.enabled;row.button.IsEnabled(visible && item.enabled);
+            row.enabled=item.enabled;row.alwaysVisible=item.alwaysVisible;row.button.IsEnabled(visible && item.enabled);
             Automation::AutomationProperties::SetName(row.button, item.label);
             Automation::AutomationProperties::SetItemStatus(row.button, item.badge);
             ToolTipService::SetToolTip(row.button, winrt::box_value(item.label));

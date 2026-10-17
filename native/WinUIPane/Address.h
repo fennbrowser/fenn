@@ -9,6 +9,7 @@
 #include "SuggestionList.h"
 #include "NavigationToolbar.h"
 #include "AddressContextMenu.h"
+#include "PageActionsMenu.h"
 
 // Win32 owns keyboard-layout translation. Probe without consuming dead-key state.
 inline bool NativeAltGrTextKey(UINT key) {
@@ -41,6 +42,8 @@ struct NativeAddress {
     double clipboardSerial{}, autofillSerial{}, textEpoch{};
     winrt::hstring nextInputType{L"insertReplacementText"}, observedInputType{L"insertReplacementText"};
     PinnedExtensionButtons omnibarLeft, omnibarRight;
+    NativePageActionsMenu pageActions;
+    Microsoft::UI::Xaml::Controls::StackPanel trailingActions;
     SuggestionList suggestions;
     GlobalActionsPanel actions;
     Microsoft::UI::Xaml::Controls::Primitives::Popup popup{nullptr};
@@ -108,9 +111,11 @@ struct NativeAddress {
     }
     void UpdateEmbeddedControls() {
         const bool reveal = !hideEmbeddedControls || pointerOverField || FocusInsideField() ||
-                            mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen();
-        for (auto const& element : {winrt::Microsoft::UI::Xaml::UIElement(omnibarLeft.panel), winrt::Microsoft::UI::Xaml::UIElement(omnibarRight.panel),
-                                    winrt::Microsoft::UI::Xaml::UIElement(mode.button), winrt::Microsoft::UI::Xaml::UIElement(mode.exit)}) {
+                            mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen() || pageActions.open;
+        omnibarLeft.SetRevealed(reveal);
+        omnibarRight.SetRevealed(reveal);
+        for (auto const& element : {winrt::Microsoft::UI::Xaml::UIElement(mode.button), winrt::Microsoft::UI::Xaml::UIElement(mode.exit),
+                                    winrt::Microsoft::UI::Xaml::UIElement(pageActions.button)}) {
             element.Opacity(reveal ? 1.0 : 0.0);
         }
     }
@@ -290,7 +295,7 @@ struct NativeAddress {
         Stage(value, NativeShellCore::ContextMenu);
     }
     void ObserveFocus(bool islandHasFocus) {
-        if ((mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen()) && islandHasFocus) return;
+        if ((mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen() || pageActions.open) && islandHasFocus) return;
         bool inside = false;
         if (root.XamlRoot() && islandHasFocus) {
             auto focused =
@@ -298,7 +303,7 @@ struct NativeAddress {
             while (focused) {
                 // Site/page buttons live inside the editor's visual border,
                 // but focusing them must not start or restore an address query.
-                if (focused == omnibarLeft.panel || focused == omnibarRight.panel) break;
+                if (focused == omnibarLeft.panel || focused == trailingActions) break;
                 if (focused == root || (popupContent && focused == popupContent)) {
                     inside = true;
                     break;
@@ -704,7 +709,8 @@ struct NativeAddress {
                 action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
                 action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
                 action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
-                if (releaseMenuFocus && wcsncmp(command,L"history-menu:",13)!=0) releaseMenuFocus();
+                if (releaseMenuFocus && wcsncmp(command,L"history-menu:",13)!=0 &&
+                    wcsncmp(command,L"omni-pin:",9)!=0 && wcsncmp(command,L"omni-unpin:",11)!=0) releaseMenuFocus();
             }
             navigate(action.Stringify());
         };
@@ -712,6 +718,11 @@ struct NativeAddress {
         navigation->historyMenu.dispatch=navigation->activate;
         omnibarLeft.activate = navigation->activate;
         omnibarRight.activate = navigation->activate;
+        pageActions.dispatch = navigation->activate;
+        pageActions.changed = [this, alive = std::weak_ptr<int>(lifetime)] {
+            if (!alive.expired()) UpdateEmbeddedControls();
+        };
+        pageActions.Create();
         for (auto* buttons : {&omnibarLeft, &omnibarRight}) {
             buttons->commandPrefix = L"omni:";
             buttons->contextPrefix = L"omni-menu:";
@@ -721,7 +732,11 @@ struct NativeAddress {
             buttons->panel.VerticalAlignment(VerticalAlignment::Center);
         }
         omnibarLeft.panel.Margin({4, 0, 0, 0});
-        omnibarRight.panel.Margin({0, 0, 4, 0});
+        omnibarRight.panel.Margin({0, 0, 0, 0});
+        trailingActions.Orientation(Orientation::Horizontal);
+        trailingActions.VerticalAlignment(VerticalAlignment::Center);
+        trailingActions.Children().Append(omnibarRight.panel);
+        trailingActions.Children().Append(pageActions.button);
         // The stock TextBox owns the entire surface and focus accent. Its
         // padding reserves the overlaid native controls within that border.
         header.Children().Clear();
@@ -735,7 +750,7 @@ struct NativeAddress {
         Grid::SetColumn(omnibarLeft.panel, 0);
         Grid::SetColumn(mode.button, 1);
         Grid::SetColumn(mode.exit, 3);
-        Grid::SetColumn(omnibarRight.panel, 4);
+        Grid::SetColumn(trailingActions, 4);
         // Keep logical tab order left-to-right while painting the editor
         // behind the embedded controls.
         Canvas::SetZIndex(field, -1);
@@ -743,7 +758,7 @@ struct NativeAddress {
         header.Children().Append(mode.button);
         header.Children().Append(field);
         header.Children().Append(mode.exit);
-        header.Children().Append(omnibarRight.panel);
+        header.Children().Append(trailingActions);
         mode.button.MinWidth(0); mode.button.MinHeight(0);
         mode.button.Height(24); mode.button.Margin({4, 0, 4, 0});
         // The stock 12-DIP arrow has internal side bearings; balance visible edge spacing.
@@ -776,10 +791,10 @@ struct NativeAddress {
             };
             const float textGap = mode.button.Visibility() == Visibility::Visible ? 2.0f : 8.0f;
             field.Padding({float(textGap + width(omnibarLeft.panel) + width(mode.button)), 4,
-                float(8 + width(mode.exit) + width(omnibarRight.panel)), 4});
+                float(8 + width(mode.exit) + width(trailingActions)), 4});
         };
         for (auto element : {omnibarLeft.panel.as<FrameworkElement>(), mode.button.as<FrameworkElement>(),
-                             mode.exit.as<FrameworkElement>(), omnibarRight.panel.as<FrameworkElement>()}) {
+                             mode.exit.as<FrameworkElement>(), trailingActions.as<FrameworkElement>()}) {
             element.SizeChanged(reserveControls);
             element.RegisterPropertyChangedCallback(UIElement::VisibilityProperty(), reserveControls);
         }
@@ -884,6 +899,7 @@ struct NativeAddress {
             context.Reset();
             resultMenu.Reset();
             omnibarLeft.Apply({}, false); omnibarRight.Apply({}, false);
+            pageActions.Apply({}, false);
             if (popup) popup.IsOpen(false);
             mode.Disable();
             actions.Clear();
@@ -912,6 +928,7 @@ struct NativeAddress {
         const auto paletteState = PinnedExtensionButtons::Read(snapshot,L"palette");
         const auto omnibarLeftState = PinnedExtensionButtons::Read(snapshot, L"omnibarLeft");
         const auto omnibarRightState = PinnedExtensionButtons::Read(snapshot, L"omnibarRight");
+        const auto pageActionsState = NativePageActionsMenu::Read(snapshot);
         auto checkedText = snapshot.GetNamedString(L"text", L"");
         auto clipboard = snapshot.GetNamedObject(L"clipboard", JObject());
         const auto clipboardId = clipboard.Size() ? NativeJson::RequireRevision(clipboard, L"serial") : 0;
@@ -1093,6 +1110,7 @@ struct NativeAddress {
             if(toolbarDecision==SHELL_TOOLBAR_PUBLICATION_UNCHANGED) customizationState.labels=std::move(labels);
         }
         if (applyAddress && nextSession != session) {
+            pageActions.Close();
             if (navigation) navigation->sentOverflow.clear();
             context.Reset();
             resultMenu.Reset();
@@ -1136,6 +1154,7 @@ struct NativeAddress {
             navigation->customization.Apply(customizationState, navigationToolbar);
             omnibarLeft.Apply(omnibarLeftState, navigationToolbar);
             omnibarRight.Apply(omnibarRightState, navigationToolbar);
+            pageActions.Apply(pageActionsState, navigationToolbar && !navigation->customization.editing);
             toolbarSurface.Visibility(navigationToolbar ? Visibility::Visible : Visibility::Collapsed);
             root.Margin(navigationToolbar ? Thickness{8, 4, 8, 4} : Thickness{0, 0, 0, 0});
             hideEmbeddedControls = navigationToolbar;

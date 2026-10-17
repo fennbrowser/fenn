@@ -16,6 +16,7 @@
 #include <winrt/Windows.UI.ViewManagement.h>
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/Microsoft.UI.Xaml.h>
+#include <winrt/Microsoft.UI.Xaml.Markup.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Input.h>
@@ -31,6 +32,7 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include "../../native/WinUIPane/PackageUpdates.h"
+#include "../../native/WinUIPane/PinnedExtensionButtons.h"
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <wrl/client.h>
 #include "GlowFrameProbe.h"
@@ -930,6 +932,24 @@ static BOOL CALLBACK CountChild(HWND, LPARAM count) {
 void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
+    {
+        PinnedExtensionButtons indicators;
+        auto state= PinnedExtensionButtons::Read(winrt::Windows::Data::Json::JsonObject::Parse(
+            LR"({"navigation":{"omnibarLeft":[{"id":"warning","label":"Warning","enabled":true,"alwaysVisible":true,"background":[0,0,0,0],"foreground":[0,0,0,255]},{"id":"ordinary","label":"Action","enabled":true,"background":[0,0,0,0],"foreground":[0,0,0,255]}]}})"),L"omnibarLeft");
+        indicators.Apply(state,true);
+        indicators.SetRevealed(false);
+        Require(indicators.panel.Opacity()==1 && indicators.rows.at(L"warning").button.Opacity()==1 &&
+                    indicators.rows.at(L"ordinary").button.Opacity()==0,
+                "persistent Firefox indicator survives hover-off without revealing adjacent ordinary action");
+        indicators.SetRevealed(true);
+        Require(indicators.rows.at(L"ordinary").button.Opacity()==1, "hover reveals ordinary action");
+        state[0].alwaysVisible=false;
+        indicators.Apply(state,true); indicators.SetRevealed(false);
+        Require(indicators.rows.at(L"warning").button.Opacity()==0, "cleared active state returns to hover-only presentation");
+        indicators.Apply({},true);
+        Require(indicators.rows.empty() && indicators.panel.Visibility()==Visibility::Collapsed,
+                "Firefox removal revokes persistent indicators");
+    }
     std::vector<wchar_t> output(262144);
     // State fixtures receive fresh publication sequences, as Firefox now sends.
     uint64_t addressSequence = 0;

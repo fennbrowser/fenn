@@ -3,6 +3,9 @@ import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const context=vm.createContext({console});
+const pins = new Map();
+context.Services={prefs:{getBoolPref:(key,fallback)=>pins.get(key) ?? fallback,
+  setBoolPref:(key,value)=>pins.set(key,value)}};
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIOmnibarActions.sys.mjs',import.meta.url),'utf8')
   .replace('export class WinUIOmnibarActions','this.Actions = class WinUIOmnibarActions'),context);
 function fixture() {
@@ -26,6 +29,13 @@ test('hidden or revoked action cannot execute',()=>{
   const f=fixture(); f.hide(); assert.equal(f.adapter.activate('omni:action-1',{},{}),2);
   assert.equal(f.dispatched.length,0);
 });
+
+test('an unpinned menu action still invokes the original Firefox target',()=>{
+  const f=fixture();
+  f.adapter.snapshot=()=>({omnibarLeft:[],omnibarRight:[],pageActions:{items:[{id:'action-1',enabled:true,pinned:false}]}});
+  assert.equal(f.adapter.activate('omni:action-1',{}, {shiftKey:true}),1);
+  assert.equal(f.dispatched.length,1); assert.equal(f.dispatched[0].shiftKey,true);
+});
 test('popup anchors are scoped to current tab and document',()=>{
   const f=fixture(); assert.equal(f.adapter.anchorFor(f.node),f.anchor);
   f.changeDocument(); assert.equal(f.adapter.anchorFor(f.node),f.node);
@@ -48,4 +58,94 @@ test('native popup repositioning retains its anchor until original Firefox input
   f.adapter.onOriginalInput(nativeEvent); assert.equal(f.adapter.anchorFor(f.node),f.anchor);
   f.adapter.onOriginalInput({isTrusted:true});
   assert.equal(f.adapter.anchorFor(f.node),f.node);
+});
+
+function menuFixture() {
+  pins.clear();
+  const ids=['trust-icon-container','identity-icon-box','identity-box','tracking-protection-icon-container',
+    'identity-permission-box','reader-mode-button','picture-in-picture-button','taskbar-tabs-button',
+    'translations-button','star-button-box','pageActionButton','share-button','extension-action'];
+  const nodes=new Map(ids.map(id=>[id,{id,isConnected:true,hidden:false,attrs:{},textContent:id,
+    classes:new Set(),classList:{contains(c){return nodes.get(id).classes.has(c);}},
+    getAttribute(name){return this.attrs[name] || '';},hasAttribute(name){return name in this.attrs;},querySelectorAll(){return [];},querySelector(){return null;},matches(){return false;}}]));
+  nodes.get('trust-icon-container').hidden=true;
+  const document={getElementById:id=>nodes.get(id),querySelectorAll:selector=>selector.startsWith('#page-action-buttons') ?
+    [...nodes.values()].filter(n=>!['trust-icon-container','identity-icon-box','identity-box','tracking-protection-icon-container','identity-permission-box'].includes(n.id)) : []};
+  const adapter=Object.create(context.Actions.prototype);
+  Object.assign(adapter,{entries:new Map(),nextId:0,images:new Map(),events:new WeakSet(),label:key=>key,context:()=>17,
+    toolbar:{menuAnchor:()=>({}),menuAnchors:new Map()},window:{document,gURLBar:{parentNode:{}},
+      gBrowser:{selectedTab:{}},getComputedStyle:()=>({display:'block',visibility:'visible',fill:'currentColor',color:'rgb(0,0,0)',listStyleImage:'none'})}});
+  return {adapter,nodes};
+}
+
+test('page menu has exactly five rows, four default pins and disabled explanations',()=>{
+  const {adapter,nodes}=menuFixture();
+  nodes.get('picture-in-picture-button').hidden=true;
+  const menu=adapter.snapshot().pageActions;
+  assert.deepEqual(Array.from(menu.items,i=>i.key),['connection','reader','pip','taskbar','translation']);
+  assert.equal(menu.items[0].pinnable,false); assert.equal(menu.items[0].pinned,false);
+  assert.ok(menu.items.slice(1).every(i=>i.pinned && i.pinnable));
+  assert.equal(menu.items[2].enabled,false); assert.equal(menu.items[2].reason,'pip-unavailable');
+});
+
+test('unpinning keeps the action in the menu, persists across adapters and rejects repeated intents',()=>{
+  const {adapter,nodes}=menuFixture();
+  const reader=adapter.snapshot().pageActions.items[1];
+  assert.equal(adapter.activate('omni-unpin:'+reader.id,{},{}),1);
+  const next=adapter.snapshot();
+  assert.ok(!next.omnibarRight.some(i=>i.id===reader.id));
+  assert.equal(next.pageActions.items[1].enabled,true);
+  assert.equal(next.pageActions.items[1].pinned,false);
+  assert.equal(adapter.activate('omni-unpin:'+reader.id,{},{}),2);
+  const another=Object.create(context.Actions.prototype);
+  Object.assign(another,adapter,{entries:new Map(),nextId:0});
+  assert.equal(another.pageActions().items[1].pinned,false);
+  assert.equal(adapter.activate('omni-pin:'+reader.id,{},{}),1);
+  assert.ok(adapter.snapshot().omnibarRight.some(i=>i.id===reader.id));
+  nodes.get('reader-mode-button').hidden=true;
+  assert.equal(adapter.activate('omni:'+reader.id,{},{}),2);
+});
+
+test('secure identity moves into menu; insecure and trust warning indicators stay inline',()=>{
+  const {adapter,nodes}=menuFixture();
+  let state=adapter.snapshot(); let connection=state.pageActions.items[0];
+  assert.equal(connection.enabled,true);
+  assert.ok(!state.omnibarLeft.some(i=>i.id===connection.id));
+  assert.equal(adapter.activate('omni-pin:'+connection.id,{},{}),2);
+  nodes.get('identity-box').classes.add('notSecure');
+  assert.ok(adapter.snapshot().omnibarLeft.some(i=>i.id===connection.id));
+  nodes.get('identity-icon-box').hidden=true; nodes.get('trust-icon-container').hidden=false;
+  nodes.get('trust-icon-container').classes.add('warning');
+  state=adapter.snapshot(); connection=state.pageActions.items[0];
+  assert.ok(state.omnibarLeft.some(i=>i.id===connection.id));
+  assert.ok(state.omnibarLeft.some(i=>i.label==='tracking-protection-icon-container'));
+});
+
+test('bookmark star is the final published action before native ellipsis; other actions stay inline',()=>{
+  const {adapter}=menuFixture(); const state=adapter.snapshot();
+  assert.equal(state.omnibarRight.at(-1).label,'star-button-box');
+  assert.ok(state.omnibarRight.some(i=>i.label==='extension-action'));
+  assert.ok(state.omnibarRight.some(i=>i.label==='share-button'));
+  assert.ok(!state.omnibarRight.some(i=>i.label==='pageActionButton'));
+});
+
+test('Firefox indicators remain persistent; ordinary actions only reveal on hover',()=>{
+  const {adapter,nodes}=menuFixture();
+  nodes.get('identity-box').classes.add('notSecure');
+  let state=adapter.snapshot();
+  assert.ok(state.omnibarLeft.length>0 && state.omnibarLeft.every(i=>i.alwaysVisible));
+  assert.ok(state.omnibarRight.every(i=>!i.alwaysVisible));
+  for (const [id,attr] of [['reader-mode-button','readeractive'],['picture-in-picture-button','pipactive'],['translations-button','translationsactive']]) {
+    const node=nodes.get(id);
+    const menu=adapter.snapshot().pageActions.items.find(i=>i.id===adapter.entries.get(node).id);
+    adapter.activate('omni-unpin:'+menu.id,{},{});
+    node.attrs[attr]=attr==='readeractive'?'true':'';
+    assert.equal(adapter.snapshot().omnibarRight.find(i=>i.id===menu.id)?.alwaysVisible,true);
+    delete node.attrs[attr];
+    assert.ok(!adapter.snapshot().omnibarRight.some(i=>i.id===menu.id));
+  }
+  nodes.get('identity-icon-box').hidden=true;
+  assert.ok(!adapter.snapshot().omnibarLeft.some(i=>i.label==='identity-icon-box'));
+  nodes.set('urlbar-zoom-button',{...nodes.get('share-button'),id:'urlbar-zoom-button',attrs:{label:'120%'}});
+  assert.equal(adapter.snapshot().omnibarRight.find(i=>i.text==='120%')?.alwaysVisible,true);
 });
