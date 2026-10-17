@@ -123,7 +123,8 @@ struct NativeAddress {
                             (FocusInsideField() || mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen() || pageActions.open));
         omnibarLeft.SetRevealed(reveal);
         omnibarRight.SetRevealed(reveal);
-        for (auto const& element : {winrt::Microsoft::UI::Xaml::UIElement(mode.button), winrt::Microsoft::UI::Xaml::UIElement(mode.exit),
+        mode.button.Opacity(1.0);
+        for (auto const& element : {winrt::Microsoft::UI::Xaml::UIElement(mode.exit),
                                     winrt::Microsoft::UI::Xaml::UIElement(pageActions.button)}) {
             element.Opacity(reveal ? 1.0 : 0.0);
         }
