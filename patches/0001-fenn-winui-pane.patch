@@ -13,7 +13,7 @@ index 934bad0d61f..81cd6e7ab6b 100644
 +        CONFIG["MOZ_BRANDING_DIRECTORY"],
      )
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 4f50c25976a..00f58792028 100644
+index 4f50c25976a..aebd9bcedf6 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -97,7 +97,7 @@ index 4f50c25976a..00f58792028 100644
 +// which, like fullscreen, shows the toolbar again.
 +pref("fenn.winui.navigation.hideFirefoxToolbar", true);
 +// Native product menu button (logo, top left of the navigation row).
-+pref("fenn.winui.productmenu.enabled", false);
++pref("fenn.winui.productmenu.enabled", true);
 +// The window backdrop shows around the content area, as in Edge and Dia. Mica Alt
 +// (TABBEDWINDOW) matches the strip and toolbar islands' system backdrop.
 +pref("widget.windows.mica", true);
@@ -18406,7 +18406,7 @@ index 00000000000..c2927f9a1dd
 +}
 diff --git a/browser/base/content/WinUIProductMenu.sys.mjs b/browser/base/content/WinUIProductMenu.sys.mjs
 new file mode 100644
-index 00000000000..b955da218dd
+index 00000000000..fc839ac1291
 --- /dev/null
 +++ b/browser/base/content/WinUIProductMenu.sys.mjs
 @@ -0,0 +1,256 @@
@@ -18467,7 +18467,7 @@ index 00000000000..b955da218dd
 +  }
 +
 +  get enabled() {
-+    return Services.prefs.getBoolPref(PRODUCT_MENU_PREF, false);
++    return Services.prefs.getBoolPref(PRODUCT_MENU_PREF, true);
 +  }
 +
 +  localization() {
