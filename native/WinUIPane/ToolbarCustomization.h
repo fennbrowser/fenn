@@ -320,6 +320,7 @@ struct NativeToolbarCustomization {
         state=std::move(next);
         if(!visible || !state.revision) {Hide();return;}
         if(available) {
+            if(popup && popup.Child())Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(popup.Child(),state.labels.at(L"title"));
             for(auto const& [key,block]:textBlocks) block.Text(state.labels.at(key));
             for(auto const& [key,control]:std::initializer_list<std::pair<wchar_t const*,Button>>{{L"reset",reset},{L"undo-reset",undoReset}}) control.Content(winrt::box_value(state.labels.at(key)));
         }
@@ -357,16 +358,19 @@ struct NativeToolbarCustomization {
                 if(alive.expired() || args.Key()!=winrt::Windows::System::VirtualKey::Tab || (GetKeyState(VK_SHIFT)&0x8000))return;
                 if(sender==undoReset || !undoReset.IsEnabled())args.Handled(FocusFirstPlaced());
             });
-            popup.Opened([this,alive](auto const&,auto const&){if(!alive.expired()){editing=true;SendGlobal(L"open",true);if(editorChanged)editorChanged();available.Focus(FocusState::Keyboard);}});
+            popup.Opened([this,alive](auto const&,auto const&){if(!alive.expired()){
+                editing=true;SendGlobal(L"open",true);if(editorChanged)editorChanged();
+                available.SelectedIndex(-1);
+                // Give the popup input ownership without focusing/highlighting
+                // an available button. Tab enters the stock GridView normally.
+                popup.Child().as<FlyoutPresenter>().Focus(FocusState::Programmatic);
+            }});
             popup.Closed([this,alive](auto const&,auto const&){if(!alive.expired()){editing=false;dragCancelled=true;SendGlobal(L"close",true);if(editorChanged)editorChanged();}});
             reset.Click([this,alive](auto const&,auto const&){if(!alive.expired())SendGlobal(L"reset");});
             undoReset.Click([this,alive](auto const&,auto const&){if(!alive.expired())SendGlobal(L"undo-reset");});
             auto itemTemplate=Markup::XamlReader::Load(LR"(<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><ContentPresenter/></DataTemplate>)").as<DataTemplate>();
             available.ItemTemplate(itemTemplate);
             available.LayoutUpdated([this,alive](auto const&,auto const&){if(!alive.expired())PopulatePalette();});
-            content.PreviewKeyDown([this,alive](auto const&,auto const& args){
-                if(!alive.expired() && args.Key()==winrt::Windows::System::VirtualKey::Escape){dragCancelled=true;Hide();anchor.Focus(FocusState::Keyboard);args.Handled(true);}
-            });
             available.PreviewKeyDown([this,alive](auto const&,auto const& args){
                 if(alive.expired())return;
                 if(args.Key()==winrt::Windows::System::VirtualKey::Tab) {
@@ -375,7 +379,11 @@ struct NativeToolbarCustomization {
                     return;
                 }
                 if(args.Key()!=winrt::Windows::System::VirtualKey::Enter)return;
-                auto id=Id(available.SelectedItem());if(!id.empty()){Send(id,L"add");args.Handled(true);}
+                // Tab can focus a row without selecting it. Activate that exact
+                // container rather than requiring a preselected palette item.
+                auto focused=Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(available.XamlRoot()).try_as<GridViewItem>();
+                auto id=Id(focused?available.ItemFromContainer(focused):available.SelectedItem());
+                if(!id.empty()){Send(id,L"add");args.Handled(true);}
             });
             available.DragItemsStarting([this,alive](auto const&,auto const& args){
                 if(alive.expired())return;
@@ -384,7 +392,13 @@ struct NativeToolbarCustomization {
             available.DragItemsCompleted([this,alive](auto const&,auto const&){if(!alive.expired())EndDrag();});
             available.DragOver([this,alive](auto const&,auto const& args){if(!alive.expired() && Accept(args,true))args.Handled(true);});
             available.Drop([this,alive](auto const&,auto const& args){if(!alive.expired())DropAt(args,{},true);});
-            FlyoutPresenter presenter;presenter.Content(content);popup.Child(presenter);
+            FlyoutPresenter presenter;presenter.Content(content);presenter.IsTabStop(true);presenter.UseSystemFocusVisuals(false);
+            Automation::AutomationProperties::SetAutomationId(presenter,L"FennCustomizePopup");
+            Automation::AutomationProperties::SetName(presenter,state.labels.at(L"title"));
+            presenter.PreviewKeyDown([this,alive](auto const&,auto const& args){
+                if(!alive.expired() && args.Key()==winrt::Windows::System::VirtualKey::Escape){dragCancelled=true;Hide();anchor.Focus(FocusState::Keyboard);args.Handled(true);}
+            });
+            popup.Child(presenter);
         }
         popup.Child().as<FrameworkElement>().FlowDirection(button.FlowDirection());
         popup.XamlRoot(button.XamlRoot());popup.PlacementTarget(button);
