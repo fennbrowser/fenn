@@ -315,6 +315,16 @@ struct NativeAddress {
             auto focused =
                 Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(root.XamlRoot()).try_as<DependencyObject>();
             while (focused) {
+                // Keyboard traversal into the address's edit toolbar retains
+                // that edit target and selection. Other toolbar buttons still
+                // leave address focus normally.
+                if(navigation)for(auto const& item:navigation->customization.state.items) {
+                    auto row=navigation->stock.rows.find(item.id);
+                    if(row==navigation->stock.rows.end())continue;
+                    for(size_t i=0;i<item.stock.size();i++)if(item.stock[i].address &&
+                        focused==row->second.buttons[i])inside=true;
+                }
+                if(inside)break;
                 // Site/page buttons live inside the editor's visual border,
                 // but focusing them must not start or restore an address query.
                 if (focused == omnibarLeft.panel || focused == trailingActions) break;
@@ -705,6 +715,30 @@ struct NativeAddress {
             </ResourceDictionary>)").as<ResourceDictionary>());
         toolbarRoot = Grid();
         navigation = std::make_unique<NativeNavigationToolbar>();
+        navigation->stock.activate=[this](wchar_t const* command,uint32_t modifiers,auto const& button,bool keyboard) {
+            if(syncing || session.empty() || !navigate || navigation->customization.editing)return;
+            // Reuse the address clipboard contract while its editor owns focus;
+            // Firefox's content command controller handles other edit targets.
+            for(auto const& item:navigation->customization.state.items)if(item.placed)
+                for(auto const& part:item.stock)if(part.address && part.enabled &&
+                    winrt::hstring(command)==L"stock:"+item.id+L":"+part.id) {
+                    if(part.id==L"cut-button"){Action(L"clipboard",0,L"cmd_cut");return;}
+                    if(part.id==L"copy-button"){Action(L"clipboard",0,L"cmd_copy");return;}
+                    if(part.id==L"paste-button"){Action(L"clipboard",0,L"cmd_paste");return;}
+                }
+            auto action=Message(L"navigation");
+            action.SetNamedValue(L"command",JValue::CreateStringValue(command));
+            action.SetNamedValue(L"keyboard",JValue::CreateBooleanValue(keyboard));
+            action.SetNamedValue(L"modifiers",JValue::CreateNumberValue(modifiers));
+            auto local=button.TransformToVisual(nullptr).TransformBounds({0,0,float(button.ActualWidth()),float(button.ActualHeight())});
+            auto screen=button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
+            for(auto const& item:navigation->customization.state.items)if(item.placed)
+                for(auto const& part:item.stock)if(part.menu &&
+                    winrt::hstring(command)==L"stock:"+item.id+L":"+part.id && releaseMenuFocus)releaseMenuFocus();
+            navigate(action.Stringify());
+        };
         navigation->activate = [this](wchar_t const* command, uint32_t modifiers, Controls::Button const& button) {
             if (syncing || session.empty() || !navigate) return;
             if (navigation->customization.editing && wcsncmp(command,L"customize:",10)!=0) return;
@@ -957,6 +991,7 @@ struct NativeAddress {
         const auto checkedTextEpoch = snapshot.HasKey(L"textEpoch") ? NativeJson::RequireRevision(snapshot, L"textEpoch") : 0;
         const auto navigationToolbar = snapshot.GetNamedBoolean(L"navigationToolbar", false);
         auto customizationState = NativeToolbarCustomization::Read(snapshot);
+        NativeStockToolbar::Validate(customizationState);
         const auto historyMenuState = NativeHistoryMenu::Read(snapshot);
         const auto productMenuState = NativeProductMenu::Read(snapshot);
         const auto navigationState = NativeNavigationToolbar::Read(snapshot);

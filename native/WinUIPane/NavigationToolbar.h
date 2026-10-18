@@ -12,6 +12,7 @@
 #include "HistoryMenu.h"
 #include "ProductMenu.h"
 #include "ToolbarMetrics.h"
+#include "StockToolbar.h"
 
 // WinUI presentation only. Firefox owns eligibility, labels and commands.
 struct NativeNavigationToolbar {
@@ -42,6 +43,7 @@ struct NativeNavigationToolbar {
     std::array<Microsoft::UI::Xaml::Controls::Border,3> downloadAttention;
     PinnedExtensionButtons pinned;
     NativeToolbarCustomization customization;
+    NativeStockToolbar stock;
     NativeHistoryMenu historyMenu;
     NativeProductMenu productMenu;
     ToolbarDragPreview preview;
@@ -82,6 +84,7 @@ struct NativeNavigationToolbar {
     std::map<winrt::hstring,std::shared_ptr<PinnedExtensionButtons>> paletteRenderers;
     Microsoft::UI::Xaml::FrameworkElement PaletteControl(NativeToolbarCustomization::Item const& item) {
         using namespace Microsoft::UI::Xaml;using namespace Microsoft::UI::Xaml::Controls;
+        if(!item.stock.empty())return stock.Create(item,true).host;
         for(size_t i=0;i<buttons.size();i++)if(i!=5 && i!=6 && item.control==commands[i])return CreateButton(i,i==4?Symbol::Library:icons[i].Symbol());
         for(auto const& state:paletteState)if(state.id==item.palette) {
             auto renderer=std::make_shared<PinnedExtensionButtons>();renderer->externalLayout=true;renderer->Apply({state},true);
@@ -296,7 +299,10 @@ struct NativeNavigationToolbar {
         });
         auto updatePreview=[this](auto const& args) {
             if(!customization.Accept(args)){preview.Reset();return false;}
-            preview.Begin(host,ordered,dropSlots,customization.dragId,customization.dragRevision);
+            auto palette=customization.previews.find(customization.dragId);
+            const double paletteWidth=palette!=customization.previews.end() && palette->second.ActualWidth()>0
+                ? palette->second.ActualWidth():ToolbarMetrics::kButton;
+            preview.Begin(host,ordered,dropSlots,customization.dragId,customization.dragRevision,paletteWidth);
             uint32_t index;
             if(!preview.Hit(args.GetPosition(host).X,host.FlowDirection()==Microsoft::UI::Xaml::FlowDirection::RightToLeft,index))return false;
             preview.Show(index);return true;
@@ -342,7 +348,7 @@ struct NativeNavigationToolbar {
             std::vector<ShellToolbarSlot> slots;
             std::vector<NativeToolbarCustomization::Item const*> items;
             for(auto const& item:state.items)if(item.placed && (item.control!=L"downloads" || commandState[8].shown || customization.editing)) {
-                slots.push_back({item.spring?2u:item.control==L"address"?1u:0u,item.canAutoOverflow?(item.extension?2u:1u):0u});
+                slots.push_back({item.spring?2u:item.control==L"address"?1u:item.stock.size()==3?3u:0u,item.canAutoOverflow?(item.extension?2u:1u):0u});
                 items.push_back(&item);
             }
             uint64_t mask=0;
@@ -380,6 +386,7 @@ struct NativeNavigationToolbar {
                 if(!item.placed || overflowed.contains(item.id) || (item.control==L"downloads" && !commandState[8].shown && !customization.editing))continue;
                 UIElement control{nullptr};
                 if(item.control==L"address")control=address;
+                else if(!item.stock.empty())control=stock.Control(item,visible,customization.editing);
                 else if(item.spring) {
                     keep.insert(item.id);
                     auto [it,inserted]=spacers.try_emplace(item.id);
@@ -437,6 +444,9 @@ struct NativeNavigationToolbar {
         }
         for(auto it=dragHosts.begin();it!=dragHosts.end();) {
             if(!keepDrag.contains(it->first)){if(it->second.Children().Size())it->second.Children().GetAt(0).IsHitTestVisible(true);it->second.Children().Clear();it=dragHosts.erase(it);}else ++it;
+        }
+        for(auto it=stock.rows.begin();it!=stock.rows.end();) {
+            if(!keepDrag.contains(it->first))it=stock.rows.erase(it);else ++it;
         }
         if(desired==ordered && arrangedCollapsed==!customization.editing)return;
         // Retain the editor and flyout anchor while changing placement columns.

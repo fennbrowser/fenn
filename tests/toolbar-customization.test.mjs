@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
+import {STOCK_TOOLBAR_WIDGETS,WinUIStockToolbar} from '../upstream/firefox/browser/base/content/WinUIStockToolbar.sys.mjs';
 import {readFileSync} from 'node:fs';
 import {readActionStamp,actionStampMatches} from '../upstream/firefox/browser/base/content/WinUIActionStamp.sys.mjs';
 function fixture() {
@@ -17,9 +18,9 @@ function fixture() {
   removeWidgetFromArea(id){calls.push(['remove',id]);order=order.filter(x=>x!==id);},addWidgetToArea(id,area,position=order.length){calls.push(['add',id]);order=order.filter(x=>x!==id);const old=overflow.indexOf(id);if(old>=0)overflow.splice(old,1);if(area==='overflow'){overflow.push(id);return;}if(id==='spring'){id=`customizableui-special-spring${++nextSpring}`;nodes.set(id,{getAttribute:()=>id});}order.splice(position,0,id);},
   moveWidgetWithinArea(id,position){saved=null;calls.push(['move',id,position]);if(order.indexOf(id)<position)position--;order=order.filter(x=>x!==id);order.splice(position,0,id);}};
  const context=vm.createContext({Services:{strings:{createBundle:()=>({GetStringFromName:()=> 'Flexible Space'})},prefs:{addObserver(){},removeObserver(){},getPrefType(p){return prefs.has(p)?64:0;},getIntPref(p){return prefs.get(p);},prefHasUserValue(p){return prefs.has(p);}}},ChromeUtils:{importESModule:()=>({CustomizableUI:ui})}});
- Object.assign(context,{readActionStamp,actionStampMatches});
- vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIToolbarCustomization.sys.mjs',import.meta.url),'utf8').replace(/^import .*;$/m,'').replace('export class WinUIToolbarCustomization','this.Customization = class WinUIToolbarCustomization'),context);
- const toolbar={window:{addEventListener(){},removeEventListener(){},document:{getElementById:()=>({overflowable:{setNativeOverflow:ids=>calls.push(["transient",...ids])}})}},owner:{invalidateAddress(){revision++;},localization:()=>({formatValueSync:k=>k})}};
+ Object.assign(context,{readActionStamp,actionStampMatches,STOCK_TOOLBAR_WIDGETS,WinUIStockToolbar});
+ vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIToolbarCustomization.sys.mjs',import.meta.url),'utf8').replace(/^import .*;$/gm,'').replace('export class WinUIToolbarCustomization','this.Customization = class WinUIToolbarCustomization'),context);
+ const toolbar={window:{MutationObserver:class {observe(){} disconnect(){}},addEventListener(){},removeEventListener(){},document:{getElementById:()=>({overflowable:{setNativeOverflow:ids=>calls.push(["transient",...ids])}})}},owner:{invalidateAddress(){revision++;},localization:()=>({formatValueSync:k=>k})}};
  const c=new context.Customization(toolbar);toolbar.navigationState=()=>c.snapshot({});
  const state=()=>c.snapshot({});
  const command=(control,verb,target)=>{const s=state();return `customize:${s.revision}:${s.items.find(i=>i.control===control).id}:${verb}`+(target?':'+s.items.find(i=>i.control===target).id:'');};
@@ -29,6 +30,18 @@ test('placement projection keeps stable identities and revisions until Firefox s
  const f=fixture(),a=f.state(),b=f.state();assert.equal(a.revision,b.revision);assert.deepEqual(a.items,b.items);
  const command=f.command('profile','before','back');assert.equal(f.c.execute(command),1);
  assert.equal(f.order()[0],'fxa-toolbar-menu-button');assert.equal(f.c.execute(command),2);
+});
+test('stock buttons enter the palette without changing defaults and retain Firefox placement',()=>{
+ const f=fixture(),before=[...f.order()];
+ const node={getAttribute:key=>key==='label'?'Localized Find':'',querySelector:()=>null};
+ f.nodes.set('find-button',node);
+ const item=f.state().items.find(i=>i.control==='stock:find-button');
+ assert.equal(item.placed,false);assert.equal(item.extension,false);assert.equal(item.stock[0].label,'Localized Find');
+ assert.deepEqual(f.order(),before);
+ assert.equal(f.c.execute(f.command('stock:find-button','add')),1);
+ f.state();
+ assert.equal(f.c.hostedWidgets.has('find-button'),true);
+ assert.equal(f.order().at(-1),'find-button');
 });
 test('mandatory address removal and malformed commands are rejected; removal/addition use Firefox',()=>{
  const f=fixture();assert.equal(f.c.execute(f.command('address','remove')),2);
@@ -183,4 +196,34 @@ test('an unplaced widget is labelled from the localization its node names, once'
  assert.equal(f.c.l10nLabel({getAttribute:()=>null}),'');assert.equal(f.c.l10nLabel(null),'');
  f.c.toolbar.owner.localization=()=>({formatMessagesSync(){throw new Error('missing');}});
  assert.equal(f.c.l10nLabel({getAttribute:name=>name==='data-l10n-id'?'broken':null}),'');
+});
+
+
+test('hosted widget identities come only from included native placements',()=>{
+ const f=fixture();f.state();
+ assert.equal(f.c.hostedWidgets.has('back-button'),true);
+ f.nodes.set('unsupported-custom',{getAttribute:()=> 'Custom',querySelector:()=>null});
+ f.ui.addWidgetToArea('unsupported-custom','nav');f.state();
+ assert.equal(f.c.hostedWidgets.has('unsupported-custom'),false);
+ f.ui.addWidgetToArea('fxa-toolbar-menu-button','overflow');f.state();
+ assert.equal(f.c.hostedWidgets.has('fxa-toolbar-menu-button'),false,'an overflow placement is not hosted inline');
+});
+
+
+test('an extension is hosted only when its control is actually published and within bounds',()=>{
+ const f=fixture(),entries=new Map();
+ f.c.toolbar.pinned={entries};
+ f.c.toolbar.window.WebExtensionPolicy={getByID:()=>({extension:{name:'Extension',canAccessWindow:()=>true}})};
+ f.c.toolbar.window.gUnifiedExtensions={browserActionFor:()=>({})};
+ for(let i=0;i<33;i++) {
+  const id=`extension-${i}`;
+  f.nodes.set(id,{getAttribute:()=>null,querySelector:()=>({dataset:{extensionid:id},getAttribute:()=>id})});
+  entries.set(id,{id:`pinned-${i}`});f.ui.addWidgetToArea(id,'nav');
+ }
+ f.c.snapshot({pinned:[]});
+ assert.equal(f.c.hostedWidgets.has('extension-0'),false,'unpublished native controls require fallback');
+ f.c.snapshot({pinned:[...entries.values()]});
+ assert.equal(f.c.hostedWidgets.has('extension-0'),true);
+ assert.equal(f.c.hostedWidgets.has('extension-31'),true);
+ assert.equal(f.c.hostedWidgets.has('extension-32'),false,'the first omitted extension requires fallback');
 });

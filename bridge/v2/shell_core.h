@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 42
+#define SHELL_CORE_ABI_VERSION 43
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -850,7 +850,7 @@ typedef struct {
 
 typedef struct {
   /*
-   0 button, 1 address, 2 flexible space.
+   0 button, 1 address, 2 flexible space, 3 three-button stock group.
    */
   uint32_t kind;
   /*

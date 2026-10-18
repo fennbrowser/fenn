@@ -41,7 +41,7 @@ function fixture() {
     gBrowser:{addTabsProgressListener() {},removeTabsProgressListener() {}},
     windowUtils:{updateWinUIAddress(...args) {calls.push(["host",...args]); return window.acceptHost;}},
     acceptHost:true,requestAnimationFrame(callback) {callback(); return 0;},cancelAnimationFrame() {},
-    PrivateBrowsingUtils:{isWindowPrivate:()=>false},ResizeObserver:class {constructor(callback) {this.callback=callback;} observe() {} disconnect() {}},
+    PrivateBrowsingUtils:{isWindowPrivate:()=>false},ResizeObserver:class {constructor(callback) {this.callback=callback;} observe() {} unobserve() {} disconnect() {}},
     MutationObserver:class {observe() {} disconnect() {}},
     MouseEvent:class {constructor(type, args) {this.type=type;Object.assign(this,args);}}};
   root.hasAttribute = k => root.attributes.has(k);
@@ -478,4 +478,35 @@ test("indicator panels require current window state, session and valid native bo
   assert.equal(f.toolbar.executeNavigation(privateAction),1);assert.equal(panel.state,"closed");
   f.window.gDialogBox={isOpen:true};
   assert.equal(f.toolbar.executeNavigation(privateAction),2);
+});
+
+
+test("unhosted widget fallback follows actual native coverage and rendered visibility", () => {
+  const f=fixture();
+  assert.equal(f.toolbar.hasVisibleUnhostedWidgets(),true,"unknown toolbar stays reachable");
+  const node=(id,localName="toolbarbutton",visible=true)=>({id,localName,
+    getBoundingClientRect:()=>({x:-2000,y:0,width:32,height:32}),querySelectorAll:()=>[],
+    checkVisibility(options) {assert.equal(options.visibilityProperty,true);assert.equal(options.opacityProperty,true);return visible;}});
+  const target={children:[]};f.elements.set("nav-bar-customization-target",target);
+  const navbar={children:[target]};f.elements.set("nav-bar",navbar);
+  f.toolbar.customization={hostedWidgets:new Set(["back-button","urlbar-container","native-extension"])};
+  target.children=[node("back-button"),node("urlbar-container"),node("native-extension"),node("spring","toolbarspring")];
+  assert.equal(f.toolbar.hasVisibleUnhostedWidgets(),false);
+  target.children.push(node("find-button"));
+  assert.equal(f.toolbar.hasVisibleUnhostedWidgets(),true,"unsupported built-in remains reachable");
+  target.children.pop();target.children.push(node("custom-widget","toolbaritem",false));
+  assert.equal(f.toolbar.hasVisibleUnhostedWidgets(),false,"hidden, collapsed and transparent widgets do not force fallback");
+  target.children.pop();target.children.push(node("unpublished-extension"));
+  assert.equal(f.toolbar.hasVisibleUnhostedWidgets(),true,"an extension omitted from the native publication stays reachable");
+  target.children=[{...node("zero-sized"),getBoundingClientRect:()=>({width:0,height:32})}];
+  assert.equal(f.toolbar.hasVisibleUnhostedWidgets(),false,"zero-sized widget wrappers do not force fallback");
+  target.children=[{...node("display-contents","toolbaritem",false),querySelectorAll:()=>[node("visible-child")]}];
+  assert.equal(f.toolbar.hasVisibleUnhostedWidgets(),true,"display:contents widgets still need a home for visible descendants");
+  target.children=[];
+  assert.equal(f.toolbar.hasVisibleUnhostedWidgets(),false);
+  assert.equal(f.toolbar.unhostedNodes.size,0,"removed nodes leave observation");
+  navbar.children.push({...node("direct-special-control"),matches:()=>false});
+  assert.equal(f.toolbar.hasVisibleUnhostedWidgets(),true,"direct toolbar children also need a native home");
+  navbar.children.pop();navbar.children.push({...node("native-caption"),matches:()=>true});
+  assert.equal(f.toolbar.hasVisibleUnhostedWidgets(),false,"native menu/status/caption infrastructure is already hosted");
 });

@@ -42,7 +42,7 @@ struct ToolbarDragPreview {
         }
     }
     void Begin(Grid const& root,std::vector<UIElement> const& order,
-        std::vector<std::pair<winrt::hstring,Element>> const& items,winrt::hstring const& id,uint64_t rev) {
+        std::vector<std::pair<winrt::hstring,Element>> const& items,winrt::hstring const& id,uint64_t rev,double paletteWidth=32) {
         if(active)return;
         host=root;original=order;slots=items;revision=rev;width=host.XamlRoot().Size().Width;
         geometry.clear();sourceIndex=slots.size();
@@ -50,7 +50,7 @@ struct ToolbarDragPreview {
             auto e=slots[i].second;geometry.push_back({e.ActualOffset().x,e.ActualWidth()});
             if(slots[i].first==id){sourceIndex=i;source=e;}
         }
-        if(!source){gap=Grid();gap.Width(32);gap.IsHitTestVisible(false);host.Children().Append(gap);}
+        if(!source){gap=Grid();gap.Width(paletteWidth);gap.IsHitTestVisible(false);host.Children().Append(gap);}
         active=true;target=UINT32_MAX;
     }
     bool Hit(double x,bool rtl,uint32_t& index) {

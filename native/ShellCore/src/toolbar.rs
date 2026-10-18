@@ -2,7 +2,7 @@
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ShellToolbarSlot {
-    /// 0 button, 1 address, 2 flexible space.
+    /// 0 button, 1 address, 2 flexible space, 3 three-button stock group.
     pub kind: u32,
     /// 0 retained, 1 general overflow, 2 Firefox Extensions panel.
     pub overflow: u32,
@@ -10,7 +10,7 @@ pub struct ShellToolbarSlot {
 
 pub fn plan(slots: &[ShellToolbarSlot], width: f64, required_menu: bool) -> Option<u64> {
     if slots.len() > 55 || !width.is_finite() || !(0.0..=100000.0).contains(&width)
-        || slots.iter().any(|s| s.kind > 2 || s.overflow > 2 || (s.kind != 0 && s.overflow != 0)) {
+        || slots.iter().any(|s| s.kind > 3 || s.overflow > 2 || ((s.kind == 1 || s.kind == 2) && s.overflow != 0)) {
         return None;
     }
     let used = |mask: u64| {
@@ -18,9 +18,9 @@ pub fn plan(slots: &[ShellToolbarSlot], width: f64, required_menu: bool) -> Opti
         let mut previous_button = false;
         for (i, slot) in slots.iter().enumerate() {
             if mask & (1u64 << i) != 0 { continue; }
-            let button = slot.kind == 0;
+            let button = slot.kind == 0 || slot.kind == 3;
             if previous_button && button { total += 4.0; }
-            total += match slot.kind { 0 => 32.0, 1 => 256.0, _ => 1.0 };
+            total += match slot.kind { 0 => 32.0, 1 => 256.0, 3 => 104.0, _ => 1.0 };
             previous_button = button;
         }
         let menu = required_menu || slots.iter().enumerate().any(|(i,s)| s.overflow == 1 && mask & (1u64 << i) != 0);
@@ -54,6 +54,13 @@ mod tests {
         let r=row();assert_eq!(plan(&r,408.0,true),Some(8));
         // A general item needs a menu button; removing it alone saves no width.
         assert_eq!(plan(&r[..3],371.0,false),Some(4));
+    }
+    #[test] fn stock_groups_overflow_atomically_at_their_full_width() {
+        let r=[ShellToolbarSlot{kind:1,overflow:0},ShellToolbarSlot{kind:3,overflow:1}];
+        assert_eq!(plan(&r,412.0,false),Some(0));
+        assert_eq!(plan(&r,411.0,false),Some(2));
+        assert_eq!(plan(&r,0.0,false),Some(2));
+        assert_eq!(plan(&[ShellToolbarSlot{kind:4,overflow:1}],500.0,false),None);
     }
     #[test] fn bounded_and_invalid_inputs() {
         assert_eq!(plan(&row(),f64::NAN,false),None);
