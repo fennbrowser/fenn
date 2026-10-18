@@ -21850,10 +21850,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..5e455b6f490
+index 00000000000..7d497e8ed6d
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,373 @@
+@@ -0,0 +1,414 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -21898,13 +21898,17 @@ index 00000000000..5e455b6f490
 +    this.navigationCommands = NAVIGATION_COMMANDS;
 +    this.navigationModel = new WinUINavigationState(window,
 +      id => this.owner.nativeLabels?.().navigation?.[id]?.label || "");
++    this.novaObserver = {observe:() => owner.invalidateAddress()};
++    Services.prefs.addObserver("browser.nova.enabled", this.novaObserver);
 +    this.navigationObserver = new window.MutationObserver(() => owner.invalidateAddress());
 +    for (const id of this.navigationModel.observedIds()) {
 +      const element = document.getElementById(id);
 +      if (element) this.navigationObserver.observe(element,
 +        {attributes:true,attributeFilter:["disabled","label","tooltiptext","aria-label","hidden","progress","attention","style"]});
 +    }
-+    this.navigationObserver.observe(document.getElementById("nav-bar"), {subtree:true,childList:true,attributes:true,attributeFilter:["hidden","progress","attention","style","label","tooltiptext"]});
++    this.navigationObserver.observe(document.documentElement, {attributes:true,
++      attributeFilter:["privatebrowsingmode", "contentanalysisactive"]});
++    this.navigationObserver.observe(document.getElementById("nav-bar"), {subtree:true,childList:true,attributes:true,characterData:true,attributeFilter:["hidden","progress","attention","style","label","tooltiptext","aria-label"]});
 +    for (const id of ["widget-overflow-list", "widget-overflow-fixed-list"]) {
 +      const list = document.getElementById(id);
 +      if (list) this.navigationObserver.observe(list, {childList:true,subtree:true,attributes:true,attributeFilter:["hidden"]});
@@ -21952,6 +21956,7 @@ index 00000000000..5e455b6f490
 +  navigationState() {
 +    const document = this.window.document;
 +    const state = this.navigationModel.snapshot();
++    state.indicators = this.indicatorState();
 +    state.historyMenu=this.historyMenu.snapshot();
 +    state.pinned = this.pinned?.snapshot() || [];
 +    Object.assign(state, this.omnibar?.snapshot() || {});
@@ -21966,8 +21971,27 @@ index 00000000000..5e455b6f490
 +      [...(document.getElementById("widget-overflow-list")?.children || [])].some(node => !node.hidden && this.customization.nativeOverflow.has(node.id));
 +    return state;
 +  }
++  // Window status is Firefox-owned, independent of toolbar placement and hover.
++  indicatorState() {
++    const document = this.window.document;
++    const root = document.documentElement;
++    const nova = Services.prefs.getBoolPref("browser.nova.enabled", false);
++    const privateNode = document.querySelector?.(nova
++      ? "#nav-bar > .private-browsing-indicator-button"
++      : "#nav-bar .private-browsing-indicator-label");
++    const analysis = document.querySelector?.("#nav-bar > .content-analysis-indicator");
++    const label = node => node?.getAttribute("tooltiptext") ||
++      node?.getAttribute("aria-label") || node?.textContent?.trim() || "";
++    return {
++      private: {shown:root.getAttribute("privatebrowsingmode") === "temporary",
++        enabled:nova, label:label(privateNode)},
++      analysis: {shown:root.hasAttribute("contentanalysisactive"),
++        enabled:true, label:label(analysis)},
++    };
++  }
 +  executeNavigation(action) {
 +    const {window, owner} = this;
++    const indicator = ["indicator:private", "indicator:analysis"].includes(action?.command);
 +    const nativeHistory=typeof action?.command === "string" && action.command.startsWith("history-menu:");
 +    const customization = typeof action?.command === "string" && action.command.startsWith("customize:");
 +    const extension = typeof action?.command === "string" && /^(extension|extension-menu):pinned-[0-9]+$/.test(action.command);
@@ -21976,16 +22000,32 @@ index 00000000000..5e455b6f490
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!indicator && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
++    if (indicator) {
++      const id = action.command.slice(10), state = this.indicatorState()[id];
++      if (!state?.shown || !state.enabled || this.customization?.editing || window.gDialogBox?.isOpen) return 2;
++      const anchor = this.menuAnchor(action.command, action);
++      if (!anchor) return 2;
++      anchor.setAttribute("aria-label", state.label);
++      if (id === "analysis") window.ContentAnalysis.showPanel(anchor, window.PanelUI);
++      else {
++        const panel = window.document.getElementById("private-browsing-info-panel");
++        if (!panel) return 2;
++        if (panel.state === "open") panel.hidePopup();
++        else if (panel.state === "closed") panel.openPopup(anchor,
++          {position:"bottomright topright", triggerEvent:action.keyboard ? new window.KeyboardEvent("keypress", {key:"Enter"}) : new window.MouseEvent("click", {view:window})});
++      }
++      return 1;
++    }
 +    if (nativeHistory) return this.navigationState().history.enabled && !this.customization?.nativeOverflow.has("history-panelmenu") ? this.historyMenu.execute(action) : 2;
 +    if (customization) return this.customization.execute(action.command);
 +    if (product) {
@@ -22212,6 +22252,7 @@ index 00000000000..5e455b6f490
 +    this.restore();
 +    this.historyMenu.close();
 +    this.resize.disconnect();
++    Services.prefs.removeObserver("browser.nova.enabled", this.novaObserver);
 +    this.navigationObserver.disconnect();
 +    this.customization?.close();
 +    this.pinned?.close();
@@ -22361,10 +22402,10 @@ index 00000000000..f52d7b201b3
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..1448f9613af
+index 00000000000..f5ceb3b43b9
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2198 @@
+@@ -0,0 +1,2199 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22608,6 +22649,7 @@ index 00000000000..1448f9613af
 +    this.setToolbarHidden(
 +      Services.prefs.getBoolPref(this.hideToolbarPref, true) &&
 +      !!toolbar?.active && toolbar.navigation && this.attached &&
++      Object.values(toolbar.indicatorState()).every(item => !item.shown || !!item.label) &&
 +      !window.fullScreen && !document.fullscreenElement &&
 +      !document.documentElement.hasAttribute("customizing"));
 +  },

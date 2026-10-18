@@ -18,7 +18,13 @@ struct NativeNavigationToolbar {
     using JObject = winrt::Windows::Data::Json::JsonObject;
     using Button = Microsoft::UI::Xaml::Controls::Button;
     struct State { bool enabled{}, stopping{}, required{}, shown{true}; double progress{-1}; winrt::hstring label, tooltip, attention; };
-    using States = std::array<State, 12>;
+    struct States : std::array<State, 12> {
+        std::array<State, 2> indicators{};
+        States() { for(auto& item:indicators)item.shown=false; }
+    };
+    std::array<Button, 2> indicatorButtons;
+    Microsoft::UI::Xaml::Controls::TextBlock privateLabel;
+    static constexpr wchar_t const* indicatorCommands[] = {L"indicator:private", L"indicator:analysis"};
     States commandState{};
     std::vector<std::pair<winrt::hstring,Microsoft::UI::Xaml::FrameworkElement>> dropSlots;
     static constexpr wchar_t const* commands[] = {L"back", L"forward", L"reload", L"profile", L"extensions", L"appmenu", L"overflow", L"home", L"downloads", L"history", L"bookmarks", L"reset-pbm"};
@@ -210,6 +216,24 @@ struct NativeNavigationToolbar {
                 Microsoft::UI::Xaml::FrameworkElement const& editor,
                 Microsoft::UI::Xaml::Controls::Grid const& background) {
         host=grid;address=editor;surface=background;
+        for(size_t i=0;i<indicatorButtons.size();i++) {
+            auto button=CreateButton(0,Controls::Symbol::Permissions);
+            if(i==0) { button.Width(NAN); button.Padding(Thickness{8,0,8,0}); }
+            Automation::AutomationProperties::SetAutomationId(button,i==0?L"FennPrivateIndicator":L"FennContentAnalysisIndicator");
+            button.AddHandler(UIElement::PointerPressedEvent(),winrt::box_value(
+                Microsoft::UI::Xaml::Input::PointerEventHandler([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const&){if(!alive.expired())keyboardActivation=false;})),true);
+            button.PreviewKeyDown([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const&){if(!alive.expired())keyboardActivation=true;});
+            button.Click([this,i,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const&) {
+                if(!alive.expired() && visible && !customization.editing && activate &&
+                   commandState.indicators[i].shown && commandState.indicators[i].enabled)
+                    activate(indicatorCommands[i],0,indicatorButtons[i]);
+            });
+            button.VerticalAlignment(VerticalAlignment::Center);
+            indicatorButtons[i]=button;
+        }
+        privateLabel.VerticalAlignment(VerticalAlignment::Center);
+        privateLabel.Margin(Thickness{8,0,8,0});
+        Automation::AutomationProperties::SetAutomationId(privateLabel,L"FennPrivateIndicatorLabel");
         customization.editorChanged=[this]{Layout(layoutState);};
         customization.dragEnded=[this]{preview.Reset();};
         preview.arrange=[this](auto const& order,bool extra){Arrange(order,extra);};
@@ -305,7 +329,14 @@ struct NativeNavigationToolbar {
             preview.Reset(false);
         }
         if(layoutState.revision!=state.revision)layoutState=state;
-        const double availableWidth=host.XamlRoot()?host.XamlRoot().Size().Width:0;
+        double indicatorWidth=0;
+        if(commandState.indicators[0].shown) {
+            auto element=commandState.indicators[0].enabled?indicatorButtons[0].as<UIElement>():privateLabel.as<UIElement>();
+            element.Measure({INFINITY,float(ToolbarMetrics::kButton)});
+            indicatorWidth+=element.DesiredSize().Width+ToolbarMetrics::kGap;
+        }
+        if(commandState.indicators[1].shown)indicatorWidth+=ToolbarMetrics::kButton+ToolbarMetrics::kGap;
+        const double availableWidth=host.XamlRoot()?std::max(0.0,double(host.XamlRoot().Size().Width)-indicatorWidth):0;
         std::set<winrt::hstring> overflowed;
         if(visible && state.revision && availableWidth>0) {
             std::vector<ShellToolbarSlot> slots;
@@ -335,6 +366,8 @@ struct NativeNavigationToolbar {
             }
         }
         for(size_t i=0;i<buttons.size();i++)buttons[i].IsEnabled(visible && (customization.editing || commandState[i].enabled));
+        for(size_t i=0;i<indicatorButtons.size();i++)indicatorButtons[i].IsEnabled(
+            visible && commandState.indicators[i].shown && commandState.indicators[i].enabled && !customization.editing);
         dropSlots.clear();customization.placedControls.clear();
         std::vector<UIElement> desired;
         std::set<winrt::hstring> keep, keepDrag;
@@ -395,6 +428,13 @@ struct NativeNavigationToolbar {
             desired.push_back(address);desired.push_back(buttons[3]);desired.push_back(buttons[4]);
             desired.push_back(pinned.panel);if(hasOverflow)desired.push_back(buttons[6]);if(!productMenu.enabled)desired.push_back(buttons[5]);
         } else desired.push_back(address);
+        // Status indicators are fixed, never palette entries or overflow candidates.
+        if(visible) {
+            if(commandState.indicators[0].shown)
+                desired.push_back(commandState.indicators[0].enabled
+                    ? indicatorButtons[0].as<UIElement>() : privateLabel.as<UIElement>());
+            if(commandState.indicators[1].shown)desired.push_back(indicatorButtons[1]);
+        }
         for(auto it=dragHosts.begin();it!=dragHosts.end();) {
             if(!keepDrag.contains(it->first)){if(it->second.Children().Size())it->second.Children().GetAt(0).IsHitTestVisible(true);it->second.Children().Clear();it=dragHosts.erase(it);}else ++it;
         }
@@ -478,11 +518,31 @@ struct NativeNavigationToolbar {
             NativeJson::RequireLength(item.label, NativeJson::kMaxShortLabel);
             NativeJson::RequireLength(item.tooltip, NativeJson::kMaxShortLabel);
         }
+        if(navigation.HasKey(L"indicators")) {
+            auto indicators=navigation.GetNamedObject(L"indicators");
+            for(size_t i=0;i<result.indicators.size();i++) {
+                auto entry=indicators.GetNamedObject(i==0?L"private":L"analysis");
+                auto& item=result.indicators[i];
+                item.shown=entry.GetNamedBoolean(L"shown");
+                item.enabled=entry.GetNamedBoolean(L"enabled");
+                item.label=entry.GetNamedString(L"label");
+                NativeJson::RequireLength(item.label,NativeJson::kMaxShortLabel);
+            }
+        } else for(auto& item:result.indicators)item.shown=false;
         return result;
     }
     void Apply(States const& state, bool visible) {
         using namespace Microsoft::UI::Xaml;
         this->visible=visible;commandState=state;
+        for(size_t i=0;i<indicatorButtons.size();i++) {
+            auto const& item=state.indicators[i];
+            indicatorButtons[i].IsEnabled(visible && item.shown && item.enabled && !customization.editing);
+            Automation::AutomationProperties::SetName(indicatorButtons[i],item.label);
+            Controls::ToolTipService::SetToolTip(indicatorButtons[i],winrt::box_value(item.label));
+        }
+        indicatorButtons[0].Content(winrt::box_value(state.indicators[0].label));
+        privateLabel.Text(state.indicators[0].label);
+        Automation::AutomationProperties::SetName(privateLabel,state.indicators[0].label);
         if (!visible) { historyMenu.Close(); productMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
         hasOverflow = visible && state[6].enabled;
         requiredOverflow = visible && state[6].required;

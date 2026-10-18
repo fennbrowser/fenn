@@ -5709,6 +5709,24 @@ int wmain(int argc, wchar_t** argv) {
                 Require(SUCCEEDED(api.syncAddress(first, productMenu(LR"({"enabled":true,"label":"Fenn","items":[{"kind":"item","id":"new-tab","label":"New Tab","shortcut":"Ctrl+T"},{"kind":"separator"},{"kind":"submenu","id":"bookmarks","label":"Bookmarks","items":[{"kind":"item","id":"bookmarks-toolbar-never","label":"Never Show","checked":true}]}]})",8).c_str())), "publish a valid product menu");
                 Require(SUCCEEDED(api.syncAddress(first, productMenu(LR"({"enabled":false})",9).c_str())), "disable the product menu");
             }
+            {
+                auto status=winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":10,"rows":[],"navigation":{"back":{"enabled":false},"forward":{"enabled":false},"reload":{"enabled":true},"indicators":{"private":{"shown":true,"enabled":false,"label":"Localized private"},"analysis":{"shown":true,"enabled":true,"label":"Enterprise agent"}}}})");
+                Require(SUCCEEDED(api.syncAddress(first,status.Stringify().c_str())), "publish window status indicators");
+                auto label=findControl(toolbarRoot,L"FennPrivateIndicatorLabel");
+                auto analysis=button(L"FennContentAnalysisIndicator");
+                Require(label && label.as<Controls::TextBlock>().Text()==L"Localized private", "legacy private status is localized text");
+                Require(analysis.IsEnabled() && Automation::AutomationProperties::GetName(analysis)==L"Enterprise agent", "analysis indicator has Firefox label");
+                auto indicators=status.GetNamedObject(L"navigation").GetNamedObject(L"indicators");
+                indicators.GetNamedObject(L"private").SetNamedValue(L"enabled",winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
+                status.SetNamedValue(L"sequence",winrt::Windows::Data::Json::JsonValue::CreateNumberValue(11));
+                Require(SUCCEEDED(api.syncAddress(first,status.Stringify().c_str())), "publish private info button");
+                auto privateButton=button(L"FennPrivateIndicator");
+                Require(!label.Parent() && privateButton.IsEnabled(), "private info mode replaces static label");
+                for(auto key:{L"private",L"analysis"})indicators.GetNamedObject(key).SetNamedValue(L"shown",winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
+                status.SetNamedValue(L"sequence",winrt::Windows::Data::Json::JsonValue::CreateNumberValue(12));
+                Require(SUCCEEDED(api.syncAddress(first,status.Stringify().c_str())), "revoke status indicators");
+                Require(!privateButton.Parent() && !analysis.Parent() && !privateButton.IsEnabled() && !analysis.IsEnabled(), "inactive status detaches and disables buttons");
+            }
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":false})")), "disable navigation with address");
             Require(!addressBackdrop(), "disabling navigation releases its system backdrop");
             for (auto const& control : {profile, extensions, appMenu})

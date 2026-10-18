@@ -429,3 +429,53 @@ for (const command of ["history","bookmarks"]) test(`${command} uses Firefox's o
  opened=null;f.owner.addressDocument++;
  assert.equal(f.toolbar.executeNavigation(action),2);assert.equal(opened,null);
 });
+
+
+test("window indicators mirror Firefox state and live localized labels", () => {
+  const f=navigationCommandsFixture(), label=f.element(), button=f.element(), analysis=f.element();
+  label.textContent="Localized private browsing";
+  button.setAttribute("tooltiptext","Localized private info");
+  analysis.setAttribute("tooltiptext","Company DLP agent");
+  f.window.document.querySelector=selector=>selector.includes("content-analysis")?analysis:
+    selector.includes("indicator-button")?button:label;
+  let state=f.toolbar.indicatorState();
+  assert.equal(state.private.shown,false);assert.equal(state.analysis.shown,false);
+  f.root.setAttribute("privatebrowsingmode","temporary");f.root.setAttribute("contentanalysisactive","true");
+  state=f.toolbar.navigationState().indicators;
+  assert.equal(state.private.shown,true);assert.equal(state.private.enabled,false);
+  assert.equal(state.private.label,"Localized private browsing");
+  assert.equal(state.analysis.label,"Company DLP agent");
+  f.prefs.set("browser.nova.enabled",true);
+  assert.equal(f.toolbar.indicatorState().private.enabled,true);
+  assert.equal(f.toolbar.indicatorState().private.label,"Localized private info");
+  analysis.setAttribute("tooltiptext","New agent");
+  assert.equal(f.toolbar.indicatorState().analysis.label,"New agent");
+  f.root.removeAttribute("contentanalysisactive");
+  assert.equal(f.toolbar.indicatorState().analysis.shown,false);
+});
+
+test("indicator panels require current window state, session and valid native bounds", () => {
+  const f=navigationCommandsFixture(), opened=[];
+  f.window.ContentAnalysis={showPanel:anchor=>opened.push(anchor)};
+  const panel={state:"closed",openPopup:anchor=>{opened.push(anchor);panel.state="open";},hidePopup:()=>{panel.state="closed";}};
+  f.elements.set("private-browsing-info-panel",panel);
+  f.window.document.querySelector=()=>null;
+  const action={...f.action,command:"indicator:analysis",x:20,y:40,width:32,height:32};
+  assert.equal(f.toolbar.executeNavigation(action),2);
+  f.root.setAttribute("contentanalysisactive","true");
+  assert.equal(f.toolbar.executeNavigation({...action,session:"stale"}),2);
+  assert.equal(f.toolbar.executeNavigation({...action,width:0}),2);
+  assert.equal(f.toolbar.executeNavigation(action),1);
+  assert.equal(opened[0],f.toolbar.menuAnchors.get("indicator:analysis"));
+  f.root.removeAttribute("contentanalysisactive");
+  assert.equal(f.toolbar.executeNavigation(action),2);
+  const privateAction={...action,command:"indicator:private"};
+  f.root.setAttribute("privatebrowsingmode","temporary");
+  assert.equal(f.toolbar.executeNavigation(privateAction),2,"the legacy label has no action");
+  f.prefs.set("browser.nova.enabled",true);
+  assert.equal(f.toolbar.executeNavigation(privateAction),1);
+  assert.equal(opened.at(-1),f.toolbar.menuAnchors.get("indicator:private"));
+  assert.equal(f.toolbar.executeNavigation(privateAction),1);assert.equal(panel.state,"closed");
+  f.window.gDialogBox={isOpen:true};
+  assert.equal(f.toolbar.executeNavigation(privateAction),2);
+});

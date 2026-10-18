@@ -164,9 +164,15 @@ test("the retained Firefox toolbar hides only while the native navigation row is
   const f = fixture(), {pane, root} = f;
   const hidden = () => root.hasAttribute("winui-hides-nav-bar");
   pane.attached = true;
-  pane.addressToolbar = {active: true, navigation: true};
+  pane.addressToolbar = {active: true, navigation: true, indicatorState: () => ({})};
   pane.updateToolbarHidden();
   assert.equal(hidden(), true, "on by default");
+  pane.addressToolbar.indicatorState=()=>({private:{shown:true,label:""}});
+  pane.updateToolbarHidden();
+  assert.equal(hidden(),false,"pending indicator localization keeps the original toolbar reachable");
+  pane.addressToolbar.indicatorState=()=>({private:{shown:true,label:"Localized private"}});
+  pane.updateToolbarHidden();
+  assert.equal(hidden(),true,"a localized native indicator permits hiding");
   f.prefs.set(pane.hideToolbarPref, false);
   pane.updateToolbarHidden();
   assert.equal(hidden(), false, "opt-out keeps the toolbar");
