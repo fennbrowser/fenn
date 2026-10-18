@@ -297,9 +297,18 @@ struct NativeToolbarCustomization {
     }
     void Refresh() {
         if(!available) return;
+        // ShellCore supplies only a visual permutation. Firefox's original
+        // widget order, identities and persisted toolbar placement stay intact.
+        std::vector<Item const*> items;
+        std::vector<uint32_t> spans;
+        for(auto const& item:state.items)if(!item.placed && item.control!=L"address") {
+            items.push_back(&item);spans.push_back(item.stock.size()==3?3u:1u);
+        }
+        ShellToolbarPaletteOrder packed{};
+        if(shell_core_toolbar_palette_order(spans.data(),spans.size(),7,&packed)!=SHELL_STATUS_OK)return;
         updating=true;availableItems.Clear();previews.clear();if(clearPreviews)clearPreviews();
-        for(auto const& item:state.items) {
-            if(item.placed || item.control==L"address")continue;
+        for(uint32_t index=0;index<packed.len;index++) {
+            auto const& item=*items[packed.order[index]];
             auto value=winrt::single_threaded_observable_map<winrt::hstring,winrt::Windows::Foundation::IInspectable>();
             value.Insert(L"Id",winrt::box_value(item.id));value.Insert(L"Label",winrt::box_value(item.label));
             availableItems.Append(value);

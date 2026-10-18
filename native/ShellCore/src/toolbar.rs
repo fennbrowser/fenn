@@ -1,4 +1,82 @@
-//! Bounded, presentation-only toolbar overflow. Firefox supplies eligibility.
+//! Bounded, presentation-only toolbar layout. Firefox supplies eligibility.
+
+#[repr(C)]
+pub struct ShellToolbarPaletteOrder {
+    pub order: [u32; 59],
+    pub len: u32,
+}
+
+/// Fill each row with the earliest remaining item that fits. Composite spans
+/// stay indivisible; singles can pass a composite to fill the preceding row.
+/// This permutation is presentation-only and never changes Firefox placement.
+pub fn palette_order(spans: &[u32], columns: u32) -> Option<ShellToolbarPaletteOrder> {
+    if spans.len() > 59 || !(1..=16).contains(&columns)
+        || spans.iter().any(|&span| ![1, 3].contains(&span) || span > columns) {
+        return None;
+    }
+    let mut remaining: Vec<usize> = (0..spans.len()).collect();
+    let mut result = ShellToolbarPaletteOrder { order: [0; 59], len: 0 };
+    let mut space = columns;
+    while !remaining.is_empty() {
+        if let Some(index) = remaining.iter().position(|&i| spans[i] <= space) {
+            let item = remaining.remove(index);
+            result.order[result.len as usize] = item as u32;
+            result.len += 1;
+            space -= spans[item];
+        } else {
+            space = columns;
+        }
+    }
+    Some(result)
+}
+
+#[cfg(test)]
+#[test]
+fn palette_singles_fill_gaps_without_splitting_groups() {
+    let spans = [1,1,1,1,1,3,3,1,1,1];
+    let order = palette_order(&spans,7).unwrap();
+    assert_eq!(&order.order[..order.len as usize], &[0,1,2,3,4,7,8,5,6,9]);
+    let groups = palette_order(&[3,3,3],7).unwrap();
+    assert_eq!(&groups.order[..3], &[0,1,2]);
+}
+
+#[cfg(test)]
+#[test]
+fn palette_packing_preserves_every_item_and_fills_available_cells() {
+    for bits in 0..1024 {
+        let spans: Vec<u32> = (0..10).map(|i| if bits & (1<<i) == 0 {1} else {3}).collect();
+        for columns in 3..=9 {
+            let order = palette_order(&spans,columns).unwrap();
+            let mut remaining: Vec<usize> = (0..spans.len()).collect();
+            let mut space = columns;
+            for &item in &order.order[..order.len as usize] {
+                if spans[item as usize] > space {
+                    assert!(remaining.iter().all(|&i| spans[i] > space));
+                    space = columns;
+                }
+                let index = remaining.iter().position(|&i| i == item as usize).unwrap();
+                remaining.remove(index);
+                space -= spans[item as usize];
+            }
+            assert!(remaining.is_empty());
+            for span in [1,3] {
+                let same_kind: Vec<u32> = order.order[..order.len as usize].iter()
+                    .copied().filter(|&i| spans[i as usize] == span).collect();
+                assert!(same_kind.windows(2).all(|pair| pair[0] < pair[1]));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn palette_bounds_and_empty_inventory() {
+    assert_eq!(palette_order(&[],7).unwrap().len,0);
+    assert_eq!(palette_order(&[1;59],7).unwrap().len,59);
+    for (spans,columns) in [(&[1;60][..],7),(&[0][..],7),(&[2][..],7),(&[3][..],2),(&[1][..],0),(&[1][..],17)] {
+        assert!(palette_order(spans,columns).is_none());
+    }
+}
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ShellToolbarSlot {

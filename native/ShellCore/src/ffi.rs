@@ -3300,6 +3300,34 @@ fn toolbar_drop_ffi_rejects_invalid_buffers_without_mutation() {
     }
 }
 
+/// Pack the bounded palette without changing persistent toolbar placement.
+/// # Safety
+/// Readable spans (null only for zero count), writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_toolbar_palette_order(spans:*const u32,count:usize,columns:u32,
+    out:*mut crate::toolbar::ShellToolbarPaletteOrder)->ShellStatus {
+    if out.is_null() || count>59 || (spans.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+    let spans=if count==0 {&[]} else {std::slice::from_raw_parts(spans,count)};
+    match crate::toolbar::palette_order(spans,columns) {
+        Some(plan)=>{*out=plan;ShellStatus::Ok},None=>ShellStatus::InvalidArgument,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn toolbar_palette_ffi_refuses_invalid_input_without_mutating_output() {
+    unsafe {
+        let mut out=crate::toolbar::ShellToolbarPaletteOrder{order:[99;59],len:99};
+        assert_eq!(shell_core_toolbar_palette_order(std::ptr::null(),1,7,&mut out),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_toolbar_palette_order([1].as_ptr(),60,7,&mut out),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_toolbar_palette_order([2].as_ptr(),1,7,&mut out),ShellStatus::InvalidArgument);
+        assert_eq!(out.len,99);assert_eq!(out.order,[99;59]);
+        assert_eq!(shell_core_toolbar_palette_order(std::ptr::null(),0,7,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_toolbar_palette_order(std::ptr::null(),0,7,&mut out),ShellStatus::Ok);
+        assert_eq!(out.len,0);
+    }
+}
+
 /// Plan a bounded preview permutation without changing persistent toolbar state.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_toolbar_preview(len:usize,source:usize,target:usize,out:*mut crate::toolbar::ShellToolbarPreview)->ShellStatus {

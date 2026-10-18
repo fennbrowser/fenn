@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 43
+#define SHELL_CORE_ABI_VERSION 44
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -863,6 +863,11 @@ typedef struct {
   double left;
   double width;
 } ShellToolbarDropSlot;
+
+typedef struct {
+  uint32_t order[59];
+  uint32_t len;
+} ShellToolbarPaletteOrder;
 
 typedef struct {
   uint32_t order[56];
@@ -2015,6 +2020,16 @@ ShellStatus shell_core_toolbar_drop_target(const ShellToolbarDropSlot *slots,
                                            double x,
                                            bool rtl,
                                            uint32_t *out_index);
+
+/*
+ Pack the bounded palette without changing persistent toolbar placement.
+ # Safety
+ Readable spans (null only for zero count), writable out.
+ */
+ShellStatus shell_core_toolbar_palette_order(const uint32_t *spans,
+                                             uintptr_t count,
+                                             uint32_t columns,
+                                             ShellToolbarPaletteOrder *out);
 
 /*
  Plan a bounded preview permutation without changing persistent toolbar state.
