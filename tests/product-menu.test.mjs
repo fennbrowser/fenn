@@ -2,6 +2,67 @@ import assert from "node:assert/strict";
 import {test} from "node:test";
 import {WinUIProductMenu, PRODUCT_MENU_PREF, PRODUCT_MENU_LIMITS} from "../upstream/firefox/browser/base/content/WinUIProductMenu.sys.mjs";
 
+test("extension artwork loads only the current page and preserves add-on identity", async () => {
+  const f = listFixture(8), loaded = [];
+  f.menu.loadExtensionIcon = async addon => {
+    loaded.push(addon.id);
+    return {width:32,height:32,pixels:"204080ff".repeat(1024)};
+  };
+  await f.menu.refresh("open-icons-1");
+  assert.deepEqual(loaded, f.data.extensions.slice(0,6).map(addon=>addon.id));
+  assert.equal(f.menu.lists.extensions.filter(item=>item.image).length,6);
+  assert.ok(JSON.stringify(f.menu.model()).length < 131072);
+  const next=f.menu.lists.extensions.find(item=>item.id.startsWith("page-"));
+  f.menu.execute(next.id,{},{});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(loaded.slice(6),f.data.extensions.slice(6).map(addon=>addon.id));
+  assert.equal(f.menu.lists.extensions.filter(item=>item.image).length,2);
+});
+
+test("late extension artwork cannot publish into a newer request or a closed menu", async () => {
+  for (const cancel of [f=>f.menu.refresh("open-new-1"),f=>f.menu.close(),f=>f.prefs.set(PRODUCT_MENU_PREF,false)]) {
+    const f=listFixture(1); let finish;
+    f.menu.loadExtensionIcon=()=>new Promise(resolve=>finish=resolve);
+    const pending=f.menu.refresh("open-old-1");
+    await new Promise(resolve=>setImmediate(resolve));
+    f.menu.loadExtensionIcon=async()=>null;
+    await cancel(f);
+    const invalidations=f.calls.filter(row=>row[0]==="invalidate").length;
+    finish({width:1,height:1,pixels:"204080ff"});
+    await pending;
+    assert.notEqual(f.menu.request,"open-old-1");
+    assert.equal(f.calls.filter(row=>row[0]==="invalidate").length,invalidations);
+    assert.ok(!f.menu.lists?.extensions.some(item=>item.image));
+  }
+});
+
+test("Gecko decodes preferred extension icons and releases broken or timed-out images", async () => {
+  const f=fixture(); let image, timeout, cleared=0, requested;
+  f.window.Image=class {
+    constructor(){image=this;this.naturalWidth=this.naturalHeight=32;}
+    async decode(){if(this.src==="broken")throw new Error("decode failed");if(this.src==="timeout")await new Promise(()=>{});}
+  };
+  f.window.setTimeout=callback=>{timeout=callback;return 1;};
+  f.window.clearTimeout=()=>cleared++;
+  const pixels={data:new Uint8ClampedArray(4096),width:32,height:32};
+  f.window.document.createElementNS=()=>({getContext:()=>({drawImage:(source,x,y,w,h)=>{
+    assert.equal(source,image);assert.deepEqual([x,y,w,h],[0,0,32,32]);
+  },getImageData:()=>pixels})});
+  f.menu.host.encodePixels=data=>{assert.equal(data,pixels);return {width:32,height:32,pixels:"204080ff".repeat(1024)};};
+  globalThis.ChromeUtils={importESModule:()=>({AddonManager:{getPreferredIconURL:(addon,size,window)=>{
+    requested=[addon,size,window];return addon.url;
+  }}})};
+  const addon={id:"disabled-actionless",url:"moz-extension://icon.svg"};
+  assert.equal((await f.menu.loadExtensionIcon(addon)).width,32);
+  assert.deepEqual(requested,[addon,32,f.window]);
+  assert.equal(image.src,"");
+  assert.equal(await f.menu.loadExtensionIcon({url:"broken"}),null);
+  const pending=f.menu.loadExtensionIcon({url:"timeout"});timeout();
+  assert.equal(await pending,null);
+  assert.equal(image.src,"");
+  assert.equal(cleared,3);
+});
+
 const LABELS = {
   ...Object.fromEntries(["recently-visited", "recently-closed", "show-history", "recent-bookmarks",
     "add-extension", "manage-extensions", "show-sidebar", "autohide-tabs", "reset-zoom", "developer-tools",
@@ -310,6 +371,12 @@ function listFixture(count = 20) {
     : {AddonManager:{getAddonByID:async id=>f.data.extensions.find(addon=>addon.id===id)}}};
   f.data = {PlacesUtils:places,recent:[{guid:"recent",title:"Recent bookmark",url:new URL("https://example.com/recent")}],
     extensions:Array.from({length:count},(_,i)=>({id:`addon-${i}@example`,name:`Extension ${i}`}))};
+  f.menu.host.extensionEnabled = id => f.data.extensions.some(addon=>addon.id===id && addon.isActive !== false);
+  f.menu.host.activateExtension = (id,bounds,event) => {
+    if (!f.menu.host.extensionEnabled(id)) return 2;
+    f.calls.push(["extension-action",id,bounds,event]);
+    return 1;
+  };
   f.menu.loadData = async()=>f.data;
   return {...f,roots,folderData:folders,removeClosed:()=>{closed=closed.slice(1);}};
 }
@@ -391,7 +458,7 @@ test("live node, closed-tab and extension identities reject removed or supersede
   const closed=f.menu.find("history").items.find(item=>item.label==="Closed A");
   f.removeClosed();assert.equal(f.menu.execute(closed.id,{},{}),2);
   const addon=f.menu.find("extensions").items.find(item=>item.label==="Extension 0");
-  f.data.extensions=[];assert.equal(f.menu.execute(addon.id,{},{}),1);
+  f.data.extensions=[];assert.equal(f.menu.execute(addon.id,{},{}),2);
   await new Promise(resolve=>setImmediate(resolve));
   assert.ok(!f.calls.some(call=>call[0]==="addons"));
   await f.menu.refresh("open-2-2");assert.equal(f.menu.execute(old,{},{}),2);
@@ -440,4 +507,19 @@ test("maximum folder paging, extension pages and all Help commands stay in nativ
   const walk=(items,depth)=>{assert.ok(items.length<=32);assert.ok(depth<=3);for(const item of items){total++;if(item.items)walk(item.items,depth+1);}};
   walk(f.menu.model().items,1);
   assert.ok(total+6<=128,`full native model, including eight closed-tab/pager rows, has ${total+6} entries`);
+});
+
+
+test("extension rows invoke toolbar actions with the original bounds and modifiers", async () => {
+  const f=listFixture(3);
+  f.data.extensions[1].isActive=false;
+  f.menu.host.extensionEnabled=id=>id===f.data.extensions[0].id;
+  await f.menu.refresh("open-action-1");
+  const rows=f.menu.lists.extensions;
+  assert.deepEqual(rows.map(row=>row.enabled),[true,false,false]);
+  const bounds={x:10,y:20,width:32,height:32},event={ctrlKey:true,shiftKey:true};
+  assert.equal(f.menu.execute(rows[0].id,bounds,event),1);
+  assert.deepEqual(f.calls.at(-1),["extension-action",f.data.extensions[0].id,bounds,event]);
+  for(const row of rows.slice(1))assert.equal(f.menu.execute(row.id,bounds,event),2);
+  assert.ok(!f.calls.some(call=>call[0]==="addons"));
 });

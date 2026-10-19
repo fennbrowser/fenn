@@ -18454,10 +18454,10 @@ index 00000000000..2febe0ecc1d
 +}
 diff --git a/browser/base/content/WinUIPinnedExtensions.sys.mjs b/browser/base/content/WinUIPinnedExtensions.sys.mjs
 new file mode 100644
-index 00000000000..c2927f9a1dd
+index 00000000000..995582041f0
 --- /dev/null
 +++ b/browser/base/content/WinUIPinnedExtensions.sys.mjs
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,174 @@
 +// Firefox owns extension placement, action policy, icons and command execution.
 +export class WinUIPinnedExtensions {
 +  constructor(toolbar) {
@@ -18583,6 +18583,34 @@ index 00000000000..c2927f9a1dd
 +        (bounds.y + bounds.height) / this.window.devicePixelRatio, true, trigger);
 +      return 1;
 +    }
++    return this.dispatchButton(entry.button, anchor, event);
++  }
++  // Resolve the real Firefox browser-action widget in any placement. Menu
++  // activation must not depend on pinning, the native 32-button cap or overflow.
++  addonButton(id) {
++    if (this.closed) return null;
++    const policy = this.window.WebExtensionPolicy.getByID(id);
++    if (!policy?.extension?.canAccessWindow(this.window)) return null;
++    const action = this.window.gUnifiedExtensions.browserActionFor(policy);
++    if (!action?.action.getContextData(this.window.gBrowser.selectedTab).enabled) return null;
++    let node = action.widget?.forWindow(this.window)?.node;
++    if (node && !node.isConnected) {
++      // AREA_ADDONS is lazy. Let Firefox register/build its retained panel and
++      // place the widget without showing that panel or changing persistence.
++      void this.window.gUnifiedExtensions.panel;
++      this.ui.ensureWidgetPlacedInWindow(action.id, this.window);
++      node = action.widget.forWindow(this.window)?.node;
++    }
++    const button = node?.querySelector(".webextension-browser-action");
++    return button?.isConnected && !button.hidden && !button.hasAttribute("disabled") ? button : null;
++  }
++  activateAddon(id, bounds, event) {
++    const button = this.addonButton(id);
++    if (!button || this.window.gDialogBox?.isOpen) return 2;
++    const anchor = this.toolbar.menuAnchor("product-extension", bounds);
++    return anchor ? this.dispatchButton(button, anchor, event) : 2;
++  }
++  dispatchButton(button, anchor, event) {
 +    if (anchor.hasAttribute("open")) {
 +      this.window.document.getElementById("customizationui-widget-panel")?.hidePopup();
 +      return 1;
@@ -18590,7 +18618,7 @@ index 00000000000..c2927f9a1dd
 +    const trigger = new this.window.MouseEvent("command", {bubbles:true, cancelable:true,
 +      button:0, ctrlKey:event.ctrlKey, shiftKey:event.shiftKey, altKey:event.altKey, metaKey:event.metaKey});
 +    this.events.set(trigger, anchor);
-+    try { entry.button.dispatchEvent(trigger); }
++    try { button.dispatchEvent(trigger); }
 +    finally { this.events.delete(trigger); }
 +    return 1;
 +  }
@@ -18606,10 +18634,10 @@ index 00000000000..c2927f9a1dd
 +}
 diff --git a/browser/base/content/WinUIProductMenu.sys.mjs b/browser/base/content/WinUIProductMenu.sys.mjs
 new file mode 100644
-index 00000000000..78533535515
+index 00000000000..683680b03e4
 --- /dev/null
 +++ b/browser/base/content/WinUIProductMenu.sys.mjs
-@@ -0,0 +1,533 @@
+@@ -0,0 +1,567 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18741,6 +18769,35 @@ index 00000000000..78533535515
 +      .sort((a,b) => a.name.localeCompare(b.name))};
 +  }
 +
++  // Decode in Gecko, just as pinned toolbar extensions do. Never send URLs or
++  // let native code fetch extension resources. A broken icon must not hold the
++  // menu open handshake indefinitely.
++  async loadExtensionIcon(addon) {
++    if (!this.host.encodePixels) return null;
++    const image = new this.window.Image();
++    let timer;
++    try {
++      const {AddonManager} = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");
++      const url = AddonManager.getPreferredIconURL(addon, 32, this.window);
++      if (!url) return null;
++      image.src = url;
++      await Promise.race([image.decode(), new Promise((_, reject) => {
++        timer = this.window.setTimeout(() => reject(new Error("Extension icon timeout")), 1500);
++      })]);
++      if (this.closed || !this.enabled || !image.naturalWidth || !image.naturalHeight) return null;
++      const canvas = this.window.document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
++      canvas.width = canvas.height = 32;
++      const context = canvas.getContext("2d");
++      context.drawImage(image, 0, 0, 32, 32);
++      return this.host.encodePixels(context.getImageData(0, 0, 32, 32));
++    } catch {
++      return null;
++    } finally {
++      if (timer !== undefined) this.window.clearTimeout(timer);
++      image.src = "";
++    }
++  }
++
 +  async refresh(request) {
 +    this.request = "";
 +    this.pending = request;
@@ -18749,7 +18806,12 @@ index 00000000000..78533535515
 +      const data = await this.loadData();
 +      if (this.closed || !this.enabled || this.pending !== request) return;
 +      this.window.buildHelpMenu?.();
-+      this.buildLists(data);
++      const icons = this.buildLists(data);
++      const decoded = await Promise.all(icons.map(({addon}) => this.loadExtensionIcon(addon)));
++      if (this.closed || !this.enabled || this.pending !== request) return;
++      for (let i = 0; i < icons.length; i++) {
++        if (decoded[i]) icons[i].item.image = decoded[i];
++      }
 +    } catch (error) {
 +      // Static library/manager commands remain available after a data failure.
 +      if (this.pending !== request || this.closed) return;
@@ -18886,16 +18948,16 @@ index 00000000000..78533535515
 +      }).catch(console.error);
 +      return 1;
 +    }));
-+    const extensionItems = this.page("extensions", extensions, addon => this.entry(addon.name, () => {
-+      const epoch = this.pending;
-+      const {AddonManager} = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");
-+      void AddonManager.getAddonByID(addon.id).then(current => {
-+        if (current && !current.hidden && !this.closed && this.enabled && this.pending === epoch && !window.gDialogBox?.isOpen)
-+          window.BrowserAddonUI.openAddonsMgr(`addons://detail/${encodeURIComponent(current.id)}`);
-+      }).catch(console.error);
-+      return 1;
-+    }));
++    const icons = [];
++    const extensionItems = this.page("extensions", extensions, addon => {
++      const item = this.entry(addon.name, (action, event) =>
++        this.host.activateExtension?.(addon.id, action, event) || 2);
++      item.enabled = addon.isActive !== false && !!this.host.extensionEnabled?.(addon.id);
++      icons.push({addon, item});
++      return item;
++    });
 +    this.lists = {history:history.length ? history : undefined, closed, recent:recentItems, folders:folderRows, extensions:extensionItems};
++    return icons;
 +  }
 +
 +  model() {
@@ -22327,10 +22389,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..e94a22c3248
+index 00000000000..81d37bfead6
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,462 @@
+@@ -0,0 +1,465 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -22404,6 +22466,9 @@ index 00000000000..e94a22c3248
 +    }
 +    const {WinUIProductMenu} = ChromeUtils.importESModule("chrome://browser/content/WinUIProductMenu.sys.mjs");
 +    this.productMenu = new WinUIProductMenu(window, {
++      encodePixels: data => owner.encodePixels(data),
++      extensionEnabled: id => !!this.pinned?.addonButton(id),
++      activateExtension: (id, bounds, event) => this.pinned?.activateAddon(id, bounds, event) || 2,
 +      invalidate: () => owner.invalidateAddress(),
 +      openMenu: (id, bounds, event) => this.openMenu(id, bounds, event),
 +    });

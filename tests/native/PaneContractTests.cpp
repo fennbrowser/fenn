@@ -5781,7 +5781,22 @@ int wmain(int argc, wchar_t** argv) {
                 Require(FAILED(api.syncAddress(first, productMenu(LR"({"enabled":true,"items":[{"kind":"item","id":"a","label":"x"},{"kind":"item","id":"a","label":"y"}]})",5).c_str())), "reject duplicate product menu ids");
                 Require(FAILED(api.syncAddress(first, productMenu(LR"({"enabled":true,"items":[{"kind":"submenu","id":"a","label":"x","items":[]}]})",6).c_str())), "reject an empty submenu");
                 Require(FAILED(api.syncAddress(first, productMenu(LR"({"enabled":true,"items":[{"kind":"submenu","id":"a","label":"a","items":[{"kind":"submenu","id":"b","label":"b","items":[{"kind":"submenu","id":"c","label":"c","items":[{"kind":"item","id":"d","label":"d"}]}]}]}]})",7).c_str())), "reject a product menu nested beyond its depth");
-                Require(SUCCEEDED(api.syncAddress(first, productMenu(LR"({"enabled":true,"label":"Fenn","items":[{"kind":"item","id":"new-tab","label":"New Tab","shortcut":"Ctrl+T"},{"kind":"separator"},{"kind":"submenu","id":"bookmarks","label":"Bookmarks","items":[{"kind":"item","id":"bookmarks-toolbar-never","label":"Never Show","checked":true}]}]})",8).c_str())), "publish a valid product menu");
+                Require(SUCCEEDED(api.syncAddress(first, productMenu(LR"({"enabled":true,"label":"Fenn","items":[{"kind":"item","id":"new-tab","label":"New Tab","shortcut":"Ctrl+T","image":{"width":1,"height":1,"pixels":"204080ff"}},{"kind":"separator"},{"kind":"submenu","id":"bookmarks","label":"Bookmarks","items":[{"kind":"item","id":"bookmarks-toolbar-never","label":"Never Show","checked":true}]}]})",8).c_str())), "publish a valid product menu");
+                auto artwork = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"enabled":true,"items":[{"kind":"submenu","id":"extensions","label":"Extensions","items":[{"kind":"item","id":"entry-1","label":"Extension","image":{"width":1,"height":1,"pixels":"204080ff"}}]}]})");
+                auto icon = artwork.GetNamedArray(L"items").GetObjectAt(0).GetNamedArray(L"items").GetObjectAt(0).GetNamedObject(L"image");
+                icon.SetNamedValue(L"pixels", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"zzzzzzzz"));
+                Require(FAILED(api.syncAddress(first, productMenu(artwork.Stringify().c_str(),9).c_str())), "reject malformed nested extension icon pixels");
+                icon.SetNamedValue(L"width", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(33));
+                Require(FAILED(api.syncAddress(first, productMenu(artwork.Stringify().c_str(),9).c_str())), "reject oversized extension icons");
+                auto crowded = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"enabled":true,"items":[]})");
+                auto entries = crowded.GetNamedArray(L"items");
+                for (int i=0; i<9; ++i) {
+                    auto entry = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"kind":"item","label":"Extension","image":{"width":32,"height":32}})");
+                    entry.SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"entry-"+winrt::to_hstring(i)));
+                    entry.GetNamedObject(L"image").SetNamedValue(L"pixels", winrt::Windows::Data::Json::JsonValue::CreateStringValue(std::wstring(8192,L'0')));
+                    entries.Append(entry);
+                }
+                Require(FAILED(api.syncAddress(first, productMenu(crowded.Stringify().c_str(),9).c_str())), "reject aggregate extension icon pixel overflow");
                 Require(SUCCEEDED(api.syncAddress(first, productMenu(LR"({"enabled":false})",9).c_str())), "disable the product menu");
             }
             {

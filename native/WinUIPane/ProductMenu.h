@@ -20,7 +20,7 @@ struct NativeProductMenu {
     static constexpr uint32_t kMaxItems = 128;
     static constexpr size_t kMaxLabel = 256;
     static constexpr size_t kMaxShortcut = 64;
-    static constexpr size_t kMaxModelBytes = 65536;
+    static constexpr size_t kMaxModelBytes = 131072;
 
     Button button{nullptr};
     Microsoft::UI::Xaml::Controls::MenuFlyout flyout{nullptr};
@@ -30,6 +30,7 @@ struct NativeProductMenu {
     std::shared_ptr<NativePackageUpdates> updates = std::make_shared<NativePackageUpdates>();
     bool enabled{};
     bool keepOpenForCheck{};
+    std::function<void()> afterClose;
     std::function<void(wchar_t const*, uint32_t, Button const&)> dispatch;
     // Items the native toolbar handles itself instead of reporting to Firefox.
     std::function<void()> customize;
@@ -50,7 +51,7 @@ struct NativeProductMenu {
         return !boundary;
     }
 
-    static void ValidateItems(Array const& items, uint32_t depth, uint32_t& total, std::set<winrt::hstring>& ids) {
+    static void ValidateItems(Array const& items, uint32_t depth, uint32_t& total, std::set<winrt::hstring>& ids, size_t& pixels) {
         using winrt::Windows::Data::Json::JsonValueType;
         if (depth > kMaxDepth || items.Size() > kMaxItemsPerLevel) winrt::throw_hresult(E_INVALIDARG);
         for (auto value : items) {
@@ -60,6 +61,7 @@ struct NativeProductMenu {
             const auto kind = item.GetNamedString(L"kind");
             if (kind == L"separator") continue;
             if (kind != L"item" && kind != L"submenu") winrt::throw_hresult(E_INVALIDARG);
+            NativeJson::ValidateImage(item, pixels, NativeJson::kIconImageLimits);
             const auto id = item.GetNamedString(L"id");
             if (!ValidId(id) || !ids.insert(id).second) winrt::throw_hresult(E_INVALIDARG);
             const auto label = item.GetNamedString(L"label");
@@ -71,7 +73,7 @@ struct NativeProductMenu {
             if (kind == L"submenu") {
                 auto children = item.GetNamedArray(L"items");
                 if (children.Size() == 0) winrt::throw_hresult(E_INVALIDARG);
-                ValidateItems(children, depth + 1, total, ids);
+                ValidateItems(children, depth + 1, total, ids, pixels);
             } else if (item.HasKey(L"items")) {
                 winrt::throw_hresult(E_INVALIDARG);
             }
@@ -100,7 +102,8 @@ struct NativeProductMenu {
         NativeJson::RequireLength(menu.GetNamedString(L"tooltip", L""), kMaxLabel);
         uint32_t total = 0;
         std::set<winrt::hstring> ids;
-        ValidateItems(menu.GetNamedArray(L"items"), 1, total, ids);
+        size_t pixels = 0;
+        ValidateItems(menu.GetNamedArray(L"items"), 1, total, ids, pixels);
         if (ids.count(L"check-updates") && !menu.HasKey(L"updateLabels")) winrt::throw_hresult(E_INVALIDARG);
         if (menu.HasKey(L"updateLabels")) {
             auto labels = menu.GetNamedObject(L"updateLabels");
@@ -199,6 +202,7 @@ struct NativeProductMenu {
     void Close() {
         pendingRequest = L"";
         keepOpenForCheck = false;
+        afterClose = {};
         if (flyout) flyout.Hide();
         flyout = nullptr;
         updateItem = nullptr;
@@ -288,6 +292,19 @@ struct NativeProductMenu {
         return nullptr;
     }
 
+    static Microsoft::UI::Xaml::Controls::IconElement ItemIcon(Object const& item) {
+        using namespace Microsoft::UI::Xaml;
+        const auto id = item.GetNamedString(L"id");
+        if (!item.HasKey(L"image") || item.GetNamedValue(L"image").ValueType() ==
+            winrt::Windows::Data::Json::JsonValueType::Null) return Icon(id);
+        Controls::ImageIcon icon;
+        icon.Source(NativeJson::DecodeImage(item.GetNamedObject(L"image")));
+        icon.IsHitTestVisible(false);
+        Automation::AutomationProperties::SetAccessibilityView(icon, Automation::Peers::AccessibilityView::Raw);
+        Automation::AutomationProperties::SetAutomationId(icon, winrt::hstring(L"FennProductMenuIcon-") + id);
+        return icon;
+    }
+
     void Fill(winrt::Windows::Foundation::Collections::IVector<Microsoft::UI::Xaml::Controls::MenuFlyoutItemBase> const& target,
               Array const& items) {
         using namespace Microsoft::UI::Xaml;
@@ -306,7 +323,7 @@ struct NativeProductMenu {
                 MenuFlyoutSubItem sub;
                 sub.Text(entry.GetNamedString(L"label"));
                 sub.IsEnabled(itemEnabled);
-                sub.Icon(Icon(id));
+                sub.Icon(ItemIcon(entry));
                 Automation::AutomationProperties::SetAutomationId(sub, automationId);
                 Fill(sub.Items(), entry.GetNamedArray(L"items"));
                 target.Append(sub);
@@ -345,7 +362,16 @@ struct NativeProductMenu {
                 }
                 if (!dispatch) return;
                 if (std::wstring_view(id).starts_with(L"page-")) pendingRequest = id;
-                dispatch((std::wstring(L"product:") + id.c_str()).c_str(), Modifiers(), button);
+                auto send = [this, alive, id, modifiers = Modifiers()] {
+                    if (!alive.expired() && enabled && dispatch)
+                        dispatch((std::wstring(L"product:") + id.c_str()).c_str(), modifiers, button);
+                };
+                // A closing MenuFlyout restores native focus. Finish that
+                // before Firefox opens/focuses an extension or browser panel.
+                if (flyout && flyout.IsOpen()) {
+                    afterClose = std::move(send);
+                    flyout.Hide();
+                } else send();
             };
             MenuFlyoutItemBase base{nullptr};
             if (checkable) {
@@ -366,7 +392,7 @@ struct NativeProductMenu {
                 MenuFlyoutItem item;
                 item.Text(entry.GetNamedString(L"label"));
                 item.IsEnabled(itemEnabled);
-                item.Icon(Icon(id));
+                item.Icon(ItemIcon(entry));
                 if (id == L"check-updates") updateItem = item;
                 item.Click([invoke](auto const&, auto const&) { invoke(); });
                 const auto shortcut = entry.GetNamedString(L"shortcut", L"");
@@ -394,7 +420,14 @@ struct NativeProductMenu {
             return;
         }
         flyout = MenuFlyout();
+        afterClose = {};
         keepOpenForCheck = false;
+        flyout.Closed([this, alive = std::weak_ptr<int>(lifetime)](auto const& sender, auto const&) {
+            if (alive.expired() || sender != flyout) return;
+            auto send = std::move(afterClose);
+            afterClose = {};
+            if (send) button.DispatcherQueue().TryEnqueue(std::move(send));
+        });
         flyout.Closing([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
             if (!alive.expired() && keepOpenForCheck) {
                 keepOpenForCheck = false;

@@ -19,15 +19,16 @@ function fixture() {
     MouseEvent:class {constructor(type, args) {this.type=type;Object.assign(this,args);}}};
   Object.assign(pinned,{toolbar,window,entries:new Map(),nextId:0,images:new Map(),loads:new Set(),
     events:new WeakMap(),theme:{matches:false},iconDetails:{getPreferredIcon:()=>({icon:"icon"})},
-    ui:{AREA_NAVBAR:"navbar",getWidgetIdsInArea:()=>order,getWidget:id=>({forWindow:()=>({node:widgets.get(id)})})},
+    ui:{ensureWidgetPlacedInWindow:()=>{},AREA_NAVBAR:"navbar",getWidgetIdsInArea:()=>order,getWidget:id=>({forWindow:()=>({node:widgets.get(id)})})},
     loadImage:()=>{}});
   function add(id) {
     const attrs = new Map();
     const button = {dataset:{extensionid:id},isConnected:true,hidden:false,
       getAttribute:key=>attrs.get(key),hasAttribute:key=>attrs.has(key),dispatchEvent:()=>{}};
-    const node = {querySelector:()=>button,hasAttribute:key=>attrs.has(key),closest:()=>null};
-    const data = {badgeBackgroundColor:[1,2,3,255],badgeText:"3",title:id};
+    const node = {isConnected:true,querySelector:()=>button,hasAttribute:key=>attrs.has(key),closest:()=>null};
+    const data = {enabled:true,badgeBackgroundColor:[1,2,3,255],badgeText:"3",title:id};
     const action = {action:{getContextData:()=>data,getTextColor:()=>[255,255,255,255]},extension:{name:id}};
+    action.widget={forWindow:()=>({node})};
     widgets.set(id,node); actions.set(id,action); order.push(id);
     return {attrs,button,data};
   }
@@ -98,4 +99,44 @@ test("palette publishes unplaced artwork without authorizing toolbar activation"
  assert.equal(available.badge,"3");assert.match(available.id,/^palette-/);
  assert.equal(f.pinned.activate(`extension:${available.id}`,{},{}),2);
  assert.equal(f.pinned.snapshot()[0].id,live[0].id);
+});
+
+
+test("product-menu activation reuses toolbar commands for unpinned actions beyond its publication cap",()=>{
+  const f=fixture();let target;
+  for(let i=0;i<40;i++)target=f.add(`addon-${i}`);
+  f.order.length=0; // No pinned toolbar entries.
+  assert.equal(f.pinned.snapshot().length,0);
+  let dispatched;
+  target.button.dispatchEvent=event=>{dispatched=event;assert.ok(f.pinned.events.get(event));};
+  assert.equal(f.pinned.activateAddon("addon-39",{}, {altKey:true,shiftKey:true}),1);
+  assert.equal(dispatched.type,"command");assert.equal(dispatched.altKey,true);assert.equal(dispatched.shiftKey,true);
+  assert.equal(f.pinned.events.has(dispatched),false);
+  target.data.enabled=false;
+  assert.equal(f.pinned.activateAddon("addon-39",{},{}),2);
+  target.data.enabled=true;target.button.isConnected=false;
+  assert.equal(f.pinned.activateAddon("addon-39",{},{}),2);
+});
+
+test("product-menu action rejects missing, private-ineligible, disabled and modal extensions",()=>{
+  const f=fixture();const target=f.add("addon");
+  assert.equal(f.pinned.activateAddon("missing",{},{}),2);
+  target.attrs.set("disabled","true");assert.equal(f.pinned.activateAddon("addon",{},{}),2);
+  target.attrs.delete("disabled");
+  f.pinned.window.gDialogBox={isOpen:true};assert.equal(f.pinned.activateAddon("addon",{},{}),2);
+  f.pinned.window.gDialogBox.isOpen=false;
+  f.pinned.window.WebExtensionPolicy.getByID=()=>({extension:{canAccessWindow:()=>false}});
+  assert.equal(f.pinned.activateAddon("addon",{},{}),2);
+});
+
+
+test("an unpinned action initializes Firefox's lazy panel without opening it or changing placement",()=>{
+  const f=fixture(),target=f.add("lazy");
+  const action=f.pinned.window.gUnifiedExtensions.browserActionFor({id:"lazy"});
+  const node=action.widget.forWindow().node;node.isConnected=false;target.button.isConnected=false;
+  let registered=false,placed=false;
+  Object.defineProperty(f.pinned.window.gUnifiedExtensions,"panel",{get(){registered=true;return {};}});
+  f.pinned.ui.ensureWidgetPlacedInWindow=()=>{assert.ok(registered);placed=true;node.isConnected=target.button.isConnected=true;};
+  assert.equal(f.pinned.activateAddon("lazy",{},{}),1);
+  assert.ok(placed);
 });
