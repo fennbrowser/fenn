@@ -123,7 +123,8 @@ struct NativeProductMenu {
         auto labels = UpdateLabels();
         const auto state = updates->current;
         if (updates->installing) updateItem.Text(NativePackageUpdates::Text(labels, L"installing"));
-        else if (state && state->ready) updateItem.Text(NativePackageUpdates::Text(labels, L"install"));
+        else if (state && state->ready) updateItem.Text(NativePackageUpdates::Text(labels,
+            state->status == L"failed" ? L"failed" : L"install"));
         else if (updates->checking && state && state->status == L"downloading")
             updateItem.Text(NativePackageUpdates::Text(labels, L"downloading"));
         else if (updates->checking && updates->manualCheck) updateItem.Text(NativePackageUpdates::Text(labels, L"checking"));

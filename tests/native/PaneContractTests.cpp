@@ -4063,6 +4063,8 @@ static void CheckInlinePackageUpdates(HMODULE module, HWND owner) {
     wait([&] { return !state->installing; }, "refused session preparation completes");
     Require(installs == 1 && state->current->ready && state->current->status == L"failed",
             "session preparation refusal keeps the ready update without invoking Windows");
+    Require(item.Text() == L"failed" && item.IsEnabled(),
+            "refused or failed installation is visible and retryable in the native menu");
     state->prepare = []() -> Updates::Action { co_return; };
     state->Cancel();
     auto finishCheck = std::make_shared<std::atomic_bool>(false);

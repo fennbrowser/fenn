@@ -46,6 +46,9 @@ function fixture(overrides = {}) {
     ShortcutUtils: {prettifyShortcut: key => key.shortcut},
     document: {getElementById: id => id === "key_newNavigatorTab" ? {shortcut: "Ctrl+T"} : null},
     Localization: class {
+      constructor(resources) {
+        assert.ok(resources.includes("branding/brand.ftl"), "product/update labels can resolve brand terms");
+      }
       formatMessagesSync([{id}]) {
         const value = LABELS[id];
         if (value === undefined) throw new Error(`missing ${id}`);

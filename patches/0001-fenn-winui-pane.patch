@@ -7655,7 +7655,7 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..663b5e5a6e0 100644
+index 4f28e62c7b5..9d8dc31f211 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
 @@ -21,3 +21,3 @@ tabbrowser-tab-tooltip-container = { $containerName }
@@ -7762,7 +7762,7 @@ index 4f28e62c7b5..663b5e5a6e0 100644
 +winui-update-available-store = An update is available from Microsoft Store. Open the Store to install it. Save your work before closing the browser to apply an update.
 +winui-update-available-feed = An update is available from this installation’s App Installer feed. Open the feed, then open the downloaded .appinstaller file if prompted. Save your work before closing the browser to apply an update.
 +winui-update-unavailable = This installation has no supported update source. Install through Microsoft Store or an App Installer feed to enable update checks.
-+winui-update-failed = Couldn’t check for updates or open the update source. Check your connection and try again.
++winui-update-failed = Couldn’t complete the update. Check your connection and try again.
 +winui-update-open-store = Open Microsoft Store
 +winui-update-open-feed = Open update feed
 +winui-update-close = Close
@@ -18582,10 +18582,10 @@ index 00000000000..c2927f9a1dd
 +}
 diff --git a/browser/base/content/WinUIProductMenu.sys.mjs b/browser/base/content/WinUIProductMenu.sys.mjs
 new file mode 100644
-index 00000000000..fc839ac1291
+index 00000000000..cf801e9140c
 --- /dev/null
 +++ b/browser/base/content/WinUIProductMenu.sys.mjs
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,257 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18602,6 +18602,7 @@ index 00000000000..fc839ac1291
 +// Only one browser window may authorize package replacement at a time.
 +let updateOwner = null;
 +const RESOURCES = [
++  "branding/brand.ftl",
 +  "browser/appmenu.ftl",
 +  "browser/menubar.ftl",
 +  "browser/toolbarContextMenu.ftl",
