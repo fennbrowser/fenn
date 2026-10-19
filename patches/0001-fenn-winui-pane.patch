@@ -18606,10 +18606,10 @@ index 00000000000..c2927f9a1dd
 +}
 diff --git a/browser/base/content/WinUIProductMenu.sys.mjs b/browser/base/content/WinUIProductMenu.sys.mjs
 new file mode 100644
-index 00000000000..58dc4d2b257
+index 00000000000..78533535515
 --- /dev/null
 +++ b/browser/base/content/WinUIProductMenu.sys.mjs
-@@ -0,0 +1,535 @@
+@@ -0,0 +1,533 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18987,7 +18987,6 @@ index 00000000000..58dc4d2b257
 +      // Windows owns package servicing; the native host handles this item.
 +      command("check-updates", "winui-update-check"),
 +      separator(),
-+      command("close-window", "menu-file-close-window", { shortcut: this.shortcut("key_closeWindow") }),
 +      command("quit", "appmenuitem-exit2", { shortcut: this.shortcut("key_quitApplication") }),
 +    ].filter(Boolean);
 +    return {
@@ -19077,7 +19076,6 @@ index 00000000000..58dc4d2b257
 +        void startup.onKey(window, id === "inspect-element" ? {toolId:"inspector"} : {id:"browserConsole"});
 +        break;
 +      }
-+      case "close-window": window.BrowserCommands.tryToCloseWindow(event); break;
 +      case "quit": window.goQuitApplication(event); break;
 +      default: {
 +        const match = /^bookmarks-toolbar-(always|newtab|never)$/.exec(id);

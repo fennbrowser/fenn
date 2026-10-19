@@ -3,6 +3,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include "JsonValidation.h"
 #include "ToolbarMetrics.h"
 #include "PackageUpdates.h"
@@ -235,6 +236,58 @@ struct NativeProductMenu {
                ((GetKeyState(VK_SHIFT) & 0x8000) ? 4u : 0u) | ((GetKeyState(VK_LWIN) & 0x8000) ? 8u : 0u);
     }
 
+    // Presentation only: opaque dynamic entry IDs deliberately have no generic
+    // icon. Never turn a site title, extension name or localized label into an
+    // icon guess, and leave visibility choices to their stock check marks.
+    static Microsoft::UI::Xaml::Controls::IconElement Icon(std::wstring_view id) {
+        struct Entry { std::wstring_view id; wchar_t const* glyph; };
+        static constexpr Entry entries[] = {
+            {L"new-tab", L"\xE710"}, {L"new-window", L"\xE78B"},
+            {L"new-private-window", L"\xE727"},
+            {L"history", L"\xE81C"}, {L"history-show-all", L"\xE81C"},
+            {L"history-restore-tab", L"\xE7A7"}, {L"downloads", L"\xE896"},
+            {L"bookmarks", L"\xE734"}, {L"bookmarks-bookmark-tab", L"\xE734"},
+            {L"bookmarks-show-all", L"\xE8F1"}, {L"bookmarks-toolbar", L"\xE8A4"},
+            {L"bookmarks-list-toolbar", L"\xE8B7"}, {L"bookmarks-list-menu", L"\xE8B7"},
+            {L"bookmarks-list-unfiled", L"\xE8B7"},
+            {L"extensions", L"\xEA86"}, {L"extensions-add", L"\xE710"},
+            {L"extensions-manage", L"\xE713"}, {L"view", L"\xE890"},
+            {L"view-sidebar", L"\xE90C"}, {L"view-autohide-tabs", L"\xE77A"},
+            {L"zoom-in", L"\xE8A3"}, {L"zoom-out", L"\xE71F"},
+            {L"zoom-reset", L"\xE71E"}, {L"developer-tools", L"\xE943"},
+            {L"inspect-element", L"\xE721"}, {L"browser-console", L"\xE756"},
+            {L"task-manager", L"\xE9D9"}, {L"print", L"\xE749"},
+            {L"help", L"\xE897"}, {L"help-support", L"\xE897"},
+            {L"help-broken-site", L"\xE7BA"}, {L"help-feedback", L"\xE90A"},
+            {L"help-safe-mode", L"\xE90F"}, {L"help-troubleshooting", L"\xE943"},
+            {L"help-report-deceptive", L"\xE7BA"}, {L"help-not-deceptive", L"\xE73E"},
+            {L"help-switch-device", L"\xE8A1"}, {L"help-about", L"\xE946"},
+            {L"set-default", L"\xE73E"}, {L"settings", L"\xE713"},
+            {L"customize-toolbar", L"\xE771"}, {L"check-updates", L"\xE895"},
+            {L"quit", L"\xE8BB"},
+        };
+        for (auto const& entry : entries) {
+            if (entry.id != id) continue;
+            using namespace Microsoft::UI::Xaml;
+            auto icon = Markup::XamlReader::Load(
+                LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="16" IsHitTestVisible="False"/>)").as<Controls::FontIcon>();
+            icon.Glyph(entry.glyph);
+            // ChromeClose has a larger visual footprint than the other glyphs.
+            // Keep the stock menu icon slot, with a smaller X inside it.
+            if (id == L"quit") {
+                Media::ScaleTransform scale;
+                scale.ScaleX(0.75);
+                scale.ScaleY(0.75);
+                icon.RenderTransformOrigin({0.5, 0.5});
+                icon.RenderTransform(scale);
+            }
+            Automation::AutomationProperties::SetAccessibilityView(icon, Automation::Peers::AccessibilityView::Raw);
+            Automation::AutomationProperties::SetAutomationId(icon, winrt::hstring(L"FennProductMenuIcon-") + winrt::hstring(id));
+            return icon;
+        }
+        return nullptr;
+    }
+
     void Fill(winrt::Windows::Foundation::Collections::IVector<Microsoft::UI::Xaml::Controls::MenuFlyoutItemBase> const& target,
               Array const& items) {
         using namespace Microsoft::UI::Xaml;
@@ -253,6 +306,7 @@ struct NativeProductMenu {
                 MenuFlyoutSubItem sub;
                 sub.Text(entry.GetNamedString(L"label"));
                 sub.IsEnabled(itemEnabled);
+                sub.Icon(Icon(id));
                 Automation::AutomationProperties::SetAutomationId(sub, automationId);
                 Fill(sub.Items(), entry.GetNamedArray(L"items"));
                 target.Append(sub);
@@ -312,6 +366,7 @@ struct NativeProductMenu {
                 MenuFlyoutItem item;
                 item.Text(entry.GetNamedString(L"label"));
                 item.IsEnabled(itemEnabled);
+                item.Icon(Icon(id));
                 if (id == L"check-updates") updateItem = item;
                 item.Click([invoke](auto const&, auto const&) { invoke(); });
                 const auto shortcut = entry.GetNamedString(L"shortcut", L"");

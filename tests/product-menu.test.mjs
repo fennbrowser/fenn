@@ -86,7 +86,7 @@ test("the model is a bounded cascading menu with History and Bookmarks as submen
   assert.deepEqual(top, [["new-tab", "item"], ["new-window", "item"], ["new-private-window", "item"],
     ["history", "submenu"], ["downloads", "item"], ["bookmarks", "submenu"], ["extensions", "submenu"],
     ["view", "submenu"], ["print", "item"], ["help", "submenu"], ["set-default", "item"], ["settings", "item"],
-    ["customize-toolbar", "item"], ["check-updates", "item"], ["close-window", "item"], ["quit", "item"]]);
+    ["customize-toolbar", "item"], ["check-updates", "item"], ["quit", "item"]]);
   const bookmarks = model.items.find(item => item.id === "bookmarks");
   assert.ok(!bookmarks.items.some(item => item.id === "bookmarks-toolbar"));
   const toolbar = model.items.find(item => item.id === "view").items.find(item => item.id === "bookmarks-toolbar");
@@ -126,11 +126,11 @@ test("commands run Firefox's own handlers", () => {
   const f = fixture({closed: 1});
   const event = {type: "click"};
   for (const id of ["new-tab", "new-window", "new-private-window", "history-show-all",
-    "history-restore-tab", "bookmarks-show-all", "settings", "close-window", "quit"]) {
+    "history-restore-tab", "bookmarks-show-all", "settings", "quit"]) {
     assert.equal(f.menu.execute(id, {}, event), 1, id);
   }
   assert.deepEqual(f.calls.map(call => call[0]),
-    ["new-tab", "window", "window", "organizer", "undo", "organizer", "settings", "close", "quit"]);
+    ["new-tab", "window", "window", "organizer", "undo", "organizer", "settings", "quit"]);
   assert.deepEqual(f.calls[2], ["window", {private: true}]);
   assert.deepEqual(f.calls[3], ["organizer", "History"]);
 });
@@ -153,7 +153,7 @@ test("the bookmarks toolbar choice writes Firefox's preference and visibility", 
 test("submenu parents, unknown, malformed and stale ids are refused", () => {
   const f = fixture();
   for (const id of ["history", "bookmarks", "bookmarks-toolbar", "nope", "../x", "", "New-Tab", null, 5,
-    "bookmarks-toolbar-sometimes"]) {
+    "bookmarks-toolbar-sometimes", "close-window"]) {
     assert.equal(f.menu.execute(id, {}, {}), 2, String(id));
   }
   assert.deepEqual(f.calls, []);
