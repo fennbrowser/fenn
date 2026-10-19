@@ -187,10 +187,10 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..51e69aa74d0 100644
+index b2b5db6040b..dce5bf155e6 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,20 @@ browser.jar:
+@@ -35,2 +35,21 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -205,13 +205,14 @@ index b2b5db6040b..51e69aa74d0 100644
 +        content/browser/WinUIResultContextMenu.sys.mjs  (content/WinUIResultContextMenu.sys.mjs)
 +        content/browser/WinUIAddressContextMenu.sys.mjs  (content/WinUIAddressContextMenu.sys.mjs)
 +        content/browser/WinUIOmnibarActions.sys.mjs  (content/WinUIOmnibarActions.sys.mjs)
++        content/browser/WinUIDownloadsPanel.sys.mjs  (content/WinUIDownloadsPanel.sys.mjs)
 +        content/browser/WinUIHistoryMenu.sys.mjs     (content/WinUIHistoryMenu.sys.mjs)
 +        content/browser/WinUIActionStamp.sys.mjs     (content/WinUIActionStamp.sys.mjs)
 +        content/browser/WinUIAddressToolbar.sys.mjs     (content/WinUIAddressToolbar.sys.mjs)
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +124,17 @@ browser.jar:
+@@ -106 +125,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -349,23 +350,26 @@ index fb77346559b..d186d417cc5 100644
 +    let anchor = nativeAnchor || this._getPanelAnchor(this.menuButton);
  
 diff --git a/browser/components/downloads/content/downloads.js b/browser/components/downloads/content/downloads.js
-index 311e0d736c7..130388d39ea 100644
+index 311e0d736c7..a61d9457612 100644
 --- a/browser/components/downloads/content/downloads.js
 +++ b/browser/components/downloads/content/downloads.js
-@@ -184,3 +184,4 @@ var DownloadsPanel = {
+@@ -184,3 +184,7 @@ var DownloadsPanel = {
     */
 -  showPanel(openedManually = false, isKeyPress = false) {
 +  showPanel(openedManually = false, isKeyPress = false, nativeAnchor = null) {
++    // An explicitly opened native panel already receives live list updates.
++    // The adapter yields to this controller for per-window spam permissions.
++    if (!openedManually && window.gWinUIPane?.addressToolbar?.downloadsPanel?.ownsAutomaticPresentation()) return;
 +    this._nativeAnchor = nativeAnchor;
      Glean.downloads.panelShown.add(1);
-@@ -670,3 +671,5 @@ var DownloadsPanel = {
+@@ -670,3 +674,5 @@ var DownloadsPanel = {
      // anchored to the top area of the window, near the default anchor position.
 -    let anchor = DownloadsButton.getAnchor();
 +    const nativeAnchor = this._nativeAnchor;
 +    this._nativeAnchor = null;
 +    let anchor = nativeAnchor ? nativeAnchor() : DownloadsButton.getAnchor();
  
-@@ -695,2 +698,3 @@ var DownloadsPanel = {
+@@ -695,2 +701,3 @@ var DownloadsPanel = {
      setTimeout(() => {
 +      if (nativeAnchor && nativeAnchor() !== anchor) return;
        PanelMultiView.openPopup(
@@ -7655,7 +7659,7 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..94e663bfed6 100644
+index 4f28e62c7b5..796f17c6918 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
 @@ -21,3 +21,3 @@ tabbrowser-tab-tooltip-container = { $containerName }
@@ -7696,7 +7700,7 @@ index 4f28e62c7b5..94e663bfed6 100644
 -tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. We’ll save your groups here so they’re easy to find later.
 +tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. Weâ€™ll save your groups here so theyâ€™re easy to find later.
  tab-groups-list-empty-button = Create a tab group
-@@ -520 +520,98 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,100 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -7795,6 +7799,8 @@ index 4f28e62c7b5..94e663bfed6 100644
 +winui-update-ready = An update is ready. Install it to restart { -brand-short-name } and restore your session.
 +winui-update-install = Install update
 +winui-update-installing = Installing update…
++
++winui-downloads-unavailable = Downloads could not be loaded. Open all downloads to try again.
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -17470,6 +17476,279 @@ index 00000000000..e4be8e911db
 +    return 1;
 +  }
 +}
+diff --git a/browser/base/content/WinUIDownloadsPanel.sys.mjs b/browser/base/content/WinUIDownloadsPanel.sys.mjs
+new file mode 100644
+index 00000000000..a0ce3a667fe
+--- /dev/null
++++ b/browser/base/content/WinUIDownloadsPanel.sys.mjs
+@@ -0,0 +1,267 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Firefox owns downloads, localization, file operations and security prompts.
++// Native receives bounded presentation and opaque, opening-scoped action IDs.
++export class WinUIDownloadsPanel {
++  constructor(toolbar) {
++    this.toolbar = toolbar;
++    this.window = toolbar.window;
++    this.session = this.lastSession = 0;
++    this.rows = [];
++    this.actions = new Map();
++    this.labels = new Map();
++    this.localeChanged=()=>{this.l10n=null;this.labels.clear();for(const row of this.rows)row.dirty=true;this.toolbar.owner.invalidateAddress();};
++    Services.obs.addObserver(this.localeChanged,"intl:app-locales-changed");
++  }
++  close() { this.closed = true; this.dismiss(); Services.obs.removeObserver(this.localeChanged,"intl:app-locales-changed"); }
++  dismiss() {
++    if (!this.session) return;
++    this.closedSession = this.session;
++    this.session = 0;
++    if (this.list && this.view) this.list.removeView(this.view);
++    this.list = this.view = null;
++    this.rows = [];
++    this.ready = false;
++    this.labels.clear();
++    this.actions.clear();
++    this.description = this.context = null;
++    this.fingerprint = this.actionFingerprint = "";
++    this.consumed?.clear();
++    this.window.clearTimeout(this.delayTimer);
++    this.toolbar.owner.invalidateAddress();
++  }
++  live() {
++    const {toolbar: t, window: w} = this;
++    return !this.closed && t.active && t.navigation && t.supported() &&
++      !w.gDialogBox?.isOpen && !t.customization?.editorOpen &&
++      t.owner.addressSession?.sessionId === this.context?.session &&
++      t.owner.addressTab === this.context?.tab && t.owner.addressDocument === this.context?.document;
++  }
++  label(value, attribute) {
++    if (!value) return "";
++    if (typeof value === "string" && !attribute) return value.slice(0, 512);
++    const descriptor = typeof value === "string" ? {id:value} : value.l10n;
++    if (!descriptor) return "";
++    const key=JSON.stringify([descriptor,attribute || ""]);
++    if(this.labels.has(key))return this.labels.get(key);
++    this.l10n ??= new this.window.Localization(["browser/downloads.ftl","browser/tabbrowser.ftl","branding/brand.ftl"],true);
++    const [message] = this.l10n.formatMessagesSync([descriptor]);
++    const text=String(message?.attributes?.find(a => a.name === attribute)?.value ?? message?.value ?? "").slice(0,512);
++    if(this.labels.size===128)this.labels.delete(this.labels.keys().next().value);
++    this.labels.set(key,text);return text;
++  }
++  ownsAutomaticPresentation() {
++    if(!this.session || !this.live())return false;
++    // Spam has per-window permission controls in the retained Firefox panel.
++    if(this.integration?.downloadSpamProtection?.getSpamListForWindow(this.window)){this.dismiss();return false;}
++    return true;
++  }
++  async open(session,bounds) {
++    this.dismiss();
++    this.session = session;
++    this.ready = this.failure = false;
++    this.context = {session:this.toolbar.owner.addressSession?.sessionId,
++      tab:this.toolbar.owner.addressTab, document:this.toolbar.owner.addressDocument};
++    const {DownloadIntegration}=ChromeUtils.importESModule("resource://gre/modules/DownloadIntegration.sys.mjs");
++    this.integration=DownloadIntegration;
++    if(bounds && DownloadIntegration.downloadSpamProtection?.getSpamListForWindow(this.window)) {
++      this.dismiss();
++      this.toolbar.noteFallback?.("downloads-spam-controller");
++      return this.toolbar.openMenu("downloads",bounds,new this.window.MouseEvent("click",{view:this.window}));
++    }
++    const retained=this.window.document.getElementById?.("downloadsPanel");
++    if(retained && ["open","showing","hiding"].includes(retained.state)) {
++      await new Promise(resolve=>{retained.addEventListener("popuphidden",resolve,{once:true});this.window.DownloadsPanel.hidePanel();});
++      if(this.session!==session || !this.live())return;
++    }
++    this.revision = this.actionRevision = this.serial = this.nextAction = this.membership = 0;
++    this.actionFingerprint="";
++    this.consumed = new Set();
++    this.fingerprint = "";
++    this.l10n ??= new this.window.Localization(["browser/downloads.ftl","browser/tabbrowser.ftl","branding/brand.ftl"], true);
++    const {Downloads} = ChromeUtils.importESModule("resource://gre/modules/Downloads.sys.mjs");
++    const {PrivateBrowsingUtils} = ChromeUtils.importESModule("resource://gre/modules/PrivateBrowsingUtils.sys.mjs");
++    const list = await Downloads.getList(PrivateBrowsingUtils.isWindowPrivate(this.window) ? Downloads.PRIVATE : Downloads.PUBLIC);
++    if (this.session !== session || !this.live()) return;
++    this.list = list;
++    this.ready = false;
++    const invalidate = () => this.toolbar.owner.invalidateAddress();
++    const insert = download => {
++      if (this.session !== session || this.rows.some(row => row.download === download)) return;
++      this.membership++;
++      if(this.serial>=0x0fffffff){this.dismiss();return;}
++      this.rows.unshift({download, dirty:true, serial:++this.serial});
++      this.rows.length = Math.min(this.rows.length, 8);
++      invalidate();
++    };
++    this.view = {
++      onDownloadAdded: insert,
++      onDownloadChanged: download => {
++        const row = this.rows.find(row => row.download === download);
++        if (this.session === session && row) { row.dirty = true; invalidate(); }
++      },
++      onDownloadRemoved: download => {
++        if (this.session !== session) return;
++        this.membership++;
++        this.rows = this.rows.filter(row => row.download !== download);
++        this.refill(session).catch(console.error);
++        invalidate();
++      },
++    };
++    await list.addView(this.view);
++    if (this.session !== session || !this.live()) return;
++    await this.refill(session);
++    if (this.session !== session || !this.live()) return;
++    // The panel is explicitly invoked. Firefox applies activation protection to
++    // automatically opened panels; this presenter never auto-opens on download.
++    this.ready = true;
++    invalidate();
++  }
++  async refill(session) {
++    const list = this.list;
++    const membership = this.membership;
++    const downloads = await list.getAll();
++    if (this.session !== session || this.list !== list) return;
++    if (this.membership !== membership) return this.refill(session);
++    const previous = new Map(this.rows.map(row => [row.download,row]));
++    if(this.serial>=0x0ffffff0){this.dismiss();return;}
++    // DownloadList preserves insertion order, matching Firefox's panel unshift.
++    this.rows=downloads.slice(-8).reverse().map(download=>previous.get(download) || {download,dirty:true,serial:++this.serial});
++    for (const row of this.rows) {
++      row.download.refresh?.().catch(console.error);
++    }
++    this.toolbar.owner.invalidateAddress();
++  }
++  shell(row) {
++    if (row.shell) return row.shell;
++    const {DownloadsViewUI} = ChromeUtils.importESModule("moz-src:///browser/components/downloads/DownloadsViewUI.sys.mjs");
++    const shell = Object.create(DownloadsViewUI.DownloadElementShell.prototype);
++    shell.download = row.download;
++    // The inherited state machine uses attributes as controller bookkeeping.
++    // One detached node, no Firefox row markup, layout, panel or DOM exposure.
++    shell.element = this.window.document.createXULElement("richlistitem");
++    shell.isPanel = true;
++    const enabled=shell.isCommandEnabled.bind(shell);
++    shell.isCommandEnabled=command=>command==="downloadsCmd_copyLocation" ?
++      !!row.download.source?.url && !row.download.source.isDataURICleared : enabled(command);
++    shell.downloadsCmd_copyLocation=()=>this.common.copyDownloadLink(row.download);
++    Object.defineProperty(shell,"browserWindow",{get:() => this.window});
++    shell.showDisplayNameAndIcon = name => { row.name = this.label(name); };
++    shell.showStatus = value => { row.status = this.label(value); };
++    shell.showProgress = (mode,value,paused) => { row.progress = mode === "normal" ? Math.max(0,Math.min(100,value)) : -1; row.paused = !!paused; };
++    shell.showButton = type => { row.button = type; };
++    shell.hideButton = () => { row.button = ""; };
++    return row.shell = shell;
++  }
++  describe(row, index) {
++    const shell = this.shell(row), d = row.download;
++    if (row.dirty) {
++      this.common ??= ChromeUtils.importESModule("moz-src:///browser/components/downloads/DownloadsCommon.sys.mjs").DownloadsCommon;
++      const state=this.common.stateOfDownload(d);
++      if(row.state!==state){row.state=state;shell._updateState();}else shell._updateStateInner();
++      row.dirty = false;
++    }
++    const commands = [],slots=new Set();
++    row.capabilities ??= new Map();
++    const add = (slot, command, label, icon, close = false) => {
++      if (!label || !shell.isCommandEnabled(command) || (command==="downloadsCmd_open" && !d.succeeded)) return 0;
++      slots.add(slot);
++      const prerequisite=JSON.stringify([command,command==="downloadsCmd_pauseResume" ? d.stopped : null,
++        ["downloadsCmd_open","downloadsCmd_show"].includes(command) ? d.target.path : null]);
++      let capability=row.capabilities.get(slot);
++      if(!capability || capability.prerequisite!==prerequisite) {
++        if(this.nextAction>=0xfffffffe)throw new Error("Downloads action identity exhausted");
++        if(++this.nextAction===255)++this.nextAction;
++        capability={id:this.nextAction,prerequisite,issued:this.actionRevision+1};row.capabilities.set(slot,capability);
++      }
++      const id=capability.id;
++      this.actions.set(id, {download:d, command, close, prerequisite, issued:capability.issued});
++      commands.push({id, label, icon, close});
++      return id;
++    };
++    const presets = {
++      cancel:["downloadsCmd_cancel","downloads-cmd-cancel-panel","cancel"],
++      retry:["downloadsCmd_retry","downloads-cmd-retry-panel","retry"],
++      show:["downloadsCmd_show","downloads-cmd-show-panel-2","folder"],
++      subviewOpenOrRemoveFile:["downloadsCmd_chooseUnblock","downloads-cmd-choose-unblock-panel","review"],
++    };
++    const preset = presets[row.button];
++    const primary = preset ? add(2,preset[0],this.label(preset[1],"aria-label"),preset[2],preset[2]==="folder" || preset[2]==="review") : 0;
++    const defaultCommand = shell.currentDefaultCommandName;
++    const main = defaultCommand === "downloadsCmd_showBlockedInfo" ? primary : defaultCommand ?
++      add(1,defaultCommand,row.name,"file",defaultCommand === "downloadsCmd_open" || defaultCommand === "downloadsCmd_openReferrer") : 0;
++    add(3,"downloadsCmd_pauseResume",this.label(d.stopped ? "downloads-cmd-resume" : "downloads-cmd-pause","label"),d.stopped?"resume":"pause");
++    add(4,"downloadsCmd_show",this.label("downloads-cmd-show-menuitem-2","label"),"folder",true);
++    add(5,"downloadsCmd_delete",this.label("downloads-cmd-remove-from-history","label"),"remove");
++    add(7,"downloadsCmd_copyLocation",this.label("downloads-cmd-copy-download-link","label"),"copy");
++    if (d.hasBlockedData) add(6,"downloadsCmd_confirmBlock",this.label("downloads-cmd-remove-file-panel","aria-label"),"remove");
++    for(const slot of row.capabilities.keys())if(!slots.has(slot))row.capabilities.delete(slot);
++    return {id:index, name:row.name, status:row.status, progress:row.progress,
++      progressVisible:!d.stopped || !!d.hasPartialData, paused:!!row.paused,
++      warning:!!d.error, main:this.actions.has(main)?main:0, primary:this.actions.has(primary)?primary:0, commands};
++  }
++  snapshot() {
++    if (this.session && !this.live()) this.dismiss();
++    if (!this.session || !this.ready) return {enabled:true, closed:this.closedSession || 0};
++    this.actions.clear();
++    const items = this.rows.map(row => this.describe(row,row.serial));
++    const description = {title:this.label("downloads-panel","aria-label"), empty:this.failure ? this.label({l10n:{id:"winui-downloads-unavailable"}}) : this.label("downloads-panel-empty","value"),
++      all:this.label("downloads-history","label"), more:this.label("downloads-show-more-information","value"), items};
++    const actionFingerprint=JSON.stringify([...this.actions].map(([id,a])=>[id,a.command,a.close]));
++    if(actionFingerprint!==this.actionFingerprint){this.actionFingerprint=actionFingerprint;this.actionRevision++;}
++    for(const id of this.consumed)if(!this.actions.has(id))this.consumed.delete(id);
++    for(const item of items)for(const command of item.commands)command.pending=this.consumed.has(command.id);
++    const fingerprint = JSON.stringify([description,actionFingerprint]);
++    if (fingerprint !== this.fingerprint) { this.fingerprint = fingerprint; this.revision++; }
++    this.description = {enabled:true,closed:this.closedSession || 0,session:this.session,revision:this.revision,actionRevision:this.actionRevision,...description};
++    return this.description;
++  }
++  execute(action) {
++    const match = /^downloads-panel:(open|dismiss|invoke):([1-9][0-9]*)(?::([1-9][0-9]*):([0-9]+))?$/.exec(action.command);
++    if (!match) return 2;
++    const session = Number(match[2]);
++    if (!Number.isSafeInteger(session) || session > 0xffffffff) return 2;
++    if (match[1] === "open") {
++      if (match[3] || this.closed || session <= this.lastSession || !this.toolbar.navigationState().downloads.shown ||
++          this.toolbar.customization?.nativeOverflow.has("downloads-button") || !this.toolbar.menuAnchor("downloads",action)) return 2;
++      this.lastSession = session;
++      this.open(session,action).catch(error => { if(this.session===session && this.live()){this.failure=this.ready=true;this.toolbar.owner.invalidateAddress();} console.error(error); });
++      return 1;
++    }
++    if (session !== this.session) return 2;
++    if (match[1] === "dismiss") { if(match[3])return 2; this.dismiss(); return 1; }
++    const revision=Number(match[3]);
++    if (!this.live() || !Number.isInteger(revision) || revision<1 || revision>this.description?.actionRevision) return 2;
++    const id = Number(match[4]);
++    if (id === 255) { this.dismiss(); this.window.BrowserCommands.downloadsUI(); return 1; }
++    const entry = this.actions.get(id);
++    const row = this.rows.find(row => row.download === entry?.download);
++    if (!entry || !row || revision<entry.issued || this.consumed.has(id)) return 2;
++    const prerequisite=JSON.stringify([entry.command,entry.command==="downloadsCmd_pauseResume" ? entry.download.stopped : null,
++      ["downloadsCmd_open","downloadsCmd_show"].includes(entry.command) ? entry.download.target.path : null]);
++    if(prerequisite!==entry.prerequisite)return 2;
++    const shell = this.shell(row);
++    // Revalidate the live object and exact command immediately before dispatch.
++    if (!shell.isCommandEnabled(entry.command) || (entry.command === "downloadsCmd_open" && !entry.download.succeeded)) return 2;
++    if (["downloadsCmd_open","downloadsCmd_show"].includes(entry.command) && entry.download.target.path) {
++      // Match the panel controller's immediate existence check, rather than
++      // trusting the cached target.exists bit after an external file removal.
++      const {FileUtils}=ChromeUtils.importESModule("resource://gre/modules/FileUtils.sys.mjs");
++      const target=entry.download.target;
++      const exists=new FileUtils.File(target.path).exists() ||
++        (entry.command==="downloadsCmd_show" && target.partFilePath && new FileUtils.File(target.partFilePath).exists());
++      if(!exists){entry.download.refresh().catch(console.error);return 2;}
++    }
++    for(const [key,action] of this.actions)if(action.download===entry.download && action.command===entry.command)this.consumed.add(key);
++    this.actions.delete(id);
++    row.dirty = true;
++    if (entry.close) this.dismiss();
++    if (entry.command === "downloadsCmd_chooseUnblock") shell.confirmUnblock(this.window,"chooseUnblock");
++    else shell.doCommand(entry.command);
++    if(entry.command==="downloadsCmd_copyLocation")row.capabilities.delete(7);
++    this.toolbar.owner.invalidateAddress();
++    return 1;
++  }
++}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
 index 00000000000..85d6b628141
@@ -22431,10 +22710,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..f942495ee28
+index 00000000000..e3df79ed94b
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,491 @@
+@@ -0,0 +1,498 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -22474,6 +22753,8 @@ index 00000000000..f942495ee28
 +    // Progress alone can fire before command disabled states are updated.
 +    const {WinUIHistoryMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIHistoryMenu.sys.mjs");
 +    this.historyMenu=new WinUIHistoryMenu(this);
++    const {WinUIDownloadsPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUIDownloadsPanel.sys.mjs");
++    this.downloadsPanel=new WinUIDownloadsPanel(this);
 +    const { WinUINavigationState, NAVIGATION_COMMANDS } = ChromeUtils.importESModule(
 +      "chrome://browser/content/WinUINavigationState.sys.mjs");
 +    this.navigationCommands = NAVIGATION_COMMANDS;
@@ -22544,6 +22825,7 @@ index 00000000000..f942495ee28
 +    const state = this.navigationModel.snapshot();
 +    state.indicators = this.indicatorState();
 +    state.historyMenu=this.historyMenu.snapshot();
++    state.downloadsPanel=this.downloadsPanel.snapshot();
 +    state.pinned = this.pinned?.snapshot() || [];
 +    Object.assign(state, this.omnibar?.snapshot() || {});
 +    state.palette = this.pinned?.snapshot(true) || [];
@@ -22615,6 +22897,7 @@ index 00000000000..f942495ee28
 +  executeNavigation(action) {
 +    const {window, owner} = this;
 +    const indicator = ["indicator:private", "indicator:analysis"].includes(action?.command);
++    const nativeDownloads=typeof action?.command === "string" && action.command.startsWith("downloads-panel:");
 +    const nativeHistory=typeof action?.command === "string" && action.command.startsWith("history-menu:");
 +    const customization = typeof action?.command === "string" && action.command.startsWith("customize:");
 +    const stock = typeof action?.command === "string" && action.command.startsWith("stock:");
@@ -22624,16 +22907,17 @@ index 00000000000..f942495ee28
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!stock && !indicator && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!stock && !indicator && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
++    if (nativeDownloads) return this.downloadsPanel.execute(action);
 +    if (indicator) {
 +      const id = action.command.slice(10), state = this.indicatorState()[id];
 +      if (!state?.shown || !state.enabled || this.customization?.editing || window.gDialogBox?.isOpen) return 2;
@@ -22866,6 +23150,7 @@ index 00000000000..f942495ee28
 +  }
 +  restore() {
 +    if(this.historyMenu?.session)this.historyMenu.dismiss();
++    if(this.downloadsPanel?.session)this.downloadsPanel.dismiss();
 +    if (this.activationFrame) this.window.cancelAnimationFrame(this.activationFrame);
 +    this.activationFrame = 0;
 +    for (const panel of this.window.document.querySelectorAll("panel, menupopup")) {
@@ -22907,6 +23192,7 @@ index 00000000000..f942495ee28
 +  close() {
 +    this.restore();
 +    this.historyMenu.close();
++    this.downloadsPanel.close();
 +    this.resize.disconnect();
 +    Services.prefs.removeObserver("browser.nova.enabled", this.novaObserver);
 +    this.navigationObserver.disconnect();

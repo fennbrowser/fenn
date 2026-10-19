@@ -9,10 +9,11 @@ pub struct SurfaceMenu {
     /// Descriptions are scoped to one opening and reset with it.
     stream: Stream,
     actions: BTreeSet<u32>,
+    pending: BTreeSet<u32>,
 }
 impl Default for SurfaceMenu {
     fn default() -> Self {
-        Self { next: 0, session: 0, stream: Stream::new(StreamKind::Session), actions: BTreeSet::new() }
+        Self { next: 0, session: 0, stream: Stream::new(StreamKind::Session), actions: BTreeSet::new(), pending: BTreeSet::new() }
     }
 }
 impl SurfaceMenu {
@@ -22,7 +23,7 @@ impl SurfaceMenu {
         self.session
     }
     pub fn counts(&self) -> ShellPublicationCounts {self.stream.counts()}
-    pub fn dismiss(&mut self) {self.session=0;self.stream.reset();self.actions.clear();}
+    pub fn dismiss(&mut self) {self.session=0;self.stream.reset();self.actions.clear();self.pending.clear();}
     fn classify(&self, session:u32, revision:u32, actions:&[u32], fingerprint:&[u16]) -> Classification {
         if session==0 || revision==0 || actions.len()>MAX_ACTIONS || fingerprint.len()>MAX_DESCRIPTION {return Classification::Invalid;}
         let ids:BTreeSet<_>=actions.iter().copied().collect();
@@ -46,7 +47,12 @@ impl SurfaceMenu {
         let class=self.classify(session,revision,actions,fingerprint);
         self.stream.record(class);
         if !class.outcome(self.stream.kind())? {return Ok(false);}
-        self.stream.commit(revision,fingerprint);self.actions=actions.iter().copied().collect();Ok(true)
+        self.stream.commit(revision,fingerprint);self.actions=actions.iter().copied().collect();self.pending.clear();Ok(true)
+    }
+    /// A live panel stays open. Reject repeated activation until a newer reply.
+    pub fn activate_retained(&mut self,session:u32,revision:u32,action:u32)->bool {
+        session!=0 && session==self.session && revision==self.stream.revision() &&
+            self.actions.contains(&action) && self.pending.insert(action)
     }
     pub fn activate(&mut self,session:u32,revision:u32,action:u32)->bool {
         if session==0 || session!=self.session || revision!=self.stream.revision() || !self.actions.contains(&action){return false;}
@@ -84,5 +90,18 @@ mod tests {
  #[test] fn close_and_exhaustion_do_not_reuse_ids() {
   let mut m=SurfaceMenu::default();let s=m.open();m.dismiss();assert_eq!(m.accept(s,1,&[1],&[]),Ok(false));
   assert!(m.open()>s);m.next=u32::MAX;assert_eq!(m.open(),0);
+ }
+}
+
+#[cfg(test)]
+mod retained_tests {
+ use super::*;
+ #[test] fn live_actions_wait_for_a_new_reply_and_never_survive_dismissal() {
+  let mut m=SurfaceMenu::default();let s=m.open();m.accept(s,1,&[1,2],&[8]).unwrap();
+  assert!(m.activate_retained(s,1,1));assert!(!m.activate_retained(s,1,1));
+  assert!(m.activate_retained(s,1,2));assert!(!m.activate_retained(s,2,1));
+  assert_eq!(m.accept(s,1,&[1,2],&[8]),Ok(false));assert!(!m.activate_retained(s,1,1));
+  m.accept(s,2,&[2],&[9]).unwrap();assert!(!m.activate_retained(s,2,1));assert!(m.activate_retained(s,2,2));
+  m.dismiss();assert!(!m.activate_retained(s,2,2));assert_eq!(m.accept(s,3,&[2],&[10]),Ok(false));
  }
 }

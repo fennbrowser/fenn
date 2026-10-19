@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 44
+#define SHELL_CORE_ABI_VERSION 45
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -271,6 +271,7 @@ enum ShellPublicationChannel
   SHELL_PUBLICATION_CHANNEL_ADDRESS_MODES = 7,
   SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU = 8,
   SHELL_PUBLICATION_CHANNEL_ADDRESS_RESULT_MENU = 9,
+  SHELL_PUBLICATION_CHANNEL_DOWNLOADS_PANEL = 10,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -2149,6 +2150,61 @@ ShellStatus shell_core_address_section(ShellCore *core,
 ShellStatus shell_core_address_menu_eligible(ShellCore *core,
                                              const ShellAddressMenuContext *context,
                                              bool *eligible);
+
+/*
+ Allocate a window-scoped menu opening. Zero means identity exhaustion.
+ # Safety
+ Live core and writable out.
+ */
+ShellStatus shell_core_downloads_panel_open(ShellCore *core, uint32_t *out);
+
+/*
+ Revoke a window-scoped menu, preserving its identity high-water mark.
+ # Safety
+ Live core.
+ */
+ShellStatus shell_core_downloads_panel_dismiss(ShellCore *core);
+
+/*
+ Resolve a validated session description before mutating the host container.
+ Accepted work is committed and counted by shell_core_downloads_panel_accept;
+ ignored/refused work ends here, without changing menu or action identity.
+ # Safety
+ Live core, readable arrays (null only for zero length), writable changed.
+ */
+ShellStatus shell_core_downloads_panel_resolve(ShellCore *core,
+                                               uint32_t session,
+                                               uint32_t revision,
+                                               const uint32_t *actions,
+                                               uintptr_t count,
+                                               const uint16_t *fingerprint,
+                                               uintptr_t units,
+                                               bool *changed);
+
+/*
+ Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
+ # Safety
+ Live core, readable arrays (null only for zero length), writable changed.
+ */
+ShellStatus shell_core_downloads_panel_accept(ShellCore *core,
+                                              uint32_t session,
+                                              uint32_t revision,
+                                              const uint32_t *actions,
+                                              uintptr_t count,
+                                              const uint16_t *fingerprint,
+                                              uintptr_t units,
+                                              bool *changed);
+
+/*
+ Consume one current enabled action; dismissal and late updates cannot resurrect it.
+ # Safety
+ Live core and writable accepted.
+ */
+ShellStatus shell_core_downloads_panel_activate(ShellCore *core,
+                                                uint32_t session,
+                                                uint32_t revision,
+                                                uint32_t action,
+                                                bool *accepted);
 
 #ifdef __cplusplus
 }  // extern "C"

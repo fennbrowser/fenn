@@ -50,7 +50,7 @@ function fixture() {
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIHistoryMenu.sys.mjs",import.meta.url),"utf8").replace(/^import .*;$/m,"").replace("export class WinUIHistoryMenu","this.WinUIHistoryMenu=class WinUIHistoryMenu"),context);
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUINavigationState.sys.mjs",import.meta.url),"utf8").replace(/^export /gm,"")+";this.WinUINavigationState=WinUINavigationState;this.NAVIGATION_COMMANDS=NAVIGATION_COMMANDS;",context);
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIProductMenu.sys.mjs",import.meta.url),"utf8").replace(/^export /gm,"")+";this.WinUIProductMenu=WinUIProductMenu;",context);
-  context.ChromeUtils={importESModule:()=>({WinUIHistoryMenu:context.WinUIHistoryMenu,WinUIProductMenu:context.WinUIProductMenu,
+  context.ChromeUtils={importESModule:()=>({WinUIDownloadsPanel:class {snapshot(){return {enabled:true};}close(){}},WinUIHistoryMenu:context.WinUIHistoryMenu,WinUIProductMenu:context.WinUIProductMenu,
     WinUINavigationState:context.WinUINavigationState,NAVIGATION_COMMANDS:context.NAVIGATION_COMMANDS})};
   vm.runInContext(source, context);
   const toolbar = new context.WinUIAddressToolbar(window, owner);
@@ -557,4 +557,10 @@ test("automatic notification anchors are revoked with native presentation",()=>{
   f.toolbar.restore();
   assert.ok(closed,"native teardown dismisses its anchored Firefox popup");
   assert.equal(f.toolbar.notificationAnchorFor(null),null);
+});
+
+test("toolbar fallback revokes an open Downloads subscription before native detachment",()=>{
+  const f=fixture();let dismissed=false;
+  f.toolbar.downloadsPanel={session:1,dismiss(){dismissed=true;this.session=0;}};
+  f.toolbar.restore();assert.equal(dismissed,true);assert.equal(f.toolbar.downloadsPanel.session,0);
 });
