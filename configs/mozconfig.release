@@ -7,7 +7,8 @@
 # file stands on its own; tests/test_mozconfig.py keeps the two in step.
 #
 # A separate object directory: switching between the two configurations must not
-# clobber either build. Packaging and launch scripts still read build/firefox.
+# clobber either build. Packaging selects this tree with -ReleaseBuild or -Store;
+# unpackaged launch scripts still read build/firefox.
 mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/../../build/firefox-release
 mk_add_options MOZ_MAKE_FLAGS=-j16
 ac_add_options --enable-application=browser
