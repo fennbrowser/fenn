@@ -247,17 +247,20 @@ static void WithTab(HWND hwnd, const wchar_t* id, const wchar_t* title, bool sel
 }
 // Two conditions, two waits. An island's content tree goes live asynchronously
 // once its host window becomes visible, and nothing can realize a container
-// before that; whether the row then realizes is a separate question with its
-// own, much shorter, answer. Measured on this machine with
+// before that; whether the row then realizes is a separate question. Both
+// stages need the same bounded allowance: hide/show can leave the TabView live
+// while its replacement row still awaits the slow Loaded transition.
+// Measured on this machine with
 // `PaneContractTests.exe ... --inspect`: the process's first island goes live
 // 78-125ms after creation, a later island 359-625ms, and rarely -- about one
 // long-running process in six -- 9.7-13.4s, with every observable state
 // (IsHostVisible, the child window's visibility, its region) identical in the
 // fast and slow cases. Covering both conditions with one ~5s budget is what
 // turned that outlier into an intermittent failure blamed on hide/show.
+static constexpr ULONGLONG LiveTreeTimeoutMs = 30000;
 static void AwaitLiveTree(winrt::Microsoft::UI::Xaml::FrameworkElement const& element) {
     auto started = GetTickCount64();
-    while (!element.IsLoaded() && GetTickCount64() - started < 30000) {
+    while (!element.IsLoaded() && GetTickCount64() - started < LiveTreeTimeoutMs) {
         Pump();
         Sleep(5);
     }
@@ -283,11 +286,16 @@ static winrt::Microsoft::UI::Xaml::Controls::TabView StripView(HMODULE module, H
 // source, so they are found by their stable automation ID rather than by index.
 static winrt::Microsoft::UI::Xaml::Controls::TabViewItem StripRow(
     winrt::Microsoft::UI::Xaml::Controls::TabView const& view, uint32_t id) {
-    for (int i = 0; i < 500; ++i) {
+    const auto started = GetTickCount64();
+    while (GetTickCount64() - started < LiveTreeTimeoutMs) {
         view.UpdateLayout();
         if (auto found = FindInTabList(view, L"FennTab-" + winrt::to_hstring(id));
-            found && found.IsLoaded() && found.ActualWidth() > 0 && found.ActualHeight() > 0)
+            found && found.IsLoaded() && found.ActualWidth() > 0 && found.ActualHeight() > 0) {
+            if (GetTickCount64() - started > 1000)
+                fprintf(stderr, "Strip row id=%u went live after %llums\n", id,
+                    static_cast<unsigned long long>(GetTickCount64() - started));
             return found.as<winrt::Microsoft::UI::Xaml::Controls::TabViewItem>();
+        }
         Pump();
         Sleep(10);
     }
@@ -930,6 +938,36 @@ static BOOL CALLBACK CountChild(HWND, LPARAM count) {
     ++*reinterpret_cast<unsigned*>(count);
     return TRUE;
 }
+static void CheckStockFlyout(HMODULE module, HWND hwnd) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    SetForegroundWindow(hwnd);
+    auto anchor = StripView(module, hwnd);
+    anchor.Focus(FocusState::Programmatic);
+    Controls::MenuFlyout menu;
+    Controls::MenuFlyoutItem item;
+    item.Text(L"Lifecycle probe");
+    menu.Items().Append(item);
+    bool opened = false;
+    auto token = menu.Opened([&](auto const&, auto const&) { opened = true; });
+    menu.ShowAt(anchor);
+    for (int i = 0; i < 500 && (!opened || item.ActualWidth() == 0); ++i) { Pump(); Sleep(10); }
+    menu.Opened(token);
+    fwprintf(stderr,L"Lifecycle popup opened=%d isOpen=%d item=%.1fx%.1f rootLoaded=%d visible=%d\n",
+        opened,menu.IsOpen(),item.ActualWidth(),item.ActualHeight(),anchor.IsLoaded(),anchor.XamlRoot().IsHostVisible());
+    Require(opened && menu.IsOpen() && item.ActualWidth() > 0 && item.ActualHeight() > 0,
+        "stock flyout renders across address-source closure");
+    bool visible = false;
+    // Use the same thread-scoped popup discovery as PaneAutomation.ps1.
+    EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM data)->BOOL {
+        wchar_t name[256]{};GetClassNameW(window,name,256);
+        if(IsWindowVisible(window) && wcsstr(name,L"Popup"))*reinterpret_cast<bool*>(data)=true;
+        return TRUE;
+    },reinterpret_cast<LPARAM>(&visible));
+    Require(visible,"rendered lifecycle flyout has a visible native popup window");
+    menu.Hide();
+    for(int i=0;i<30;++i){Pump();Sleep(10);}
+}
+
 void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
@@ -1152,6 +1190,16 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     conflict.SetNamedValue(L"text", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"conflict"));
     Require(FAILED(api.syncAddress(hwnd, conflict.Stringify().c_str())) && field.Text() == L"initial",
             "same address sequence with different content refuses before editor mutation");
+    // Reparenting the strip header above can queue address focus intents.
+    // Complete them as Firefox does before asserting publication ordering;
+    // visible direction metadata alone does not prove a snapshot committed.
+    for (int i=0;i<20;++i) {
+        Pump();
+        auto batch=DrainRequests(api,hwnd);
+        if(!batch.Size())break;
+        CompleteRequests(api,hwnd,batch);
+    }
+    Require(SUCCEEDED(publishAddress(snapshot)),"commit settled address before ordering checks");
     auto directionSnapshot = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);
     directionSnapshot.SetNamedValue(L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
     Require(SUCCEEDED(publishAddress(directionSnapshot.Stringify().c_str())) &&
@@ -1164,7 +1212,8 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     auto stale = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);
     stale.SetNamedValue(L"text", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"stale"));
     stale.SetNamedValue(L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
-    Require(SUCCEEDED(api.syncAddress(hwnd, stale.Stringify().c_str())) && field.Text() == L"initial" &&
+    const auto staleResult=api.syncAddress(hwnd, stale.Stringify().c_str());
+    Require(SUCCEEDED(staleResult) && field.Text() == L"initial" &&
                 address.FlowDirection() == FlowDirection::LeftToRight,
             "stale address publication leaves editor and direction untouched");
     stale.SetNamedValue(L"placeholder", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(5));
@@ -5504,7 +5553,7 @@ int wmain(int argc, wchar_t** argv) {
                     return EXCEPTION_CONTINUE_SEARCH;
                 }) != nullptr,
             "install teardown exception guard");
-    Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 || wcscmp(argv[2], L"--address-host") == 0 ||
+    Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--popup-lifecycle") == 0 || wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 || wcscmp(argv[2], L"--address-host") == 0 ||
                                         wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--updates") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 ||
                                         wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
                                         wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))),
@@ -6004,6 +6053,31 @@ int wmain(int argc, wchar_t** argv) {
         Sleep(10);
     }
 
+    if (argc == 3 && wcscmp(argv[2], L"--popup-lifecycle") == 0) {
+        CheckStockFlyout(module,first);
+        for(int cycle=0;cycle<3;++cycle) {
+            fprintf(stderr,"Address popup lifecycle cycle=%d\n",cycle);
+            CheckAddress(api,module,first);
+            CheckStockFlyout(module,first);
+            HWND second=CreateWindowExW(0,L"STATIC",L"Popup lifecycle sibling",WS_OVERLAPPEDWINDOW,80,80,640,480,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+            Require(second && SUCCEEDED(api.updateTabStrip(second,&rect,TRUE)),"create popup lifecycle sibling");
+            ShowWindow(second,SW_SHOW);
+            Require(SUCCEEDED(api.syncTabs(second,tabs,2,11,NextTabRevision(),&requested)),"publish sibling tabs after address close");
+            auto row=StripRow(StripView(module,second),11);
+            CheckStockFlyout(module,second);
+            Require(SUCCEEDED(api.destroy(second)),"destroy popup lifecycle sibling");
+            DestroyWindow(second);
+            CheckStockFlyout(module,first);
+        }
+        CheckContextMenu(module,api,first);
+        Require(SUCCEEDED(api.destroy(first)),"destroy popup lifecycle host");
+        DestroyWindow(first);
+        winrt::clear_factory_cache();
+        Require(SUCCEEDED(api.shutdown()),"popup lifecycle shutdown");
+        CoUninitialize();
+        puts("CHECKS PASSED: address source close/recreate, surviving and new-island popups, loaded rows, shutdown");
+        return 0;
+    }
     if (argc == 3 && wcscmp(argv[2], L"--address") == 0) {
         try {
             CheckTabKeyboardNavigation(module, api, first);
