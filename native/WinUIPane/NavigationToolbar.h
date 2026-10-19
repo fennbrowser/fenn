@@ -188,6 +188,7 @@ struct NativeNavigationToolbar {
                 const uint32_t modifiers = inputModifiers[i];
                 inputModifiers[i] = 0;
                 if(i==9 && historyMenu.enabled && !customization.editing){historyMenu.Open(buttons[i]);return;}
+                if((i==4 || i==9 || i==10) && productMenu.enabled && !customization.editing){productMenu.OpenFrom(buttons[i],commands[i]);return;}
                 activate(i == 2 && stopping ? L"stop" : commands[i], modifiers, buttons[i]);
             });
             if(i==7 || i==8)button.ContextRequested([this,i,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const& args){if(alive.expired() || !visible || customization.editing || !activate)return;args.Handled(true);activate(i==7?L"widget-menu:home":L"widget-menu:downloads",0,buttons[i]);});

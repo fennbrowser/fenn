@@ -27,6 +27,8 @@ struct NativeProductMenu {
     static constexpr NativeJson::ImageLimits kMenuImageLimits{32, 42 * 32 * 32};
 
     Button button{nullptr};
+    Button anchor{nullptr};
+    winrt::hstring rootId;
     Microsoft::UI::Xaml::Controls::MenuFlyout flyout{nullptr};
     Object model;
     winrt::hstring pendingRequest;
@@ -198,7 +200,7 @@ struct NativeProductMenu {
         button.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired() || !enabled) return;
             if (closeEditor && closeEditor()) return;
-            Open();
+            OpenFrom(button);
         });
     }
     ~NativeProductMenu() { lifetime.reset(); updates->Cancel(); Close(); }
@@ -210,6 +212,19 @@ struct NativeProductMenu {
         if (flyout) flyout.Hide();
         flyout = nullptr;
         updateItem = nullptr;
+        anchor = nullptr;
+        rootId = L"";
+    }
+
+    // Reuse the same publication, refresh handshake and command routing when a
+    // toolbar button opens one of the product menu's submenus directly.
+    void OpenFrom(Button const& source, winrt::hstring const& root = L"") {
+        if (anchor == source && rootId == root &&
+            (!pendingRequest.empty() || (flyout && flyout.IsOpen()))) { Close(); return; }
+        Close();
+        anchor = source;
+        rootId = root;
+        Open();
     }
 
     void Apply(Object const& next, bool visible) {
@@ -366,9 +381,9 @@ struct NativeProductMenu {
                 }
                 if (!dispatch) return;
                 if (std::wstring_view(id).starts_with(L"page-")) pendingRequest = id;
-                auto send = [this, alive, id, modifiers = Modifiers()] {
+                auto send = [this, alive, id, source = anchor ? anchor : button, modifiers = Modifiers()] {
                     if (!alive.expired() && enabled && dispatch)
-                        dispatch((std::wstring(L"product:") + id.c_str()).c_str(), modifiers, button);
+                        dispatch((std::wstring(L"product:") + id.c_str()).c_str(), modifiers, source);
                 };
                 // A closing MenuFlyout restores native focus. Finish that
                 // before Firefox opens/focuses an extension or browser panel.
@@ -416,14 +431,27 @@ struct NativeProductMenu {
             return;
         }
         if (!enabled || !model || model.Size() == 0) return;
+        auto source = anchor ? anchor : button;
+        if (!source.IsEnabled() || source.Visibility() != Visibility::Visible) { Close(); return; }
         if (!refreshed && model.GetNamedBoolean(L"refreshOnOpen", false) && dispatch) {
             if (!pendingRequest.empty()) { pendingRequest = L""; return; }
             static uint64_t serial = 0;
             pendingRequest = L"open-" + winrt::to_hstring(GetTickCount64()) + L"-" + winrt::to_hstring(++serial);
-            dispatch((std::wstring(L"product:") + pendingRequest.c_str()).c_str(), Modifiers(), button);
+            dispatch((std::wstring(L"product:") + pendingRequest.c_str()).c_str(), Modifiers(), source);
             return;
         }
+        auto items = model.GetNamedArray(L"items");
+        if (!rootId.empty()) {
+            Object root;
+            for (auto value : items) {
+                auto entry = value.GetObject();
+                if (entry.GetNamedString(L"id", L"") == rootId && entry.GetNamedString(L"kind") == L"submenu") root = entry;
+            }
+            if (!root.HasKey(L"items") || !root.GetNamedBoolean(L"enabled", true)) { Close(); return; }
+            items = root.GetNamedArray(L"items");
+        }
         flyout = MenuFlyout();
+        updateItem = nullptr;
         afterClose = {};
         keepOpenForCheck = false;
         flyout.Closed([this, alive = std::weak_ptr<int>(lifetime)](auto const& sender, auto const&) {
@@ -438,12 +466,12 @@ struct NativeProductMenu {
                 args.Cancel(true);
             }
         });
-        flyout.Placement(button.FlowDirection() == FlowDirection::RightToLeft
-            ? Primitives::FlyoutPlacementMode::BottomEdgeAlignedRight
+        const bool alignRight = (source.FlowDirection() == FlowDirection::RightToLeft) == rootId.empty();
+        flyout.Placement(alignRight ? Primitives::FlyoutPlacementMode::BottomEdgeAlignedRight
             : Primitives::FlyoutPlacementMode::BottomEdgeAlignedLeft);
-        Fill(flyout.Items(), model.GetNamedArray(L"items"));
+        Fill(flyout.Items(), items);
         RefreshUpdateItem();
-        flyout.ShowAt(button);
-        if (model.HasKey(L"updateLabels")) NativePackageUpdates::Probe(updates);
+        flyout.ShowAt(source);
+        if (rootId.empty() && model.HasKey(L"updateLabels")) NativePackageUpdates::Probe(updates);
     }
 };
