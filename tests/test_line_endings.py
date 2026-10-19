@@ -60,6 +60,40 @@ class LineEndingTests(unittest.TestCase):
         self.assertEqual(self.check("--base", "missing-revision"), 1)
         self.assertEqual(self.file.read_bytes(), before)
 
+    def declare_crlf(self):
+        (self.root / ".gitattributes").write_bytes(b'"sample file.txt" -text eol=crlf\n')
+
+    def test_explicit_crlf_restoration_passes_and_survives_checkout(self):
+        self.declare_crlf()
+        self.file.write_bytes(b"restored\r\n")
+        self.commit()
+        self.assertEqual(self.check("--base", self.base), 0)
+        blob = subprocess.check_output(["git", "-C", str(self.root),
+                                        "show", "HEAD:sample file.txt"])
+        self.assertEqual(blob, b"restored\r\n")
+        self.file.unlink()
+        self.git("checkout", "--", "sample file.txt")
+        self.assertEqual(self.file.read_bytes(), blob)
+
+    def test_explicit_convention_rejects_and_repairs_wrong_endings(self):
+        self.declare_crlf()
+        self.file.write_bytes(b"wrong\n")
+        self.commit()
+        self.assertEqual(self.check("--base", self.base), 1)
+        self.assertEqual(self.check("--base", self.base, "--fix"), 0)
+        self.assertEqual(self.file.read_bytes(), b"wrong\r\n")
+
+    def test_explicit_convention_does_not_allow_unrelated_drift(self):
+        self.declare_crlf()
+        self.file.write_bytes(b"restored\r\n")
+        other = self.root / "other.txt"
+        other.write_bytes(b"original\n")
+        self.commit()
+        base = self.git("rev-parse", "HEAD").strip()
+        other.write_bytes(b"drifted\r\n")
+        self.commit()
+        self.assertEqual(self.check("--base", base), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

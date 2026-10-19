@@ -10,9 +10,9 @@ thousands of whitespace errors.
 
 Two sets of files are checked:
 
-* Tracked files, against the convention the committed version uses. A file is
-  allowed to keep a mixed convention it already had; what is refused is
-  flipping, because that is never deliberate here.
+* Tracked files, against an explicit Git eol attribute when present, otherwise
+  the convention the committed version uses. Explicit attributes permit a
+  reviewed convention restoration without accepting unrelated drift.
 * The Firefox sources the patches touch, against LF. `upstream/` is ignored by
   git and has no committed version to compare with, and mozilla-central is LF
   throughout, so LF is the authority there.
@@ -64,6 +64,18 @@ def committed(name, base="HEAD"):
     return result.stdout if result.returncode == 0 else None
 
 
+def declared_endings(names):
+    """Read explicit conventions in one batch, preserving spaces in paths."""
+    if not names:
+        return {}
+    result = subprocess.run(["git", "-C", str(ROOT), "check-attr", "-z", "--stdin", "eol"],
+                            input="\0".join(names) + "\0", capture_output=True,
+                            text=True, check=True)
+    fields = result.stdout.split("\0")
+    return {fields[i]: fields[i + 2] for i in range(0, len(fields) - 1, 3)
+            if fields[i + 2] in ("lf", "crlf")}
+
+
 def patched_files():
     """Firefox sources the patches apply to, read from the patch headers."""
     names = set()
@@ -92,14 +104,17 @@ def main():
 
     drifted = []
 
-    for name in tracked_files(base):
+    names = tracked_files(base)
+    declared = declared_endings(names)
+    for name in names:
         path = ROOT / name
         if not path.is_file() or path.suffix.lower() in BINARY:
             continue
         before = committed(name, base)
-        if before is None:
+        if before is None and name not in declared:
             continue  # newly added: it sets its own convention
-        want, have = style(before), style(path.read_bytes())
+        want = declared.get(name) or style(before)
+        have = style(path.read_bytes())
         if want in ("none", "mixed") or have == want:
             continue
         drifted.append((name, want, have))
