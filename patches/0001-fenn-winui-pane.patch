@@ -8211,10 +8211,15 @@ index a7cd6c416c0..d121aa1068f 100644
 +-firefoxlabs-brand-name = Fenn Labs
  
 diff --git a/toolkit/modules/PopupNotifications.sys.mjs b/toolkit/modules/PopupNotifications.sys.mjs
-index 38490ae2aba..ddfc21ae368 100644
+index 38490ae2aba..b32a0d7742f 100644
 --- a/toolkit/modules/PopupNotifications.sys.mjs
 +++ b/toolkit/modules/PopupNotifications.sys.mjs
-@@ -1469,5 +1469,5 @@ PopupNotifications.prototype = {
+@@ -1356,2 +1356,4 @@ PopupNotifications.prototype = {
+     }
++    // Retained toolbar nodes can have layout entirely offscreen in native mode.
++    anchorElement = this.window.gWinUIPane?.addressToolbar?.notificationAnchorFor(anchorElement) || anchorElement;
+     // In case _getVisibleAnchorElement provided a non-visible element.
+@@ -1469,5 +1471,5 @@ PopupNotifications.prototype = {
        if (popupOptions) {
 -        this.panel.openPopup(anchorElement, popupOptions);
 +        this.panel.openPopup(this.window.gWinUIPane?.addressToolbar?.omnibar?.anchorFor(anchorElement) || anchorElement, popupOptions);
@@ -22389,10 +22394,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..81d37bfead6
+index 00000000000..f942495ee28
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,465 @@
+@@ -0,0 +1,491 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -22664,6 +22669,32 @@ index 00000000000..81d37bfead6
 +      top:`${bounds.y / scale - window.mozInnerScreenY}px`,
 +      width:`${bounds.width / scale}px`, height:`${bounds.height / scale}px`,
 +    });
++    return anchor;
++  }
++  // Automatic Firefox notifications have no native activation/bounds event.
++  // The retained nav-bar has layout at -200vw, so checkVisibility alone cannot
++  // make it a usable popup anchor. Use this window's live toolbar surface;
++  // Firefox keeps its original left/right popup placement and prompt policy.
++  notificationAnchorFor(node) {
++    const {document} = this.window;
++    if (!this.active || !this.navigation || !this.supported() ||
++        !document.documentElement.hasAttribute("winui-hides-nav-bar") ||
++        (node && (node.ownerDocument !== document || !node.closest?.("#nav-bar")))) return null;
++    const explicit = this.omnibar?.anchorFor(node);
++    if (explicit && explicit !== node) return explicit;
++    if (this.row.hidden || !this.row.checkVisibility()) return null;
++    const rect = this.row.getBoundingClientRect();
++    if (rect.width <= 0 || rect.height <= 0 || rect.x < 0 || rect.y < 0 ||
++        rect.x + rect.width > this.window.innerWidth + 1 ||
++        rect.y + rect.height > this.window.innerHeight + 1) return null;
++    this.menuAnchors ??= new Map();
++    let anchor = this.menuAnchors.get("notifications");
++    if (!anchor) {
++      anchor = document.createElementNS("http://www.w3.org/1999/xhtml", "div");
++      anchor.className = "winui-toolbar-menu-anchor winui-toolbar-notification-anchor";
++      this.row.append(anchor);
++      this.menuAnchors.set("notifications", anchor);
++    }
 +    return anchor;
 +  }
 +  openMenu(id, bounds, event) {
@@ -22950,13 +22981,14 @@ index 00000000000..9f282df768b
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.css b/browser/base/content/WinUIAddressToolbar.css
 new file mode 100644
-index 00000000000..f52d7b201b3
+index 00000000000..102270633fe
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.css
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,40 @@
 +#winui-address-focus { display: none; }
 +#winui-navigation-toolbar:not([hidden]) {
 +  display: block;
++  position: relative;
 +  min-block-size: 40px;
 +  block-size: 40px;
 +  flex-shrink: 0;
@@ -22975,6 +23007,9 @@ index 00000000000..f52d7b201b3
 +}
 +
 +.winui-toolbar-menu-anchor { position: fixed; pointer-events: none; opacity: 0; }
++/* Span the live row so Firefox keeps both left- and right-aligned automatic
++   prompts inside the owning window, including after moves and resizes. */
++.winui-toolbar-notification-anchor { position: absolute; inset: 0; }
 +
 +/* The window backdrop frames the native navigation row and page together.
 +   Keep their side insets aligned; the toolbar's bounds also position its native

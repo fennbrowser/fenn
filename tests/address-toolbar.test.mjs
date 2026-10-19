@@ -510,3 +510,51 @@ test("unhosted widget fallback follows actual native coverage and rendered visib
   navbar.children.pop();navbar.children.push({...node("native-caption"),matches:()=>true});
   assert.equal(f.toolbar.hasVisibleUnhostedWidgets(),false,"native menu/status/caption infrastructure is already hosted");
 });
+
+
+test("automatic notification anchors use the live owning row while the retained toolbar is offscreen",()=>{
+  const f=fixture();f.toolbar.active=f.toolbar.navigation=true;
+  f.root.setAttribute("winui-hides-nav-bar", "true");
+  f.window.innerWidth=900;f.window.innerHeight=700;
+  f.toolbar.row.hidden=false;f.toolbar.row.checkVisibility=()=>true;
+  const node={ownerDocument:f.window.document,closest:()=>({})};
+  const anchor=f.toolbar.notificationAnchorFor(node);
+  assert.ok(anchor.className.includes("winui-toolbar-notification-anchor"));
+  assert.equal(f.toolbar.notificationAnchorFor(node),anchor,"one retained anchor follows row layout");
+  f.toolbar.row.getBoundingClientRect=()=>({x:4,y:40,width:700,height:40});
+  assert.equal(f.toolbar.notificationAnchorFor(node),anchor,"resizing uses the same row-relative anchor");
+  f.toolbar.omnibar={anchorFor:()=>f.input};
+  assert.equal(f.toolbar.notificationAnchorFor(node),f.input,"native icon activations keep their exact scoped anchor");
+});
+
+test("notification anchoring preserves Firefox fallback, unrelated/foreign anchors and hidden native modes",()=>{
+  const f=fixture();f.toolbar.active=f.toolbar.navigation=true;
+  f.root.setAttribute("winui-hides-nav-bar","true");
+  f.window.innerWidth=900;f.window.innerHeight=700;
+  f.toolbar.row.hidden=false;f.toolbar.row.checkVisibility=()=>true;
+  const node={ownerDocument:f.window.document,closest:()=>({})};
+  assert.equal(f.toolbar.notificationAnchorFor({ownerDocument:{},closest:()=>({})}),null);
+  assert.equal(f.toolbar.notificationAnchorFor({ownerDocument:f.window.document,closest:()=>null}),null);
+  f.root.removeAttribute("winui-hides-nav-bar");assert.equal(f.toolbar.notificationAnchorFor(node),null);
+  f.root.setAttribute("winui-hides-nav-bar","true");
+  f.toolbar.active=false;assert.equal(f.toolbar.notificationAnchorFor(node),null);
+  f.toolbar.active=true;f.toolbar.row.hidden=true;assert.equal(f.toolbar.notificationAnchorFor(node),null);
+  f.toolbar.row.hidden=false;f.toolbar.row.checkVisibility=()=>false;assert.equal(f.toolbar.notificationAnchorFor(node),null);
+  f.toolbar.row.checkVisibility=()=>true;
+  f.toolbar.row.getBoundingClientRect=()=>({x:-1800,y:40,width:700,height:40});
+  assert.equal(f.toolbar.notificationAnchorFor(node),null,"never substitute another offscreen anchor");
+});
+
+test("automatic notification anchors are revoked with native presentation",()=>{
+  const f=fixture();f.toolbar.active=f.toolbar.navigation=true;
+  f.root.setAttribute("winui-hides-nav-bar","true");
+  f.window.innerWidth=900;f.window.innerHeight=700;
+  f.toolbar.row.hidden=false;f.toolbar.row.checkVisibility=()=>true;
+  const anchor=f.toolbar.notificationAnchorFor(null);
+  assert.ok(anchor,"a missing Firefox anchor can use the active native surface");
+  let closed=false;
+  f.elements.set("notification-popup",{anchorNode:anchor,hidePopup:()=>closed=true});
+  f.toolbar.restore();
+  assert.ok(closed,"native teardown dismisses its anchored Firefox popup");
+  assert.equal(f.toolbar.notificationAnchorFor(null),null);
+});
