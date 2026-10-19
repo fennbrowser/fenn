@@ -7655,7 +7655,7 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..9d8dc31f211 100644
+index 4f28e62c7b5..94e663bfed6 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
 @@ -21,3 +21,3 @@ tabbrowser-tab-tooltip-container = { $containerName }
@@ -7696,7 +7696,7 @@ index 4f28e62c7b5..9d8dc31f211 100644
 -tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. We’ll save your groups here so they’re easy to find later.
 +tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. Weâ€™ll save your groups here so theyâ€™re easy to find later.
  tab-groups-list-empty-button = Create a tab group
-@@ -520 +520,74 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,98 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -7753,6 +7753,30 @@ index 4f28e62c7b5..9d8dc31f211 100644
 +
 +winui-history-open-firefox = Open full history menu
 +winui-history-empty = No recent history
++
++# Native product-menu sections and commands. Browser data and controllers stay
++# owned by Firefox; the sidebar and tab autohide commands are not available yet.
++winui-menu-recently-visited = Recently visited
++winui-menu-recently-closed = Recently closed
++winui-menu-show-history = Show history
++winui-menu-recent-bookmarks = Recent bookmarks
++winui-menu-add-extension = Add extension
++winui-menu-manage-extensions = Manage extensions
++winui-menu-show-sidebar = Show sidebar
++winui-menu-autohide-tabs = Autohide Tabs
++winui-menu-reset-zoom = Reset Zoom
++winui-menu-developer-tools = Developer Tools
++winui-menu-inspect-element = Inspect element
++winui-menu-browser-console = Browser console
++winui-menu-set-default = Set as default
++winui-menu-bookmarks-toolbar = Bookmarks toolbar
++winui-menu-bookmarks-menu = Bookmarks menu
++winui-menu-other-bookmarks = Other bookmarks
++winui-menu-empty = No items
++winui-menu-empty-folder = Untitled folder
++winui-menu-next = Next page
++winui-menu-previous = Previous page
++winui-menu-back = Back to parent folder
 +
 +winui-update-check =
 +    .label = Check for updates
@@ -18582,10 +18606,10 @@ index 00000000000..c2927f9a1dd
 +}
 diff --git a/browser/base/content/WinUIProductMenu.sys.mjs b/browser/base/content/WinUIProductMenu.sys.mjs
 new file mode 100644
-index 00000000000..cf801e9140c
+index 00000000000..58dc4d2b257
 --- /dev/null
 +++ b/browser/base/content/WinUIProductMenu.sys.mjs
-@@ -0,0 +1,257 @@
+@@ -0,0 +1,535 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18622,7 +18646,20 @@ index 00000000000..cf801e9140c
 +  constructor(window, host) {
 +    this.window = window;
 +    this.host = host;
-+    this.observer = { observe: () => this.host.invalidate() };
++    this.actions = new Map();
++    this.serial = 0;
++    this.pages = new Map();
++    this.folders = new Map();
++    this.roots = [];
++    this.results = [];
++    this.observer = { observe: () => {
++      if (!this.enabled) {
++        this.pending = null;
++        this.request = "";
++        this.releaseLists();
++      }
++      this.host.invalidate();
++    } };
 +    for (const pref of [PRODUCT_MENU_PREF, BOOKMARKS_VISIBILITY_PREF]) {
 +      Services.prefs.addObserver(pref, this.observer);
 +    }
@@ -18630,6 +18667,8 @@ index 00000000000..cf801e9140c
 +
 +  close() {
 +    this.closed = true;
++    this.pending = null;
++    this.releaseLists();
 +    if (this.updateInstall?.status === "ready") {
 +      // Windows may already be closing us to replace the package. Keep the
 +      // persisted one-time restore preference through that shutdown.
@@ -18672,6 +18711,193 @@ index 00000000000..cf801e9140c
 +    }
 +  }
 +
++  get devtoolsEnabled() {
++    return !Services.prefs.getBoolPref("devtools.policy.disabled", false) &&
++      (!Services.policies?.isAllowed || Services.policies.isAllowed("devtools"));
++  }
++
++  domCommand(id, source, resource) {
++    const node = this.window.document.getElementById(source);
++    const label = this.label(resource);
++    return label ? {id, kind:"item", label, enabled:!this.window.gDialogBox?.isOpen &&
++      !!node && !node.hidden && !node.disabled && node.getAttribute?.("disabled") !== "true"} : null;
++  }
++
++  releaseLists() {
++    for (const root of this.roots) root.containerOpen = false;
++    this.roots = [];
++    this.results = [];
++    this.actions.clear();
++    this.lists = null;
++  }
++
++  async loadData() {
++    const {PlacesUtils} = ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");
++    const {AddonManager} = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");
++    const [recent, extensions] = await Promise.all([
++      PlacesUtils.bookmarks.getRecent(6), AddonManager.getAddonsByTypes(["extension"]),
++    ]);
++    return {PlacesUtils, recent, extensions:extensions.filter(addon => !addon.hidden)
++      .sort((a,b) => a.name.localeCompare(b.name))};
++  }
++
++  async refresh(request) {
++    this.request = "";
++    this.pending = request;
++    this.releaseLists();
++    try {
++      const data = await this.loadData();
++      if (this.closed || !this.enabled || this.pending !== request) return;
++      this.window.buildHelpMenu?.();
++      this.buildLists(data);
++    } catch (error) {
++      // Static library/manager commands remain available after a data failure.
++      if (this.pending !== request || this.closed) return;
++      this.releaseLists();
++      console.error("Product menu lists unavailable", error);
++    }
++    if (this.closed || !this.enabled || this.pending !== request) return;
++    this.request = request;
++    this.host.invalidate();
++  }
++
++  entry(label, callback, page = false) {
++    const id = `${page ? "page" : "entry"}-${++this.serial}`;
++    this.actions.set(id, callback);
++    return {id, kind:"item", label:String(label).slice(0, PRODUCT_MENU_LIMITS.label), enabled:true};
++  }
++
++  page(key, rows, render) {
++    const size = 6;
++    const start = Math.min(this.pages.get(key) || 0, Math.max(0, Math.floor((rows.length - 1) / size) * size));
++    const items = rows.slice(start, start + size).map(render).filter(Boolean);
++    const move = offset => {
++      let item;
++      item = this.entry(this.label(offset < 0 ? "winui-menu-previous" : "winui-menu-next"), () => {
++        this.pages.set(key, start + offset);
++        void this.refresh(item.id);
++        return 1;
++      }, true);
++      return item;
++    };
++    if (start) items.push(move(-size));
++    if (start + size < rows.length) items.push(move(size));
++    return items.length ? items : [{id:`empty-${key}`, kind:"item", label:this.label("winui-menu-empty"), enabled:false}];
++  }
++
++  buildLists({PlacesUtils: places, recent, extensions}) {
++    const {window} = this;
++    const openNode = (node, event) => {
++      const {BrowserUtils} = ChromeUtils.importESModule("resource://gre/modules/BrowserUtils.sys.mjs");
++      let where = BrowserUtils.whereToOpenLink(event, false, true);
++      if (places.nodeIsBookmark(node) && window.PlacesUIUtils.loadBookmarksInTabs) {
++        if (where === "current" && !node.uri.startsWith("javascript:")) where = "tab";
++        if (where === "tab" && window.gBrowser.selectedTab?.isEmpty) where = "current";
++      }
++      window.PlacesUIUtils.openNodeIn(node, where, {ownerWindow:window});
++    };
++    const visit = (node, root) => {
++      const uri = node.uri;
++      return this.entry(node.title || uri, (_action, event) => {
++        if (node.parent !== root || !uri || node.uri !== uri) return 2;
++        openNode(node, event);
++        return 1;
++      });
++    };
++    const children = root => {
++      this.roots.push(root);
++      return Array.from({length:root.childCount}, (_, i) => root.getChild(i));
++    };
++    const options = places.history.getNewQueryOptions();
++    options.sortingMode = Ci.nsINavHistoryQueryOptions.SORT_BY_DATE_DESCENDING;
++    options.maxResults = 6;
++    options.excludeQueries = true;
++    const historyResult = places.history.executeQuery(places.history.getNewQuery(), options);
++    this.results.push(historyResult);
++    const historyRoot = historyResult.root;
++    historyRoot.containerOpen = true;
++    const history = children(historyRoot).map(node => visit(node, historyRoot));
++    const closedTabs = () => {
++      const rows = window.SessionStore.getClosedTabData({sourceWindow:window});
++      if (!window.PrivateBrowsingUtils.isWindowPrivate(window) &&
++          Services.prefs.getBoolPref("browser.sessionstore.closedTabsFromClosedWindows", false))
++        rows.push(...window.SessionStore.getClosedTabDataFromClosedWindows());
++      return rows.sort((a,b) => b.closedAt - a.closedAt);
++    };
++    const closed = this.page("closed", closedTabs(), tab => this.entry(tab.title || tab.state.entries.at(-1)?.url, () => {
++      // Match identity again, never the old array index after another restore.
++      const current = closedTabs().find(row => row.closedId === tab.closedId && row.sourceWindowId === tab.sourceWindowId);
++      if (!current) return 2;
++      if (current.sourceClosedId !== undefined) {
++        window.SessionStore.undoClosedTabFromClosedWindow({sourceClosedId:current.sourceClosedId}, tab.closedId, window);
++        return 1;
++      }
++      const source = current.sourceWindowId ? window.SessionStore.getWindowById(current.sourceWindowId) : window;
++      const index = window.SessionStore.getClosedTabDataForWindow(source).findIndex(row => row.closedId === tab.closedId);
++      if (index < 0) return 2;
++      window.SessionWindowUI.undoCloseTab(window, index, current.sourceWindowId);
++      return 1;
++    }));
++    const folderRows = [
++      ["toolbar", places.bookmarks.toolbarGuid, "winui-menu-bookmarks-toolbar"],
++      ["menu", places.bookmarks.menuGuid, "winui-menu-bookmarks-menu"],
++      ["unfiled", places.bookmarks.unfiledGuid, "winui-menu-other-bookmarks"],
++    ].map(([key, guid, label]) => {
++      const path = this.folders.get(key) || [];
++      const current = path.at(-1);
++      const result = places.getFolderContents(current?.guid || guid, false, false);
++      this.results.push(result);
++      const root = result.root;
++      const rows = children(root).filter(node => !places.nodeIsSeparator(node));
++      const items = this.page(key, rows, node => {
++        if (!places.nodeIsFolderOrShortcut(node)) return places.nodeIsURI(node) ? visit(node, root) : null;
++        let item;
++        item = this.entry(node.title || this.label("winui-menu-empty-folder"), () => {
++          if (node.parent !== root) return 2;
++          this.folders.set(key, [...path, {guid:places.getConcreteItemGuid(node), title:node.title}]);
++          this.pages.delete(key);
++          void this.refresh(item.id);
++          return 1;
++        }, true);
++        return item;
++      });
++      if (path.length) {
++        let back;
++        back = this.entry(this.label("winui-menu-back"), () => {
++          this.folders.set(key, path.slice(0,-1)); this.pages.delete(key);
++          void this.refresh(back.id); return 1;
++        }, true);
++        items.unshift(back);
++      }
++      return {id:`bookmarks-list-${key}`, kind:"submenu", label:String(current?.title || this.label(label)).slice(0,256), enabled:true, items};
++    });
++    const recentItems = recent.map(bookmark => this.entry(bookmark.title || bookmark.url.href, (_action, event) => {
++      // Re-read a bookmark before navigating, including its current URI/security policy.
++      const epoch = this.pending;
++      const tab = window.gBrowser.selectedTab;
++      const documentId = window.gBrowser.selectedBrowser?.browsingContext.currentWindowGlobal?.innerWindowId;
++      void places.bookmarks.fetch(bookmark.guid).then(current => {
++        if (!current || current.url.href !== bookmark.url.href || this.closed || !this.enabled ||
++            this.pending !== epoch || window.gDialogBox?.isOpen || window.gBrowser.selectedTab !== tab ||
++            window.gBrowser.selectedBrowser?.browsingContext.currentWindowGlobal?.innerWindowId !== documentId) return;
++        openNode({uri:current.url.href, title:current.title,
++          type:Ci.nsINavHistoryResultNode.RESULT_TYPE_URI, itemId:-1, bookmarkGuid:current.guid},
++          event);
++      }).catch(console.error);
++      return 1;
++    }));
++    const extensionItems = this.page("extensions", extensions, addon => this.entry(addon.name, () => {
++      const epoch = this.pending;
++      const {AddonManager} = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");
++      void AddonManager.getAddonByID(addon.id).then(current => {
++        if (current && !current.hidden && !this.closed && this.enabled && this.pending === epoch && !window.gDialogBox?.isOpen)
++          window.BrowserAddonUI.openAddonsMgr(`addons://detail/${encodeURIComponent(current.id)}`);
++      }).catch(console.error);
++      return 1;
++    }));
++    this.lists = {history:history.length ? history : undefined, closed, recent:recentItems, folders:folderRows, extensions:extensionItems};
++  }
++
 +  model() {
 +    if (!this.enabled) return { enabled: false };
 +    const { window } = this;
@@ -18690,6 +18916,7 @@ index 00000000000..cf801e9140c
 +      const kept = items.filter(Boolean);
 +      return label && kept.length ? { id, kind: "submenu", label, enabled: !dialog, items: kept } : null;
 +    };
++    const lists = this.lists || {};
 +    const items = [
 +      command("new-tab", "appmenuitem-new-tab", { shortcut: this.shortcut("key_newNavigatorTab") }),
 +      command("new-window", "appmenuitem-new-window", { shortcut: this.shortcut("key_newNavigator") }),
@@ -18697,22 +18924,62 @@ index 00000000000..cf801e9140c
 +        { shortcut: this.shortcut("key_privatebrowsing") }),
 +      separator(),
 +      submenu("history", "appmenuitem-history", [
-+        command("history-show-all", "menu-history-show-all-history",
-+          { shortcut: this.shortcut("showAllHistoryKb") }),
-+        command("history-restore-tab", "menu-history-undo-menu", { enabled: !dialog && closedTabs > 0 }),
++        command("history-recent-heading", "winui-menu-recently-visited", {enabled:false}),
++        ...(lists.history || [command("history-empty", "winui-history-empty", {enabled:false})]),
++        separator(),
++        command("history-closed-heading", "winui-menu-recently-closed", {enabled:false}),
++        ...(lists.closed || [command("history-restore-tab", "menu-history-undo-menu", { enabled: !dialog && closedTabs > 0 })]),
++        separator(),
++        command("history-show-all", "winui-menu-show-history", { shortcut: this.shortcut("showAllHistoryKb") }),
 +      ]),
 +      command("downloads", "appmenuitem-downloads", { shortcut: this.shortcut("key_openDownloads") }),
 +      submenu("bookmarks", "menu-bookmarks-menu", [
++        command("bookmarks-recent-heading", "winui-menu-recent-bookmarks", {enabled:false}),
++        ...(lists.recent || []),
++        separator(),
++        ...(lists.folders || []),
++        separator(),
 +        command("bookmarks-bookmark-tab", "toolbar-context-menu-bookmark-selected-tab",
 +          { shortcut: this.shortcut("addBookmarkAsKb") }),
++        command("bookmarks-show-all", "library-bookmarks-menu", { shortcut: this.shortcut("manBookmarkKb") }),
++      ]),
++      submenu("extensions", "appmenuitem-extensions", [
++        command("extensions-add", "winui-menu-add-extension"),
++        command("extensions-manage", "winui-menu-manage-extensions"),
++        separator(),
++        ...(lists.extensions || []),
++      ]),
++      submenu("view", "menu-view", [
++        command("view-sidebar", "winui-menu-show-sidebar", {enabled:false}),
++        command("view-autohide-tabs", "winui-menu-autohide-tabs", {enabled:false}),
 +        submenu("bookmarks-toolbar", "menu-bookmarks-toolbar", [
 +          ["always", "always-show"], ["newtab", "on-new-tab"], ["never", "never-show"],
 +        ].map(([value, suffix]) => command(`bookmarks-toolbar-${value}`,
 +          `toolbar-context-menu-bookmarks-toolbar-${suffix}-2`,
 +          { checked: bookmarksVisibility === value }))),
 +        separator(),
-+        command("bookmarks-show-all", "library-bookmarks-menu", { shortcut: this.shortcut("manBookmarkKb") }),
++        command("zoom-in", "menu-view-full-zoom-enlarge"),
++        command("zoom-out", "menu-view-full-zoom-reduce"),
++        command("zoom-reset", "winui-menu-reset-zoom"),
++        separator(),
++        command("developer-tools", "winui-menu-developer-tools", {enabled:!dialog && this.devtoolsEnabled}),
++        command("inspect-element", "winui-menu-inspect-element", {enabled:!dialog && this.devtoolsEnabled}),
++        command("browser-console", "winui-menu-browser-console", {enabled:!dialog && this.devtoolsEnabled}),
++        this.domCommand("task-manager", "View:AboutProcesses", "menu-tools-task-manager"),
 +      ]),
++      this.domCommand("print", "cmd_print", "appmenuitem-print"),
++      submenu("help", "menu-help", [
++        this.domCommand("help-support", "menu_openHelp", "menu-get-help"),
++        this.domCommand("help-broken-site", "help_reportBrokenSite", "menu-report-broken-site"),
++        this.domCommand("help-feedback", "feedbackPage", "menu-help-share-ideas"),
++        this.domCommand("help-safe-mode", "helpSafeMode", "menu-help-enter-troubleshoot-mode2"),
++        this.domCommand("help-troubleshooting", "troubleShooting", "menu-help-more-troubleshooting-info"),
++        this.domCommand("help-report-deceptive", "menu_HelpPopup_reportPhishingtoolmenu", "menu-help-report-deceptive-site"),
++        this.domCommand("help-not-deceptive", "menu_HelpPopup_reportPhishingErrortoolmenu", "menu-help-not-deceptive"),
++        this.domCommand("help-switch-device", "helpSwitchDevice", "menu-help-switch-device"),
++        this.domCommand("help-about", "aboutName", "menu-about"),
++      ]),
++      command("set-default", "winui-menu-set-default"),
 +      separator(),
 +      command("settings", "appmenuitem-settings"),
 +      // Opened by the native editor itself; Firefox only supplies the label.
@@ -18725,9 +18992,11 @@ index 00000000000..cf801e9140c
 +    ].filter(Boolean);
 +    return {
 +      enabled: true,
++      refreshOnOpen: true,
++      request: this.request || "",
 +      label: this.label("appmenu-menu-button-closed2") || "Menu",
 +      tooltip: this.label("appmenu-menu-button-closed2", "tooltiptext"),
-+      items: tidy(items),
++      items: tidy(items, dialog),
 +      ...(this.updateInstall ? { updateInstall: { ...this.updateInstall } } : {}),
 +      updateLabels: Object.fromEntries(["title", "checking", "current", "available-store",
 +        "available-feed", "unavailable", "failed", "open-store", "open-feed", "close",
@@ -18748,7 +19017,13 @@ index 00000000000..cf801e9140c
 +  // Returns 1 when handled and 2 when refused. The id must name an enabled
 +  // item of the current model.
 +  execute(id, action, event) {
-+    if (!this.enabled || typeof id !== "string" || !PRODUCT_MENU_LIMITS.idPattern.test(id)) return 2;
++    if (this.closed || !this.enabled || typeof id !== "string" || !PRODUCT_MENU_LIMITS.idPattern.test(id)) return 2;
++    if (/^open-[0-9]+-[0-9]+$/.test(id)) {
++      this.pages.clear();
++      this.folders.clear();
++      void this.refresh(id);
++      return 1;
++    }
 +    const update = /^(prepare-update|update-failed)-([0-9]+-[0-9]+)$/.exec(id);
 +    if (update) {
 +      if (update[1] === "update-failed") {
@@ -18765,6 +19040,16 @@ index 00000000000..cf801e9140c
 +    const item = this.find(id);
 +    if (!item || item.kind === "submenu" || !item.enabled) return 2;
 +    const { window } = this;
++    const dynamic = this.actions.get(id);
++    if (dynamic) return dynamic(action, event);
++    const source = {
++      "print":"cmd_print", "task-manager":"View:AboutProcesses",
++      "help-support":"menu_openHelp", "help-troubleshooting":"troubleShooting", "help-about":"aboutName",
++      "help-broken-site":"help_reportBrokenSite", "help-feedback":"feedbackPage", "help-safe-mode":"helpSafeMode",
++      "help-report-deceptive":"menu_HelpPopup_reportPhishingtoolmenu", "help-not-deceptive":"menu_HelpPopup_reportPhishingErrortoolmenu",
++      "help-switch-device":"helpSwitchDevice",
++    }[id];
++    if (source) { window.document.getElementById(source).doCommand(); return 1; }
 +    switch (id) {
 +      case "new-tab": window.BrowserCommands.openTab(); break;
 +      case "new-window": window.OpenBrowserWindow(); break;
@@ -18777,6 +19062,21 @@ index 00000000000..cf801e9140c
 +        break;
 +      case "bookmarks-show-all": window.PlacesCommandHook.showPlacesOrganizer("BookmarksMenu"); break;
 +      case "settings": window.openPreferences(); break;
++      case "extensions-add": window.BrowserAddonUI.openAddonsMgr("addons://list/discover"); break;
++      case "extensions-manage": window.BrowserAddonUI.openAddonsMgr("addons://list/extension"); break;
++      case "set-default":
++        ChromeUtils.importESModule("resource:///modules/ShellService.sys.mjs").ShellService.setAsDefault().catch(console.error);
++        break;
++      case "zoom-in": window.FullZoom.enlarge(); break;
++      case "zoom-out": window.FullZoom.reduce(); break;
++      case "zoom-reset": window.FullZoom.reset(); window.FullZoom.resetScalingZoom(); break;
++      case "developer-tools": return this.host.openMenu("developer-tools", action, event);
++      case "inspect-element":
++      case "browser-console": {
++        const startup = Cc["@mozilla.org/devtools/startup-clh;1"].getService(Ci.nsICommandLineHandler).wrappedJSObject;
++        void startup.onKey(window, id === "inspect-element" ? {toolId:"inspector"} : {id:"browserConsole"});
++        break;
++      }
 +      case "close-window": window.BrowserCommands.tryToCloseWindow(event); break;
 +      case "quit": window.goQuitApplication(event); break;
 +      default: {
@@ -18833,10 +19133,12 @@ index 00000000000..cf801e9140c
 +  }
 +}
 +
-+function tidy(items) {
++function tidy(items, disabled = false) {
 +  const out = [];
-+  for (const item of items) {
-+    if (item.items) item.items = tidy(item.items);
++  for (const original of items) {
++    let item = {...original};
++    if (item.items) item.items = tidy(item.items, disabled);
++    if (disabled && item.kind !== "separator") item = {...item, enabled:false};
 +    if (item.kind === "separator" && (!out.length || out.at(-1).kind === "separator")) continue;
 +    out.push(item);
 +  }
@@ -22027,10 +22329,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..8a9f1fe495f
+index 00000000000..e94a22c3248
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,457 @@
+@@ -0,0 +1,462 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -22334,6 +22636,11 @@ index 00000000000..8a9f1fe495f
 +    } else if (id === "profile") {
 +      if (anchor.hasAttribute("open")) document.getElementById("customizationui-widget-panel")?.hidePopup();
 +      else window.gSync.toggleAccountPanel(anchor, event).catch(console.error);
++    } else if (id === "developer-tools") {
++      const widget = window.CustomizableUI.getWidget("developer-button");
++      const view = widget?.viewId;
++      if (!view) return 2;
++      window.PanelUI.showSubView(view, anchor, event);
 +    } else if (id === "extensions") {
 +      if (["open", "showing"].includes(window.gUnifiedExtensions.panel.state))
 +        window.PanelMultiView.hidePopup(window.gUnifiedExtensions.panel);

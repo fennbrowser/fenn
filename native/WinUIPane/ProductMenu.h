@@ -24,6 +24,7 @@ struct NativeProductMenu {
     Button button{nullptr};
     Microsoft::UI::Xaml::Controls::MenuFlyout flyout{nullptr};
     Object model;
+    winrt::hstring pendingRequest;
     Microsoft::UI::Xaml::Controls::MenuFlyoutItem updateItem{nullptr};
     std::shared_ptr<NativePackageUpdates> updates = std::make_shared<NativePackageUpdates>();
     bool enabled{};
@@ -84,6 +85,9 @@ struct NativeProductMenu {
         auto menu = navigation.GetNamedObject(L"productMenu");
         if (!menu.GetNamedBoolean(L"enabled", false)) return Object();
         if (menu.Stringify().size() > kMaxModelBytes) winrt::throw_hresult(E_INVALIDARG);
+        menu.GetNamedBoolean(L"refreshOnOpen", false);
+        const auto request = menu.GetNamedString(L"request", L"");
+        if (!request.empty() && !ValidId(request)) winrt::throw_hresult(E_INVALIDARG);
         if (menu.HasKey(L"updateInstall")) {
             auto grant = menu.GetNamedObject(L"updateInstall");
             auto token = grant.GetNamedString(L"token");
@@ -192,6 +196,7 @@ struct NativeProductMenu {
     ~NativeProductMenu() { lifetime.reset(); updates->Cancel(); Close(); }
 
     void Close() {
+        pendingRequest = L"";
         keepOpenForCheck = false;
         if (flyout) flyout.Hide();
         flyout = nullptr;
@@ -219,6 +224,10 @@ struct NativeProductMenu {
         if (!label.empty()) Automation::AutomationProperties::SetName(button, label);
         Controls::ToolTipService::SetToolTip(button, winrt::box_value(tooltip.empty() ? label : tooltip));
         RefreshUpdateItem();
+        if (!pendingRequest.empty() && next.GetNamedString(L"request", L"") == pendingRequest) {
+            pendingRequest = L"";
+            Open(true);
+        }
     }
 
     static uint32_t Modifiers() {
@@ -281,6 +290,7 @@ struct NativeProductMenu {
                     return;
                 }
                 if (!dispatch) return;
+                if (std::wstring_view(id).starts_with(L"page-")) pendingRequest = id;
                 dispatch((std::wstring(L"product:") + id.c_str()).c_str(), Modifiers(), button);
             };
             MenuFlyoutItemBase base{nullptr};
@@ -313,7 +323,7 @@ struct NativeProductMenu {
         }
     }
 
-    void Open() {
+    void Open(bool refreshed = false) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         if (flyout && flyout.IsOpen()) {
@@ -321,6 +331,13 @@ struct NativeProductMenu {
             return;
         }
         if (!enabled || !model || model.Size() == 0) return;
+        if (!refreshed && model.GetNamedBoolean(L"refreshOnOpen", false) && dispatch) {
+            if (!pendingRequest.empty()) { pendingRequest = L""; return; }
+            static uint64_t serial = 0;
+            pendingRequest = L"open-" + winrt::to_hstring(GetTickCount64()) + L"-" + winrt::to_hstring(++serial);
+            dispatch((std::wstring(L"product:") + pendingRequest.c_str()).c_str(), Modifiers(), button);
+            return;
+        }
         flyout = MenuFlyout();
         keepOpenForCheck = false;
         flyout.Closing([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
