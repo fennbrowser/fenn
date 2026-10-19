@@ -525,10 +525,13 @@ test("extension rows invoke toolbar actions with the original bounds and modifie
 });
 
 
-test("History publishes cached favicons for six visited sites and six closed tabs alongside six extensions", async()=>{
+test("all collection pages publish up to 42 cached images within the menu budget", async()=>{
   const f=listFixture(6), loaded=[];
   f.data.PlacesUtils.history.executeQuery=()=>({root:f.makeRoot(Array.from({length:6},(_,i)=>({title:`Visited ${i}`,uri:`https://site-${i}.test/`,icon:`cached-favicon:https://site-${i}.test/icon.png`})))});
   f.setClosed(Array.from({length:6},(_,i)=>({title:`Closed ${i}`,closedId:i,closedAt:i,image:`https://closed-${i}.test/icon.png`})));
+  f.data.recent=Array.from({length:6},(_,i)=>({guid:`recent-${i}`,title:`Recent ${i}`,url:new URL(`https://recent-${i}.test/`)}));
+  for(const key of ["toolbar","menu","unfiled"])
+    f.folderData.set(key,Array.from({length:6},(_,i)=>({title:`${key} ${i}`,uri:`https://${key}-${i}.test/`,icon:`cached-favicon:https://${key}-${i}.test/icon.png`})));
   const pixels={width:32,height:32,pixels:"204080ff".repeat(1024)};
   f.menu.loadFavicon=async icon=>{loaded.push(icon);return pixels;};
   f.menu.loadExtensionIcon=async()=>pixels;
@@ -536,9 +539,31 @@ test("History publishes cached favicons for six visited sites and six closed tab
   assert.equal(f.menu.lists.history.filter(item=>item.image).length,6);
   assert.equal(f.menu.lists.closed.filter(item=>item.image).length,6);
   assert.equal(f.menu.lists.extensions.filter(item=>item.image).length,6);
-  assert.equal(loaded.length,12);
-  assert.ok(JSON.stringify(f.menu.model()).length<262144);
-  assert.ok(!f.menu.lists.folders.some(folder=>folder.items.some(item=>item.image)),"bookmark rendering stays unchanged");
+  assert.equal(f.menu.lists.recent.filter(item=>item.image).length,6);
+  for(const folder of f.menu.lists.folders)assert.equal(folder.items.filter(item=>item.image).length,6);
+  assert.equal(loaded.length,36);
+  assert.ok(loaded.includes("page-icon:https://recent-0.test/"));
+  assert.ok(JSON.stringify(f.menu.model()).length<524288);
+});
+
+test("bookmark paging and folder navigation decode only the current page and tolerate missing icons", async()=>{
+  const f=listFixture(10),loaded=[];
+  for(const rows of f.folderData.values())for(const row of rows)if(row.uri)row.icon=`page-icon:${row.uri}`;
+  f.menu.loadFavicon=async icon=>{loaded.push(icon);return icon.endsWith("/nested") ? null : {width:1,height:1,pixels:"204080ff"};};
+  await f.menu.refresh("open-bookmark-icons");
+  const toolbar=()=>f.menu.lists.folders.find(row=>row.id==="bookmarks-list-toolbar");
+  assert.equal(toolbar().items.filter(item=>item.image).length,5,"folder rows stay text-only");
+  assert.ok(!loaded.includes("page-icon:https://example.com/9"),"off-page bookmarks are not decoded");
+  assert.equal(f.menu.execute(toolbar().items.find(item=>item.label==="next").id,{},{}),1);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.ok(toolbar().items.find(item=>item.label==="Bookmark 9").image);
+  f.menu.pages.delete("toolbar");await f.menu.refresh("open-bookmark-folder");
+  f.menu.execute(toolbar().items.find(item=>item.label==="Nested folder").id,{},{});
+  await new Promise(resolve=>setImmediate(resolve));
+  const nested=toolbar().items.find(item=>item.label==="Nested bookmark");
+  assert.ok(nested && !nested.image,"a failed favicon keeps the bookmark available");
+  assert.equal(f.menu.execute(nested.id,{},{}),1);
+  assert.equal(f.calls.at(-1)[0],"visit");
 });
 
 test("favicon decoding uses Firefox's cache-only URL resolver and tolerates missing/broken artwork", async()=>{
@@ -553,18 +578,19 @@ test("favicon decoding uses Firefox's cache-only URL resolver and tolerates miss
   assert.equal(await f.menu.loadFavicon("bad"),null);
 });
 
-test("late history favicons cannot attach to a replaced request or a closed menu", async()=>{
+test("late history and bookmark favicons cannot attach to a replaced request or a closed menu", async()=>{
   for(const cancel of [f=>f.menu.refresh("open-favicons-new"),f=>f.menu.close()]){
-    const f=listFixture(0);f.setClosed([]);let finish;
+    const f=listFixture(0);f.setClosed([]);const finishes=[];
     f.data.PlacesUtils.history.executeQuery=()=>({root:f.makeRoot([{title:"Old site",uri:"https://old.test/",icon:"cached-favicon:https://old.test/icon.png"}])});
-    f.menu.loadFavicon=()=>new Promise(resolve=>finish=resolve);
+    f.menu.loadFavicon=()=>new Promise(resolve=>finishes.push(resolve));
     const pending=f.menu.refresh("open-favicons-old");
     await new Promise(resolve=>setImmediate(resolve));
     f.menu.loadFavicon=async()=>null;await cancel(f);
     const invalidations=f.calls.filter(call=>call[0]==="invalidate").length;
-    finish({width:1,height:1,pixels:"204080ff"});await pending;
+    for(const finish of finishes)finish({width:1,height:1,pixels:"204080ff"});await pending;
     assert.notEqual(f.menu.request,"open-favicons-old");
     assert.equal(f.calls.filter(call=>call[0]==="invalidate").length,invalidations);
     assert.ok(!f.menu.lists?.history.some(item=>item.image));
+    assert.ok(!f.menu.lists?.recent.some(item=>item.image));
   }
 });

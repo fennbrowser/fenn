@@ -18639,10 +18639,10 @@ index 00000000000..995582041f0
 +}
 diff --git a/browser/base/content/WinUIProductMenu.sys.mjs b/browser/base/content/WinUIProductMenu.sys.mjs
 new file mode 100644
-index 00000000000..11f45dd712a
+index 00000000000..1dc7b4fee7a
 --- /dev/null
 +++ b/browser/base/content/WinUIProductMenu.sys.mjs
-@@ -0,0 +1,593 @@
+@@ -0,0 +1,604 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18788,7 +18788,7 @@ index 00000000000..11f45dd712a
 +    if (!icon || !this.host.encodePixels) return null;
 +    try {
 +      // Match Firefox's recently-closed menu: never fetch a site's remote
-+      // favicon just because the user opened History.
++      // favicon just because the user opened a menu.
 +      return await this.loadIcon(this.window.PlacesUIUtils.getImageURL(icon));
 +    } catch {
 +      return null;
@@ -18944,7 +18944,12 @@ index 00000000000..11f45dd712a
 +      const root = result.root;
 +      const rows = children(root).filter(node => !places.nodeIsSeparator(node));
 +      const items = this.page(key, rows, node => {
-+        if (!places.nodeIsFolderOrShortcut(node)) return places.nodeIsURI(node) ? visit(node, root) : null;
++        if (!places.nodeIsFolderOrShortcut(node)) {
++          if (!places.nodeIsURI(node)) return null;
++          const item = visit(node, root);
++          if (node.icon) icons.push({item, icon:node.icon});
++          return item;
++        }
 +        let item;
 +        item = this.entry(node.title || this.label("winui-menu-empty-folder"), () => {
 +          if (node.parent !== root) return 2;
@@ -18965,21 +18970,27 @@ index 00000000000..11f45dd712a
 +      }
 +      return {id:`bookmarks-list-${key}`, kind:"submenu", label:String(current?.title || this.label(label)).slice(0,256), enabled:true, items};
 +    });
-+    const recentItems = recent.map(bookmark => this.entry(bookmark.title || bookmark.url.href, (_action, event) => {
-+      // Re-read a bookmark before navigating, including its current URI/security policy.
-+      const epoch = this.pending;
-+      const tab = window.gBrowser.selectedTab;
-+      const documentId = window.gBrowser.selectedBrowser?.browsingContext.currentWindowGlobal?.innerWindowId;
-+      void places.bookmarks.fetch(bookmark.guid).then(current => {
-+        if (!current || current.url.href !== bookmark.url.href || this.closed || !this.enabled ||
-+            this.pending !== epoch || window.gDialogBox?.isOpen || window.gBrowser.selectedTab !== tab ||
-+            window.gBrowser.selectedBrowser?.browsingContext.currentWindowGlobal?.innerWindowId !== documentId) return;
-+        openNode({uri:current.url.href, title:current.title,
-+          type:Ci.nsINavHistoryResultNode.RESULT_TYPE_URI, itemId:-1, bookmarkGuid:current.guid},
-+          event);
-+      }).catch(console.error);
-+      return 1;
-+    }));
++    const recentItems = recent.map(bookmark => {
++      const item = this.entry(bookmark.title || bookmark.url.href, (_action, event) => {
++        // Re-read a bookmark before navigating, including its current URI/security policy.
++        const epoch = this.pending;
++        const tab = window.gBrowser.selectedTab;
++        const documentId = window.gBrowser.selectedBrowser?.browsingContext.currentWindowGlobal?.innerWindowId;
++        void places.bookmarks.fetch(bookmark.guid).then(current => {
++          if (!current || current.url.href !== bookmark.url.href || this.closed || !this.enabled ||
++              this.pending !== epoch || window.gDialogBox?.isOpen || window.gBrowser.selectedTab !== tab ||
++              window.gBrowser.selectedBrowser?.browsingContext.currentWindowGlobal?.innerWindowId !== documentId) return;
++          openNode({uri:current.url.href, title:current.title,
++            type:Ci.nsINavHistoryResultNode.RESULT_TYPE_URI, itemId:-1, bookmarkGuid:current.guid},
++            event);
++        }).catch(console.error);
++        return 1;
++      });
++      // Recent bookmark records have no icon field. page-icon resolves the
++      // saved artwork by page URI in Places without a network request.
++      icons.push({item, icon:`page-icon:${bookmark.url.href}`});
++      return item;
++    });
 +    const extensionItems = this.page("extensions", extensions, addon => {
 +      const item = this.entry(addon.name, (action, event) =>
 +        this.host.activateExtension?.(addon.id, action, event) || 2);

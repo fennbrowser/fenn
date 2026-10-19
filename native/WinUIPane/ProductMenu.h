@@ -20,10 +20,11 @@ struct NativeProductMenu {
     static constexpr uint32_t kMaxItems = 128;
     static constexpr size_t kMaxLabel = 256;
     static constexpr size_t kMaxShortcut = 64;
-    static constexpr size_t kMaxModelBytes = 262144;
+    static constexpr size_t kMaxModelBytes = 524288;
 
-    // Six extensions, six visited sites and six closed tabs, each at 32x32.
-    static constexpr NativeJson::ImageLimits kMenuImageLimits{32, 18 * 32 * 32};
+    // Six each: extensions, visited sites, closed tabs, recent bookmarks,
+    // and the current page of each of the three bookmark collections.
+    static constexpr NativeJson::ImageLimits kMenuImageLimits{32, 42 * 32 * 32};
 
     Button button{nullptr};
     Microsoft::UI::Xaml::Controls::MenuFlyout flyout{nullptr};

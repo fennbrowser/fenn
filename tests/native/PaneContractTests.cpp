@@ -5789,13 +5789,23 @@ int wmain(int argc, wchar_t** argv) {
                 icon.SetNamedValue(L"width", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(33));
                 Require(FAILED(api.syncAddress(first, productMenu(artwork.Stringify().c_str(),9).c_str())), "reject oversized extension icons");
                 auto crowded = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"enabled":true,"items":[]})");
-                auto entries = crowded.GetNamedArray(L"items");
-                for (int i=0; i<19; ++i) {
-                    auto entry = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"kind":"item","label":"Extension","image":{"width":32,"height":32}})");
-                    entry.SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"entry-"+winrt::to_hstring(i)));
-                    entry.GetNamedObject(L"image").SetNamedValue(L"pixels", winrt::Windows::Data::Json::JsonValue::CreateStringValue(std::wstring(8192,L'0')));
-                    entries.Append(entry);
+                auto groups = crowded.GetNamedArray(L"items");
+                for (int group=0; group<2; ++group) {
+                    auto submenu = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"kind":"submenu","label":"Collection","items":[]})");
+                    submenu.SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"collection-"+winrt::to_hstring(group)));
+                    auto entries = submenu.GetNamedArray(L"items");
+                    for (int i=0; i<21; ++i) {
+                        auto entry = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"kind":"item","label":"Site","image":{"width":32,"height":32}})");
+                        entry.SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"entry-"+winrt::to_hstring(group*21+i)));
+                        entry.GetNamedObject(L"image").SetNamedValue(L"pixels", winrt::Windows::Data::Json::JsonValue::CreateStringValue(std::wstring(8192,L'0')));
+                        entries.Append(entry);
+                    }
+                    groups.Append(submenu);
                 }
+                auto entries = groups.GetObjectAt(1).GetNamedArray(L"items");
+                auto overflow = winrt::Windows::Data::Json::JsonObject::Parse(entries.GetObjectAt(0).Stringify());
+                overflow.SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"entry-overflow"));
+                entries.Append(overflow);
                 Require(FAILED(api.syncAddress(first, productMenu(crowded.Stringify().c_str(),9).c_str())), "reject aggregate product-menu icon pixel overflow");
                 Require(SUCCEEDED(api.syncAddress(first, productMenu(LR"({"enabled":false})",9).c_str())), "disable the product menu");
             }
