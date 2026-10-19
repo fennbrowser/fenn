@@ -106,6 +106,15 @@ struct NativePackageUpdates : std::enable_shared_from_this<NativePackageUpdates>
         result->status = L"downloading";
         if (result->progress) result->progress();
     }
+    // Keep the Windows cost flags independent: an unrestricted plan can still
+    // report roaming or an exceeded allowance. The interface also lets the
+    // native contract fixture cover provider-only states without faking a modem.
+    static bool DeferFeedDownload(winrt::Windows::Networking::Connectivity::IConnectionCost const& cost) {
+        using winrt::Windows::Networking::Connectivity::NetworkCostType;
+        return cost.Roaming() || cost.OverDataLimit() ||
+            cost.NetworkCostType() == NetworkCostType::Fixed ||
+            cost.NetworkCostType() == NetworkCostType::Variable;
+    }
     // These operations are Windows servicing APIs, not Firefox's updater.
     // Staging never registers the package or closes a running browser.
     static Action Download(HWND, std::shared_ptr<Result> result) {
@@ -124,10 +133,7 @@ struct NativePackageUpdates : std::enable_shared_from_this<NativePackageUpdates>
             if (!local) {
                 auto profile = Networking::Connectivity::NetworkInformation::GetInternetConnectionProfile();
                 if (profile) {
-                    auto cost = profile.GetConnectionCost();
-                    if (cost.Roaming() || cost.OverDataLimit() ||
-                        cost.NetworkCostType() == Networking::Connectivity::NetworkCostType::Fixed ||
-                        cost.NetworkCostType() == Networking::Connectivity::NetworkCostType::Variable) co_return;
+                    if (DeferFeedDownload(profile.GetConnectionCost())) co_return;
                 }
             }
             Web::Http::Filters::HttpBaseProtocolFilter filter;

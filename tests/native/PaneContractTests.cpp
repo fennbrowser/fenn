@@ -3867,8 +3867,32 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
     return bounds;
 }
 
+struct UpdateCostFixture : winrt::implements<UpdateCostFixture,
+    winrt::Windows::Networking::Connectivity::IConnectionCost> {
+    using CostType = winrt::Windows::Networking::Connectivity::NetworkCostType;
+    CostType type;
+    bool roaming, overLimit;
+    UpdateCostFixture(CostType value, bool roamingValue, bool overLimitValue)
+        : type(value), roaming(roamingValue), overLimit(overLimitValue) {}
+    CostType NetworkCostType() const { return type; }
+    bool Roaming() const { return roaming; }
+    bool OverDataLimit() const { return overLimit; }
+    bool ApproachingDataLimit() const { return false; }
+};
+
 static void CheckPackageUpdates(HWND owner) {
     using Updates = NativePackageUpdates;
+    using CostType = winrt::Windows::Networking::Connectivity::NetworkCostType;
+    for (auto type : {CostType::Unknown, CostType::Unrestricted, CostType::Fixed, CostType::Variable}) {
+        auto plain = winrt::make<UpdateCostFixture>(type, false, false);
+        Require(Updates::DeferFeedDownload(plain) == (type == CostType::Fixed || type == CostType::Variable),
+                "fixed and variable plans defer optional HTTPS update staging; ordinary unknown/unrestricted preserve existing behavior");
+        for (auto flags : {std::pair{true, false}, std::pair{false, true}, std::pair{true, true}}) {
+            auto flagged = winrt::make<UpdateCostFixture>(type, flags.first, flags.second);
+            Require(Updates::DeferFeedDownload(flagged),
+                    "roaming and over-limit independently defer HTTPS staging even on an unrestricted plan");
+        }
+    }
     using namespace winrt::Microsoft::UI::Xaml;
     Require(Updates::Select(true, true) == Updates::Source::Store &&
             Updates::Select(true, false) == Updates::Source::Store &&
