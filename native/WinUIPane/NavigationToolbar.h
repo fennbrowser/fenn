@@ -218,7 +218,7 @@ struct NativeNavigationToolbar {
     void Attach(Microsoft::UI::Xaml::Controls::Grid const& grid,
                 Microsoft::UI::Xaml::FrameworkElement const& editor,
                 Microsoft::UI::Xaml::Controls::Grid const& background) {
-        host=grid;address=editor;surface=background;
+        host=grid;address=editor;surface=background;customization.toolbar=host;
         for(size_t i=0;i<indicatorButtons.size();i++) {
             auto button=CreateButton(0,Controls::Symbol::Permissions);
             if(i==0) { button.Width(NAN); button.Padding(Thickness{8,0,8,0}); }
@@ -329,6 +329,7 @@ struct NativeNavigationToolbar {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         if(!host || preview.changing)return;
+        if(customization.editing && !customization.dragging)customization.PlacePopup();
         if(preview.active) {
             if(visible && customization.dragging && customization.editing && state.revision==preview.revision &&
                 host.XamlRoot().Size().Width==preview.width)return;

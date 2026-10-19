@@ -20,6 +20,10 @@ struct NativeToolbarCustomization {
     std::map<winrt::hstring,Microsoft::UI::Xaml::Controls::TextBlock> textBlocks;
     Button reset{nullptr}, undoReset{nullptr};
     Button anchor{nullptr};
+    HWND ownerHwnd{};
+    Microsoft::UI::Xaml::FrameworkElement toolbar{nullptr};
+    double popupAnchorX{};
+    bool placingPopup{};
     Microsoft::UI::Xaml::Controls::MenuFlyout itemMenu{nullptr};
     bool itemMenuOpen{};
     std::map<winrt::hstring,Microsoft::UI::Xaml::FrameworkElement> placedControls;
@@ -254,6 +258,47 @@ struct NativeToolbarCustomization {
         activate(command.c_str(),0,anchor);
     }
     void Buttons() {reset.IsEnabled(state.canReset);undoReset.IsEnabled(state.canUndoReset);}
+    bool PlacePopup(bool capture=false) {
+        if(placingPopup || !popup || !popup.Child() || !anchor || !toolbar || !anchor.XamlRoot() || !ownerHwnd)return false;
+        auto window=GetAncestor(ownerHwnd,GA_ROOT);
+        RECT client{};
+        if(!window || !GetClientRect(window,&client))return false;
+        MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&client),2);
+        auto converter=anchor.XamlRoot().ContentIsland().CoordinateConverter();
+        auto start=converter.ConvertScreenToLocal(winrt::Windows::Graphics::PointInt32{client.left,client.top});
+        auto end=converter.ConvertScreenToLocal(winrt::Windows::Graphics::PointInt32{client.right,client.bottom});
+        auto row=toolbar.TransformToVisual(nullptr).TransformBounds({0,0,float(toolbar.ActualWidth()),float(toolbar.ActualHeight())});
+        if(capture) {
+            POINT cursor{};
+            if(GetCursorPos(&cursor) && PtInRect(&client,cursor))
+                popupAnchorX=converter.ConvertScreenToLocal(winrt::Windows::Graphics::PointInt32{cursor.x,cursor.y}).X;
+            else popupAnchorX=anchor.TransformToVisual(nullptr).TransformPoint({0,0}).X;
+        }
+        placingPopup=true;
+        struct Reset { bool& flag; ~Reset(){flag=false;} } placingGuard{placingPopup};
+        const double left=start.X+8,right=std::max(left,double(end.X)-8);
+        const double top=std::max(double(start.Y)+8,double(row.Y+row.Height)+4);
+        const double height=std::max(0.0,double(end.Y)-8-top);
+        auto child=popup.Child().as<Microsoft::UI::Xaml::FrameworkElement>();
+        if(child.MaxWidth()!=right-left)child.MaxWidth(right-left);
+        if(child.MaxHeight()!=height)child.MaxHeight(height);
+        auto presenter=child.as<Microsoft::UI::Xaml::Controls::FlyoutPresenter>();
+        presenter.ApplyTemplate();
+        auto padding=presenter.Padding(),border=presenter.BorderThickness();
+        auto content=presenter.Content().as<Microsoft::UI::Xaml::FrameworkElement>();
+        content.MaxHeight(std::max(0.0,height-padding.Top-padding.Bottom-border.Top-border.Bottom));
+        child.Measure({float(right-left),float(height)});
+        const double width=child.DesiredSize().Width;
+        const bool rtl=child.FlowDirection()==Microsoft::UI::Xaml::FlowDirection::RightToLeft;
+        const double x=std::clamp(popupAnchorX-(rtl?width:0),left,std::max(left,right-width));
+        // This unparented Popup uses XamlRoot-local offsets. Keep WinUI's own
+        // surface/scrolling; allow it outside the 40-DIP island, inside Firefox.
+        popup.PlacementTarget(nullptr);
+        popup.DesiredPlacement(Microsoft::UI::Xaml::Controls::Primitives::PopupPlacementMode::Auto);
+        if(popup.HorizontalOffset()!=x)popup.HorizontalOffset(x);
+        if(popup.VerticalOffset()!=top)popup.VerticalOffset(top);
+        return height>0;
+    }
     void PopulatePalette() {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
@@ -341,7 +386,8 @@ struct NativeToolbarCustomization {
         if(!state.revision) return;
         anchor=button;
         if(!popup) {
-            popup=Primitives::Popup();popup.ShouldConstrainToRootBounds(false);popup.IsLightDismissEnabled(false);StackPanel content;content.Width(280);content.Spacing(8);
+            popup=Primitives::Popup();popup.ShouldConstrainToRootBounds(false);popup.IsLightDismissEnabled(false);Grid content;content.Width(280);content.RowSpacing(8);
+            for(auto height:{GridLengthHelper::Auto(),GridLengthHelper::FromValueAndType(1,GridUnitType::Star),GridLengthHelper::Auto()}){RowDefinition row;row.Height(height);content.RowDefinitions().Append(row);}
             auto text=[&](wchar_t const* key){TextBlock t;textBlocks[key]=t;t.Text(state.labels.at(key));t.TextWrapping(TextWrapping::Wrap);content.Children().Append(t);};
             text(L"title");
             available=GridView();available.ItemsSource(availableItems);available.MaxHeight(240);available.MinHeight(40);available.CanDragItems(true);available.AllowDrop(true);
@@ -349,8 +395,8 @@ struct NativeToolbarCustomization {
             // built-in GridView keyboard, selection and drag behavior.
             available.ItemsPanel(Markup::XamlReader::Load(LR"(<ItemsPanelTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><VariableSizedWrapGrid Orientation="Horizontal" ItemWidth="36" ItemHeight="36" MaximumRowsOrColumns="7"/></ItemsPanelTemplate>)").as<ItemsPanelTemplate>());
             Automation::AutomationProperties::SetAutomationId(available,L"FennCustomizeAvailable");
-            Automation::AutomationProperties::SetName(available,state.labels.at(L"available"));content.Children().Append(available);
-            StackPanel defaults;defaults.Orientation(Orientation::Horizontal);defaults.Spacing(8);content.Children().Append(defaults);
+            Automation::AutomationProperties::SetName(available,state.labels.at(L"available"));Grid::SetRow(available,1);content.Children().Append(available);
+            StackPanel defaults;defaults.Orientation(Orientation::Horizontal);defaults.Spacing(8);Grid::SetRow(defaults,2);content.Children().Append(defaults);
             auto make=[&](wchar_t const* key){Button b;b.Content(winrt::box_value(state.labels.at(key)));Automation::AutomationProperties::SetAutomationId(b,winrt::hstring(L"FennCustomize-")+key);defaults.Children().Append(b);return b;};
             reset=make(L"reset");undoReset=make(L"undo-reset");
             auto alive=std::weak_ptr<int>(lifetime);
@@ -393,6 +439,7 @@ struct NativeToolbarCustomization {
             available.DragOver([this,alive](auto const&,auto const& args){if(!alive.expired() && Accept(args,true))args.Handled(true);});
             available.Drop([this,alive](auto const&,auto const& args){if(!alive.expired())DropAt(args,{},true);});
             FlyoutPresenter presenter;presenter.Content(content);presenter.IsTabStop(true);presenter.UseSystemFocusVisuals(false);
+            presenter.SizeChanged([this,alive](auto const&,auto const&){if(!alive.expired() && popup.IsOpen() && !dragging)PlacePopup();});
             Automation::AutomationProperties::SetAutomationId(presenter,L"FennCustomizePopup");
             Automation::AutomationProperties::SetName(presenter,state.labels.at(L"title"));
             presenter.PreviewKeyDown([this,alive](auto const&,auto const& args){
@@ -401,8 +448,7 @@ struct NativeToolbarCustomization {
             popup.Child(presenter);
         }
         popup.Child().as<FrameworkElement>().FlowDirection(button.FlowDirection());
-        popup.XamlRoot(button.XamlRoot());popup.PlacementTarget(button);
-        popup.DesiredPlacement(button.FlowDirection()==FlowDirection::RightToLeft?Primitives::PopupPlacementMode::BottomEdgeAlignedLeft:Primitives::PopupPlacementMode::BottomEdgeAlignedRight);
-        Refresh();popup.IsOpen(true);
+        popup.XamlRoot(button.XamlRoot());
+        Refresh();if(PlacePopup(true))popup.IsOpen(true);
     }
 };

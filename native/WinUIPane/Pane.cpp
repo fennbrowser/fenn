@@ -462,6 +462,7 @@ struct Pane {
         addressSource = nullptr;
     }
     void WireAddress() {
+        address->navigation->customization.ownerHwnd=parent;
         windowDrag.windowCaption.SetToolbarSurface(address->toolbarSurface);
         if (strip) {
             auto menuButton = address->navigation->productMenu.button;
