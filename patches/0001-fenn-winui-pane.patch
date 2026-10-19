@@ -18639,10 +18639,10 @@ index 00000000000..995582041f0
 +}
 diff --git a/browser/base/content/WinUIProductMenu.sys.mjs b/browser/base/content/WinUIProductMenu.sys.mjs
 new file mode 100644
-index 00000000000..683680b03e4
+index 00000000000..11f45dd712a
 --- /dev/null
 +++ b/browser/base/content/WinUIProductMenu.sys.mjs
-@@ -0,0 +1,567 @@
+@@ -0,0 +1,593 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18774,20 +18774,37 @@ index 00000000000..683680b03e4
 +      .sort((a,b) => a.name.localeCompare(b.name))};
 +  }
 +
-+  // Decode in Gecko, just as pinned toolbar extensions do. Never send URLs or
-+  // let native code fetch extension resources. A broken icon must not hold the
-+  // menu open handshake indefinitely.
 +  async loadExtensionIcon(addon) {
 +    if (!this.host.encodePixels) return null;
++    try {
++      const {AddonManager} = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");
++      return await this.loadIcon(AddonManager.getPreferredIconURL(addon, 32, this.window));
++    } catch {
++      return null;
++    }
++  }
++
++  async loadFavicon(icon) {
++    if (!icon || !this.host.encodePixels) return null;
++    try {
++      // Match Firefox's recently-closed menu: never fetch a site's remote
++      // favicon just because the user opened History.
++      return await this.loadIcon(this.window.PlacesUIUtils.getImageURL(icon));
++    } catch {
++      return null;
++    }
++  }
++
++  // Gecko decodes bounded menu artwork; native code never fetches URLs.
++  // A broken icon must not hold the open handshake indefinitely.
++  async loadIcon(url) {
++    if (!url || !this.host.encodePixels) return null;
 +    const image = new this.window.Image();
 +    let timer;
 +    try {
-+      const {AddonManager} = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");
-+      const url = AddonManager.getPreferredIconURL(addon, 32, this.window);
-+      if (!url) return null;
 +      image.src = url;
 +      await Promise.race([image.decode(), new Promise((_, reject) => {
-+        timer = this.window.setTimeout(() => reject(new Error("Extension icon timeout")), 1500);
++        timer = this.window.setTimeout(() => reject(new Error("Menu icon timeout")), 1500);
 +      })]);
 +      if (this.closed || !this.enabled || !image.naturalWidth || !image.naturalHeight) return null;
 +      const canvas = this.window.document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
@@ -18812,7 +18829,8 @@ index 00000000000..683680b03e4
 +      if (this.closed || !this.enabled || this.pending !== request) return;
 +      this.window.buildHelpMenu?.();
 +      const icons = this.buildLists(data);
-+      const decoded = await Promise.all(icons.map(({addon}) => this.loadExtensionIcon(addon)));
++      const decoded = await Promise.all(icons.map(({addon, icon}) =>
++        addon ? this.loadExtensionIcon(addon) : this.loadFavicon(icon)));
 +      if (this.closed || !this.enabled || this.pending !== request) return;
 +      for (let i = 0; i < icons.length; i++) {
 +        if (decoded[i]) icons[i].item.image = decoded[i];
@@ -18854,6 +18872,7 @@ index 00000000000..683680b03e4
 +
 +  buildLists({PlacesUtils: places, recent, extensions}) {
 +    const {window} = this;
++    const icons = [];
 +    const openNode = (node, event) => {
 +      const {BrowserUtils} = ChromeUtils.importESModule("resource://gre/modules/BrowserUtils.sys.mjs");
 +      let where = BrowserUtils.whereToOpenLink(event, false, true);
@@ -18883,7 +18902,11 @@ index 00000000000..683680b03e4
 +    this.results.push(historyResult);
 +    const historyRoot = historyResult.root;
 +    historyRoot.containerOpen = true;
-+    const history = children(historyRoot).map(node => visit(node, historyRoot));
++    const history = children(historyRoot).map(node => {
++      const item = visit(node, historyRoot);
++      if (node.icon) icons.push({item, icon:node.icon});
++      return item;
++    });
 +    const closedTabs = () => {
 +      const rows = window.SessionStore.getClosedTabData({sourceWindow:window});
 +      if (!window.PrivateBrowsingUtils.isWindowPrivate(window) &&
@@ -18891,20 +18914,24 @@ index 00000000000..683680b03e4
 +        rows.push(...window.SessionStore.getClosedTabDataFromClosedWindows());
 +      return rows.sort((a,b) => b.closedAt - a.closedAt);
 +    };
-+    const closed = this.page("closed", closedTabs(), tab => this.entry(tab.title || tab.state.entries.at(-1)?.url, () => {
-+      // Match identity again, never the old array index after another restore.
-+      const current = closedTabs().find(row => row.closedId === tab.closedId && row.sourceWindowId === tab.sourceWindowId);
-+      if (!current) return 2;
-+      if (current.sourceClosedId !== undefined) {
-+        window.SessionStore.undoClosedTabFromClosedWindow({sourceClosedId:current.sourceClosedId}, tab.closedId, window);
++    const closed = this.page("closed", closedTabs(), tab => {
++      const item = this.entry(tab.title || tab.state.entries.at(-1)?.url, () => {
++        // Match identity again, never the old array index after another restore.
++        const current = closedTabs().find(row => row.closedId === tab.closedId && row.sourceWindowId === tab.sourceWindowId);
++        if (!current) return 2;
++        if (current.sourceClosedId !== undefined) {
++          window.SessionStore.undoClosedTabFromClosedWindow({sourceClosedId:current.sourceClosedId}, tab.closedId, window);
++          return 1;
++        }
++        const source = current.sourceWindowId ? window.SessionStore.getWindowById(current.sourceWindowId) : window;
++        const index = window.SessionStore.getClosedTabDataForWindow(source).findIndex(row => row.closedId === tab.closedId);
++        if (index < 0) return 2;
++        window.SessionWindowUI.undoCloseTab(window, index, current.sourceWindowId);
 +        return 1;
-+      }
-+      const source = current.sourceWindowId ? window.SessionStore.getWindowById(current.sourceWindowId) : window;
-+      const index = window.SessionStore.getClosedTabDataForWindow(source).findIndex(row => row.closedId === tab.closedId);
-+      if (index < 0) return 2;
-+      window.SessionWindowUI.undoCloseTab(window, index, current.sourceWindowId);
-+      return 1;
-+    }));
++      });
++      if (tab.image) icons.push({item, icon:tab.image});
++      return item;
++    });
 +    const folderRows = [
 +      ["toolbar", places.bookmarks.toolbarGuid, "winui-menu-bookmarks-toolbar"],
 +      ["menu", places.bookmarks.menuGuid, "winui-menu-bookmarks-menu"],
@@ -18953,7 +18980,6 @@ index 00000000000..683680b03e4
 +      }).catch(console.error);
 +      return 1;
 +    }));
-+    const icons = [];
 +    const extensionItems = this.page("extensions", extensions, addon => {
 +      const item = this.entry(addon.name, (action, event) =>
 +        this.host.activateExtension?.(addon.id, action, event) || 2);

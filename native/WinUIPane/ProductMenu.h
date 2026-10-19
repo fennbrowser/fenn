@@ -20,7 +20,10 @@ struct NativeProductMenu {
     static constexpr uint32_t kMaxItems = 128;
     static constexpr size_t kMaxLabel = 256;
     static constexpr size_t kMaxShortcut = 64;
-    static constexpr size_t kMaxModelBytes = 131072;
+    static constexpr size_t kMaxModelBytes = 262144;
+
+    // Six extensions, six visited sites and six closed tabs, each at 32x32.
+    static constexpr NativeJson::ImageLimits kMenuImageLimits{32, 18 * 32 * 32};
 
     Button button{nullptr};
     Microsoft::UI::Xaml::Controls::MenuFlyout flyout{nullptr};
@@ -61,7 +64,7 @@ struct NativeProductMenu {
             const auto kind = item.GetNamedString(L"kind");
             if (kind == L"separator") continue;
             if (kind != L"item" && kind != L"submenu") winrt::throw_hresult(E_INVALIDARG);
-            NativeJson::ValidateImage(item, pixels, NativeJson::kIconImageLimits);
+            NativeJson::ValidateImage(item, pixels, kMenuImageLimits);
             const auto id = item.GetNamedString(L"id");
             if (!ValidId(id) || !ids.insert(id).second) winrt::throw_hresult(E_INVALIDARG);
             const auto label = item.GetNamedString(L"label");

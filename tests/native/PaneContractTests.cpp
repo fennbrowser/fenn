@@ -5790,13 +5790,13 @@ int wmain(int argc, wchar_t** argv) {
                 Require(FAILED(api.syncAddress(first, productMenu(artwork.Stringify().c_str(),9).c_str())), "reject oversized extension icons");
                 auto crowded = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"enabled":true,"items":[]})");
                 auto entries = crowded.GetNamedArray(L"items");
-                for (int i=0; i<9; ++i) {
+                for (int i=0; i<19; ++i) {
                     auto entry = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"kind":"item","label":"Extension","image":{"width":32,"height":32}})");
                     entry.SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"entry-"+winrt::to_hstring(i)));
                     entry.GetNamedObject(L"image").SetNamedValue(L"pixels", winrt::Windows::Data::Json::JsonValue::CreateStringValue(std::wstring(8192,L'0')));
                     entries.Append(entry);
                 }
-                Require(FAILED(api.syncAddress(first, productMenu(crowded.Stringify().c_str(),9).c_str())), "reject aggregate extension icon pixel overflow");
+                Require(FAILED(api.syncAddress(first, productMenu(crowded.Stringify().c_str(),9).c_str())), "reject aggregate product-menu icon pixel overflow");
                 Require(SUCCEEDED(api.syncAddress(first, productMenu(LR"({"enabled":false})",9).c_str())), "disable the product menu");
             }
             {
