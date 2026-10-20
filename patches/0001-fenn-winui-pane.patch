@@ -155,6 +155,14 @@ index 00da33bc111..b38767f3b32 100644
 -          return node;
 +          return window.gWinUIPane?.addressToolbar?.omnibar?.anchorFor(node) || node;
          }
+diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
+index 7ce8e235dd4..3c74fd67b18 100644
+--- a/browser/base/content/browser.js
++++ b/browser/base/content/browser.js
+@@ -4454,2 +4454,3 @@ var PanicButtonNotifier = {
+       let anchor = widget.anchor.icon;
++      anchor = window.gWinUIPane?.addressToolbar?.notificationAnchorFor(anchor) || anchor;
+       popup.openPopup(anchor, popup.getAttribute("position"));
 diff --git a/browser/base/content/default-bookmarks.html b/browser/base/content/default-bookmarks.html
 index a182468fce7..428407c54a3 100644
 --- a/browser/base/content/default-bookmarks.html
@@ -187,10 +195,10 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..28414aabc72 100644
+index b2b5db6040b..af81403aba0 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,24 @@ browser.jar:
+@@ -35,2 +35,25 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -206,6 +214,7 @@ index b2b5db6040b..28414aabc72 100644
 +        content/browser/WinUIAddressContextMenu.sys.mjs  (content/WinUIAddressContextMenu.sys.mjs)
 +        content/browser/WinUIOmnibarActions.sys.mjs  (content/WinUIOmnibarActions.sys.mjs)
 +        content/browser/WinUIProfileMenu.sys.mjs (content/WinUIProfileMenu.sys.mjs)
++        content/browser/WinUIPrivacyPanels.sys.mjs (content/WinUIPrivacyPanels.sys.mjs)
 +        content/browser/WinUIDeveloperMenu.sys.mjs                (content/WinUIDeveloperMenu.sys.mjs)
 +        content/browser/WinUIOverflowMenu.sys.mjs (content/WinUIOverflowMenu.sys.mjs)
 +        content/browser/WinUIDownloadsPanel.sys.mjs  (content/WinUIDownloadsPanel.sys.mjs)
@@ -215,7 +224,7 @@ index b2b5db6040b..28414aabc72 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +128,17 @@ browser.jar:
+@@ -106 +129,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -318,6 +327,33 @@ index 76cab7f8e46..8ae93f53085 100644
 +        await this.#moveItemsBackToTheirOrigin(false, totalAvailWidth);
 +      }
      } else {
+diff --git a/browser/components/customizableui/CustomizableWidgets.sys.mjs b/browser/components/customizableui/CustomizableWidgets.sys.mjs
+index 488c6036dde..79b1bd4bfc1 100644
+--- a/browser/components/customizableui/CustomizableWidgets.sys.mjs
++++ b/browser/components/customizableui/CustomizableWidgets.sys.mjs
+@@ -735,3 +735,7 @@ if (Services.prefs.getBoolPref("privacy.panicButton.enabled")) {
+       let doc = aEvent.target.ownerDocument;
+-      let group = doc.getElementById("PanelUI-panic-timeSpan");
++      return this.forgetWindow(doc.defaultView, +doc.getElementById("PanelUI-panic-timeSpan").value);
++    },
++    // Shared browser operation for the Firefox and native confirmation panels.
++    // Presentation supplies only one of Firefox's existing time-span values.
++    forgetWindow(window, timeSpan) {
+       let itemsToClear = [
+@@ -747,3 +751,3 @@ if (Services.prefs.getBoolPref("privacy.panicButton.enabled")) {
+       let newWindowPrivateState = PrivateBrowsingUtils.isWindowPrivate(
+-        doc.defaultView
++        window
+       )
+@@ -753,6 +757,6 @@ if (Services.prefs.getBoolPref("privacy.panicButton.enabled")) {
+         ignoreTimespan: false,
+-        range: lazy.Sanitizer.getClearRange(+group.value),
++        range: lazy.Sanitizer.getClearRange(timeSpan),
+         privateStateForNewWindow: newWindowPrivateState,
+       });
+-      promise.then(function () {
++      return promise.then(function () {
+         let otherWindow = Services.wm.getMostRecentWindow("navigator:browser");
 diff --git a/browser/components/customizableui/PanelMultiView.sys.mjs b/browser/components/customizableui/PanelMultiView.sys.mjs
 index 122165dba99..d9fff8f2189 100644
 --- a/browser/components/customizableui/PanelMultiView.sys.mjs
@@ -376,6 +412,62 @@ index 311e0d736c7..a61d9457612 100644
      setTimeout(() => {
 +      if (nativeAnchor && nativeAnchor() !== anchor) return;
        PanelMultiView.openPopup(
+diff --git a/browser/components/privatebrowsing/ResetPBMPanel.sys.mjs b/browser/components/privatebrowsing/ResetPBMPanel.sys.mjs
+index 324ea950595..4942ec6133b 100644
+--- a/browser/components/privatebrowsing/ResetPBMPanel.sys.mjs
++++ b/browser/components/privatebrowsing/ResetPBMPanel.sys.mjs
+@@ -77,5 +77,3 @@ export const ResetPBMPanel = {
+       // Trigger the restart action.
+-      await this._restartPBM(triggeringWindow);
+-
+-      Glean.privateBrowsingResetPbm.resetAction.record({ did_confirm: false });
++      await this.restartFromToolbar(triggeringWindow, { confirmed: false });
+       return;
+@@ -140,23 +138,22 @@ export const ResetPBMPanel = {
+ 
+-    // Write the checkbox state to pref. Only do this when the user
+-    // confirms.
+-    // Setting this pref to true means there is no way to see the panel
+-    // again other than flipping the pref back via about:config or resetting
+-    // the profile. This is by design.
+-    Services.prefs.setBoolPref(
+-      SHOW_CONFIRM_DIALOG_PREF,
+-      this._rememberCheck(triggeringWindow).checked
+-    );
+-
++    const alwaysAsk = this._rememberCheck(triggeringWindow).checked;
+     lazy.CustomizableUI.hidePanelForNode(button);
++    await this.restartFromToolbar(triggeringWindow, { confirmed: true, alwaysAsk });
++  },
+ 
+-    Glean.privateBrowsingResetPbm.confirmPanel.record({
+-      action: "hide",
+-      reason: "confirm-btn",
+-    });
+-
+-    // Clear the private browsing session.
++  // Semantic entry point shared by Firefox and native toolbar presentation.
++  // Never permit the no-confirmation path to bypass the current preference.
++  async restartFromToolbar(triggeringWindow, { confirmed, alwaysAsk }) {
++    if (!this._enabled || !lazy.PrivateBrowsingUtils.isWindowPrivate(triggeringWindow)) {
++      throw new Error("Invalid private-session reset.");
++    }
++    if (confirmed) {
++      if (typeof alwaysAsk !== "boolean") throw new Error("Invalid confirmation preference.");
++      Services.prefs.setBoolPref(SHOW_CONFIRM_DIALOG_PREF, alwaysAsk);
++      Glean.privateBrowsingResetPbm.confirmPanel.record({ action: "hide", reason: "confirm-btn" });
++    } else if (confirmed !== false || this._shouldConfirmClear) {
++      throw new Error("Private-session confirmation required.");
++    }
+     await this._restartPBM(triggeringWindow);
+-
+-    Glean.privateBrowsingResetPbm.resetAction.record({ did_confirm: true });
++    Glean.privateBrowsingResetPbm.resetAction.record({ did_confirm: confirmed });
+   },
+@@ -247,2 +244,3 @@ export const ResetPBMPanel = {
+     }
++    anchor = triggeringWindow.gWinUIPane?.addressToolbar?.notificationAnchorFor(anchor ?? toolbarButton) || anchor;
+     triggeringWindow.ConfirmationHint.show(
 diff --git a/browser/components/search/SearchOneOffs.sys.mjs b/browser/components/search/SearchOneOffs.sys.mjs
 index 7f6f1f35b2a..9c8c9613021 100644
 --- a/browser/components/search/SearchOneOffs.sys.mjs
@@ -18179,6 +18271,118 @@ index 00000000000..0dd2ed8e94d
 +    this.dismiss();row.node.doCommand();return 1;
 +  }
 +}
+diff --git a/browser/base/content/WinUIPrivacyPanels.sys.mjs b/browser/base/content/WinUIPrivacyPanels.sys.mjs
+new file mode 100644
+index 00000000000..1dbff3ea703
+--- /dev/null
++++ b/browser/base/content/WinUIPrivacyPanels.sys.mjs
+@@ -0,0 +1,106 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Two bounded confirmation presentations. Clearing, window closure, private
++// session reset, preferences and notifications remain Firefox operations.
++export class WinUIPrivacyPanels {
++  constructor(toolbar) {
++    this.toolbar=toolbar;this.window=toolbar.window;
++    this.panels=[{kind:1,key:"forgetPanel",widget:"panic-button",session:0,lastSession:0},
++      {kind:2,key:"clearPrivatePanel",widget:"reset-pbm-toolbar-button",session:0,lastSession:0}];
++    this.changed=()=>{this.l10n=null;this.dismissAll();};
++    this.prefs=["privacy.panicButton.enabled","browser.privatebrowsing.resetPBM.enabled","browser.privatebrowsing.resetPBM.showConfirmationDialog"];
++    for(const pref of this.prefs)Services.prefs.addObserver(pref,this.changed);
++    Services.obs.addObserver(this.changed,"intl:app-locales-changed");
++  }
++  close(){if(this.closed)return;this.closed=true;this.dismissAll();for(const pref of this.prefs)Services.prefs.removeObserver(pref,this.changed);Services.obs.removeObserver(this.changed,"intl:app-locales-changed");}
++  dismiss(p){if(!p.session)return;p.closed=p.session;p.session=0;p.description=p.context=p.sourceNode=null;this.toolbar.owner.invalidateAddress();}
++  dismissAll(){for(const p of this.panels)this.dismiss(p);}
++  source(p){
++    const t=this.toolbar,c=t.customization,w=this.window;
++    if(this.closed || this.busy || !t.active || !t.navigation || !t.supported() || c?.editorOpen || w.gDialogBox?.isOpen)return null;
++    if(!Services.prefs.getBoolPref(p.kind===1?this.prefs[0]:this.prefs[1],false))return null;
++    if(p.kind===2 && !w.PrivateBrowsingUtils.isWindowPrivate(w))return null;
++    const node=c?.ui.getWidget(p.widget)?.forWindow(w)?.node,entry=c?.entries.get(p.widget);
++    const item=c?.current?.items.find(row=>row.id===entry?.id);
++    const part=p.kind===1?item?.stock?.find(row=>row.id===p.widget):this.navigation?.["reset-pbm"];
++    return node && node===entry?.node && item?.placed && part?.enabled && (p.kind!==1 || part.shown) &&
++      !c.nativeOverflow.has(p.widget) ? {node,label:String(part.label).slice(0,512)} : null;
++  }
++  live(p){
++    const t=this.toolbar,w=this.window;
++    return !!this.source(p) && t.owner.addressSession?.sessionId===p.context?.session &&
++      t.owner.addressTab===p.context?.tab && t.owner.addressDocument===p.context?.document &&
++      t.owner.addressTab===w.gBrowser.selectedTab && t.owner.addressDocument===w.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId;
++  }
++  snapshot(navigation){
++    this.navigation=navigation;
++    return Object.fromEntries(this.panels.map(p=>{
++      const source=this.source(p);
++      if(p.session && (!this.live(p) || source.node!==p.sourceNode || (p.description && source.label!==p.description.sourceLabel)))this.dismiss(p);
++      return [p.key,{enabled:!!source,closed:p.closed || 0,...(p.description || {})}];
++    }));
++  }
++  label(id,attribute){
++    this.l10n ??= new this.window.Localization(["branding/brand.ftl","browser/browser.ftl","browser/panicButton.ftl"],true);
++    const [message]=this.l10n.formatMessagesSync([{id}]);
++    return String(message?.attributes?.find(a=>a.name===attribute)?.value ?? message?.value ?? "").replace(/<\/?strong>/g,"").slice(0,2048);
++  }
++  controllers(){
++    const {CustomizableWidgets}=ChromeUtils.importESModule("moz-src:///browser/components/customizableui/CustomizableWidgets.sys.mjs");
++    const {ResetPBMPanel}=ChromeUtils.importESModule("moz-src:///browser/components/privatebrowsing/ResetPBMPanel.sys.mjs");
++    return {forget:CustomizableWidgets.find(widget=>widget.id==="panic-button"),reset:ResetPBMPanel};
++  }
++  perform(kind,choice,remember){
++    if(this.busy || this.closed)return;
++    this.busy=true;this.dismissAll();this.toolbar.owner.invalidateAddress();
++    try {
++      const {forget,reset}=this.controllers();
++      const operation=kind===1 ? forget.forgetWindow(this.window,[5,2,6][choice-1]) :
++        reset.restartFromToolbar(this.window,{confirmed:choice!==0,alwaysAsk:remember});
++      Promise.resolve(operation).catch(console.error).finally(()=>{this.busy=false;if(!this.closed)this.toolbar.owner.invalidateAddress();});
++    } catch(error){this.busy=false;if(!this.closed)this.toolbar.owner.invalidateAddress();console.error(error);}
++  }
++  open(p,session){
++    this.dismissAll();p.session=session;p.sourceNode=this.source(p)?.node;
++    const t=this.toolbar;
++    p.context={session:t.owner.addressSession?.sessionId,tab:t.owner.addressTab,document:t.owner.addressDocument};
++    if(!this.live(p)){this.dismiss(p);return;}
++    if(p.kind===2 && !Services.prefs.getBoolPref(this.prefs[2],true)){
++      this.dismiss(p);this.perform(2,0,false);return;
++    }
++    const sourceLabel=this.source(p).label;
++    const common={session,revision:1,sourceLabel,cancel:this.label("reset-pbm-panel-cancel-button","label"),remember:true};
++    p.description=p.kind===1 ? {...common,title:sourceLabel,
++      group:this.label("panic-main-timeframe-desc"),
++      options:["panic-button-5min","panic-button-2hr","panic-button-day"].map((id,index)=>({id:index+1,label:this.label(id,"label").slice(0,512)})),
++      body:["panic-button-action-desc","panic-button-delete-tabs-and-windows","panic-button-delete-cookies","panic-button-delete-history","panic-button-open-new-window"].map(id=>this.label(id)).join("\n"),
++      warning:this.label("panic-button-undo-warning"),checkbox:"",confirm:this.label("panic-button-forget-button","label")} :
++      {...common,title:this.label("reset-pbm-panel-heading2"),group:"",options:[],
++      body:this.label("reset-pbm-panel-description2"),warning:"",checkbox:this.label("reset-pbm-panel-always-ask-checkbox","label"),confirm:this.label("reset-pbm-panel-confirm-button2","label")};
++    if(p.kind===2)Glean.privateBrowsingResetPbm.confirmPanel.record({action:"show",reason:"toolbar-btn"});
++    t.owner.invalidateAddress();
++  }
++  execute(action){
++    const match=/^privacy-panel:(open|dismiss|cancel|confirm):([12]):([1-9][0-9]*)(?::([1-9][0-9]*):([0-3]):([01]))?$/.exec(action.command);
++    if(!match)return 2;
++    const p=this.panels[Number(match[2])-1],session=Number(match[3]);
++    if(session>0xffffffff)return 2;
++    if(match[1]!=="dismiss" && match[1]!=="cancel")this.toolbar.navigationState();
++    if(match[1]==="open"){
++      if(match[4] || session<=p.lastSession || !this.source(p) || !this.toolbar.menuAnchor("privacy-panel-"+p.kind,action))return 2;
++      p.lastSession=session;this.open(p,session);return 1;
++    }
++    if(session!==p.session)return 2;
++    if(match[1]==="dismiss" || match[1]==="cancel"){
++      if(match[4])return 2;
++      if(match[1]==="cancel" && p.kind===2)Glean.privateBrowsingResetPbm.confirmPanel.record({action:"hide",reason:"cancel-btn"});
++      this.dismiss(p);return 1;
++    }
++    const choice=Number(match[5]),remember=match[6]==="1";
++    if(!this.live(p) || p.sourceNode!==this.source(p).node || Number(match[4])!==p.description?.revision ||
++      (p.kind===1 ? ![1,2,3].includes(choice) : choice!==0))return 2;
++    this.dismiss(p);this.perform(p.kind,p.kind===2?1:choice,remember);return 1;
++  }
++}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
 index 00000000000..85d6b628141
@@ -18398,7 +18602,7 @@ index 00000000000..85d6b628141
 +}
 diff --git a/browser/base/content/WinUIStockToolbar.sys.mjs b/browser/base/content/WinUIStockToolbar.sys.mjs
 new file mode 100644
-index 00000000000..6a8dd324ed8
+index 00000000000..4d93f4547f4
 --- /dev/null
 +++ b/browser/base/content/WinUIStockToolbar.sys.mjs
 @@ -0,0 +1,158 @@
@@ -18505,7 +18709,7 @@ index 00000000000..6a8dd324ed8
 +        menu:!!this.customization.ui.getWidget(widget)?.viewId || ["library-button","send-tab-button","share-tab-button"].includes(widget),
 +        tooltip:String(button?.getAttribute("tooltiptext") || label).slice(0,4096),
 +        shown:!!button && rendered && !node.hidden && !node.collapsed && !button.hidden && !button.collapsed,
-+        enabled:!window.gDialogBox?.isOpen && rendered && !node.hidden && !node.collapsed && !button?.hidden && !button?.collapsed && enabled,
++        enabled:!window.gDialogBox?.isOpen && !(widget === "panic-button" && this.toolbar.privacyPanels?.busy) && rendered && !node.hidden && !node.collapsed && !button?.hidden && !button?.collapsed && enabled,
 +        checkable:button?.getAttribute("type") === "checkbox" || ["true","false"].includes(button?.getAttribute("aria-pressed")),
 +        checked:button?.getAttribute("checked") === "true" || button?.getAttribute("aria-pressed") === "true" || source?.getAttribute("checked") === "true" ||
 +          !!button?.classList?.contains("profiler-active") || !!button?.classList?.contains("profiler-paused"),
@@ -23147,10 +23351,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..ece15f777a0
+index 00000000000..8196edb2d66
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,519 @@
+@@ -0,0 +1,528 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -23198,6 +23402,8 @@ index 00000000000..ece15f777a0
 +    this.overflowMenu=new WinUIOverflowMenu(this);
 +    const {WinUIDeveloperMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIDeveloperMenu.sys.mjs");
 +    this.developerMenu=new WinUIDeveloperMenu(this);
++    const {WinUIPrivacyPanels}=ChromeUtils.importESModule("chrome://browser/content/WinUIPrivacyPanels.sys.mjs");
++    this.privacyPanels=new WinUIPrivacyPanels(this);
 +    const { WinUINavigationState, NAVIGATION_COMMANDS } = ChromeUtils.importESModule(
 +      "chrome://browser/content/WinUINavigationState.sys.mjs");
 +    this.navigationCommands = NAVIGATION_COMMANDS;
@@ -23275,6 +23481,8 @@ index 00000000000..ece15f777a0
 +    state.palette = this.pinned?.snapshot(true) || [];
 +    state.productMenu = this.productMenu.model();
 +    state.editorRequest = this.editorRequests;
++    // Include operation availability before customization computes its revision.
++    if(this.privacyPanels?.busy)state["reset-pbm"].enabled=false;
 +    state.customization = this.customization?.snapshot(state);
 +    const represented = new Set([...(this.customization?.entries?.values() || [])].map(entry => entry.widget));
 +    state.overflow.required = !!document.getElementById("widget-overflow-fixed-list")?.childElementCount ||
@@ -23283,6 +23491,7 @@ index 00000000000..ece15f777a0
 +      [...(document.getElementById("widget-overflow-list")?.children || [])].some(node => !node.hidden && this.customization.nativeOverflow.has(node.id));
 +    state.overflowMenu=this.overflowMenu.snapshot(state);
 +    state.developerMenu=this.developerMenu.snapshot();
++    Object.assign(state,this.privacyPanels.snapshot(state));
 +    return state;
 +  }
 +  hasVisibleUnhostedWidgets() {
@@ -23343,6 +23552,7 @@ index 00000000000..ece15f777a0
 +  executeNavigation(action) {
 +    const {window, owner} = this;
 +    const indicator = ["indicator:private", "indicator:analysis"].includes(action?.command);
++    const nativePrivacy=typeof action?.command === "string" && action.command.startsWith("privacy-panel:");
 +    const nativeDeveloper=typeof action?.command === "string" && action.command.startsWith("developer-menu:");
 +    const nativeOverflow=typeof action?.command === "string" && action.command.startsWith("overflow-menu:");
 +    const nativeProfile=typeof action?.command === "string" && action.command.startsWith("profile-menu:");
@@ -23356,16 +23566,17 @@ index 00000000000..ece15f777a0
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!stock && !indicator && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!stock && !indicator && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
++    if (nativePrivacy) return this.privacyPanels.execute(action);
 +    if (nativeDeveloper) return this.developerMenu.execute(action);
 +    if (nativeOverflow) return this.overflowMenu.execute(action);
 +    if (nativeProfile) return this.profileMenu.execute(action);
@@ -23606,6 +23817,7 @@ index 00000000000..ece15f777a0
 +    if(this.profileMenu?.session)this.profileMenu.dismiss();
 +    if(this.overflowMenu?.session)this.overflowMenu.dismiss();
 +    if(this.developerMenu?.session)this.developerMenu.dismiss();
++    this.privacyPanels?.dismissAll();
 +    if (this.activationFrame) this.window.cancelAnimationFrame(this.activationFrame);
 +    this.activationFrame = 0;
 +    for (const panel of this.window.document.querySelectorAll("panel, menupopup")) {
@@ -23651,6 +23863,7 @@ index 00000000000..ece15f777a0
 +    this.profileMenu.close();
 +    this.overflowMenu.close();
 +    this.developerMenu.close();
++    this.privacyPanels.close();
 +    this.resize.disconnect();
 +    Services.prefs.removeObserver("browser.nova.enabled", this.novaObserver);
 +    this.navigationObserver.disconnect();

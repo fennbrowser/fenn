@@ -24,6 +24,14 @@ test('stock inventory explicitly covers stock buttons and groups, excluding arbi
   assert.equal(STOCK_TOOLBAR_WIDGETS['sidebar-button'],undefined);
   assert.equal(STOCK_TOOLBAR_WIDGETS['some-user-script'],undefined);
 });
+test('Forget busy availability is included before customization revisions its stock state',()=>{
+  const f=fixture('panic-button');f.attrs.set('label','Forget');
+  assert.equal(f.stock.snapshot('panic-button',f.button)[0].enabled,true);
+  f.toolbar.privacyPanels={busy:true};
+  assert.equal(f.stock.snapshot('panic-button',f.button)[0].enabled,false);
+  f.toolbar.privacyPanels.busy=false;
+  assert.equal(f.stock.snapshot('panic-button',f.button)[0].enabled,true);
+});
 test('activation rechecks live placement, disabled commands, modal state, overflow and exact node identity',()=>{
   for(const mutate of [f=>f.setPlaced(false),f=>f.attrs.set('disabled','true'),f=>{f.attrs.set('command','cmd_find');f.cmdattrs.set('disabled','true');},f=>f.c.nativeOverflow.add('find-button'),f=>f.c.editorOpen=true,f=>f.window.gDialogBox={isOpen:true},f=>f.c.ui.getWidget=()=>({forWindow:()=>({node:{}})})]) {
     const f=fixture();f.attrs.set('label','Find');mutate(f);

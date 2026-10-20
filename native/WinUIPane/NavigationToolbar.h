@@ -14,6 +14,7 @@
 #include "ProfileMenu.h"
 #include "OverflowMenu.h"
 #include "DeveloperMenu.h"
+#include "PrivacyPanel.h"
 #include "ProductMenu.h"
 #include "ToolbarMetrics.h"
 #include "StockToolbar.h"
@@ -53,6 +54,8 @@ struct NativeNavigationToolbar {
     NativeProfileMenu profileMenu;
     NativeOverflowMenu overflowMenu;
     NativeDeveloperMenu developerMenu;
+    NativePrivacyPanel forgetPanel{SHELL_PRIVACY_PANEL_KIND_FORGET,L"forgetPanel",L"FennForgetPanel"};
+    NativePrivacyPanel clearPrivatePanel{SHELL_PRIVACY_PANEL_KIND_CLEAR_PRIVATE,L"clearPrivatePanel",L"FennClearPrivatePanel"};
     NativeProductMenu productMenu;
     ToolbarDragPreview preview;
     bool keyboardActivation{};
@@ -195,6 +198,7 @@ struct NativeNavigationToolbar {
                 if (i < 2 && historyHeld[i]) { historyHeld[i] = false; return; }
                 const uint32_t modifiers = inputModifiers[i];
                 inputModifiers[i] = 0;
+                if(i==11 && clearPrivatePanel.enabled && !customization.editing){clearPrivatePanel.Open(buttons[i]);return;}
                 if(i==6 && overflowMenu.enabled && !customization.editing){overflowMenu.keyboardActivation=keyboardActivation;overflowMenu.Open(buttons[i]);return;}
                 if(i==3 && profileMenu.enabled && !customization.editing){profileMenu.Open(buttons[i]);return;}
                 if(i==8 && downloadsPanel.enabled && !customization.editing){downloadsPanel.Open(buttons[i]);return;}
@@ -566,7 +570,7 @@ struct NativeNavigationToolbar {
         indicatorButtons[0].Content(winrt::box_value(state.indicators[0].label));
         privateLabel.Text(state.indicators[0].label);
         Automation::AutomationProperties::SetName(privateLabel,state.indicators[0].label);
-        if (!visible) { historyMenu.Close(); downloadsPanel.Close(); profileMenu.Close(); overflowMenu.Close(); developerMenu.Close(); productMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
+        if (!visible) { historyMenu.Close(); downloadsPanel.Close(); profileMenu.Close(); overflowMenu.Close(); developerMenu.Close(); forgetPanel.Close(); clearPrivatePanel.Close(); productMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
         hasOverflow = visible && state[6].enabled;
         requiredOverflow = visible && state[6].required;
         const bool downloading=visible && state[8].progress>=0 && !customization.editing;
