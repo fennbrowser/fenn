@@ -187,10 +187,10 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..dce5bf155e6 100644
+index b2b5db6040b..3cfc6230491 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,21 @@ browser.jar:
+@@ -35,2 +35,22 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -205,6 +205,7 @@ index b2b5db6040b..dce5bf155e6 100644
 +        content/browser/WinUIResultContextMenu.sys.mjs  (content/WinUIResultContextMenu.sys.mjs)
 +        content/browser/WinUIAddressContextMenu.sys.mjs  (content/WinUIAddressContextMenu.sys.mjs)
 +        content/browser/WinUIOmnibarActions.sys.mjs  (content/WinUIOmnibarActions.sys.mjs)
++        content/browser/WinUIProfileMenu.sys.mjs (content/WinUIProfileMenu.sys.mjs)
 +        content/browser/WinUIDownloadsPanel.sys.mjs  (content/WinUIDownloadsPanel.sys.mjs)
 +        content/browser/WinUIHistoryMenu.sys.mjs     (content/WinUIHistoryMenu.sys.mjs)
 +        content/browser/WinUIActionStamp.sys.mjs     (content/WinUIActionStamp.sys.mjs)
@@ -212,7 +213,7 @@ index b2b5db6040b..dce5bf155e6 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +125,17 @@ browser.jar:
+@@ -106 +126,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -7659,7 +7660,7 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..796f17c6918 100644
+index 4f28e62c7b5..fd8512870f9 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
 @@ -21,3 +21,3 @@ tabbrowser-tab-tooltip-container = { $containerName }
@@ -7700,7 +7701,7 @@ index 4f28e62c7b5..796f17c6918 100644
 -tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. We’ll save your groups here so they’re easy to find later.
 +tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. Weâ€™ll save your groups here so theyâ€™re easy to find later.
  tab-groups-list-empty-button = Create a tab group
-@@ -520 +520,100 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,103 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -7801,6 +7802,9 @@ index 4f28e62c7b5..796f17c6918 100644
 +winui-update-installing = Installing update…
 +
 +winui-downloads-unavailable = Downloads could not be loaded. Open all downloads to try again.
++
++winui-profile-more-options = More account options…
++winui-profile-unavailable = Profiles could not be loaded. Open Manage Profiles to try again.
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -17749,6 +17753,179 @@ index 00000000000..a0ce3a667fe
 +    return 1;
 +  }
 +}
+diff --git a/browser/base/content/WinUIProfileMenu.sys.mjs b/browser/base/content/WinUIProfileMenu.sys.mjs
+new file mode 100644
+index 00000000000..35f04c14bda
+--- /dev/null
++++ b/browser/base/content/WinUIProfileMenu.sys.mjs
+@@ -0,0 +1,167 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// A bounded profile/account projection. Firefox owns identities, policies,
++// launches, account state, dialogs and persistence. Opening never creates a store.
++export class WinUIProfileMenu {
++  constructor(toolbar) {
++    this.toolbar=toolbar;this.window=toolbar.window;this.session=this.lastSession=0;
++    this.actions=new Map();this.items=[];
++    this.changed=(_subject,topic)=>{
++      if(!this.session)return;
++      if(topic==="sync-ui-state:update" && this.accountState && this.accountSignature(this.services().UIState.get())===this.accountState)return;
++      this.dismiss();
++    };
++    this.topics=["sync-ui-state:update","sps-profiles-updated","sps-profile-created","intl:app-locales-changed","EnterprisePolicies:AllPoliciesApplied"];
++    for(const topic of this.topics)Services.obs.addObserver(this.changed,topic);
++    for(const pref of ["identity.fxaccounts.enabled","browser.profiles.enabled"])Services.prefs.addObserver(pref,this.changed);
++  }
++  close() {
++    if(this.closed)return;this.closed=true;this.dismiss();
++    for(const topic of this.topics)Services.obs.removeObserver(this.changed,topic);
++    for(const pref of ["identity.fxaccounts.enabled","browser.profiles.enabled"])Services.prefs.removeObserver(pref,this.changed);
++  }
++  dismiss() {
++    if(!this.session)return;
++    this.closedSession=this.session;this.session=0;this.actions.clear();this.items=[];
++    this.description=this.context=this.bounds=this.accountState=null;this.l10n=null;
++    this.toolbar.owner.invalidateAddress();
++  }
++  live() {
++    const t=this.toolbar,w=this.window;
++    return !this.closed && t.active && t.navigation && t.supported() &&
++      !t.customization?.editorOpen && !w.gDialogBox?.isOpen &&
++      t.owner.addressSession?.sessionId===this.context?.session &&
++      t.owner.addressTab===this.context?.tab && t.owner.addressDocument===this.context?.document &&
++      t.owner.addressTab===w.gBrowser.selectedTab && t.owner.addressDocument===w.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId;
++  }
++  label(id,attribute) {
++    this.l10n ??= new this.window.Localization(["branding/brand.ftl","browser/appmenu.ftl","browser/sync.ftl","browser/accounts.ftl","browser/tabbrowser.ftl"],true);
++    const [message]=this.l10n.formatMessagesSync([{id}]);
++    return String(message?.attributes?.find(a=>a.name===attribute)?.value ?? message?.value ?? "").slice(0,512);
++  }
++  services() {
++    const {UIState}=ChromeUtils.importESModule("resource://services-sync/UIState.sys.mjs");
++    const {SelectableProfileService}=ChromeUtils.importESModule("resource:///modules/profiles/SelectableProfileService.sys.mjs");
++    return {UIState,profiles:SelectableProfileService};
++  }
++  accountSignature(state) {return JSON.stringify([state.status,state.email || "",state.syncEnabled,Services.prefs.getBoolPref("identity.fxaccounts.enabled",true)]);}
++  profilesAllowed(profiles) {return profiles.isEnabled && Services.policies.isAllowed("profileManagement");}
++  snapshot() {
++    if(this.session && !this.live())this.dismiss();
++    if(this.session && this.accountState && this.accountSignature(this.services().UIState.get())!==this.accountState)this.dismiss();
++    return {enabled:true,closed:this.closedSession || 0,...(this.description || {})};
++  }
++  async open(session,bounds) {
++    this.dismiss();this.session=session;this.bounds=bounds;
++    const t=this.toolbar;
++    this.context={session:t.owner.addressSession?.sessionId,tab:t.owner.addressTab,document:t.owner.addressDocument};
++    const panel=this.window.document.getElementById("customizationui-widget-panel");
++    if(panel && ["open","showing","hiding"].includes(panel.state)) {
++      await new Promise(resolve=>{panel.addEventListener("popuphidden",resolve,{once:true});if(panel.state!=="hiding")panel.hidePopup();});
++      if(this.session!==session || !this.live())return;
++    }
++    const {UIState,profiles}=this.services();const state=UIState.get();
++    this.accountState=this.accountSignature(state);
++    let list=[];let failed=false;
++    try {if(this.profilesAllowed(profiles) && profiles.initialized)list=await profiles.getAllProfiles();}
++    catch(error){failed=true;console.error("Native profile list unavailable",error);}
++    if(this.session!==session || !this.live())return;
++    // An account transition during an async list read must not publish old identities.
++    if(this.accountSignature(UIState.get())!==this.accountState){this.dismiss();return;}
++    const add=(key,label,kind,extra={},enabled=true)=>{
++      if(!label)return;
++      const id=this.items.filter(i=>!i.separator).length+1;
++      this.items.push({id,key,label:String(label).slice(0,512),enabled,checked:!!extra.checked});
++      if(enabled)this.actions.set(id,{kind,...extra});
++    };
++    const separator=()=>{if(this.items.length && !this.items.at(-1).separator)this.items.push({separator:true});};
++    const current=profiles.initialized?profiles.currentProfile:null;
++    if(this.profilesAllowed(profiles)) {
++      if(failed)add("unavailable",this.label("winui-profile-unavailable"),"none",{},false);
++      else {
++        const ordered=[...list].sort((a,b)=>Number(b.id===current?.id)-Number(a.id===current?.id));
++        for(const [index,profile] of ordered.slice(0,8).entries()) {
++          const isCurrent=profile.id===current?.id;
++          add("profile-"+index,profile.name,"launch",{profileId:profile.id,checked:isCurrent},!isCurrent);
++        }
++      }
++      if(current) {
++        separator();add("edit",this.label("appmenu-edit-this-profile","label"),"edit",{profileId:current.id});
++        add("copy",this.label("appmenu-copy-profile","label"),"copy",{profileId:current.id});
++      }
++      add("create",this.label("appmenu-create-profile2","label"),"create");
++      add("manage",this.label("appmenu-manage-profiles","label"),"manage");
++      separator();
++    }
++    if(Services.prefs.getBoolPref("identity.fxaccounts.enabled",true)) {
++      if(state.status===UIState.STATUS_SIGNED_IN) {
++        add("account",this.label("appmenuitem-fxa-manage-account"),"account");
++        if(state.syncEnabled)add("sync",this.label("appmenuitem-fxa-toolbar-sync-now2"),"sync");
++        add("settings",this.label("fxa-menu-manage-sync-settings","label"),"settings");
++        add("signout",this.label("fxa-menu-sign-out","label"),"signout");
++      } else {
++        const key=state.status===UIState.STATUS_NOT_VERIFIED ? "account-finish-account-setup" : "appmenuitem-fxa-sign-in";
++        add("account",this.label(key),"account");
++      }
++    }
++    separator();add("more",this.label("winui-profile-more-options"),"original");
++    this.description={session,revision:1,label:this.label("appmenu-profiles-header"),items:this.items};
++    t.owner.invalidateAddress();
++  }
++  execute(action) {
++    const match=/^profile-menu:(open|dismiss|invoke):([1-9][0-9]*)(?::([1-9][0-9]*):([1-9][0-9]*))?$/.exec(action.command);
++    if(!match)return 2;
++    const session=Number(match[2]);if(!Number.isInteger(session) || session>0xffffffff)return 2;
++    if(match[1]==="open") {
++      const t=this.toolbar;
++      if(this.closed || match[3] || session<=this.lastSession || !t.navigationState().profile.enabled ||
++          t.customization?.nativeOverflow.has("fxa-toolbar-menu-button") || !t.menuAnchor("profile",action))return 2;
++      this.lastSession=session;
++      this.open(session,action).catch(error=>{if(this.session===session)this.dismiss();console.error(error);});return 1;
++    }
++    if(session!==this.session)return 2;
++    if(match[1]==="dismiss"){if(match[3])return 2;this.dismiss();return 1;}
++    if(!this.live() || Number(match[3])!==this.description?.revision)return 2;
++    const entry=this.actions.get(Number(match[4]));if(!entry)return 2;
++    const {UIState,profiles}=this.services(),state=UIState.get();
++    if(this.accountSignature(state)!==this.accountState){this.dismiss();return 2;}
++    const bounds=this.bounds,context=this.context;
++    const currentContext=()=>{
++      const t=this.toolbar,w=this.window;
++      return !this.closed && t.active && t.navigation && t.supported() && !w.gDialogBox?.isOpen && !t.customization?.editorOpen &&
++        t.owner.addressSession?.sessionId===context.session && t.owner.addressTab===context.tab && t.owner.addressDocument===context.document &&
++        t.owner.addressTab===w.gBrowser.selectedTab && t.owner.addressDocument===w.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId;
++    };
++    // Consume before any asynchronous service work or nested Firefox dialog.
++    this.dismiss();
++    const w=this.window,source=w.document.getElementById("fxa-toolbar-menu-button");
++    if(["launch","edit","copy","create","manage"].includes(entry.kind) && !this.profilesAllowed(profiles))return 2;
++    if(["edit","copy"].includes(entry.kind) && profiles.currentProfile?.id!==entry.profileId)return 2;
++    switch(entry.kind) {
++      case "launch": {
++        void profiles.getProfile(entry.profileId).then(profile=>{
++          if(!profile || !this.profilesAllowed(profiles) || !currentContext() || profiles.currentProfile?.id===profile.id)return;
++          return profiles.launchInstance(profile);
++        }).catch(console.error);break;
++      }
++      case "edit":w.openTrustedLinkIn("about:editprofile","tab");break;
++      case "copy": {
++        const current=profiles.currentProfile;
++        void profiles.maybeSetupDataStore().then(()=>{
++          if(currentContext() && this.profilesAllowed(profiles) && profiles.currentProfile?.id===entry.profileId)return current.copyProfile();
++        }).catch(console.error);break;
++      }
++      case "create":w.gProfiles.createNewProfile("profiles-panel");break;
++      case "manage":void w.gProfiles.manageProfiles();break;
++      case "account":void w.gSync.clickFxAMenuHeaderButton(source);break;
++      case "sync":w.gSync.doSyncFromFxaMenu(source);break;
++      case "settings":w.gSync.openPrefsFromFxaMenu("sync_settings",source);break;
++      case "signout":void w.gSync.disconnect();break;
++      case "original":return this.toolbar.openMenu("profile",bounds,new w.MouseEvent("click",{view:w}));
++      default:return 2;
++    }
++    return 1;
++  }
++}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
 index 00000000000..85d6b628141
@@ -22710,10 +22887,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..e3df79ed94b
+index 00000000000..df12738f302
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,498 @@
+@@ -0,0 +1,505 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -22755,6 +22932,8 @@ index 00000000000..e3df79ed94b
 +    this.historyMenu=new WinUIHistoryMenu(this);
 +    const {WinUIDownloadsPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUIDownloadsPanel.sys.mjs");
 +    this.downloadsPanel=new WinUIDownloadsPanel(this);
++    const {WinUIProfileMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIProfileMenu.sys.mjs");
++    this.profileMenu=new WinUIProfileMenu(this);
 +    const { WinUINavigationState, NAVIGATION_COMMANDS } = ChromeUtils.importESModule(
 +      "chrome://browser/content/WinUINavigationState.sys.mjs");
 +    this.navigationCommands = NAVIGATION_COMMANDS;
@@ -22826,6 +23005,7 @@ index 00000000000..e3df79ed94b
 +    state.indicators = this.indicatorState();
 +    state.historyMenu=this.historyMenu.snapshot();
 +    state.downloadsPanel=this.downloadsPanel.snapshot();
++    state.profileMenu=this.profileMenu.snapshot();
 +    state.pinned = this.pinned?.snapshot() || [];
 +    Object.assign(state, this.omnibar?.snapshot() || {});
 +    state.palette = this.pinned?.snapshot(true) || [];
@@ -22897,6 +23077,7 @@ index 00000000000..e3df79ed94b
 +  executeNavigation(action) {
 +    const {window, owner} = this;
 +    const indicator = ["indicator:private", "indicator:analysis"].includes(action?.command);
++    const nativeProfile=typeof action?.command === "string" && action.command.startsWith("profile-menu:");
 +    const nativeDownloads=typeof action?.command === "string" && action.command.startsWith("downloads-panel:");
 +    const nativeHistory=typeof action?.command === "string" && action.command.startsWith("history-menu:");
 +    const customization = typeof action?.command === "string" && action.command.startsWith("customize:");
@@ -22907,16 +23088,17 @@ index 00000000000..e3df79ed94b
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!stock && !indicator && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!stock && !indicator && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
++    if (nativeProfile) return this.profileMenu.execute(action);
 +    if (nativeDownloads) return this.downloadsPanel.execute(action);
 +    if (indicator) {
 +      const id = action.command.slice(10), state = this.indicatorState()[id];
@@ -23151,6 +23333,7 @@ index 00000000000..e3df79ed94b
 +  restore() {
 +    if(this.historyMenu?.session)this.historyMenu.dismiss();
 +    if(this.downloadsPanel?.session)this.downloadsPanel.dismiss();
++    if(this.profileMenu?.session)this.profileMenu.dismiss();
 +    if (this.activationFrame) this.window.cancelAnimationFrame(this.activationFrame);
 +    this.activationFrame = 0;
 +    for (const panel of this.window.document.querySelectorAll("panel, menupopup")) {
@@ -23193,6 +23376,7 @@ index 00000000000..e3df79ed94b
 +    this.restore();
 +    this.historyMenu.close();
 +    this.downloadsPanel.close();
++    this.profileMenu.close();
 +    this.resize.disconnect();
 +    Services.prefs.removeObserver("browser.nova.enabled", this.novaObserver);
 +    this.navigationObserver.disconnect();

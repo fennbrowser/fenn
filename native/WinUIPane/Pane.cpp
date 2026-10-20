@@ -647,6 +647,7 @@ struct Pane {
                 {SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU, L"address-context-menu"},
                 {SHELL_PUBLICATION_CHANNEL_ADDRESS_RESULT_MENU, L"address-result-menu"},
                 {SHELL_PUBLICATION_CHANNEL_DOWNLOADS_PANEL, L"downloads-panel"},
+                {SHELL_PUBLICATION_CHANNEL_PROFILE_MENU, L"profile-menu"},
                 {SHELL_PUBLICATION_CHANNEL_TOOLBAR_CUSTOMIZATION, L"toolbar-customization"},
             };
             for (auto const& entry : channels) {

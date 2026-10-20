@@ -11,6 +11,7 @@
 #include "ToolbarDragPreview.h"
 #include "HistoryMenu.h"
 #include "DownloadsPanel.h"
+#include "ProfileMenu.h"
 #include "ProductMenu.h"
 #include "ToolbarMetrics.h"
 #include "StockToolbar.h"
@@ -47,6 +48,7 @@ struct NativeNavigationToolbar {
     NativeStockToolbar stock;
     NativeHistoryMenu historyMenu;
     NativeDownloadsPanel downloadsPanel;
+    NativeProfileMenu profileMenu;
     NativeProductMenu productMenu;
     ToolbarDragPreview preview;
     bool keyboardActivation{};
@@ -189,6 +191,7 @@ struct NativeNavigationToolbar {
                 if (i < 2 && historyHeld[i]) { historyHeld[i] = false; return; }
                 const uint32_t modifiers = inputModifiers[i];
                 inputModifiers[i] = 0;
+                if(i==3 && profileMenu.enabled && !customization.editing){profileMenu.Open(buttons[i]);return;}
                 if(i==8 && downloadsPanel.enabled && !customization.editing){downloadsPanel.Open(buttons[i]);return;}
                 if(i==9 && historyMenu.enabled && !customization.editing){historyMenu.Open(buttons[i]);return;}
                 if((i==4 || i==9 || i==10) && productMenu.enabled && !customization.editing){productMenu.OpenFrom(buttons[i],commands[i]);return;}
@@ -558,7 +561,7 @@ struct NativeNavigationToolbar {
         indicatorButtons[0].Content(winrt::box_value(state.indicators[0].label));
         privateLabel.Text(state.indicators[0].label);
         Automation::AutomationProperties::SetName(privateLabel,state.indicators[0].label);
-        if (!visible) { historyMenu.Close(); downloadsPanel.Close(); productMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
+        if (!visible) { historyMenu.Close(); downloadsPanel.Close(); profileMenu.Close(); productMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
         hasOverflow = visible && state[6].enabled;
         requiredOverflow = visible && state[6].required;
         const bool downloading=visible && state[8].progress>=0 && !customization.editing;
