@@ -4,8 +4,8 @@ import vm from 'node:vm';
 import {STOCK_TOOLBAR_WIDGETS,WinUIStockToolbar} from '../upstream/firefox/browser/base/content/WinUIStockToolbar.sys.mjs';
 import {readFileSync} from 'node:fs';
 import {readActionStamp,actionStampMatches} from '../upstream/firefox/browser/base/content/WinUIActionStamp.sys.mjs';
-function fixture() {
- let order=['back-button','urlbar-container','stop-reload-button','fxa-toolbar-menu-button'],revision=0;
+function fixture(retired=[]) {
+ let order=['back-button','urlbar-container','stop-reload-button','fxa-toolbar-menu-button',...retired],revision=0;
  let nextSpring=0; let saved=null; const listeners=new Set();
  const defaults=[...order], extras=[], overflow=[], prefs=new Map();
  const calls=[],nodes=new Map(order.map(id=>[id,{getAttribute:()=>id}]));
@@ -26,6 +26,14 @@ function fixture() {
  const command=(control,verb,target)=>{const s=state();return `customize:${s.revision}:${s.items.find(i=>i.control===control).id}:${verb}`+(target?':'+s.items.find(i=>i.control===target).id:'');};
  return {c,state,command,calls,ui,nodes,prefs,extras,overflow,order:()=>order};
 }
+test('saved Send/Share toolbar placements migrate out of the toolbar',()=>{
+ const f=fixture(['send-tab-button','share-tab-button']);
+ assert.ok(!f.order().includes('send-tab-button'));
+ assert.ok(!f.order().includes('share-tab-button'));
+ assert.deepEqual(f.calls.filter(call=>call[0]==='remove'),[['remove','send-tab-button'],['remove','share-tab-button']]);
+ assert.ok(!f.state().items.some(i=>['stock:send-tab-button','stock:share-tab-button'].includes(i.control)));
+});
+
 test('placement projection keeps stable identities and revisions until Firefox state changes',()=>{
  const f=fixture(),a=f.state(),b=f.state();assert.equal(a.revision,b.revision);assert.deepEqual(a.items,b.items);
  const command=f.command('profile','before','back');assert.equal(f.c.execute(command),1);

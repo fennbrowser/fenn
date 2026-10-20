@@ -73,19 +73,72 @@ function menuFixture() {
     [...nodes.values()].filter(n=>!['trust-icon-container','identity-icon-box','identity-box','tracking-protection-icon-container','identity-permission-box','star-button'].includes(n.id)) : []};
   const adapter=Object.create(context.Actions.prototype);
   Object.assign(adapter,{entries:new Map(),nextId:0,images:new Map(),events:new WeakSet(),label:key=>key,context:()=>17,
-    toolbar:{menuAnchor:()=>({}),menuAnchors:new Map()},window:{document,gURLBar:{parentNode:{}},
+    shareURL:()=>({spec:'https://example.com/'}),toolbar:{menuAnchor:()=>({}),menuAnchors:new Map()},window:{document,gURLBar:{parentNode:{}},
       gBrowser:{selectedTab:{}},getComputedStyle:()=>({display:'block',visibility:'visible',fill:'currentColor',color:'rgb(0,0,0)',listStyleImage:'none'})}});
+  context.Services.focus={activeWindow:adapter.window};
   return {adapter,nodes};
 }
 
-test('page menu has exactly six rows, four default pins and disabled explanations',()=>{
+test('page menu has exactly seven rows, five default pins and disabled explanations',()=>{
   const {adapter,nodes}=menuFixture();
   nodes.get('picture-in-picture-button').hidden=true;
   const menu=adapter.snapshot().pageActions;
-  assert.deepEqual(Array.from(menu.items,i=>i.key),['connection','reader','pip','taskbar','translation','permissions']);
+  assert.deepEqual(Array.from(menu.items,i=>i.key),['connection','reader','pip','taskbar','translation','share','permissions']);
   assert.equal(menu.items[0].pinnable,false); assert.equal(menu.items[0].pinned,false);
   assert.ok(menu.items.slice(1,5).every(i=>i.pinned && i.pinnable));
   assert.equal(menu.items[2].enabled,false); assert.equal(menu.items[2].reason,'pip-unavailable');
+});
+
+test('Share stays independent of Firefox panel visibility and honors its pin preference',()=>{
+  const {adapter,nodes}=menuFixture(); nodes.get('share-button').hidden=true;
+  let state=adapter.snapshot();
+  const share=state.pageActions.items.find(i=>i.key==='share');
+  assert.ok(share.enabled && share.pinned && share.pinnable);
+  assert.equal(state.omnibarRight.at(-2).id,share.id);
+  assert.equal(adapter.activate('omni-unpin:'+share.id,{},{}),1);
+  state=adapter.snapshot();
+  assert.ok(!state.omnibarRight.some(i=>i.id===share.id));
+  assert.ok(state.pageActions.items.find(i=>i.key==='share').enabled);
+  adapter.shareURL=()=>null;
+  state=adapter.snapshot();
+  assert.equal(state.pageActions.items.find(i=>i.key==='share').reason,'share-unavailable');
+  assert.equal(adapter.activate('omni:'+share.id,{},{}),2);
+});
+
+test('Share invokes only the native Windows service with Firefox-readable URL and live title',()=>{
+  const {adapter,nodes}=menuFixture(); nodes.get('share-button').hidden=true;
+  context.Services.focus={activeWindow:adapter.window};
+  const calls=[];
+  context.Ci={nsIWindowsUIUtils:'windows-service'};
+  context.Cc={'@mozilla.org/windows-ui-utils;1':{getService(iid){
+    assert.equal(iid,'windows-service');return {shareUrl:(...args)=>calls.push(args)};
+  }}};
+  adapter.window.gURLBar.makeURIReadable=()=>({displaySpec:'https://example.com/readable'});
+  adapter.window.gBrowser.selectedBrowser={contentTitle:'Current page'};
+  const share=adapter.snapshot().pageActions.items.find(i=>i.key==='share');
+  assert.equal(adapter.activate('omni-menu:'+share.id,{},{}),2);
+  assert.equal(adapter.activate('omni:'+share.id,{},{}),1);
+  assert.deepEqual(calls,[['https://example.com/readable','Current page']]);
+  context.Services.focus.activeWindow={};
+  assert.equal(adapter.activate('omni:'+share.id,{},{}),2);
+  context.Services.focus.activeWindow=adapter.window;
+  adapter.toolbar.menuAnchor=()=>null;
+  assert.equal(adapter.activate('omni:'+share.id,{},{}),2);
+  assert.equal(calls.length,1);
+});
+
+test('Share eligibility delegates URL policy and reader unwrapping to BrowserUtils',()=>{
+  const {adapter}=menuFixture(); delete adapter.shareURL;
+  const uri={spec:'about:reader?url=https://example.com/'};
+  const received=[];
+  adapter.window.gBrowser.selectedBrowser={currentURI:uri};
+  context.ChromeUtils={importESModule(path){
+    assert.equal(path,'resource://gre/modules/BrowserUtils.sys.mjs');
+    return {BrowserUtils:{getShareableURL(value){received.push(value);return null;}}};
+  }};
+  assert.equal(adapter.shareURL(),null);assert.equal(received[0],uri);
+  pins.set('browser.menu.share_url.allow',false);
+  assert.equal(adapter.shareURL(),null);assert.equal(received.length,1);
 });
 
 test('unpinning keeps the action in the menu, persists across adapters and rejects repeated intents',()=>{
@@ -124,9 +177,19 @@ test('secure identity moves into menu; insecure and trust warning indicators sta
 test('bookmark star is the final published action before native ellipsis; other actions stay inline',()=>{
   const {adapter}=menuFixture(); const state=adapter.snapshot();
   assert.equal(state.omnibarRight.at(-1).label,'star-button-box');
+  assert.equal(state.omnibarRight.at(-2).icon,'share');
   assert.ok(state.omnibarRight.some(i=>i.label==='extension-action'));
-  assert.ok(state.omnibarRight.some(i=>i.label==='share-button'));
+  assert.ok(state.omnibarRight.some(i=>i.label==='share'));
   assert.ok(!state.omnibarRight.some(i=>i.label==='pageActionButton'));
+});
+
+test('the bounded inline inventory reserves both Share and the bookmark star',()=>{
+  const {adapter,nodes}=menuFixture();
+  for(let i=0;i<40;i++) nodes.set('extension-'+i,{...nodes.get('extension-action'),id:'extension-'+i});
+  const right=adapter.snapshot().omnibarRight;
+  assert.equal(right.length,32);
+  assert.equal(right.at(-2).icon,'share');
+  assert.equal(right.at(-1).icon,'bookmark');
 });
 
 test('Firefox indicators remain persistent; ordinary actions only reveal on hover',()=>{

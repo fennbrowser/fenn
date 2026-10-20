@@ -13,7 +13,7 @@ index 934bad0d61f..81cd6e7ab6b 100644
 +        CONFIG["MOZ_BRANDING_DIRECTORY"],
      )
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 4f50c25976a..aebd9bcedf6 100644
+index 4f50c25976a..de3012e298b 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -56,7 +56,7 @@ index 4f50c25976a..aebd9bcedf6 100644
 +// Fenn (firefox-winui): no Start Menu Private Browsing shortcut is created.
 +pref("browser.privacySegmentation.createdShortcut", true);
  
-@@ -3872,2 +3877,59 @@ pref("distribution.mozillaonline.ignore", true);
+@@ -3872,2 +3877,60 @@ pref("distribution.mozillaonline.ignore", true);
  
 +// The native tab strip is on by default in every lane (unpackaged launcher and
 +// MSIX alike); turn it off to fall back to Firefox's own UI. Firefox keeps its
@@ -90,6 +90,7 @@ index 4f50c25976a..aebd9bcedf6 100644
 +pref("fenn.winui.address.actions.pip", true);
 +pref("fenn.winui.address.actions.taskbar", true);
 +pref("fenn.winui.address.actions.translation", true);
++pref("fenn.winui.address.actions.share", true);
 +pref("fenn.winui.navigation.toolbar.enabled", true);
 +// Hide Firefox's retained toolbar below the native navigation row while that row
 +// is active. Controls the row does not yet host (for example
@@ -7895,10 +7896,10 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..5b181bd0ae2 100644
+index 4f28e62c7b5..b05b0871d86 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -520 +520,110 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,112 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -7923,6 +7924,8 @@ index 4f28e62c7b5..5b181bd0ae2 100644
 +winui-page-actions-pip = Picture-in-Picture
 +winui-page-actions-taskbar = Taskbar tabs
 +winui-page-actions-translation = Translation
++winui-page-actions-share = Share Tab
++winui-page-actions-share-unavailable = This page can’t be shared.
 +winui-page-actions-permissions = Site permissions
 +winui-page-actions-pin = Pin to address bar
 +winui-page-actions-unpin = Unpin from address bar
@@ -18877,10 +18880,10 @@ index 00000000000..1dbff3ea703
 +}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 00000000000..85d6b628141
+index 00000000000..a1d38e9ebd3
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,218 @@
 +// Firefox owns widget eligibility and durable placement; native owns the editor.
 +import { readActionStamp, actionStampMatches } from "chrome://browser/content/WinUIActionStamp.sys.mjs";
 +import { STOCK_TOOLBAR_WIDGETS, WinUIStockToolbar } from "chrome://browser/content/WinUIStockToolbar.sys.mjs";
@@ -18889,6 +18892,13 @@ index 00000000000..85d6b628141
 +    this.toolbar = toolbar;
 +    this.stock = new WinUIStockToolbar(this);
 +    this.ui = ChromeUtils.importESModule('moz-src:///browser/components/customizableui/CustomizableUI.sys.mjs').CustomizableUI;
++    // Sharing moved into the URL bar. Retire saved toolbar/overflow placement
++    // as well as palette eligibility, so existing profiles do not show both.
++    for (const widget of ['send-tab-button', 'share-tab-button']) {
++      const area = this.ui.getPlacementOfWidget(widget)?.area;
++      if ([this.ui.AREA_NAVBAR, this.ui.AREA_FIXED_OVERFLOW_PANEL].includes(area))
++        this.ui.removeWidgetFromArea(widget);
++    }
 +    this.widgetStrings = Services.strings.createBundle('chrome://browser/locale/customizableui/customizableWidgets.properties');
 +    this.editorOpen = false; this.ownsReset = false; this.resetting = false;
 +    this.nativeOverflow = new Set();
@@ -19094,10 +19104,10 @@ index 00000000000..85d6b628141
 +}
 diff --git a/browser/base/content/WinUIStockToolbar.sys.mjs b/browser/base/content/WinUIStockToolbar.sys.mjs
 new file mode 100644
-index 00000000000..4d93f4547f4
+index 00000000000..b877bfa4fd6
 --- /dev/null
 +++ b/browser/base/content/WinUIStockToolbar.sys.mjs
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,150 @@
 +// An explicit stock-widget boundary, not an adapter for arbitrary chrome widgets.
 +// Firefox owns every command, policy check, label and persisted placement.
 +export const STOCK_TOOLBAR_WIDGETS = Object.freeze({
@@ -19122,8 +19132,6 @@ index 00000000000..4d93f4547f4
 +  "privatebrowsing-button": ["privatebrowsing-button"],
 +  "tab-groups-button": ["tab-groups-button"],
 +  "import-button": ["import-button"],
-+  "send-tab-button": ["send-tab-button"],
-+  "share-tab-button": ["share-tab-button"],
 +  "mini-window-button": ["mini-window-button"],
 +  "firefox-view-button": ["firefox-view-button"],
 +  "profiler-button": ["profiler-button"],
@@ -19198,7 +19206,7 @@ index 00000000000..4d93f4547f4
 +        this.label(button) || this.customization.l10nLabel(button) || button?.getAttribute("tooltiptext") || "";
 +      return {id, label:String(label).slice(0,4096),
 +        address:!!editCommand && address,
-+        menu:!!this.customization.ui.getWidget(widget)?.viewId || ["library-button","send-tab-button","share-tab-button"].includes(widget),
++        menu:!!this.customization.ui.getWidget(widget)?.viewId || widget === "library-button",
 +        tooltip:String(button?.getAttribute("tooltiptext") || label).slice(0,4096),
 +        shown:!!button && rendered && !node.hidden && !node.collapsed && !button.hidden && !button.collapsed,
 +        enabled:!window.gDialogBox?.isOpen && !(widget === "panic-button" && this.toolbar.privacyPanels?.busy) && rendered && !node.hidden && !node.collapsed && !button?.hidden && !button?.collapsed && enabled,
@@ -19234,18 +19242,12 @@ index 00000000000..4d93f4547f4
 +    const view = c.ui.getWidget(entry.widget)?.viewId || ({
 +      "library-button":"appMenu-libraryView", "developer-button":"PanelUI-developer",
 +    })[entry.widget];
-+    // New Tab also owns a container popup, but its primary action remains the
-+    // normal new-tab command. Only these stock menu buttons open on activation.
-+    const popup = ["send-tab-button","share-tab-button"].includes(entry.widget) ? button.querySelector("menupopup") : null;
-+    if (view || popup) {
++    if (view) {
 +      const anchor = toolbar.menuAnchor(command, action);
 +      if (!anchor) return 2;
 +      anchor.setAttribute("aria-label", part.label);
 +      const trigger = action.keyboard ? new window.KeyboardEvent("keypress", {key:"Enter"}) : event;
-+      if (popup) {
-+        if (["open","showing"].includes(popup.state)) popup.hidePopup();
-+        else popup.openPopup(anchor, "after_start", 0, 0, false, false, trigger);
-+      } else if (anchor.open) window.document.getElementById("customizationui-widget-panel")?.hidePopup();
++      if (anchor.open) window.document.getElementById("customizationui-widget-panel")?.hidePopup();
 +      else window.PanelUI.showSubView(view, anchor, trigger);
 +    } else {
 +      // doCommand produces Firefox's real command event, preserving the original
@@ -19568,10 +19570,10 @@ index 00000000000..78194ca8878
 +}
 diff --git a/browser/base/content/WinUIOmnibarActions.sys.mjs b/browser/base/content/WinUIOmnibarActions.sys.mjs
 new file mode 100644
-index 00000000000..2febe0ecc1d
+index 00000000000..1a592f1575d
 --- /dev/null
 +++ b/browser/base/content/WinUIOmnibarActions.sys.mjs
-@@ -0,0 +1,297 @@
+@@ -0,0 +1,333 @@
 +// Presentation adapter for Firefox-owned address-bar controls. No browser policy lives here.
 +const PAGE_ACTIONS = [
 +  ['connection', 'identity-icon-box'],
@@ -19579,6 +19581,7 @@ index 00000000000..2febe0ecc1d
 +  ['pip', 'picture-in-picture-button'],
 +  ['taskbar', 'taskbar-tabs-button'],
 +  ['translation', 'translations-button'],
++  ['share', 'share-button'],
 +  ['permissions', 'identity-permission-box'],
 +];
 +const PIN_PREF = 'fenn.winui.address.actions.';
@@ -19595,6 +19598,7 @@ index 00000000000..2febe0ecc1d
 +    this.closed = false;
 +    this.invalidate = () => { if (!this.closed) toolbar.owner.invalidateAddress(); };
 +    Services.prefs.addObserver(PIN_PREF, this.invalidate);
++    Services.prefs.addObserver('browser.menu.share_url.allow', this.invalidate);
 +    this.observer = new this.window.MutationObserver(this.invalidate);
 +    this.observer.observe(this.window.gURLBar, {subtree:true, childList:true, characterData:true, attributes:true});
 +    this.theme = this.window.matchMedia('(prefers-color-scheme: dark)');
@@ -19636,13 +19640,19 @@ index 00000000000..2febe0ecc1d
 +    }
 +    return entry;
 +  }
++  shareURL() {
++    if (!Services.prefs.getBoolPref('browser.menu.share_url.allow', true)) return null;
++    const {BrowserUtils} = ChromeUtils.importESModule('resource://gre/modules/BrowserUtils.sys.mjs');
++    return BrowserUtils.getShareableURL(this.window.gBrowser.selectedBrowser.currentURI);
++  }
 +  pageActions() {
 +    const document = this.window.document;
 +    const items = PAGE_ACTIONS.map(([key, nodeId]) => {
 +      const node = key === 'connection' ?
 +        ['trust-icon-container', nodeId].map(id => document.getElementById(id)).find(n => this.visible(n)) :
 +        document.getElementById(nodeId);
-+      const enabled = !!node && this.visible(node) && node.getAttribute('disabled') !== 'true';
++      const enabled = key === 'share' ? !!node && !!this.shareURL() :
++        !!node && this.visible(node) && node.getAttribute('disabled') !== 'true';
 +      const entry = node ? this.entry(node) : null;
 +      return {key, id:entry?.id || `unavailable-${key}`, label:this.label(key), enabled,
 +        reason:enabled ? '' : this.label(`${key}-unavailable`),
@@ -19728,14 +19738,27 @@ index 00000000000..2febe0ecc1d
 +      .filter(node => node && node.id !== 'pageActionButton');
 +    // Keep the star directly before the fixed native ellipsis, including when
 +    // extensions insert page-action nodes after Firefox's star.
-+    right.sort((a,b) => Number(a.id === 'star-button-box') - Number(b.id === 'star-button-box'));
++    const order = node => node.id === 'star-button-box' ? 2 : node.id === 'share-button' ? 1 : 0;
++    right.sort((a,b) => order(a) - order(b));
 +    const pageActions = this.pageActions();
 +    const keep = new Set([...this.entries].filter(([,e]) => pageActions.items.some(item => item.id === e.id)).map(([node]) => node));
 +    const output = {omnibarLeft:[], omnibarRight:[], pageActions};
 +    for (const [nodes, key] of [[left,'omnibarLeft'],[right,'omnibarRight']]) {
 +      for (const node of nodes) {
-+        const limit = key === 'omnibarRight' && node.id !== 'star-button-box' &&
-+          this.visible(document.getElementById('star-button-box')) ? 31 : 32;
++        // Sharing is a native Windows destination, independent of the retained
++        // Firefox share-panel feature and its hidden URL-bar button.
++        if (node.id === 'share-button') {
++          const item = pageActions.items.find(item => item.key === 'share');
++          if (item?.enabled && item.pinned) {
++            keep.add(node);
++            output[key].push({id:item.id, label:item.label, enabled:true, icon:'share', iconState:'normal',
++              alwaysVisible:false, text:'', badge:'', background:[0,0,0,0], foreground:[128,128,128,255], image:null});
++          }
++          continue;
++        }
++        const reserved = Number(this.visible(document.getElementById('star-button-box'))) +
++          Number(pageActions.items.some(item => item.key === 'share' && item.enabled && item.pinned));
++        const limit = key === 'omnibarRight' && node.id !== 'star-button-box' ? 32 - reserved : 32;
 +        if (!this.visible(node) || output[key].length >= limit) continue;
 +        if (['trust-icon-container','identity-icon-box'].includes(node.id) && !this.connectionWarning(node)) continue;
 +        // Firefox decides whether an indicator exists and whether an action is
@@ -19820,6 +19843,20 @@ index 00000000000..2febe0ecc1d
 +    }
 +    const live = [...state.omnibarLeft,...state.omnibarRight,...(state.pageActions?.items || [])].find(item=>item.id === id);
 +    const entry = [...this.entries.values()].find(item=>item.id === id);
++    if (menuItem?.key === 'share') {
++      // The Windows service selects its owner from the foreground HWND.
++      // Native delivery is asynchronous; reject an activation after switching
++      // to another window instead of attaching its share UI to that window.
++      if (Services.focus.activeWindow !== this.window || contextMenu || !live?.enabled || !entry ||
++          entry.node !== this.window.document.getElementById('share-button') ||
++          !this.toolbar.menuAnchor(`omni:${id}`, bounds)) return 2;
++      const url = this.shareURL();
++      if (!url) return 2;
++      Cc['@mozilla.org/windows-ui-utils;1'].getService(Ci.nsIWindowsUIUtils)
++        .shareUrl(this.window.gURLBar.makeURIReadable(url).displaySpec,
++          this.window.gBrowser.selectedBrowser.contentTitle || this.label('share'));
++      return 1;
++    }
 +    if (!live?.enabled || !entry || !this.visible(entry.node)) return 2;
 +    const anchor = this.toolbar.menuAnchor(`omni:${id}`, bounds);
 +    if (!anchor) return 2;
@@ -19859,6 +19896,7 @@ index 00000000000..2febe0ecc1d
 +  close() {
 +    this.closed = true;
 +    Services.prefs.removeObserver(PIN_PREF, this.invalidate);
++    Services.prefs.removeObserver('browser.menu.share_url.allow', this.invalidate);
 +    this.observer.disconnect();
 +    this.theme.removeEventListener('change',this.invalidate);
 +    this.contrast.removeEventListener('change',this.invalidate);

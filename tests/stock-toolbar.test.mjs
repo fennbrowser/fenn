@@ -22,6 +22,8 @@ test('stock inventory explicitly covers stock buttons and groups, excluding arbi
   assert.deepEqual(STOCK_TOOLBAR_WIDGETS['zoom-controls'],['zoom-out-button','zoom-reset-button','zoom-in-button']);
   assert.equal(STOCK_TOOLBAR_WIDGETS['edit-controls'].length,3);
   assert.equal(STOCK_TOOLBAR_WIDGETS['sidebar-button'],undefined);
+  assert.equal(STOCK_TOOLBAR_WIDGETS['send-tab-button'],undefined);
+  assert.equal(STOCK_TOOLBAR_WIDGETS['share-tab-button'],undefined);
   assert.equal(STOCK_TOOLBAR_WIDGETS['some-user-script'],undefined);
 });
 test('Forget busy availability is included before customization revisions its stock state',()=>{
