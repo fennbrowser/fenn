@@ -14,6 +14,7 @@
 #include "ProfileMenu.h"
 #include "OverflowMenu.h"
 #include "DeveloperMenu.h"
+#include "ProfilerPanel.h"
 #include "PrivacyPanel.h"
 #include "TabGroupsMenu.h"
 #include "ProductMenu.h"
@@ -55,6 +56,7 @@ struct NativeNavigationToolbar {
     NativeProfileMenu profileMenu;
     NativeOverflowMenu overflowMenu;
     NativeDeveloperMenu developerMenu;
+    NativeProfilerPanel profilerPanel;
     NativeTabGroupsMenu tabGroupsMenu;
     NativePrivacyPanel forgetPanel{SHELL_PRIVACY_PANEL_KIND_FORGET,L"forgetPanel",L"FennForgetPanel"};
     NativePrivacyPanel clearPrivatePanel{SHELL_PRIVACY_PANEL_KIND_CLEAR_PRIVATE,L"clearPrivatePanel",L"FennClearPrivatePanel"};
@@ -572,7 +574,7 @@ struct NativeNavigationToolbar {
         indicatorButtons[0].Content(winrt::box_value(state.indicators[0].label));
         privateLabel.Text(state.indicators[0].label);
         Automation::AutomationProperties::SetName(privateLabel,state.indicators[0].label);
-        if (!visible) { historyMenu.Close(); downloadsPanel.Close(); profileMenu.Close(); overflowMenu.Close(); developerMenu.Close(); tabGroupsMenu.Close(); forgetPanel.Close(); clearPrivatePanel.Close(); productMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
+        if (!visible) { historyMenu.Close(); downloadsPanel.Close(); profileMenu.Close(); overflowMenu.Close(); developerMenu.Close(); profilerPanel.Close(); tabGroupsMenu.Close(); forgetPanel.Close(); clearPrivatePanel.Close(); productMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
         hasOverflow = visible && state[6].enabled;
         requiredOverflow = visible && state[6].required;
         const bool downloading=visible && state[8].progress>=0 && !customization.editing;
