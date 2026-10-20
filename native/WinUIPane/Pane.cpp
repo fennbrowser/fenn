@@ -1713,6 +1713,10 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
             pane.strip->Publish(snapshot.GetNamedObject(L"strip"));
             return S_OK;
         }
+        if (snapshot.HasKey(L"groupCreation")) {
+            if(!pane.strip || snapshot.Size()!=3 || snapshot.GetNamedNumber(L"version")!=2 || !snapshot.GetNamedBoolean(L"publishOnly",false))return E_INVALIDARG;
+            pane.strip->RequestGroupCreation(snapshot.GetNamedObject(L"groupCreation"));return S_OK;
+        }
         if (snapshot.HasKey(L"groupHeader")) {
             if (!pane.strip || snapshot.Size()!=3 || snapshot.GetNamedNumber(L"version")!=2 || !snapshot.GetNamedBoolean(L"publishOnly",false)) return E_INVALIDARG;
             pane.strip->groupHeader.core=pane.shell.core;

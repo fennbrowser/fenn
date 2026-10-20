@@ -4218,3 +4218,14 @@ mod group_header_ffi_tests {
   shell_core_destroy(core);
  }}
 }
+
+/// Resolve a browser-initiated group creation opening once, through Snapshot rules.
+/// # Safety
+/// Live core and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_group_header_request(core:*mut ShellCore,request:u32,group:u32,window:u32,out:*mut u32)->ShellStatus {
+ let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
+ if group==0 || window==0{return ShellStatus::InvalidArgument;}
+ let fingerprint=[group as u16,(group>>16) as u16,window as u16,(window>>16) as u16];
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match c.group_header.request_open(request,&fingerprint){Ok(id)=>{*out=id;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}

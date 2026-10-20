@@ -863,14 +863,18 @@ index be3252ae5f2..2fed4aa835b 100644
 +    gBrowser.selectedTab = contextTabs[0];
  
 diff --git a/browser/components/tabbrowser/content/tabgroup-menu.js b/browser/components/tabbrowser/content/tabgroup-menu.js
-index 1902d2d4088..ad9fd600b06 100644
+index 1902d2d4088..e37de036a69 100644
 --- a/browser/components/tabbrowser/content/tabgroup-menu.js
 +++ b/browser/components/tabbrowser/content/tabgroup-menu.js
 @@ -324,2 +324,3 @@
      #commandButtons;
 +    #commandActions = {};
      #createButton;
-@@ -495,3 +496,8 @@
+@@ -339,2 +340,3 @@
+     #initialTabGroupName;
++    #nativeInitialName;
+     #suggestionsContainer;
+@@ -495,3 +497,8 @@
  
 -      this.#commandButtons.addNewTabInGroup.addEventListener("command", () => {
 +      const onCommand = (key, handler) => {
@@ -880,45 +884,46 @@ index 1902d2d4088..ad9fd600b06 100644
 +
 +      onCommand("addNewTabInGroup", () => {
          this.#handleNewTabInGroup();
-@@ -499,4 +505,4 @@
+@@ -499,4 +506,4 @@
  
 -      this.#commandButtons.moveGroupToNewWindow.addEventListener(
 -        "command",
 +      onCommand(
 +        "moveGroupToNewWindow",
          () => {
-@@ -510,3 +516,3 @@
+@@ -510,3 +517,3 @@
  
 -      this.#commandButtons.copyAllLinks.addEventListener("command", () => {
 +      onCommand("copyAllLinks", () => {
          let links = this.#getGroupLinks(this.activeGroup);
-@@ -519,3 +525,3 @@
+@@ -519,3 +526,3 @@
  
 -      this.#commandButtons.ungroupTabs.addEventListener("command", () => {
 +      onCommand("ungroupTabs", () => {
          this.activeGroup.ungroupTabs(
-@@ -527,3 +533,3 @@
+@@ -527,3 +534,3 @@
  
 -      this.#commandButtons.saveAndCloseGroup.addEventListener("command", () => {
 +      onCommand("saveAndCloseGroup", () => {
          this.activeGroup.saveAndClose(
-@@ -535,3 +541,3 @@
+@@ -535,3 +542,3 @@
  
 -      this.#commandButtons.deleteGroup.addEventListener("command", () => {
 +      onCommand("deleteGroup", () => {
          gBrowser.removeTabGroup(this.activeGroup, {
-@@ -543,3 +549,3 @@
+@@ -543,3 +550,3 @@
  
 -      this.#commandButtons.shareTabGroup.addEventListener("command", () => {
 +      onCommand("shareTabGroup", () => {
          ContentSharingUtils.handleShareTabGroup(this.activeGroup);
-@@ -548,3 +554,3 @@
+@@ -548,3 +555,3 @@
  
 -      this.#commandButtons.createAITab.addEventListener("command", () => {
 +      onCommand("createAITab", () => {
          lazy.AIWindow.createAITab(
-@@ -911,2 +917,29 @@
+@@ -911,3 +918,33 @@
  
+-    openCreateModal(group) {
 +    /**
 +     * Opens the editor at an explicit screen rect, or at the group's label.
 +     * A hidden Firefox tab row (the native strip replaces it) leaves the label
@@ -946,15 +951,19 @@ index 1902d2d4088..ad9fd600b06 100644
 +      }
 +    }
 +
-     openCreateModal(group) {
-@@ -920,5 +953,3 @@
++    openCreateModal(group, { nativeFallback = false, screenRect = null, initialName } = {}) {
++      if (!nativeFallback && !(this.smartTabGroupsEnabled && this.smartTabGroupsOptin) &&
++          window.gWinUIPane?.openGroupCreation(group)) return;
++      this.#nativeInitialName = initialName;
+       this.activeGroup = group;
+@@ -920,5 +957,3 @@
  
 -      this.#panel.openPopup(group.firstChild, {
 -        position: this.#panelPosition,
 -      });
-+      this.#openPanel(group);
++      this.#openPanel(group, screenRect);
        if (!this.smartTabGroupsOptin) {
-@@ -956,3 +987,51 @@
+@@ -956,3 +991,59 @@
  
 -    openEditModal(group) {
 +    // Native header presentation reuses the existing browser command handlers.
@@ -988,6 +997,14 @@ index 1902d2d4088..ad9fd600b06 100644
 +      return true;
 +    }
 +
++    nativeCreationFinished(group, keep) {
++      if (keep) {
++        this.dispatchEvent(new CustomEvent("TabGroupCreateDone", { bubbles: true }));
++      } else {
++        group.ungroupTabs(TabMetrics.userTriggeredContext(TabMetrics.METRIC_SOURCE.CANCEL_TAB_GROUP_CREATION));
++      }
++    }
++
 +    nativeEditFinished(group, initialName) {
 +      if (group.label != initialName) Glean.tabgroup.groupInteractions.rename.add(1);
 +    }
@@ -1007,13 +1024,35 @@ index 1902d2d4088..ad9fd600b06 100644
 +
 +    openEditModal(group, screenRect = null) {
        this.activeGroup = group;
-@@ -965,5 +1044,3 @@
+@@ -965,5 +1056,3 @@
  
 -      this.#panel.openPopup(group.firstChild, {
 -        position: this.#panelPosition,
 -      });
 +      this.#openPanel(group, screenRect);
        document.getElementById("tabGroupEditor_moveGroupToNewWindow").disabled =
+@@ -1027,3 +1116,4 @@
+       }
+-      this.#initialTabGroupName = this.activeGroup?.label;
++      this.#initialTabGroupName = (this.createMode ? this.#nativeInitialName : undefined) ?? this.activeGroup?.label;
++      this.#nativeInitialName = undefined;
+       this.#nameField.focus();
+@@ -1048,5 +1138,3 @@
+         if (this.#keepNewlyCreatedGroup) {
+-          this.dispatchEvent(
+-            new CustomEvent("TabGroupCreateDone", { bubbles: true })
+-          );
++          this.nativeCreationFinished(this.activeGroup, true);
+           if (
+@@ -1059,7 +1147,3 @@
+         } else {
+-          this.activeGroup.ungroupTabs(
+-            TabMetrics.userTriggeredContext(
+-              TabMetrics.METRIC_SOURCE.CANCEL_TAB_GROUP_CREATION
+-            )
+-          );
++          this.nativeCreationFinished(this.activeGroup, false);
+         }
 diff --git a/browser/components/tabbrowser/content/tabgroup.mjs b/browser/components/tabbrowser/content/tabgroup.mjs
 index 3d25b8afa3b..39c7484036e 100644
 --- a/browser/components/tabbrowser/content/tabgroup.mjs
@@ -18465,14 +18504,15 @@ index 00000000000..9f7d8fdffd5
 +}
 diff --git a/browser/base/content/WinUIGroupHeader.sys.mjs b/browser/base/content/WinUIGroupHeader.sys.mjs
 new file mode 100644
-index 00000000000..e961914ed90
+index 00000000000..ce08dde36a4
 --- /dev/null
 +++ b/browser/base/content/WinUIGroupHeader.sys.mjs
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,149 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
++let nextCreationRequest=0;
 +const commands = ["new-tab", "new-window", "copy-links", "save", "ungroup", "delete", "share"];
 +export class WinUIGroupHeader {
 +  constructor(owner, window) {
@@ -18484,7 +18524,43 @@ index 00000000000..e961914ed90
 +    for(const topic of this.topics)Services.obs.addObserver(this.changed,topic);
 +    Services.prefs.addObserver("browser.",this.changed);
 +  }
-+  close(){this.dismiss();this.closed=true;for(const topic of this.topics)Services.obs.removeObserver(this.changed,topic);Services.prefs.removeObserver("browser.",this.changed);}
++  close(){this.pendingCreation=null;this.dismiss();this.closed=true;for(const topic of this.topics)Services.obs.removeObserver(this.changed,topic);Services.prefs.removeObserver("browser.",this.changed);}
++  requestCreation(group){
++    const w=this.window;
++    if(this.closed || !this.owner.attached || !group?.isConnected || !w.gBrowser.tabGroups.includes(group) || w.fullScreen || w.document.fullscreenElement ||
++       w.gBrowser.tabContainer.verticalMode || w.gDialogBox.isOpen || w.document.documentElement.hasAttribute("customizing") || this.owner.addressToolbar?.customization?.editorOpen || nextCreationRequest===0xffffffff)return false;
++    const controller=w.gBrowser.tabGroupMenu;
++    if(["open","showing"].includes(controller.panel?.state))controller.close();
++    if(this.pendingCreation?.group.isConnected)controller.nativeCreationFinished(this.pendingCreation.group,true);
++    this.dismiss();
++    this.pendingCreation={request:++nextCreationRequest,group,tab:w.gBrowser.selectedTab,tabs:[...group.tabs]};
++    this.owner.structuralDirty=true;this.owner.stripDirty=true;this.owner.schedule();return true;
++  }
++  publishCreation(){
++    const pending=this.pendingCreation,w=this.window;
++    if(!pending || pending.sent)return;
++    const group=this.owner.stripSession?.ids.get(pending.group);
++    if(!group || !pending.group.isConnected || !w.gBrowser.tabGroups.includes(pending.group)){this.pendingCreation=null;return;}
++    pending.sent=true;
++    try {w.windowUtils.syncWinUITabMenu(JSON.stringify({version:2,publishOnly:true,groupCreation:{request:pending.request,group,window:this.owner.stripSession.windowDragSession}}));}
++    catch(error){
++      if(this.pendingCreation!==pending)return;
++      this.pendingCreation=null;
++      w.gBrowser.tabGroupMenu.openCreateModal(pending.group,{nativeFallback:true});
++      console.error("Native group creation unavailable",error);
++    }
++  }
++  rejectCreation(action){
++    const pending=this.pendingCreation,w=this.window;
++    if(!pending || action.creation!==pending.request)return;
++    this.pendingCreation=null;
++    if(Number.isInteger(action.menuSession) && action.menuSession>0 && action.menuSession<=0xffffffff)
++      w.windowUtils.syncWinUITabMenu(JSON.stringify({version:2,publishOnly:true,groupHeader:{closed:action.menuSession}}));
++    if(!pending.group.isConnected)return;
++    if(this.closed || !this.owner.attached || w.gBrowser.selectedTab!==pending.tab || w.gDialogBox.isOpen || w.fullScreen || w.document.fullscreenElement || w.gBrowser.tabContainer.verticalMode || w.document.documentElement.hasAttribute("customizing") || this.owner.addressToolbar?.customization?.editorOpen)
++      w.gBrowser.tabGroupMenu.nativeCreationFinished(pending.group,true);
++    else w.gBrowser.tabGroupMenu.openCreateModal(pending.group,{nativeFallback:true});
++  }
 +  label(id,attribute,args){
 +    this.l10n ??= new this.window.Localization(["branding/brand.ftl","browser/tabbrowser.ftl"],true);
 +    const [m]=this.l10n.formatMessagesSync([{id,...(args?{args}:{})}]);
@@ -18493,15 +18569,16 @@ index 00000000000..e961914ed90
 +  live(){const w=this.window,g=this.group;return !this.closed && this.owner.attached && !w.fullScreen && !w.document.fullscreenElement && Services.prefs.getBoolPref("browser.tabs.groups.enabled",true) &&
 +    !w.document.documentElement.hasAttribute("customizing") && !this.owner.addressToolbar?.customization?.editorOpen && !w.gBrowser.tabContainer.verticalMode && !w.gDialogBox.isOpen &&
 +    g?.isConnected && w.gBrowser.tabGroups.includes(g) && g.tabs.length && !g.tabs.some(t=>t.closing) &&
-+    w.gBrowser.selectedTab===this.tab && w.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId===this.document &&
++    w.gBrowser.selectedTab===this.tab && (this.creating || w.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId===this.document) &&
 +    g.tabs.length===this.tabs.length && g.tabs.every((t,i)=>t===this.tabs[i]) && g.label===this.name && g.color===this.color;}
 +  model(){
 +    const w=this.window,g=this.group,state=w.gBrowser.tabGroupMenu.nativeEditState(g);
-+    return {session:this.session,revision:this.revision,title:this.label("tab-group-editor-title-edit"),name:g.label,color:g.color,
++    return {session:this.session,revision:this.revision,creation:!!this.creating,title:this.label(this.creating?"tab-group-editor-title-create":"tab-group-editor-title-edit"),name:g.label,color:g.color,
 +      nameLabel:this.label("tab-group-editor-name-label"),placeholder:this.label("tab-group-editor-name-field","placeholder"),
 +      colorLabel:this.label("tab-group-editor-color-selector","aria-label"),done:this.label("tab-group-editor-done","label"),
 +      colors:state.colors.map(key=>({key,label:this.label("tab-group-editor-color-selector2-"+key)})),
-+      commands:state.commands.map(row=>({id:4+commands.indexOf(row.key),key:row.key,label:this.label(row.l10n,"label",row.args),enabled:row.enabled})),
++      ...(this.creating?{cancel:this.label("tab-group-editor-cancel","label")} : {}),
++      commands:(this.creating?[]:state.commands).map(row=>({id:4+commands.indexOf(row.key),key:row.key,label:this.label(row.l10n,"label",row.args),enabled:row.enabled})),
 +      ...(state.advanced?{more:this.label("winui-group-header-more")}:{})};
 +  }
 +  publish(){
@@ -18516,25 +18593,33 @@ index 00000000000..e961914ed90
 +    this.window.windowUtils.syncWinUITabMenu(JSON.stringify({version:2,publishOnly:true,groupHeader:this.description || {closed:this.closedSession,...(this.closedFallback?{fallback:true}:{})}}));
 +  }
 +  fallback(){
-+    const w=this.window,group=this.group,bounds=this.bounds;
-+    this.dismiss(true);
-+    const scale=w.devicePixelRatio;
-+    w.gBrowser.tabGroupMenu.openEditModal(group,Object.fromEntries(Object.entries(bounds).map(([k,v])=>[k,v/scale])));
++    const w=this.window,group=this.group,bounds=this.bounds,creating=this.creating,initialName=this.initialName;
++    this.dismiss(true,true);
++    const scale=w.devicePixelRatio,screenRect=Object.fromEntries(Object.entries(bounds).map(([k,v])=>[k,v/scale]));
++    if(creating)w.gBrowser.tabGroupMenu.openCreateModal(group,{nativeFallback:true,screenRect,initialName});
++    else w.gBrowser.tabGroupMenu.openEditModal(group,screenRect);
 +  }
-+  dismiss(fallback=false){
++  dismiss(fallback=false,transfer=false,keep=true){
 +    if(!this.session)return;
-+    this.window.gBrowser.tabGroupMenu.nativeEditFinished(this.group,this.initialName);
++    const w=this.window,group=this.group,creating=this.creating,initialName=this.initialName;
++    // Revoke before browser settlement can synchronously dispatch group events.
 +    this.closedFallback=fallback;this.closedSession=this.session;this.session=0;this.description=null;this.observer.disconnect();
 +    this.window.gBrowser.tabContainer.removeEventListener("TabSelect",this.revoke);
 +    this.l10n=null;this.publish();
++    if(!transfer){
++      if(creating && group.isConnected)w.gBrowser.tabGroupMenu.nativeCreationFinished(group,keep);
++      w.gBrowser.tabGroupMenu.nativeEditFinished(group,initialName);
++    }
 +  }
-+  open(group,bounds,session){
++  open(group,bounds,session,creation=0){
 +    if(!Number.isInteger(session) || session<=this.lastSession || session>0xffffffff)return false;
-+    this.dismiss();this.lastSession=session;this.session=session;this.revision=0;this.group=group;this.bounds=bounds;
++    if(creation && (!this.pendingCreation || this.pendingCreation.request!==creation || this.pendingCreation.group!==group || this.pendingCreation.tab!==this.window.gBrowser.selectedTab || group.tabs.length!==this.pendingCreation.tabs.length || group.tabs.some((t,i)=>t!==this.pendingCreation.tabs[i])))return false;
++    this.dismiss();this.creating=!!creation;if(creation)this.pendingCreation=null;
++    this.lastSession=session;this.session=session;this.revision=0;this.group=group;this.bounds=bounds;
 +    const w=this.window;this.tab=w.gBrowser.selectedTab;this.document=w.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId;
 +    this.tabs=[...group.tabs];this.name=this.initialName=group.label;this.color=group.color;
 +    if(!this.live()){this.dismiss();return false;}
-+    w.gBrowser.tabGroupMenu.close();
++    if(!this.creating)w.gBrowser.tabGroupMenu.close();
 +    this.observer.observe(w.gBrowser.tabContainer,{attributes:true,childList:true,subtree:true});
 +    w.gBrowser.tabContainer.addEventListener("TabSelect",this.revoke);
 +    this.fingerprint=null;this.publish();
@@ -18545,9 +18630,13 @@ index 00000000000..e961914ed90
 +  }
 +  execute(action){
 +    if(action?.kind!=="group-header" || action.session!==this.session || !this.session)return 2;
-+    if(action.command===0 || (action.command===3 && typeof action.name==="string")){
++    if(action.command===0 || action.command===21 || (action.command===3 && typeof action.name==="string")){
++      if(action.command===21 && !this.creating)return 2;
++      const cancel=this.creating && (action.command===21 || action.cancel===true);
++      if((cancel || action.command===21 || action.command===3) && (!Number.isInteger(action.revision) || action.revision<=0 || action.revision>this.revision))return 2;
++      if(cancel && !this.live()){this.dismiss();return 2;}
 +      if(this.live() && Number.isInteger(action.revision) && action.revision>0 && action.revision<=this.revision && typeof action.name==="string" && action.name.length<=4096 && this.description.colors.some(c=>c.key===action.color))this.window.gBrowser.tabGroupMenu.nativeEditValue(this.group,action.name,action.color);
-+      this.dismiss();return 1;
++      this.dismiss(false,false,!cancel);return 1;
 +    }
 +    if(["x","y","width","height"].every(k=>Number.isFinite(action[k]) && Math.abs(action[k])<=1000000) && action.width>0 && action.height>0)this.bounds=Object.fromEntries(["x","y","width","height"].map(k=>[k,action[k]]));
 +    this.publish();if(!this.session || action.revision!==this.revision || !this.live())return 2;
@@ -18562,9 +18651,9 @@ index 00000000000..e961914ed90
 +    if(action.command!==3 && !(action.command===20 && this.description.more) && !command)return 2;
 +    const bounds=Object.fromEntries(["x","y","width","height"].map(k=>[k,action[k]]));
 +    if(action.command===20 && (!Object.values(bounds).every(n=>Number.isFinite(n) && Math.abs(n)<=1000000) || bounds.width<=0 || bounds.height<=0))return 2;
-+    this.dismiss();
++    const creating=this.creating,initialName=this.initialName;this.dismiss(false,action.command===20);
 +    if(action.command===3)return 1;
-+    if(action.command===20){const scale=w.devicePixelRatio;controller.openEditModal(g,Object.fromEntries(Object.entries(bounds).map(([k,v])=>[k,v/scale])));return 1;}
++    if(action.command===20){const scale=w.devicePixelRatio,screenRect=Object.fromEntries(Object.entries(bounds).map(([k,v])=>[k,v/scale]));if(creating)controller.openCreateModal(g,{nativeFallback:true,screenRect,initialName});else controller.openEditModal(g,screenRect);return 1;}
 +    return controller.nativeEditCommand(g,command.key)?1:2;
 +  }
 +}
@@ -20466,10 +20555,10 @@ index 00000000000..1dc7b4fee7a
 +}
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 00000000000..a5c99b4fa14
+index 00000000000..ce8f9831359
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,318 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20664,6 +20753,7 @@ index 00000000000..a5c99b4fa14
 +    if (event?.kind === "strip-group-context") {
 +      if (this.consumed || event.session !== this.windowDragSession || !this.fresh(event.revision) ||
 +          !Number.isSafeInteger(event.group) || event.group <= 0 || !this.openGroupMenu ||
++          (event.creation!==undefined && (!Number.isInteger(event.creation) || event.creation<0 || event.creation>0xffffffff)) ||
 +          !Number.isInteger(event.menuSession) || event.menuSession<=0 || event.menuSession>0xffffffff ||
 +          ![event.x,event.y,event.width,event.height].every(n => Number.isFinite(n) && Math.abs(n) <= 1000000) ||
 +          event.width <= 0 || event.height <= 0) return false;
@@ -20673,7 +20763,7 @@ index 00000000000..a5c99b4fa14
 +      this.consumed = true;
 +      return this.openGroupMenu(this.targets.get(event.group), {
 +        x:event.x, y:event.y, width:event.width, height:event.height,
-+      },event.menuSession) !== false;
++      },event.menuSession,event.creation || 0) !== false;
 +    }
 +    if (event?.kind === "strip-group-select") {
 +      if (this.consumed || event.session !== this.windowDragSession || !this.fresh(event.revision) ||
@@ -24326,10 +24416,10 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..e9177d87994
+index 00000000000..1dfbbd1eb4f
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2203 @@
+@@ -0,0 +1,2209 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24849,7 +24939,10 @@ index 00000000000..e9177d87994
 +    // carried over from the transport it replaces.
 +    if (window.fullScreen || document.fullscreenElement) return 2;
 +    if (!this.stripSession) return 2;
-+    if (!this.stripSession.receive(action)) return 2;
++    if (!this.stripSession.receive(action)) {
++      if(action?.kind==="strip-group-context" && action.creation)this.groupHeader?.rejectCreation(action);
++      return 2;
++    }
 +    // Any of these can move a tab between windows or change the row set, so
 +    // the pane's own published state has to be rebuilt rather than patched.
 +    this.structuralDirty = true;
@@ -25348,6 +25441,14 @@ index 00000000000..e9177d87994
 +  },
 +
 +
++  groupHeaderController() {
++    if(!this.groupHeader){const {WinUIGroupHeader}=ChromeUtils.importESModule("chrome://browser/content/WinUIGroupHeader.sys.mjs");this.groupHeader=new WinUIGroupHeader(this,window);}
++    return this.groupHeader;
++  },
++  openGroupCreation(group) {
++    if(!this.attached)return false;
++    return this.groupHeaderController().requestCreation(group);
++  },
 +  publishStrip() {
 +    if (!this.stripSession) {
 +      const { WinUITabStripSession } = ChromeUtils.importESModule(
@@ -25415,13 +25516,7 @@ index 00000000000..e9177d87994
 +            gBrowser.TabMetrics.METRIC_SOURCE.DRAG_AND_DROP)});
 +          return true;
 +        },
-+        openGroupMenu: (group, bounds, session) => {
-+          if (!this.groupHeader) {
-+            const {WinUIGroupHeader}=ChromeUtils.importESModule("chrome://browser/content/WinUIGroupHeader.sys.mjs");
-+            this.groupHeader=new WinUIGroupHeader(this,window);
-+          }
-+          return this.groupHeader.open(group,bounds,session);
-+        },
++        openGroupMenu: (group, bounds, session, creation) => this.groupHeaderController().open(group,bounds,session,creation),
 +        openAllTabsMenu: bounds => {
 +          if (gDialogBox.isOpen) return false;
 +          gTabsPanel.init();
@@ -25556,6 +25651,7 @@ index 00000000000..e9177d87994
 +      this.publishWithRecovery(() => (sync(snapshot), true),
 +        () => sync(this.stripSession.update(true)));
 +    }
++    this.groupHeader?.publishCreation();
 +  },
 +
 +  // Bounds distinct favicon URLs retained across a browsing session; oldest

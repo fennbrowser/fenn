@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 51
+#define SHELL_CORE_ABI_VERSION 52
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -2563,6 +2563,17 @@ ShellStatus shell_core_group_header_activate(ShellCore *core,
                                              uint32_t action,
                                              bool retained,
                                              bool *accepted);
+
+/*
+ Resolve a browser-initiated group creation opening once, through Snapshot rules.
+ # Safety
+ Live core and writable out.
+ */
+ShellStatus shell_core_group_header_request(ShellCore *core,
+                                            uint32_t request,
+                                            uint32_t group,
+                                            uint32_t window,
+                                            uint32_t *out);
 
 #ifdef __cplusplus
 }  // extern "C"

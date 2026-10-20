@@ -1628,23 +1628,8 @@ struct NativeTabStrip {
             action.SetNamedValue(L"collapsed", JValue::CreateBooleanValue(collapsed));
             groupsButton.dispatch(action.Stringify());
         };
-        inlineGroups.context = [this](uint32_t id, Windows::Foundation::Rect bounds, Controls::Button const& button) {
-            if (IsDragging() || GroupDrag().phase || !groupsButton.dispatch) return;
-            groupHeader.core=core;groupHeader.dispatch=groupsButton.dispatch;
-            groupHeader.releaseFocus=[this]{if(ownerHwnd)SetFocus(ownerHwnd);};
-            const auto opening=groupHeader.Open(button);if(!opening)return;
-            using Value = Windows::Data::Json::JsonValue;
-            Windows::Data::Json::JsonObject action;
-            action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-group-context"));
-            action.SetNamedValue(L"menuSession", Value::CreateNumberValue(opening));
-            action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));
-            action.SetNamedValue(L"session", Value::CreateNumberValue(windowDragSession));
-            action.SetNamedValue(L"group", Value::CreateNumberValue(id));
-            action.SetNamedValue(L"x", Value::CreateNumberValue(bounds.X));
-            action.SetNamedValue(L"y", Value::CreateNumberValue(bounds.Y));
-            action.SetNamedValue(L"width", Value::CreateNumberValue(bounds.Width));
-            action.SetNamedValue(L"height", Value::CreateNumberValue(bounds.Height));
-            groupsButton.dispatch(action.Stringify());
+        inlineGroups.context = [this](uint32_t id, Windows::Foundation::Rect, Controls::Button const& button) {
+            OpenGroupEditor(id,button);
         };
         auto alive = std::weak_ptr<int>(lifetime);
         root.SizeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) groupSlide.Cancel(); });
@@ -1764,6 +1749,36 @@ struct NativeTabStrip {
         if (core) shell_core_transfer_cancel(core);
         try { ReconcileTransfers(); } catch (...) { /* An island may also be closing. */ }
         inlineGroups.Release(view);
+    }
+
+    void OpenGroupEditor(uint32_t id,Controls::Button const& button,uint32_t request=0) {
+        if((!request && (IsDragging() || GroupDrag().phase)) || !groupsButton.dispatch)return;
+        groupHeader.core=core;groupHeader.dispatch=groupsButton.dispatch;
+        groupHeader.releaseFocus=[this]{if(ownerHwnd)SetFocus(ownerHwnd);};
+        const auto opening=request?groupHeader.Request(button,request,id,windowDragSession):groupHeader.Open(button);if(!opening)return;
+        using Value=Windows::Data::Json::JsonValue;
+        auto local=button.TransformToVisual(nullptr).TransformBounds({0,0,float(button.ActualWidth()),float(button.ActualHeight())});
+        auto bounds=button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+        Windows::Data::Json::JsonObject action;
+        action.SetNamedValue(L"kind",Value::CreateStringValue(L"strip-group-context"));
+        action.SetNamedValue(L"menuSession",Value::CreateNumberValue(opening));
+        action.SetNamedValue(L"creation",Value::CreateNumberValue(request));
+        action.SetNamedValue(L"revision",Value::CreateNumberValue(presentationRevision));
+        action.SetNamedValue(L"session",Value::CreateNumberValue(windowDragSession));
+        action.SetNamedValue(L"group",Value::CreateNumberValue(id));
+        action.SetNamedValue(L"x",Value::CreateNumberValue(bounds.X));action.SetNamedValue(L"y",Value::CreateNumberValue(bounds.Y));
+        action.SetNamedValue(L"width",Value::CreateNumberValue(bounds.Width));action.SetNamedValue(L"height",Value::CreateNumberValue(bounds.Height));
+        groupsButton.dispatch(action.Stringify());
+    }
+    void RequestGroupCreation(Windows::Data::Json::JsonObject const& model) {
+        auto request=NativeGroupHeader::Id(model,L"request"),group=NativeGroupHeader::Id(model,L"group"),window=NativeGroupHeader::Id(model,L"window");
+        if(model.Size()!=3 || window!=windowDragSession)winrt::throw_hresult(E_INVALIDARG);
+        auto source=inlineGroups.runs.find(group);
+        // The new header can still be awaiting layout. The strip's always-loaded
+        // all-tabs button is a native, window-scoped anchor for that opening.
+        auto button=source!=inlineGroups.runs.end() && source->second.button.IsLoaded()?source->second.button:allTabs.button;
+        if(!button.IsLoaded())winrt::throw_hresult(E_NOT_VALID_STATE);
+        OpenGroupEditor(group,button,request);
     }
 
     // Names the button's screen rectangle; Firefox opens its own all-tabs panel there.

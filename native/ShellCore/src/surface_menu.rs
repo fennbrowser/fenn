@@ -8,12 +8,14 @@ pub struct SurfaceMenu {
     session: u32,
     /// Descriptions are scoped to one opening and reset with it.
     stream: Stream,
+    opening_requests: Stream,
+    requested_session: u32,
     actions: BTreeSet<u32>,
     pending: BTreeSet<u32>,
 }
 impl Default for SurfaceMenu {
     fn default() -> Self {
-        Self { next: 0, session: 0, stream: Stream::new(StreamKind::Session), actions: BTreeSet::new(), pending: BTreeSet::new() }
+        Self { next: 0, session: 0, stream: Stream::new(StreamKind::Session), opening_requests: Stream::new(StreamKind::Snapshot), requested_session: 0, actions: BTreeSet::new(), pending: BTreeSet::new() }
     }
 }
 impl SurfaceMenu {
@@ -21,6 +23,18 @@ impl SurfaceMenu {
         self.dismiss();
         if let Some(next)=self.next.checked_add(1) {self.next=next;self.session=next;}
         self.session
+    }
+    /// Browser-initiated openings share the Snapshot classifier. Replays never
+    /// reopen a dismissed editor or retarget an intervening native opening.
+    pub fn request_open(&mut self, request:u32, fingerprint:&[u16])->Result<u32,()> {
+        if request==0 || fingerprint.len()>MAX_DESCRIPTION{return Err(());}
+        let class=self.opening_requests.classify(0,request,fingerprint);
+        self.opening_requests.record(class);
+        match class {
+            Classification::Accepted=>{let session=self.open();self.opening_requests.commit(request,fingerprint);self.requested_session=session;Ok(session)},
+            Classification::Unchanged=>Ok(if self.session==self.requested_session{self.session}else{0}),
+            _=>{class.outcome(self.opening_requests.kind())?;Ok(0)},
+        }
     }
     pub fn counts(&self) -> ShellPublicationCounts {self.stream.counts()}
     pub fn dismiss(&mut self) {self.session=0;self.stream.reset();self.actions.clear();self.pending.clear();}
@@ -96,6 +110,14 @@ mod tests {
 #[cfg(test)]
 mod retained_tests {
  use super::*;
+ #[test] fn browser_opening_requests_classify_replay_conflict_stale_and_dismissal() {
+  let mut m=SurfaceMenu::default();let first=m.request_open(1,&[7]).unwrap();assert!(first>0);
+  assert_eq!(m.request_open(1,&[7]),Ok(first));assert_eq!(m.request_open(1,&[8]),Err(()));
+  m.dismiss();assert_eq!(m.request_open(1,&[7]),Ok(0));
+  let second=m.request_open(2,&[8]).unwrap();assert!(second>first);
+  assert_eq!(m.request_open(1,&[7]),Ok(0));m.open();assert_eq!(m.request_open(2,&[8]),Ok(0));
+  assert_eq!(m.request_open(0,&[7]),Err(()));
+ }
  #[test] fn live_actions_wait_for_a_new_reply_and_never_survive_dismissal() {
   let mut m=SurfaceMenu::default();let s=m.open();m.accept(s,1,&[1,2],&[8]).unwrap();
   assert!(m.activate_retained(s,1,1));assert!(!m.activate_retained(s,1,1));
