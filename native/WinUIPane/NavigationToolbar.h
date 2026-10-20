@@ -13,6 +13,7 @@
 #include "DownloadsPanel.h"
 #include "ProfileMenu.h"
 #include "OverflowMenu.h"
+#include "DeveloperMenu.h"
 #include "ProductMenu.h"
 #include "ToolbarMetrics.h"
 #include "StockToolbar.h"
@@ -51,6 +52,7 @@ struct NativeNavigationToolbar {
     NativeDownloadsPanel downloadsPanel;
     NativeProfileMenu profileMenu;
     NativeOverflowMenu overflowMenu;
+    NativeDeveloperMenu developerMenu;
     NativeProductMenu productMenu;
     ToolbarDragPreview preview;
     bool keyboardActivation{};
@@ -564,7 +566,7 @@ struct NativeNavigationToolbar {
         indicatorButtons[0].Content(winrt::box_value(state.indicators[0].label));
         privateLabel.Text(state.indicators[0].label);
         Automation::AutomationProperties::SetName(privateLabel,state.indicators[0].label);
-        if (!visible) { historyMenu.Close(); downloadsPanel.Close(); profileMenu.Close(); overflowMenu.Close(); productMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
+        if (!visible) { historyMenu.Close(); downloadsPanel.Close(); profileMenu.Close(); overflowMenu.Close(); developerMenu.Close(); productMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
         hasOverflow = visible && state[6].enabled;
         requiredOverflow = visible && state[6].required;
         const bool downloading=visible && state[8].progress>=0 && !customization.editing;

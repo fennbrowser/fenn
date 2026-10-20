@@ -187,10 +187,10 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..4940311bdc4 100644
+index b2b5db6040b..28414aabc72 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,23 @@ browser.jar:
+@@ -35,2 +35,24 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -206,6 +206,7 @@ index b2b5db6040b..4940311bdc4 100644
 +        content/browser/WinUIAddressContextMenu.sys.mjs  (content/WinUIAddressContextMenu.sys.mjs)
 +        content/browser/WinUIOmnibarActions.sys.mjs  (content/WinUIOmnibarActions.sys.mjs)
 +        content/browser/WinUIProfileMenu.sys.mjs (content/WinUIProfileMenu.sys.mjs)
++        content/browser/WinUIDeveloperMenu.sys.mjs                (content/WinUIDeveloperMenu.sys.mjs)
 +        content/browser/WinUIOverflowMenu.sys.mjs (content/WinUIOverflowMenu.sys.mjs)
 +        content/browser/WinUIDownloadsPanel.sys.mjs  (content/WinUIDownloadsPanel.sys.mjs)
 +        content/browser/WinUIHistoryMenu.sys.mjs     (content/WinUIHistoryMenu.sys.mjs)
@@ -214,7 +215,7 @@ index b2b5db6040b..4940311bdc4 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +127,17 @@ browser.jar:
+@@ -106 +128,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -18067,6 +18068,117 @@ index 00000000000..d128f96b535
 +    w.BrowserCommands[command.method](event);return 1;
 +  }
 +}
+diff --git a/browser/base/content/WinUIDeveloperMenu.sys.mjs b/browser/base/content/WinUIDeveloperMenu.sys.mjs
+new file mode 100644
+index 00000000000..0dd2ed8e94d
+--- /dev/null
++++ b/browser/base/content/WinUIDeveloperMenu.sys.mjs
+@@ -0,0 +1,105 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Firefox owns the developer command inventory, lazy initialization and policy.
++export class WinUIDeveloperMenu {
++  constructor(toolbar) {
++    this.toolbar=toolbar;this.window=toolbar.window;this.session=this.lastSession=0;
++    this.actions=new Map();
++    this.observer=new this.window.MutationObserver(()=>{if(this.session)this.snapshot();});
++    this.changed=()=>this.dismiss();
++    Services.prefs.addObserver("devtools.",this.changed);
++    Services.obs.addObserver(this.changed,"intl:app-locales-changed");
++  }
++  close(){if(this.closed)return;this.closed=true;this.dismiss();this.observer.disconnect();Services.prefs.removeObserver("devtools.",this.changed);Services.obs.removeObserver(this.changed,"intl:app-locales-changed");}
++  dismiss(){
++    if(!this.session)return;
++    this.closedSession=this.session;this.session=0;this.actions.clear();this.description=this.context=null;
++    this.observer.disconnect();this.toolbar.owner.invalidateAddress();
++  }
++  source(){
++    const t=this.toolbar,c=t.customization,w=this.window;
++    if(this.closed || !t.active || !t.navigation || !t.supported() || c?.editorOpen || w.gDialogBox?.isOpen ||
++        Services.prefs.getBoolPref("devtools.policy.disabled",false))return null;
++    const node=c?.ui.getWidget("developer-button")?.forWindow(w)?.node;
++    const entry=c?.entries.get("developer-button");
++    const item=c?.current?.items.find(row=>row.id===entry?.id);
++    const part=item?.stock?.find(row=>row.id==="developer-button");
++    return node && node===entry?.node && item?.placed && part?.shown && part.enabled && !c.nativeOverflow.has("developer-button") ? {node,label:String(part.label).slice(0,512)} : null;
++  }
++  live(){
++    const t=this.toolbar,w=this.window;
++    return !!this.source() && t.owner.addressSession?.sessionId===this.context?.session &&
++      t.owner.addressTab===this.context?.tab && t.owner.addressDocument===this.context?.document &&
++      t.owner.addressTab===w.gBrowser.selectedTab && t.owner.addressDocument===w.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId;
++  }
++  rows(){
++    const w=this.window,doc=w.document,popup=doc.getElementById("menuWebDeveloperPopup"),rows=[];
++    for(const node of popup?.children || []) {
++      if(node.hidden || node.collapsed || node.getAttribute("hidden")==="true" || node.getAttribute("collapsed")==="true")continue;
++      // Ignore inherited visibility of the closed menubar popup, but preserve
++      // local display rules. Match Firefox's subview's menuitem-only projection.
++      if(w.getComputedStyle(node).display==="none")continue;
++      if(node.localName==="menuseparator"){if(rows.length && !rows.at(-1).separator)rows.push({separator:true});continue;}
++      if(node.localName!=="menuitem")continue;
++      const command=doc.getElementById(node.getAttribute("command"));
++      const label=node.getAttribute("label") || node.label;
++      if(!label)continue;
++      rows.push({node,commandId:node.getAttribute("command") || "",label:String(label).slice(0,512),enabled:!node.disabled && node.getAttribute("disabled")!=="true" &&
++        !command?.disabled && command?.getAttribute("disabled")!=="true",
++        checked:node.getAttribute("checked")==="true",checkable:["checkbox","radio"].includes(node.getAttribute("type"))});
++    }
++    if(rows.at(-1)?.separator)rows.pop();
++    return rows;
++  }
++  signature(rows){return JSON.stringify(rows.map(({node,...row})=>row));}
++  snapshot(){
++    const source=this.source();
++    if(this.session && (!this.live() || source.node!==this.sourceNode || (this.description &&
++        (source.label!==this.description.label || this.signature(this.rows())!==this.membership || this.rows().some((row,index)=>row.node!==this.nodes[index])))))this.dismiss();
++    return {enabled:!!source,closed:this.closedSession || 0,...(this.description || {})};
++  }
++  async open(session){
++    this.dismiss();this.session=session;
++    const t=this.toolbar,w=this.window;
++    this.context={session:t.owner.addressSession?.sessionId,tab:t.owner.addressTab,document:t.owner.addressDocument};
++    this.sourceNode=this.source()?.node;
++    // The same lazy initialization used by Firefox's Developer Tools subview.
++    const startup=Cc["@mozilla.org/devtools/startup-clh;1"].getService(Ci.nsICommandLineHandler).wrappedJSObject;
++    startup.initDevTools("HamburgerMenu");
++    const popup=w.document.getElementById("menuWebDeveloperPopup");
++    await w.document.l10n.translateElements([...popup.children].filter(node=>node.hasAttribute("data-l10n-id")));
++    if(this.session!==session || !this.live())return;
++    const rows=this.rows();
++    // Refuse an unexpectedly expanded inventory rather than silently lose tools.
++    if(!rows.length || rows.length>64){this.dismiss();return;}
++    this.membership=this.signature(rows);this.nodes=rows.map(row=>row.node);
++    this.description={session,revision:1,label:this.source().label,items:rows.map((row,index)=>{
++      if(row.separator)return {separator:true};
++      const id=index+1;this.actions.set(id,row);
++      return {id,key:"command-"+id,label:row.label,enabled:row.enabled,checked:row.checked,checkable:row.checkable};
++    })};
++    this.observer.observe(popup,{subtree:true,childList:true,attributes:true,characterData:true});
++    // Command elements live outside the menu; their state is also authoritative.
++    for(const row of rows){const command=row.node && w.document.getElementById(row.node.getAttribute("command"));if(command)this.observer.observe(command,{attributes:true});}
++    t.owner.invalidateAddress();
++  }
++  execute(action){
++    const match=/^developer-menu:(open|dismiss|invoke):([1-9][0-9]*)(?::([1-9][0-9]*):([1-9][0-9]*))?$/.exec(action.command);
++    if(!match)return 2;
++    const session=Number(match[2]);if(!Number.isInteger(session) || session>0xffffffff)return 2;
++    if(match[1]!=="dismiss")this.toolbar.navigationState();
++    if(match[1]==="open"){
++      if(match[3] || session<=this.lastSession || !this.source() || !this.toolbar.menuAnchor("developer-tools",action))return 2;
++      this.lastSession=session;this.open(session).catch(error=>{if(this.session===session)this.dismiss();console.error(error);});return 1;
++    }
++    if(session!==this.session)return 2;
++    if(match[1]==="dismiss"){if(match[3])return 2;this.dismiss();return 1;}
++    this.snapshot();
++    if(session!==this.session || !this.live() || Number(match[3])!==this.description?.revision)return 2;
++    const row=this.actions.get(Number(match[4]));if(!row?.enabled)return 2;
++    // Consume before a command opens a toolbox, changes tabs or enters a dialog.
++    this.dismiss();row.node.doCommand();return 1;
++  }
++}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
 index 00000000000..85d6b628141
@@ -23035,10 +23147,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..4c41311fb91
+index 00000000000..ece15f777a0
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,512 @@
+@@ -0,0 +1,519 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -23084,6 +23196,8 @@ index 00000000000..4c41311fb91
 +    this.profileMenu=new WinUIProfileMenu(this);
 +    const {WinUIOverflowMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIOverflowMenu.sys.mjs");
 +    this.overflowMenu=new WinUIOverflowMenu(this);
++    const {WinUIDeveloperMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIDeveloperMenu.sys.mjs");
++    this.developerMenu=new WinUIDeveloperMenu(this);
 +    const { WinUINavigationState, NAVIGATION_COMMANDS } = ChromeUtils.importESModule(
 +      "chrome://browser/content/WinUINavigationState.sys.mjs");
 +    this.navigationCommands = NAVIGATION_COMMANDS;
@@ -23168,6 +23282,7 @@ index 00000000000..4c41311fb91
 +    if (state.customization) state.overflow.enabled = state.overflow.required ||
 +      [...(document.getElementById("widget-overflow-list")?.children || [])].some(node => !node.hidden && this.customization.nativeOverflow.has(node.id));
 +    state.overflowMenu=this.overflowMenu.snapshot(state);
++    state.developerMenu=this.developerMenu.snapshot();
 +    return state;
 +  }
 +  hasVisibleUnhostedWidgets() {
@@ -23228,6 +23343,7 @@ index 00000000000..4c41311fb91
 +  executeNavigation(action) {
 +    const {window, owner} = this;
 +    const indicator = ["indicator:private", "indicator:analysis"].includes(action?.command);
++    const nativeDeveloper=typeof action?.command === "string" && action.command.startsWith("developer-menu:");
 +    const nativeOverflow=typeof action?.command === "string" && action.command.startsWith("overflow-menu:");
 +    const nativeProfile=typeof action?.command === "string" && action.command.startsWith("profile-menu:");
 +    const nativeDownloads=typeof action?.command === "string" && action.command.startsWith("downloads-panel:");
@@ -23240,16 +23356,17 @@ index 00000000000..4c41311fb91
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!stock && !indicator && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!stock && !indicator && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
++    if (nativeDeveloper) return this.developerMenu.execute(action);
 +    if (nativeOverflow) return this.overflowMenu.execute(action);
 +    if (nativeProfile) return this.profileMenu.execute(action);
 +    if (nativeDownloads) return this.downloadsPanel.execute(action);
@@ -23488,6 +23605,7 @@ index 00000000000..4c41311fb91
 +    if(this.downloadsPanel?.session)this.downloadsPanel.dismiss();
 +    if(this.profileMenu?.session)this.profileMenu.dismiss();
 +    if(this.overflowMenu?.session)this.overflowMenu.dismiss();
++    if(this.developerMenu?.session)this.developerMenu.dismiss();
 +    if (this.activationFrame) this.window.cancelAnimationFrame(this.activationFrame);
 +    this.activationFrame = 0;
 +    for (const panel of this.window.document.querySelectorAll("panel, menupopup")) {
@@ -23532,6 +23650,7 @@ index 00000000000..4c41311fb91
 +    this.downloadsPanel.close();
 +    this.profileMenu.close();
 +    this.overflowMenu.close();
++    this.developerMenu.close();
 +    this.resize.disconnect();
 +    Services.prefs.removeObserver("browser.nova.enabled", this.novaObserver);
 +    this.navigationObserver.disconnect();

@@ -204,6 +204,7 @@ pub struct ShellCore {
     downloads_panel: crate::surface_menu::SurfaceMenu,
     profile_menu: crate::surface_menu::SurfaceMenu,
     overflow_menu: crate::surface_menu::SurfaceMenu,
+    developer_menu: crate::surface_menu::SurfaceMenu,
     address_publication: crate::address_publication::AddressPublication,
     toolbar_publication: crate::toolbar_publication::ToolbarPublication,
     preview_publication: crate::preview_publication::PreviewPublication,
@@ -431,6 +432,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         downloads_panel: Default::default(),
         profile_menu: Default::default(),
         overflow_menu: Default::default(),
+        developer_menu: Default::default(),
         address_publication: Default::default(),
         toolbar_publication: Default::default(),
         preview_publication: Default::default(),
@@ -762,6 +764,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
         core.downloads_panel.dismiss();
         core.profile_menu.dismiss();
         core.overflow_menu.dismiss();
+        core.developer_menu.dismiss();
         core.address_publication.reset();
         core.address_sections.reset();
         core.toolbar_publication.reset();
@@ -787,6 +790,7 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
         core.downloads_panel.dismiss();
         core.profile_menu.dismiss();
         core.overflow_menu.dismiss();
+        core.developer_menu.dismiss();
         core.address_publication.reset();
         core.address_sections.reset();
         core.toolbar_publication.reset();
@@ -845,6 +849,7 @@ pub enum ShellPublicationChannel {
     DownloadsPanel = 10,
     ProfileMenu = 11,
     OverflowMenu = 12,
+    DeveloperMenu = 13,
 }
 
 /// What one channel did with the publications it received, for diagnostics.
@@ -872,6 +877,7 @@ pub unsafe extern "C" fn shell_core_publication_stats(
             c if c == ShellPublicationChannel::DownloadsPanel as u32 => core.downloads_panel.counts(),
             c if c == ShellPublicationChannel::ProfileMenu as u32 => core.profile_menu.counts(),
             c if c == ShellPublicationChannel::OverflowMenu as u32 => core.overflow_menu.counts(),
+            c if c == ShellPublicationChannel::DeveloperMenu as u32 => core.developer_menu.counts(),
             c if c == ShellPublicationChannel::AddressSession as u32 => core.address_publication.counts(),
             c if c == ShellPublicationChannel::ToolbarCustomization as u32 => core.toolbar_publication.counts(),
             _ => return ShellStatus::InvalidArgument,
@@ -1536,7 +1542,7 @@ mod tests {
             let mut counts = ShellPublicationCounts::default();
             assert_eq!(shell_core_publication_stats(core, ShellPublicationChannel::Strip as u32, &mut counts), ShellStatus::Ok);
             assert_eq!(counts, ShellPublicationCounts { accepted: 2, unchanged: 1, ignored: 0, refused: 1 });
-            assert_eq!(shell_core_publication_stats(core, 13, &mut counts), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_publication_stats(core, 14, &mut counts), ShellStatus::InvalidArgument);
             assert_eq!(counts, ShellPublicationCounts::default(), "an unknown channel reports nothing");
             assert_eq!(shell_core_publication_stats(core, 0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
             shell_core_destroy(core);
@@ -3878,6 +3884,81 @@ mod overflow_menu_ffi_tests {
   shell_core_overflow_menu_accept(core,overflow,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(!changed);
   assert_eq!(shell_core_overflow_menu_resolve(core,overflow,1,std::ptr::null(),257,std::ptr::null(),0,&mut changed),ShellStatus::InvalidArgument);
   shell_core_close(core);assert_eq!(shell_core_overflow_menu_open(core,&mut overflow),ShellStatus::Closed);
+  shell_core_destroy(core);
+ }}
+}
+
+// Independent developer menu session; shared publication semantics, no widget state.
+/// Allocate a window-scoped menu opening. Zero means identity exhaustion.
+/// # Safety
+/// Live core and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_developer_menu_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
+ let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.developer_menu.open();ShellStatus::Ok})
+}
+/// Revoke a window-scoped menu, preserving its identity high-water mark.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_developer_menu_dismiss(core:*mut ShellCore)->ShellStatus {
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.developer_menu.dismiss();ShellStatus::Ok})
+}
+/// Resolve a validated session description before mutating the host container.
+/// Accepted work is committed and counted by shell_core_developer_menu_accept;
+/// ignored/refused work ends here, without changing menu or action identity.
+/// # Safety
+/// Live core, readable arrays (null only for zero length), writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_developer_menu_resolve(core:*mut ShellCore,session:u32,revision:u32,
+ actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
+ let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
+ if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
+ guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.developer_menu.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+
+/// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
+/// # Safety
+/// Live core, readable arrays (null only for zero length), writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_developer_menu_accept(core:*mut ShellCore,session:u32,revision:u32,
+ actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
+ let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
+ if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
+ guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.developer_menu.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+/// Consume one current enabled action; dismissal and late updates cannot resurrect it.
+/// # Safety
+/// Live core and writable accepted.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_developer_menu_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,accepted:*mut bool)->ShellStatus {
+ let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=c.developer_menu.activate(session,revision,action);ShellStatus::Ok})
+}
+
+
+#[cfg(test)]
+mod developer_menu_ffi_tests {
+ use super::*;
+ #[test] fn developer_openings_are_independent_and_consumed_once() {unsafe {
+  let core=shell_core_create(std::ptr::null());let(mut developer,mut profile)=(0,0);let mut changed=false;
+  assert_eq!(shell_core_developer_menu_open(core,&mut developer),ShellStatus::Ok);
+  shell_core_profile_menu_open(core,&mut profile);
+  shell_core_developer_menu_resolve(core,developer,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
+  shell_core_developer_menu_activate(core,developer,1,3,&mut changed);assert!(!changed);
+  shell_core_developer_menu_accept(core,developer,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
+  shell_core_profile_menu_dismiss(core);shell_core_surface_menu_dismiss(core);
+  shell_core_developer_menu_activate(core,developer,2,3,&mut changed);assert!(!changed);
+  shell_core_developer_menu_activate(core,developer,1,3,&mut changed);assert!(changed);
+  shell_core_developer_menu_activate(core,developer,1,3,&mut changed);assert!(!changed);
+  shell_core_developer_menu_open(core,&mut developer);shell_core_cancel_all(core);
+  shell_core_developer_menu_accept(core,developer,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(!changed);
+  assert_eq!(shell_core_developer_menu_resolve(core,developer,1,std::ptr::null(),257,std::ptr::null(),0,&mut changed),ShellStatus::InvalidArgument);
+  shell_core_close(core);assert_eq!(shell_core_developer_menu_open(core,&mut developer),ShellStatus::Closed);
   shell_core_destroy(core);
  }}
 }
