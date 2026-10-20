@@ -389,6 +389,7 @@ struct Pane {
         return false;
     }
     void DismissMenus() {
+        if (address) address->bookmarkPanel.LightDismiss();
         if (tabMenu.active) tabMenu.Dismiss();
         if (strip) strip->inlineGroups.hover.Dismiss();
         if (address && address->mode.flyout.IsOpen()) address->mode.flyout.Hide();
@@ -430,6 +431,7 @@ struct Pane {
         if (!stripPopup && tabMenu.active) tabMenu.Dismiss();
         if (!stripPopup && strip && (strip->inlineGroups.hover.open || strip->inlineGroups.hover.showPending))
             strip->inlineGroups.hover.Dismiss();
+        if (!addressPopup && address) address->bookmarkPanel.LightDismiss();
         const HWND addressHost = addressSource ? addressWindow : childWindow;
         if (!InWindow(addressHost, target) && !addressPopup) LeaveAddress();
         else if (!addressPopup && address && address->mode.flyout.IsOpen()) address->mode.flyout.Hide();

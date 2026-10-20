@@ -156,6 +156,66 @@ index 00da33bc111..b38767f3b32 100644
 -          return node;
 +          return window.gWinUIPane?.addressToolbar?.omnibar?.anchorFor(node) || node;
          }
+diff --git a/browser/base/content/browser-places.js b/browser/base/content/browser-places.js
+index 20220bd0969..50f95f13b63 100644
+--- a/browser/base/content/browser-places.js
++++ b/browser/base/content/browser-places.js
+@@ -229,2 +229,6 @@ var StarUI = {
+   async showEditBookmarkPopup(aNode, aIsNewBookmark, aUrl) {
++    const nativeEditor = window.gWinUIPane?.addressToolbar?.bookmarkPanel;
++    if (nativeEditor && await nativeEditor.show(aNode, aIsNewBookmark, aUrl)) {
++      return;
++    }
+     // Slow double-clicks (not true double-clicks) shouldn't
+@@ -321,46 +325,4 @@ var StarUI = {
+ 
+-  async _storeRecentlyUsedFolder(selectedFolderGuid, didChangeFolder) {
+-    if (!selectedFolderGuid) {
+-      return;
+-    }
+-
+-    // If we're changing where a bookmark gets saved, persist that location,
+-    // unless it is the mobile root.
+-    if (
+-      didChangeFolder &&
+-      selectedFolderGuid !== PlacesUtils.bookmarks.mobileGuid
+-    ) {
+-      Services.prefs.setCharPref(
+-        "browser.bookmarks.defaultLocation",
+-        selectedFolderGuid
+-      );
+-    }
+-
+-    // Don't store folders that are always displayed in "Recent Folders".
+-    if (PlacesUtils.bookmarks.userContentRoots.includes(selectedFolderGuid)) {
+-      return;
+-    }
+-
+-    // List of recently used folders:
+-    let lastUsedFolderGuids = await PlacesUtils.metadata.get(
+-      PlacesUIUtils.LAST_USED_FOLDERS_META_KEY,
+-      []
+-    );
+-
+-    let index = lastUsedFolderGuids.indexOf(selectedFolderGuid);
+-    if (index > 1) {
+-      // The guid is in the array but not the most recent.
+-      lastUsedFolderGuids.splice(index, 1);
+-      lastUsedFolderGuids.unshift(selectedFolderGuid);
+-    } else if (index == -1) {
+-      lastUsedFolderGuids.unshift(selectedFolderGuid);
+-    }
+-    while (lastUsedFolderGuids.length > PlacesUIUtils.maxRecentFolders) {
+-      lastUsedFolderGuids.pop();
+-    }
+-
+-    await PlacesUtils.metadata.set(
+-      PlacesUIUtils.LAST_USED_FOLDERS_META_KEY,
+-      lastUsedFolderGuids
+-    );
++  _storeRecentlyUsedFolder(selectedFolderGuid, didChangeFolder) {
++    return PlacesUIUtils.storeRecentlyUsedBookmarkFolder(selectedFolderGuid, didChangeFolder);
+   },
 diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
 index 7ce8e235dd4..3c74fd67b18 100644
 --- a/browser/base/content/browser.js
@@ -196,10 +256,10 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..0004cd2a526 100644
+index b2b5db6040b..d66bb4dcd05 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,28 @@ browser.jar:
+@@ -35,2 +35,29 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -219,6 +279,7 @@ index b2b5db6040b..0004cd2a526 100644
 +        content/browser/WinUIGroupHeader.sys.mjs (content/WinUIGroupHeader.sys.mjs)
 +        content/browser/WinUITabGroupsMenu.sys.mjs (content/WinUITabGroupsMenu.sys.mjs)
 +        content/browser/WinUIDeveloperMenu.sys.mjs                (content/WinUIDeveloperMenu.sys.mjs)
++        content/browser/WinUIBookmarkPanel.sys.mjs (content/WinUIBookmarkPanel.sys.mjs)
 +        content/browser/WinUIProfilerPanel.sys.mjs                (content/WinUIProfilerPanel.sys.mjs)
 +        content/browser/WinUIOverflowMenu.sys.mjs (content/WinUIOverflowMenu.sys.mjs)
 +        content/browser/WinUIDownloadsPanel.sys.mjs  (content/WinUIDownloadsPanel.sys.mjs)
@@ -228,7 +289,7 @@ index b2b5db6040b..0004cd2a526 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +132,17 @@ browser.jar:
+@@ -106 +133,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -416,6 +477,99 @@ index 311e0d736c7..a61d9457612 100644
      setTimeout(() => {
 +      if (nativeAnchor && nativeAnchor() !== anchor) return;
        PanelMultiView.openPopup(
+diff --git a/browser/components/places/PlacesUIUtils.sys.mjs b/browser/components/places/PlacesUIUtils.sys.mjs
+index 16b4b7bf0e1..6df6c842c59 100644
+--- a/browser/components/places/PlacesUIUtils.sys.mjs
++++ b/browser/components/places/PlacesUIUtils.sys.mjs
+@@ -354,2 +354,59 @@ export var PlacesUIUtils = {
+   BookmarkState,
++  // Shared by the retained overlay and native bookmark presentation.
++  // Shared system-module lifetime: native drafts may finish after window unload.
++  async storeRecentlyUsedBookmarkFolder(selectedFolderGuid, didChangeFolder) {
++    if (!selectedFolderGuid) {
++      return;
++    }
++
++    // If we're changing where a bookmark gets saved, persist that location,
++    // unless it is the mobile root.
++    if (
++      didChangeFolder &&
++      selectedFolderGuid !== lazy.PlacesUtils.bookmarks.mobileGuid
++    ) {
++      Services.prefs.setCharPref(
++        "browser.bookmarks.defaultLocation",
++        selectedFolderGuid
++      );
++    }
++
++    // Don't store folders that are always displayed in "Recent Folders".
++    if (lazy.PlacesUtils.bookmarks.userContentRoots.includes(selectedFolderGuid)) {
++      return;
++    }
++
++    // List of recently used folders:
++    let lastUsedFolderGuids = await lazy.PlacesUtils.metadata.get(
++      this.LAST_USED_FOLDERS_META_KEY,
++      []
++    );
++
++    let index = lastUsedFolderGuids.indexOf(selectedFolderGuid);
++    if (index > 1) {
++      // The guid is in the array but not the most recent.
++      lastUsedFolderGuids.splice(index, 1);
++      lastUsedFolderGuids.unshift(selectedFolderGuid);
++    } else if (index == -1) {
++      lastUsedFolderGuids.unshift(selectedFolderGuid);
++    }
++    while (lastUsedFolderGuids.length > this.maxRecentFolders) {
++      lastUsedFolderGuids.pop();
++    }
++
++    await lazy.PlacesUtils.metadata.set(
++      this.LAST_USED_FOLDERS_META_KEY,
++      lastUsedFolderGuids
++    );
++  },
++
++  parseBookmarkTags(value) {
++    return value.trim().split(/\s*,\s*/).filter(tag => !!tag.length);
++  },
++  toggleBookmarkTag(value, tag, checked) {
++    const tags = this.parseBookmarkTags(value), index = tags.indexOf(tag);
++    if (checked && index === -1) tags.push(tag);
++    else if (!checked && index !== -1) tags.splice(index, 1);
++    return tags.join(", ");
++  },
+   _bookmarkToolbarTelemetryListening: false,
+diff --git a/browser/components/places/content/editBookmark.js b/browser/components/places/content/editBookmark.js
+index d3180c5b1e6..f60f1d1f558 100644
+--- a/browser/components/places/content/editBookmark.js
++++ b/browser/components/places/content/editBookmark.js
+@@ -1121,7 +1121,3 @@ var gEditItemOverlay = {
+   _getTagsArrayFromTagsInputField() {
+-    let tags = this._element("tagsField").value;
+-    return tags
+-      .trim()
+-      .split(/\s*,\s*/) // Split on commas and remove spaces.
+-      .filter(tag => !!tag.length); // Kill empty tags.
++    return PlacesUIUtils.parseBookmarkTags(this._element("tagsField").value);
+   },
+@@ -1225,12 +1221,5 @@ var gEditItemOverlay = {
+     // Update the tags field when items are checked/unchecked in the listbox
+-    let tags = this._getTagsArrayFromTagsInputField();
+-    let curTagIndex = tags.indexOf(item.label);
+-    if (item.toggleAttribute("checked")) {
+-      if (curTagIndex == -1) {
+-        tags.push(item.label);
+-      }
+-    } else if (curTagIndex != -1) {
+-      tags.splice(curTagIndex, 1);
+-    }
+-    this._element("tagsField").value = tags.join(", ");
++    this._element("tagsField").value = PlacesUIUtils.toggleBookmarkTag(
++      this._element("tagsField").value, item.label, item.toggleAttribute("checked")
++    );
+     this._updateTags();
 diff --git a/browser/components/privatebrowsing/ResetPBMPanel.sys.mjs b/browser/components/privatebrowsing/ResetPBMPanel.sys.mjs
 index 324ea950595..4942ec6133b 100644
 --- a/browser/components/privatebrowsing/ResetPBMPanel.sys.mjs
@@ -7896,10 +8050,10 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..b05b0871d86 100644
+index 4f28e62c7b5..5e492644fa8 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -520 +520,112 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,116 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -8012,6 +8166,10 @@ index 4f28e62c7b5..b05b0871d86 100644
 +winui-tab-groups-more = More tab groups…
 +
 +winui-group-header-more = More group options…
++
++winui-bookmark-previous = Previous
++winui-bookmark-next = More
++winui-bookmark-error = This bookmark could not be saved. Try again.
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -8654,6 +8812,203 @@ index 1e2660589bd..5ae3ab48433 100644
 +      const nsTArray<LayoutDeviceIntRect>& aOcclusions) override;
 +
    void SendAnAPZEvent(mozilla::InputData& aEvent);
+diff --git a/browser/base/content/WinUIBookmarkPanel.sys.mjs b/browser/base/content/WinUIBookmarkPanel.sys.mjs
+new file mode 100644
+index 00000000000..4e10b2bd4ae
+--- /dev/null
++++ b/browser/base/content/WinUIBookmarkPanel.sys.mjs
+@@ -0,0 +1,191 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Firefox owns the draft/Places transactions. Native receives opaque folder
++// choices, localized presentation and a bounded original tag-search result.
++export class WinUIBookmarkPanel {
++  constructor(toolbar) { this.toolbar=toolbar;this.window=toolbar.window;this.nextRequest=0;this.nextChoice=100;this.localeChanged=()=>{this.retire(true);this.l10n=null;};Services.obs.addObserver(this.localeChanged,"intl:app-locales-changed"); }
++  eligible() { const t=this.toolbar;return !this.closed && t.active && t.navigation && t.supported() && !t.customization?.editorOpen && !this.window.gDialogBox?.isOpen && !['open','showing','hiding'].includes(this.window.document.getElementById('editBookmarkPanel')?.state) && !!t.omnibar?.visible(this.window.document.getElementById('star-button-box')); }
++  context() { const t=this.toolbar,w=this.window;return {session:t.owner.addressSession?.sessionId,tab:w.gBrowser.selectedTab,document:w.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId}; }
++  live(p=this.pending) {if(!p || !this.eligible() || p.sourceNode!==this.window.document.getElementById('star-button-box'))return false;const c=this.context();return p.context.session===c.session && p.context.tab===c.tab && p.context.document===c.document;}
++  invalidate() {if(!this.closed)this.toolbar.owner.invalidateAddress();}
++  label(id,attr,args) {
++    this.l10n ??= new this.window.Localization(['branding/brand.ftl','browser/browser.ftl','browser/editBookmarkOverlay.ftl','browser/tabbrowser.ftl'],true);
++    const [m]=this.l10n.formatMessagesSync([{id,args}]);return String((attr?m?.attributes?.find(a=>a.name===attr)?.value:m?.value) || '').slice(0,512);
++  }
++  async show(node,isNew,url) {
++    if(!this.eligible() || this.nextRequest>=0xffffffff)return false;
++    if(this.pending)return true;
++    const w=this.window, p={request:++this.nextRequest,context:this.context(),isNew,node,url:String(url.href || url),session:0,revision:0,choices:new Map(),page:0};
++    p.sourceNode=this.window.document.getElementById('star-button-box');p.source=this.toolbar.omnibar.entry(p.sourceNode).id;
++    this.pending=p;
++    try {
++      const {PlacesUtils:places,PlacesUIUtils:ui}=w;p.places=places;p.ui=ui;p.transactions=w.PlacesTransactions;
++      const uri=Services.io.newURI(p.url);p.guids=[];
++      await places.bookmarks.fetch({url:p.url},b=>p.guids.push(b.guid));
++      if(this.pending!==p)return true;
++      const tags=places.tagging.getTagsForURI(uri).join(', ');
++      if(tags.length>4096 || String(node.title || '').length>4096){this.pending=null;return !this.live(p);}
++      p.state=new ui.BookmarkState({info:{itemGuid:node.bookmarkGuid,parentGuid:node.parent.bookmarkGuid,title:node.title,uri},tags});
++      p.name=p.originalName=String(node.title || '');p.tags=p.originalTags=tags;p.folder=node.parent.bookmarkGuid;p.originalFolder=p.folder;
++      p.showEditor=w.StarUI.showForNewBookmarks;p.autoClose=Math.min(60000,Math.max(1,w.StarUI._autoCloseTimeout*(w.StarUI._closePanelQuickForTesting ? .1 : 1)));p.focusTags=Services.prefs.getCharPref('browser.bookmarks.editDialog.firstEditField','namePicker')==='tagsField';
++      if(w.StarUI.userHasTags===undefined)w.StarUI.userHasTags=!!(await places.bookmarks.fetchTags()).length;
++      p.tagsVisible=w.StarUI.userHasTags;p.suggestions=[];p.tagOptions=[];p.tagChoices=new Map();p.tagPage=0;p.tagSelection=0;
++      p.labels={title:this.label(isNew?'bookmarks-add-bookmark':'bookmarks-edit-bookmark'),
++        name:this.label('bookmark-overlay-name-2','value'),folder:this.label('bookmark-overlay-location-2','value'),
++        tags:this.label('bookmark-overlay-tags-2','value'),tagsHint:this.label('bookmark-overlay-tags-empty-description','placeholder'),
++        tagsHelp:this.label('bookmark-overlay-tags-caption-label'),tagsAll:this.label('bookmark-overlay-tags-expander2','tooltiptext'),showEditor:this.label('bookmark-panel-show-editor-checkbox','label'),
++        save:this.label('bookmark-panel-save-button','label'),remove:this.label(isNew?'bookmark-panel-cancel':'bookmark-panel-remove','label',{count:p.guids.length}),
++        newFolder:this.label('bookmark-overlay-new-folder-button','label'),parent:this.label('winui-menu-back'),
++        previous:this.label('winui-bookmark-previous'),next:this.label('winui-bookmark-next'),error:this.label('winui-bookmark-error')};
++      await this.folders(p);
++      if(this.pending!==p)return true;
++      if(!this.live(p)) {this.dismiss();return true;}
++      p.ready=true;this.publish(p);this.invalidate();return true;
++    } catch(error) {console.error(error);const fallback=this.pending===p && this.live(p);if(this.pending===p)this.dismiss();return !fallback;}
++  }
++  folderTitle(folder) {return this.window.PlacesUtils.bookmarks.getLocalizedTitle(folder) || this.window.PlacesUIUtils.promptLocalization.formatValueSync('places-no-title');}
++  async folders(p) {
++    const places=this.window.PlacesUtils;p.choices.clear();
++    const current=await places.bookmarks.fetch(p.folder);
++    if(!current || current.type!==places.bookmarks.TYPE_FOLDER)throw new Error('Bookmark folder no longer exists');
++    p.folderLabel=String(this.folderTitle(current)).slice(0,512);p.parent=current.parentGuid;
++    const roots=[];
++    for(const guid of places.bookmarks.userContentRoots) {
++      if(guid===places.bookmarks.mobileGuid && guid!==p.folder)continue;
++      const folder=await places.bookmarks.fetch(guid);if(folder)roots.push({guid,label:String(this.folderTitle(folder)).slice(0,256)});
++    }
++    const recent=await places.metadata.get(this.window.PlacesUIUtils.LAST_USED_FOLDERS_META_KEY,[]);
++    for(const guid of recent.slice(0,Math.min(this.window.PlacesUIUtils.maxRecentFolders,12))) {
++      if(roots.some(r=>r.guid===guid))continue;const folder=await places.bookmarks.fetch(guid);
++      if(folder?.type===places.bookmarks.TYPE_FOLDER)roots.push({guid,label:String(this.folderTitle(folder)).slice(0,256)});
++    }
++    p.roots=roots.map(folder=>this.choice(p,folder.guid,folder.label));
++    const result=places.getFolderContents(p.folder,true,false);
++    try {
++      const root=result.root,start=p.page*64;
++      p.previous=p.page>0;p.next=start+64<root.childCount;p.folders=[];
++      for(let i=start;i<Math.min(root.childCount,start+64);i++) {
++        const child=root.getChild(i);if(places.nodeIsConcreteFolder(child))p.folders.push(this.choice(p,child.bookmarkGuid,String(this.window.PlacesUIUtils.getBestTitle(child)).slice(0,256)));
++      }
++    } finally {result.root.containerOpen=false;}
++  }
++  choice(p,guid,label){const id=this.nextChoice++;if(id>0xffffffff)throw new Error('Bookmark choice identity exhausted');p.choices.set(id,guid);return {id,label};}
++  tagRows(p) {
++    const tags=this.window.PlacesUIUtils.parseBookmarkTags(p.tags);
++    for(const tag of tags)p.allTags.set(tag.toLowerCase(),tag);
++    const sorted=[...p.allTags.values()].sort(),previous=p.tagChoices;
++    p.tagChoices=new Map();p.tagNext=(p.tagPage+1)*32<sorted.length;
++    p.tagOptions=sorted.slice(p.tagPage*32,(p.tagPage+1)*32).map(tag=>{
++      const id=[...previous].find(([,value])=>value===tag)?.[0] || this.nextChoice++;
++      p.tagChoices.set(id,tag);return {id,label:tag.slice(0,256),checked:tags.includes(tag)};
++    });
++  }
++  snapshot() {
++    const p=this.pending;
++    if(p && !this.live(p))this.retire(true);
++    if(!this.pending?.ready)return {enabled:this.eligible(),closed:this.closedSession || 0};
++    return {enabled:true,request:p.request,source:p.source,closed:this.closedSession || 0,
++      ...(p.session ? {session:p.session,revision:p.revision,...p.presentation} : {})};
++  }
++  publish(p) {
++    // Async folder/search work stages its data separately. Only a completed
++    // revision is exposed; Places observers can request snapshots in between.
++    p.presentation={isNew:p.isNew,autoClose:p.autoClose,focusTags:p.focusTags && p.tagsVisible,name:p.name,tags:p.tags,tagsVisible:p.tagsVisible,showEditor:p.showEditor,
++      folder:p.folderLabel,roots:p.roots,folders:p.folders,previous:p.previous,next:p.next,parent:!this.window.PlacesUtils.bookmarks.userContentRoots.includes(p.folder),
++      suggestions:p.suggestions,tagOptions:p.tagOptions,tagPrevious:p.tagPage>0,tagNext:p.tagNext || false,tagSelection:p.tagSelection,labels:p.labels,error:p.error || ''};
++  }
++
++  draft(p,value) {
++    if(!value || typeof value.name!=='string' || value.name.length>4096 || typeof value.tags!=='string' || value.tags.length>4096 || typeof value.showEditor!=='boolean' || (!p.tagsVisible && value.tags!==p.tags))return false;
++    if(!p.firstEdit){const field=p.name!==value.name?'namePicker':p.tags!==value.tags?'tagsField':null;if(field){p.firstEdit=field;Services.prefs.setCharPref('browser.bookmarks.editDialog.firstEditField',field);}}
++    p.name=value.name;p.tags=value.tags;p.showEditor=value.showEditor;return true;
++  }
++  async search(p) {
++    p.search?.stopSearch();
++    const token=p.searchToken=(p.searchToken || 0)+1;p.suggestions=[];
++    p.search=Cc['@mozilla.org/autocomplete/search;1?name=places-tag-autocomplete'].createInstance(Ci.nsIAutoCompleteSearch);
++    p.search.startSearch(p.tags,'',null,{onSearchResult:(_search,result)=>{
++      if(this.pending!==p || !this.live(p) || p.searchToken!==token)return;
++      p.suggestions=[];let units=0;for(let i=0;i<Math.min(result.matchCount,64);i++){const value=String(result.getValueAt(i));if(value.length>4096)continue;if(units+value.length>8192)break;p.suggestions.push(value);units+=value.length;}
++      p.revision++;this.publish(p);this.invalidate();
++    }});
++  }
++  async finish(p,id) {
++    const w=this.window,places=p.places,ui=p.ui;
++    if(id===2) {
++      if(p.isNew)w.BookmarkingUI.updateStarState();
++      else {
++        const guids=[];for(const guid of p.guids){const b=await places.bookmarks.fetch(guid);if(b?.url?.href===p.url)guids.push(guid);}
++        if(guids.length)await p.transactions.Remove(guids).transact();
++      }
++      return;
++    }
++    const folder=await places.bookmarks.fetch(p.folder);if(folder?.type!==places.bookmarks.TYPE_FOLDER)throw new Error('Bookmark folder was removed');
++    if(!p.isNew){const b=await places.bookmarks.fetch(p.node.bookmarkGuid);if(!b || b.url?.href!==p.url)throw new Error('Bookmark target changed');}
++    if(p.name!==p.originalName)await p.state._titleChanged(p.name);
++    if(p.tagsVisible && p.tags!==p.originalTags)await p.state._tagsChanged(ui.parseBookmarkTags(p.tags));
++    if(p.didChangeFolder)await p.state._parentGuidChanged(p.folder);
++    Services.prefs.setBoolPref('browser.bookmarks.editDialog.showForNewBookmarks',p.showEditor);
++    await ui.storeRecentlyUsedBookmarkFolder(p.folder,!!p.didChangeFolder);
++    await p.state.save();
++    if(p.isNew && this.live(p)){try{w.StarUI.showConfirmation();}catch(error){console.error(error);}}
++  }
++  execute(action) {
++    const match=/^bookmark-panel:(open|invoke|escape):([1-9][0-9]*)(?::([1-9][0-9]*))?(?::([1-9][0-9]*))?$/.exec(action.command);
++    const p=this.pending;if(!match || !p || !this.live(p))return 2;
++    if(match.slice(2).some(value=>value!==undefined && (!Number.isSafeInteger(Number(value)) || Number(value)>0xffffffff)))return 2;
++    const n=Number(match[2]);
++    if(match[1]==='open') {
++      if(p.session || n!==p.request || !match[3] || match[4] || !this.toolbar.menuAnchor('bookmark-panel',action))return 2;
++      p.session=Number(match[3]);p.revision=1;this.invalidate();return 1;
++    }
++    const previousTags=p.tags,id=Number(match[4]);
++    if(p.busy || n!==p.session || Number(match[3])!==p.revision ||
++      (match[1]==='escape' ? id!==2 : ![1,2,3,4,5,6,7,8,9,10].includes(id) && !p.choices.has(id) && !p.tagChoices.has(id)))return 2;
++    if((id===4 && !p.previous) || (id===5 && !p.next) || (id===3 && this.window.PlacesUtils.bookmarks.userContentRoots.includes(p.folder)) ||
++      ((id===8 || id===9 || id===10 || p.tagChoices.has(id)) && !p.tagsVisible) || (id===9 && !p.tagPage) || (id===10 && !p.tagNext))return 2;
++    if(id===6 && (typeof action.bookmark?.folderName!=='string' || !action.bookmark.folderName.trim() || action.bookmark.folderName.length>512))return 2;
++    if(!this.draft(p,action.bookmark))return 2;
++    if(match[1]==='escape') {this.dismiss();return 1;}
++    if(id===1 || id===2) {
++      // One terminal operation owns this immutable target; async completion can
++      // never consume a newer opening or read a newer selected document.
++      this.pending=null;this.closedSession=p.session;p.searchToken=(p.searchToken || 0)+1;p.search?.stopSearch();this.invalidate();
++      void this.finish(p,id).catch(error=>{console.error(error);if(!this.pending && this.live(p)){p.request=++this.nextRequest;p.session=p.revision=0;p.error=p.labels.error;this.pending=p;this.publish(p);this.invalidate();}else if(p.isNew)this.window.BookmarkingUI.updateStarState();});return 1;
++    }
++    if(id===7) {if(p.allTags)this.tagRows(p);if(previousTags!==p.tags)p.suggestions=[];p.revision++;this.publish(p);this.invalidate();if(p.tagsVisible && previousTags!==p.tags)void this.search(p).catch(error=>console.error(error));return 1;}
++    const folderBefore=Object.fromEntries(["folder","page","parent","folderLabel","roots","folders","previous","next"].map(key=>[key,p[key]]));
++    const choicesBefore=new Map(p.choices);
++    const operation=async()=>{
++      const originalFolder=p.folder;
++      if(id===8 || id===9 || id===10 || p.tagChoices.has(id)) {
++        if(!p.allTags){const tags=await this.window.PlacesUtils.bookmarks.fetchTags();p.allTags=new Map(tags.map(tag=>[tag.name.toLowerCase(),tag.name]));}
++        if(id===9)p.tagPage--;
++        if(id===10)p.tagPage++;
++        if(p.tagChoices.has(id)){const tag=p.tagChoices.get(id);const value=this.window.PlacesUIUtils.toggleBookmarkTag(p.tags,tag,!this.window.PlacesUIUtils.parseBookmarkTags(p.tags).includes(tag));if(value.length>4096)throw new Error('Bookmark tags exceed editor capacity');p.tags=value;p.tagSelection++;}
++        this.tagRows(p);return;
++      }
++      if(id===3){p.folder=p.parent;p.page=0;}
++      else if(id===4)p.page--;
++      else if(id===5)p.page++;
++      else if(id===6) {
++        const title=action.bookmark.folderName;if(typeof title!=='string' || !title.trim() || title.length>512)throw new Error('Invalid folder name');
++        p.folder=await this.window.PlacesTransactions.NewFolder({parentGuid:p.folder,title}).transact();p.page=0;
++      } else {p.folder=p.choices.get(id);p.page=0;}
++      await this.folders(p);if(p.folder!==originalFolder)p.didChangeFolder=true;
++    };
++    if(p.busy)return 2;p.busy=true;p.search?.stopSearch();p.searchToken=(p.searchToken || 0)+1;p.suggestions=[];
++    void operation().then(()=>{p.error='';}).catch(error=>{console.error(error);Object.assign(p,folderBefore);p.choices=choicesBefore;p.error=p.labels.error;}).finally(()=>{p.busy=false;if(p.onSettled){const done=p.onSettled;p.onSettled=null;done();}if(this.pending===p){p.revision++;this.publish(p);this.invalidate();}});return 1;
++  }
++  retire(save=false) {
++    const p=this.pending;if(!p)return;
++    if(!save || !p.ready || !p.session){this.dismiss();return;}
++    this.pending=null;this.closedSession=p.session;p.searchToken=(p.searchToken || 0)+1;p.search?.stopSearch();this.invalidate();
++    const complete=()=>{void this.finish(p,1).catch(error=>{console.error(error);if(p.isNew)this.window.BookmarkingUI.updateStarState();});};
++    if(p.busy)p.onSettled=complete;else complete();
++  }
++  dismiss() {const p=this.pending;if(!p)return;this.pending=null;this.closedSession=p.session || 0;p.search?.stopSearch();if(p.isNew)this.window.BookmarkingUI.updateStarState();this.invalidate();}
++  close(){if(this.closed)return;this.retire(true);this.closed=true;Services.obs.removeObserver(this.localeChanged,"intl:app-locales-changed");}
++}
 diff --git a/browser/components/urlbar/content/UrlbarInputIdentity.mjs b/browser/components/urlbar/content/UrlbarInputIdentity.mjs
 new file mode 100644
 index 00000000000..e0803c1e34b
@@ -23883,10 +24238,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..e7f53b38d71
+index 00000000000..5af8160e70d
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,542 @@
+@@ -0,0 +1,549 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -23936,6 +24291,8 @@ index 00000000000..e7f53b38d71
 +    this.developerMenu=new WinUIDeveloperMenu(this);
 +    const {WinUIProfilerPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUIProfilerPanel.sys.mjs");
 +    this.profilerPanel=new WinUIProfilerPanel(this);
++    const {WinUIBookmarkPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUIBookmarkPanel.sys.mjs");
++    this.bookmarkPanel=new WinUIBookmarkPanel(this);
 +    const {WinUITabGroupsMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUITabGroupsMenu.sys.mjs");
 +    this.tabGroupsMenu=new WinUITabGroupsMenu(this);
 +    const {WinUIPrivacyPanels}=ChromeUtils.importESModule("chrome://browser/content/WinUIPrivacyPanels.sys.mjs");
@@ -24028,6 +24385,7 @@ index 00000000000..e7f53b38d71
 +    state.overflowMenu=this.overflowMenu.snapshot(state);
 +    state.developerMenu=this.developerMenu.snapshot();
 +    state.profilerPanel=this.profilerPanel.snapshot();
++    state.bookmarkPanel=this.bookmarkPanel.snapshot();
 +    state.tabGroupsMenu=this.tabGroupsMenu.snapshot();
 +    Object.assign(state,this.privacyPanels.snapshot(state));
 +    return state;
@@ -24090,6 +24448,7 @@ index 00000000000..e7f53b38d71
 +  executeNavigation(action) {
 +    const {window, owner} = this;
 +    const indicator = ["indicator:private", "indicator:analysis"].includes(action?.command);
++    const nativeBookmark=typeof action?.command === "string" && action.command.startsWith("bookmark-panel:");
 +    const nativeProfiler=typeof action?.command === "string" && action.command.startsWith("profiler-panel:");
 +    const nativePrivacy=typeof action?.command === "string" && action.command.startsWith("privacy-panel:");
 +    const nativeTabGroups=typeof action?.command === "string" && action.command.startsWith("tab-groups-menu:");
@@ -24106,16 +24465,17 @@ index 00000000000..e7f53b38d71
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!stock && !indicator && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!stock && !indicator && !nativeBookmark && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
++    if (nativeBookmark) return this.bookmarkPanel.execute(action);
 +    if (nativeProfiler) return this.profilerPanel.execute(action);
 +    if (nativeTabGroups) return this.tabGroupsMenu.execute(action);
 +    if (nativePrivacy) return this.privacyPanels.execute(action);
@@ -24359,6 +24719,7 @@ index 00000000000..e7f53b38d71
 +    if(this.profileMenu?.session)this.profileMenu.dismiss();
 +    if(this.overflowMenu?.session)this.overflowMenu.dismiss();
 +    this.profilerPanel?.dismiss();
++    this.bookmarkPanel?.retire(true);
 +    if(this.developerMenu?.session)this.developerMenu.dismiss();
 +    if(this.tabGroupsMenu?.session)this.tabGroupsMenu.dismiss();
 +    this.privacyPanels?.dismissAll();
@@ -24408,6 +24769,7 @@ index 00000000000..e7f53b38d71
 +    this.overflowMenu.close();
 +    this.developerMenu.close();
 +    this.profilerPanel.close();
++    this.bookmarkPanel.close();
 +    this.tabGroupsMenu.close();
 +    this.privacyPanels.close();
 +    this.resize.disconnect();
