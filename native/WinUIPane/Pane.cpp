@@ -651,6 +651,7 @@ struct Pane {
                 {SHELL_PUBLICATION_CHANNEL_OVERFLOW_MENU, L"overflow-menu"},
                 {SHELL_PUBLICATION_CHANNEL_DEVELOPER_MENU, L"developer-menu"},
                 {SHELL_PUBLICATION_CHANNEL_TAB_GROUPS_MENU, L"tab-groups-menu"},
+                {SHELL_PUBLICATION_CHANNEL_GROUP_HEADER, L"group-header"},
                 {SHELL_PUBLICATION_CHANNEL_FORGET_PANEL, L"forget-panel"},
                 {SHELL_PUBLICATION_CHANNEL_CLEAR_PRIVATE_PANEL, L"clear-private-panel"},
                 {SHELL_PUBLICATION_CHANNEL_TOOLBAR_CUSTOMIZATION, L"toolbar-customization"},
@@ -1711,6 +1712,11 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
                 return E_INVALIDARG;
             pane.strip->Publish(snapshot.GetNamedObject(L"strip"));
             return S_OK;
+        }
+        if (snapshot.HasKey(L"groupHeader")) {
+            if (!pane.strip || snapshot.Size()!=3 || snapshot.GetNamedNumber(L"version")!=2 || !snapshot.GetNamedBoolean(L"publishOnly",false)) return E_INVALIDARG;
+            pane.strip->groupHeader.core=pane.shell.core;
+            pane.strip->groupHeader.Apply(snapshot.GetNamedObject(L"groupHeader"));return S_OK;
         }
         if (snapshot.HasKey(L"tabPreview")) {
             // Firefox's answer to a hover-card request: also its own envelope,

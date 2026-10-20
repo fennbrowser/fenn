@@ -195,10 +195,10 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..eb4e4ac842e 100644
+index b2b5db6040b..5a20c1c38ed 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,26 @@ browser.jar:
+@@ -35,2 +35,27 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -215,6 +215,7 @@ index b2b5db6040b..eb4e4ac842e 100644
 +        content/browser/WinUIOmnibarActions.sys.mjs  (content/WinUIOmnibarActions.sys.mjs)
 +        content/browser/WinUIProfileMenu.sys.mjs (content/WinUIProfileMenu.sys.mjs)
 +        content/browser/WinUIPrivacyPanels.sys.mjs (content/WinUIPrivacyPanels.sys.mjs)
++        content/browser/WinUIGroupHeader.sys.mjs (content/WinUIGroupHeader.sys.mjs)
 +        content/browser/WinUITabGroupsMenu.sys.mjs (content/WinUITabGroupsMenu.sys.mjs)
 +        content/browser/WinUIDeveloperMenu.sys.mjs                (content/WinUIDeveloperMenu.sys.mjs)
 +        content/browser/WinUIOverflowMenu.sys.mjs (content/WinUIOverflowMenu.sys.mjs)
@@ -225,7 +226,7 @@ index b2b5db6040b..eb4e4ac842e 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +130,17 @@ browser.jar:
+@@ -106 +131,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -862,10 +863,61 @@ index be3252ae5f2..2fed4aa835b 100644
 +    gBrowser.selectedTab = contextTabs[0];
  
 diff --git a/browser/components/tabbrowser/content/tabgroup-menu.js b/browser/components/tabbrowser/content/tabgroup-menu.js
-index 1902d2d4088..2c603501ceb 100644
+index 1902d2d4088..ad9fd600b06 100644
 --- a/browser/components/tabbrowser/content/tabgroup-menu.js
 +++ b/browser/components/tabbrowser/content/tabgroup-menu.js
-@@ -911,2 +911,29 @@
+@@ -324,2 +324,3 @@
+     #commandButtons;
++    #commandActions = {};
+     #createButton;
+@@ -495,3 +496,8 @@
+ 
+-      this.#commandButtons.addNewTabInGroup.addEventListener("command", () => {
++      const onCommand = (key, handler) => {
++        this.#commandActions[key] = handler;
++        this.#commandButtons[key].addEventListener("command", handler);
++      };
++
++      onCommand("addNewTabInGroup", () => {
+         this.#handleNewTabInGroup();
+@@ -499,4 +505,4 @@
+ 
+-      this.#commandButtons.moveGroupToNewWindow.addEventListener(
+-        "command",
++      onCommand(
++        "moveGroupToNewWindow",
+         () => {
+@@ -510,3 +516,3 @@
+ 
+-      this.#commandButtons.copyAllLinks.addEventListener("command", () => {
++      onCommand("copyAllLinks", () => {
+         let links = this.#getGroupLinks(this.activeGroup);
+@@ -519,3 +525,3 @@
+ 
+-      this.#commandButtons.ungroupTabs.addEventListener("command", () => {
++      onCommand("ungroupTabs", () => {
+         this.activeGroup.ungroupTabs(
+@@ -527,3 +533,3 @@
+ 
+-      this.#commandButtons.saveAndCloseGroup.addEventListener("command", () => {
++      onCommand("saveAndCloseGroup", () => {
+         this.activeGroup.saveAndClose(
+@@ -535,3 +541,3 @@
+ 
+-      this.#commandButtons.deleteGroup.addEventListener("command", () => {
++      onCommand("deleteGroup", () => {
+         gBrowser.removeTabGroup(this.activeGroup, {
+@@ -543,3 +549,3 @@
+ 
+-      this.#commandButtons.shareTabGroup.addEventListener("command", () => {
++      onCommand("shareTabGroup", () => {
+         ContentSharingUtils.handleShareTabGroup(this.activeGroup);
+@@ -548,3 +554,3 @@
+ 
+-      this.#commandButtons.createAITab.addEventListener("command", () => {
++      onCommand("createAITab", () => {
+         lazy.AIWindow.createAITab(
+@@ -911,2 +917,29 @@
  
 +    /**
 +     * Opens the editor at an explicit screen rect, or at the group's label.
@@ -895,19 +947,67 @@ index 1902d2d4088..2c603501ceb 100644
 +    }
 +
      openCreateModal(group) {
-@@ -920,5 +947,3 @@
+@@ -920,5 +953,3 @@
  
 -      this.#panel.openPopup(group.firstChild, {
 -        position: this.#panelPosition,
 -      });
 +      this.#openPanel(group);
        if (!this.smartTabGroupsOptin) {
-@@ -956,3 +981,3 @@
+@@ -956,3 +987,51 @@
  
 -    openEditModal(group) {
++    // Native header presentation reuses the existing browser command handlers.
++    // No hidden edit panel is opened to describe or edit a group.
++    nativeEditState(group) {
++      const links = this.#getGroupLinks(group);
++      const privateWindow = PrivateBrowsingUtils.isWindowPrivate(window);
++      return {
++        colors: MozTabbrowserTabGroupMenu.COLORS,
++        commands: [
++          { key: "new-tab", node: "addNewTabInGroup", l10n: "tab-group-editor-action-new-tab", enabled: true },
++          { key: "new-window", node: "moveGroupToNewWindow", l10n: "tab-group-editor-action-new-window", enabled: group.tabs.length != gBrowser.openTabs.length },
++          { key: "copy-links", node: "copyAllLinks", l10n: "tab-group-editor-action-copy-links", args: { linkCount: links.length }, enabled: !!links.length },
++          ...(!privateWindow ? [{ key: "save", node: "saveAndCloseGroup", l10n: "tab-group-editor-action-save", enabled: SessionStore.shouldSaveTabsToGroup(group.tabs) }] : []),
++          { key: "ungroup", node: "ungroupTabs", l10n: "tab-group-editor-action-ungroup", enabled: true },
++          { key: "delete", node: "deleteGroup", l10n: "tab-group-editor-action-delete", enabled: true },
++          ...(ContentSharingUtils.isEnabled ? [{ key: "share", node: "shareTabGroup", l10n: "tab-group-editor-action-share-group", enabled: true }] : []),
++
++        ],
++        advanced: this.smartTabGroupsEnabled || (this.aitabEnabled && lazy.AIWindow.isAIWindowActiveAndEnabled(window)),
++      };
++    }
++
++    nativeEditValue(group, name, color) {
++      if (typeof name != "string" || name.length > 4096 || !MozTabbrowserTabGroupMenu.COLORS.includes(color)) return false;
++      if (group.label != name) group.label = name;
++      if (group.color != color) {
++        group.color = color;
++        Glean.tabgroup.groupInteractions.change_color.add(1);
++      }
++      return true;
++    }
++
++    nativeEditFinished(group, initialName) {
++      if (group.label != initialName) Glean.tabgroup.groupInteractions.rename.add(1);
++    }
++
++    nativeEditCommand(group, key) {
++      const command = this.nativeEditState(group).commands.find(row => row.key == key && row.enabled);
++      if (!command) return false;
++      const previous = this.activeGroup;
++      try {
++        this.activeGroup = group;
++        this.#commandActions[command.node]();
++      } finally {
++        this.activeGroup = previous;
++      }
++      return true;
++    }
++
 +    openEditModal(group, screenRect = null) {
        this.activeGroup = group;
-@@ -965,5 +990,3 @@
+@@ -965,5 +1044,3 @@
  
 -      this.#panel.openPopup(group.firstChild, {
 -        position: this.#panelPosition,
@@ -7755,10 +7855,10 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..a25c8190967 100644
+index 4f28e62c7b5..5b181bd0ae2 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -520 +520,108 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,110 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -7867,6 +7967,8 @@ index 4f28e62c7b5..a25c8190967 100644
 +winui-overflow-more-tools = More tools…
 +
 +winui-tab-groups-more = More tab groups…
++
++winui-group-header-more = More group options…
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -18361,6 +18463,111 @@ index 00000000000..9f7d8fdffd5
 +    return 1;
 +  }
 +}
+diff --git a/browser/base/content/WinUIGroupHeader.sys.mjs b/browser/base/content/WinUIGroupHeader.sys.mjs
+new file mode 100644
+index 00000000000..e961914ed90
+--- /dev/null
++++ b/browser/base/content/WinUIGroupHeader.sys.mjs
+@@ -0,0 +1,99 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++const commands = ["new-tab", "new-window", "copy-links", "save", "ungroup", "delete", "share"];
++export class WinUIGroupHeader {
++  constructor(owner, window) {
++    this.owner=owner;this.window=window;this.session=this.lastSession=0;
++    this.changed=(_subject,topic)=>{if(topic==="intl:app-locales-changed")this.dismiss();else this.publish();};
++    this.observer=new window.MutationObserver(this.changed);
++    this.revoke=()=>this.dismiss();
++    this.topics=["intl:app-locales-changed","sessionstore-closed-objects-changed"];
++    for(const topic of this.topics)Services.obs.addObserver(this.changed,topic);
++    Services.prefs.addObserver("browser.",this.changed);
++  }
++  close(){this.dismiss();this.closed=true;for(const topic of this.topics)Services.obs.removeObserver(this.changed,topic);Services.prefs.removeObserver("browser.",this.changed);}
++  label(id,attribute,args){
++    this.l10n ??= new this.window.Localization(["branding/brand.ftl","browser/tabbrowser.ftl"],true);
++    const [m]=this.l10n.formatMessagesSync([{id,...(args?{args}:{})}]);
++    return String(m?.attributes?.find(a=>a.name===attribute)?.value ?? m?.value ?? "").slice(0,512);
++  }
++  live(){const w=this.window,g=this.group;return !this.closed && this.owner.attached && !w.fullScreen && !w.document.fullscreenElement && Services.prefs.getBoolPref("browser.tabs.groups.enabled",true) &&
++    !w.document.documentElement.hasAttribute("customizing") && !this.owner.addressToolbar?.customization?.editorOpen && !w.gBrowser.tabContainer.verticalMode && !w.gDialogBox.isOpen &&
++    g?.isConnected && w.gBrowser.tabGroups.includes(g) && g.tabs.length && !g.tabs.some(t=>t.closing) &&
++    w.gBrowser.selectedTab===this.tab && w.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId===this.document &&
++    g.tabs.length===this.tabs.length && g.tabs.every((t,i)=>t===this.tabs[i]) && g.label===this.name && g.color===this.color;}
++  model(){
++    const w=this.window,g=this.group,state=w.gBrowser.tabGroupMenu.nativeEditState(g);
++    return {session:this.session,revision:this.revision,title:this.label("tab-group-editor-title-edit"),name:g.label,color:g.color,
++      nameLabel:this.label("tab-group-editor-name-label"),placeholder:this.label("tab-group-editor-name-field","placeholder"),
++      colorLabel:this.label("tab-group-editor-color-selector","aria-label"),done:this.label("tab-group-editor-done","label"),
++      colors:state.colors.map(key=>({key,label:this.label("tab-group-editor-color-selector2-"+key)})),
++      commands:state.commands.map(row=>({id:4+commands.indexOf(row.key),key:row.key,label:this.label(row.l10n,"label",row.args),enabled:row.enabled})),
++      ...(state.advanced?{more:this.label("winui-group-header-more")}:{})};
++  }
++  publish(){
++    if(this.closed || (!this.session && !this.closedSession))return;
++    if(this.session){
++      if(!this.live()){this.dismiss();return;}
++      const next=this.model();
++      if(this.name.length>4096 || JSON.stringify(next).length>16384){this.fallback();return;}
++      if(this.description && (JSON.stringify(next.commands.map(c=>c.key))!==JSON.stringify(this.description.commands.map(c=>c.key)) || !!next.more!==!!this.description.more)){this.dismiss();return;}
++      if(JSON.stringify({...next,revision:0})!==this.fingerprint){this.revision++;next.revision=this.revision;this.fingerprint=JSON.stringify({...next,revision:0});this.description=next;}
++    }
++    this.window.windowUtils.syncWinUITabMenu(JSON.stringify({version:2,publishOnly:true,groupHeader:this.description || {closed:this.closedSession,...(this.closedFallback?{fallback:true}:{})}}));
++  }
++  fallback(){
++    const w=this.window,group=this.group,bounds=this.bounds;
++    this.dismiss(true);
++    const scale=w.devicePixelRatio;
++    w.gBrowser.tabGroupMenu.openEditModal(group,Object.fromEntries(Object.entries(bounds).map(([k,v])=>[k,v/scale])));
++  }
++  dismiss(fallback=false){
++    if(!this.session)return;
++    this.window.gBrowser.tabGroupMenu.nativeEditFinished(this.group,this.initialName);
++    this.closedFallback=fallback;this.closedSession=this.session;this.session=0;this.description=null;this.observer.disconnect();
++    this.window.gBrowser.tabContainer.removeEventListener("TabSelect",this.revoke);
++    this.l10n=null;this.publish();
++  }
++  open(group,bounds,session){
++    if(!Number.isInteger(session) || session<=this.lastSession || session>0xffffffff)return false;
++    this.dismiss();this.lastSession=session;this.session=session;this.revision=0;this.group=group;this.bounds=bounds;
++    const w=this.window;this.tab=w.gBrowser.selectedTab;this.document=w.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId;
++    this.tabs=[...group.tabs];this.name=this.initialName=group.label;this.color=group.color;
++    if(!this.live()){this.dismiss();return false;}
++    w.gBrowser.tabGroupMenu.close();
++    this.observer.observe(w.gBrowser.tabContainer,{attributes:true,childList:true,subtree:true});
++    w.gBrowser.tabContainer.addEventListener("TabSelect",this.revoke);
++    this.fingerprint=null;this.publish();
++    const active=session;
++    const {TabStateFlusher}=ChromeUtils.importESModule("moz-src:///browser/components/sessionstore/TabStateFlusher.sys.mjs");
++    Promise.allSettled(this.tabs.map(t=>TabStateFlusher.flush(t.linkedBrowser))).then(()=>{if(this.session===active)this.publish();});
++    return true;
++  }
++  execute(action){
++    if(action?.kind!=="group-header" || action.session!==this.session || !this.session)return 2;
++    if(action.command===0 || (action.command===3 && typeof action.name==="string")){
++      if(this.live() && Number.isInteger(action.revision) && action.revision>0 && action.revision<=this.revision && typeof action.name==="string" && action.name.length<=4096 && this.description.colors.some(c=>c.key===action.color))this.window.gBrowser.tabGroupMenu.nativeEditValue(this.group,action.name,action.color);
++      this.dismiss();return 1;
++    }
++    if(["x","y","width","height"].every(k=>Number.isFinite(action[k]) && Math.abs(action[k])<=1000000) && action.width>0 && action.height>0)this.bounds=Object.fromEntries(["x","y","width","height"].map(k=>[k,action[k]]));
++    this.publish();if(!this.session || action.revision!==this.revision || !this.live())return 2;
++    const w=this.window,g=this.group,controller=w.gBrowser.tabGroupMenu;
++    if(action.command===1 || action.command===2){
++      const name=action.command===1?action.value:this.name,color=action.command===2?action.value:this.color;
++      if(typeof name!=="string" || name.length>4096 || typeof color!=="string" || !this.description.colors.some(c=>c.key===color))return 2;
++      if(!controller.nativeEditValue(g,name,color))return 2;
++      this.name=g.label;this.color=g.color;this.revision++;this.fingerprint=null;this.publish();return 1;
++    }
++    const command=this.description.commands.find(c=>c.id===action.command && c.enabled);
++    if(action.command!==3 && !(action.command===20 && this.description.more) && !command)return 2;
++    const bounds=Object.fromEntries(["x","y","width","height"].map(k=>[k,action[k]]));
++    if(action.command===20 && (!Object.values(bounds).every(n=>Number.isFinite(n) && Math.abs(n)<=1000000) || bounds.width<=0 || bounds.height<=0))return 2;
++    this.dismiss();
++    if(action.command===3)return 1;
++    if(action.command===20){const scale=w.devicePixelRatio;controller.openEditModal(g,Object.fromEntries(Object.entries(bounds).map(([k,v])=>[k,v/scale])));return 1;}
++    return controller.nativeEditCommand(g,command.key)?1:2;
++  }
++}
 diff --git a/browser/base/content/WinUIPrivacyPanels.sys.mjs b/browser/base/content/WinUIPrivacyPanels.sys.mjs
 new file mode 100644
 index 00000000000..1dbff3ea703
@@ -20259,10 +20466,10 @@ index 00000000000..1dc7b4fee7a
 +}
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 00000000000..5dd7b096625
+index 00000000000..a5c99b4fa14
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
-@@ -0,0 +1,316 @@
+@@ -0,0 +1,317 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20457,6 +20664,7 @@ index 00000000000..5dd7b096625
 +    if (event?.kind === "strip-group-context") {
 +      if (this.consumed || event.session !== this.windowDragSession || !this.fresh(event.revision) ||
 +          !Number.isSafeInteger(event.group) || event.group <= 0 || !this.openGroupMenu ||
++          !Number.isInteger(event.menuSession) || event.menuSession<=0 || event.menuSession>0xffffffff ||
 +          ![event.x,event.y,event.width,event.height].every(n => Number.isFinite(n) && Math.abs(n) <= 1000000) ||
 +          event.width <= 0 || event.height <= 0) return false;
 +      const current = this.describe();
@@ -20465,7 +20673,7 @@ index 00000000000..5dd7b096625
 +      this.consumed = true;
 +      return this.openGroupMenu(this.targets.get(event.group), {
 +        x:event.x, y:event.y, width:event.width, height:event.height,
-+      }) !== false;
++      },event.menuSession) !== false;
 +    }
 +    if (event?.kind === "strip-group-select") {
 +      if (this.consumed || event.session !== this.windowDragSession || !this.fresh(event.revision) ||
@@ -24118,10 +24326,10 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..b49b1f045bd
+index 00000000000..e9177d87994
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2200 @@
+@@ -0,0 +1,2203 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24633,6 +24841,7 @@ index 00000000000..b49b1f045bd
 +  // revision has moved, so a gesture made against a superseded strip is
 +  // rejected rather than applied to the wrong tab.
 +  executeStripRequest(action) {
++    if(action?.kind==="group-header")return this.groupHeader?.execute(action) || 2;
 +    // A gesture that moves or tears out a tab cannot be honoured while a modal
 +    // dialog owns the window or while the window is in fullscreen (where the
 +    // strip is not the thing the user is looking at). The caller already
@@ -25206,13 +25415,12 @@ index 00000000000..b49b1f045bd
 +            gBrowser.TabMetrics.METRIC_SOURCE.DRAG_AND_DROP)});
 +          return true;
 +        },
-+        openGroupMenu: (group, bounds) => {
-+          if (gDialogBox.isOpen || !group?.isConnected || !gBrowser.tabGroups.includes(group)) return false;
-+          // WinUI sends physical screen pixels; XUL popup APIs use screen CSS pixels.
-+          const scale = window.devicePixelRatio;
-+          const screenRect = Object.fromEntries(Object.entries(bounds).map(([key,value]) => [key,value / scale]));
-+          gBrowser.tabGroupMenu.openEditModal(group, screenRect);
-+          return true;
++        openGroupMenu: (group, bounds, session) => {
++          if (!this.groupHeader) {
++            const {WinUIGroupHeader}=ChromeUtils.importESModule("chrome://browser/content/WinUIGroupHeader.sys.mjs");
++            this.groupHeader=new WinUIGroupHeader(this,window);
++          }
++          return this.groupHeader.open(group,bounds,session);
 +        },
 +        openAllTabsMenu: bounds => {
 +          if (gDialogBox.isOpen) return false;
@@ -25853,6 +26061,7 @@ index 00000000000..b49b1f045bd
 +
 +  publishState(force = false) {
 +    if (!this.element || !this.attached || this.processingAction) return;
++    this.groupHeader?.publish();
 +    if (force || this.structuralDirty || !this.nativeRevision) {
 +      this.syncTabs();
 +      return;
@@ -25968,6 +26177,7 @@ index 00000000000..b49b1f045bd
 +
 +  syncTabs() {
 +    if (!this.element || !this.attached || this.processingAction) return;
++    this.groupHeader?.publish();
 +    const tabs = this.visibleTabs();
 +    const ids = tabs.map(tab => {
 +      if (!this.tabIds.has(tab)) this.tabIds.set(tab, this.nextTabId++);
@@ -26256,6 +26466,7 @@ index 00000000000..b49b1f045bd
 +    this.addressSession = null;
 +    this.addressToolbar?.close();
 +    this.addressToolbar = null;
++    this.groupHeader?.close();this.groupHeader=null;
 +    this.tabMenuSession = null;
 +    this.stripSession = null;
 +    this.tabMenuL10n = null;

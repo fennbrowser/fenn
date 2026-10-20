@@ -7,6 +7,7 @@
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include "JsonValidation.h"
 #include "TabGroupsButton.h"
+#include "GroupHeader.h"
 #include "AllTabsButton.h"
 #include "TabDragImage.h"
 #include "ShellCore.h"
@@ -92,6 +93,7 @@ struct NativeTabStrip {
 
     NativeTabMenu& menu;
     ShellCore* core{};
+    NativeGroupHeader groupHeader;
     std::function<void(uint32_t)> select, close;
     std::function<void()> add;
     // This window's own real top-level HWND, set by Pane.cpp at
@@ -1626,14 +1628,15 @@ struct NativeTabStrip {
             action.SetNamedValue(L"collapsed", JValue::CreateBooleanValue(collapsed));
             groupsButton.dispatch(action.Stringify());
         };
-        inlineGroups.context = [this](uint32_t id, Windows::Foundation::Rect bounds) {
+        inlineGroups.context = [this](uint32_t id, Windows::Foundation::Rect bounds, Controls::Button const& button) {
             if (IsDragging() || GroupDrag().phase || !groupsButton.dispatch) return;
-            // The next surface belongs to Gecko. Release island keyboard focus
-            // before Firefox opens its panel and focuses the group-name field.
-            if (ownerHwnd) SetFocus(ownerHwnd);
+            groupHeader.core=core;groupHeader.dispatch=groupsButton.dispatch;
+            groupHeader.releaseFocus=[this]{if(ownerHwnd)SetFocus(ownerHwnd);};
+            const auto opening=groupHeader.Open(button);if(!opening)return;
             using Value = Windows::Data::Json::JsonValue;
             Windows::Data::Json::JsonObject action;
             action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-group-context"));
+            action.SetNamedValue(L"menuSession", Value::CreateNumberValue(opening));
             action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));
             action.SetNamedValue(L"session", Value::CreateNumberValue(windowDragSession));
             action.SetNamedValue(L"group", Value::CreateNumberValue(id));
@@ -1645,7 +1648,7 @@ struct NativeTabStrip {
         };
         auto alive = std::weak_ptr<int>(lifetime);
         root.SizeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) groupSlide.Cancel(); });
-        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { ambient.Motion(false); groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
+        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { groupHeader.Close(); ambient.Motion(false); groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
         root.PreviewKeyDown([this, alive](auto&&, auto const& args) {
             if (alive.expired() || GroupDrag().phase) return;
             const auto key=args.Key();
@@ -1747,6 +1750,7 @@ struct NativeTabStrip {
         button.ContextFlyout(flyout);
     }
     ~NativeTabStrip() {
+        groupHeader.Close();
         inlineGroups.realized = nullptr;
         ambient.refresh = nullptr;
         ambient.Motion(false);

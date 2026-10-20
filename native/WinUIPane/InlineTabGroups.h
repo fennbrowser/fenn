@@ -58,7 +58,7 @@ struct InlineTabGroups {
         washesGroup = value;
         for (auto& [id, run] : runs) if (run.button) ApplyHoverFill(run.button);
     }
-    std::function<void(uint32_t, Windows::Foundation::Rect)> context;
+    std::function<void(uint32_t, Windows::Foundation::Rect, Controls::Button const&)> context;
     std::function<void(uint32_t, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&)> press;
     uint32_t suppressClick{};
     GroupTabsFlyout hover;
@@ -709,7 +709,7 @@ struct InlineTabGroups {
                     auto bounds = button.TransformToVisual(nullptr).TransformBounds(
                         {0,0,float(button.ActualWidth()),float(button.ActualHeight())});
                     auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(bounds);
-                    context(uint32_t(id), {float(screen.X),float(screen.Y),float(screen.Width),float(screen.Height)});
+                    context(uint32_t(id), {float(screen.X),float(screen.Y),float(screen.Width),float(screen.Height)}, button);
                 });
                 run.button.Click([this, alive, id](auto&&, auto&&) {
                     if (alive.expired()) return;
