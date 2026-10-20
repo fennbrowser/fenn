@@ -74,3 +74,21 @@ test('Firefox View stays out of private palettes and source CSS visibility remai
   f.attrs.set('label','View');f.button.isConnected=true;f.button.checkVisibility=()=>false;
   const part=f.stock.snapshot('firefox-view-button',f.button)[0];assert.equal(part.shown,false);assert.equal(part.enabled,false);
 });
+
+test('native overflow ignores inherited closed-popup visibility while preserving local hiding and commands',()=>{
+  const f=fixture();f.attrs.set('label','Find');f.button.isConnected=true;f.button.checkVisibility=()=>false;
+  f.window.getComputedStyle=()=>({display:'flex',visibility:'hidden'});
+  assert.equal(f.stock.snapshot('find-button',f.button)[0].shown,false);
+  assert.equal(f.stock.snapshot('find-button',f.button,true)[0].enabled,true);
+  f.attrs.set('disabled','true');assert.equal(f.stock.snapshot('find-button',f.button,true)[0].enabled,false);
+  f.attrs.delete('disabled');f.button.hidden=true;assert.equal(f.stock.snapshot('find-button',f.button,true)[0].shown,false);
+  f.button.hidden=false;f.window.getComputedStyle=()=>({display:'none'});assert.equal(f.stock.snapshot('find-button',f.button,true)[0].shown,false);
+});
+
+test('a described overflow address edit target survives popup focus while retaining live field availability',()=>{
+  const f=fixture('edit-controls');f.window.getComputedStyle=()=>({display:'flex'});
+  f.toolbar.owner.addressSession={input:{inputField:{controllers:{getControllerForCommand:()=>({isCommandEnabled:()=>true})}}}};
+  f.button.querySelector=selector=>({getAttribute:key=>key==='label'?selector.slice(1):'',querySelector:()=>null});
+  assert.ok(f.stock.snapshot('edit-controls',f.button,true,true).every(p=>p.address && p.enabled));
+  assert.ok(f.stock.snapshot('edit-controls',f.button,true).every(p=>!p.address));
+});

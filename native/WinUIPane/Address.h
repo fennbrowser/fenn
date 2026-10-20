@@ -318,6 +318,10 @@ struct NativeAddress {
                 // Keyboard traversal into the address's edit toolbar retains
                 // that edit target and selection. Other toolbar buttons still
                 // leave address focus normally.
+                // Firefox identifies an address edit target in actual overflow.
+                // Keep it while entering that menu, as for inline edit controls.
+                if(navigation && navigation->overflowMenu.preserveAddress &&
+                    (focused==navigation->buttons[6] || navigation->overflowMenu.Owns(focused)))inside=true;
                 if(navigation)for(auto const& item:navigation->customization.state.items) {
                     auto row=navigation->stock.rows.find(item.id);
                     if(row==navigation->stock.rows.end())continue;
@@ -742,11 +746,22 @@ struct NativeAddress {
         navigation->activate = [this](wchar_t const* command, uint32_t modifiers, Controls::Button const& button) {
             if (syncing || session.empty() || !navigate) return;
             if (navigation->customization.editing && wcsncmp(command,L"customize:",10)!=0) return;
+            if(wcsncmp(command,L"overflow-menu:invoke:",21)==0 || wcsncmp(command,L"overflow-menu:open:",19)==0)Edit();
             auto action = Message(L"navigation");
+            if(wcsncmp(command,L"overflow-menu:invoke:",21)==0 || wcsncmp(command,L"overflow-menu:open:",19)==0) {
+                auto editor=Message(L"clipboard");
+                editor.SetNamedValue(L"editId",JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
+                editor.SetNamedValue(L"text",JValue::CreateStringValue(field.Text()));
+                editor.SetNamedValue(L"textEpoch",JValue::CreateNumberValue(textEpoch));
+                editor.SetNamedValue(L"selectionStart",JValue::CreateNumberValue(field.SelectionStart()));
+                editor.SetNamedValue(L"selectionEnd",JValue::CreateNumberValue(field.SelectionStart()+field.SelectionLength()));
+                editor.SetNamedValue(L"composing",JValue::CreateBooleanValue(composing));
+                action.SetNamedValue(L"editor",editor);
+            }
             action.SetNamedValue(L"command", JValue::CreateStringValue(command));
             action.SetNamedValue(L"keyboard", JValue::CreateBooleanValue(navigation->keyboardActivation));
             action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
-            if (wcscmp(command,L"indicator:private")==0 || wcscmp(command,L"indicator:analysis")==0 || wcsncmp(command, L"product:", 8) == 0 || wcscmp(command, L"back-history") == 0 || wcscmp(command, L"forward-history") == 0 || wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcscmp(command, L"overflow") == 0 || wcsncmp(command,L"profile-menu:",13)==0 || wcsncmp(command,L"downloads-panel:",16)==0 || wcscmp(command, L"downloads") == 0 || wcscmp(command, L"history") == 0 || wcsncmp(command,L"history-menu:open:",18)==0 || wcscmp(command, L"bookmarks") == 0 || wcscmp(command, L"reset-pbm") == 0 || wcsncmp(command, L"extension", 9) == 0 || wcsncmp(command,L"widget-menu:",12)==0 || wcsncmp(command, L"omni", 4) == 0) {
+            if (wcscmp(command,L"indicator:private")==0 || wcscmp(command,L"indicator:analysis")==0 || wcsncmp(command, L"product:", 8) == 0 || wcscmp(command, L"back-history") == 0 || wcscmp(command, L"forward-history") == 0 || wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcscmp(command, L"overflow") == 0 || wcsncmp(command,L"overflow-menu:",14)==0 || wcsncmp(command,L"profile-menu:",13)==0 || wcsncmp(command,L"downloads-panel:",16)==0 || wcscmp(command, L"downloads") == 0 || wcscmp(command, L"history") == 0 || wcsncmp(command,L"history-menu:open:",18)==0 || wcscmp(command, L"bookmarks") == 0 || wcscmp(command, L"reset-pbm") == 0 || wcsncmp(command, L"extension", 9) == 0 || wcsncmp(command,L"widget-menu:",12)==0 || wcsncmp(command, L"omni", 4) == 0) {
                 auto local = button.TransformToVisual(nullptr).TransformBounds(
                     {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
                 auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
@@ -754,12 +769,14 @@ struct NativeAddress {
                 action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
                 action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
                 action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
-                if (releaseMenuFocus && wcsncmp(command,L"profile-menu:",13)!=0 && wcsncmp(command,L"downloads-panel:",16)!=0 && wcsncmp(command,L"history-menu:",13)!=0 &&
+                if (releaseMenuFocus && wcsncmp(command,L"overflow-menu:",14)!=0 && wcsncmp(command,L"profile-menu:",13)!=0 && wcsncmp(command,L"downloads-panel:",16)!=0 && wcsncmp(command,L"history-menu:",13)!=0 &&
                     wcsncmp(command,L"omni-pin:",9)!=0 && wcsncmp(command,L"omni-unpin:",11)!=0) releaseMenuFocus();
             }
             navigate(action.Stringify());
         };
         navigation->historyMenu.core=shell.core;
+        navigation->overflowMenu.core=shell.core;
+        navigation->overflowMenu.dispatch=[this](auto command,auto modifiers,auto const& button){navigation->keyboardActivation=navigation->overflowMenu.keyboardActivation;navigation->activate(command,modifiers,button);};
         navigation->profileMenu.core=shell.core;
         navigation->profileMenu.dispatch=navigation->activate;
         navigation->downloadsPanel.core=shell.core;
@@ -999,6 +1016,7 @@ struct NativeAddress {
         const auto historyMenuState = NativeHistoryMenu::Read(snapshot);
         const auto downloadsPanelState = NativeDownloadsPanel::Read(snapshot);
         const auto profileMenuState = NativeProfileMenu::Read(snapshot);
+        const auto overflowMenuState = NativeOverflowMenu::Read(snapshot);
         const auto productMenuState = NativeProductMenu::Read(snapshot);
         const auto navigationState = NativeNavigationToolbar::Read(snapshot);
         const auto pinnedState = PinnedExtensionButtons::Read(snapshot);
@@ -1178,6 +1196,7 @@ struct NativeAddress {
             ? shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_RESULT_MENU, nextSession, resultGeneration,
                 resultFingerprint, resultEligible, false) : SHELL_ADDRESS_SECTION_DECISION_IGNORED;
         const bool applyHistory = navigation && navigation->historyMenu.Resolve(historyMenuState);
+        const bool applyOverflow = navigation && navigation->overflowMenu.Resolve(overflowMenuState);
         const bool applyProfile = navigation && navigation->profileMenu.Resolve(profileMenuState);
         const bool applyDownloads = navigation && navigation->downloadsPanel.Resolve(downloadsPanelState);
         const auto toolbarDecision = navigation && customizationState.revision
@@ -1225,6 +1244,7 @@ struct NativeAddress {
             navigation->historyMenu.Apply(historyMenuState,navigationToolbar && !navigation->customization.editing,navigation->buttons[9],applyHistory);
             navigation->productMenu.Apply(productMenuState,navigationToolbar);
             navigation->profileMenu.Apply(profileMenuState,navigationToolbar && !navigation->customization.editing,applyProfile);
+            navigation->overflowMenu.Apply(overflowMenuState,navigationToolbar && !navigation->customization.editing,applyOverflow);
             navigation->downloadsPanel.Apply(downloadsPanelState,navigationToolbar && !navigation->customization.editing,applyDownloads);
             if (snapshot.HasKey(L"navigation")) {
                 auto request = snapshot.GetNamedObject(L"navigation").GetNamedNumber(L"editorRequest", 0);

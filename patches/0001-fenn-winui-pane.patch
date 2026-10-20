@@ -187,10 +187,10 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..3cfc6230491 100644
+index b2b5db6040b..4940311bdc4 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,22 @@ browser.jar:
+@@ -35,2 +35,23 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -206,6 +206,7 @@ index b2b5db6040b..3cfc6230491 100644
 +        content/browser/WinUIAddressContextMenu.sys.mjs  (content/WinUIAddressContextMenu.sys.mjs)
 +        content/browser/WinUIOmnibarActions.sys.mjs  (content/WinUIOmnibarActions.sys.mjs)
 +        content/browser/WinUIProfileMenu.sys.mjs (content/WinUIProfileMenu.sys.mjs)
++        content/browser/WinUIOverflowMenu.sys.mjs (content/WinUIOverflowMenu.sys.mjs)
 +        content/browser/WinUIDownloadsPanel.sys.mjs  (content/WinUIDownloadsPanel.sys.mjs)
 +        content/browser/WinUIHistoryMenu.sys.mjs     (content/WinUIHistoryMenu.sys.mjs)
 +        content/browser/WinUIActionStamp.sys.mjs     (content/WinUIActionStamp.sys.mjs)
@@ -213,7 +214,7 @@ index b2b5db6040b..3cfc6230491 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +126,17 @@ browser.jar:
+@@ -106 +127,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -7660,7 +7661,7 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..fd8512870f9 100644
+index 4f28e62c7b5..c55b194833d 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
 @@ -21,3 +21,3 @@ tabbrowser-tab-tooltip-container = { $containerName }
@@ -7701,7 +7702,7 @@ index 4f28e62c7b5..fd8512870f9 100644
 -tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. We’ll save your groups here so they’re easy to find later.
 +tab-groups-list-empty-description = Drag one tab onto another or right-click a tab to start organizing. Weâ€™ll save your groups here so theyâ€™re easy to find later.
  tab-groups-list-empty-button = Create a tab group
-@@ -520 +520,103 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,106 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -7805,6 +7806,9 @@ index 4f28e62c7b5..fd8512870f9 100644
 +
 +winui-profile-more-options = More account options…
 +winui-profile-unavailable = Profiles could not be loaded. Open Manage Profiles to try again.
++
++# Opens the complete retained overflow panel, including unrepresented controls.
++winui-overflow-more-tools = More tools…
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -17926,6 +17930,143 @@ index 00000000000..35f04c14bda
 +    return 1;
 +  }
 +}
+diff --git a/browser/base/content/WinUIOverflowMenu.sys.mjs b/browser/base/content/WinUIOverflowMenu.sys.mjs
+new file mode 100644
+index 00000000000..d128f96b535
+--- /dev/null
++++ b/browser/base/content/WinUIOverflowMenu.sys.mjs
+@@ -0,0 +1,131 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Firefox owns overflow membership, order, availability and widget commands.
++// Only the explicit stock-widget boundary and WebExtension actions are projected.
++export class WinUIOverflowMenu {
++  constructor(toolbar) {
++    this.toolbar=toolbar;this.window=toolbar.window;this.session=this.lastSession=0;
++    this.actions=new Map();
++  }
++  close(){this.closed=true;this.dismiss();}
++  dismiss(){
++    if(!this.session)return;
++    this.closedSession=this.session;this.session=0;this.addressTarget=false;this.description=this.context=this.bounds=null;
++    this.actions.clear();this.toolbar.owner.invalidateAddress();
++  }
++  live(){
++    const t=this.toolbar,w=this.window;
++    return !this.closed && t.active && t.navigation && t.supported() && !t.customization?.editorOpen && !w.gDialogBox?.isOpen &&
++      t.owner.addressSession?.sessionId===this.context?.session && t.owner.addressTab===this.context?.tab && t.owner.addressDocument===this.context?.document &&
++      t.owner.addressTab===w.gBrowser.selectedTab && t.owner.addressDocument===w.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId;
++  }
++  // Use Firefox's real two lists, not a second interpretation of saved placement.
++  // A closed ancestor panel has no rendered layout; inspect visibility only up
++  // to its list and preserve each stock widget's explicit feature/policy gates.
++  members(){
++    const c=this.toolbar.customization,w=this.window,rows=[];
++    if(!c?.current)return rows;
++    for(const listId of ["widget-overflow-list","widget-overflow-fixed-list"]){
++      const list=w.document.getElementById(listId);
++      for(const node of list?.children || []){
++        if(node.hidden || node.collapsed || node.localName==="toolbarseparator" || node.localName==="toolbarspring")continue;
++        if(listId==="widget-overflow-list" && !c.nativeOverflow.has(node.id) && c.entries.has(node.id))continue;
++        const item=c.current.items.find(i=>c.entries.get(node.id)?.id===i.id);
++        if(!item || item.kind==="spring")continue;
++        if(item.stock){
++          if(!c.stock.eligible(node.id))continue;
++          for(const part of c.stock.snapshot(node.id,node,true,this.session && this.addressTarget ? true : undefined)){
++            if(part.shown && part.label)rows.push({key:node.id+"-"+part.id,label:part.label,enabled:part.enabled,
++              checked:part.checked,checkable:part.checkable,address:part.address,kind:"stock",widget:node.id,node,part:part.id,item:item.id});
++          }
++        }else if(item.extension){
++          const entry=this.toolbar.pinned?.paletteEntries?.get(node.id);
++          const button=node.querySelector(".webextension-browser-action");
++          const policy=button && w.WebExtensionPolicy.getByID(button.dataset.extensionid);
++          if(!entry || !policy?.extension.canAccessWindow(w) || !w.gUnifiedExtensions.browserActionFor(policy) || button.hidden)continue;
++          rows.push({key:item.id,label:button.getAttribute("tooltiptext") || policy.extension.name,enabled:!button.hasAttribute("disabled"),
++            checked:false,checkable:false,kind:"extension",widget:node.id,node,addon:button.dataset.extensionid});
++        }else{
++          const state=this.navigation?.[item.control];
++          if(state?.label && (state.shown ?? true))rows.push({key:item.control,label:state.label,enabled:state.enabled,
++            checked:false,checkable:false,kind:"navigation",widget:node.id,node,control:item.control,stopping:!!state.stopping});
++        }
++      }
++    }
++    return rows;
++  }
++  signature(rows){return JSON.stringify(rows.map(({node,...row})=>row));}
++  snapshot(navigation){
++    this.navigation=navigation;
++    const rows=this.members();
++    if(this.session){
++      if(!navigation.overflow.enabled || !this.live() || (this.description && (this.signature(rows)!==this.membership ||
++          rows.slice(0,60).some((row,index)=>this.actions.get(index+1)?.node!==row.node))))this.dismiss();
++    }
++    return {enabled:!!this.toolbar.customization && navigation.overflow.enabled,preserveAddress:rows.some(row=>row.address),closed:this.closedSession || 0,...(this.description || {})};
++  }
++  async open(session,bounds){
++    const addressTarget=this.members().some(row=>row.address);
++    this.dismiss();this.session=session;this.bounds=bounds;this.addressTarget=addressTarget;
++    const t=this.toolbar;
++    this.context={session:t.owner.addressSession?.sessionId,tab:t.owner.addressTab,document:t.owner.addressDocument};
++    const panel=this.window.document.getElementById("widget-overflow");
++    if(panel && ["open","showing","hiding"].includes(panel.state)){
++      await new Promise(resolve=>{panel.addEventListener("popuphidden",resolve,{once:true});if(panel.state!=="hiding")panel.hidePopup();});
++    }
++    if(this.session!==session || !this.live()){if(this.session===session)this.dismiss();return;}
++    const rows=this.members();this.membership=this.signature(rows);
++    const items=rows.slice(0,60).map((row,index)=>{
++      const id=index+1;this.actions.set(id,row);
++      return {id,key:"item-"+id,label:String(row.label).slice(0,512),enabled:row.enabled,checked:row.checked,checkable:row.checkable};
++    });
++    if(items.length)items.push({separator:true});
++    // Preserve access to unrepresented controls, context actions and excess items.
++    const label=String(t.owner.localization().formatValueSync("winui-overflow-more-tools")).slice(0,512);
++    this.actions.set(61,{kind:"original"});items.push({id:61,key:"more",label,enabled:true,checked:false,checkable:false});
++    this.description={session,revision:1,label:String(this.navigation.overflow.label).slice(0,512),items};t.owner.invalidateAddress();
++  }
++  execute(action){
++    const match=/^overflow-menu:(open|dismiss|invoke):([1-9][0-9]*)(?::([1-9][0-9]*):([1-9][0-9]*))?$/.exec(action.command);
++    if(!match)return 2;
++    const session=Number(match[2]);if(!Number.isInteger(session) || session>0xffffffff)return 2;
++    if(match[1]==="open"){
++      const t=this.toolbar;
++      if(this.closed || match[3] || session<=this.lastSession || t.customization?.editorOpen || this.window.gDialogBox?.isOpen || !t.menuAnchor("overflow",action))return 2;
++      // The native selection may have changed without a text edit. Reuse the
++      // existing address contract before asking Firefox for edit availability.
++      if(action.editor && this.toolbar.owner.addressSession.syncNativeSelection(action.editor)!==1)return 2;
++      // Firefox normally suppresses global edit-state updates while its own
++      // panels are closed. Refresh its controllers for this native menu too.
++      t.window.goUpdateGlobalEditMenuItems?.(true);
++      const state=t.navigationState();if(!state.overflow.enabled)return 2;
++      this.lastSession=session;this.open(session,action).catch(error=>{if(this.session===session)this.dismiss();console.error(error);});return 1;
++    }
++    if(session!==this.session)return 2;
++    if(match[1]==="dismiss"){if(match[3])return 2;this.dismiss();return 1;}
++    // Refresh the authoritative model before resolving the described item.
++    this.window.goUpdateGlobalEditMenuItems?.(true);
++    this.toolbar.navigationState();
++    if(session!==this.session || !this.live() || Number(match[3])!==this.description?.revision)return 2;
++    const entry=this.actions.get(Number(match[4]));if(!entry || entry.enabled===false)return 2;
++    if(entry.kind!=="original" && !this.members().some(row=>row.widget===entry.widget && row.node===entry.node && row.part===entry.part && row.control===entry.control && row.enabled))return 2;
++    // Native activation reports the button's current screen rectangle, including
++    // window moves/DPI changes since the menu opened.
++    const bounds={...this.bounds,...action},t=this.toolbar,w=this.window;
++    this.dismiss();
++    const event=new w.MouseEvent("click",{view:w,button:0,ctrlKey:!!(action.modifiers&1),altKey:!!(action.modifiers&2),shiftKey:!!(action.modifiers&4),metaKey:!!(action.modifiers&8)});
++    if(entry.kind==="original")return t.openMenu("overflow",bounds,event);
++    if(entry.kind==="extension")return t.pinned.activateAddon(entry.addon,bounds,event);
++    if(entry.kind==="stock" && entry.address){
++      const clipboard=({"cut-button":"cmd_cut","copy-button":"cmd_copy","paste-button":"cmd_paste"})[entry.part];
++      return clipboard && action.editor ? t.owner.addressSession.clipboard({...action.editor,clipboard}) : 2;
++    }
++    if(entry.kind==="stock")return t.customization.stock.dispatch(entry.widget,entry.node,t.customization.stock.snapshot(entry.widget,entry.node,true).find(p=>p.id===entry.part),bounds,event);
++    const command=t.navigationCommands.find(row=>row.id===(entry.control==="reload" && entry.stopping ? "stop" : entry.control));
++    if(!command)return 2;
++    if(command.menu)return t.openMenu(command.id,bounds,event);
++    w.BrowserCommands[command.method](event);return 1;
++  }
++}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
 index 00000000000..85d6b628141
@@ -18145,10 +18286,10 @@ index 00000000000..85d6b628141
 +}
 diff --git a/browser/base/content/WinUIStockToolbar.sys.mjs b/browser/base/content/WinUIStockToolbar.sys.mjs
 new file mode 100644
-index 00000000000..1ac24c49f24
+index 00000000000..6a8dd324ed8
 --- /dev/null
 +++ b/browser/base/content/WinUIStockToolbar.sys.mjs
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,158 @@
 +// An explicit stock-widget boundary, not an adapter for arbitrary chrome widgets.
 +// Firefox owns every command, policy check, label and persisted placement.
 +export const STOCK_TOOLBAR_WIDGETS = Object.freeze({
@@ -18222,7 +18363,7 @@ index 00000000000..1ac24c49f24
 +    this.nodes = this.nextNodes;
 +    this.nextNodes = null;
 +  }
-+  snapshot(widget, node) {
++  snapshot(widget, node, overflow = false, addressTarget) {
 +    const {window} = this.toolbar;
 +    const {document} = window;
 +    this.observe(node);
@@ -18232,7 +18373,7 @@ index 00000000000..1ac24c49f24
 +      const command = button?.getAttribute("command") || button?.getAttribute("observes");
 +      const source = command ? document.getElementById(command) : button;
 +      this.observe(source);
-+      const address = !!(this.toolbar.focusOwned || this.toolbar.proxy && document.activeElement === this.toolbar.proxy);
++      const address = addressTarget ?? !!(this.toolbar.focusOwned || this.toolbar.proxy && document.activeElement === this.toolbar.proxy);
 +      const editor = address && this.toolbar.owner.addressSession?.input?.inputField;
 +      const editCommand = ({"cut-button":"cmd_cut","copy-button":"cmd_copy","paste-button":"cmd_paste"})[id];
 +      const enabled = editor && editCommand
@@ -18240,7 +18381,10 @@ index 00000000000..1ac24c49f24
 +        : !disabled(button) && !disabled(source);
 +      // The retained row is off-screen, which does not affect checkVisibility.
 +      // New Tab's source is deliberately suppressed by native tab replacement.
-+      const rendered = !node.isConnected || widget === "new-tab-button" ||
++      // visibility is inherited from the retained popup as it closes. It must
++      // not hide a native overflow row; local hidden/collapsed and display rules
++      // plus eligible() remain Firefox's feature and presentation authority.
++      const rendered = overflow ? [node,button].every(n=>n && window.getComputedStyle(n).display !== "none") : !node.isConnected || widget === "new-tab-button" ||
 +        (button?.checkVisibility?.({visibilityProperty:true,opacityProperty:true}) ?? true);
 +      const label = button?.getAttribute("label") || button?.getAttribute("aria-label") ||
 +        this.label(button) || this.customization.l10nLabel(button) || button?.getAttribute("tooltiptext") || "";
@@ -18267,8 +18411,12 @@ index 00000000000..1ac24c49f24
 +    const entry = item && [...c.entries.values()].find(row => row.id === item.id);
 +    const part = item?.stock?.find(row => row.id === match[2]);
 +    if (!entry || !item.placed || !part?.enabled || !part.label || c.nativeOverflow.has(entry.widget)) return 2;
-+    const {window} = toolbar;
-+    const node = entry.node;
++    return this.dispatch(entry.widget,entry.node,part,action,event,command);
++  }
++  // Called only after the inline or overflow adapter validates its live item.
++  dispatch(widget, node, part, action, event, command = `stock:${widget}:${part.id}`) {
++    const {toolbar,customization:c}=this, {window}=toolbar;
++    const entry={widget};
 +    const button = entry.widget === part.id ? node : node.querySelector(`#${part.id}`);
 +    if (!button || c.ui.getWidget(entry.widget)?.forWindow(window)?.node !== node) return 2;
 +    if (entry.widget === "new-tab-button") {
@@ -22887,10 +23035,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..df12738f302
+index 00000000000..4c41311fb91
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,505 @@
+@@ -0,0 +1,512 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -22934,6 +23082,8 @@ index 00000000000..df12738f302
 +    this.downloadsPanel=new WinUIDownloadsPanel(this);
 +    const {WinUIProfileMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIProfileMenu.sys.mjs");
 +    this.profileMenu=new WinUIProfileMenu(this);
++    const {WinUIOverflowMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIOverflowMenu.sys.mjs");
++    this.overflowMenu=new WinUIOverflowMenu(this);
 +    const { WinUINavigationState, NAVIGATION_COMMANDS } = ChromeUtils.importESModule(
 +      "chrome://browser/content/WinUINavigationState.sys.mjs");
 +    this.navigationCommands = NAVIGATION_COMMANDS;
@@ -23017,6 +23167,7 @@ index 00000000000..df12738f302
 +      [...(document.getElementById("widget-overflow-list")?.children || [])].some(node => !node.hidden && !represented.has(node.id));
 +    if (state.customization) state.overflow.enabled = state.overflow.required ||
 +      [...(document.getElementById("widget-overflow-list")?.children || [])].some(node => !node.hidden && this.customization.nativeOverflow.has(node.id));
++    state.overflowMenu=this.overflowMenu.snapshot(state);
 +    return state;
 +  }
 +  hasVisibleUnhostedWidgets() {
@@ -23077,6 +23228,7 @@ index 00000000000..df12738f302
 +  executeNavigation(action) {
 +    const {window, owner} = this;
 +    const indicator = ["indicator:private", "indicator:analysis"].includes(action?.command);
++    const nativeOverflow=typeof action?.command === "string" && action.command.startsWith("overflow-menu:");
 +    const nativeProfile=typeof action?.command === "string" && action.command.startsWith("profile-menu:");
 +    const nativeDownloads=typeof action?.command === "string" && action.command.startsWith("downloads-panel:");
 +    const nativeHistory=typeof action?.command === "string" && action.command.startsWith("history-menu:");
@@ -23088,16 +23240,17 @@ index 00000000000..df12738f302
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!stock && !indicator && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!stock && !indicator && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
++    if (nativeOverflow) return this.overflowMenu.execute(action);
 +    if (nativeProfile) return this.profileMenu.execute(action);
 +    if (nativeDownloads) return this.downloadsPanel.execute(action);
 +    if (indicator) {
@@ -23334,6 +23487,7 @@ index 00000000000..df12738f302
 +    if(this.historyMenu?.session)this.historyMenu.dismiss();
 +    if(this.downloadsPanel?.session)this.downloadsPanel.dismiss();
 +    if(this.profileMenu?.session)this.profileMenu.dismiss();
++    if(this.overflowMenu?.session)this.overflowMenu.dismiss();
 +    if (this.activationFrame) this.window.cancelAnimationFrame(this.activationFrame);
 +    this.activationFrame = 0;
 +    for (const panel of this.window.document.querySelectorAll("panel, menupopup")) {
@@ -23377,6 +23531,7 @@ index 00000000000..df12738f302
 +    this.historyMenu.close();
 +    this.downloadsPanel.close();
 +    this.profileMenu.close();
++    this.overflowMenu.close();
 +    this.resize.disconnect();
 +    Services.prefs.removeObserver("browser.nova.enabled", this.novaObserver);
 +    this.navigationObserver.disconnect();
