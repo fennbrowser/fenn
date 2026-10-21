@@ -389,7 +389,7 @@ struct Pane {
         return false;
     }
     void DismissMenus() {
-        if (address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); }
+        if (address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); }
         if (tabMenu.active) tabMenu.Dismiss();
         if (strip) strip->inlineGroups.hover.Dismiss();
         if (address && address->mode.flyout.IsOpen()) address->mode.flyout.Hide();
@@ -431,7 +431,7 @@ struct Pane {
         if (!stripPopup && tabMenu.active) tabMenu.Dismiss();
         if (!stripPopup && strip && (strip->inlineGroups.hover.open || strip->inlineGroups.hover.showPending))
             strip->inlineGroups.hover.Dismiss();
-        if (!addressPopup && address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); }
+        if (!addressPopup && address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); }
         const HWND addressHost = addressSource ? addressWindow : childWindow;
         if (!InWindow(addressHost, target) && !addressPopup) LeaveAddress();
         else if (!addressPopup && address && address->mode.flyout.IsOpen()) address->mode.flyout.Hide();
@@ -1632,6 +1632,10 @@ HRESULT WINAPI SyncAddress(HWND hwnd, const wchar_t* input) noexcept {
             }
         }
         return S_OK;
+    } catch (winrt::hresult_error const& error) {
+        if (DiagnosticsEnabled())
+            fprintf(stderr, "WinUIPane syncAddress failed hr=%08x: %ls\n", unsigned(error.code().value), error.message().c_str());
+        return error.code();
     } catch (...) {
         return to_hresult();
     }

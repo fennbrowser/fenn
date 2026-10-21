@@ -213,6 +213,7 @@ pub struct ShellCore {
     connection_panel: crate::surface_menu::SurfaceMenu,
     translations_panel: crate::surface_menu::SurfaceMenu,
     selected_translations_panel: crate::surface_menu::SurfaceMenu,
+    page_context_menu: crate::surface_menu::SurfaceMenu,
     privacy_panels: [crate::surface_menu::SurfaceMenu; 2],
     address_publication: crate::address_publication::AddressPublication,
     toolbar_publication: crate::toolbar_publication::ToolbarPublication,
@@ -450,6 +451,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         connection_panel: Default::default(),
         translations_panel: Default::default(),
         selected_translations_panel: Default::default(),
+        page_context_menu: Default::default(),
         privacy_panels: Default::default(),
         address_publication: Default::default(),
         toolbar_publication: Default::default(),
@@ -791,6 +793,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
         core.connection_panel.dismiss();
         core.translations_panel.dismiss();
         core.selected_translations_panel.dismiss();
+        core.page_context_menu.dismiss();
         for panel in &mut core.privacy_panels { panel.dismiss(); }
         core.address_publication.reset();
         core.address_sections.reset();
@@ -826,6 +829,7 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
         core.connection_panel.dismiss();
         core.translations_panel.dismiss();
         core.selected_translations_panel.dismiss();
+        core.page_context_menu.dismiss();
         for panel in &mut core.privacy_panels { panel.dismiss(); }
         core.address_publication.reset();
         core.address_sections.reset();
@@ -896,6 +900,7 @@ pub enum ShellPublicationChannel {
     ConnectionPanel = 21,
     TranslationsPanel = 22,
     SelectedTranslationsPanel = 23,
+    PageContextMenu = 24,
 }
 
 /// What one channel did with the publications it received, for diagnostics.
@@ -932,6 +937,7 @@ pub unsafe extern "C" fn shell_core_publication_stats(
             c if c == ShellPublicationChannel::ConnectionPanel as u32 => core.connection_panel.counts(),
             c if c == ShellPublicationChannel::TranslationsPanel as u32 => core.translations_panel.counts(),
             c if c == ShellPublicationChannel::SelectedTranslationsPanel as u32 => core.selected_translations_panel.counts(),
+            c if c == ShellPublicationChannel::PageContextMenu as u32 => core.page_context_menu.counts(),
             c if c == ShellPublicationChannel::ForgetPanel as u32 => core.privacy_panels[0].counts(),
             c if c == ShellPublicationChannel::ClearPrivatePanel as u32 => core.privacy_panels[1].counts(),
             c if c == ShellPublicationChannel::AddressSession as u32 => core.address_publication.counts(),
@@ -1598,7 +1604,7 @@ mod tests {
             let mut counts = ShellPublicationCounts::default();
             assert_eq!(shell_core_publication_stats(core, ShellPublicationChannel::Strip as u32, &mut counts), ShellStatus::Ok);
             assert_eq!(counts, ShellPublicationCounts { accepted: 2, unchanged: 1, ignored: 0, refused: 1 });
-            assert_eq!(shell_core_publication_stats(core, 24, &mut counts), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_publication_stats(core, 25, &mut counts), ShellStatus::InvalidArgument);
             assert_eq!(counts, ShellPublicationCounts::default(), "an unknown channel reports nothing");
             assert_eq!(shell_core_publication_stats(core, 0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
             shell_core_destroy(core);
@@ -4730,6 +4736,85 @@ pub unsafe extern "C" fn shell_core_selected_translations_panel_request(core:*mu
   shell_core_selected_translations_panel_request(core,7,[2].as_ptr(),1,&mut id);assert_eq!(id,0);
   shell_core_selected_translations_panel_request(core,8,[2].as_ptr(),1,&mut id);assert_ne!(id,0);shell_core_cancel_all(core);
   shell_core_selected_translations_panel_accept(core,id,1,[1].as_ptr(),1,[3].as_ptr(),1,&mut changed);assert!(!changed);
+  shell_core_destroy(core);
+ }}
+}
+
+// Independent page context menu session; shared publication semantics, no widget state.
+/// Allocate a window-scoped menu opening. Zero means identity exhaustion.
+/// # Safety
+/// Live core and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_page_context_menu_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
+ let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.page_context_menu.open();ShellStatus::Ok})
+}
+/// Revoke a window-scoped menu, preserving its identity high-water mark.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_page_context_menu_dismiss(core:*mut ShellCore)->ShellStatus {
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.page_context_menu.dismiss();ShellStatus::Ok})
+}
+/// Resolve a validated session description before mutating the host container.
+/// Accepted work is committed and counted by shell_core_page_context_menu_accept;
+/// ignored/refused work ends here, without changing menu or action identity.
+/// # Safety
+/// Live core, readable arrays (null only for zero length), writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_page_context_menu_resolve(core:*mut ShellCore,session:u32,revision:u32,
+ actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
+ let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
+ if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
+ guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.page_context_menu.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+
+/// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
+/// # Safety
+/// Live core, readable arrays (null only for zero length), writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_page_context_menu_accept(core:*mut ShellCore,session:u32,revision:u32,
+ actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
+ let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
+ if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
+ guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.page_context_menu.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+/// Consume one current enabled action; dismissal and late updates cannot resurrect it.
+/// # Safety
+/// Live core and writable accepted.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_page_context_menu_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
+ let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.page_context_menu.activate_retained(session,revision,action)}else{c.page_context_menu.activate(session,revision,action)};ShellStatus::Ok})
+}
+
+
+/// Resolve a browser-owned page context opening once through Snapshot rules.
+/// # Safety
+/// Live core, readable fingerprint and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_page_context_menu_request(core:*mut ShellCore,request:u32,fingerprint:*const u16,units:usize,out:*mut u32)->ShellStatus {
+ let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
+ if units>crate::surface_menu::MAX_DESCRIPTION{return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match c.page_context_menu.request_open(request,fingerprint){Ok(id)=>{*out=id;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+#[cfg(test)] mod page_context_menu_ffi_tests {
+ use super::*;
+ #[test] fn browser_request_and_actions_are_scoped_and_one_use(){unsafe{
+  let core=shell_core_create(std::ptr::null());let mut id=0;let mut changed=false;
+  assert_eq!(shell_core_page_context_menu_request(core,7,[2].as_ptr(),1,&mut id),ShellStatus::Ok);assert_ne!(id,0);
+  shell_core_page_context_menu_accept(core,id,1,[1,7].as_ptr(),2,[3].as_ptr(),1,&mut changed);assert!(changed);
+  shell_core_page_context_menu_activate(core,id,1,7,true,&mut changed);assert!(changed);
+  shell_core_page_context_menu_activate(core,id,1,7,true,&mut changed);assert!(!changed);
+  shell_core_page_context_menu_activate(core,id,1,1,false,&mut changed);assert!(changed);
+  shell_core_page_context_menu_request(core,7,[2].as_ptr(),1,&mut id);assert_eq!(id,0);
+  shell_core_page_context_menu_request(core,8,[2].as_ptr(),1,&mut id);assert_ne!(id,0);shell_core_cancel_all(core);
+  shell_core_page_context_menu_accept(core,id,1,[1].as_ptr(),1,[3].as_ptr(),1,&mut changed);assert!(!changed);
   shell_core_destroy(core);
  }}
 }

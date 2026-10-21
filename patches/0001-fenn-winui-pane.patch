@@ -1,3 +1,26 @@
+diff --git a/browser/actors/ContextMenuChild.sys.mjs b/browser/actors/ContextMenuChild.sys.mjs
+index bdb92525789..1674fc8cd4c 100644
+--- a/browser/actors/ContextMenuChild.sys.mjs
++++ b/browser/actors/ContextMenuChild.sys.mjs
+@@ -77,2 +77,6 @@ export class ContextMenuChild extends JSWindowActorChild {
+       case "ContextMenu:Hiding": {
++        // Cleanup for an older native opening must not clear a newer target.
++        if (message.data.timeStamp !== undefined && message.data.timeStamp !== this.context?.timeStamp) {
++          break;
++        }
+         this.context = null;
+diff --git a/browser/actors/ContextMenuParent.sys.mjs b/browser/actors/ContextMenuParent.sys.mjs
+index 9e0ef4f14fd..030d3809afd 100644
+--- a/browser/actors/ContextMenuParent.sys.mjs
++++ b/browser/actors/ContextMenuParent.sys.mjs
+@@ -48,5 +48,5 @@ export class ContextMenuParent extends JSWindowActorParent {
+ 
+-  hiding() {
++  hiding(timeStamp) {
+     try {
+-      this.sendAsyncMessage("ContextMenu:Hiding", {});
++      this.sendAsyncMessage("ContextMenu:Hiding", { timeStamp });
+     } catch (e) {
 diff --git a/browser/app/moz.build b/browser/app/moz.build
 index 934bad0d61f..81cd6e7ab6b 100644
 --- a/browser/app/moz.build
@@ -13,7 +36,7 @@ index 934bad0d61f..81cd6e7ab6b 100644
 +        CONFIG["MOZ_BRANDING_DIRECTORY"],
      )
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 4f50c25976a..de3012e298b 100644
+index 4f50c25976a..4ba1b3345e3 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -56,7 +79,12 @@ index 4f50c25976a..de3012e298b 100644
 +// Fenn (firefox-winui): no Start Menu Private Browsing shortcut is created.
 +pref("browser.privacySegmentation.createdShortcut", true);
  
-@@ -3872,2 +3877,60 @@ pref("distribution.mozillaonline.ignore", true);
+@@ -3412,2 +3417,4 @@ pref("devtools.dom.enabled", false);
+ pref("devtools.accessibility.enabled", true);
++// Keep its inspection shortcut out of page context menus unless requested.
++pref("fenn.contextMenu.inspectAccessibility", false);
+ 
+@@ -3872,2 +3879,60 @@ pref("distribution.mozillaonline.ignore", true);
  
 +// The native tab strip is on by default in every lane (unpackaged launcher and
 +// MSIX alike); turn it off to fall back to Firefox's own UI. Firefox keeps its
@@ -137,6 +165,22 @@ index d380089ca59..9b130e24202 100644
 +        }
 +        PanelMultiView.openPopup(panel, nativeAnchor || this._button, {
            position: "bottomright topright",
+diff --git a/browser/base/content/browser-context.js b/browser/base/content/browser-context.js
+index 2e617f91b92..3d1f4aa539d 100644
+--- a/browser/base/content/browser-context.js
++++ b/browser/base/content/browser-context.js
+@@ -290,3 +290,4 @@ document.addEventListener(
+           // eslint-disable-next-line no-global-assign
+-          gContextMenu = new nsContextMenu(contextMenuPopup, event.shiftKey);
++          window.gWinUIPane?.addressToolbar?.pageContextMenu?.beforePopup();
++          gContextMenu = window.gWinUIPane?.addressToolbar?.pageContextMenu?.takePrepared(contextMenuPopup) || new nsContextMenu(contextMenuPopup, event.shiftKey);
+           if (!gContextMenu.shouldDisplay) {
+@@ -306,2 +307,5 @@ document.addEventListener(
+           }
++          if (window.gWinUIPane?.addressToolbar?.pageContextMenu?.show(event, contextMenuPopup, gContextMenu)) {
++            event.preventDefault();
++          }
+           break;
 diff --git a/browser/base/content/browser-main.js b/browser/base/content/browser-main.js
 index 89ebf874267..eeffb8e3679 100644
 --- a/browser/base/content/browser-main.js
@@ -1059,11 +1103,35 @@ index a182468fce7..428407c54a3 100644
 -        </dl><p>
 -#endif
  </dl>
+diff --git a/browser/base/content/nsContextMenu.sys.mjs b/browser/base/content/nsContextMenu.sys.mjs
+index af4633e94e3..af0053f5435 100644
+--- a/browser/base/content/nsContextMenu.sys.mjs
++++ b/browser/base/content/nsContextMenu.sys.mjs
+@@ -368,3 +368,3 @@ export class nsContextMenu {
+     if (this.actor) {
+-      this.actor.hiding();
++      this.actor.hiding(this.timeStamp);
+     }
+@@ -451,3 +451,5 @@ export class nsContextMenu {
+     }
+-    this.textFragmentURL = await this.actor.getTextDirective();
++    const textFragmentURL = await this.actor.getTextDirective();
++    if (!this.contentData || this.window.gContextMenu !== this) { return; }
++    this.textFragmentURL = textFragmentURL;
+ 
+@@ -874,2 +876,3 @@ export class nsContextMenu {
+       showInspect &&
++      Services.prefs.getBoolPref("fenn.contextMenu.inspectAccessibility", false) &&
+       Services.prefs.getBoolPref("devtools.accessibility.enabled", false) &&
+@@ -2718,2 +2721,3 @@ export class nsContextMenu {
+       await this.#translationsLangPairPromise;
++    if (!this.contentData || this.window.gContextMenu !== this) { return; }
+ 
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..d902f184ba8 100644
+index b2b5db6040b..15f9975f595 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,33 @@ browser.jar:
+@@ -35,2 +35,34 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -1087,6 +1155,7 @@ index b2b5db6040b..d902f184ba8 100644
 +        content/browser/WinUISitePermissionsPanel.sys.mjs (content/WinUISitePermissionsPanel.sys.mjs)
 +        content/browser/WinUISelectedTranslationsPanel.sys.mjs (content/WinUISelectedTranslationsPanel.sys.mjs)
 +        content/browser/WinUITranslationsPanel.sys.mjs (content/WinUITranslationsPanel.sys.mjs)
++        content/browser/WinUIPageContextMenu.sys.mjs (content/WinUIPageContextMenu.sys.mjs)
 +        content/browser/WinUIConnectionPanel.sys.mjs (content/WinUIConnectionPanel.sys.mjs)
 +        content/browser/WinUIProfilerPanel.sys.mjs                (content/WinUIProfilerPanel.sys.mjs)
 +        content/browser/WinUIOverflowMenu.sys.mjs (content/WinUIOverflowMenu.sys.mjs)
@@ -1097,7 +1166,7 @@ index b2b5db6040b..d902f184ba8 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +137,17 @@ browser.jar:
+@@ -106 +138,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -9972,6 +10041,148 @@ index 1e2660589bd..5ae3ab48433 100644
 +      const nsTArray<LayoutDeviceIntRect>& aOcclusions) override;
 +
    void SendAnAPZEvent(mozilla::InputData& aEvent);
+diff --git a/browser/base/content/WinUIPageContextMenu.sys.mjs b/browser/base/content/WinUIPageContextMenu.sys.mjs
+new file mode 100644
+index 00000000000..afd34c98cc0
+--- /dev/null
++++ b/browser/base/content/WinUIPageContextMenu.sys.mjs
+@@ -0,0 +1,136 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// nsContextMenu and its exact command nodes remain the browser authority.
++// This adapter replaces presentation only; it never receives a content node.
++export class WinUIPageContextMenu {
++  constructor(toolbar) {
++    this.toolbar=toolbar;this.window=toolbar.window;this.nextRequest=0;
++    this.locale=()=>this.dismiss();
++    Services.obs.addObserver(this.locale,"intl:app-locales-changed");
++  }
++  eligible(){const t=this.toolbar,w=this.window;return !this.closed && !this.fallingBack && t.active && t.navigation && t.supported() && !t.customization?.editorOpen && !w.gDialogBox?.isOpen && !w.document.fullscreen;}
++  live(p=this.pending){try{const w=this.window,b=w.gBrowser.selectedBrowser,manager=p?.actor.manager;return !!p && this.eligible() && w.gContextMenu===p.controller && p.browser===b && p.tab===w.gBrowser.selectedTab && p.document===b.browsingContext.currentWindowGlobal?.innerWindowId && p.principal.equals(b.contentPrincipal) && p.context===this.toolbar.owner.addressSession?.sessionId && manager?.isCurrentGlobal && p.frame===manager.innerWindowId;}catch(_){return false;}}
++  invalidate(){if(!this.closed)this.toolbar.owner.invalidateAddress();}
++  beforePopup(){this.dismiss();}
++  takePrepared(popup){const p=this.prepared;if(p?.popup!==popup)return null;this.prepared=null;return p.controller;}
++  show(event,popup,controller){
++    if(event.defaultPrevented || !this.eligible() || this.nextRequest>=0xffffffff || !controller.shouldDisplay || controller.browser!==this.window.gBrowser.selectedBrowser || !controller.contentData?.context || !controller.actor?.manager?.isCurrentGlobal)return false;
++    const point=controller.contentData.context;
++    if(![point.screenXDevPx,point.screenYDevPx].every(n=>Number.isFinite(n) && Math.abs(n)<=0x7fffffff))return false;
++    const w=this.window,b=controller.browser;
++    const p={request:++this.nextRequest,session:0,revision:0,popup,controller,browser:b,tab:w.gBrowser.selectedTab,document:b.browsingContext.currentWindowGlobal?.innerWindowId,principal:b.contentPrincipal,context:this.toolbar.owner.addressSession?.sessionId,actor:controller.actor,frame:controller.actor.manager.innerWindowId,pointX:Math.round(point.screenXDevPx),pointY:Math.round(point.screenYDevPx),ids:new WeakMap(),nextId:0,actions:new Map(),opened:new WeakSet(),shownPopups:new WeakSet(),localized:new WeakMap(),icons:new Map(),event};
++    this.pending=p;
++    p.observer=new w.MutationObserver(()=>this.schedule(p));
++    p.observer.observe(popup,{subtree:true,childList:true,attributes:true,attributeFilter:["hidden","collapsed","disabled","checked","label","accesskey","type","command","image","data-l10n-id","data-l10n-args","tooltiptext","aria-label"]});
++    this.schedule(p);this.invalidate();return true;
++  }
++  visible(node){return !node.hidden && !node.collapsed && !["hidden","collapsed"].some(k=>node.getAttribute(k)==="true") && this.window.getComputedStyle(node).display!=="none";}
++  enabled(node){const command=node.getAttribute("command"),owner=command && this.window.document.getElementById(command);return !node.disabled && node.getAttribute("disabled")!=="true" && (!command || !!owner && !owner.disabled && owner.getAttribute("disabled")!=="true");}
++  id(p,node){if(!p.ids.has(node)){if(p.nextId>=0xffffffff)throw new Error("Context identity exhausted");p.ids.set(node,++p.nextId);}return p.ids.get(node);}
++  schedule(p){
++    if(this.pending!==p || p.fallbackPending)return;p.dirty=true;if(p.scheduled)return;p.scheduled=true;
++    Promise.resolve().then(async()=>{
++      p.dirty=false;if(!this.live(p)){if(this.pending===p)this.dismiss();return;}
++      for(const entry of p.actions.values())if(entry.submenu && p.opened.has(entry.node))this.initializeSubmenu(p,entry.node);
++      const localize=[...p.popup.querySelectorAll("[data-l10n-id]")].filter(node=>{
++        const key=node.getAttribute("data-l10n-id")+"/"+node.getAttribute("data-l10n-args");
++        if(p.localized.get(node)===key)return false;p.localized.set(node,key);return true;
++      });
++      if(localize.length)await this.window.document.l10n.translateElements(localize);
++      if(this.pending===p && this.live(p)){const force=!!p.force;p.force=false;this.publish(p,force);}
++    }).catch(error=>{console.error(error);if(this.pending===p && this.live(p))this.fallback(p);else if(this.pending===p)this.dismiss();}).finally(()=>{p.scheduled=false;if(p.dirty && this.pending===p)this.schedule(p);});
++  }
++  publish(p,force=false){
++    if(!this.live(p))return;
++    const actions=new Map();let count=0,iconCount=0;
++    const read=(parent,depth=0,allowed=true,primary=false)=>{
++      if(depth>6)throw new Error("Context menu exceeds native depth");
++      const rows=[];
++      for(const node of parent.children){
++        if(!this.visible(node))continue;
++        if(node.localName==="menugroup"){rows.push(...read(node,depth,allowed && this.enabled(node),depth===0 && node.id==="context-navigation"));continue;}
++        if(node.localName==="menuseparator"){if(rows.length && !rows.at(-1).separator){if(++count>256)throw new Error("Context menu exceeds native item bound");rows.push({separator:true});}continue;}
++        if(!["menu","menuitem"].includes(node.localName))continue;
++        if(++count>256)throw new Error("Context menu exceeds native item bound");
++        const id=this.id(p,node),enabled=allowed && this.enabled(node),submenu=node.localName==="menu";
++        const label=node.getAttribute("label") || node.getAttribute("aria-label") || node.getAttribute("tooltiptext") || "";
++        if(!label)continue;
++        if(label.length>2048)throw new Error("Context label exceeds native bound");
++        const type=node.getAttribute("type"),key=String(node.id || "").slice(0,256);
++        const item={id,key,label,accessKey:node.getAttribute("accesskey") || "",enabled,checked:node.getAttribute("checked")==="true",checkable:type==="checkbox" || type==="radio",radio:type==="radio",group:String(node.getAttribute("name") || ""),loaded:!submenu || p.opened.has(node),glyph:({"context-back":"back","context-forward":"forward","context-reload":"reload","context-stop":"stop","context-bookmarkpage":"bookmark"})[key] || "",image:null};
++        if(item.group.length>256)throw new Error("Context radio group exceeds native bound");
++        item.primary=primary && !!item.glyph;
++        if(item.accessKey.length>16)throw new Error("Context access key exceeds native bound");
++        if(submenu){const popup=node.menupopup || node.querySelector("menupopup");item.loaded=!!popup && p.shownPopups.has(popup);item.children=item.loaded?read(popup,depth+1,enabled):[];actions.set(id,{node,popup,submenu:true});}
++        else actions.set(id,{node,submenu:false});
++        const url=node.getAttribute("image");
++        if(url && !item.glyph && /^(?:moz-extension:|chrome:|resource:|data:image\/)/.test(url)){
++          if(!p.icons.has(url) && p.icons.size<16){p.icons.set(url,null);void this.loadIcon(p,url);}
++          if(iconCount<16 && p.icons.get(url)){item.image=p.icons.get(url);iconCount++;}
++        }
++        rows.push(item);
++      }
++      if(rows.at(-1)?.separator)rows.pop();return rows;
++    };
++    const model={items:read(p.popup),pointX:p.pointX,pointY:p.pointY};
++    // Artwork is optional; never drop browser or extension commands to fit it.
++    if(JSON.stringify(model).length>65000){const strip=items=>{for(const item of items){if(item.separator)continue;item.image=null;if(item.children)strip(item.children);}};strip(model.items);}
++    const fingerprint=JSON.stringify(model);
++    if(fingerprint.length>65000)throw new Error("Context description exceeds native bound");
++    p.actions=actions;
++    if(force || p.fingerprint!==fingerprint){p.fingerprint=fingerprint;p.presentation=model;p.revision++;this.invalidate();}
++  }
++  async loadIcon(p,url){
++    const w=this.window,image=new w.Image();let timer;
++    try{image.src=url;await Promise.race([image.decode(),new Promise((_,reject)=>{timer=w.setTimeout(()=>reject(new Error("Context icon timeout")),1500);})]);if(this.pending!==p || !this.live(p) || !image.naturalWidth || !image.naturalHeight)return;const canvas=w.document.createElementNS("http://www.w3.org/1999/xhtml","canvas");canvas.width=canvas.height=16;const context=canvas.getContext("2d");context.drawImage(image,0,0,16,16);p.icons.set(url,this.toolbar.owner.encodePixels(context.getImageData(0,0,16,16)));this.schedule(p);}catch(_){}finally{if(timer!==undefined)w.clearTimeout(timer);image.src="";}
++  }
++  initializeSubmenu(p,node){const popup=node.menupopup || node.querySelector("menupopup");if(popup && !p.shownPopups.has(popup)){p.shownPopups.add(popup);popup.dispatchEvent(new this.window.MouseEvent("popupshowing",{bubbles:true,cancelable:true}));}}
++  snapshot(){if(this.pending && !this.live())this.dismiss();const p=this.pending;return {enabled:this.eligible(),closed:this.closedSession || 0,fallback:p?.fallbackPending?p.session:0,...(p?{request:p.request,source:"page-context",...(p.session && p.presentation?{session:p.session,revision:p.revision,...p.presentation}:{})}:{})};}
++  execute(action){
++    const m=/^page-context:(open|dismiss|fallback|submenu|invoke|middle):([1-9][0-9]*)(?::([1-9][0-9]*))?(?::([1-9][0-9]*))?$/.exec(action.command);
++    if(!m || m.slice(2).some(v=>v!==undefined && (!Number.isSafeInteger(Number(v)) || Number(v)>0xffffffff)))return 2;
++    const p=this.pending;if(!p)return 2;const id=Number(m[2]);
++    if(m[1]==="dismiss"){if(m[3] || id!==p.session)return 2;this.dismiss();return 1;}
++    if(!this.live(p)){this.dismiss();return 2;}
++    if(m[1]==="fallback"){if(m[3] || id!==p.session || !p.fallbackPending)return 2;this.finishFallback(p);return 1;}
++    if(p.fallbackPending)return 2;
++    if(m[1]==="open"){if(p.session || id!==p.request || !m[3] || m[4])return 2;p.session=Number(m[3]);this.schedule(p);this.invalidate();return 1;}
++    if(id!==p.session)return 2;
++    // Read the exact command nodes again before honoring a native click. Async
++    // extension/login/spelling changes cannot leave an old action eligible.
++    try{this.publish(p);}catch(error){console.error(error);this.fallback(p);return 1;}
++    if(Number(m[3])!==p.revision){this.dismiss();return 2;}
++    const entry=p.actions.get(Number(m[4]));
++    if(!entry || !entry.node.isConnected || !this.enabled(entry.node))return 2;
++    for(let n=entry.node;n && n!==p.popup;n=n.parentElement){if(!this.visible(n) || !this.enabled(n))return 2;}
++    if(m[1]==="submenu"){
++      if(!entry.submenu)return 2;
++      p.opened.add(entry.node);this.initializeSubmenu(p,entry.node);
++      p.force=true;this.schedule(p);return 1;
++    }
++    if(entry.submenu)return 2;
++    const w=this.window,modifiers=action.modifiers || 0;
++    const event=w.document.createEvent("XULCommandEvent");
++    event.initCommandEvent("command",true,true,w,0,!!(modifiers&1),!!(modifiers&2),!!(modifiers&4),!!(modifiers&8),m[1]==="middle"?1:0,null,action.keyboard?6:1);
++    const input=w.windowUtils.setHandlingUserInput(true);
++    try{entry.node.dispatchEvent(event);return 1;}finally{input.destruct();if(this.pending===p)this.dismiss();}
++  }
++  dismiss(){
++    const p=this.pending;if(!p)return;this.pending=null;p.observer.disconnect();this.closedSession=p.session || 0;
++    // Original cleanup runs after the native Closed command handoff, including
++    // extension onHidden, password cancellation and child actor invalidation.
++    try{if(this.window.gContextMenu===p.controller){p.popup.dispatchEvent(new this.window.Event("popuphiding",{bubbles:true}));}else p.controller.hiding(p.popup);}finally{p.popup.dispatchEvent(new this.window.Event("popuphidden",{bubbles:true}));this.invalidate();}
++  }
++  fallback(p){
++    if(this.pending!==p)return;
++    if(p.session){if(!p.fallbackPending){p.fallbackPending=true;p.revision++;this.invalidate();}return;}
++    this.finishFallback(p);
++  }
++  finishFallback(p){
++    if(this.pending!==p)return;p.observer.disconnect();this.pending=null;this.closedSession=p.session || 0;this.prepared=p;this.fallingBack=true;this.invalidate();
++    try{const scale=this.window.devicePixelRatio || 1;p.popup.openPopupAtScreen(p.pointX/scale,p.pointY/scale,true,p.event);}finally{this.fallingBack=false;this.prepared=null;}
++  }
++  close(){if(this.closed)return;this.dismiss();this.closed=true;Services.obs.removeObserver(this.locale,"intl:app-locales-changed");}
++}
 diff --git a/browser/base/content/WinUISelectedTranslationsPanel.sys.mjs b/browser/base/content/WinUISelectedTranslationsPanel.sys.mjs
 new file mode 100644
 index 00000000000..31882d1b6da
@@ -26017,10 +26228,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..bea8c7fe92f
+index 00000000000..39303cbc01f
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,577 @@
+@@ -0,0 +1,584 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -26074,6 +26285,8 @@ index 00000000000..bea8c7fe92f
 +    this.bookmarkPanel=new WinUIBookmarkPanel(this);
 +    const {WinUISitePermissionsPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUISitePermissionsPanel.sys.mjs");
 +    this.permissionsPanel=new WinUISitePermissionsPanel(this);
++    const {WinUIPageContextMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIPageContextMenu.sys.mjs");
++    this.pageContextMenu=new WinUIPageContextMenu(this);
 +    const {WinUIConnectionPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUIConnectionPanel.sys.mjs");
 +    this.connectionPanel=new WinUIConnectionPanel(this);
 +    const {WinUITranslationsPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUITranslationsPanel.sys.mjs");
@@ -26174,6 +26387,7 @@ index 00000000000..bea8c7fe92f
 +    state.profilerPanel=this.profilerPanel.snapshot();
 +    state.bookmarkPanel=this.bookmarkPanel.snapshot();
 +    state.permissionsPanel=this.permissionsPanel.snapshot();
++    state.pageContextMenu=this.pageContextMenu.snapshot();
 +    state.connectionPanel=this.connectionPanel.snapshot();
 +    state.translationsPanel=this.translationsPanel.snapshot();
 +    state.selectedTranslationsPanel=this.selectedTranslationsPanel.snapshot();
@@ -26245,6 +26459,7 @@ index 00000000000..bea8c7fe92f
 +    const nativeConnection=typeof action?.command === "string" && action.command.startsWith("connection-panel:");
 +    const nativePermissions=typeof action?.command === "string" && action.command.startsWith("permissions-panel:");
 +    const nativeProfiler=typeof action?.command === "string" && action.command.startsWith("profiler-panel:");
++    const nativePageContext=typeof action?.command === "string" && action.command.startsWith("page-context:");
 +    const nativePrivacy=typeof action?.command === "string" && action.command.startsWith("privacy-panel:");
 +    const nativeTabGroups=typeof action?.command === "string" && action.command.startsWith("tab-groups-menu:");
 +    const nativeDeveloper=typeof action?.command === "string" && action.command.startsWith("developer-menu:");
@@ -26260,16 +26475,17 @@ index 00000000000..bea8c7fe92f
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativeSelectedTranslation ? {nativeSelectedTranslation:true} : nativeTranslation ? {nativeTranslation:true} : nativeConnection ? {nativeConnection:true} : nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativePageContext ? {nativePageContext:true} : nativeSelectedTranslation ? {nativeSelectedTranslation:true} : nativeTranslation ? {nativeTranslation:true} : nativeConnection ? {nativeConnection:true} : nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!stock && !indicator && !nativeBookmark && !nativePermissions && !nativeSelectedTranslation && !nativeTranslation && !nativeConnection && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!nativePageContext && !stock && !indicator && !nativeBookmark && !nativePermissions && !nativeSelectedTranslation && !nativeTranslation && !nativeConnection && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
++    if (nativePageContext) return this.pageContextMenu.execute(action);
 +    if (nativeBookmark) return this.bookmarkPanel.execute(action);
 +    if (nativePermissions) return this.permissionsPanel.execute(action);
 +    if (nativeSelectedTranslation) return this.selectedTranslationsPanel.execute(action);
@@ -26520,6 +26736,7 @@ index 00000000000..bea8c7fe92f
 +    this.profilerPanel?.dismiss();
 +    this.bookmarkPanel?.retire(true);
 +    this.permissionsPanel?.dismiss();
++    this.pageContextMenu?.dismiss();
 +    this.connectionPanel?.dismiss();
 +    this.translationsPanel?.dismiss();
 +    this.selectedTranslationsPanel?.dismiss();
@@ -26574,6 +26791,7 @@ index 00000000000..bea8c7fe92f
 +    this.profilerPanel.close();
 +    this.bookmarkPanel.close();
 +    this.permissionsPanel.close();
++    this.pageContextMenu.close();
 +    this.connectionPanel.close();
 +    this.translationsPanel.close();
 +    this.selectedTranslationsPanel.close();
