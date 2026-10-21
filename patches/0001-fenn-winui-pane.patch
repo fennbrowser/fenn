@@ -922,10 +922,10 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..40518b7356c 100644
+index b2b5db6040b..d267ef41323 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,31 @@ browser.jar:
+@@ -35,2 +35,32 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -947,6 +947,7 @@ index b2b5db6040b..40518b7356c 100644
 +        content/browser/WinUIDeveloperMenu.sys.mjs                (content/WinUIDeveloperMenu.sys.mjs)
 +        content/browser/WinUIBookmarkPanel.sys.mjs (content/WinUIBookmarkPanel.sys.mjs)
 +        content/browser/WinUISitePermissionsPanel.sys.mjs (content/WinUISitePermissionsPanel.sys.mjs)
++        content/browser/WinUITranslationsPanel.sys.mjs (content/WinUITranslationsPanel.sys.mjs)
 +        content/browser/WinUIConnectionPanel.sys.mjs (content/WinUIConnectionPanel.sys.mjs)
 +        content/browser/WinUIProfilerPanel.sys.mjs                (content/WinUIProfilerPanel.sys.mjs)
 +        content/browser/WinUIOverflowMenu.sys.mjs (content/WinUIOverflowMenu.sys.mjs)
@@ -957,7 +958,7 @@ index b2b5db6040b..40518b7356c 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +135,17 @@ browser.jar:
+@@ -106 +136,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -1910,6 +1911,155 @@ index 3d25b8afa3b..39c7484036e 100644
 -      interactionMetric.add(1);
 +      this.setCollapsedFromUser(!this.collapsed);
      }
+diff --git a/browser/components/translations/content/fullPageTranslationsPanel.js b/browser/components/translations/content/fullPageTranslationsPanel.js
+index 6eac00e607c..c5eee17b2b7 100644
+--- a/browser/components/translations/content/fullPageTranslationsPanel.js
++++ b/browser/components/translations/content/fullPageTranslationsPanel.js
+@@ -1229,2 +1229,4 @@ var FullPageTranslationsPanel = new (class {
+ 
++    if (window.gWinUIPane?.addressToolbar?.translationsPanel?.show(event, reportAsAutoShow)) return;
++
+     const { button } = this.buttonElements;
+@@ -1282,13 +1284,16 @@ var FullPageTranslationsPanel = new (class {
+    */
+-  async onTranslate() {
++  getNativeSelectedTarget() { return this.#manuallySelectedToLanguage; }
++  nativeLanguageChanged(side, value) {
++    if (side === "from") TranslationsParent.telemetry().fullPagePanel().onChangeFromLanguage(value);
++    else { this.#manuallySelectedToLanguage = value; TranslationsParent.telemetry().fullPagePanel().onChangeToLanguage(value); }
++  }
++
++  async onTranslate(_event, native = null) {
++    if (native && !native.valid()) return;
+     this.#manuallySelectedToLanguage = null;
+-    PanelMultiView.hidePopup(this.elements.panel);
++    if (!native) PanelMultiView.hidePopup(this.elements.panel);
+ 
+-    const actor = TranslationsParent.getTranslationsActor(
+-      gBrowser.selectedBrowser
+-    );
+-    const [sourceLanguage, sourceVariant] =
+-      this.elements.fromMenuList.value.split(",");
+-    const [targetLanguage, targetVariant] =
+-      this.elements.toMenuList.value.split(",");
++    const actor = native?.actor || TranslationsParent.getTranslationsActor(gBrowser.selectedBrowser);
++    const [sourceLanguage, sourceVariant] = (native?.from ?? this.elements.fromMenuList.value).split(",");
++    const [targetLanguage, targetVariant] = (native?.to ?? this.elements.toMenuList.value).split(",");
+ 
+@@ -1328,3 +1333,4 @@ var FullPageTranslationsPanel = new (class {
+    */
+-  getCheckboxPageActionFor() {
++  getCheckboxPageActionFor(native = null) {
++    if (native) return new CheckboxPageAction(native.active, native.always, native.never, native.site);
+     const {
+@@ -1366,3 +1372,4 @@ var FullPageTranslationsPanel = new (class {
+    */
+-  async #doPageAction(pageAction) {
++  async #doPageAction(pageAction, native = null) {
++    if (native && !native.valid()) return;
+     switch (pageAction) {
+@@ -1372,3 +1379,3 @@ var FullPageTranslationsPanel = new (class {
+       case PageAction.RESTORE_PAGE: {
+-        await this.onRestore();
++        await this.onRestore(null, native);
+         break;
+@@ -1376,3 +1383,3 @@ var FullPageTranslationsPanel = new (class {
+       case PageAction.TRANSLATE_PAGE: {
+-        await this.onTranslate();
++        await this.onTranslate(null, native);
+         break;
+@@ -1380,3 +1387,4 @@ var FullPageTranslationsPanel = new (class {
+       case PageAction.CLOSE_PANEL: {
+-        PanelMultiView.hidePopup(this.elements.panel);
++        if (native) native.dismiss();
++        else PanelMultiView.hidePopup(this.elements.panel);
+         break;
+@@ -1391,4 +1399,5 @@ var FullPageTranslationsPanel = new (class {
+    */
+-  async onAlwaysTranslateLanguage() {
+-    const langTags = await this.#getCachedDetectedLanguages();
++  async onAlwaysTranslateLanguage(_event, native = null) {
++    const langTags = native?.tags || await this.#getCachedDetectedLanguages();
++    if (native && !native.valid()) return;
+     const { docLangTag } = langTags;
+@@ -1398,3 +1407,3 @@ var FullPageTranslationsPanel = new (class {
+     const pageAction =
+-      this.getCheckboxPageActionFor().alwaysTranslateLanguage();
++      this.getCheckboxPageActionFor(native?.settings).alwaysTranslateLanguage();
+     const toggledOn =
+@@ -1404,4 +1413,4 @@ var FullPageTranslationsPanel = new (class {
+       .onAlwaysTranslateLanguage(docLangTag, toggledOn);
+-    this.#updateSettingsMenuLanguageCheckboxStates();
+-    await this.#doPageAction(pageAction);
++    if (!native) this.#updateSettingsMenuLanguageCheckboxStates();
++    await this.#doPageAction(pageAction, native);
+   }
+@@ -1423,4 +1432,5 @@ var FullPageTranslationsPanel = new (class {
+    */
+-  async onNeverTranslateLanguage() {
+-    const { docLangTag } = await this.#getCachedDetectedLanguages();
++  async onNeverTranslateLanguage(_event, native = null) {
++    const { docLangTag } = native?.tags || await this.#getCachedDetectedLanguages();
++    if (native && !native.valid()) return;
+     if (!docLangTag) {
+@@ -1428,3 +1438,3 @@ var FullPageTranslationsPanel = new (class {
+     }
+-    const pageAction = this.getCheckboxPageActionFor().neverTranslateLanguage();
++    const pageAction = this.getCheckboxPageActionFor(native?.settings).neverTranslateLanguage();
+     const toggledOn =
+@@ -1434,4 +1444,4 @@ var FullPageTranslationsPanel = new (class {
+       .onNeverTranslateLanguage(docLangTag, toggledOn);
+-    this.#updateSettingsMenuLanguageCheckboxStates();
+-    await this.#doPageAction(pageAction);
++    if (!native) this.#updateSettingsMenuLanguageCheckboxStates();
++    await this.#doPageAction(pageAction, native);
+   }
+@@ -1443,7 +1453,6 @@ var FullPageTranslationsPanel = new (class {
+    */
+-  async onNeverTranslateSite() {
+-    const pageAction = this.getCheckboxPageActionFor().neverTranslateSite();
+-    const toggledOn = await TranslationsParent.getTranslationsActor(
+-      gBrowser.selectedBrowser
+-    ).toggleNeverTranslateSitePermissions();
++  async onNeverTranslateSite(_event, native = null) {
++    if (native && !native.valid()) return;
++    const pageAction = this.getCheckboxPageActionFor(native?.settings).neverTranslateSite();
++    const toggledOn = await (native?.actor || TranslationsParent.getTranslationsActor(gBrowser.selectedBrowser)).toggleNeverTranslateSitePermissions();
+     TranslationsParent.telemetry()
+@@ -1451,4 +1460,4 @@ var FullPageTranslationsPanel = new (class {
+       .onNeverTranslateSite(toggledOn);
+-    this.#updateSettingsMenuSiteCheckboxStates();
+-    await this.#doPageAction(pageAction);
++    if (!native) this.#updateSettingsMenuSiteCheckboxStates();
++    await this.#doPageAction(pageAction, native);
+   }
+@@ -1458,6 +1467,6 @@ var FullPageTranslationsPanel = new (class {
+    */
+-  async onRestore() {
+-    const { panel } = this.elements;
+-    PanelMultiView.hidePopup(panel);
+-    const { docLangTag } = await this.#getCachedDetectedLanguages();
++  async onRestore(_event, native = null) {
++    if (!native) PanelMultiView.hidePopup(this.elements.panel);
++    const { docLangTag } = native?.tags || await this.#getCachedDetectedLanguages();
++    if (native && !native.valid()) return;
+     if (!docLangTag) {
+@@ -1466,5 +1475,3 @@ var FullPageTranslationsPanel = new (class {
+ 
+-    TranslationsParent.getTranslationsActor(
+-      gBrowser.selectedBrowser
+-    ).restorePage(docLangTag);
++    (native?.actor || TranslationsParent.getTranslationsActor(gBrowser.selectedBrowser)).restorePage(docLangTag);
+   }
+@@ -1499,2 +1506,3 @@ var FullPageTranslationsPanel = new (class {
+   async #showEngineError(actor) {
++    if (window.gWinUIPane?.addressToolbar?.translationsPanel?.showError(actor)) return;
+     const { button } = this.buttonElements;
+@@ -1609,2 +1617,4 @@ var FullPageTranslationsPanel = new (class {
+ 
++        window.gWinUIPane?.addressToolbar?.translationsPanel?.languageChanged(actor);
++
+         const {
 diff --git a/browser/components/urlbar/QuickSuggest.sys.mjs b/browser/components/urlbar/QuickSuggest.sys.mjs
 index ce4dc0f5e3a..dbaa9db04ac 100644
 --- a/browser/components/urlbar/QuickSuggest.sys.mjs
@@ -9493,6 +9643,173 @@ index 1e2660589bd..5ae3ab48433 100644
 +      const nsTArray<LayoutDeviceIntRect>& aOcclusions) override;
 +
    void SendAnAPZEvent(mozilla::InputData& aEvent);
+diff --git a/browser/base/content/WinUITranslationsPanel.sys.mjs b/browser/base/content/WinUITranslationsPanel.sys.mjs
+new file mode 100644
+index 00000000000..4feefbf12a5
+--- /dev/null
++++ b/browser/base/content/WinUITranslationsPanel.sys.mjs
+@@ -0,0 +1,161 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++import { TranslationsParent } from "resource://gre/actors/TranslationsParent.sys.mjs";
++import { TranslationsFeature } from "chrome://global/content/translations/TranslationsFeature.sys.mjs";
++import { TranslationsUtils } from "chrome://global/content/translations/TranslationsUtils.mjs";
++
++// Firefox owns language policy, actor state and all translation/settings commands.
++// Native selectors carry opaque choices, never arbitrary language/variant strings.
++export class WinUITranslationsPanel {
++  constructor(toolbar) {
++    this.toolbar=toolbar;this.window=toolbar.window;this.nextRequest=0;this.nextChoice=100;
++    this.observe=()=>{if(this.pending)this.prepare(this.pending);};
++    this.locale=()=>{this.l10n=null;this.dismiss();};
++    for(const topic of ["perm-changed","translations:language-pairs-changed"])Services.obs.addObserver(this.observe,topic);
++    Services.obs.addObserver(this.locale,"intl:app-locales-changed");
++    Services.prefs.addObserver("browser.translations.",this.observe);
++  }
++  eligible(){const t=this.toolbar,w=this.window;return !this.closed && t.active && t.navigation && t.supported() && !t.customization?.editorOpen && !w.gDialogBox?.isOpen && !w.document.fullscreen && TranslationsFeature.isEnabled && !TranslationsParent.isFullPageTranslationsRestrictedForPage(w.gBrowser);}
++  live(p=this.pending){if(!p || !this.eligible())return false;const w=this.window,b=w.gBrowser.selectedBrowser;return p.browser===b && p.tab===w.gBrowser.selectedTab && p.document===b.browsingContext.currentWindowGlobal?.innerWindowId && p.principal.equals(b.contentPrincipal) && p.context===this.toolbar.owner.addressSession?.sessionId && p.actor===TranslationsParent.getTranslationsActor(b);}
++  label(id,args,attr){this.l10n??=new this.window.Localization(["branding/brand.ftl","browser/translations.ftl"],true);const m=this.l10n.formatMessagesSync([{id,args}])[0];return String((attr?m.attributes?.find(a=>a.name===attr)?.value:m.value) || "").slice(0,2048);}
++  invalidate(){if(!this.closed)this.toolbar.owner.invalidateAddress();}
++  state(p){const {requestedLanguagePair,isEngineReady,error,detectedLanguages}=p.actor.languageState;return {requestedLanguagePair,isEngineReady,error,detectedLanguages};}
++  show(event,auto=false){
++    if(!this.eligible() || this.nextRequest>=0xffffffff)return false;
++    if(this.pending){this.dismiss();return true;}
++    const w=this.window,t=this.toolbar,b=w.gBrowser.selectedBrowser;
++    const source=t.omnibar.entry(w.document.getElementById("translations-button"));
++    const p={request:++this.nextRequest,session:0,revision:1,source:source.id,browser:b,tab:w.gBrowser.selectedTab,
++      document:b.browsingContext.currentWindowGlobal?.innerWindowId,principal:b.contentPrincipal,context:t.owner.addressSession?.sessionId,
++      actor:TranslationsParent.getTranslationsActor(b),generation:0,choices:new Map(),ids:new Map(),actions:new Map(),auto,
++      from:"",to:"",force:false,ready:false,failed:false,opened:false,openedFromAppMenu:!w.document.getElementById("translations-button").contains(event?.target) && event?.type!=="TranslationsParent:OfferTranslation"};
++    this.pending=p;p.presentation=this.model(p);this.invalidate();void this.prepare(p,true);return true;
++  }
++  showError(actor){if(!this.eligible() || actor!==TranslationsParent.getTranslationsActor(this.window.gBrowser.selectedBrowser))return false;if(this.pending){this.languageChanged(actor);return true;}return this.show(null,true);}
++  languageChanged(actor){if(this.pending?.actor===actor && !this.mutating)void this.prepare(this.pending);}
++  choice(p,side,key){const name=side+":"+key;let id=p.ids.get(name);if(!id){id=this.nextChoice++;if(id>0xffffffff)throw new Error("Translation choice identity exhausted");p.ids.set(name,id);}p.choices.set(id,{side,key});return id;}
++  async prepare(p,reset=false){
++    if(this.pending!==p || !this.live(p) || this.mutating)return;
++    const generation=++p.generation;p.refreshing=true;
++    try {
++      const key=JSON.stringify(this.state(p));
++      const [tags,languages,preferred]=await Promise.all([p.actor.getLangTags(),TranslationsParent.getSupportedLanguages(),TranslationsParent.getTopPreferredSupportedToLang()]);
++      if(this.pending!==p || !this.live(p) || generation!==p.generation)return;
++      if(!languages.languagePairs.length || languages.sourceLanguages.length>256 || languages.targetLanguages.length>256)throw new Error("Unavailable translation language list");
++      const state=this.state(p),pair=state.requestedLanguagePair;
++      const revisit=!!pair && state.isEngineReady;
++      const preferredTo=await TranslationsParent.getTopPreferredSupportedToLang({excludeLangTags:[tags?.docLangTag,revisit?pair.targetLanguage:""]});
++      const settings={active:!!pair,always:TranslationsParent.shouldAlwaysTranslateLanguage(tags || {}),never:TranslationsParent.shouldNeverTranslateLanguage(tags?.docLangTag),site:await p.actor.shouldNeverTranslateSite()};
++      if(this.pending!==p || !this.live(p) || generation!==p.generation)return;
++      if(key!==JSON.stringify(this.state(p))){void this.prepare(p,reset);return;}
++      const match=(a,b)=>!!a && !!b && TranslationsUtils.langTagsMatch(a.split(",")[0],b.split(",")[0]);
++      const becomingRevisit=revisit && !p.data?.revisit;
++      let from=p.from,to=p.to;
++      if(reset || !p.ready || becomingRevisit){
++        from=pair?[pair.sourceLanguage,pair.sourceVariant].filter(Boolean).join(","):tags?.isDocLangTagSupported?tags.docLangTag:"";
++        const remembered=this.window.FullPageTranslationsPanel.getNativeSelectedTarget();
++        to=revisit?preferredTo:remembered && !match(remembered,tags?.docLangTag)?remembered:tags?.userLangTag && !match(tags.userLangTag,tags.docLangTag)?tags.userLangTag:preferredTo;
++      }
++      const find=(list,value)=>list.find(l=>l.langTagKey===value)?.langTagKey || list.find(l=>match(l.langTagKey,value))?.langTagKey || "";
++      from=find(languages.sourceLanguages,from);to=find(languages.targetLanguages,to);if(match(from,to))to="";
++      p.from=from;p.to=to;p.data={tags:tags || {},languages,preferred,settings,state,revisit};p.ready=true;p.failed=false;p.commandPending=false;p.stateKey=key;
++      this.publish(p);
++      if(!p.opened){p.opened=true;this.telemetry().onOpen({viewName:revisit?"revisitView":"defaultView",autoShow:p.auto,docLangTag:tags?.docLangTag,maintainFlow:false,openedFromAppMenu:p.openedFromAppMenu});}
++    }catch(error){console.error(error);if(this.pending===p && this.live(p) && generation===p.generation){p.ready=false;p.failed=true;p.commandPending=false;this.publish(p);}}
++    finally{if(generation===p.generation)p.refreshing=false;}
++  }
++  telemetry(){return TranslationsParent.telemetry().fullPagePanel();}
++  publish(p){if(this.pending!==p || !this.live(p))return;const model=this.model(p);if(JSON.stringify(model).length>65536){this.dismiss();return;}p.presentation=model;p.revision++;this.invalidate();}
++  model(p){
++    const l=(id,args,attr)=>this.label(id,args,attr),d=p.data,tags=d?.tags || {},state=d?.state || {},pair=state.requestedLanguagePair,revisit=!!d?.revisit;
++    const names=TranslationsParent.createLanguageDisplayNames();
++    const unsupported=p.ready && !revisit && !pair && !tags.isDocLangTagSupported && !p.force;
++    const match=(a,b)=>!!a && !!b && TranslationsUtils.langTagsMatch(a.split(",")[0],b.split(",")[0]);
++    const busy=!!pair && !state.isEngineReady && match(p.from,pair.sourceLanguage) && match(p.to,pair.targetLanguage);
++    const intro=p.ready && !unsupported && !pair && !TranslationsParent.hasUserEverTranslated();
++    p.actions=new Map();p.choices=new Map();
++    const buttons=[],settings=[];p.actions.set(3,{verb:"cancel",retained:false});
++    const button=(id,label,enabled,retained,verb)=>{buttons.push({id,label,enabled,retained});if(enabled)p.actions.set(id,{verb,retained});};
++    if(unsupported)button(6,l("translations-panel-error-change-button",null,"label"),true,true,"change-source");
++    else if(p.failed)button(7,l("translations-panel-error-load-languages-hint-button",null,"label"),true,true,"retry");
++    else {
++      if(revisit)button(5,l("translations-panel-restore-button",null,"label"),true,false,"restore");
++      button(4,l(busy?"translations-panel-translate-button-loading":"translations-panel-translate-button",null,"label"),p.ready && !!p.from && !!p.to && !match(p.from,p.to) && !(pair && match(p.from,pair.sourceLanguage) && match(p.to,pair.targetLanguage)),false,"translate");
++    }
++    const languageName=tags.docLangTag?TranslationsParent.createLanguageDisplayNames({fallback:"none"}).of(tags.docLangTag):null;
++    const check=(id,label,enabled,checked,kind)=>{const pageAction=kind==="offer"?"NO_CHANGE":this.window.FullPageTranslationsPanel.getCheckboxPageActionFor(d.settings)[({always:"alwaysTranslateLanguage",never:"neverTranslateLanguage",site:"neverTranslateSite"})[kind]]();const retained=pageAction==="NO_CHANGE";settings.push({id,label,enabled,checked,retained});if(enabled)p.actions.set(id,{verb:kind,retained});};
++    if(p.ready){
++      const enabled=!!tags.docLangTag && !!tags.isDocLangTagSupported && tags.docLangTag!==d.preferred;
++      check(10,l(languageName?"translations-panel-settings-always-translate-language":"translations-panel-settings-always-translate-unknown-language",{language:languageName},"label"),enabled,d.settings.always,"always");
++      check(11,l(languageName?"translations-panel-settings-never-translate-language":"translations-panel-settings-never-translate-unknown-language",{language:languageName},"label"),enabled,d.settings.never,"never");
++      check(12,l("translations-panel-settings-never-translate-site",null,"label"),true,d.settings.site,"site");
++      check(13,l("translations-panel-settings-always-offer-translation",null,"label"),true,TranslationsParent.shouldAlwaysOfferTranslations(),"offer");
++    }
++    if(intro || unsupported)button(16,l("translations-panel-learn-more-link"),true,false,"learn");
++    button(14,l("translations-panel-settings-manage-languages",null,"label"),true,false,"manage");button(15,l("translations-panel-settings-about2",null,"label"),true,false,"about");
++    const selector=(side,label,visible,list,value)=>{const options=[{id:this.choice(p,side,""),label:l("translations-panel-choose-language",null,"label")},...(list || []).map(row=>({id:this.choice(p,side,row.langTagKey),label:String(row.displayName).slice(0,512)}))];return {label,visible,selected:options.find(o=>p.choices.get(o.id).key===value)?.id || options[0].id,options};};
++    if(p.ready && !unsupported){if(!revisit)p.actions.set(8,{verb:"choose",side:"from",retained:true});p.actions.set(9,{verb:"choose",side:"to",retained:true});}
++    return {title:l(unsupported?"translations-panel-error-unsupported":revisit?"translations-panel-revisit-header":intro?"translations-panel-intro-header":"translations-panel-header",revisit?{fromLanguage:names.of(pair.sourceLanguage),toLanguage:names.of(pair.targetLanguage)}:null),
++      description:unsupported?l(languageName?"translations-panel-error-unsupported-hint-known-2":"translations-panel-error-unsupported-hint-unknown-2",{language:languageName}):intro?l("translations-panel-intro-description"):"",
++      error:p.failed?l("translations-panel-error-load-languages"):state.error?l("translations-panel-error-translating"):"",hint:p.failed?l("translations-panel-error-load-languages-hint"):"",loading:!p.ready && !p.failed || busy,
++      from:selector("from",l("translations-panel-from-label"),p.ready && !unsupported && !revisit,d?.languages.sourceLanguages,p.from),
++      to:selector("to",l(revisit?"translations-panel-revisit-to-label":"translations-panel-to-label"),p.ready && !unsupported,d?.languages.targetLanguages,p.to),
++      buttons,settings,settingsLabel:l("translations-panel-settings-button",null,"aria-label"),close:l(unsupported?"translations-panel-error-dismiss-button":"translations-panel-translate-cancel",null,"label"),learn:l("translations-panel-learn-more-link")};
++  }
++  snapshot(){const p=this.pending;if(p && !this.live(p))this.dismiss();else if(p && p.ready && !p.refreshing && !this.mutating && p.stateKey!==JSON.stringify(this.state(p)))void this.prepare(p);const current=this.pending;return {enabled:this.eligible(),closed:this.closedSession || 0,...(current?{request:current.request,source:current.source,...(current.session?{session:current.session,revision:current.revision,...current.presentation}:{})}:{})};}
++  execute(action){
++    const m=/^translation-panel:(open|dismiss|invoke):([1-9][0-9]*)(?::([1-9][0-9]*))?(?::([1-9][0-9]*))?$/.exec(action.command);
++    if(!m || m.slice(2).some(v=>v!==undefined && (!Number.isSafeInteger(Number(v)) || Number(v)>0xffffffff)))return 2;
++    const p=this.pending;if(!p)return 2;const id=Number(m[2]);
++    if(m[1]==="dismiss"){if(m[3] || id!==p.session)return 2;this.dismiss();return 1;}
++    if(!this.live(p)){this.dismiss();return 2;}
++    if(m[1]==="open"){if(p.session || id!==p.request || !m[3] || m[4] || !this.toolbar.menuAnchor("translation-panel",action))return 2;p.session=Number(m[3]);this.invalidate();return 1;}
++    // Cancel revokes this opening even while a retained language/settings command
++    // awaits its reply. It never executes a browser operation from an old view.
++    if(id===p.session && Number(m[4])===3 && Number(m[3])>0 && Number(m[3])<=p.revision){
++      if(p.ready && !p.data.tags.isDocLangTagSupported && !p.force)this.telemetry().onDismissErrorButton();
++      else this.telemetry().onCancelButton();
++      this.dismiss();return 1;
++    }
++    if(id!==p.session || Number(m[3])!==p.revision || this.mutating || p.commandPending || (p.refreshing && p.ready && Number(m[4])!==3) || p.ready && p.stateKey!==JSON.stringify(this.state(p)))return 2;
++    const item=p.actions.get(Number(m[4]));if(!item)return 2;
++    const c=this.window.FullPageTranslationsPanel;
++    if(item.verb==="choose"){
++      const row=p.choices.get(action.choice);if(!row || row.side!==item.side)return 2;
++      p.commandPending=true;
++      const choose=async()=>{
++        try {
++          p[item.side]=row.key;c.nativeLanguageChanged(item.side,row.key);
++          if(item.side==="from" && !p.to){
++            const to=await TranslationsParent.getTopPreferredSupportedToLang({excludeLangTags:[row.key]});
++            if(this.pending!==p || !this.live(p))return;
++            p.to=p.data.languages.targetLanguages.find(l=>l.langTagKey===to)?.langTagKey || "";
++          }
++          this.publish(p);
++        }catch(error){console.error(error);if(this.pending===p)void this.prepare(p);}
++        finally{p.commandPending=false;}
++      };
++      void choose();return 1;
++    }
++    if(item.verb==="change-source"){p.commandPending=true;p.force=true;void this.prepare(p,true);this.telemetry().onChangeSourceLanguageButton();return 1;}
++    if(item.verb==="retry"){p.commandPending=true;void this.prepare(p,true);return 1;}
++    const context={actor:p.actor,tags:p.data?.tags,settings:p.data?.settings,from:p.from,to:p.to,valid:()=>this.live(p) && this.nextRequest===p.request,dismiss:()=>this.dismiss()};
++    if(!item.retained)this.dismiss();this.mutating=true;
++    void (async()=>{
++    try {
++      if(item.verb==="cancel"){if(p.ready && !p.data.tags.isDocLangTagSupported && !p.force)this.telemetry().onDismissErrorButton();else this.telemetry().onCancelButton();}
++      else if(item.verb==="translate"){this.telemetry().onTranslateButton();await c.onTranslate(null,context);}
++      else if(item.verb==="restore"){this.telemetry().onRestorePageButton();await c.onRestore(null,context);}
++      else if(item.verb==="manage")c.openManageLanguages();
++      else if(item.verb==="about" || item.verb==="learn"){if(item.verb==="about")this.telemetry().onAboutTranslations();else this.telemetry().onLearnMoreLink();this.window.openTrustedLinkIn(Services.urlFormatter.formatURLPref("app.support.baseURL")+"website-translation","tab");}
++      else await c[({always:"onAlwaysTranslateLanguage",never:"onNeverTranslateLanguage",site:"onNeverTranslateSite",offer:"onAlwaysOfferTranslations"})[item.verb]](null,context);
++      return 1;
++    }catch(error){console.error(error);return 1;}
++    finally{this.mutating=false;if(this.pending)void this.prepare(this.pending);}
++    })();
++    return 1;
++  }
++  dismiss(){const p=this.pending;if(!p)return;this.pending=null;this.closedSession=p.session || 0;p.generation++;if(p.opened)this.telemetry().onClose();this.invalidate();}
++  close(){if(this.closed)return;this.dismiss();this.closed=true;for(const topic of ["perm-changed","translations:language-pairs-changed"])Services.obs.removeObserver(this.observe,topic);Services.obs.removeObserver(this.locale,"intl:app-locales-changed");Services.prefs.removeObserver("browser.translations.",this.observe);}
++}
 diff --git a/browser/base/content/WinUIConnectionPanel.sys.mjs b/browser/base/content/WinUIConnectionPanel.sys.mjs
 new file mode 100644
 index 00000000000..8bcade8b0f8
@@ -25223,10 +25540,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..86241c3bfaa
+index 00000000000..245688c8b8d
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,563 @@
+@@ -0,0 +1,570 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -25282,6 +25599,8 @@ index 00000000000..86241c3bfaa
 +    this.permissionsPanel=new WinUISitePermissionsPanel(this);
 +    const {WinUIConnectionPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUIConnectionPanel.sys.mjs");
 +    this.connectionPanel=new WinUIConnectionPanel(this);
++    const {WinUITranslationsPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUITranslationsPanel.sys.mjs");
++    this.translationsPanel=new WinUITranslationsPanel(this);
 +    const {WinUITabGroupsMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUITabGroupsMenu.sys.mjs");
 +    this.tabGroupsMenu=new WinUITabGroupsMenu(this);
 +    const {WinUIPrivacyPanels}=ChromeUtils.importESModule("chrome://browser/content/WinUIPrivacyPanels.sys.mjs");
@@ -25377,6 +25696,7 @@ index 00000000000..86241c3bfaa
 +    state.bookmarkPanel=this.bookmarkPanel.snapshot();
 +    state.permissionsPanel=this.permissionsPanel.snapshot();
 +    state.connectionPanel=this.connectionPanel.snapshot();
++    state.translationsPanel=this.translationsPanel.snapshot();
 +    state.tabGroupsMenu=this.tabGroupsMenu.snapshot();
 +    Object.assign(state,this.privacyPanels.snapshot(state));
 +    return state;
@@ -25440,6 +25760,7 @@ index 00000000000..86241c3bfaa
 +    const {window, owner} = this;
 +    const indicator = ["indicator:private", "indicator:analysis"].includes(action?.command);
 +    const nativeBookmark=typeof action?.command === "string" && action.command.startsWith("bookmark-panel:");
++    const nativeTranslation=typeof action?.command === "string" && action.command.startsWith("translation-panel:");
 +    const nativeConnection=typeof action?.command === "string" && action.command.startsWith("connection-panel:");
 +    const nativePermissions=typeof action?.command === "string" && action.command.startsWith("permissions-panel:");
 +    const nativeProfiler=typeof action?.command === "string" && action.command.startsWith("profiler-panel:");
@@ -25458,18 +25779,19 @@ index 00000000000..86241c3bfaa
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativeConnection ? {nativeConnection:true} : nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativeTranslation ? {nativeTranslation:true} : nativeConnection ? {nativeConnection:true} : nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!stock && !indicator && !nativeBookmark && !nativePermissions && !nativeConnection && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!stock && !indicator && !nativeBookmark && !nativePermissions && !nativeTranslation && !nativeConnection && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
 +    if (nativeBookmark) return this.bookmarkPanel.execute(action);
 +    if (nativePermissions) return this.permissionsPanel.execute(action);
++    if (nativeTranslation) return this.translationsPanel.execute(action);
 +    if (nativeConnection) return this.connectionPanel.execute(action);
 +    if (nativeProfiler) return this.profilerPanel.execute(action);
 +    if (nativeTabGroups) return this.tabGroupsMenu.execute(action);
@@ -25717,6 +26039,7 @@ index 00000000000..86241c3bfaa
 +    this.bookmarkPanel?.retire(true);
 +    this.permissionsPanel?.dismiss();
 +    this.connectionPanel?.dismiss();
++    this.translationsPanel?.dismiss();
 +    if(this.developerMenu?.session)this.developerMenu.dismiss();
 +    if(this.tabGroupsMenu?.session)this.tabGroupsMenu.dismiss();
 +    this.privacyPanels?.dismissAll();
@@ -25769,6 +26092,7 @@ index 00000000000..86241c3bfaa
 +    this.bookmarkPanel.close();
 +    this.permissionsPanel.close();
 +    this.connectionPanel.close();
++    this.translationsPanel.close();
 +    this.tabGroupsMenu.close();
 +    this.privacyPanels.close();
 +    this.resize.disconnect();
