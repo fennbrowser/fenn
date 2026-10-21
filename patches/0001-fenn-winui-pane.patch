@@ -216,6 +216,292 @@ index 20220bd0969..50f95f13b63 100644
 +  _storeRecentlyUsedFolder(selectedFolderGuid, didChangeFolder) {
 +    return PlacesUIUtils.storeRecentlyUsedBookmarkFolder(selectedFolderGuid, didChangeFolder);
    },
+diff --git a/browser/base/content/browser-siteIdentity.js b/browser/base/content/browser-siteIdentity.js
+index 16b222280f8..416d5a03af6 100644
+--- a/browser/base/content/browser-siteIdentity.js
++++ b/browser/base/content/browser-siteIdentity.js
+@@ -247,2 +247,3 @@ var gIdentityHandler = {
+   hidePopup() {
++    window.gWinUIPane?.addressToolbar?.connectionPanel?.dismiss();
+     if (this._popupInitialized) {
+@@ -462,3 +463,3 @@ var gIdentityHandler = {
+    */
+-  async clearSiteData(event) {
++  async clearSiteData(event, native = false) {
+     if (!this._uriHasHost) {
+@@ -471,7 +472,9 @@ var gIdentityHandler = {
+     // illusion that clicking the button had an effect.
+-    let hidden = new Promise(c => {
+-      this._identityPopup.addEventListener("popuphidden", c, { once: true });
+-    });
+-    PanelMultiView.hidePopup(this._identityPopup);
+-    await hidden;
++    if (!native) {
++      let hidden = new Promise(c => {
++        this._identityPopup.addEventListener("popuphidden", c, { once: true });
++      });
++      PanelMultiView.hidePopup(this._identityPopup);
++      await hidden;
++    }
+ 
+@@ -492,3 +495,3 @@ var gIdentityHandler = {
+     event.stopPropagation();
+-    PanelMultiView.hidePopup(this._identityPopup);
++    if (this._popupInitialized) PanelMultiView.hidePopup(this._identityPopup);
+   },
+@@ -561,3 +564,3 @@ var gIdentityHandler = {
+    */
+-  changeHttpsOnlyPermission() {
++  changeHttpsOnlyPermission(newValue = parseInt(this._identityPopupHttpsOnlyModeMenuList.selectedItem.value, 10)) {
+     // Get the new value from the menulist and the current value
+@@ -573,6 +576,6 @@ var gIdentityHandler = {
+ 
+-    let newValue = parseInt(
+-      this._identityPopupHttpsOnlyModeMenuList.selectedItem.value,
+-      10
+-    );
++    if (![0, 1, 2].includes(newValue) ||
++        (PrivateBrowsingUtils.isWindowPrivate(window) && newValue === 1 && oldValue !== 1)) {
++      return;
++    }
+ 
+@@ -645,3 +648,4 @@ var gIdentityHandler = {
+     // Otherwise we just refresh the interface
+-    this.refreshIdentityPopup();
++    if (this._popupInitialized) this.refreshIdentityPopup();
++    window.gWinUIPane?.addressToolbar?.connectionPanel?.changed();
+   },
+@@ -739,2 +743,4 @@ var gIdentityHandler = {
+ 
++    window.gWinUIPane?.addressToolbar?.connectionPanel?.changed();
++
+     // NOTE: We do NOT update the identity popup (the control center) when
+@@ -1036,48 +1042,45 @@ var gIdentityHandler = {
+    */
+-  refreshIdentityPopup() {
+-    // Update cookies and site data information and show the
+-    // "Clear Site Data" button if the site is storing local data, and
+-    // if the page is not controlled by a WebExtension.
+-    this._clearSiteDataFooter.hidden = true;
+-    let identityPopupPanelView = document.getElementById(
+-      "identity-popup-mainView"
+-    );
+-    identityPopupPanelView.removeAttribute("footerVisible");
+-    // Bug 1754172 - Only show the clear site data footer if we're not in private browsing.
+-    if (
+-      !PrivateBrowsingUtils.isWindowPrivate(window) &&
+-      this._uriHasHost &&
+-      !this._pageExtensionPolicy
+-    ) {
+-      SiteDataManager.hasSiteData(this._uri.asciiHost).then(hasData => {
+-        this._clearSiteDataFooter.hidden = !hasData;
+-        identityPopupPanelView.setAttribute("footerVisible", hasData);
+-      });
+-    }
++  getConnectionIdentityDetails() {
++    // Initialize the optional strings to empty values
++    let supplemental = "";
++    let verifier = "";
++    let owner = "";
+ 
+-    // Determine connection security information.
+-    let connection = this.getConnectionSecurityInformation();
++    // Fill in the CA name if we have a valid TLS certificate.
++    if (this._isSecureConnection || this._isCertUserOverridden) {
++      verifier = this._identityIconLabel.tooltipText;
++    }
+ 
+-    let securityButtonNode = document.getElementById(
+-      "identity-popup-security-button"
+-    );
++    // Fill in organization information if we have a valid EV certificate or
++    // QWAC.
++    if (this._isEV || this._qwac) {
++      let iData = this.getIdentityData(this._qwac || this._secInfo.serverCert);
++      owner = iData.subjectOrg;
++      verifier = this._identityIconLabel.tooltipText;
+ 
+-    let disableSecurityButton = ![
+-      "not-secure",
+-      "secure",
+-      "secure-etsi",
+-      "secure-ev",
+-      "secure-cert-user-overridden",
+-      "cert-error-page",
+-      "net-error-page",
+-      "https-only-error-page",
+-    ].includes(connection);
+-    if (disableSecurityButton) {
+-      securityButtonNode.disabled = true;
+-      securityButtonNode.classList.remove("subviewbutton-nav");
+-    } else {
+-      securityButtonNode.disabled = false;
+-      securityButtonNode.classList.add("subviewbutton-nav");
++      // Build an appropriate supplemental block out of whatever location data we have
++      if (iData.city) {
++        supplemental += iData.city + "\n";
++      }
++      if (iData.state && iData.country) {
++        supplemental += gNavigatorBundle.getFormattedString(
++          "identity.identified.state_and_country",
++          [iData.state, iData.country]
++        );
++      } else if (iData.state) {
++        // State only
++        supplemental += iData.state;
++      } else if (iData.country) {
++        // Country only
++        supplemental += iData.country;
++      }
+     }
+ 
++    return {owner, supplemental, verifier};
++  },
++
++  getConnectionPanelState() {
++    // Determine connection security information.
++    let connection = this.getConnectionSecurityInformation();
++
+     // Determine the mixed content state.
+@@ -1117,2 +1120,3 @@ var gIdentityHandler = {
+     let httpsOnlyStatus = "";
++    let httpsOnlyValue = -1, httpsOnlyVisible = false;
+     if (
+@@ -1128,9 +1132,4 @@ var gIdentityHandler = {
+       // HTTPS-First, but we still want the "Upgraded to HTTPS" label.
+-      this._identityPopupHttpsOnlyMode.hidden =
+-        isSchemelessHttpsFirstModeActive;
+-
+-      this._identityPopupHttpsOnlyModeMenuListOffItem.hidden =
+-        privateBrowsingWindow && value != 1;
+-
+-      this._identityPopupHttpsOnlyModeMenuList.value = value;
++      httpsOnlyValue = value;
++      httpsOnlyVisible = !isSchemelessHttpsFirstModeActive;
+ 
+@@ -1153,2 +1152,57 @@ var gIdentityHandler = {
+ 
++    return {connection, mixedcontent, ciphers, httpsOnlyStatus, httpsOnlyValue,
++      httpsOnlyVisible: httpsOnlyVisible && httpsOnlyValue >= 0,
++      privateBrowsingWindow, customRoot: this._hasCustomRoot(),
++      tlsKeyLogging: Services.env.exists("SSLKEYLOGFILE") && !!this._isSecureConnection && !this._isCertUserOverridden};
++  },
++
++  refreshIdentityPopup() {
++    // Update cookies and site data information and show the
++    // "Clear Site Data" button if the site is storing local data, and
++    // if the page is not controlled by a WebExtension.
++    this._clearSiteDataFooter.hidden = true;
++    let identityPopupPanelView = document.getElementById(
++      "identity-popup-mainView"
++    );
++    identityPopupPanelView.removeAttribute("footerVisible");
++    // Bug 1754172 - Only show the clear site data footer if we're not in private browsing.
++    if (
++      !PrivateBrowsingUtils.isWindowPrivate(window) &&
++      this._uriHasHost &&
++      !this._pageExtensionPolicy
++    ) {
++      SiteDataManager.hasSiteData(this._uri.asciiHost).then(hasData => {
++        this._clearSiteDataFooter.hidden = !hasData;
++        identityPopupPanelView.setAttribute("footerVisible", hasData);
++      });
++    }
++
++    const {connection, mixedcontent, ciphers, httpsOnlyStatus, httpsOnlyValue,
++      httpsOnlyVisible, privateBrowsingWindow} = this.getConnectionPanelState();
++    let securityButtonNode = document.getElementById(
++      "identity-popup-security-button"
++    );
++
++    let disableSecurityButton = ![
++      "not-secure",
++      "secure",
++      "secure-etsi",
++      "secure-ev",
++      "secure-cert-user-overridden",
++      "cert-error-page",
++      "net-error-page",
++      "https-only-error-page",
++    ].includes(connection);
++    if (disableSecurityButton) {
++      securityButtonNode.disabled = true;
++      securityButtonNode.classList.remove("subviewbutton-nav");
++    } else {
++      securityButtonNode.disabled = false;
++      securityButtonNode.classList.add("subviewbutton-nav");
++    }
++
++    this._identityPopupHttpsOnlyMode.hidden = !httpsOnlyVisible;
++    this._identityPopupHttpsOnlyModeMenuListOffItem.hidden = privateBrowsingWindow && httpsOnlyValue != 1;
++    this._identityPopupHttpsOnlyModeMenuList.value = httpsOnlyValue;
++
+     // Update all elements.
+@@ -1169,37 +1223,4 @@ var gIdentityHandler = {
+ 
+-    // Initialize the optional strings to empty values
+-    let supplemental = "";
+-    let verifier = "";
+-    let host = this.getHostForDisplay();
+-    let owner = "";
+-
+-    // Fill in the CA name if we have a valid TLS certificate.
+-    if (this._isSecureConnection || this._isCertUserOverridden) {
+-      verifier = this._identityIconLabel.tooltipText;
+-    }
+-
+-    // Fill in organization information if we have a valid EV certificate or
+-    // QWAC.
+-    if (this._isEV || this._qwac) {
+-      let iData = this.getIdentityData(this._qwac || this._secInfo.serverCert);
+-      owner = iData.subjectOrg;
+-      verifier = this._identityIconLabel.tooltipText;
+-
+-      // Build an appropriate supplemental block out of whatever location data we have
+-      if (iData.city) {
+-        supplemental += iData.city + "\n";
+-      }
+-      if (iData.state && iData.country) {
+-        supplemental += gNavigatorBundle.getFormattedString(
+-          "identity.identified.state_and_country",
+-          [iData.state, iData.country]
+-        );
+-      } else if (iData.state) {
+-        // State only
+-        supplemental += iData.state;
+-      } else if (iData.country) {
+-        // Country only
+-        supplemental += iData.country;
+-      }
+-    }
++    const {owner, supplemental, verifier} = this.getConnectionIdentityDetails();
++    const host = this.getHostForDisplay();
+ 
+@@ -1293,6 +1314,3 @@ var gIdentityHandler = {
+ 
+-  _openPopup(event) {
+-    // Make the popup available.
+-    this._initializePopup();
+-
++  ensureConnectionQWAC() {
+     // Kick off background determination of QWAC status.
+@@ -1308,3 +1326,4 @@ var gIdentityHandler = {
+           this._qwac = result;
+-          this.refreshIdentityPopup();
++          if (this._popupInitialized) this.refreshIdentityPopup();
++          window.gWinUIPane?.addressToolbar?.connectionPanel?.changed();
+         }
+@@ -1314,2 +1333,10 @@ var gIdentityHandler = {
+ 
++  },
++
++  _openPopup(event) {
++    this.ensureConnectionQWAC();
++    if (window.gWinUIPane?.addressToolbar?.connectionPanel?.show(event)) return;
++    // Make the popup available.
++    this._initializePopup();
++
+     // Update the popup strings
 diff --git a/browser/base/content/browser-sitePermissionPanel.js b/browser/base/content/browser-sitePermissionPanel.js
 index 6a4ed1d46f5..69b2302a5ab 100644
 --- a/browser/base/content/browser-sitePermissionPanel.js
@@ -636,10 +922,10 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..8820429870f 100644
+index b2b5db6040b..40518b7356c 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,30 @@ browser.jar:
+@@ -35,2 +35,31 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -661,6 +947,7 @@ index b2b5db6040b..8820429870f 100644
 +        content/browser/WinUIDeveloperMenu.sys.mjs                (content/WinUIDeveloperMenu.sys.mjs)
 +        content/browser/WinUIBookmarkPanel.sys.mjs (content/WinUIBookmarkPanel.sys.mjs)
 +        content/browser/WinUISitePermissionsPanel.sys.mjs (content/WinUISitePermissionsPanel.sys.mjs)
++        content/browser/WinUIConnectionPanel.sys.mjs (content/WinUIConnectionPanel.sys.mjs)
 +        content/browser/WinUIProfilerPanel.sys.mjs                (content/WinUIProfilerPanel.sys.mjs)
 +        content/browser/WinUIOverflowMenu.sys.mjs (content/WinUIOverflowMenu.sys.mjs)
 +        content/browser/WinUIDownloadsPanel.sys.mjs  (content/WinUIDownloadsPanel.sys.mjs)
@@ -670,7 +957,7 @@ index b2b5db6040b..8820429870f 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +134,17 @@ browser.jar:
+@@ -106 +135,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -8431,10 +8718,10 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..7133348e55b 100644
+index 4f28e62c7b5..508da335d5c 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -520 +520,125 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,129 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -8560,6 +8847,10 @@ index 4f28e62c7b5..7133348e55b 100644
 +winui-permissions-next = More
 +winui-permissions-error = This permission could not be changed. Try again.
 +winui-permissions-close = Close
++
++winui-connection-close = Close
++winui-connection-learn-more = Learn more
++winui-connection-error = This setting could not be changed. Try again.
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -9202,6 +9493,148 @@ index 1e2660589bd..5ae3ab48433 100644
 +      const nsTArray<LayoutDeviceIntRect>& aOcclusions) override;
 +
    void SendAnAPZEvent(mozilla::InputData& aEvent);
+diff --git a/browser/base/content/WinUIConnectionPanel.sys.mjs b/browser/base/content/WinUIConnectionPanel.sys.mjs
+new file mode 100644
+index 00000000000..c9c4dc564ac
+--- /dev/null
++++ b/browser/base/content/WinUIConnectionPanel.sys.mjs
+@@ -0,0 +1,136 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Firefox owns connection classification, certificate metadata and mutations.
++// Native sees localized presentation and opening-scoped commands only.
++export class WinUIConnectionPanel {
++  constructor(toolbar) {
++    this.toolbar=toolbar;this.window=toolbar.window;this.nextRequest=0;
++    this.observe=()=>this.changed();this.locale=()=>{this.l10n=null;this.dismiss();};
++    Services.obs.addObserver(this.observe,"perm-changed");
++    Services.obs.addObserver(this.locale,"intl:app-locales-changed");
++    Services.prefs.addObserver("dom.security.",this.observe);
++    this.scheme=this.window.matchMedia?.("(prefers-color-scheme: dark)");
++    this.theme=()=>{if(this.pending){this.pending.mark=null;this.pending.markRequested=false;this.changed();}};
++    this.scheme?.addEventListener("change",this.theme);
++  }
++  eligible() {
++    const t=this.toolbar,w=this.window;
++    return !this.closed && t.active && t.navigation && t.supported() && !t.customization?.editorOpen &&
++      !w.gDialogBox?.isOpen && !w.document.fullscreen && !!w.gIdentityHandler._uri &&
++      w.gURLBar.getAttribute("pageproxystate")==="valid";
++  }
++  live(p=this.pending) {
++    const b=this.window.gBrowser.selectedBrowser;
++    return !!p && this.eligible() && p.browser===b && p.tab===this.window.gBrowser.selectedTab &&
++      p.context===this.toolbar.owner.addressSession?.sessionId &&
++      p.document===b.browsingContext.currentWindowGlobal?.innerWindowId && p.principal.equals(b.contentPrincipal);
++  }
++  invalidate(){if(!this.closed)this.toolbar.owner.invalidateAddress();}
++  label(id,args,attribute) {
++    this.l10n??=new this.window.Localization(["branding/brand.ftl","browser/browser.ftl","browser/tabbrowser.ftl"],true);
++    const m=this.l10n.formatMessagesSync([{id,args}])[0];
++    return String(attribute?m.attributes?.find(a=>a.name===attribute)?.value:m.value || "").slice(0,2048);
++  }
++  show(event) {
++    if(!this.eligible() || this.nextRequest>=0xffffffff)return false;
++    if(this.pending){this.dismiss();return true;}
++    const t=this.toolbar,w=this.window,b=w.gBrowser.selectedBrowser;
++    const entry=[...t.omnibar.entries.values()].find(e=>e.node===event?.target || e.node.contains?.(event?.target)) || t.omnibar.entry(w.document.getElementById("identity-icon-box"));
++    const p={request:++this.nextRequest,source:entry.id,session:0,revision:0,browser:b,tab:w.gBrowser.selectedTab,
++      principal:b.contentPrincipal,document:b.browsingContext.currentWindowGlobal?.innerWindowId,
++      context:t.owner.addressSession?.sessionId,hasData:false,actions:new Map()};
++    this.pending=p;
++    try {
++      w.gIdentityHandler.ensureConnectionQWAC();this.refresh();this.invalidate();
++      if(!w.PrivateBrowsingUtils.isWindowPrivate(w) && w.gIdentityHandler._uriHasHost && !w.gIdentityHandler._pageExtensionPolicy) {
++        void w.SiteDataManager.hasSiteData(w.gIdentityHandler._uri.asciiHost).then(value=>{
++          if(this.pending===p && this.live(p) && p.hasData!==!!value){p.hasData=!!value;this.changed();}
++        }).catch(console.error);
++      }
++      return true;
++    } catch(error){console.error(error);this.dismiss();return false;}
++  }
++  model(p) {
++    const w=this.window,c=w.gIdentityHandler,s=c.getConnectionPanelState(),l=(id,args,attr)=>this.label(id,args,attr);
++    const safe=String(c.getHostForDisplay()).slice(0,2048),secure=["secure","secure-ev","secure-etsi"].includes(s.connection);
++    const summaryId=({chrome:"identity-connection-internal",file:"identity-connection-file",associated:"identity-connection-associated",extension:"identity-extension-page","net-error-page":"identity-connection-failure"})[s.connection] || (secure?"identity-connection-verified":"identity-connection-not-secure-security-view");
++    const warning=(!secure && !["chrome","file","associated","extension"].includes(s.connection)) || !!s.mixedcontent || !!s.ciphers || s.customRoot || s.tlsKeyLogging;
++    const blocks=[],actions=[];p.actions=new Map();
++    const text=(id,args)=>blocks.push(l(id,args));
++    const action=(id,label,verb,extra={})=>{actions.push({id,label,retained:false});p.actions.set(id,{verb,...extra});};
++    if(secure){
++      const d=c.getConnectionIdentityDetails();
++      if(c._isEV || c._qwac){text("identity-ev-owner-label2");blocks.push(String(d.owner || "").slice(0,2048));if(d.supplemental)blocks.push(String(d.supplemental).slice(0,2048));}
++      text("identity-verifier-label2");blocks.push(String(d.verifier || "").slice(0,2048));
++      if(s.connection==="secure-etsi")text("identity-etsi");
++    }
++    if(s.connection==="secure-cert-user-overridden") {text("identity-cert-exception-overridden");action(3,l("identity-remove-cert-exception",null,"label"),"remove-exception");}
++    if(s.customRoot){text("identity-description-custom-root2");action(5,l("winui-connection-learn-more"),"help",{page:"enterprise-roots"});}
++    if(s.ciphers){text("identity-description-weak-cipher-intro");text("identity-description-weak-cipher-risk");}
++    else if(s.mixedcontent.includes("active-loaded")){text("identity-description-active-loaded");text("identity-description-active-loaded-insecure");}
++    else if(s.mixedcontent.includes("passive-loaded")){text("identity-description-passive-loaded");text(s.mixedcontent.includes("active-blocked")?"identity-description-passive-loaded-mixed2":"identity-description-passive-loaded-insecure2");}
++    else if(s.mixedcontent.includes("active-blocked"))text("identity-description-active-blocked2");
++    else if(["not-secure","cert-error-page","net-error-page","https-only-error-page"].includes(s.connection))text("identity-description-insecure");
++    if(s.mixedcontent)action(6,l("winui-connection-learn-more"),"help",{page:"mixed-content"});
++    if(s.tlsKeyLogging){text("identity-description-tls-key-logging-heading");text("identity-description-tls-key-logging-message");action(7,l("winui-connection-learn-more"),"help",{page:"sslkeylogfile-warning"});}
++    if(["upgraded","failed-sub"].includes(s.httpsOnlyStatus))text("identity-https-only-connection-upgraded");
++    const info=({exception:"identity-https-only-info-turn-on3","failed-sub":"identity-https-only-info-turn-off3","failed-top":"identity-https-only-info-no-upgrade"})[s.httpsOnlyStatus];if(info)text(info);
++    const options=[];let selected=0;
++    if(s.httpsOnlyVisible && s.httpsOnlyStatus){
++      for(const value of [0,1,2]){if(s.privateBrowsingWindow && value===1 && s.httpsOnlyValue!==1)continue;const id=100+value;options.push({id,label:l(["identity-https-only-dropdown-on","identity-https-only-dropdown-off","identity-https-only-dropdown-off-temporarily"][value],null,"label"),retained:value+s.httpsOnlyValue===3});p.actions.set(id,{verb:"https",value});if(value===s.httpsOnlyValue)selected=id;}
++    }
++    if(p.hasData)action(4,l("identity-clear-site-data",null,"label"),"clear-data");
++    action(8,l("identity-more-info-link-text",null,"label"),"more-info");
++    // Include raw authority only in the Firefox fingerprint, never in native data.
++    p.authority=JSON.stringify([s,c._state,c._secInfo?.serverCert?.sha256Fingerprint,c._qwac?.sha256Fingerprint,p.hasData]);
++    return {title:l("identity-site-information",{host:safe}),summary:l(summaryId),icon:warning?"warning":"connection",
++      blocks:blocks.filter(Boolean),options,selected,choiceLabel:l("identity-https-only-label2"),actions,
++      image:s.connection==="secure-etsi"?p.mark || null:null,
++      close:l("winui-connection-close"),error:p.error || ""};
++  }
++  refresh(force=false) {
++    const p=this.pending;if(!p || this.mutating)return;
++    if(!this.live(p)){this.dismiss();return;}
++    const model=this.model(p);if(JSON.stringify(model).length>65536)throw new Error("Connection description exceeds bound");const fingerprint=JSON.stringify([model,p.authority]);
++    if(force || p.fingerprint!==fingerprint){p.fingerprint=fingerprint;p.revision++;p.presentation=model;}
++    if(this.window.gIdentityHandler._qwac && !p.markRequested){p.markRequested=true;void this.loadTrustMark(p).catch(console.error);}
++  }
++  async loadTrustMark(p) {
++    const w=this.window,image=new w.Image(),generation=(p.markGeneration || 0)+1;p.markGeneration=generation;
++    try {
++      image.src="chrome://global/skin/icons/EU-trust-mark"+(this.scheme?.matches?"-inverted":"")+".svg";await image.decode();
++      if(this.pending!==p || !this.live(p) || p.markGeneration!==generation)return;
++      const canvas=w.document.createElementNS("http://www.w3.org/1999/xhtml","canvas");
++      canvas.width=64;canvas.height=95;const context=canvas.getContext("2d");context.drawImage(image,0,0,64,95);
++      p.mark=this.toolbar.owner.encodePixels(context.getImageData(0,0,64,95));this.changed();
++    } finally {image.src="";}
++  }
++  changed(){const p=this.pending;if(!p || this.mutating)return;try{const r=p.revision;this.refresh();if(this.pending===p && r!==p.revision)this.invalidate();}catch(error){console.error(error);this.dismiss();}}
++  snapshot(){this.changed();const p=this.pending;return {enabled:this.eligible(),closed:this.closedSession || 0,...(p?{request:p.request,source:p.source,...(p.session?{session:p.session,revision:p.revision,...p.presentation}:{})}:{})};}
++  execute(action) {
++    const m=/^connection-panel:(open|dismiss|invoke):([1-9][0-9]*)(?::([1-9][0-9]*))?(?::([1-9][0-9]*))?$/.exec(action.command);
++    if(!m || m.slice(2).some(v=>v!==undefined && (!Number.isSafeInteger(Number(v)) || Number(v)>0xffffffff)))return 2;
++    const p=this.pending;if(!p)return 2;const id=Number(m[2]);
++    if(m[1]==="dismiss"){if(m[3] || id!==p.session)return 2;this.dismiss();return 1;}
++    if(!this.live(p)){this.dismiss();return 2;}
++    if(m[1]==="open") {if(p.session || id!==p.request || !m[3] || m[4] || !this.toolbar.menuAnchor("connection-panel",action))return 2;p.session=Number(m[3]);this.refresh(true);this.invalidate();return 1;}
++    this.refresh();if(this.pending!==p || id!==p.session)return 2;
++    if(Number(m[3])!==p.revision){this.dismiss();return 2;}
++    const item=p.actions.get(Number(m[4]));if(!item)return 2;
++    const w=this.window,c=w.gIdentityHandler,retained=item.verb==="https" && item.value+c._getHttpsOnlyPermission()===3;
++    if(!retained)this.dismiss();this.mutating=true;
++    try {
++      if(item.verb==="https")c.changeHttpsOnlyPermission(item.value);
++      else if(item.verb==="remove-exception")c.removeCertException();
++      else if(item.verb==="clear-data")void c.clearSiteData({stopPropagation(){}},true).catch(console.error);
++      else if(item.verb==="more-info")c.handleMoreInfoClick({stopPropagation(){}});
++      else w.openTrustedLinkIn(Services.urlFormatter.formatURLPref("app.support.baseURL")+item.page,"tab");
++      return 1;
++    } catch(error){console.error(error);p.error=this.label("winui-connection-error");return 1;}
++    finally {this.mutating=false;if(this.pending===p){this.refresh(true);this.invalidate();}}
++  }
++  dismiss(){const p=this.pending;if(!p)return;this.closedSession=p.session || 0;this.pending=null;this.invalidate();}
++  close(){if(this.closed)return;this.dismiss();this.closed=true;Services.obs.removeObserver(this.observe,"perm-changed");Services.obs.removeObserver(this.locale,"intl:app-locales-changed");Services.prefs.removeObserver("dom.security.",this.observe);this.scheme?.removeEventListener("change",this.theme);}
++}
 diff --git a/browser/base/content/WinUISitePermissionsPanel.sys.mjs b/browser/base/content/WinUISitePermissionsPanel.sys.mjs
 new file mode 100644
 index 00000000000..47c88f22307
@@ -20461,10 +20894,10 @@ index 00000000000..78194ca8878
 +}
 diff --git a/browser/base/content/WinUIOmnibarActions.sys.mjs b/browser/base/content/WinUIOmnibarActions.sys.mjs
 new file mode 100644
-index 00000000000..1a592f1575d
+index 00000000000..475c3a3eeef
 --- /dev/null
 +++ b/browser/base/content/WinUIOmnibarActions.sys.mjs
-@@ -0,0 +1,333 @@
+@@ -0,0 +1,335 @@
 +// Presentation adapter for Firefox-owned address-bar controls. No browser policy lives here.
 +const PAGE_ACTIONS = [
 +  ['connection', 'identity-icon-box'],
@@ -20751,6 +21184,8 @@ index 00000000000..1a592f1575d
 +    if (!live?.enabled || !entry || !this.visible(entry.node)) return 2;
 +    const anchor = this.toolbar.menuAnchor(`omni:${id}`, bounds);
 +    if (!anchor) return 2;
++    if (!contextMenu && ['identity-icon-box','trust-icon-container'].includes(entry.node.id) &&
++        this.toolbar.connectionPanel?.show({target:entry.node})) return 1;
 +    entry.pending = true;
 +    entry.document = this.context();
 +    entry.tab = this.window.gBrowser.selectedTab;
@@ -24774,10 +25209,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..eaa89b48f5e
+index 00000000000..86241c3bfaa
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,556 @@
+@@ -0,0 +1,563 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -24831,6 +25266,8 @@ index 00000000000..eaa89b48f5e
 +    this.bookmarkPanel=new WinUIBookmarkPanel(this);
 +    const {WinUISitePermissionsPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUISitePermissionsPanel.sys.mjs");
 +    this.permissionsPanel=new WinUISitePermissionsPanel(this);
++    const {WinUIConnectionPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUIConnectionPanel.sys.mjs");
++    this.connectionPanel=new WinUIConnectionPanel(this);
 +    const {WinUITabGroupsMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUITabGroupsMenu.sys.mjs");
 +    this.tabGroupsMenu=new WinUITabGroupsMenu(this);
 +    const {WinUIPrivacyPanels}=ChromeUtils.importESModule("chrome://browser/content/WinUIPrivacyPanels.sys.mjs");
@@ -24925,6 +25362,7 @@ index 00000000000..eaa89b48f5e
 +    state.profilerPanel=this.profilerPanel.snapshot();
 +    state.bookmarkPanel=this.bookmarkPanel.snapshot();
 +    state.permissionsPanel=this.permissionsPanel.snapshot();
++    state.connectionPanel=this.connectionPanel.snapshot();
 +    state.tabGroupsMenu=this.tabGroupsMenu.snapshot();
 +    Object.assign(state,this.privacyPanels.snapshot(state));
 +    return state;
@@ -24988,6 +25426,7 @@ index 00000000000..eaa89b48f5e
 +    const {window, owner} = this;
 +    const indicator = ["indicator:private", "indicator:analysis"].includes(action?.command);
 +    const nativeBookmark=typeof action?.command === "string" && action.command.startsWith("bookmark-panel:");
++    const nativeConnection=typeof action?.command === "string" && action.command.startsWith("connection-panel:");
 +    const nativePermissions=typeof action?.command === "string" && action.command.startsWith("permissions-panel:");
 +    const nativeProfiler=typeof action?.command === "string" && action.command.startsWith("profiler-panel:");
 +    const nativePrivacy=typeof action?.command === "string" && action.command.startsWith("privacy-panel:");
@@ -25005,18 +25444,19 @@ index 00000000000..eaa89b48f5e
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativeConnection ? {nativeConnection:true} : nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!stock && !indicator && !nativeBookmark && !nativePermissions && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!stock && !indicator && !nativeBookmark && !nativePermissions && !nativeConnection && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
 +    if (nativeBookmark) return this.bookmarkPanel.execute(action);
 +    if (nativePermissions) return this.permissionsPanel.execute(action);
++    if (nativeConnection) return this.connectionPanel.execute(action);
 +    if (nativeProfiler) return this.profilerPanel.execute(action);
 +    if (nativeTabGroups) return this.tabGroupsMenu.execute(action);
 +    if (nativePrivacy) return this.privacyPanels.execute(action);
@@ -25262,6 +25702,7 @@ index 00000000000..eaa89b48f5e
 +    this.profilerPanel?.dismiss();
 +    this.bookmarkPanel?.retire(true);
 +    this.permissionsPanel?.dismiss();
++    this.connectionPanel?.dismiss();
 +    if(this.developerMenu?.session)this.developerMenu.dismiss();
 +    if(this.tabGroupsMenu?.session)this.tabGroupsMenu.dismiss();
 +    this.privacyPanels?.dismissAll();
@@ -25313,6 +25754,7 @@ index 00000000000..eaa89b48f5e
 +    this.profilerPanel.close();
 +    this.bookmarkPanel.close();
 +    this.permissionsPanel.close();
++    this.connectionPanel.close();
 +    this.tabGroupsMenu.close();
 +    this.privacyPanels.close();
 +    this.resize.disconnect();

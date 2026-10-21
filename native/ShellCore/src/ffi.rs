@@ -210,6 +210,7 @@ pub struct ShellCore {
     profiler_panel: crate::surface_menu::SurfaceMenu,
     bookmark_panel: crate::surface_menu::SurfaceMenu,
     permissions_panel: crate::surface_menu::SurfaceMenu,
+    connection_panel: crate::surface_menu::SurfaceMenu,
     privacy_panels: [crate::surface_menu::SurfaceMenu; 2],
     address_publication: crate::address_publication::AddressPublication,
     toolbar_publication: crate::toolbar_publication::ToolbarPublication,
@@ -444,6 +445,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         profiler_panel: Default::default(),
         bookmark_panel: Default::default(),
         permissions_panel: Default::default(),
+        connection_panel: Default::default(),
         privacy_panels: Default::default(),
         address_publication: Default::default(),
         toolbar_publication: Default::default(),
@@ -782,6 +784,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
         core.profiler_panel.dismiss();
         core.bookmark_panel.dismiss();
         core.permissions_panel.dismiss();
+        core.connection_panel.dismiss();
         for panel in &mut core.privacy_panels { panel.dismiss(); }
         core.address_publication.reset();
         core.address_sections.reset();
@@ -814,6 +817,7 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
         core.profiler_panel.dismiss();
         core.bookmark_panel.dismiss();
         core.permissions_panel.dismiss();
+        core.connection_panel.dismiss();
         for panel in &mut core.privacy_panels { panel.dismiss(); }
         core.address_publication.reset();
         core.address_sections.reset();
@@ -881,6 +885,7 @@ pub enum ShellPublicationChannel {
     ProfilerPanel = 18,
     BookmarkPanel = 19,
     PermissionsPanel = 20,
+    ConnectionPanel = 21,
 }
 
 /// What one channel did with the publications it received, for diagnostics.
@@ -914,6 +919,7 @@ pub unsafe extern "C" fn shell_core_publication_stats(
             c if c == ShellPublicationChannel::ProfilerPanel as u32 => core.profiler_panel.counts(),
             c if c == ShellPublicationChannel::BookmarkPanel as u32 => core.bookmark_panel.counts(),
             c if c == ShellPublicationChannel::PermissionsPanel as u32 => core.permissions_panel.counts(),
+            c if c == ShellPublicationChannel::ConnectionPanel as u32 => core.connection_panel.counts(),
             c if c == ShellPublicationChannel::ForgetPanel as u32 => core.privacy_panels[0].counts(),
             c if c == ShellPublicationChannel::ClearPrivatePanel as u32 => core.privacy_panels[1].counts(),
             c if c == ShellPublicationChannel::AddressSession as u32 => core.address_publication.counts(),
@@ -1580,7 +1586,7 @@ mod tests {
             let mut counts = ShellPublicationCounts::default();
             assert_eq!(shell_core_publication_stats(core, ShellPublicationChannel::Strip as u32, &mut counts), ShellStatus::Ok);
             assert_eq!(counts, ShellPublicationCounts { accepted: 2, unchanged: 1, ignored: 0, refused: 1 });
-            assert_eq!(shell_core_publication_stats(core, 21, &mut counts), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_publication_stats(core, 22, &mut counts), ShellStatus::InvalidArgument);
             assert_eq!(counts, ShellPublicationCounts::default(), "an unknown channel reports nothing");
             assert_eq!(shell_core_publication_stats(core, 0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
             shell_core_destroy(core);
@@ -4475,6 +4481,85 @@ pub unsafe extern "C" fn shell_core_permissions_panel_request(core:*mut ShellCor
   shell_core_permissions_panel_request(core,7,[2].as_ptr(),1,&mut id);assert_eq!(id,0);
   shell_core_permissions_panel_request(core,8,[2].as_ptr(),1,&mut id);assert_ne!(id,0);shell_core_cancel_all(core);
   shell_core_permissions_panel_accept(core,id,1,[1].as_ptr(),1,[3].as_ptr(),1,&mut changed);assert!(!changed);
+  shell_core_destroy(core);
+ }}
+}
+
+// Independent connection security panel session; shared publication semantics, no widget state.
+/// Allocate a window-scoped menu opening. Zero means identity exhaustion.
+/// # Safety
+/// Live core and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_connection_panel_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
+ let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.connection_panel.open();ShellStatus::Ok})
+}
+/// Revoke a window-scoped menu, preserving its identity high-water mark.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_connection_panel_dismiss(core:*mut ShellCore)->ShellStatus {
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.connection_panel.dismiss();ShellStatus::Ok})
+}
+/// Resolve a validated session description before mutating the host container.
+/// Accepted work is committed and counted by shell_core_connection_panel_accept;
+/// ignored/refused work ends here, without changing menu or action identity.
+/// # Safety
+/// Live core, readable arrays (null only for zero length), writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_connection_panel_resolve(core:*mut ShellCore,session:u32,revision:u32,
+ actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
+ let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
+ if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
+ guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.connection_panel.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+
+/// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
+/// # Safety
+/// Live core, readable arrays (null only for zero length), writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_connection_panel_accept(core:*mut ShellCore,session:u32,revision:u32,
+ actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
+ let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
+ if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
+ guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.connection_panel.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+/// Consume one current enabled action; dismissal and late updates cannot resurrect it.
+/// # Safety
+/// Live core and writable accepted.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_connection_panel_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
+ let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.connection_panel.activate_retained(session,revision,action)}else{c.connection_panel.activate(session,revision,action)};ShellStatus::Ok})
+}
+
+
+/// Resolve a browser-owned connection security opening once through Snapshot rules.
+/// # Safety
+/// Live core, readable fingerprint and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_connection_panel_request(core:*mut ShellCore,request:u32,fingerprint:*const u16,units:usize,out:*mut u32)->ShellStatus {
+ let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
+ if units>crate::surface_menu::MAX_DESCRIPTION{return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match c.connection_panel.request_open(request,fingerprint){Ok(id)=>{*out=id;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+#[cfg(test)] mod connection_panel_ffi_tests {
+ use super::*;
+ #[test] fn browser_request_and_actions_are_scoped_and_one_use(){unsafe{
+  let core=shell_core_create(std::ptr::null());let mut id=0;let mut changed=false;
+  assert_eq!(shell_core_connection_panel_request(core,7,[2].as_ptr(),1,&mut id),ShellStatus::Ok);assert_ne!(id,0);
+  shell_core_connection_panel_accept(core,id,1,[1,7].as_ptr(),2,[3].as_ptr(),1,&mut changed);assert!(changed);
+  shell_core_connection_panel_activate(core,id,1,7,true,&mut changed);assert!(changed);
+  shell_core_connection_panel_activate(core,id,1,7,true,&mut changed);assert!(!changed);
+  shell_core_connection_panel_activate(core,id,1,1,false,&mut changed);assert!(changed);
+  shell_core_connection_panel_request(core,7,[2].as_ptr(),1,&mut id);assert_eq!(id,0);
+  shell_core_connection_panel_request(core,8,[2].as_ptr(),1,&mut id);assert_ne!(id,0);shell_core_cancel_all(core);
+  shell_core_connection_panel_accept(core,id,1,[1].as_ptr(),1,[3].as_ptr(),1,&mut changed);assert!(!changed);
   shell_core_destroy(core);
  }}
 }
