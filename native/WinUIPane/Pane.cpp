@@ -391,7 +391,7 @@ struct Pane {
         return false;
     }
     void DismissMenus() {
-        if (address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); if(address->navigation)address->navigation->backForwardMenu.LightDismiss(); }
+        if (address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->notificationPanel.LightDismiss(true); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); if(address->navigation)address->navigation->backForwardMenu.LightDismiss(); }
         if (strip) strip->allTabsPanel.LightDismiss(true);
         if (tabMenu.active) tabMenu.Dismiss();
         if (strip) strip->inlineGroups.hover.Dismiss();
@@ -435,7 +435,7 @@ struct Pane {
         if(!stripPopup && strip)strip->allTabsPanel.LightDismiss();
         if (!stripPopup && strip && (strip->inlineGroups.hover.open || strip->inlineGroups.hover.showPending))
             strip->inlineGroups.hover.Dismiss();
-        if (!addressPopup && address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); if(address->navigation)address->navigation->backForwardMenu.LightDismiss(); }
+        if (!addressPopup && address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->notificationPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); if(address->navigation)address->navigation->backForwardMenu.LightDismiss(); }
         const HWND addressHost = addressSource ? addressWindow : childWindow;
         if (!InWindow(addressHost, target) && !addressPopup) LeaveAddress();
         else if (!addressPopup && address && address->mode.flyout.IsOpen()) address->mode.flyout.Hide();

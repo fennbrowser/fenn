@@ -1128,10 +1128,10 @@ index af4633e94e3..af0053f5435 100644
 +    if (!this.contentData || this.window.gContextMenu !== this) { return; }
  
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..121c7ece47d 100644
+index b2b5db6040b..7bbd28f1dae 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,36 @@ browser.jar:
+@@ -35,2 +35,37 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -1155,6 +1155,7 @@ index b2b5db6040b..121c7ece47d 100644
 +        content/browser/WinUIAllTabs.sys.mjs (content/WinUIAllTabs.sys.mjs)
 +        content/browser/WinUIBookmarkPanel.sys.mjs (content/WinUIBookmarkPanel.sys.mjs)
 +        content/browser/WinUISitePermissionsPanel.sys.mjs (content/WinUISitePermissionsPanel.sys.mjs)
++        content/browser/WinUINotificationPanel.sys.mjs (content/WinUINotificationPanel.sys.mjs)
 +        content/browser/WinUISelectedTranslationsPanel.sys.mjs (content/WinUISelectedTranslationsPanel.sys.mjs)
 +        content/browser/WinUITranslationsPanel.sys.mjs (content/WinUITranslationsPanel.sys.mjs)
 +        content/browser/WinUIPageContextMenu.sys.mjs (content/WinUIPageContextMenu.sys.mjs)
@@ -1168,7 +1169,7 @@ index b2b5db6040b..121c7ece47d 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +140,17 @@ browser.jar:
+@@ -106 +141,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -9260,10 +9261,10 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..35b4ba13757 100644
+index 4f28e62c7b5..85ef2f231d6 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -520 +520,141 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,144 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -9405,6 +9406,9 @@ index 4f28e62c7b5..35b4ba13757 100644
 +# Native All Tabs flyout commands.
 +winui-all-tabs-actions = Actions
 +winui-all-tabs-back = Back
++
++winui-notification-close = Close notification
++winui-notification-more = More actions
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -9821,15 +9825,32 @@ index a7cd6c416c0..d121aa1068f 100644
 +-firefoxlabs-brand-name = Fenn Labs
  
 diff --git a/toolkit/modules/PopupNotifications.sys.mjs b/toolkit/modules/PopupNotifications.sys.mjs
-index 38490ae2aba..b32a0d7742f 100644
+index 38490ae2aba..81beda426b5 100644
 --- a/toolkit/modules/PopupNotifications.sys.mjs
 +++ b/toolkit/modules/PopupNotifications.sys.mjs
-@@ -1356,2 +1356,4 @@ PopupNotifications.prototype = {
+@@ -744,2 +744,3 @@ PopupNotifications.prototype = {
+   get isPanelOpen() {
++    if (this.window.gWinUIPane?.addressToolbar?.notificationPanel?.pending) return true;
+     let panelState = this.panel.state;
+@@ -991,2 +992,4 @@ PopupNotifications.prototype = {
+   ) {
++    const native = this.window.gWinUIPane?.addressToolbar?.notificationPanel;
++    if (native?.pending) { native.userDismiss(); return; }
+     if (disablePersistent) {
+@@ -1012,2 +1015,3 @@ PopupNotifications.prototype = {
+   _hidePanel: function PopupNotifications_hide() {
++    this.window.gWinUIPane?.addressToolbar?.notificationPanel?.hide();
+     if (this.panel.state == "closed") {
+@@ -1348,2 +1352,3 @@ PopupNotifications.prototype = {
+     this._refreshPanel(notificationsToShow);
++    if (this.window.gWinUIPane?.addressToolbar?.notificationPanel?.show(this, notificationsToShow, anchorElement)) return;
+ 
+@@ -1356,2 +1361,4 @@ PopupNotifications.prototype = {
      }
 +    // Retained toolbar nodes can have layout entirely offscreen in native mode.
 +    anchorElement = this.window.gWinUIPane?.addressToolbar?.notificationAnchorFor(anchorElement) || anchorElement;
      // In case _getVisibleAnchorElement provided a non-visible element.
-@@ -1469,5 +1471,5 @@ PopupNotifications.prototype = {
+@@ -1469,5 +1476,5 @@ PopupNotifications.prototype = {
        if (popupOptions) {
 -        this.panel.openPopup(anchorElement, popupOptions);
 +        this.panel.openPopup(this.window.gWinUIPane?.addressToolbar?.omnibar?.anchorFor(anchorElement) || anchorElement, popupOptions);
@@ -9837,6 +9858,40 @@ index 38490ae2aba..b32a0d7742f 100644
 -        this.panel.openPopup(anchorElement, "bottomleft topleft", 0, 0);
 +        this.panel.openPopup(this.window.gWinUIPane?.addressToolbar?.omnibar?.anchorFor(anchorElement) || anchorElement, "bottomleft topleft", 0, 0);
        }
+@@ -1721,2 +1728,13 @@ PopupNotifications.prototype = {
+ 
++    const native = this.window.gWinUIPane?.addressToolbar?.notificationPanel;
++    if (native?.pending) {
++      if (native.live() && native.pending.notifications[0].anchorElement == anchor) {
++        native.focus();
++        return;
++      }
++      native.hide();
++      this._dismissOrRemoveCurrentNotifications();
++      this._clearPanel();
++    }
++
+     // If the panel is not closed, and the anchor is different, immediately mark all
+@@ -1730,12 +1748,10 @@ PopupNotifications.prototype = {
+       // As soon as the panel is shown, focus the first element in the selected notification.
+-      this.panel.addEventListener(
+-        "popupshown",
+-        () =>
+-          this.window.document.commandDispatcher.advanceFocusIntoSubtree(
+-            this.panel
+-          ),
+-        { once: true }
+-      );
+-
++      const focusPanel = () => this.window.document.commandDispatcher.advanceFocusIntoSubtree(this.panel);
++      this.panel.addEventListener("popupshown", focusPanel, { once: true });
+       this._reshowNotifications(anchor);
++      const native = this.window.gWinUIPane?.addressToolbar?.notificationPanel;
++      if (native?.pending) {
++        this.panel.removeEventListener("popupshown", focusPanel);
++        native.focus();
++      }
+     } else {
 diff --git a/toolkit/mozapps/notificationserver/NotificationComServer.cpp b/toolkit/mozapps/notificationserver/NotificationComServer.cpp
 index 6bef7f9779e..80ef6a45126 100644
 --- a/toolkit/mozapps/notificationserver/NotificationComServer.cpp
@@ -11235,6 +11290,141 @@ index 00000000000..47c88f22307
 +  }
 +  dismiss(){const p=this.pending;if(!p)return;this.closedSession=p.session || 0;this.pending=null;this.invalidate();}
 +  close(){if(this.closed)return;this.dismiss();this.closed=true;Services.obs.removeObserver(this.permissionChanged,"perm-changed");Services.obs.removeObserver(this.localeChanged,"intl:app-locales-changed");for(const pref of ["permissions.","media.autoplay.","dom.disable_open_during_load"])Services.prefs.removeObserver(pref,this.permissionChanged);}
++}
+diff --git a/browser/base/content/WinUINotificationPanel.sys.mjs b/browser/base/content/WinUINotificationPanel.sys.mjs
+new file mode 100644
+index 00000000000..7b7b92e1eae
+--- /dev/null
++++ b/browser/base/content/WinUINotificationPanel.sys.mjs
+@@ -0,0 +1,129 @@
++/* This Source Code Form is subject to the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++export class WinUINotificationPanel {
++  constructor(toolbar) {
++    this.toolbar=toolbar;this.window=toolbar.window;this.nextRequest=0;this.retained=new WeakSet();
++  }
++  eligible() {
++    const t=this.toolbar,w=this.window;
++    return !this.closed && t.active && t.navigation && t.supported() &&
++      !t.customization?.editorOpen && !w.gDialogBox?.isOpen && !w.document.fullscreen &&
++      !w.isInFullScreenTransition && !w.PointerLock?.isActive;
++  }
++  live(p=this.pending) {
++    const b=this.window.gBrowser.selectedBrowser;
++    return !!p && this.eligible() && p.browser===b && p.tab===this.window.gBrowser.selectedTab &&
++      p.context===this.toolbar.owner.addressSession?.sessionId &&
++      p.document===b.browsingContext.currentWindowGlobal?.innerWindowId &&
++      p.principal.equals(b.contentPrincipal) &&
++      p.notifications.every(n=>p.manager.getNotificationsForBrowser(b).includes(n));
++  }
++  invalidate(){this.toolbar.owner.invalidateAddress();}
++  elements(manager){return [...manager.panel.children];}
++  supported(manager,notifications) {
++    return notifications.length>0 && notifications.length<=4 && notifications.every(n=>{
++      const el=this.elements(manager).find(e=>e.notification===n);
++      return !this.retained.has(n) && el && !el.getAttribute("is") && !el.querySelector("popupnotificationcontent, popupnotificationheader, popupnotificationfooter") &&
++        !n.options.lowerPanelLevel && !n.options.popupOptions && n.secondaryActions.length<=8;
++    });
++  }
++  show(manager,notifications,anchor) {
++    if(!this.eligible() || notifications.some(n=>n.browser!==this.window.gBrowser.selectedBrowser) || !this.supported(manager,notifications) || manager.panel.state!=="closed"){
++      this.hide();return false;
++    }
++    let p=this.pending;
++    if(p && (!this.live(p) || p.notifications.length!==notifications.length || p.notifications.some((n,i)=>n!==notifications[i])))this.hide();
++    p=this.pending;
++    if(!p) {
++      if(this.nextRequest>=0xffffffff)return false;
++      const b=this.window.gBrowser.selectedBrowser,t=this.toolbar;
++      const entry=[...t.omnibar.entries.values()].find(e=>e.node===anchor || anchor?.contains?.(e.node));
++      const icon=anchor?.closest?.('#notification-popup-box > [role="button"]');
++      const source=entry || (icon?.ownerDocument===this.window.document?t.omnibar.entry(icon):null);
++      p={request:++this.nextRequest,session:0,revision:0,manager,notifications:[...notifications],browser:b,
++        tab:this.window.gBrowser.selectedTab,context:t.owner.addressSession?.sessionId,
++        document:b.browsingContext.currentWindowGlobal?.innerWindowId,principal:b.contentPrincipal,source:source?.id || "notifications",shown:false,focus:manager.panel.hasAttribute("noautofocus")?0:1};
++      this.pending=p;
++    }
++    try{this.refresh();this.invalidate();return this.pending===p;}catch(error){console.error(error);this.hide();return false;}
++  }
++  label(id){this.l10n ??=new this.window.Localization(["toolkit/global/notification.ftl","toolkit/global/popupnotification.ftl","browser/tabbrowser.ftl"],true);return id==="popup-notification-default-button2"?this.l10n.formatMessagesSync([{id}])[0].attributes.find(a=>a.name==="label").value:this.l10n.formatValueSync(id);}
++  model(p) {
++    const actions=new Map(),rows=[];
++    for(let i=0;i<p.notifications.length;i++) {
++      const n=p.notifications[i],el=this.elements(p.manager).find(e=>e.notification===n);
++      if(!el)throw new Error("Notification model revoked");
++      const base=100+i*16,parts=p.manager._formatDescriptionMessage(n);
++      const row={id:base,origin:el.getAttribute("origin") || "",parts:[parts.start,parts.name,parts.end,parts.secondName || "",parts.secondEnd || ""],
++        hint:n.options.hintText || "",warning:el.getAttribute("warninghidden")==="true"?"":el.getAttribute("warninglabel") || "",
++        checkbox:n.options.checkbox?.label || "",checked:!!el.checkbox.checked,check:0,actions:[]};
++      if(row.checkbox){row.check=base;actions.set(base,{n,el,verb:"check"});}
++      const add=(id,label,type,enabled=true)=>{row.actions.push({id,label,enabled});actions.set(id,{n,el,type,disabled:!enabled});};
++      add(base+1,n.mainAction?.label || this.label("popup-notification-default-button2"),"buttoncommand",!el.hasAttribute("mainactiondisabled") && !n.mainAction?.disabled);
++      for(let j=0;j<n.secondaryActions.length;j++)add(base+2+j,n.secondaryActions[j].label,j===0?"secondarybuttoncommand":j);
++      if(!n.options.hideClose)add(base+11,this.label("winui-notification-close"),"close");
++      if(n.options.learnMoreURL)add(base+12,this.label("popup-notification-learn-more"),"help");
++      rows.push(row);
++    }
++    actions.set(1,{verb:"shown"});actions.set(2,{verb:"escape"});actions.set(3,{verb:"suspend"});
++    const model={rows,persistent:p.notifications.some(n=>n.options.persistent),focus:p.focus,more:this.label("winui-notification-more")};
++    if(JSON.stringify(model).length>65536 || rows.some(r=>[r.origin,r.hint,r.warning,r.checkbox,...r.parts,...r.actions.map(a=>a.label)].some(s=>typeof s!=="string" || s.length>4096)))throw new Error("Notification exceeds native bound");
++    p.actions=actions;return model;
++  }
++  refresh(force=false) {
++    const p=this.pending;if(!p)return;
++    if(!this.live(p)){this.hide();return;}
++    if(!this.supported(p.manager,p.notifications)){
++      for(const n of p.notifications)this.retained.add(n);
++      this.hide();this.window.setTimeout(()=>{if(!this.closed && !this.window.closed)p.manager._update();},0);return;
++    }
++    const model=this.model(p),fingerprint=JSON.stringify(model);
++    if(force || fingerprint!==p.fingerprint){p.fingerprint=fingerprint;p.presentation=model;p.revision++;}
++  }
++  snapshot(){try{this.refresh();}catch(error){console.error(error);this.hide();}const p=this.pending;return {enabled:this.eligible(),closed:this.closedSession || 0,...(p?{request:p.request,source:p.source,...(p.session?{session:p.session,revision:p.revision,...p.presentation}:{})}:{})};}
++  execute(action) {
++    const match=/^notification-panel:(open|dismiss|suspend|invoke):([1-9][0-9]*)(?::([1-9][0-9]*))?(?::([1-9][0-9]*))?$/.exec(action.command);
++    if(!match || match.slice(2).some(v=>v!==undefined && (!Number.isSafeInteger(+v) || +v>0xffffffff)))return 2;
++    const p=this.pending;if(!p)return 2;
++    if(match[1]==="suspend"){if(match[3] || +match[2]!==p.session)return 2;this.hide();return 1;}
++    if(match[1]==="dismiss"){if(match[3] || +match[2]!==p.session)return 2;this.userDismiss();return 1;}
++    if(!this.live(p)){this.hide();return 2;}
++    if(match[1]==="open"){
++      if(p.session || +match[2]!==p.request || !match[3] || match[4] || !this.toolbar.menuAnchor("notification-panel",action))return 2;
++      p.session=+match[3];this.refresh(true);this.invalidate();return 1;
++    }
++    this.refresh();if(this.pending!==p || +match[2]!==p.session || +match[3]!==p.revision){this.invalidate();return 2;}
++    const item=p.actions.get(+match[4]);if(!item || item.disabled)return 2;
++    const m=p.manager,w=this.window;
++    if(item.verb==="shown") {
++      if(p.shown)return 2;p.shown=true;
++      for(const n of p.notifications){n._recordTelemetryStat(0);n.timeShown=Math.max(ChromeUtils.now(),n.timeShown || 0);n.timeShownWithoutClickExtensions=n.timeShown;m._fireCallback(n,"shown");}
++      m.panel.dispatchEvent(new w.CustomEvent("Shown"));m.panel.dispatchEvent(new w.CustomEvent("PanelUpdated",{detail:p.notifications.map(n=>n.id)}));
++    } else if(item.verb==="suspend")this.hide();
++    else if(item.verb==="escape") {
++      if(p.notifications.some(n=>n.options.persistent)){const el=this.elements(m)[0];m._onButtonEvent({},el.notification.options.escAction,"esc-press",el);}else this.userDismiss();
++    } else if(item.verb==="check") {
++      item.el.checkbox.checked=!item.el.checkbox.checked;
++      m._onCheckboxCommand({originalTarget:item.el.checkbox,stopPropagation(){}});
++    } else if(!p.shown)return 2;
++    else if(item.type==="close"){item.n.options.persistent=false;this.userDismiss();}
++    else if(item.type==="help") {
++      m._onButtonEvent({},"learnmoreclick","button",item.el);
++      w.openTrustedLinkIn(item.n.options.learnMoreURL,"tab");
++    } else if(typeof item.type==="number") {
++      const target=[...item.el.menupopup.children][item.type-1];if(!target)return 2;
++      m._onMenuCommand({originalTarget:target,stopPropagation(){}});
++    } else if(item.el.dispatchEvent(new w.CustomEvent(item.type,{cancelable:true,bubbles:true})))m._onButtonEvent({},item.type,"button",item.el);
++    if(this.pending===p){this.refresh(true);this.invalidate();}return 1;
++  }
++  userDismiss() {
++    const p=this.pending;if(!p)return;
++    this.hide();p.manager._dismissOrRemoveCurrentNotifications();p.manager._clearPanel();p.manager._update();
++  }
++  focus(){if(this.pending){this.pending.focus++;this.refresh();this.invalidate();}}
++  hide(){const p=this.pending;if(!p)return false;this.closedSession=p.session;this.pending=null;p.manager.panel.setAttribute("noautofocus","true");p.manager.panel.removeAttribute("aria-describedby");this.invalidate();return true;}
++  dismiss(){const p=this.pending;this.hide();if(p)this.window.setTimeout(()=>{if(!this.closed && !this.window.closed)p.manager._update();},0);}
++  close(){this.hide();this.closed=true;}
 +}
 diff --git a/browser/base/content/WinUIBookmarkPanel.sys.mjs b/browser/base/content/WinUIBookmarkPanel.sys.mjs
 new file mode 100644
@@ -26666,10 +26856,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..3e19c8039a0
+index 00000000000..4c817d1fe34
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,585 @@
+@@ -0,0 +1,592 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -26725,6 +26915,8 @@ index 00000000000..3e19c8039a0
 +    this.bookmarkPanel=new WinUIBookmarkPanel(this);
 +    const {WinUISitePermissionsPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUISitePermissionsPanel.sys.mjs");
 +    this.permissionsPanel=new WinUISitePermissionsPanel(this);
++    const {WinUINotificationPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUINotificationPanel.sys.mjs");
++    this.notificationPanel=new WinUINotificationPanel(this);
 +    const {WinUIPageContextMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIPageContextMenu.sys.mjs");
 +    this.pageContextMenu=new WinUIPageContextMenu(this);
 +    const {WinUIConnectionPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUIConnectionPanel.sys.mjs");
@@ -26828,6 +27020,7 @@ index 00000000000..3e19c8039a0
 +    state.profilerPanel=this.profilerPanel.snapshot();
 +    state.bookmarkPanel=this.bookmarkPanel.snapshot();
 +    state.permissionsPanel=this.permissionsPanel.snapshot();
++    state.notificationPanel=this.notificationPanel.snapshot();
 +    state.pageContextMenu=this.pageContextMenu.snapshot();
 +    state.connectionPanel=this.connectionPanel.snapshot();
 +    state.translationsPanel=this.translationsPanel.snapshot();
@@ -26898,6 +27091,7 @@ index 00000000000..3e19c8039a0
 +    const nativeSelectedTranslation=typeof action?.command === "string" && action.command.startsWith("selected-translation-panel:");
 +    const nativeTranslation=typeof action?.command === "string" && action.command.startsWith("translation-panel:");
 +    const nativeConnection=typeof action?.command === "string" && action.command.startsWith("connection-panel:");
++    const nativeNotification=typeof action?.command === "string" && action.command.startsWith("notification-panel:");
 +    const nativePermissions=typeof action?.command === "string" && action.command.startsWith("permissions-panel:");
 +    const nativeProfiler=typeof action?.command === "string" && action.command.startsWith("profiler-panel:");
 +    const nativePageContext=typeof action?.command === "string" && action.command.startsWith("page-context:");
@@ -26917,19 +27111,20 @@ index 00000000000..3e19c8039a0
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativeBackForward ? {nativeBackForward:true} : nativePageContext ? {nativePageContext:true} : nativeSelectedTranslation ? {nativeSelectedTranslation:true} : nativeTranslation ? {nativeTranslation:true} : nativeConnection ? {nativeConnection:true} : nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativeNotification ? {nativeNotification:true} : nativeBackForward ? {nativeBackForward:true} : nativePageContext ? {nativePageContext:true} : nativeSelectedTranslation ? {nativeSelectedTranslation:true} : nativeTranslation ? {nativeTranslation:true} : nativeConnection ? {nativeConnection:true} : nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!nativeBackForward && !nativePageContext && !stock && !indicator && !nativeBookmark && !nativePermissions && !nativeSelectedTranslation && !nativeTranslation && !nativeConnection && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!nativeNotification && !nativeBackForward && !nativePageContext && !stock && !indicator && !nativeBookmark && !nativePermissions && !nativeSelectedTranslation && !nativeTranslation && !nativeConnection && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
 +    if (nativePageContext) return this.pageContextMenu.execute(action);
 +    if (nativeBookmark) return this.bookmarkPanel.execute(action);
 +    if (nativePermissions) return this.permissionsPanel.execute(action);
++    if (nativeNotification) return this.notificationPanel.execute(action);
 +    if (nativeSelectedTranslation) return this.selectedTranslationsPanel.execute(action);
 +    if (nativeTranslation) return this.translationsPanel.execute(action);
 +    if (nativeConnection) return this.connectionPanel.execute(action);
@@ -27173,6 +27368,7 @@ index 00000000000..3e19c8039a0
 +    this.profilerPanel?.dismiss();
 +    this.bookmarkPanel?.retire(true);
 +    this.permissionsPanel?.dismiss();
++    this.notificationPanel?.dismiss();
 +    this.pageContextMenu?.dismiss();
 +    this.connectionPanel?.dismiss();
 +    this.translationsPanel?.dismiss();
@@ -27230,6 +27426,7 @@ index 00000000000..3e19c8039a0
 +    this.profilerPanel.close();
 +    this.bookmarkPanel.close();
 +    this.permissionsPanel.close();
++    this.notificationPanel.close();
 +    this.pageContextMenu.close();
 +    this.connectionPanel.close();
 +    this.translationsPanel.close();

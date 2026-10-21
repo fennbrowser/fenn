@@ -212,6 +212,7 @@ pub struct ShellCore {
     profiler_panel: crate::surface_menu::SurfaceMenu,
     bookmark_panel: crate::surface_menu::SurfaceMenu,
     permissions_panel: crate::surface_menu::SurfaceMenu,
+    notification_panel: crate::surface_menu::SurfaceMenu,
     connection_panel: crate::surface_menu::SurfaceMenu,
     translations_panel: crate::surface_menu::SurfaceMenu,
     selected_translations_panel: crate::surface_menu::SurfaceMenu,
@@ -452,6 +453,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         profiler_panel: Default::default(),
         bookmark_panel: Default::default(),
         permissions_panel: Default::default(),
+        notification_panel: Default::default(),
         connection_panel: Default::default(),
         translations_panel: Default::default(),
         selected_translations_panel: Default::default(),
@@ -796,6 +798,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
         core.profiler_panel.dismiss();
         core.bookmark_panel.dismiss();
         core.permissions_panel.dismiss();
+        core.notification_panel.dismiss();
         core.connection_panel.dismiss();
         core.translations_panel.dismiss();
         core.selected_translations_panel.dismiss();
@@ -834,6 +837,7 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
         core.profiler_panel.dismiss();
         core.bookmark_panel.dismiss();
         core.permissions_panel.dismiss();
+        core.notification_panel.dismiss();
         core.connection_panel.dismiss();
         core.translations_panel.dismiss();
         core.selected_translations_panel.dismiss();
@@ -911,6 +915,7 @@ pub enum ShellPublicationChannel {
     PageContextMenu = 24,
     BackForwardMenu = 25,
     AllTabsPanel = 26,
+    NotificationPanel = 27,
 }
 
 /// What one channel did with the publications it received, for diagnostics.
@@ -946,6 +951,7 @@ pub unsafe extern "C" fn shell_core_publication_stats(
             c if c == ShellPublicationChannel::ProfilerPanel as u32 => core.profiler_panel.counts(),
             c if c == ShellPublicationChannel::BookmarkPanel as u32 => core.bookmark_panel.counts(),
             c if c == ShellPublicationChannel::PermissionsPanel as u32 => core.permissions_panel.counts(),
+            c if c == ShellPublicationChannel::NotificationPanel as u32 => core.notification_panel.counts(),
             c if c == ShellPublicationChannel::ConnectionPanel as u32 => core.connection_panel.counts(),
             c if c == ShellPublicationChannel::TranslationsPanel as u32 => core.translations_panel.counts(),
             c if c == ShellPublicationChannel::SelectedTranslationsPanel as u32 => core.selected_translations_panel.counts(),
@@ -5001,4 +5007,83 @@ mod all_tabs_panel_ffi_tests {
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_tab_drag_list_origin(core:*mut ShellCore)->ShellStatus {
  queue_guard(core,|q|if q.tab_drag.list_origin(){ShellStatus::Ok}else{ShellStatus::InvalidArgument})
+}
+
+// Independent notification panel session; shared publication semantics, no widget state.
+/// Allocate a window-scoped menu opening. Zero means identity exhaustion.
+/// # Safety
+/// Live core and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_notification_panel_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
+ let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.notification_panel.open();ShellStatus::Ok})
+}
+/// Revoke a window-scoped menu, preserving its identity high-water mark.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_notification_panel_dismiss(core:*mut ShellCore)->ShellStatus {
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.notification_panel.dismiss();ShellStatus::Ok})
+}
+/// Resolve a validated session description before mutating the host container.
+/// Accepted work is committed and counted by shell_core_notification_panel_accept;
+/// ignored/refused work ends here, without changing menu or action identity.
+/// # Safety
+/// Live core, readable arrays (null only for zero length), writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_notification_panel_resolve(core:*mut ShellCore,session:u32,revision:u32,
+ actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
+ let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
+ if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
+ guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.notification_panel.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+
+/// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
+/// # Safety
+/// Live core, readable arrays (null only for zero length), writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_notification_panel_accept(core:*mut ShellCore,session:u32,revision:u32,
+ actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
+ let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
+ if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
+ guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.notification_panel.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+/// Consume one current enabled action; dismissal and late updates cannot resurrect it.
+/// # Safety
+/// Live core and writable accepted.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_notification_panel_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
+ let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.notification_panel.activate_retained(session,revision,action)}else{c.notification_panel.activate(session,revision,action)};ShellStatus::Ok})
+}
+
+
+/// Resolve a browser-owned notification opening once through Snapshot rules.
+/// # Safety
+/// Live core, readable fingerprint and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_notification_panel_request(core:*mut ShellCore,request:u32,fingerprint:*const u16,units:usize,out:*mut u32)->ShellStatus {
+ let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
+ if units>crate::surface_menu::MAX_DESCRIPTION{return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match c.notification_panel.request_open(request,fingerprint){Ok(id)=>{*out=id;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+#[cfg(test)] mod notification_panel_ffi_tests {
+ use super::*;
+ #[test] fn browser_request_and_actions_are_scoped_and_one_use(){unsafe{
+  let core=shell_core_create(std::ptr::null());let mut id=0;let mut changed=false;
+  assert_eq!(shell_core_notification_panel_request(core,7,[2].as_ptr(),1,&mut id),ShellStatus::Ok);assert_ne!(id,0);
+  shell_core_notification_panel_accept(core,id,1,[1,7].as_ptr(),2,[3].as_ptr(),1,&mut changed);assert!(changed);
+  shell_core_notification_panel_activate(core,id,1,7,true,&mut changed);assert!(changed);
+  shell_core_notification_panel_activate(core,id,1,7,true,&mut changed);assert!(!changed);
+  shell_core_notification_panel_activate(core,id,1,1,false,&mut changed);assert!(changed);
+  shell_core_notification_panel_request(core,7,[2].as_ptr(),1,&mut id);assert_eq!(id,0);
+  shell_core_notification_panel_request(core,8,[2].as_ptr(),1,&mut id);assert_ne!(id,0);shell_core_cancel_all(core);
+  shell_core_notification_panel_accept(core,id,1,[1].as_ptr(),1,[3].as_ptr(),1,&mut changed);assert!(!changed);
+  shell_core_destroy(core);
+ }}
 }

@@ -12,6 +12,7 @@
 #include "PageActionsMenu.h"
 #include "BookmarkPanel.h"
 #include "SitePermissionsPanel.h"
+#include "NotificationPanel.h"
 #include "ConnectionPanel.h"
 #include "TranslationsPanel.h"
 #include "SelectedTranslationsPanel.h"
@@ -51,6 +52,7 @@ struct NativeAddress {
     NativePageActionsMenu pageActions;
     NativeBookmarkPanel bookmarkPanel;
     NativeSitePermissionsPanel permissionsPanel;
+    NativeNotificationPanel notificationPanel;
     NativeConnectionPanel connectionPanel;
     NativeTranslationsPanel translationsPanel;
     NativeSelectedTranslationsPanel selectedTranslationsPanel;
@@ -830,6 +832,18 @@ struct NativeAddress {
             if(wcsncmp(payload.GetNamedString(L"command").c_str(),L"permissions-panel:open:",23)!=0 && !permissionsPanel.opening && releaseMenuFocus)releaseMenuFocus();
             navigate(action.Stringify());
         };
+        notificationPanel.core=shell.core;
+        notificationPanel.dispatch=[this](auto const& payload,auto const& button){
+            if(syncing || session.empty() || !navigate)return;
+            auto action=Message(L"navigation");action.SetNamedValue(L"modifiers",JValue::CreateNumberValue(0));for(auto const& value:payload)action.SetNamedValue(value.Key(),value.Value());
+            auto source=button;if(!source.XamlRoot() || !source.IsLoaded())source=pageActions.button;
+            auto local=source.TransformToVisual(nullptr).TransformBounds({0,0,float(source.ActualWidth()),float(source.ActualHeight())});
+            auto screen=source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
+            if(wcsncmp(payload.GetNamedString(L"command").c_str(),L"notification-panel:open:",24)!=0 && !notificationPanel.opening && releaseMenuFocus)releaseMenuFocus();
+            navigate(action.Stringify());
+        };
         connectionPanel.core=shell.core;
         connectionPanel.dispatch=[this](auto const& payload,auto const& button){
             if(syncing || session.empty() || !navigate)return;
@@ -1153,6 +1167,7 @@ struct NativeAddress {
         const auto profilerPanelState = NativeProfilerPanel::Read(snapshot);
         const auto bookmarkPanelState = NativeBookmarkPanel::Read(snapshot);
         const auto permissionsPanelState = NativeSitePermissionsPanel::Read(snapshot);
+        const auto notificationPanelState = NativeNotificationPanel::Read(snapshot);
         const auto pageContextMenuState = NativePageContextMenu::Read(snapshot);
         const auto connectionPanelState = NativeConnectionPanel::Read(snapshot);
         const auto translationsPanelState = NativeTranslationsPanel::Read(snapshot);
@@ -1344,6 +1359,7 @@ struct NativeAddress {
         const bool applyOverflow = navigation && navigation->overflowMenu.Resolve(overflowMenuState);
         const bool applyBookmark = bookmarkPanel.Resolve(bookmarkPanelState);
         const bool applyPermissions = permissionsPanel.Resolve(permissionsPanelState);
+        const bool applyNotification = notificationPanel.Resolve(notificationPanelState);
         const bool applyPageContextMenu = pageContextMenu.Resolve(pageContextMenuState);
         const bool applyConnection = connectionPanel.Resolve(connectionPanelState);
         const bool applyTranslations = translationsPanel.Resolve(translationsPanelState);
@@ -1423,6 +1439,8 @@ struct NativeAddress {
             bookmarkPanel.Apply(bookmarkPanelState,navigationToolbar && !navigation->customization.editing && bookmarkSource!=omnibarRight.rows.end(),bookmarkSource!=omnibarRight.rows.end()?bookmarkSource->second.button:pageActions.button,applyBookmark);
             auto permissionsSource=omnibarLeft.rows.find(permissionsPanelState.GetNamedString(L"source",L""));
             permissionsPanel.Apply(permissionsPanelState,navigationToolbar && !navigation->customization.editing,permissionsSource!=omnibarLeft.rows.end()?permissionsSource->second.button:pageActions.button,applyPermissions);
+            auto notificationSource=omnibarLeft.rows.find(notificationPanelState.GetNamedString(L"source",L""));
+            notificationPanel.Apply(notificationPanelState,navigationToolbar && !navigation->customization.editing,notificationSource!=omnibarLeft.rows.end()?notificationSource->second.button:pageActions.button,applyNotification);
             pageContextMenu.Apply(pageContextMenuState,navigationToolbar && !navigation->customization.editing,pageActions.button,applyPageContextMenu);
             selectedTranslationsPanel.Apply(selectedTranslationsPanelState,navigationToolbar && !navigation->customization.editing,pageActions.button,applySelectedTranslations);
             auto translationsSource=omnibarRight.rows.find(translationsPanelState.GetNamedString(L"source",L""));
