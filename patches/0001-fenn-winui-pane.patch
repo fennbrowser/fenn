@@ -9495,16 +9495,18 @@ index 1e2660589bd..5ae3ab48433 100644
    void SendAnAPZEvent(mozilla::InputData& aEvent);
 diff --git a/browser/base/content/WinUIConnectionPanel.sys.mjs b/browser/base/content/WinUIConnectionPanel.sys.mjs
 new file mode 100644
-index 00000000000..c9c4dc564ac
+index 00000000000..8bcade8b0f8
 --- /dev/null
 +++ b/browser/base/content/WinUIConnectionPanel.sys.mjs
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,150 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +// Firefox owns connection classification, certificate metadata and mutations.
 +// Native sees localized presentation and opening-scoped commands only.
++import { ContentBlockingAllowList } from "resource://gre/modules/ContentBlockingAllowList.sys.mjs";
++
 +export class WinUIConnectionPanel {
 +  constructor(toolbar) {
 +    this.toolbar=toolbar;this.window=toolbar.window;this.nextRequest=0;
@@ -9584,10 +9586,17 @@ index 00000000000..c9c4dc564ac
 +    }
 +    if(p.hasData)action(4,l("identity-clear-site-data",null,"label"),"clear-data");
 +    action(8,l("identity-more-info-link-text",null,"label"),"more-info");
++    const trackingVisible=ContentBlockingAllowList.canHandle(p.browser);
++    const trackingOn=trackingVisible && !ContentBlockingAllowList.includes(p.browser);
++    const tracking={visible:trackingVisible,on:trackingOn,command:trackingVisible?9:0,
++      label:trackingVisible?l(trackingOn?"trustpanel-etp-label-enabled":"trustpanel-etp-label-disabled"):"",
++      description:trackingVisible?l(trackingOn?"trustpanel-etp-description-enabled":"trustpanel-etp-description-disabled"):"",
++      name:trackingVisible?l(trackingOn?"trustpanel-etp-toggle-on":"trustpanel-etp-toggle-off",{host:safe},"aria-label"):""};
++    if(trackingVisible)p.actions.set(9,{verb:"tracking",enabled:!trackingOn});
 +    // Include raw authority only in the Firefox fingerprint, never in native data.
-+    p.authority=JSON.stringify([s,c._state,c._secInfo?.serverCert?.sha256Fingerprint,c._qwac?.sha256Fingerprint,p.hasData]);
++    p.authority=JSON.stringify([s,c._state,c._secInfo?.serverCert?.sha256Fingerprint,c._qwac?.sha256Fingerprint,p.hasData,trackingVisible,trackingOn]);
 +    return {title:l("identity-site-information",{host:safe}),summary:l(summaryId),icon:warning?"warning":"connection",
-+      blocks:blocks.filter(Boolean),options,selected,choiceLabel:l("identity-https-only-label2"),actions,
++      blocks:blocks.filter(Boolean),options,selected,choiceLabel:l("identity-https-only-label2"),actions,tracking,
 +      image:s.connection==="secure-etsi"?p.mark || null:null,
 +      close:l("winui-connection-close"),error:p.error || ""};
 +  }
@@ -9627,6 +9636,11 @@ index 00000000000..c9c4dc564ac
 +      else if(item.verb==="remove-exception")c.removeCertException();
 +      else if(item.verb==="clear-data")void c.clearSiteData({stopPropagation(){}},true).catch(console.error);
 +      else if(item.verb==="more-info")c.handleMoreInfoClick({stopPropagation(){}});
++      else if(item.verb==="tracking") {
++        // Reuse the original browser operation without initializing its popup.
++        w.gProtectionsHandler[item.enabled?"enableForCurrentPage":"disableForCurrentPage"](false);
++        w.BrowserCommands.reload();
++      }
 +      else w.openTrustedLinkIn(Services.urlFormatter.formatURLPref("app.support.baseURL")+item.page,"tab");
 +      return 1;
 +    } catch(error){console.error(error);p.error=this.label("winui-connection-error");return 1;}

@@ -3,10 +3,10 @@ import test from 'node:test';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 const source=readFileSync(new URL('../upstream/firefox/browser/base/content/browser-siteIdentity.js',import.meta.url),'utf8');
-const adapter=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIConnectionPanel.sys.mjs',import.meta.url),'utf8').replace('export class WinUIConnectionPanel','this.Panel=class WinUIConnectionPanel');
+const adapter=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIConnectionPanel.sys.mjs',import.meta.url),'utf8').replace(/^import .*;$/m,'').replace('export class WinUIConnectionPanel','this.Panel=class WinUIConnectionPanel');
 const settle=()=>new Promise(resolve=>setTimeout(resolve,0));
 function fixture(){
- const calls=[],permissions=new Map();let privateWindow=false,dataReply,qwacReply;
+ const calls=[],permissions=new Map();let privateWindow=false,dataReply,qwacReply,trackingException=false,trackingSupported=true;
  class URI {constructor(scheme='https'){this.scheme=scheme;this.host=this.asciiHost='first.test';this.port=-1;this.spec=scheme+'://first.test';}schemeIs(s){return s===this.scheme;}mutate(){return {setScheme:s=>({finalize:()=>new URI(s)})};}}
  const principal={originAttributes:{userContextId:2,privateBrowsingId:0},equals(p){return p===this;}};
  const browser={contentPrincipal:principal,currentURI:new URI(),documentURI:new URI(),browsingContext:{currentWindowGlobal:{innerWindowId:7}},focus:()=>calls.push(['focus'])};
@@ -15,11 +15,14 @@ function fixture(){
  const window={document,gBrowser,gDialogBox:{isOpen:false},gURLBar:{getAttribute:()=> 'valid'},PrivateBrowsingUtils:{isWindowPrivate:()=>privateWindow},SiteDataManager:{hasSiteData:()=>new Promise(r=>dataReply=r)},openTrustedLinkIn:(...a)=>calls.push(['help',...a])};
  const SitePermissions={SCOPE_PERSISTENT:1,SCOPE_SESSION:2,getForPrincipal:()=>({state:permissions.get('https') || 0}),setForPrincipal:(p,id,state,scope)=>{permissions.set('https',state);calls.push(['set',p,id,state,scope]);},removeFromPrincipal:(...a)=>{permissions.delete('https');calls.push(['remove',...a]);}};
  const flags={STATE_IS_BROKEN:1,STATE_IS_SECURE:2,STATE_IDENTITY_EV_TOPLEVEL:4,STATE_IDENTITY_ASSOCIATED:8,STATE_LOADED_MIXED_ACTIVE_CONTENT:16,STATE_BLOCKED_MIXED_ACTIVE_CONTENT:32,STATE_LOADED_MIXED_DISPLAY_CONTENT:64,STATE_HTTPS_ONLY_MODE_UPGRADED:128,STATE_HTTPS_ONLY_MODE_UPGRADE_FAILED:256,STATE_HTTPS_ONLY_MODE_UPGRADED_FIRST:512,STATE_CERT_USER_OVERRIDDEN:1024};
- const globals={window,document,gBrowser,SitePermissions,PrivateBrowsingUtils:window.PrivateBrowsingUtils,ChromeUtils:{defineESModuleGetters(){}},console:{error:e=>calls.push(['error',String(e)])},
+ window.ContentBlockingAllowList={canHandle:()=>trackingSupported,includes:()=>trackingException};
+ window.gProtectionsHandler={disableForCurrentPage:reload=>{calls.push(["tracking-off",reload]);trackingException=true;},enableForCurrentPage:reload=>{calls.push(["tracking-on",reload]);trackingException=false;}};
+ const globals={ContentBlockingAllowList:window.ContentBlockingAllowList,window,document,gBrowser,SitePermissions,PrivateBrowsingUtils:window.PrivateBrowsingUtils,ChromeUtils:{defineESModuleGetters(){}},console:{error:e=>calls.push(['error',String(e)])},
   Ci:{nsIWebProgressListener:flags,nsINestedURI:class {},nsIHttpsOnlyModePermission:{LOAD_INSECURE_ALLOW:10,LOAD_INSECURE_ALLOW_SESSION:20},nsIWebNavigation:{LOAD_FLAGS_REPLACE_HISTORY:1}},
   Services:{env:{exists:()=>false},obs:{addObserver(){},removeObserver(){}},prefs:{addObserver(){},removeObserver(){}},scriptSecurityManager:{createContentPrincipal:(uri,attrs)=>({uri,attrs}),getSystemPrincipal:()=>({system:true})},urlFormatter:{formatURLPref:()=> 'https://support.test/'}},
-  QWACs:{determineQWACStatus:()=>new Promise(r=>qwacReply=r)},BrowserCommands:{reloadSkipCache:()=>calls.push(['reload'])},PanelMultiView:{hidePopup:p=>calls.push(['hide',p])},displaySecurityInfo:()=>calls.push(['info']),
+  QWACs:{determineQWACStatus:()=>new Promise(r=>qwacReply=r)},BrowserCommands:{reload:()=>calls.push(["tracking-reload"]),reloadSkipCache:()=>calls.push(['reload'])},PanelMultiView:{hidePopup:p=>calls.push(['hide',p])},displaySecurityInfo:()=>calls.push(['info']),
   SiteDataManager:{getBaseDomainFromHost:h=>h,promptSiteDataRemoval:(...a)=>{calls.push(['prompt',...a]);return true;},remove:(...a)=>calls.push(['data-remove',...a])},gNavigatorBundle:{getFormattedString:(id,args)=>id+': '+args.join(','),getString:id=>id}};
+ window.BrowserCommands=globals.BrowserCommands;
  const context=vm.createContext(globals);vm.runInContext(source,context);const c=context.gIdentityHandler;window.gIdentityHandler=c;
  c._uri=browser.currentURI;c._uriHasHost=true;c._state=flags.STATE_IS_SECURE;c._isSecureContext=false;c._hasCustomRoot=()=>false;c.getHostForDisplay=()=>"first.test";
  Object.defineProperty(c,'_identityIconLabel',{value:{tooltipText:'Verified by Example CA'}});
@@ -30,7 +33,7 @@ function fixture(){
  const panel=new context.Panel(toolbar);panel.label=(id,args,attr)=>id+(args?JSON.stringify(args):'')+(attr?':'+attr:'');window.gWinUIPane={addressToolbar:{connectionPanel:panel}};
  const open=()=>{assert.equal(panel.show({target:node}),true,JSON.stringify(calls));const p=panel.pending;assert.equal(panel.execute({command:`connection-panel:open:${p.request}:1`}),1);return p;};
  const invoke=id=>panel.execute({command:`connection-panel:invoke:${panel.pending.session}:${panel.pending.revision}:${id}`});
- return {panel,c,window,browser,toolbar,globals,flags,calls,permissions,open,invoke,setPrivate:()=>privateWindow=true,data:value=>dataReply(value),qwac:value=>qwacReply(value)};
+ return {panel,c,window,browser,toolbar,globals,flags,calls,permissions,open,invoke,setPrivate:()=>privateWindow=true,setTracking:(exception,supported=true)=>{trackingException=exception;trackingSupported=supported;},data:value=>dataReply(value),qwac:value=>qwacReply(value)};
 }
 test('native gateway precedes retained construction and shares QWAC operation',()=>{const body=source.slice(source.indexOf('  _openPopup(event)'));assert.ok(body.indexOf('connectionPanel?.show')<body.indexOf('this._initializePopup()'));});
 test('closed adapter does not enumerate identity details or site data',()=>{const f=fixture();f.c.getConnectionPanelState=()=>assert.fail('closed read');f.panel.snapshot();assert.equal(f.panel.pending,undefined);});
@@ -67,4 +70,18 @@ test('HTTPS-only failure and invalid address proxy do not claim a verified conne
 test('original same-document security notifications refresh native warnings directly',()=>{
  const f=fixture(),p=f.open();f.window.gBrowser.securityUI={secInfo:null};f.c.setURI=uri=>f.c._uri=uri;f.c._getIsSecureContext=()=>false;f.c.refreshIdentityBlock=()=>{};
  f.c.updateIdentity(f.flags.STATE_IS_BROKEN,f.browser.currentURI);assert.equal(p.presentation.icon,'warning');assert.ok(p.presentation.blocks.includes('identity-description-weak-cipher-intro'));
+});
+test('tracking switch publishes Firefox allow-list state and original localized labels',()=>{
+ const f=fixture(),p=f.open();assert.equal(p.presentation.tracking.on,true);assert.equal(p.presentation.tracking.command,9);assert.equal(p.presentation.tracking.label,'trustpanel-etp-label-enabled');
+ f.setTracking(true);f.panel.changed();assert.equal(p.presentation.tracking.on,false);assert.equal(p.presentation.tracking.label,'trustpanel-etp-label-disabled');assert.ok(p.presentation.tracking.name.includes('first.test'));
+});
+test('tracking switch uses original enable/disable without a retained popup and reloads once',()=>{
+ for(const exception of [false,true]){const f=fixture();f.setTracking(exception);const p=f.open(),command=`connection-panel:invoke:${p.session}:${p.revision}:9`;assert.equal(f.panel.execute({command}),1);assert.equal(f.panel.execute({command}),2);assert.deepEqual(f.calls.find(c=>c[0]===(exception?'tracking-on':'tracking-off')),[exception?'tracking-on':'tracking-off',false]);assert.equal(f.calls.filter(c=>c[0]==='tracking-reload').length,1);assert.equal(f.c._popupInitialized,false);assert.equal(f.panel.pending,null);}
+});
+test('unsupported documents have no tracking action and changed allow-list authority rejects stale clicks',()=>{
+ const f=fixture();f.setTracking(false,false);const p=f.open();assert.equal(p.presentation.tracking.visible,false);assert.equal(p.presentation.tracking.command,0);assert.equal(f.invoke(9),2);assert.equal(f.calls.length,0);
+ const other=fixture(),q=other.open(),command=`connection-panel:invoke:${q.session}:${q.revision}:9`;other.setTracking(true);assert.equal(other.panel.execute({command}),2);assert.equal(other.calls.length,0);
+});
+test('private tracking commands still use Firefox operations on the captured private browser',()=>{
+ const f=fixture();f.setPrivate();f.open();assert.equal(f.invoke(9),1);assert.ok(f.calls.some(c=>c[0]==='tracking-off'));assert.ok(!f.calls.some(c=>c[0]==='set' || c[0]==='remove'));
 });
