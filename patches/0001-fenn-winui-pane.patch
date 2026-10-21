@@ -1128,10 +1128,10 @@ index af4633e94e3..af0053f5435 100644
 +    if (!this.contentData || this.window.gContextMenu !== this) { return; }
  
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..15f9975f595 100644
+index b2b5db6040b..45f7f6c7fec 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,34 @@ browser.jar:
+@@ -35,2 +35,35 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -1151,6 +1151,7 @@ index b2b5db6040b..15f9975f595 100644
 +        content/browser/WinUIGroupHeader.sys.mjs (content/WinUIGroupHeader.sys.mjs)
 +        content/browser/WinUITabGroupsMenu.sys.mjs (content/WinUITabGroupsMenu.sys.mjs)
 +        content/browser/WinUIDeveloperMenu.sys.mjs                (content/WinUIDeveloperMenu.sys.mjs)
++        content/browser/WinUIBackForwardMenu.sys.mjs (content/WinUIBackForwardMenu.sys.mjs)
 +        content/browser/WinUIBookmarkPanel.sys.mjs (content/WinUIBookmarkPanel.sys.mjs)
 +        content/browser/WinUISitePermissionsPanel.sys.mjs (content/WinUISitePermissionsPanel.sys.mjs)
 +        content/browser/WinUISelectedTranslationsPanel.sys.mjs (content/WinUISelectedTranslationsPanel.sys.mjs)
@@ -1166,7 +1167,7 @@ index b2b5db6040b..15f9975f595 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +138,17 @@ browser.jar:
+@@ -106 +139,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -10041,6 +10042,155 @@ index 1e2660589bd..5ae3ab48433 100644
 +      const nsTArray<LayoutDeviceIntRect>& aOcclusions) override;
 +
    void SendAnAPZEvent(mozilla::InputData& aEvent);
+diff --git a/browser/base/content/WinUIBackForwardMenu.sys.mjs b/browser/base/content/WinUIBackForwardMenu.sys.mjs
+new file mode 100644
+index 00000000000..77b064a0da8
+--- /dev/null
++++ b/browser/base/content/WinUIBackForwardMenu.sys.mjs
+@@ -0,0 +1,143 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// FillHistoryMenu remains the authority for ordering, bounds, interaction
++// filtering, titles and relative indexes. Its detached popup is a command model,
++// never a second presenter. BrowserCommands retains modified-click policy.
++export class WinUIBackForwardMenu {
++  constructor(toolbar) {
++    this.toolbar=toolbar;this.window=toolbar.window;this.session=this.lastSession=0;
++    this.actions=new Map();this.status="";
++    this.changed=()=>this.dismiss();
++    Services.obs.addObserver(this.changed,"intl:app-locales-changed");
++  }
++  close(){if(this.closed)return;this.closed=true;this.dismiss();Services.obs.removeObserver(this.changed,"intl:app-locales-changed");}
++  available(direction){
++    const t=this.toolbar,w=this.window;
++    if(this.closed || !t.active || !t.navigation || !t.supported() || t.customization?.editorOpen || w.gDialogBox?.isOpen)return null;
++    const state=t.navigationModel.snapshot()[direction];
++    return state?.enabled ? state : null;
++  }
++  historyStamp(){
++    const w=this.window,tab=w.gBrowser.selectedTab;
++    const parent=tab.linkedBrowser.browsingContext.sessionHistory;
++    const h=parent?.count ? parent : w.SessionStore.getSessionHistory(tab);
++    const count=parent?.count || h.entries.length,index=h.index;
++    // Read only the bounded window that FillHistoryMenu can expose. Include
++    // absolute entry identity so same-document replacement cannot retarget IDs.
++    const start=Math.max(0,Math.min(index-7,count-15)),end=Math.min(count,start+15),entries=[];
++    for(let i=start;i<end;i++){
++      const e=parent?.count ? h.getEntryAtIndex(i) : h.entries[i];
++      entries.push([e.ID,e.docIdentifier,e.URI?.spec || e.url,e.title,e.hasUserInteraction]);
++    }
++    return JSON.stringify([count,index,entries]);
++  }
++  live(){
++    const t=this.toolbar,w=this.window,c=this.context,b=w.gBrowser.selectedBrowser;
++    return !!c && !!this.available(this.direction) && t.owner.addressSession?.sessionId===c.session &&
++      t.owner.addressTab===c.tab && c.tab===w.gBrowser.selectedTab && b===c.browser &&
++      t.owner.addressDocument===c.document && b.browsingContext.currentWindowGlobal?.innerWindowId===c.document &&
++      b.contentPrincipal.equals(c.principal) && this.historyStamp()===c.history;
++  }
++  setStatus(uri){if(uri!==this.status){this.status=uri;this.window.XULBrowserWindow.setOverLink(uri);}}
++  dismiss(){
++    if(!this.session)return;
++    this.closedSession=this.session;this.session=0;this.observer?.disconnect();this.observer=null;
++    this.actions.clear();this.popup=this.description=this.context=null;
++    this.setStatus("");this.toolbar.owner.invalidateAddress();
++  }
++  snapshot(){
++    if(this.session && !this.live())this.dismiss();
++    return {enabled:!!(this.available("back") || this.available("forward")),closed:this.closedSession || 0,...(this.description || {})};
++  }
++  rows(){
++    return [...this.popup.children].filter(node=>node.hasAttribute("index")).map(node=>({node,
++      index:node.getAttribute("index"),offset:node.getAttribute("historyindex"),uri:node.getAttribute("uri"),
++      label:String(node.getAttribute("label")).slice(0,2048),tooltip:String(node.getAttribute("tooltiptext") || "").slice(0,512),
++      checked:node.getAttribute("checked")==="true"}));
++  }
++  publish(){
++    if(!this.session)return;
++    if(!this.live()){this.dismiss();return;}
++    const rows=this.rows();
++    if(rows.length>15 || rows.some(row=>!row.label)){this.dismiss();return;}
++    if(!rows.length)return;
++    const signature=JSON.stringify(rows.map(({node,...row})=>row));
++    if(this.description){if(signature!==this.membership)this.dismiss();return;}
++    this.membership=signature;
++    this.description={session:this.session,revision:1,label:this.available(this.direction).label.slice(0,512),items:rows.map((row,index)=>{
++      const id=index+1;this.actions.set(id,row);
++      return {id,key:"entry-"+id,label:row.label,tooltip:row.tooltip,checked:row.checked,checkable:row.checked,enabled:true,image:null};
++    })};
++    this.toolbar.owner.invalidateAddress();
++  }
++  async open(session,direction){
++    this.dismiss();this.lastSession=Math.max(this.lastSession,session);this.session=session;this.direction=direction;
++    const t=this.toolbar,w=this.window,b=w.gBrowser.selectedBrowser;
++    this.context={session:t.owner.addressSession?.sessionId,tab:t.owner.addressTab,document:t.owner.addressDocument,
++      browser:b,principal:b.contentPrincipal,history:this.historyStamp()};
++    const popup=w.document.createXULElement("menupopup");this.popup=popup;
++    // Firefox's delayed SessionStore callback recognizes this ID and does not
++    // attempt to reopen a click-and-hold parent. It can mutate only this opening.
++    popup.id="backForwardMenu";
++    popup.addEventListener("command",event=>w.BrowserCommands.gotoHistoryIndex(event));
++    this.observer=new w.MutationObserver(()=>this.publish());
++    this.observer.observe(popup,{subtree:true,childList:true,attributes:true});
++    let canceled=false;w.FillHistoryMenu({target:popup,preventDefault(){canceled=true;}});
++    if(canceled){this.dismiss();return;}
++    this.publish();
++    const description=this.description;
++    if(!description)return;
++    // Decode favicons in Gecko, never in the native UI thread. All completion
++    // callbacks are tied to the exact description and selected document.
++    const images=new Map();
++    const {PlacesUtils}=ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");
++    await Promise.all([...this.actions].filter(([,row])=>!row.checked).map(async([id,row])=>{
++      const image=new w.Image();let timer;
++      try{
++        const timeout=new Promise((_,reject)=>{timer=w.setTimeout(()=>reject(new Error("History icon timeout")),1500);});
++        // Only stored artwork. Null publishes the native theme-aware default
++        // rather than rasterizing Firefox's context-fill default as black.
++        const icon=await Promise.race([PlacesUtils.favicons.getFaviconForPage(Services.io.newURI(row.uri),16),timeout]);
++        if(!icon || this.description!==description || !this.live())return;
++        image.src=icon.dataURI.spec;
++        await Promise.race([image.decode(),timeout]);
++        if(this.description!==description || !this.live() || !image.naturalWidth || !image.naturalHeight)return;
++        const canvas=w.document.createElementNS("http://www.w3.org/1999/xhtml","canvas");canvas.width=canvas.height=16;
++        const context=canvas.getContext("2d");context.drawImage(image,0,0,16,16);
++        images.set(id,t.owner.encodePixels(context.getImageData(0,0,16,16)));
++      }catch(_){}finally{if(timer!==undefined)w.clearTimeout(timer);image.src="";}
++    }));
++    if(this.description!==description || !this.live())return;
++    // No unannounced same-revision changes: publish a fresh immutable model.
++    const items=description.items.map(item=>({...item,image:images.get(item.id) || null}));
++    if(JSON.stringify({...description,items}).length>65000)for(const item of items)item.image=null;
++    this.description={...description,revision:2,items};t.owner.invalidateAddress();
++  }
++  execute(action){
++    const m=/^back-forward-menu:(open|dismiss|invoke|middle|hover|leave):([1-9][0-9]*)(?::(back|forward)|:([1-9][0-9]*):([1-9][0-9]*))?$/.exec(action.command);
++    if(!m)return 2;
++    const session=Number(m[2]);if(!Number.isSafeInteger(session) || session>0xffffffff)return 2;
++    if(m[1]==="open"){
++      if(!m[3] || m[4] || session<=this.lastSession || !this.available(m[3]) || !this.toolbar.menuAnchor(m[3]+"-history",action))return 2;
++      this.lastSession=session;this.open(session,m[3]).catch(error=>{if(this.session===session)this.dismiss();console.error(error);});return 1;
++    }
++    if(session!==this.session)return 2;
++    if(m[1]==="dismiss"){if(m[3] || m[4])return 2;this.dismiss();return 1;}
++    this.snapshot();
++    if(session!==this.session || !this.live() || m[3] || (!Number.isInteger(Number(m[4])) || Number(m[4])<1 || Number(m[4])>this.description?.revision))return 2;
++    const row=this.actions.get(Number(m[5]));if(!row)return 2;
++    const w=this.window;
++    // Revisions within an opening differ only by favicon pixels; the immutable
++    // action table remains eligible while an icon publication is in flight.
++    if(m[1]==="hover" || m[1]==="leave"){this.setStatus(m[1]==="hover" && !row.checked ? row.uri : "");return 1;}
++    const event=new w.MouseEvent("command",{view:w,bubbles:true,button:m[1]==="middle"?1:0,
++      ctrlKey:!!(action.modifiers&1),altKey:!!(action.modifiers&2),shiftKey:!!(action.modifiers&4),metaKey:!!(action.modifiers&8)});
++    // Consume before navigation or duplication; dispatch on the original model
++    // node so gotoHistoryIndex sees Firefox's absolute and relative indexes.
++    this.dismiss();const input=w.windowUtils.setHandlingUserInput(true);
++    try{row.node.dispatchEvent(event);}finally{input.destruct();}
++    return 1;
++  }
++}
 diff --git a/browser/base/content/WinUIPageContextMenu.sys.mjs b/browser/base/content/WinUIPageContextMenu.sys.mjs
 new file mode 100644
 index 00000000000..afd34c98cc0
@@ -26228,10 +26378,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..39303cbc01f
+index 00000000000..3e19c8039a0
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,584 @@
+@@ -0,0 +1,585 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -26271,6 +26421,8 @@ index 00000000000..39303cbc01f
 +    // Progress alone can fire before command disabled states are updated.
 +    const {WinUIHistoryMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIHistoryMenu.sys.mjs");
 +    this.historyMenu=new WinUIHistoryMenu(this);
++    const {WinUIBackForwardMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIBackForwardMenu.sys.mjs");
++    this.backForwardMenu=new WinUIBackForwardMenu(this);
 +    const {WinUIDownloadsPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUIDownloadsPanel.sys.mjs");
 +    this.downloadsPanel=new WinUIDownloadsPanel(this);
 +    const {WinUIProfileMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUIProfileMenu.sys.mjs");
@@ -26367,6 +26519,7 @@ index 00000000000..39303cbc01f
 +    const state = this.navigationModel.snapshot();
 +    state.indicators = this.indicatorState();
 +    state.historyMenu=this.historyMenu.snapshot();
++    state.backForwardMenu=this.backForwardMenu.snapshot();
 +    state.downloadsPanel=this.downloadsPanel.snapshot();
 +    state.profileMenu=this.profileMenu.snapshot();
 +    state.pinned = this.pinned?.snapshot() || [];
@@ -26462,6 +26615,7 @@ index 00000000000..39303cbc01f
 +    const nativePageContext=typeof action?.command === "string" && action.command.startsWith("page-context:");
 +    const nativePrivacy=typeof action?.command === "string" && action.command.startsWith("privacy-panel:");
 +    const nativeTabGroups=typeof action?.command === "string" && action.command.startsWith("tab-groups-menu:");
++    const nativeBackForward=typeof action?.command === "string" && action.command.startsWith("back-forward-menu:");
 +    const nativeDeveloper=typeof action?.command === "string" && action.command.startsWith("developer-menu:");
 +    const nativeOverflow=typeof action?.command === "string" && action.command.startsWith("overflow-menu:");
 +    const nativeProfile=typeof action?.command === "string" && action.command.startsWith("profile-menu:");
@@ -26475,14 +26629,14 @@ index 00000000000..39303cbc01f
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativePageContext ? {nativePageContext:true} : nativeSelectedTranslation ? {nativeSelectedTranslation:true} : nativeTranslation ? {nativeTranslation:true} : nativeConnection ? {nativeConnection:true} : nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativeBackForward ? {nativeBackForward:true} : nativePageContext ? {nativePageContext:true} : nativeSelectedTranslation ? {nativeSelectedTranslation:true} : nativeTranslation ? {nativeTranslation:true} : nativeConnection ? {nativeConnection:true} : nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!nativePageContext && !stock && !indicator && !nativeBookmark && !nativePermissions && !nativeSelectedTranslation && !nativeTranslation && !nativeConnection && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!nativeBackForward && !nativePageContext && !stock && !indicator && !nativeBookmark && !nativePermissions && !nativeSelectedTranslation && !nativeTranslation && !nativeConnection && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
 +    if (nativePageContext) return this.pageContextMenu.execute(action);
@@ -26494,6 +26648,7 @@ index 00000000000..39303cbc01f
 +    if (nativeProfiler) return this.profilerPanel.execute(action);
 +    if (nativeTabGroups) return this.tabGroupsMenu.execute(action);
 +    if (nativePrivacy) return this.privacyPanels.execute(action);
++    if (nativeBackForward) return this.backForwardMenu.execute(action);
 +    if (nativeDeveloper) return this.developerMenu.execute(action);
 +    if (nativeOverflow) return this.overflowMenu.execute(action);
 +    if (nativeProfile) return this.profileMenu.execute(action);
@@ -26539,13 +26694,7 @@ index 00000000000..39303cbc01f
 +      window.document.getElementById("toolbar-context-menu").openPopupAtScreen(action.x/window.devicePixelRatio,(action.y+action.height)/window.devicePixelRatio,true,trigger);
 +      return 1;
 +    }
-+    if (history) {
-+      const anchor = this.menuAnchor(action.command, action);
-+      if (!anchor) return 2;
-+      const popup = window.document.getElementById("backForwardMenu");
-+      popup.openPopup(anchor, "after_start", 0, 0, true, false, event);
-+      return 1;
-+    }
++    if (history) return 2;
 +    if (item.menu) return this.openMenu(item.id, action, event);
 +    window.BrowserCommands[item.method](event);
 +    return 1;
@@ -26740,6 +26889,7 @@ index 00000000000..39303cbc01f
 +    this.connectionPanel?.dismiss();
 +    this.translationsPanel?.dismiss();
 +    this.selectedTranslationsPanel?.dismiss();
++    if(this.backForwardMenu?.session)this.backForwardMenu.dismiss();
 +    if(this.developerMenu?.session)this.developerMenu.dismiss();
 +    if(this.tabGroupsMenu?.session)this.tabGroupsMenu.dismiss();
 +    this.privacyPanels?.dismissAll();
@@ -26788,6 +26938,7 @@ index 00000000000..39303cbc01f
 +    this.profileMenu.close();
 +    this.overflowMenu.close();
 +    this.developerMenu.close();
++    this.backForwardMenu.close();
 +    this.profilerPanel.close();
 +    this.bookmarkPanel.close();
 +    this.permissionsPanel.close();

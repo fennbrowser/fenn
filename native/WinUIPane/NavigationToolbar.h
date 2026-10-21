@@ -14,6 +14,7 @@
 #include "ProfileMenu.h"
 #include "OverflowMenu.h"
 #include "DeveloperMenu.h"
+#include "BackForwardMenu.h"
 #include "ProfilerPanel.h"
 #include "PrivacyPanel.h"
 #include "TabGroupsMenu.h"
@@ -41,7 +42,28 @@ struct NativeNavigationToolbar {
     std::map<winrt::hstring,Microsoft::UI::Xaml::Controls::Grid> spacers, dragHosts;
     std::vector<Microsoft::UI::Xaml::UIElement> ordered;
     bool visible{};
+    HWND ownerHwnd{};
+    bool HistoryPointerInside(size_t i) const noexcept {
+        try {
+            if(!buttons[i] || !buttons[i].XamlRoot())return false;
+            if(ownerHwnd && GetAncestor(GetForegroundWindow(),GA_ROOTOWNER)!=GetAncestor(ownerHwnd,GA_ROOTOWNER))return false;
+            POINT pointer{};if(!GetCursorPos(&pointer))return false;
+            auto local=buttons[i].TransformToVisual(nullptr).TransformBounds({0,0,float(buttons[i].ActualWidth()),float(buttons[i].ActualHeight())});
+            auto screen=buttons[i].XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            return pointer.x>=screen.X && pointer.y>=screen.Y && pointer.x<screen.X+screen.Width && pointer.y<screen.Y+screen.Height;
+        }catch(...){return false;}
+    }
     std::array<Button, 12> buttons;
+    bool historyTipsHidden{};
+    std::array<winrt::Windows::Foundation::IInspectable,2> historyTips{nullptr,nullptr};
+    void HistoryTooltips(bool hidden) {
+        if(historyTipsHidden==hidden)return;
+        historyTipsHidden=hidden;
+        for(size_t i=0;i<2;i++)if(buttons[i]){
+            if(hidden){historyTips[i]=Microsoft::UI::Xaml::Controls::ToolTipService::GetToolTip(buttons[i]);Microsoft::UI::Xaml::Controls::ToolTipService::SetToolTip(buttons[i],nullptr);}
+            else{Microsoft::UI::Xaml::Controls::ToolTipService::SetToolTip(buttons[i],historyTips[i]);historyTips[i]=nullptr;}
+        }
+    }
     std::array<Microsoft::UI::Xaml::Controls::SymbolIcon, 12> icons;
     Microsoft::UI::Xaml::Controls::Grid downloadProgress{nullptr};
     Microsoft::UI::Xaml::Shapes::Path downloadPie{nullptr};
@@ -56,6 +78,7 @@ struct NativeNavigationToolbar {
     NativeProfileMenu profileMenu;
     NativeOverflowMenu overflowMenu;
     NativeDeveloperMenu developerMenu;
+    NativeBackForwardMenu backForwardMenu;
     NativeProfilerPanel profilerPanel;
     NativeTabGroupsMenu tabGroupsMenu;
     NativePrivacyPanel forgetPanel{SHELL_PRIVACY_PANEL_KIND_FORGET,L"forgetPanel",L"FennForgetPanel"};
@@ -116,6 +139,7 @@ struct NativeNavigationToolbar {
         }
     }
     NativeNavigationToolbar() {
+        backForwardMenu.tooltipState=[this,alive=std::weak_ptr<int>(lifetime)](bool hidden){if(!alive.expired())HistoryTooltips(hidden);};
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         customization.createPreview=[this](auto const& item){return PaletteControl(item);};
@@ -219,17 +243,23 @@ struct NativeNavigationToolbar {
                 historyTimers[i].IsRepeating(false);
                 historyTimers[i].Interval(std::chrono::milliseconds(500));
                 auto history = [this, i, alive = std::weak_ptr<int>(lifetime)] {
-                    if (!alive.expired() && activate && buttons[i].IsEnabled() && visible)
-                        activate(i == 0 ? L"back-history" : L"forward-history", 0, buttons[i]);
+                    if (!alive.expired() && buttons[i].IsEnabled() && visible && !customization.editing){
+                        backForwardMenu.keyboardActivation=keyboardActivation;
+                        backForwardMenu.Open(buttons[i],i==0?L"back":L"forward");
+                    }
                 };
                 historyTimers[i].Tick([this, i, history, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-                    if (alive.expired() || !(GetKeyState(VK_LBUTTON) & 0x8000)) return;
+                    // Dispatcher callbacks can run inside the island's nested pump,
+                    // without a fresh mouse message in Gecko's queue.
+                    if (alive.expired() || !(GetAsyncKeyState(VK_LBUTTON) & 0x8000) || !HistoryPointerInside(i)) return;
                     historyHeld[i] = true;
                     history();
                 });
                 button.ContextRequested([history](auto const&, auto const& args) { args.Handled(true); history(); });
                 button.PointerExited([this, i, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-                    if (!alive.expired()) historyTimers[i].Stop();
+                    // Routed exits can lag a closing island popup. Cancel a held
+                    // mouse gesture only when its physical pointer really left.
+                    if (!alive.expired() && (!(GetAsyncKeyState(VK_LBUTTON)&0x8000) || !HistoryPointerInside(i)))historyTimers[i].Stop();
                 });
             }
 
@@ -574,7 +604,7 @@ struct NativeNavigationToolbar {
         indicatorButtons[0].Content(winrt::box_value(state.indicators[0].label));
         privateLabel.Text(state.indicators[0].label);
         Automation::AutomationProperties::SetName(privateLabel,state.indicators[0].label);
-        if (!visible) { historyMenu.Close(); downloadsPanel.Close(); profileMenu.Close(); overflowMenu.Close(); developerMenu.Close(); profilerPanel.Close(); tabGroupsMenu.Close(); forgetPanel.Close(); clearPrivatePanel.Close(); productMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
+        if (!visible) { backForwardMenu.Close(); historyMenu.Close(); downloadsPanel.Close(); profileMenu.Close(); overflowMenu.Close(); developerMenu.Close(); profilerPanel.Close(); tabGroupsMenu.Close(); forgetPanel.Close(); clearPrivatePanel.Close(); productMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
         hasOverflow = visible && state[6].enabled;
         requiredOverflow = visible && state[6].required;
         const bool downloading=visible && state[8].progress>=0 && !customization.editing;
@@ -594,7 +624,13 @@ struct NativeNavigationToolbar {
         for (size_t i = 0; i < buttons.size(); ++i) {
             buttons[i].IsEnabled(visible && state[i].enabled);
             if (!state[i].label.empty()) Automation::AutomationProperties::SetName(buttons[i], state[i].label);
-            if (!state[i].tooltip.empty()) Controls::ToolTipService::SetToolTip(buttons[i], winrt::box_value(state[i].tooltip));
+            if (!state[i].tooltip.empty()) {
+                // A manually opened history flyout must suppress its source
+                // tooltips; otherwise a pending tooltip can replay old pointer
+                // coordinates into the windowed menu. Keep live locale updates.
+                if(i<2 && historyTipsHidden)historyTips[i]=winrt::box_value(state[i].tooltip);
+                else Controls::ToolTipService::SetToolTip(buttons[i],winrt::box_value(state[i].tooltip));
+            }
         }
     }
 };

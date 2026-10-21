@@ -895,6 +895,18 @@ struct NativeAddress {
             action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
             navigate(action.Stringify());
         };
+        navigation->backForwardMenu.core=shell.core;
+        navigation->backForwardMenu.dispatch=[this](auto command,auto modifiers,auto const& button){
+            auto action=Message(L"navigation");action.SetNamedValue(L"command",JValue::CreateStringValue(command));
+            action.SetNamedValue(L"keyboard",JValue::CreateBooleanValue(navigation->backForwardMenu.keyboardActivation));
+            action.SetNamedValue(L"modifiers",JValue::CreateNumberValue(modifiers));
+            auto local=button.TransformToVisual(nullptr).TransformBounds({0,0,float(button.ActualWidth()),float(button.ActualHeight())});
+            auto screen=button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
+            if(releaseMenuFocus && (wcsncmp(command,L"back-forward-menu:invoke:",25)==0 || wcsncmp(command,L"back-forward-menu:middle:",25)==0))releaseMenuFocus();
+            navigate(action.Stringify());
+        };
         navigation->historyMenu.core=shell.core;
         navigation->overflowMenu.core=shell.core;
         navigation->overflowMenu.dispatch=[this](auto command,auto modifiers,auto const& button){navigation->keyboardActivation=navigation->overflowMenu.keyboardActivation;navigation->activate(command,modifiers,button);};
@@ -1146,6 +1158,7 @@ struct NativeAddress {
         const auto translationsPanelState = NativeTranslationsPanel::Read(snapshot);
         const auto selectedTranslationsPanelState = NativeSelectedTranslationsPanel::Read(snapshot);
         const auto developerMenuState = NativeDeveloperMenu::Read(snapshot);
+        const auto backForwardMenuState = NativeBackForwardMenu::Read(snapshot);
         const auto tabGroupsMenuState = NativeTabGroupsMenu::Read(snapshot);
         const auto forgetPanelState = navigation ? navigation->forgetPanel.Read(snapshot) : JObject();
         const auto clearPrivatePanelState = navigation ? navigation->clearPrivatePanel.Read(snapshot) : JObject();
@@ -1336,6 +1349,7 @@ struct NativeAddress {
         const bool applyTranslations = translationsPanel.Resolve(translationsPanelState);
         const bool applySelectedTranslations = selectedTranslationsPanel.Resolve(selectedTranslationsPanelState);
         const bool applyProfiler = navigation && navigation->profilerPanel.Resolve(profilerPanelState);
+        const bool applyBackForward = navigation && navigation->backForwardMenu.Resolve(backForwardMenuState);
         const bool applyDeveloper = navigation && navigation->developerMenu.Resolve(developerMenuState);
         const bool applyTabGroups = navigation && navigation->tabGroupsMenu.Resolve(tabGroupsMenuState);
         const bool applyForget = navigation && navigation->forgetPanel.Resolve(forgetPanelState);
@@ -1389,6 +1403,7 @@ struct NativeAddress {
             navigation->profileMenu.Apply(profileMenuState,navigationToolbar && !navigation->customization.editing,applyProfile);
             navigation->overflowMenu.Apply(overflowMenuState,navigationToolbar && !navigation->customization.editing,applyOverflow);
             navigation->profilerPanel.Apply(profilerPanelState,navigationToolbar && !navigation->customization.editing,applyProfiler);
+            navigation->backForwardMenu.Apply(backForwardMenuState,navigationToolbar && !navigation->customization.editing,applyBackForward);
             navigation->developerMenu.Apply(developerMenuState,navigationToolbar && !navigation->customization.editing,applyDeveloper);
             navigation->tabGroupsMenu.Apply(tabGroupsMenuState,navigationToolbar && !navigation->customization.editing,applyTabGroups);
             navigation->forgetPanel.Apply(forgetPanelState,navigationToolbar && !navigation->customization.editing,applyForget);

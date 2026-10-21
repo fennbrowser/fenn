@@ -389,7 +389,7 @@ struct Pane {
         return false;
     }
     void DismissMenus() {
-        if (address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); }
+        if (address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); if(address->navigation)address->navigation->backForwardMenu.LightDismiss(); }
         if (tabMenu.active) tabMenu.Dismiss();
         if (strip) strip->inlineGroups.hover.Dismiss();
         if (address && address->mode.flyout.IsOpen()) address->mode.flyout.Hide();
@@ -431,7 +431,7 @@ struct Pane {
         if (!stripPopup && tabMenu.active) tabMenu.Dismiss();
         if (!stripPopup && strip && (strip->inlineGroups.hover.open || strip->inlineGroups.hover.showPending))
             strip->inlineGroups.hover.Dismiss();
-        if (!addressPopup && address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); }
+        if (!addressPopup && address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); if(address->navigation)address->navigation->backForwardMenu.LightDismiss(); }
         const HWND addressHost = addressSource ? addressWindow : childWindow;
         if (!InWindow(addressHost, target) && !addressPopup) LeaveAddress();
         else if (!addressPopup && address && address->mode.flyout.IsOpen()) address->mode.flyout.Hide();
@@ -465,6 +465,7 @@ struct Pane {
     }
     void WireAddress() {
         address->navigation->customization.ownerHwnd=parent;
+        address->navigation->ownerHwnd=parent;
         windowDrag.windowCaption.SetToolbarSurface(address->toolbarSurface);
         if (strip) {
             auto menuButton = address->navigation->productMenu.button;
@@ -652,6 +653,7 @@ struct Pane {
                 {SHELL_PUBLICATION_CHANNEL_PROFILE_MENU, L"profile-menu"},
                 {SHELL_PUBLICATION_CHANNEL_OVERFLOW_MENU, L"overflow-menu"},
                 {SHELL_PUBLICATION_CHANNEL_DEVELOPER_MENU, L"developer-menu"},
+                {SHELL_PUBLICATION_CHANNEL_BACK_FORWARD_MENU, L"back-forward-menu"},
                 {SHELL_PUBLICATION_CHANNEL_TAB_GROUPS_MENU, L"tab-groups-menu"},
                 {SHELL_PUBLICATION_CHANNEL_GROUP_HEADER, L"group-header"},
                 {SHELL_PUBLICATION_CHANNEL_FORGET_PANEL, L"forget-panel"},

@@ -50,7 +50,7 @@ function fixture() {
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIHistoryMenu.sys.mjs",import.meta.url),"utf8").replace(/^import .*;$/m,"").replace("export class WinUIHistoryMenu","this.WinUIHistoryMenu=class WinUIHistoryMenu"),context);
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUINavigationState.sys.mjs",import.meta.url),"utf8").replace(/^export /gm,"")+";this.WinUINavigationState=WinUINavigationState;this.NAVIGATION_COMMANDS=NAVIGATION_COMMANDS;",context);
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIProductMenu.sys.mjs",import.meta.url),"utf8").replace(/^export /gm,"")+";this.WinUIProductMenu=WinUIProductMenu;",context);
-  context.ChromeUtils={importESModule:()=>({WinUIPageContextMenu:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUISelectedTranslationsPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUITranslationsPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIConnectionPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUISitePermissionsPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIBookmarkPanel:class {snapshot(){return {enabled:false};}dismiss(){}retire(){}close(){}},WinUIProfilerPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIPrivacyPanels:class {snapshot(){return {forgetPanel:{enabled:false},clearPrivatePanel:{enabled:false}};}dismissAll(){}close(){}},WinUITabGroupsMenu:class {snapshot(){return {enabled:false};}close(){}},WinUIDeveloperMenu:class {snapshot(){return {enabled:false};}close(){}},WinUIOverflowMenu:class {snapshot(){return {enabled:true};}close(){}},WinUIProfileMenu:class {snapshot(){return {enabled:true};}close(){}},WinUIDownloadsPanel:class {snapshot(){return {enabled:true};}close(){}},WinUIHistoryMenu:context.WinUIHistoryMenu,WinUIProductMenu:context.WinUIProductMenu,
+  context.ChromeUtils={importESModule:()=>({WinUIBackForwardMenu:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIPageContextMenu:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUISelectedTranslationsPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUITranslationsPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIConnectionPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUISitePermissionsPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIBookmarkPanel:class {snapshot(){return {enabled:false};}dismiss(){}retire(){}close(){}},WinUIProfilerPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIPrivacyPanels:class {snapshot(){return {forgetPanel:{enabled:false},clearPrivatePanel:{enabled:false}};}dismissAll(){}close(){}},WinUITabGroupsMenu:class {snapshot(){return {enabled:false};}close(){}},WinUIDeveloperMenu:class {snapshot(){return {enabled:false};}close(){}},WinUIOverflowMenu:class {snapshot(){return {enabled:true};}close(){}},WinUIProfileMenu:class {snapshot(){return {enabled:true};}close(){}},WinUIDownloadsPanel:class {snapshot(){return {enabled:true};}close(){}},WinUIHistoryMenu:context.WinUIHistoryMenu,WinUIProductMenu:context.WinUIProductMenu,
     WinUINavigationState:context.WinUINavigationState,NAVIGATION_COMMANDS:context.NAVIGATION_COMMANDS})};
   vm.runInContext(source, context);
   const toolbar = new context.WinUIAddressToolbar(window, owner);
@@ -338,21 +338,18 @@ test("native trailing buttons open Firefox controllers at validated screen ancho
   assert.equal(opened.length,3);
 });
 
-test("Back/Forward history use the original popup with validated native anchors", () => {
-  const f=navigationCommandsFixture(), opened=[];
-  f.window.devicePixelRatio=1;f.window.mozInnerScreenX=0;f.window.mozInnerScreenY=0;
+test("Back/Forward history routes to the native adapter within the address-session boundary", () => {
+  const f=navigationCommandsFixture(), opened=[],actions=[];
   f.elements.set("backForwardMenu",{openPopup(...args){opened.push(args);}});
-  for(const command of ["back-history","forward-history"]){
-    const action={...f.action,command,x:20,y:40,width:32,height:32};
-    assert.equal(f.toolbar.executeNavigation({...action,width:0}),2);
-    assert.equal(f.toolbar.executeNavigation({...action,session:"stale"}),2);
-    assert.equal(f.toolbar.executeNavigation(action),1);
-    assert.equal(opened.at(-1)[0].style.left,"20px");
-  }
-  assert.equal(opened.length,2);
+  f.toolbar.backForwardMenu.execute=action=>{actions.push(action);return 1;};
+  const action={...f.action,command:"back-forward-menu:open:1:back",x:20,y:40,width:32,height:32};
+  assert.equal(f.toolbar.executeNavigation({...action,session:"stale"}),2);
+  assert.equal(actions.length,0);
+  assert.equal(f.toolbar.executeNavigation(action),1);
+  assert.equal(actions.length,1);
+  for(const command of ["back-history","forward-history"])assert.equal(f.toolbar.executeNavigation({...action,command}),2);
+  assert.equal(opened.length,0,"native history never opens the retained presenter");
   assert.equal(f.calls.filter(c=>c[0]==="command").length,0,"opening history never navigates");
-  f.elements.get("Browser:Back").setAttribute("disabled","true");
-  assert.equal(f.toolbar.executeNavigation({...f.action,command:"back-history",x:20,y:40,width:32,height:32}),2);
 });
 
 // A queued frame without address dirtiness cannot restore a widened toolbar.
