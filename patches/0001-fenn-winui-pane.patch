@@ -216,6 +216,386 @@ index 20220bd0969..50f95f13b63 100644
 +  _storeRecentlyUsedFolder(selectedFolderGuid, didChangeFolder) {
 +    return PlacesUIUtils.storeRecentlyUsedBookmarkFolder(selectedFolderGuid, didChangeFolder);
    },
+diff --git a/browser/base/content/browser-sitePermissionPanel.js b/browser/base/content/browser-sitePermissionPanel.js
+index 6a4ed1d46f5..69b2302a5ab 100644
+--- a/browser/base/content/browser-sitePermissionPanel.js
++++ b/browser/base/content/browser-sitePermissionPanel.js
+@@ -270,2 +270,6 @@ var gPermissionPanel = {
+ 
++    if (window.gWinUIPane?.addressToolbar?.permissionsPanel?.show(event)) {
++      return;
++    }
++
+     // Make the popup available.
+@@ -298,2 +302,3 @@ var gPermissionPanel = {
+   updateSharingIndicator() {
++    window.gWinUIPane?.addressToolbar?.permissionsPanel?.changed();
+     let browser = gBrowser.selectedBrowser;
+@@ -448,2 +453,3 @@ var gPermissionPanel = {
+   onLocationChange() {
++    window.gWinUIPane?.addressToolbar?.permissionsPanel?.locationChanged();
+     if (this._popupInitialized && this._permissionPopup.state != "closed") {
+@@ -453,17 +459,6 @@ var gPermissionPanel = {
+ 
+-  /**
+-   * Updates the permission list in the permissions popup.
+-   */
+-  updateSitePermissions() {
+-    let permissionItemSelector = [
+-      ".permission-popup-permission-item, .permission-popup-permission-item-container",
+-    ];
+-    this._permissionList
+-      .querySelectorAll(permissionItemSelector)
+-      .forEach(e => e.remove());
+-    // Used by _createPermissionItem to build unique IDs.
+-    this._permissionLabelIndex = 0;
+-
++  // Browser-owned permission state, shared by retained and native presenters.
++  getPermissionDetailsForDisplay(browser = this.browser) {
+     let permissions = SitePermissions.getAllPermissionDetailsForBrowser(
+-      this.browser
++      browser
+     );
+@@ -501,3 +496,3 @@ var gPermissionPanel = {
+ 
+-    this._sharingState = this.browser._sharingState;
++    this._sharingState = browser._sharingState;
+ 
+@@ -577,2 +572,43 @@ var gPermissionPanel = {
+ 
++    // Resolve device-specific precedence without depending on retained DOM rows.
++    // This preserves the original per-device factory's single-row behavior.
++    const result = [];
++    for (const permission of permissions) {
++      const [id, key] = permission.id.split(SitePermissions.PERM_KEY_DELIMITER);
++      if (id === "storage-access" || SitePermissions.getPermissionLabel(permission.id) === null) {
++        continue;
++      }
++      if (["camera", "screen", "microphone", "speaker"].includes(id)) {
++        if ((key && permission.state !== SitePermissions.ALLOW) ||
++            (permission.state === SitePermissions.PROMPT && !this._gumShowAlwaysAsk)) {
++          continue;
++        }
++        const index = result.findIndex(p => p.id.split(SitePermissions.PERM_KEY_DELIMITER)[0] === id);
++        if (index !== -1) {
++          if (key || permission.state === SitePermissions.PROMPT) {
++            continue;
++          }
++          result.splice(index, 1);
++        }
++      }
++      result.push(permission);
++    }
++    return result;
++  },
++
++  /**
++   * Updates the permission list in the permissions popup.
++   */
++  updateSitePermissions() {
++    let permissionItemSelector = [
++      ".permission-popup-permission-item, .permission-popup-permission-item-container",
++    ];
++    this._permissionList
++      .querySelectorAll(permissionItemSelector)
++      .forEach(e => e.remove());
++    // Used by _createPermissionItem to build unique IDs.
++    this._permissionLabelIndex = 0;
++
++    let permissions = this.getPermissionDetailsForDisplay();
++
+     let totalBlockedPopups =
+@@ -793,7 +829,3 @@ var gPermissionPanel = {
+       menulist.addEventListener("command", () => {
+-        SitePermissions.setForPrincipal(
+-          gBrowser.contentPrincipal,
+-          permission.id,
+-          menulist.selectedItem.value
+-        );
++        this.setPermissionState(permission, menulist.selectedItem.value);
+       });
+@@ -900,2 +932,104 @@ var gPermissionPanel = {
+ 
++  clearPermission(permission, idNoSuffix = permission.id, browser = this.browser) {
++    if ([SitePermissions.SCOPE_POLICY, SitePermissions.SCOPE_GLOBAL].includes(permission.scope)) {
++      return false;
++    }
++    const contentPrincipal = browser.contentPrincipal;
++    // For XR permissions we need to keep track of all origins which may have
++    // started XR sharing. This is necessary, because XR does not use
++    // permission delegation and permissions can be granted for sub-frames. We
++    // need to keep track of which origins we need to revoke the permission
++    // for.
++    if (permission.sharingState && idNoSuffix === "xr") {
++      let origins = browser.getDevicePermissionOrigins(idNoSuffix);
++      for (let origin of origins) {
++        let principal =
++          Services.scriptSecurityManager.createContentPrincipalFromOrigin(
++            origin
++          );
++        this._removePermPersistentAllow(principal, permission.id);
++      }
++      origins.clear();
++    }
++
++    // For 3rdPartyFrameStorage permissions, we also need to remove
++    // any 3rdPartyStorage permissions for origins covered by
++    // the site of this permission. These permissions have the same
++    // dialog, but slightly different scopes, so we only show one in
++    // the list if they both exist and use it to stand in for both.
++    if (idNoSuffix == "3rdPartyFrameStorage") {
++      let [, matchSite] = permission.id.split(
++        SitePermissions.PERM_KEY_DELIMITER
++      );
++      let permissions = SitePermissions.getAllForBrowser(browser);
++      let removePermissions = permissions.filter(function (removePermission) {
++        let [id, key] = removePermission.id.split(
++          SitePermissions.PERM_KEY_DELIMITER
++        );
++        if (id != "3rdPartyStorage") {
++          return false;
++        }
++        try {
++          let origin = Services.io.newURI(key);
++          let site = Services.eTLD.getSite(origin);
++          return site == matchSite;
++        } catch {
++          return false;
++        }
++      });
++      for (let removePermission of removePermissions) {
++        SitePermissions.removeFromPrincipal(
++          contentPrincipal,
++          removePermission.id,
++          browser
++        );
++      }
++    }
++
++    SitePermissions.removeFromPrincipal(
++      contentPrincipal,
++      permission.id,
++      browser
++    );
++
++    // Record telemetry for notification permission revocation via toolbar
++    if (idNoSuffix === "desktop-notification") {
++      Glean.webNotificationPermission.permissionRevokedToolbar.record({
++        site_category: SiteCategory.getCategory(contentPrincipal),
++      });
++    }
++
++    if (idNoSuffix === "geo") {
++      gBrowser.updateBrowserSharing(browser, { geo: false });
++    } else if (idNoSuffix === "xr") {
++      gBrowser.updateBrowserSharing(browser, { xr: false });
++    } else if (idNoSuffix === "serial") {
++      SerialDeviceSharingHelper.resetBrowserCount(browser);
++      gBrowser.updateBrowserSharing(browser, { serial: false });
++      Services.obs.notifyObservers(
++        browser.browsingContext,
++        "serial-permission-revoked"
++      );
++    }
++
++    if (["camera", "screen", "microphone", "speaker"].includes(idNoSuffix)) {
++      webrtcUI.clearPermissionsAndStopSharing([idNoSuffix], browser);
++    }
++    return true;
++  },
++
++  setPermissionState(permission, state, browser = this.browser) {
++    const [id] = permission.id.split(SitePermissions.PERM_KEY_DELIMITER);
++    if ([SitePermissions.SCOPE_POLICY, SitePermissions.SCOPE_GLOBAL].includes(permission.scope) ||
++        (id === "popup" && Services.prefs.prefIsLocked("dom.disable_open_during_load"))) {
++      return false;
++    }
++    const available = SitePermissions.getAvailableStates(id).map(value => value === SitePermissions.getDefault(id) ? 0 : value);
++    if (!available.includes(Number(state))) {
++      return false;
++    }
++    SitePermissions.setForPrincipal(browser.contentPrincipal, permission.id, Number(state));
++    return true;
++  },
++
+   _createPermissionClearButton({
+@@ -912,83 +1046,6 @@ var gPermissionPanel = {
+       let browser = this.browser;
+-      let contentPrincipal = browser.contentPrincipal;
+       container.remove();
+-      // For XR permissions we need to keep track of all origins which may have
+-      // started XR sharing. This is necessary, because XR does not use
+-      // permission delegation and permissions can be granted for sub-frames. We
+-      // need to keep track of which origins we need to revoke the permission
+-      // for.
+-      if (permission.sharingState && idNoSuffix === "xr") {
+-        let origins = browser.getDevicePermissionOrigins(idNoSuffix);
+-        for (let origin of origins) {
+-          let principal =
+-            Services.scriptSecurityManager.createContentPrincipalFromOrigin(
+-              origin
+-            );
+-          this._removePermPersistentAllow(principal, permission.id);
+-        }
+-        origins.clear();
+-      }
+-
+-      // For 3rdPartyFrameStorage permissions, we also need to remove
+-      // any 3rdPartyStorage permissions for origins covered by
+-      // the site of this permission. These permissions have the same
+-      // dialog, but slightly different scopes, so we only show one in
+-      // the list if they both exist and use it to stand in for both.
+-      if (idNoSuffix == "3rdPartyFrameStorage") {
+-        let [, matchSite] = permission.id.split(
+-          SitePermissions.PERM_KEY_DELIMITER
+-        );
+-        let permissions = SitePermissions.getAllForBrowser(browser);
+-        let removePermissions = permissions.filter(function (removePermission) {
+-          let [id, key] = removePermission.id.split(
+-            SitePermissions.PERM_KEY_DELIMITER
+-          );
+-          if (id != "3rdPartyStorage") {
+-            return false;
+-          }
+-          try {
+-            let origin = Services.io.newURI(key);
+-            let site = Services.eTLD.getSite(origin);
+-            return site == matchSite;
+-          } catch {
+-            return false;
+-          }
+-        });
+-        for (let removePermission of removePermissions) {
+-          SitePermissions.removeFromPrincipal(
+-            contentPrincipal,
+-            removePermission.id,
+-            browser
+-          );
+-        }
+-      }
+-
+-      SitePermissions.removeFromPrincipal(
+-        contentPrincipal,
+-        permission.id,
+-        browser
+-      );
+-
+-      // Record telemetry for notification permission revocation via toolbar
+-      if (idNoSuffix === "desktop-notification") {
+-        Glean.webNotificationPermission.permissionRevokedToolbar.record({
+-          site_category: SiteCategory.getCategory(gBrowser.contentPrincipal),
+-        });
+-      }
+-
++      this.clearPermission(permission, idNoSuffix, browser);
+       this._permissionReloadHint.hidden = false;
+ 
+-      if (idNoSuffix === "geo") {
+-        gBrowser.updateBrowserSharing(browser, { geo: false });
+-      } else if (idNoSuffix === "xr") {
+-        gBrowser.updateBrowserSharing(browser, { xr: false });
+-      } else if (idNoSuffix === "serial") {
+-        SerialDeviceSharingHelper.resetBrowserCount(browser);
+-        gBrowser.updateBrowserSharing(browser, { serial: false });
+-        Services.obs.notifyObservers(
+-          browser.browsingContext,
+-          "serial-permission-revoked"
+-        );
+-      }
+-
+       clearCallback();
+@@ -999,3 +1056,3 @@ var gPermissionPanel = {
+ 
+-  _getGeoLocationLastAccess() {
++  _getGeoLocationLastAccess(browser = this.browser) {
+     return new Promise(resolve => {
+@@ -1003,5 +1060,5 @@ var gPermissionPanel = {
+       ContentPrefService2.getByDomainAndName(
+-        gBrowser.currentURI.spec,
++        browser.currentURI.spec,
+         "permissions.geoLocation.lastAccess",
+-        gBrowser.selectedBrowser.loadContext,
++        browser.loadContext,
+         {
+@@ -1018,4 +1075,13 @@ var gPermissionPanel = {
+ 
++  async getGeoLocationLastAccessLabel(browser = this.browser) {
++    const value = await this._getGeoLocationLastAccess(browser);
++    if (value == null) return null;
++    const lastAccess = new Date(value);
++    if (isNaN(lastAccess)) return null;
++    const timeFormat = new Services.intl.RelativeTimeFormat(undefined, {});
++    return gNavigatorBundle.getFormattedString("geolocationLastAccessIndicatorText", [timeFormat.formatBestUnit(lastAccess)]);
++  },
++
+   async _createGeoLocationLastAccessIndicator() {
+-    let lastAccessStr = await this._getGeoLocationLastAccess();
++    let accessLabel = await this.getGeoLocationLastAccessLabel();
+     let geoContainer = document.getElementById(
+@@ -1030,3 +1096,3 @@ var gPermissionPanel = {
+     if (
+-      lastAccessStr == null ||
++      accessLabel == null ||
+       !geoContainer ||
+@@ -1036,8 +1102,2 @@ var gPermissionPanel = {
+     }
+-    let lastAccess = new Date(lastAccessStr);
+-    if (isNaN(lastAccess)) {
+-      console.error("Invalid timestamp for last geolocation access");
+-      return;
+-    }
+-
+     let indicator = document.createXULElement("hbox");
+@@ -1047,4 +1107,2 @@ var gPermissionPanel = {
+ 
+-    let timeFormat = new Services.intl.RelativeTimeFormat(undefined, {});
+-
+     let text = document.createXULElement("label");
+@@ -1053,6 +1111,3 @@ var gPermissionPanel = {
+ 
+-    text.textContent = gNavigatorBundle.getFormattedString(
+-      "geolocationLastAccessIndicatorText",
+-      [timeFormat.formatBestUnit(lastAccess)]
+-    );
++    text.textContent = accessLabel;
+ 
+@@ -1077,30 +1132,2 @@ var gPermissionPanel = {
+     }
+-    // Only show WebRTC device-specific ALLOW permissions. Since we only show
+-    // one permission item per device type, we don't support showing mixed
+-    // states where one devices is allowed and another one blocked.
+-    if (key && permission.state != SitePermissions.ALLOW) {
+-      return null;
+-    }
+-    // Check if there is already an item for this permission. Multiple
+-    // permissions with the same id can be set, but with different keys.
+-    let item = document.querySelector(
+-      `.permission-popup-permission-item-${id}`
+-    );
+-
+-    if (key) {
+-      // We have a double keyed permission. If there is already an item it will
+-      // have ownership of all permissions with this WebRTC permission id.
+-      if (item) {
+-        return null;
+-      }
+-    } else if (item) {
+-      if (permission.state == SitePermissions.PROMPT) {
+-        return null;
+-      }
+-      // If we have a single-key (not device specific) webRTC permission
+-      // other than PROMPT, it overrides any existing (device specific)
+-      // permission items.
+-      item.remove();
+-    }
+-
+     return this._createPermissionItem({
+@@ -1108,5 +1135,2 @@ var gPermissionPanel = {
+       idNoSuffix: id,
+-      clearCallback: () => {
+-        webrtcUI.clearPermissionsAndStopSharing([id], this.browser);
+-      },
+     });
 diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
 index 7ce8e235dd4..3c74fd67b18 100644
 --- a/browser/base/content/browser.js
@@ -256,10 +636,10 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..d66bb4dcd05 100644
+index b2b5db6040b..8820429870f 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,29 @@ browser.jar:
+@@ -35,2 +35,30 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -280,6 +660,7 @@ index b2b5db6040b..d66bb4dcd05 100644
 +        content/browser/WinUITabGroupsMenu.sys.mjs (content/WinUITabGroupsMenu.sys.mjs)
 +        content/browser/WinUIDeveloperMenu.sys.mjs                (content/WinUIDeveloperMenu.sys.mjs)
 +        content/browser/WinUIBookmarkPanel.sys.mjs (content/WinUIBookmarkPanel.sys.mjs)
++        content/browser/WinUISitePermissionsPanel.sys.mjs (content/WinUISitePermissionsPanel.sys.mjs)
 +        content/browser/WinUIProfilerPanel.sys.mjs                (content/WinUIProfilerPanel.sys.mjs)
 +        content/browser/WinUIOverflowMenu.sys.mjs (content/WinUIOverflowMenu.sys.mjs)
 +        content/browser/WinUIDownloadsPanel.sys.mjs  (content/WinUIDownloadsPanel.sys.mjs)
@@ -289,7 +670,7 @@ index b2b5db6040b..d66bb4dcd05 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +133,17 @@ browser.jar:
+@@ -106 +134,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -8050,10 +8431,10 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..5e492644fa8 100644
+index 4f28e62c7b5..7133348e55b 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -520 +520,116 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,125 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -8170,6 +8551,15 @@ index 4f28e62c7b5..5e492644fa8 100644
 +winui-bookmark-previous = Previous
 +winui-bookmark-next = More
 +winui-bookmark-error = This bookmark could not be saved. Try again.
++
++winui-permissions-empty = No permissions to manage for this page.
++winui-permissions-managed = This permission is controlled by browser policy or settings.
++winui-permissions-in-use = Currently in use
++winui-permissions-paused = Sharing is paused
++winui-permissions-previous = Previous
++winui-permissions-next = More
++winui-permissions-error = This permission could not be changed. Try again.
++winui-permissions-close = Close
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -8812,6 +9202,152 @@ index 1e2660589bd..5ae3ab48433 100644
 +      const nsTArray<LayoutDeviceIntRect>& aOcclusions) override;
 +
    void SendAnAPZEvent(mozilla::InputData& aEvent);
+diff --git a/browser/base/content/WinUISitePermissionsPanel.sys.mjs b/browser/base/content/WinUISitePermissionsPanel.sys.mjs
+new file mode 100644
+index 00000000000..47c88f22307
+--- /dev/null
++++ b/browser/base/content/WinUISitePermissionsPanel.sys.mjs
+@@ -0,0 +1,140 @@
++/* This Source Code Form is subject to the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Firefox's permission controller owns filtering, revocation and sharing.
++// Native receives bounded localized rows and opening-scoped action identities.
++export class WinUISitePermissionsPanel {
++  constructor(toolbar) {
++    this.toolbar=toolbar;this.window=toolbar.window;this.nextRequest=0;this.nextAction=100;
++    this.permissionChanged=()=>this.changed();
++    this.localeChanged=()=>{this.l10n=null;this.dismiss();};
++    Services.obs.addObserver(this.permissionChanged,"perm-changed");
++    Services.obs.addObserver(this.localeChanged,"intl:app-locales-changed");
++    Services.prefs.addObserver("permissions.",this.permissionChanged);
++    Services.prefs.addObserver("media.autoplay.",this.permissionChanged);
++    Services.prefs.addObserver("dom.disable_open_during_load",this.permissionChanged);
++  }
++  eligible() {
++    const t=this.toolbar,w=this.window,c=w.gPermissionPanel;
++    return !this.closed && t.active && t.navigation && t.supported() && !t.customization?.editorOpen && !w.gDialogBox?.isOpen &&
++      !c._browserOverride && !c._popupAnchorNode && !w.document.fullscreen &&
++      w.SitePermissions.isSupportedPrincipal(w.gBrowser.selectedBrowser.contentPrincipal);
++  }
++  live(p=this.pending) {
++    if(!p || !this.eligible())return false;
++    const w=this.window,t=this.toolbar,b=w.gBrowser.selectedBrowser;
++    return p.browser===b && p.tab===w.gBrowser.selectedTab && p.context===t.owner.addressSession?.sessionId &&
++      p.document===b.browsingContext.currentWindowGlobal?.innerWindowId && p.principal.equals(b.contentPrincipal);
++  }
++  invalidate(){if(!this.closed)this.toolbar.owner.invalidateAddress();}
++  label(id,args){this.l10n ??= new this.window.Localization(["branding/brand.ftl","browser/browser.ftl","browser/sitePermissions.ftl","browser/tabbrowser.ftl"],true);return this.l10n.formatValueSync(id,args).slice(0,1024);}
++  show(event) {
++    if(!this.eligible() || this.nextRequest>=0xffffffff)return false;
++    if(this.pending){this.dismiss();return true;}
++    const w=this.window,t=this.toolbar,b=w.gBrowser.selectedBrowser;
++    const entries=[...t.omnibar.entries.values()];
++    const entry=entries.find(row=>row.node===event?.target) || entries.find(row=>row.node.contains?.(event?.target));
++    const source=entry || t.omnibar.entry(w.document.getElementById("identity-permission-box"));
++    const p={request:++this.nextRequest,session:0,revision:0,browser:b,tab:w.gBrowser.selectedTab,principal:b.contentPrincipal,
++      document:b.browsingContext.currentWindowGlobal?.innerWindowId,context:t.owner.addressSession?.sessionId,
++      source:source.id,page:0,actions:new Map(),identities:new Map(),reload:false,geoLabel:""};
++    this.pending=p;
++    try{this.refresh();this.invalidate();return true;}catch(error){console.error(error);this.dismiss();return false;}
++  }
++  action(p,key,value) {
++    let id=p.identities.get(key);if(!id){id=this.nextAction++;if(id>0xffffffff)throw new Error("Permission action identity exhausted");}
++    p.nextIdentities.set(key,id);p.actions.set(id,value);return id;
++  }
++  model(p) {
++    const w=this.window,s=w.SitePermissions,c=w.gPermissionPanel,b=p.browser;
++    let permissions=c.getPermissionDetailsForDisplay(b);
++    const blocked=b.popupAndRedirectBlocker.getBlockedPopupCount(),redirect=b.popupAndRedirectBlocker.isRedirectBlocked();
++    if((blocked || redirect) && !permissions.some(row=>row.id==="popup"))permissions.push({id:"popup",state:s.getDefault("popup"),scope:s.SCOPE_PERSISTENT});
++    // Match the original default anchor followed by its cross-site section.
++    const storage=row=>["3rdPartyStorage","3rdPartyFrameStorage"].includes(row.id.split(s.PERM_KEY_DELIMITER)[0]);
++    permissions=[...permissions.filter(row=>!storage(row)),...permissions.filter(storage)];
++    p.permissions=permissions;
++    p.page=Math.min(p.page,Math.max(0,Math.ceil(permissions.length/16)-1));p.actions=new Map();p.nextIdentities=new Map();
++    const icons={"desktop-notification":"notification","loopback-network":"network","persistent-storage":"storage","autoplay-media":"autoplay","3rdPartyStorage":"storage-access","3rdPartyFrameStorage":"storage-access","open-protocol-handler":"service","midi-sysex":"midi","shortcuts":"permissions","midi":"midi"};
++    const rows=permissions.slice(p.page*16,(p.page+1)*16).map(permission=>{
++      const [kind,key]=permission.id.split(s.PERM_KEY_DELIMITER),policy=[s.SCOPE_POLICY,s.SCOPE_GLOBAL].includes(permission.scope);
++      const combo=kind==="autoplay-media" || (kind==="popup" && !policy);
++      const locked=policy || (kind==="popup" && Services.prefs.prefIsLocked("dom.disable_open_during_load"));
++      const active=permission.sharingState==Ci.nsIMediaManagerService.STATE_CAPTURE_ENABLED || (kind==="screen" && !!permission.sharingState && !String(permission.sharingState).includes("Paused"));
++      const blockedState=permission.state===s.BLOCK || permission.state===s.AUTOPLAY_BLOCKED_ALL;
++      let icon=icons[kind] || kind;if(!["notification","network","storage","autoplay","storage-access","service","midi","geo","xr","serial","camera","screen","microphone","speaker","popup","canvas","install","password","permissions"].includes(icon))icon="permissions";
++      const row={key:permission.id,label:(kind==="open-protocol-handler" ? w.gNavigatorBundle.getFormattedString("openProtocolHandlerPermissionEntryLabel",[key]) : s.getPermissionLabel(permission.id)).slice(0,512),
++        group:storage(permission)?"storage":kind==="open-protocol-handler"?"protocol":"",icon,iconState:blockedState?"blocked":active?"active":permission.sharingState?"paused":"normal",usage:active?this.label("winui-permissions-in-use"):permission.sharingState?this.label("winui-permissions-paused"):"",
++        state:combo?"":String(s.getCurrentStateLabel(permission.sharingState && permission.state!==s.ALLOW?s.ALLOW:permission.state,kind,permission.sharingState && permission.state!==s.ALLOW?s.SCOPE_REQUEST:permission.scope) || "").slice(0,512),
++        detail:kind==="geo" && permission.state===s.ALLOW?p.geoLabel:"",locked,clear:0,selected:0,options:[]};
++      // Permission IDs stay Firefox-side. The row key is an opaque presentation ID.
++      row.key="row-"+this.action(p,"row:"+permission.id,{verb:"row"});
++      if(combo) {
++        const def=s.getDefault(kind),selected=permission.state===def?0:permission.state;
++        for(const state of s.getAvailableStates(kind)) {
++          const value=state===def?0:state;
++          const id=this.action(p,"state:"+permission.id+":"+value,{verb:"set",permission,kind,value,disabled:locked});
++          row.options.push({id,label:s.getMultichoiceStateLabel(kind,state).slice(0,512)});
++          if(value===selected)row.selected=id;
++        }
++        if(!row.selected)throw new Error("Unknown permission selection");
++      } else if(!policy)row.clear=this.action(p,"clear:"+permission.id,{verb:"clear",permission,kind});
++      return row;
++    });
++    p.identities=p.nextIdentities;
++    const actions=[];
++    if(blocked)actions.push({id:3,label:this.label("site-permissions-open-blocked-popups",{count:blocked})});
++    if(redirect)actions.push({id:4,label:this.label("site-permissions-unblock-redirect")});
++    if(rows.some(row=>row.group==="storage"))actions.push({id:5,label:this.label("identity-permissions-storage-access-learn-more")});
++    if(p.page>0)actions.push({id:6,label:this.label("winui-permissions-previous")});
++    if((p.page+1)*16<permissions.length)actions.push({id:7,label:this.label("winui-permissions-next")});
++    for(const action of actions)p.actions.set(action.id,{verb:({3:"popups",4:"redirect",5:"help",6:"previous",7:"next"})[action.id]});
++    const result={title:w.gNavigatorBundle.getFormattedString("permissions.header",[w.gIdentityHandler.getHostForDisplay()]).slice(0,2048),
++      rows,actions,reload:p.reload?this.label("identity-permissions-reload-hint"):"",empty:this.label("winui-permissions-empty"),
++      close:this.label("winui-permissions-close"),remove:w.gNavigatorBundle.getString("permissions.remove.tooltip"),managed:this.label("winui-permissions-managed"),error:p.error || "",
++      storageTitle:this.label("identity-permissions-storage-access-header"),storageHint:this.label("identity-permissions-storage-access-hint"),protocolTitle:s.getPermissionLabel("open-protocol-handler") || ""};
++    p.authority=JSON.stringify({permissions,blocked,redirect,locks:rows.map(row=>row.locked)});
++    if(JSON.stringify(result).length>65536)throw new Error("Permission description exceeds bound");return result;
++  }
++  refresh(force=false) {
++    const p=this.pending;if(!p || this.mutating)return;
++    if(!this.live(p)){this.dismiss();return;}
++    const model=this.model(p),fingerprint=JSON.stringify([model,p.authority]);
++    if(force || fingerprint!==p.fingerprint){p.fingerprint=fingerprint;p.revision++;p.presentation=model;}
++    const geo=p.permissions.some(row=>row.id==="geo" && row.state===this.window.SitePermissions.ALLOW);
++    if(geo && !p.geoRequested){p.geoRequested=true;void this.window.gPermissionPanel.getGeoLocationLastAccessLabel(p.browser).then(label=>{
++      if(label && this.pending===p && this.live(p) && p.permissions.some(row=>row.id==="geo" && row.state===this.window.SitePermissions.ALLOW)){p.geoLabel=String(label).slice(0,1024);this.refresh();this.invalidate();}
++    }).catch(console.error);}
++    if(!geo){p.geoRequested=false;p.geoLabel="";}
++  }
++  changed(){const p=this.pending;if(p && !this.mutating){const revision=p.revision;this.refresh();if(this.pending===p && p.revision!==revision)this.invalidate();}}
++  locationChanged(){if(this.pending){this.pending.reload=false;this.changed();}}
++  snapshot(){try{this.refresh();}catch(error){console.error(error);this.dismiss();}const p=this.pending;return {enabled:this.eligible(),closed:this.closedSession || 0,...(p?{request:p.request,source:p.source,...(p.session?{session:p.session,revision:p.revision,...p.presentation}:{})}:{})};}
++  execute(action) {
++    const match=/^permissions-panel:(open|dismiss|invoke):([1-9][0-9]*)(?::([1-9][0-9]*))?(?::([1-9][0-9]*))?$/.exec(action.command);
++    if(!match || match.slice(2).some(v=>v!==undefined && (!Number.isSafeInteger(Number(v)) || Number(v)>0xffffffff)))return 2;
++    const p=this.pending;if(!p)return 2;const n=Number(match[2]);
++    if(match[1]==="dismiss"){if(match[3] || n!==p.session)return 2;this.dismiss();return 1;}
++    if(!this.live(p))return 2;
++    if(match[1]==="open") {
++      if(p.session || n!==p.request || !match[3] || match[4] || !this.toolbar.menuAnchor("permissions-panel",action))return 2;
++      p.session=Number(match[3]);this.refresh(true);this.invalidate();return 1;
++    }
++    this.refresh();if(this.pending!==p || n!==p.session)return 2;
++    if(Number(match[3])!==p.revision){if([3,4,5].includes(Number(match[4])))this.dismiss();return 2;}
++    const id=Number(match[4]),item=p.actions.get(id);if(!item || item.disabled || item.verb==="row")return 2;
++    const w=this.window,c=w.gPermissionPanel;this.mutating=true;
++    try {
++      if(item.verb==="clear"){if(!c.clearPermission(item.permission,item.kind,p.browser))return 2;p.reload=true;}
++      else if(item.verb==="set"){if(!c.setPermissionState(item.permission,item.value,p.browser))return 2;}
++      else if(item.verb==="previous")p.page--;
++      else if(item.verb==="next")p.page++;
++      else {this.dismiss();if(item.verb==="popups")p.browser.popupAndRedirectBlocker.unblockAllPopups();else if(item.verb==="redirect")p.browser.popupAndRedirectBlocker.unblockFirstRedirect();else w.openTrustedLinkIn(Services.urlFormatter.formatURLPref("app.support.baseURL")+"site-information-third-party-access","tab");return 1;}
++      p.error="";return 1;
++    } catch(error){console.error(error);p.error=this.label("winui-permissions-error");return 1;}
++    finally {this.mutating=false;if(this.pending===p){this.refresh(true);this.invalidate();}}
++  }
++  dismiss(){const p=this.pending;if(!p)return;this.closedSession=p.session || 0;this.pending=null;this.invalidate();}
++  close(){if(this.closed)return;this.dismiss();this.closed=true;Services.obs.removeObserver(this.permissionChanged,"perm-changed");Services.obs.removeObserver(this.localeChanged,"intl:app-locales-changed");for(const pref of ["permissions.","media.autoplay.","dom.disable_open_during_load"])Services.prefs.removeObserver(pref,this.permissionChanged);}
++}
 diff --git a/browser/base/content/WinUIBookmarkPanel.sys.mjs b/browser/base/content/WinUIBookmarkPanel.sys.mjs
 new file mode 100644
 index 00000000000..4e10b2bd4ae
@@ -24238,10 +24774,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..5af8160e70d
+index 00000000000..eaa89b48f5e
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,549 @@
+@@ -0,0 +1,556 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -24293,6 +24829,8 @@ index 00000000000..5af8160e70d
 +    this.profilerPanel=new WinUIProfilerPanel(this);
 +    const {WinUIBookmarkPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUIBookmarkPanel.sys.mjs");
 +    this.bookmarkPanel=new WinUIBookmarkPanel(this);
++    const {WinUISitePermissionsPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUISitePermissionsPanel.sys.mjs");
++    this.permissionsPanel=new WinUISitePermissionsPanel(this);
 +    const {WinUITabGroupsMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUITabGroupsMenu.sys.mjs");
 +    this.tabGroupsMenu=new WinUITabGroupsMenu(this);
 +    const {WinUIPrivacyPanels}=ChromeUtils.importESModule("chrome://browser/content/WinUIPrivacyPanels.sys.mjs");
@@ -24386,6 +24924,7 @@ index 00000000000..5af8160e70d
 +    state.developerMenu=this.developerMenu.snapshot();
 +    state.profilerPanel=this.profilerPanel.snapshot();
 +    state.bookmarkPanel=this.bookmarkPanel.snapshot();
++    state.permissionsPanel=this.permissionsPanel.snapshot();
 +    state.tabGroupsMenu=this.tabGroupsMenu.snapshot();
 +    Object.assign(state,this.privacyPanels.snapshot(state));
 +    return state;
@@ -24449,6 +24988,7 @@ index 00000000000..5af8160e70d
 +    const {window, owner} = this;
 +    const indicator = ["indicator:private", "indicator:analysis"].includes(action?.command);
 +    const nativeBookmark=typeof action?.command === "string" && action.command.startsWith("bookmark-panel:");
++    const nativePermissions=typeof action?.command === "string" && action.command.startsWith("permissions-panel:");
 +    const nativeProfiler=typeof action?.command === "string" && action.command.startsWith("profiler-panel:");
 +    const nativePrivacy=typeof action?.command === "string" && action.command.startsWith("privacy-panel:");
 +    const nativeTabGroups=typeof action?.command === "string" && action.command.startsWith("tab-groups-menu:");
@@ -24465,17 +25005,18 @@ index 00000000000..5af8160e70d
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!stock && !indicator && !nativeBookmark && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!stock && !indicator && !nativeBookmark && !nativePermissions && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
 +    if (nativeBookmark) return this.bookmarkPanel.execute(action);
++    if (nativePermissions) return this.permissionsPanel.execute(action);
 +    if (nativeProfiler) return this.profilerPanel.execute(action);
 +    if (nativeTabGroups) return this.tabGroupsMenu.execute(action);
 +    if (nativePrivacy) return this.privacyPanels.execute(action);
@@ -24720,6 +25261,7 @@ index 00000000000..5af8160e70d
 +    if(this.overflowMenu?.session)this.overflowMenu.dismiss();
 +    this.profilerPanel?.dismiss();
 +    this.bookmarkPanel?.retire(true);
++    this.permissionsPanel?.dismiss();
 +    if(this.developerMenu?.session)this.developerMenu.dismiss();
 +    if(this.tabGroupsMenu?.session)this.tabGroupsMenu.dismiss();
 +    this.privacyPanels?.dismissAll();
@@ -24770,6 +25312,7 @@ index 00000000000..5af8160e70d
 +    this.developerMenu.close();
 +    this.profilerPanel.close();
 +    this.bookmarkPanel.close();
++    this.permissionsPanel.close();
 +    this.tabGroupsMenu.close();
 +    this.privacyPanels.close();
 +    this.resize.disconnect();

@@ -11,6 +11,7 @@
 #include "AddressContextMenu.h"
 #include "PageActionsMenu.h"
 #include "BookmarkPanel.h"
+#include "SitePermissionsPanel.h"
 
 // Win32 owns keyboard-layout translation. Probe without consuming dead-key state.
 inline bool NativeAltGrTextKey(UINT key) {
@@ -45,6 +46,7 @@ struct NativeAddress {
     PinnedExtensionButtons omnibarLeft, omnibarRight;
     NativePageActionsMenu pageActions;
     NativeBookmarkPanel bookmarkPanel;
+    NativeSitePermissionsPanel permissionsPanel;
     Microsoft::UI::Xaml::Controls::StackPanel trailingActions;
     SuggestionList suggestions;
     GlobalActionsPanel actions;
@@ -808,6 +810,18 @@ struct NativeAddress {
             if(wcsncmp(payload.GetNamedString(L"command").c_str(),L"bookmark-panel:open:",20)!=0 && !bookmarkPanel.opening && releaseMenuFocus)releaseMenuFocus();
             navigate(action.Stringify());
         };
+        permissionsPanel.core=shell.core;
+        permissionsPanel.dispatch=[this](auto const& payload,auto const& button){
+            if(syncing || session.empty() || !navigate)return;
+            auto action=Message(L"navigation");action.SetNamedValue(L"modifiers",JValue::CreateNumberValue(0));for(auto const& value:payload)action.SetNamedValue(value.Key(),value.Value());
+            auto source=button;if(!source.XamlRoot() || !source.IsLoaded())source=pageActions.button;
+            auto local=source.TransformToVisual(nullptr).TransformBounds({0,0,float(source.ActualWidth()),float(source.ActualHeight())});
+            auto screen=source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
+            if(wcsncmp(payload.GetNamedString(L"command").c_str(),L"permissions-panel:open:",23)!=0 && !permissionsPanel.opening && releaseMenuFocus)releaseMenuFocus();
+            navigate(action.Stringify());
+        };
         navigation->profilerPanel.core=shell.core;
         navigation->profilerPanel.releaseFocus=[this]{if(releaseMenuFocus)releaseMenuFocus();};
         navigation->profilerPanel.dispatch=[this](auto command,auto modifiers,auto const& button){
@@ -1070,6 +1084,7 @@ struct NativeAddress {
         const auto overflowMenuState = NativeOverflowMenu::Read(snapshot);
         const auto profilerPanelState = NativeProfilerPanel::Read(snapshot);
         const auto bookmarkPanelState = NativeBookmarkPanel::Read(snapshot);
+        const auto permissionsPanelState = NativeSitePermissionsPanel::Read(snapshot);
         const auto developerMenuState = NativeDeveloperMenu::Read(snapshot);
         const auto tabGroupsMenuState = NativeTabGroupsMenu::Read(snapshot);
         const auto forgetPanelState = navigation ? navigation->forgetPanel.Read(snapshot) : JObject();
@@ -1255,6 +1270,7 @@ struct NativeAddress {
         const bool applyHistory = navigation && navigation->historyMenu.Resolve(historyMenuState);
         const bool applyOverflow = navigation && navigation->overflowMenu.Resolve(overflowMenuState);
         const bool applyBookmark = bookmarkPanel.Resolve(bookmarkPanelState);
+        const bool applyPermissions = permissionsPanel.Resolve(permissionsPanelState);
         const bool applyProfiler = navigation && navigation->profilerPanel.Resolve(profilerPanelState);
         const bool applyDeveloper = navigation && navigation->developerMenu.Resolve(developerMenuState);
         const bool applyTabGroups = navigation && navigation->tabGroupsMenu.Resolve(tabGroupsMenuState);
@@ -1326,6 +1342,8 @@ struct NativeAddress {
             pageActions.Apply(pageActionsState, navigationToolbar && !navigation->customization.editing);
             auto bookmarkSource=omnibarRight.rows.find(bookmarkPanelState.GetNamedString(L"source",L""));
             bookmarkPanel.Apply(bookmarkPanelState,navigationToolbar && !navigation->customization.editing && bookmarkSource!=omnibarRight.rows.end(),bookmarkSource!=omnibarRight.rows.end()?bookmarkSource->second.button:pageActions.button,applyBookmark);
+            auto permissionsSource=omnibarLeft.rows.find(permissionsPanelState.GetNamedString(L"source",L""));
+            permissionsPanel.Apply(permissionsPanelState,navigationToolbar && !navigation->customization.editing,permissionsSource!=omnibarLeft.rows.end()?permissionsSource->second.button:pageActions.button,applyPermissions);
             toolbarSurface.Visibility(navigationToolbar ? Visibility::Visible : Visibility::Collapsed);
             root.Margin(navigationToolbar ? Thickness{8, 4, 8, 4} : Thickness{0, 0, 0, 0});
             hideEmbeddedControls = navigationToolbar;
