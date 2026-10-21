@@ -1128,10 +1128,10 @@ index af4633e94e3..af0053f5435 100644
 +    if (!this.contentData || this.window.gContextMenu !== this) { return; }
  
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..45f7f6c7fec 100644
+index b2b5db6040b..121c7ece47d 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,35 @@ browser.jar:
+@@ -35,2 +35,36 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -1152,6 +1152,7 @@ index b2b5db6040b..45f7f6c7fec 100644
 +        content/browser/WinUITabGroupsMenu.sys.mjs (content/WinUITabGroupsMenu.sys.mjs)
 +        content/browser/WinUIDeveloperMenu.sys.mjs                (content/WinUIDeveloperMenu.sys.mjs)
 +        content/browser/WinUIBackForwardMenu.sys.mjs (content/WinUIBackForwardMenu.sys.mjs)
++        content/browser/WinUIAllTabs.sys.mjs (content/WinUIAllTabs.sys.mjs)
 +        content/browser/WinUIBookmarkPanel.sys.mjs (content/WinUIBookmarkPanel.sys.mjs)
 +        content/browser/WinUISitePermissionsPanel.sys.mjs (content/WinUISitePermissionsPanel.sys.mjs)
 +        content/browser/WinUISelectedTranslationsPanel.sys.mjs (content/WinUISelectedTranslationsPanel.sys.mjs)
@@ -1167,7 +1168,7 @@ index b2b5db6040b..45f7f6c7fec 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +139,17 @@ browser.jar:
+@@ -106 +140,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -9259,10 +9260,10 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..5693b4c57fe 100644
+index 4f28e62c7b5..35b4ba13757 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -520 +520,137 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,141 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -9400,6 +9401,10 @@ index 4f28e62c7b5..5693b4c57fe 100644
 +winui-tracking-next = More sites
 +winui-connection-learn-more = Learn more
 +winui-connection-error = This setting could not be changed. Try again.
++
++# Native All Tabs flyout commands.
++winui-all-tabs-actions = Actions
++winui-all-tabs-back = Back
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -10189,6 +10194,287 @@ index 00000000000..77b064a0da8
 +    this.dismiss();const input=w.windowUtils.setHandlingUserInput(true);
 +    try{row.node.dispatchEvent(event);}finally{input.destruct();}
 +    return 1;
++  }
++}
+diff --git a/browser/base/content/WinUIAllTabs.sys.mjs b/browser/base/content/WinUIAllTabs.sys.mjs
+new file mode 100644
+index 00000000000..43470e1fe45
+--- /dev/null
++++ b/browser/base/content/WinUIAllTabs.sys.mjs
+@@ -0,0 +1,275 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++import {readNativeTabGroups} from "chrome://browser/content/WinUITabGroupsMenu.sys.mjs";
++
++// Firefox owns list eligibility, tab commands, grouping, containers and moves.
++// The existing TabsPanel builds a command model; none of its XUL is shown.
++export class WinUIAllTabs {
++  constructor(owner, window) {
++    this.owner=owner;this.window=window;this.session=this.lastSession=0;
++    this.rowIds=new Map();this.groupVersions=new Map();this.nextId=0;this.pending=new Set();this.lastOperations=new Map();this.containers=new Set();
++    this.events=["TabOpen","TabClose","TabSelect","TabMove","TabAttrModified","TabPinned","TabUnpinned","TabHide","TabShow","TabGrouped","TabUngrouped","TabGroupCreate","TabGroupUpdate","TabGroupRemoved","TabGroupMoved","TabGroupCollapse","TabGroupExpand"];
++    this.changed=(event,topic)=>{
++      if(event?.type && event.currentTarget===this.window.gBrowser.tabContainer){
++        const attrs=event.detail?.changed || [];
++        if(event.type==="TabAttrModified" && !this.modelsDirty && !attrs.some(a=>["muted","soundplaying","hidden"].includes(a)))for(const controller of this.modelControllers || [])controller.handleEvent(event);
++        else this.modelsDirty=true;
++      }else if(topic==="sessionstore-closed-objects-changed" || topic==="browser-tabgroup-removed-from-dom")this.modelsDirty=true;
++      this.dirty=true;this.owner.schedule();
++    };
++    this.topics=["contextual-identity-created","contextual-identity-updated","contextual-identity-deleted","sessionstore-closed-objects-changed","browser-tabgroup-removed-from-dom"];
++    this.preferenceBranches=["privacy.userContext.enabled","browser.tabs.groups.","browser.contentsharing."];
++    this.revokeTopics=["intl:app-locales-changed","domwindowopened","domwindowclosed"];
++    this.revoke=()=>this.dismiss();
++    this.originalShowing=event=>{
++      const p=this.window.gTabsPanel;
++      if([p.allTabsView,p.hiddenTabsView].includes(event.target))this.dismiss();
++    };
++  }
++  live() {
++    const w=this.window;
++    return !this.closed && this.owner.attached && !w.closed && !w.fullScreen && !w.document.fullscreenElement &&
++      !w.gBrowser.tabContainer.verticalMode && !w.gDialogBox.isOpen &&
++      !w.document.documentElement.hasAttribute("customizing") && !this.owner.addressToolbar?.customization?.editorOpen;
++  }
++  label(id,attribute,args) {
++    this.l10n ??= new this.window.Localization(["branding/brand.ftl","browser/allTabsMenu.ftl","browser/tabbrowser.ftl","browser/browser.ftl","toolkit/global/contextual-identity.ftl"],true);
++    const [m]=this.l10n.formatMessagesSync([{id,...(args?{args}:{})}]);
++    return String(m?.attributes?.find(a=>a.name===attribute)?.value ?? m?.value ?? "").slice(0,512);
++  }
++  id(key) {if(!this.rowIds.has(key))this.rowIds.set(key,++this.nextId);return this.rowIds.get(key);}
++  tabId(tab) {if(!this.owner.tabIds.has(tab))this.owner.tabIds.set(tab,this.owner.nextTabId++);return this.owner.tabIds.get(tab);}
++  metrics() {return this.window.gBrowser.TabMetrics.userTriggeredContext(this.window.gBrowser.TabMetrics.METRIC_SOURCE.TAB_OVERFLOW_MENU);}
++  watchWindows(){
++    const compatible=[...(Services.wm?.getEnumerator("navigator:browser") || [this.window])].filter(w=>w.gBrowser && this.window.PrivateBrowsingUtils.isWindowPrivate(w)===this.window.PrivateBrowsingUtils.isWindowPrivate(this.window));
++    const next=new Set(compatible.map(w=>w.gBrowser.tabContainer));next.add(this.window.gBrowser.tabContainer);
++    for(const container of this.containers)if(!next.has(container))for(const type of this.events)container.removeEventListener(type,this.changed);
++    for(const container of next)if(!this.containers.has(container))for(const type of this.events)container.addEventListener(type,this.changed);
++    this.containers=next;
++  }
++  read() {
++    const w=this.window,p=w.gTabsPanel,b=w.gBrowser;
++    p.init();
++    const list=this.hidden?p.hiddenTabsPopup:p.allTabsPanel;
++    // Keep Firefox's command rows across metadata updates. Structural changes
++    // rebuild the model; ordinary title/loading/icon changes use its controller.
++    if(this.modelsDirty){
++      for(const controller of [p.allTabsPanel,p.hiddenTabsPopup,p.hiddenAudioTabsPopup])controller._cleanupDOM();
++      this.modelControllers=this.hidden?[list]:[list,p.hiddenAudioTabsPopup];
++      for(const controller of this.modelControllers)controller._populateDOM();
++      this.modelsDirty=false;
++    }
++    const {ContentSharingUtils:sharing}=ChromeUtils.importESModule("moz-src:///browser/components/sharing/ContentSharingUtils.sys.mjs");
++    const groups=readNativeTabGroups(w,this.label.bind(this),sharing),groupTargets=new Map();
++    const groupCommands=["moveHere","moveNew","share","delete","restore","restoreNew","forget"];
++    const groupRows=groups.map(row=>{
++      const id=this.id((row.saved?"saved-":"recent-")+row.target.id);groupTargets.set(id,row);
++      const previous=this.groupVersions.get(id);
++      const changed=!previous || previous.state!==row.state || (!row.saved && (previous.target!==row.target || previous.owner!==row.owner || previous.tabs.length!==row.tabs.length || previous.tabs.some((t,i)=>t!==row.tabs[i])));
++      const generation=(previous?.generation || 0)+(changed?1:0);
++      this.groupVersions.set(id,{...row,generation});
++      return {id,generation,label:row.label,saved:row.saved,context:row.context.map(c=>({command:groupCommands.indexOf(c.operation)+1,label:this.label(c.l10n,"label"),enabled:c.enabled}))};
++    });
++    const rows=[],targets=new Map();let imageUnits=0;
++    const add=(key,data,target)=>{const id=this.id(key);rows.push({id,...data});targets.set(id,target);};
++    const tabRow=(node,controller)=>{
++      const tab=node._tab,group=node._tabGroup;
++      if(tab) {
++        if(!tab.isConnected || tab.closing || !b.tabs.includes(tab))return;
++        const tabId=this.tabId(tab),container=w.ContextualIdentityService.getPublicIdentityFromId(tab.userContextId);
++        let image=null;
++        if(tab.hidden){const url=b.getIcon(tab) || "";if(url){if(!this.owner.faviconCache.has(url))this.owner.loadTabFavicon(url);image=this.owner.faviconCache.get(url) || null;}}
++        if(image && imageUnits+image.pixels.length<=131072)imageUnits+=image.pixels.length;else image=null;
++        add("tab-"+tabId,{kind:"tab",tab:tabId,image,group:this.owner.stripSession?.ids.get(tab.group) || 0,label:String(tab.label).slice(0,512),
++          detail:String(b.getTabTooltip(tab)).slice(0,2048),selected:tab===b.selectedTab,
++          status:[tab===b.selectedTab && this.label("winui-tab-strip-active"),tab.pinned && this.label("winui-tab-strip-pinned"),tab.hasAttribute("busy") && this.label("winui-tab-strip-loading"),tab.muted?this.label("winui-tab-strip-muted"):tab.soundPlaying && this.label("winui-tab-strip-playing")].filter(Boolean).join(" · ").slice(0,512),
++          container:container?String(w.ContextualIdentityService.getUserContextLabel(tab.userContextId)).slice(0,512):"",
++          audio:!!(tab.soundPlaying || tab.muted),muted:!!tab.muted,pinned:!!tab.pinned,
++          close:this.label("tabbrowser-manager-close-tab","tooltiptext"),
++          mute:this.label(tab.muted?"tabbrowser-manager-unmute-tab":"tabbrowser-manager-mute-tab","tooltiptext"),
++          droppable:!!controller.dropIndicator && !this.hidden,draggable:!this.hidden && !!this.owner.resolveStripTab(tabId)}, {tab,node,controller});
++      } else if(group) {
++        const groupId=this.owner.stripSession?.ids.get(group) || 0;
++        add("group-"+(controller===p.hiddenAudioTabsPopup?"audio-":this.hidden?"hidden-":"main-")+group.id,{kind:"group",tab:0,group:groupId,label:String(group.label || this.label("tab-group-name-default")).slice(0,512),
++          detail:"",selected:false,container:"",audio:false,muted:false,pinned:false,close:"",mute:"",droppable:!!controller.dropIndicator && !this.hidden,draggable:!this.hidden && controller===p.allTabsPanel && !!groupId,context:groupRows.find(r=>groupTargets.get(r.id).target===group)?.context || []}, {group});
++      }
++    };
++    if(!this.hidden) {
++      for(const node of p.hiddenAudioTabs.children)if(node._tab || node._tabGroup)tabRow(node,p.hiddenAudioTabsPopup);
++    }
++    for(const node of list.containerNode.children)if(node._tab || node._tabGroup)tabRow(node,list);
++    const containers=!w.PrivateBrowsingUtils.isWindowPrivate(w) && Services.prefs.getBoolPref("privacy.userContext.enabled") ?
++      w.ContextualIdentityService.getPublicIdentities().map(c=>({id:c.userContextId,label:String(w.ContextualIdentityService.getUserContextLabel(c.userContextId)).slice(0,512)})):[];
++    return {targets,groupTargets,model:{hidden:this.hidden,title:this.label(this.hidden?"all-tabs-menu-hidden-tabs":"tabs-toolbar-list-all-tabs","label"),
++      search:this.label("all-tabs-menu-search-all-tabs","label"),more:this.label("winui-all-tabs-actions"),
++      duplicates:b.getAllDuplicateTabsToClose().length?this.label("all-tabs-menu-close-duplicate-tabs","label"):"",
++      hiddenLabel:p.hasHiddenTabsExcludingFxView()?this.label("all-tabs-menu-hidden-tabs","label"):"",
++      back:this.label("winui-all-tabs-back"),viewAll:this.label("all-tabs-menu-view-all-tabs","label"),
++      newContainer:this.label("all-tabs-menu-new-user-context","label"),
++      addContainer:this.label("user-context-add-container2","label"),
++      manageContainers:this.label("user-context-manage-containers2","label"),
++      groups:groupRows,groupsLabel:this.label("all-tabs-menu-tab-groups-sub-view","title"),rows,containers}};
++  }
++  open(session,bounds) {
++    if(!Number.isInteger(session) || session<=this.lastSession || session>0xffffffff || !this.live())return false;
++    this.dismiss();this.lastSession=session;this.session=session;this.bounds=bounds;this.hidden=false;this.dirty=this.modelsDirty=true;this.revision=this.epoch=0;this.structure=this.fingerprint="";this.lastOperations.clear();
++    this.rowIds.clear();this.groupVersions.clear();this.nextId=0;
++    const p=this.window.gTabsPanel;p.init();
++    // The retained presenter shares these command controllers. Wait for its
++    // cleanup before borrowing them, and revoke before it next builds rows.
++    const popup=p.allTabsView?.closest("panel");
++    if(popup && popup.state!=="closed"){
++      const ready=event=>{if((event && event.target!==popup) || this.originalPopup?.popup!==popup)return;popup.removeEventListener("popuphidden",ready);this.originalPopup=null;if(this.session===session){this.dirty=this.modelsDirty=true;this.publish();}};
++      this.originalPopup={popup,ready};popup.addEventListener("popuphidden",ready);
++    }
++    this.window.document.addEventListener("ViewShowing",this.originalShowing,true);
++    p.hideAllTabsPanel();
++    Glean.browserUiInteraction.allTabsPanelEntrypoint["alltabs-button"].add(1);
++    this.watchWindows();
++    for(const topic of this.revokeTopics)Services.obs.addObserver(this.revoke,topic);
++    for(const topic of this.topics)Services.obs.addObserver(this.changed,topic);
++    for(const branch of this.preferenceBranches)Services.prefs.addObserver(branch,this.changed);
++    this.owner.contextDirty=this.owner.structuralDirty=true;this.owner.schedule();this.publish();return true;
++  }
++  dismiss(fallback=false) {
++    if(!this.session)return;
++    this.window.document.removeEventListener("ViewShowing",this.originalShowing,true);
++    if(this.originalPopup){const {popup,ready}=this.originalPopup;popup.removeEventListener("popuphidden",ready);this.originalPopup=null;}
++    const session=this.session;this.session=0;this.pending.clear();this.targets=this.description=this.groupTargets=null;this.fingerprint="";
++    for(const container of this.containers)for(const type of this.events)container.removeEventListener(type,this.changed);
++    this.containers.clear();this.groupVersions.clear();this.l10n=null;
++    for(const topic of this.revokeTopics)Services.obs.removeObserver(this.revoke,topic);
++    for(const topic of this.topics)Services.obs.removeObserver(this.changed,topic);
++    for(const branch of this.preferenceBranches)Services.prefs.removeObserver(branch,this.changed);
++    for(const controller of [this.window.gTabsPanel.allTabsPanel,this.window.gTabsPanel.hiddenTabsPopup,this.window.gTabsPanel.hiddenAudioTabsPopup])controller?._cleanupDOM();
++    this.owner.contextDirty=this.owner.structuralDirty=true;this.owner.schedule();
++    this.window.windowUtils.syncWinUITabMenu(JSON.stringify({version:2,publishOnly:true,allTabs:{closed:session,...(fallback?{fallback:true}:{})}}));
++  }
++  close() {this.dismiss();this.closed=true;}
++  publish(force=false) {
++    if(!this.session || this.originalPopup)return;
++    if(!this.live()){this.dismiss();return;}
++    if(!force && !this.dirty)return;this.dirty=false;
++    const {model,targets,groupTargets}=this.read(),fingerprint=JSON.stringify(model);
++    // Large lists are bounded explicitly; fallback displays every tab.
++    if(this.rowIds.size>10000 || model.rows.length>2048 || model.groups.length>256 || model.containers.length>128 || fingerprint.length>1000000){this.fallback();return;}
++    this.targets=targets;this.groupTargets=groupTargets;
++    if(!force && fingerprint===this.fingerprint)return;
++    if(this.revision===0xffffffff){this.dismiss();return;}
++    const structure=JSON.stringify({hidden:model.hidden,rows:model.rows.map(r=>[r.id,r.kind,r.tab,r.group,r.draggable,r.droppable,r.pinned,r.audio,r.muted]),
++      groups:model.groups.map(g=>[g.id,g.generation,g.context.map(c=>[c.command,c.enabled])]),containers:model.containers.map(c=>c.id),duplicates:!!model.duplicates});
++    if(structure!==this.structure){this.structure=structure;this.epoch++;}
++    this.fingerprint=fingerprint;this.targets=targets;this.pending.clear();
++    this.description={session:this.session,revision:++this.revision,epoch:this.epoch,...model};
++    this.window.windowUtils.syncWinUITabMenu(JSON.stringify({version:2,publishOnly:true,allTabs:this.description}));
++  }
++  fallback() {
++    const w=this.window,bounds=this.bounds,view=this.hidden?w.gTabsPanel.kElements.hiddenTabsView:w.gTabsPanel.kElements.allTabsView;this.dismiss(true);const scale=w.devicePixelRatio;
++    const anchor=w.document.createElementNS("http://www.w3.org/1999/xhtml","div");anchor.style.cssText="position:fixed;pointer-events:none;opacity:0";
++    Object.assign(anchor.style,{left:`${bounds.x/scale-w.mozInnerScreenX}px`,top:`${bounds.y/scale-w.mozInnerScreenY}px`,width:`${bounds.width/scale}px`,height:`${bounds.height/scale}px`});
++    this.owner.element.append(anchor);w.gTabsPanel.init();
++    Promise.resolve(w.PanelUI.showSubView(view,anchor)).then(()=>{
++      const panel=w.document.getElementById("customizationui-widget-panel");
++      if(panel && panel.state!=="closed")panel.addEventListener("popuphidden",()=>anchor.remove(),{once:true});else anchor.remove();
++    },error=>{anchor.remove();console.error(error);});
++  }
++  execute(action) {
++    if(!this.session || action.menuSession!==this.session)return 2;
++    if(action.operation===0){this.dismiss();return 1;}
++    const operation=action.operation,terminal=[1,5,7,10,11,13,14,15].includes(operation);
++    const reject=()=>{if(terminal)this.dismiss();else if(this.session)this.publish(true);return 2;};
++    this.dirty=this.modelsDirty=true;this.publish();
++    if(!this.session || !Number.isInteger(action.revision) || action.revision<1 || action.revision>this.revision || action.epoch!==this.epoch || !Number.isInteger(operation) || operation<1 || operation>15 || this.pending.has(operation) || (this.lastOperations.get(operation) || 0)>=action.revision)return reject();
++    const w=this.window,b=w.gBrowser,row=this.targets.get(action.row);
++    if([1,2,3,4,12].includes(operation) && !row)return reject();
++    if(row?.tab && (!row.tab.isConnected || row.tab.closing || !b.tabs.includes(row.tab)))return reject();
++    if(row?.group && (!row.group.isConnected || !b.tabGroups.includes(row.group)))return reject();
++    if(operation===3 && !(row.tab?.soundPlaying || row.tab?.muted))return reject();
++    if(operation===10 && (!Number.isInteger(action.container) || !this.description.containers.some(c=>c.id===action.container)))return reject();
++    if(operation===6 && !this.description.duplicates)return reject();
++    if(operation===4 && !this.description.rows.some(r=>r.id===action.row && r.droppable))return reject();
++    if(operation===8 && !this.description.hiddenLabel)return reject();
++    if(operation===9 && !this.hidden)return reject();
++    if([11,15].includes(operation) && !this.description.containers.length)return reject();
++    const group=operation===13 || operation===14 ? (this.groupTargets.get(action.row) || (row?.group && [...this.groupTargets.values()].find(g=>g.target===row.group))) : null;
++    if((operation===13 || operation===14) && !group)return reject();
++    const groupCommands=["moveHere","moveNew","share","delete","restore","restoreNew","forget"];
++    const groupCommand=groupCommands[action.groupCommand-1];
++    if(operation===14 && (!Number.isInteger(action.groupCommand) || !group.context.some(c=>c.operation===groupCommand && c.enabled)))return reject();
++    this.pending.add(operation);this.lastOperations.set(operation,action.revision);
++    const target=row;
++    if(terminal)this.dismiss();
++    const input=w.windowUtils.setHandlingUserInput(true);
++    try {
++      switch(operation) {
++        case 1:
++          if(target.tab){const base=Object.getPrototypeOf(Object.getPrototypeOf(target.controller));base._selectTab.call(target.controller,target.tab);}
++          else target.group.select();
++          break;
++        case 2:case 3: {
++          const node=target.node.querySelector(operation===2?".all-tabs-close-button":".all-tabs-mute-button");
++          if(node)target.controller.handleEvent({type:"command",target:node});
++          else if(operation===2)target.controller.handleEvent({type:"click",button:1,target:target.node});break;
++        }
++        case 4:if(!this.move(action,target))return 2;break;
++        case 5:Glean.browserUiInteraction.listAllTabsAction.search_tabs.add(1);w.gTabsPanel.searchTabs();break;
++        case 6:Glean.browserUiInteraction.listAllTabsAction.close_all_duplicates.add(1);b.removeAllDuplicateTabs();break;
++        case 7:w.FirefoxViewHandler.openTab("opentabs");break;
++        case 8:this.hidden=true;this.modelsDirty=true;break;
++        case 9:this.hidden=false;this.modelsDirty=true;break;
++        case 10:this.containerCommand("Browser:NewUserContextTab",action.container);break;
++        case 11:this.containerCommand("Browser:OpenAboutContainers");break;
++        case 12:target.group.saveAndClose(this.metrics());break;
++        case 13:if(group.saved)w.SessionStore.openSavedTabGroup(group.target.id,w,{source:b.TabMetrics.METRIC_SOURCE.TAB_OVERFLOW_MENU});else{group.target.select();group.owner.focus();}break;
++        case 14: {
++          const {ContentSharingUtils:sharing}=ChromeUtils.importESModule("moz-src:///browser/components/sharing/ContentSharingUtils.sys.mjs");
++          switch(groupCommand){
++            case "moveHere":b.adoptTabGroup(group.target,{tabIndex:b.tabs.length}).select();break;
++            case "moveNew":group.owner.gBrowser.replaceGroupWithWindow(group.target,this.metrics());break;
++            case "share":sharing.handleShareTabGroup(group.target);break;
++            case "delete":group.owner.gBrowser.removeTabGroup(group.target,{metricsContext:this.metrics()});break;
++            case "restore":w.SessionStore.openSavedTabGroup(group.target.id,w,{source:b.TabMetrics.METRIC_SOURCE.TAB_OVERFLOW_MENU});break;
++            case "restoreNew":{const restored=w.SessionStore.openSavedTabGroup(group.target.id,w,{source:b.TabMetrics.METRIC_SOURCE.TAB_OVERFLOW_MENU});b.replaceGroupWithWindow(restored,this.metrics());break;}
++            case "forget":w.SessionStore.forgetSavedTabGroup(group.target.id);break;
++          }break;
++        }
++        case 15:this.containerCommand("Browser:AddContainer");break;
++      }
++      if(!terminal){this.modelsDirty=true;this.publish(true);}
++      return 1;
++    } finally {input.destruct();if(this.session && this.pending.has(operation))this.publish(true);}
++  }
++  containerCommand(command,id) {
++    const w=this.window;
++    if(command==="Browser:AddContainer"){
++      const {ContainerCreationPanel}=ChromeUtils.importESModule("chrome://browser/content/usercontext/ContainerCreationPanel.mjs");
++      ContainerCreationPanel.open(w,"all_tabs_menu");
++    }else if(command==="Browser:OpenAboutContainers")w.openPreferences("paneContainers",{urlParams:{entrypoint:"all_tabs_menu"}});
++    else{
++      // The original helper consumes an event target's container metadata.
++      // This detached node is a command model, never a rendered control.
++      const node=w.document.createXULElement("toolbarbutton");node.setAttribute("data-usercontextid",id);node.setAttribute("data-container-entrypoint","all_tabs_menu");
++      w.openNewUserContextTab({target:node});
++    }
++  }
++  move(action,target) {
++    const w=this.window,source=this.owner.stripSourceWindow(action.sourceHwnd),sourceOwner=source?.gWinUIPane;
++    if(![action.sourceHwnd,action.sourceSession,action.sourceTab,action.sourceGroup].every(Number.isSafeInteger) || action.sourceHwnd<=0 || action.sourceSession<1 || action.sourceSession>0xffffffff || action.sourceTab<0 || action.sourceTab>0xffffffff || action.sourceGroup<0 || action.sourceGroup>0xffffffff || !!action.sourceTab===!!action.sourceGroup)return false;
++    if(!sourceOwner?.attached || source.gDialogBox?.isOpen || source.fullScreen || source.document.fullscreenElement || source.gBrowser.tabContainer.verticalMode || sourceOwner.addressToolbar?.customization?.editorOpen || sourceOwner.stripSession?.windowDragSession!==action.sourceSession ||
++       w.PrivateBrowsingUtils.isWindowPrivate(source)!==w.PrivateBrowsingUtils.isWindowPrivate(w) || typeof action.before!=="boolean")return false;
++    let dragged=action.sourceGroup?sourceOwner.stripSession.targets.get(action.sourceGroup):sourceOwner.resolveStripTab(action.sourceTab);
++    if(!dragged?.isConnected || ((dragged.splitview || dragged).tabs || [dragged]).some(t=>t.closing || source.gBrowser.isTabPendingPermitUnload(t)))return false;
++    let destination=target.tab || target.group?.labelElement;
++    if(target.group===dragged)return false;
++    if(destination?.splitview)destination=action.before?destination.splitview.tabs[0]:destination.splitview.tabs.at(-1);
++    if(!destination?.isConnected || destination===dragged || (dragged.splitview?.tabs || dragged.tabs || []).includes(destination))return false;
++    if(source!==w)dragged=action.sourceGroup? w.gBrowser.adoptTabGroup(dragged,{tabIndex:w.gBrowser.tabs.length}):w.gBrowser.adoptTab(dragged,{elementIndex:w.gBrowser.tabs.length,selectTab:false});
++    if(!dragged)return false;
++    dragged=dragged.splitview || dragged;
++    if(action.before)w.gBrowser.moveTabBefore(dragged,destination,{metricsContext:this.metrics()});
++    else w.gBrowser.moveTabAfter(dragged,destination,{metricsContext:this.metrics()});
++    return true;
 +  }
 +}
 diff --git a/browser/base/content/WinUIPageContextMenu.sys.mjs b/browser/base/content/WinUIPageContextMenu.sys.mjs
@@ -20981,13 +21267,32 @@ index 00000000000..7a81b6525e3
 +}
 diff --git a/browser/base/content/WinUITabGroupsMenu.sys.mjs b/browser/base/content/WinUITabGroupsMenu.sys.mjs
 new file mode 100644
-index 00000000000..9f7d8fdffd5
+index 00000000000..be4830a0b21
 --- /dev/null
 +++ b/browser/base/content/WinUITabGroupsMenu.sys.mjs
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,121 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++export function readNativeTabGroups(window,label,sharing){
++    const w=window;
++    const open=w.gBrowser.getAllTabGroups({sortByLastSeenActive:true});
++    const saved=w.PrivateBrowsingUtils.isWindowPrivate(w)?[]:[...w.SessionStore.savedGroups].sort((a,b)=>b.closedAt-a.closedAt);
++    return [...open.map(target=>{
++      const owner=target.documentGlobal,alone=target.tabs.length===owner.gBrowser.openTabs.length;
++      return {target,owner,tabs:[...target.tabs],saved:false,state:JSON.stringify([target.id,target.name,target.color,target.collapsed,target.tabs.map(t=>owner.gBrowser.tabs.indexOf(t)),alone]),
++        label:String(target.name || label("tab-group-name-default")).slice(0,512),
++        context:[{operation:"moveHere",l10n:"tab-group-context-move-to-this-window",enabled:target.ownerDocument!==w.document},
++          {operation:"moveNew",l10n:"tab-group-context-move-to-new-window",enabled:!alone},
++          ...(sharing.isEnabled?[{operation:"share",l10n:"tab-group-context-share-group",enabled:true}]:[]),
++          {operation:"delete",l10n:"tab-group-context-delete",enabled:true}]};
++    }),...saved.map(target=>({target,saved:true,state:JSON.stringify(target),
++      label:label("tab-group-menu-closed-tab-group","title",{tabGroupName:target.name || label("tab-group-name-default")}),
++      context:[{operation:"restore",l10n:"tab-group-context-open-saved-group-in-this-window",enabled:true},
++        {operation:"restoreNew",l10n:"tab-group-context-open-saved-group-in-new-window",enabled:true},
++        {operation:"forget",l10n:"tab-group-context-delete",enabled:true}]}))];
++}
 +
 +// A toolbar projection of Firefox's tab-groups list and its two context menus.
 +// Firefox owns group order, private isolation, restore/move/delete and metrics.
@@ -21020,24 +21325,7 @@ index 00000000000..9f7d8fdffd5
 +    metrics:ChromeUtils.importESModule("moz-src:///browser/components/tabbrowser/TabMetrics.sys.mjs").TabMetrics,
 +    sharing:ChromeUtils.importESModule("moz-src:///browser/components/sharing/ContentSharingUtils.sys.mjs").ContentSharingUtils,
 +  };}
-+  read(){
-+    const w=this.window,{sharing}=this.services();
-+    const open=w.gBrowser.getAllTabGroups({sortByLastSeenActive:true});
-+    const saved=w.PrivateBrowsingUtils.isWindowPrivate(w)?[]:[...w.SessionStore.savedGroups].sort((a,b)=>b.closedAt-a.closedAt);
-+    return [...open.map(target=>{
-+      const owner=target.documentGlobal,alone=target.tabs.length===owner.gBrowser.openTabs.length;
-+      return {target,owner,tabs:[...target.tabs],saved:false,state:JSON.stringify([target.id,target.name,target.color,target.collapsed,target.tabs.map(t=>owner.gBrowser.tabs.indexOf(t)),alone]),
-+        label:String(target.name || this.label("tab-group-name-default")).slice(0,512),
-+        context:[{operation:"moveHere",l10n:"tab-group-context-move-to-this-window",enabled:target.ownerDocument!==w.document},
-+          {operation:"moveNew",l10n:"tab-group-context-move-to-new-window",enabled:!alone},
-+          ...(sharing.isEnabled?[{operation:"share",l10n:"tab-group-context-share-group",enabled:true}]:[]),
-+          {operation:"delete",l10n:"tab-group-context-delete",enabled:true}]};
-+    }),...saved.map(target=>({target,saved:true,state:JSON.stringify(target),
-+      label:this.label("tab-group-menu-closed-tab-group","title",{tabGroupName:target.name || this.label("tab-group-name-default")}),
-+      context:[{operation:"restore",l10n:"tab-group-context-open-saved-group-in-this-window",enabled:true},
-+        {operation:"restoreNew",l10n:"tab-group-context-open-saved-group-in-new-window",enabled:true},
-+        {operation:"forget",l10n:"tab-group-context-delete",enabled:true}]}))];
-+  }
++  read(){return readNativeTabGroups(this.window,this.label.bind(this),this.services().sharing);}
 +  signature(rows){return JSON.stringify(rows.slice(0,40).map(({target,owner,tabs,...row})=>row));}
 +  snapshot(){
 +    const source=this.source();
@@ -23194,7 +23482,7 @@ index 00000000000..1dc7b4fee7a
 +}
 diff --git a/browser/base/content/WinUITabStripSession.sys.mjs b/browser/base/content/WinUITabStripSession.sys.mjs
 new file mode 100644
-index 00000000000..ce8f9831359
+index 00000000000..d157ffd07a8
 --- /dev/null
 +++ b/browser/base/content/WinUITabStripSession.sys.mjs
 @@ -0,0 +1,318 @@
@@ -23382,12 +23670,12 @@ index 00000000000..ce8f9831359
 +    }
 +    if (event?.kind === "strip-all-tabs") {
 +      if (event.session !== this.windowDragSession || !this.fresh(event.revision) ||
-+          !this.openAllTabsMenu ||
++          !this.openAllTabsMenu || !Number.isInteger(event.menuSession) || event.menuSession<1 || event.menuSession>0xffffffff ||
 +          ![event.x,event.y,event.width,event.height].every(n => Number.isFinite(n) && Math.abs(n) <= 1000000) ||
 +          event.width <= 0 || event.height <= 0) return false;
 +      return this.openAllTabsMenu({
 +        x:event.x, y:event.y, width:event.width, height:event.height,
-+      }) !== false;
++      },event.menuSession) !== false;
 +    }
 +    if (event?.kind === "strip-group-context") {
 +      if (this.consumed || event.session !== this.windowDragSession || !this.fresh(event.revision) ||
@@ -27105,10 +27393,10 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..1dfbbd1eb4f
+index 00000000000..f11886da663
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2209 @@
+@@ -0,0 +1,2202 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -27621,6 +27909,7 @@ index 00000000000..1dfbbd1eb4f
 +  // rejected rather than applied to the wrong tab.
 +  executeStripRequest(action) {
 +    if(action?.kind==="group-header")return this.groupHeader?.execute(action) || 2;
++    if(action?.kind==="all-tabs")return this.allTabsController?.execute(action) || 2;
 +    // A gesture that moves or tears out a tab cannot be honoured while a modal
 +    // dialog owns the window or while the window is in fullscreen (where the
 +    // strip is not the thing the user is looking at). The caller already
@@ -27630,6 +27919,8 @@ index 00000000000..1dfbbd1eb4f
 +    if (!this.stripSession) return 2;
 +    if (!this.stripSession.receive(action)) {
 +      if(action?.kind==="strip-group-context" && action.creation)this.groupHeader?.rejectCreation(action);
++      if(action?.kind==="strip-all-tabs" && Number.isInteger(action.menuSession) && action.menuSession>0 && action.menuSession<=0xffffffff)
++        window.windowUtils.syncWinUITabMenu(JSON.stringify({version:2,publishOnly:true,allTabs:{closed:action.menuSession}}));
 +      return 2;
 +    }
 +    // Any of these can move a tab between windows or change the row set, so
@@ -28067,7 +28358,7 @@ index 00000000000..1dfbbd1eb4f
 +      );
 +      this.localization();
 +      this.tabMenuSession = new WinUITabMenuSession({
-+        resolveTab: id => this.resolveStripTab(id),
++        resolveTab: id => this.allTabsController?.session ? Array.from(gBrowser.tabs).find(t=>this.tabIds.get(t)===id && t.isConnected && !t.closing) : this.resolveStripTab(id),
 +        describe: (tab, surface) => surface === "tab-bar" ? this.describeTabBarMenu() :
 +          surface === "new-tab" ? this.describeContainerMenu(null) : this.describeTabMenu(tab),
 +        context: () => ({ selected: this.tabIds.get(gBrowser.selectedTab) || 0,
@@ -28114,9 +28405,11 @@ index 00000000000..1dfbbd1eb4f
 +        },
 +      });
 +    }
-+    const snapshot = this.tabMenuSession.update(
-+      new Map(tabs.map((tab, i) => [ids[i], tab]))
-+    );
++    const menuTabs=this.allTabsController?.session ? Array.from(gBrowser.tabs).filter(t=>t.isConnected && !t.closing) : tabs;
++    const snapshot = this.tabMenuSession.update(new Map(menuTabs.map(tab=>{
++      if(!this.tabIds.has(tab))this.tabIds.set(tab,this.nextTabId++);
++      return [this.tabIds.get(tab),tab];
++    })));
 +    if (snapshot) {
 +      window.windowUtils.syncWinUITabMenu(JSON.stringify(snapshot));
 +      return;
@@ -28206,28 +28499,12 @@ index 00000000000..1dfbbd1eb4f
 +          return true;
 +        },
 +        openGroupMenu: (group, bounds, session, creation) => this.groupHeaderController().open(group,bounds,session,creation),
-+        openAllTabsMenu: bounds => {
-+          if (gDialogBox.isOpen) return false;
-+          gTabsPanel.init();
-+          if (this.allTabsAnchor?.open) {
-+            document.getElementById("customizationui-widget-panel")?.hidePopup();
-+            return true;
++        openAllTabsMenu: (bounds, session) => {
++          if (!this.allTabsController) {
++            const {WinUIAllTabs}=ChromeUtils.importESModule("chrome://browser/content/WinUIAllTabs.sys.mjs");
++            this.allTabsController=new WinUIAllTabs(this,window);
 +          }
-+          const scale = window.devicePixelRatio;
-+          if (!this.allTabsAnchor) {
-+            this.allTabsAnchor = document.createElementNS("http://www.w3.org/1999/xhtml", "div");
-+            this.allTabsAnchor.style.cssText = "position:fixed;pointer-events:none;opacity:0;";
-+            this.element.append(this.allTabsAnchor);
-+          }
-+          Object.assign(this.allTabsAnchor.style, {
-+            left: `${bounds.x / scale - window.mozInnerScreenX}px`,
-+            top: `${bounds.y / scale - window.mozInnerScreenY}px`,
-+            width: `${bounds.width / scale}px`,
-+            height: `${bounds.height / scale}px`,
-+          });
-+          Glean.browserUiInteraction.allTabsPanelEntrypoint["alltabs-button"].add(1);
-+          PanelUI.showSubView(gTabsPanel.kElements.allTabsView, this.allTabsAnchor);
-+          return true;
++          return this.allTabsController.open(session,bounds);
 +        },
 +        selectGroupTab: (group, id) => {
 +          if (gDialogBox.isOpen || !group?.isConnected || !group.collapsed || !gBrowser.tabGroups.includes(group)) return false;
@@ -28390,6 +28667,7 @@ index 00000000000..1dfbbd1eb4f
 +        image.src = "";
 +        while (this.faviconCache.size > this.kMaxFaviconCache)
 +          this.faviconCache.delete(this.faviconCache.keys().next().value);
++        if(this.allTabsController?.session)this.allTabsController.changed();
 +        // A decode finishing is a real change with no tab event behind it. It
 +        // used to be picked up by the next timer tick; now it schedules its own
 +        // publication, so nothing has to keep looking for it.
@@ -28847,6 +29125,7 @@ index 00000000000..1dfbbd1eb4f
 +  publishState(force = false) {
 +    if (!this.element || !this.attached || this.processingAction) return;
 +    this.groupHeader?.publish();
++    this.allTabsController?.publish();
 +    if (force || this.structuralDirty || !this.nativeRevision) {
 +      this.syncTabs();
 +      return;
@@ -28963,6 +29242,7 @@ index 00000000000..1dfbbd1eb4f
 +  syncTabs() {
 +    if (!this.element || !this.attached || this.processingAction) return;
 +    this.groupHeader?.publish();
++    this.allTabsController?.publish();
 +    const tabs = this.visibleTabs();
 +    const ids = tabs.map(tab => {
 +      if (!this.tabIds.has(tab)) this.tabIds.set(tab, this.nextTabId++);
@@ -29252,6 +29532,7 @@ index 00000000000..1dfbbd1eb4f
 +    this.addressToolbar?.close();
 +    this.addressToolbar = null;
 +    this.groupHeader?.close();this.groupHeader=null;
++    this.allTabsController?.close();this.allTabsController=null;
 +    this.tabMenuSession = null;
 +    this.stripSession = null;
 +    this.tabMenuL10n = null;

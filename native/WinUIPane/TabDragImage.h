@@ -32,6 +32,7 @@ struct CaptureCorners {
     explicit CaptureCorners(winrt::Microsoft::UI::Xaml::Controls::TabViewItem const& row) {
         using namespace winrt::Microsoft::UI::Xaml;
         auto root = Media::VisualTreeHelper::GetChild(row, 0).as<FrameworkElement>();
+        if (!root) return;
         container = root.FindName(L"TabContainer").try_as<Controls::Grid>();
         if (!container) return;
         auto property = Controls::Grid::CornerRadiusProperty();

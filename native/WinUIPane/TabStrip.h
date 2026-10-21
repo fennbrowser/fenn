@@ -9,6 +9,7 @@
 #include "TabGroupsButton.h"
 #include "GroupHeader.h"
 #include "AllTabsButton.h"
+#include "AllTabsPanel.h"
 #include "TabDragImage.h"
 #include "ShellCore.h"
 #include "InlineTabGroups.h"
@@ -134,6 +135,7 @@ struct NativeTabStrip {
     std::map<uint32_t, Presentation> presentation;
     TabGroupsButton groupsButton;
     AllTabsButton allTabs;
+    NativeAllTabsPanel allTabsPanel;
     // Left of the first tab: an optional control owned by another surface (the
     // product menu button), then the list-all-tabs button and the groups button.
     Controls::StackPanel header{nullptr};
@@ -1106,6 +1108,7 @@ struct NativeTabStrip {
         const auto state=GroupDrag();
         if (state.phase==2) {
             if (old.phase==1) {
+                if(GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS",nullptr,0))fprintf(stderr,"AllTabs group-promote x=%.1f y=%.1f down=%d\n",point.X,point.Y,down);
                 BeginGroupSelectionGuard();
                 ::SetCapture(ownerHwnd);
                 CollapseDraggingGroup(state.group);
@@ -1451,6 +1454,10 @@ struct NativeTabStrip {
         if (core) shell_core_tab_drag_state(core, &state);
         return state;
     }
+    void StartGroupDragTimer() {
+        if(!groupDragVisual.timer){groupDragVisual.timer=root.DispatcherQueue().CreateTimer();groupDragVisual.timer.Interval(std::chrono::milliseconds(16));groupDragVisual.timer.Tick([this,alive=std::weak_ptr<int>(lifetime)](auto&&,auto&&){if(alive.expired())return;try{if(tickDragSession)tickDragSession();}catch(...){}});}
+        groupDragVisual.timer.Start();
+    }
     void StartTabDragTimer() {
         if (!tabDragTimer) {
             tabDragTimer = root.DispatcherQueue().CreateTimer();
@@ -1781,18 +1788,19 @@ struct NativeTabStrip {
         OpenGroupEditor(group,button,request);
     }
 
-    // Names the button's screen rectangle; Firefox opens its own all-tabs panel there.
+    // Names the native opening and anchor; Firefox publishes the live list.
     void OpenAllTabs() {
         if (!dispatch || IsDragging() || GroupDrag().phase || !allTabs.button.XamlRoot()) return;
         auto button = allTabs.button;
+        const auto session=allTabsPanel.Open(button);if(!session)return;
         auto local = button.TransformToVisual(nullptr).TransformBounds(
             {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
         auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-        // The panel belongs to Gecko; release island keyboard focus first.
-        if (ownerHwnd) SetFocus(ownerHwnd);
+        // The panel stays in the strip island; terminal commands hand focus back after closure.
         using Value = Windows::Data::Json::JsonValue;
         Windows::Data::Json::JsonObject action;
         action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-all-tabs"));
+        action.SetNamedValue(L"menuSession", Value::CreateNumberValue(session));
         action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));
         action.SetNamedValue(L"session", Value::CreateNumberValue(windowDragSession));
         action.SetNamedValue(L"x", Value::CreateNumberValue(screen.X));
@@ -3492,6 +3500,7 @@ struct NativeTabStrip {
             faviconImage.Source(nullptr);
             faviconImage.Tag(box_value(hstring{}));
         }
+        allTabsPanel.RefreshTabImage(id);
         faviconImage.Visibility(!isBusy && hasImage ? Visibility::Visible : Visibility::Collapsed);
         busy.Visibility(isBusy ? Visibility::Visible : Visibility::Collapsed);
         busy.IsActive(isBusy);

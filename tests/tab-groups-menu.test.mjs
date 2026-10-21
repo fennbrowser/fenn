@@ -18,7 +18,7 @@ function fixture(){
     customization:{current:{items:[item]},entries:new Map([['tab-groups-button',{id:item.id,node:source}]]),nativeOverflow:new Set(),ui:{getWidget:()=>({forWindow:()=>({node:source})})}}};
   toolbar.customization.stock={dispatch:(...args)=>{calls.push(['more',...args]);return 1;}};
   const context=vm.createContext({console,ChromeUtils:{importESModule:()=>({TabMetrics:metrics,ContentSharingUtils:sharing})},Services:{wm:{getEnumerator:()=>[window]},prefs:{getBoolPref:(k,f)=>prefs.get(k)??f,addObserver(){},removeObserver(){}},obs:{addObserver(){},removeObserver(){}}}});
-  vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUITabGroupsMenu.sys.mjs',import.meta.url),'utf8').replace('export class WinUITabGroupsMenu','this.Menu=class WinUITabGroupsMenu'),context);
+  vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUITabGroupsMenu.sys.mjs',import.meta.url),'utf8').replace('export function readNativeTabGroups','function readNativeTabGroups').replace('export class WinUITabGroupsMenu','this.Menu=class WinUITabGroupsMenu'),context);
   const menu=new context.Menu(toolbar);toolbar.navigationState=()=>({tabGroupsMenu:menu.snapshot()});
   const add=(name='Group',owner=window)=>{const group={id:'group-'+groups.length,name,color:'blue',collapsed:true,lastSeenActive:1,tabs:[{_tPos:0}],documentGlobal:owner,ownerDocument:owner.document,select(){calls.push(['select',this]);}};groups.push(group);return group;};
   const open=()=>menu.execute({command:'tab-groups-menu:open:1',x:10,y:10,width:32,height:32});

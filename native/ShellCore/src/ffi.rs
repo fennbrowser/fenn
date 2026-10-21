@@ -206,6 +206,7 @@ pub struct ShellCore {
     overflow_menu: crate::surface_menu::SurfaceMenu,
     developer_menu: crate::surface_menu::SurfaceMenu,
     back_forward_menu: crate::surface_menu::SurfaceMenu,
+    all_tabs_panel: crate::surface_menu::SurfaceMenu,
     tab_groups_menu: crate::surface_menu::SurfaceMenu,
     group_header: crate::surface_menu::SurfaceMenu,
     profiler_panel: crate::surface_menu::SurfaceMenu,
@@ -445,6 +446,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         overflow_menu: Default::default(),
         developer_menu: Default::default(),
         back_forward_menu: Default::default(),
+        all_tabs_panel: crate::surface_menu::SurfaceMenu::with_description_limit(1048576),
         tab_groups_menu: Default::default(),
         group_header: Default::default(),
         profiler_panel: Default::default(),
@@ -788,6 +790,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
         core.overflow_menu.dismiss();
         core.developer_menu.dismiss();
         core.back_forward_menu.dismiss();
+        core.all_tabs_panel.dismiss();
         core.tab_groups_menu.dismiss();
         core.group_header.dismiss();
         core.profiler_panel.dismiss();
@@ -825,6 +828,7 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
         core.overflow_menu.dismiss();
         core.developer_menu.dismiss();
         core.back_forward_menu.dismiss();
+        core.all_tabs_panel.dismiss();
         core.tab_groups_menu.dismiss();
         core.group_header.dismiss();
         core.profiler_panel.dismiss();
@@ -906,6 +910,7 @@ pub enum ShellPublicationChannel {
     SelectedTranslationsPanel = 23,
     PageContextMenu = 24,
     BackForwardMenu = 25,
+    AllTabsPanel = 26,
 }
 
 /// What one channel did with the publications it received, for diagnostics.
@@ -935,6 +940,7 @@ pub unsafe extern "C" fn shell_core_publication_stats(
             c if c == ShellPublicationChannel::OverflowMenu as u32 => core.overflow_menu.counts(),
             c if c == ShellPublicationChannel::DeveloperMenu as u32 => core.developer_menu.counts(),
             c if c == ShellPublicationChannel::BackForwardMenu as u32 => core.back_forward_menu.counts(),
+            c if c == ShellPublicationChannel::AllTabsPanel as u32 => core.all_tabs_panel.counts(),
             c if c == ShellPublicationChannel::TabGroupsMenu as u32 => core.tab_groups_menu.counts(),
             c if c == ShellPublicationChannel::GroupHeader as u32 => core.group_header.counts(),
             c if c == ShellPublicationChannel::ProfilerPanel as u32 => core.profiler_panel.counts(),
@@ -4898,4 +4904,101 @@ mod back_forward_menu_ffi_tests {
   shell_core_close(core);assert_eq!(shell_core_back_forward_menu_open(core,&mut back_forward),ShellStatus::Closed);
   shell_core_destroy(core);
  }}
+}
+
+// Independent All Tabs list; retained actions and shared session publication.
+/// Allocate a window-scoped menu opening. Zero means identity exhaustion.
+/// # Safety
+/// Live core and writable out.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_all_tabs_panel_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
+ let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.all_tabs_panel.open();ShellStatus::Ok})
+}
+/// Revoke a window-scoped menu, preserving its identity high-water mark.
+/// # Safety
+/// Live core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_all_tabs_panel_dismiss(core:*mut ShellCore)->ShellStatus {
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.all_tabs_panel.dismiss();ShellStatus::Ok})
+}
+/// Resolve a validated session description before mutating the host container.
+/// Accepted work is committed and counted by shell_core_all_tabs_panel_accept;
+/// ignored/refused work ends here, without changing menu or action identity.
+/// # Safety
+/// Live core, readable arrays (null only for zero length), writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_all_tabs_panel_resolve(core:*mut ShellCore,session:u32,revision:u32,
+ actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
+ let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
+ if count>crate::surface_menu::MAX_ACTIONS || units>1048576 || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
+ guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.all_tabs_panel.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+
+/// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
+/// # Safety
+/// Live core, readable arrays (null only for zero length), writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_all_tabs_panel_accept(core:*mut ShellCore,session:u32,revision:u32,
+ actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
+ let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
+ if count>crate::surface_menu::MAX_ACTIONS || units>1048576 || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+ let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
+ let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
+ guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.all_tabs_panel.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+}
+/// Consume one current enabled action; dismissal and late updates cannot resurrect it.
+/// # Safety
+/// Live core and writable accepted.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_all_tabs_panel_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
+ let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.all_tabs_panel.activate_retained(session,revision,action)}else{c.all_tabs_panel.activate(session,revision,action)};ShellStatus::Ok})
+}
+
+
+/// Project a bounded realized list onto a stable opaque row ID.
+/// # Safety
+/// Live core, readable rows (null only for zero count), writable outputs.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_all_tabs_panel_project(core:*mut ShellCore,rows:*const crate::all_tabs::ShellAllTabsRow,count:usize,
+ y:f64,top:f64,bottom:f64,out:*mut u32,before:*mut bool)->ShellStatus {
+ let (Some(out),Some(before))=(out.as_mut(),before.as_mut()) else{return ShellStatus::InvalidArgument;};*out=0;*before=false;
+ if count>crate::all_tabs::MAX_ROWS || (rows.is_null() && count!=0){return ShellStatus::InvalidArgument;}
+ let rows=if count==0{&[]}else{std::slice::from_raw_parts(rows,count)};
+ guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match crate::all_tabs::project(rows,y,top,bottom){
+  Ok(Some((id,at)))=>{*out=id;*before=at;ShellStatus::Ok},Ok(None)=>ShellStatus::Ok,Err(())=>ShellStatus::InvalidArgument,
+ }})
+}
+
+#[cfg(test)]
+mod all_tabs_panel_ffi_tests {
+ use super::*;
+ #[test] fn independent_retained_actions_bounds_cancellation_and_shutdown(){unsafe{
+  let core=shell_core_create(std::ptr::null());assert!(!core.is_null());
+  let(mut s,mut other,mut changed)=(0,0,false);shell_core_all_tabs_panel_open(core,&mut s);shell_core_back_forward_menu_open(core,&mut other);
+  shell_core_all_tabs_panel_resolve(core,s,1,[1,2].as_ptr(),2,[7].as_ptr(),1,&mut changed);assert!(changed);
+  shell_core_all_tabs_panel_activate(core,s,1,2,true,&mut changed);assert!(!changed);
+  shell_core_all_tabs_panel_accept(core,s,1,[1,2].as_ptr(),2,[7].as_ptr(),1,&mut changed);assert!(changed);
+  shell_core_back_forward_menu_dismiss(core);
+  shell_core_all_tabs_panel_activate(core,s,1,2,true,&mut changed);assert!(changed);
+  shell_core_all_tabs_panel_activate(core,s,1,2,true,&mut changed);assert!(!changed);
+  shell_core_all_tabs_panel_accept(core,s,2,[1,2].as_ptr(),2,[8].as_ptr(),1,&mut changed);assert!(changed);
+  shell_core_all_tabs_panel_activate(core,s,1,1,false,&mut changed);assert!(!changed);
+  shell_core_all_tabs_panel_activate(core,s,2,1,false,&mut changed);assert!(changed);
+  shell_core_all_tabs_panel_open(core,&mut s);shell_core_cancel_all(core);
+  shell_core_all_tabs_panel_accept(core,s,1,[1].as_ptr(),1,[7].as_ptr(),1,&mut changed);assert!(!changed);
+  assert_eq!(shell_core_all_tabs_panel_resolve(core,s,1,std::ptr::null(),0,std::ptr::null(),1048577,&mut changed),ShellStatus::InvalidArgument);
+  shell_core_close(core);assert_eq!(shell_core_all_tabs_panel_open(core,&mut s),ShellStatus::Closed);shell_core_destroy(core);
+ }}
+}
+
+/// Center a promoted secondary-list drag in the strip's measured row geometry.
+/// # Safety
+/// Live core on its owner thread.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_tab_drag_list_origin(core:*mut ShellCore)->ShellStatus {
+ queue_guard(core,|q|if q.tab_drag.list_origin(){ShellStatus::Ok}else{ShellStatus::InvalidArgument})
 }

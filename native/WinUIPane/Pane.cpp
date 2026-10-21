@@ -324,7 +324,9 @@ struct TabDragSession {
     HWND sourceHwnd{};
     NativeTabStrip* sourceStrip{};
     uint32_t tabId{};
-    bool groupSource{};
+    bool groupSource{},listSource{};
+    UIElement listVisual{nullptr};
+    NativeAllTabsPanel* hoverPanel{};
     // Whichever pane's own strip is currently showing a live "make room"
     // preview: sourceStrip itself while still hovering the strip the
     // gesture started on, a different pane's own strip while hovering it
@@ -390,6 +392,7 @@ struct Pane {
     }
     void DismissMenus() {
         if (address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); if(address->navigation)address->navigation->backForwardMenu.LightDismiss(); }
+        if (strip) strip->allTabsPanel.LightDismiss(true);
         if (tabMenu.active) tabMenu.Dismiss();
         if (strip) strip->inlineGroups.hover.Dismiss();
         if (address && address->mode.flyout.IsOpen()) address->mode.flyout.Hide();
@@ -429,6 +432,7 @@ struct Pane {
         const bool addressPopup = InPopups(addressSource ? addressIsland : contentIsland, target);
         // All submenu windows belong to the same island popup graph.
         if (!stripPopup && tabMenu.active) tabMenu.Dismiss();
+        if(!stripPopup && strip)strip->allTabsPanel.LightDismiss();
         if (!stripPopup && strip && (strip->inlineGroups.hover.open || strip->inlineGroups.hover.showPending))
             strip->inlineGroups.hover.Dismiss();
         if (!addressPopup && address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); if(address->navigation)address->navigation->backForwardMenu.LightDismiss(); }
@@ -625,7 +629,7 @@ struct Pane {
         // it replaced) can genuinely still be in progress when a window
         // closes -- abort it rather than leave a dangling sourceStrip/
         // hoverStrip pointer for the next tick to dereference.
-        if (strip && (strip.get() == dragSession().sourceStrip || strip.get() == dragSession().hoverStrip))
+        if (strip && (strip.get() == dragSession().sourceStrip || strip.get() == dragSession().hoverStrip || &strip->allTabsPanel == dragSession().hoverPanel))
             AbortDragSession();
         // Ordered teardown: stop accepting requests and drop the host wakeup
         // before anything the queued work refers to goes away, then release the
@@ -654,6 +658,7 @@ struct Pane {
                 {SHELL_PUBLICATION_CHANNEL_OVERFLOW_MENU, L"overflow-menu"},
                 {SHELL_PUBLICATION_CHANNEL_DEVELOPER_MENU, L"developer-menu"},
                 {SHELL_PUBLICATION_CHANNEL_BACK_FORWARD_MENU, L"back-forward-menu"},
+                {SHELL_PUBLICATION_CHANNEL_ALL_TABS_PANEL, L"all-tabs-panel"},
                 {SHELL_PUBLICATION_CHANNEL_TAB_GROUPS_MENU, L"tab-groups-menu"},
                 {SHELL_PUBLICATION_CHANNEL_GROUP_HEADER, L"group-header"},
                 {SHELL_PUBLICATION_CHANNEL_FORGET_PANEL, L"forget-panel"},
@@ -954,6 +959,45 @@ struct Pane {
         strip->armDragSession = [this](uint32_t id) { ArmDragSession(*this, id); };
         strip->armGroupDragSession = [this](uint32_t id) { ArmDragSession(*this,id); dragSession().groupSource=true; };
         strip->tickDragSession = TickDragSession;
+        strip->allTabsPanel.core=shell.core;
+        strip->allTabsPanel.ownerHwnd=parent;
+        strip->allTabsPanel.dispatch=[this](auto const& action){if(strip && strip->dispatch)strip->dispatch(0,action.Stringify());};
+        strip->allTabsPanel.releaseFocus=[this]{SetFocus(parent);};
+        strip->allTabsPanel.cancelDrag=[owner=strip.get()] {
+            if(dragSession().sourceStrip==owner || dragSession().hoverPanel==&owner->allTabsPanel)AbortDragSession();
+        };
+        strip->allTabsPanel.dragging=[] {auto* strip=dragSession().sourceStrip;return strip && (strip->Drag().phase==NativeTabStrip::DragPhase::Dragging || strip->GroupDrag().phase==2 || (!dragSession().listSource && (strip->Drag().phase==NativeTabStrip::DragPhase::Armed || strip->GroupDrag().phase==1)));};
+        strip->allTabsPanel.deferOutside=[this]{
+            if(!(GetAsyncKeyState(VK_LBUTTON)&0x8000))return false;POINT p{};GetCursorPos(&p);
+            if(GetAncestor(WindowFromPoint(p),GA_ROOTOWNER)!=GetAncestor(parent,GA_ROOTOWNER))return false;
+            for(auto const& [id,row]:strip->rows)if(row.IsLoaded() && row.Visibility()==Visibility::Visible){auto r=NativeAllTabsPanel::ScreenBounds(row);if(p.x>=r.X && p.x<r.X+r.Width && p.y>=r.Y && p.y<r.Y+r.Height)return true;}
+            for(auto const& [id,run]:strip->inlineGroups.runs)if(run.button && run.button.IsLoaded()){auto r=NativeAllTabsPanel::ScreenBounds(run.button);if(p.x>=r.X && p.x<r.X+r.Width && p.y>=r.Y && p.y<r.Y+r.Height)return true;}
+            return false;
+        };
+        strip->allTabsPanel.armDrag=[this](uint32_t tab,uint32_t group,UIElement visual){
+            POINT p{};GetCursorPos(&p);auto local=ScreenToStrip(p);
+            if(group){
+                if(DiagnosticsEnabled())fprintf(stderr,"AllTabs arm group=%u x=%.1f y=%.1f\n",group,local.X,local.Y);
+                if(shell_core_group_drag_arm(shell.core,group,local.X,local.Y)!=SHELL_STATUS_OK)return false;
+                strip->groupDragVisual.Create(strip->root);
+                auto found=strip->inlineGroups.runs.find(group);if(found!=strip->inlineGroups.runs.end())strip->groupDragVisual.Arm(found->second.button,found->second.button.TransformToVisual(strip->groupDragVisual.layer).TransformPoint({float(found->second.button.ActualWidth()/2),0}));
+                ArmDragSession(*this,group);dragSession().groupSource=true;dragSession().listSource=true;strip->StartGroupDragTimer();return true;
+            }
+            if(!strip->rows.count(tab))return false;
+            ArmDragSession(*this,tab);if(shell_core_tab_drag_arm(shell.core,tab,local.X,local.Y)!=SHELL_STATUS_OK){AbortDragSession();return false;}dragSession().listSource=true;dragSession().listVisual=visual;strip->StartTabDragTimer();return true;
+        };
+        strip->allTabsPanel.image=[this](uint32_t tab)->Media::ImageSource{
+            auto found=strip->rows.find(tab);if(found==strip->rows.end() || !found->second.Header())return nullptr;
+            auto header=found->second.Header().as<Controls::Grid>();
+            return header.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(0).as<Controls::Image>().Source();
+        };
+        strip->allTabsPanel.context=[this](uint32_t tab){
+            Controls::MenuFlyout menu;menu.Items().Append(NativeTabMenu::Placeholder());
+            auto alive=std::weak_ptr<int>(lifetime);
+            menu.Opening([this,alive,tab,weak=make_weak(menu)](auto const&,auto const&){if(!alive.expired())tabMenu.Open(weak.get(),tab);});
+            menu.Closed([this,alive,weak=make_weak(menu)](auto const&,auto const&){if(!alive.expired() && tabMenu.active==weak.get())tabMenu.Dismiss();});return menu;
+        };
+
     }
 };
 
@@ -1026,6 +1070,7 @@ void AbortDragSession() noexcept {
     // detached preview first, while its exact HWND is still owned here.
     DestroyTearoffWindow(session);
     if (session.sourceHwnd && GetCapture() == session.sourceHwnd) ReleaseCapture();
+    if(session.hoverPanel)try{session.hoverPanel->ResetPreview();}catch(...){}
     auto& panes = state().panes;
     auto source = panes.find(session.sourceHwnd);
     if (source != panes.end() && source->second->strip.get() == session.sourceStrip && session.sourceStrip && session.groupSource)
@@ -1121,10 +1166,22 @@ bool CreateTearoffWindow(TabDragSession& session) {
     return true;
 }
 
+// Overflow strip items need not have an installed template. Capture the live
+// native list container for list-origin gestures, with the same gesture lease.
+winrt::fire_and_forget RenderListTearoffAsync(UIElement visual, HWND popup, std::weak_ptr<int> alive) {
+    int width{},height{};uint64_t bitmap{};
+    try {bitmap=co_await TabDragImage::RenderElementToBitmapAsync(visual,&width,&height);}
+    catch (...) {co_return;}
+    auto& session=dragSession();
+    if(alive.expired() || !bitmap || session.tearoffWindow!=popup){if(bitmap)DeleteObject(HBITMAP(bitmap));co_return;}
+    session.tearoffBitmap=HBITMAP(bitmap);session.tearoffWidth=width;session.tearoffHeight=height;
+}
+
 void ShowOrMoveTearoff(TabDragSession& session, POINT screenPoint) {
     if (!session.tearoffWindow) {
         if (!CreateTearoffWindow(session)) return;
-        if (session.sourceStrip && session.sourceStrip->rows.count(session.tabId))
+        if(session.listVisual)RenderListTearoffAsync(session.listVisual,session.tearoffWindow,std::weak_ptr<int>(session.lifetime));
+        else if (session.sourceStrip && session.sourceStrip->rows.count(session.tabId))
             RenderTearoffAsync(session.sourceStrip->rows.at(session.tabId), session.tearoffWindow,
                                 std::weak_ptr<int>(session.lifetime));
     }
@@ -1215,12 +1272,12 @@ void ResolveDragDrop(Pane& sourcePane, Pane* hitPane, POINT screenPoint) {
 }
 
 // The top-level window a person sees at `screenPoint`, as a drop target
-// would resolve it. Skips the source window and its owned popups, and windows
-// that are both layered and input-transparent: the drag's own preview and the
+// would resolve it. The source still occludes windows underneath it. Skip
+// windows that are both layered and input-transparent: the drag's own preview and the
 // shell's snap overlay are such windows and never take a drop.
-HWND VisibleRootAt(POINT screenPoint, HWND source) {
+HWND VisibleRootAt(POINT screenPoint) {
     for (HWND window = GetTopWindow(nullptr); window; window = GetWindow(window, GW_HWNDNEXT)) {
-        if (!IsWindowVisible(window) || IsIconic(window) || GetAncestor(window, GA_ROOTOWNER) == source) continue;
+        if (!IsWindowVisible(window) || IsIconic(window)) continue;
         const auto style = GetWindowLongPtrW(window, GWL_EXSTYLE);
         if ((style & WS_EX_LAYERED) && (style & WS_EX_TRANSPARENT)) continue;
         BOOL cloaked = FALSE;
@@ -1237,7 +1294,7 @@ HWND VisibleRootAt(POINT screenPoint, HWND source) {
 // The other pane whose strip claims `screenPoint`, if any. Never the source,
 // a hidden or minimized window, or a strip another window covers there.
 Pane* ForeignStripAt(Pane& sourcePane, POINT screenPoint) {
-    const auto visible = VisibleRootAt(screenPoint, GetAncestor(sourcePane.parent, GA_ROOT));
+    const auto visible = VisibleRootAt(screenPoint);
     if (!visible) return nullptr;
     for (auto& entry : state().panes) {
         if (!entry.second->strip || entry.second.get() == &sourcePane || !entry.second->appliedVisible ||
@@ -1262,6 +1319,12 @@ Pane* ForeignStripAt(Pane& sourcePane, POINT screenPoint) {
 // as this keeps getting ticked at all, which raw ::SetCapture (TabStrip.h's
 // PointerPressed) exists specifically to guarantee regardless of where the
 // cursor physically is.
+NativeAllTabsPanel* AllTabsAt(POINT point) {
+    const auto window=WindowFromPoint(point);const auto hit=GetAncestor(window,GA_ROOTOWNER);
+    for(auto& [hwnd,pane]:state().panes)if(pane->strip && pane->appliedVisible && IsWindowVisible(hwnd) && !IsIconic(hwnd) && GetAncestor(hwnd,GA_ROOTOWNER)==hit && pane->strip->allTabsPanel.Contains(point))return &pane->strip->allTabsPanel;
+    return nullptr;
+}
+
 void TickDragSession() {
     // XAML layout/capture callbacks can reenter the message hook while a tick
     // is already resolving a release or creating the drag visual.
@@ -1284,9 +1347,17 @@ void TickDragSession() {
         POINT point{};
         GetCursorPos(&point);
         const bool down=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;
-        const bool cancel=(GetAsyncKeyState(VK_ESCAPE)&0x8000)!=0 || GetForegroundWindow()!=sourcePane.parent ||
+        const bool cancel=(GetAsyncKeyState(VK_ESCAPE)&0x8000)!=0 || GetAncestor(GetForegroundWindow(),GA_ROOTOWNER)!=GetAncestor(sourcePane.parent,GA_ROOTOWNER) ||
             (session.sourceStrip->GroupDrag().phase==2 && GetCapture()!=sourcePane.parent) || !sourcePane.appliedVisible;
         auto* strip = session.sourceStrip;
+        if(session.listSource && strip->GroupDrag().phase==1 && !down){
+            // An ordinary ListView click never promoted. Disarm without strip
+            // visual restoration or capture changes before WinUI handles up.
+            shell_core_group_drag_end(strip->core);
+            if(strip->groupDragVisual.timer)strip->groupDragVisual.timer.Stop();
+            auto candidate=std::exchange(dragSession(),TabDragSession{});
+            candidate.lifetime.reset();return;
+        }
         // Another window's strip wins over this strip's own margin, as for a
         // tab. Let Firefox reject incompatible private/ordinary adoption so
         // release rolls the source back; filtering that strip out here turns
@@ -1298,6 +1369,13 @@ void TickDragSession() {
         if (session.hoverStrip != hover && session.hoverStrip && session.hoverStrip != strip)
             session.hoverStrip->EndForeignGroupOver();
         session.hoverStrip = hover;
+        auto* panel=AllTabsAt(point);
+        if(session.hoverPanel && session.hoverPanel!=panel)session.hoverPanel->ResetPreview();session.hoverPanel=panel;
+        if(cancel){AbortDragSession();return;}
+        if(panel && strip->GroupDrag().phase==2){
+            strip->allTabsPanel.suppressClick=true;
+            const bool valid=panel->Preview(point);if(!down){if(valid)panel->Drop(sourcePane.parent,strip->windowDragSession,0,strip->GroupDrag().group);strip->EndGroupDrag();AbortDragSession();return;}
+        }
         if (hitPane && !down) {
             // The destination queues the adopt; the source keeps the group
             // hidden until Firefox moves it, exactly like a tear-off.
@@ -1310,14 +1388,15 @@ void TickDragSession() {
             AbortDragSession();
             return;
         }
-        strip->TickGroupDrag(sourcePane.ScreenToStrip(point), down, cancel, hitPane != nullptr);
+        strip->TickGroupDrag(sourcePane.ScreenToStrip(point), down, cancel, hitPane != nullptr || panel != nullptr);
+        if(session.listSource && strip->GroupDrag().phase==2)strip->allTabsPanel.suppressClick=true;
         const auto group = strip->GroupDrag();
-        if (!group.phase) { AbortDragSession(); return; }
+        if (!group.phase) {const bool fromList=session.listSource;AbortDragSession();if(!fromList)sourcePane.strip->allTabsPanel.LightDismiss();return;}
         if (hitPane) {
             if (!hitPane->strip->ForeignGroupOver(hitPane->ScreenToStrip(point), strip->GroupDragSlotWidth()))
                 session.hoverStrip = nullptr;
         }
-        UpdateGroupTearoff(session, point, group.phase == 2 && group.detaching,
+        UpdateGroupTearoff(session, point, group.phase == 2 && (group.detaching || panel!=nullptr),
                            hitPane ? hitPane->StripScreenBounds() : RECT{});
         return;
     }
@@ -1334,10 +1413,11 @@ void TickDragSession() {
         GetCursorPos(&screenPoint);
         auto local = sourcePane.ScreenToStrip(screenPoint);
         if (!buttonDown) {
-            session.sourceStrip->FinishDrag(session.tabId);
-            AbortDragSession();
+            if(session.listSource)shell_core_tab_drag_end(session.sourceStrip->core,false);else session.sourceStrip->FinishDrag(session.tabId);
+            const bool fromList=session.listSource;AbortDragSession();if(!fromList)sourcePane.strip->allTabsPanel.LightDismiss();
         } else {
             session.sourceStrip->TryPromote(session.tabId, local);
+            if(session.listSource && session.sourceStrip->Drag().phase==NativeTabStrip::DragPhase::Dragging){shell_core_tab_drag_list_origin(session.sourceStrip->core);session.sourceStrip->allTabsPanel.suppressClick=true;SetCapture(sourcePane.parent);}
         }
         return;
     }
@@ -1362,6 +1442,14 @@ void TickDragSession() {
     // would never resolve as a foreign hover at all (local Y relative to
     // the source alone can't tell "moved to a horizontally different
     // window" from "still over my own strip").
+    auto* panel=AllTabsAt(screenPoint);
+    if(session.hoverPanel && session.hoverPanel!=panel)session.hoverPanel->ResetPreview();session.hoverPanel=panel;
+    if(panel){
+        if(session.hoverStrip && session.hoverStrip!=session.sourceStrip)session.hoverStrip->EndForeignDragOver();session.hoverStrip=nullptr;
+        session.sourceStrip->CloseDragGap();ShowOrMoveTearoff(session,screenPoint);
+        const bool valid=panel->Preview(screenPoint);if(!buttonDown){if(valid)panel->Drop(sourcePane.parent,session.sourceStrip->windowDragSession,session.tabId,0);AbortDragSession();}
+        return;
+    }
     Pane* hitPane = ForeignStripAt(sourcePane, screenPoint);
     NativeTabStrip* newHover = hitPane ? hitPane->strip.get() : nullptr;
     if (!hitPane) {
@@ -1725,6 +1813,10 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
             if(!pane.strip || snapshot.Size()!=3 || snapshot.GetNamedNumber(L"version")!=2 || !snapshot.GetNamedBoolean(L"publishOnly",false))return E_INVALIDARG;
             pane.strip->RequestGroupCreation(snapshot.GetNamedObject(L"groupCreation"));return S_OK;
         }
+        if (snapshot.HasKey(L"allTabs")) {
+            if(!pane.strip || snapshot.Size()!=3 || snapshot.GetNamedNumber(L"version")!=2 || !snapshot.GetNamedBoolean(L"publishOnly",false))return E_INVALIDARG;
+            pane.strip->allTabsPanel.Apply(snapshot.GetNamedObject(L"allTabs"));return S_OK;
+        }
         if (snapshot.HasKey(L"groupHeader")) {
             if (!pane.strip || snapshot.Size()!=3 || snapshot.GetNamedNumber(L"version")!=2 || !snapshot.GetNamedBoolean(L"publishOnly",false)) return E_INVALIDARG;
             pane.strip->groupHeader.core=pane.shell.core;
@@ -2003,6 +2095,11 @@ BOOL WINAPI Translate(MSG* message) noexcept {
     if (WorkAccountingEnabled()) RecordPumpGap();
     try {
         if (!message || FAILED(Check())) return FALSE;
+        // Popup focus and Win32 drag capture have different owners. Consume
+        // the actual queued Escape; a short press can end between timer polls.
+        if(message->message==WM_KEYDOWN && message->wParam==VK_ESCAPE && dragSession().sourceHwnd &&
+           (dragSession().listSource || dragSession().hoverPanel || (dragSession().sourceStrip && dragSession().sourceStrip->allTabsPanel.opening))){AbortDragSession();return TRUE;}
+
         // Message-agnostic: this is the ground-truth tick a process-wide
         // drag session's correctness depends on (Pane.cpp's TabDragSession/
         // TickDragSession), driven by every message this hook sees rather

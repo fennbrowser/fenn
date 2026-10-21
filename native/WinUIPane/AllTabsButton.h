@@ -3,7 +3,7 @@
 
 // The "List all tabs" button, hosted in the strip header beside the product
 // menu button. It is a stock subtle Button in the same size and style; Firefox
-// owns the panel it opens and this only names where it was pressed.
+// supplies the native panel model and validates its commands.
 struct AllTabsButton {
     static constexpr double kWidth = ToolbarMetrics::kButton;
     Controls::Button button{nullptr};

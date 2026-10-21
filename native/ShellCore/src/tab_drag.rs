@@ -50,6 +50,14 @@ impl TabDrag {
         self.state.phase = 2;
         true
     }
+    /// A secondary list starts outside the strip row. Once promoted, center
+    /// the strip projection under the pointer instead of applying list delta.
+    pub fn list_origin(&mut self) -> bool {
+        if self.state.phase != 2 {return false;}
+        let row=self.rows[self.state.original as usize];
+        self.state.start_x=row.left+row.width/2.0;
+        true
+    }
     pub fn update(&mut self, x: f64, y: f64, width: f64, height: f64, project: bool) -> bool {
         if self.state.phase != 2 || ![x,y,width,height].into_iter().all(coordinate) || width < 0.0 || height < 0.0 { return false; }
         let detaching = height > 0.0 && (x < -height || x > width+height || y < -height || y > height*2.0);
@@ -432,4 +440,15 @@ mod tests {
         assert_eq!(d.offset(0),Some(0.0)); assert_eq!(d.landing(),0.0);
         d.commit(0,0); assert_eq!(d.state().awaiting,0);
     }
+}
+
+#[cfg(test)]
+mod list_origin_tests {
+ use super::*;
+ #[test] fn a_list_press_is_not_the_origin_of_strip_projection(){
+  let mut d=TabDrag::default();assert!(!d.list_origin());assert!(d.arm(9,100.0,300.0));
+  assert!(d.promote(2,&[ShellDragRow{left:0.0,width:100.0},ShellDragRow{left:100.0,width:100.0},ShellDragRow{left:200.0,width:100.0}]));
+  assert!(d.list_origin());assert!(d.update(20.0,16.0,300.0,40.0,true));assert_eq!(d.state().projected,0);
+  d.end(true);assert!(!d.list_origin());
+ }
 }

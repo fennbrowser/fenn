@@ -4,6 +4,7 @@ use crate::publication::{Classification, ShellPublicationCounts, Stream, StreamK
 pub const MAX_ACTIONS: usize = 256;
 pub const MAX_DESCRIPTION: usize = 65536;
 pub struct SurfaceMenu {
+    max_description: usize,
     next: u32,
     session: u32,
     /// Descriptions are scoped to one opening and reset with it.
@@ -15,10 +16,12 @@ pub struct SurfaceMenu {
 }
 impl Default for SurfaceMenu {
     fn default() -> Self {
-        Self { next: 0, session: 0, stream: Stream::new(StreamKind::Session), opening_requests: Stream::new(StreamKind::Snapshot), requested_session: 0, actions: BTreeSet::new(), pending: BTreeSet::new() }
+        Self { max_description: MAX_DESCRIPTION, next: 0, session: 0, stream: Stream::new(StreamKind::Session), opening_requests: Stream::new(StreamKind::Snapshot), requested_session: 0, actions: BTreeSet::new(), pending: BTreeSet::new() }
     }
 }
 impl SurfaceMenu {
+    /// A separately bounded large list uses the same session semantics.
+    pub fn with_description_limit(limit: usize) -> Self {Self {max_description:limit,..Self::default()}}
     pub fn open(&mut self) -> u32 {
         self.dismiss();
         if let Some(next)=self.next.checked_add(1) {self.next=next;self.session=next;}
@@ -27,7 +30,7 @@ impl SurfaceMenu {
     /// Browser-initiated openings share the Snapshot classifier. Replays never
     /// reopen a dismissed editor or retarget an intervening native opening.
     pub fn request_open(&mut self, request:u32, fingerprint:&[u16])->Result<u32,()> {
-        if request==0 || fingerprint.len()>MAX_DESCRIPTION{return Err(());}
+        if request==0 || fingerprint.len()>self.max_description{return Err(());}
         let class=self.opening_requests.classify(0,request,fingerprint);
         self.opening_requests.record(class);
         match class {
@@ -39,7 +42,7 @@ impl SurfaceMenu {
     pub fn counts(&self) -> ShellPublicationCounts {self.stream.counts()}
     pub fn dismiss(&mut self) {self.session=0;self.stream.reset();self.actions.clear();self.pending.clear();}
     fn classify(&self, session:u32, revision:u32, actions:&[u32], fingerprint:&[u16]) -> Classification {
-        if session==0 || revision==0 || actions.len()>MAX_ACTIONS || fingerprint.len()>MAX_DESCRIPTION {return Classification::Invalid;}
+        if session==0 || revision==0 || actions.len()>MAX_ACTIONS || fingerprint.len()>self.max_description {return Classification::Invalid;}
         let ids:BTreeSet<_>=actions.iter().copied().collect();
         if ids.contains(&0) || ids.len()!=actions.len(){return Classification::Invalid;}
         // An answer to a superseded opening is late, not wrong.
@@ -110,6 +113,16 @@ mod tests {
 #[cfg(test)]
 mod retained_tests {
  use super::*;
+ #[test] fn a_large_list_has_an_explicit_separate_description_bound() {
+  let mut large=SurfaceMenu::with_description_limit(1048576);let mut small=SurfaceMenu::default();
+  let l=large.open();let s=small.open();let body=vec![7;MAX_DESCRIPTION+1];
+  assert_eq!(small.accept(s,1,&[1],&body),Err(()));
+  assert_eq!(large.accept(l,1,&[1],&body),Ok(true));
+  assert_eq!(large.accept(l,1,&[1],&vec![8;MAX_DESCRIPTION+1]),Err(()));
+  assert_eq!(large.accept(l,2,&[1],&vec![7;1048577]),Err(()));
+  assert!(large.activate_retained(l,1,1));assert!(!large.activate_retained(l,1,1));
+  large.dismiss();assert!(!large.activate_retained(l,1,1));
+ }
  #[test] fn browser_opening_requests_classify_replay_conflict_stale_and_dismissal() {
   let mut m=SurfaceMenu::default();let first=m.request_open(1,&[7]).unwrap();assert!(first>0);
   assert_eq!(m.request_open(1,&[7]),Ok(first));assert_eq!(m.request_open(1,&[8]),Err(()));

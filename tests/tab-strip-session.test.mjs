@@ -523,15 +523,15 @@ test("group context menu rejects stale identity and invalid screen bounds", () =
 });
 
 
-test("all-tabs button opens Firefox's panel at its bounds and rejects stale or invalid requests", () => {
+test("all-tabs button names the native opening and rejects stale or invalid requests", () => {
   const f = fixture(), calls = [];
   f.session.openAllTabsMenu = bounds => calls.push(bounds);
   const event = {kind:"strip-all-tabs", revision:f.session.revision,
-    session:f.session.windowDragSession, x:1200,y:0,width:46,height:32};
+    session:f.session.windowDragSession, menuSession:7, x:1200,y:0,width:46,height:32};
   assert.equal(f.session.receive(event), true);
   assert.equal(f.session.receive(event), true);
   assert.deepEqual(calls, Array(2).fill({x:1200,y:0,width:46,height:32}));
-  for (const override of [{session:0},{revision:0},{x:NaN},{y:Infinity},{width:0},{height:-1},{x:1000001}])
+  for (const override of [{menuSession:0},{menuSession:0xffffffff+1},{session:0},{revision:0},{x:NaN},{y:Infinity},{width:0},{height:-1},{x:1000001}])
     assert.equal(f.session.receive({...event, ...override}), false);
   assert.equal(calls.length, 2);
   f.session.openAllTabsMenu = null;
