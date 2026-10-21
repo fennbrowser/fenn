@@ -882,11 +882,149 @@ index 6a4ed1d46f5..69b2302a5ab 100644
 -        webrtcUI.clearPermissionsAndStopSharing([id], this.browser);
 -      },
      });
+diff --git a/browser/base/content/browser-siteProtections.js b/browser/base/content/browser-siteProtections.js
+index db1d8e05d21..5c82939966b 100644
+--- a/browser/base/content/browser-siteProtections.js
++++ b/browser/base/content/browser-siteProtections.js
+@@ -244,3 +244,3 @@ class ProtectionCategory {
+   /**
+-   * Create a DOM item representing a tracker.
++   * Describe a tracker for either presenter without constructing DOM.
+    *
+@@ -249,9 +249,6 @@ class ProtectionCategory {
+    * associated with the tracking origin.
+-   * @returns {object} result - An object containing the results.
+-   * @returns {HTMLDListElement} [options.item] - Generated item or null if we
+-   * don't have an item for this origin based on the actions log.
+-   * @returns {boolean} options.shimAllowed - Flag indicating whether the
+-   * tracking origin was allowed by a shim script.
++   * @returns {?object} Origin, allowed state and shim indicator, or null when
++   * the category does not expose this origin.
+    */
+-  _createListItem(origin, actions) {
++  getTrackerItemData(origin, actions) {
+     let isAllowed = actions.some(
+@@ -263,5 +260,17 @@ class ProtectionCategory {
+     if (!isDetected) {
+-      return {};
++      return null;
+     }
+ 
++    return { origin, isAllowed, shimAllowed: actions.some(([flag]) => flag == this._flags.allow) };
++  }
++
++  getTrackerItems(log) {
++    return Object.entries(log).map(([origin, actions]) => this.getTrackerItemData(origin, actions)).filter(Boolean);
++  }
++
++  _createListItem(origin, actions) {
++    const data = this.getTrackerItemData(origin, actions);
++    if (!data) { return {}; }
++    const { isAllowed } = data;
++
+     // Create an item to hold the origin label and shim allow indicator. Using
+@@ -670,3 +679,3 @@ let TrackingProtection =
+ 
+-    async _createListItem(origin, actions) {
++    getTrackerItemData(origin, actions) {
+       // Figure out if this list entry was actually detected by TP or something else.
+@@ -679,3 +688,3 @@ let TrackingProtection =
+       if (!isDetected) {
+-        return {};
++        return null;
+       }
+@@ -696,5 +705,13 @@ let TrackingProtection =
+       ) {
+-        return {};
++        return null;
+       }
+ 
++      return super.getTrackerItemData(origin, actions);
++    }
++
++    async _createListItem(origin, actions) {
++      const data = this.getTrackerItemData(origin, actions);
++      if (!data) { return {}; }
++      const { isAllowed } = data;
++
+       let listItem = document.createElementNS(
+@@ -860,26 +877,19 @@ let ThirdPartyCookies =
+ 
+-    _generateSubViewListItems() {
+-      let fragment = document.createDocumentFragment();
+-      let contentBlockingLog = gBrowser.selectedBrowser.getContentBlockingLog();
+-      contentBlockingLog = JSON.parse(contentBlockingLog);
+-      let categories = this._processContentBlockingLog(contentBlockingLog);
+-
+-      let categoryNames = ["trackers"];
++    getTrackerItems(log) {
++      const categories = this._processContentBlockingLog(log);
++      const names = ["trackers"];
+       switch (this.behaviorPref) {
+         case Ci.nsICookieService.BEHAVIOR_REJECT:
+-          categoryNames.push("firstParty");
+-        // eslint-disable-next-line no-fallthrough
++          names.push("firstParty");
++          // falls through
+         case Ci.nsICookieService.BEHAVIOR_REJECT_FOREIGN:
+-          categoryNames.push("thirdParty");
++          names.push("thirdParty");
+       }
++      return names.flatMap(name => categories[name]);
++    }
+ 
+-      for (let category of categoryNames) {
+-        let itemsToShow = categories[category];
+-
+-        if (!itemsToShow.length) {
+-          continue;
+-        }
+-        for (let info of itemsToShow) {
+-          fragment.appendChild(this._createListItem(info));
+-        }
++    _generateSubViewListItems() {
++      const fragment = document.createDocumentFragment();
++      for (const info of this.getTrackerItems(JSON.parse(gBrowser.selectedBrowser.getContentBlockingLog()))) {
++        fragment.appendChild(this._createListItem(info));
+       }
+diff --git a/browser/base/content/browser-trustPanel.js b/browser/base/content/browser-trustPanel.js
+index 544866fac7e..4acc28ed6b3 100644
+--- a/browser/base/content/browser-trustPanel.js
++++ b/browser/base/content/browser-trustPanel.js
+@@ -808,4 +808,22 @@ class TrustPanel {
+ 
+-  #computeTrackerCount() {
+-    const log = JSON.parse(gBrowser.selectedBrowser.getContentBlockingLog());
++  // Presentation-independent data for the native connection panel. The same
++  // blockers own category eligibility, annotation filtering and cookie policy.
++  getConnectionTrackingState(log, event, includeDetails = true) {
++    const count = this.#computeTrackerCount(log);
++    if (!count || !includeDetails) { return { count, categories: [] }; }
++    const categories = Object.values(this.#blockers).flatMap((blocker, index) => {
++      const blocking = blocker.isBlocking(event);
++      if (!blocking && !blocker.isDetected(event)) { return []; }
++      return [{ index, blocking, keys: blocker.l10nKeys,
++        title: blocker.subViewTitleL10nId(blocking),
++        items: blocker.getTrackerItems(log) }];
++    });
++    return { count, categories };
++  }
++
++  clearConnectionCookieException(origin) {
++    ThirdPartyCookies._clearException(origin);
++  }
++
++  #computeTrackerCount(log = JSON.parse(gBrowser.selectedBrowser.getContentBlockingLog())) {
+ 
 diff --git a/browser/base/content/browser.js b/browser/base/content/browser.js
-index 7ce8e235dd4..3c74fd67b18 100644
+index 7ce8e235dd4..f1ca381a6b4 100644
 --- a/browser/base/content/browser.js
 +++ b/browser/base/content/browser.js
-@@ -4454,2 +4454,3 @@ var PanicButtonNotifier = {
+@@ -2617,2 +2617,3 @@ var XULBrowserWindow = {
+     this._event = aEvent;
++    window.gWinUIPane?.addressToolbar?.connectionPanel?.changed();
+   },
+@@ -4454,2 +4455,3 @@ var PanicButtonNotifier = {
        let anchor = widget.anchor.icon;
 +      anchor = window.gWinUIPane?.addressToolbar?.notificationAnchorFor(anchor) || anchor;
        popup.openPopup(anchor, popup.getAttribute("position"));
@@ -9051,10 +9189,10 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..508da335d5c 100644
+index 4f28e62c7b5..5693b4c57fe 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -520 +520,129 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,137 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -9182,6 +9320,14 @@ index 4f28e62c7b5..508da335d5c 100644
 +winui-permissions-close = Close
 +
 +winui-connection-close = Close
++winui-tracking-summary = { $count ->
++    [one] { $count } tracker blocked on this site
++   *[other] { $count } trackers blocked on this site
++}
++winui-tracking-back-connection = Back to connection security
++winui-tracking-back-list = Back to tracking protections
++winui-tracking-previous = Previous sites
++winui-tracking-next = More sites
 +winui-connection-learn-more = Learn more
 +winui-connection-error = This setting could not be changed. Try again.
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -10101,10 +10247,10 @@ index 00000000000..4feefbf12a5
 +}
 diff --git a/browser/base/content/WinUIConnectionPanel.sys.mjs b/browser/base/content/WinUIConnectionPanel.sys.mjs
 new file mode 100644
-index 00000000000..8bcade8b0f8
+index 00000000000..97fdc808a60
 --- /dev/null
 +++ b/browser/base/content/WinUIConnectionPanel.sys.mjs
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,192 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10116,10 +10262,12 @@ index 00000000000..8bcade8b0f8
 +export class WinUIConnectionPanel {
 +  constructor(toolbar) {
 +    this.toolbar=toolbar;this.window=toolbar.window;this.nextRequest=0;
-+    this.observe=()=>this.changed();this.locale=()=>{this.l10n=null;this.dismiss();};
++    this.observe=()=>{if(this.pending)this.pending.trackerCache=null;this.changed();};this.locale=()=>{this.l10n=null;this.dismiss();};
 +    Services.obs.addObserver(this.observe,"perm-changed");
 +    Services.obs.addObserver(this.locale,"intl:app-locales-changed");
 +    Services.prefs.addObserver("dom.security.",this.observe);
++    Services.prefs.addObserver("privacy.",this.observe);
++    Services.prefs.addObserver("network.cookie.",this.observe);
 +    this.scheme=this.window.matchMedia?.("(prefers-color-scheme: dark)");
 +    this.theme=()=>{if(this.pending){this.pending.mark=null;this.pending.markRequested=false;this.changed();}};
 +    this.scheme?.addEventListener("change",this.theme);
@@ -10138,7 +10286,7 @@ index 00000000000..8bcade8b0f8
 +  }
 +  invalidate(){if(!this.closed)this.toolbar.owner.invalidateAddress();}
 +  label(id,args,attribute) {
-+    this.l10n??=new this.window.Localization(["branding/brand.ftl","browser/browser.ftl","browser/tabbrowser.ftl"],true);
++    this.l10n??=new this.window.Localization(["branding/brand.ftl","browser/browser.ftl","browser/tabbrowser.ftl","browser/siteProtections.ftl","browser/protectionsPanel.ftl"],true);
 +    const m=this.l10n.formatMessagesSync([{id,args}])[0];
 +    return String(attribute?m.attributes?.find(a=>a.name===attribute)?.value:m.value || "").slice(0,2048);
 +  }
@@ -10199,12 +10347,50 @@ index 00000000000..8bcade8b0f8
 +      description:trackingVisible?l(trackingOn?"trustpanel-etp-description-enabled":"trustpanel-etp-description-disabled"):"",
 +      name:trackingVisible?l(trackingOn?"trustpanel-etp-toggle-on":"trustpanel-etp-toggle-off",{host:safe},"aria-label"):""};
 +    if(trackingVisible)p.actions.set(9,{verb:"tracking",enabled:!trackingOn});
++    const trackers=this.trackerModel(p,trackingVisible && trackingOn);
 +    // Include raw authority only in the Firefox fingerprint, never in native data.
-+    p.authority=JSON.stringify([s,c._state,c._secInfo?.serverCert?.sha256Fingerprint,c._qwac?.sha256Fingerprint,p.hasData,trackingVisible,trackingOn]);
++    p.authority=JSON.stringify([s,c._state,c._secInfo?.serverCert?.sha256Fingerprint,c._qwac?.sha256Fingerprint,p.hasData,trackingVisible,trackingOn,p.trackerCache?.raw,p.trackerCache?.event]);
 +    return {title:l("identity-site-information",{host:safe}),summary:l(summaryId),icon:warning?"warning":"connection",
-+      blocks:blocks.filter(Boolean),options,selected,choiceLabel:l("identity-https-only-label2"),actions,tracking,
++      blocks:blocks.filter(Boolean),options,selected,choiceLabel:l("identity-https-only-label2"),actions,tracking,trackers,
 +      image:s.connection==="secure-etsi"?p.mark || null:null,
 +      close:l("winui-connection-close"),error:p.error || ""};
++  }
++  trackerModel(p,enabled) {
++    const w=this.window,l=(id,args,attr)=>this.label(id,args,attr);
++    const empty={visible:false,view:0,title:"",description:"",rows:[],buttons:[]};
++    if(!enabled){p.trackerView=0;return empty;}
++    const raw=p.browser.getContentBlockingLog(),event=w.XULBrowserWindow._event,includeDetails=!!p.trackerView;
++    if(!p.trackerCache || p.trackerCache.raw!==raw || p.trackerCache.event!==event || p.trackerCache.includeDetails!==includeDetails){
++      p.trackerCache={raw,event,includeDetails,data:w.gTrustPanelHandler.getConnectionTrackingState(JSON.parse(raw),event,includeDetails)};
++    }
++    const data=p.trackerCache.data;
++    if(!data.count){p.trackerView=0;return empty;}
++    const model={visible:true,view:p.trackerView || 0,title:l("winui-tracking-summary",{count:data.count}),description:"",rows:[],buttons:[]};
++    const button=(id,label,view,page=0)=>{model.buttons.push({id,label});p.actions.set(id,{verb:"tracker-view",view,page});};
++    if(!model.view){button(10,l("trustpanel-blocker-see-all"),1);return model;}
++    if(model.view===1){
++      model.title=l("trustpanel-blocker-header",{host:w.gIdentityHandler.getHostForDisplay()},"title");
++      for(const c of data.categories){const id=20+c.index;model.rows.push({id,label:l(`trustpanel-list-label-${c.keys.general}`,{count:c.items.length}),state:l(c.blocking?"trustpanel-blocked-header":"trustpanel-tracking-header"),command:id,actionLabel:""});p.actions.set(id,{verb:"tracker-view",view:2+c.index,page:0});}
++      button(11,l("winui-tracking-back-connection"),0);return model;
++    }
++    const category=data.categories.find(c=>c.index===model.view-2);
++    if(!category){p.trackerView=1;return this.trackerModel(p,enabled);}
++    const key=category.keys.general;
++    model.title=category.title?l(category.title,null,"title"):l(`trustpanel-list-label-${key}`,{count:category.items.length});
++    model.description=(l(`trustpanel-${key}-${category.blocking?"blocking":"not-blocking"}-tab-header`,{count:category.items.length})+"\n"+l(`protections-panel-${category.keys.content}`)).slice(0,4096);
++    const pageSize=8,page=Math.min(p.trackerPage || 0,Math.max(0,Math.ceil(category.items.length/pageSize)-1));p.trackerPage=page;
++    for(const [index,item] of category.items.slice(page*pageSize,(page+1)*pageSize).entries()){
++      const id=1000+index,allowed=item.isAllowed;
++      const removable=key==="tracking-cookies" && item.exceptionState===(allowed?Services.perms.ALLOW_ACTION:Services.perms.DENY_ACTION);
++      let state=l(allowed?"content-blocking-cookies-view-allowed-label":"content-blocking-cookies-view-blocked-label",null,"value");
++      if(item.shimAllowed)state=(state+" — "+l("protections-panel-shim-allowed-indicator",null,"tooltiptext")).slice(0,2048);
++      model.rows.push({id,label:item.origin.slice(0,1024),state,command:removable?id:0,actionLabel:removable?l("content-blocking-cookies-view-remove-button",{domain:item.origin},"tooltiptext"):""});
++      if(removable)p.actions.set(id,{verb:"tracker-remove",origin:item.origin});
++    }
++    button(12,l("winui-tracking-back-list"),1);
++    if(page)button(13,l("winui-tracking-previous"),model.view,page-1);
++    if((page+1)*pageSize<category.items.length)button(14,l("winui-tracking-next"),model.view,page+1);
++    return model;
 +  }
 +  refresh(force=false) {
 +    const p=this.pending;if(!p || this.mutating)return;
@@ -10235,10 +10421,12 @@ index 00000000000..8bcade8b0f8
 +    this.refresh();if(this.pending!==p || id!==p.session)return 2;
 +    if(Number(m[3])!==p.revision){this.dismiss();return 2;}
 +    const item=p.actions.get(Number(m[4]));if(!item)return 2;
-+    const w=this.window,c=w.gIdentityHandler,retained=item.verb==="https" && item.value+c._getHttpsOnlyPermission()===3;
++    const w=this.window,c=w.gIdentityHandler,retained=item.verb.startsWith("tracker-") || item.verb==="https" && item.value+c._getHttpsOnlyPermission()===3;
 +    if(!retained)this.dismiss();this.mutating=true;
 +    try {
-+      if(item.verb==="https")c.changeHttpsOnlyPermission(item.value);
++      if(item.verb==="tracker-view"){p.trackerView=item.view;p.trackerPage=item.page;}
++      else if(item.verb==="tracker-remove"){w.gTrustPanelHandler.clearConnectionCookieException(item.origin);p.trackerCache=null;}
++      else if(item.verb==="https")c.changeHttpsOnlyPermission(item.value);
 +      else if(item.verb==="remove-exception")c.removeCertException();
 +      else if(item.verb==="clear-data")void c.clearSiteData({stopPropagation(){}},true).catch(console.error);
 +      else if(item.verb==="more-info")c.handleMoreInfoClick({stopPropagation(){}});
@@ -10253,7 +10441,7 @@ index 00000000000..8bcade8b0f8
 +    finally {this.mutating=false;if(this.pending===p){this.refresh(true);this.invalidate();}}
 +  }
 +  dismiss(){const p=this.pending;if(!p)return;this.closedSession=p.session || 0;this.pending=null;this.invalidate();}
-+  close(){if(this.closed)return;this.dismiss();this.closed=true;Services.obs.removeObserver(this.observe,"perm-changed");Services.obs.removeObserver(this.locale,"intl:app-locales-changed");Services.prefs.removeObserver("dom.security.",this.observe);this.scheme?.removeEventListener("change",this.theme);}
++  close(){if(this.closed)return;this.dismiss();this.closed=true;Services.obs.removeObserver(this.observe,"perm-changed");Services.obs.removeObserver(this.locale,"intl:app-locales-changed");for(const pref of ["dom.security.","privacy.","network.cookie."])Services.prefs.removeObserver(pref,this.observe);this.scheme?.removeEventListener("change",this.theme);}
 +}
 diff --git a/browser/base/content/WinUISitePermissionsPanel.sys.mjs b/browser/base/content/WinUISitePermissionsPanel.sys.mjs
 new file mode 100644

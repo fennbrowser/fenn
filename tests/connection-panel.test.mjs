@@ -9,7 +9,7 @@ function fixture(){
  const calls=[],permissions=new Map();let privateWindow=false,dataReply,qwacReply,trackingException=false,trackingSupported=true;
  class URI {constructor(scheme='https'){this.scheme=scheme;this.host=this.asciiHost='first.test';this.port=-1;this.spec=scheme+'://first.test';}schemeIs(s){return s===this.scheme;}mutate(){return {setScheme:s=>({finalize:()=>new URI(s)})};}}
  const principal={originAttributes:{userContextId:2,privateBrowsingId:0},equals(p){return p===this;}};
- const browser={contentPrincipal:principal,currentURI:new URI(),documentURI:new URI(),browsingContext:{currentWindowGlobal:{innerWindowId:7}},focus:()=>calls.push(['focus'])};
+ const browser={getContentBlockingLog:()=> '{}',contentPrincipal:principal,currentURI:new URI(),documentURI:new URI(),browsingContext:{currentWindowGlobal:{innerWindowId:7}},focus:()=>calls.push(['focus'])};
  const gBrowser={selectedBrowser:browser,selectedTab:{},contentPrincipal:principal,get currentURI(){return browser.currentURI;},loadURI:(...a)=>calls.push(['load',...a])};
  const node={id:'identity-icon-box',contains:e=>e===node},document={fullscreen:false,getElementById:()=>node};
  const window={document,gBrowser,gDialogBox:{isOpen:false},gURLBar:{getAttribute:()=> 'valid'},PrivateBrowsingUtils:{isWindowPrivate:()=>privateWindow},SiteDataManager:{hasSiteData:()=>new Promise(r=>dataReply=r)},openTrustedLinkIn:(...a)=>calls.push(['help',...a])};
@@ -23,6 +23,7 @@ function fixture(){
   QWACs:{determineQWACStatus:()=>new Promise(r=>qwacReply=r)},BrowserCommands:{reload:()=>calls.push(["tracking-reload"]),reloadSkipCache:()=>calls.push(['reload'])},PanelMultiView:{hidePopup:p=>calls.push(['hide',p])},displaySecurityInfo:()=>calls.push(['info']),
   SiteDataManager:{getBaseDomainFromHost:h=>h,promptSiteDataRemoval:(...a)=>{calls.push(['prompt',...a]);return true;},remove:(...a)=>calls.push(['data-remove',...a])},gNavigatorBundle:{getFormattedString:(id,args)=>id+': '+args.join(','),getString:id=>id}};
  window.BrowserCommands=globals.BrowserCommands;
+ window.XULBrowserWindow={_event:0};window.gTrustPanelHandler={getConnectionTrackingState:()=>({count:0,categories:[]})};
  const context=vm.createContext(globals);vm.runInContext(source,context);const c=context.gIdentityHandler;window.gIdentityHandler=c;
  c._uri=browser.currentURI;c._uriHasHost=true;c._state=flags.STATE_IS_SECURE;c._isSecureContext=false;c._hasCustomRoot=()=>false;c.getHostForDisplay=()=>"first.test";
  Object.defineProperty(c,'_identityIconLabel',{value:{tooltipText:'Verified by Example CA'}});
@@ -84,4 +85,37 @@ test('unsupported documents have no tracking action and changed allow-list autho
 });
 test('private tracking commands still use Firefox operations on the captured private browser',()=>{
  const f=fixture();f.setPrivate();f.open();assert.equal(f.invoke(9),1);assert.ok(f.calls.some(c=>c[0]==='tracking-off'));assert.ok(!f.calls.some(c=>c[0]==='set' || c[0]==='remove'));
+});
+
+function trackers(f,{count=1,items=[{origin:'https://tracker.test',isAllowed:false}],blocking=true,index=3}={}){
+ f.window.gTrustPanelHandler.getConnectionTrackingState=()=>({count,categories:[{index,blocking,keys:{general:index===1?'tracking-cookies':'fingerprinter',content:index===1?'cross-site-tracking-cookies':'fingerprinters'},title:'protections-blocking-fingerprinters',items}]});
+ return f;
+}
+test('zero blocked trackers omits summary and its commands',()=>{const f=fixture(),p=f.open();assert.equal(p.presentation.trackers.visible,false);assert.equal(f.invoke(10),2);});
+test('blocked summary opens native categories and details, then returns without closing',()=>{
+ const f=trackers(fixture()),p=f.open();assert.equal(p.presentation.trackers.visible,true);assert.equal(f.invoke(10),1);assert.equal(p.presentation.trackers.view,1);assert.equal(f.invoke(23),1);assert.equal(p.presentation.trackers.view,5);assert.equal(p.presentation.trackers.rows[0].label,'https://tracker.test');assert.equal(f.invoke(12),1);assert.equal(p.presentation.trackers.view,1);assert.equal(f.invoke(11),1);assert.equal(p.presentation.trackers.view,0);assert.equal(f.panel.pending,p);
+});
+test('allowed category and shim origin retain explicit text rather than color-only state',()=>{
+ const f=trackers(fixture(),{blocking:false,items:[{origin:'https://shim.test',isAllowed:true,shimAllowed:true}]}),p=f.open();f.invoke(10);assert.ok(p.presentation.trackers.rows[0].state.includes('tracking-header'));f.invoke(23);assert.ok(p.presentation.trackers.rows[0].state.includes('allowed-label'));assert.ok(p.presentation.trackers.rows[0].state.includes('shim-allowed-indicator'));
+});
+test('origin pages are bounded and no origin is lost',()=>{
+ const items=Array.from({length:19},(_,i)=>({origin:`https://tracker${i}.test`,isAllowed:false})),f=trackers(fixture(),{items}),p=f.open();f.invoke(10);f.invoke(23);const seen=[];
+ for(let i=0;i<3;i++){seen.push(...p.presentation.trackers.rows.map(r=>r.label));assert.ok(p.presentation.trackers.rows.length<=8);if(i<2)assert.equal(f.invoke(14),1);}
+ assert.deepEqual(seen,items.map(i=>i.origin));assert.equal(f.invoke(14),2);assert.equal(f.invoke(13),1);assert.equal(p.presentation.trackers.rows[0].label,items[8].origin);
+});
+test('cookie exception removal uses captured Firefox origin and stays open',()=>{
+ const f=fixture();f.globals.Services.perms={ALLOW_ACTION:1,DENY_ACTION:2};trackers(f,{index:1,items:[{origin:'https://cookie.test',isAllowed:true,exceptionState:1}]});f.window.gTrustPanelHandler.clearConnectionCookieException=origin=>f.calls.push(['clear-cookie',origin]);const p=f.open();f.invoke(10);f.invoke(21);assert.equal(p.presentation.trackers.rows[0].command,1000);assert.equal(f.invoke(1000),1);assert.deepEqual(f.calls.find(c=>c[0]==='clear-cookie'),['clear-cookie','https://cookie.test']);assert.equal(f.panel.pending,p);
+});
+test('content-blocking changes reject obsolete tracker actions and zero count returns to security',()=>{
+ const f=trackers(fixture()),p=f.open();f.invoke(10);const command=`connection-panel:invoke:${p.session}:${p.revision}:23`;trackers(f,{count:0});f.browser.getContentBlockingLog=()=>'{"changed":[]}';assert.equal(f.panel.execute({command}),2);assert.equal(f.panel.pending,null);
+ const g=trackers(fixture()),q=g.open();g.invoke(10);g.invoke(23);trackers(g,{count:0});g.browser.getContentBlockingLog=()=>'{"changed":[]}';g.panel.changed();assert.equal(q.presentation.trackers.visible,false);assert.equal(q.presentation.trackers.view,0);
+});
+test('unchanged snapshots reuse tracker classification and closed panels never read the log',()=>{
+ const f=trackers(fixture());let reads=0;const describe=f.window.gTrustPanelHandler.getConnectionTrackingState;f.window.gTrustPanelHandler.getConnectionTrackingState=(...args)=>{reads++;return describe(...args);};f.open();const before=reads;f.panel.snapshot();f.panel.snapshot();assert.equal(reads,before);f.panel.dismiss();f.browser.getContentBlockingLog=()=>assert.fail('closed log read');f.panel.snapshot();
+});
+test('changes outside the displayed origin page still revoke old commands',()=>{
+ const f=trackers(fixture()),p=f.open();f.invoke(10);f.invoke(23);const command=`connection-panel:invoke:${p.session}:${p.revision}:12`;f.browser.getContentBlockingLog=()=>'{"off-page":[]}';assert.equal(f.panel.execute({command}),2);assert.equal(f.panel.pending,null);
+});
+test('combined localized tracker descriptions and shim states respect native field bounds',()=>{
+ const f=trackers(fixture(),{items:[{origin:'https://shim.test',isAllowed:true,shimAllowed:true}]});f.panel.label=()=> 'x'.repeat(2048);const p=f.open();f.invoke(10);f.invoke(23);assert.ok(p.presentation.trackers.description.length<=4096);assert.ok(p.presentation.trackers.rows[0].state.length<=2048);
 });
