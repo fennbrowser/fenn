@@ -922,10 +922,10 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..d267ef41323 100644
+index b2b5db6040b..d902f184ba8 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,32 @@ browser.jar:
+@@ -35,2 +35,33 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
@@ -947,6 +947,7 @@ index b2b5db6040b..d267ef41323 100644
 +        content/browser/WinUIDeveloperMenu.sys.mjs                (content/WinUIDeveloperMenu.sys.mjs)
 +        content/browser/WinUIBookmarkPanel.sys.mjs (content/WinUIBookmarkPanel.sys.mjs)
 +        content/browser/WinUISitePermissionsPanel.sys.mjs (content/WinUISitePermissionsPanel.sys.mjs)
++        content/browser/WinUISelectedTranslationsPanel.sys.mjs (content/WinUISelectedTranslationsPanel.sys.mjs)
 +        content/browser/WinUITranslationsPanel.sys.mjs (content/WinUITranslationsPanel.sys.mjs)
 +        content/browser/WinUIConnectionPanel.sys.mjs (content/WinUIConnectionPanel.sys.mjs)
 +        content/browser/WinUIProfilerPanel.sys.mjs                (content/WinUIProfilerPanel.sys.mjs)
@@ -958,7 +959,7 @@ index b2b5db6040b..d267ef41323 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +136,17 @@ browser.jar:
+@@ -106 +137,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -2060,6 +2061,188 @@ index 6eac00e607c..c5eee17b2b7 100644
 +        window.gWinUIPane?.addressToolbar?.translationsPanel?.languageChanged(actor);
 +
          const {
+diff --git a/browser/components/translations/content/selectTranslationsPanel.js b/browser/components/translations/content/selectTranslationsPanel.js
+index 7f454a216b7..a684d91136c 100644
+--- a/browser/components/translations/content/selectTranslationsPanel.js
++++ b/browser/components/translations/content/selectTranslationsPanel.js
+@@ -234,2 +234,5 @@ var SelectTranslationsPanel = new (class {
+ 
++  // Firefox owns translation state and Translator lifetime in both presenters.
++  #native = null;
++
+   /**
+@@ -434,2 +437,80 @@ var SelectTranslationsPanel = new (class {
+ 
++  async openNative(n, sourceText, isTextSelected, langPairPromise, maintainFlow = false) {
++    if (!this.#native && !this.#isClosed()) {
++      this.close();
++      this.#changeStateToClosed();
++      this.#removeActiveTranslationListeners();
++    }
++    this.#native = n;
++    const generation = ++n.generation;
++    ++this.#translationId;
++    n.args = [sourceText, isTextSelected, langPairPromise];
++    n.from = n.to = n.alternate = "";
++    n.ready = false;
++    n.copied = false;
++    this.#sourceTextWordCount = undefined;
++    this.#getLanguageInfo(true);
++    this.#changeStateTo("idle", false, {sourceText});
++    n.changed();
++    const current = () => this.#native === n && n.valid() && generation === n.generation;
++    try {
++      const [languages, pair] = await Promise.all([TranslationsParent.getSupportedLanguages(), langPairPromise]);
++      if (!current()) return;
++      if (!languages.languagePairs.length || languages.sourceLanguages.length > 256 || languages.targetLanguages.length > 256) throw new Error("Unavailable language lists");
++      const [from, to] = await Promise.all([
++        TranslationsParent.findCompatibleSourceLangTag(pair.sourceLanguage),
++        TranslationsParent.findCompatibleTargetLangTag(pair.targetLanguage),
++      ]);
++      if (!current()) return;
++      n.languages = languages;
++      const key = (rows, value) => rows.find(r => r.langTagKey === value)?.langTagKey || "";
++      n.from = key(languages.sourceLanguages, from);
++      n.to = key(languages.targetLanguages, to);
++      n.ready = true;
++      const {docLangTag} = this.#getLanguageInfo();
++      TranslationsParent.telemetry().selectTranslationsPanel().onOpen({maintainFlow, docLangTag, ...pair, textSource:isTextSelected ? "selection" : "hyperlink"});
++      n.opened = true;
++      this.#changeStateTo(n.from ? "idle" : "unsupported", false, {
++        sourceText, sourceLanguage:n.from, targetLanguage:n.to, detectedLanguage:pair.sourceLanguage,
++      });
++      this.#maybeRequestTranslation();
++      n.changed();
++    } catch (error) {
++      if (!current()) return;
++      this.console?.error(error);
++      this.#changeStateTo("init-failure", false, {sourceText});
++    }
++  }
++
++  closeNative(n) {
++    if (this.#native !== n) return;
++    ++n.generation;
++    ++this.#translationId;
++    if (n.opened) TranslationsParent.telemetry().selectTranslationsPanel().onClose();
++    this.#changeStateToClosed();
++    this.#native = null;
++  }
++
++  nativeChoose(n, side, value) {
++    if (this.#native !== n || !n.valid() || !n.ready) return;
++    if (this.phase() === "unsupported") n.alternate = value;
++    else {
++      n[side] = value;
++      if (side === "from") this.#sourceTextWordCount = undefined;
++      this.#maybeReportLanguageChangeToTelemetry();
++      this.#maybeRequestTranslation();
++    }
++    n.changed();
++  }
++
++  nativeView(n) {
++    if (this.#native !== n) return null;
++    this.#getLanguageInfo(true);
++    const pair = this.#getSelectedLanguagePair();
++    const hideFullPage = !!this.#shouldHideTranslateFullPageButton();
++    return {...this.#translationState, pair, hideFullPage,
++      canFullPage:!hideFullPage && !!pair.sourceLanguage && !!pair.targetLanguage &&
++        !TranslationsUtils.langTagsMatch(pair.sourceLanguage, pair.targetLanguage)};
++  }
++
+   /**
+@@ -438,2 +519,3 @@ var SelectTranslationsPanel = new (class {
+   close() {
++    if (this.#native) { this.#native.dismiss(); return; }
+     PanelMultiView.hidePopup(this.elements.panel);
+@@ -560,2 +642,5 @@ var SelectTranslationsPanel = new (class {
+   ) {
++    if (window.gWinUIPane?.addressToolbar?.selectedTranslationsPanel?.show(
++      event, screenX, screenY, sourceText, isTextSelected, langPairPromise, maintainFlow
++    )) return;
+     if (this.#isOpen()) {
+@@ -1159,2 +1244,3 @@ var SelectTranslationsPanel = new (class {
+   #handlePopupShownEvent(target) {
++    if (this.#native) return;
+     const { panel } = this.elements;
+@@ -1175,2 +1261,3 @@ var SelectTranslationsPanel = new (class {
+   #handlePopupHiddenEvent(target) {
++    if (this.#native) return;
+     const { panel } = this.elements;
+@@ -1283,2 +1370,8 @@ var SelectTranslationsPanel = new (class {
+   onClickTranslateButton() {
++    if (this.#native) {
++      this.#native.from = this.#native.alternate;
++      TranslationsParent.telemetry().selectTranslationsPanel().onTranslateButton({detectedLanguage:this.#translationState.detectedLanguage,...this.#getSelectedLanguagePair()});
++      this.#maybeRequestTranslation();
++      return;
++    }
+     const { fromMenuList, tryAnotherSourceMenuList } = this.elements;
+@@ -1301,2 +1394,11 @@ var SelectTranslationsPanel = new (class {
+   onClickTranslateFullPageButton() {
++    if (this.#native) {
++      if (!this.#native.valid() || !this.nativeView(this.#native).canFullPage) return;
++      const pair = this.#getSelectedLanguagePair();
++      const actor = TranslationsParent.getTranslationsActor(gBrowser.selectedBrowser);
++      TranslationsParent.telemetry().selectTranslationsPanel().onTranslateFullPageButton();
++      this.close();
++      actor.translate(pair, false);
++      return;
++    }
+     TranslationsParent.telemetry()
+@@ -1337,2 +1439,8 @@ var SelectTranslationsPanel = new (class {
+   onClickTryAgainButton() {
++    if (this.#native && this.phase() === "init-failure") {
++      const n = this.#native;
++      TranslationsParent.telemetry().selectTranslationsPanel().onTryAgainButton();
++      void this.openNative(n, ...n.args, true);
++      return;
++    }
+     TranslationsParent.telemetry().selectTranslationsPanel().onTryAgainButton();
+@@ -1388,2 +1496,3 @@ var SelectTranslationsPanel = new (class {
+   #checkCopyButton() {
++    if (this.#native) { this.#native.copied = true; this.#native.changed(); return; }
+     const { copyButton } = this.elements;
+@@ -1487,2 +1596,7 @@ var SelectTranslationsPanel = new (class {
+   #getSelectedLanguagePair() {
++    if (this.#native) {
++      const [sourceLanguage, sourceVariant] = this.#native.from.split(",");
++      const [targetLanguage, targetVariant] = this.#native.to.split(",");
++      return {sourceLanguage, sourceVariant, targetLanguage, targetVariant};
++    }
+     const { fromMenuList, toMenuList } = this.elements;
+@@ -1847,2 +1961,3 @@ var SelectTranslationsPanel = new (class {
+       this.#isOpen() &&
++      (!this.#native || this.#native.valid()) &&
+       // Continue only if the current translationId matches.
+@@ -1949,2 +2064,15 @@ var SelectTranslationsPanel = new (class {
+     const phase = this.phase();
++    if (this.#native) {
++      const n = this.#native;
++      if (phase !== this.#mostRecentUIPhase) {
++        const telemetry = TranslationsParent.telemetry().selectTranslationsPanel();
++        if (phase === "init-failure") telemetry.onInitializationFailureMessage();
++        if (phase === "translation-failure") telemetry.onTranslationFailureMessage(this.#getSelectedLanguagePair());
++        if (phase === "unsupported") telemetry.onUnsupportedLanguageMessage({...this.#getLanguageInfo(), detectedLanguage:this.#translationState.detectedLanguage});
++        if (phase === "translated" || phase === "translation-failure" || phase === "closed") n.copied = false;
++      }
++      this.#mostRecentUIPhase = phase;
++      n.changed();
++      return;
++    }
+ 
+@@ -2222,2 +2350,3 @@ var SelectTranslationsPanel = new (class {
+   #maybeRequestTranslation() {
++    if (this.#native && !this.#native.valid()) return;
+     if (this.#isClosed()) {
+@@ -2273,3 +2402,5 @@ var SelectTranslationsPanel = new (class {
+         this.console?.error(error);
+-        this.#changeStateToTranslationFailure();
++        if (this.#shouldContinueTranslation(translationId, sourceLanguage, targetLanguage)) {
++          this.#changeStateToTranslationFailure();
++        }
+       });
 diff --git a/browser/components/urlbar/QuickSuggest.sys.mjs b/browser/components/urlbar/QuickSuggest.sys.mjs
 index ce4dc0f5e3a..dbaa9db04ac 100644
 --- a/browser/components/urlbar/QuickSuggest.sys.mjs
@@ -9643,6 +9826,112 @@ index 1e2660589bd..5ae3ab48433 100644
 +      const nsTArray<LayoutDeviceIntRect>& aOcclusions) override;
 +
    void SendAnAPZEvent(mozilla::InputData& aEvent);
+diff --git a/browser/base/content/WinUISelectedTranslationsPanel.sys.mjs b/browser/base/content/WinUISelectedTranslationsPanel.sys.mjs
+new file mode 100644
+index 00000000000..31882d1b6da
+--- /dev/null
++++ b/browser/base/content/WinUISelectedTranslationsPanel.sys.mjs
+@@ -0,0 +1,100 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++import { TranslationsParent } from "resource://gre/actors/TranslationsParent.sys.mjs";
++import { TranslationsFeature } from "chrome://global/content/translations/TranslationsFeature.sys.mjs";
++
++// Context-menu selection/link text is captured only by Firefox. Native commands
++// carry opaque choices; the retained controller owns Translator and its phases.
++export class WinUISelectedTranslationsPanel {
++  constructor(toolbar) {
++    this.toolbar=toolbar;this.window=toolbar.window;this.nextRequest=0;this.nextChoice=100;
++    this.locale=()=>{this.l10n=null;this.dismiss();};
++    this.policy=()=>{if(this.pending)this.publish(this.pending);};
++    this.pairs=()=>this.dismiss();
++    Services.obs.addObserver(this.locale,"intl:app-locales-changed");
++    Services.obs.addObserver(this.pairs,"translations:language-pairs-changed");
++    this.window.document.addEventListener("TranslationsParent:LanguageState",this.policy);
++  }
++  eligible(){const t=this.toolbar,w=this.window;return !this.closed && !this.fallingBack && t.active && t.navigation && t.supported() && !t.customization?.editorOpen && !w.gDialogBox?.isOpen && !w.document.fullscreen && TranslationsFeature.isEnabled;}
++  live(p=this.pending){if(!p || !this.eligible())return false;const w=this.window,b=w.gBrowser.selectedBrowser;return p.browser===b && p.tab===w.gBrowser.selectedTab && p.document===b.browsingContext.currentWindowGlobal?.innerWindowId && p.principal.equals(b.contentPrincipal) && p.context===this.toolbar.owner.addressSession?.sessionId;}
++  label(id,args,attr){this.l10n??=new this.window.Localization(["branding/brand.ftl","browser/translations.ftl"],true);const m=this.l10n.formatMessagesSync([{id,args}])[0];return String((attr?m.attributes?.find(a=>a.name===attr)?.value:m.value)||"").slice(0,2048);}
++  invalidate(){if(!this.closed)this.toolbar.owner.invalidateAddress();}
++  show(event,x,y,text,isSelected,pairPromise,maintainFlow=false){
++    if(!this.eligible() || this.nextRequest>=0xffffffff || typeof text!=="string" || text.length>16384 || ![x,y].every(Number.isFinite))return false;
++    const scale=this.window.devicePixelRatio || 1,point=[Math.round(x*scale),Math.round(y*scale)];
++    if(point.some(v=>!Number.isSafeInteger(v) || Math.abs(v)>0x7fffffff))return false;
++    this.dismiss();this.toolbar.translationsPanel?.dismiss();
++    const w=this.window,b=w.gBrowser.selectedBrowser;
++    const p={request:++this.nextRequest,session:0,revision:1,source:"selection",browser:b,tab:w.gBrowser.selectedTab,document:b.browsingContext.currentWindowGlobal?.innerWindowId,
++      principal:b.contentPrincipal,context:this.toolbar.owner.addressSession?.sessionId,point,event,x,y,text,isSelected,pairPromise,generation:0,ids:new Map(),choices:new Map(),actions:new Map(),from:"",to:"",alternate:"",ready:false};
++    p.valid=()=>this.pending===p && this.live(p);p.changed=()=>this.publish(p);p.dismiss=()=>{if(this.pending===p)this.dismiss();};
++    this.pending=p;void w.SelectTranslationsPanel.openNative(p,text,isSelected,pairPromise,maintainFlow);return true;
++  }
++  choice(p,side,key){const name=side+":"+key;let id=p.ids.get(name);if(!id){id=this.nextChoice++;if(id>0xffffffff)throw Error("Choice identity exhausted");p.ids.set(name,id);}p.choices.set(id,{side,key});return id;}
++  model(p,view=this.window.SelectTranslationsPanel.nativeView(p)){
++    if(!view)return null;
++    const l=(id,args,attr)=>this.label(id,args,attr),phase=view.phase,unsupported=phase==="unsupported",failed=phase==="init-failure" || phase==="translation-failure";
++    const valid=!!p.from && !!p.to,main=p.ready && !unsupported && phase!=="init-failure";
++    const result=phase==="translated"?view.translatedText || "":l(phase==="translating" || phase==="translatable"?"select-translations-panel-translating-placeholder-text":"select-translations-panel-idle-placeholder-text");
++    p.choices=new Map();p.actions=new Map([[3,{verb:"close",retained:false}]]);
++    const buttons=[];
++    const button=(id,label,enabled,retained,verb)=>{buttons.push({id,label,enabled,retained});if(enabled)p.actions.set(id,{verb,retained});};
++    if(unsupported)button(6,l("select-translations-panel-translate-button",null,"label"),!!p.alternate,true,"translate");
++    else if(failed)button(7,l("select-translations-panel-try-again-button",null,"label"),true,true,"retry");
++    else {
++      button(4,l(p.copied?"select-translations-panel-copy-button-copied":"select-translations-panel-copy-button",null,"label"),phase==="translated" && valid,true,"copy");
++      if(!view.hideFullPage)button(5,l("select-translations-panel-translate-full-page-button",null,"label"),main && !!view.canFullPage,false,"full-page");
++    }
++    button(14,l("select-translations-panel-open-translations-settings-menuitem",null,"label"),true,false,"settings");
++    button(15,l("translations-panel-settings-about2",null,"label"),true,false,"about");
++    const selector=(side,label,visible,list,key)=>{
++      const options=[{id:this.choice(p,side,""),label:l("translations-panel-choose-language",null,"label")},...(list || []).map(r=>({id:this.choice(p,side,r.langTagKey),label:String(r.displayName).slice(0,512)}))];
++      if(visible)p.actions.set(side==="from"?8:9,{verb:"choose",side,retained:true});
++      return {label,visible,selected:options.find(o=>p.choices.get(o.id).key===key)?.id || options[0].id,options};
++    };
++    let error="";
++    if(unsupported){let language;try{language=TranslationsParent.createLanguageDisplayNames({fallback:"none"}).of(view.detectedLanguage);}catch(_){}error=l(language?"select-translations-panel-unsupported-language-message-known-2":"select-translations-panel-unsupported-language-message-unknown-2",{language},"message");}
++    else if(failed)error=l(phase==="init-failure"?"select-translations-panel-init-failure-message":"select-translations-panel-translation-failure-message",null,"message");
++    return {title:l("select-translations-panel-header"),description:"",error,hint:"",learn:"",loading:!p.ready && !failed || phase==="translating" || phase==="translatable",
++      from:selector("from",l(unsupported?"select-translations-panel-try-another-language-label":"select-translations-panel-from-label"),p.ready && phase!=="init-failure",p.languages?.sourceLanguages,unsupported?p.alternate:p.from),
++      to:selector("to",l("select-translations-panel-to-label"),main,p.languages?.targetLanguages,p.to),buttons,settings:[],settingsLabel:l("translations-panel-settings-button",null,"aria-label"),
++      close:l(failed?"select-translations-panel-cancel-button":"select-translations-panel-done-button",null,"label"),
++      result,resultEnabled:valid,resultVisible:main && !failed,resultRtl:phase==="translated" && Services.intl.getScriptDirection(view.pair.targetLanguage)==="rtl",resultLong:p.text.length>=this.window.SelectTranslationsPanel.textLengthThreshold,
++      announcement:phase==="translated"?l("select-translations-panel-translation-complete-announcement"):"",pointX:p.point[0],pointY:p.point[1]};
++  }
++  publish(p,force=false){
++    if(!p.valid())return;
++    const view=this.window.SelectTranslationsPanel.nativeView(p);if(!view)return;
++    const version=[view.phase,view.translatedText,view.detectedLanguage,view.hideFullPage,view.canFullPage,p.from,p.to,p.alternate,p.ready,p.copied,p.languages];
++    if(!force && p.viewVersion?.every((v,i)=>v===version[i]))return;
++    const model=this.model(p,view);if(model.result.length>32768 || JSON.stringify(model).length>65536){this.fallback(p);return;}
++    p.viewVersion=version;const fp=JSON.stringify(model);if(!force && fp===p.fingerprint)return;
++    p.fingerprint=fp;p.presentation=model;p.revision++;this.invalidate();
++  }
++
++  fallback(p){if(!p.valid())return;const pair=p.ready?Promise.resolve({sourceLanguage:p.from || this.window.SelectTranslationsPanel.nativeView(p).detectedLanguage,targetLanguage:p.to}):p.pairPromise;this.dismiss();this.fallingBack=true;try{void this.window.SelectTranslationsPanel.open(p.event,p.x,p.y,p.text,p.isSelected,pair,true).catch(console.error);}finally{this.fallingBack=false;}}
++  snapshot(){if(this.pending && !this.live(this.pending))this.dismiss();if(this.pending)this.publish(this.pending);const p=this.pending;return {enabled:this.eligible(),closed:this.closedSession || 0,...(p?{request:p.request,source:p.source,...(p.session?{session:p.session,revision:p.revision,...p.presentation}:{})}:{})};}
++  execute(action){
++    const m=/^selected-translation-panel:(open|dismiss|invoke):([1-9][0-9]*)(?::([1-9][0-9]*))?(?::([1-9][0-9]*))?$/.exec(action.command);
++    if(!m || m.slice(2).some(v=>v!==undefined && (!Number.isSafeInteger(Number(v)) || Number(v)>0xffffffff)))return 2;
++    const p=this.pending;if(!p)return 2;const session=Number(m[2]),c=this.window.SelectTranslationsPanel;
++    if(m[1]==="dismiss"){if(m[3] || session!==p.session)return 2;this.dismiss();return 1;}
++    if(!p.valid()){this.dismiss();return 2;}
++    if(m[1]==="open"){if(p.session || session!==p.request || !m[3] || m[4])return 2;p.session=Number(m[3]);this.invalidate();return 1;}
++    if(session!==p.session)return 2;
++    if(Number(m[4])===3 && Number(m[3])>0 && Number(m[3])<=p.revision){if(["init-failure","translation-failure"].includes(c.phase()))c.onClickCancelButton();else c.onClickDoneButton();return 1;}
++    const before=p.revision;this.publish(p);if(this.pending!==p || before!==p.revision || Number(m[3])!==p.revision)return 2;
++    const item=p.actions.get(Number(m[4]));if(!item)return 2;
++    if(item.verb==="choose"){const row=p.choices.get(action.choice);if(!row || row.side!==item.side)return 2;c.nativeChoose(p,row.side,row.key);if(p.revision===before)this.publish(p,true);return 1;}
++    if(item.verb==="copy")c.onClickCopyButton();
++    else if(item.verb==="translate")c.onClickTranslateButton();
++    else if(item.verb==="retry")c.onClickTryAgainButton();
++    else if(item.verb==="full-page")c.onClickTranslateFullPageButton();
++    else if(item.verb==="settings")c.openTranslationsSettingsPage();
++    else if(item.verb==="about")c.onAboutTranslations();
++    this.publish(p,p.revision===before && item.retained);return 1;
++  }
++  dismiss(){const p=this.pending;if(!p)return;this.pending=null;this.closedSession=p.session || 0;this.window.SelectTranslationsPanel.closeNative(p);this.invalidate();}
++  close(){if(this.closed)return;this.dismiss();this.closed=true;Services.obs.removeObserver(this.locale,"intl:app-locales-changed");Services.obs.removeObserver(this.pairs,"translations:language-pairs-changed");this.window.document.removeEventListener("TranslationsParent:LanguageState",this.policy);}
++}
 diff --git a/browser/base/content/WinUITranslationsPanel.sys.mjs b/browser/base/content/WinUITranslationsPanel.sys.mjs
 new file mode 100644
 index 00000000000..4feefbf12a5
@@ -25540,10 +25829,10 @@ index 00000000000..0111c38b89c
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..245688c8b8d
+index 00000000000..bea8c7fe92f
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,570 @@
+@@ -0,0 +1,577 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -25601,6 +25890,8 @@ index 00000000000..245688c8b8d
 +    this.connectionPanel=new WinUIConnectionPanel(this);
 +    const {WinUITranslationsPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUITranslationsPanel.sys.mjs");
 +    this.translationsPanel=new WinUITranslationsPanel(this);
++    const {WinUISelectedTranslationsPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUISelectedTranslationsPanel.sys.mjs");
++    this.selectedTranslationsPanel=new WinUISelectedTranslationsPanel(this);
 +    const {WinUITabGroupsMenu}=ChromeUtils.importESModule("chrome://browser/content/WinUITabGroupsMenu.sys.mjs");
 +    this.tabGroupsMenu=new WinUITabGroupsMenu(this);
 +    const {WinUIPrivacyPanels}=ChromeUtils.importESModule("chrome://browser/content/WinUIPrivacyPanels.sys.mjs");
@@ -25697,6 +25988,7 @@ index 00000000000..245688c8b8d
 +    state.permissionsPanel=this.permissionsPanel.snapshot();
 +    state.connectionPanel=this.connectionPanel.snapshot();
 +    state.translationsPanel=this.translationsPanel.snapshot();
++    state.selectedTranslationsPanel=this.selectedTranslationsPanel.snapshot();
 +    state.tabGroupsMenu=this.tabGroupsMenu.snapshot();
 +    Object.assign(state,this.privacyPanels.snapshot(state));
 +    return state;
@@ -25760,6 +26052,7 @@ index 00000000000..245688c8b8d
 +    const {window, owner} = this;
 +    const indicator = ["indicator:private", "indicator:analysis"].includes(action?.command);
 +    const nativeBookmark=typeof action?.command === "string" && action.command.startsWith("bookmark-panel:");
++    const nativeSelectedTranslation=typeof action?.command === "string" && action.command.startsWith("selected-translation-panel:");
 +    const nativeTranslation=typeof action?.command === "string" && action.command.startsWith("translation-panel:");
 +    const nativeConnection=typeof action?.command === "string" && action.command.startsWith("connection-panel:");
 +    const nativePermissions=typeof action?.command === "string" && action.command.startsWith("permissions-panel:");
@@ -25779,18 +26072,19 @@ index 00000000000..245688c8b8d
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativeTranslation ? {nativeTranslation:true} : nativeConnection ? {nativeConnection:true} : nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativeSelectedTranslation ? {nativeSelectedTranslation:true} : nativeTranslation ? {nativeTranslation:true} : nativeConnection ? {nativeConnection:true} : nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!stock && !indicator && !nativeBookmark && !nativePermissions && !nativeTranslation && !nativeConnection && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!stock && !indicator && !nativeBookmark && !nativePermissions && !nativeSelectedTranslation && !nativeTranslation && !nativeConnection && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
 +    if (nativeBookmark) return this.bookmarkPanel.execute(action);
 +    if (nativePermissions) return this.permissionsPanel.execute(action);
++    if (nativeSelectedTranslation) return this.selectedTranslationsPanel.execute(action);
 +    if (nativeTranslation) return this.translationsPanel.execute(action);
 +    if (nativeConnection) return this.connectionPanel.execute(action);
 +    if (nativeProfiler) return this.profilerPanel.execute(action);
@@ -26040,6 +26334,7 @@ index 00000000000..245688c8b8d
 +    this.permissionsPanel?.dismiss();
 +    this.connectionPanel?.dismiss();
 +    this.translationsPanel?.dismiss();
++    this.selectedTranslationsPanel?.dismiss();
 +    if(this.developerMenu?.session)this.developerMenu.dismiss();
 +    if(this.tabGroupsMenu?.session)this.tabGroupsMenu.dismiss();
 +    this.privacyPanels?.dismissAll();
@@ -26093,6 +26388,7 @@ index 00000000000..245688c8b8d
 +    this.permissionsPanel.close();
 +    this.connectionPanel.close();
 +    this.translationsPanel.close();
++    this.selectedTranslationsPanel.close();
 +    this.tabGroupsMenu.close();
 +    this.privacyPanels.close();
 +    this.resize.disconnect();
