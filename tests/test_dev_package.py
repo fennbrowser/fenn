@@ -78,6 +78,24 @@ class DevPackageTests(unittest.TestCase):
             (Path(temp) / "application.ini").write_text("[App]\nName=Firefox\nVersion=159.0a1\n")
             self.assertEqual(package.firefox_version(Path(temp)), "159.0a1")
 
+    def test_store_rejects_beta_with_release_shaped_application_version(self):
+        with tempfile.TemporaryDirectory() as temp:
+            objdir = Path(temp)
+            config = objdir / "config.status.json"
+            for display in ("159.0b5", "159.0rc1", "159.0esr", "159.0a1"):
+                config.write_text(json.dumps({"substs": {
+                    "MOZ_APP_VERSION": "159.0", "MOZ_APP_VERSION_DISPLAY": display}}))
+                with self.subTest(display=display), self.assertRaisesRegex(RuntimeError, "release tag"):
+                    package.check_store_version(objdir, "159.0")
+            config.write_text(json.dumps({"substs": {
+                "MOZ_APP_VERSION": "159.0", "MOZ_APP_VERSION_DISPLAY": "159.0"}}))
+            package.check_store_version(objdir, "159.0")
+            with self.assertRaisesRegex(RuntimeError, "release tag"):
+                package.check_store_version(objdir, "158.0")
+            config.unlink()
+            with self.assertRaises(FileNotFoundError):
+                package.check_store_version(objdir, "159.0")
+
     def test_next_version_counts_within_the_firefox_series(self):
         self.assertEqual(package.next_version((159, 0), "0.2.0.0", "0.2.2.0"), "159.0.1.0")
         self.assertEqual(package.next_version((159, 0), "159.0.2.0", "159.0.10.0", "158.0.40.0"),

@@ -137,6 +137,16 @@ def is_release_version(version):
     return re.fullmatch(r"\d+\.\d+(?:\.\d+)?", version) is not None
 
 
+def check_store_version(objdir, packaged_version):
+    substitutions = json.loads((objdir / "config.status.json").read_text(encoding="utf-8"))["substs"]
+    display_version = substitutions["MOZ_APP_VERSION_DISPLAY"]
+    if (substitutions["MOZ_APP_VERSION"] != packaged_version
+            or not is_release_version(packaged_version)
+            or not isinstance(display_version, str) or not is_release_version(display_version)):
+        raise RuntimeError(f"The Store package needs Firefox from a release tag; {objdir} is {display_version}. "
+                           "Rebase the Firefox pin to a release tag first.")
+
+
 def next_version(series, *known):
     """The next package of this Firefox series: <major>.<minor>.<build>.0.
 
@@ -637,9 +647,8 @@ def main():
     framework = installed_framework(min_version)
     record = framework_record(framework)
     browser_version = firefox_version(clean)
-    if lane.store and not is_release_version(browser_version):
-        raise RuntimeError(f"The Store package needs Firefox from a release tag; {objdir} is {browser_version}. "
-                           "Rebase the Firefox pin to a release tag first.")
+    if lane.store:
+        check_store_version(objdir, browser_version)
     installed = installed_version(lane)
     if args.version is None:
         # The loose lane's registration is its only record; its runs are superseded.
