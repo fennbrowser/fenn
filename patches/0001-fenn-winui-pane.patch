@@ -24180,10 +24180,10 @@ index 00000000000..961c3b61a43
 +}
 diff --git a/browser/base/content/WinUIAddressSession.sys.mjs b/browser/base/content/WinUIAddressSession.sys.mjs
 new file mode 100644
-index 00000000000..0111c38b89c
+index 00000000000..6b51b68594d
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressSession.sys.mjs
-@@ -0,0 +1,2670 @@
+@@ -0,0 +1,2726 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24521,6 +24521,7 @@ index 00000000000..0111c38b89c
 +      this.nativeSelected = null;
 +      this.modeQueryRestart = null;
 +    }
++    if (this.active) this.active.retainedRows = [];
 +    this.nativeOpen = false;
 +    this.nativeVisible = [];
 +    this.input.controller.visibleResults = [];
@@ -25002,10 +25003,42 @@ index 00000000000..0111c38b89c
 +    };
 +  }
 +
++  // Retained rows are presentation only. They never join the new query's
++  // result objects, selection, activation or exposure authority.
++  nativePresentationRows(active = this.active) {
++    if (!active) return [];
++    const rows = active.rows;
++    if (active.done) return rows;
++    const count = rows.filter(row => !row.globalActions).length;
++    // Current and retained rows share the existing native pixel budget.
++    // Keep row geometry even if an old image must use its symbol fallback.
++    const pixels = row => (row.image?.width || 0) * (row.image?.height || 0);
++    let total = rows.reduce((sum, row) => sum + pixels(row), 0);
++    const tail = (active.retainedRows || []).slice(count).map(row => {
++      if (total + pixels(row) > 65536) return {...row, image:null};
++      total += pixels(row);
++      return row;
++    });
++    return [...rows, ...tail];
++  }
++
++  retainNativeRows() {
++    const active = this.active;
++    const browser = this.window.gBrowser.selectedBrowser;
++    const document = browser.browsingContext?.currentWindowGlobal?.innerWindowId;
++    if (!active || !document || this.closed || !this.nativeOpen || active.browser !== browser ||
++        active.page !== browser.currentURI.spec || active.presentationDocument !== document ||
++        active.presentationMode !== JSON.stringify(this.input.searchMode ?? null)) return [];
++    return this.nativePresentationRows(active).filter(row => !row.globalActions).slice(0, 100)
++      .map(row => ({...row, stale:true, actions:[], tipButtons:[],
++        helpLink:null, focusButton:false, feedback:""}));
++  }
++
 +  async legacyQuery(text, event = null, edit = null) {
 +    if (this.closed) throw new Error("Session is closed");
 +    if (typeof text !== "string" || text.length > 32768)
 +      throw new TypeError("Invalid query text");
++    const retainedRows = this.retainNativeRows();
 +    this.cancel();
 +    const active = (this.active = {
 +      revision: this.revision,
@@ -25015,6 +25048,9 @@ index 00000000000..0111c38b89c
 +      browser: this.window.gBrowser.selectedBrowser,
 +      page: this.window.gBrowser.selectedBrowser.currentURI.spec,
 +      context: null,
++      retainedRows,
++      presentationDocument: this.window.gBrowser.selectedBrowser.browsingContext?.currentWindowGlobal?.innerWindowId,
++      presentationMode: JSON.stringify(this.input.searchMode ?? null),
 +      rows: [],
 +      done: false,
 +    });
@@ -25038,6 +25074,11 @@ index 00000000000..0111c38b89c
 +        event:event || new this.window.InputEvent("input", {inputType:"insertText"})});
 +    }
 +    await this.input.lastQueryContextPromise;
++    if (this.active === active && !active.context) {
++      active.done = true;
++      active.retainedRows = [];
++      this.sequence++;
++    }
 +    return this.active === active ? this.snapshot() : null;
 +  }
 +
@@ -25101,6 +25142,8 @@ index 00000000000..0111c38b89c
 +      active.page !== active.browser.currentURI.spec
 +    )
 +      return;
++    active.presentationDocument = active.browser.browsingContext?.currentWindowGlobal?.innerWindowId;
++    active.presentationMode = JSON.stringify(this.input.searchMode ?? null);
 +    this.resultMenuAdapter?.close();
 +    this.captureAutofill(active);
 +    this.cancelImages();
@@ -25291,6 +25334,8 @@ index 00000000000..0111c38b89c
 +  onQueryFinished(context) {
 +    if (this.active?.context?.id === context.id) {
 +      this.active.done = true;
++      this.active.retainedRows = [];
++      this.sequence++;
 +      if (
 +        this.input.view.nativePresentation === this &&
 +        this.nativeVisible?.length &&
@@ -25487,7 +25532,7 @@ index 00000000000..0111c38b89c
 +        )?.id || null,
 +      query: active.text,
 +      complete: active.done,
-+      rows: active.rows.map(row => ({ ...row, image: row.image ? { ...row.image } : null, actions: [...row.actions] })),
++      rows: this.nativePresentationRows(active).map(row => ({ ...row, image: row.image ? { ...row.image } : null, actions: [...row.actions] })),
 +    };
 +  }
 +
@@ -26178,6 +26223,7 @@ index 00000000000..0111c38b89c
 +    if (typeof text !== "string" || text.length > 32768) {
 +      throw new TypeError("Invalid query text");
 +    }
++    const retainedRows = this.retainNativeRows();
 +    this.cancel();
 +    const browser = this.window.gBrowser.selectedBrowser;
 +    const active = (this.active = {
@@ -26189,6 +26235,9 @@ index 00000000000..0111c38b89c
 +      browser,
 +      page: browser.currentURI.spec,
 +      context: null,
++      retainedRows,
++      presentationDocument: this.window.gBrowser.selectedBrowser.browsingContext?.currentWindowGlobal?.innerWindowId,
++      presentationMode: JSON.stringify(this.input.searchMode ?? null),
 +      rows: [],
 +      done: false,
 +    });
@@ -26228,7 +26277,14 @@ index 00000000000..0111c38b89c
 +        "edit-error:" + String(error?.message ?? error).slice(0, 120));
 +      throw error;
 +    }
-+    if (!context) return null;
++    if (!context) {
++      if (this.active === active) {
++        active.done = true;
++        active.retainedRows = [];
++        this.sequence++;
++      }
++      return null;
++    }
 +    return this.active === active ? this.snapshot() : null;
 +  }
 +
@@ -27590,10 +27646,10 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..f11886da663
+index 00000000000..cf0f59c5ede
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2202 @@
+@@ -0,0 +1,2203 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -28376,6 +28432,7 @@ index 00000000000..f11886da663
 +        .map(row => ({
 +          id: row.id,
 +          enabled: row.enabled !== false,
++          stale: row.stale === true,
 +          title: (row.title || row.displayUrl || "Suggestion").slice(0, 1024),
 +          description: (row.description || "").slice(0, 1024),
 +          feedback: (row.feedback || "").slice(0,1024),

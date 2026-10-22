@@ -34,6 +34,7 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include "../../native/WinUIPane/PackageUpdates.h"
 #include "../../native/WinUIPane/PinnedExtensionButtons.h"
+#include "../../native/WinUIPane/SuggestionList.h"
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <wrl/client.h>
 #include "GlowFrameProbe.h"
@@ -972,6 +973,41 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     {
+        SuggestionList suggestions;
+        auto rows = [](wchar_t const* id) {
+            auto data = winrt::Windows::Data::Json::JsonArray::Parse(
+                LR"([{"id":"old","title":"Tip","description":"Help","buttons":[{"id":"action","label":"Act","enabled":true}],"helpLink":{"id":"help","before":"","label":"Help","after":""}}])");
+            data.GetAt(0).GetObject().SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(id));
+            return data;
+        };
+        suggestions.SyncRows(rows(L"old"));
+        auto container = suggestions.list.Items().GetAt(0);
+        auto button = suggestions.visuals[0].mainButtons[0];
+        auto help = suggestions.visuals[0].help;
+        suggestions.SyncRows(rows(L"new"));
+        Require(suggestions.list.Items().GetAt(0) == container &&
+                    suggestions.visuals[0].mainButtons[0] != button && suggestions.visuals[0].help != help,
+                "recycled slot replaces callbacks even when action metadata is unchanged");
+        hstring activated;
+        suggestions.activateButton = [&](auto const&, auto const& resultId) { activated = resultId; };
+        Automation::Peers::ButtonAutomationPeer peer(suggestions.visuals[0].mainButtons[0]);
+        peer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+        Pump();
+        Require(activated == L"new", "recycled tip action activates the current result identity");
+        suggestions.SyncRows(winrt::Windows::Data::Json::JsonArray::Parse(
+            LR"([{"id":"retained","title":"Previous first result","stale":true}])"));
+        suggestions.SyncSelection(L"retained");
+        Require(!suggestions.HasCurrentRows() && suggestions.list.Items().Size() == 1 &&
+                    suggestions.list.Items().GetAt(0) == container &&
+                    container.as<Controls::ListViewItem>().IsEnabled() &&
+                    !container.as<Controls::ListViewItem>().IsHitTestVisible() && suggestions.list.SelectedIndex() == -1 &&
+                    suggestions.VisibleIds().empty() && suggestions.visuals[0].mainButtons.empty() && !suggestions.visuals[0].help,
+                "pending rows retain their appearance without selection, exposure or early-Enter readiness");
+        suggestions.Clear();
+        Require(suggestions.ids.empty() && suggestions.list.Items().Size() == 0,
+                "explicit dismissal still releases recycled slots");
+    }
+    {
         PinnedExtensionButtons indicators;
         auto state= PinnedExtensionButtons::Read(winrt::Windows::Data::Json::JsonObject::Parse(
             LR"({"navigation":{"omnibarLeft":[{"id":"warning","label":"Warning","enabled":true,"alwaysVisible":true,"background":[0,0,0,0],"foreground":[0,0,0,255]},{"id":"ordinary","label":"Action","enabled":true,"background":[0,0,0,0],"foreground":[0,0,0,255]}]}})"),L"omnibarLeft");
@@ -1185,6 +1221,34 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     auto list = popupContent.Children().GetAt(0).as<Controls::ListView>();
     Require(address.Visibility() == Visibility::Visible && field.Text() == L"initial" && list.Items().Size() == 2,
             "real TextBox and ListView receive snapshot");
+    {
+        SuggestionList fixture;
+        auto root = content.as<Controls::Grid>();
+        root.Children().Append(fixture.list);
+        for (auto size : {16, 32, 52}) {
+            for (auto kind : {L"page", L"search", L"history", L"copy", L"bookmarks", L"tabs", L"actions"}) {
+                auto row = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"id":"glyph","title":"Icon layout"})");
+                row.SetNamedValue(L"imageSize", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(size));
+                row.SetNamedValue(L"symbol", winrt::Windows::Data::Json::JsonValue::CreateStringValue(kind));
+                winrt::Windows::Data::Json::JsonArray rows; rows.Append(row);
+                fixture.SyncRows(rows); fixture.RefreshLabels();
+                root.UpdateLayout();
+                AwaitLiveTree(fixture.visuals[0].symbolHost);
+                auto host = fixture.visuals[0].symbolHost;
+                auto symbol = fixture.visuals[0].symbol;
+                Require(host.Width() == size && host.Height() == size && host.ActualWidth() == size &&
+                            host.Stretch() == Media::Stretch::Uniform && std::isnan(symbol.Width()) && std::isnan(symbol.Height()) &&
+                            symbol.ActualWidth() > 0 && symbol.ActualHeight() > 0,
+                        "stock fallback glyph keeps natural layout inside a scaled compact or rich icon slot");
+                const auto bounds = symbol.TransformToVisual(host).TransformBounds(
+                    {0, 0, float(symbol.ActualWidth()), float(symbol.ActualHeight())});
+                Require(bounds.Width <= size + 0.1f && bounds.Height <= size + 0.1f && bounds.X >= -0.1f && bounds.Y >= -0.1f,
+                        "complete fallback symbol bounds fit within the result icon slot");
+            }
+        }
+        uint32_t index{};
+        if (root.Children().IndexOf(fixture.list, index)) root.Children().RemoveAt(index);
+    }
     Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "exact address replay is harmless");
     auto conflict = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);
     conflict.SetNamedValue(L"text", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"conflict"));
@@ -1246,6 +1310,25 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
             LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"text":"initial","rows":[{"id":"a","title":"bad","image":{"width":105,"height":1,"pixels":"00"}}]})")),
         "reject oversized image before mutation");
     Require(list.Items().GetAt(0) == originalRow && image.Source(), "malformed image leaves controls intact");
+    // Provider updates and subsequent edits use fresh result IDs. Retaining
+    // only identical IDs misses the normal typing path and replays animations.
+    auto secondRow = list.Items().GetAt(1);
+    Require(SUCCEEDED(publishAddress(
+        LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"text":"initial","selectedId":"new-b","rows":[{"id":"new-a","title":"Updated first"},{"id":"new-b","title":"Updated second"},{"id":"new-c","title":"Added third"}]})")),
+        "accept fresh query identities and an appended result");
+    Pump();
+    Require(list.Items().Size() == 3 && list.Items().GetAt(0) == originalRow &&
+                list.Items().GetAt(1) == secondRow && list.SelectedIndex() == 1 &&
+                unbox_value<hstring>(originalRow.as<Controls::ListViewItem>().Tag()) == L"new-a" &&
+                Automation::AutomationProperties::GetName(originalRow.as<Controls::ListViewItem>()) == L"Updated first" &&
+                !image.Source(),
+            "typing retains containers while refreshing identity, accessibility, selection and image");
+    Require(SUCCEEDED(publishAddress(
+        LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"text":"initial","rows":[{"id":"short-a","title":"Remaining result"}]})")) &&
+                list.Items().Size() == 1 && list.Items().GetAt(0) == originalRow && list.SelectedIndex() == -1,
+            "shrinking results removes only trailing containers and clears absent selection");
+    // Restore the original rows for the following independent fixtures.
+    Require(SUCCEEDED(publishAddress(snapshot)), "restore original address fixture");
     const wchar_t* modesSnapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":3,"text":"initial","rows":[{"id":"a","title":"First suggestion"},{"id":"b","title":"Second suggestion"}],"modes":{"generation":1,"applied":0,"active":false,"label":"Test engine","entries":[{"id":"engine","label":"Test engine","local":false,"symbol":"search","image":{"width":1,"height":1,"pixels":"0000ffff"}},{"id":"local","label":"History","local":true,"symbol":"history"},{"id":"settings","label":"Settings","local":true,"symbol":"settings"}]}})";
     Require(SUCCEEDED(publishAddress(modesSnapshot)),

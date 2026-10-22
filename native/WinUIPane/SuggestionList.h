@@ -14,19 +14,21 @@ struct SuggestionList {
 
     std::function<void(winrt::hstring const&, winrt::hstring const&)> activateButton;
     std::function<void()> focusField;
-    std::function<void(winrt::hstring const&, winrt::hstring const&, Microsoft::UI::Xaml::FrameworkElement const&)> openButtonMenu;
+    std::function<void(winrt::hstring const&, winrt::hstring const&, winrt::Microsoft::UI::Xaml::FrameworkElement const&)> openButtonMenu;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     ~SuggestionList() { lifetime.reset(); }
-    Microsoft::UI::Xaml::Controls::ListView list;
+    winrt::Microsoft::UI::Xaml::Controls::ListView list;
     std::vector<winrt::hstring> ids, titles, actionLabels;
+    std::vector<bool> current;
     struct RowVisual {
-        Microsoft::UI::Xaml::Controls::TextBlock title, section, description, url, feedback;
-        Microsoft::UI::Xaml::Controls::Image image;
-        Microsoft::UI::Xaml::Controls::SymbolIcon symbol;
-        Microsoft::UI::Xaml::Controls::StackPanel buttons;
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock title, section, description, url, feedback;
+        winrt::Microsoft::UI::Xaml::Controls::Image image;
+        winrt::Microsoft::UI::Xaml::Controls::SymbolIcon symbol;
+        winrt::Microsoft::UI::Xaml::Controls::Viewbox symbolHost;
+        winrt::Microsoft::UI::Xaml::Controls::StackPanel buttons;
         std::vector<winrt::hstring> buttonIds;
-        std::vector<Microsoft::UI::Xaml::Controls::Button> mainButtons, menuButtons;
-        Microsoft::UI::Xaml::Documents::Hyperlink help{nullptr};
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> mainButtons, menuButtons;
+        winrt::Microsoft::UI::Xaml::Documents::Hyperlink help{nullptr};
         winrt::hstring helpKey, pixels;
         int pixelWidth{}, pixelHeight{};
     };
@@ -34,21 +36,22 @@ struct SuggestionList {
     winrt::hstring pendingFocus, lastFocus;
 
     SuggestionList() {
-        using namespace Microsoft::UI::Xaml::Controls;
+        using namespace winrt::Microsoft::UI::Xaml;
+        using namespace winrt::Microsoft::UI::Xaml::Controls;
         Automation::AutomationProperties::SetName(list, L"Address suggestions");
         Automation::AutomationProperties::SetAutomationId(list, L"FennSuggestions");
         list.MaxHeight(160);
         list.SelectionMode(ListViewSelectionMode::Single);
     }
 
-    Microsoft::UI::Xaml::Controls::Button FirstButton() const {
+    winrt::Microsoft::UI::Xaml::Controls::Button FirstButton() const {
         for (auto const& row : visuals)
             for (auto const& button : row.mainButtons) {
                 if (button.IsEnabled()) return button;
             }
         return nullptr;
     }
-    Microsoft::UI::Xaml::Documents::Hyperlink FirstHelp() const {
+    winrt::Microsoft::UI::Xaml::Documents::Hyperlink FirstHelp() const {
         for (auto const& row : visuals) {
             if (row.help) return row.help;
             for (auto const& button : row.mainButtons) if (button.IsEnabled()) return nullptr;
@@ -57,9 +60,9 @@ struct SuggestionList {
     }
     bool FocusFirstAction() const {
         for (auto const& row : visuals) {
-            if (row.help) return row.help.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+            if (row.help) return row.help.Focus(winrt::Microsoft::UI::Xaml::FocusState::Keyboard);
             for (auto const& button : row.mainButtons)
-                if (button.IsEnabled()) return button.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+                if (button.IsEnabled()) return button.Focus(winrt::Microsoft::UI::Xaml::FocusState::Keyboard);
         }
         return false;
     }
@@ -68,19 +71,21 @@ struct SuggestionList {
         for (auto const& row : visuals)
             for (uint32_t i = 0; i < row.buttonIds.size(); ++i)
                 if (row.buttonIds[i] == pendingFocus) {
-                    row.mainButtons[i].Focus(Microsoft::UI::Xaml::FocusState::Programmatic);
+                    row.mainButtons[i].Focus(winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
                     pendingFocus = L""; return;
                 }
         pendingFocus = L"";
     }
     void Clear() {
         ids.clear();
+        current.clear();
         visuals.clear();
         list.Items().Clear();
     }
 
     void RefreshLabels() {
-        using namespace Microsoft::UI::Xaml::Controls;
+        using namespace winrt::Microsoft::UI::Xaml;
+        using namespace winrt::Microsoft::UI::Xaml::Controls;
         for (uint32_t i = 0; i < ids.size(); ++i) {
             auto container = list.Items().GetAt(i).as<ListViewItem>();
             auto title = titles[i];
@@ -94,31 +99,30 @@ struct SuggestionList {
         }
     }
 
-    // Rebuilds rows only when the caller has determined the row set or
-    // ordering may have changed (compared by sequence/revision); called
-    // unconditionally would defeat that skip. Re-checks the size bound the
-    // caller already validated, matching the snapshot's other fields.
+    // Firefox assigns fresh opaque IDs as providers publish and queries change.
+    // Reuse XAML slots, not those identities: clearing the list restarts its
+    // container transitions while typing. The owner suppresses selection events
+    // until SyncSelection/RefreshLabels; rebind identity-bearing callbacks too.
     void SyncRows(winrt::Windows::Data::Json::JsonArray const& rows) {
-        using namespace Microsoft::UI::Xaml;
-        using namespace Microsoft::UI::Xaml::Controls;
+        using namespace winrt::Microsoft::UI::Xaml;
+        using namespace winrt::Microsoft::UI::Xaml::Controls;
         if (rows.Size() > NativeJson::kMaxListEntries) winrt::throw_hresult(E_INVALIDARG);
-        bool sameIds = rows.Size() == ids.size();
-        for (uint32_t i = 0; sameIds && i < rows.Size(); ++i)
-            sameIds = rows.GetAt(i).GetObject().GetNamedString(L"id") == ids[i];
-        if (!sameIds) {
-            ids.clear();
-            visuals.clear();
-            list.Items().Clear();
+        while (ids.size() > rows.Size()) {
+            list.Items().RemoveAtEnd();
+            ids.pop_back();
+            visuals.pop_back();
         }
         titles.clear();
         actionLabels.clear();
-        for (auto item : rows) {
-            auto row = item.GetObject();
+        current.clear();
+        for (uint32_t i = 0; i < rows.Size(); ++i) {
+            auto row = rows.GetAt(i).GetObject();
             auto id = row.GetNamedString(L"id");
             auto title = row.GetNamedString(L"title");
             titles.push_back(title);
             actionLabels.push_back(row.GetNamedString(L"actionLabel", L""));
-            if (!sameIds) {
+            current.push_back(!row.GetNamedBoolean(L"stale", false));
+            if (i == ids.size()) {
                 ids.push_back(id);
                 ListViewItem container;
                 RowVisual visual;
@@ -155,7 +159,9 @@ struct SuggestionList {
                 text.Children().Append(visual.buttons);
                 Grid::SetColumn(text, 1);
                 Grid icon;
-                icon.Children().Append(visual.symbol);
+                visual.symbolHost.Stretch(Media::Stretch::Uniform);
+                visual.symbolHost.Child(visual.symbol);
+                icon.Children().Append(visual.symbolHost);
                 icon.Children().Append(visual.image);
                 visual.image.Stretch(Media::Stretch::Uniform);
                 Automation::AutomationProperties::SetAccessibilityView(visual.image,
@@ -171,11 +177,28 @@ struct SuggestionList {
                 container.Tag(winrt::box_value(id));
                 visuals.push_back(visual);
                 list.Items().Append(container);
+            } else if (ids[i] != id) {
+                ids[i] = id;
+                list.Items().GetAt(i).as<ListViewItem>().Tag(winrt::box_value(id));
+                // Action handlers capture the result ID. Identical metadata
+                // must still acquire the new result's activation authority.
+                auto& visual = visuals[i];
+                visual.buttons.Children().Clear();
+                visual.buttonIds.clear();
+                visual.mainButtons.clear();
+                visual.menuButtons.clear();
+                visual.helpKey = L"";
+                visual.help = nullptr;
             }
         }
         for (uint32_t i = 0; i < rows.Size(); ++i) {
             auto row = rows.GetAt(i).GetObject();
-            list.Items().GetAt(i).as<ListViewItem>().IsEnabled(row.GetNamedBoolean(L"enabled", true));
+            auto container = list.Items().GetAt(i).as<ListViewItem>();
+            // Retained rows keep their appearance while the next query runs.
+            // Disable interaction separately so they do not flash disabled.
+            container.IsEnabled(row.GetNamedBoolean(L"enabled", true));
+            container.IsHitTestVisible(current[i]);
+            container.IsTabStop(current[i]);
             auto& visual = visuals[i];
             auto buttons = row.GetNamedArray(L"buttons", winrt::Windows::Data::Json::JsonArray());
             bool sameButtons = buttons.Size() == visual.buttonIds.size();
@@ -274,8 +297,10 @@ struct SuggestionList {
             const auto size = row.GetNamedNumber(L"imageSize", 16);
             visual.image.Width(size);
             visual.image.Height(size);
-            visual.symbol.Width(size);
-            visual.symbol.Height(size);
+            // SymbolIcon has a stock glyph size; Width/Height alone clip it.
+            // Let WinUI scale its natural layout into Firefox's icon slot.
+            visual.symbolHost.Width(size);
+            visual.symbolHost.Height(size);
             const auto symbol = row.GetNamedString(L"symbol", L"page");
             visual.symbol.Symbol(symbol == L"search"    ? Symbol::Find
                                  : symbol == L"history" ? Symbol::Clock
@@ -301,13 +326,18 @@ struct SuggestionList {
                 visual.pixels = L"";
             }
             visual.image.Visibility(hasImage ? Visibility::Visible : Visibility::Collapsed);
-            visual.symbol.Visibility(hasImage ? Visibility::Collapsed : Visibility::Visible);
+            visual.symbolHost.Visibility(hasImage ? Visibility::Collapsed : Visibility::Visible);
         }
     }
 
     void SyncSelection(winrt::hstring const& selectedId) {
         auto selectedIt = std::find(ids.begin(), ids.end(), selectedId);
-        list.SelectedIndex(selectedIt == ids.end() ? -1 : int(selectedIt - ids.begin()));
+        list.SelectedIndex(selectedIt == ids.end() || !current[selectedIt - ids.begin()]
+                               ? -1 : int(selectedIt - ids.begin()));
+    }
+
+    bool HasCurrentRows() const {
+        return std::find(current.begin(), current.end(), true) != current.end();
     }
 
     // The ids whose rows are actually within the list's viewport. Returns them
@@ -315,9 +345,10 @@ struct SuggestionList {
     // what it last reported, and building JSON to answer "did anything change"
     // is work done to discover that nothing has.
     std::vector<winrt::hstring> VisibleIds() const {
-        using namespace Microsoft::UI::Xaml;
+        using namespace winrt::Microsoft::UI::Xaml;
         std::vector<winrt::hstring> visible;
         for (uint32_t i = 0; i < ids.size(); ++i) {
+            if (!current[i]) continue;
             auto row = list.ContainerFromIndex(i).try_as<FrameworkElement>();
             if (!row || row.ActualHeight() <= 0) continue;
             auto origin = row.TransformToVisual(list).TransformPoint({0, 0});

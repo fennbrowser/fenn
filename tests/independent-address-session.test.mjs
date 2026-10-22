@@ -653,6 +653,20 @@ test('edits carry the input search mode so a confirmed mode survives typing',asy
   assert.equal(state.searchMode.engineName,'Held');
 });
 
+test('an independent edit keeps presentation-only rows while its replacement query is pending',async()=>{
+  const f=fixture();let finish;
+  f.s.active.presentationDocument=2;
+  f.s.active.presentationMode=JSON.stringify(f.input.searchMode);
+  f.editor.edit=()=>new Promise(resolve=>finish=resolve);
+  const pending=f.s.query('abc',null,{composing:false,selectionStart:3,selectionEnd:3,inputType:'insertText'});
+  assert.equal(f.s.active.rows.length,0);
+  assert.equal(f.s.active.retainedRows.length,1);
+  assert.equal(f.s.active.retainedRows[0].id,f.row.id);
+  assert.equal(f.s.active.retainedRows[0].stale,true);
+  assert.equal(f.s.nativePresentationRows().length,1);
+  finish(null);await pending;
+});
+
 test('an unsupported Enter on the heuristic or with no row is completed once by Firefox',()=>{
   for(const id of ['','row']){
     const f=fixture(),counters=f.s.constructor.counters,before=counters.replays;

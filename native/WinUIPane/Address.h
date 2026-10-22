@@ -257,6 +257,9 @@ struct NativeAddress {
     void Action(wchar_t const* kind, int traversal = 0, wchar_t const* clipboard = nullptr) {
         const auto incoming = IntentOf(kind);
         if (incoming == NativeShellCore::NoIntent) return;
+        const auto selected = suggestions.list.SelectedIndex();
+        if ((incoming == NativeShellCore::Select || incoming == NativeShellCore::Activate) &&
+            selected >= 0 && size_t(selected) < suggestions.current.size() && !suggestions.current[selected]) return;
         // Is this intent meaningful at all right now -- a question about the
         // surface, not about what is staged. Asked before Edit() below, which
         // is where the original guard sat.
@@ -475,7 +478,8 @@ struct NativeAddress {
             if (e.Key() == VirtualKey::Down && !suggestions.ids.empty() && !(GetKeyState(VK_MENU) & 0x8000)) {
                 auto& list = suggestions.list;
                 int next = list.SelectedIndex() + 1;
-                while (next < int(suggestions.ids.size()) && !list.Items().GetAt(next).as<ListViewItem>().IsEnabled())
+                while (next < int(suggestions.ids.size()) &&
+                       (!suggestions.current[next] || !list.Items().GetAt(next).as<ListViewItem>().IsEnabled()))
                     ++next;
                 if (next >= int(suggestions.ids.size())) {
                     e.Handled(true);
@@ -492,6 +496,13 @@ struct NativeAddress {
         });
         suggestions.list.SelectionChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
+            const auto index = suggestions.list.SelectedIndex();
+            if (!syncing && index >= 0 && size_t(index) < suggestions.current.size() && !suggestions.current[index]) {
+                syncing = true;
+                suggestions.list.SelectedIndex(-1);
+                syncing = false;
+                return;
+            }
             if (!syncing) suggestions.RefreshLabels();
             Action(L"select");
         });
@@ -560,7 +571,7 @@ struct NativeAddress {
                         }
                     }
                 }
-                if (found) {
+                if (found && index < suggestions.current.size() && suggestions.current[index]) {
                     syncing = true;
                     list.SelectedIndex(int(index));
                     syncing = false;
@@ -586,7 +597,7 @@ struct NativeAddress {
             const bool pointer = e.TryGetPosition(suggestions.list, point);
             if (!row && !pointer) row = suggestions.list.SelectedItem().try_as<ListViewItem>();
             uint32_t index{};
-            if (!row || !suggestions.list.Items().IndexOf(row, index) || index >= suggestions.ids.size()) return;
+            if (!row || !suggestions.list.Items().IndexOf(row, index) || index >= suggestions.ids.size() || !suggestions.current[index]) return;
             e.Handled(true);
             resultMenuId = suggestions.ids[index];
             resultMenuButtonId = L"";
@@ -599,6 +610,12 @@ struct NativeAddress {
                                             auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
             if (alive.expired()) return;
             using winrt::Windows::System::VirtualKey;
+            if (e.Key() == VirtualKey::Down) {
+                const auto next = suggestions.list.SelectedIndex() + 1;
+                if (size_t(next) < suggestions.current.size() && !suggestions.current[next]) {
+                    e.Handled(true); return;
+                }
+            }
             if (e.Key() == VirtualKey::Tab && (GetKeyState(VK_SHIFT) & 0x8000)) {
                 auto focused = Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(suggestions.list.XamlRoot());
                 if (auto help = suggestions.FirstHelp(); help && focused == help) {
@@ -1247,6 +1264,7 @@ struct NativeAddress {
             }
             row.GetNamedBoolean(L"focusButton", false);
             row.GetNamedBoolean(L"enabled", true);
+            row.GetNamedBoolean(L"stale", false);
             row.GetNamedBoolean(L"titleLtr", false);
             NativeJson::RequireLength(row.GetNamedString(L"symbol", L"page"), NativeJson::kMaxShortLabel);
             auto buttons = row.GetNamedArray(L"buttons", JsonArray());
@@ -1533,7 +1551,7 @@ struct NativeAddress {
                 shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_MODES, nextSession, modesGeneration, modesFingerprint, true, true);
             mode.Sync(snapshot, modesDecision != SHELL_ADDRESS_SECTION_DECISION_IGNORED);
             actions.Sync(snapshot);
-            shell.PublishAddress(uint64_t(checkedEdit), checkedComplete || !suggestions.ids.empty());
+            shell.PublishAddress(uint64_t(checkedEdit), checkedComplete || suggestions.HasCurrentRows());
         } catch (...) {
             syncing = false;
             throw;
