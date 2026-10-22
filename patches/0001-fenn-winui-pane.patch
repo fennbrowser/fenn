@@ -22,10 +22,10 @@ index 9e0ef4f14fd..030d3809afd 100644
 +      this.sendAsyncMessage("ContextMenu:Hiding", { timeStamp });
      } catch (e) {
 diff --git a/browser/app/moz.build b/browser/app/moz.build
-index 934bad0d61f..81cd6e7ab6b 100644
+index 5cc4a68caec..92669a3d53a 100644
 --- a/browser/app/moz.build
 +++ b/browser/app/moz.build
-@@ -300,5 +300,7 @@ for icon in (
+@@ -299,5 +299,7 @@ for icon in (
      macro = "CUSTOM_" + icon.upper().replace("-", "_") + "_ICO"
 -    DEFINES[macro] = '"%s/browser/components/shell/icons/%s.ico"' % (
 +    # Fenn (firefox-winui): these are Firefox logo artwork; embed Fenn's own
@@ -36,7 +36,7 @@ index 934bad0d61f..81cd6e7ab6b 100644
 +        CONFIG["MOZ_BRANDING_DIRECTORY"],
      )
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 4f50c25976a..4ba1b3345e3 100644
+index 0f4b2915ad2..23d9ee6dc7c 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -50,14 +50,14 @@ index 4f50c25976a..4ba1b3345e3 100644
 -pref("browser.topsites.contile.enabled", true);
 +pref("browser.topsites.contile.enabled", false);
  pref("browser.topsites.contile.endpoint", "https://contile.services.mozilla.com/v1/tiles");
-@@ -2301,4 +2302,4 @@ pref("nimbus.profilesdatastoreservice.sync.enabled", true);
+@@ -2300,4 +2301,4 @@ pref("nimbus.profilesdatastoreservice.sync.enabled", true);
  
 -// Enable Rollouts by default.
 -pref("nimbus.rollouts.enabled", true);
 +// Fenn (firefox-winui): no Nimbus rollouts; Mozilla delivers them to Firefox.
 +pref("nimbus.rollouts.enabled", false);
  
-@@ -3087,3 +3088,6 @@ pref("app.normandy.api_url", "https://normandy.cdn.mozilla.net/api/v1");
+@@ -3092,3 +3093,6 @@ pref("app.normandy.api_url", "https://normandy.cdn.mozilla.net/api/v1");
  pref("app.normandy.dev_mode", false);
 -pref("app.normandy.enabled", true);
 +// Fenn (firefox-winui): no Normandy recipes; Mozilla targets them at Firefox.
@@ -65,7 +65,7 @@ index 4f50c25976a..4ba1b3345e3 100644
 +// runtime and also changes first-startup initialization.
 +pref("app.normandy.enabled", false);
  pref("app.normandy.first_run", true);
-@@ -3094,7 +3098,8 @@ pref("app.normandy.last_seen_buildid", "");
+@@ -3099,7 +3103,8 @@ pref("app.normandy.last_seen_buildid", "");
  pref("app.normandy.onsync_skew_sec", 600);
 -#ifdef MOZ_DATA_REPORTING
 -  pref("app.shield.optoutstudies.enabled", true);
@@ -79,12 +79,12 @@ index 4f50c25976a..4ba1b3345e3 100644
 +// Fenn (firefox-winui): no Start Menu Private Browsing shortcut is created.
 +pref("browser.privacySegmentation.createdShortcut", true);
  
-@@ -3412,2 +3417,4 @@ pref("devtools.dom.enabled", false);
+@@ -3417,2 +3422,4 @@ pref("devtools.dom.enabled", false);
  pref("devtools.accessibility.enabled", true);
 +// Keep its inspection shortcut out of page context menus unless requested.
 +pref("fenn.contextMenu.inspectAccessibility", false);
  
-@@ -3872,2 +3879,60 @@ pref("distribution.mozillaonline.ignore", true);
+@@ -3877,2 +3884,60 @@ pref("distribution.mozillaonline.ignore", true);
  
 +// The native tab strip is on by default in every lane (unpackaged launcher and
 +// MSIX alike); turn it off to fall back to Firefox's own UI. Firefox keeps its
@@ -261,7 +261,7 @@ index 20220bd0969..50f95f13b63 100644
 +    return PlacesUIUtils.storeRecentlyUsedBookmarkFolder(selectedFolderGuid, didChangeFolder);
    },
 diff --git a/browser/base/content/browser-siteIdentity.js b/browser/base/content/browser-siteIdentity.js
-index 16b222280f8..416d5a03af6 100644
+index 1d331baef48..2b2fb5fbd36 100644
 --- a/browser/base/content/browser-siteIdentity.js
 +++ b/browser/base/content/browser-siteIdentity.js
 @@ -247,2 +247,3 @@ var gIdentityHandler = {
@@ -1104,7 +1104,7 @@ index a182468fce7..428407c54a3 100644
 -#endif
  </dl>
 diff --git a/browser/base/content/nsContextMenu.sys.mjs b/browser/base/content/nsContextMenu.sys.mjs
-index af4633e94e3..af0053f5435 100644
+index bdf2c9c2928..3c00d8625fa 100644
 --- a/browser/base/content/nsContextMenu.sys.mjs
 +++ b/browser/base/content/nsContextMenu.sys.mjs
 @@ -368,3 +368,3 @@ export class nsContextMenu {
@@ -1119,11 +1119,11 @@ index af4633e94e3..af0053f5435 100644
 +    if (!this.contentData || this.window.gContextMenu !== this) { return; }
 +    this.textFragmentURL = textFragmentURL;
  
-@@ -874,2 +876,3 @@ export class nsContextMenu {
+@@ -879,2 +881,3 @@ export class nsContextMenu {
        showInspect &&
 +      Services.prefs.getBoolPref("fenn.contextMenu.inspectAccessibility", false) &&
        Services.prefs.getBoolPref("devtools.accessibility.enabled", false) &&
-@@ -2718,2 +2721,3 @@ export class nsContextMenu {
+@@ -2723,2 +2726,3 @@ export class nsContextMenu {
        await this.#translationsLangPairPromise;
 +    if (!this.contentData || this.window.gContextMenu !== this) { return; }
  
@@ -2090,7 +2090,7 @@ index 1902d2d4088..e37de036a69 100644
 +          this.nativeCreationFinished(this.activeGroup, false);
          }
 diff --git a/browser/components/tabbrowser/content/tabgroup.mjs b/browser/components/tabbrowser/content/tabgroup.mjs
-index 3d25b8afa3b..39c7484036e 100644
+index 98ebd520d6d..e33303961c9 100644
 --- a/browser/components/tabbrowser/content/tabgroup.mjs
 +++ b/browser/components/tabbrowser/content/tabgroup.mjs
 @@ -730,4 +730,15 @@ export class MozTabbrowserTabGroup extends MozXULElement {
@@ -2490,7 +2490,7 @@ index ce4dc0f5e3a..dbaa9db04ac 100644
 +    defaultValues: {},
    },
 diff --git a/browser/components/urlbar/UrlbarParentController.sys.mjs b/browser/components/urlbar/UrlbarParentController.sys.mjs
-index ba254af0c6d..0c25343eb9e 100644
+index 7be73751839..de8bdab9d3d 100644
 --- a/browser/components/urlbar/UrlbarParentController.sys.mjs
 +++ b/browser/components/urlbar/UrlbarParentController.sys.mjs
 @@ -22,2 +22,3 @@ ChromeUtils.defineESModuleGetters(lazy, {
@@ -4230,7 +4230,7 @@ index 6d9c262c839..58fe21fd4ff 100644
 +    this.#initPromiseWithResolvers.resolve();
    }
 diff --git a/browser/components/urlbar/content/SearchModeSwitcher.mjs b/browser/components/urlbar/content/SearchModeSwitcher.mjs
-index 30f5aa6556d..6198840503c 100644
+index 4d1c2c0aa62..6b99705753c 100644
 --- a/browser/components/urlbar/content/SearchModeSwitcher.mjs
 +++ b/browser/components/urlbar/content/SearchModeSwitcher.mjs
 @@ -13,4 +13,4 @@
@@ -4272,17 +4272,17 @@ index 30f5aa6556d..6198840503c 100644
      this.#closebutton = input.querySelector(".searchmode-switcher-close");
 +    this.syncVisibility();
      if (input.variantB) {
-@@ -153,3 +139,5 @@ export class SearchModeSwitcher {
+@@ -150,3 +136,5 @@ export class SearchModeSwitcher {
    connect() {
 +    this.#input.addEventListener("searchmodechanged", this);
      UrlbarPrefs.addObserver(this);
 +    this.syncVisibility();
  
-@@ -164,2 +152,3 @@ export class SearchModeSwitcher {
+@@ -161,2 +149,3 @@ export class SearchModeSwitcher {
    disconnect() {
 +    this.#input.removeEventListener("searchmodechanged", this);
      UrlbarPrefs.removeObserver(this);
-@@ -175,2 +164,9 @@ export class SearchModeSwitcher {
+@@ -172,2 +161,9 @@ export class SearchModeSwitcher {
  
 +  // Render the shared policy; native publication never reads these elements.
 +  syncVisibility() {
@@ -4292,7 +4292,7 @@ index 30f5aa6556d..6198840503c 100644
 +  }
 +
    async #onPopupShowing() {
-@@ -197,7 +193,3 @@ export class SearchModeSwitcher {
+@@ -194,7 +190,3 @@ export class SearchModeSwitcher {
    #openPreferences() {
 -    this.#input.parentController.openPreferences("paneSearch");
 -
@@ -4301,23 +4301,23 @@ index 30f5aa6556d..6198840503c 100644
 -    }
 +    this.#input.searchModeModel.openPreferences();
    }
-@@ -212,5 +204,3 @@ export class SearchModeSwitcher {
+@@ -209,5 +201,3 @@ export class SearchModeSwitcher {
      event.preventDefault();
 -    this.#input.searchMode = null;
 -    this.#selectedIndex = 0;
 -    this.#engines = [];
 +    this.#input.searchModeModel.exit();
      // Update the result by the default engine.
-@@ -223,2 +213,3 @@ export class SearchModeSwitcher {
+@@ -220,2 +210,3 @@ export class SearchModeSwitcher {
    onSearchModeChanged() {
 +    this.syncVisibility();
-     if (!this.#input.window || this.#input.window.closed) {
-@@ -413,2 +404,4 @@ export class SearchModeSwitcher {
+     if (window.closed) {
+@@ -410,2 +401,4 @@ export class SearchModeSwitcher {
    onPrefChanged(pref) {
 +    if (["searchModeSwitcher.featureGate", "scotchBonnet.enableOverride",
 +         "unifiedSearchButton.always"].includes(pref)) this.syncVisibility();
-     if (!this.#input.window || this.#input.window.closed) {
-@@ -482,13 +475,13 @@ export class SearchModeSwitcher {
+     if (window.closed) {
+@@ -479,13 +472,13 @@ export class SearchModeSwitcher {
    async #handleAccelUpDown(event) {
 -    if (!this.#engines.length) {
 +    if (!this.#input.searchModeModel.engines.length) {
@@ -4338,7 +4338,7 @@ index 30f5aa6556d..6198840503c 100644
 -    let selectedEngine = this.#engines[this.#selectedIndex];
 +    let selectedEngine = this.#input.searchModeModel.engines[this.#input.searchModeModel.selectedIndex];
      this.#input.setSearchMode(
-@@ -510,27 +503,3 @@ export class SearchModeSwitcher {
+@@ -507,27 +500,3 @@ export class SearchModeSwitcher {
    async #populateEngines() {
 -    let searchEngines = [];
 -
@@ -4367,7 +4367,7 @@ index 30f5aa6556d..6198840503c 100644
 -    }
 +    await this.#input.searchModeModel.populateEngines();
    }
-@@ -802,39 +771,6 @@ export class SearchModeSwitcher {
+@@ -797,39 +766,6 @@ export class SearchModeSwitcher {
  
 -  async #getSearchModeLabel(source) {
 -    let mode = UrlbarShared.LOCAL_SEARCH_MODES.find(m => m.source == source);
@@ -4410,16 +4410,16 @@ index 30f5aa6556d..6198840503c 100644
 +    if (engine) details.wordmark = this.#getEngineWordmark(engine);
 +    return details;
    }
-@@ -849,3 +785,2 @@ export class SearchModeSwitcher {
+@@ -844,3 +780,2 @@ export class SearchModeSwitcher {
  
 -    let browser = this.#input.window.gBrowser;
      let installedEngineSeparator = this.#panelList.querySelector(
-@@ -858,3 +793,3 @@ export class SearchModeSwitcher {
+@@ -853,3 +788,3 @@ export class SearchModeSwitcher {
      await this.#populateEngines();
 -    for (let engine of this.#engines) {
 +    for (let engine of this.#input.searchModeModel.engines) {
        if (engine.source) {
-@@ -870,9 +805,3 @@ export class SearchModeSwitcher {
+@@ -865,9 +800,3 @@ export class SearchModeSwitcher {
      // offer them from.
 -    let openSearchEngines = browser
 -      ? lazy.OpenSearchManager.getInstallableEngines(browser.selectedBrowser)
@@ -4430,7 +4430,7 @@ index 30f5aa6556d..6198840503c 100644
 -    );
 +    let openSearchEngines = this.#input.searchModeModel.offeredEngines();
  
-@@ -920,10 +849,3 @@ export class SearchModeSwitcher {
+@@ -915,10 +844,3 @@ export class SearchModeSwitcher {
    #whereToOpenSerp(event) {
 -    let where = UrlbarContentUtils.whereToOpenLink(event);
 -    // Usually, shift means "open in new window", but in the search
@@ -4442,7 +4442,7 @@ index 30f5aa6556d..6198840503c 100644
 -    return "current";
 +    return this.#input.searchModeModel.disposition(event);
    }
-@@ -997,10 +919,4 @@ export class SearchModeSwitcher {
+@@ -996,10 +918,4 @@ export class SearchModeSwitcher {
     */
 -  #localSearch(restrict) {
 -    this.#input.search(restrict + " " + this.#getSearchString(), {
@@ -4455,7 +4455,7 @@ index 30f5aa6556d..6198840503c 100644
 +  #localSearch(restrict, options = {}) {
 +    this.#input.searchModeModel.localSearch(restrict, options);
    }
-@@ -1016,32 +932,5 @@ export class SearchModeSwitcher {
+@@ -1015,32 +931,5 @@ export class SearchModeSwitcher {
     */
 -  #remoteSearch(searchEngine, event) {
 -    let whereToOpenSerp = this.#whereToOpenSerp(event);
@@ -4491,7 +4491,7 @@ index 30f5aa6556d..6198840503c 100644
 +    if (this.#whereToOpenSerp(event) == "current") this.closePanel();
 +    this.#input.searchModeModel.remoteSearch(searchEngine, event, options);
    }
-@@ -1054,6 +943,3 @@ export class SearchModeSwitcher {
+@@ -1053,6 +942,3 @@ export class SearchModeSwitcher {
    #getSearchString() {
 -    if (this.#input.getAttribute("pageproxystate") == "valid") {
 -      return "";
@@ -4499,15 +4499,15 @@ index 30f5aa6556d..6198840503c 100644
 -    return this.#input.value;
 +    return this.#input.searchModeModel.searchString();
    }
-@@ -1097,3 +983,2 @@ export class SearchModeSwitcher {
+@@ -1096,3 +982,2 @@ export class SearchModeSwitcher {
  
 -    this.#input.addEventListener("searchmodechanged", this);
      this.#noWordmarkQuery.addEventListener("change", this);
-@@ -1117,3 +1002,2 @@ export class SearchModeSwitcher {
+@@ -1116,3 +1001,2 @@ export class SearchModeSwitcher {
  
 -    this.#input.removeEventListener("searchmodechanged", this);
      this.#noWordmarkQuery.removeEventListener("change", this);
-@@ -1170,23 +1054,6 @@ export class SearchModeSwitcher {
+@@ -1166,23 +1050,6 @@ export class SearchModeSwitcher {
     */
 -  async #installOpenSearchEngine(engine) {
 -    /** @type {(_: string, newEngine: PartialSearchEngine) => void} */
@@ -4535,7 +4535,7 @@ index 30f5aa6556d..6198840503c 100644
 +
  }
 diff --git a/browser/components/urlbar/content/SmartbarInput.mjs b/browser/components/urlbar/content/SmartbarInput.mjs
-index e5dcc2c9231..79a0c0f6b82 100644
+index 62b27dc8d0c..9bad2aa732f 100644
 --- a/browser/components/urlbar/content/SmartbarInput.mjs
 +++ b/browser/components/urlbar/content/SmartbarInput.mjs
 @@ -4,2 +4,11 @@
@@ -4584,108 +4584,108 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +  }
 +
    static get #markup() {
-@@ -319,5 +349,3 @@ ${
+@@ -318,5 +348,3 @@ ${
    // Tracks IME composition.
 -  #compositionState = UrlbarShared.COMPOSITION.NONE;
 -  #compositionClosedPopup = false;
 -  #compositionHadText = false;
 +  #composition = new UrlbarCompositionModel();
    // Bumped on each input-driven search; a deferred-Enter snapshots it so its
-@@ -641,2 +669,4 @@ ${
+@@ -653,2 +681,4 @@ ${
      this.searchModeSwitcher.disconnect();
 +    this.#searchModeModel?.dispose();
 +    this.#searchModeModel = null;
  
-@@ -2441,2 +2471,5 @@ ${
+@@ -2453,2 +2483,5 @@ ${
     * @param {HTMLElement} [options.element] The picked view element, if available.
 +   * @param {object} [options.resultAction]
 +   *   Firefox-owned button/menu metadata from UrlbarResultActions. Native
 +   *   presenters resolve opaque IDs to this descriptor before calling here.
     * @param {number} [options.browserId]
-@@ -2447,3 +2480,4 @@ ${
+@@ -2459,3 +2492,4 @@ ${
    // eslint-disable-next-line complexity
 -  pickResult({ result, event, element = null, browserId = null }) {
 +  pickResult({ result, event, element = null, resultAction = null, browserId = null }) {
 +    resultAction ??= UrlbarResultActions.fromElement(element);
      if (element?.classList.contains("urlbarView-button-menu")) {
-@@ -2453,4 +2487,4 @@ ${
+@@ -2465,4 +2499,4 @@ ${
  
 -    if (element?.dataset.command) {
 -      this.#pickMenuResult(result, event, element);
 +    if (resultAction?.command) {
 +      this.#pickMenuResult(result, event, element, resultAction);
        return;
-@@ -2498,2 +2532,3 @@ ${
+@@ -2510,2 +2544,3 @@ ${
          element,
 +        resultAction,
          location: this.sapLocation,
-@@ -2508,3 +2543,3 @@ ${
+@@ -2520,3 +2555,3 @@ ${
  
 -    let resultUrl = element?.dataset.url;
 +    let resultUrl = resultAction?.url;
      let originalUntrimmedValue = this.untrimmedValue;
-@@ -2514,2 +2549,3 @@ ${
+@@ -2526,2 +2561,3 @@ ${
        element,
 +      resultAction,
        urlOverride: resultUrl,
-@@ -2542,2 +2578,3 @@ ${
+@@ -2554,2 +2590,3 @@ ${
          element,
 +        resultAction,
          location: this.sapLocation,
-@@ -2628,2 +2665,3 @@ ${
+@@ -2640,2 +2677,3 @@ ${
            element,
 +          resultAction,
            location: this.sapLocation,
-@@ -2632,3 +2670,3 @@ ${
+@@ -2644,3 +2682,3 @@ ${
            searchMode,
 -          selType: this.view.telemetryTypeFromElement(result, element),
 +          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
            windowMode: this.windowMode,
-@@ -2651,2 +2689,3 @@ ${
+@@ -2663,2 +2701,3 @@ ${
              element,
 +            resultAction,
              location: this.sapLocation,
-@@ -2654,3 +2693,3 @@ ${
+@@ -2666,3 +2705,3 @@ ${
              searchString: this._lastSearchString,
 -            selType: this.view.telemetryTypeFromElement(result, element),
 +            selType: this.view.telemetryTypeFromElement(result, element, resultAction),
              windowMode: this.windowMode,
-@@ -2721,2 +2760,3 @@ ${
+@@ -2733,2 +2772,3 @@ ${
            element,
 +          resultAction,
            location: this.sapLocation,
-@@ -2740,2 +2780,3 @@ ${
+@@ -2752,2 +2792,3 @@ ${
              element,
 +            resultAction,
              location: this.sapLocation,
-@@ -2744,3 +2785,3 @@ ${
+@@ -2756,3 +2797,3 @@ ${
              searchString: this._lastSearchString,
 -            selType: this.view.telemetryTypeFromElement(result, element),
 +            selType: this.view.telemetryTypeFromElement(result, element, resultAction),
              windowMode: this.windowMode,
-@@ -2755,2 +2796,3 @@ ${
+@@ -2767,2 +2808,3 @@ ${
            element,
 +          resultAction,
            location: this.sapLocation,
-@@ -2783,2 +2825,3 @@ ${
+@@ -2795,2 +2837,3 @@ ${
            element,
 +          resultAction,
            location: this.sapLocation,
-@@ -2786,3 +2829,3 @@ ${
+@@ -2798,3 +2841,3 @@ ${
            searchString: this._lastSearchString,
 -          selType: this.view.telemetryTypeFromElement(result, element),
 +          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
            windowMode: this.windowMode,
-@@ -2800,2 +2843,3 @@ ${
+@@ -2812,2 +2855,3 @@ ${
            element,
 +          resultAction,
            location: this.sapLocation,
-@@ -2803,3 +2847,3 @@ ${
+@@ -2815,3 +2859,3 @@ ${
            searchString: this._lastSearchString,
 -          selType: this.view.telemetryTypeFromElement(result, element),
 +          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
            windowMode: this.windowMode,
-@@ -2843,5 +2887,6 @@ ${
+@@ -2855,5 +2899,6 @@ ${
              element,
 +            resultAction,
              location: this.sapLocation,
@@ -4693,7 +4693,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 -            selType: this.view.telemetryTypeFromElement(result, element),
 +            selType: this.view.telemetryTypeFromElement(result, element, resultAction),
              searchSource: this.getSearchSource(event),
-@@ -2856,5 +2901,6 @@ ${
+@@ -2868,5 +2913,6 @@ ${
        element,
 +      resultAction,
        location: this.sapLocation,
@@ -4701,21 +4701,21 @@ index e5dcc2c9231..79a0c0f6b82 100644
 -      selType: this.view.telemetryTypeFromElement(result, element),
 +      selType: this.view.telemetryTypeFromElement(result, element, resultAction),
        searchSource: this.getSearchSource(event),
-@@ -2947,2 +2993,3 @@ ${
+@@ -2959,2 +3005,3 @@ ${
      element = null,
 +    resultAction = null,
    } = {}) {
-@@ -3017,3 +3064,3 @@ ${
+@@ -3029,3 +3076,3 @@ ${
              UrlbarPrefs.get("scotchBonnet.enableOverride") &&
 -            this.view.visibleResults.length == 1,
 +            this.controller.visibleResults.length == 1,
          });
-@@ -3031,3 +3078,3 @@ ${
+@@ -3043,3 +3090,3 @@ ${
      if (!result.autofill) {
 -      let value = this.#getValueFromResult(result, { urlOverride, element });
 +      let value = this.#getValueFromResult(result, { urlOverride, element, resultAction });
        this.setValue(value, {
-@@ -3078,24 +3125,10 @@ ${
+@@ -3090,24 +3137,10 @@ ${
  
 -    // Don’t autofill if mentions panel is open.
 -    if (this.inputField.isHandlingMentions) {
@@ -4748,7 +4748,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +      handlingMentions: this.inputField.isHandlingMentions,
 +    })) {
        return;
-@@ -3431,17 +3464,5 @@ ${
+@@ -3448,17 +3481,5 @@ ${
    searchModeForToken(token) {
 -    if (token == UrlbarShared.RESTRICT_TOKENS.SEARCH) {
 -      return {
@@ -4769,7 +4769,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +      isAddressbar: this.#isAddressbar, engineStore: this.controller.engineStore,
 +    });
    }
-@@ -3776,6 +3797,5 @@ ${
+@@ -3778,6 +3799,5 @@ ${
    confirmSearchMode() {
 -    let searchMode = this.searchMode;
 -    if (searchMode?.isPreview) {
@@ -4779,7 +4779,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +    if (confirmation.applyMode) {
 +      this.searchMode = { ...confirmation.searchMode };
  
-@@ -4486,79 +4506,15 @@ ${
+@@ -4489,79 +4509,15 @@ ${
     */
 -  #getValueFromResult(result, { urlOverride = null, element = null } = {}) {
 -    switch (result.type) {
@@ -4871,7 +4871,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +      isAddressbar: true, isPrivate: this.isPrivate,
 +    }, url => losslessDecodeURI(url.URI));
    }
-@@ -4573,10 +4529,3 @@ ${
+@@ -4576,10 +4532,3 @@ ${
    #getActionTypeFromResult(result) {
 -    switch (result.type) {
 -      case UrlbarShared.RESULT_TYPE.TAB_SWITCH:
@@ -4883,7 +4883,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 -    }
 +    return this.resultPresentation.actionType(result);
    }
-@@ -4603,69 +4552,25 @@ ${
+@@ -4606,69 +4555,25 @@ ${
    _maybeAutofillPlaceholder(value) {
 -    // We allow autofill in local but not remote search modes.
 -    // Also disable autofill when mentions panel is open.
@@ -4975,26 +4975,26 @@ index e5dcc2c9231..79a0c0f6b82 100644
 -    return true;
 +    return plan.allowAutofill;
    }
-@@ -5066,3 +4971,3 @@ ${
+@@ -5069,3 +4974,3 @@ ${
     */
 -  #pickMenuResult(result, event, element) {
 +  #pickMenuResult(result, event, element, resultAction = UrlbarResultActions.fromElement(element)) {
      this.controller.engagementEvent.record(event, {
-@@ -5070,2 +4975,3 @@ ${
+@@ -5073,2 +4978,3 @@ ${
        element,
 +      resultAction,
        location: this.sapLocation,
-@@ -5073,3 +4979,3 @@ ${
+@@ -5076,3 +4982,3 @@ ${
        searchString: this._lastSearchString,
 -      selType: element.dataset.command,
 +      selType: resultAction.command,
        windowMode: this.windowMode,
-@@ -5077,3 +4983,3 @@ ${
+@@ -5080,3 +4986,3 @@ ${
  
 -    if (element.dataset.command == "manage") {
 +    if (resultAction.command == "manage") {
        this.window.openPreferences("search-locationBar");
-@@ -5083,6 +4989,6 @@ ${
+@@ -5086,6 +4992,6 @@ ${
      let url;
 -    if (element.dataset.command == "help") {
 +    if (resultAction.command == "help") {
@@ -5003,12 +5003,12 @@ index e5dcc2c9231..79a0c0f6b82 100644
 -    url ||= element.dataset.url;
 +    url ||= resultAction.url;
  
-@@ -5093,3 +4999,3 @@ ${
+@@ -5096,3 +5002,3 @@ ${
      let where = this.controller.whereToOpen(event);
 -    if (element.dataset.command == "help" && where == "current") {
 +    if (resultAction.command == "help" && where == "current") {
        // Open help links in a new tab.
-@@ -5248,2 +5154,11 @@ ${
+@@ -5239,2 +5145,11 @@ ${
  
 +  getCutEdit(selection = null) {
 +    return planUrlbarCut({
@@ -5020,12 +5020,12 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +  }
 +
    _initCopyCutController() {
-@@ -5466,3 +5381,3 @@ ${
+@@ -5457,3 +5372,3 @@ ${
     */
 -  #pasteAndGoEnabled() {
 +  canPasteAndGo() {
      if (this.#isSmartbarMode) {
-@@ -5493,2 +5408,21 @@ ${
+@@ -5484,2 +5399,21 @@ ${
  
 +  /** Runs Firefox's Paste and Go independently of the menu node. */
 +  pasteAndGo() {
@@ -5047,7 +5047,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +  }
 +
    _initPasteAndGo() {
-@@ -5506,15 +5440,3 @@ ${
+@@ -5497,15 +5431,3 @@ ${
          pasteAndGo.setAttribute("anonid", "paste-and-go");
 -        pasteAndGo.addEventListener("command", () => {
 -          this.suppressStartQuery();
@@ -5064,12 +5064,12 @@ index e5dcc2c9231..79a0c0f6b82 100644
 -        });
 +        pasteAndGo.addEventListener("command", () => this.pasteAndGo());
  
-@@ -5546,3 +5468,3 @@ ${
+@@ -5537,3 +5459,3 @@ ${
  
 -        if (this.#pasteAndGoEnabled()) {
 +        if (this.canPasteAndGo()) {
            pasteAndGo.removeAttribute("disabled");
-@@ -5695,49 +5617,5 @@ ${
+@@ -5689,49 +5611,5 @@ ${
    _searchModeForResult(result, entry = null) {
 -    // Search mode is determined by the result's keyword or engine.
 -    if (!result.payload.keyword && !result.payload.engine) {
@@ -5122,12 +5122,12 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +      entry, modeForToken: token => this.searchModeForToken(token),
 +    });
    }
-@@ -6131,3 +6009,3 @@ ${
+@@ -6125,3 +6003,3 @@ ${
        !this._preventClickSelectsAll &&
 -      this.#compositionState != UrlbarShared.COMPOSITION.COMPOSING &&
 +      !this.#composition.isComposing &&
        this.focused &&
-@@ -6483,14 +6361,5 @@ ${
+@@ -6477,14 +6355,5 @@ ${
  
 -    let compositionState = this.#compositionState;
 -    let compositionClosedPopup = this.#compositionClosedPopup;
@@ -5145,7 +5145,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +      this.#composition.isComposing && !!event.data
 +    );
  
-@@ -6577,6 +6446,5 @@ ${
+@@ -6571,6 +6440,5 @@ ${
      if (
 -      !UrlbarPrefs.get("keepPanelOpenDuringImeComposition") &&
 -      (compositionState == UrlbarShared.COMPOSITION.COMPOSING ||
@@ -5155,7 +5155,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +        composition, UrlbarPrefs.get("keepPanelOpenDuringImeComposition")
 +      )
      ) {
-@@ -6588,7 +6456,6 @@ ${
+@@ -6582,7 +6450,6 @@ ${
      const allowAutofill =
 -      (!UrlbarPrefs.get("keepPanelOpenDuringImeComposition") ||
 -        compositionState !== UrlbarShared.COMPOSITION.COMPOSING) &&
@@ -5167,7 +5167,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +      ) &&
 +      UrlbarAutofillModel.allowsInput(event.inputType, UrlbarShared.isPasteEvent(event)) &&
        this._maybeAutofillPlaceholder(value);
-@@ -6667,23 +6534,10 @@ ${
+@@ -6661,23 +6528,10 @@ ${
    _on_paste(event) {
 -    let originalPasteData = event.clipboardData.getData("text/plain");
 -    if (!originalPasteData) {
@@ -5198,17 +5198,17 @@ index e5dcc2c9231..79a0c0f6b82 100644
 -    if (originalPasteData != pasteData) {
 +    if (edit) {
        // Unfortunately we're not allowed to set the bits being pasted
-@@ -6693,3 +6547,3 @@ ${
+@@ -6687,3 +6541,3 @@ ${
  
 -      const value = oldStart + pasteData + oldEnd;
 +      const value = edit.text;
        this.setValue(value, { valueIsTyped: true });
-@@ -6707,3 +6561,3 @@ ${
+@@ -6701,3 +6555,3 @@ ${
        // Fix up cursor/selection:
 -      let newCursorPos = oldStart.length + pasteData.length;
 +      let newCursorPos = edit.start;
        this.setSelectionRange(newCursorPos, newCursorPos);
-@@ -6738,52 +6592,23 @@ ${
+@@ -6732,52 +6586,23 @@ ${
    } = {}) {
 -    // When we are in actions search mode we can show more results so
 -    // increase the limit.
@@ -5279,7 +5279,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +      pasteLength: isPaste ? event.data?.length : undefined,
 +    });
    }
-@@ -7058,7 +6883,3 @@ ${
+@@ -7054,7 +6879,3 @@ ${
    _on_compositionstart() {
 -    if (this.#compositionState == UrlbarShared.COMPOSITION.COMPOSING) {
 -      throw new Error("Trying to start a nested composition?");
@@ -5288,7 +5288,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 -    this.#compositionHadText = false;
 +    this.#composition.begin();
  
-@@ -7068,21 +6889,12 @@ ${
+@@ -7064,21 +6885,12 @@ ${
  
 -    // Close the view. This will also stop searching.
 -    if (this.view.isOpen) {
@@ -5320,7 +5320,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +    this.#composition.setPopupClosed(policy.closePopup);
 +    if (policy.closePopup) this.view.close();
    }
-@@ -7090,32 +6902,12 @@ ${
+@@ -7086,32 +6898,12 @@ ${
    _on_compositionend(event) {
 -    if (this.#compositionState != UrlbarShared.COMPOSITION.COMPOSING) {
 -      throw new Error("Trying to stop a non existing composition?");
@@ -5363,14 +5363,14 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +    // Some IMEs omit the next input event for an empty composition.
 +    if (reopen) {
        this.startQuery({ resetSearchState: false, event });
-@@ -7237,5 +7029,3 @@ ${
+@@ -7233,5 +7025,3 @@ ${
    #getSchemelessInput(value) {
 -    return ["http://", "https://", "file://"].every(
 -      scheme => !value.trim().startsWith(scheme)
 -    )
 +    return isSchemelessInput(value)
        ? Ci.nsILoadInfo.SchemelessInputTypeSchemeless
-@@ -7668,81 +7458,3 @@ function getDroppableData(event) {
+@@ -7664,81 +7454,3 @@ function getDroppableData(event) {
  function losslessDecodeURI(aURI) {
 -  let scheme = aURI.scheme;
 -  let value = aURI.displaySpec;
@@ -5453,7 +5453,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 -  return value;
 +  return losslessDecodeDisplaySpec(aURI.displaySpec, aURI.scheme);
  }
-@@ -7773,8 +7485,6 @@ class CopyCutController {
+@@ -7769,8 +7481,6 @@ class CopyCutController {
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
 -      let start = urlbar.selectionStart;
 -      let end = urlbar.selectionEnd;
@@ -5467,7 +5467,7 @@ index e5dcc2c9231..79a0c0f6b82 100644
 +      urlbar.inputField.setSelectionRange(edit.start, edit.end);
  
 diff --git a/browser/components/urlbar/content/UrlbarChildController.mjs b/browser/components/urlbar/content/UrlbarChildController.mjs
-index b679c5cf1b6..1f7f6b848db 100644
+index a04f9639217..8b05a8db78c 100644
 --- a/browser/components/urlbar/content/UrlbarChildController.mjs
 +++ b/browser/components/urlbar/content/UrlbarChildController.mjs
 @@ -10,2 +10,3 @@ import { UrlbarContentUtils } from "chrome://browser/content/urlbar/UrlbarConten
@@ -5712,7 +5712,7 @@ index b679c5cf1b6..1f7f6b848db 100644
 -    if (this.#input.sapName == "searchbar") {
 +    if (this.sapName == "searchbar") {
        return false;
-@@ -794,5 +804,12 @@ export class UrlbarChildController {
+@@ -794,6 +804,13 @@ export class UrlbarChildController {
     *   The event that triggered the opening.
 +   * @param {object} [options]
 +   *   Independent consumers supply the pinned host's empty-tab fact.
@@ -5721,11 +5721,13 @@ index b679c5cf1b6..1f7f6b848db 100644
     * @returns {"current" | "tabshifted" | "tab" | "save" | "window"}
     */
 -  whereToOpen(event) {
+-    const isKeyboardEvent = UrlbarShared.isInstance(event, KeyboardEvent);
 +  whereToOpen(event, { selectedTabIsEmpty } = {}) {
 +    if (selectedTabIsEmpty !== undefined && typeof selectedTabIsEmpty !== "boolean") {
 +      throw new TypeError("Invalid empty-tab fact");
 +    }
-     let isKeyboardEvent = UrlbarShared.isInstance(event, KeyboardEvent);
++    let isKeyboardEvent = UrlbarShared.isInstance(event, KeyboardEvent);
+     let reuseEmpty = isKeyboardEvent;
 @@ -816,3 +833,3 @@ export class UrlbarChildController {
      let openInTabPref =
 -      this.#input.sapName == "searchbar"
@@ -5837,7 +5839,7 @@ index 4172241eafb..ce3917f8f7c 100644
 +    // Refresh the stored context with the results-bearing one: onQueryArmed
      // armed the bufferer with the pre-query context, whose results are
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f7..a360d0c3e26 100644
+index 9bf6ad33a0f..8c40e2038d1 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -4,2 +4,8 @@
@@ -5858,20 +5860,20 @@ index a077de625f7..a360d0c3e26 100644
 +import { UrlbarInputIdentity } from "chrome://browser/content/urlbar/UrlbarInputIdentity.mjs";
 +import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
  import { UrlbarView } from "chrome://browser/content/urlbar/UrlbarView.mjs";
-@@ -62,3 +72,2 @@ if (lazy) {
+@@ -97,3 +107,2 @@ if (lazy) {
        "moz-src:///browser/components/urlbar/UrlbarParentController.sys.mjs",
 -    QuickSuggest: "moz-src:///browser/components/urlbar/QuickSuggest.sys.mjs",
      ReaderMode: "moz-src:///toolkit/components/reader/ReaderMode.sys.mjs",
-@@ -66,4 +75,2 @@ if (lazy) {
+@@ -101,4 +110,2 @@ if (lazy) {
      SearchUIUtils: "moz-src:///browser/components/search/SearchUIUtils.sys.mjs",
 -    UrlbarTokenizer:
 -      "moz-src:///browser/components/urlbar/UrlbarTokenizer.sys.mjs",
      UrlbarUtils: "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs",
-@@ -73,3 +80,2 @@ if (lazy) {
+@@ -108,3 +115,2 @@ if (lazy) {
        "moz-src:///browser/components/urlbar/UrlbarSearchTermsPersistence.sys.mjs",
 -    UrlUtils: "resource://gre/modules/UrlUtils.sys.mjs",
    });
-@@ -89,8 +95,2 @@ const logger = () => UrlbarShared.getLogger({ prefix: "Input" });
+@@ -124,8 +130,2 @@ const logger = () => UrlbarShared.getLogger({ prefix: "Input" });
  
 -const UNLIMITED_MAX_RESULTS = 99;
 -
@@ -5880,7 +5882,7 @@ index a077de625f7..a360d0c3e26 100644
 -const SCHEMELESS_INPUT_SCHEMEFUL = 1;
 -const SCHEMELESS_INPUT_SCHEMELESS = 2;
  
-@@ -136,2 +136,25 @@ function parseMarkupToFragment(markup) {
+@@ -174,2 +174,25 @@ function parseMarkupToFragment(markup) {
  export class UrlbarInputBase extends HTMLElement {
 +  #unifiedSearchButtonAvailable = true;
 +  get searchModeVisibility() {
@@ -5906,26 +5908,26 @@ index a077de625f7..a360d0c3e26 100644
 +  }
 +
    static get #markup() {
-@@ -277,5 +300,3 @@ ${
+@@ -314,5 +337,3 @@ ${
    // Tracks IME composition.
 -  #compositionState = UrlbarShared.COMPOSITION.NONE;
 -  #compositionClosedPopup = false;
 -  #compositionHadText = false;
 +  #composition = new UrlbarCompositionModel();
    // Bumped on each input-driven search; a deferred-Enter snapshots it so its
-@@ -602,2 +623,4 @@ ${
+@@ -651,2 +672,4 @@ ${
      this.searchModeSwitcher.disconnect();
 +    this.#searchModeModel?.dispose();
 +    this.#searchModeModel = null;
  
-@@ -850,2 +873,6 @@ ${
+@@ -903,2 +926,6 @@ ${
     */
 +  nativeDomainEmphasis() {
 +    return this.#getValueFormatter().nativeDomainEmphasis();
 +  }
 +
    formatValue() {
-@@ -1019,32 +1046,8 @@ ${
+@@ -1072,32 +1099,8 @@ ${
  
 -      let isInitialPageControlledByWebContent = false;
 -
@@ -5964,7 +5966,7 @@ index a077de625f7..a360d0c3e26 100644
 +      ({ value, valid } = loadedURIValue(() => uri.displaySpec, { hideInitialPage, isBlankPage,
 +        isExtensionUrl: isBlankPage && lazy.ExtensionUtils.isExtensionUrl(uri), dueToSessionRestore }));
      } else if (
-@@ -1321,6 +1324,3 @@ ${
+@@ -1374,6 +1377,3 @@ ${
    #engineSearchStringForResult(result) {
 -    return (
 -      (result && (result.payload.suggestion || result.payload.query)) ||
@@ -5972,7 +5974,7 @@ index a077de625f7..a360d0c3e26 100644
 -    );
 +    return UrlbarQueryModel.engineSearchTerms(result, this._lastSearchString);
    }
-@@ -1425,8 +1425,8 @@ ${
+@@ -1478,8 +1478,8 @@ ${
      // heuristic is also kept the behavior as is for safety.
 -    let safeToPickResult =
 -      result &&
@@ -5987,7 +5989,7 @@ index a077de625f7..a360d0c3e26 100644
 +      getResultValue: selected => this.#getValueFromResult(selected),
 +    });
  
-@@ -1440,9 +1440,6 @@ ${
+@@ -1493,9 +1493,6 @@ ${
  
 -    if (
 -      !isComposing &&
@@ -6001,18 +6003,18 @@ index a077de625f7..a360d0c3e26 100644
 +      hasOneOffEngine: !!oneOffParams?.engine, selectedPrivateEngineResult, safeToPickResult,
 +    })) {
        this.pickElement(element, event);
-@@ -1468,3 +1465,3 @@ ${
+@@ -1521,3 +1518,3 @@ ${
        let tokenAliasResult = this.view.getResultAtIndex(0);
 -      if (tokenAliasResult?.autofill && tokenAliasResult?.payload.keyword) {
 +      if (UrlbarQueryModel.pickTokenAliasResult(tokenAliasResult)) {
          this.pickResult({ result: tokenAliasResult, event });
-@@ -1718,2 +1715,5 @@ ${
+@@ -1771,2 +1768,5 @@ ${
     * @param {HTMLElement} [options.element] The picked view element, if available.
 +   * @param {object} [options.resultAction]
 +   *   Firefox-owned button/menu metadata from UrlbarResultActions. Native
 +   *   presenters resolve opaque IDs to this descriptor before calling here.
     * @param {number} [options.browserId]
-@@ -1724,3 +1724,12 @@ ${
+@@ -1777,3 +1777,12 @@ ${
    // eslint-disable-next-line complexity
 -  pickResult({ result, event, element = null, browserId = null }) {
 +  pickResult({ result, event, element = null, resultAction = null, browserId = null, nativeActionKey = null }) {
@@ -6026,14 +6028,14 @@ index a077de625f7..a360d0c3e26 100644
 +      return "native-search-mode";
 +    }
      if (element?.classList.contains("urlbarView-button-menu")) {
-@@ -1730,4 +1739,4 @@ ${
+@@ -1783,4 +1792,4 @@ ${
  
 -    if (element?.dataset.command) {
 -      this.#pickMenuResult(result, event, element);
 +    if (resultAction?.command) {
 +      this.#pickMenuResult(result, event, element, resultAction);
        return;
-@@ -1735,11 +1744,5 @@ ${
+@@ -1788,11 +1797,5 @@ ${
  
 -    if (
 -      UrlbarPrefs.get("autoFill.adaptiveHistory.enabled") &&
@@ -6048,20 +6050,20 @@ index a077de625f7..a360d0c3e26 100644
 +    if (autofillBackspaceURL) {
 +      this.parentController.clearAutofillBackspaceEntryForUrl(autofillBackspaceURL);
      }
-@@ -1786,2 +1789,3 @@ ${
+@@ -1839,2 +1842,3 @@ ${
          element,
 +        resultAction,
          searchString: this._lastSearchString,
-@@ -1795,3 +1799,3 @@ ${
+@@ -1848,3 +1852,3 @@ ${
  
 -    let resultUrl = element?.dataset.url;
 +    let resultUrl = resultAction?.url;
      let originalUntrimmedValue = this.untrimmedValue;
-@@ -1801,2 +1805,3 @@ ${
+@@ -1854,2 +1858,3 @@ ${
        element,
 +      resultAction,
        urlOverride: resultUrl,
-@@ -1804,59 +1809,7 @@ ${
+@@ -1857,59 +1862,7 @@ ${
  
 -    let where;
 -    let openParams = {
@@ -6125,11 +6127,11 @@ index a077de625f7..a360d0c3e26 100644
      );
 -    openParams.avoidBrowserFocus = keepViewOpen;
  
-@@ -1870,2 +1823,3 @@ ${
+@@ -1923,2 +1876,3 @@ ${
          element,
 +        resultAction,
          selType: "canonized",
-@@ -1891,43 +1845,10 @@ ${
+@@ -1944,43 +1898,10 @@ ${
  
 +    const loadPolicy = UrlbarQueryModel.resultLoadPolicy(result, loadRequest, originalUntrimmedValue);
 +    loadRequest = loadPolicy.loadRequest;
@@ -6179,7 +6181,7 @@ index a077de625f7..a360d0c3e26 100644
          break;
 -      }
        case UrlbarShared.RESULT_TYPE.TAB_SWITCH: {
-@@ -1953,5 +1874,6 @@ ${
+@@ -2006,5 +1927,6 @@ ${
            element,
 +          resultAction,
            searchString,
@@ -6187,14 +6189,14 @@ index a077de625f7..a360d0c3e26 100644
 -          selType: this.view.telemetryTypeFromElement(result, element),
 +          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
            searchSource: this.getSearchSource(event),
-@@ -1975,4 +1897,5 @@ ${
+@@ -2028,4 +1950,5 @@ ${
              element,
 +            resultAction,
              searchString: this._lastSearchString,
 -            selType: this.view.telemetryTypeFromElement(result, element),
 +            selType: this.view.telemetryTypeFromElement(result, element, resultAction),
              searchSource: this.getSearchSource(event),
-@@ -1987,31 +1910,12 @@ ${
+@@ -2040,31 +1963,12 @@ ${
  
 -        // TODO (bug 2058937): Consider removing this check.
 -        if (
@@ -6234,7 +6236,7 @@ index a077de625f7..a360d0c3e26 100644
 +        where = destination.where;
 +        Object.assign(openParams, destination.openParams);
  
-@@ -2035,36 +1939,6 @@ ${
+@@ -2088,36 +1992,6 @@ ${
  
 -        if (
 -          this.#isAddressbar &&
@@ -6275,11 +6277,11 @@ index a077de625f7..a360d0c3e26 100644
 +          engine, defaultEngine: this.controller.engineStore.default },
 +        selection => this.#makeQueryContext({ searchString: selection }));
          break;
-@@ -2079,2 +1953,3 @@ ${
+@@ -2132,2 +2006,3 @@ ${
            element,
 +          resultAction,
            selType: "tip",
-@@ -2101,5 +1976,7 @@ ${
+@@ -2154,5 +2029,7 @@ ${
              element,
 +            resultAction,
 +            pickedActionKey: nativeAction?.key,
@@ -6288,25 +6290,25 @@ index a077de625f7..a360d0c3e26 100644
 -            selType: this.view.telemetryTypeFromElement(result, element),
 +            selType: this.view.telemetryTypeFromElement(result, element, resultAction),
              searchSource: this.getSearchSource(event),
-@@ -2121,2 +1998,3 @@ ${
+@@ -2174,2 +2051,3 @@ ${
            element,
 +          resultAction,
            selType: "extension",
-@@ -2148,4 +2026,5 @@ ${
+@@ -2201,4 +2079,5 @@ ${
            element,
 +          resultAction,
            searchString: this._lastSearchString,
 -          selType: this.view.telemetryTypeFromElement(result, element),
 +          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
            searchSource: this.getSearchSource(event),
-@@ -2165,4 +2044,5 @@ ${
+@@ -2218,4 +2097,5 @@ ${
            element,
 +          resultAction,
            searchString: this._lastSearchString,
 -          selType: this.view.telemetryTypeFromElement(result, element),
 +          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
            searchSource: this.getSearchSource(event),
-@@ -2178,43 +2058,11 @@ ${
+@@ -2231,43 +2111,11 @@ ${
  
 -    // Record input history but only in non-private windows and for url loads.
 -    if (!this.isPrivate && loadRequest.urlLoad) {
@@ -6358,35 +6360,35 @@ index a077de625f7..a360d0c3e26 100644
      }
 +    if (history.reintegrateURL) this.parentController.handleAutofillReintegration(history.reintegrateURL);
  
-@@ -2227,4 +2075,5 @@ ${
+@@ -2280,4 +2128,5 @@ ${
          element,
 +        resultAction,
          searchString: this._lastSearchString,
 -        selType: this.view.telemetryTypeFromElement(result, element),
 +        selType: this.view.telemetryTypeFromElement(result, element, resultAction),
          searchSource: this.getSearchSource(event),
-@@ -2237,4 +2086,5 @@ ${
+@@ -2290,4 +2139,5 @@ ${
        element,
 +      resultAction,
        searchString: this._lastSearchString,
 -      selType: this.view.telemetryTypeFromElement(result, element),
 +      selType: this.view.telemetryTypeFromElement(result, element, resultAction),
        searchSource: this.getSearchSource(event),
-@@ -2285,2 +2135,3 @@ ${
+@@ -2338,2 +2188,3 @@ ${
      element = null,
 +    resultAction = null,
    } = {}) {
-@@ -2355,3 +2206,3 @@ ${
+@@ -2408,3 +2259,3 @@ ${
              UrlbarPrefs.get("scotchBonnet.enableOverride") &&
 -            this.view.visibleResults.length == 1,
 +            this.controller.visibleResults.length == 1,
          });
-@@ -2369,3 +2220,3 @@ ${
+@@ -2422,3 +2273,3 @@ ${
      if (!result.autofill) {
 -      let value = this.#getValueFromResult(result, { urlOverride, element });
 +      let value = this.#getValueFromResult(result, { urlOverride, element, resultAction });
        this.setValue(value, {
-@@ -2417,19 +2268,9 @@ ${
+@@ -2470,19 +2321,9 @@ ${
  
 -    let isPlaceholderSelected =
 -      this._autofillPlaceholder &&
@@ -6413,11 +6415,11 @@ index a077de625f7..a360d0c3e26 100644
 +      ignoresSelection: this._autofillIgnoresSelection,
 +    })) {
        return;
-@@ -2481,2 +2322,3 @@ ${
+@@ -2534,2 +2375,3 @@ ${
        // Search mode restarts the query, so these results are obsolete.
 +      this.view.nativePresentation?.onSearchModeFromResult(queryContext);
        this.controller.discardResults(queryContext);
-@@ -2536,8 +2378,6 @@ ${
+@@ -2589,8 +2431,6 @@ ${
    } = {}) {
 -    if (!searchString) {
 -      searchString =
@@ -6430,24 +6432,24 @@ index a077de625f7..a360d0c3e26 100644
 +      pageProxyValid: this.getAttribute("pageproxystate") == "valid",
 +    }, searchString);
  
-@@ -2558,3 +2398,3 @@ ${
+@@ -2611,3 +2451,3 @@ ${
  
 -    if (this._suppressStartQuery) {
 +    if (UrlbarQueryModel.startQueryDisposition({ suppressStartQuery: this._suppressStartQuery }) === "suppressed") {
        return;
-@@ -2571,3 +2411,3 @@ ${
+@@ -2624,3 +2464,3 @@ ${
  
 -    if (this.inOverflowPanel) {
 +    if (UrlbarQueryModel.startQueryDisposition({ inOverflowPanel: this.inOverflowPanel }) === "overflow") {
        return;
-@@ -2610,5 +2450,3 @@ ${
+@@ -2663,5 +2503,3 @@ ${
      }
 -    let trimmedValue = value.trim();
 -    let end = trimmedValue.search(UrlbarShared.REGEXP_SPACES);
 -    let firstToken = end == -1 ? trimmedValue : trimmedValue.substring(0, end);
 +    const firstToken = UrlbarSearchModeModel.searchCommandToken(value);
  
-@@ -2631,32 +2469,9 @@ ${
+@@ -2684,38 +2522,9 @@ ${
  
 -    // Enter search mode if the string starts with a restriction token.
 -    let searchMode = this.searchModeForToken(firstToken);
@@ -6471,11 +6473,17 @@ index a077de625f7..a360d0c3e26 100644
 -        value = value.slice(1);
 -      }
 -    } else if (
--      Object.values(UrlbarShared.RESTRICT_TOKENS).includes(firstToken)
+-      /** @type {string[]} */ (
+-        Object.values(UrlbarShared.RESTRICT_TOKENS)
+-      ).includes(firstToken)
 -    ) {
 -      this.searchMode = null;
 -      // If the entire value is a restricted token, append a space.
--      if (Object.values(UrlbarShared.RESTRICT_TOKENS).includes(value)) {
+-      if (
+-        /** @type {string[]} */ (
+-          Object.values(UrlbarShared.RESTRICT_TOKENS)
+-        ).includes(value)
+-      ) {
 -        value += " ";
 -      }
 +    const command = UrlbarSearchModeModel.searchCommand(value, {
@@ -6486,7 +6494,7 @@ index a077de625f7..a360d0c3e26 100644
      }
 +    value = command.value;
      this.inputField.value = value;
-@@ -2694,17 +2509,5 @@ ${
+@@ -2752,17 +2561,5 @@ ${
    searchModeForToken(token) {
 -    if (token == UrlbarShared.RESTRICT_TOKENS.SEARCH) {
 -      return {
@@ -6507,7 +6515,7 @@ index a077de625f7..a360d0c3e26 100644
 +      isAddressbar: this.#isAddressbar, engineStore: this.controller.engineStore,
 +    });
    }
-@@ -2826,12 +2629,5 @@ ${
+@@ -2883,12 +2680,5 @@ ${
    getSearchMode(browser, confirmedOnly = false) {
 -    let modes = this.#getSearchModesObject(browser);
 -
@@ -6523,7 +6531,7 @@ index a077de625f7..a360d0c3e26 100644
 +      this.#getSearchModesObject(browser), confirmedOnly
 +    );
    }
-@@ -2882,60 +2678,6 @@ ${
+@@ -2926,59 +2716,6 @@ ${
  
 -    let {
 -      engineName,
@@ -6533,25 +6541,34 @@ index a077de625f7..a360d0c3e26 100644
 -      isPreview = true,
 -    } = searchMode || {};
 -
--    searchMode = null;
+-    if (!UrlbarShared.SEARCH_MODE_ENTRY.has(entry)) {
+-      // If we see this value showing up in telemetry, we should review
+-      // search mode's entry points.
+-      entry = "other";
+-    }
+-
+-    /** @type {?SearchMode} */
+-    let newSearchMode = null;
 -
 -    if (engineName) {
--      searchMode = {
+-      newSearchMode = {
 -        engineName,
 -        isGeneralPurposeEngine: engine.isGeneralPurposeEngine,
+-        entry,
+-        isPreview,
 -      };
 -      if (source) {
--        searchMode.source = source;
--      } else if (searchMode.isGeneralPurposeEngine) {
+-        newSearchMode.source = source;
+-      } else if (newSearchMode.isGeneralPurposeEngine) {
 -        // History results for general-purpose search engines are often not
 -        // useful, so we hide them in search mode. See bug 1658646 for
 -        // discussion.
--        searchMode.source = UrlbarShared.RESULT_SOURCE.SEARCH;
+-        newSearchMode.source = UrlbarShared.RESULT_SOURCE.SEARCH;
 -      }
 -    } else if (source) {
 -      let sourceName = UrlbarShared.getResultSourceName(source);
 -      if (sourceName) {
--        searchMode = { source };
+-        newSearchMode = { source, entry, isPreview };
 -      } else {
 -        console.error(`Unrecognized source: ${source}`);
 -      }
@@ -6559,41 +6576,40 @@ index a077de625f7..a360d0c3e26 100644
 -
 -    let modes = this.#getSearchModesObject(browser);
 -
--    if (searchMode) {
--      searchMode.isPreview = isPreview;
--      if (UrlbarShared.SEARCH_MODE_ENTRY.has(entry)) {
--        searchMode.entry = entry;
--      } else {
--        // If we see this value showing up in telemetry, we should review
--        // search mode's entry points.
--        searchMode.entry = "other";
--      }
--
--      if (!searchMode.isPreview) {
--        modes.confirmed = searchMode;
+-    if (newSearchMode) {
+-      if (!newSearchMode.isPreview) {
+-        modes.confirmed = newSearchMode;
 -        delete modes.preview;
 -      } else {
--        modes.preview = searchMode;
+-        modes.preview = newSearchMode;
+-      }
+-      if (restrictType) {
+-        newSearchMode.restrictType = restrictType;
 -      }
 -    } else {
 -      delete modes.preview;
 -      delete modes.confirmed;
--    }
--
--    if (restrictType) {
--      searchMode.restrictType = restrictType;
 -    }
 +    const normalized = UrlbarSearchModeModel.normalizeMode(searchMode, engine);
 +    searchMode = UrlbarSearchModeModel.writeMode(
 +      this.#getSearchModesObject(browser), normalized
 +    );
  
-@@ -2953,3 +2695,3 @@ ${
+@@ -2990,4 +2727,4 @@ ${
+     ) {
+-      this._updateSearchModeUI(newSearchMode);
+-      if (newSearchMode) {
++      this._updateSearchModeUI(searchMode);
++      if (searchMode) {
+         // Set userTypedValue to the query string so that it's properly restored
+@@ -2996,4 +2733,4 @@ ${
          this.valueIsTyped = true;
--        if (!searchMode.isPreview && !areSearchModesSame) {
+-        if (!newSearchMode.isPreview && !areSearchModesSame) {
+-          this.parentController.recordSearchMode(newSearchMode);
 +        if (UrlbarSearchModeModel.shouldRecordModeEntry(searchMode, areSearchModesSame)) {
-           this.parentController.recordSearchMode(searchMode);
-@@ -2962,2 +2704,33 @@ ${
++          this.parentController.recordSearchMode(searchMode);
+         }
+@@ -3005,2 +2742,33 @@ ${
  
 +  /**
 +   * Mirrors a mode that an independent editor already committed to the
@@ -6627,7 +6643,7 @@ index a077de625f7..a360d0c3e26 100644
 +  }
 +
    /**
-@@ -3040,6 +2813,5 @@ ${
+@@ -3083,6 +2851,5 @@ ${
    confirmSearchMode() {
 -    let searchMode = this.searchMode;
 -    if (searchMode?.isPreview) {
@@ -6637,7 +6653,7 @@ index a077de625f7..a360d0c3e26 100644
 +    if (confirmation.applyMode) {
 +      this.searchMode = { ...confirmation.searchMode };
  
-@@ -3247,34 +3019,17 @@ ${
+@@ -3291,34 +3058,17 @@ ${
      startQuery = true,
 +    nativeAction = null,
    }) {
@@ -6684,7 +6700,7 @@ index a077de625f7..a360d0c3e26 100644
 +      // The query must wait for Firefox to apply the selected mode.
 +      if (transition.startQuery) this.#searchModeApplied.then(() =>
          this.startQuery({ allowAutofill: false })
-@@ -3319,33 +3074,16 @@ ${
+@@ -3363,33 +3113,16 @@ ${
    getSearchSource(event) {
 -    if (this.#isAddressbar) {
 -      if (this._isHandoffSession) {
@@ -6732,7 +6748,7 @@ index a077de625f7..a360d0c3e26 100644
 +    return UrlbarQueryModel.searchSource({ sapName: this.#sapName, isAddressbar,
 +      isHandoff, switcherItem, isOneOff, searchMode, persistedSearchTerms });
    }
-@@ -3518,80 +3256,15 @@ ${
+@@ -3562,80 +3295,15 @@ ${
     */
 -  #getValueFromResult(result, { urlOverride = null, element = null } = {}) {
 -    switch (result.type) {
@@ -6825,7 +6841,7 @@ index a077de625f7..a360d0c3e26 100644
 +      isAddressbar: this.#isAddressbar, isPrivate: this.isPrivate,
 +    });
    }
-@@ -3606,10 +3279,3 @@ ${
+@@ -3650,10 +3318,3 @@ ${
    #getActionTypeFromResult(result) {
 -    switch (result.type) {
 -      case UrlbarShared.RESULT_TYPE.TAB_SWITCH:
@@ -6837,7 +6853,7 @@ index a077de625f7..a360d0c3e26 100644
 -    }
 +    return this.resultPresentation.actionType(result);
    }
-@@ -3636,60 +3302,23 @@ ${
+@@ -3680,60 +3341,23 @@ ${
    _maybeAutofillPlaceholder(value) {
 -    // We allow autofill in local but not remote search modes.
 -    let allowAutofill =
@@ -6918,7 +6934,7 @@ index a077de625f7..a360d0c3e26 100644
 -    return true;
 +    return plan.allowAutofill;
    }
-@@ -3774,101 +3403,27 @@ ${
+@@ -3818,101 +3442,27 @@ ${
  
 -  _getSelectedValueForClipboard() {
 -    let selectedVal = this.#selectedText;
@@ -7045,7 +7061,7 @@ index a077de625f7..a360d0c3e26 100644
 +      canParse: value => URL.canParse(value),
 +    });
    }
-@@ -3944,18 +3499,6 @@ ${
+@@ -3988,18 +3538,6 @@ ${
  
 -    let searchData = {
 -      engineId: engine.id,
@@ -7068,7 +7084,7 @@ index a077de625f7..a360d0c3e26 100644
 +      newtabSessionId: this._handoffSession, opensInPrivateWindow });
 +    this.parentController[recording.method](recording.data);
    }
-@@ -3974,11 +3517,8 @@ ${
+@@ -4018,11 +3556,8 @@ ${
      }
 -    let trimmedValue = UrlbarPrefs.get("trimURLs")
 -      ? lazy.BrowserUIUtils.trimURL(val)
@@ -7086,24 +7102,24 @@ index a077de625f7..a360d0c3e26 100644
 +      preserveMixedContentProtocol: value => this.#getValueFormatter().willShowFormattedMixedContentProtocol(value),
 +    });
    }
-@@ -4083,3 +3623,3 @@ ${
+@@ -4127,3 +3662,3 @@ ${
     */
 -  #pickMenuResult(result, event, element) {
 +  #pickMenuResult(result, event, element, resultAction = UrlbarResultActions.fromElement(element)) {
      this.controller.engagementEvent.record(event, {
-@@ -4087,4 +3627,5 @@ ${
+@@ -4131,4 +3666,5 @@ ${
        element,
 +      resultAction,
        searchString: this._lastSearchString,
 -      selType: element.dataset.command,
 +      selType: resultAction.command,
        searchSource: this.getSearchSource(event),
-@@ -4093,3 +3634,3 @@ ${
+@@ -4137,3 +3673,3 @@ ${
  
 -    if (element.dataset.command == "manage") {
 +    if (resultAction.command == "manage") {
        this.parentController.openPreferences("search-locationBar");
-@@ -4099,6 +3640,6 @@ ${
+@@ -4143,6 +3679,6 @@ ${
      let url;
 -    if (element.dataset.command == "help") {
 +    if (resultAction.command == "help") {
@@ -7112,12 +7128,12 @@ index a077de625f7..a360d0c3e26 100644
 -    url ||= element.dataset.url;
 +    url ||= resultAction.url;
  
-@@ -4109,3 +3650,3 @@ ${
+@@ -4153,3 +3689,3 @@ ${
      let where = this.controller.whereToOpen(event);
 -    if (element.dataset.command == "help" && where == "current") {
 +    if (resultAction.command == "help" && where == "current") {
        // Open help links in a new tab.
-@@ -4202,32 +3743,12 @@ ${
+@@ -4234,32 +3770,12 @@ ${
  
 +    const navigation = UrlbarQueryModel.navigationPlan({ loadRequest, where, params,
 +      sapName: this.#sapName, isPrivate: this.isPrivate,
@@ -7157,17 +7173,17 @@ index a077de625f7..a360d0c3e26 100644
 -    }
 +    Object.assign(params, navigation.openParams);
  
-@@ -4236,3 +3757,3 @@ ${
+@@ -4268,3 +3784,3 @@ ${
      // runs against the chrome window.
 -    if (this.#isAddressbar && !params.avoidBrowserFocus) {
 +    if (navigation.resetSelection) {
        this.inputField.setSelectionRange(0, 0);
-@@ -4240,3 +3761,3 @@ ${
+@@ -4272,3 +3788,3 @@ ${
  
 -    if (where != "current" && !this.isSearchbarSAP) {
 +    if (navigation.revertBeforeLoad) {
        this.handleRevert();
-@@ -4269,2 +3790,11 @@ ${
+@@ -4301,2 +3817,11 @@ ${
  
 +  getCutEdit(selection = null) {
 +    return planUrlbarCut({
@@ -7179,12 +7195,12 @@ index a077de625f7..a360d0c3e26 100644
 +  }
 +
    _initCopyCutController() {
-@@ -4481,3 +4011,3 @@ ${
+@@ -4513,3 +4038,3 @@ ${
      let controller =
 -      this.document.commandDispatcher.getControllerForCommand("cmd_copy");
 +      this.inputField.controllers.getControllerForCommand("cmd_copy");
      if (
-@@ -4497,2 +4027,29 @@ ${
+@@ -4529,2 +4054,29 @@ ${
  
 +  /** Live editor eligibility, shared by original and native menu commands. */
 +  canPasteAndGo() {
@@ -7214,7 +7230,7 @@ index a077de625f7..a360d0c3e26 100644
 +  }
 +
    _initPasteAndGo() {
-@@ -4509,13 +4066,3 @@ ${
+@@ -4541,13 +4093,3 @@ ${
          pasteAndGo.setAttribute("anonid", "paste-and-go");
 -        pasteAndGo.addEventListener("command", () => {
 -          this._suppressStartQuery = true;
@@ -7229,7 +7245,7 @@ index a077de625f7..a360d0c3e26 100644
 -        });
 +        pasteAndGo.addEventListener("command", () => this.pasteAndGo());
  
-@@ -4547,6 +4094,3 @@ ${
+@@ -4579,6 +4121,3 @@ ${
  
 -        let controller =
 -          this.document.commandDispatcher.getControllerForCommand("cmd_paste");
@@ -7237,7 +7253,7 @@ index a077de625f7..a360d0c3e26 100644
 -        if (enabled) {
 +        if (this.canPasteAndGo()) {
            pasteAndGo.removeAttribute("disabled");
-@@ -4749,56 +4293,7 @@ ${
+@@ -4784,56 +4323,7 @@ ${
     */
 -  _searchModeForResult(result, entry = null) {
 -    // Search mode is determined by the result's keyword or engine.
@@ -7299,13 +7315,13 @@ index a077de625f7..a360d0c3e26 100644
 +      entry, actionEngine, modeForToken: token => this.searchModeForToken(token),
 +    });
    }
-@@ -4868,3 +4363,4 @@ ${
+@@ -4903,3 +4393,4 @@ ${
      // Clear autofill.
 -    if (this._autofillPlaceholder && this.userTypedValue) {
 +    if (this._autofillPlaceholder &&
 +        UrlbarSearchModeModel.modeEntryRestoresAutofill(true, this.userTypedValue)) {
        this.value = this.userTypedValue;
-@@ -4906,62 +4402,14 @@ ${
+@@ -4941,62 +4432,14 @@ ${
    }) {
 -    if (!lazy.UrlbarUtils.isPersistedSearchTermsEnabled()) {
 -      if (state.persist) {
@@ -7380,21 +7396,21 @@ index a077de625f7..a360d0c3e26 100644
 +    if (effect.recordView) Glean.urlbarPersistedsearchterms.viewCount.add(1);
 +    return effect.shouldPersist;
    }
-@@ -5073,2 +4521,4 @@ ${
+@@ -5108,2 +4551,4 @@ ${
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
 +    const changed = this.#unifiedSearchButtonAvailable !== !!available;
 +    this.#unifiedSearchButtonAvailable = !!available;
      const switcher = this.querySelector(".searchmode-switcher");
-@@ -5087,2 +4537,3 @@ ${
+@@ -5122,2 +4567,3 @@ ${
      }
 +    if (changed) this.dispatchEvent(new CustomEvent("searchmodevisibilitychanged"));
    }
-@@ -5153,3 +4604,3 @@ ${
+@@ -5188,3 +4634,3 @@ ${
        !this.#preventClickSelectsAll &&
 -      this.#compositionState != UrlbarShared.COMPOSITION.COMPOSING &&
 +      !this.#composition.isComposing &&
        this.focused &&
-@@ -5479,2 +4930,53 @@ ${
+@@ -5514,2 +4960,53 @@ ${
  
 +  setNativeInputValue(value) {
 +    if (
@@ -7448,7 +7464,7 @@ index a077de625f7..a360d0c3e26 100644
 +  }
 +
    _on_input(event) {
-@@ -5507,66 +5009,29 @@ ${
+@@ -5542,66 +5039,29 @@ ${
      let value = this.value;
 -    this.valueIsTyped = true;
 -    this._untrimmedValue = value;
@@ -7470,13 +7486,13 @@ index a077de625f7..a360d0c3e26 100644
 -      this.#compositionState = UrlbarShared.COMPOSITION.NONE;
 -      this.#compositionClosedPopup = false;
 -    }
-+    this.#updateTypedValue(value);
- 
+-
 -    if (compositionState == UrlbarShared.COMPOSITION.COMPOSING && event.data) {
 -      this.#compositionHadText = true;
 -    }
--
--    this.toggleAttribute("usertyping", value);
++    this.#updateTypedValue(value);
+ 
+-    this.toggleAttribute("usertyping", !!value);
 -    this.removeAttribute("actiontype");
 -
 -    if (
@@ -7536,7 +7552,7 @@ index a077de625f7..a360d0c3e26 100644
      }
 -
      this.view.removeAccessibleFocus();
-@@ -5582,6 +5047,5 @@ ${
+@@ -5617,6 +5077,5 @@ ${
      if (
 -      !UrlbarPrefs.get("keepPanelOpenDuringImeComposition") &&
 -      (compositionState == UrlbarShared.COMPOSITION.COMPOSING ||
@@ -7546,7 +7562,7 @@ index a077de625f7..a360d0c3e26 100644
 +        composition, UrlbarPrefs.get("keepPanelOpenDuringImeComposition")
 +      )
      ) {
-@@ -5593,7 +5057,6 @@ ${
+@@ -5628,7 +5087,6 @@ ${
      const allowAutofill =
 -      (!UrlbarPrefs.get("keepPanelOpenDuringImeComposition") ||
 -        compositionState !== UrlbarShared.COMPOSITION.COMPOSING) &&
@@ -7558,7 +7574,7 @@ index a077de625f7..a360d0c3e26 100644
 +      ) &&
 +      UrlbarAutofillModel.allowsInput(event.inputType, UrlbarShared.isPasteEvent(event)) &&
        this._maybeAutofillPlaceholder(value);
-@@ -5612,8 +5075,6 @@ ${
+@@ -5647,8 +5105,6 @@ ${
      // clicking on it, or pressing HOME, END, RIGHT, …
 -    if (
 -      this._autofillPlaceholder &&
@@ -7571,7 +7587,7 @@ index a077de625f7..a360d0c3e26 100644
 +      selectionStart: this.selectionStart, selectionEnd: this.selectionEnd,
 +    })) {
        this._autofillPlaceholder = null;
-@@ -5671,23 +5132,10 @@ ${
+@@ -5706,23 +5162,10 @@ ${
    _on_paste(event) {
 -    let originalPasteData = event.clipboardData.getData("text/plain");
 -    if (!originalPasteData) {
@@ -7602,17 +7618,17 @@ index a077de625f7..a360d0c3e26 100644
 -    if (originalPasteData != pasteData) {
 +    if (edit) {
        // Unfortunately we're not allowed to set the bits being pasted
-@@ -5697,3 +5145,3 @@ ${
+@@ -5732,3 +5175,3 @@ ${
  
 -      const value = oldStart + pasteData + oldEnd;
 +      const value = edit.text;
        this.setValue(value, { valueIsTyped: true });
-@@ -5711,3 +5159,3 @@ ${
+@@ -5746,3 +5189,3 @@ ${
        // Fix up cursor/selection:
 -      let newCursorPos = oldStart.length + pasteData.length;
 +      let newCursorPos = edit.start;
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
-@@ -5742,47 +5190,21 @@ ${
+@@ -5777,47 +5220,21 @@ ${
    } = {}) {
 -    // When we are in actions search mode we can show more results so
 -    // increase the limit.
@@ -7676,12 +7692,12 @@ index a077de625f7..a360d0c3e26 100644
 +      pasteLength: isPaste ? event.data?.length : undefined,
 +    });
    }
-@@ -5980,3 +5402,3 @@ ${
+@@ -6017,3 +5434,3 @@ ${
    get isComposing() {
 -    return this.#compositionState == UrlbarShared.COMPOSITION.COMPOSING;
 +    return this.#composition.isComposing;
    }
-@@ -5984,7 +5406,3 @@ ${
+@@ -6021,7 +5438,3 @@ ${
    _on_compositionstart() {
 -    if (this.#compositionState == UrlbarShared.COMPOSITION.COMPOSING) {
 -      throw new Error("Trying to start a nested composition?");
@@ -7690,7 +7706,7 @@ index a077de625f7..a360d0c3e26 100644
 -    this.#compositionHadText = false;
 +    this.#composition.begin();
  
-@@ -5994,21 +5412,12 @@ ${
+@@ -6031,21 +5444,12 @@ ${
  
 -    // Close the view. This will also stop searching.
 -    if (this.view.isOpen) {
@@ -7722,7 +7738,7 @@ index a077de625f7..a360d0c3e26 100644
 +    this.#composition.setPopupClosed(policy.closePopup);
 +    if (policy.closePopup) this.view.close();
    }
-@@ -6016,32 +5425,12 @@ ${
+@@ -6053,32 +5457,12 @@ ${
    _on_compositionend(event) {
 -    if (this.#compositionState != UrlbarShared.COMPOSITION.COMPOSING) {
 -      throw new Error("Trying to stop a non existing composition?");
@@ -7765,7 +7781,7 @@ index a077de625f7..a360d0c3e26 100644
 +    // Some IMEs omit the next input event for an empty composition.
 +    if (reopen) {
        this.startQuery({ resetSearchState: false, event });
-@@ -6171,7 +5560,3 @@ ${
+@@ -6208,7 +5592,3 @@ ${
    #getSchemelessInput(value) {
 -    return ["http://", "https://", "file://"].every(
 -      scheme => !value.trim().startsWith(scheme)
@@ -7774,7 +7790,7 @@ index a077de625f7..a360d0c3e26 100644
 -      : SCHEMELESS_INPUT_SCHEMEFUL;
 +    return UrlbarQueryModel.schemelessInput(value);
    }
-@@ -6313,107 +5698,2 @@ function getDroppableData(event) {
+@@ -6350,107 +5730,2 @@ function getDroppableData(event) {
  
 -/**
 - * Decodes the given URI for displaying it in the address bar without losing
@@ -7882,7 +7898,7 @@ index a077de625f7..a360d0c3e26 100644
 -}
 -
  /**
-@@ -6442,8 +5722,6 @@ class CopyCutController {
+@@ -6479,8 +5754,6 @@ class CopyCutController {
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
 -      let start = urlbar.selectionStart;
 -      let end = urlbar.selectionEnd;
@@ -7896,10 +7912,10 @@ index a077de625f7..a360d0c3e26 100644
 +      urlbar.inputField.setSelectionRange(edit.start, edit.end);
  
 diff --git a/browser/components/urlbar/content/UrlbarShared.mjs b/browser/components/urlbar/content/UrlbarShared.mjs
-index 862b56c9ca8..c37f1f26b90 100644
+index f135f613f6a..6fab273a537 100644
 --- a/browser/components/urlbar/content/UrlbarShared.mjs
 +++ b/browser/components/urlbar/content/UrlbarShared.mjs
-@@ -119,2 +119,9 @@ export const UrlbarShared = {
+@@ -133,2 +133,9 @@ export const UrlbarShared = {
    NOTIFICATIONS: Object.freeze({
 +    // Local to the child, before a deferred command can run. Sent while
 +    // waiting for engines and again after dispatch tears down the old query.
@@ -7999,15 +8015,15 @@ index 9596698cf94..77dd6bd1755 100644
 +
    static #buildRecorded(
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 278cb5ca71a..c0e8197b010 100644
+index 625b58d963c..cce5d11c8ab 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
-@@ -6,2 +6,4 @@ import UrlbarPrefs from "chrome://browser/content/urlbar/UrlbarContentPrefs.mjs"
+@@ -10,2 +10,4 @@ import UrlbarPrefs from "chrome://browser/content/urlbar/UrlbarContentPrefs.mjs"
  import { UrlbarContentUtils } from "chrome://browser/content/urlbar/UrlbarContentUtils.mjs";
 +import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
 +import { UrlbarResultPresentation } from "chrome://browser/content/urlbar/UrlbarResultPresentation.mjs";
  import { UrlbarResult } from "chrome://browser/content/urlbar/UrlbarResult.mjs";
-@@ -24,12 +26,2 @@ const KEYBOARD_SELECTABLE_ELEMENT_SELECTOR =
+@@ -28,12 +30,2 @@ const KEYBOARD_SELECTABLE_ELEMENT_SELECTOR =
  
 -const RESULT_MENU_COMMANDS = {
 -  DISMISS: "dismiss",
@@ -8020,36 +8036,39 @@ index 278cb5ca71a..c0e8197b010 100644
 -const CONTAINER_SOURCE = "urlbar_result_context_menu";
 -
  const getBoundsWithoutFlushing = UrlbarShared.getBoundsWithoutFlushing;
-@@ -60,3 +52,3 @@ export class UrlbarView {
-     this.resultMenu = this.panel.querySelector(".urlbarView-result-menu");
--    this.#resultMenuCommands = new WeakMap();
+@@ -93,5 +85,4 @@ export class UrlbarView {
+     this.#rows = this.panel.querySelector(".urlbarView-results");
+-    this.resultMenu = /** @type {PanelList} */ (
+-      this.panel.querySelector(".urlbarView-result-menu")
+-    );
++    this.resultMenu = this.panel.querySelector(".urlbarView-result-menu");
 +    this.#menuActions = new WeakMap();
  
-@@ -87,2 +79,3 @@ export class UrlbarView {
+@@ -122,2 +113,3 @@ export class UrlbarView {
    get oneOffSearchButtons() {
 +    if (this.nativePresentation) return null;
      if (this.input.sapName != "urlbar") {
-@@ -143,3 +136,3 @@ export class UrlbarView {
+@@ -178,3 +170,3 @@ export class UrlbarView {
    get isOpen() {
 -    return this.input.hasAttribute("open");
 +    return this.controller.resultsOpen;
    }
-@@ -154,4 +147,3 @@ export class UrlbarView {
+@@ -189,4 +181,3 @@ export class UrlbarView {
    get allowEmptySelection() {
 -    let { heuristicResult } = this.#queryContext || {};
 -    return !heuristicResult || !this.#shouldShowHeuristic(heuristicResult);
 +    return this.input.resultPresentation.allowEmptySelection(this.#queryContext);
    }
-@@ -215,2 +207,4 @@ export class UrlbarView {
+@@ -250,2 +241,4 @@ export class UrlbarView {
    get selectedResult() {
 +    if (this.nativePresentation)
 +      return this.nativePresentation.nativeSelected || null;
      if (!this.isOpen) {
-@@ -227,2 +221,3 @@ export class UrlbarView {
+@@ -262,2 +255,3 @@ export class UrlbarView {
    get selectedElement() {
 +    if (this.nativePresentation) return null;
      if (!this.isOpen) {
-@@ -303,4 +298,10 @@ export class UrlbarView {
+@@ -338,4 +332,10 @@ export class UrlbarView {
     */
 -  telemetryTypeFromElement(result, element) {
 +  telemetryTypeFromElement(result, element, resultAction = null) {
@@ -8061,7 +8080,7 @@ index 278cb5ca71a..c0e8197b010 100644
      if (!element) {
 +      if (this.nativePresentation && ["UrlbarProviderActionsSearchMode", "UrlbarProviderGlobalActions"].includes(result?.providerName)) return "action";
        return "none";
-@@ -329,96 +330,3 @@ export class UrlbarView {
+@@ -364,96 +364,3 @@ export class UrlbarView {
    telemetryTypeFromResult(result) {
 -    if (!result) {
 -      return "unknown";
@@ -8092,7 +8111,7 @@ index 278cb5ca71a..c0e8197b010 100644
 -        return "searchengine";
 -      case UrlbarShared.RESULT_TYPE.URL:
 -        if (result.autofill) {
--          let { type } = result.autofill;
+-          let type = /** @type {string} */ (result.autofill.type);
 -          if (!type) {
 -            type = "other";
 -            console.error(
@@ -8159,11 +8178,11 @@ index 278cb5ca71a..c0e8197b010 100644
 -    return "unknown";
 +    return UrlbarResultPresentation.telemetryTypeFromResult(result);
    }
-@@ -449,2 +357,3 @@ export class UrlbarView {
+@@ -484,2 +391,3 @@ export class UrlbarView {
    resultIsSelected(result) {
 +    if (this.nativePresentation) return this.isOpen && this.nativePresentation.nativeSelected === result;
      if (this.selectedRowIndex < 0) {
-@@ -482,25 +391,15 @@ export class UrlbarView {
+@@ -517,25 +425,15 @@ export class UrlbarView {
      if (!userPressedTab) {
 -      let { selectedRowIndex } = this;
 -      let end = this.visibleRowCount - 1;
@@ -8201,11 +8220,11 @@ index 278cb5ca71a..c0e8197b010 100644
        }
 -      this.selectedRowIndex = index > end ? -1 : index;
        return;
-@@ -583,2 +482,3 @@ export class UrlbarView {
+@@ -618,2 +516,3 @@ export class UrlbarView {
    async acknowledgeFeedback(resultId) {
 +    if (this.nativePresentation) return this.nativePresentation.acknowledgeNativeFeedback(resultId);
      let row = this.#getRowByResultId(resultId);
-@@ -626,15 +526,3 @@ export class UrlbarView {
+@@ -661,15 +560,3 @@ export class UrlbarView {
      // Replace the row with a dismissal acknowledgment tip.
 -    let tip = new UrlbarResult({
 -      type: UrlbarShared.RESULT_TYPE.TIP,
@@ -8216,13 +8235,13 @@ index 278cb5ca71a..c0e8197b010 100644
 -        buttons: [{ l10n: { id: "urlbar-search-tips-confirm-short" } }],
 -        icon: "chrome://branding/content/icon32.png",
 -      },
--      rowLabel: !result.hideRowLabel && this.#rowLabel(row),
+-      rowLabel: result.hideRowLabel ? null : this.#rowLabel(row),
 -      hideRowLabel: result.hideRowLabel,
 -      richSuggestionIconSize: 32,
 -    });
 +    let tip = this.createDismissalAcknowledgment(result, titleL10n);
      this.#updateRow(row, tip);
-@@ -642,7 +530,4 @@ export class UrlbarView {
+@@ -677,7 +564,4 @@ export class UrlbarView {
  
 -    // If the row was selected, move the selection to the tip button.
      if (isSelected) {
@@ -8231,14 +8250,14 @@ index 278cb5ca71a..c0e8197b010 100644
 -      });
 +      this.#selectElement(this.#getNextSelectableElement(row), { updateInput: false });
      }
-@@ -650,2 +535,6 @@ export class UrlbarView {
+@@ -685,2 +569,6 @@ export class UrlbarView {
  
 +  createDismissalAcknowledgment(result, titleL10n) {
 +    return this.input.resultActions.createDismissalAcknowledgment(result, titleL10n, this.#queryContext);
 +  }
 +
    removeAccessibleFocus() {
-@@ -654,2 +543,8 @@ export class UrlbarView {
+@@ -689,2 +577,8 @@ export class UrlbarView {
  
 +  // Read-only compatibility for retained view consumers. The renderer is no
 +  // longer the exposure-state owner; providers/native sessions use controller.
@@ -8247,30 +8266,30 @@ index 278cb5ca71a..c0e8197b010 100644
 +  }
 +
    clear() {
-@@ -659,3 +554,3 @@ export class UrlbarView {
+@@ -694,3 +588,3 @@ export class UrlbarView {
      this.clearSelection();
 -    this.visibleResults = [];
 +    this.controller.visibleResults = [];
    }
-@@ -672,2 +567,6 @@ export class UrlbarView {
+@@ -707,2 +601,6 @@ export class UrlbarView {
    close({ elementPicked = false, showFocusBorder = true } = {}) {
 +    if (this.nativePresentation) {
 +      this.nativePresentation.onNativeViewClosed(elementPicked);
 +      return;
 +    }
      const isShowingZeroPrefix =
-@@ -706,2 +605,3 @@ export class UrlbarView {
+@@ -741,2 +639,3 @@ export class UrlbarView {
  
 +    this.controller.resultsOpen = false;
      this.input.toggleAttribute("open", false);
-@@ -712,3 +612,5 @@ export class UrlbarView {
+@@ -747,3 +646,5 @@ export class UrlbarView {
      // opened.
 -    if (!this.input.focused && !elementPicked) {
 +    const closeRecording = UrlbarQueryModel.closeRecording({ open: true,
 +      focused: !!this.input.focused, elementPicked, zeroPrefix: !!isShowingZeroPrefix });
 +    if (closeRecording.discardEngagement) {
        this.controller.engagementEvent.discard();
-@@ -730,6 +632,4 @@ export class UrlbarView {
+@@ -764,6 +665,4 @@ export class UrlbarView {
  
 -    if (isShowingZeroPrefix) {
 -      this.controller.parentController.recordZeroPrefix(
@@ -8279,7 +8298,7 @@ index 278cb5ca71a..c0e8197b010 100644
 +    if (closeRecording.zeroPrefix) {
 +      this.controller.parentController.recordZeroPrefix(closeRecording.zeroPrefix);
      }
-@@ -924,2 +824,7 @@ export class UrlbarView {
+@@ -953,2 +852,7 @@ export class UrlbarView {
  
 +  onPresentationCacheInvalidated(kind) {
 +    if (kind == "topsites") this.clearTopSitesCache();
@@ -8287,25 +8306,25 @@ index 278cb5ca71a..c0e8197b010 100644
 +  }
 +
    /**
-@@ -931,2 +836,6 @@ export class UrlbarView {
+@@ -960,2 +864,6 @@ export class UrlbarView {
    onQueryStarted(queryContext) {
 +    if (this.nativePresentation) {
 +      this.#cancelRemoveStaleRowsTimer();
 +      return;
 +    }
      this.#queryWasCancelled = false;
-@@ -962,2 +871,3 @@ export class UrlbarView {
+@@ -991,2 +899,3 @@ export class UrlbarView {
    onQueryFinished(queryContext) {
 +    if (this.nativePresentation) return;
      this.#cancelRemoveStaleRowsTimer();
-@@ -969,3 +879,5 @@ export class UrlbarView {
+@@ -998,3 +907,5 @@ export class UrlbarView {
      // results, remove stale rows. Otherwise remove all rows.
 -    if (this.#queryUpdatedResults) {
 +    const presentation = UrlbarQueryModel.finishedQueryPresentation({
 +      updatedResults: this.#queryUpdatedResults, searchMode: null });
 +    if (presentation.rows === "remove-stale") {
        this.#removeStaleRows();
-@@ -977,5 +889,5 @@ export class UrlbarView {
+@@ -1006,5 +917,5 @@ export class UrlbarView {
      // exposure.
 -    if (!queryContext.searchString) {
 -      this.controller.parentController.recordZeroPrefix("exposure");
@@ -8314,13 +8333,13 @@ index 278cb5ca71a..c0e8197b010 100644
 +      cancelled: this.#queryWasCancelled, searchString: queryContext.searchString });
 +    if (recording) this.controller.parentController.recordZeroPrefix(recording);
  
-@@ -987,3 +899,4 @@ export class UrlbarView {
+@@ -1016,3 +927,4 @@ export class UrlbarView {
      // If search mode isn't active, close the view.
 -    if (!this.input.searchMode) {
 +    const searchMode = this.input.searchMode;
 +    if (UrlbarQueryModel.finishedQueryPresentation({ updatedResults: false, searchMode }).action === "close") {
        this.close();
-@@ -1000,6 +913,6 @@ export class UrlbarView {
+@@ -1029,6 +941,6 @@ export class UrlbarView {
        }
 -      if (willHide) {
 -        if (this.isOpen) {
@@ -8331,11 +8350,11 @@ index 278cb5ca71a..c0e8197b010 100644
 +      if (finalPresentation.action !== "open-one-offs") {
 +        if (finalPresentation.action === "close") this.close();
          return;
-@@ -1020,2 +933,3 @@ export class UrlbarView {
+@@ -1049,2 +961,3 @@ export class UrlbarView {
      this.#queryContext = queryContext;
 +    if (this.nativePresentation) return;
  
-@@ -1059,24 +973,12 @@ export class UrlbarView {
+@@ -1088,24 +1001,12 @@ export class UrlbarView {
      if (!this.#selectedElement && !this.oneOffSearchButtons?.selectedButton) {
 -      if (firstResult.heuristic) {
 -        // Select the heuristic result.  The heuristic may not be the first
@@ -8370,7 +8389,7 @@ index 278cb5ca71a..c0e8197b010 100644
 +      } else if (selection.kind == "associate-first") {
 +        this.input.setResultForCurrentValue(selection.valueResult);
        }
-@@ -1141,2 +1043,8 @@ export class UrlbarView {
+@@ -1170,2 +1071,8 @@ export class UrlbarView {
  
 +  onResultsCloseRequested(queryId, elementPicked) {
 +    if (queryId === this.#queryContext?.id && elementPicked === true) {
@@ -8379,14 +8398,14 @@ index 278cb5ca71a..c0e8197b010 100644
 +  }
 +
    /**
-@@ -1154,2 +1062,6 @@ export class UrlbarView {
+@@ -1183,2 +1090,6 @@ export class UrlbarView {
    onQueryResultRemoved(id, acknowledgeDismissalL10n) {
 +    if (this.nativePresentation) {
 +      this.nativePresentation.dismissalAcknowledgments?.remove(id);
 +      return;
 +    }
      let removedIndex = -1;
-@@ -1218,2 +1130,7 @@ export class UrlbarView {
+@@ -1247,2 +1158,7 @@ export class UrlbarView {
    updateResultMenuCommands(resultId, commands) {
 +    if (this.nativePresentation) {
 +      const result = this.nativePresentation.updateResultMenuCommands(resultId, commands);
@@ -8394,22 +8413,34 @@ index 278cb5ca71a..c0e8197b010 100644
 +      return;
 +    }
      let row = this.#getRowByResultId(resultId);
-@@ -1223,3 +1140,3 @@ export class UrlbarView {
+@@ -1252,3 +1168,3 @@ export class UrlbarView {
      row.result.commands = commands;
 -    this.#resultMenuCommands.delete(row.result);
 +    this.input.resultActions.invalidate(row.result);
    }
-@@ -1260,3 +1177,4 @@ export class UrlbarView {
-   #resultMenuResult;
--  #resultMenuCommands;
+@@ -1286,14 +1202,10 @@ export class UrlbarView {
+   #overflowObserver;
+-  /** @type {string} */
+   #previousTabToSearchEngine = null;
+-  #queryContext = /** @type {UrlbarQueryContext} */ (null);
++  #queryContext = null;
+   #queryUpdatedResults = false;
+   #queryWasCancelled = false;
+-  /** @type {?number} */
+   #removeStaleRowsTimer = null;
+-  /** @type {?UrlbarResult} */
+   #resultMenuResult = null;
+-  /** @type {WeakMap<UrlbarResult, UrlbarResultCommand[]>} */
+-  #resultMenuCommands = new WeakMap();
+-  /** @type {RowsContainer} */
 +  #menuActions;
 +  #menuBuilds = new WeakMap();
    #rows;
-@@ -1312,2 +1230,3 @@ export class UrlbarView {
+@@ -1348,2 +1260,3 @@ export class UrlbarView {
      this.input.toggleAttribute("suppress-focus-border", true);
 +    this.controller.resultsOpen = true;
      this.input.toggleAttribute("open", true);
-@@ -1344,9 +1263,3 @@ export class UrlbarView {
+@@ -1380,9 +1293,3 @@ export class UrlbarView {
    #shouldShowHeuristic(result) {
 -    if (!result?.heuristic) {
 -      throw new Error("A heuristic result must be given");
@@ -8420,7 +8451,7 @@ index 278cb5ca71a..c0e8197b010 100644
 -    );
 +    return this.input.resultPresentation.shouldShowHeuristic(result);
    }
-@@ -2148,9 +2061,3 @@ export class UrlbarView {
+@@ -2214,9 +2121,3 @@ export class UrlbarView {
    #updateRowButtons(item, oldResult, result) {
 -    for (let i = 0; i < result.payload.buttons?.length; i++) {
 -      // We hold the name to each button data in payload to enable to get the
@@ -8431,7 +8462,7 @@ index 278cb5ca71a..c0e8197b010 100644
 -    }
 +    this.input.resultActions.buttons(result);
  
-@@ -2232,8 +2139,3 @@ export class UrlbarView {
+@@ -2311,8 +2212,3 @@ export class UrlbarView {
          ],
 -        dataset: {
 -          name: buttonName,
@@ -8441,7 +8472,7 @@ index 278cb5ca71a..c0e8197b010 100644
 -        },
 +        dataset: this.input.resultActions.buttonAction({name:buttonName,command,url,input}),
        },
-@@ -2689,16 +2591,5 @@ export class UrlbarView {
+@@ -2768,16 +2664,5 @@ export class UrlbarView {
        default:
 -        if (
 -          result.heuristic &&
@@ -8461,7 +8492,7 @@ index 278cb5ca71a..c0e8197b010 100644
 +        isVisitAction = presentation.isVisitAction;
 +        setURL = presentation.showUrl;
          break;
-@@ -2802,39 +2693,4 @@ export class UrlbarView {
+@@ -2881,39 +2766,4 @@ export class UrlbarView {
    #iconForResult(result, iconUrlOverride = null) {
 -    if (
 -      result.source == UrlbarShared.RESULT_SOURCE.HISTORY &&
@@ -8503,7 +8534,7 @@ index 278cb5ca71a..c0e8197b010 100644
 +    return this.input.resultPresentation.icon(result, iconUrlOverride,
 +      (owner, blob) => this.#getBlobUrlForResult(owner, blob));
    }
-@@ -2923,17 +2779,18 @@ export class UrlbarView {
+@@ -3013,17 +2863,18 @@ export class UrlbarView {
      if (result.payload.descriptionL10n) {
 -      this.#l10nCache.setElementL10n(
 -        description,
@@ -8511,11 +8542,11 @@ index 278cb5ca71a..c0e8197b010 100644
 -      );
 -
 -      if (result.payload.descriptionLearnMoreTopic) {
--        let learnMoreLink = description.querySelector(
--          "[data-l10n-name=learn-more-link]"
+-        let learnMoreLink = /** @type {HTMLElement} */ (
+-          description.querySelector("[data-l10n-name=learn-more-link]")
 -        );
 -        if (learnMoreLink) {
--          learnMoreLink.dataset.url = this.window.getHelpLinkURL(
+-          learnMoreLink.dataset.url = window.getHelpLinkURL(
 -            result.payload.descriptionLearnMoreTopic
 -          );
 -        } else {
@@ -8525,7 +8556,7 @@ index 278cb5ca71a..c0e8197b010 100644
 +        this.input.resultActions.description(result, message.value);
 +      if (help && !help.unsupported) {
 +        this.#l10nCache.removeElementL10n(description);
-+        const link = this.#createElement("a");
++        const link = document.createElement("a");
 +        link.dataset.l10nName = "learn-more-link";
 +        link.dataset.url = help.action.url;
 +        link.textContent = help.label;
@@ -8537,22 +8568,22 @@ index 278cb5ca71a..c0e8197b010 100644
 +          const link = description.querySelector("[data-l10n-name=learn-more-link]");
 +          if (link) link.dataset.url = this.input.resultActions.helpAction(result).url;
          }
-@@ -3013,3 +2870,3 @@ export class UrlbarView {
+@@ -3110,3 +2961,3 @@ export class UrlbarView {
    #updateIndices() {
 -    this.visibleResults = [];
 +    this.controller.visibleResults = [];
      this.#overflowObserver.disconnect();
-@@ -3035,3 +2892,3 @@ export class UrlbarView {
+@@ -3132,3 +2983,3 @@ export class UrlbarView {
        if (visible) {
 -        this.visibleResults.push(result);
 +        this.controller.visibleResults.push(result);
          seenOnlyHeuristicOrSearchSuggestions &&=
-@@ -3069,3 +2926,3 @@ export class UrlbarView {
+@@ -3166,3 +3017,3 @@ export class UrlbarView {
  
 -    this.input.toggleAttribute("noresults", !this.visibleResults.length);
 +    this.input.toggleAttribute("noresults", !this.controller.visibleResults.length);
    }
-@@ -3166,67 +3023,3 @@ export class UrlbarView {
+@@ -3263,67 +3114,3 @@ export class UrlbarView {
     */
 -  #rowLabel(row) {
 -    if (!UrlbarPrefs.get("groupLabels.enabled")) {
@@ -8621,12 +8652,12 @@ index 278cb5ca71a..c0e8197b010 100644
 -  }
 +  #rowLabel(row) { return this.input.resultActions.rowLabel(row.result, this.#queryContext); }
  
-@@ -3279,3 +3072,3 @@ export class UrlbarView {
+@@ -3380,3 +3167,3 @@ export class UrlbarView {
        this.input.searchMode?.source != UrlbarShared.RESULT_SOURCE.ACTIONS &&
 -      this.visibleResults[0]?.source != UrlbarShared.RESULT_SOURCE.ACTIONS
 +      this.controller.visibleResults[0]?.source != UrlbarShared.RESULT_SOURCE.ACTIONS
      ) {
-@@ -3307,2 +3100,25 @@ export class UrlbarView {
+@@ -3408,2 +3195,25 @@ export class UrlbarView {
  
 +  /**
 +   * Announce presentation text for the contextual opt-in's Learn More control.
@@ -8652,11 +8683,11 @@ index 278cb5ca71a..c0e8197b010 100644
 +  }
 +
    #selectElement(
-@@ -3342,2 +3158,3 @@ export class UrlbarView {
+@@ -3443,2 +3253,3 @@ export class UrlbarView {
      if (result) {
 +      this.announceSelection(result, element);
        this.controller.parentController.onBeforeSelection(result, element);
-@@ -3600,51 +3417,9 @@ export class UrlbarView {
+@@ -3710,51 +3521,9 @@ export class UrlbarView {
    #setResultTitle(result, titleNode) {
 -    if (result.payload.titleL10n) {
 -      this.#l10nCache.setElementL10n(titleNode, result.payload.titleL10n);
@@ -8713,7 +8744,7 @@ index 278cb5ca71a..c0e8197b010 100644
 +    if (descriptor?.text !== undefined) {
 +      titleNode.textContent = descriptor.text;
        return;
-@@ -4162,47 +3937,2 @@ export class UrlbarView {
+@@ -4275,47 +4044,2 @@ export class UrlbarView {
  
 -  /**
 -   * The commands that open a result in a new tab or window. They're offered
@@ -8761,12 +8792,12 @@ index 278cb5ca71a..c0e8197b010 100644
 -   *   second row.
 -   */
    #hasMenuButton(result) {
-@@ -4219,3 +3949,3 @@ export class UrlbarView {
+@@ -4332,3 +4056,3 @@ export class UrlbarView {
     */
 -  #updateMenuButtonKeyboardAccessibility() {
 +  updateMenuButtonKeyboardAccessibility() {
      let inaccessible = !UrlbarPrefs.get("resultMenu.keyboardAccessible");
-@@ -4234,94 +3964,5 @@ export class UrlbarView {
+@@ -4347,94 +4071,5 @@ export class UrlbarView {
     */
 -  #canOpenInNewTarget(result) {
 -    return (
@@ -8864,7 +8895,7 @@ index 278cb5ca71a..c0e8197b010 100644
 +  #getMenuCommands(result) { return this.input.resultActions.getMenuCommands(result); }
 +  #getResultMenuCommands(result) { return this.input.resultActions.getResultMenuCommands(result); }
  
-@@ -4335,40 +3976,33 @@ export class UrlbarView {
+@@ -4448,42 +4083,33 @@ export class UrlbarView {
    async #populateResultMenu({ panel = this.resultMenu, commands }) {
 +    const generation = {};
 +    this.#menuBuilds.set(panel, generation);
@@ -8877,10 +8908,12 @@ index 278cb5ca71a..c0e8197b010 100644
 -    await this.#l10nCache.ensureAll(commands.map(e => e.l10n).filter(e => e));
 -    for (let data of commands) {
 -      if (data.name == "separator") {
--        panel.appendChild(this.document.createElement("hr"));
+-        panel.appendChild(document.createElement("hr"));
 -        continue;
 -      }
--      let menuitem = this.document.createElement("panel-item");
+-      let menuitem = /** @type {PanelItem} */ (
+-        document.createElement("panel-item")
+-      );
 -      menuitem.classList.add("urlbarView-result-menuitem");
 -      if (data.openIn) {
 -        menuitem.dataset.openIn = data.openIn;
@@ -8893,17 +8926,17 @@ index 278cb5ca71a..c0e8197b010 100644
 -        // localizes, so the label goes in a child and its accesskey stays on
 -        // the item, where pressing it activates the item.
 -        menuitem.toggleAttribute("submenu", true);
--        let label = this.document.createElement("span");
+-        let label = document.createElement("span");
 -        this.#l10nCache.setElementL10n(label, data.l10n);
 -        if (label.hasAttribute("accesskey")) {
 -          menuitem.setAttribute("accesskey", label.getAttribute("accesskey"));
 -          label.removeAttribute("accesskey");
 -        }
 -        menuitem.appendChild(label);
--        let submenu = this.document.createElement("panel-list");
+-        let submenu = document.createElement("panel-list");
 +    for (const data of items) {
-+      if (data.separator) { panel.appendChild(this.document.createElement("hr")); continue; }
-+      const item = this.document.createElement("panel-item");
++      if (data.separator) { panel.appendChild(document.createElement("hr")); continue; }
++      const item = document.createElement("panel-item");
 +      item.classList.add("urlbarView-result-menuitem");
 +      this.#menuActions.set(item, data.action);
 +      if (data.action.command) item.dataset.command = data.action.command;
@@ -8916,10 +8949,10 @@ index 278cb5ca71a..c0e8197b010 100644
 +      if (data.colorCode) item.style.setProperty("--panel-item-fill", data.colorCode);
 +      if (data.children) {
 +        item.toggleAttribute("submenu", true);
-+        const label = this.document.createElement("span");
++        const label = document.createElement("span");
 +        label.textContent = data.label;
 +        item.appendChild(label);
-+        const submenu = this.document.createElement("panel-list");
++        const submenu = document.createElement("panel-list");
          submenu.slot = "submenu";
 -        menuitem.appendChild(submenu);
 -      } else {
@@ -8934,7 +8967,7 @@ index 278cb5ca71a..c0e8197b010 100644
 +      } else { item.textContent = data.label; }
 +      panel.appendChild(item);
      }
-@@ -4376,61 +4010,7 @@ export class UrlbarView {
+@@ -4491,61 +4117,7 @@ export class UrlbarView {
  
 -  /**
 -   * Fills the submenu of the command that opens a result in a container tab
@@ -8948,7 +8981,7 @@ index 278cb5ca71a..c0e8197b010 100644
 -
 -    panel.textContent = "";
 -    for (let container of containers) {
--      let menuitem = this.document.createElement("panel-item");
+-      let menuitem = document.createElement("panel-item");
 -      menuitem.dataset.usercontextid = String(container.userContextId);
 -      menuitem.textContent = container.name;
 -      menuitem.style.setProperty(
@@ -8959,7 +8992,7 @@ index 278cb5ca71a..c0e8197b010 100644
 -      panel.appendChild(menuitem);
 -    }
 -
--    panel.appendChild(this.document.createElement("hr"));
+-    panel.appendChild(document.createElement("hr"));
 -    panel.appendChild(
 -      this.#createContainerMenuItem(
 -        "user-context-add-container2-panel-item",
@@ -8991,8 +9024,8 @@ index 278cb5ca71a..c0e8197b010 100644
 -   *   The menu item.
 -   */
 -  #createContainerMenuItem(l10nId, onPick) {
--    let menuitem = this.document.createElement("panel-item");
--    this.document.l10n.setAttributes(menuitem, l10nId);
+-    let menuitem = document.createElement("panel-item");
+-    document.l10n.setAttributes(menuitem, l10nId);
 -    menuitem.addEventListener("click", onPick);
 -    return menuitem;
 +    const generation = {};
@@ -9000,7 +9033,7 @@ index 278cb5ca71a..c0e8197b010 100644
 +    const items = await this.input.resultActions.describeContainers();
 +    if (this.#menuBuilds.get(panel) === generation) this.#renderResultMenu(panel, items);
    }
-@@ -4712,35 +4292,8 @@ export class UrlbarView {
+@@ -4829,35 +4401,8 @@ export class UrlbarView {
    on_click(event) {
 -    let menuitem = event
 -      .composedPath()
@@ -9042,22 +9075,22 @@ index 278cb5ca71a..c0e8197b010 100644
 +    if (action.command !== "toggle-keyboard-accessible") this.#resultMenuResult = null;
 +    this.input.resultActions.invokeMenu(result, action, event);
    }
-@@ -4782,2 +4335,3 @@ export class UrlbarView {
+@@ -4899,2 +4444,3 @@ export class UrlbarView {
      }
 +    this.#menuBuilds.delete(event.currentTarget);
      event.currentTarget.lastAnchorNode
 diff --git a/browser/components/urlbar/tests/UrlbarTestUtils.sys.mjs b/browser/components/urlbar/tests/UrlbarTestUtils.sys.mjs
-index c459a4dded9..1dbd5902c66 100644
+index a4171ce34f6..c394b05bd44 100644
 --- a/browser/components/urlbar/tests/UrlbarTestUtils.sys.mjs
 +++ b/browser/components/urlbar/tests/UrlbarTestUtils.sys.mjs
-@@ -1643,6 +1643,2 @@ export class UrlbarInputBaseTestUtils {
+@@ -1644,6 +1644,2 @@ export class UrlbarInputBaseTestUtils {
      );
 -    // The child controller arms the event bufferer when a query starts; a real
 -    // input always has one, so give the mock's input a no-op stand-in. Set here
 -    // after the merge, since a caller-supplied `input` replaces the default one.
 -    parentOptions.input.eventBufferer = { queryStarting() {} };
      // The parent controller resolves the browser window from its actor (for the
-@@ -1680,2 +1676,3 @@ export class UrlbarInputBaseTestUtils {
+@@ -1681,2 +1677,3 @@ export class UrlbarInputBaseTestUtils {
        controller.engineStore.initialized = true;
 +      parentOptions.input.controller = controller;
        return controller;
@@ -9340,7 +9373,7 @@ index 580aa471358..55e52c6ef37 100644
 +fenn-appdir = "browser"
  support-files = ["data/engine.xml"]
 diff --git a/browser/installer/package-manifest.in b/browser/installer/package-manifest.in
-index ae503c243ce..fe10f80b9a8 100644
+index 04bd23515eb..d66c4e0bc86 100644
 --- a/browser/installer/package-manifest.in
 +++ b/browser/installer/package-manifest.in
 @@ -106,13 +106,2 @@
@@ -9578,7 +9611,7 @@ index 8979a2e4e8d..e9835799cca 100644
 +imply_option("MOZ_APP_UA_NAME", "Firefox")
  imply_option("MOZ_APP_ID", "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}")
 diff --git a/browser/themes/shared/urlbar.css b/browser/themes/shared/urlbar.css
-index 7744ae446c2..ce98b5fb422 100644
+index bbd8b165659..09bbf1a0b9e 100644
 --- a/browser/themes/shared/urlbar.css
 +++ b/browser/themes/shared/urlbar.css
 @@ -1382,6 +1382,4 @@ toolbar[inactive="true"] .urlbar,
@@ -9612,7 +9645,7 @@ index b5ed380f179..84de0e70ef0 100644
 +	@touch $@
  endif
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
-index 994aac6c3a1..cbbfb20a014 100644
+index b39212b1c97..bc73f41c482 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
 +++ b/dom/base/nsDOMWindowUtils.cpp
 @@ -154,2 +154,159 @@ using namespace mozilla::gfx;
@@ -9776,7 +9809,7 @@ index 994aac6c3a1..cbbfb20a014 100644
 +
  static LazyLogModule sApzZoomToFocusedInputLog("apz.zoomtofocusedinput");
 diff --git a/dom/interfaces/base/nsIDOMWindowUtils.idl b/dom/interfaces/base/nsIDOMWindowUtils.idl
-index c14d1de1140..198db6e462b 100644
+index 400fb84ffc6..d232d774381 100644
 --- a/dom/interfaces/base/nsIDOMWindowUtils.idl
 +++ b/dom/interfaces/base/nsIDOMWindowUtils.idl
 @@ -63,2 +63,37 @@ interface nsIDOMWindowUtils : nsISupports {
@@ -10105,7 +10138,7 @@ index f5d293a068d..46a84340817 100644
 +        }
          if (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST &&
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index b8d139b22ae..7d5f1e54bf3 100644
+index e505d3ce012..e34eae83be2 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -81,2 +81,3 @@
