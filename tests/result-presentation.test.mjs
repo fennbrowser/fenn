@@ -107,6 +107,83 @@ test('icon precedence and blob lifetime stay with the presenter',()=>{
   result.type=1;assert.equal(model.icon(result),'page');
 });
 
+test('URL row text uses Firefox display values and its titled-autofill versus visit policy',()=>{
+  const {model}=fixture(), calls=[];
+  const result={type:1,heuristic:true,providerName:'UrlbarProviderAutofill',autofill:{noVisitAction:true},
+    payload:{title:'raw title',url:'https://www.example.test/'},
+    getDisplayableValueAndHighlights(field,options){calls.push([field,options]);return {value:field==='title'?'Known site title':'example.test'};}};
+  const tokens=[{value:'example'}];
+  const text=model.displayText(result,{tokens});
+  assert.equal(text.title,'Known site title');assert.equal(text.displayUrl,'example.test');
+  assert.equal(text.inlineUrl,true);assert.equal(text.isVisitAction,false);
+  assert.deepEqual(calls.map(([field])=>field),['title','url']);
+  assert.equal(calls[0][1].tokens,tokens);assert.equal(calls[1][1].isURL,true);
+  result.autofill.noVisitAction=false;
+  const visit=model.displayText(result,{tokens});
+  assert.equal(visit.displayUrl,'');assert.equal(visit.isVisitAction,true);assert.equal(visit.inlineUrl,false);
+  result.providerName='UrlbarProviderHistoryUrlHeuristic';
+  assert.equal(model.displayText(result,{tokens}).displayUrl,'example.test');
+  result.heuristic=false;
+  assert.equal(model.displayText(result,{tokens}).inlineUrl,true);
+  result.type=5;
+  assert.equal(model.displayText(result,{tokens}).inlineUrl,true,'switch-to-tab keeps an inline destination');
+  result.isRichSuggestion=true;
+  assert.equal(model.displayText(result,{tokens}).inlineUrl,false);
+  result.isRichSuggestion=false;
+  result.payload.description='Useful detail';
+  assert.equal(model.displayText(result,{tokens}).inlineUrl,false);
+  delete result.payload.description;
+  result.payload.descriptionL10n={id:'pending-description'};
+  assert.equal(model.displayText(result,{tokens}).inlineUrl,false,'late localization must not change the row template');
+});
+
+test('native emphasis uses the exact formatted title and URL ranges without mutating Firefox caches',()=>{
+  const {model}=fixture();
+  const title={value:'A Café guide',highlights:[[2,4]]};
+  const url={value:'example.test/Café',highlights:[[13,4]]};
+  const result={type:1,payload:{title:'raw',url:'https://www.example.test/Caf%C3%A9'},
+    getDisplayableValueAndHighlights(field){return field==='title'?title:url;}};
+  const text=model.displayText(result,{tokens:[]});
+  const plain=value=>JSON.parse(JSON.stringify(value));
+  assert.deepEqual(plain(model.highlightRuns(text.title,text.titleHighlights)),[
+    {text:'A ',matched:false},{text:'Café',matched:true},{text:' guide',matched:false}]);
+  assert.deepEqual(plain(model.highlightRuns(text.displayUrl,text.urlHighlights)),[
+    {text:'example.test/',matched:false},{text:'Café',matched:true}]);
+  text.titleHighlights.highlights[0][0]=0;
+  assert.deepEqual(title.highlights,[[2,4]]);
+  result.payload.titleL10n={id:'localized'};
+  assert.equal(model.displayText(result,{}).titleHighlights,null);
+  delete result.payload.titleL10n;result.payload.text='Extension text';
+  assert.equal(model.displayText(result,{}).titleHighlights,null);
+});
+
+test('emphasis preserves UTF-16 text, multiple matches and the existing display bound',()=>{
+  const {model}=fixture(),plain=value=>JSON.parse(JSON.stringify(value));
+  const value='🦊 Fenn / Fenn';
+  assert.deepEqual(plain(model.highlightRuns(value,{value,highlights:[[3,4],[10,4]]})),[
+    {text:'🦊 ',matched:false},{text:'Fenn',matched:true},{text:' / ',matched:false},{text:'Fenn',matched:true}]);
+  const long='a'.repeat(1020)+'matching tail';
+  const runs=model.highlightRuns(long,{value:long,highlights:[[1020,8]]});
+  assert.equal(runs.map(r=>r.text).join(''),long.slice(0,1024));
+  assert.deepEqual(plain(runs[1]),{text:'matc',matched:true});
+  assert.equal(model.highlightRuns('new label',{value:'old label',highlights:[[0,3]]}).length,0);
+  for(const highlights of [[[0,0]],[[-1,2]],[[0,99]],[[0.5,1]],[[0,3],[2,1]],[[2,1],[0,1]],Array(65).fill([0,1])])
+    assert.equal(model.highlightRuns('example',{value:'example',highlights}).length,0);
+});
+
+test('URL visibility keeps clipboard, search and sponsored-result exceptions',()=>{
+  const {model}=fixture();
+  const result={type:1,payload:{url:'https://example.test/'},providerName:'UrlbarProviderClipboard'};
+  assert.equal(model.urlPresentation(result).showUrl,false);
+  result.providerName='UrlbarProviderQuickSuggest';
+  assert.equal(model.urlPresentation(result).showUrl,false);
+  result.payload.shouldShowUrl=true;assert.equal(model.urlPresentation(result).showUrl,true);
+  result.type=2;assert.equal(model.urlPresentation(result).showUrl,false);
+  result.type=5;assert.equal(model.urlPresentation(result).showUrl,true);
+  result.type=1;result.payload.providesSearchMode=true;
+  assert.equal(model.urlPresentation(result).showUrl,false);
+});
+
 test('original renderer and native adapter share policy and delete native view helpers',()=>{
   const view=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarView.mjs',import.meta.url),'utf8');
   const session=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs',import.meta.url),'utf8');

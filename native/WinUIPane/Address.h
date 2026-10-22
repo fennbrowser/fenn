@@ -4,6 +4,8 @@
 #include <winrt/Windows.Storage.Streams.h>
 #include "JsonValidation.h"
 #include "ShellCore.h"
+#include "AddressInteraction.h"
+#include "AddressValue.h"
 #include "SearchMode.h"
 #include "GlobalActions.h"
 #include "SuggestionList.h"
@@ -42,7 +44,9 @@ struct NativeAddress {
     std::unique_ptr<NativeNavigationToolbar> navigation;
     std::function<void(winrt::hstring const&)> navigate;
     std::function<void()> releaseMenuFocus;
+    std::function<void()> releaseContentFocus;
     Microsoft::UI::Xaml::Controls::TextBox field;
+    NativeAddressValue formattedValue;
     NativeSearchMode mode;
     NativeAddressContextMenu context, resultMenu;
     winrt::hstring resultMenuId, resultMenuButtonId;
@@ -62,7 +66,6 @@ struct NativeAddress {
     GlobalActionsPanel actions;
     Microsoft::UI::Xaml::Controls::Primitives::Popup popup{nullptr};
     Microsoft::UI::Xaml::Controls::StackPanel popupContent{nullptr};
-    Microsoft::UI::Xaml::Controls::Button fallback;
     NativeShellCore& shell;
     // Cached WinUI/JSON observations; lifecycle decisions and IDs live in Rust.
     winrt::hstring session, pending, visibility, observedText;
@@ -109,7 +112,28 @@ struct NativeAddress {
         });
     }
     double revision{}, sequence{-1}, selectionId{};
-    bool syncing{}, composing{}, observedComposing{}, focusWithin{};
+    bool syncing{}, composing{}, observedComposing{};
+    NativeAddressInteraction interaction;
+    bool EditorOwned() const {
+        return islandFocusOwned && field.XamlRoot() &&
+            Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(field.XamlRoot()) == field;
+    }
+    void ApplyInteraction(ShellAddressInteractionState const& effect) {
+        if (!interaction.Current(effect)) return;
+        if (effect.effects & SHELL_ADDRESS_INTERACTION_EFFECT_CLEAR_SELECTION) {
+            context.requested = false;
+            resultMenu.requested = false;
+            if (field.SelectionLength()) field.Select(0,0);
+        }
+        if (!interaction.Current(effect)) return;
+        if ((effect.effects & SHELL_ADDRESS_INTERACTION_EFFECT_SELECT_ALL) && EditorOwned() &&
+            !composing && field.SelectionLength() == 0) field.SelectAll();
+        if (!interaction.Current(effect)) return;
+        if ((effect.effects & SHELL_ADDRESS_INTERACTION_EFFECT_RELEASE_CONTENT_FOCUS) && releaseContentFocus) releaseContentFocus();
+        if (!interaction.Current(effect)) return;
+        if (effect.effects & SHELL_ADDRESS_INTERACTION_EFFECT_BLUR) Action(L"blur");
+        if ((effect.effects & SHELL_ADDRESS_INTERACTION_EFFECT_FOCUS) && interaction.Current(effect)) Action(L"focus");
+    }
     // In the navigation row the field's embedded buttons stay hidden until the
     // pointer is over the field, or keyboard focus or an open menu is within it.
     bool hideEmbeddedControls{}, islandFocusOwned{};
@@ -133,6 +157,7 @@ struct NativeAddress {
         return point.X >= 0 && point.Y >= 0 && point.X < fieldHeader.ActualWidth() && point.Y < fieldHeader.ActualHeight();
     }
     void UpdateEmbeddedControls() {
+        formattedValue.Refresh(field, EditorOwned() || composing);
         const bool reveal = !hideEmbeddedControls || PointerInsideField() || (islandFocusOwned &&
                             (FocusInsideField() || mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen() || pageActions.open));
         omnibarLeft.SetRevealed(reveal);
@@ -257,8 +282,11 @@ struct NativeAddress {
     void Action(wchar_t const* kind, int traversal = 0, wchar_t const* clipboard = nullptr) {
         const auto incoming = IntentOf(kind);
         if (incoming == NativeShellCore::NoIntent) return;
+        if (incoming == NativeShellCore::Dismiss || incoming == NativeShellCore::Activate ||
+            incoming == NativeShellCore::Fallback || incoming == NativeShellCore::ContextMenu ||
+            incoming == NativeShellCore::Clipboard) interaction.Interrupt(EditorOwned());
         const auto selected = suggestions.list.SelectedIndex();
-        if ((incoming == NativeShellCore::Select || incoming == NativeShellCore::Activate) &&
+        if (incoming == NativeShellCore::Select && !traversal &&
             selected >= 0 && size_t(selected) < suggestions.current.size() && !suggestions.current[selected]) return;
         // Is this intent meaningful at all right now -- a question about the
         // surface, not about what is staged. Asked before Edit() below, which
@@ -282,6 +310,8 @@ struct NativeAddress {
         const auto action = shell.NegotiateAddress(incoming, Observed(), modifiers);
         if (action.decision == NativeShellCore::Defer || action.decision == NativeShellCore::DropIntent) return;
         auto value = Message(kind);
+        if (incoming == NativeShellCore::Select && traversal)
+            value.SetNamedValue(L"traverse", JValue::CreateNumberValue(traversal));
         if (incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::ContextMenu || incoming == NativeShellCore::Blur) {
             value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
             value.SetNamedValue(L"text", JValue::CreateStringValue(field.Text()));
@@ -297,6 +327,13 @@ struct NativeAddress {
             } else if (clipboard) value.SetNamedValue(L"clipboard", JValue::CreateStringValue(clipboard));
         }
         if (incoming == NativeShellCore::Activate) {
+            // Enter can supersede a queued arrow-clear before Firefox restores
+            // the typed value. Carry that restoration in the same command.
+            if (shell.AddressState().staged_kind == uint32_t(NativeShellCore::Select) && !pending.empty()) {
+                const auto selection = JObject::Parse(pending);
+                if (selection.HasKey(L"traverse") && selection.GetNamedString(L"id", L"").empty())
+                    value.SetNamedValue(L"clearSelection", JValue::CreateBooleanValue(true));
+            }
             JObject intent;
             intent.SetNamedValue(L"ctrlKey", JValue::CreateBooleanValue((action.modifiers & 1) != 0));
             intent.SetNamedValue(L"altKey", JValue::CreateBooleanValue((action.modifiers & 2) != 0));
@@ -304,7 +341,7 @@ struct NativeAddress {
             intent.SetNamedValue(L"metaKey", JValue::CreateBooleanValue((action.modifiers & 8) != 0));
             value.SetNamedValue(L"intent", intent);
         }
-        int index = suggestions.list.SelectedIndex();
+        int index = suggestions.CurrentSelectedIndex();
         if (incoming != NativeShellCore::ContextMenu && index >= 0 && size_t(index) < suggestions.ids.size())
             value.SetNamedValue(L"id", JValue::CreateStringValue(suggestions.ids[index]));
         Stage(value, incoming);
@@ -356,17 +393,17 @@ struct NativeAddress {
                 focused = Media::VisualTreeHelper::GetParent(focused);
             }
         }
-        // XAML retains logical focus when Win32 focus leaves the island.
-        if (inside != focusWithin) {
-            focusWithin = inside;
-            if (!inside) { context.requested = false; resultMenu.requested = false; }
-            Action(inside ? L"focus" : L"blur");
-            if (GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0))
-                fwprintf(stderr, L"Native address focus inside=%d island=%d pending=%s\n", inside, islandHasFocus,
-                         StagedKind() == NativeShellCore::NoIntent ? L"none" : JObject::Parse(pending).GetNamedString(L"kind").c_str());
-        }
+        ApplyInteraction(interaction.Observe(inside));
     }
-    explicit NativeAddress(NativeShellCore& core) : mode(core), shell(core) {
+    void LeaveForTraversal(int direction) {
+        islandFocusOwned = false;
+        UpdateEmbeddedControls();
+        auto effect = interaction.Observe(false);
+        effect.effects &= ~uint32_t(SHELL_ADDRESS_INTERACTION_EFFECT_BLUR);
+        ApplyInteraction(effect);
+        Action(L"blur", direction);
+    }
+    explicit NativeAddress(NativeShellCore& core) : mode(core), shell(core), interaction(core) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         root.Visibility(Visibility::Collapsed);
@@ -397,12 +434,15 @@ struct NativeAddress {
         });
         Automation::AutomationProperties::SetName(field, L"Search or enter address");
         Automation::AutomationProperties::SetAutomationId(field, L"FennAddress");
+        field.GotFocus([this](auto const&, auto const&) { formattedValue.Hide(); });
         field.TextChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
+            formattedValue.Refresh(field, EditorOwned() || composing);
             Edit();
         });
         field.SelectionChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
+            formattedValue.Refresh(field, EditorOwned() || composing);
             // A caret move is the least important intent there is: it folds
             // into a staged edit, which already carries a range, and otherwise
             // never displaces anything.
@@ -436,19 +476,63 @@ struct NativeAddress {
             nextInputType = L"insertCompositionText";
             Edit();
         });
-        // TextBox handles pointer presses internally; observe without handling
-        // them again so native caret placement and selection remain standard.
+        // Observe handled TextBox events without taking over native caret,
+        // selection or capture. The core consumes each gesture exactly once.
+        field.GettingFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+            if (!alive.expired() && e.FocusState() == FocusState::Pointer) interaction.PointerFocus();
+        });
         field.AddHandler(UIElement::PointerPressedEvent(),
-                         winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                             [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
-                                 if (!alive.expired() && !e.GetCurrentPoint(field).Properties().IsRightButtonPressed()) Action(L"focus");
-                             })),
-                         true);
+            winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                    if (alive.expired()) return;
+                    const auto point = e.GetCurrentPoint(field);
+                    if (!point.Properties().IsLeftButtonPressed()) { interaction.Interrupt(EditorOwned()); return; }
+                    interaction.Begin(point, !interaction.FocusWithin() || !islandFocusOwned);
+                    ScheduleFocusObservation();
+                })), true);
+        field.AddHandler(UIElement::PointerMovedEvent(),
+            winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                    if (!alive.expired()) interaction.Move(e.GetCurrentPoint(field));
+                })), true);
+        field.AddHandler(UIElement::PointerReleasedEvent(),
+            winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                    if (alive.expired()) return;
+                    if (observeFocus) observeFocus();
+                    ApplyInteraction(interaction.Release(e.GetCurrentPoint(field), EditorOwned()));
+                    ScheduleFocusObservation();
+                })), true);
+        field.AddHandler(UIElement::PointerCanceledEvent(),
+            winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                    if (alive.expired()) return;
+                    interaction.Cancel(e.Pointer().PointerId(), interaction.token);
+                    ScheduleFocusObservation();
+                })), true);
+        field.AddHandler(UIElement::PointerCaptureLostEvent(),
+            winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                    if (alive.expired()) return;
+                    // Normal release may lose capture before PointerReleased.
+                    // Reconcile next turn, using the old token so this cannot
+                    // cancel a subsequent gesture or one in a new session.
+                    const auto id=e.Pointer().PointerId(); const auto ticket=interaction.token;
+                    auto queue=Dispatching::DispatcherQueue::GetForCurrentThread();
+                    if (queue) queue.TryEnqueue([this,alive,id,ticket] {
+                        if (alive.expired()) return;
+                        interaction.Cancel(id,ticket);
+                        ScheduleFocusObservation();
+                    });
+                })), true);
         field.GotFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (!alive.expired()) ScheduleFocusObservation();
         });
         field.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
             if (alive.expired()) return;
+            if (!composing && e.Key() == winrt::Windows::System::VirtualKey::Enter)
+                ApplyInteraction(interaction.PrepareSubmit(EditorOwned()));
+            else interaction.Interrupt(EditorOwned());
             nextInputType = L"insertReplacementText";
             const auto key = uint32_t(e.Key());
             const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -475,22 +559,18 @@ struct NativeAddress {
                 Action(L"dismiss");
                 e.Handled(true);
             }
-            if (e.Key() == VirtualKey::Down && !suggestions.ids.empty() && !(GetKeyState(VK_MENU) & 0x8000)) {
-                auto& list = suggestions.list;
-                int next = list.SelectedIndex() + 1;
-                while (next < int(suggestions.ids.size()) &&
-                       (!suggestions.current[next] || !list.Items().GetAt(next).as<ListViewItem>().IsEnabled()))
-                    ++next;
-                if (next >= int(suggestions.ids.size())) {
-                    e.Handled(true);
-                    return;
-                }
+            if ((e.Key() == VirtualKey::Down || e.Key() == VirtualKey::Up) &&
+                suggestions.HasCurrentRows() && !(GetKeyState(VK_MENU) & 0x8000)) {
+                // Firefox publishes arrow destinations. Apply stock selection
+                // synchronously so immediate Enter commits that exact row.
+                const bool reverse = e.Key() == VirtualKey::Up;
+                auto id = suggestions.ArrowTarget(reverse);
                 syncing = true;
-                list.Focus(FocusState::Keyboard);
-                list.SelectedIndex(next);
+                suggestions.retainedSelection = -1;
+                suggestions.SyncSelection(id);
                 syncing = false;
                 suggestions.RefreshLabels();
-                Action(L"select");
+                Action(L"select", reverse ? -1 : 1);
                 e.Handled(true);
             }
         });
@@ -611,7 +691,7 @@ struct NativeAddress {
             if (alive.expired()) return;
             using winrt::Windows::System::VirtualKey;
             if (e.Key() == VirtualKey::Down) {
-                const auto next = suggestions.list.SelectedIndex() + 1;
+                const auto next = suggestions.CurrentSelectedIndex() + 1;
                 if (size_t(next) < suggestions.current.size() && !suggestions.current[next]) {
                     e.Handled(true); return;
                 }
@@ -636,12 +716,6 @@ struct NativeAddress {
                 e.Handled(true);
                 field.Focus(FocusState::Keyboard);
             }
-        });
-        fallback.Content(winrt::box_value(L"Use classic address bar"));
-        Automation::AutomationProperties::SetAutomationId(fallback, L"FennAddressFallback");
-        fallback.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-            if (alive.expired()) return;
-            Action(L"fallback");
         });
         Grid header;
         ColumnDefinition buttonColumn;
@@ -987,6 +1061,9 @@ struct NativeAddress {
         header.Children().Append(omnibarLeft.panel);
         header.Children().Append(mode.button);
         header.Children().Append(field);
+        formattedValue.Create();
+        Grid::SetColumnSpan(formattedValue.display, 5);
+        header.Children().Append(formattedValue.display);
         header.Children().Append(mode.exit);
         header.Children().Append(trailingActions);
         mode.button.MinWidth(0); mode.button.MinHeight(0);
@@ -1047,6 +1124,7 @@ struct NativeAddress {
             const float textGap = mode.button.Visibility() == Visibility::Visible ? 2.0f : 8.0f;
             field.Padding({float(textGap + width(omnibarLeft.panel) + width(mode.button)), 4,
                 float(8 + width(mode.exit) + width(trailingActions)), 4});
+            formattedValue.Refresh(field, EditorOwned() || composing);
         };
         for (auto element : {omnibarLeft.panel.as<FrameworkElement>(), mode.button.as<FrameworkElement>(),
                              mode.exit.as<FrameworkElement>(), trailingActions.as<FrameworkElement>()}) {
@@ -1104,7 +1182,6 @@ struct NativeAddress {
         popupContent.Spacing(4);
         popupContent.Children().Append(suggestions.list);
         popupContent.Children().Append(actions.panel);
-        popupContent.Children().Append(fallback);
         auto border = Markup::XamlReader::Load(
             LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="4"/>)").as<Border>();
         border.Child(popupContent);
@@ -1172,6 +1249,7 @@ struct NativeAddress {
         const auto checkedEdit = snapshot.HasKey(L"editId") ? NativeJson::RequireRevision(snapshot, L"editId") : 0;
         const auto checkedComplete = snapshot.GetNamedBoolean(L"complete", false);
         const auto checkedOpen = snapshot.GetNamedBoolean(L"open", false);
+        const auto contentFocused = snapshot.GetNamedBoolean(L"contentFocused", false);
         const auto checkedRtl = snapshot.GetNamedBoolean(L"rtl", false);
         const auto checkedTextEpoch = snapshot.HasKey(L"textEpoch") ? NativeJson::RequireRevision(snapshot, L"textEpoch") : 0;
         const auto navigationToolbar = snapshot.GetNamedBoolean(L"navigationToolbar", false);
@@ -1202,6 +1280,7 @@ struct NativeAddress {
         const auto omnibarRightState = PinnedExtensionButtons::Read(snapshot, L"omnibarRight");
         const auto pageActionsState = NativePageActionsMenu::Read(snapshot);
         auto checkedText = snapshot.GetNamedString(L"text", L"");
+        NativeAddressValue::Validate(snapshot);
         auto clipboard = snapshot.GetNamedObject(L"clipboard", JObject());
         const auto clipboardId = clipboard.Size() ? NativeJson::RequireRevision(clipboard, L"serial") : 0;
         const auto clipboardEdit = clipboard.Size() ? NativeJson::RequireRevision(clipboard, L"editId") : 0;
@@ -1247,9 +1326,19 @@ struct NativeAddress {
             winrt::throw_hresult(E_INVALIDARG);
         std::set<winrt::hstring> checkedIds;
         size_t imagePixels = 0;
+        if (snapshot.HasKey(L"arrowTargets")) {
+            const auto targets = snapshot.GetNamedObject(L"arrowTargets");
+            NativeJson::RequireLength(targets.GetNamedString(L"forward", L""), NativeJson::kMaxOpaqueId);
+            NativeJson::RequireLength(targets.GetNamedString(L"backward", L""), NativeJson::kMaxOpaqueId);
+            auto entries = targets.GetNamedArray(L"rows");
+            if (entries.Size() > NativeJson::kMaxListEntries) winrt::throw_hresult(E_INVALIDARG);
+            for (auto entry : entries) for (auto key : {L"id", L"forward", L"backward"})
+                NativeJson::RequireLength(entry.GetObject().GetNamedString(key), NativeJson::kMaxOpaqueId);
+        }
         for (auto value : checkedRows) {
             auto row = value.GetObject();
             auto id = row.GetNamedString(L"id");
+            NativeJson::RequireLength(row.GetNamedString(L"presentationId", id), NativeJson::kMaxOpaqueId);
             if (id.empty() || id.size() > NativeJson::kMaxOpaqueId || !checkedIds.insert(id).second ||
                 row.GetNamedString(L"title").size() > 4096 ||
                 row.GetNamedString(L"description", L"").size() > 1024 ||
@@ -1257,6 +1346,8 @@ struct NativeAddress {
                 row.GetNamedString(L"displayUrl", L"").size() > 1024 ||
                 row.GetNamedString(L"actionLabel", L"").size() > NativeJson::kMaxShortLabel)
                 winrt::throw_hresult(E_INVALIDARG);
+            SuggestionList::ValidateTextRuns(row, L"titleRuns", row.GetNamedString(L"title"));
+            SuggestionList::ValidateTextRuns(row, L"urlRuns", row.GetNamedString(L"displayUrl", L""));
             if (row.HasKey(L"helpLink")) {
                 auto help = row.GetNamedObject(L"helpLink");
                 NativeJson::RequireLength(help.GetNamedString(L"id"), NativeJson::kMaxOpaqueId);
@@ -1265,7 +1356,9 @@ struct NativeAddress {
             row.GetNamedBoolean(L"focusButton", false);
             row.GetNamedBoolean(L"enabled", true);
             row.GetNamedBoolean(L"stale", false);
+            row.GetNamedBoolean(L"retainedSelected", false);
             row.GetNamedBoolean(L"titleLtr", false);
+            row.GetNamedBoolean(L"inlineUrl", false);
             NativeJson::RequireLength(row.GetNamedString(L"symbol", L"page"), NativeJson::kMaxShortLabel);
             auto buttons = row.GetNamedArray(L"buttons", JsonArray());
             if (buttons.Size() > 8) winrt::throw_hresult(E_INVALIDARG);
@@ -1363,10 +1456,10 @@ struct NativeAddress {
         const auto resultGeneration = hasResult ? uint64_t(resultObject.GetNamedNumber(L"generation")) : 0;
         const auto currentEdit = shell.AddressState().edit_id;
         const bool contextEligible = hasContext && shell.AddressMenuEligible(nextSession, session,
-            uint64_t(contextObject.GetNamedNumber(L"editId")), currentEdit, L"", L"", context.requested, focusWithin);
+            uint64_t(contextObject.GetNamedNumber(L"editId")), currentEdit, L"", L"", context.requested, interaction.FocusWithin());
         const bool resultEligible = hasResult && shell.AddressMenuEligible(nextSession, session,
             uint64_t(resultObject.GetNamedNumber(L"editId")), currentEdit,
-            resultObject.GetNamedString(L"resultId"), resultMenuId, resultMenu.requested, focusWithin);
+            resultObject.GetNamedString(L"resultId"), resultMenuId, resultMenu.requested, interaction.FocusWithin());
         const auto contextDecision = applyAddress && hasContext
             ? shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU, nextSession, contextGeneration,
                 contextFingerprint, contextEligible, false) : SHELL_ADDRESS_SECTION_DECISION_IGNORED;
@@ -1505,7 +1598,6 @@ struct NativeAddress {
                 NativeJson::RequireLength(actionsName, NativeJson::kMaxShortLabel);
                 if (!suggestionsName.empty()) Automation::AutomationProperties::SetName(suggestions.list, suggestionsName);
                 if (!actionsName.empty()) Automation::AutomationProperties::SetName(actions.panel, actionsName);
-                fallback.Content(winrt::box_value(labels.GetNamedString(L"addressFallback", L"Use classic address bar")));
             }
             const auto previousRevision = revision;
             revision = snapshot.GetNamedNumber(L"revision");
@@ -1527,6 +1619,8 @@ struct NativeAddress {
                 } else field.Text(text);
                 field.Select(int(text.size()), 0);
             }
+            formattedValue.Apply(snapshot);
+            formattedValue.Refresh(field, EditorOwned() || composing);
             if (clipboardId > clipboardSerial) {
                 field.Select(int(clipboardStart), int(clipboardEnd - clipboardStart));
                 clipboardSerial = double(clipboardId);
@@ -1545,7 +1639,11 @@ struct NativeAddress {
                 suggestions.SyncRows(snapshot.GetNamedArray(L"rows"));
                 visibility = L"";
             }
+            const auto previousSelected = suggestions.CurrentSelectedIndex();
+            suggestions.arrowTargets = snapshot.GetNamedObject(L"arrowTargets", JObject());
             suggestions.SyncSelection(snapshot.GetNamedString(L"selectedId", L""));
+            if (suggestions.CurrentSelectedIndex() >= 0 && suggestions.CurrentSelectedIndex() != previousSelected)
+                suggestions.list.ScrollIntoView(suggestions.list.SelectedItem());
             suggestions.RefreshLabels();
             if (modesDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED)
                 shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_MODES, nextSession, modesGeneration, modesFingerprint, true, true);
@@ -1569,7 +1667,14 @@ struct NativeAddress {
         if (snapshot.HasKey(L"resultMenu") && snapshot.GetNamedObject(L"resultMenu").GetNamedString(L"resultId") != resultMenuId)
             resultMenu.Reset();
         else resultMenu.Sync(snapshot, resultDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED, field);
-        if (focusWithin && (!popup || popup.IsOpen())) suggestions.FocusPending();
+        if (interaction.FocusWithin() && !interaction.Holding() && (!popup || popup.IsOpen())) suggestions.FocusPending();
+        // Firefox has already focused content. Finish only the HWND handoff,
+        // after publication and pending-input guards; Escape and mode picks
+        // leave Gecko focus on its address proxy and never take this path.
+        // Gecko still reports content focus until a held entry gesture ends.
+        // That older observation must not interrupt native text selection.
+        if (contentFocused && !checkedOpen && checkedEdit == shell.AddressState().edit_id)
+            ApplyInteraction(shell.AddressInteraction(SHELL_ADDRESS_INTERACTION_KIND_CONTENT_FOCUS));
         mode.ShowPendingReveal();
         // The deferred commit's precondition is satisfied by a publication, so
         // this is where it is re-offered. Action() queues it if the policy now

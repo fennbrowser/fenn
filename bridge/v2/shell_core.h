@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 62
+#define SHELL_CORE_ABI_VERSION 63
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -225,6 +225,49 @@ enum ShellAddressSectionDecision
 typedef enum ShellAddressSectionDecision ShellAddressSectionDecision;
 #else
 typedef uint32_t ShellAddressSectionDecision;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+enum ShellAddressInteractionKind
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  SHELL_ADDRESS_INTERACTION_KIND_INSPECT = 0,
+  SHELL_ADDRESS_INTERACTION_KIND_OBSERVE = 1,
+  SHELL_ADDRESS_INTERACTION_KIND_POINTER_FOCUS = 2,
+  SHELL_ADDRESS_INTERACTION_KIND_BEGIN = 3,
+  SHELL_ADDRESS_INTERACTION_KIND_MOVE = 4,
+  SHELL_ADDRESS_INTERACTION_KIND_RELEASE = 5,
+  SHELL_ADDRESS_INTERACTION_KIND_CANCEL = 6,
+  SHELL_ADDRESS_INTERACTION_KIND_INTERRUPT = 7,
+  SHELL_ADDRESS_INTERACTION_KIND_CONTENT_FOCUS = 8,
+  SHELL_ADDRESS_INTERACTION_KIND_PREPARE_SUBMIT = 9,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum ShellAddressInteractionKind ShellAddressInteractionKind;
+#else
+typedef uint32_t ShellAddressInteractionKind;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+enum ShellAddressInteractionEffect
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  SHELL_ADDRESS_INTERACTION_EFFECT_CLEAR_SELECTION = 1,
+  SHELL_ADDRESS_INTERACTION_EFFECT_FOCUS = 2,
+  SHELL_ADDRESS_INTERACTION_EFFECT_BLUR = 4,
+  SHELL_ADDRESS_INTERACTION_EFFECT_SELECT_ALL = 8,
+  SHELL_ADDRESS_INTERACTION_EFFECT_RELEASE_CONTENT_FOCUS = 16,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum ShellAddressInteractionEffect ShellAddressInteractionEffect;
+#else
+typedef uint32_t ShellAddressInteractionEffect;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
@@ -935,6 +978,13 @@ typedef struct {
   double top;
   double height;
 } ShellAllTabsRow;
+
+typedef struct {
+  uint64_t token;
+  uint32_t effects;
+  uint32_t focused;
+  uint32_t holding;
+} ShellAddressInteractionState;
 
 #ifdef __cplusplus
 extern "C" {
@@ -3247,6 +3297,19 @@ ShellStatus shell_core_notification_panel_request(ShellCore *core,
                                                   const uint16_t *fingerprint,
                                                   uintptr_t units,
                                                   uint32_t *out);
+
+/*
+ Native gesture/focus observations. kind is ShellAddressInteractionKind;
+ value is a boolean. Tokens are endpoint-local and survive session resets.
+ # Safety
+ core is live; out is writable. Invalid observations never mutate state.
+ */
+ShellStatus shell_core_address_interaction(ShellCore *core,
+                                           uint32_t kind,
+                                           uint32_t pointer,
+                                           uint64_t token,
+                                           uint32_t value,
+                                           ShellAddressInteractionState *out);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -4131,6 +4131,85 @@ index 05db07d0ed4..fac057f94b6 100644
 +  }
 +
    async #onSettingsSync(event) {
+diff --git a/browser/components/urlbar/UrlbarValueFormatter.sys.mjs b/browser/components/urlbar/UrlbarValueFormatter.sys.mjs
+index 7ac2e345ea6..e3c4947e20b 100644
+--- a/browser/components/urlbar/UrlbarValueFormatter.sys.mjs
++++ b/browser/components/urlbar/UrlbarValueFormatter.sys.mjs
+@@ -417,3 +417,3 @@ export class UrlbarValueFormatter {
+ 
+-    let { domain, origin, preDomain, schemeWSlashes, trimmedLength, url } =
++    let { domain, preDomain, schemeWSlashes, trimmedLength, url } =
+       urlMetaData;
+@@ -479,19 +479,3 @@ export class UrlbarValueFormatter {
+ 
+-    let baseDomain = domain;
+-    let subDomain = "";
+-    try {
+-      baseDomain = Services.eTLD.getBaseDomainFromHost(origin);
+-      if (!domain.endsWith(baseDomain)) {
+-        // The domain may be displayed in a different encoding (e.g., mixed
+-        // punycode/unicode) than the ACE baseDomain from origin. Get the
+-        // baseDomain in the same encoding as the displayed domain.
+-        let IDNService = Cc["@mozilla.org/network/idn-service;1"].getService(
+-          Ci.nsIIDNService
+-        );
+-        baseDomain = IDNService.domainToDisplay(baseDomain);
+-      }
+-    } catch (e) {}
+-    if (baseDomain != domain) {
+-      subDomain = domain.slice(0, -baseDomain.length);
+-    }
++    const {start, end} = this.#domainEmphasis(urlMetaData);
+ 
+@@ -499,3 +483,3 @@ export class UrlbarValueFormatter {
+ 
+-    let rangeLength = preDomain.length + subDomain.length - trimmedLength;
++    let rangeLength = start;
+     if (rangeLength) {
+@@ -507,3 +491,3 @@ export class UrlbarValueFormatter {
+ 
+-    let startRest = preDomain.length + domain.length - trimmedLength;
++    let startRest = end;
+     if (startRest < url.length - trimmedLength) {
+@@ -518,2 +502,38 @@ export class UrlbarValueFormatter {
+ 
++  // Native presentation consumes the same validated, displayed-domain offsets
++  // as the Firefox editor. Never parse URLs or guess eTLDs on the native side.
++  nativeDomainEmphasis() {
++    if (!this.formattingEnabled || !lazy.SearchService.isInitialized ||
++        this.#urlbarInput.focused ||
++        this.#urlbarInput.getBrowserState(this.#window.gBrowser.selectedBrowser).searchTerms) {
++      return null;
++    }
++    const metadata = this.#getUrlMetaData();
++    if (!metadata) return null;
++    return {text: this.#urlbarInput.value, ...this.#domainEmphasis(metadata)};
++  }
++
++  #domainEmphasis({domain, origin, preDomain, trimmedLength}) {
++    let baseDomain = domain;
++    let subDomain = "";
++    try {
++      baseDomain = Services.eTLD.getBaseDomainFromHost(origin);
++      if (!domain.endsWith(baseDomain)) {
++        // The domain may be displayed in a different encoding (e.g., mixed
++        // punycode/unicode) than the ACE baseDomain from origin. Get the
++        // baseDomain in the same encoding as the displayed domain.
++        let IDNService = Cc["@mozilla.org/network/idn-service;1"].getService(
++          Ci.nsIIDNService
++        );
++        baseDomain = IDNService.domainToDisplay(baseDomain);
++      }
++    } catch (e) {}
++    if (baseDomain != domain) {
++      subDomain = domain.slice(0, -baseDomain.length);
++    }
++
++    return {start: preDomain.length + subDomain.length - trimmedLength,
++      end: preDomain.length + domain.length - trimmedLength};
++  }
++
+   #formatScheme(selectionType, clear) {
 diff --git a/browser/components/urlbar/content/SearchEngineStore.mjs b/browser/components/urlbar/content/SearchEngineStore.mjs
 index 6d9c262c839..58fe21fd4ff 100644
 --- a/browser/components/urlbar/content/SearchEngineStore.mjs
@@ -5758,7 +5837,7 @@ index 4172241eafb..ce3917f8f7c 100644
 +    // Refresh the stored context with the results-bearing one: onQueryArmed
      // armed the bufferer with the pre-query context, whose results are
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index a077de625f7..5dfd856bf18 100644
+index a077de625f7..a360d0c3e26 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -4,2 +4,8 @@
@@ -5839,7 +5918,14 @@ index a077de625f7..5dfd856bf18 100644
 +    this.#searchModeModel?.dispose();
 +    this.#searchModeModel = null;
  
-@@ -1019,32 +1042,8 @@ ${
+@@ -850,2 +873,6 @@ ${
+    */
++  nativeDomainEmphasis() {
++    return this.#getValueFormatter().nativeDomainEmphasis();
++  }
++
+   formatValue() {
+@@ -1019,32 +1046,8 @@ ${
  
 -      let isInitialPageControlledByWebContent = false;
 -
@@ -5878,7 +5964,7 @@ index a077de625f7..5dfd856bf18 100644
 +      ({ value, valid } = loadedURIValue(() => uri.displaySpec, { hideInitialPage, isBlankPage,
 +        isExtensionUrl: isBlankPage && lazy.ExtensionUtils.isExtensionUrl(uri), dueToSessionRestore }));
      } else if (
-@@ -1321,6 +1320,3 @@ ${
+@@ -1321,6 +1324,3 @@ ${
    #engineSearchStringForResult(result) {
 -    return (
 -      (result && (result.payload.suggestion || result.payload.query)) ||
@@ -5886,7 +5972,7 @@ index a077de625f7..5dfd856bf18 100644
 -    );
 +    return UrlbarQueryModel.engineSearchTerms(result, this._lastSearchString);
    }
-@@ -1425,8 +1421,8 @@ ${
+@@ -1425,8 +1425,8 @@ ${
      // heuristic is also kept the behavior as is for safety.
 -    let safeToPickResult =
 -      result &&
@@ -5901,7 +5987,7 @@ index a077de625f7..5dfd856bf18 100644
 +      getResultValue: selected => this.#getValueFromResult(selected),
 +    });
  
-@@ -1440,9 +1436,6 @@ ${
+@@ -1440,9 +1440,6 @@ ${
  
 -    if (
 -      !isComposing &&
@@ -5915,18 +6001,18 @@ index a077de625f7..5dfd856bf18 100644
 +      hasOneOffEngine: !!oneOffParams?.engine, selectedPrivateEngineResult, safeToPickResult,
 +    })) {
        this.pickElement(element, event);
-@@ -1468,3 +1461,3 @@ ${
+@@ -1468,3 +1465,3 @@ ${
        let tokenAliasResult = this.view.getResultAtIndex(0);
 -      if (tokenAliasResult?.autofill && tokenAliasResult?.payload.keyword) {
 +      if (UrlbarQueryModel.pickTokenAliasResult(tokenAliasResult)) {
          this.pickResult({ result: tokenAliasResult, event });
-@@ -1718,2 +1711,5 @@ ${
+@@ -1718,2 +1715,5 @@ ${
     * @param {HTMLElement} [options.element] The picked view element, if available.
 +   * @param {object} [options.resultAction]
 +   *   Firefox-owned button/menu metadata from UrlbarResultActions. Native
 +   *   presenters resolve opaque IDs to this descriptor before calling here.
     * @param {number} [options.browserId]
-@@ -1724,3 +1720,12 @@ ${
+@@ -1724,3 +1724,12 @@ ${
    // eslint-disable-next-line complexity
 -  pickResult({ result, event, element = null, browserId = null }) {
 +  pickResult({ result, event, element = null, resultAction = null, browserId = null, nativeActionKey = null }) {
@@ -5940,14 +6026,14 @@ index a077de625f7..5dfd856bf18 100644
 +      return "native-search-mode";
 +    }
      if (element?.classList.contains("urlbarView-button-menu")) {
-@@ -1730,4 +1735,4 @@ ${
+@@ -1730,4 +1739,4 @@ ${
  
 -    if (element?.dataset.command) {
 -      this.#pickMenuResult(result, event, element);
 +    if (resultAction?.command) {
 +      this.#pickMenuResult(result, event, element, resultAction);
        return;
-@@ -1735,11 +1740,5 @@ ${
+@@ -1735,11 +1744,5 @@ ${
  
 -    if (
 -      UrlbarPrefs.get("autoFill.adaptiveHistory.enabled") &&
@@ -5962,20 +6048,20 @@ index a077de625f7..5dfd856bf18 100644
 +    if (autofillBackspaceURL) {
 +      this.parentController.clearAutofillBackspaceEntryForUrl(autofillBackspaceURL);
      }
-@@ -1786,2 +1785,3 @@ ${
+@@ -1786,2 +1789,3 @@ ${
          element,
 +        resultAction,
          searchString: this._lastSearchString,
-@@ -1795,3 +1795,3 @@ ${
+@@ -1795,3 +1799,3 @@ ${
  
 -    let resultUrl = element?.dataset.url;
 +    let resultUrl = resultAction?.url;
      let originalUntrimmedValue = this.untrimmedValue;
-@@ -1801,2 +1801,3 @@ ${
+@@ -1801,2 +1805,3 @@ ${
        element,
 +      resultAction,
        urlOverride: resultUrl,
-@@ -1804,59 +1805,7 @@ ${
+@@ -1804,59 +1809,7 @@ ${
  
 -    let where;
 -    let openParams = {
@@ -6039,11 +6125,11 @@ index a077de625f7..5dfd856bf18 100644
      );
 -    openParams.avoidBrowserFocus = keepViewOpen;
  
-@@ -1870,2 +1819,3 @@ ${
+@@ -1870,2 +1823,3 @@ ${
          element,
 +        resultAction,
          selType: "canonized",
-@@ -1891,43 +1841,10 @@ ${
+@@ -1891,43 +1845,10 @@ ${
  
 +    const loadPolicy = UrlbarQueryModel.resultLoadPolicy(result, loadRequest, originalUntrimmedValue);
 +    loadRequest = loadPolicy.loadRequest;
@@ -6093,7 +6179,7 @@ index a077de625f7..5dfd856bf18 100644
          break;
 -      }
        case UrlbarShared.RESULT_TYPE.TAB_SWITCH: {
-@@ -1953,5 +1870,6 @@ ${
+@@ -1953,5 +1874,6 @@ ${
            element,
 +          resultAction,
            searchString,
@@ -6101,14 +6187,14 @@ index a077de625f7..5dfd856bf18 100644
 -          selType: this.view.telemetryTypeFromElement(result, element),
 +          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
            searchSource: this.getSearchSource(event),
-@@ -1975,4 +1893,5 @@ ${
+@@ -1975,4 +1897,5 @@ ${
              element,
 +            resultAction,
              searchString: this._lastSearchString,
 -            selType: this.view.telemetryTypeFromElement(result, element),
 +            selType: this.view.telemetryTypeFromElement(result, element, resultAction),
              searchSource: this.getSearchSource(event),
-@@ -1987,31 +1906,12 @@ ${
+@@ -1987,31 +1910,12 @@ ${
  
 -        // TODO (bug 2058937): Consider removing this check.
 -        if (
@@ -6148,7 +6234,7 @@ index a077de625f7..5dfd856bf18 100644
 +        where = destination.where;
 +        Object.assign(openParams, destination.openParams);
  
-@@ -2035,36 +1935,6 @@ ${
+@@ -2035,36 +1939,6 @@ ${
  
 -        if (
 -          this.#isAddressbar &&
@@ -6189,11 +6275,11 @@ index a077de625f7..5dfd856bf18 100644
 +          engine, defaultEngine: this.controller.engineStore.default },
 +        selection => this.#makeQueryContext({ searchString: selection }));
          break;
-@@ -2079,2 +1949,3 @@ ${
+@@ -2079,2 +1953,3 @@ ${
            element,
 +          resultAction,
            selType: "tip",
-@@ -2101,5 +1972,7 @@ ${
+@@ -2101,5 +1976,7 @@ ${
              element,
 +            resultAction,
 +            pickedActionKey: nativeAction?.key,
@@ -6202,25 +6288,25 @@ index a077de625f7..5dfd856bf18 100644
 -            selType: this.view.telemetryTypeFromElement(result, element),
 +            selType: this.view.telemetryTypeFromElement(result, element, resultAction),
              searchSource: this.getSearchSource(event),
-@@ -2121,2 +1994,3 @@ ${
+@@ -2121,2 +1998,3 @@ ${
            element,
 +          resultAction,
            selType: "extension",
-@@ -2148,4 +2022,5 @@ ${
+@@ -2148,4 +2026,5 @@ ${
            element,
 +          resultAction,
            searchString: this._lastSearchString,
 -          selType: this.view.telemetryTypeFromElement(result, element),
 +          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
            searchSource: this.getSearchSource(event),
-@@ -2165,4 +2040,5 @@ ${
+@@ -2165,4 +2044,5 @@ ${
            element,
 +          resultAction,
            searchString: this._lastSearchString,
 -          selType: this.view.telemetryTypeFromElement(result, element),
 +          selType: this.view.telemetryTypeFromElement(result, element, resultAction),
            searchSource: this.getSearchSource(event),
-@@ -2178,43 +2054,11 @@ ${
+@@ -2178,43 +2058,11 @@ ${
  
 -    // Record input history but only in non-private windows and for url loads.
 -    if (!this.isPrivate && loadRequest.urlLoad) {
@@ -6272,35 +6358,35 @@ index a077de625f7..5dfd856bf18 100644
      }
 +    if (history.reintegrateURL) this.parentController.handleAutofillReintegration(history.reintegrateURL);
  
-@@ -2227,4 +2071,5 @@ ${
+@@ -2227,4 +2075,5 @@ ${
          element,
 +        resultAction,
          searchString: this._lastSearchString,
 -        selType: this.view.telemetryTypeFromElement(result, element),
 +        selType: this.view.telemetryTypeFromElement(result, element, resultAction),
          searchSource: this.getSearchSource(event),
-@@ -2237,4 +2082,5 @@ ${
+@@ -2237,4 +2086,5 @@ ${
        element,
 +      resultAction,
        searchString: this._lastSearchString,
 -      selType: this.view.telemetryTypeFromElement(result, element),
 +      selType: this.view.telemetryTypeFromElement(result, element, resultAction),
        searchSource: this.getSearchSource(event),
-@@ -2285,2 +2131,3 @@ ${
+@@ -2285,2 +2135,3 @@ ${
      element = null,
 +    resultAction = null,
    } = {}) {
-@@ -2355,3 +2202,3 @@ ${
+@@ -2355,3 +2206,3 @@ ${
              UrlbarPrefs.get("scotchBonnet.enableOverride") &&
 -            this.view.visibleResults.length == 1,
 +            this.controller.visibleResults.length == 1,
          });
-@@ -2369,3 +2216,3 @@ ${
+@@ -2369,3 +2220,3 @@ ${
      if (!result.autofill) {
 -      let value = this.#getValueFromResult(result, { urlOverride, element });
 +      let value = this.#getValueFromResult(result, { urlOverride, element, resultAction });
        this.setValue(value, {
-@@ -2417,19 +2264,9 @@ ${
+@@ -2417,19 +2268,9 @@ ${
  
 -    let isPlaceholderSelected =
 -      this._autofillPlaceholder &&
@@ -6327,11 +6413,11 @@ index a077de625f7..5dfd856bf18 100644
 +      ignoresSelection: this._autofillIgnoresSelection,
 +    })) {
        return;
-@@ -2481,2 +2318,3 @@ ${
+@@ -2481,2 +2322,3 @@ ${
        // Search mode restarts the query, so these results are obsolete.
 +      this.view.nativePresentation?.onSearchModeFromResult(queryContext);
        this.controller.discardResults(queryContext);
-@@ -2536,8 +2374,6 @@ ${
+@@ -2536,8 +2378,6 @@ ${
    } = {}) {
 -    if (!searchString) {
 -      searchString =
@@ -6344,24 +6430,24 @@ index a077de625f7..5dfd856bf18 100644
 +      pageProxyValid: this.getAttribute("pageproxystate") == "valid",
 +    }, searchString);
  
-@@ -2558,3 +2394,3 @@ ${
+@@ -2558,3 +2398,3 @@ ${
  
 -    if (this._suppressStartQuery) {
 +    if (UrlbarQueryModel.startQueryDisposition({ suppressStartQuery: this._suppressStartQuery }) === "suppressed") {
        return;
-@@ -2571,3 +2407,3 @@ ${
+@@ -2571,3 +2411,3 @@ ${
  
 -    if (this.inOverflowPanel) {
 +    if (UrlbarQueryModel.startQueryDisposition({ inOverflowPanel: this.inOverflowPanel }) === "overflow") {
        return;
-@@ -2610,5 +2446,3 @@ ${
+@@ -2610,5 +2450,3 @@ ${
      }
 -    let trimmedValue = value.trim();
 -    let end = trimmedValue.search(UrlbarShared.REGEXP_SPACES);
 -    let firstToken = end == -1 ? trimmedValue : trimmedValue.substring(0, end);
 +    const firstToken = UrlbarSearchModeModel.searchCommandToken(value);
  
-@@ -2631,32 +2465,9 @@ ${
+@@ -2631,32 +2469,9 @@ ${
  
 -    // Enter search mode if the string starts with a restriction token.
 -    let searchMode = this.searchModeForToken(firstToken);
@@ -6400,7 +6486,7 @@ index a077de625f7..5dfd856bf18 100644
      }
 +    value = command.value;
      this.inputField.value = value;
-@@ -2694,17 +2505,5 @@ ${
+@@ -2694,17 +2509,5 @@ ${
    searchModeForToken(token) {
 -    if (token == UrlbarShared.RESTRICT_TOKENS.SEARCH) {
 -      return {
@@ -6421,7 +6507,7 @@ index a077de625f7..5dfd856bf18 100644
 +      isAddressbar: this.#isAddressbar, engineStore: this.controller.engineStore,
 +    });
    }
-@@ -2826,12 +2625,5 @@ ${
+@@ -2826,12 +2629,5 @@ ${
    getSearchMode(browser, confirmedOnly = false) {
 -    let modes = this.#getSearchModesObject(browser);
 -
@@ -6437,7 +6523,7 @@ index a077de625f7..5dfd856bf18 100644
 +      this.#getSearchModesObject(browser), confirmedOnly
 +    );
    }
-@@ -2882,60 +2674,6 @@ ${
+@@ -2882,60 +2678,6 @@ ${
  
 -    let {
 -      engineName,
@@ -6502,12 +6588,12 @@ index a077de625f7..5dfd856bf18 100644
 +      this.#getSearchModesObject(browser), normalized
 +    );
  
-@@ -2953,3 +2691,3 @@ ${
+@@ -2953,3 +2695,3 @@ ${
          this.valueIsTyped = true;
 -        if (!searchMode.isPreview && !areSearchModesSame) {
 +        if (UrlbarSearchModeModel.shouldRecordModeEntry(searchMode, areSearchModesSame)) {
            this.parentController.recordSearchMode(searchMode);
-@@ -2962,2 +2700,33 @@ ${
+@@ -2962,2 +2704,33 @@ ${
  
 +  /**
 +   * Mirrors a mode that an independent editor already committed to the
@@ -6541,7 +6627,7 @@ index a077de625f7..5dfd856bf18 100644
 +  }
 +
    /**
-@@ -3040,6 +2809,5 @@ ${
+@@ -3040,6 +2813,5 @@ ${
    confirmSearchMode() {
 -    let searchMode = this.searchMode;
 -    if (searchMode?.isPreview) {
@@ -6551,7 +6637,7 @@ index a077de625f7..5dfd856bf18 100644
 +    if (confirmation.applyMode) {
 +      this.searchMode = { ...confirmation.searchMode };
  
-@@ -3247,34 +3015,17 @@ ${
+@@ -3247,34 +3019,17 @@ ${
      startQuery = true,
 +    nativeAction = null,
    }) {
@@ -6598,7 +6684,7 @@ index a077de625f7..5dfd856bf18 100644
 +      // The query must wait for Firefox to apply the selected mode.
 +      if (transition.startQuery) this.#searchModeApplied.then(() =>
          this.startQuery({ allowAutofill: false })
-@@ -3319,33 +3070,16 @@ ${
+@@ -3319,33 +3074,16 @@ ${
    getSearchSource(event) {
 -    if (this.#isAddressbar) {
 -      if (this._isHandoffSession) {
@@ -6646,7 +6732,7 @@ index a077de625f7..5dfd856bf18 100644
 +    return UrlbarQueryModel.searchSource({ sapName: this.#sapName, isAddressbar,
 +      isHandoff, switcherItem, isOneOff, searchMode, persistedSearchTerms });
    }
-@@ -3518,80 +3252,15 @@ ${
+@@ -3518,80 +3256,15 @@ ${
     */
 -  #getValueFromResult(result, { urlOverride = null, element = null } = {}) {
 -    switch (result.type) {
@@ -6739,7 +6825,7 @@ index a077de625f7..5dfd856bf18 100644
 +      isAddressbar: this.#isAddressbar, isPrivate: this.isPrivate,
 +    });
    }
-@@ -3606,10 +3275,3 @@ ${
+@@ -3606,10 +3279,3 @@ ${
    #getActionTypeFromResult(result) {
 -    switch (result.type) {
 -      case UrlbarShared.RESULT_TYPE.TAB_SWITCH:
@@ -6751,7 +6837,7 @@ index a077de625f7..5dfd856bf18 100644
 -    }
 +    return this.resultPresentation.actionType(result);
    }
-@@ -3636,60 +3298,23 @@ ${
+@@ -3636,60 +3302,23 @@ ${
    _maybeAutofillPlaceholder(value) {
 -    // We allow autofill in local but not remote search modes.
 -    let allowAutofill =
@@ -6832,7 +6918,7 @@ index a077de625f7..5dfd856bf18 100644
 -    return true;
 +    return plan.allowAutofill;
    }
-@@ -3774,101 +3399,27 @@ ${
+@@ -3774,101 +3403,27 @@ ${
  
 -  _getSelectedValueForClipboard() {
 -    let selectedVal = this.#selectedText;
@@ -6959,7 +7045,7 @@ index a077de625f7..5dfd856bf18 100644
 +      canParse: value => URL.canParse(value),
 +    });
    }
-@@ -3944,18 +3495,6 @@ ${
+@@ -3944,18 +3499,6 @@ ${
  
 -    let searchData = {
 -      engineId: engine.id,
@@ -6982,7 +7068,7 @@ index a077de625f7..5dfd856bf18 100644
 +      newtabSessionId: this._handoffSession, opensInPrivateWindow });
 +    this.parentController[recording.method](recording.data);
    }
-@@ -3974,11 +3513,8 @@ ${
+@@ -3974,11 +3517,8 @@ ${
      }
 -    let trimmedValue = UrlbarPrefs.get("trimURLs")
 -      ? lazy.BrowserUIUtils.trimURL(val)
@@ -7000,24 +7086,24 @@ index a077de625f7..5dfd856bf18 100644
 +      preserveMixedContentProtocol: value => this.#getValueFormatter().willShowFormattedMixedContentProtocol(value),
 +    });
    }
-@@ -4083,3 +3619,3 @@ ${
+@@ -4083,3 +3623,3 @@ ${
     */
 -  #pickMenuResult(result, event, element) {
 +  #pickMenuResult(result, event, element, resultAction = UrlbarResultActions.fromElement(element)) {
      this.controller.engagementEvent.record(event, {
-@@ -4087,4 +3623,5 @@ ${
+@@ -4087,4 +3627,5 @@ ${
        element,
 +      resultAction,
        searchString: this._lastSearchString,
 -      selType: element.dataset.command,
 +      selType: resultAction.command,
        searchSource: this.getSearchSource(event),
-@@ -4093,3 +3630,3 @@ ${
+@@ -4093,3 +3634,3 @@ ${
  
 -    if (element.dataset.command == "manage") {
 +    if (resultAction.command == "manage") {
        this.parentController.openPreferences("search-locationBar");
-@@ -4099,6 +3636,6 @@ ${
+@@ -4099,6 +3640,6 @@ ${
      let url;
 -    if (element.dataset.command == "help") {
 +    if (resultAction.command == "help") {
@@ -7026,12 +7112,12 @@ index a077de625f7..5dfd856bf18 100644
 -    url ||= element.dataset.url;
 +    url ||= resultAction.url;
  
-@@ -4109,3 +3646,3 @@ ${
+@@ -4109,3 +3650,3 @@ ${
      let where = this.controller.whereToOpen(event);
 -    if (element.dataset.command == "help" && where == "current") {
 +    if (resultAction.command == "help" && where == "current") {
        // Open help links in a new tab.
-@@ -4202,32 +3739,12 @@ ${
+@@ -4202,32 +3743,12 @@ ${
  
 +    const navigation = UrlbarQueryModel.navigationPlan({ loadRequest, where, params,
 +      sapName: this.#sapName, isPrivate: this.isPrivate,
@@ -7071,17 +7157,17 @@ index a077de625f7..5dfd856bf18 100644
 -    }
 +    Object.assign(params, navigation.openParams);
  
-@@ -4236,3 +3753,3 @@ ${
+@@ -4236,3 +3757,3 @@ ${
      // runs against the chrome window.
 -    if (this.#isAddressbar && !params.avoidBrowserFocus) {
 +    if (navigation.resetSelection) {
        this.inputField.setSelectionRange(0, 0);
-@@ -4240,3 +3757,3 @@ ${
+@@ -4240,3 +3761,3 @@ ${
  
 -    if (where != "current" && !this.isSearchbarSAP) {
 +    if (navigation.revertBeforeLoad) {
        this.handleRevert();
-@@ -4269,2 +3786,11 @@ ${
+@@ -4269,2 +3790,11 @@ ${
  
 +  getCutEdit(selection = null) {
 +    return planUrlbarCut({
@@ -7093,12 +7179,12 @@ index a077de625f7..5dfd856bf18 100644
 +  }
 +
    _initCopyCutController() {
-@@ -4481,3 +4007,3 @@ ${
+@@ -4481,3 +4011,3 @@ ${
      let controller =
 -      this.document.commandDispatcher.getControllerForCommand("cmd_copy");
 +      this.inputField.controllers.getControllerForCommand("cmd_copy");
      if (
-@@ -4497,2 +4023,29 @@ ${
+@@ -4497,2 +4027,29 @@ ${
  
 +  /** Live editor eligibility, shared by original and native menu commands. */
 +  canPasteAndGo() {
@@ -7128,7 +7214,7 @@ index a077de625f7..5dfd856bf18 100644
 +  }
 +
    _initPasteAndGo() {
-@@ -4509,13 +4062,3 @@ ${
+@@ -4509,13 +4066,3 @@ ${
          pasteAndGo.setAttribute("anonid", "paste-and-go");
 -        pasteAndGo.addEventListener("command", () => {
 -          this._suppressStartQuery = true;
@@ -7143,7 +7229,7 @@ index a077de625f7..5dfd856bf18 100644
 -        });
 +        pasteAndGo.addEventListener("command", () => this.pasteAndGo());
  
-@@ -4547,6 +4090,3 @@ ${
+@@ -4547,6 +4094,3 @@ ${
  
 -        let controller =
 -          this.document.commandDispatcher.getControllerForCommand("cmd_paste");
@@ -7151,7 +7237,7 @@ index a077de625f7..5dfd856bf18 100644
 -        if (enabled) {
 +        if (this.canPasteAndGo()) {
            pasteAndGo.removeAttribute("disabled");
-@@ -4749,56 +4289,7 @@ ${
+@@ -4749,56 +4293,7 @@ ${
     */
 -  _searchModeForResult(result, entry = null) {
 -    // Search mode is determined by the result's keyword or engine.
@@ -7213,13 +7299,13 @@ index a077de625f7..5dfd856bf18 100644
 +      entry, actionEngine, modeForToken: token => this.searchModeForToken(token),
 +    });
    }
-@@ -4868,3 +4359,4 @@ ${
+@@ -4868,3 +4363,4 @@ ${
      // Clear autofill.
 -    if (this._autofillPlaceholder && this.userTypedValue) {
 +    if (this._autofillPlaceholder &&
 +        UrlbarSearchModeModel.modeEntryRestoresAutofill(true, this.userTypedValue)) {
        this.value = this.userTypedValue;
-@@ -4906,62 +4398,14 @@ ${
+@@ -4906,62 +4402,14 @@ ${
    }) {
 -    if (!lazy.UrlbarUtils.isPersistedSearchTermsEnabled()) {
 -      if (state.persist) {
@@ -7294,21 +7380,21 @@ index a077de625f7..5dfd856bf18 100644
 +    if (effect.recordView) Glean.urlbarPersistedsearchterms.viewCount.add(1);
 +    return effect.shouldPersist;
    }
-@@ -5073,2 +4517,4 @@ ${
+@@ -5073,2 +4521,4 @@ ${
        this.isSearchbarSAP || UrlbarPrefs.get("unifiedSearchButton.always");
 +    const changed = this.#unifiedSearchButtonAvailable !== !!available;
 +    this.#unifiedSearchButtonAvailable = !!available;
      const switcher = this.querySelector(".searchmode-switcher");
-@@ -5087,2 +4533,3 @@ ${
+@@ -5087,2 +4537,3 @@ ${
      }
 +    if (changed) this.dispatchEvent(new CustomEvent("searchmodevisibilitychanged"));
    }
-@@ -5153,3 +4600,3 @@ ${
+@@ -5153,3 +4604,3 @@ ${
        !this.#preventClickSelectsAll &&
 -      this.#compositionState != UrlbarShared.COMPOSITION.COMPOSING &&
 +      !this.#composition.isComposing &&
        this.focused &&
-@@ -5479,2 +4926,53 @@ ${
+@@ -5479,2 +4930,53 @@ ${
  
 +  setNativeInputValue(value) {
 +    if (
@@ -7362,7 +7448,7 @@ index a077de625f7..5dfd856bf18 100644
 +  }
 +
    _on_input(event) {
-@@ -5507,66 +5005,29 @@ ${
+@@ -5507,66 +5009,29 @@ ${
      let value = this.value;
 -    this.valueIsTyped = true;
 -    this._untrimmedValue = value;
@@ -7450,7 +7536,7 @@ index a077de625f7..5dfd856bf18 100644
      }
 -
      this.view.removeAccessibleFocus();
-@@ -5582,6 +5043,5 @@ ${
+@@ -5582,6 +5047,5 @@ ${
      if (
 -      !UrlbarPrefs.get("keepPanelOpenDuringImeComposition") &&
 -      (compositionState == UrlbarShared.COMPOSITION.COMPOSING ||
@@ -7460,7 +7546,7 @@ index a077de625f7..5dfd856bf18 100644
 +        composition, UrlbarPrefs.get("keepPanelOpenDuringImeComposition")
 +      )
      ) {
-@@ -5593,7 +5053,6 @@ ${
+@@ -5593,7 +5057,6 @@ ${
      const allowAutofill =
 -      (!UrlbarPrefs.get("keepPanelOpenDuringImeComposition") ||
 -        compositionState !== UrlbarShared.COMPOSITION.COMPOSING) &&
@@ -7472,7 +7558,7 @@ index a077de625f7..5dfd856bf18 100644
 +      ) &&
 +      UrlbarAutofillModel.allowsInput(event.inputType, UrlbarShared.isPasteEvent(event)) &&
        this._maybeAutofillPlaceholder(value);
-@@ -5612,8 +5071,6 @@ ${
+@@ -5612,8 +5075,6 @@ ${
      // clicking on it, or pressing HOME, END, RIGHT, …
 -    if (
 -      this._autofillPlaceholder &&
@@ -7485,7 +7571,7 @@ index a077de625f7..5dfd856bf18 100644
 +      selectionStart: this.selectionStart, selectionEnd: this.selectionEnd,
 +    })) {
        this._autofillPlaceholder = null;
-@@ -5671,23 +5128,10 @@ ${
+@@ -5671,23 +5132,10 @@ ${
    _on_paste(event) {
 -    let originalPasteData = event.clipboardData.getData("text/plain");
 -    if (!originalPasteData) {
@@ -7516,17 +7602,17 @@ index a077de625f7..5dfd856bf18 100644
 -    if (originalPasteData != pasteData) {
 +    if (edit) {
        // Unfortunately we're not allowed to set the bits being pasted
-@@ -5697,3 +5141,3 @@ ${
+@@ -5697,3 +5145,3 @@ ${
  
 -      const value = oldStart + pasteData + oldEnd;
 +      const value = edit.text;
        this.setValue(value, { valueIsTyped: true });
-@@ -5711,3 +5155,3 @@ ${
+@@ -5711,3 +5159,3 @@ ${
        // Fix up cursor/selection:
 -      let newCursorPos = oldStart.length + pasteData.length;
 +      let newCursorPos = edit.start;
        this.inputField.setSelectionRange(newCursorPos, newCursorPos);
-@@ -5742,47 +5186,21 @@ ${
+@@ -5742,47 +5190,21 @@ ${
    } = {}) {
 -    // When we are in actions search mode we can show more results so
 -    // increase the limit.
@@ -7590,12 +7676,12 @@ index a077de625f7..5dfd856bf18 100644
 +      pasteLength: isPaste ? event.data?.length : undefined,
 +    });
    }
-@@ -5980,3 +5398,3 @@ ${
+@@ -5980,3 +5402,3 @@ ${
    get isComposing() {
 -    return this.#compositionState == UrlbarShared.COMPOSITION.COMPOSING;
 +    return this.#composition.isComposing;
    }
-@@ -5984,7 +5402,3 @@ ${
+@@ -5984,7 +5406,3 @@ ${
    _on_compositionstart() {
 -    if (this.#compositionState == UrlbarShared.COMPOSITION.COMPOSING) {
 -      throw new Error("Trying to start a nested composition?");
@@ -7604,7 +7690,7 @@ index a077de625f7..5dfd856bf18 100644
 -    this.#compositionHadText = false;
 +    this.#composition.begin();
  
-@@ -5994,21 +5408,12 @@ ${
+@@ -5994,21 +5412,12 @@ ${
  
 -    // Close the view. This will also stop searching.
 -    if (this.view.isOpen) {
@@ -7636,7 +7722,7 @@ index a077de625f7..5dfd856bf18 100644
 +    this.#composition.setPopupClosed(policy.closePopup);
 +    if (policy.closePopup) this.view.close();
    }
-@@ -6016,32 +5421,12 @@ ${
+@@ -6016,32 +5425,12 @@ ${
    _on_compositionend(event) {
 -    if (this.#compositionState != UrlbarShared.COMPOSITION.COMPOSING) {
 -      throw new Error("Trying to stop a non existing composition?");
@@ -7679,7 +7765,7 @@ index a077de625f7..5dfd856bf18 100644
 +    // Some IMEs omit the next input event for an empty composition.
 +    if (reopen) {
        this.startQuery({ resetSearchState: false, event });
-@@ -6171,7 +5556,3 @@ ${
+@@ -6171,7 +5560,3 @@ ${
    #getSchemelessInput(value) {
 -    return ["http://", "https://", "file://"].every(
 -      scheme => !value.trim().startsWith(scheme)
@@ -7688,7 +7774,7 @@ index a077de625f7..5dfd856bf18 100644
 -      : SCHEMELESS_INPUT_SCHEMEFUL;
 +    return UrlbarQueryModel.schemelessInput(value);
    }
-@@ -6313,107 +5694,2 @@ function getDroppableData(event) {
+@@ -6313,107 +5698,2 @@ function getDroppableData(event) {
  
 -/**
 - * Decodes the given URI for displaying it in the address bar without losing
@@ -7796,7 +7882,7 @@ index a077de625f7..5dfd856bf18 100644
 -}
 -
  /**
-@@ -6442,8 +5718,6 @@ class CopyCutController {
+@@ -6442,8 +5722,6 @@ class CopyCutController {
      if (command == "cmd_cut" && this.isCommandEnabled(command)) {
 -      let start = urlbar.selectionStart;
 -      let end = urlbar.selectionEnd;
@@ -7913,7 +7999,7 @@ index 9596698cf94..77dd6bd1755 100644
 +
    static #buildRecorded(
 diff --git a/browser/components/urlbar/content/UrlbarView.mjs b/browser/components/urlbar/content/UrlbarView.mjs
-index 278cb5ca71a..9a2bc70c93f 100644
+index 278cb5ca71a..c0e8197b010 100644
 --- a/browser/components/urlbar/content/UrlbarView.mjs
 +++ b/browser/components/urlbar/content/UrlbarView.mjs
 @@ -6,2 +6,4 @@ import UrlbarPrefs from "chrome://browser/content/urlbar/UrlbarContentPrefs.mjs"
@@ -8355,7 +8441,27 @@ index 278cb5ca71a..9a2bc70c93f 100644
 -        },
 +        dataset: this.input.resultActions.buttonAction({name:buttonName,command,url,input}),
        },
-@@ -2802,39 +2704,4 @@ export class UrlbarView {
+@@ -2689,16 +2591,5 @@ export class UrlbarView {
+       default:
+-        if (
+-          result.heuristic &&
+-          result.payload.url &&
+-          result.providerName != "UrlbarProviderHistoryUrlHeuristic" &&
+-          !result.autofill?.noVisitAction
+-        ) {
+-          isVisitAction = true;
+-        } else if (
+-          (result.providerName != "UrlbarProviderQuickSuggest" ||
+-            result.payload.shouldShowUrl) &&
+-          !result.payload.providesSearchMode
+-        ) {
+-          setURL = true;
+-        }
++        const presentation = this.input.resultPresentation.urlPresentation(result);
++        isVisitAction = presentation.isVisitAction;
++        setURL = presentation.showUrl;
+         break;
+@@ -2802,39 +2693,4 @@ export class UrlbarView {
    #iconForResult(result, iconUrlOverride = null) {
 -    if (
 -      result.source == UrlbarShared.RESULT_SOURCE.HISTORY &&
@@ -8397,7 +8503,7 @@ index 278cb5ca71a..9a2bc70c93f 100644
 +    return this.input.resultPresentation.icon(result, iconUrlOverride,
 +      (owner, blob) => this.#getBlobUrlForResult(owner, blob));
    }
-@@ -2923,17 +2790,18 @@ export class UrlbarView {
+@@ -2923,17 +2779,18 @@ export class UrlbarView {
      if (result.payload.descriptionL10n) {
 -      this.#l10nCache.setElementL10n(
 -        description,
@@ -8431,22 +8537,22 @@ index 278cb5ca71a..9a2bc70c93f 100644
 +          const link = description.querySelector("[data-l10n-name=learn-more-link]");
 +          if (link) link.dataset.url = this.input.resultActions.helpAction(result).url;
          }
-@@ -3013,3 +2881,3 @@ export class UrlbarView {
+@@ -3013,3 +2870,3 @@ export class UrlbarView {
    #updateIndices() {
 -    this.visibleResults = [];
 +    this.controller.visibleResults = [];
      this.#overflowObserver.disconnect();
-@@ -3035,3 +2903,3 @@ export class UrlbarView {
+@@ -3035,3 +2892,3 @@ export class UrlbarView {
        if (visible) {
 -        this.visibleResults.push(result);
 +        this.controller.visibleResults.push(result);
          seenOnlyHeuristicOrSearchSuggestions &&=
-@@ -3069,3 +2937,3 @@ export class UrlbarView {
+@@ -3069,3 +2926,3 @@ export class UrlbarView {
  
 -    this.input.toggleAttribute("noresults", !this.visibleResults.length);
 +    this.input.toggleAttribute("noresults", !this.controller.visibleResults.length);
    }
-@@ -3166,67 +3034,3 @@ export class UrlbarView {
+@@ -3166,67 +3023,3 @@ export class UrlbarView {
     */
 -  #rowLabel(row) {
 -    if (!UrlbarPrefs.get("groupLabels.enabled")) {
@@ -8515,12 +8621,12 @@ index 278cb5ca71a..9a2bc70c93f 100644
 -  }
 +  #rowLabel(row) { return this.input.resultActions.rowLabel(row.result, this.#queryContext); }
  
-@@ -3279,3 +3083,3 @@ export class UrlbarView {
+@@ -3279,3 +3072,3 @@ export class UrlbarView {
        this.input.searchMode?.source != UrlbarShared.RESULT_SOURCE.ACTIONS &&
 -      this.visibleResults[0]?.source != UrlbarShared.RESULT_SOURCE.ACTIONS
 +      this.controller.visibleResults[0]?.source != UrlbarShared.RESULT_SOURCE.ACTIONS
      ) {
-@@ -3307,2 +3111,25 @@ export class UrlbarView {
+@@ -3307,2 +3100,25 @@ export class UrlbarView {
  
 +  /**
 +   * Announce presentation text for the contextual opt-in's Learn More control.
@@ -8546,26 +8652,26 @@ index 278cb5ca71a..9a2bc70c93f 100644
 +  }
 +
    #selectElement(
-@@ -3342,2 +3169,3 @@ export class UrlbarView {
+@@ -3342,2 +3158,3 @@ export class UrlbarView {
      if (result) {
 +      this.announceSelection(result, element);
        this.controller.parentController.onBeforeSelection(result, element);
-@@ -3600,51 +3428,9 @@ export class UrlbarView {
+@@ -3600,51 +3417,9 @@ export class UrlbarView {
    #setResultTitle(result, titleNode) {
 -    if (result.payload.titleL10n) {
 -      this.#l10nCache.setElementL10n(titleNode, result.payload.titleL10n);
-+    const descriptor = this.input.resultPresentation.title(result);
-+    if (descriptor?.l10n) {
-+      this.#l10nCache.setElementL10n(titleNode, descriptor.l10n);
-       return;
-     }
+-      return;
+-    }
 -
 -    // TODO: `text` is intended only for WebExtensions. We should remove it and
 -    // the WebExtensions urlbar API since we're no longer using it.
 -    if (result.payload.text) {
 -      titleNode.textContent = result.payload.text;
--      return;
--    }
++    const descriptor = this.input.resultPresentation.title(result);
++    if (descriptor?.l10n) {
++      this.#l10nCache.setElementL10n(titleNode, descriptor.l10n);
+       return;
+     }
 -
 -    if (result.payload.providesSearchMode) {
 -      if (result.type == UrlbarShared.RESULT_TYPE.RESTRICT) {
@@ -8607,7 +8713,7 @@ index 278cb5ca71a..9a2bc70c93f 100644
 +    if (descriptor?.text !== undefined) {
 +      titleNode.textContent = descriptor.text;
        return;
-@@ -4162,47 +3948,2 @@ export class UrlbarView {
+@@ -4162,47 +3937,2 @@ export class UrlbarView {
  
 -  /**
 -   * The commands that open a result in a new tab or window. They're offered
@@ -8655,12 +8761,12 @@ index 278cb5ca71a..9a2bc70c93f 100644
 -   *   second row.
 -   */
    #hasMenuButton(result) {
-@@ -4219,3 +3960,3 @@ export class UrlbarView {
+@@ -4219,3 +3949,3 @@ export class UrlbarView {
     */
 -  #updateMenuButtonKeyboardAccessibility() {
 +  updateMenuButtonKeyboardAccessibility() {
      let inaccessible = !UrlbarPrefs.get("resultMenu.keyboardAccessible");
-@@ -4234,94 +3975,5 @@ export class UrlbarView {
+@@ -4234,94 +3964,5 @@ export class UrlbarView {
     */
 -  #canOpenInNewTarget(result) {
 -    return (
@@ -8758,7 +8864,7 @@ index 278cb5ca71a..9a2bc70c93f 100644
 +  #getMenuCommands(result) { return this.input.resultActions.getMenuCommands(result); }
 +  #getResultMenuCommands(result) { return this.input.resultActions.getResultMenuCommands(result); }
  
-@@ -4335,40 +3987,33 @@ export class UrlbarView {
+@@ -4335,40 +3976,33 @@ export class UrlbarView {
    async #populateResultMenu({ panel = this.resultMenu, commands }) {
 +    const generation = {};
 +    this.#menuBuilds.set(panel, generation);
@@ -8828,7 +8934,7 @@ index 278cb5ca71a..9a2bc70c93f 100644
 +      } else { item.textContent = data.label; }
 +      panel.appendChild(item);
      }
-@@ -4376,61 +4021,7 @@ export class UrlbarView {
+@@ -4376,61 +4010,7 @@ export class UrlbarView {
  
 -  /**
 -   * Fills the submenu of the command that opens a result in a container tab
@@ -8894,7 +9000,7 @@ index 278cb5ca71a..9a2bc70c93f 100644
 +    const items = await this.input.resultActions.describeContainers();
 +    if (this.#menuBuilds.get(panel) === generation) this.#renderResultMenu(panel, items);
    }
-@@ -4712,35 +4303,8 @@ export class UrlbarView {
+@@ -4712,35 +4292,8 @@ export class UrlbarView {
    on_click(event) {
 -    let menuitem = event
 -      .composedPath()
@@ -8936,7 +9042,7 @@ index 278cb5ca71a..9a2bc70c93f 100644
 +    if (action.command !== "toggle-keyboard-accessible") this.#resultMenuResult = null;
 +    this.input.resultActions.invokeMenu(result, action, event);
    }
-@@ -4782,2 +4346,3 @@ export class UrlbarView {
+@@ -4782,2 +4335,3 @@ export class UrlbarView {
      }
 +    this.#menuBuilds.delete(event.currentTarget);
      event.currentTarget.lastAnchorNode
@@ -19833,10 +19939,10 @@ index 00000000000..82d5029bd92
 +}
 diff --git a/browser/components/urlbar/content/UrlbarResultPresentation.mjs b/browser/components/urlbar/content/UrlbarResultPresentation.mjs
 new file mode 100644
-index 00000000000..4df5efe958e
+index 00000000000..f780289b35b
 --- /dev/null
 +++ b/browser/components/urlbar/content/UrlbarResultPresentation.mjs
-@@ -0,0 +1,320 @@
+@@ -0,0 +1,400 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20079,6 +20185,86 @@ index 00000000000..4df5efe958e
 +      span += UrlbarShared.getSpanForResult(result);
 +      return span <= context.maxResults;
 +    });
++  }
++
++  urlPresentation(result) {
++    switch (result.type) {
++      case UrlbarShared.RESULT_TYPE.TAB_SWITCH:
++      case UrlbarShared.RESULT_TYPE.REMOTE_TAB:
++        return {showUrl:true, isVisitAction:false};
++      case UrlbarShared.RESULT_TYPE.KEYWORD:
++        return {showUrl:false, isVisitAction:result.payload.input.trim() == result.payload.keyword};
++      case UrlbarShared.RESULT_TYPE.SEARCH:
++      case UrlbarShared.RESULT_TYPE.OMNIBOX:
++      case UrlbarShared.RESULT_TYPE.TIP:
++      case UrlbarShared.RESULT_TYPE.AI_CHAT:
++        return {showUrl:false, isVisitAction:false};
++      case UrlbarShared.RESULT_TYPE.URL:
++        if (result.providerName == "UrlbarProviderClipboard") {
++          return {showUrl:false, isVisitAction:false};
++        }
++        // fall-through
++      default: {
++        const isVisitAction = !!(result.heuristic && result.payload.url &&
++          result.providerName != "UrlbarProviderHistoryUrlHeuristic" && !result.autofill?.noVisitAction);
++        return {isVisitAction, showUrl:!isVisitAction &&
++          (result.providerName != "UrlbarProviderQuickSuggest" || !!result.payload.shouldShowUrl) &&
++          !result.payload.providesSearchMode};
++      }
++    }
++  }
++
++  /** Text and emphasis from the same formatter the DOM renderer uses. */
++  displayText(result, context) {
++    const descriptor = this.title(result);
++    const {showUrl, isVisitAction} = this.urlPresentation(result);
++    const title = descriptor?.text !== undefined ? {value:descriptor.text} :
++      result.getDisplayableValueAndHighlights("title", {tokens:context.tokens});
++    const url = showUrl ? result.getDisplayableValueAndHighlights("url", {tokens:context.tokens, isURL:true}) : {};
++    return {
++      title: String(title.value ?? ""),
++      displayUrl: String(url.value ?? ""),
++      // The DOM renderer leaves explicit/localized titles unhighlighted.
++      // Copy the formatter's ranges; never retain or mutate its cached object.
++      titleHighlights: !descriptor ? this.copyHighlights(title) : null,
++      urlHighlights: this.copyHighlights(url),
++      // Ordinary destinations share the headline, regardless of provider or
++      // heuristic position. Descriptions and specialized rich rows keep their
++      // existing vertical presentation, including asynchronously localized text.
++      inlineUrl: !!(showUrl && !result.isRichSuggestion &&
++        !result.payload.description && !result.payload.descriptionL10n &&
++        result.type != UrlbarShared.RESULT_TYPE.TIP &&
++        result.type != UrlbarShared.RESULT_TYPE.DYNAMIC),
++      isVisitAction,
++    };
++  }
++
++  copyHighlights({value, highlights}) {
++    if (typeof value !== "string" || !Array.isArray(highlights) || !highlights.length || highlights.length > 64 ||
++        highlights.some(range => !Array.isArray(range) || range.length !== 2)) return null;
++    return {value, highlights:highlights.map(range => [...range])};
++  }
++
++  /** Bounded native text runs; text replacement invalidates old emphasis. */
++  highlightRuns(text, presentation) {
++    if (!presentation || presentation.value !== text || !Array.isArray(presentation.highlights) ||
++        presentation.highlights.length > 64) return [];
++    const displayed = text.slice(0, 1024), runs = [];
++    let cursor = 0;
++    for (const range of presentation.highlights) {
++      if (!Array.isArray(range) || range.length !== 2) return [];
++      const [start, length] = range;
++      if (!Number.isInteger(start) || !Number.isInteger(length) || start < cursor ||
++          length <= 0 || start + length > text.length) return [];
++      const end = start + length;
++      if (cursor < displayed.length && start > cursor)
++        runs.push({text:displayed.slice(cursor, start), matched:false});
++      if (start < displayed.length)
++        runs.push({text:displayed.slice(start, end), matched:true});
++      cursor = end;
++    }
++    if (cursor < displayed.length) runs.push({text:displayed.slice(cursor), matched:false});
++    return runs.some(run => run.matched) ? runs : [];
 +  }
 +
 +  title(result) {
@@ -24180,10 +24366,10 @@ index 00000000000..961c3b61a43
 +}
 diff --git a/browser/base/content/WinUIAddressSession.sys.mjs b/browser/base/content/WinUIAddressSession.sys.mjs
 new file mode 100644
-index 00000000000..6b51b68594d
+index 00000000000..c00f8d6b839
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressSession.sys.mjs
-@@ -0,0 +1,2726 @@
+@@ -0,0 +1,2943 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24583,9 +24769,13 @@ index 00000000000..6b51b68594d
 +    });
 +  }
 +
-+  cancelImages() {
-+    for (const image of this.imageLoads || []) image.src = "";
-+    this.imageLoads = new Set();
++  cancelImages(keepRows = null) {
++    for (const image of this.imageLoads || []) {
++      if (keepRows?.has(this.imageRows?.get(image))) continue;
++      image.src = "";
++      this.imageLoads.delete(image);
++    }
++    this.imageLoads ??= new Set();
 +  }
 +
 +  async loadNativeImage(active, row, presentation, isCurrent = null) {
@@ -24596,6 +24786,10 @@ index 00000000000..6b51b68594d
 +    let blobUrl = null;
 +    const loads = isCurrent ? this.modeImageLoads : this.imageLoads;
 +    loads.add(image);
++    if (!isCurrent) {
++      this.imageRows ??= new WeakMap();
++      this.imageRows.set(image, row);
++    }
 +    const current = isCurrent || (() => !this.closed && this.active === active &&
 +      (active.rows.includes(row) || active.rows.some(r => r.globalActions?.includes(row))) && active.browser === this.window.gBrowser.selectedBrowser &&
 +      active.page === active.browser.currentURI.spec);
@@ -25009,17 +25203,75 @@ index 00000000000..6b51b68594d
 +    if (!active) return [];
 +    const rows = active.rows;
 +    if (active.done) return rows;
-+    const count = rows.filter(row => !row.globalActions).length;
++    const retained = active.retainedRows || [];
++    // Match Firefox's refusal to replace a heuristic slot with an early
++    // non-heuristic provider. Keep its selection/geometry as stale presentation
++    // until the heuristic arrives or this query finishes without one.
 +    // Current and retained rows share the existing native pixel budget.
-+    // Keep row geometry even if an old image must use its symbol fallback.
 +    const pixels = row => (row.image?.width || 0) * (row.image?.height || 0);
 +    let total = rows.reduce((sum, row) => sum + pixels(row), 0);
-+    const tail = (active.retainedRows || []).slice(count).map(row => {
++    const budget = row => {
 +      if (total + pixels(row) > 65536) return {...row, image:null};
 +      total += pixels(row);
 +      return row;
++    };
++    const presented = [];
++    let slot = 0;
++    let seenSearchSuggestion = false;
++    currentRows: for (const row of rows) {
++      if (row.globalActions) { presented.push(row); continue; }
++      // Firefox keeps incompatible providers in their old slots while output
++      // streams. A heuristic can always replace the first slot.
++      while (!row.heuristic && slot < retained.length) {
++        const old = retained[slot];
++        seenSearchSuggestion ||= !old.heuristic && !!old.searchSuggestion;
++        const compatible =
++          !(slot === 0 && old.heuristic &&
++            (!active.context?.heuristicResult || this.resultPresentation.shouldShowHeuristic(active.context.heuristicResult))) &&
++          (row.provider || "") === (old.provider || "") &&
++          !!row.hasSuggestedIndex === !!old.hasSuggestedIndex &&
++          (!row.hasSuggestedIndex || row.suggestedIndex === old.suggestedIndex) &&
++          (!!row.searchSuggestion === !!old.searchSuggestion ||
++            (row.searchSuggestion && seenSearchSuggestion));
++        if (compatible) break;
++        // Firefox postpones a misplaced indexed result and everything after
++        // it until stale rows are gone; appending it would make it jump again.
++        if (row.hasSuggestedIndex || old.hasSuggestedIndex) {
++          presented.push(...retained.slice(slot).map(budget));
++          slot = retained.length;
++          break currentRows;
++        }
++        presented.push(budget(retained[slot++]));
++      }
++      if (row.hasSuggestedIndex && !row.heuristic && slot >= retained.length) {
++        const finalIndex = row.suggestedIndex >= 0
++          ? Math.min(rows.length - 1, row.suggestedIndex)
++          : Math.max(0, rows.length + row.suggestedIndex);
++        if (row.isSuggestedIndexRelativeToGroup || presented.length !== finalIndex) break;
++      }
++      presented.push(row);
++      slot++;
++    }
++    presented.push(...retained.slice(slot).map(budget));
++    // Headings belong to displayed groups, not to a particular old row. Keep
++    // Firefox's localized label even when its former owner was replaced.
++    let lastLabel = null;
++    let onlySuggestions = true;
++    let spans = 0;
++    const limit = active.context?.maxResults || 100;
++    return presented.slice(0, 100).filter(row => {
++      spans += row._span || 1;
++      return spans <= limit;
++    }).map(row => {
++      onlySuggestions &&= row.heuristic || row.searchSuggestion;
++      if (!Object.hasOwn(row, "_groupLabelKey")) return row;
++      const key = row._groupLabelKey;
++      const show = !row._hideRowLabel && key && key !== lastLabel &&
++        !(onlySuggestions && row.searchSuggestion);
++      if (show) lastLabel = key;
++      const sectionLabel = show ? row._groupLabel || "" : "";
++      return sectionLabel === row.sectionLabel ? row : {...row, sectionLabel};
 +    });
-+    return [...rows, ...tail];
 +  }
 +
 +  retainNativeRows() {
@@ -25030,8 +25282,16 @@ index 00000000000..6b51b68594d
 +        active.page !== browser.currentURI.spec || active.presentationDocument !== document ||
 +        active.presentationMode !== JSON.stringify(this.input.searchMode ?? null)) return [];
 +    return this.nativePresentationRows(active).filter(row => !row.globalActions).slice(0, 100)
-+      .map(row => ({...row, stale:true, actions:[], tipButtons:[],
-+        helpLink:null, focusButton:false, feedback:""}));
++      .map(row => ({...row, stale:true,
++        retainedSelected: row.stale ? row.retainedSelected === true :
++          active.results?.[active.resultIndexes?.[active.rows.findIndex(current => current.id === row.id)]] != null &&
++          active.results[active.resultIndexes[active.rows.findIndex(current => current.id === row.id)]] === this.input.view.selectedResult,
++        actions:[],
++        // Preserve layout, not commands or activation metadata.
++        tipButtons:(row.tipButtons || []).map(({id,label,enabled,menu,menuLabel}) =>
++          ({id,label,enabled,menu,menuLabel})),
++        helpLink:row.helpLink ? (({id,before,label,after}) => ({id,before,label,after}))(row.helpLink) : null,
++        focusButton:false, feedback:""}));
 +  }
 +
 +  async legacyQuery(text, event = null, edit = null) {
@@ -25137,16 +25397,26 @@ index 00000000000..6b51b68594d
 +    const active = this.active;
 +    if (
 +      !active ||
++      active.frozen ||
 +      active.context?.id !== context.id ||
 +      active.browser !== this.window.gBrowser.selectedBrowser ||
 +      active.page !== active.browser.currentURI.spec
 +    )
 +      return;
-+    active.presentationDocument = active.browser.browsingContext?.currentWindowGlobal?.innerWindowId;
++    const document = active.browser.browsingContext?.currentWindowGlobal?.innerWindowId;
++    const mode = JSON.stringify(this.input.searchMode ?? null);
++    const previousRows = new Map(active.presentationDocument === document && active.presentationMode === mode
++      ? (active.rows || []).map((row, i) => [active.results?.[active.resultIndexes?.[i]], row]) : []);
++    // Keep an already localized heading across replacement rows. Refresh it
++    // asynchronously, but never collapse the same group's heading in between.
++    const sectionLabels = new Map([...(active.retainedRows || []), ...(active.rows || [])]
++      .filter(row => (row._groupLabelKey && row._groupLabel) || (row._sectionLabelKey && row.sectionLabel))
++      .map(row => [row._groupLabelKey || row._sectionLabelKey, row._groupLabel || row.sectionLabel]));
++    const reused = new Set();
++    active.presentationDocument = document;
 +    active.presentationMode = JSON.stringify(this.input.searchMode ?? null);
 +    this.resultMenuAdapter?.close();
 +    this.captureAutofill(active);
-+    this.cancelImages();
 +    active.imagePixels = 0;
 +    this.sequence++;
 +    const previousSelection = this.nativeSelected;
@@ -25173,6 +25443,8 @@ index 00000000000..6b51b68594d
 +      this.input.view.nativePresentation === this
 +        ? new Set(this.resultPresentation.candidates(context))
 +        : null;
++    const presentation = nativeCandidates ? this.nativeResultPresentation([...nativeCandidates], context) : [];
++    const actionPresentation = new Map();
 +    active.resultIndexes = [];
 +    active.rows = active.results.flatMap((result, index) => {
 +      if (
@@ -25181,17 +25453,58 @@ index 00000000000..6b51b68594d
 +      )
 +        return [];
 +      active.resultIndexes.push(index);
++      const text = this.resultPresentation.displayText(result, context);
++      const data = presentation[active.resultIndexes.length - 1];
++      const action = nativeCandidates ? this.nativeActionPresentation(result) : null;
++      actionPresentation.set(result, action);
++      const icon = action ? action.icon : data?.icon;
++      // Firefox assigns missing button names during preparation. Normalize
++      // before comparing payloads so that preparation itself is not a change.
++      if (result.type === UrlbarShared.RESULT_TYPE.TIP) this.resultActions.buttons(result);
++      let signature = null;
++      try {
++        signature = JSON.stringify([result.type, result.source, result.providerName, result.heuristic,
++          result.payload, text, data, action, this.canActivate(result)]);
++        if (signature.length > 65536) signature = null;
++      } catch (_) {} // Unserializable provider data cannot participate in reuse.
++      const id = `${this.sessionId}:${active.revision}:${this.sequence}:${index}`;
++      const old = previousRows.get(result);
++      if (signature && old?._presentationSignature === signature && old._presentationIcon === icon && !old.stale) {
++        // Preserve presentation and in-flight work, but revoke every old action ID.
++        old.id = id;
++        old.tipButtons?.forEach((button, i) => { button.id = `${id}:tip:${i}`; });
++        if (old.helpLink) old.helpLink.id = `${id}:help`;
++        old.globalActions?.forEach((action, i) => { action.id = `${id}:action:${i}`; });
++        for (const item of [old, ...(old.globalActions || [])])
++          active.imagePixels += (item.image?.width || 0) * (item.image?.height || 0);
++        reused.add(old);
++        return [old];
++      }
 +      return [
 +        {
-+          id: `${this.sessionId}:${active.revision}:${this.sequence}:${index}`,
++          id,
++          presentationId: id,
++          _presentationSignature: signature,
++          _presentationIcon: icon,
++          _groupLabelKey: data?.groupLabel ? JSON.stringify(data.groupLabel) : null,
++          _groupLabel: data?.groupLabel ? sectionLabels.get(JSON.stringify(data.groupLabel)) || "" : "",
++          _hideRowLabel: !!result.hideRowLabel,
++          _span: data?.span || 1,
++          hasSuggestedIndex: !!result.hasSuggestedIndex,
++          isSuggestedIndexRelativeToGroup: !!result.isSuggestedIndexRelativeToGroup,
++          suggestedIndex: result.hasSuggestedIndex ? result.suggestedIndex : null,
++          _sectionLabelKey: data?.label ? JSON.stringify(data.label) : null,
++          sectionLabel: data?.label ? sectionLabels.get(JSON.stringify(data.label)) || "" : "",
++          heuristic: !!result.heuristic,
++          searchSuggestion: result.type === UrlbarShared.RESULT_TYPE.SEARCH && !!result.payload.suggestion,
 +          type: result.type,
 +          source: result.source,
-+          title: String(
-+            result.payload.title || result.payload.suggestion || result.payload.query || ""
-+          ),
-+          displayUrl: String(
-+            result.payload.displayUrl || result.payload.url || ""
-+          ),
++          title: text.title,
++          displayUrl: text.displayUrl,
++          titleHighlights: text.titleHighlights,
++          urlHighlights: text.urlHighlights,
++          inlineUrl: text.inlineUrl,
++          titleLtr: text.isVisitAction,
 +          provider: String(result.providerName || ""),
 +          ...((this.nativeKeywordResult(result) || this.nativeOmniboxResult(result)) ? {keywordDocument:
 +            active.browser.browsingContext.currentWindowGlobal?.innerWindowId} : {}),
@@ -25200,9 +25513,10 @@ index 00000000000..6b51b68594d
 +        },
 +      ];
 +    });
++    this.cancelImages(new Set(active.rows.flatMap(row => [row, ...(row.globalActions || [])])));
 +    if (nativeCandidates) {
-+      const presentation = this.nativeResultPresentation([...nativeCandidates], context);
 +      for (const [i, row] of active.rows.entries()) {
++        if (reused.has(row)) continue;
 +        const data = presentation[i];
 +        const result = active.results[active.resultIndexes[i]];
 +        this.loadNativeDetails(active, row, result).catch(console.error);
@@ -25229,7 +25543,7 @@ index 00000000000..6b51b68594d
 +            if (icon) this.loadNativeImage(active,item,{icon,size:16});
 +          });
 +        }
-+        const action = this.nativeActionPresentation(active.results[active.resultIndexes[i]]);
++        const action = actionPresentation.get(result);
 +        if (action) {
 +          row.enabled = action.enabled;
 +          data.icon = action.icon;
@@ -25251,10 +25565,11 @@ index 00000000000..6b51b68594d
 +        }
 +        row.imageSize = data.size;
 +        row.symbol = data.symbol;
-+        if (data.label) {
-+          this.window.document.l10n.formatMessages([data.label]).then(([message]) => {
++        if (data.groupLabel || data.label) {
++          this.window.document.l10n.formatMessages([data.groupLabel || data.label]).then(([message]) => {
 +            if (this.closed || this.active !== active || !active.rows.includes(row)) return;
-+            row.sectionLabel = message?.attributes?.find(a => a.name === "label")?.value || message?.value || "";
++            row._groupLabel = message?.attributes?.find(a => a.name === "label")?.value || message?.value || "";
++            row.sectionLabel = data.label ? row._groupLabel : "";
 +            this.sequence++;
 +          }).catch(() => {});
 +        }
@@ -25268,6 +25583,12 @@ index 00000000000..6b51b68594d
 +        ? previousSelection
 +        : !this.resultPresentation.allowEmptySelection(context) && nativeCandidates.has(context.heuristicResult)
 +          ? context.heuristicResult : null;
++      // Once Firefox has chosen a current selection (including intentional
++      // empty selection), historical selection must never revive from a tail.
++      // Missing heuristic also allows empty selection, but is only provisional
++      // while providers are running. A published hidden heuristic is resolved.
++      if (this.nativeSelected || (context.heuristicResult && this.resultPresentation.allowEmptySelection(context)))
++        this.clearRetainedSelection(active);
 +    }
 +    // Reuse Firefox's localized action label and the engine on its result.
 +    // Labels resolve asynchronously; do not allow old queries to overwrite rows.
@@ -25276,6 +25597,7 @@ index 00000000000..6b51b68594d
 +      if (result.type !== UrlbarShared.RESULT_TYPE.SEARCH || !result.payload.engine ||
 +          result.payload.providesSearchMode) continue;
 +      const row = active.rows[rowIndex];
++      if (reused.has(row)) continue;
 +      this.window.document.l10n.formatValue("urlbar-result-action-search-w-engine", {
 +        engine: result.payload.engine,
 +      }).then(label => {
@@ -25284,6 +25606,10 @@ index 00000000000..6b51b68594d
 +        this.sequence++;
 +      }).catch(() => {});
 +    }
++  }
++
++  clearRetainedSelection(active = this.active) {
++    for (const row of active?.retainedRows || []) row.retainedSelected = false;
 +  }
 +
 +  updateResultMenuCommands(resultId, commands) {
@@ -25397,6 +25723,7 @@ index 00000000000..6b51b68594d
 +  }
 +
 +  resolveTipButton(request) {
++    if (!this.frozenResultsCurrent()) return null;
 +    const active = this.active;
 +    const row = active?.rows.find(item => item.id === request.id);
 +    const button = row?.helpLink?.id === request.actionId ? row.helpLink : row?.tipButtons?.find(item => item.id === request.actionId);
@@ -25485,6 +25812,12 @@ index 00000000000..6b51b68594d
 +  }
 +
 +  onQueryCancelled(context) {
++    if (this.active?.frozen && this.active.context?.id === context?.id) {
++      this.active.done = true;
++      this.active.retainedRows = [];
++      this.sequence++;
++      return;
++    }
 +    const restart = this.tipQueryRestart || this.modeQueryRestart;
 +    if (restart?.active === this.active && restart.editId === this.editId &&
 +        this.nativeOpen && !this.closed && this.active.browser === this.window.gBrowser.selectedBrowser &&
@@ -25532,8 +25865,44 @@ index 00000000000..6b51b68594d
 +        )?.id || null,
 +      query: active.text,
 +      complete: active.done,
-+      rows: this.nativePresentationRows(active).map(row => ({ ...row, image: row.image ? { ...row.image } : null, actions: [...row.actions] })),
++      rows: this.nativePresentationRows(active).map(({_presentationSignature, _presentationIcon, _sectionLabelKey, _groupLabelKey, _groupLabel, _hideRowLabel, _span, ...row}) =>
++        ({ ...row, image: row.image ? { ...row.image } : null, actions: [...row.actions] })),
 +    };
++  }
++
++  frozenResultState(active) {
++    try {
++      return JSON.stringify(active.results.map(result =>
++        [result.type, result.source, result.providerName, result.payload]));
++    } catch (_) { return null; }
++  }
++
++  frozenResultsCurrent(active = this.active) {
++    return !active?.frozen || (active.frozenState !== null &&
++      active.frozenState === this.frozenResultState(active));
++  }
++
++  nativeArrowTargets(rows = []) {
++    const active = this.active;
++    if (active && !active.done) {
++      const displayed = new Set(this.nativePresentationRows(active).filter(row => !row.stale).map(row => row.id));
++      rows = rows.filter(row => displayed.has(row.id));
++    }
++    const results = rows.map(row => {
++      const index = active?.rows.indexOf(row);
++      return index >= 0 ? active.results[active.resultIndexes[index]] : null;
++    });
++    const target = (index, reverse) => {
++      if (!rows.length) return "";
++      const choice = this.resultPresentation.arrowSelection({selectedRowIndex:index,
++        rowCount:rows.length, amount:1, reverse,
++        allowEmptySelection:this.resultPresentation.allowEmptySelection(active.context),
++        isSelectable:i => !!results[i] && this.canActivate(results[i]),
++      });
++      return choice.kind === "row" && choice.index >= 0 ? rows[choice.index].id : "";
++    };
++    return {forward:target(-1,false), backward:target(-1,true),
++      rows:rows.map((row,i)=>({id:row.id,forward:target(i,false),backward:target(i,true)}))};
 +  }
 +
 +  selectResult(request) {
@@ -25555,6 +25924,34 @@ index 00000000000..6b51b68594d
 +      this.input.inputField.value !== active.inputValue
 +    )
 +      return { status: "stale" };
++    if (!this.frozenResultsCurrent(active)) return {status:"stale"};
++    const native = this.input.view.nativePresentation === this;
++    const traversal = request.traverse;
++    if (traversal !== undefined && (!native || (traversal !== 1 && traversal !== -1)))
++      return {status: "invalid-selection"};
++    // Validate the originating selection before freezing or advancing. No
++    // retired row ID may acquire authority through a navigation gesture.
++    if (native && request.id && (!active.rows.some(row => row.id === request.id) ||
++        !this.nativeVisible?.includes(request.id))) return {status: "stale"};
++    if (native && (traversal || request.id) && !this.input.isDeferringEvents && !active.frozen) {
++      active.frozenState = this.frozenResultState(active);
++      active.frozen = true;
++      if (active.source === "independent") this.editor.freezeResults(this.editorRevision, active.context.id);
++      else this.input.controller.cancelQuery();
++      if (this.active !== active) return {status: "stale"};
++      active.done = true;
++      active.retainedRows = [];
++      this.sequence++;
++    }
++    if (traversal && !request.id) {
++      this.clearRetainedSelection(active);
++      this.nativeSelected = null;
++      this.input.setValueFromResult({result: null, element: null});
++      if (this.active !== active) return {status: "stale"};
++      active.inputValue = this.input.inputField.value;
++      this.sequence++;
++      return {status: "selected", id: null, revision: active.revision, text: active.inputValue};
++    }
 +    const rowIndex = active.rows.findIndex(row => row.id === request.id);
 +    const index = active.resultIndexes?.[rowIndex];
 +    const result = active.results?.[index];
@@ -25577,6 +25974,7 @@ index 00000000000..6b51b68594d
 +      // Match UrlbarView: selection is visible to setValueFromResult so Firefox
 +      // can preview the engine/local mode instead of treating it as plain text.
 +      this.nativeSelected = result;
++      this.clearRetainedSelection(active);
 +      this.input.setValueFromResult({ result, element: null });
 +      this.input.controller.parentController.onSelection(result);
 +      if (this.active !== active) return { status: "stale" };
@@ -25673,8 +26071,9 @@ index 00000000000..6b51b68594d
 +    return results.map(result => {
 +      onlySuggestions &&= result.heuristic ||
 +        (result.type == UrlbarShared.RESULT_TYPE.SEARCH && result.payload.suggestion);
++      const groupLabel = this.resultActions.rowLabel(result, context);
 +      let label = onlySuggestions && result.type == UrlbarShared.RESULT_TYPE.SEARCH &&
-+        result.payload.suggestion ? null : this.resultActions.rowLabel(result, context);
++        result.payload.suggestion ? null : groupLabel;
 +      if (result.hideRowLabel || !label || UrlbarShared.deepEqual(label, lastLabel)) {
 +        label = null;
 +      } else {
@@ -25684,6 +26083,8 @@ index 00000000000..6b51b68594d
 +      const builtin = Object.values(UrlbarShared.ICON).includes(icon);
 +      return {
 +        label,
++        groupLabel,
++        span: UrlbarShared.getSpanForResult(result),
 +        icon: builtin ? null : icon,
 +        symbol: icon == UrlbarShared.ICON.HISTORY ? "history" :
 +          result.type == UrlbarShared.RESULT_TYPE.SEARCH ? "search" : "page",
@@ -26359,6 +26760,7 @@ index 00000000000..6b51b68594d
 +  // that engagement's query context. Mode-entering actions stay with the
 +  // inherited mode path.
 +  activateGlobalAction(request) {
++    if (!this.frozenResultsCurrent()) return "stale";
 +    const active = this.active;
 +    const rowIndex = active?.source === "independent" && this.editor && active.context
 +      ? active.rows.findIndex(item => item.id === request?.id)
@@ -26418,6 +26820,7 @@ index 00000000000..6b51b68594d
 +
 +  activateWithReplay(revision, id, intent = {}) {
 +    const active = this.active;
++    if (!this.frozenResultsCurrent(active)) return "stale";
 +    if (active?.source !== "independent") return this.legacyActivate(revision, id, intent);
 +    const outcome = this.#activateIndependent(active, revision, id, intent);
 +    // An Enter on the heuristic row (or with no chosen row) that the editor
@@ -26912,10 +27315,10 @@ index 00000000000..6b51b68594d
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..4c817d1fe34
+index 00000000000..bd30b12d361
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,592 @@
+@@ -0,0 +1,601 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -27400,6 +27803,15 @@ index 00000000000..4c817d1fe34
 +    this.switcher.inert = true;
 +    if (editorHadFocus) this.focus(false);
 +  }
++  adoptNativeFocus() {
++    // Mouse/UIA entry does not pass through Firefox's beforefocus hook. Mirror
++    // it in Gecko too, so a later browser.focus() is a real focus transition.
++    // Return focus to the native editor without changing its caret/selection.
++    if (!this.active) return false;
++    if (this.window.document.activeElement !== this.proxy) return this.focus(false);
++    this.focusOwned = true;
++    return true;
++  }
 +  focus(selectAll) {
 +    const rect = this.bounds();
 +    try {
@@ -27646,10 +28058,10 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..cf0f59c5ede
+index 00000000000..37332cf4f21
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2203 @@
+@@ -0,0 +1,2218 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -28404,6 +28816,7 @@ index 00000000000..cf0f59c5ede
 +      rtl: document.documentElement.matches(":dir(rtl)"),
 +      ...(toolbar && this.addressToolbar.navigation ? {navigation:this.addressToolbar.navigationState()} : {}),
 +      open: !!session.nativeOpen,
++      contentFocused: !session.nativeOpen && document.activeElement === gBrowser.selectedBrowser,
 +      session: session.sessionId,
 +      revision: session.revision,
 +      editId: session.editId,
@@ -28411,12 +28824,14 @@ index 00000000000..cf0f59c5ede
 +      ...(session.contextSnapshot ? {contextMenu:session.contextSnapshot} : {}),
 +      ...(session.resultMenuSnapshot ? {resultMenu:session.resultMenuSnapshot} : {}),
 +      selectedId: snapshot?.selectedId || "",
++      arrowTargets: session.nativeArrowTargets((session.active?.rows || []).filter(row=>!row.globalActions)),
 +      sequence: session.sequence,
 +      complete: !!session.active?.done || snapshot?.complete || session.editState?.status === "failed",
 +      text:
 +        session.active?.inputValue ??
 +        session.editState?.text ??
 +        gURLBar.inputField.value,
++      domainEmphasis: gURLBar.nativeDomainEmphasis(),
 +      placeholder: gURLBar.inputField.getAttribute("placeholder") || "",
 +      labels: this.nativeLabels(),
 +      modes: session.nativeModes(),
@@ -28431,9 +28846,13 @@ index 00000000000..cf0f59c5ede
 +        .slice(0, 100)
 +        .map(row => ({
 +          id: row.id,
++          presentationId: row.presentationId || row.id,
 +          enabled: row.enabled !== false,
 +          stale: row.stale === true,
++          retainedSelected: row.stale === true && row.retainedSelected === true,
 +          title: (row.title || row.displayUrl || "Suggestion").slice(0, 1024),
++          titleRuns: session.resultPresentation.highlightRuns(row.title || row.displayUrl || "Suggestion", row.titleHighlights),
++          urlRuns: session.resultPresentation.highlightRuns(row.displayUrl || "", row.urlHighlights),
 +          description: (row.description || "").slice(0, 1024),
 +          feedback: (row.feedback || "").slice(0,1024),
 +          focusButton: !!row.focusButton,
@@ -28442,6 +28861,7 @@ index 00000000000..cf0f59c5ede
 +          displayUrl: (row.displayUrl || "").slice(0, 1024),
 +          actionLabel: (row.actionLabel || "").slice(0, 1024),
 +          titleLtr: row.titleLtr === true,
++          inlineUrl: row.inlineUrl === true,
 +          sectionLabel: (row.sectionLabel || "").slice(0, 1024),
 +          imageSize: row.imageSize || 16,
 +          symbol: row.symbol || "page",
@@ -28521,6 +28941,10 @@ index 00000000000..cf0f59c5ede
 +      const result = session.selectResult({ ...action, id: action.id || "" });
 +      if (result.status === "firefox-fallback") this.addressFallback("selection-not-presentable", { handoff: false });
 +    } else if (action.kind === "activate") {
++      if (action.clearSelection) {
++        const selection = session.selectResult({...action, id:"", traverse:1});
++        if (selection.status !== "selected") return;
++      }
 +      const result = session.activate(
 +        action.revision,
 +        action.id || "",
@@ -28536,13 +28960,16 @@ index 00000000000..cf0f59c5ede
 +          Ci.nsIFocusManager.FLAG_BYKEY);
 +      }
 +    } else if (action.kind === "focus") {
-+      if (this.addressToolbar) this.addressToolbar.focusOwned = true;
++      if (this.addressToolbar?.active && !this.addressToolbar.adoptNativeFocus()) return 2;
 +      if (gURLBar.view.oneOffSearchButtons?.selectedButton) {
 +        this.addressFallback("focus-firefox-one-off-selected");
 +        return 2;
 +      }
 +      session.focusNativePresentation();
 +    } else if (action.kind === "dismiss") {
++      // Escape can interrupt the first pointer entry before its focus request.
++      // Adopt the proxy without opening a query before publishing dismissal.
++      if (this.addressToolbar?.active && !this.addressToolbar.adoptNativeFocus()) return 2;
 +      session.dismiss({ ...action, reason: "escape" });
 +    } else if (action.kind === "fallback") {
 +      this.addressFallback(action.clipboard ? "native-clipboard-handoff" : "native-requested-handoff");
@@ -30234,10 +30661,10 @@ index 00000000000..cf68f6fb6fe
 +#endif
 diff --git a/browser/base/content/WinUIAddressHost.sys.mjs b/browser/base/content/WinUIAddressHost.sys.mjs
 new file mode 100644
-index 00000000000..5be5c4331c2
+index 00000000000..cd1051c5061
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressHost.sys.mjs
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,231 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30391,6 +30818,10 @@ index 00000000000..5be5c4331c2
 +  }
 +  mirrorSearchMode(...args) {
 +    return this.#input.mirrorSearchMode(...args);
++  }
++
++  get isDeferringEvents() {
++    return this.#input.eventBufferer.isDeferringEvents;
 +  }
 +
 +  // Query and engagement state the original input keeps for its own paths.

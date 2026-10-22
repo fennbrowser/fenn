@@ -35,6 +35,7 @@
 #include "../../native/WinUIPane/PackageUpdates.h"
 #include "../../native/WinUIPane/PinnedExtensionButtons.h"
 #include "../../native/WinUIPane/SuggestionList.h"
+#include "../../native/WinUIPane/AddressValue.h"
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <wrl/client.h>
 #include "GlowFrameProbe.h"
@@ -994,6 +995,163 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         peer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
         Pump();
         Require(activated == L"new", "recycled tip action activates the current result identity");
+        activated = L"";
+        Automation::Peers::ButtonAutomationPeer retiredPeer(button);
+        retiredPeer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+        Pump();
+        Require(activated.empty(), "detached control cannot dispatch its retired result action");
+        auto currentButton = suggestions.visuals[0].mainButtons[0];
+        auto currentHelp = suggestions.visuals[0].help;
+        auto refreshed = rows(L"newer");
+        refreshed.GetAt(0).GetObject().SetNamedValue(L"presentationId", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"new"));
+        suggestions.SyncRows(refreshed);
+        Require(suggestions.visuals[0].mainButtons[0] == currentButton && suggestions.visuals[0].help == currentHelp,
+                "unchanged presentation keeps native controls across action-ID renewal");
+        Automation::Peers::ButtonAutomationPeer currentPeer(currentButton);
+        currentPeer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+        Pump();
+        Require(activated == L"newer", "retained button dispatches only the current result identity");
+        auto reordered = winrt::Windows::Data::Json::JsonArray::Parse(LR"([{"id":"inserted","title":"Inserted"}])");
+        reordered.Append(refreshed.GetAt(0));
+        suggestions.SyncRows(reordered);
+        Require(suggestions.visuals[1].mainButtons[0] == currentButton && suggestions.visuals[1].help == currentHelp,
+                "inserting ahead preserves rich result controls across slots");
+        suggestions.SyncSelection(L"newer");
+        auto selectedContainer = suggestions.list.SelectedItem();
+        int reorderSelectionChanges = 0;
+        const auto reorderToken = suggestions.list.SelectionChanged([&](auto const&, auto const&) { ++reorderSelectionChanges; });
+        suggestions.SyncRows(refreshed);
+        suggestions.SyncSelection(L"newer");
+        Require(reorderSelectionChanges == 0 && suggestions.list.SelectedItem() == selectedContainer,
+                "moving selected rich result forward never detaches or deselects its container");
+        suggestions.SyncRows(reordered); suggestions.SyncSelection(L"newer");
+        Require(reorderSelectionChanges == 0 && suggestions.list.SelectedItem() == selectedContainer,
+                "insertion before selected result keeps its stock selection state");
+        auto several = winrt::Windows::Data::Json::JsonArray::Parse(
+            LR"([{"id":"one","title":"One"},{"id":"two","title":"Two"},{"id":"three","title":"Three"}])");
+        several.Append(refreshed.GetAt(0));
+        suggestions.SyncRows(several); suggestions.SyncSelection(L"newer");
+        suggestions.SyncRows(refreshed); suggestions.SyncSelection(L"newer");
+        Require(reorderSelectionChanges == 0 && suggestions.list.SelectedItem() == selectedContainer,
+                "selected result survives multiple preceding removals without selection transitions");
+        refreshed.GetAt(0).GetObject().SetNamedValue(L"stale", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
+        refreshed.GetAt(0).GetObject().SetNamedValue(L"retainedSelected", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
+        suggestions.SyncRows(several); suggestions.SyncSelection(L"");
+        suggestions.SyncRows(refreshed); suggestions.SyncSelection(L"");
+        Require(reorderSelectionChanges == 0 && suggestions.CurrentSelectedIndex() == -1 &&
+                    suggestions.VisibleIds().empty() && !selectedContainer.as<Controls::ListViewItem>().IsHitTestVisible(),
+                "reordered retained selection stays visible without activation or exposure authority");
+        activated = L"";
+        currentPeer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+        Pump();
+        Require(activated.empty(), "retained reordered rich action cannot activate a stale result");
+        Require(suggestions.visuals[0].mainButtons[0] == currentButton && suggestions.visuals[0].help == currentHelp &&
+                    !currentButton.IsTabStop() && !currentHelp.IsTabStop() &&
+                    !suggestions.FirstButton() && !suggestions.FirstHelp() && !suggestions.FocusFirstAction(),
+                "stale rich presentation keeps controls but excludes keyboard traversal");
+        int fieldRecoveries = 0;
+        suggestions.focusField = [&] { ++fieldRecoveries; };
+        suggestions.pendingControlFocus = currentButton;
+        suggestions.RestoreControlFocus();
+        Require(fieldRecoveries == 1, "stale focused rich control recovers the editor");
+        suggestions.pendingControlFocus = nullptr;
+        suggestions.RestoreControlFocus();
+        Require(fieldRecoveries == 1, "ordinary editor or outside focus does not trigger recovery");
+        suggestions.focusField = nullptr;
+        suggestions.list.SelectionChanged(reorderToken);
+        Require(suggestions.visuals[0].mainButtons[0] == currentButton && suggestions.visuals[0].help == currentHelp,
+                "removing preceding row preserves rich result controls across slots");
+        auto acknowledgment = winrt::Windows::Data::Json::JsonArray::Parse(
+            LR"([{"id":"ack","title":"Dismissed","feedback":"Dismissed"}])");
+        suggestions.SyncRows(acknowledgment);
+        Require(Automation::AutomationProperties::GetLiveSetting(suggestions.visuals[0].title) == Automation::Peers::AutomationLiveSetting::Polite,
+                "dismissal acknowledgment is a polite live region");
+        auto inlineRow = winrt::Windows::Data::Json::JsonArray::Parse(
+            LR"([{"id":"url","title":"Known site title","displayUrl":"example.test","inlineUrl":true}])");
+        suggestions.SyncRows(inlineRow); suggestions.RefreshLabels();
+        Require(Automation::AutomationProperties::GetLiveSetting(suggestions.visuals[0].title) == Automation::Peers::AutomationLiveSetting::Off,
+                "ordinary title reuse clears acknowledgment live-region state");
+        Require(suggestions.visuals[0].title.Text() == L"Known site title" &&
+                    suggestions.visuals[0].destination.Text() == L"example.test" &&
+                    suggestions.visuals[0].destination.Visibility() == Visibility::Visible &&
+                    suggestions.visuals[0].url.Visibility() == Visibility::Collapsed &&
+                    Automation::AutomationProperties::GetName(suggestions.list.Items().GetAt(0).as<Controls::ListViewItem>()) == L"Known site title · example.test",
+                "Firefox-published heuristic title and display URL share one line and accessible name");
+        auto emphasized = inlineRow.GetAt(0).GetObject();
+        emphasized.SetNamedValue(L"titleRuns", winrt::Windows::Data::Json::JsonArray::Parse(
+            LR"([{"text":"Known","matched":true},{"text":" site title","matched":false}])"));
+        emphasized.SetNamedValue(L"urlRuns", winrt::Windows::Data::Json::JsonArray::Parse(
+            LR"([{"text":"example","matched":true},{"text":".test","matched":false}])"));
+        SuggestionList::ValidateTextRuns(emphasized, L"titleRuns", L"Known site title");
+        SuggestionList::ValidateTextRuns(emphasized, L"urlRuns", L"example.test");
+        suggestions.SyncRows(inlineRow); suggestions.RefreshLabels();
+        auto titleRun = suggestions.visuals[0].title.Inlines().GetAt(0).as<Documents::Run>();
+        Require(titleRun.FontWeight().Weight == 700 &&
+                    suggestions.visuals[0].title.Inlines().GetAt(1).as<Documents::Run>().FontWeight().Weight == 400 &&
+                    suggestions.visuals[0].destination.Inlines().GetAt(0).as<Documents::Run>().FontWeight().Weight == 700 &&
+                    suggestions.visuals[0].title.Text() == L"Known site title" &&
+                    Automation::AutomationProperties::GetName(suggestions.list.Items().GetAt(0).as<Controls::ListViewItem>()) == L"Known site title · example.test",
+                "Firefox spans emphasize title and URL without changing text or accessible name");
+        suggestions.SyncSelection(L"url"); suggestions.RefreshLabels(); suggestions.SyncRows(inlineRow);
+        Require(suggestions.visuals[0].title.Inlines().GetAt(0) == titleRun,
+                "selection and unchanged publications retain highlighted text runs");
+        bool rejectedRuns = false;
+        try { SuggestionList::ValidateTextRuns(emphasized, L"titleRuns", L"Different title"); }
+        catch (winrt::hresult_error const&) { rejectedRuns = true; }
+        Require(rejectedRuns, "mismatched highlighted text is rejected before presentation");
+        inlineRow.GetAt(0).GetObject().SetNamedValue(L"inlineUrl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
+        suggestions.SyncRows(inlineRow); suggestions.RefreshLabels();
+        Require(suggestions.visuals[0].title.Text() == L"Known site title" && suggestions.visuals[0].url.Visibility() == Visibility::Visible &&
+                    suggestions.visuals[0].destination.Visibility() == Visibility::Collapsed &&
+                    suggestions.visuals[0].separator.Visibility() == Visibility::Collapsed,
+                "recycled row clears inline URL presentation when Firefox changes layout");
+        Require(suggestions.visuals[0].url.Inlines().GetAt(0).as<Documents::Run>().FontWeight().Weight == 700,
+                "rich row URL retains Firefox emphasis");
+        emphasized.Remove(L"titleRuns"); emphasized.Remove(L"urlRuns");
+        suggestions.SyncRows(inlineRow); suggestions.RefreshLabels();
+        Require(suggestions.visuals[0].title.Text() == L"Known site title" &&
+                    suggestions.visuals[0].title.Inlines().GetAt(0).as<Documents::Run>().FontWeight().Weight == 400,
+                "unhighlighted publication clears previous emphasis");
+        suggestions.SyncSelection(L"url");
+        int selectionChanges = 0;
+        const auto selectionToken = suggestions.list.SelectionChanged([&](auto const&, auto const&) { ++selectionChanges; });
+        emphasized.SetNamedValue(L"stale", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
+        suggestions.SyncRows(inlineRow); suggestions.SyncSelection(L""); suggestions.RefreshLabels();
+        Require(suggestions.retainedSelection == 0 && suggestions.list.SelectedIndex() == 0 && suggestions.CurrentSelectedIndex() == -1 &&
+                    !suggestions.HasCurrentRows() && suggestions.VisibleIds().empty(),
+                "pending query retains only selection appearance without activation or exposure authority");
+        suggestions.SyncRows(inlineRow); suggestions.SyncSelection(L"");
+        Require(suggestions.retainedSelection == 0, "repeated pending publications preserve selection appearance");
+        auto earlyHistory = winrt::Windows::Data::Json::JsonArray::Parse(
+            LR"([{"id":"url","title":"Previous first","stale":true},{"id":"history","title":"Early history","sectionLabel":"Suggest"}])");
+        suggestions.SyncRows(earlyHistory); suggestions.SyncSelection(L"");
+        Require(suggestions.list.SelectedIndex() == 0 && suggestions.CurrentSelectedIndex() == -1 &&
+                    suggestions.visuals[0].section.Text().empty() && suggestions.visuals[1].section.Text() == L"Suggest",
+                "late heuristic keeps heading below the stale selected first slot");
+        earlyHistory.GetAt(0).GetObject().SetNamedValue(L"stale", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
+        earlyHistory.GetAt(0).GetObject().SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"new-heuristic"));
+        suggestions.SyncRows(earlyHistory); suggestions.SyncSelection(L"new-heuristic");
+        Require(selectionChanges == 0 && suggestions.list.Items().GetAt(0) == container,
+                "early history then heuristic never deselects or recreates the accented first container");
+        emphasized.SetNamedValue(L"stale", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
+        suggestions.SyncRows(inlineRow); suggestions.SyncSelection(L"url");
+        Require(selectionChanges == 0 && suggestions.CurrentSelectedIndex() == 0,
+                "pending-to-current first result never deselects/reselects the stock control");
+        auto coalesced = winrt::Windows::Data::Json::JsonArray::Parse(
+            LR"([{"id":"never-displayed","title":"Intermediate result","stale":true,"retainedSelected":true}])");
+        suggestions.SyncRows(coalesced); suggestions.SyncSelection(L"");
+        Require(selectionChanges == 0 && suggestions.list.SelectedIndex() == 0 &&
+                    suggestions.CurrentSelectedIndex() == -1 && suggestions.VisibleIds().empty() &&
+                    suggestions.list.Items().GetAt(0) == container,
+                "coalesced query publications preserve explicit stale selection without activation authority");
+        coalesced.GetAt(0).GetObject().SetNamedValue(L"retainedSelected", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
+        suggestions.SyncRows(coalesced); suggestions.SyncSelection(L"");
+        Require(suggestions.list.SelectedIndex() == -1,
+                "explicit Firefox empty retained selection overrides same-ID continuity");
+        suggestions.list.SelectionChanged(selectionToken);
+        suggestions.SyncRows(inlineRow); suggestions.SyncSelection(L"");
+        Require(suggestions.retainedSelection == -1 && suggestions.list.SelectedIndex() == -1,
+                "Firefox empty selection clears retained appearance when current rows arrive");
         suggestions.SyncRows(winrt::Windows::Data::Json::JsonArray::Parse(
             LR"([{"id":"retained","title":"Previous first result","stale":true}])"));
         suggestions.SyncSelection(L"retained");
@@ -1215,6 +1373,9 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     // The editor's header holds the mode button and the field; the suggestions
     // and global actions float in the address's popup below it.
     auto header = field.Parent().as<Controls::Grid>();
+    auto formattedDisplay = byId(content, L"FennAddressDisplay").as<Controls::TextBlock>();
+    Require(formattedDisplay.Parent() == header && !formattedDisplay.IsHitTestVisible(),
+            "formatted URL display survives final toolbar layout and cannot intercept input");
     auto address = header.Parent().as<Controls::StackPanel>();
     auto popupContent =
         address.Children().GetAt(1).as<Controls::Primitives::Popup>().Child().as<Controls::Border>().Child().as<Controls::StackPanel>();
@@ -1225,6 +1386,47 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         SuggestionList fixture;
         auto root = content.as<Controls::Grid>();
         root.Children().Append(fixture.list);
+        auto compact = winrt::Windows::Data::Json::JsonArray::Parse(
+            LR"([{"id":"compact","title":"Wikipedia","displayUrl":"wikipedia.org","inlineUrl":true,"actionLabel":"Switch to tab"}])");
+        for (double width : {900.0, 420.0, 280.0}) {
+            fixture.list.Width(width);
+            fixture.SyncRows(compact); fixture.SyncSelection(L""); fixture.RefreshLabels();
+            root.UpdateLayout(); AwaitLiveTree(fixture.visuals[0].headline); root.UpdateLayout();
+            auto& visual = fixture.visuals[0];
+            auto row = fixture.list.Items().GetAt(0).as<Controls::ListViewItem>();
+            const auto height = row.ActualHeight();
+            const auto titleBounds = visual.title.TransformToVisual(row).TransformBounds(
+                {0, 0, float(visual.title.ActualWidth()), float(visual.title.ActualHeight())});
+            const auto urlBounds = visual.destination.TransformToVisual(row).TransformBounds(
+                {0, 0, float(visual.destination.ActualWidth()), float(visual.destination.ActualHeight())});
+            Require(height >= 36 && height <= 40 && std::abs(titleBounds.Y - urlBounds.Y) < 1 &&
+                        urlBounds.X > titleBounds.X + titleBounds.Width && urlBounds.X + urlBounds.Width <= width,
+                    "ordinary destination stays beside the title in one compact row at wide and narrow widths");
+            fixture.SyncSelection(L"compact"); fixture.RefreshLabels(); root.UpdateLayout();
+            Require(row.ActualHeight() == height && visual.action.Visibility() == Visibility::Visible &&
+                        visual.title.Text() == L"Wikipedia" && visual.destination.ActualWidth() > 0,
+                    "selected action occupies its own bounded field without changing row height or title text");
+            auto longRow = compact.GetAt(0).GetObject();
+            longRow.SetNamedValue(L"title", winrt::Windows::Data::Json::JsonValue::CreateStringValue(
+                L"A very long page title that must leave room for its destination even in a narrow browser window"));
+            fixture.SyncRows(compact); fixture.RefreshLabels(); root.UpdateLayout();
+            Require(row.ActualHeight() == height && visual.title.IsTextTrimmed() && visual.destination.ActualWidth() > 20,
+                    "long title is ellipsized independently while a destination remains visible");
+            longRow.SetNamedValue(L"title", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"Page title\nwith an embedded line break"));
+            fixture.SyncRows(compact); fixture.RefreshLabels(); root.UpdateLayout();
+            Require(row.ActualHeight() == height,
+                    "embedded title line breaks cannot expand an ordinary result to two lines");
+            longRow.SetNamedValue(L"title", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"Wikipedia"));
+            longRow.SetNamedValue(L"inlineUrl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
+            longRow.SetNamedValue(L"description", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"Firefox rich description"));
+            fixture.SyncRows(compact); fixture.RefreshLabels(); root.UpdateLayout();
+            Require(row.ActualHeight() > height && visual.url.Visibility() == Visibility::Visible &&
+                        visual.destination.Visibility() == Visibility::Collapsed && visual.description.Text() == L"Firefox rich description",
+                    "reused compact row becomes rich without losing description or destination");
+            longRow.Remove(L"description");
+            longRow.SetNamedValue(L"inlineUrl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
+        }
+        fixture.list.ClearValue(FrameworkElement::WidthProperty());
         for (auto size : {16, 32, 52}) {
             for (auto kind : {L"page", L"search", L"history", L"copy", L"bookmarks", L"tabs", L"actions"}) {
                 auto row = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"id":"glyph","title":"Icon layout"})");
@@ -1248,6 +1450,52 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         }
         uint32_t index{};
         if (root.Children().IndexOf(fixture.list, index)) root.Children().RemoveAt(index);
+    }
+    {
+        using namespace winrt::Windows::Data::Json;
+        auto root = content.as<Controls::Grid>();
+        NativeAddressValue value;
+        value.Create();
+        Require(value.display.Inlines().Size() == 3, "URL display contains exactly three styled runs, without XAML whitespace runs");
+        auto formatted = JsonObject::Parse(LR"({"domainEmphasis":{"text":"www.example.com/path","start":4,"end":15}})");
+        NativeAddressValue::Validate(formatted);
+        value.Apply(formatted);
+        Require(value.display.Inlines().GetAt(0).as<Documents::Run>().Text() == L"www." &&
+                    value.display.Inlines().GetAt(1).as<Documents::Run>().Text() == L"example.com" &&
+                    value.display.Inlines().GetAt(2).as<Documents::Run>().Text() == L"/path",
+                "native URL display uses Firefox UTF-16 ranges without parsing the URL");
+        for (auto invalid : {LR"({"text":"url","start":-1,"end":2})",
+                             LR"({"text":"url","start":0.5,"end":2})",
+                             LR"({"text":"url","start":0,"end":9})",
+                             LR"({"text":"url","start":2,"end":2})"}) {
+            formatted.SetNamedValue(L"domainEmphasis", JsonObject::Parse(invalid));
+            bool rejected = false;
+            try { NativeAddressValue::Validate(formatted); } catch (...) { rejected = true; }
+            Require(rejected, "malformed domain offsets are rejected before native mutation");
+        }
+        Controls::Grid displayHost;
+        Controls::TextBox displayField;
+        displayField.Text(L"www.example.com/path");
+        displayHost.Children().Append(displayField);
+        displayHost.Children().Append(value.display);
+        root.Children().Append(displayHost);
+        AwaitLiveTree(displayHost);
+        root.UpdateLayout();
+        value.Refresh(displayField, false);
+        Require(value.display.Visibility() == Visibility::Visible && value.content && value.content.Opacity() == 0,
+                "unfocused display hides only the editor content");
+        value.Refresh(displayField, true);
+        Require(value.display.Visibility() == Visibility::Collapsed && value.content.Opacity() == 1,
+                "editing immediately restores original TextBox rendering");
+        displayField.Text(L"new text");
+        value.Refresh(displayField, false);
+        Require(value.display.Visibility() == Visibility::Collapsed && value.content.Opacity() == 1,
+                "stale formatted text cannot cover a changed editor value");
+        uint32_t displayIndex{};
+        if (root.Children().IndexOf(displayHost, displayIndex)) root.Children().RemoveAt(displayIndex);
+        value.Apply(JsonObject::Parse(LR"({"domainEmphasis":null})"));
+        Require(!value.available && value.display.Visibility() == Visibility::Collapsed,
+                "missing emphasis clears the display layer");
     }
     Require(SUCCEEDED(api.syncAddress(hwnd, snapshot)), "exact address replay is harmless");
     auto conflict = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);

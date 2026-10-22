@@ -13,7 +13,7 @@ function fixture(type=2,providerName='UrlbarProviderTokenAliasEngines') {
  Object.assign(s,{sessionId:'s',_sequence:0,_revision:2,editId:5,modeApplied:0,nativeVisible:['r'],cancelImages(){},
   window:{gBrowser:{selectedBrowser:browser},KeyboardEvent:class{}},
   input:{inputField:{value:'@'},view:{},resultPresentation:{searchModeTitle:async()=> 'Firefox mode label'},
-   controller:{parentController:{onBeforeSelection(){},onSelection(){}}},
+   controller:{cancelQuery(){s.onQueryCancelled(s.active.context);},parentController:{onBeforeSelection(){},onSelection(){}}},
    setValueFromResult({result:chosen}){assert.equal(s.nativeSelected,chosen);this.inputField.value='';},
    pickResult(){picked++;this.inputField.value='';}},
   active:{revision:2,rows:[row],results:[result],resultIndexes:[0],context:{id:8,results:[result]},inputValue:'@',text:'@',browser,page:'page'}});

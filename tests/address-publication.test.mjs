@@ -20,7 +20,7 @@ test("empty-query publications are positive; replay and independent navigation k
 test("selection, open state, completion, labels and modes advance publication, not query structure", () => {
   const {s,state} = fixture();
   s.preparePublication(state);
-  for (const change of [{selectedId:"a"}, {open:true}, {complete:true}, {labels:{actions:"Actions"}}, {modes:{generation:1}}, {text:"changed"}]) {
+  for (const change of [{selectedId:"a"}, {open:true}, {complete:true}, {contentFocused:true}, {contentFocused:false}, {labels:{actions:"Actions"}}, {modes:{generation:1}}, {text:"changed"}]) {
     const before = s.sequence;
     Object.assign(state, change);
     assert.equal(s.preparePublication(state).sequence, before + 1);

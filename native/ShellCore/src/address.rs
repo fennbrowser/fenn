@@ -81,6 +81,10 @@ impl AddressState {
         self.query_settled = settled;
     }
 
+    // Only an interrupted first-entry submit needs a new focus query. Ordinary
+    // caret clicks can reuse an open query without a new browser publication.
+    pub fn await_focus_query(&mut self) { self.query_settled = false; }
+
     pub fn cancel_submit(&mut self) {
         self.deferred = false;
         self.submit = None;
@@ -132,6 +136,27 @@ mod tests {
     }
     fn enter(s: &mut AddressState, modifiers: u32) -> ShellAddressAction {
         s.action(IntentKind::Activate, observed(), modifiers)
+    }
+
+    #[test]
+    fn focus_entry_invalidates_old_readiness_and_retains_early_enter_modifiers() {
+        let mut s = AddressState::default();
+        s.publish(0, true);
+        s.stage(16, IntentKind::Focus);
+        s.complete(16);
+        assert_eq!(s.state().query_settled, 1, "ordinary focus reuse keeps readiness");
+        s.await_focus_query();
+        s.stage(17, IntentKind::Focus);
+        assert_eq!(enter(&mut s, 5).decision, Decision::Defer as u32);
+        s.complete(17);
+        assert!(!s.take_deferred(), "transport completion does not make the focus query ready");
+        s.publish(0, false);
+        assert!(!s.take_deferred());
+        s.publish(0, true);
+        assert!(s.take_deferred());
+        let commit = enter(&mut s, 0);
+        assert_eq!(commit.decision, Decision::Stage as u32);
+        assert_eq!(commit.modifiers, 5);
     }
 
     #[test]

@@ -821,6 +821,23 @@ function wirePaneFallback(f) {
   return pane;
 }
 
+test('Escape adopts initial pointer focus before dismissal without opening a query',()=>{
+  const f=fixture(),pane=wirePaneFallback(f),calls=[];
+  const action={version:1,session:f.s.sessionId,kind:'dismiss'};
+  pane.addressToolbar={active:true,adoptNativeFocus(){calls.push('focus');return true;}};
+  f.s.focusNativePresentation=()=>assert.fail('Escape must not open a query');
+  f.s.dismiss=request=>{assert.equal(request.reason,'escape');calls.push('dismiss');};
+  assert.equal(pane.executeAddressRequest(action),1);
+  assert.deepEqual(calls,['focus','dismiss']);
+  calls.length=0;
+  pane.addressToolbar.adoptNativeFocus=()=>false;
+  assert.equal(pane.executeAddressRequest(action),2);
+  assert.deepEqual(calls,[],'failed focus adoption cannot publish a misleading dismissal');
+  pane.addressToolbar.active=false;
+  assert.equal(pane.executeAddressRequest(action),1);
+  assert.deepEqual(calls,['dismiss'],'the standalone address slot keeps its existing routing');
+});
+
 test('direct handoffs persist reasons, omit private windows and do not count as lost actions',async()=>{
   const f=fixture(),C=f.s.constructor,pane=wirePaneFallback(f);let file=null;
   C.persistence={enabled:()=>true,path:()=>'tally.json',read:async()=>file,
@@ -898,4 +915,17 @@ test('diagnostic lists keep only the most recent entries',()=>{
   for(let i=0;i<450;i++)f.s.constructor.recordFallback('toolbar-focus-failed');
   assert.equal(f.s.constructor.counters.fallbacks.length,200);
   assert.equal(f.s.constructor.counters.fallbackTotal,450);
+});
+
+test('immediate Enter applies a superseded arrow-clear before activation and rejects a stale clear',()=>{
+  const f=fixture(),pane=wirePaneFallback(f),calls=[];
+  const action={version:1,session:f.s.sessionId,kind:'activate',revision:1,id:'',clearSelection:true};
+  f.s.selectResult=request=>{assert.equal(request.id,'');assert.equal(request.traverse,1);calls.push('clear');return {status:'selected'};};
+  f.s.activate=()=>{calls.push('activate');return 'activated';};
+  pane.executeAddressRequest(action);
+  assert.deepEqual(calls,['clear','activate']);
+  calls.length=0;
+  f.s.selectResult=()=>({status:'stale'});
+  pane.executeAddressRequest(action);
+  assert.deepEqual(calls,[],'a stale pending clear cannot submit a different query');
 });

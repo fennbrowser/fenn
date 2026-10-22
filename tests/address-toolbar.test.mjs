@@ -176,6 +176,22 @@ test("restoring Gecko widget focus does not reenter an already owned native fiel
   assert.ok(f.calls.some(c=>c[0]==="host" && c[6]===true),"keyboard entry after a real blur still enters WinUI");
 });
 
+test("native mouse focus establishes the Gecko proxy without selecting text or looping", () => {
+  const f=fixture(); f.toolbar.update(); f.toolbar.activate();
+  f.window.document.activeElement={id:'browser'};
+  f.toolbar.proxy.focus=()=>{f.calls.push(['proxy-focus']); f.window.document.activeElement=f.toolbar.proxy;};
+  f.calls.length=0;
+  assert.equal(f.toolbar.adoptNativeFocus(),true);
+  assert.equal(f.window.document.activeElement,f.toolbar.proxy);
+  assert.equal(f.toolbar.focusOwned,true);
+  assert.ok(f.calls.some(c=>c[0]==='host' && c[6]===true && c[7]===false));
+  f.calls.length=0;
+  assert.equal(f.toolbar.adoptNativeFocus(),true);
+  assert.equal(f.calls.length,0,'repeated native focus observations do not refocus the island');
+  f.toolbar.active=false;
+  assert.equal(f.toolbar.adoptNativeFocus(),false);
+});
+
 test("Firefox's Customize Toolbar command requests the native editor only while the native toolbar is active", () => {
   const f = fixture();
   const event = () => {

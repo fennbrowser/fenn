@@ -218,6 +218,7 @@ pub struct ShellCore {
     selected_translations_panel: crate::surface_menu::SurfaceMenu,
     page_context_menu: crate::surface_menu::SurfaceMenu,
     privacy_panels: [crate::surface_menu::SurfaceMenu; 2],
+    address_interaction: crate::address_interaction::AddressInteraction,
     address_publication: crate::address_publication::AddressPublication,
     toolbar_publication: crate::toolbar_publication::ToolbarPublication,
     preview_publication: crate::preview_publication::PreviewPublication,
@@ -459,6 +460,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         selected_translations_panel: Default::default(),
         page_context_menu: Default::default(),
         privacy_panels: Default::default(),
+        address_interaction: Default::default(),
         address_publication: Default::default(),
         toolbar_publication: Default::default(),
         preview_publication: Default::default(),
@@ -804,6 +806,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
         core.selected_translations_panel.dismiss();
         core.page_context_menu.dismiss();
         for panel in &mut core.privacy_panels { panel.dismiss(); }
+        core.address_interaction.reset();
         core.address_publication.reset();
         core.address_sections.reset();
         core.toolbar_publication.reset();
@@ -843,6 +846,7 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
         core.selected_translations_panel.dismiss();
         core.page_context_menu.dismiss();
         for panel in &mut core.privacy_panels { panel.dismiss(); }
+        core.address_interaction.reset();
         core.address_publication.reset();
         core.address_sections.reset();
         core.toolbar_publication.reset();
@@ -2478,7 +2482,7 @@ pub unsafe extern "C" fn shell_core_address_state(core: *mut ShellCore, out: *mu
 /// `core` is a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_address_reset(core: *mut ShellCore) -> ShellStatus {
-    queue_guard(core, |queue| { queue.address = Default::default(); ShellStatus::Ok })
+    guard(core, |core| { if core.queue.is_closed() { return ShellStatus::Closed; } core.queue.address = Default::default(); core.address_interaction.reset(); ShellStatus::Ok })
 }
 
 /// Forget the mode request on switcher disable/reset. This revokes local
@@ -5086,4 +5090,63 @@ pub unsafe extern "C" fn shell_core_notification_panel_request(core:*mut ShellCo
   shell_core_notification_panel_accept(core,id,1,[1].as_ptr(),1,[3].as_ptr(),1,&mut changed);assert!(!changed);
   shell_core_destroy(core);
  }}
+}
+
+/// Native gesture/focus observations. kind is ShellAddressInteractionKind;
+/// value is a boolean. Tokens are endpoint-local and survive session resets.
+/// # Safety
+/// core is live; out is writable. Invalid observations never mutate state.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_address_interaction(core: *mut ShellCore,
+    kind: u32, pointer: u32, token: u64, value: u32,
+    out: *mut crate::address_interaction::ShellAddressInteractionState) -> ShellStatus {
+    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+    *out = Default::default();
+    guard(core, |core| {
+        if core.queue.is_closed() { return ShellStatus::Closed; }
+        match core.address_interaction.event(kind,pointer,token,value) {
+        Some(state) => {
+            if kind == crate::address_interaction::ShellAddressInteractionKind::PrepareSubmit as u32 &&
+                state.effects & crate::address_interaction::ShellAddressInteractionEffect::Focus as u32 != 0 {
+                core.queue.address.await_focus_query();
+            }
+            *out = state;
+            ShellStatus::Ok
+        },
+        None => ShellStatus::InvalidArgument,
+    }})
+}
+
+#[cfg(test)]
+mod interaction_ffi_tests {
+    use super::*;
+    use crate::address_interaction::ShellAddressInteractionState;
+    #[test] fn interaction_boundary_and_session_reset_reject_old_completion() { unsafe {
+        let core=shell_core_create(std::ptr::null());
+        let mut out=ShellAddressInteractionState::default();
+        assert_eq!(shell_core_address_interaction(core,3,1,0,1,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_address_interaction(core,3,1,0,1,&mut out),ShellStatus::Ok);
+        let old=out.token;
+        assert_eq!(shell_core_address_interaction(core,99,0,0,0,&mut out),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_address_interaction(core,0,0,0,2,&mut out),ShellStatus::InvalidArgument);
+        assert_eq!(shell_core_address_interaction(core,0,0,0,0,&mut out),ShellStatus::Ok);
+        assert_eq!(out.holding,1);
+        assert_eq!(shell_core_address_reset(core),ShellStatus::Ok);
+        assert_eq!(shell_core_address_interaction(core,5,1,old,1,&mut out),ShellStatus::Ok);
+        assert_eq!(out.effects,0);
+        shell_core_address_interaction(core,1,0,0,0,&mut out);
+        shell_core_address_publish(core,0,true);
+        shell_core_address_interaction(core,3,1,0,1,&mut out);
+        shell_core_address_interaction(core,9,0,0,1,&mut out);
+        let mut address=crate::address::ShellAddressState::default();
+        shell_core_address_state(core,&mut address);
+        assert_eq!(address.query_settled,0,"first-entry submit waits for a focus query");
+        shell_core_address_publish(core,0,true);
+        shell_core_address_interaction(core,9,0,0,1,&mut out);
+        shell_core_address_state(core,&mut address);
+        assert_eq!(address.query_settled,1,"ordinary submission keeps current readiness");
+        assert_eq!(shell_core_close(core),ShellStatus::Ok);
+        assert_eq!(shell_core_address_interaction(core,0,0,0,0,&mut out),ShellStatus::Closed);
+        shell_core_destroy(core);
+    }}
 }

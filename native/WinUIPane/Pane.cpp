@@ -477,6 +477,15 @@ struct Pane {
             strip->SetLeadingControl(menuButton);
         }
         address->releaseMenuFocus = [this] { SetFocus(parent); };
+        address->releaseContentFocus = [this] {
+            // Never reclaim focus from another application, another island,
+            // or a dialog. XAML logical focus alone is not ownership.
+            const auto focused = GetFocus();
+            const auto host = addressSource ? addressWindow : childWindow;
+            if (GetForegroundWindow() == parent &&
+                (InWindow(host, focused) || InPopups(addressSource ? addressIsland : contentIsland, focused)))
+                SetFocus(parent);
+        };
         address->navigate = [this](hstring const& action) {
             Enqueue(NativeShellCore::NavigationAction, 0, 0, action);
         };
@@ -487,6 +496,7 @@ struct Pane {
             Enqueue(NativeShellCore::AddressVisibility, 0, address->revision, action);
         };
         address->mode.dispatch = [this](hstring const& action) {
+            address->interaction.Interrupt(address->EditorOwned());
             Enqueue(NativeShellCore::AddressModeAction, 0, address->revision, action);
         };
         address->observeFocus = [this] {
@@ -1746,9 +1756,8 @@ HRESULT WINAPI UpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept
             pane.address->navigation->productMenu.updates->owner = hwnd;
             pane.WireAddress();
             pane.addressTakeFocus = pane.addressSource.TakeFocusRequested([&pane](auto const&, auto const&) {
-                pane.address->focusWithin = false;
                 SetFocus(pane.parent);
-                pane.address->Action(L"blur", (GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
+                pane.address->LeaveForTraversal((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
             });
             pane.addressSource.Content(pane.address->toolbarRoot);
             pane.addressWindow = GetWindowFromWindowId(pane.addressSource.SiteBridge().WindowId());
@@ -1782,6 +1791,7 @@ HRESULT WINAPI FocusAddress(HWND hwnd, BOOL selectAll) noexcept {
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end() || !found->second->addressSource) return E_NOT_VALID_STATE;
         auto& pane = *found->second;
+        pane.address->interaction.Interrupt(false);
         pane.addressSource.NavigateFocus(XamlSourceFocusNavigationRequest(XamlSourceFocusNavigationReason::First));
         if (!pane.address->field.Focus(FocusState::Programmatic)) return E_FAIL;
         if (selectAll) pane.address->field.SelectAll();

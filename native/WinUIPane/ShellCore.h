@@ -54,6 +54,14 @@ struct NativeShellCore {
         return Decision(decision);
     }
 
+    ShellAddressInteractionState AddressInteraction(ShellAddressInteractionKind kind = SHELL_ADDRESS_INTERACTION_KIND_INSPECT,
+                                                    uint32_t pointer = 0, uint64_t token = 0, bool value = false) const {
+        ShellAddressInteractionState state{};
+        winrt::check_hresult(core && shell_core_address_interaction(core, uint32_t(kind), pointer, token, value, &state)
+            == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
+        return state;
+    }
+
     ShellAddressState AddressState() const {
         ShellAddressState value{};
         if (core) shell_core_address_state(core, &value);
