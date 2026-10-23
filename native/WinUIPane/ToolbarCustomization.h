@@ -163,7 +163,8 @@ struct NativeToolbarCustomization {
         return false;
     }
     void RestoreKeyboardFocus() {
-        if(focusAfterChange.empty() || state.revision==focusRevision)return;
+        // MenuFlyout restores its anchor while closing; choose the next target afterward.
+        if(itemMenuOpen || focusAfterChange.empty() || state.revision==focusRevision)return;
         auto id=focusAfterChange;focusAfterChange=L"";auto revision=state.revision;auto alive=std::weak_ptr<int>(lifetime);
         anchor.DispatcherQueue().TryEnqueue([this,alive,id,revision]{
             if(alive.expired() || !editing || state.revision!=revision)return;
@@ -190,7 +191,12 @@ struct NativeToolbarCustomization {
         const auto index=size_t(found-placed.begin());auto revision=state.revision;auto alive=std::weak_ptr<int>(lifetime);
         if(itemMenu)itemMenu.Hide();itemMenu=MenuFlyout();auto menu=itemMenu;
         menu.Opened([this,alive](auto const&,auto const&){if(!alive.expired())itemMenuOpen=true;});
-        menu.Closed([this,alive,weak=winrt::make_weak(menu)](auto const&,auto const&){if(!alive.expired() && itemMenu==weak.get())itemMenuOpen=false;});
+        menu.Closed([this,alive,weak=winrt::make_weak(menu)](auto const&,auto const&){
+            if(!alive.expired() && itemMenu==weak.get()) {
+                itemMenuOpen=false;
+                RestoreKeyboardFocus();
+            }
+        });
         auto add=[&](wchar_t const* label,wchar_t const* verb,winrt::hstring const& target,bool enabled) {
             MenuFlyoutItem action;action.Text(state.labels.at(label));action.IsEnabled(enabled);
             Automation::AutomationProperties::SetAutomationId(action,winrt::hstring(L"FennCustomizeAction-")+label);
