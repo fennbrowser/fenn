@@ -418,6 +418,7 @@ struct Pane {
             if (hwnd == pane->parent && ((msg == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE &&
                  GetAncestor(HWND(l), GA_ROOTOWNER) != GetAncestor(hwnd, GA_ROOTOWNER)) ||
                 (msg == WM_ACTIVATEAPP && !w) || msg == WM_CANCELMODE)) {
+                if (pane->strip) pane->strip->CloseToolTips();
                 pane->DismissMenus();
                 pane->LeaveAddress();
             }

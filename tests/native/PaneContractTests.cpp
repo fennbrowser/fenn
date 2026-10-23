@@ -2981,7 +2981,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     Require(root.FlowDirection() == FlowDirection::RightToLeft, "inline groups inherit RTL");
     {
         auto tip = [](FrameworkElement const& element) {
-            return unbox_value<winrt::hstring>(Controls::ToolTipService::GetToolTip(element));
+            return unbox_value<winrt::hstring>(Controls::ToolTipService::GetToolTip(element).as<Controls::ToolTip>().Content());
         };
         auto allTabsButton = find(root, L"FennAllTabs").as<Controls::Button>();
         auto stockAdd = find(view, L"FennStripNewTab").as<Controls::Button>();
@@ -2993,6 +2993,30 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(Automation::AutomationProperties::GetName(stockAdd) == L"Neuer Tab" &&
                     tip(stockAdd) == L"Neuer Tab, Strg+T",
                 "stock add button takes Firefox's localized name and tooltip");
+        // A tooltip owns a popup HWND. It must not cover a foreground sibling
+        // window's tab or intercept that tab's next context-menu press.
+        HWND sibling = CreateWindowExW(0, L"STATIC", L"Tooltip foreground sibling", WS_OVERLAPPEDWINDOW,
+            80, 80, 800, 600, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        Require(sibling != nullptr, "tooltip sibling host");
+        for (auto button : {stockAdd, allTabsButton}) {
+            SetForegroundWindow(host);
+            settle();
+            Require(GetForegroundWindow() == host, "tooltip owner foreground");
+            auto tooltip = Controls::ToolTipService::GetToolTip(button).as<Controls::ToolTip>();
+            tooltip.IsOpen(true);
+            settle();
+            Require(tooltip.IsOpen(), "foreground strip tooltip remains available");
+            ShowWindow(sibling, SW_SHOW);
+            SetForegroundWindow(sibling);
+            settle();
+            Require(GetForegroundWindow() == sibling && !tooltip.IsOpen(), "deactivation closes strip tooltip");
+            tooltip.IsOpen(true);
+            settle();
+            Require(!tooltip.IsOpen(), "background strip cannot reopen tooltip over another window");
+        }
+        DestroyWindow(sibling);
+        SetForegroundWindow(host);
+        settle();
         Require(Automation::AutomationProperties::GetItemStatus(first.as<Controls::TabViewItem>()) == L"Aktiver Tab",
                 "existing rows take the localized active-tab status");
     }

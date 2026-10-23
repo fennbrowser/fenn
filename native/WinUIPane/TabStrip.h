@@ -42,6 +42,7 @@
 struct NativeTabStrip {
     Controls::Grid root{nullptr};
     Controls::TabView view{nullptr};
+    Controls::ToolTip addToolTip{nullptr}, allTabsToolTip{nullptr};
     Controls::Border groupIndicator{nullptr};
     Microsoft::UI::Dispatching::DispatcherQueueTimer groupTimer{nullptr};
     // Ticks an armed or live tab drag. Once XAML has the pointer, WinUI can
@@ -1297,10 +1298,27 @@ struct NativeTabStrip {
         }
         return next;
     }
+    // Stock tooltips own popup HWNDs too. A background island can still see
+    // hover input; its tooltip must never cover a foreground browser's tab.
+    void ApplyWindowToolTip(Controls::Button const& button, hstring const& text, Controls::ToolTip& tip) {
+        if (!tip) {
+            tip = Controls::ToolTip();
+            tip.Opened([this, alive=std::weak_ptr<int>(lifetime)](auto const& sender, auto const&) {
+                if (alive.expired() || !ownerHwnd || GetAncestor(ownerHwnd, GA_ROOT) != GetForegroundWindow())
+                    sender.template as<Controls::ToolTip>().IsOpen(false);
+            });
+        }
+        tip.Content(box_value(text));
+        Controls::ToolTipService::SetToolTip(button, tip);
+    }
+    void CloseToolTips() {
+        for (auto const& tip : {addToolTip, allTabsToolTip})
+            if (tip) tip.IsOpen(false);
+    }
     void ApplyAddButtonLabels() {
         if (auto button = FindAddButton(view)) {
             Automation::AutomationProperties::SetName(button, labels.newTab);
-            Controls::ToolTipService::SetToolTip(button, box_value(labels.newTabTip));
+            ApplyWindowToolTip(button, labels.newTabTip, addToolTip);
         }
     }
     void ApplyLabels(Labels const& next) {
@@ -1308,7 +1326,7 @@ struct NativeTabStrip {
         labels = next;
         Automation::AutomationProperties::SetName(view, labels.tabs);
         Automation::AutomationProperties::SetName(allTabs.button, labels.allTabs);
-        Controls::ToolTipService::SetToolTip(allTabs.button, box_value(labels.allTabsTip));
+        ApplyWindowToolTip(allTabs.button, labels.allTabsTip, allTabsToolTip);
         ApplyAddButtonLabels();
         if (statusChanged)
             for (auto const& [id, row] : rows)
