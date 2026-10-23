@@ -36,7 +36,7 @@ index 5cc4a68caec..92669a3d53a 100644
 +        CONFIG["MOZ_BRANDING_DIRECTORY"],
      )
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 0f4b2915ad2..23d9ee6dc7c 100644
+index 0f4b2915ad2..be069cceb45 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -57,7 +57,12 @@ index 0f4b2915ad2..23d9ee6dc7c 100644
 +// Fenn (firefox-winui): no Nimbus rollouts; Mozilla delivers them to Firefox.
 +pref("nimbus.rollouts.enabled", false);
  
-@@ -3092,3 +3093,6 @@ pref("app.normandy.api_url", "https://normandy.cdn.mozilla.net/api/v1");
+@@ -2329,2 +2330,4 @@ pref("sidebar.position_start", true);
+ pref("sidebar.revamp", true);
++// Fenn's minimal toolbar omits this button; do not introduce it on restart.
++pref("browser.toolbarbuttons.introduced.sidebar-button", true);
+ pref("sidebar.animation.enabled", true);
+@@ -3092,3 +3095,6 @@ pref("app.normandy.api_url", "https://normandy.cdn.mozilla.net/api/v1");
  pref("app.normandy.dev_mode", false);
 -pref("app.normandy.enabled", true);
 +// Fenn (firefox-winui): no Normandy recipes; Mozilla targets them at Firefox.
@@ -65,7 +70,7 @@ index 0f4b2915ad2..23d9ee6dc7c 100644
 +// runtime and also changes first-startup initialization.
 +pref("app.normandy.enabled", false);
  pref("app.normandy.first_run", true);
-@@ -3099,7 +3103,8 @@ pref("app.normandy.last_seen_buildid", "");
+@@ -3099,7 +3105,8 @@ pref("app.normandy.last_seen_buildid", "");
  pref("app.normandy.onsync_skew_sec", 600);
 -#ifdef MOZ_DATA_REPORTING
 -  pref("app.shield.optoutstudies.enabled", true);
@@ -79,12 +84,12 @@ index 0f4b2915ad2..23d9ee6dc7c 100644
 +// Fenn (firefox-winui): no Start Menu Private Browsing shortcut is created.
 +pref("browser.privacySegmentation.createdShortcut", true);
  
-@@ -3417,2 +3422,4 @@ pref("devtools.dom.enabled", false);
+@@ -3417,2 +3424,4 @@ pref("devtools.dom.enabled", false);
  pref("devtools.accessibility.enabled", true);
 +// Keep its inspection shortcut out of page context menus unless requested.
 +pref("fenn.contextMenu.inspectAccessibility", false);
  
-@@ -3877,2 +3884,60 @@ pref("distribution.mozillaonline.ignore", true);
+@@ -3877,2 +3886,60 @@ pref("distribution.mozillaonline.ignore", true);
  
 +// The native tab strip is on by default in every lane (unpackaged launcher and
 +// MSIX alike); turn it off to fall back to Firefox's own UI. Firefox keeps its
@@ -21803,10 +21808,10 @@ index 00000000000..be4830a0b21
 +}
 diff --git a/browser/base/content/WinUIGroupHeader.sys.mjs b/browser/base/content/WinUIGroupHeader.sys.mjs
 new file mode 100644
-index 00000000000..ce08dde36a4
+index 00000000000..559fde0e918
 --- /dev/null
 +++ b/browser/base/content/WinUIGroupHeader.sys.mjs
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,151 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21840,6 +21845,8 @@ index 00000000000..ce08dde36a4
 +    if(!pending || pending.sent)return;
 +    const group=this.owner.stripSession?.ids.get(pending.group);
 +    if(!group || !pending.group.isConnected || !w.gBrowser.tabGroups.includes(pending.group)){this.pendingCreation=null;return;}
++    // Firefox may select the new group's target after addTabGroup returns.
++    pending.tab=w.gBrowser.selectedTab;
 +    pending.sent=true;
 +    try {w.windowUtils.syncWinUITabMenu(JSON.stringify({version:2,publishOnly:true,groupCreation:{request:pending.request,group,window:this.owner.stripSession.windowDragSession}}));}
 +    catch(error){

@@ -62,6 +62,19 @@ test('creation publishes after strip identity and exposes only name, color, Done
   assert.equal(f.act(3,{name:'Final',color:'green'}),1);assert.equal(f.group.label,'Final');assert.equal(f.group.isConnected,true);
   assert.deepEqual(f.calls.filter(c=>c[0]==='created'),[['created',true]]);assert.equal(f.act(3),2);
 });
+test('creation uses Firefox selection settled before publication and rejects later selection changes',()=>{
+  for(const changedAfterPublication of [false,true]) {
+    const f=fixture();assert.equal(f.menu.requestCreation(f.group),true);
+    f.w.gBrowser.selectedTab=f.tabs[1];
+    f.menu.publishCreation();const request=f.publications.at(-1).request;
+    if(changedAfterPublication)f.w.gBrowser.selectedTab=f.tabs[0];
+    const selected=f.w.gBrowser.selectedTab;
+    assert.equal(f.menu.open(f.group,{x:4,y:5,width:60,height:32},1,request),!changedAfterPublication);
+    assert.equal(f.w.gBrowser.selectedTab,selected);
+    assert.equal(f.group.isConnected,true);
+    if(!changedAfterPublication)assert.equal(f.menu.description.creation,true);
+  }
+});
 test('creation Cancel and Escape ungroup once; light dismissal keeps tabs grouped',()=>{
   for(const action of [{command:21},{command:0,cancel:true},{command:0}]){
     const f=fixture();create(f);assert.equal(f.act(action.command,{...action,name:'Draft',color:'red'}),1);
