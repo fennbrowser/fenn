@@ -105,7 +105,9 @@ impl AddressInteraction {
                 // the editor must not synthesize a fresh entry on observation.
                 if value != 0 { self.focused = true; }
             },
-            ContentFocus => { if self.gesture.is_none() { effects = Effect::ReleaseContentFocus as u32; } },
+            // A retained content-focus snapshot cannot reclaim another native
+            // control after the address interaction has already lost focus.
+            ContentFocus => { if self.focused && self.gesture.is_none() { effects = Effect::ReleaseContentFocus as u32; } },
         }
         Some(self.state(effects))
     }
@@ -180,6 +182,14 @@ mod tests {
 #[cfg(test)]
 mod effect_tests {
     use super::*;
+    #[test] fn content_handoff_does_not_take_focus_from_other_native_controls() {
+        let mut state=AddressInteraction::default();
+        assert_eq!(state.event(8,0,0,0).unwrap().effects,0);
+        state.event(1,0,0,1);
+        assert_eq!(state.event(8,0,0,0).unwrap().effects,16);
+        state.event(1,0,0,0);
+        assert_eq!(state.event(8,0,0,0).unwrap().effects,0);
+    }
     #[test] fn effects_are_revoked_by_interrupt_and_content_handoff_waits_for_gesture() {
         let mut state=AddressInteraction::default();
         let begin=state.event(3,1,0,1).unwrap();

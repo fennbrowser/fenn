@@ -363,7 +363,11 @@ struct NativeAddress {
         // island. Only the owning pane's live island/popup focus can reveal it.
         islandFocusOwned = islandHasFocus;
         UpdateEmbeddedControls();
-        if ((mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen() || pageActions.open) && islandHasFocus) return;
+        // Popup focus can temporarily sit on the presenter, outside this root.
+        // Retain Firefox's address edit target for the whole overflow opening.
+        const bool overflowAddressMenu=navigation && navigation->overflowMenu.preserveAddress &&
+            navigation->overflowMenu.flyout && navigation->overflowMenu.flyout.IsOpen();
+        if ((mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen() || pageActions.open || overflowAddressMenu) && islandHasFocus) return;
         bool inside = false;
         if (root.XamlRoot() && islandHasFocus) {
             auto focused =
@@ -434,7 +438,9 @@ struct NativeAddress {
         });
         Automation::AutomationProperties::SetName(field, L"Search or enter address");
         Automation::AutomationProperties::SetAutomationId(field, L"FennAddress");
-        field.GotFocus([this](auto const&, auto const&) { formattedValue.Hide(); });
+        field.GotFocus([this, alive=std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if(!alive.expired())formattedValue.Hide();
+        });
         field.TextChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
             formattedValue.Refresh(field, EditorOwned() || composing);
