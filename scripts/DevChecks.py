@@ -135,6 +135,7 @@ def fast(checks, tools):
     problem = source_problem(checks.root)
     checks.run("Line endings", [python, "scripts/Check-LineEndings.py"],
                missing=None if tools["git"] else "Git is required.")
+    checks.run("Fixture health (static)", [python, "scripts/Check-FixtureHealth.py"], missing=problem)
     checks.run("Native UI dependency ledger", [python, "scripts/Check-NativeUIDependencies.py"],
                missing=problem)
     checks.run("Address model dependency ledger", [tools["node"], "scripts/Check-AddressModelDependencies.mjs"],
