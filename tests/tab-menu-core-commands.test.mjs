@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { describeNativeTabCommands } from "../upstream/firefox/browser/base/content/WinUITabMenuCommands.sys.mjs";
 import vm from "node:vm";
 import { test } from "node:test";
 
@@ -30,7 +31,10 @@ function fixture() {
     gDialogBox: { isOpen: false },
     window: {},
     XPCOMUtils: { defineLazyPreferenceGetter() {} },
-    ChromeUtils: { defineESModuleGetters() {} },
+    ChromeUtils: { defineESModuleGetters() {}, importESModule(spec) {
+      assert.equal(spec, "chrome://browser/content/WinUITabMenuCommands.sys.mjs");
+      return { describeNativeTabCommands };
+    } },
     Glean: { tabgroup: { tabInteractions: {
       duplicate: { add: () => calls.push(["group-metric"]) },
     } } },
@@ -294,4 +298,42 @@ test("every core action forwards to the corresponding Firefox operation", () => 
   assert(f.menu.executeCoreCommand(f.tabs[1], "unload"));
   assert.equal(f.calls.at(-1)[0], "unload");
   assert.equal(f.calls.at(-1)[1][0], f.tabs[1]);
+});
+
+
+test("extracted descriptor is registered as a packaged Gecko resource", () => {
+  const jar = readFileSync(new URL("../upstream/firefox/browser/base/jar.mn", import.meta.url), "utf8");
+  assert.match(jar, /content\/browser\/WinUITabMenuCommands\.sys\.mjs\s+\(content\/WinUITabMenuCommands\.sys\.mjs\)/);
+});
+
+test("forwarder reads live lexical bindings even during synchronous description", () => {
+  const f = coreFixture();
+  const replacement = { ...f.browser, allTabsSelected: () => true };
+  // The selected-target lookup may synchronously replace the window binding.
+  // Later predicates must read that binding rather than an eager context copy.
+  const original = f.menu.getCommandTabs;
+  f.menu.getCommandTabs = function(tab) {
+    const tabs = original.call(this, tab);
+    f.context.gBrowser = replacement;
+    return tabs;
+  };
+  assert.equal(f.describe().get("select-all").enabled, false);
+  f.context.gDialogBox = { isOpen: true };
+  assert.equal(f.menu.executeCoreCommand(f.tabs[1], "r"), false);
+  assert.deepEqual(f.calls, []);
+});
+
+test("each window supplies its own current history and group policy", () => {
+  const a = coreFixture(), b = coreFixture();
+  a.menu.Tabbrowser.prefs.tabGroupsEnabled = false;
+  b.context.SessionStore = { getLastClosedTabCount(owner) {
+    assert.equal(owner, b.context.window);
+    return 2;
+  } };
+  assert.equal(a.describe().has("new-group"), false);
+  assert.equal(b.describe().has("new-group"), true);
+  assert.equal(a.describe().get("restore").enabled, false);
+  assert.equal(b.describe().get("restore").tabCount, 2);
+  b.context.SessionStore = { getLastClosedTabCount: () => 0 };
+  assert.equal(b.menu.executeCoreCommand(b.tabs[1], "restore"), false);
 });
