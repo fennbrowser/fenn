@@ -51,11 +51,6 @@
 #define SHELL_GLOW_HALO_GONE 8
 
 /*
- Ease-out duration shared with the sliding tabs.
- */
-#define EASE_MS 135.0
-
-/*
  Bound on surfaces and layout slots per frame.
  */
 #define MAX_ENTRIES 10000
@@ -83,11 +78,6 @@
 #define MAX_ADDRESS_SECTION_FINGERPRINT ((6 * 1024) * 1024)
 
 /*
- Matches the host's neighbor animation: 135 ms, cubic-bezier(.215, .61, .355, 1).
- */
-#define SETTLE_MS 135.0
-
-/*
  Bound on simultaneously settling elements.
  */
 #define MAX_SETTLING 4096
@@ -95,6 +85,10 @@
 #define SHELL_SETTLE_TAB 0
 
 #define SHELL_SETTLE_HEADER 1
+
+#define TAB_MOTION_MS 135
+
+#define GROUP_MOTION_MS 150
 
 /*
  Result of every entry point. `Ok` is zero so the host can test it directly.

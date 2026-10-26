@@ -8,7 +8,7 @@
 use crate::strip::ShellStripSlot;
 
 /// Ease-out duration shared with the sliding tabs.
-pub const EASE_MS: f64 = 135.0;
+pub const EASE_MS: f64 = crate::motion::TAB_MOTION_MS as f64;
 /// Bound on surfaces and layout slots per frame.
 pub const MAX_ENTRIES: usize = 10_000;
 
@@ -72,8 +72,7 @@ impl Rect {
 }
 
 fn eased(start: f64, now: f64) -> f32 {
-    let t = ((now - start) / EASE_MS).clamp(0.0, 1.0) as f32;
-    1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t)
+    crate::motion::ease((now - start) / EASE_MS) as f32
 }
 
 #[derive(Clone, Copy, Default)]

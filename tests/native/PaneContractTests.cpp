@@ -38,6 +38,7 @@
 #include "../../native/WinUIPane/PinnedExtensionButtons.h"
 #include "../../native/WinUIPane/SuggestionList.h"
 #include "../../native/WinUIPane/AddressValue.h"
+#include "../../native/WinUIPane/TabContentScale.h"
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <wrl/client.h>
 #include "GlowFrameProbe.h"
@@ -2041,8 +2042,85 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
         auto entry = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t*)>(GetProcAddress(module, "WinUIPaneTestEntryMotion"));
         Require(entry != nullptr, "entry motion inspector exists");
         const bool animated = winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled();
+        for (int i = 0; i < 400; ++i) {
+            uint32_t idle[10]{};
+            Require(SUCCEEDED(entry(host, 0, idle)), "wait for prior caption-fixture motion before pixel control");
+            if (!idle[0] && !idle[3] && !idle[4] && !idle[5] && !idle[6]) break;
+            Pump(); Sleep(5);
+        }
+        // Rendered-pixel control: a fixed-size favicon must stay square while
+        // its row changes width. The uncompensated control proves this capture
+        // observes compositor scaling rather than only XAML's layout values.
+        {
+            auto header = first.Header().as<Controls::Grid>();
+            auto icon = header.Children().GetAt(0).as<Controls::Grid>();
+            const auto background = icon.Background();
+            const auto visibility = icon.Visibility();
+            std::vector<Visibility> iconChildren;
+            for (auto child : icon.Children()) { iconChildren.push_back(child.Visibility()); child.Visibility(Visibility::Collapsed); }
+            icon.Background(Media::SolidColorBrush(winrt::Windows::UI::Color{255, 255, 0, 255}));
+            icon.Visibility(Visibility::Visible);
+            auto visual = Hosting::ElementCompositionPreview::GetElementVisual(first);
+            const auto originalScale = visual.Scale();
+            Require(std::abs(originalScale.x - 1.f) < .001f, "pixel control starts from an unscaled resting row");
+            const auto originalCenter = visual.CenterPoint();
+            visual.CenterPoint({0, 0, 0});
+            auto marker = [&] {
+                for (int i = 0; i < 15; ++i) { Pump(); Sleep(10); }
+                RECT client{}; GetClientRect(host, &client);
+                POINT origin{}; ClientToScreen(host, &origin);
+                HDC screen = GetDC(nullptr), memory = CreateCompatibleDC(screen);
+                BITMAPINFO info{}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                info.bmiHeader.biWidth = client.right; info.bmiHeader.biHeight = -client.bottom;
+                info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32; info.bmiHeader.biCompression = BI_RGB;
+                void* pixels{};
+                HBITMAP bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+                Require(bitmap && pixels, "create content-scale capture");
+                auto previous = SelectObject(memory, bitmap);
+                Require(BitBlt(memory, 0, 0, client.right, client.bottom, screen, origin.x, origin.y, SRCCOPY), "capture composed tab content");
+                int left = client.right, right = -1, top = client.bottom, bottom = -1;
+                auto data = static_cast<uint32_t const*>(pixels);
+                for (int y = 0; y < client.bottom; ++y) for (int x = 0; x < client.right; ++x) {
+                    const auto pixel = data[y * client.right + x];
+                    if ((pixel & 255) > 240 && ((pixel >> 8) & 255) < 20 && ((pixel >> 16) & 255) > 240) {
+                        left = std::min(left, x); right = std::max(right, x);
+                        top = std::min(top, y); bottom = std::max(bottom, y);
+                    }
+                }
+                SelectObject(memory, previous); DeleteObject(bitmap); DeleteDC(memory); ReleaseDC(nullptr, screen);
+                Require(right >= left && bottom >= top, "favicon marker is visible in composed pixels");
+                return std::pair{right - left + 1, bottom - top + 1};
+            };
+            const auto natural = marker();
+            visual.Scale({.65f, 1, 1});
+            const auto stretched = marker();
+            Require(stretched.first < natural.first - 2, "unprotected favicon demonstrates horizontal distortion");
+            for (bool rtlContent : {false, true}) {
+                uint32_t ignored[10]{};
+                Require(SUCCEEDED(entry(host, rtlContent ? 2 : 1, ignored)), "set content-scale flow direction");
+                {
+                    TabContentScale preserve(first);
+                    for (float scale : {.65f, 1.35f, .8f, 1.f}) {
+                        visual.Scale({scale, 1, 1});
+                        const auto shown = marker();
+                        fprintf(stderr, "Content scale rtl=%d scale=%.2f natural=%dx%d shown=%dx%d\n",
+                            int(rtlContent), scale, natural.first, natural.second, shown.first, shown.second);
+                        Require(std::abs(shown.first - natural.first) <= 1 && shown.second == natural.second,
+                            "composed favicon retains its natural size through shrink, grow and interruption");
+                    }
+                }
+                visual.Scale({.65f, 1, 1});
+                Require(marker().first < natural.first - 2, "content compensation releases its expression on cancellation");
+            }
+            visual.Scale(originalScale); visual.CenterPoint(originalCenter);
+            icon.Background(background); icon.Visibility(visibility);
+            for (uint32_t i = 0; i < iconChildren.size(); ++i) icon.Children().GetAt(i).Visibility(iconChildren[i]);
+            uint32_t ignored[10]{};
+            Require(SUCCEEDED(entry(host, 1, ignored)), "restore flow direction after content-scale checks");
+            settleWidths();
+        }
         struct Seen { bool tracked{}, clipOrigin{}, closing{}, neighbors{}; uint32_t addSign{}, ghostLeft{}, firstScale{}, firstShift{5000}; };
-        auto observe = [&](std::function<void()> change) {
+        auto observe = [&](std::function<void()> change, std::function<void()> checkGhost = {}) {
             Seen seen{};
             change();
             for (int i = 0; i < 400; ++i) {
@@ -2051,7 +2129,15 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
                 seen.tracked |= out[0] != 0;
                 seen.clipOrigin |= out[1] != 0 && out[1] == out[2];
                 seen.closing |= out[4] != 0;
+                if (out[4] && checkGhost) checkGhost();
                 seen.neighbors |= out[6] != 0;
+                if (out[8] && std::abs(int(out[8]) - 1000) >= 2) {
+                    uint32_t protectedRows[10]{};
+                    Require(SUCCEEDED(entry(host, 3, protectedRows)), "inspect resize content protection");
+                    if (!protectedRows[0]) fprintf(stderr, "Missing content protection: frame=%d scale=%u moving=%u\n", i, out[8], out[6]);
+                    Require(protectedRows[0] != 0,
+                        "real neighbor settles install natural-size content protection");
+                }
                 if (out[3] && !seen.addSign) seen.addSign = out[3];
                 if (out[7] && !seen.ghostLeft) seen.ghostLeft = out[7];
                 if (out[6] && !seen.firstScale) { seen.firstScale = out[8]; seen.firstShift = out[9]; }
@@ -2110,9 +2196,34 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
                                 "existing tabs start on their old position and width and ease to the new one in both directions");
                     }
                 }
-                const auto closing = view.TabItems().GetAt(2).as<Controls::TabViewItem>()
-                    .TransformToVisual(root).TransformBounds({0, 0, 1, 1});
-                auto closed = observe([&] { sync(); });
+                auto closingRow = view.TabItems().GetAt(2).as<Controls::TabViewItem>();
+                // The visual title intentionally differs from its UIA name;
+                // status artwork and close visibility must survive the wipe.
+                auto closingHeader = closingRow.Header().as<Controls::Grid>();
+                closingHeader.Children().GetAt(2).as<Controls::StackPanel>().Children().GetAt(0)
+                    .as<Controls::TextBlock>().Text(L"Visible title, not the accessibility label");
+                closingHeader.Children().GetAt(3).Visibility(Visibility::Visible);
+                closingRow.IsClosable(wide);
+                closingRow.FontWeight(winrt::Windows::UI::Text::FontWeight{600});
+                root.UpdateLayout();
+                const auto closing = closingRow.TransformToVisual(root).TransformBounds({0, 0, 1, 1});
+                auto closed = observe([&] { sync(); }, [&] {
+                    bool foundGhost = false;
+                    for (auto layer : root.Children()) {
+                        auto canvas = layer.try_as<Controls::Canvas>();
+                        if (!canvas) continue;
+                        for (auto child : canvas.Children()) {
+                            auto ghost = child.try_as<Controls::TabViewItem>();
+                            if (!ghost) continue;
+                            foundGhost = true;
+                            Require(ghost.Header() == closingHeader && ghost.IsClosable() == wide &&
+                                ghost.FontWeight().Weight == 600 && !ghost.IsHitTestVisible() &&
+                                Automation::AutomationProperties::GetAccessibilityView(ghost) == Automation::Peers::AccessibilityView::Raw,
+                                "closing ghost retains the exact title/status header and close state without input or UIA exposure");
+                        }
+                    }
+                    Require(foundGhost, "inspect the actual closing ghost");
+                });
                 settleWidths(); waitIdle();
                 if (animated) {
                     Require(closed.closing && closed.ghostLeft, "closing a tab shows a stand-in");
@@ -3972,13 +4083,18 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 Require(ambientMask.Mask().try_as<Comp::CompositionSurfaceBrush>() &&
                     outlineChild().Comment() == L"group-outline-reveal",
                     "the light spreads from its source through reveal masks");
-                auto tabContainer = [&] {
-                    auto row = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
-                    return Media::VisualTreeHelper::GetChild(row, 0).as<FrameworkElement>().FindName(L"TabContainer").as<Controls::Grid>();
+                auto tabContainer = [&](uint32_t id = 42) {
+                    for (auto item : view.TabItems()) {
+                        auto row = item.as<Controls::TabViewItem>();
+                        if (unbox_value<uint32_t>(row.Tag()) == id)
+                            return Media::VisualTreeHelper::GetChild(row, 0).as<FrameworkElement>().FindName(L"TabContainer").as<Controls::Grid>();
+                    }
+                    return Controls::Grid{nullptr};
                 };
                 Require(tabContainer().BackgroundTransition() &&
-                    tabContainer().BackgroundTransition().Duration() == std::chrono::milliseconds(400),
-                    "tab backgrounds fade between states while a group is revealing");
+                    tabContainer().BackgroundTransition().Duration() == std::chrono::milliseconds(400) &&
+                    !tabContainer(41).BackgroundTransition() && !tabContainer(43).BackgroundTransition(),
+                    "only the revealing group's tab fades between states");
                 auto wash = bottomGlow.Children().First().Current().as<Comp::SpriteVisual>();
                 Require(wash.Opacity() == .65f && washStop().Color().A == 92,
                     "the light-up leaves static properties at their final values");
@@ -4114,6 +4230,9 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 printf("Glow regroup: surface=%d outline=%d lighting=%u\n", int(bool(reachSurface())), int(bool(outline())), query(0));
                 fflush(stdout);
                 Require(regrouped && !query(0), "regrouping in a full snapshot shows the group already lit");
+                // Keep one realized member in the group when the other leaves
+                // during the reveal below.
+                layout(true); settle(); settle();
                 // groupGlowFadeOut off (its default): glow still lights up, but goes at once.
                 setOption(L"groupGlowFadeOut", false); settle();
                 setOption(L"groupGlow", false); settle();
@@ -4122,6 +4241,17 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 setOption(L"groupGlow", true);
                 Require(waitFor([&] { return bottomGlow.Children().Count() == 1 && query(0) == 1; }),
                     "without the fade-out, a newly lit group still lights up");
+                glowDelta([&](auto const& strip) {
+                    strip.SetNamedValue(L"layout", winrt::Windows::Data::Json::JsonArray::Parse(
+                        LR"([{"group":0,"tab":41},{"group":0,"tab":42},{"group":7,"tab":0},{"group":7,"tab":43}])"));
+                });
+                root.UpdateLayout();
+                fprintf(stderr, "Reveal membership: active=%u fades=%d/%d/%d\n", query(0),
+                    int(bool(tabContainer(41).BackgroundTransition())), int(bool(tabContainer(42).BackgroundTransition())),
+                    int(bool(tabContainer(43).BackgroundTransition())));
+                Require(tabContainer(43).BackgroundTransition() && !tabContainer(42).BackgroundTransition() &&
+                    !tabContainer(41).BackgroundTransition(),
+                    "a revealing group fades only its current members and releases a departing member's fade");
                 Require(waitFor([&] { return query(0) == 0; }), "the light-up completes without the fade-out");
                 setOption(L"groupGlowFadeOut", true); settle();
                 // Reduced motion: every change applies at once and motion detaches.
@@ -4139,10 +4269,12 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 // the group's motion instead of snapping them to the new width.
                 using Value = winrt::Windows::Data::Json::JsonValue;
                 WinUITab crowded[]{{41,L"One"},{42,L"Two"},{43,L"Three"},{44,L"Four"},{45,L"Five"},{46,L"Six"},{47,L"Seven"},{48,L"Eight"}};
+                bool crowdRtl = false;
                 auto crowd = [&](bool collapsed) {
                     auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":false,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[],"layout":[]}})");
                     auto strip = state.GetNamedObject(L"strip");
                     strip.SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
+                    strip.SetNamedValue(L"rtl", Value::CreateBooleanValue(crowdRtl));
                     strip.GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(L"collapsed", Value::CreateBooleanValue(collapsed));
                     auto rows = strip.GetNamedArray(L"rows");
                     auto slots = strip.GetNamedArray(L"layout");
@@ -4202,6 +4334,28 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 Require(std::abs(headerMidway - (headerBefore + (headerAfter - headerBefore) * progress)) < 1.5,
                     "the group header follows one eased path while the widths before it animate");
                 Require(SUCCEEDED(motion(host,9,&resizing)) && !resizing, "width motion ends with the group motion");
+                // Reverse a paused collapse, then reverse the expansion again.
+                // Seeking the replacement to zero exposes a snap that waiting
+                // for completion would hide, independent of guest frame rate.
+                for (bool rightToLeft : {false, true}) for (bool collapseFirst : {true, false}) {
+                    crowdRtl = rightToLeft;
+                    crowd(!collapseFirst); settle(); settle();
+                    crowd(collapseFirst);
+                    Require(SUCCEEDED(motion(host,10,&paused)) && paused, "pause group motion before reversing");
+                    root.UpdateLayout();
+                    const auto shownWidth = loose[0].ActualWidth();
+                    const auto shownHeader = left(crowdHeader);
+                    crowd(!collapseFirst);
+                    Require(SUCCEEDED(motion(host,12,&paused)) && paused, "inspect reversed group motion at its start");
+                    root.UpdateLayout();
+                    fprintf(stderr, "Group reversal rtl=%d collapseFirst=%d width=%.1f->%.1f header=%.1f->%.1f\n",
+                        int(rightToLeft), int(collapseFirst), shownWidth, loose[0].ActualWidth(), shownHeader, left(crowdHeader));
+                    Require(std::abs(loose[0].ActualWidth() - shownWidth) < 1.5 &&
+                        std::abs(left(crowdHeader) - shownHeader) < 1.5,
+                        "group reversal preserves displayed tab width and header position");
+                    Require(SUCCEEDED(motion(host,11,&paused)), "resume reversed group motion");
+                    settle(); settle();
+                }
             }
         }
         puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");

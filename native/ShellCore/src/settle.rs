@@ -7,9 +7,8 @@
 //! geometry. Time is the host's monotonic clock in milliseconds.
 use std::collections::BTreeMap;
 
-/// Matches the host's neighbor animation: 135 ms, cubic-bezier(.215, .61, .355, 1).
-pub const SETTLE_MS: f64 = 135.0;
-const CURVE: (f64, f64, f64, f64) = (0.215, 0.61, 0.355, 1.0);
+/// Shared structural motion duration, also used by the native host.
+pub const SETTLE_MS: f64 = crate::motion::TAB_MOTION_MS as f64;
 /// Bound on simultaneously settling elements.
 pub const MAX_SETTLING: usize = 4096;
 
@@ -25,23 +24,8 @@ pub struct ShellSettleSample {
     pub sx: f32,
 }
 
-fn bezier(a: f64, b: f64, u: f64) -> f64 {
-    let v = 1.0 - u;
-    3.0 * v * v * u * a + 3.0 * v * u * u * b + u * u * u
-}
-
-/// Progress of the easing curve at linear time `t` in [0, 1].
-pub fn ease(t: f64) -> f64 {
-    if t <= 0.0 { return 0.0; }
-    if t >= 1.0 { return 1.0; }
-    // x(u) is monotonic for these control points: bisect for x(u) = t.
-    let (mut lo, mut hi) = (0.0, 1.0);
-    for _ in 0..40 {
-        let mid = (lo + hi) / 2.0;
-        if bezier(CURVE.0, CURVE.2, mid) < t { lo = mid; } else { hi = mid; }
-    }
-    bezier(CURVE.1, CURVE.3, (lo + hi) / 2.0)
-}
+/// Sample the same structural curve used by XAML and Composition.
+pub fn ease(t: f64) -> f64 { crate::motion::ease(t) }
 
 #[derive(Clone, Copy)]
 struct Hold { dx: f32, sx: f32, start: f64 }

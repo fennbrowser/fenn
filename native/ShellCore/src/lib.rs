@@ -46,6 +46,7 @@ pub mod preview_publication;
 pub mod address_sections;
 pub mod queue;
 pub mod settle;
+pub mod motion;
 pub mod strip;
 pub mod layout_work;
 

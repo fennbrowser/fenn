@@ -1,4 +1,5 @@
 #pragma once
+#include "TabMotion.h"
 
 // WinUI-only easing; ShellCore supplies the insertion offsets for each block.
 struct GroupDragShift {
@@ -34,9 +35,8 @@ struct GroupDragShift {
         if (!animate || !element.IsLoaded()) { entry.animation=nullptr; return; }
         Media::Animation::DoubleAnimation motion;
         motion.From(from); motion.To(target);
-        motion.Duration(Duration{Windows::Foundation::TimeSpan{std::chrono::milliseconds(135)},DurationType::TimeSpan});
-        Media::Animation::CubicEase ease;
-        ease.EasingMode(Media::Animation::EasingMode::EaseOut); motion.EasingFunction(ease);
+        motion.Duration(Duration{Windows::Foundation::TimeSpan{TabMotion::Duration},DurationType::TimeSpan});
+        auto ease = TabMotion::Ease(); motion.EasingFunction(ease);
         Media::Animation::Storyboard::SetTarget(motion,entry.shift);
         Media::Animation::Storyboard::SetTargetProperty(motion,L"X");
         entry.animation=Media::Animation::Storyboard();

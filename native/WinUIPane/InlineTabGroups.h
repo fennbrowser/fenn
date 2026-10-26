@@ -1,4 +1,5 @@
 #pragma once
+#include "TabMotion.h"
 #include <chrono>
 #include <map>
 #include <optional>
@@ -12,7 +13,7 @@
 // WinUI projection only. Firefox supplies order/visibility; ShellCore validates
 // the complete layout. All tab policy and group commands remain in Firefox.
 struct InlineTabGroups {
-    static constexpr auto MotionDuration = std::chrono::milliseconds(150);
+    static constexpr auto MotionDuration = TabMotion::GroupDuration;
     using Object = Windows::Foundation::IInspectable;
     using Vector = Windows::Foundation::Collections::IObservableVector<Object>;
     using Map = Windows::Foundation::Collections::IObservableMap<hstring, Object>;
@@ -166,8 +167,7 @@ struct InlineTabGroups {
             motion.From(previous);
             motion.To(target);
             motion.Duration(Duration{Windows::Foundation::TimeSpan{MotionDuration}, DurationType::TimeSpan});
-            Media::Animation::CubicEase ease;
-            ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+            auto ease = TabMotion::Ease();
             motion.EasingFunction(ease);
             Media::Animation::Storyboard::SetTarget(motion, marker);
             Media::Animation::Storyboard::SetTargetProperty(motion, L"Width");
@@ -621,8 +621,7 @@ struct InlineTabGroups {
                     rotation.From(previous + direction * (collapsed ? -90.0 : 90.0));
                     rotation.To(0.0);
                     rotation.Duration(Duration{Windows::Foundation::TimeSpan{MotionDuration}, DurationType::TimeSpan});
-                    Media::Animation::CubicEase ease;
-                    ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+                    auto ease = TabMotion::Ease();
                     rotation.EasingFunction(ease);
                     Media::Animation::Storyboard::SetTarget(rotation, turn);
                     Media::Animation::Storyboard::SetTargetProperty(rotation, L"Angle");

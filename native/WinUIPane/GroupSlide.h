@@ -1,4 +1,5 @@
 #pragma once
+#include "TabMotion.h"
 #include <winrt/Windows.UI.ViewManagement.h>
 
 // WinUI-only lifetime and geometry. ShellCore plans arrivals/departures;
@@ -8,13 +9,14 @@ struct GroupSlide {
     using Rect = Windows::Foundation::Rect;
     struct Frame { Element element{nullptr}; Rect bounds{}; };
     struct Moving { Element element{nullptr}; Media::Transform previous{nullptr}; };
-    struct Ghost { Controls::Border clipper{nullptr}; Rect bounds{}; };
+    struct Ghost { Controls::Border clipper{nullptr}; Rect bounds{}; uint32_t tab{}; };
     struct Borrowed { Controls::TabViewItem source{nullptr}, ghost{nullptr}; Windows::Foundation::IInspectable content{nullptr}; };
     struct InputState { UIElement element{nullptr}; bool hitTest{}; Automation::Peers::AccessibilityView accessibility{}; hstring id; };
     struct Resize { Controls::TabViewItem row{nullptr}; double from{}, to{}, minWidth{}, maxWidth{}; };
     std::vector<Borrowed> borrowed;
     std::vector<InputState> inputStates;
     std::map<uint64_t, Frame> before;
+    std::map<uint32_t, Rect> returning;
     std::vector<ShellGroupMotionRow> plan;
     std::vector<Moving> moving;
     std::vector<Ghost> departing;
@@ -85,7 +87,7 @@ struct GroupSlide {
         borrowed.clear();
         moving.clear(); departing.clear(); active = nullptr;
         if (overlay) { try { overlay.Children().Clear(); } catch (...) {} }
-        before.clear(); plan.clear();
+        before.clear(); returning.clear(); plan.clear();
     }
     void Remember(uint64_t key, Element const& element) {
         if (!Placed(element) || before.size() >= 128) return;
@@ -99,15 +101,29 @@ struct GroupSlide {
                  std::map<uint32_t, Controls::TabViewItem> const& rows,
                  InlineTabGroups const& groups, Controls::Button const& add,
                  std::vector<ShellGroupMotionRow> changes) {
-        Cancel();
-        if (changes.empty() || !Enabled() || !owner.IsLoaded()) return;
+        if (changes.empty() || !Enabled() || !owner.IsLoaded()) { Cancel(); return; }
+        // Sample live rows and departing faces before stopping their timelines.
+        // A reversal must start where the previous frame drew them, not at the
+        // old animation's destination. Ghosts supply geometry only; Firefox's
+        // newly published rows remain the sole interactive controls.
+        std::map<uint32_t, Rect> reversed;
+        for (auto const& ghost : departing) {
+            try { reversed.emplace(ghost.tab, Bounds(ghost.clipper.Child().as<Element>(), owner)); }
+            catch (...) {}
+        }
+        before.clear();
         root = owner;
-        viewport = list;
-        oldViewportWidth = list ? list.ActualWidth() : 0;
-        rtl = root.FlowDirection() == FlowDirection::RightToLeft;
         for (auto const& [id, row] : rows) Remember(id, row);
         for (auto const& [id, run] : groups.runs) if (run.button) Remember(GroupKey(uint32_t(id)), run.button);
         Remember(AddKey, add);
+        auto displayed = std::move(before);
+        const auto displayedWidth = list ? list.ActualWidth() : 0;
+        Cancel();
+        before = std::move(displayed);
+        returning = std::move(reversed);
+        viewport = list;
+        oldViewportWidth = displayedWidth;
+        rtl = root.FlowDirection() == FlowDirection::RightToLeft;
         plan = std::move(changes);
         pending = true;
         if (!overlay) {
@@ -145,8 +161,7 @@ struct GroupSlide {
         Media::Animation::DoubleAnimation animation;
         animation.From(from); animation.To(to);
         animation.Duration(Duration{Windows::Foundation::TimeSpan{InlineTabGroups::MotionDuration}, DurationType::TimeSpan});
-        Media::Animation::CubicEase ease;
-        ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+        auto ease = TabMotion::Ease();
         animation.EasingFunction(ease);
         Media::Animation::Storyboard::SetTarget(animation, transform);
         Media::Animation::Storyboard::SetTargetProperty(animation, L"X");
@@ -183,10 +198,12 @@ struct GroupSlide {
         if (!draggedGroup) {
             for (auto const& [id, row] : rows) {
                 auto old = before.find(id);
-                if (old == before.end() || !Placed(row)) continue;
+                auto reversed = returning.find(id);
+                if ((old == before.end() && reversed == returning.end()) || !Placed(row)) continue;
+                const double from = old != before.end() ? old->second.bounds.Width : reversed->second.Width;
                 const double to = row.ActualWidth();
-                if (to > 0 && std::abs(old->second.bounds.Width - to) >= .5)
-                    resizes.push_back({row, old->second.bounds.Width, to, row.MinWidth(), row.MaxWidth()});
+                if (to > 0 && std::abs(from - to) >= .5)
+                    resizes.push_back({row, from, to, row.MinWidth(), row.MaxWidth()});
             }
         }
         if (viewport && (viewport.ActualWidth() < oldViewportWidth || !resizes.empty())) {
@@ -230,8 +247,7 @@ struct GroupSlide {
                 animation.From(item.from); animation.To(item.to);
                 animation.EnableDependentAnimation(true);
                 animation.Duration(Duration{Windows::Foundation::TimeSpan{InlineTabGroups::MotionDuration}, DurationType::TimeSpan});
-                Media::Animation::CubicEase ease;
-                ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+                auto ease = TabMotion::Ease();
                 animation.EasingFunction(ease);
                 Media::Animation::Storyboard::SetTarget(animation, item.row);
                 Media::Animation::Storyboard::SetTargetProperty(animation, property);
@@ -254,7 +270,10 @@ struct GroupSlide {
                 if (!row.IsLoaded()) continue;
                 const auto now = Bounds(row, root);
                 if (now.X + now.Width <= 0 || now.X >= root.ActualWidth()) continue;
-                Slide(row, edge - now.X - (rtl ? 0 : now.Width) - shift(change.tab), 0);
+                auto previous = returning.find(change.tab);
+                const auto from = previous != returning.end() ? previous->second.X - now.X :
+                    edge - now.X - (rtl ? 0 : now.Width);
+                Slide(row, from - shift(change.tab), 0);
             } else if (before.count(change.tab)) {
                 auto old = before.at(change.tab);
                 // WinUI can keep removed containers parented in its recycle
@@ -282,7 +301,7 @@ struct GroupSlide {
                 overlay.Children().Append(wrapper);
                 ghost.UpdateLayout();
                 MakeVisualOnly(ghost,retainDeparting ? &inputStates : nullptr);
-                departing.push_back({wrapper, old.bounds});
+                departing.push_back({wrapper, old.bounds, change.tab});
                 Slide(old.element, 0, edge - old.bounds.X - (rtl ? 0 : old.bounds.Width));
             }
         }

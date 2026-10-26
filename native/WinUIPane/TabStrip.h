@@ -19,6 +19,8 @@
 #include "TabAmbient.h"
 #include "TabGroupSurface.h"
 #include "TabHoverCard.h"
+#include "TabContentScale.h"
+#include "TabMotion.h"
 
 // Strip-only experiment: TabView owns presentation, Firefox owns all mutations.
 // Inline grouping has a localized TabListView template dependency. CanDragTabs/CanReorderTabs
@@ -225,13 +227,21 @@ struct NativeTabStrip {
     // Lit groups whose color changed this refresh (glow motion).
     std::vector<uint32_t> pendingRecolors;
     void FadeTabBackgrounds(bool on) {
-        if (!on) {
-            for (auto& [id, container] : fadedTabs) container.BackgroundTransition(nullptr);
-            fadedTabs.clear();
-            return;
+        std::set<uint32_t> eligible;
+        if (on) {
+            for (auto const& slot : groupLayout)
+                if (slot.tab && ambient.reveals.count(slot.group)) eligible.insert(slot.tab);
         }
+        // Reconcile each group independently: one group's reveal must not slow
+        // feedback elsewhere, or keep another group's finished fade installed.
+        for (auto it = fadedTabs.begin(); it != fadedTabs.end();) {
+            if (eligible.count(it->first)) { ++it; continue; }
+            it->second.BackgroundTransition(nullptr);
+            it = fadedTabs.erase(it);
+        }
+        if (eligible.empty()) return;
         for (auto const& [id, row] : rows) {
-            if (fadedTabs.count(id) || !row.IsLoaded() || !Media::VisualTreeHelper::GetChildrenCount(row)) continue;
+            if (!eligible.count(id) || fadedTabs.count(id) || !row.IsLoaded() || !Media::VisualTreeHelper::GetChildrenCount(row)) continue;
             auto root = Media::VisualTreeHelper::GetChild(row, 0).try_as<FrameworkElement>();
             auto container = root ? root.FindName(L"TabContainer").try_as<Controls::Grid>() : Controls::Grid{nullptr};
             if (!container) continue;
@@ -299,7 +309,7 @@ struct NativeTabStrip {
                 [this, id, alive = std::weak_ptr<int>(lifetime)] {
                     if (alive.expired()) return;
                     ambient.EndReveal(id); groupSurface.EndReveal(id);
-                    if (ambient.reveals.empty()) FadeTabBackgrounds(false);
+                    FadeTabBackgrounds(!ambient.reveals.empty());
                 });
         }
         for (auto id : haloLitNow)
@@ -509,7 +519,17 @@ struct NativeTabStrip {
             bool curve = false;
             if (!core || shell_core_settle_advance(core, joinClock, false, &curve) != SHELL_STATUS_OK) curve = false;
             // Finished elements leave once XAML reports them at rest.
-            if (!curve) settling.erase(std::remove_if(settling.begin(), settling.end(), [](auto const& held) { return held.rested; }), settling.end());
+            if (!curve) settling.erase(std::remove_if(settling.begin(), settling.end(), [](auto const& held) {
+                if (!held.rested) return false;
+                // The sampled clock can finish before Composition has applied
+                // its final scale. Keep reciprocal content scaling until the
+                // parent reports rest too, avoiding a stretched cleanup frame.
+                if (held.content) {
+                    auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(held.element);
+                    if (std::abs(visual.Scale().x - 1.f) > .001f) return false;
+                }
+                return true;
+            }), settling.end());
             if (joinClock >= settlingUntil) settling.clear();
         }
         const bool settlingMotion = !settling.empty();
@@ -1713,7 +1733,7 @@ struct NativeTabStrip {
         auto alive = std::weak_ptr<int>(lifetime);
         root.ActualThemeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) InvalidateGeometry(); });
         root.SizeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) groupSlide.Cancel(); });
-        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { groupHeader.Close(); ambient.Motion(false); groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
+        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { groupHeader.Close(); ambient.Motion(false); ClearSettling(); groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
         root.PreviewKeyDown([this, alive](auto&&, auto const& args) {
             if (alive.expired() || GroupDrag().phase) return;
             const auto key=args.Key();
@@ -2089,9 +2109,11 @@ struct NativeTabStrip {
     struct ClosingTab {
         bool valid{};
         Windows::Foundation::Rect bounds{};
-        hstring title;
-        Media::ImageSource image{nullptr};
+        Controls::TabViewItem source{nullptr};
+        Windows::Foundation::IInspectable header{nullptr};
         bool selected{};
+        bool closable{};
+        Windows::UI::Text::FontWeight weight{};
     };
     // Bound on waiting for TabView to arrange a close before repairing widths
     // and starting the motion from whatever layout there is.
@@ -2114,24 +2136,16 @@ struct NativeTabStrip {
             {0, 0, float(view.ActualWidth()), float(view.ActualHeight())});
         viewClip.Rect(viewBounds);
         closeOverlay.Clip(viewClip);
-        Controls::StackPanel face;
-        face.Orientation(Controls::Orientation::Horizontal);
-        face.Spacing(6);
-        if (closing.image) {
-            Controls::Image icon;
-            icon.Width(16); icon.Height(16);
-            icon.Source(closing.image);
-            face.Children().Append(icon);
-        }
-        Controls::TextBlock name;
-        name.Text(closing.title);
-        name.TextTrimming(TextTrimming::CharacterEllipsis);
-        name.VerticalAlignment(VerticalAlignment::Center);
-        face.Children().Append(name);
+        // The closed row can remain in WinUI's recycle cache. Transfer only
+        // our header after removal, without reparenting the cached container
+        // or letting header detachment disturb the pre-close layout capture.
+        for (auto& held : settling) if (held.element == closing.source) held.content.reset();
+        closing.source.Header(nullptr);
         Controls::TabViewItem ghost;
-        ghost.Header(face);
-        ghost.IsClosable(true);
+        ghost.Header(closing.header);
+        ghost.IsClosable(closing.closable);
         ghost.IsSelected(closing.selected);
+        ghost.FontWeight(closing.weight);
         ghost.HorizontalContentAlignment(HorizontalAlignment::Stretch);
         ghost.Width(closing.bounds.Width);
         ghost.Height(closing.bounds.Height);
@@ -2149,9 +2163,8 @@ struct NativeTabStrip {
         animation.From(1.0);
         animation.To(0.0);
         animation.Duration(
-            Duration{Windows::Foundation::TimeSpan{std::chrono::milliseconds(135)}, DurationType::TimeSpan});
-        Media::Animation::CubicEase ease;
-        ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+            Duration{Windows::Foundation::TimeSpan{TabMotion::Duration}, DurationType::TimeSpan});
+        auto ease = TabMotion::Ease();
         animation.EasingFunction(ease);
         Media::Animation::Storyboard::SetTarget(animation, scale);
         Media::Animation::Storyboard::SetTargetProperty(animation, L"ScaleX");
@@ -2185,10 +2198,28 @@ struct NativeTabStrip {
     // XAML also reports the last offset for a frame or two after the curve
     // ends, so a finished element stays placed from its layout slot until its
     // reported bounds agree (`rested`), for at most SettleLagMs.
-    struct Settling { FrameworkElement element{nullptr}; uint32_t kind{}, id{}; bool rested{}; };
+    struct Settling {
+        FrameworkElement element{nullptr}; uint32_t kind{}, id{}; bool rested{};
+        std::shared_ptr<TabContentScale> content;
+    };
     std::vector<Settling> settling;
     static constexpr double SettleLagMs = 250;
     double settlingUntil = 0;
+
+    void ClearSettling() noexcept {
+        for (auto& held : settling) {
+            try {
+                auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(held.element);
+                visual.StopAnimation(L"Scale.X");
+                visual.Properties().StopAnimation(L"Translation.X");
+                visual.Scale({1, 1, 1});
+                visual.Properties().InsertVector3(L"Translation", {0, 0, 0});
+            } catch (...) {}
+        }
+        settling.clear();
+        bool active{};
+        if (core) shell_core_settle_advance(core, SteadyMs(), true, &active);
+    }
 
     // Opt-in (FENN_PANE_DIAGNOSTICS) trace of the new-tab entry motion.
     template <typename... Args> static void EntryLog(char const* format, Args... args) {
@@ -2246,10 +2277,13 @@ struct NativeTabStrip {
 
     void Track(uint32_t kind, uint32_t id, FrameworkElement const& element, float dx, float sx, double start) {
         if (!core || shell_core_settle_hold(core, kind, id, dx, sx, start) != SHELL_STATUS_OK) return;
-        settlingUntil = start + SETTLE_MS + SettleLagMs;
+        settlingUntil = start + TAB_MOTION_MS + SettleLagMs;
         auto found = std::find_if(settling.begin(), settling.end(), [&](auto const& item) { return item.element == element; });
-        if (found == settling.end()) settling.push_back({element, kind, id});
-        else *found = {element, kind, id};
+        auto content = found != settling.end() ? found->content : std::shared_ptr<TabContentScale>{};
+        if (!content && kind == SHELL_SETTLE_TAB && std::abs(sx - 1.f) >= .002f)
+            if (auto row = element.try_as<Controls::TabViewItem>()) content = std::make_shared<TabContentScale>(row);
+        if (found == settling.end()) settling.push_back({element, kind, id, false, std::move(content)});
+        else *found = {element, kind, id, false, std::move(content)};
     }
 
     // Without `refresh`, the caller refreshes the lighting once it has placed
@@ -2263,11 +2297,12 @@ struct NativeTabStrip {
                 if (!animate) {
                     visual.Properties().InsertVector3(L"Translation", {0, 0, 0});
                     visual.Scale({1, 1, 1});
+                    for (auto& held : settling) if (held.element == item.element) held.content.reset();
                     continue;
                 }
                 auto compositor = visual.Compositor();
-                auto ease = compositor.CreateCubicBezierEasingFunction({0.215f, 0.61f}, {0.355f, 1.f});
-                const Windows::Foundation::TimeSpan duration{std::chrono::milliseconds(135)};
+                auto ease = TabMotion::CompositionEase(compositor);
+                const Windows::Foundation::TimeSpan duration{TabMotion::Duration};
                 auto scale = compositor.CreateScalarKeyFrameAnimation();
                 scale.InsertKeyFrame(1.f, 1.f, ease);
                 scale.Duration(duration);
@@ -2397,9 +2432,8 @@ struct NativeTabStrip {
         animation.From(delta);
         animation.To(0.0);
         animation.Duration(
-            Duration{Windows::Foundation::TimeSpan{std::chrono::milliseconds(135)}, DurationType::TimeSpan});
-        Media::Animation::CubicEase ease;
-        ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+            Duration{Windows::Foundation::TimeSpan{TabMotion::Duration}, DurationType::TimeSpan});
+        auto ease = TabMotion::Ease();
         animation.EasingFunction(ease);
         Media::Animation::Storyboard::SetTarget(animation, transform);
         Media::Animation::Storyboard::SetTargetProperty(animation, L"X");
@@ -2433,9 +2467,8 @@ struct NativeTabStrip {
         animation.From(0.0);
         animation.To(1.0);
         animation.Duration(
-            Duration{Windows::Foundation::TimeSpan{std::chrono::milliseconds(135)}, DurationType::TimeSpan});
-        Media::Animation::CubicEase ease;
-        ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+            Duration{Windows::Foundation::TimeSpan{TabMotion::Duration}, DurationType::TimeSpan});
+        auto ease = TabMotion::Ease();
         animation.EasingFunction(ease);
         Media::Animation::Storyboard::SetTarget(animation, scale);
         Media::Animation::Storyboard::SetTargetProperty(animation, L"ScaleX");
@@ -2482,9 +2515,8 @@ struct NativeTabStrip {
         // and falls back to XAML's own built-in 1-second default. Type must
         // be set explicitly, or the duration below is set for nothing.
         animation.Duration(
-            Duration{Windows::Foundation::TimeSpan{std::chrono::milliseconds(135)}, DurationType::TimeSpan});
-        Media::Animation::CubicEase ease;
-        ease.EasingMode(Media::Animation::EasingMode::EaseOut);
+            Duration{Windows::Foundation::TimeSpan{TabMotion::Duration}, DurationType::TimeSpan});
+        auto ease = TabMotion::Ease();
         animation.EasingFunction(ease);
         Media::Animation::Storyboard::SetTarget(animation, transform);
         Media::Animation::Storyboard::SetTargetProperty(animation, L"X");
@@ -3363,6 +3395,10 @@ struct NativeTabStrip {
             if (row == rows.end()) continue;
             UpdateHeader(row->second, change.id, Automation::AutomationProperties::GetName(row->second));
         }
+        // Geometry refresh can wait for grouped containers to be realized.
+        // Membership is already authoritative: remove a former member's fade
+        // now, without waiting for that visual-only layout barrier.
+        FadeTabBackgrounds(ambient.motion.Enabled() && !ambient.reveals.empty());
         ambient.Update();
     }
 
@@ -3769,12 +3805,11 @@ struct NativeTabStrip {
                     closing.valid = true;
                     closing.bounds = row.TransformToVisual(root).TransformBounds(
                         {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
-                    closing.title = Automation::AutomationProperties::GetName(row);
                     closing.selected = row.IsSelected();
-                    if (auto header = row.Header().try_as<Controls::Grid>())
-                        if (auto favicon = header.Children().GetAt(0).try_as<Controls::Grid>())
-                            if (auto image = favicon.Children().GetAt(0).try_as<Controls::Image>())
-                                closing.image = image.Source();
+                    closing.closable = row.IsClosable();
+                    closing.weight = row.FontWeight();
+                    closing.source = row;
+                    closing.header = row.Header();
                 }
             }
             if (populated && count != rows.size()) {
