@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 63
+#define SHELL_CORE_ABI_VERSION 65
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -357,6 +357,23 @@ enum ShellPrivacyPanelKind
 typedef enum ShellPrivacyPanelKind ShellPrivacyPanelKind;
 #else
 typedef uint32_t ShellPrivacyPanelKind;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+enum ShellLayoutWork
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  SHELL_LAYOUT_WORK_WIDTHS = 0,
+  SHELL_LAYOUT_WORK_AMBIENT = 1,
+  SHELL_LAYOUT_WORK_CAPTION = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum ShellLayoutWork ShellLayoutWork;
+#else
+typedef uint32_t ShellLayoutWork;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
@@ -985,6 +1002,15 @@ typedef struct {
   uint32_t focused;
   uint32_t holding;
 } ShellAddressInteractionState;
+
+/*
+ Adapter-defined finite geometry values, in stable order for each consumer.
+ Exact comparison preserves subpixel movement and DPI changes. Unused slots
+ are zero. This is an observation, never an authoritative layout model.
+ */
+typedef struct {
+  double values[16];
+} ShellLayoutInputs;
 
 #ifdef __cplusplus
 extern "C" {
@@ -1762,6 +1788,20 @@ ShellStatus shell_core_menu_publish(ShellCore *core,
                                     const uint16_t *fingerprint,
                                     uintptr_t units,
                                     bool *changed);
+
+/*
+ Apply a compact selection context against existing publication membership.
+ # Safety
+ Live core; bounded readable selection and fingerprint; writable changed.
+ */
+ShellStatus shell_core_menu_selection(ShellCore *core,
+                                      uint32_t base,
+                                      uint32_t revision,
+                                      const uint32_t *selected,
+                                      uintptr_t len,
+                                      const uint16_t *fingerprint,
+                                      uintptr_t units,
+                                      bool *changed);
 
 /*
  Retain only tabs still present in a native tab snapshot.
@@ -3310,6 +3350,26 @@ ShellStatus shell_core_address_interaction(ShellCore *core,
                                            uint64_t token,
                                            uint32_t value,
                                            ShellAddressInteractionState *out);
+
+/*
+ Test a bounded geometry observation for one ShellLayoutWork consumer.
+ Explicit force is for active motion or a host-owned invalidation. The host
+ invalidates again on failed work and on topology/realization changes.
+ # Safety
+ See [`guard`]. `inputs` and `changed` point to valid values.
+ */
+ShellStatus shell_core_layout_observe(ShellCore *core,
+                                      uint32_t consumer,
+                                      const ShellLayoutInputs *inputs,
+                                      bool force,
+                                      bool *changed);
+
+/*
+ Invalidate one consumer without changing any other consumer's observation.
+ # Safety
+ See [`guard`].
+ */
+ShellStatus shell_core_layout_invalidate(ShellCore *core, uint32_t consumer);
 
 #ifdef __cplusplus
 }  // extern "C"

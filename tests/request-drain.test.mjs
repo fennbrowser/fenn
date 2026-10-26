@@ -31,6 +31,36 @@ function fixture(requests) {
   return {context, pane, completions, errors, posted, dialog, publications: () => publications};
 }
 
+test("identical complete address containers coalesce, while dynamic state and sessions publish", () => {
+  const f=fixture([]),sent=[];
+  f.context.window.windowUtils.syncWinUIAddress=value=>sent.push(JSON.parse(value));
+  const state={version:1,enabled:true,session:'one',text:'same',navigation:{back:{enabled:false}}};
+  f.pane.publishAddress(state);f.pane.publishAddress({...state});
+  assert.equal(sent.length,1);
+  f.pane.publishAddress({...state,navigation:{back:{enabled:true}}});
+  f.pane.publishAddress({...state,session:'two'});
+  assert.equal(sent.length,3);
+  f.context.window.windowUtils.syncWinUIAddress=()=>{throw Error('bridge failure');};
+  const before=f.pane.addressPublication;
+  assert.throws(()=>f.pane.publishAddress({...state,text:'retry'}));
+  assert.equal(f.pane.addressPublication,before);
+  f.context.window.windowUtils.syncWinUIAddress=value=>sent.push(JSON.parse(value));
+  f.pane.publishAddress({...state,text:'retry'});
+  assert.equal(sent.length,4);
+});
+
+test("completion of rejected native address input permits identical state to be applied again", () => {
+  for(const kind of [6,7]) {
+    const f=fixture([{id:1,kind,action:{}}]);
+    f.pane.addressPublication='previously sent';
+    f.pane.executeRequest=()=>2;
+    f.pane.drain();
+    assert.equal(f.pane.addressPublication,null);
+    assert.equal(f.pane.addressDirty,true);
+    assert.equal(f.completions[0].outcomes[0].outcome,2);
+  }
+});
+
 for (const failedId of [1, 2, 3]) {
   test(`a failure at request ${failedId} answers every request without replay`, () => {
     const requests = [1, 2, 3].map(id => ({id, kind: 4, action: {kind: "new-tab"}}));
@@ -121,6 +151,201 @@ test("title and active-tab selection events do not rebuild strip metadata", () =
   }
 });
 
+test("background metadata skips address refresh; selected and unknown changes retain it", () => {
+  const f=fixture([]), selected={}, background={}, calls=[];
+  f.context.gBrowser.selectedTab=selected;
+  f.pane.schedule=refresh=>calls.push(refresh);
+  for(const target of [background,selected]) for(const name of ["label","busy","progress","image","muted","unknown"]) {
+    f.pane.handleEvent({type:"TabAttrModified",target,detail:{changed:[name]}});
+    assert.equal(calls.pop(),target===selected || !["label","busy","progress","image"].includes(name),name);
+  }
+  for(const changed of [undefined,[],["label","muted"]]) {
+    f.pane.handleEvent({type:"TabAttrModified",target:background,detail:{changed}});
+    assert.equal(calls.pop(),true);
+  }
+  f.pane.handleEvent({type:"TabSelect",target:selected});
+  assert.equal(calls.pop(),true);
+});
+
+test("only background label text mutations omit the address refresh", () => {
+  const f=fixture([]), selected={}, background={}, root={}, calls=[];
+  const label=tab=>{const node={closest:()=>tab};tab.textLabel=node;return node;};
+  const selectedLabel=label(selected), backgroundLabel=label(background);
+  f.context.gBrowser.selectedTab=selected;
+  f.context.document={documentElement:root};
+  f.pane.urlbar={};f.pane.modeSwitcher={};f.pane.schedule=refresh=>calls.push(refresh);
+  const record={type:"childList",target:backgroundLabel};
+  for(const records of [[record],[record,record]]) {
+    f.pane.addressDirty=false;f.pane.handleMutations(records);
+    assert.equal(calls.pop(),false);assert.equal(f.pane.addressDirty,false);
+  }
+  for(const records of [[],[{...record,target:selectedLabel}], [{...record,type:"attributes"}],
+    [{...record,target:{closest:()=>background}}], [record,{type:"attributes",target:root}],
+    [record,{type:"attributes",target:f.pane.urlbar}], [record,{type:"attributes",target:f.pane.modeSwitcher}]]) {
+    f.pane.handleMutations(records);assert.equal(calls.pop(),true);
+  }
+  assert.equal(f.pane.addressDirty,true);
+  assert.equal(f.pane.stripDirty,true);
+});
+
+function schedulingFixture() {
+  const f=fixture([]), tasks=new Map(), frames=new Map();let serial=0;
+  f.context.window.setTimeout=callback=>{const id=++serial;tasks.set(id,callback);return id;};
+  f.context.window.clearTimeout=id=>tasks.delete(id);
+  f.context.requestAnimationFrame=callback=>{const id=++serial;frames.set(id,callback);return id;};
+  f.context.cancelAnimationFrame=id=>frames.delete(id);
+  f.context.Services.prefs={getBoolPref:()=>false,removeObserver(){}};
+  f.context.Services.obs={removeObserver(){}};
+  f.context.document={fullscreenElement:null,documentElement:{hasAttribute:()=>false}};
+  f.context.gBrowser.tabContainer={removeEventListener(){}};
+  f.context.window.removeEventListener=()=>{};
+  f.context.window.windowUtils.updateWinUIPane=()=>true;
+  f.pane.element={style:{},getBoundingClientRect:()=>({x:0,y:0,width:100,height:40}),remove(){}};
+  f.pane.addressToolbar={close(){}};f.pane.addressDirty=false;
+  f.pane.observer=f.pane.mutation={disconnect(){}};
+  f.pane.occlusions=()=>[];
+  f.pane.setReplacementActive=f.pane.setToolbarHidden=f.pane.updateToolbarHidden=()=>{};
+  const take=queue=>{const [id,callback]=queue.entries().next().value;queue.delete(id);callback();};
+  return {...f,tasks,frames,task:()=>take(tasks),frame:()=>take(frames)};
+}
+
+test("address publication is task-bound while strip publication retains its frame budget", () => {
+  for(const order of [[false,false],[false,true],[true,false]]) {
+    const f=schedulingFixture(),sent=[],strip=[];
+    f.pane.publish=(force,includeAddress)=>{
+      strip.push(f.context.gBrowser.selectedTab);
+      if(includeAddress){sent.push([f.context.gBrowser.selectedTab,f.pane.addressDirty]);f.pane.addressDirty=false;}
+    };
+    for(const refresh of order)f.pane.schedule(refresh);
+    assert.equal(f.tasks.size,Number(order.includes(true)));assert.equal(f.frames.size,1);
+    f.context.gBrowser.selectedTab='latest';
+    f.frame();assert.deepEqual(strip,['latest']);
+    assert.equal(sent.length,0,"frame work must not construct or publish address state");
+    if(order.includes(true)) {f.task();assert.deepEqual(sent,[['latest',true]]);}
+    else assert.deepEqual(sent,[]);
+    f.pane.schedule(false);f.pane.invalidateAddress();f.task();
+    assert.equal(sent.at(-1)[1],true);
+    f.pane.schedule();f.task();assert.equal(sent.at(-1)[1],true);
+  }
+});
+
+test("suspended strip frames retain latest titles and metadata without scheduling tasks", () => {
+  const f=schedulingFixture(),titles=new Map(),sent=[];
+  const tab={},other={};
+  f.pane.dirtyTitles=new Set();f.pane.stripDirty=false;
+  f.pane.publish=(force,includeAddress)=>{
+    sent.push({titles:[...f.pane.dirtyTitles].map(t=>titles.get(t)),metadata:f.pane.stripDirty,includeAddress});
+    f.pane.dirtyTitles.clear();f.pane.stripDirty=false;
+  };
+  for(let i=0;i<12;i++) {
+    titles.set(tab,`latest-${i}`);f.pane.dirtyTitles.add(tab);
+    f.pane.stripDirty=true;f.pane.schedule(false);
+  }
+  titles.set(other,'other');f.pane.dirtyTitles.add(other);f.pane.schedule(false);
+  assert.equal(f.tasks.size,0);assert.equal(f.frames.size,1);
+  assert.equal(sent.length,0);assert.equal(f.pane.dirtyTitles.size,2);
+  f.frame();
+  assert.deepEqual(sent,[{titles:['latest-11','other'],metadata:true,includeAddress:false}]);
+  assert.equal(f.pane.dirtyTitles.size,0);assert.equal(f.tasks.size,0);
+});
+
+test("address invalidation while a strip frame is suspended publishes live state promptly", () => {
+  const f=schedulingFixture(),sent=[];
+  f.pane.publish=(force,includeAddress)=>sent.push([f.context.gBrowser.selectedTab,includeAddress]);
+  f.pane.schedule(false);assert.equal(f.tasks.size,0);
+  f.pane.invalidateAddress();assert.equal(f.tasks.size,1);
+  f.context.gBrowser.selectedTab='new document';f.task();
+  assert.deepEqual(sent,[['new document',true]]);
+  assert.equal(f.frames.size,1,"address work must not cancel the pending strip frame");
+});
+
+test("explicit reentrant publication recovery retains its task even with clean address state", () => {
+  const f=schedulingFixture();runInNewContext(source,f.context);
+  f.pane.publish=f.context.gWinUIPane.publish;
+  let calls=0;
+  f.pane.publishState=()=>{if(++calls===1)f.pane.publish(true);};
+  f.pane.publish();assert.equal(f.pane.addressDirty,false);assert.equal(f.tasks.size,1);
+  f.task();assert.equal(calls,2);assert.equal(f.pane.structuralDirty,true);
+});
+
+test("frame publication sends selection without consuming pending address state", () => {
+  const f=schedulingFixture(),tabs=[{},{}],selected=[],addresses=[];
+  runInNewContext(source,f.context);f.pane.publish=f.context.gWinUIPane.publish;
+  f.pane.nativeRevision=1;f.pane.stripDirty=false;
+  tabs.forEach((tab,i)=>f.pane.tabIds.set(tab,i+1));f.pane.publishedIds=new Set([1,2]);
+  f.pane.visibleTabs=()=>tabs;f.pane.publishTabContext=()=>{};
+  f.pane.publishTabDelta=()=>{selected.push(f.context.gBrowser.selectedTab);f.pane.dirtySelection=false;};
+  f.pane.syncAddress=()=>addresses.push(f.context.gBrowser.selectedTab);
+  f.context.gBrowser.selectedTab=tabs[0];f.pane.dirtySelection=true;
+  f.pane.schedule();f.frame();
+  assert.deepEqual(selected,[tabs[0]]);assert.equal(addresses.length,0);assert.equal(f.pane.addressDirty,true);
+  f.context.gBrowser.selectedTab=tabs[1];f.pane.dirtySelection=true;
+  f.task();assert.deepEqual(selected,tabs);assert.deepEqual(addresses,[tabs[1]]);
+  assert.equal(f.pane.addressDirty,false);
+});
+
+test("a task before initial attachment preserves dirty work until geometry wakes it", () => {
+  const f=schedulingFixture();f.pane.attached=false;
+  f.pane.schedule();f.task();assert.equal(f.publications(),0);
+  assert.equal(f.pane.addressDirty,true);assert.equal(f.tasks.size,0);
+  f.frame();assert.equal(f.publications(),1);assert.equal(f.tasks.size,1);
+  assert.equal(f.pane.addressDirty,true);
+  f.task();assert.equal(f.publications(),2);
+});
+
+test("nested operations defer publication without polling and resume at their boundary", () => {
+  for(const guard of ['processingAction','draining','publishing']) {
+    const f=schedulingFixture();f.pane.schedule();f.pane[guard]=true;
+    f.task();assert.equal(f.publications(),0);assert.equal(f.tasks.size,0);
+    f.pane.resumePublication();assert.equal(f.tasks.size,0);
+    f.pane[guard]=false;f.pane.resumePublication();f.task();
+    assert.equal(f.publications(),1);assert.equal(f.pane.publicationDeferred,false);
+  }
+});
+
+test("publication changes and reentrant force requests survive the current pass", () => {
+  const f=schedulingFixture();runInNewContext(source,f.context);
+  const originalPublish=f.context.gWinUIPane.publish;
+  f.pane.publish=originalPublish;let calls=0;
+  f.pane.publishState=()=>{
+    calls++;
+    if(calls===1){f.pane.invalidateAddress();f.pane.publish(true);}
+  };
+  f.pane.publish();assert.equal(calls,1);assert.equal(f.tasks.size,1);
+  assert.equal(f.pane.structuralDirty,true,"nested force requires a subsequent snapshot");
+  f.task();assert.equal(calls,2);assert.equal(f.pane.publishing,false);
+});
+
+test("teardown cancels both queues and old callbacks cannot mutate a new attachment", () => {
+  const f=schedulingFixture();f.pane.schedule();
+  const oldTask=[...f.tasks.values()][0],oldFrame=[...f.frames.values()][0];
+  f.pane.uninit();assert.equal(f.tasks.size,0);assert.equal(f.frames.size,0);
+  f.pane.element={};f.pane.uninitializing=false;
+  f.pane.schedule(false);const timer=f.pane.publicationTimer,frame=f.pane.frame;
+  oldTask();oldFrame();
+  assert.equal(f.pane.publicationTimer,timer);assert.equal(f.pane.frame,frame);
+  assert.equal(f.publications(),0);
+});
+
+test("tab-only geometry pass preserves pending address work without manufacturing it", () => {
+  const f=fixture([]);
+  f.pane.element={style:{},getBoundingClientRect:()=>({x:0,y:0,width:100,height:40})};
+  f.pane.addressToolbar={};
+  f.context.Services.prefs={getBoolPref:()=>false};
+  f.context.document={fullscreenElement:null,documentElement:{hasAttribute:()=>false}};
+  f.context.window.windowUtils.updateWinUIPane=()=>true;
+  f.pane.occlusions=()=>[];
+  f.pane.setReplacementActive=f.pane.updateToolbarHidden=()=>{};
+  for(const dirty of [false,true]) {
+    f.pane.addressDirty=dirty;
+    f.pane.update(false,false);
+    assert.equal(f.pane.addressDirty,dirty);
+  }
+  f.pane.addressDirty=false;
+  f.pane.update();
+  assert.equal(f.pane.addressDirty,true,"direct updates preserve the default refresh");
+});
+
 test("collapsed-member title changes refresh group previews without changing strip membership", () => {
   const f = fixture([]);
   f.pane.stripDirty = false;
@@ -132,9 +357,84 @@ test("collapsed-member title changes refresh group previews without changing str
   assert.equal(f.pane.dirtyTitles.has(tab),true);
 });
 
+test("single-tab identity changes keep context fresh without rebuilding strip metadata", () => {
+  const f = fixture([]), tabs = [{}, {}, {}];
+  f.pane.schedule = () => {};
+  f.pane.stripSingleSelection = true;
+  f.pane.stripDirty = false;
+  for (const tab of tabs) {
+    f.context.gBrowser.selectedTabs = [tab];
+    f.pane.contextDirty = f.pane.dirtySelection = false;
+    f.pane.handleEvent({type:"TabSelect", target:tab});
+    f.pane.handleEvent({type:"TabMultiSelect", target:tab});
+    assert.equal(f.pane.stripDirty, false);
+    assert.equal(f.pane.contextDirty, true);
+    assert.equal(f.pane.dirtySelection, true);
+  }
+});
+
+test("only selection eligibility transitions dirty metadata; coalescing cannot erase dirty work", () => {
+  const f = fixture([]), tabs = [{}, {}, {}];
+  f.pane.schedule = () => {};
+  f.pane.stripSingleSelection = true;
+  for (const [selection, dirty] of [[tabs.slice(0,2), true], [tabs, false],
+      [tabs.slice(1), false], [[tabs[2]], true]]) {
+    f.context.gBrowser.selectedTabs = selection;
+    f.pane.stripDirty = f.pane.contextDirty = false;
+    f.pane.handleEvent({type:"TabMultiSelect", target:selection[0]});
+    assert.equal(f.pane.stripDirty, dirty);
+    assert.equal(f.pane.contextDirty, true);
+  }
+  // A 1 -> 2 -> 1 burst before publication must retain the first invalidation.
+  f.pane.stripDirty = false;
+  for (const selection of [tabs.slice(0,2), [tabs[0]]]) {
+    f.context.gBrowser.selectedTabs = selection;
+    f.pane.handleEvent({type:"TabMultiSelect", target:selection[0]});
+    assert.equal(f.pane.stripDirty, true);
+  }
+  for (const event of [{type:"TabAttrModified", detail:{changed:["image"]}},
+      {type:"TabGroupCollapse"}, {type:"TabGroupExpand"}, {type:"TabGrouped"}]) {
+    f.pane.stripDirty = false;
+    f.pane.handleEvent({...event, target:tabs[0]});
+    assert.equal(f.pane.stripDirty, true, event.type);
+    f.pane.handleEvent({type:"TabMultiSelect", target:tabs[0]});
+    assert.equal(f.pane.stripDirty, true, "unchanged eligibility preserves other dirty reasons");
+  }
+});
+
+test("selection away from a collapsed retained member still forces an ordered snapshot", () => {
+  const f = fixture([]), active = {}, other = {};
+  f.pane.nativeRevision = 1;
+  f.pane.publishedIds = new Set([1,2]);
+  f.pane.tabIds.set(active, 1); f.pane.tabIds.set(other, 2);
+  f.pane.visibleTabs = () => [other];
+  f.pane.dirtySelection = true;
+  f.pane.stripDirty = false;
+  let snapshots = 0;
+  f.pane.syncTabs = () => snapshots++;
+  f.pane.publishState();
+  assert.equal(snapshots, 1, "visible membership is checked independently of metadata invalidation");
+});
+
+test("unchanged selection eligibility retains a consumed gesture's publication boundary", () => {
+  const f = fixture([]), tab = {};
+  f.pane.schedule = () => {};
+  f.context.gBrowser.selectedTabs = [tab];
+  f.pane.stripSingleSelection = true;
+  f.pane.stripDirty = false;
+  f.pane.stripSession = {consumed:true};
+  f.pane.handleEvent({type:"TabMultiSelect", target:tab});
+  assert.equal(f.pane.stripDirty, true);
+  assert.equal(f.pane.contextDirty, true);
+});
+
 test("multiselection republishes grouping eligibility as row deltas without rebuilding layout", () => {
   const tabs = [1, 2].map(() => ({isConnected:true, visible:true, hasAttribute:() => false}));
   const browser = {isTabPendingPermitUnload: () => false, tabs, selectedTabs:[tabs[0]], tabGroups:[], getIcon:() => ""};
+  let selected = browser.selectedTabs, selectionReads = 0;
+  Object.defineProperty(browser, "selectedTabs", {
+    get() {selectionReads++; return selected;}, set(value) {selected = value;},
+  });
   const context = {
     window:{addEventListener() {}},
     PrivateBrowsingUtils:{isWindowPrivate:() => false},
@@ -152,6 +452,7 @@ test("multiselection republishes grouping eligibility as row deltas without rebu
   pane.schedule = () => {};
   const session = new WinUITabStripSession({read:() => pane.describeStrip()});
   let previous = session.update().strip.revision;
+  assert.equal(selectionReads, 1, "one selection read per description, not two per row");
   assert.ok(session.state.rows.every(row => row.groupSource && row.groupTarget));
 
   for (const selectedTabs of [tabs, [tabs[0]]]) {
@@ -161,7 +462,9 @@ test("multiselection republishes grouping eligibility as row deltas without rebu
     assert.equal(pane.stripDirty, true, "eligibility changes must reach the native strip");
     assert.equal(pane.contextDirty, true, "menu multiselection state also changes");
     assert.equal(pane.structuralDirty, false, "membership and order remain intact");
+    const readsBefore = selectionReads;
     const delta = session.update().strip;
+    assert.equal(selectionReads - readsBefore, 1);
     const eligible = selectedTabs.length === 1;
     assert.equal(delta.base, previous);
     assert.deepEqual(delta.rows, [1, 2].map(id => ({id, groupSource:eligible, groupTarget:eligible})));
@@ -170,6 +473,12 @@ test("multiselection republishes grouping eligibility as row deltas without rebu
     previous = delta.revision;
     assert.equal(session.update(), null, "unchanged eligibility produces no publication");
   }
+  // Action validation must read live state even before the next event arrives.
+  browser.selectedTabs = tabs;
+  assert.equal(pane.stripSingleSelection, true);
+  assert.equal(pane.canDragGroupTab(tabs[0]), false);
+  browser.selectedTabs = [tabs[0]];
+  assert.equal(pane.canDragGroupTab(tabs[0]), true);
 });
 
 test("a rejected strip delta recovers with one complete publication", () => {

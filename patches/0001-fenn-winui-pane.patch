@@ -22021,10 +22021,10 @@ index 00000000000..1dbff3ea703
 +}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 00000000000..a1d38e9ebd3
+index 00000000000..18f86c924fc
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,221 @@
 +// Firefox owns widget eligibility and durable placement; native owns the editor.
 +import { readActionStamp, actionStampMatches } from "chrome://browser/content/WinUIActionStamp.sys.mjs";
 +import { STOCK_TOOLBAR_WIDGETS, WinUIStockToolbar } from "chrome://browser/content/WinUIStockToolbar.sys.mjs";
@@ -22176,6 +22176,9 @@ index 00000000000..a1d38e9ebd3
 +        if (!item || !entry) return 2;
 +        widgets.push(entry.widget);
 +      }
++      // Layout acknowledgment is idempotent, even after an address session
++      // changes. Revalidation above still rejects stale revisions and IDs.
++      if (widgets.length === this.nativeOverflow.size && widgets.every(id => this.nativeOverflow.has(id))) return 1;
 +      this.nativeOverflow = new Set(widgets);
 +      this.toolbar.window.document.getElementById('nav-bar').overflowable.setNativeOverflow(widgets);
 +      this.invalidate();
@@ -22711,10 +22714,10 @@ index 00000000000..78194ca8878
 +}
 diff --git a/browser/base/content/WinUIOmnibarActions.sys.mjs b/browser/base/content/WinUIOmnibarActions.sys.mjs
 new file mode 100644
-index 00000000000..475c3a3eeef
+index 00000000000..60341f93fe8
 --- /dev/null
 +++ b/browser/base/content/WinUIOmnibarActions.sys.mjs
-@@ -0,0 +1,335 @@
+@@ -0,0 +1,341 @@
 +// Presentation adapter for Firefox-owned address-bar controls. No browser policy lives here.
 +const PAGE_ACTIONS = [
 +  ['connection', 'identity-icon-box'],
@@ -22874,8 +22877,14 @@ index 00000000000..475c3a3eeef
 +    const left = ['trust-icon-container', 'tracking-protection-icon-container', 'identity-icon-box']
 +      .map(id => document.getElementById(id));
 +    // Notification indicators and extension page actions are dynamic Firefox children.
-+    left.push(...document.querySelectorAll('#identity-permission-box .sharing-icon, #identity-permission-box .blocked-permission-icon, #notification-popup-box > [role="button"]'));
-+    const right = [document.getElementById('urlbar-revert-button'), ...document.querySelectorAll('#page-action-buttons > [role="button"], #page-action-buttons > toolbarbutton')]
++    // Keep discovery bounded to Firefox's owning roots. Query live children on
++    // every snapshot, retaining the document-order union of dynamic indicators.
++    const indicators = new Set([
++      ...(document.getElementById('identity-permission-box')?.querySelectorAll('.sharing-icon, .blocked-permission-icon') || []),
++      ...(document.getElementById('notification-popup-box')?.querySelectorAll(':scope > [role="button"]') || []),
++    ]);
++    left.push(...[...indicators].sort((a,b) => a.compareDocumentPosition(b) & 2 ? 1 : -1));
++    const right = [document.getElementById('urlbar-revert-button'), ...(document.getElementById('page-action-buttons')?.querySelectorAll(':scope > [role="button"], :scope > toolbarbutton') || [])]
 +      .filter(node => node && node.id !== 'pageActionButton');
 +    // Keep the star directly before the fixed native ellipsis, including when
 +    // extensions insert page-action nodes after Firefox's star.
@@ -24244,10 +24253,10 @@ index 00000000000..011b56a659a
 +}
 diff --git a/browser/base/content/WinUITabMenuSession.sys.mjs b/browser/base/content/WinUITabMenuSession.sys.mjs
 new file mode 100644
-index 00000000000..961c3b61a43
+index 00000000000..7da40cf503f
 --- /dev/null
 +++ b/browser/base/content/WinUITabMenuSession.sys.mjs
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,204 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24307,8 +24316,34 @@ index 00000000000..961c3b61a43
 +    this.tabs = tabs;
 +    this.contextFingerprint = context;
 +    this.tabsFingerprint = fingerprint;
++    this.hasSelection = Array.isArray(liveContext?.selection);
 +    // A new publication invalidates any open menu's description, so the native
 +    // side discards what it cached and any answer still in flight.
++    this.active = null;
++    return snapshot;
++  }
++
++  // Ordinary selection changes reuse the validated identity map. The selected
++  // set is complete, but bounded by the selection rather than all open tabs.
++  // Undefined asks the adapter for a structural/initial snapshot; null is a no-op.
++  updateSelection() {
++    const liveContext = this.context();
++    if (!this.revision || !this.hasSelection || !Array.isArray(liveContext?.selection) ||
++        (liveContext.selected && !this.tabs.has(liveContext.selected))) return undefined;
++    if (liveContext.selection.length > 10000) throw new Error("Too many selected native tabs");
++    const context = JSON.stringify(liveContext);
++    if (!this.forceUpdate && context === this.contextFingerprint) return null;
++    if (this.revision === 0xffffffff) throw new Error("Native menu snapshot limit exceeded");
++    // Hidden/non-presented members were likewise absent from full bindings.
++    const selection = [...new Set(liveContext.selection.filter(id => this.tabs.has(id)))];
++    const snapshot = { version: 2, publishOnly: true,
++      state: { base: this.revision, revision: this.revision + 1, selection } };
++    this.revision++;
++    this.forceUpdate = false;
++    this.contextFingerprint = context;
++    // A later structural publication must not compare against old selection
++    // flags. It will rebuild/fingerprint the bindings at that boundary only.
++    this.tabsFingerprint = null;
 +    this.active = null;
 +    return snapshot;
 +  }
@@ -24428,10 +24463,10 @@ index 00000000000..961c3b61a43
 +}
 diff --git a/browser/base/content/WinUIAddressSession.sys.mjs b/browser/base/content/WinUIAddressSession.sys.mjs
 new file mode 100644
-index 00000000000..c00f8d6b839
+index 00000000000..257f4e71518
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressSession.sys.mjs
-@@ -0,0 +1,2943 @@
+@@ -0,0 +1,2946 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24644,7 +24679,10 @@ index 00000000000..c00f8d6b839
 +    const previous = this.publicationSequence || 0;
 +    const next = Math.max(this.sequence, previous + (signature !== this.publicationSignature ? 1 : 0));
 +    if (!Number.isSafeInteger(next) || next < 1) throw new Error("Address publication sequence exhausted");
-+    this.sequence = next;
++    // This publication already contains the change. Notifying through the
++    // sequence setter would dirty the address again while sending it. Actual
++    // model/image changes still use the notifying setter below.
++    this._sequence = next;
 +    this.publicationSequence = next;
 +    this.publicationSignature = signature;
 +    state.sequence = this.publicationSequence;
@@ -28120,10 +28158,10 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..37332cf4f21
+index 00000000000..aa1229360ce
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2218 @@
+@@ -0,0 +1,2365 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -28148,6 +28186,10 @@ index 00000000000..37332cf4f21
 +    "browser.tabs.dragDrop.createGroup.delayMS"],
 +  element: null,
 +  frame: 0,
++  publicationTimer: 0,
++  publicationDeferred: false,
++  publishing: false,
++  uninitializing: false,
 +  popups: new Set(),
 +  backwards: false,
 +  tabIds: new WeakMap(),
@@ -28166,12 +28208,17 @@ index 00000000000..37332cf4f21
 +  contextDirty: false,
 +  structuralDirty: true,
 +  stripDirty: true,
++  // Last observed selection eligibility, not a cached action decision. Identity
++  // changes still invalidate context; only crossing this threshold changes the
++  // strip rows' group-drag metadata. Other strip dirty reasons remain sticky.
++  stripSingleSelection: null,
 +  // The address surface needs republishing. Set by everything that can change
 +  // what a publication would say: the session's own counters (which advance on
 +  // every mutation, including asynchronous label and image completions), the
 +  // urlbar's input and focus, window activation, tab changes, and the prefs
 +  // and fullscreen state that decide whether the surface runs at all.
 +  addressDirty: true,
++  addressPublication: null,
 +  // The pane's presentation-model revision as of the last snapshot or delta.
 +  // Every delta names it; a mismatch means producer and consumer diverged, and
 +  // is answered with one snapshot rather than a retry.
@@ -28389,6 +28436,7 @@ index 00000000000..37332cf4f21
 +    ) {
 +      return;
 +    }
++    this.uninitializing = false;
 +    // This window's native endpoint, formatted exactly as nsIBaseWindow does,
 +    // so the pane's drain notification can be matched to this window. An HWND
 +    // alone is not a lifetime identity; the request path carries its own
@@ -28425,15 +28473,7 @@ index 00000000000..37332cf4f21
 +    // focused, usertyping, and the switcher's own offscreen) rather than any
 +    // event. Watching those attributes is what replaces sampling it.
 +    this.modeSwitcher = this.urlbar.querySelector(".searchmode-switcher");
-+    this.mutation = new MutationObserver(records => {
-+      if (records.some(record => record.target === this.urlbar ||
-+                                 record.target === this.modeSwitcher ||
-+                                 record.target === document.documentElement)) {
-+        this.addressDirty = true;
-+      }
-+      if (records.some(record => record.target === document.documentElement)) this.stripDirty = true;
-+      this.schedule();
-+    });
++    this.mutation = new MutationObserver(records => this.handleMutations(records));
 +    this.mutation.observe(document.documentElement, { attributes: true });
 +    this.mutation.observe(document.getElementById("TabsToolbar-customization-target"),
 +      {childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "collapsed", "class", "style"]});
@@ -28454,6 +28494,7 @@ index 00000000000..37332cf4f21
 +    for (const type of ["input", "focus", "blur"]) {
 +      this.urlbarInput.addEventListener(type, this, true);
 +    }
++    this.stripSingleSelection = gBrowser.selectedTabs.length <= 1;
 +    for (const type of this.tabEvents)
 +      gBrowser.tabContainer.addEventListener(type, this);
 +    for (const type of this.stripStateEvents)
@@ -28560,10 +28601,15 @@ index 00000000000..37332cf4f21
 +    }
 +    // Native input defers snapshots until its pending request completes,
 +    // including rejected requests that do not otherwise mutate Firefox state.
-+    if (batch?.requests?.some(request => request.kind === 6 || request.kind === 7))
++    if (batch?.requests?.some(request => request.kind === 6 || request.kind === 7)) {
++      // A previously sent container may have been deferred by native input.
++      // Even a rejected request needs a fresh application after completion.
++      this.addressPublication = null;
 +      this.addressDirty = true;
++    }
 +    // Reflect whatever the executed commands changed, in the same turn.
 +    this.publish();
++    this.resumePublication();
 +    if (this.optionsRefreshDeferred) {
 +      this.optionsRefreshDeferred = false;
 +      this.optionsObserver?.observe();
@@ -28813,6 +28859,16 @@ index 00000000000..37332cf4f21
 +      Services.prefs.getBoolPref(this.addressPrivatePref, true);
 +  },
 +
++  publishAddress(state, session = null) {
++    const payload = JSON.stringify(session ? session.preparePublication(state) : state);
++    // Compare the complete, freshly resolved container, including independent
++    // dynamic controls and document/session identity. Cache only successful
++    // sends, and only for this native host's lifetime.
++    if (payload === this.addressPublication) return;
++    window.windowUtils.syncWinUIAddress(payload);
++    this.addressPublication = payload;
++  },
++
 +  syncAddress() {
 +    if (!this.attached || this.processingAction) return;
 +    const toolbarRequested = Services.prefs.getBoolPref(this.addressToolbarPref, false) ||
@@ -28841,13 +28897,12 @@ index 00000000000..37332cf4f21
 +    ) {
 +      retainNativePresentation = !!this.addressSession &&
 +        gURLBar.view.nativePresentation === this.addressSession;
++      if (this.addressSession) this.addressSession.onChanged = null;
 +      this.addressSession?.close();
 +      this.addressSession = null;
 +    }
 +    if (!enabled) {
-+      window.windowUtils.syncWinUIAddress(
-+        JSON.stringify({ version: 1, enabled: false })
-+      );
++      this.publishAddress({ version: 1, enabled: false });
 +      return;
 +    }
 +    if (!this.addressSession) {
@@ -28941,7 +28996,7 @@ index 00000000000..37332cf4f21
 +    // Publication only. Intents, and the visibility of the rows, arrive
 +    // through the request queue.
 +    // This privileged publication method returns void and throws on refusal.
-+    window.windowUtils.syncWinUIAddress(JSON.stringify(session.preparePublication(state)));
++    this.publishAddress(state, session);
 +    if (toolbar) this.addressToolbar.activate();
 +  },
 +
@@ -29094,7 +29149,20 @@ index 00000000000..37332cf4f21
 +  // tab's commands: that used to happen here for every tab on every pass, and
 +  // was the dominant recurring cost of the whole shell. A description is now
 +  // produced only for the tab whose menu is opening (WinUITabMenuSession).
-+  publishTabContext(tabs, ids) {
++  publishTabContext(tabs, ids, selectionOnly = false) {
++    if (selectionOnly && this.tabMenuSession) {
++      const snapshot = this.tabMenuSession.updateSelection();
++      if (snapshot !== undefined) {
++        if (snapshot) {
++          this.publishWithRecovery(
++            () => { window.windowUtils.syncWinUITabMenu(JSON.stringify(snapshot)); return true; },
++            () => { this.tabMenuSession.forceUpdate = true; this.publishTabContext(tabs, ids); });
++        } else if (this.tabMenuSession.revalidateActive()) {
++          this.publishMenu(this.tabMenuSession.snapshot());
++        }
++        return;
++      }
++    }
 +    if (!this.tabMenuSession) {
 +      const { WinUITabMenuSession } = ChromeUtils.importESModule(
 +        "chrome://browser/content/WinUITabMenuSession.sys.mjs"
@@ -29144,6 +29212,7 @@ index 00000000000..37332cf4f21
 +            }
 +          } finally {
 +            this.processingAction = false;
++            this.resumePublication();
 +          }
 +        },
 +      });
@@ -29472,12 +29541,12 @@ index 00000000000..37332cf4f21
 +    return this.nativeLabelCache;
 +  },
 +
-+  canDragGroupTab(tab, creating = false) {
++  canDragGroupTab(tab, creating = false, singleSelection = gBrowser.selectedTabs.length <= 1) {
 +    // Split wrappers and multi-tab gestures retain ordinary drag behavior until
 +    // the native gesture contract can represent their complete moving set.
 +    return !!tab && tab.isConnected && !tab.closing && tab.visible &&
 +      !tab.pinned && !tab.splitview && !gBrowser.isTabPendingPermitUnload(tab) &&
-+      gBrowser.selectedTabs.length <= 1 &&
++      singleSelection &&
 +      Services.prefs.getBoolPref("browser.tabs.groups.enabled", false) &&
 +      (!creating || Services.prefs.getBoolPref("browser.tabs.dragDrop.createGroup.enabled", false));
 +  },
@@ -29502,6 +29571,9 @@ index 00000000000..37332cf4f21
 +  describeStrip() {
 +    const l10n = this.localization();
 +    const label = (id, args) => l10n.formatValueSync(id, args);
++    // One synchronous description has one selection context. Action handlers
++    // omit this argument and continue to validate Firefox's live selection.
++    const singleSelection = gBrowser.selectedTabs.length <= 1;
 +    // Bounds what images may spend of one strip snapshot; beyond this,
 +    // remaining rows fall back to the native placeholder glyph rather than
 +    // risking WinUITabStripSession's snapshot-size cap, whose failure mode
@@ -29600,8 +29672,8 @@ index 00000000000..37332cf4f21
 +        else imageChars += cost;
 +      }
 +      const container = ContextualIdentityService.getPublicIdentityFromId(tab.userContextId);
-+      return { id: this.tabIds.get(tab), groupSource: this.canDragGroupTab(tab),
-+        groupTarget: this.canDragGroupTab(tab, true) && !tab.group, detail:detail.slice(0, 2048), status:status.slice(0, 2048), flags, image,
++      return { id: this.tabIds.get(tab), groupSource: this.canDragGroupTab(tab, false, singleSelection),
++        groupTarget: this.canDragGroupTab(tab, true, singleSelection) && !tab.group, detail:detail.slice(0, 2048), status:status.slice(0, 2048), flags, image,
 +        containerName: container ? ContextualIdentityService.getUserContextLabel(tab.userContextId).slice(0, 1024) : "",
 +        containerColor: container ? this.containerColor(container) : 0 };
 +    });
@@ -29717,7 +29789,7 @@ index 00000000000..37332cf4f21
 +          BrowserUsageTelemetry.recordToolbarVisibility(toolbarId, visible, "toolbar-context-menu");
 +        }
 +      }
-+    } finally { this.processingAction = false; }
++    } finally { this.processingAction = false; this.resumePublication(); }
 +  },
 +
 +  containerColor(identity) {
@@ -29851,21 +29923,32 @@ index 00000000000..37332cf4f21
 +      else TabContextMenu.executeCoreCommand(tab, command);
 +    } finally {
 +      this.processingAction = false;
++      this.resumePublication();
 +    }
 +  },
 +
 +  // Decide the smallest publication that tells the pane what changed. A quiet
 +  // window reaches this with nothing dirty and publishes nothing at all.
-+  publish(force = false) {
++  publish(force = false, includeAddress = true) {
++    if (this.uninitializing) return;
++    if (this.publishing) {
++      this.structuralDirty ||= force;
++      this.publicationDeferred = true;
++      return;
++    }
++    this.publishing = true;
 +    try {
-+      this.publishState(force);
++      this.publishState(force, includeAddress);
 +    } catch (error) {
 +      console.error("WinUI tab publication failed", error);
 +      this.uninit();
++    } finally {
++      this.publishing = false;
++      this.resumePublication();
 +    }
 +  },
 +
-+  publishState(force = false) {
++  publishState(force = false, includeAddress = true) {
 +    if (!this.element || !this.attached || this.processingAction) return;
 +    this.groupHeader?.publish();
 +    this.allTabsController?.publish();
@@ -29887,14 +29970,14 @@ index 00000000000..37332cf4f21
 +        return;
 +      }
 +      this.contextDirty = false;
-+      this.publishTabContext(tabs, ids);
++      this.publishTabContext(tabs, ids, true);
 +    }
 +    if (this.stripDirty) {
 +      this.stripDirty = false;
 +      this.publishStrip();
 +    }
 +    if (this.dirtyTitles.size || this.dirtySelection) this.publishTabDelta();
-+    if (this.addressDirty) {
++    if (includeAddress && this.addressDirty) {
 +      this.addressDirty = false;
 +      try {
 +        this.syncAddress();
@@ -29907,6 +29990,7 @@ index 00000000000..37332cf4f21
 +        this.addressSession?.close();
 +        this.addressSession = null;
 +        this.addressFailed = true;
++        this.addressPublication = null;
 +        this.addressToolbar?.restore();
 +        try {
 +          window.windowUtils.syncWinUIAddress(
@@ -29918,8 +30002,8 @@ index 00000000000..37332cf4f21
 +  },
 +
 +  // Anything that could change what the address publication would say. Cheap
-+  // and idempotent: it sets a flag and asks for the frame that is already
-+  // coming, so callers do not have to know whether a change is real.
++  // and idempotent: it sets a flag and asks for a coalesced publication task,
++  // so callers do not have to know whether a change is real.
 +  invalidateAddress() {
 +    this.addressDirty = true;
 +    this.schedule();
@@ -30038,6 +30122,7 @@ index 00000000000..37332cf4f21
 +      gBrowser.removeTab(tab, { animate: true });
 +    } finally {
 +      this.processingAction = false;
++      this.resumePublication();
 +    }
 +    return 1;
 +  },
@@ -30121,6 +30206,24 @@ index 00000000000..37332cf4f21
 +    }
 +  },
 +
++  handleMutations(records) {
++    if (records.some(record => record.target === this.urlbar ||
++                               record.target === this.modeSwitcher ||
++                               record.target === document.documentElement)) {
++      this.addressDirty = true;
++    }
++    if (records.some(record => record.target === document.documentElement)) this.stripDirty = true;
++    // Firefox also changes the retained label's text child when a background
++    // title changes. That is tab presentation, not selected-address state.
++    // Any other or mixed mutation keeps the existing refresh behavior.
++    const backgroundLabels = records.length > 0 && records.every(record => {
++      if (record.type !== "childList") return false;
++      const tab = record.target.closest?.("tab");
++      return tab && tab !== gBrowser.selectedTab && record.target === tab.textLabel;
++    });
++    this.schedule(!backgroundLabels);
++  },
++
 +  handleEvent(event) {
 +    if (event.type == "keydown") {
 +      this.backwards = event.shiftKey;
@@ -30136,7 +30239,12 @@ index 00000000000..37332cf4f21
 +    if (event.type === "TabSelect") {
 +      this.dirtySelection = true;
 +    } else if (event.type === "TabMultiSelect") {
-+      this.stripDirty = true;
++      const singleSelection = gBrowser.selectedTabs.length <= 1;
++      // A consumed gesture needs its publication boundary even if its browser
++      // operation was refused and did not produce a structural event.
++      if (singleSelection !== this.stripSingleSelection || this.stripSession?.consumed)
++        this.stripDirty = true;
++      this.stripSingleSelection = singleSelection;
 +      // The tab set and its order are unchanged; only which tabs are selected.
 +      this.contextDirty = true;
 +    } else if (event.type === "TabAttrModified") {
@@ -30174,16 +30282,84 @@ index 00000000000..37332cf4f21
 +      this.observer.unobserve(event.target);
 +      this.update();
 +    }
-+    this.schedule();
++    // These attributes describe a background tab, not the selected document.
++    // Dynamic address controls and open panels invalidate their own state;
++    // preserve their requests if they coalesce with this tab-only update.
++    const backgroundMetadata = event.type === "TabAttrModified" &&
++      event.target !== gBrowser.selectedTab && event.detail?.changed?.length > 0 &&
++      event.detail.changed.every(name => ["label", "busy", "progress", "image"].includes(name));
++    this.schedule(!backgroundMetadata);
 +  },
 +
-+  schedule() {
-+    if (!this.frame && this.element) {
-+      this.frame = requestAnimationFrame(() => {
++  schedule(refreshAddress = true) {
++    if (!this.element || this.uninitializing) return;
++    this.refreshAddress(refreshAddress);
++    // Background strip metadata needs only the frame publication below. Keep
++    // its dirty state while frames are suspended (for example, minimized),
++    // rather than waking native layout for each title change. Address work
++    // retains its prompt task even when it coalesces with strip-only changes.
++    // Explicit attachment/recovery continuations still schedule their own task.
++    if (this.addressDirty) this.schedulePublication();
++    if (!this.frame) {
++      const element = this.element;
++      const frame = requestAnimationFrame(() => {
++        if (this.element !== element || this.frame !== frame) return;
 +        this.frame = 0;
-+        this.update();
++        // Keep strip selection within its frame budget. Address construction
++        // and native application run in the task, outside this callback ahead
++        // of Firefox's tab layer readiness processing.
++        this.updateGeometry();
++        this.publishPresentation(false);
 +      });
++      this.frame = frame;
 +    }
++  },
++
++  refreshAddress(requested) {
++    if (requested && (this.addressToolbar || Services.prefs.getBoolPref(this.addressToolbarPref, false) ||
++        Services.prefs.getBoolPref(this.navigationToolbarPref, true))) this.addressDirty = true;
++  },
++
++  schedulePublication() {
++    if (!this.element || this.uninitializing || this.publicationTimer) return;
++    const element = this.element;
++    const timer = window.setTimeout(() => {
++      if (this.element !== element || this.publicationTimer !== timer) return;
++      this.publicationTimer = 0;
++      if (this.processingAction || this.draining || this.publishing) {
++        // A nested modal loop must not publish half of a browser operation.
++        // The operation's finally path resumes us; do not poll the nested loop.
++        this.publicationDeferred = true;
++        return;
++      }
++      // Read live state here, never a snapshot or selected tab captured when
++      // scheduling. If attachment is still pending, geometry wakes us once ready.
++      this.publishPresentation();
++    }, 0);
++    this.publicationTimer = timer;
++  },
++
++  resumePublication() {
++    if (!this.publicationDeferred || this.processingAction || this.draining || this.publishing) return;
++    this.publicationDeferred = false;
++    this.schedulePublication();
++  },
++
++  stripVisibility() {
++    const replace = Services.prefs.getBoolPref(this.replaceTabsPref, true);
++    const hidden = window.fullScreen || !!document.fullscreenElement ||
++      (replace && (document.documentElement.hasAttribute("customizing") ||
++        Services.prefs.getBoolPref("sidebar.verticalTabs", false) || this.hasUnreplacedTabControls()));
++    return {replace, hidden};
++  },
++
++  publishPresentation(includeAddress = true) {
++    if (!this.element || !this.attached || this.uninitializing) return;
++    this.publish(false, includeAddress);
++    if (!this.element || !this.attached || this.uninitializing) return;
++    const {replace, hidden} = this.stripVisibility();
++    this.setReplacementActive(replace && !hidden && !!this.nativeRevision);
++    this.updateToolbarHidden();
 +  },
 +
 +  occlusions(rect) {
@@ -30209,12 +30385,18 @@ index 00000000000..37332cf4f21
 +      });
 +  },
 +
-+  update(focus = false) {
-+    if (!this.element) return;
-+    const replace = Services.prefs.getBoolPref(this.replaceTabsPref, true);
-+    const hidden = window.fullScreen || !!document.fullscreenElement ||
-+      (replace && (document.documentElement.hasAttribute("customizing") ||
-+        Services.prefs.getBoolPref("sidebar.verticalTabs", false) || this.hasUnreplacedTabControls()));
++  update(focus = false, refreshAddress = true) {
++    if (!this.element || this.uninitializing) return;
++    // Explicit focus/popup callers keep their synchronous geometry and state
++    // ordering. Ordinary invalidations use the separate task/frame paths above.
++    this.refreshAddress(refreshAddress);
++    this.updateGeometry(focus);
++    this.publishPresentation();
++  },
++
++  updateGeometry(focus = false) {
++    if (!this.element || this.uninitializing) return;
++    const {replace, hidden} = this.stripVisibility();
 +    if (hidden) this.setReplacementActive(false);
 +    this.element.style.display = hidden ? "none" : "";
 +    const r = this.element.getBoundingClientRect();
@@ -30229,14 +30411,11 @@ index 00000000000..37332cf4f21
 +        this.backwards,
 +        this.occlusions(r)
 +      );
++      const wasAttached = this.attached;
 +      this.attached = ok;
 +      if (!ok) this.uninit();
 +      else {
-+        if (this.addressToolbar || Services.prefs.getBoolPref(this.addressToolbarPref, false) ||
-+            Services.prefs.getBoolPref(this.navigationToolbarPref, true)) {
-+          this.addressDirty = true;
-+        }
-+        this.publish();
++        if (!wasAttached) this.schedulePublication();
 +        this.setReplacementActive(replace && this.attached && !hidden && !!this.nativeRevision);
 +        this.updateToolbarHidden();
 +      }
@@ -30251,6 +30430,11 @@ index 00000000000..37332cf4f21
 +  },
 +
 +  uninit() {
++    this.uninitializing = true;
++    if (this.publicationTimer) window.clearTimeout(this.publicationTimer);
++    this.publicationTimer = 0;
++    this.publicationDeferred = false;
++    this.addressPublication = null;
 +    this.setReplacementActive(false);
 +    this.setToolbarHidden(false);
 +    if (!this.element) return;
@@ -30263,6 +30447,7 @@ index 00000000000..37332cf4f21
 +    this.dirtyTitles.clear();
 +    this.dirtySelection = false;
 +    this.structuralDirty = true;
++    this.stripSingleSelection = null;
 +    this.publishedIds = new Set();
 +    try {
 +      Services.obs.removeObserver(this, "winui-pane-drain");

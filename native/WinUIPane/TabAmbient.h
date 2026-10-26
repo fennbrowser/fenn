@@ -216,7 +216,9 @@ struct TabAmbient {
     winrt::event_token contrastToken{}, layoutToken{}, renderingToken{};
     std::shared_ptr<int> life = std::make_shared<int>(0);
     std::function<void()> refresh;
-    bool observing{}, updating{}, reportedFailure{}, queued{};
+    std::function<bool()> layoutChanged;
+    std::function<void()> refreshFailed;
+    bool observing{}, updating{}, reportedFailure{}, queued{}, checkingLayout{};
     // Rendered frames observed while following motion; bounds waits in
     // frames, so a throttled window cannot end them before it draws.
     uint64_t frames{};
@@ -253,7 +255,15 @@ struct TabAmbient {
         auto weak = std::weak_ptr<int>(life);
         layer.Loaded([this, weak](auto&&, auto&&) {
             if (weak.expired()) return;
-            if (!layoutToken.value) layoutToken = layer.LayoutUpdated([this, weak](auto&&, auto&&) { if (!weak.expired()) Update(); });
+            if (!layoutToken.value) layoutToken = layer.LayoutUpdated([this, weak](auto&&, auto&&) {
+                // Geometry reads can themselves finish layout. Do not consume
+                // an observation in a nested/skipped refresh.
+                if (weak.expired() || updating || checkingLayout || !layer.IsLoaded()) return;
+                checkingLayout = true;
+                try { if (!layoutChanged || layoutChanged()) Update(); }
+                catch (...) { if (refreshFailed) refreshFailed(); }
+                checkingLayout = false;
+            });
             Update();
         });
         contrastToken = settings.ColorValuesChanged([this, weak, queue = root.DispatcherQueue()](auto&&, auto&&) {
@@ -314,6 +324,7 @@ struct TabAmbient {
             }
             refresh();
         } catch (...) {
+            if (refreshFailed) refreshFailed();
 #ifdef WINUI_PANE_TESTING
             if (!reportedFailure) {
                 reportedFailure = true;

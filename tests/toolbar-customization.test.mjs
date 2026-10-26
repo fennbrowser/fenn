@@ -26,6 +26,19 @@ function fixture(retired=[]) {
  const command=(control,verb,target)=>{const s=state();return `customize:${s.revision}:${s.items.find(i=>i.control===control).id}:${verb}`+(target?':'+s.items.find(i=>i.control===target).id:'');};
  return {c,state,command,calls,ui,nodes,prefs,extras,overflow,order:()=>order};
 }
+test('repeated accepted overflow acknowledgments do not update Firefox again',()=>{
+ const f=fixture(),s=f.state(),item=s.items.find(i=>i.canAutoOverflow);
+ assert.ok(item);
+ const command=`customize:${s.revision}:overflow-layout:${item.id}`;
+ assert.equal(f.c.execute(command),1);
+ const writes=f.calls.filter(call=>call[0]==='transient').length;
+ assert.equal(writes,1);
+ const current=f.state();
+ assert.equal(f.c.execute(`customize:${current.revision}:overflow-layout:${item.id}`),1);
+ assert.equal(f.calls.filter(call=>call[0]==='transient').length,writes);
+ assert.equal(f.c.execute(`customize:${current.revision}:overflow-layout:widget-999`),2);
+});
+
 test('saved Send/Share toolbar placements migrate out of the toolbar',()=>{
  const f=fixture(['send-tab-button','share-tab-button']);
  assert.ok(!f.order().includes('send-tab-button'));

@@ -99,6 +99,15 @@ struct InlineTabGroups {
     std::vector<FrameworkElement> realizing;
     std::optional<uint64_t> realizeFrom;
     std::function<void()> realized;
+    // Host owns XAML measurements; ShellCore owns observation invalidation.
+    std::function<void()> geometryChanged;
+    std::function<bool(ShellLayoutInputs const&)> widthWork;
+    weak_ref<Controls::ScrollViewer> layoutScroller;
+    double cappedExtent{};
+    bool layoutUpdating{};
+#ifdef WINUI_PANE_TESTING
+    uint64_t capPasses{};
+#endif
     static void* Identity(FrameworkElement const& element) {
         return get_abi(element.as<Windows::Foundation::IUnknown>());
     }
@@ -376,7 +385,9 @@ struct InlineTabGroups {
                             weakView = make_weak(view), scroll = make_weak(scroller), minTab, maxTab,
                             back = make_weak(decrease), forward = make_weak(increase),
                             refreshArrows](auto const&, auto const&) {
-            if (alive.expired()) return;
+            if (alive.expired() || layoutUpdating) return;
+            layoutUpdating = true;
+            struct LayoutPass { bool& active; ~LayoutPass() { active = false; } } pass{layoutUpdating};
             auto list = weakList.get();
             auto view = weakView.get();
             if (!list || !view || view.ActualWidth() <= 0) return;
@@ -388,8 +399,23 @@ struct InlineTabGroups {
                 grid.ColumnDefinitions().GetAt(2).ActualWidth() -
                 (footer ? footer.DesiredSize().Width : 0));
             if (list.MaxWidth() != available) list.MaxWidth(available);
+            // TabView can retain a pixel width computed while the add column
+            // measured zero during a narrow layout. Capping only the list then
+            // centers it in that oversized column and clips the add button on
+            // expansion. Repair only that oversized pixel width: TabView owns
+            // MaxWidth and Auto sizing during entry, close and group motion.
+            auto tabColumn = grid.ColumnDefinitions().GetAt(1);
+            const auto columnWidth = tabColumn.Width();
+            if (columnWidth.GridUnitType == GridUnitType::Pixel && columnWidth.Value > available) {
+                tabColumn.Width(GridLength{available, GridUnitType::Pixel});
+                // The list can keep its capped size while its position moves.
+                if (geometryChanged) geometryChanged();
+            }
             // Animated widths are transient; decide caps and arrows once they end.
-            if (holdCaps && holdCaps()) return;
+            if (holdCaps && holdCaps()) {
+                if (geometryChanged) geometryChanged();
+                return;
+            }
             if (auto scroller = scroll.get(); scroller && scroller.ActualWidth() > 0) {
                 // The arrow-free width must not depend on the arrows' own
                 // state, or the decision below oscillates: their containers
@@ -415,7 +441,18 @@ struct InlineTabGroups {
                     inset = std::max(0.0, list.ActualWidth() - scroller.ViewportWidth() - arrows);
                 }
                 const double space = available - inset;
-                const double extent = CapTabWidths(space, scroller.ExtentWidth(), minTab, maxTab);
+                ShellLayoutInputs inputs{};
+                inputs.values[0] = space;
+                inputs.values[1] = scroller.ExtentWidth();
+                inputs.values[2] = minTab;
+                inputs.values[3] = maxTab;
+                inputs.values[4] = 1;
+                if (auto xaml = view.XamlRoot()) inputs.values[4] = xaml.RasterizationScale();
+                if (!widthWork || widthWork(inputs)) {
+                    try { cappedExtent = CapTabWidths(space, inputs.values[1], minTab, maxTab); }
+                    catch (...) { if (geometryChanged) geometryChanged(); throw; }
+                }
+                const double extent = cappedExtent;
                 const auto wanted = extent > space + .5 ? Controls::ScrollBarVisibility::Visible
                                                         : Controls::ScrollBarVisibility::Hidden;
                 if (scroller.HorizontalScrollBarVisibility() != wanted) scroller.HorizontalScrollBarVisibility(wanted);
@@ -423,6 +460,8 @@ struct InlineTabGroups {
             }
             refreshArrows();
         });
+        layoutScroller = make_weak(scroller);
+        if (geometryChanged) geometryChanged();
         configured = true;
         return true;
     }
@@ -484,6 +523,9 @@ struct InlineTabGroups {
     // content, so extent minus the tabs is every header, gap and padding.
     // Returns the extent expected once the caps apply.
     double CapTabWidths(double space, double extent, double minTab, double maxTab) {
+#ifdef WINUI_PANE_TESTING
+        ++capPasses;
+#endif
         std::vector<Controls::TabViewItem> tabs;
         double measured = 0;
         size_t loaded = 0;
@@ -609,6 +651,7 @@ struct InlineTabGroups {
     void Sync(Controls::TabView const& view, std::vector<ShellStripSlot> const& layout,
               std::map<uint32_t, Controls::TabViewItem> const& rows,
               Windows::Data::Json::JsonArray const& groups) {
+        if (geometryChanged) geometryChanged();
         std::set<void*> shown;
         for (auto const& element : realizing) shown.insert(Identity(element));
         for (auto const& [id, run] : runs) {
@@ -691,6 +734,9 @@ struct InlineTabGroups {
                 run.button.Tag(box_value(uint32_t(id)));
                 Automation::AutomationProperties::SetAutomationId(run.button, L"FennInlineGroup-" + to_hstring(id));
                 auto alive = std::weak_ptr<int>(lifetime);
+                run.button.SizeChanged([this, alive](auto&&, auto&&) {
+                    if (!alive.expired() && geometryChanged) geometryChanged();
+                });
                 run.button.AddHandler(UIElement::PointerPressedEvent(),
                     box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive, id](auto&&, auto const& args) {
                         if (alive.expired()) return;

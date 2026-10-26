@@ -42,11 +42,12 @@ function fixture(expectNative = true) {
     gURLBar:{nativeDomainEmphasis:()=>null,view,inputField:{value:'new-page',getAttribute:()=>''},searchModeVisibility:{}},
   });
   const source=readFileSync(new URL('../upstream/firefox/browser/base/content/browser-winui-pane.js',import.meta.url),'utf8');
-  const start=source.indexOf('  syncAddress() {'),end=source.indexOf('\n  // One native address intent',start);
-  vm.runInContext('this.syncAddress = ({'+source.slice(start,end)+'}).syncAddress;',sandbox);
-  const old={engine:'independent',close(){events.push('close-old');view.nativePresentation=null;}};
+  const start=source.indexOf('  publishAddress('),end=source.indexOf('\n  // One native address intent',start);
+  vm.runInContext('this.methods = ({'+source.slice(start,end)+'});this.syncAddress=methods.syncAddress;',sandbox);
+  const old={engine:'independent',onChanged(){throw Error('Obsolete session dirtied successor');},close(){this.onChanged?.();events.push('close-old');view.nativePresentation=null;}};
   const owner={attached:true,addressSession:old,addressTab:tab,addressDocument:1,
     addressToolbar:{update:()=>true,activate(){events.push('activate');}},
+    publishAddress:sandbox.methods.publishAddress,
     nativeLabels:()=>({}),addressAvailable:()=>true,invalidateAddress(){}};
   view.nativePresentation=old;
   return {owner,sandbox,view,events,publications};

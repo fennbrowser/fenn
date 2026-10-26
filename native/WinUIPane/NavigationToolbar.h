@@ -422,9 +422,14 @@ struct NativeNavigationToolbar {
                 }
             }
         }
-        for(size_t i=0;i<buttons.size();i++)buttons[i].IsEnabled(visible && (customization.editing || commandState[i].enabled));
-        for(size_t i=0;i<indicatorButtons.size();i++)indicatorButtons[i].IsEnabled(
-            visible && commandState.indicators[i].shown && commandState.indicators[i].enabled && !customization.editing);
+        for(size_t i=0;i<buttons.size();i++) {
+            const bool enabled=visible && (customization.editing || commandState[i].enabled);
+            if(buttons[i].IsEnabled()!=enabled)buttons[i].IsEnabled(enabled);
+        }
+        for(size_t i=0;i<indicatorButtons.size();i++) {
+            const bool enabled=visible && commandState.indicators[i].shown && commandState.indicators[i].enabled && !customization.editing;
+            if(indicatorButtons[i].IsEnabled()!=enabled)indicatorButtons[i].IsEnabled(enabled);
+        }
         dropSlots.clear();customization.placedControls.clear();
         std::vector<UIElement> desired;
         std::set<winrt::hstring> keep, keepDrag;
@@ -594,42 +599,68 @@ struct NativeNavigationToolbar {
     }
     void Apply(States const& state, bool visible) {
         using namespace Microsoft::UI::Xaml;
+        // Compare the actual WinUI properties, rather than maintaining a second
+        // presentation model. This also observes changes made by customization
+        // and the history-tooltip lifecycle between browser publications.
+        auto name = [](auto const& control, winrt::hstring const& value) {
+            if (Automation::AutomationProperties::GetName(control) != value)
+                Automation::AutomationProperties::SetName(control, value);
+        };
+        auto tooltip = [](auto const& control, winrt::hstring const& value) {
+            auto old = Controls::ToolTipService::GetToolTip(control).template try_as<winrt::Windows::Foundation::IPropertyValue>();
+            if (!old || old.Type() != winrt::Windows::Foundation::PropertyType::String || old.GetString() != value)
+                Controls::ToolTipService::SetToolTip(control, winrt::box_value(value));
+        };
+        auto show = [](auto const& control, bool value) {
+            auto next = value ? Visibility::Visible : Visibility::Collapsed;
+            if (control.Visibility() != next) control.Visibility(next);
+        };
         this->visible=visible;commandState=state;
         for(size_t i=0;i<indicatorButtons.size();i++) {
             auto const& item=state.indicators[i];
-            indicatorButtons[i].IsEnabled(visible && item.shown && item.enabled && !customization.editing);
-            Automation::AutomationProperties::SetName(indicatorButtons[i],item.label);
-            Controls::ToolTipService::SetToolTip(indicatorButtons[i],winrt::box_value(item.label));
+            const bool enabled=visible && item.shown && item.enabled && !customization.editing;
+            if(indicatorButtons[i].IsEnabled()!=enabled)indicatorButtons[i].IsEnabled(enabled);
+            name(indicatorButtons[i],item.label);
+            tooltip(indicatorButtons[i],item.label);
         }
-        indicatorButtons[0].Content(winrt::box_value(state.indicators[0].label));
-        privateLabel.Text(state.indicators[0].label);
-        Automation::AutomationProperties::SetName(privateLabel,state.indicators[0].label);
+        auto privateContent=indicatorButtons[0].Content().try_as<winrt::Windows::Foundation::IPropertyValue>();
+        if(!privateContent || privateContent.Type()!=winrt::Windows::Foundation::PropertyType::String || privateContent.GetString()!=state.indicators[0].label)
+            indicatorButtons[0].Content(winrt::box_value(state.indicators[0].label));
+        if(privateLabel.Text()!=state.indicators[0].label)privateLabel.Text(state.indicators[0].label);
+        name(privateLabel,state.indicators[0].label);
         if (!visible) { backForwardMenu.Close(); historyMenu.Close(); downloadsPanel.Close(); profileMenu.Close(); overflowMenu.Close(); developerMenu.Close(); profilerPanel.Close(); tabGroupsMenu.Close(); forgetPanel.Close(); clearPrivatePanel.Close(); productMenu.Close(); sentOverflow.clear();pendingOverflow.clear();pinned.Apply({}, false); customization.Apply({}, false); Layout({}); }
         hasOverflow = visible && state[6].enabled;
         requiredOverflow = visible && state[6].required;
         const bool downloading=visible && state[8].progress>=0 && !customization.editing;
-        downloadProgress.Visibility(downloading?Visibility::Visible:Visibility::Collapsed);
-        downloadIcon.Visibility(downloading?Visibility::Collapsed:Visibility::Visible);
-        downloadPie.Visibility(state[8].progress>0?Visibility::Visible:Visibility::Collapsed);
+        show(downloadProgress,downloading);
+        show(downloadIcon,!downloading);
+        show(downloadPie,state[8].progress>0);
         // Two arcs also represent exactly 100% without a coincident-endpoint full-circle ambiguity.
         const double sweep=std::clamp(state[8].progress,0.0,100.0)*6.283185307179586/100.0;
         for(size_t j=0;j<downloadArcs.size();j++) {
             const double angle=sweep*double(j+1)/2;
-            downloadArcs[j].Point({float(8+6.5*std::sin(angle)),float(8-6.5*std::cos(angle))});
+            winrt::Windows::Foundation::Point next{float(8+6.5*std::sin(angle)),float(8-6.5*std::cos(angle))};
+            auto old=downloadArcs[j].Point();
+            if(old.X!=next.X || old.Y!=next.Y)downloadArcs[j].Point(next);
         }
         size_t attention=state[8].attention==L"severe"?2:state[8].attention==L"warning"?1:0;
-        for(size_t j=0;j<downloadAttention.size();j++)downloadAttention[j].Visibility(visible && !state[8].attention.empty() && !customization.editing && j==attention?Visibility::Visible:Visibility::Collapsed);
+        for(size_t j=0;j<downloadAttention.size();j++)show(downloadAttention[j],visible && !state[8].attention.empty() && !customization.editing && j==attention);
         stopping = visible && state[2].stopping;
-        icons[2].Symbol(stopping ? Controls::Symbol::Cancel : Controls::Symbol::Refresh);
+        const auto symbol=stopping ? Controls::Symbol::Cancel : Controls::Symbol::Refresh;
+        if(icons[2].Symbol()!=symbol)icons[2].Symbol(symbol);
         for (size_t i = 0; i < buttons.size(); ++i) {
-            buttons[i].IsEnabled(visible && state[i].enabled);
-            if (!state[i].label.empty()) Automation::AutomationProperties::SetName(buttons[i], state[i].label);
+            const bool enabled=visible && state[i].enabled;
+            if(buttons[i].IsEnabled()!=enabled)buttons[i].IsEnabled(enabled);
+            if (!state[i].label.empty()) name(buttons[i], state[i].label);
             if (!state[i].tooltip.empty()) {
                 // A manually opened history flyout must suppress its source
                 // tooltips; otherwise a pending tooltip can replay old pointer
                 // coordinates into the windowed menu. Keep live locale updates.
-                if(i<2 && historyTipsHidden)historyTips[i]=winrt::box_value(state[i].tooltip);
-                else Controls::ToolTipService::SetToolTip(buttons[i],winrt::box_value(state[i].tooltip));
+                if(i<2 && historyTipsHidden) {
+                    auto old=historyTips[i].try_as<winrt::Windows::Foundation::IPropertyValue>();
+                    if(!old || old.Type()!=winrt::Windows::Foundation::PropertyType::String || old.GetString()!=state[i].tooltip)
+                        historyTips[i]=winrt::box_value(state[i].tooltip);
+                } else tooltip(buttons[i],state[i].tooltip);
             }
         }
     }

@@ -235,7 +235,7 @@ struct NativeTabMenu {
         // Parse the entire envelope before changing Rust state or live controls.
         snapshot.GetNamedBoolean(L"publishOnly", false);
         auto revoke = snapshot.HasKey(L"revoke") ? NativeJson::RequireId(snapshot, L"revoke") : 0;
-        uint32_t incoming = 0, forSession = 0, forTab = 0, forRevision = 0;
+        uint32_t incoming = 0, base = 0, forSession = 0, forTab = 0, forRevision = 0;
         std::vector<uint32_t> nextTabs;
         std::set<uint32_t> nextSelected;
         bool nextHasSelection = false;
@@ -244,16 +244,33 @@ struct NativeTabMenu {
         if (snapshot.HasKey(L"state")) {
             auto state = snapshot.GetNamedObject(L"state");
             incoming = NativeJson::RequireId(state, L"revision");
-            auto bindings = state.GetNamedArray(L"tabs");
-            if (bindings.Size() > NativeJson::kMaxTabs) throw winrt::hresult_invalid_argument();
-            for (auto value : bindings) {
-                auto binding = value.GetObject();
-                auto id = NativeJson::RequireId(binding, L"tab");
-                if (binding.HasKey(L"selected")) {
-                    nextHasSelection = true;
-                    if (binding.GetNamedBoolean(L"selected")) nextSelected.insert(id);
+            if (state.HasKey(L"selection")) {
+                if (state.Size() != 3 || state.HasKey(L"tabs")) throw winrt::hresult_invalid_argument();
+                base = NativeJson::RequireId(state, L"base");
+                auto selection = state.GetNamedArray(L"selection");
+                if (selection.Size() > NativeJson::kMaxTabs) throw winrt::hresult_invalid_argument();
+                nextHasSelection = true;
+                for (auto value : selection) {
+                    const auto number = value.GetNumber();
+                    if (!std::isfinite(number) || number < 1 || number > UINT32_MAX || std::floor(number) != number)
+                        throw winrt::hresult_invalid_argument();
+                    const auto id = uint32_t(number);
+                    nextTabs.push_back(id); // Keep duplicates for Rust validation.
+                    nextSelected.insert(id);
                 }
-                nextTabs.push_back(id);
+            } else {
+                if (state.HasKey(L"base") && state.GetNamedNumber(L"base") != 0) throw winrt::hresult_invalid_argument();
+                auto bindings = state.GetNamedArray(L"tabs");
+                if (bindings.Size() > NativeJson::kMaxTabs) throw winrt::hresult_invalid_argument();
+                for (auto value : bindings) {
+                    auto binding = value.GetObject();
+                    auto id = NativeJson::RequireId(binding, L"tab");
+                    if (binding.HasKey(L"selected")) {
+                        nextHasSelection = true;
+                        if (binding.GetNamedBoolean(L"selected")) nextSelected.insert(id);
+                    }
+                    nextTabs.push_back(id);
+                }
             }
             fingerprint = state.Stringify();
         }
@@ -269,8 +286,12 @@ struct NativeTabMenu {
         }
         if (incoming) {
             bool changed = false;
-            if (!core || shell_core_menu_publish(core, incoming, nextTabs.data(), nextTabs.size(),
-                    reinterpret_cast<uint16_t const*>(fingerprint.c_str()), fingerprint.size(), &changed) != SHELL_STATUS_OK)
+            if (!core) throw winrt::hresult_invalid_argument();
+            const auto text = reinterpret_cast<uint16_t const*>(fingerprint.c_str());
+            const auto status = base ? shell_core_menu_selection(core, base, incoming, nextTabs.data(), nextTabs.size(),
+                    text, fingerprint.size(), &changed) :
+                shell_core_menu_publish(core, incoming, nextTabs.data(), nextTabs.size(), text, fingerprint.size(), &changed);
+            if (status != SHELL_STATUS_OK)
                 throw winrt::hresult_invalid_argument();
             if (changed) {
                 selectedTabs = std::move(nextSelected);

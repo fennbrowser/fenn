@@ -69,8 +69,9 @@ function menuFixture() {
     classes:new Set(),classList:{contains(c){return nodes.get(id).classes.has(c);}},
     getAttribute(name){return this.attrs[name] || '';},hasAttribute(name){return name in this.attrs;},querySelectorAll(){return [];},querySelector(){return null;},matches(){return false;}}]));
   nodes.get('trust-icon-container').hidden=true;
-  const document={getElementById:id=>nodes.get(id),querySelectorAll:selector=>selector.startsWith('#page-action-buttons') ?
-    [...nodes.values()].filter(n=>!['trust-icon-container','identity-icon-box','identity-box','tracking-protection-icon-container','identity-permission-box','star-button'].includes(n.id)) : []};
+  nodes.set('page-action-buttons',{id:'page-action-buttons',querySelectorAll:()=>
+    [...nodes.values()].filter(n=>!['trust-icon-container','identity-icon-box','identity-box','tracking-protection-icon-container','identity-permission-box','star-button','page-action-buttons','notification-popup-box'].includes(n.id))});
+  const document={getElementById:id=>nodes.get(id),querySelectorAll:()=>{throw new Error('Unbounded document query');}};
   const adapter=Object.create(context.Actions.prototype);
   Object.assign(adapter,{entries:new Map(),nextId:0,images:new Map(),events:new WeakSet(),label:key=>key,context:()=>17,
     shareURL:()=>({spec:'https://example.com/'}),toolbar:{menuAnchor:()=>({}),menuAnchors:new Map()},window:{document,gURLBar:{parentNode:{}},
@@ -290,12 +291,35 @@ test('permission wrapper carries the actual first child state; sharing and prote
 });
 
 
+test('bounded discovery reads live roots, deduplicates and preserves document order',()=>{
+  const {adapter,nodes}=menuFixture();
+  const make=(id,order)=>({...nodes.get('extension-action'),id,textContent:id,order,
+    compareDocumentPosition(other){return this.order<other.order ? 4 : 2;}});
+  const a=make('sharing-a',3),b=make('notification-b',1),c=make('permission-c',2);
+  nodes.get('identity-permission-box').querySelectorAll=()=>[c,a];
+  nodes.set('notification-popup-box',{querySelectorAll:()=>[b,c]});
+  const labels=()=>Array.from(adapter.snapshot().omnibarLeft,x=>x.label).filter(x=>['sharing-a','notification-b','permission-c'].includes(x));
+  assert.deepEqual(labels(),['notification-b','permission-c','sharing-a']);
+  a.order=0;
+  assert.deepEqual(labels(),['sharing-a','notification-b','permission-c']);
+  nodes.set('identity-permission-box',{querySelectorAll:()=>[a],hidden:true});
+  nodes.delete('notification-popup-box');
+  assert.deepEqual(labels(),['sharing-a']);
+  const oldAction=adapter.entries.get(nodes.get('extension-action')).id;
+  const dynamic=make('dynamic-extension',4);
+  nodes.delete('extension-action');
+  assert.ok(!adapter.snapshot().omnibarRight.some(row=>row.id===oldAction));
+  nodes.set('dynamic-extension',dynamic);
+  assert.ok(adapter.snapshot().omnibarRight.some(row=>row.label==='dynamic-extension'));
+  nodes.delete('page-action-buttons');
+  assert.equal(adapter.snapshot().omnibarRight.length,0);
+});
+
 test('permissions are menu-only while the first sharing indicator stays inline',()=>{
   const {adapter,nodes}=menuFixture();
   const sharing=indicator('webrtc-sharing-icon',['sharing-icon'],{sharing:'microphone'});
   Object.assign(sharing,{querySelectorAll:()=>[],querySelector:()=>null,textContent:'Microphone'});
-  const original=adapter.window.document.querySelectorAll;
-  adapter.window.document.querySelectorAll=selector=>selector.startsWith('#identity-permission-box') ? [sharing] : original(selector);
+  nodes.get('identity-permission-box').querySelectorAll=()=>[sharing];
   let state=adapter.snapshot();
   const permission=state.pageActions.items.find(i=>i.key==='permissions');
   assert.equal(permission.enabled,true);

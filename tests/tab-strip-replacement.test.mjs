@@ -5,7 +5,8 @@ import {runInNewContext} from "node:vm";
 
 const source = readFileSync(new URL("../upstream/firefox/browser/base/content/browser-winui-pane.js", import.meta.url), "utf8");
 function fixture() {
-  const prefs = new Map(), observers = new Map(), posted = [], attributes = new Map();
+  const prefs = new Map(), observers = new Map(), posted = [], attributes = new Map(), timers = new Map();
+  let timerId = 0;
   const element = () => ({style: {}, attributes: new Map(), listeners: new Map(),
     setAttribute(name, value) {this.attributes.set(name, String(value));},
     addEventListener(name, listener) {this.listeners.set(name, listener);},
@@ -16,7 +17,9 @@ function fixture() {
     toggleAttribute(name, active) {if (active) attributes.set(name, ""); else attributes.delete(name);}};
   const menu = element(), state = {attached: true, revision: 1, locked: false, published: 0};
   const context = {AppConstants: {platform: "win"}, gDialogBox: {isOpen: false},
-    window: {toolbar: {visible: true}, addEventListener() {}, windowUtils: {
+    window: {toolbar: {visible: true}, addEventListener() {},
+      setTimeout(callback) {timers.set(++timerId,callback);return timerId;},
+      clearTimeout(id) {timers.delete(id);}, windowUtils: {
       updateWinUIPane: () => state.attached}},
     getComputedStyle: () => ({display: "flex"}),
     document: {documentElement: root, getElementById: () => menu,

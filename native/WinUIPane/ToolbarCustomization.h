@@ -163,8 +163,10 @@ struct NativeToolbarCustomization {
         return false;
     }
     void RestoreKeyboardFocus() {
-        // MenuFlyout restores its anchor while closing; choose the next target afterward.
-        if(itemMenuOpen || focusAfterChange.empty() || state.revision==focusRevision)return;
+        // Wait for both MenuFlyout's anchor restoration and the refreshed palette
+        // containers. A removed toolbar item cannot receive palette focus before
+        // realization, even when its new collection entry is already present.
+        if(itemMenuOpen || palettePending || focusAfterChange.empty() || state.revision==focusRevision)return;
         auto id=focusAfterChange;focusAfterChange=L"";auto revision=state.revision;auto alive=std::weak_ptr<int>(lifetime);
         anchor.DispatcherQueue().TryEnqueue([this,alive,id,revision]{
             if(alive.expired() || !editing || state.revision!=revision)return;
@@ -345,6 +347,7 @@ struct NativeToolbarCustomization {
         // Span changes occur after container realization; invalidate the panel's
         // cached cell assignment so the next measure uses composite widths.
         if(auto panel=available.ItemsPanelRoot())panel.InvalidateMeasure();
+        RestoreKeyboardFocus();
     }
     void Refresh() {
         if(!available) return;

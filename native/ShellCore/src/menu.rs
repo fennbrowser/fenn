@@ -19,15 +19,15 @@ pub struct MenuState {
     state: ShellMenuState,
     next_session: u32,
     tabs: BTreeSet<u32>,
-    /// The tab-menu state is a latest-wins snapshot; `state.state_revision`
-    /// mirrors its accepted revision for the C ABI.
+    /// Complete membership snapshots and compact selection-context deltas share
+    /// one revision. A refused delta requires a complete membership recovery.
     stream: Stream,
     enabled: BTreeSet<Vec<u16>>,
 }
 impl Default for MenuState {
     fn default() -> Self {
         Self { state: ShellMenuState::default(), next_session: 0, tabs: BTreeSet::new(),
-            stream: Stream::new(StreamKind::Snapshot), enabled: BTreeSet::new() }
+            stream: Stream::new(StreamKind::Delta), enabled: BTreeSet::new() }
     }
 }
 impl MenuState {
@@ -52,6 +52,26 @@ impl MenuState {
     pub fn retain(&mut self, ids: &[u32]) {
         let keep: BTreeSet<_> = ids.iter().copied().collect();
         self.tabs.retain(|id| keep.contains(id));
+    }
+    pub fn selection(&mut self, base: u32, revision: u32, selected: &[u32], fingerprint: &[u16]) -> Result<bool, ()> {
+        if base == 0 || selected.len() > MAX_TABS || fingerprint.len() > MAX_FINGERPRINT {
+            self.stream.record(Classification::Invalid);
+            return Err(());
+        }
+        let members: BTreeSet<_> = selected.iter().copied().collect();
+        if members.len() != selected.len() || members.iter().any(|id| !self.tabs.contains(id)) {
+            self.stream.record(Classification::Invalid);
+            return Err(());
+        }
+        let class = self.stream.classify(base, revision, fingerprint);
+        self.stream.record(class);
+        if !class.outcome(self.stream.kind())? { return Ok(false); }
+        // Selection is a complete, bounded presentation set; the presenter
+        // copies it only after this membership/revision validation succeeds.
+        // Retain the existing membership instead of reconstructing every tab.
+        self.stream.commit(revision, fingerprint);
+        self.state.state_revision = revision;
+        Ok(true)
     }
     pub fn open(&mut self, tab: u32) -> bool {
         self.dismiss();
@@ -131,7 +151,7 @@ mod tests {
         assert!(!m.matches(newer,8,1));
     }
     #[test]
-    fn publication_validation_is_atomic_and_late_states_are_ignored() {
+    fn publication_validation_is_atomic_and_late_contexts_require_recovery() {
         let mut m=menu();m.open(7);let before=m.state();
         for (revision,tabs,fingerprint) in [(2,vec![7,7],id("duplicate")),(2,vec![0],id("zero")),(1,vec![7],id("conflict")),(0,vec![7],id("zero revision"))] {
             assert_eq!(m.publish(revision,&tabs,&fingerprint),Err(()));assert_eq!(m.state(),before);
@@ -139,7 +159,34 @@ mod tests {
         }
         assert_eq!(m.publish(1,&[7,8],&id("state1")),Ok(false));
         m.publish(3,&[8],&id("state3")).unwrap();
-        assert_eq!(m.publish(2,&[7],&id("state2")),Ok(false));assert!(!m.has_tab(7));
+        assert_eq!(m.publish(2,&[7],&id("state2")),Err(()));assert!(!m.has_tab(7));
+    }
+    #[test]
+    fn selection_context_retains_membership_and_revokes_old_menu_actions() {
+        let mut m=menu();m.open(7);let s=m.state().session;
+        m.accept(s,7,1,&[id("reload")]).unwrap();
+        assert_eq!(m.selection(1,2,&[8],&id("selection2")),Ok(true));
+        assert!(m.has_tab(7) && m.has_tab(8));
+        assert!(!m.activate(s,1,&id("reload")));
+        assert_eq!(m.selection(1,2,&[8],&id("selection2")),Ok(false));
+        assert_eq!(m.state().state_revision,2);
+        assert_eq!(m.selection(2,3,&[],&id("empty")),Ok(true));
+        assert!(m.has_tab(7));
+    }
+    #[test]
+    fn invalid_selection_contexts_are_atomic_and_recover_once_with_membership() {
+        let mut m=menu();let before=m.state();
+        for (base,revision,selected,print) in [(0,2,vec![7],"zero base"),(8,9,vec![7],"gap"),
+            (1,2,vec![7,7],"duplicate"),(1,2,vec![9],"unknown"),(1,2,vec![0],"zero"),
+            (1,1,vec![7],"conflict")] {
+            assert_eq!(m.selection(base,revision,&selected,&id(print)),Err(()));
+            assert_eq!(m.state(),before);
+        }
+        m.publish(3,&[8,9],&id("recovered")).unwrap();
+        assert_eq!(m.selection(3,4,&[9],&id("next")),Ok(true));
+        assert!(!m.has_tab(7));
+        assert_eq!(m.selection(1,2,&[8],&id("late")),Err(()));
+        m.close();assert_eq!(m.selection(4,5,&[],&id("closed")),Err(()));
     }
     #[test]
     fn invalid_command_sets_do_not_consume_pending_description() {

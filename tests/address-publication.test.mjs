@@ -37,3 +37,17 @@ test("result sequence and safe-integer exhaustion retain their meaning", () => {
   s.preparePublication(state);
   assert.throws(() => s.preparePublication({...state, text:"new"}), /exhausted/);
 });
+
+test("publishing a change does not notify itself; later model mutations still notify", () => {
+  const {s,state}=fixture(); let changes=0;
+  s.changed=()=>changes++;
+  s.preparePublication(state);
+  s.preparePublication({...state,text:'selected document changed'});
+  assert.equal(changes,0);
+  assert.equal(s.sequence,2);
+  s.sequence++;
+  assert.equal(changes,1);
+  s.preparePublication({...state,text:'selected document changed'});
+  assert.equal(changes,1);
+  assert.equal(s.sequence,3);
+});

@@ -45,6 +45,7 @@ struct NativeAddress {
     std::function<void(winrt::hstring const&)> navigate;
     std::function<void()> releaseMenuFocus;
     std::function<void()> releaseContentFocus;
+    std::function<void()> preparePointerFocus;
     Microsoft::UI::Xaml::Controls::TextBox field;
     NativeAddressValue formattedValue;
     NativeSearchMode mode;
@@ -494,6 +495,7 @@ struct NativeAddress {
                     const auto point = e.GetCurrentPoint(field);
                     if (!point.Properties().IsLeftButtonPressed()) { interaction.Interrupt(EditorOwned()); return; }
                     interaction.Begin(point, !interaction.FocusWithin() || !islandFocusOwned);
+                    if (preparePointerFocus) preparePointerFocus();
                     ScheduleFocusObservation();
                 })), true);
         field.AddHandler(UIElement::PointerMovedEvent(),
@@ -1499,6 +1501,9 @@ struct NativeAddress {
         }
         if (applyAddress && nextSession != session) {
             pageActions.Close();
+            // A queued layout report carries the old address session and can
+            // be rejected after selection. Replay under the new session;
+            // Firefox coalesces already-accepted identical overflow layouts.
             if (navigation) navigation->sentOverflow.clear();
             context.Reset();
             resultMenu.Reset();

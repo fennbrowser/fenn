@@ -891,7 +891,8 @@ test('publication failure records a reason before preserving the existing cleanu
   const f=fixture(),pane=wirePaneFallback(f),C=f.s.constructor,disabled=[];
   f.window.windowUtils={syncWinUIAddress:state=>disabled.push(JSON.parse(state))};
   const source=readFileSync(new URL('../upstream/firefox/browser/base/content/browser-winui-pane.js',import.meta.url),'utf8');
-  const start=source.indexOf('  publishState(force = false) {'),end=source.indexOf('\n  // Anything that could change',start);
+  const start=source.indexOf('  publishState('),end=source.indexOf('\n  // Anything that could change',start);
+  assert.ok(start>=0 && end>start,'publication method extraction');
   const context=vm.createContext({window:f.window,console:{error(){}}});
   vm.runInContext('this.publish = ({'+source.slice(start,end)+'}).publishState;',context);
   let closed=0,restored=0;

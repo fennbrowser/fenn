@@ -21,7 +21,8 @@ struct NativeWindowDrag {
     NativeWindowCaption windowCaption;
     Input input{nullptr};
     std::vector<Rect> clipped;
-    bool visible{}, updating{};
+    weak_ref<Controls::Button> addButton;
+    bool visible{}, updating{}, checkingLayout{};
     // A caption press on empty strip waits here for the drag threshold; see Proc.
     bool pendingCaption{};
     POINT pendingStart{};
@@ -175,6 +176,15 @@ struct NativeWindowDrag {
     }
     void Exclusions(DependencyObject const& node, std::vector<Rect>& rects) {
         if (auto element = node.try_as<FrameworkElement>(); element && element.Visibility() != Visibility::Visible) return;
+        // TabView can retain departed containers through a layout transition.
+        // Only the exact current row owns input; never exclude its retired tree.
+        if (auto row = node.try_as<Controls::TabViewItem>()) {
+            const auto id = unbox_value_or<uint32_t>(row.Tag(), 0);
+            auto current = strip->rows.find(id);
+            if (current == strip->rows.end() || current->second != row) return;
+        }
+        if (auto button = node.try_as<Controls::Button>(); button && button.Name() == L"AddButton")
+            addButton = button;
         bool exclude = node.try_as<Controls::Primitives::ButtonBase>() || node.try_as<Controls::Primitives::ScrollBar>() ||
                        node.try_as<Controls::TabViewItem>();
         if (exclude) {
@@ -183,6 +193,31 @@ struct NativeWindowDrag {
         }
         for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
             Exclusions(Media::VisualTreeHelper::GetChild(node, i), rects);
+    }
+    bool GeometryChanged() {
+        // Observe bounded, actual owner-client geometry. Root/scroller dimensions
+        // alone do not detect the final New Tab arrangement after a row closes.
+        // Cache its template object during an already-required exclusion scan.
+        ShellLayoutInputs inputs{};
+        auto sample = [&](size_t at, FrameworkElement const& element) {
+            if (!element || !element.IsLoaded()) return;
+            auto r = Bounds(element);
+            inputs.values[at] = r.X; inputs.values[at + 1] = r.Y;
+            inputs.values[at + 2] = r.Width; inputs.values[at + 3] = r.Height;
+        };
+        sample(0, strip->root);
+        sample(4, addButton.get());
+        auto scroller = strip->inlineGroups.layoutScroller.get();
+        sample(8, scroller);
+        if (scroller && scroller.IsLoaded()) {
+            inputs.values[12] = scroller.HorizontalOffset();
+            inputs.values[13] = scroller.ExtentWidth();
+            inputs.values[14] = int(scroller.ComputedHorizontalScrollBarVisibility());
+        }
+        inputs.values[15] = int(strip->root.Visibility()) + 2 * int(strip->root.IsLoaded()) +
+            4 * int(strip->view.FlowDirection());
+        return strip->LayoutWork(SHELL_LAYOUT_WORK_CAPTION, inputs,
+            strip->captionDirty || strip->ambient.observing);
     }
     void Replace(Kind kind, std::vector<Rect>& owned, std::vector<Rect> const& next) {
         if (owned == next) return;
@@ -206,6 +241,9 @@ struct NativeWindowDrag {
         if (!input && !AttachInput()) return;
         updating = true;
         try {
+#ifdef WINUI_PANE_TESTING
+            ++strip->captionPasses;
+#endif
             windowCaption.Update();
             std::vector<Rect> excluded, area;
             if (visible) {
@@ -251,11 +289,24 @@ struct NativeWindowDrag {
                 if (top && GetForegroundWindow() != top) SetForegroundWindow(top);
             })), true);
         auto weak = std::weak_ptr<int>(lifetime);
-        strip->root.LayoutUpdated([this, weak](auto const&, auto const&) {
+        strip->captionGeometryChanged = [this, weak] {
             if (weak.expired()) return;
-            // Child controls can move or appear without changing the root size.
             strip->captionDirty = true;
-            try { Update(); } catch (...) {}
+            Update();
+        };
+        strip->root.LayoutUpdated([this, weak](auto const&, auto const&) {
+            if (weak.expired() || updating || checkingLayout) return;
+            // A title edit can raise this global event without moving any
+            // input target. Topology/realization invalidates explicitly; the
+            // sample observes resize, scroll, DPI, placement and active motion.
+            checkingLayout = true;
+            try {
+                if (GeometryChanged()) {
+                    strip->captionDirty = true;
+                    Update();
+                }
+            } catch (...) { strip->captionDirty = true; }
+            checkingLayout = false;
         });
         strip->root.SizeChanged([this, weak](auto const&, auto const&) { if (!weak.expired()) strip->captionDirty = true; });
     }

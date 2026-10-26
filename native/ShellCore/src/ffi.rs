@@ -195,6 +195,7 @@ pub struct ShellCore {
     queue: RequestQueue,
     model: TabModel,
     strip: StripState,
+    layout_work: crate::layout_work::LayoutWork,
     group_hover: crate::group_hover::GroupHover,
     group_surface: crate::group_surface::GroupSurfaceMotion,
     group_glow: crate::group_glow::GroupGlow,
@@ -437,6 +438,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         queue: RequestQueue::new(queue_limits),
         model: TabModel::new(model_limits),
         strip: StripState::default(),
+        layout_work: Default::default(),
         group_hover: crate::group_hover::GroupHover::default(),
         group_surface: Default::default(),
         group_glow: Default::default(),
@@ -2825,6 +2827,20 @@ pub unsafe extern "C" fn shell_core_menu_publish(core: *mut ShellCore, revision:
         Ok(value)=>{*changed=value;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument,
     })
 }
+/// Apply a compact selection context against existing publication membership.
+/// # Safety
+/// Live core; bounded readable selection and fingerprint; writable changed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_menu_selection(core: *mut ShellCore, base: u32, revision: u32,
+    selected: *const u32, len: usize, fingerprint: *const u16, units: usize, changed: *mut bool) -> ShellStatus {
+    let Some(changed)=changed.as_mut() else { return ShellStatus::InvalidArgument; }; *changed=false;
+    if len>crate::menu::MAX_TABS || units>crate::menu::MAX_FINGERPRINT || (selected.is_null() && len!=0) { return ShellStatus::InvalidArgument; }
+    let Some(fingerprint)=slice(fingerprint,units) else { return ShellStatus::InvalidArgument; };
+    let selected=if len==0 { &[] } else { std::slice::from_raw_parts(selected,len) };
+    menu_guard(core,|m| match m.selection(base,revision,selected,fingerprint) {
+        Ok(value)=>{*changed=value;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument,
+    })
+}
 /// Retain only tabs still present in a native tab snapshot.
 /// # Safety
 /// Live core and readable IDs (null only for zero len).
@@ -2899,6 +2915,22 @@ pub unsafe extern "C" fn shell_core_menu_activate(core: *mut ShellCore, session:
 mod menu_ffi_tests {
     use super::*;
     #[test]
+    fn compact_context_buffers_membership_and_revision_are_checked() { unsafe {
+        let core=shell_core_create(&std::mem::zeroed());let mut changed=false;
+        assert_eq!(shell_core_menu_publish(core,1,&7,1,&65,1,&mut changed),ShellStatus::Ok);
+        for (base,revision,ids,len) in [(1,2,std::ptr::null(),1),(1,2,&7u32 as *const u32,10001),
+            (0,2,&7,1),(9,10,&7,1),(1,2,&8,1)] {
+            changed=true;
+            assert_eq!(shell_core_menu_selection(core,base,revision,ids,len,&66,1,&mut changed),ShellStatus::InvalidArgument);
+            assert!(!changed);
+        }
+        assert_eq!(shell_core_menu_selection(core,1,2,&7,1,&66,1,&mut changed),ShellStatus::Ok);assert!(changed);
+        assert_eq!(shell_core_menu_selection(core,1,2,&7,1,&66,1,&mut changed),ShellStatus::Ok);assert!(!changed);
+        assert_eq!(shell_core_menu_selection(core,2,3,std::ptr::null(),0,&67,1,&mut changed),ShellStatus::Ok);assert!(changed);
+        let mut member=false;shell_core_menu_has_tab(core,7,&mut member);assert!(member);
+        shell_core_destroy(core);
+    }}
+    #[test]
     fn menu_publications_are_counted_by_policy() { unsafe {
         let core=shell_core_create(&std::mem::zeroed());let mut changed=false;
         let (a,b,c)=([97u16],[98u16],[99u16]);
@@ -2909,13 +2941,13 @@ mod menu_ffi_tests {
             (0,&[7][..],&a,ShellStatus::InvalidArgument),   // invalid: refused
             (2,&[7,7][..],&a,ShellStatus::InvalidArgument), // body: refused
             (3,&[7][..],&c,ShellStatus::Ok),                // accepted
-            (2,&[7][..],&b,ShellStatus::Ok),                // late snapshot: ignored
+            (2,&[7][..],&b,ShellStatus::InvalidArgument),   // late context: recover
         ] {
             assert_eq!(shell_core_menu_publish(core,revision,tabs.as_ptr(),tabs.len(),print.as_ptr(),1,&mut changed),status);
         }
         let mut counts=ShellPublicationCounts::default();
         assert_eq!(shell_core_publication_stats(core,ShellPublicationChannel::TabMenuState as u32,&mut counts),ShellStatus::Ok);
-        assert_eq!(counts,ShellPublicationCounts{accepted:2,unchanged:1,ignored:1,refused:3});
+        assert_eq!(counts,ShellPublicationCounts{accepted:2,unchanged:1,ignored:0,refused:4});
         let mut session=0;
         assert_eq!(shell_core_surface_menu_open(core,&mut session),ShellStatus::Ok);
         for (s,revision,actions,status) in [
@@ -5149,4 +5181,56 @@ mod interaction_ffi_tests {
         assert_eq!(shell_core_address_interaction(core,0,0,0,0,&mut out),ShellStatus::Closed);
         shell_core_destroy(core);
     }}
+}
+
+/// Test a bounded geometry observation for one ShellLayoutWork consumer.
+/// Explicit force is for active motion or a host-owned invalidation. The host
+/// invalidates again on failed work and on topology/realization changes.
+/// # Safety
+/// See [`guard`]. `inputs` and `changed` point to valid values.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_layout_observe(
+    core: *mut ShellCore, consumer: u32, inputs: *const crate::layout_work::ShellLayoutInputs,
+    force: bool, changed: *mut bool,
+) -> ShellStatus {
+    guard(core, |core| {
+        let (Some(inputs), Some(changed)) = (inputs.as_ref(), changed.as_mut()) else { return ShellStatus::InvalidArgument; };
+        let Some(value) = core.layout_work.observe(consumer, *inputs, force) else { return ShellStatus::InvalidArgument; };
+        *changed = value;
+        ShellStatus::Ok
+    })
+}
+
+/// Invalidate one consumer without changing any other consumer's observation.
+/// # Safety
+/// See [`guard`].
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_layout_invalidate(core: *mut ShellCore, consumer: u32) -> ShellStatus {
+    guard(core, |core| {
+        if core.layout_work.invalidate(consumer).is_some() { ShellStatus::Ok } else { ShellStatus::InvalidArgument }
+    })
+}
+
+#[cfg(test)]
+mod layout_work_tests {
+    use super::*;
+    #[test]
+    fn layout_ffi_validates_arguments_without_consuming_invalidation() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let sample = crate::layout_work::ShellLayoutInputs { values: [0.0; 16] };
+            let mut changed = false;
+            assert_eq!(shell_core_layout_observe(core, 0, &sample, false, &mut changed), ShellStatus::Ok);
+            assert!(changed);
+            assert_eq!(shell_core_layout_observe(core, 0, &sample, false, &mut changed), ShellStatus::Ok);
+            assert!(!changed);
+            assert_eq!(shell_core_layout_invalidate(core, 0), ShellStatus::Ok);
+            assert_eq!(shell_core_layout_observe(core, 0, std::ptr::null(), false, &mut changed), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_layout_observe(core, 0, &sample, false, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_layout_invalidate(core, 3), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_layout_observe(core, 0, &sample, false, &mut changed), ShellStatus::Ok);
+            assert!(changed);
+            shell_core_destroy(core);
+        }
+    }
 }

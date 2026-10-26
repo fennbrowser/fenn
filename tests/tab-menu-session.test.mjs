@@ -271,3 +271,49 @@ test("publications are window-local and invalid updates preserve the current sta
   assert.equal(f.session.revision, 1);
   assert(f.open()); assert(f.activate());
 });
+
+test("selection context reuses 1,000 identities and rejects old menu and selection revisions", () => {
+  const targets = new Map(Array.from({length:1000}, (_,i)=>[i+1,{}]));
+  let context = {selected:1,selection:[1]}, describes=0;
+  const session = new WinUITabMenuSession({resolveTab:id=>targets.get(id), context:()=>context,
+    describe:()=>{describes++;return {items:[{kind:"command",id:"reload",enabled:true}]};}, execute(){}});
+  const initial=session.update(targets), identities=session.tabs;
+  assert(session.receive({kind:"open",tab:1,session:1,revision:initial.state.revision}));
+  // Traversing the retained identity map is forbidden on the selection path.
+  identities[Symbol.iterator]=()=>{throw Error("selection scanned every tab");};
+  context={selected:2,selection:[2,3]};
+  const delta=session.updateSelection();
+  assert.deepEqual(delta.state,{base:1,revision:2,selection:[2,3]});
+  assert.equal(session.tabs,identities);
+  assert.equal(session.tabs.size,1000);
+  assert.equal(describes,1);
+  assert.equal(session.menuPublication(),null);
+  assert.equal(session.receive({kind:"activate",tab:1,session:1,revision:1,id:"reload"}),false);
+  assert.equal(session.receive({kind:"open",tab:2,session:2,revision:1}),false);
+  assert.equal(session.updateSelection(),null);
+  session.forceUpdate=true;
+  assert.deepEqual(session.updateSelection().state,{base:2,revision:3,selection:[2,3]});
+  delete identities[Symbol.iterator];
+  const full=session.update(new Map([...targets].slice(0,2)));
+  assert.deepEqual(full.state.tabs,[{tab:1,selected:false},{tab:2,selected:true}]);
+  assert.equal(session.tabs.has(3),false);
+});
+
+test("compact context preserves hidden-selection semantics and requires initial membership", () => {
+  let context={selected:1,selection:[1]};
+  const session=new WinUITabMenuSession({context:()=>context,resolveTab:()=>null,describe(){},execute(){}});
+  assert.equal(session.updateSelection(),undefined);
+  session.update(new Map([[1,{}],[2,{}]]));
+  context={selected:2,selection:[2,999]};
+  assert.deepEqual(session.updateSelection().state.selection,[2],"same intersection as full bindings");
+  assert.equal(session.contextFingerprint,JSON.stringify(context));
+  context={selected:999,selection:[999]};
+  assert.equal(session.updateSelection(),undefined,"a newly visible active member requires a full snapshot");
+  context={selected:2,selection:[]};
+  assert.deepEqual(session.updateSelection().state.selection,[]);
+  context={selected:1,selection:[1]};
+  session.revision=0xffffffff;
+  const before=session.contextFingerprint;
+  assert.throws(()=>session.updateSelection(),/limit exceeded/);
+  assert.equal(session.contextFingerprint,before);
+});

@@ -478,6 +478,12 @@ struct Pane {
             strip->SetLeadingControl(menuButton);
         }
         address->releaseMenuFocus = [this] { SetFocus(parent); };
+        address->preparePointerFocus = [this] {
+            // Composition can deliver the editor press without a queued Win32
+            // mouse message. Revoke the other island's menu before TextBox
+            // completes this original gesture; do not replay input or focus it.
+            if (tabMenu.active) tabMenu.Dismiss();
+        };
         address->releaseContentFocus = [this] {
             // Never reclaim focus from another application, another island,
             // or a dialog. XAML logical focus alone is not ownership.
@@ -1612,6 +1618,10 @@ HRESULT WINAPI UpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcep
         const RECT requested{rect->left, rect->top, rect->right, rect->bottom};
         if (!pane.boundsApplied || !EqualRect(&pane.appliedBounds, &requested)) {
             site.MoveAndResize({rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top});
+            // Caption and passthrough rectangles use owner-client coordinates.
+            // A position-only island move need not cause any XAML layout event.
+            pane.strip->captionDirty = true;
+            pane.windowDrag.SetClip(child, pane.appliedExclusions);
             pane.appliedBounds = requested;
             pane.boundsApplied = true;
             ++work.geometryApplied;
@@ -2596,6 +2606,20 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestEntryMotion(HWND hw
             if (out[4]) out[7] = uint32_t(std::max(0.0, Controls::Canvas::GetLeft(strip.closeOverlay.Children().GetAt(0)) * 10));
         }
         out[5] = uint32_t(strip.closeStoryboards.size());
+        return S_OK;
+    } catch (...) { return to_hresult(); }
+}
+// Test-only counts of actual width/ambient/separator/caption work, not events.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLayoutPasses(HWND hwnd, uint64_t* counts) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (!counts || found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
+        auto& strip = *found->second->strip;
+        counts[0] = strip.inlineGroups.capPasses;
+        counts[1] = strip.ambientPasses;
+        counts[2] = strip.separatorPasses;
+        counts[3] = strip.captionPasses;
         return S_OK;
     } catch (...) { return to_hresult(); }
 }

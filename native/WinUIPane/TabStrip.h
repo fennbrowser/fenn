@@ -93,8 +93,50 @@ struct NativeTabStrip {
         return atEnd ? std::pair{joinGroup, float(drag.originalWidth[Drag().original])} : std::pair<uint32_t, float>{};
     }
 
+    std::function<void()> captionGeometryChanged;
     NativeTabMenu& menu;
     ShellCore* core{};
+#ifdef WINUI_PANE_TESTING
+    uint64_t ambientPasses{}, separatorPasses{}, captionPasses{};
+#endif
+    void InvalidateGeometry() {
+        if (core) {
+            shell_core_layout_invalidate(core, SHELL_LAYOUT_WORK_WIDTHS);
+            shell_core_layout_invalidate(core, SHELL_LAYOUT_WORK_AMBIENT);
+            shell_core_layout_invalidate(core, SHELL_LAYOUT_WORK_CAPTION);
+        }
+        captionDirty = true;
+    }
+    bool LayoutWork(uint32_t consumer, ShellLayoutInputs const& inputs, bool force = false) {
+        bool changed = true;
+        // Missing/refused core keeps the conservative presentation path.
+        if (core && shell_core_layout_observe(core, consumer, &inputs, force, &changed) != SHELL_STATUS_OK)
+            return true;
+        return changed;
+    }
+    bool GeometryChanged(uint32_t consumer, bool force = false) {
+        ShellLayoutInputs inputs{};
+        const auto offset = root.ActualOffset(), viewOffset = view.ActualOffset();
+        inputs.values[0] = root.ActualWidth(); inputs.values[1] = root.ActualHeight();
+        inputs.values[2] = offset.x; inputs.values[3] = offset.y;
+        inputs.values[4] = viewOffset.x; inputs.values[5] = viewOffset.y;
+        inputs.values[6] = view.ActualWidth(); inputs.values[7] = view.ActualHeight();
+        auto scroller = inlineGroups.layoutScroller.get();
+        if (!scroller || !scroller.IsLoaded()) scroller = GroupScroller(view);
+        if (scroller) {
+            const auto scrollOffset = scroller.ActualOffset();
+            inputs.values[8] = scrollOffset.x; inputs.values[9] = scrollOffset.y;
+            inputs.values[10] = scroller.ExtentWidth();
+            inputs.values[11] = scroller.ViewportWidth();
+            inputs.values[12] = scroller.HorizontalOffset();
+            inputs.values[15] = int(scroller.ComputedHorizontalScrollBarVisibility());
+        }
+        if (auto xaml = root.XamlRoot()) inputs.values[13] = xaml.RasterizationScale();
+        inputs.values[14] = int(root.Visibility()) + 2 * int(root.IsLoaded()) +
+            4 * int(view.FlowDirection()) + 8 * int(scroller && scroller.IsLoaded());
+        // Composition movement retains the existing bounded follow loop.
+        return LayoutWork(consumer, inputs, force || ambient.observing);
+    }
     NativeGroupHeader groupHeader;
     std::function<void(uint32_t)> select, close;
     std::function<void()> add;
@@ -339,6 +381,9 @@ struct NativeTabStrip {
         tint.tinted = false; tint.color = 0;
     }
     void RefreshSeparators() {
+#ifdef WINUI_PANE_TESTING
+        ++separatorPasses;
+#endif
         std::set<uint32_t> live;
         const bool enabled = containerGlow && !ambient.accessibility.HighContrast();
         // The last shown member of each group ends at the group outline; its
@@ -417,6 +462,9 @@ struct NativeTabStrip {
     winrt::event_token ambientScrollToken{};
     FrameworkElement ambientContent{nullptr};
     void RefreshAmbient() {
+#ifdef WINUI_PANE_TESTING
+        ++ambientPasses;
+#endif
         if (!ambient.layer) return;
         // With diagnostics, report UI-thread refreshes long enough to delay
         // the reveal masks' geometry while a reveal runs.
@@ -1548,6 +1596,8 @@ struct NativeTabStrip {
         separatorTheme = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource TabViewItemSeparator}" Visibility="Collapsed" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         ambient.layer.Children().Append(separatorTheme);
         ambient.refresh = [this] { RefreshAmbient(); };
+        ambient.layoutChanged = [this] { return GeometryChanged(SHELL_LAYOUT_WORK_AMBIENT); };
+        ambient.refreshFailed = [this] { InvalidateGeometry(); };
         // Firefox opens its preview only in the active window and never while
         // tabs move (tab-hover-preview.mjs, shouldActivate). A card is a windowed
         // popup: one opened from a background window's visible strip edge floats
@@ -1570,7 +1620,11 @@ struct NativeTabStrip {
             action.SetNamedValue(L"scale", Value::CreateNumberValue(scale));
             preview(action.Stringify());
         };
-        inlineGroups.realized = [this] { ambient.ScheduleUpdate(); };
+        inlineGroups.realized = [this] { InvalidateGeometry(); ambient.ScheduleUpdate(); };
+        inlineGroups.geometryChanged = [this] { InvalidateGeometry(); };
+        inlineGroups.widthWork = [this](ShellLayoutInputs const& inputs) {
+            return LayoutWork(SHELL_LAYOUT_WORK_WIDTHS, inputs);
+        };
         inlineGroups.holdScroll = [this] {
             const auto state = GroupDrag();
             return state.phase == 2 || state.awaiting || groupSlide.resizing || GetTickCount64() < groupScrollHold;
@@ -1657,6 +1711,7 @@ struct NativeTabStrip {
             OpenGroupEditor(id,button);
         };
         auto alive = std::weak_ptr<int>(lifetime);
+        root.ActualThemeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) InvalidateGeometry(); });
         root.SizeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) groupSlide.Cancel(); });
         root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { groupHeader.Close(); ambient.Motion(false); groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
         root.PreviewKeyDown([this, alive](auto&&, auto const& args) {
@@ -2330,8 +2385,10 @@ struct NativeTabStrip {
         if (delta == 0) {
             // Nothing to animate (or the reveal was cancelled): restore.
             if (addSlide) { try { addSlide.Stop(); } catch (...) {} addSlide = nullptr; }
-            if (addHeld && add) add.RenderTransform(addPrevious);
+            const bool restored = addHeld && add;
+            if (restored) add.RenderTransform(addPrevious);
             addHeld = false; addPrevious = nullptr;
+            if (restored && captionGeometryChanged) captionGeometryChanged();
             return;
         }
         if (!add || !add.RenderTransform().try_as<Media::TranslateTransform>()) return;
@@ -2353,6 +2410,8 @@ struct NativeTabStrip {
             addSlide = nullptr;
             if (auto add = FindAddButton(view); add && addHeld) add.RenderTransform(addPrevious);
             addHeld = false; addPrevious = nullptr;
+            // Restoring a render transform need not raise LayoutUpdated.
+            if (captionGeometryChanged) captionGeometryChanged();
         });
         addSlide = storyboard;
         storyboard.Begin();
@@ -3804,6 +3863,7 @@ struct NativeTabStrip {
                     // A pinned row's width depends on its own laid-out chrome.
                     row.SizeChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const& sender, auto&&) {
                         if (alive.expired()) return;
+                        InvalidateGeometry();
                         auto item = sender.template as<Controls::TabViewItem>();
                         if (!IsPinnedRow(item)) return;
                         if (auto header = item.Header().template try_as<Controls::Grid>())

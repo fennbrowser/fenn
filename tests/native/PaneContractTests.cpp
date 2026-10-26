@@ -6,6 +6,7 @@
 #include <cstring>
 #include <thread>
 #include <atomic>
+#include <array>
 #include <functional>
 #include <vector>
 #include <string>
@@ -29,6 +30,7 @@
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include <winrt/Microsoft.UI.Windowing.h>
 #include <winrt/Microsoft.UI.Interop.h>
+#include <winrt/Microsoft.UI.Input.h>
 #include <UIAutomation.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
@@ -551,8 +553,30 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     settle();
     Require(!menu.IsOpen(), "changed state dismisses obsolete menu");
     open();
-    MenuPublish(api, hwnd, old.Stringify().c_str());
+    Require(FAILED(api.syncTabMenu(hwnd, old.Stringify().c_str())), "late context is refused for producer recovery");
     Require(menu.IsOpen() && menu.Items().Size() == 3, "late state cannot replace current controls");
+    auto compact = Object::Parse(LR"({"version":2,"publishOnly":true,"state":{"base":1,"revision":2,"selection":[71,72]}})");
+    auto contextState = compact.GetNamedObject(L"state");
+    contextState.SetNamedValue(L"base", Value::CreateNumberValue(menuTestRevision));
+    contextState.SetNamedValue(L"revision", Value::CreateNumberValue(menuTestRevision + 1));
+    for (auto ids : {L"[0]", L"[71,71]", L"[999]"}) {
+        auto invalid = Object::Parse(compact.Stringify());
+        invalid.GetNamedObject(L"state").SetNamedValue(L"selection", winrt::Windows::Data::Json::JsonArray::Parse(ids));
+        Require(FAILED(api.syncTabMenu(hwnd, invalid.Stringify().c_str())), "invalid compact selection is rejected");
+        Require(menu.IsOpen(), "invalid compact selection preserves the current menu");
+    }
+    auto gap = Object::Parse(compact.Stringify());
+    gap.GetNamedObject(L"state").SetNamedValue(L"base", Value::CreateNumberValue(menuTestRevision + 10));
+    Require(FAILED(api.syncTabMenu(hwnd, gap.Stringify().c_str())), "compact selection requires the accepted base");
+    Require(menu.IsOpen(), "a context gap preserves live controls until recovery");
+    current = compact;
+    ++menuTestRevision;
+    MenuPublish(api, hwnd, current.Stringify().c_str());
+    settle();
+    Require(!menu.IsOpen(), "compact context dismisses obsolete menu descriptions");
+    open(); // Both tab identities survived the compact publication.
+    MenuPublish(api, hwnd, current.Stringify().c_str());
+    Require(menu.IsOpen(), "exact compact replay does not dismiss a current opening");
     // A description that no longer names the open request must not be rendered.
     auto session = opened.GetNamedNumber(L"session");
     auto revision = opened.GetNamedNumber(L"revision");
@@ -1942,6 +1966,73 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
     sync();
     settleWidths();
     Require(std::abs(first.ActualWidth() - spaciousWidth) < 1, "tabs grow after other tabs close");
+    // Closing rows must retire their passthrough rectangles, and a position-only
+    // island move must remap the surviving controls without requiring resize.
+    RECT captionOwner{}; GetWindowRect(host, &captionOwner);
+    SetForegroundWindow(host);
+    BringWindowToTop(host);
+    // The sizing fixture intentionally lets the island exceed its STATIC owner.
+    // SDK hit regions are clipped to that owner: make this input fixture fit.
+    Require(SetWindowPos(host, nullptr, 0, 0, rect.right + 200, 480,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE), "fit caption input fixture inside its owner");
+    settleWidths();
+    std::function<FrameworkElement(DependencyObject)> captionAdd = [&](DependencyObject node) -> FrameworkElement {
+        if (auto e = node.try_as<FrameworkElement>(); e &&
+            (!e.IsLoaded() || e.Visibility() != Visibility::Visible)) return nullptr;
+        if (auto e = node.try_as<FrameworkElement>(); e && e.Name() == L"AddButton") return e;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto found = captionAdd(Media::VisualTreeHelper::GetChild(node, i))) return found;
+        return nullptr;
+    };
+    auto captionHit = [&](float afterAdd) {
+        auto add = captionAdd(view);
+        Require(bool(add), "caption target is a loaded visible New Tab button");
+        auto local = add.TransformToVisual(nullptr).TransformPoint(
+            {float(add.ActualWidth()) + afterAdd, float(add.ActualHeight()) / 2});
+        auto screen = root.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+        POINT client{screen.X, screen.Y}; ScreenToClient(host, &client);
+        auto input = winrt::Microsoft::UI::Input::InputNonClientPointerSource::GetForWindowId(
+            winrt::Microsoft::UI::GetWindowIdFromWindow(host));
+        bool passthrough = false;
+        for (auto r : input.GetRegionRects(winrt::Microsoft::UI::Input::NonClientRegionKind::Passthrough)) {
+            fprintf(stderr, "Caption SDK pass %d,%d,%d,%d\n", r.X, r.Y, r.Width, r.Height);
+            passthrough |= client.x >= r.X && client.x < r.X + r.Width &&
+                client.y >= r.Y && client.y < r.Y + r.Height;
+        }
+        const auto hit = SendMessageW(host, WM_NCHITTEST, 0, MAKELPARAM(screen.X, screen.Y));
+        fprintf(stderr, "Caption target afterAdd=%.0f client=%ld,%ld hit=%lld passthrough=%d\n",
+            afterAdd, client.x, client.y, static_cast<long long>(hit), passthrough);
+        return std::pair{hit, passthrough};
+    };
+    auto checkCaptionTargets = [&] {
+        // Close arrangement and the 135-ms transform restoration are asynchronous;
+        // wait for their public input contract, not a fixed number of layout pumps.
+        const auto deadline = GetTickCount64() + 3000;
+        bool ready = false;
+        do {
+            Pump(); root.UpdateLayout();
+            const auto button = captionHit(-16), empty = captionHit(30);
+            ready = button.second && empty.first == HTCAPTION && !empty.second;
+            if (ready) break;
+            Sleep(20);
+        } while (GetTickCount64() < deadline);
+        Require(ready, "settled New Tab retains passthrough and closed rows leave empty caption space");
+    };
+    checkCaptionTargets();
+    const auto captionRect = rect;
+    rect.top += 26; rect.bottom += 26;
+    Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "move strip without resizing its XAML root");
+    settleWidths();
+    checkCaptionTargets();
+    rect = captionRect;
+    Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "restore strip position");
+    settleWidths();
+    checkCaptionTargets();
+    Require(SetWindowPos(host, nullptr, 0, 0, captionOwner.right - captionOwner.left,
+        captionOwner.bottom - captionOwner.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE),
+        "restore caption fixture owner dimensions");
+    settleWidths();
+    puts("CHECKS PASSED: closed-row caption holes retire and position-only moves preserve New Tab and empty-space input");
     // Adding and closing a tab animate the New Tab button, the tab itself (a
     // reveal clip or a stand-in) and, when widths change, the other tabs. Check
     // in both flow directions that each piece starts, points the right way and
@@ -2004,6 +2095,8 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
                 auto grown = observe([&] { Require(SUCCEEDED(api.syncTabs(host, crowded, 3, 11, NextTabRevision(), &selected)), "add a tab"); });
                 settleWidths(); waitIdle();
                 const bool addMoved = std::abs(addX() - addOld) > 1, resized = std::abs(first.ActualWidth() - before) > 1;
+                fprintf(stderr, "Entry geometry: rtl=%d wide=%d add=%.1f->%.1f sign=%u width=%.1f->%.1f\n",
+                    rtl, wide, addOld, addX(), grown.addSign, before, first.ActualWidth());
                 if (animated) {
                     Require(grown.tracked && grown.clipOrigin, "a new tab is revealed through a clip scaled about x = 0 in both directions");
                     if (addMoved) Require(grown.addSign == 2u, "New Tab button eases in from its old, lower position in both directions");
@@ -3263,6 +3356,12 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(SUCCEEDED(api.syncTabs(host,tabs,2,41, NextTabRevision(), &selected)), "activate the first grouped member for mask inspection");
         settle();
         winrt::Windows::Foundation::Numerics::float4 selectedGroupedFace{};
+        faceShape(41).Properties().TryGetVector4(L"FaceBounds", selectedGroupedFace);
+        const auto selectedTabBounds = a.TransformToVisual(ambientLayer).TransformBounds(
+            {0, 0, float(a.ActualWidth()), float(a.ActualHeight())});
+        printf("Selected header join: face=%.1f+%.1f tab=%.1f+%.1f previous=%.1f+%.1f\n",
+            selectedGroupedFace.x, selectedGroupedFace.z, selectedTabBounds.X, selectedTabBounds.Width, ar.X, ar.Width);
+        fflush(stdout);
         Require(faceShape(41).Properties().TryGetVector4(L"FaceBounds", selectedGroupedFace) ==
             winrt::Microsoft::UI::Composition::CompositionGetValueStatus::Succeeded &&
             std::abs(selectedGroupedFace.x - ar.X) < 1 && std::abs(selectedGroupedFace.z - ar.Width) < 1,
@@ -3398,6 +3497,58 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             for (auto field : topGlow.Children()) Require(!field.ImplicitAnimations(), "container light has no independent transition");
         };
         refreshAmbient();
+        auto layoutPasses = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint64_t*)>(
+            GetProcAddress(module, "WinUIPaneTestLayoutPasses"));
+        Require(layoutPasses != nullptr, "native layout-work inspection available");
+        auto passes = [&] {
+            std::array<uint64_t, 4> counts{};
+            Require(SUCCEEDED(layoutPasses(host, counts.data())), "read native layout-work counts");
+            return counts;
+        };
+        settle();
+        const auto settledPasses = passes();
+        auto titleLine = a.Header().as<Controls::Grid>().Children().GetAt(2)
+            .as<Controls::StackPanel>().Children().GetAt(0).as<Controls::TextBlock>();
+        const auto savedTitle = titleLine.Text();
+        const auto savedWidth = a.ActualWidth();
+        for (int i = 0; i < 3; ++i) {
+            titleLine.Text(L"Layout-only title " + to_hstring(i));
+            settle();
+            const auto next = passes();
+            if (next != settledPasses) fprintf(stderr, "Layout scans: %llu/%llu %llu/%llu %llu/%llu %llu/%llu\n",
+                next[0], settledPasses[0], next[1], settledPasses[1], next[2], settledPasses[2], next[3], settledPasses[3]);
+            Require(a.ActualWidth() == savedWidth && next == settledPasses,
+                "title-only layout skips width, ambient, separator and caption scans");
+        }
+        titleLine.Text(savedTitle);
+        settle();
+        const auto beforeGeometry = passes();
+        const auto savedMargin = a.Margin();
+        auto movedMargin = savedMargin; movedMargin.Left += 8;
+        a.Margin(movedMargin);
+        settle();
+        const auto afterGeometry = passes();
+        for (size_t i = 0; i < afterGeometry.size(); ++i)
+            Require(afterGeometry[i] > beforeGeometry[i], "changed geometry refreshes each layout consumer");
+        puts("CHECKS PASSED: title-only layout skips width/ambient/separator/caption work; changed geometry refreshes all four");
+        a.Margin(savedMargin);
+        settle();
+        auto setLayoutScale = reinterpret_cast<HRESULT(WINAPI*)(HWND, float)>(
+            GetProcAddress(module, "WinUIPaneTestSetIslandScale"));
+        Require(setLayoutScale != nullptr, "island scale inspection available");
+        const float savedScale = float(root.XamlRoot().RasterizationScale());
+        const float changedScale = savedScale == 1.25f ? 1.5f : 1.25f;
+        const auto beforeScale = passes();
+        Require(SUCCEEDED(setLayoutScale(host, changedScale)), "change real island rasterization scale");
+        settle();
+        Require(std::abs(root.XamlRoot().RasterizationScale() - changedScale) < .001,
+            "layout test observes the new island scale");
+        const auto afterScale = passes();
+        for (size_t i = 0; i < afterScale.size(); ++i)
+            Require(afterScale[i] > beforeScale[i], "scale change refreshes each layout consumer");
+        Require(SUCCEEDED(setLayoutScale(host, savedScale)), "restore island rasterization scale");
+        settle();
+        puts("CHECKS PASSED: real island scale changes invalidate width/ambient/separator/caption geometry");
         auto aTransform = a.RenderTransform().as<Media::TranslateTransform>();
         auto bTransform = b.RenderTransform().as<Media::TranslateTransform>();
         const auto originalWidth = groupVisual.Size().x;
@@ -3523,7 +3674,15 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             std::abs(isolated.Size().x - ar.Width) < 1,
             "removing a neighbor container leaves the remaining corner glow unchanged");
         // Clear both color sources in the next full snapshot.
-        motionState(26,false); settle();
+        // Regrouping retains decoration until Loaded or the bounded rendered-
+        // frame realization wait completes. A fixed wall-clock pump is not a
+        // completion signal. Observe natural cleanup without forcing refresh.
+        const auto cleanupStarted = GetTickCount64();
+        motionState(26,false);
+        while ((bottomGlow.Children().Count() || topGlow.Children().Count() || spill.Children().Count() || halo.Children().Count()) &&
+               GetTickCount64()-cleanupStarted < 3000) { Pump(); Sleep(10); }
+        fprintf(stderr, "Metadata cleanup: ms=%llu bottom=%u top=%u spill=%u halo=%u\n",
+            GetTickCount64()-cleanupStarted, bottomGlow.Children().Count(), topGlow.Children().Count(), spill.Children().Count(), halo.Children().Count());
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 0,
             "removing color and container metadata releases both decorations");
         Require(spill.Children().Count() == 0 && halo.Children().Count() == 0,
