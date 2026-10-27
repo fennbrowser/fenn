@@ -9,6 +9,9 @@
 // Decorative Composition children cannot take focus, enter UIA's control tree,
 // or affect TabView measurement. Both fields use ordinary source-over alpha.
 struct TabAmbient {
+#ifdef WINUI_PANE_TESTING
+    std::function<void()> layoutEntryForTest;
+#endif
     using Rect = winrt::Windows::Foundation::Rect;
     using Sprite = winrt::Microsoft::UI::Composition::SpriteVisual;
     using Gradient = winrt::Microsoft::UI::Composition::CompositionGradientBrush;
@@ -256,6 +259,9 @@ struct TabAmbient {
         layer.Loaded([this, weak](auto&&, auto&&) {
             if (weak.expired()) return;
             if (!layoutToken.value) layoutToken = layer.LayoutUpdated([this, weak](auto&&, auto&&) {
+#ifdef WINUI_PANE_TESTING
+                if (!weak.expired() && layoutEntryForTest) layoutEntryForTest();
+#endif
                 // Geometry reads can themselves finish layout. Do not consume
                 // an observation in a nested/skipped refresh.
                 if (weak.expired() || updating || checkingLayout || !layer.IsLoaded()) return;

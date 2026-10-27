@@ -99,9 +99,20 @@ struct NativeTabStrip {
     NativeTabMenu& menu;
     ShellCore* core{};
 #ifdef WINUI_PANE_TESTING
-    uint64_t ambientPasses{}, separatorPasses{}, captionPasses{};
+    uint64_t ambientPasses{}, separatorPasses{}, captionPasses{}, selectionDecorationPasses{};
+    // Attempts, eligible bodies, layout callbacks in eligibility/body,
+    // full refreshes in eligibility/body, all layout callbacks, reserved.
+    uint64_t selectionReentry[8]{};
+    uint32_t selectionProbeStage{};
 #endif
+    // Retained XAML measurements only; ShellCore's geometry observation owns
+    // invalidation. Group joins and moving geometry keep the full refresh path.
+    bool selectionGeometryReady{};
+    Windows::Foundation::Rect selectionViewport{};
+    float selectionFadeLeft{}, selectionFadeRight{};
+    std::vector<TabLightContour::Face> selectionFaces;
     void InvalidateGeometry() {
+        selectionGeometryReady = false;
         if (core) {
             shell_core_layout_invalidate(core, SHELL_LAYOUT_WORK_WIDTHS);
             shell_core_layout_invalidate(core, SHELL_LAYOUT_WORK_AMBIENT);
@@ -472,6 +483,12 @@ struct NativeTabStrip {
     winrt::event_token ambientScrollToken{};
     FrameworkElement ambientContent{nullptr};
     void RefreshAmbient() {
+#ifdef WINUI_PANE_TESTING
+        if (selectionProbeStage) ++selectionReentry[3 + selectionProbeStage];
+#endif
+        selectionGeometryReady = false;
+        // Observe before work, so reentrant invalidation survives this refresh.
+        if (!HasDecorationGroups()) GeometryChanged(SHELL_LAYOUT_WORK_AMBIENT);
 #ifdef WINUI_PANE_TESTING
         ++ambientPasses;
 #endif
@@ -907,7 +924,91 @@ struct NativeTabStrip {
         const auto radius = activeVisible ? activeRow->second.CornerRadius() : CornerRadius{};
         ambient.Corners(ambient.upperRim, activeVisible && container != ambient.containers.end() ? container->second.color : 0,
             upperBounds, float(radius.TopLeft), float(radius.TopRight), true);
+        if (!HasDecorationGroups() && !followingMotion && faces.size() <= 128) {
+            selectionViewport = ambientViewport;
+            selectionFadeLeft = fadeLeft; selectionFadeRight = fadeRight;
+            selectionFaces = std::move(faces);
+            selectionGeometryReady = true;
+        }
+    }
 
+    bool HasDecorationGroups() const {
+        // Ungrouped spans also use the retained source, with keys above the
+        // group-id range. Only real headers require group-join recomputation.
+        return currentGroups.Size() || (!inlineGroups.runs.empty() && inlineGroups.runs.begin()->first <= UINT32_MAX);
+    }
+
+    bool RefreshSelectionDecorations(uint32_t previous, uint32_t active) {
+#ifdef WINUI_PANE_TESTING
+        struct ProbeScope {
+            uint32_t& stage;
+            explicit ProbeScope(uint32_t& value) : stage(value) { stage = 1; }
+            ~ProbeScope() { stage = 0; }
+        } probeScope(selectionProbeStage);
+        ++selectionReentry[0];
+#endif
+        if (!core || !selectionGeometryReady || ambient.updating || ambient.queued ||
+            ambient.observing || HasDecorationGroups() ||
+            surfaceMotion.following || !settling.empty() || IsDragging() || GroupDrag().phase ||
+            !foreignGroupShift.entries.empty() || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty() ||
+            !root.IsLoaded() || root.Visibility() != Visibility::Visible ||
+            GeometryChanged(SHELL_LAYOUT_WORK_AMBIENT)) return false;
+#ifdef WINUI_PANE_TESTING
+        selectionProbeStage = 2;
+        ++selectionReentry[1];
+#endif
+        try {
+            Windows::Foundation::Rect activeBounds{};
+            CornerRadius activeRadius{};
+            for (auto id : {previous, active}) {
+                auto found = rows.find(id);
+                if (found == rows.end()) continue;
+                const auto row = found->second;
+                if (!row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) return false;
+                const auto bounds = row.TransformToVisual(ambient.layer).TransformBounds(
+                    {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
+                const auto radius = row.CornerRadius();
+                auto face = std::lower_bound(selectionFaces.begin(), selectionFaces.end(), id,
+                    [](auto const& value, uint32_t key) { return value.id < key; });
+                if (face != selectionFaces.end() && face->id == id) {
+                    // A local row move may precede a scroller/extent notification.
+                    if (face->bounds != bounds) return false;
+                    face->selected = id == active;
+                    face->leftRadius = float(radius.TopLeft); face->rightRadius = float(radius.TopRight);
+                }
+                if (id == active) { activeBounds = bounds; activeRadius = radius; }
+                if (auto container = ambient.containers.find(id); container != ambient.containers.end())
+                    ambient.Corners(container->second, container->second.color, bounds,
+                        float(radius.TopLeft), float(radius.TopRight));
+                RefreshSelectionSeparator(id);
+            }
+            ambient.Clip(selectionViewport, true, activeBounds, selectionFadeLeft, selectionFadeRight);
+            ambient.Faces(selectionViewport, selectionFaces);
+            auto container = ambient.containers.find(active);
+            ambient.Corners(ambient.upperRim, container != ambient.containers.end() ? container->second.color : 0,
+                activeBounds, float(activeRadius.TopLeft), float(activeRadius.TopRight), true);
+#ifdef WINUI_PANE_TESTING
+            ++selectionDecorationPasses;
+#endif
+            return true;
+        } catch (...) { InvalidateGeometry(); return false; }
+    }
+
+    void RefreshSelectionSeparator(uint32_t id) {
+        // No group ends can change on this ungrouped selection-only path.
+        auto found = separatorTints.find(id);
+        if (found == separatorTints.end()) return;
+        auto& tint = found->second;
+        auto meta = presentation.find(id);
+        const uint32_t color = containerGlow && !ambient.accessibility.HighContrast() && id != activeTabId &&
+            meta != presentation.end() && !meta->second.containerName.empty() ? meta->second.containerColor : 0;
+        if (!color) { RestoreSeparator(tint); return; }
+        if (tint.tinted && tint.color == color) return;
+        const Windows::UI::Color value{170, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color)};
+        if (!tint.brush) tint.brush = Media::SolidColorBrush(value);
+        else tint.brush.Color(value);
+        if (!tint.tinted) tint.separator.Background(tint.brush);
+        tint.tinted = true; tint.color = color;
     }
     // Presentation only: keep browser membership, selection and collapse state.
     // Retaining the items also avoids recycling the captured group header.
@@ -1616,6 +1717,12 @@ struct NativeTabStrip {
         separatorTheme = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource TabViewItemSeparator}" Visibility="Collapsed" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
         ambient.layer.Children().Append(separatorTheme);
         ambient.refresh = [this] { RefreshAmbient(); };
+#ifdef WINUI_PANE_TESTING
+        ambient.layoutEntryForTest = [this] {
+            ++selectionReentry[6];
+            if (selectionProbeStage) ++selectionReentry[1 + selectionProbeStage];
+        };
+#endif
         ambient.layoutChanged = [this] { return GeometryChanged(SHELL_LAYOUT_WORK_AMBIENT); };
         ambient.refreshFailed = [this] { InvalidateGeometry(); };
         // Firefox opens its preview only in the active window and never while
@@ -3511,7 +3618,7 @@ struct NativeTabStrip {
         view.SelectedItem(found == rows.end() ? nullptr : found->second);
         syncing = false;
         UpdateGroupIndicator();
-        ambient.Update();
+        if (!RefreshSelectionDecorations(previous, active)) ambient.Update();
         // Only the two rows whose active-tab status can have changed. TabView
         // realizes a row per tab, so touching all of them here would put back
         // exactly the per-tab work this path exists to remove.

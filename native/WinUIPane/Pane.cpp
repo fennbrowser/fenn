@@ -2628,6 +2628,50 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLayoutPasses(HWND h
         return S_OK;
     } catch (...) { return to_hresult(); }
 }
+// Test-only: compare incremental decoration geometry with the full reference.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSelectionReentry(HWND hwnd, uint64_t* counts, BOOL reset) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (!counts || found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
+        auto& strip = *found->second->strip;
+        for (size_t i = 0; i < 8; ++i) {
+            counts[i] = strip.selectionReentry[i];
+            if (reset) strip.selectionReentry[i] = 0;
+        }
+        return S_OK;
+    } catch (...) { return to_hresult(); }
+}
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSelectionDecorations(HWND hwnd, uint64_t* counts, BOOL verify) noexcept {
+    try {
+        check_hresult(Check(hwnd));
+        auto found = state().panes.find(hwnd);
+        if (!counts || found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
+        auto& strip = *found->second->strip;
+        counts[0] = strip.selectionDecorationPasses;
+        counts[1] = strip.ambientPasses;
+        counts[2] = strip.separatorPasses;
+        counts[3] = (!strip.selectionGeometryReady ? 1u : 0u) | (strip.ambient.queued ? 2u : 0u) |
+            (strip.ambient.observing ? 4u : 0u) | (strip.currentGroups.Size() ? 8u : 0u) |
+            (strip.HasDecorationGroups() ? 16u : 0u) | (strip.surfaceMotion.following ? 32u : 0u) |
+            (!strip.settling.empty() ? 64u : 0u) | (!strip.rowAnimations.empty() ? 128u : 0u);
+        if (verify) {
+            const auto faces = strip.ambient.faceMask.previous;
+            const auto active = strip.ambient.clippedActive;
+            const auto rimBounds = strip.ambient.upperRim.bounds;
+            const auto rimColor = strip.ambient.upperRim.color;
+            std::map<uint32_t, std::pair<bool, uint32_t>> tints;
+            for (auto const& [id, tint] : strip.separatorTints) tints[id] = {tint.tinted, tint.color};
+            strip.ambient.Update();
+            if (faces != strip.ambient.faceMask.previous || active != strip.ambient.clippedActive ||
+                rimBounds != strip.ambient.upperRim.bounds || rimColor != strip.ambient.upperRim.color)
+                return E_FAIL;
+            for (auto const& [id, tint] : strip.separatorTints)
+                if (tints[id] != std::pair{tint.tinted, tint.color}) return E_FAIL;
+        }
+        return S_OK;
+    } catch (...) { return to_hresult(); }
+}
 // Test-only: refresh decorative geometry. S_FALSE indicates a frame observer
 // following an existing native tab animation or drag.
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestRefreshAmbient(HWND hwnd) noexcept {

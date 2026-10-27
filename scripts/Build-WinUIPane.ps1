@@ -45,6 +45,12 @@ if ($Test -or $AddressTest -or $MenuTest -or $TabStripTest) {
     & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'native/WinUIPane/FennPane.vcxproj') /m:2 /p:Configuration=Release /p:Platform=x64 /p:WinUIPaneTesting=true /verbosity:minimal
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     $testMode = if ($TabStripTest) { '--strip' } elseif ($MenuTest) { '--menu' } elseif ($AddressTest) { '--address' } else { '--inspect' }
+    if ($TabStripTest) {
+        # The immediate selection burst has its own island lifetime; do not
+        # append it to the resize fixture's asynchronous layout sequence.
+        & (Join-Path $output 'PaneContractTests.exe') (Join-Path $output 'FennPaneTest.dll') --selection-decorations
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    }
     & (Join-Path $output 'PaneContractTests.exe') (Join-Path $output 'FennPaneTest.dll') $testMode
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     if ($TabStripTest) {

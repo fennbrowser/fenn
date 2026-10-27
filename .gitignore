@@ -1,6 +1,7 @@
 /.cache/
 .wrangler/
 /artifacts/
+/docs/perf-data/selection-windows-trace-20261027/evidence.zip
 /upstream/
 /build/
 /.vs/

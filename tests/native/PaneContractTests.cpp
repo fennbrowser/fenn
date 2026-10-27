@@ -1798,7 +1798,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     puts("Native address: real controls, bounded JSON, copied edit, feedback suppression and disable passed");
 }
 
-static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
+static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool selectionOnly = false, bool reentryOnly = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     RECT rect{0, 0, 600, 40};
@@ -1840,6 +1840,87 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
             "reservation fits the unchanged stock TabView without an empty bottom band");
     Require(root.Children().Size() == 6 && !first.Content() && !second.Content(),
             "strip has no address or browser content");
+    if (selectionOnly) {
+        auto inspectSelection = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint64_t*, BOOL)>(
+            GetProcAddress(module, "WinUIPaneTestSelectionDecorations"));
+        auto refresh = reinterpret_cast<HRESULT(WINAPI*)(HWND)>(GetProcAddress(module, "WinUIPaneTestRefreshAmbient"));
+        Require(inspectSelection && refresh, "selection decoration inspection available");
+        for (int i = 0; i < 30; ++i) { Pump(); Sleep(10); }
+        Require(SUCCEEDED(refresh(host)), "prepare stationary decoration geometry");
+        uint32_t revision{};
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, NextTabRevision(), &revision)), "prepare selection-delta base");
+        for (int i = 0; i < 30; ++i) { Pump(); Sleep(10); }
+        Require(SUCCEEDED(refresh(host)), "settle selection-delta geometry");
+        for (uint32_t id : {22u, 11u, 22u, 11u}) {
+            uint64_t before[4]{}, after[4]{};
+            Require(SUCCEEDED(inspectSelection(host, before, FALSE)), "read selection decoration counts");
+            const auto delta = L"{\"version\":1,\"base\":" + std::to_wstring(revision) +
+                L",\"revision\":" + std::to_wstring(revision + 1) + L",\"titles\":[],\"selected\":" + std::to_wstring(id) + L"}";
+            Require(SUCCEEDED(api.applyTabDelta(host, delta.c_str(), &revision)), "apply selection-only delta");
+            Require(SUCCEEDED(inspectSelection(host, after, FALSE)), "read updated selection decoration counts");
+            Require(after[0] == before[0] + 1 && after[1] == before[1] && after[2] == before[2],
+                "stationary ungrouped selection avoids full ambient and separator scans");
+            Require(view.SelectedItem() == (id == 11 ? first : second), "stock TabView selection follows delta");
+            Require(SUCCEEDED(inspectSelection(host, after, TRUE)), "incremental decorations match full refresh");
+        }
+        if (reentryOnly) {
+            auto reentry = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint64_t*, BOOL)>(
+                GetProcAddress(module, "WinUIPaneTestSelectionReentry"));
+            Require(reentry != nullptr, "selection reentry counters available");
+            for (uint32_t size : {2u, 1000u}) {
+                if (size == 1000) {
+                    std::vector<uint32_t> ids{11, 22};
+                    std::vector<WinUITab> many{{11, L"Same title"}, {22, L"Same title"}};
+                    for (uint32_t i = 2; i < size; ++i) { ids.push_back(100 + i); many.push_back({100 + i, L"Background tab"}); }
+                    MenuPublish(api, host, MenuState(ids).Stringify().c_str());
+                    Require(SUCCEEDED(api.syncTabs(host, many.data(), size, 11, revision + 1, &revision)), "prepare 1000-tab reentry fixture");
+                    for (int i = 0; i < 50; ++i) { Pump(); Sleep(10); }
+                    first = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
+                    second = view.TabItems().GetAt(1).as<Controls::TabViewItem>();
+                }
+                for (uint32_t scenario = 0; scenario < 5; ++scenario) {
+                    uint64_t counts[8]{};
+                    Require(SUCCEEDED(reentry(host, counts, TRUE)), "reset reentry diagnostic");
+                    uint32_t fast{}, fallback{};
+                    for (uint32_t iteration = 0; iteration < 60; ++iteration) {
+                        root.UpdateLayout();
+                        Require(SUCCEEDED(refresh(host)), "settle reentry reference geometry");
+                        uint64_t before[4]{}, after[4]{};
+                        Require(SUCCEEDED(inspectSelection(host, before, FALSE)), "read pre-selection work");
+                        // Leave real XAML layout dirty, without forcing callbacks
+                        // or pumping the dispatcher from inside the fast path.
+                        if (scenario == 1) root.InvalidateMeasure();
+                        if (scenario == 2) first.InvalidateArrange();
+                        if (scenario == 3) first.Padding(Thickness{double(iteration % 2), 0, 0, 0});
+                        if (scenario == 4) first.Header().as<Controls::Grid>().Children().GetAt(2).as<Controls::StackPanel>()
+                            .Children().GetAt(0).as<Controls::TextBlock>().Text(iteration % 2 ? L"Pending title" : L"Same title");
+                        const uint32_t id = iteration % 2 ? 11u : 22u;
+                        const auto delta = L"{\"version\":1,\"base\":" + std::to_wstring(revision) +
+                            L",\"revision\":" + std::to_wstring(revision + 1) + L",\"titles\":[],\"selected\":" + std::to_wstring(id) + L"}";
+                        Require(SUCCEEDED(api.applyTabDelta(host, delta.c_str(), &revision)), "apply reentry selection delta");
+                        Require(SUCCEEDED(inspectSelection(host, after, FALSE)), "read post-selection work");
+                        if (after[0] > before[0]) {
+                            ++fast;
+                            Require(SUCCEEDED(inspectSelection(host, after, TRUE)), "reentry selection output matches full refresh");
+                        } else ++fallback;
+                        Require(view.SelectedItem() == (id == 11 ? first : second), "reentry selection follows browser");
+                        Pump();
+                    }
+                    root.UpdateLayout();
+                    Require(SUCCEEDED(reentry(host, counts, FALSE)), "read reentry diagnostic");
+                    printf("REENTRY tabs=%u scenario=%u fast=%u fallback=%u attempts=%llu eligible=%llu layout_pre=%llu layout_body=%llu refresh_pre=%llu refresh_body=%llu layout_total=%llu\n",
+                        size, scenario, fast, fallback, counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6]);
+                    fflush(stdout);
+                    Require(counts[0] >= 60 && counts[6] > 0, "diagnostic observes real selections and layout callbacks");
+                    if (scenario == 0) Require(fast > 0, "stationary diagnostic reaches fast path");
+                    Require(counts[4] == 0 && counts[5] == 0, "no full ambient refresh reentered selection geometry reads");
+                }
+            }
+            puts("CHECKS PASSED: selection reentry diagnostic, 600 deltas, pending XAML layout and 1000 tabs");
+        }
+        puts("CHECKS PASSED: selection-only decorations match full refresh without full scans");
+        return;
+    }
     Require(root.ColumnDefinitions().Size() == 3 && root.ColumnDefinitions().GetAt(2).Width().Value > 0,
             "system caption buttons reserve their SDK inset");
     Require(view.ActualWidth() + root.ColumnDefinitions().GetAt(0).Width().Value +
@@ -1870,9 +1951,13 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host) {
                                           : winrt::Microsoft::UI::Windowing::TitleBarHeightOption::Standard;
         for (int i = 0; i < 100; ++i) {
             Pump();
-            if (view.ActualHeight() == height && systemCaption.PreferredHeightOption() == expected) break;
+            if (root.ActualHeight() == height && view.ActualHeight() == height && first.ActualHeight() == 32 &&
+                systemCaption.PreferredHeightOption() == expected) break;
             Sleep(10);
         }
+        if (root.ActualHeight() != height || view.ActualHeight() != height || first.ActualHeight() != 32)
+            fprintf(stderr, "Strip height: requested=%d root=%.1f view=%.1f row=%.1f\n",
+                height, root.ActualHeight(), view.ActualHeight(), first.ActualHeight());
         Require(root.ActualHeight() == height && view.ActualHeight() == height && first.ActualHeight() == 32,
                 "all strip layouts preserve tab height without a bottom band");
         Require(systemCaption.PreferredHeightOption() == expected, "caption size follows strip layout");
@@ -3766,6 +3851,25 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "restore the second active tab");
         settle();
         Require(diffusion.Clip() != activeClip, "moving activation restores the former active tab's upper spill");
+        {
+            auto inspectContainerSelection = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint64_t*, BOOL)>(
+                GetProcAddress(module, "WinUIPaneTestSelectionDecorations"));
+            Require(inspectContainerSelection != nullptr, "container selection inspection available");
+            for (uint32_t id : {41u, 42u}) {
+                uint64_t before[4]{}, after[4]{};
+                Require(SUCCEEDED(inspectContainerSelection(host, before, TRUE)), "prepare full container decoration reference");
+                Require(SUCCEEDED(inspectContainerSelection(host, before, FALSE)), "read container decoration counts");
+                const auto delta = L"{\"version\":1,\"base\":" + std::to_wstring(selected) +
+                    L",\"revision\":" + std::to_wstring(selected + 1) + L",\"titles\":[],\"selected\":" + std::to_wstring(id) + L"}";
+                Require(SUCCEEDED(api.applyTabDelta(host, delta.c_str(), &selected)), "apply container selection-only delta");
+                Require(SUCCEEDED(inspectContainerSelection(host, after, FALSE)), "read incremental container decoration counts");
+                fprintf(stderr, "Container selection %u: fast=%llu->%llu ambient=%llu->%llu separator=%llu->%llu flags=%llu->%llu\n",
+                    id, before[0], after[0], before[1], after[1], before[2], after[2], before[3], after[3]);
+                Require(after[0] == before[0] + 1 && after[1] == before[1] && after[2] == before[2],
+                    "container selection updates only affected decorations and separators");
+                Require(SUCCEEDED(inspectContainerSelection(host, after, TRUE)), "incremental container decorations match full refresh");
+            }
+        }
         MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":23,"revision":24,"rows":[{"id":42,"containerColor":4281558681}],"removed":[]}})");
         settle();
         Require(topGlow.Children().Count() == 2, "different colors retain two independently composited fields");
@@ -6248,7 +6352,7 @@ int wmain(int argc, wchar_t** argv) {
                 }) != nullptr,
             "install teardown exception guard");
     Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--popup-lifecycle") == 0 || wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 || wcscmp(argv[2], L"--address-host") == 0 ||
-                                        wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--updates") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 ||
+                                        wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--updates") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 || wcscmp(argv[2], L"--selection-decorations") == 0 || wcscmp(argv[2], L"--selection-reentrancy") == 0 ||
                                         wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
                                         wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))),
             "DLL path and optional --inspect required");
@@ -6517,6 +6621,17 @@ int wmain(int argc, wchar_t** argv) {
         Require(SUCCEEDED(api.shutdown()), "dual host clean shutdown");
         CoUninitialize();
         puts("CHECKS PASSED: independent address attach/detach, stock TextBox, validation atomicity, retained strip, clean shutdown");
+        return 0;
+    }
+    if (argc == 3 && (wcscmp(argv[2], L"--selection-decorations") == 0 || wcscmp(argv[2], L"--selection-reentrancy") == 0)) {
+        // Keep the synchronous selection burst separate from the subsequent
+        // resize/animation fixture and its asynchronous island layout.
+        CheckTabStrip(module, api, first, true, wcscmp(argv[2], L"--selection-reentrancy") == 0);
+        Require(SUCCEEDED(api.destroy(first)), "destroy selection fixture before host");
+        DestroyWindow(first);
+        winrt::clear_factory_cache();
+        Require(SUCCEEDED(api.shutdown()), "selection fixture clean shutdown");
+        CoUninitialize();
         return 0;
     }
     if (argc == 3 && (wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0)) {
