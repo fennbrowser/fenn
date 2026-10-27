@@ -9809,6 +9809,14 @@ index 47a067c4c15..b88749f7d58 100644
 +        # Fenn (firefox-winui): its own CLSID, distinct from Firefox's.
 +        "MOZ_INOTIFICATIONACTIVATION_CLSID": "db7a9c5e-7f97-415f-945b-dbfc48829a95",
          "MOZ_BACKGROUNDTASK_ACTIVATABLE_CLASS_ID": background_task_class_id,
+diff --git a/security/manager/ssl/tests/unit/xpcshell.toml b/security/manager/ssl/tests/unit/xpcshell.toml
+index 42b6f2d3872..b99ae7c1a16 100644
+--- a/security/manager/ssl/tests/unit/xpcshell.toml
++++ b/security/manager/ssl/tests/unit/xpcshell.toml
+@@ -4,2 +4,3 @@ tags = "psm condprof"
+ firefox-appdir = "browser"
++fenn-appdir = "browser"
+ prefs = [
 diff --git a/toolkit/components/search/ConfigSearchEngine.sys.mjs b/toolkit/components/search/ConfigSearchEngine.sys.mjs
 index 2186215520c..dc5f1740a7c 100644
 --- a/toolkit/components/search/ConfigSearchEngine.sys.mjs
