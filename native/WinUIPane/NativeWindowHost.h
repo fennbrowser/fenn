@@ -1,5 +1,8 @@
 #pragma once
 #include <memory>
+#include <functional>
+#include <chrono>
+#include <cstdio>
 #include <uiautomation.h>
 #pragma comment(lib,"uiautomationcore.lib")
 #include "shell_core.h"
@@ -11,6 +14,26 @@
 namespace NativeWindowHost {
 inline constexpr wchar_t Property[] = L"Fenn.NativeWindowHost";
 inline UINT CloseMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.Close.v1"); return message; }
+// Set on the host HWND while the local startup editor owns keyboard focus (before Firefox has
+// adopted it). Gecko's own startup focus changes must not take focus from a field the user is
+// typing into; see the native interactive startup plan (input loss during adoption).
+inline constexpr wchar_t EditorOwnedProperty[] = L"Fenn.NativeStartupEditorOwned";
+inline UINT RestoreEditorFocusMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.RestoreEditorFocus.v1"); return message; }
+inline void FocusTrace(const char* event, uintptr_t detail=0) {
+    static const bool enabled=GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS",nullptr,0)!=0;
+    if (enabled) fprintf(stderr,"FennFocus ms=%lld event=%s detail=%llu\n",
+        static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()),
+        event,static_cast<unsigned long long>(detail));
+}
+// After Firefox adopts the editor its own startup focus calls can still arrive (one landed about a
+// second later), so ownership continues for a bounded grace period (a GetTickCount64 deadline).
+inline constexpr wchar_t EditorGraceProperty[] = L"Fenn.NativeStartupEditorGraceUntil";
+inline constexpr ULONGLONG EditorGraceMilliseconds = 5000;
+inline bool EditorOwned(HWND hwnd) {
+    if (GetPropW(hwnd,EditorOwnedProperty)) return true;
+    const auto until=reinterpret_cast<ULONGLONG>(GetPropW(hwnd,EditorGraceProperty));
+    return until && GetTickCount64()<until;
+}
 inline UINT EndpointCloseMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointClose.v1"); return message; }
 inline UINT EndpointDpiMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointDpi.v1"); return message; }
 inline UINT EndpointLayoutMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointLayout.v1"); return message; }
@@ -20,6 +43,8 @@ struct Context {
     // Independent browser endpoint. Never call its window procedure on the
     // native UI thread or synchronously wait for its close decision.
     HWND endpoint{};
+    // Native owner thread only. Returns keyboard focus to the local startup editor.
+    std::function<void()> restoreEditorFocus;
     winrt::com_ptr<IRawElementProviderSimple> accessibility;
     ShellWindowBinding state{};
     ShellStatus Call(uint32_t operation, ShellWindowBinding input={}) {
@@ -36,10 +61,25 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     if (focusMessage && message==focusMessage) {
         // An old endpoint must not focus a detached/rebound native window.
         // This runs on the native owner; Gecko never borrows its input queue.
-        if (host->endpoint && reinterpret_cast<HWND>(w)==host->endpoint && IsWindowEnabled(hwnd))
-            SetFocus(hwnd);
+        if (host->endpoint && reinterpret_cast<HWND>(w)==host->endpoint && IsWindowEnabled(hwnd)) {
+            // Gecko's startup focus requests (window focus, then urlbar and content) are meant
+            // for a window nobody has typed into. While the native editor owns focus, keep it.
+            const HWND focused=GetFocus();
+            const bool keep=EditorOwned(hwnd) && focused && (focused==hwnd || IsChild(hwnd,focused));
+            FocusTrace(keep?"gecko-focus-ignored":"gecko-focus-applied",reinterpret_cast<uintptr_t>(focused));
+            if (!keep) SetFocus(hwnd);
+        }
         return 0;
     }
+    if (message==RestoreEditorFocusMessage()) {
+        if (EditorOwned(hwnd) && host->restoreEditorFocus) host->restoreEditorFocus();
+        return 0;
+    }
+    // Focus can land on the host HWND itself, not the XAML island: for example when a Gecko
+    // dialog that held activation closes. Return it to the editor on the next turn.
+    if (message==WM_SETFOCUS) FocusTrace(EditorOwned(hwnd)?"host-setfocus-owned":"host-setfocus");
+    if (message==WM_SETFOCUS && EditorOwned(hwnd) && host->restoreEditorFocus)
+        PostMessageW(hwnd,RestoreEditorFocusMessage(),0,0);
     if(message==NativePageInput::LockMessage()) {NativePageInput::Pump(hwnd,w);return 0;}
     if(host->endpoint && message==WM_SETFOCUS) NativePageInput::Focus(hwnd);
     if(host->endpoint && message==WM_KILLFOCUS) NativePageInput::Blur(hwnd);

@@ -90,6 +90,7 @@ struct Presenter {
             pane.strip->groupLayout=std::move(layout);pane.strip->hasGroupLayout=hasLayout;
         };
         BindLocalCallbacks();
+        UpdateEditorOwnership();
         pane.strip->add=[this] {
             if(Switching()){Feedback(SHELL_STATUS_REJECTED);return;}
             if(browserEditor){if(browserAdd)browserAdd();return;}
@@ -181,7 +182,32 @@ struct Presenter {
         };
 #endif
     }
+    // The local editor owns focus until Firefox adopts it; see NativeWindowHost::EditorOwnedProperty.
+    void UpdateEditorOwnership() {
+        auto* host=NativeWindowHost::Get(pane.parent);
+        if(!host)return;
+        if(!browserEditor) {
+            RemovePropW(pane.parent,NativeWindowHost::EditorGraceProperty);
+            SetPropW(pane.parent,NativeWindowHost::EditorOwnedProperty,reinterpret_cast<HANDLE>(1));
+            host->restoreEditorFocus=[this] {
+                if(pane.address->HasActiveComposition())return;
+                const auto start=pane.address->field.SelectionStart(),length=pane.address->field.SelectionLength();
+                FocusEditor();
+                pane.address->field.Select(start,length);
+            };
+        } else {
+            RemovePropW(pane.parent,NativeWindowHost::EditorOwnedProperty);
+            SetPropW(pane.parent,NativeWindowHost::EditorGraceProperty,
+                reinterpret_cast<HANDLE>(GetTickCount64()+NativeWindowHost::EditorGraceMilliseconds));
+        }
+    }
+    void SetBrowserEditor(bool value) {browserEditor=value;NativeWindowHost::FocusTrace(value?"editor-adopted":"editor-local");UpdateEditorOwnership();}
     ~Presenter() {
+        if(auto* host=NativeWindowHost::Get(pane.parent)) {
+            // The grace deadline outlives the presenter on purpose; it expires by itself.
+            RemovePropW(pane.parent,NativeWindowHost::EditorOwnedProperty);
+            host->restoreEditorFocus=nullptr;
+        }
         if(recoveryButton) {
             recoveryFlyout.Hide();recoveryAction.Click(recoveryClick);
             uint32_t index{};
@@ -299,7 +325,7 @@ struct Presenter {
             if(pane.address->field.Text()!=text || pane.address->HasActiveComposition() || pane.address->session.empty())return false;
             if(shell_core_startup_transfer(pane.shell.core,16,0,session,generation,0,0,browser,false,&current)!=SHELL_STATUS_OK)return false;
             pane.address->startupEdit={};pane.address->startupSubmit={};
-            pane.address->field.IsReadOnly(false);browserEditor=true;
+            pane.address->field.IsReadOnly(false);SetBrowserEditor(true);
             // Local focus never started a Firefox query. Admit the ordinary
             // focus request now so Enter works even without another text edit.
             if(pane.address->EditorOwned())pane.address->Action(L"focus");
@@ -318,10 +344,15 @@ struct Presenter {
             pane.address->session=L"";
         }
         applying=true;Reset reset{applying};
-        pane.address->Sync(snapshot);
-        if(!browserEditor) {
+        // The first browser publication reports the content focus Firefox started with, not a
+        // move by the user; it must not release a native editor that is being typed into.
+        const bool firstApply=!browserEditor;
+        NativeWindowHost::FocusTrace(firstApply?"browser-publication-first":"browser-publication");
+        pane.address->Sync(snapshot,firstApply);
+        if(firstApply) {
             pane.address->startupEdit={};pane.address->startupSubmit={};
-            pane.address->field.IsReadOnly(false);browserEditor=true;
+            pane.address->field.IsReadOnly(false);SetBrowserEditor(true);
+            if(pane.address->EditorOwned())pane.address->Action(L"focus");
             Feedback(SHELL_STATUS_OK);
         }
         return true;
@@ -412,7 +443,7 @@ struct Presenter {
             disabled.Insert(L"enabled",NativeAddress::JValue::CreateBooleanValue(false));
             // Retire browser session/actions without hiding or reparenting the
             // live editor; those layout changes can reset its restored caret.
-            pane.address->Sync(disabled,true);browserEditor=false;BindLocalCallbacks();
+            pane.address->Sync(disabled,true);SetBrowserEditor(false);BindLocalCallbacks();
             pane.address->root.Visibility(Microsoft::UI::Xaml::Visibility::Visible);
             pane.address->navigation->Apply({},true);
             editor=true;

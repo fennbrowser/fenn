@@ -507,9 +507,10 @@ struct Pane {
             // or a dialog. XAML logical focus alone is not ownership.
             const auto focused = GetFocus();
             const auto host = addressSource ? addressWindow : childWindow;
-            if (GetForegroundWindow() == parent &&
-                (InWindow(host, focused) || InPopups(addressSource ? addressIsland : contentIsland, focused)))
-                SetFocus(parent);
+            const bool release = GetForegroundWindow() == parent &&
+                (InWindow(host, focused) || InPopups(addressSource ? addressIsland : contentIsland, focused));
+            NativeWindowHost::FocusTrace(release ? "release-content-focus" : "release-content-focus-skipped");
+            if (release) SetFocus(parent);
         };
         address->navigate = [this](hstring const& action) {
             Enqueue(NativeShellCore::NavigationAction, 0, 0, action);
