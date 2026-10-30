@@ -10555,7 +10555,7 @@ index f5d293a068d..1c4562bd45f 100644
 +        }
          if (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST &&
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index e505d3ce012..8555b2362df 100644
+index e505d3ce012..28baa14c17c 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -81,2 +81,4 @@
@@ -10795,7 +10795,14 @@ index e505d3ce012..8555b2362df 100644
 +  }
 +
    bool syncInvalidate = false;
-@@ -1823,2 +2002,13 @@ void nsWindow::Show(bool aState) {
+@@ -1809,3 +1988,5 @@ void nsWindow::Show(bool aState) {
+         } else {
+-          if (mWindowType == WindowType::Dialog && !CanTakeFocus())
++          if (mWindowType == WindowType::Dialog &&
++              (!CanTakeFocus() ||
++               mozilla::widget::NativeStartupEditorOwnsForeground()))
+             flags |= SWP_NOACTIVATE;
+@@ -1823,2 +2004,13 @@ void nsWindow::Show(bool aState) {
        }
 +      if (independentTransientOwner) {
 +        // Hide with the original owner, then detach before restoring native
@@ -10809,22 +10816,22 @@ index e505d3ce012..8555b2362df 100644
 +        }
 +      }
      }
-@@ -1989,3 +2179,3 @@ void nsWindow::Move(const DesktopPoint& aTopLeft) {
+@@ -1989,3 +2181,3 @@ void nsWindow::Move(const DesktopPoint& aTopLeft) {
    // screen space coordinates we normally use with SetWindowPos.
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
-@@ -2073,3 +2263,3 @@ void nsWindow::Resize(const DesktopSize& aSize, bool aRepaint) {
+@@ -2073,3 +2265,3 @@ void nsWindow::Resize(const DesktopSize& aSize, bool aRepaint) {
    // Refer to the comment above a similar check in nsWindow::Move
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
-@@ -2136,3 +2326,3 @@ void nsWindow::Resize(const DesktopRect& aRect, bool aRepaint) {
+@@ -2136,3 +2328,3 @@ void nsWindow::Resize(const DesktopRect& aRect, bool aRepaint) {
    // Refer to the comment above a similar check in nsWindow::Move
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
-@@ -2208,2 +2398,8 @@ static UINT GetCurrentShowCmd(HWND aWnd) {
+@@ -2208,2 +2400,8 @@ static UINT GetCurrentShowCmd(HWND aWnd) {
  
 +bool nsWindow::IsShowingMaximizedStartupWindow() const {
 +  return (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) ||
@@ -10833,49 +10840,49 @@ index e505d3ce012..8555b2362df 100644
 +}
 +
  // Maximize, minimize or restore the window.
-@@ -2214,3 +2410,3 @@ void nsWindow::SetSizeMode(nsSizeMode aMode) {
+@@ -2214,3 +2412,3 @@ void nsWindow::SetSizeMode(nsSizeMode aMode) {
    // technically displayed), we will again accept sizemode changes.
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      return;
-@@ -2448,3 +2644,5 @@ void nsWindow::SetFocus(Raise aRaise, mozilla::dom::CallerType aCallerType) {
+@@ -2448,3 +2646,5 @@ void nsWindow::SetFocus(Raise aRaise, mozilla::dom::CallerType aCallerType) {
    }
 -  ::SetFocus(mWnd);
 +  if (!mozilla::widget::FocusIndependentWindowHost(mWnd)) {
 +    ::SetFocus(mWnd);
 +  }
  }
-@@ -4057,3 +4255,4 @@ BOOL CALLBACK nsWindow::DispatchStarvedPaints(HWND aWnd, LPARAM aMsg) {
+@@ -4057,3 +4257,4 @@ BOOL CALLBACK nsWindow::DispatchStarvedPaints(HWND aWnd, LPARAM aMsg) {
    LONG_PTR proc = ::GetWindowLongPtrW(aWnd, GWLP_WNDPROC);
 -  if (proc == (LONG_PTR)&nsWindow::WindowProc) {
 +  if (proc == (LONG_PTR)&nsWindow::WindowProc ||
 +      (mozilla::widget::IsNativeWindowHost(aWnd) && WinUtils::GetNSWindowPtr(aWnd))) {
      // its one of our windows so check to see if it has a
-@@ -5639,3 +5838,4 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5639,3 +5840,4 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
  
 -      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient) {
 +      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient &&
 +          !mozilla::widget::HasWinUISystemCaption(mWnd)) {
          DispatchMouseEvent(eMouseDown, wParamFromGlobalMouseState(),
-@@ -5650,3 +5850,5 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5650,3 +5852,5 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
      case WM_NCLBUTTONUP: {
 -      if (mCustomNonClient) {
 +      // The native strip uses SDK-drawn caption controls. Forward their
 +      // original input to the previous (App SDK) window proc, not DOM chrome.
 +      if (mCustomNonClient && !mozilla::widget::HasWinUISystemCaption(mWnd)) {
          result = DispatchMouseEvent(eMouseUp, wParamFromGlobalMouseState(),
-@@ -6945,2 +7147,6 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+@@ -6945,2 +7149,6 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
  void nsWindow::OnDestroy() {
 +  mozilla::widget::DestroyWinUIPane(mWnd);
 +  if (mWindowType == WindowType::TopLevel) {
 +    mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
 +  }
    mOnDestroyCalled = true;
-@@ -7210,2 +7416,3 @@ void nsWindow::SetInputContext(const InputContext& aContext,
+@@ -7210,2 +7418,3 @@ void nsWindow::SetInputContext(const InputContext& aContext,
    mInputContext = newInputContext;
 +  mozilla::widget::RefreshIndependentPageIME(mWnd);
  }
-@@ -8935,3 +9142,3 @@ void nsWindow::FrameState::CheckInvariant() const {
+@@ -8935,3 +9144,3 @@ void nsWindow::FrameState::CheckInvariant() const {
  
 -void nsWindow::FrameState::ConsumePreXULSkeletonState(bool aWasMaximized) {
 +void nsWindow::FrameState::ConsumeStartupWindowState(bool aWasMaximized) {
@@ -32400,10 +32407,10 @@ index 00000000000..c4d29442a62
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..2221d9be47c
+index 00000000000..55d18446b71
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -0,0 +1,622 @@
+@@ -0,0 +1,636 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32455,6 +32462,20 @@ index 00000000000..2221d9be47c
 +        }
 +      }));
 +  return true;
++}
++// True while this process's foreground window is a native host whose startup editor is being typed
++// into (or was adopted a moment ago). Windows opened meanwhile, such as the first-run graphics
++// sanity window, must not take activation from it.
++bool NativeStartupEditorOwnsForeground() {
++  HWND foreground = ::GetForegroundWindow();
++  if (!foreground) return false;
++  DWORD pid = 0;
++  ::GetWindowThreadProcessId(foreground, &pid);
++  if (pid != ::GetCurrentProcessId()) return false;
++  if (::GetPropW(foreground, L"Fenn.NativeStartupEditorOwned")) return true;
++  const auto until = reinterpret_cast<ULONGLONG>(
++      ::GetPropW(foreground, L"Fenn.NativeStartupEditorGraceUntil"));
++  return until && ::GetTickCount64() < until;
 +}
 +bool HasWinUISystemCaption(HWND aWindow) {
 +  return GetPropW(aWindow, WINUI_PANE_SYSTEM_CAPTION_PROPERTY) != nullptr;
@@ -33028,10 +33049,10 @@ index 00000000000..2221d9be47c
 +}  // namespace mozilla::widget
 diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
 new file mode 100644
-index 00000000000..e2bff07b054
+index 00000000000..7ba3a408a2b
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.h
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,56 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -33046,6 +33067,7 @@ index 00000000000..e2bff07b054
 +bool IsNativeWindowHost(HWND);
 +// Returns true when the independent native owner handles the request.
 +bool FocusIndependentWindowHost(HWND);
++bool NativeStartupEditorOwnsForeground();
 +bool AdoptNativeStartupWindowHost(HWND);
 +HWND CreateNativeWindowHost(DWORD, const wchar_t*, DWORD, const RECT&, HWND, HINSTANCE);
 +bool AttachNativeWindowHost(HWND, uintptr_t, WNDPROC, WNDPROC*);
