@@ -719,6 +719,33 @@ test('the external handoff reports the owned persisted-search-terms state, not a
   assert.equal(seen.persistedSearchTerms,true);
 });
 
+test('startup Enter uses only the current heuristic without reporting unseen results',()=>{
+  const f=fixture({visible:false});
+  f.s.editId=7;
+  f.s.nativeSelected={id:'unrelated-suggestion'};
+  assert.equal(f.s.submitStartup(1,6,{}),'stale');
+  assert.equal(f.s.submitStartup(2,7,{}),'stale');
+  assert.equal(f.calls.filter(c=>c[0]==='handleCommand').length,0);
+  assert.equal(f.s.submitStartup(1,7,{altKey:true}),'activated');
+  const commands=f.calls.filter(c=>c[0]==='handleCommand');
+  assert.equal(commands.length,1);
+  assert.equal(commands[0][1].altKey,true);
+  assert.equal(f.s.nativeVisible.length,0);
+  assert.equal(f.calls.some(c=>c[0]==='editor-exposure'),false);
+  assert.equal(f.s.submitStartup(1,7,{}),'stale');
+});
+
+test('startup Enter rejects modal, read-only, missing heuristic and invalid intent',()=>{
+  for(const mode of ['modal','readonly','missing','intent']) {
+    const f=fixture({visible:false});f.s.editId=7;
+    if(mode==='modal') f.s.window.gDialogBox={isOpen:true};
+    if(mode==='readonly') f.s.input.readOnly=true;
+    if(mode==='missing') f.s.active.resultIndexes=[];
+    assert.notEqual(f.s.submitStartup(1,7,mode==='intent'?{altKey:1}:{}),'activated');
+    assert.equal(f.calls.filter(c=>c[0]==='handleCommand').length,0);
+  }
+});
+
 test('a heuristic row the host has not yet reported visible is completed by Firefox, a suggestion row is not',()=>{
   const heuristic=fixture({visible:false});
   assert.equal(heuristic.s.activate(1,heuristic.row.id,{}),'activated');

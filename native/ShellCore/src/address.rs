@@ -37,6 +37,10 @@ pub struct ShellAddressAction {
 }
 
 impl AddressState {
+    pub fn can_yield_editor(&self) -> bool {
+        !self.needs_dispatch && self.edit_id==self.acknowledged && self.staged.is_none() &&
+            self.mode_request.is_none() && !self.deferred && self.submit.is_none()
+    }
     pub fn state(&self) -> ShellAddressState {
         ShellAddressState {
             edit_id: self.edit_id,
@@ -130,6 +134,16 @@ impl AddressState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn yielding_requires_ack_and_no_staged_or_deferred_action() {
+        let mut s=AddressState::default();assert!(s.can_yield_editor());
+        s.edit();assert!(!s.can_yield_editor());
+        s.stage(1,IntentKind::Edit);s.publish(1,true);assert!(!s.can_yield_editor());
+        s.complete(1);assert!(s.can_yield_editor());
+        s.stage_mode(2);assert!(!s.can_yield_editor());s.complete(2);
+        assert!(s.can_yield_editor());s.submit=Some(0);assert!(!s.can_yield_editor());
+        s.submit=None;s.deferred=true;assert!(!s.can_yield_editor());
+    }
     fn observed() -> Conditions {
         Conditions { applying: false, composing: false, has_session: true,
             mode_intent_staged: false, edit_acknowledged: false, query_settled: false }

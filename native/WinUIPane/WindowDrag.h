@@ -24,7 +24,7 @@ struct NativeWindowDrag {
     weak_ref<Controls::Button> addButton;
     bool visible{}, updating{}, checkingLayout{};
     // A caption press on empty strip waits here for the drag threshold; see Proc.
-    bool pendingCaption{};
+    bool pendingCaption{}, pendingContextMenu{};
     POINT pendingStart{};
     std::vector<Rect> ownedCaption, ownedPass, caption, pass;
     std::vector<Rect> systemMinimize, systemMaximize, systemClose;
@@ -45,6 +45,42 @@ struct NativeWindowDrag {
         for (auto r : systemMaximize) if (Contains(r, screen)) return HTMAXBUTTON;
         for (auto r : systemMinimize) if (Contains(r, screen)) return HTMINBUTTON;
         return HTNOWHERE;
+    }
+    bool OwnsCaptionPoint(POINT screen) const {
+        if (!visible || SystemButtonAt(screen) != HTNOWHERE) return false;
+        ScreenToClient(owner, &screen);
+        return std::none_of(pass.begin(), pass.end(), [&](auto r) { return Contains(r, screen); }) &&
+            std::any_of(caption.begin(), caption.end(), [&](auto r) { return Contains(r, screen); });
+    }
+    bool ShowCaptionMenu(POINT screen) {
+        if (!OwnsCaptionPoint(screen)) return false;
+        ScreenToClient(owner, &screen);
+        auto bounds = Bounds(strip->root);
+        auto scale = strip->root.XamlRoot().RasterizationScale();
+        Windows::Foundation::Point position{float((screen.x-bounds.X)/scale), float((screen.y-bounds.Y)/scale)};
+        auto weak = std::weak_ptr<int>(lifetime);
+        strip->root.DispatcherQueue().TryEnqueue([this, weak, position] {
+            if (weak.expired() || !visible) return;
+            try { strip->ShowBarMenu(position); } catch (...) {}
+        });
+        return true;
+    }
+    bool TranslateContextMenu(MSG const& message) {
+        // The SDK caption-input child can handle the click without forwarding
+        // WM_NCRBUTTONUP to the owner. Route our own caption regions before
+        // dispatch, without identifying/subclassing private SDK child classes.
+        if (GetAncestor(message.hwnd, GA_ROOT) != owner) return false;
+        if (message.message == WM_RBUTTONDOWN || message.message == WM_NCRBUTTONDOWN) {
+            pendingContextMenu = OwnsCaptionPoint(message.pt);
+            if (pendingContextMenu && GetForegroundWindow() != owner) SetForegroundWindow(owner);
+            return pendingContextMenu;
+        }
+        if ((message.message == WM_RBUTTONUP || message.message == WM_NCRBUTTONUP) && pendingContextMenu) {
+            pendingContextMenu = false;
+            ShowCaptionMenu(message.pt);
+            return true;
+        }
+        return false;
     }
     static LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data) noexcept {
         auto self = reinterpret_cast<NativeWindowDrag*>(data);
@@ -78,28 +114,10 @@ struct NativeWindowDrag {
                     [&](auto rect) { return Contains(rect, p); });
                 if (!passthrough) return 0;
             }
-            if (msg == WM_NCRBUTTONUP || msg == WM_CONTEXTMENU) {
-                if (self->visible && self->SystemButtonAt(ScreenPoint(l)) == HTNOWHERE) {
-                    POINT point = ScreenPoint(l);
-                    ScreenToClient(self->owner, &point);
-                    const bool excluded = std::any_of(self->pass.begin(), self->pass.end(),
-                        [&](auto rect) { return Contains(rect, point); });
-                    const bool caption = std::any_of(self->caption.begin(), self->caption.end(),
-                        [&](auto rect) { return Contains(rect, point); });
-                    if (caption && !excluded) {
-                        auto bounds = self->Bounds(self->strip->root);
-                        auto scale = self->strip->root.XamlRoot().RasterizationScale();
-                        Windows::Foundation::Point position{float((point.x - bounds.X) / scale),
-                                                            float((point.y - bounds.Y) / scale)};
-                        auto weak = std::weak_ptr<int>(self->lifetime);
-                        self->strip->root.DispatcherQueue().TryEnqueue([self, weak, position] {
-                            if (weak.expired() || !self->visible) return;
-                            try { self->strip->ShowBarMenu(position); } catch (...) {}
-                        });
-                        return 0;
-                    }
-                }
-            }
+            if ((msg == WM_NCRBUTTONUP || msg == WM_CONTEXTMENU) &&
+                self->ShowCaptionMenu(ScreenPoint(l))) return 0;
+            if (msg == WM_CANCELMODE || (msg == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE))
+                self->pendingContextMenu = false;
             // Handing a plain caption press to DefWindowProc starts the system move
             // loop at once. That loop blocks this thread's dispatcher and island
             // rendering until release, so activation fades land late. Hold the press
@@ -237,6 +255,9 @@ struct NativeWindowDrag {
         systemClose.assign(close.begin(), close.end());
     }
     void Update() {
+        // Minimized HWND coordinates are placeholders, not caption geometry.
+        // Keep the dirty state until restore publishes real client bounds.
+        if (IsIconic(owner)) return;
         if (!strip || !strip->root.IsLoaded() || updating || !strip->captionDirty) return;
         if (!input && !AttachInput()) return;
         updating = true;

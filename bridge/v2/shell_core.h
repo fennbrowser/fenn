@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 65
+#define SHELL_CORE_ABI_VERSION 83
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -89,6 +89,22 @@
 #define TAB_MOTION_MS 135
 
 #define GROUP_MOTION_MS 150
+
+#define PAGE_INPUT_MAX_TEXT 65536
+
+#define PAGE_INPUT_MAX_EVENTS 128
+
+#define STARTUP_MAX_TABS 32
+
+#define STARTUP_MAX_TEXT 32768
+
+#define STARTUP_MAX_SUBMISSIONS 64
+
+#define STARTUP_MAX_UNITS 262144
+
+#define STARTUP_BROWSER_ROWS 4096
+
+#define SHELL_STARTUP_ROW_CAPACITY 4128
 
 /*
  Result of every entry point. `Ok` is zero so the host can test it directly.
@@ -372,9 +388,100 @@ typedef uint32_t ShellLayoutWork;
 #endif // __cplusplus
 
 /*
+ Window binding operations. No callbacks or HWND operations occur in Rust.
+ */
+enum ShellWindowHostOperation
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  SHELL_WINDOW_HOST_OPERATION_INSPECT = 0,
+  SHELL_WINDOW_HOST_OPERATION_BIND = 1,
+  SHELL_WINDOW_HOST_OPERATION_REQUEST_CLOSE = 2,
+  SHELL_WINDOW_HOST_OPERATION_APPROVE_CLOSE = 3,
+  SHELL_WINDOW_HOST_OPERATION_CANCEL_CLOSE = 4,
+  SHELL_WINDOW_HOST_OPERATION_CONTENT_DESTROYED = 5,
+  SHELL_WINDOW_HOST_OPERATION_SHELL_DESTROYED = 6,
+  SHELL_WINDOW_HOST_OPERATION_PREPARE_STARTUP = 7,
+  SHELL_WINDOW_HOST_OPERATION_CANCEL_STARTUP = 8,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum ShellWindowHostOperation ShellWindowHostOperation;
+#else
+typedef uint32_t ShellWindowHostOperation;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/*
  Opaque per-endpoint state. One per native shell surface.
  */
 typedef struct ShellCore ShellCore;
+
+typedef struct {
+  uint32_t presentation;
+  uint64_t draft;
+  uint64_t browser;
+  bool selected;
+} ShellStartupRow;
+
+/*
+ Command transfer envelope. kind: 0 idle, 1 create-new-tab, 2 submit, 3 close,
+ 4 select a restored editor, 5 return to a mapped local editor, 6 import a draft.
+ Text is owned by the core until completion/destruction. Inspecting a pending
+ request is not an execution acknowledgment. Lost bindings cannot issue work.
+ */
+typedef struct {
+  uint64_t session;
+  uint64_t generation;
+  uint64_t request;
+  uint64_t draft;
+  uint64_t browser;
+  uint64_t submission;
+  uint64_t revision;
+  uint32_t kind;
+  uint32_t modifiers;
+  uintptr_t mappings;
+  bool lost;
+  uint64_t editor_browser;
+  bool adoption_ready;
+  uint32_t selection_start;
+  uint32_t selection_length;
+  const uint16_t *text;
+  uintptr_t length;
+} ShellStartupTransfer;
+
+/*
+ Startup draft view. Text is borrowed until the next mutation of this core.
+ draft/request identities are local only and must never be used as browser IDs.
+ */
+typedef struct {
+  uint64_t selected;
+  uint64_t tab;
+  uint64_t revision;
+  uint64_t request;
+  uintptr_t tabs;
+  uintptr_t pending;
+  uint32_t modifiers;
+  const uint16_t *text;
+  uintptr_t length;
+  uint32_t selection_start;
+  uint32_t selection_length;
+  bool composing;
+} ShellStartupView;
+
+typedef struct {
+  uint64_t generation;
+  uintptr_t shell;
+  uintptr_t content;
+  uint64_t close_request;
+  /*
+   0 unbound, 1 attached, 2 awaiting Firefox, 3 approved, 4 content gone,
+   5 shell destroyed, 6 native startup awaiting content, 7 startup cancelled.
+   An endpoint can prepare and bind only once; cancellation is terminal.
+   */
+  uint32_t phase;
+} ShellWindowBinding;
 
 /*
  What the caller observed about the address surface when an intent arrived.
@@ -997,6 +1104,35 @@ typedef struct {
   uint32_t holding;
 } ShellAddressInteractionState;
 
+typedef struct {
+  int32_t width;
+  int32_t height;
+  uint32_t dpi;
+  /*
+   Zero omits the strip; otherwise the supported 32/40/48 DIP row height.
+   */
+  uint32_t strip_height;
+  bool navigation;
+  /*
+   Frame around navigation/content, in DIPs; ignored without navigation.
+   */
+  uint32_t content_inset;
+} ShellChromeLayoutInput;
+
+typedef struct {
+  int32_t x;
+  int32_t y;
+  int32_t width;
+  int32_t height;
+} ShellChromeRect;
+
+typedef struct {
+  bool fits;
+  ShellChromeRect strip;
+  ShellChromeRect navigation;
+  ShellChromeRect content;
+} ShellChromeLayout;
+
 /*
  Adapter-defined finite geometry values, in stable order for each consumer.
  Exact comparison preserves subpixel movement and DPI changes. Unused slots
@@ -1006,9 +1142,209 @@ typedef struct {
   double values[16];
 } ShellLayoutInputs;
 
+/*
+ Platform-neutral composition presentation, with Win32 COLORREF values.
+ kind: raw, selected raw, converted, selected converted (1..4).
+ flags: text/background/underline color and underline style (1/2/4/8).
+ */
+typedef struct {
+  uint32_t start;
+  uint32_t end;
+  uint32_t kind;
+  uint32_t flags;
+  uint32_t line;
+  uint32_t bold;
+  uint32_t foreground;
+  uint32_t background;
+  uint32_t underline;
+} ShellPageClause;
+
+/*
+ Native TSF projection operation. 0 inspect, 1 publish, 2 select, 3 replace,
+ 4 enqueue composition (kind 1 start, 2 update, 3 end), 5 consume front event.
+ Buffers returned by Read/Event are borrowed until the next mutation of core.
+ */
+typedef struct {
+  uint32_t operation;
+  uint32_t kind;
+  uint64_t session;
+  uint64_t revision;
+  uint64_t ack;
+  uint32_t start;
+  uint32_t end;
+  uint32_t caret;
+  const uint16_t *text;
+  uintptr_t length;
+  const ShellPageClause *clauses;
+  uintptr_t clause_count;
+} ShellPageInputCommand;
+
+typedef struct {
+  uint64_t session;
+  uint64_t revision;
+  uint64_t edit;
+  uint32_t start;
+  uint32_t end;
+  uint32_t length;
+} ShellPageInputState;
+
+typedef struct {
+  uint64_t session;
+  uint64_t edit;
+  uint64_t revision;
+  uint64_t request;
+  uint32_t kind;
+  uint32_t start;
+  uint32_t end;
+  uint32_t caret;
+  const uint16_t *text;
+  uintptr_t length;
+  const ShellPageClause *clauses;
+  uintptr_t clause_count;
+} ShellPageInputEvent;
+
+typedef struct {
+  uint64_t session;
+  uint64_t revision;
+  uint64_t edit;
+  uint64_t request;
+  uint32_t start;
+  uint32_t end;
+  uint32_t valid;
+  uint32_t clipped;
+  int32_t left;
+  int32_t top;
+  int32_t right;
+  int32_t bottom;
+} ShellPageGeometry;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+/*
+ Accept a complete startup presentation for this native endpoint. Labels stay
+ in the native presenter; shared Snapshot semantics own replay/stale/conflict.
+ # Safety
+ Fingerprint contains length UTF-16 units; apply is writable and disjoint.
+ */
+ShellStatus shell_core_startup_presentation(ShellCore *core,
+                                            uint64_t session,
+                                            uint64_t revision,
+                                            const uint16_t *fingerprint,
+                                            uintptr_t length,
+                                            bool *apply);
+
+/*
+ Publish visible browser identities (revision > 0), or reproject current local
+ state (revision == 0, empty input). Snapshot replay rules are shared. Draft
+ editor state and acknowledged browser mappings are never mutated here.
+ # Safety
+ IDs reference length elements; output holds SHELL_STARTUP_ROW_CAPACITY rows.
+ Count and output must be writable, mutually disjoint and disjoint from core.
+ */
+ShellStatus shell_core_startup_rows(ShellCore *core,
+                                    uint64_t session,
+                                    uint64_t generation,
+                                    uint64_t revision,
+                                    const uint64_t *ids,
+                                    uintptr_t length,
+                                    uint64_t selected,
+                                    ShellStartupRow *output,
+                                    uintptr_t capacity,
+                                    uint32_t *count);
+
+/*
+ Operations: 0 inspect, 1 prepare context, 2 bind context/generation,
+ 3 create draft, 4 lease oldest submission, 5 close orphan draft,
+ 6 terminal completion (request/browser/accepted), 7 disconnect generation,
+ 8 lease next command (or inspect the outstanding lease), 9 claim wake,
+ 10 failed notification (permit a later retry). Wake operations are native-only.
+ 11 release editor to the selected published browser after terminal cleanup.
+ 12 select a restored editor, 13 return to a mapped local draft (native-only).
+ 14 adopt the selected published browser in place of an untouched placeholder.
+ 15 enable normal adoption, 16 commit a matching selected editor publication.
+ Bind and later operations require the session returned by Prepare; later
+ operations also require the exact bound generation. Context is an opaque
+ host-established profile/privacy token, not an identifier inferred by Rust.
+ Failed calls do not alter output. One outstanding command, no automatic retry.
+ # Safety
+ Output must be writable and disjoint from core-owned storage.
+ */
+ShellStatus shell_core_startup_transfer(ShellCore *core,
+                                        uint32_t operation,
+                                        uint64_t context,
+                                        uint64_t session,
+                                        uint64_t generation,
+                                        uint64_t request,
+                                        uint64_t draft,
+                                        uint64_t browser,
+                                        bool accepted,
+                                        ShellStartupTransfer *output);
+
+/*
+ Read an acknowledged mapping by bounded index. This does not change any
+ native editor or strip identity; the presenter must reconcile them explicitly.
+ # Safety
+ Output must be writable. Returned text is always null.
+ */
+ShellStatus shell_core_startup_mapping(ShellCore *core,
+                                       uint64_t session,
+                                       uint64_t generation,
+                                       uintptr_t index,
+                                       ShellStartupTransfer *output);
+
+/*
+ Atomic native editor observation; selection uses UTF-16 units.
+ # Safety
+ Text must reference length units. No borrowed buffer is retained.
+ */
+ShellStatus shell_core_startup_editor(ShellCore *core,
+                                      uint64_t tab,
+                                      const uint16_t *text,
+                                      uintptr_t length,
+                                      uint32_t start,
+                                      uint32_t selected_length,
+                                      bool composing);
+
+/*
+ Local-only operations: 0 inspect, 1 add, 2 edit, 3 select, 4 close,
+ 5 submit (argument=modifier bits shift/control/alt), 6 reorder (argument=index).
+ No operation drains or acknowledges a browser command.
+ # Safety
+ Text must reference length UTF-16 units; output must be writable and disjoint.
+ */
+ShellStatus shell_core_startup(ShellCore *core,
+                               uint32_t operation,
+                               uint64_t tab,
+                               uint32_t argument,
+                               const uint16_t *text,
+                               uintptr_t length,
+                               ShellStartupView *output);
+
+/*
+ Read a draft (submission=false) or immutable pending submit by index.
+ # Safety
+ Output must be writable; returned text is borrowed until next core mutation.
+ */
+ShellStatus shell_core_startup_read(ShellCore *core,
+                                    bool submission,
+                                    uintptr_t index,
+                                    ShellStartupView *output);
+
+/*
+ PrepareStartup uses shell only; Bind uses shell/content only. A prepared
+ startup can bind only its original shell, with the endpoint generation intact.
+ CancelStartup and other completion operations require the exact
+ generation and request/handle returned by the binding. Inspect/RequestClose
+ take a zeroed argument. Failed calls leave the output untouched.
+ # Safety
+ See [`guard`]. Input/output must point to valid, non-overlapping values.
+ */
+ShellStatus shell_core_window_host(ShellCore *core,
+                                   uint32_t operation,
+                                   const ShellWindowBinding *input,
+                                   ShellWindowBinding *output);
 
 /*
  Version of this boundary. The host refuses a core whose version differs from
@@ -3346,6 +3682,16 @@ ShellStatus shell_core_address_interaction(ShellCore *core,
                                            ShellAddressInteractionState *out);
 
 /*
+ Allocate native chrome and content in physical client pixels, without
+ retaining state. Invalid inputs leave output untouched; fits=false is a
+ valid result requiring host fallback, not a partially applicable layout.
+ # Safety
+ Non-null pointers must be aligned, readable/writable and not overlap.
+ */
+ShellStatus shell_core_chrome_layout(const ShellChromeLayoutInput *input,
+                                     ShellChromeLayout *output);
+
+/*
  Test a bounded geometry observation for one ShellLayoutWork consumer.
  Explicit force is for active motion or a host-owned invalidation. The host
  invalidates again on failed work and on topology/realization changes.
@@ -3364,6 +3710,47 @@ ShellStatus shell_core_layout_observe(ShellCore *core,
  See [`guard`].
  */
 ShellStatus shell_core_layout_invalidate(ShellCore *core, uint32_t consumer);
+
+/*
+ # Safety
+ Valid non-overlapping pointers; text readable for length units during call.
+ */
+ShellStatus shell_core_page_input_apply(ShellCore *core, const ShellPageInputCommand *input);
+
+/*
+ # Safety
+ Valid output pointers. Returned text is borrowed until next core mutation.
+ */
+ShellStatus shell_core_page_input_read(ShellCore *core,
+                                       ShellPageInputState *state,
+                                       const uint16_t **text);
+
+/*
+ # Safety
+ Valid output pointer. Busy means empty; returned text is borrowed until mutation.
+ */
+ShellStatus shell_core_page_input_event(ShellCore *core, ShellPageInputEvent *out);
+
+/*
+ # Safety
+ core is live and exclusively accessed by its native owner.
+ */
+ShellStatus shell_core_page_geometry_context(ShellCore *core, uint64_t session, uint64_t revision);
+
+/*
+ # Safety
+ out is writable; core is live and exclusively accessed.
+ */
+ShellStatus shell_core_page_geometry_read(ShellCore *core,
+                                          uint32_t start,
+                                          uint32_t end,
+                                          ShellPageGeometry *out);
+
+/*
+ # Safety
+ input is readable; core is live and exclusively accessed.
+ */
+ShellStatus shell_core_page_geometry_reply(ShellCore *core, const ShellPageGeometry *input);
 
 #ifdef __cplusplus
 }  // extern "C"

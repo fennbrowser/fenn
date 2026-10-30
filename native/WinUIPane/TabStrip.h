@@ -4015,8 +4015,9 @@ struct NativeTabStrip {
                     row.AddHandler(
                         UIElement::PointerPressedEvent(),
                         box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                            [this, alive, id](auto const&,
+                            [this, alive](auto const& sender,
                                               Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
+                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
                                 if (alive.expired() || syncing || !rows.count(id) ||
                                     !args.GetCurrentPoint(nullptr).Properties().IsLeftButtonPressed())
                                     return;
@@ -4039,8 +4040,9 @@ struct NativeTabStrip {
                     row.AddHandler(
                         UIElement::PointerPressedEvent(),
                         box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                            [this, alive, id](auto const&,
+                            [this, alive](auto const& sender,
                                               Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
+                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
                                 if (alive.expired() || syncing || !rows.count(id)) return;
                                 auto point = args.GetCurrentPoint(view);
                                 if (!point.Properties().IsLeftButtonPressed()) return;
@@ -4084,8 +4086,9 @@ struct NativeTabStrip {
                     row.AddHandler(
                         UIElement::PointerMovedEvent(),
                         box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                            [this, alive, id](auto const&,
+                            [this, alive](auto const& sender,
                                               Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&) {
+                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
                                 // Use the same live cursor sample as the session poll.
                                 // Queued routed coordinates can belong to an older
                                 // layout or gesture after a transfer.
@@ -4105,8 +4108,9 @@ struct NativeTabStrip {
                     row.AddHandler(
                         UIElement::PointerReleasedEvent(),
                         box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                            [this, alive, id](auto const&,
+                            [this, alive](auto const& sender,
                                               Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
+                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
                                 // Only the still-Armed case is handled here.
                                 // Once Dragging, Pane.cpp's TickDragSession
                                 // (raw GetAsyncKeyState polling, not this
@@ -4126,7 +4130,8 @@ struct NativeTabStrip {
                     row.AddHandler(
                         UIElement::PointerCaptureLostEvent(),
                         box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                            [this, alive, id](auto const&, auto const&) {
+                            [this, alive](auto const& sender, auto const&) {
+                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
                                 // Only meaningful while still Armed -- once
                                 // Dragging, nothing treats this event as
                                 // authoritative anymore (raw ::SetCapture,
@@ -4138,7 +4143,8 @@ struct NativeTabStrip {
                             })),
                         true);
                     row.PreviewKeyDown(
-                        [this, alive, id](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
+                        [this, alive](auto const& sender, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
+                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
                             if (alive.expired() || syncing || !rows.count(id)) return;
                             if (args.Key() == Windows::System::VirtualKey::Escape && Drag().tab == id &&
                                 Drag().phase != DragPhase::None) {
@@ -4154,7 +4160,8 @@ struct NativeTabStrip {
                             }
                         });
                     rows.emplace(id, row);
-                    row.Loaded([this, alive, id](auto const&, auto const&) {
+                    row.Loaded([this, alive](auto const& sender, auto const&) {
+                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
                         auto found = rows.find(id);
                         if (!alive.expired() && found != rows.end()) AttachOutline(id, found->second);
                     });

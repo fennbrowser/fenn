@@ -178,6 +178,8 @@ test("restoring Gecko widget focus does not reenter an already owned native fiel
 
 test("native mouse focus establishes the Gecko proxy without selecting text or looping", () => {
   const f=fixture(); f.toolbar.update(); f.toolbar.activate();
+  assert.equal(f.toolbar.proxy.attributes.get('aria-hidden'),'true');
+  assert.equal(f.toolbar.proxy.tabIndex,0,'the service proxy still participates in Gecko keyboard routing');
   f.window.document.activeElement={id:'browser'};
   f.toolbar.proxy.focus=()=>{f.calls.push(['proxy-focus']); f.window.document.activeElement=f.toolbar.proxy;};
   f.calls.length=0;
@@ -576,4 +578,15 @@ test("toolbar fallback revokes an open Downloads subscription before native deta
   const f=fixture();let dismissed=false;
   f.toolbar.downloadsPanel={session:1,dismiss(){dismissed=true;this.session=0;}};
   f.toolbar.restore();assert.equal(dismissed,true);assert.equal(f.toolbar.downloadsPanel.session,0);
+});
+
+
+test("late toolbar stylesheet wakes publication and detaches on close", () => {
+  const f = fixture();
+  let invalidations = 0;
+  f.owner.invalidateAddress = () => invalidations++;
+  f.toolbar.link.onload();
+  assert.equal(invalidations, 1);
+  f.toolbar.close();
+  assert.equal(f.toolbar.link.onload, null);
 });

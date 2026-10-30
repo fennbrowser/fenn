@@ -3,8 +3,9 @@
 # scripts/mach.sh). It is several times slower to build than configs/mozconfig,
 # so keep that one for iteration.
 #
-# Every option of configs/mozconfig is repeated here rather than sourced, so the
-# file stands on its own; tests/test_mozconfig.py keeps the two in step.
+# Shared options of configs/mozconfig are repeated here rather than sourced.
+# The development native-host trial is deliberately excluded;
+# tests/test_mozconfig.py keeps that boundary explicit.
 #
 # A separate object directory: switching between the two configurations must not
 # clobber either build. Packaging selects this tree with -ReleaseBuild or -Store;

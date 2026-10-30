@@ -1,4 +1,5 @@
 #pragma once
+struct IUnknown;
 #include <windows.h>
 #include <stdint.h>
 
@@ -25,7 +26,15 @@
 // completeRequests) and incremental tab deltas (applyTabDelta), and retired
 // syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 // retaining the sidebar entry point.
-#define WINUI_PANE_ABI_VERSION 17u
+// v18 adds stateless native client-area allocation for browser layout.
+#define WINUI_PANE_ABI_VERSION 37u
+
+// Scalar key transport, translated exactly once by the Gecko endpoint.
+#define WINUI_PANE_ENDPOINT_KEY_OFFSET WM_APP
+#define WINUI_PANE_ENDPOINT_PROPERTY L"Fenn.GeckoEndpoint"
+inline constexpr int WinUIPaneModifierKeys[] = {
+    VK_SHIFT, VK_CONTROL, VK_MENU, VK_LSHIFT, VK_RSHIFT, VK_LCONTROL,
+    VK_RCONTROL, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN, VK_CAPITAL, VK_NUMLOCK, VK_SCROLL};
 
 // The pane is built framework-dependent on the shared Windows App SDK runtime
 // (Microsoft.WindowsAppRuntime.2, at least 2.5.1.0). A packaged host declares it
@@ -37,7 +46,9 @@
 #define WINUI_PANE_RUNTIME_MIN_VERSION 0x0002000500010000ull
 #define WINUI_PANE_RUNTIME_BOOTSTRAP_DLL L"Microsoft.WindowsAppRuntime.Bootstrap.dll"
 
-// All calls run on the browser's owning STA. Coordinates are client physical
+// Calls originate on the browser STA. The experimental independent host
+// dispatches UI work to its native STA; notify sinks must enqueue browser work.
+// Coordinates are client physical
 // pixels. The module remains loaded until process exit, including after shutdown.
 // Legacy availability bits for tab snapshots and invalidation. Menu action IDs
 // are opaque strings in the published state; native code assigns no command
@@ -68,6 +79,37 @@ struct WinUITab {
 // arrive. Returning FALSE is not an error the host must otherwise handle.
 using WinUIPaneNotifyFn = BOOL (WINAPI*)(void* context);
 
+struct WinUIChromeLayout {
+    BOOL fits;
+    RECT strip, navigation, content;
+};
+
+// v27: bounded text-window base and asynchronous range geometry (event kind 6).
+// Borrowed input buffers are copied during publication; events are copied
+// into caller-owned storage. Only the native owner accesses the TSF objects.
+struct WinUIPageInput {
+    uint64_t session, revision, acknowledgment;
+    uint32_t enabled, start, end, length, reversed, textBase;
+    const wchar_t* text;
+    RECT caret, editor;
+    uint32_t scopeCount;
+    int32_t scopes[8];
+};
+// v28: bounded composition clauses and display attributes.
+struct WinUIPageClause {
+    uint32_t start,end,kind,flags,line,bold,foreground,background,underline;
+};
+struct WinUIPageInputEvent {
+    uint64_t session, edit, revision, request;
+    uint32_t kind, start, end, caret, length;
+    uint32_t clauseCount;
+    WinUIPageClause clauses[64];
+};
+struct WinUIPageGeometry {
+    uint64_t session, revision, edit, request;
+    uint32_t start, end, valid, clipped;
+    RECT bounds;
+};
 struct WinUIPaneApi {
     uint32_t size;
     uint32_t version;
@@ -132,5 +174,42 @@ struct WinUIPaneApi {
     // v15: independent toolbar address island; the request endpoint is shared.
     HRESULT (WINAPI* updateAddress)(HWND, const RECT*, BOOL);
     HRESULT (WINAPI* focusAddress)(HWND, BOOL);
+    // No control mutation. Invalid requests leave output untouched; fits=false
+    // requires the browser to keep/restore its existing layout.
+    HRESULT (WINAPI* measureChromeLayout)(HWND, uint32_t, BOOL, uint32_t, WinUIChromeLayout*);
+    // v19: opt-in native outer HWND; Gecko remains its logical widget adapter.
+    HRESULT (WINAPI* createWindowHost)(DWORD, const wchar_t*, DWORD, const RECT*, HWND, HINSTANCE, HWND*);
+    HRESULT (WINAPI* attachWindowHost)(HWND, uintptr_t, WNDPROC, WNDPROC*);
+    HRESULT (WINAPI* detachWindowHost)(HWND);
+    HRESULT (WINAPI* destroyWindowHost)(HWND);
+    // One-use handoff from Fenn's native bootstrap, never Firefox window adoption.
+    HRESULT (WINAPI* adoptStartupWindowHost)(HWND);
+    // v21: early loading island on the original native HWND, owning thread only.
+    HRESULT (WINAPI* showStartupSurface)(HWND);
+    HRESULT (WINAPI* dismissStartupSurface)(HWND);
+    // v23: selected profile path for saved placement; borrowed during Start.
+    // Development independent-thread host. Start before Gecko/other pane calls.
+    // Profile placement/cache and optional Firefox-resolved presentation JSON.
+    // Both strings are borrowed for the call; presentation is bounded to 32768
+    // UTF-16 units and copied before dispatch to the native owner thread.
+    HRESULT (WINAPI* startIndependentHost)(const wchar_t*, const wchar_t*, HWND*);
+    HRESULT (WINAPI* bindIndependentEndpoint)(HWND, uintptr_t, HWND);
+    HRESULT (WINAPI* cancelIndependentClose)(HWND, uint64_t, uint64_t);
+    // v24: agile COM identity only. The provider must never wait for Gecko on
+    // the HWND thread. Native retains a reference until cleared or destroyed.
+    HRESULT (WINAPI* setIndependentAccessibility)(HWND, IUnknown*);
+    HRESULT (WINAPI* publishIndependentInput)(HWND, const WinUIPageInput*);
+    HRESULT (WINAPI* drainIndependentInput)(HWND, WinUIPageInputEvent*, wchar_t*, uint32_t);
+    HRESULT (WINAPI* commitIndependentInput)(HWND, BOOL);
+    HRESULT (WINAPI* publishIndependentGeometry)(HWND, const WinUIPageGeometry*);
+    // v33 adds acknowledged restored/local editor selection leases (kinds 4/5).
+    // Operation 13 releases the editor after terminal draft cleanup.
+    // Operation 15 probes early ownership; 16 acknowledges connected presentation.
+    // Operation 14 retires an untouched initial placeholder to the selected browser.
+    // Operation 12 explicitly attaches the retained startup presenter.
+    // Operation 11 publishes bounded browser-row identity snapshots.
+    // Decimal u64 identities in JSON; borrowed buffers only for this call.
+    // Operations 17/18 enable exact-state draft adoption and finish the retained presenter.
+    HRESULT (WINAPI* startupTransfer)(HWND, const wchar_t*, wchar_t*, uint32_t);
 };
 using WinUIPaneGetApiFn = HRESULT (WINAPI*)(uint32_t, uint32_t, WinUIPaneApi*);

@@ -1,3 +1,63 @@
+diff --git a/accessible/base/FocusManager.cpp b/accessible/base/FocusManager.cpp
+index 84c9c9bc7da..a69c5fa1bc3 100644
+--- a/accessible/base/FocusManager.cpp
++++ b/accessible/base/FocusManager.cpp
+@@ -15,2 +15,3 @@
+ #include "nsAccessibilityService.h"
++#include "nsContentUtils.h"
+ #include "nsEventShell.h"
+@@ -39,2 +40,17 @@ static LocalAccessible* MaybeAdjustDocumentFocusTarget(
+ 
++static bool IsNativeControlProxy(nsINode* aNode) {
++  // Native WinUI controls own focus and accessibility. These chrome-only DOM
++  // nodes route keyboard traversal; even when aria-hidden, falling back to their
++  // accessible container sends a competing focus event to screen readers.
++  if (aNode && aNode->IsElement() && nsContentUtils::IsChromeDoc(aNode->OwnerDoc())) {
++    nsAutoString id;
++    aNode->AsElement()->GetAttr(nsGkAtoms::id, id);
++    if (id.EqualsLiteral("winui-address-focus") ||
++        id.EqualsLiteral("winui-prototype-pane")) {
++      return true;
++    }
++  }
++  return false;
++}
++
+ /**
+@@ -44,2 +60,3 @@ static LocalAccessible* FocusTargetFor(DocAccessible* aDocument,
+                                        nsINode* aNode) {
++  if (IsNativeControlProxy(aNode)) return nullptr;
+   return MaybeAdjustDocumentFocusTarget(
+@@ -79,3 +96,9 @@ LocalAccessible* FocusManager::FocusedLocalAccessible() const {
+ 
++bool FocusManager::NativeControlHasFocus() const {
++  MOZ_ASSERT(NS_IsMainThread());
++  return IsNativeControlProxy(FocusedDOMNode());
++}
++
+ Accessible* FocusManager::FocusedAccessible() const {
++  if (NS_IsMainThread() && NativeControlHasFocus()) return nullptr;
+ #if defined(ANDROID)
+diff --git a/accessible/base/FocusManager.h b/accessible/base/FocusManager.h
+index 1aaa216195c..f5d6f335662 100644
+--- a/accessible/base/FocusManager.h
++++ b/accessible/base/FocusManager.h
+@@ -41,2 +41,5 @@ class FocusManager {
+ 
++  // A chrome routing proxy owns DOM focus on behalf of a native UIA control.
++  bool NativeControlHasFocus() const;
++
+   /**
+diff --git a/accessible/windows/msaa/Platform.cpp b/accessible/windows/msaa/Platform.cpp
+index d35e55a3c9d..aab3599196f 100644
+--- a/accessible/windows/msaa/Platform.cpp
++++ b/accessible/windows/msaa/Platform.cpp
+@@ -119,2 +119,5 @@ void a11y::PlatformStateChangeEvent(Accessible* aTarget, uint64_t aState,
+ void a11y::PlatformFocusEvent(Accessible* aTarget) {
++  // Remote document events can arrive after the retained native control has
++  // taken focus. It has no LocalAccessible, but still supersedes Gecko focus.
++  if (FocusMgr() && FocusMgr()->NativeControlHasFocus()) return;
+   if (aTarget->IsRemote() && FocusMgr() &&
 diff --git a/browser/actors/ContextMenuChild.sys.mjs b/browser/actors/ContextMenuChild.sys.mjs
 index bdb92525789..1674fc8cd4c 100644
 --- a/browser/actors/ContextMenuChild.sys.mjs
@@ -35,8 +95,38 @@ index 5cc4a68caec..92669a3d53a 100644
 -        icon,
 +        CONFIG["MOZ_BRANDING_DIRECTORY"],
      )
+diff --git a/browser/app/nsBrowserApp.cpp b/browser/app/nsBrowserApp.cpp
+index 1fbef26996f..7c5875a33f0 100644
+--- a/browser/app/nsBrowserApp.cpp
++++ b/browser/app/nsBrowserApp.cpp
+@@ -31,2 +31,3 @@
+ #  include "mozilla/PreXULSkeletonUI.h"
++#  include "mozilla/FennStartupWindow.h"
+ #  include "freestanding/SharedSection.h"
+@@ -522,2 +523,6 @@ int main(int argc, char* argv[], char* envp[]) {
+   mozilla::CreateAndStorePreXULSkeletonUI(GetModuleHandle(nullptr), argc, argv);
++  if (mozilla::FennStartupWindowMode() && !mozilla::FennStartupWindowReady()) {
++    mozilla::CleanupProcessRuntime();
++    return 255;
++  }
+ 
+@@ -532,4 +537,14 @@ int main(int argc, char* argv[], char* envp[]) {
+   if (NS_FAILED(rv)) {
++#if defined(XP_WIN)
++    CleanupProcessRuntime();
++#endif
+     return 255;
+   }
++#if defined(XP_WIN)
++  if (mozilla::FennStartupWindowMode() && !mozilla::FennStartupWindowReady()) {
++    CleanupProcessRuntime();
++    gBootstrap->NS_LogTerm();
++    return 0;
++  }
++#endif
+ 
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 0f4b2915ad2..be069cceb45 100644
+index 0f4b2915ad2..ca74e4cd66a 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -89,7 +179,7 @@ index 0f4b2915ad2..be069cceb45 100644
 +// Keep its inspection shortcut out of page context menus unless requested.
 +pref("fenn.contextMenu.inspectAccessibility", false);
  
-@@ -3877,2 +3886,60 @@ pref("distribution.mozillaonline.ignore", true);
+@@ -3877,2 +3886,70 @@ pref("distribution.mozillaonline.ignore", true);
  
 +// The native tab strip is on by default in every lane (unpackaged launcher and
 +// MSIX alike); turn it off to fall back to Firefox's own UI. Firefox keeps its
@@ -125,6 +215,16 @@ index 0f4b2915ad2..be069cceb45 100644
 +pref("fenn.winui.address.actions.translation", true);
 +pref("fenn.winui.address.actions.share", true);
 +pref("fenn.winui.navigation.toolbar.enabled", true);
++// Explicit development-build trial, shared by unpackaged and development MSIX.
++#ifdef FENN_DEVELOPMENT_NATIVE_HOST
++pref("fenn.winui.chrome.layout", true);
++pref("fenn.winui.window.host", true);
++pref("fenn.winui.window.independent", true);
++#else
++pref("fenn.winui.chrome.layout", false);
++pref("fenn.winui.window.host", false);
++pref("fenn.winui.window.independent", false);
++#endif
 +// Hide Firefox's retained toolbar below the native navigation row while that row
 +// is active. Controls the row does not yet host (for example
 +// unplaced items and some extensions) are reachable only in customization mode,
@@ -1133,16 +1233,18 @@ index bdf2c9c2928..3c00d8625fa 100644
 +    if (!this.contentData || this.window.gContextMenu !== this) { return; }
  
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..ab018c849a3 100644
+index b2b5db6040b..22808307a39 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,38 @@ browser.jar:
+@@ -35,2 +35,42 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuCommands.sys.mjs      (content/WinUITabMenuCommands.sys.mjs)
 +        content/browser/WinUITabMenuSession.sys.mjs      (content/WinUITabMenuSession.sys.mjs)
 +        content/browser/WinUITabStripSession.sys.mjs     (content/WinUITabStripSession.sys.mjs)
 +        content/browser/WinUIAddressSession.sys.mjs      (content/WinUIAddressSession.sys.mjs)
++        content/browser/WinUIAutomaticStartup.sys.mjs     (content/WinUIAutomaticStartup.sys.mjs)
++        content/browser/WinUIStartupTransfer.sys.mjs     (content/WinUIStartupTransfer.sys.mjs)
 +        content/browser/WinUIAddressHost.sys.mjs       (content/WinUIAddressHost.sys.mjs)
 +        content/browser/WinUIToolbarCustomization.sys.mjs (content/WinUIToolbarCustomization.sys.mjs)
 +        content/browser/WinUIStockToolbar.sys.mjs (content/WinUIStockToolbar.sys.mjs)
@@ -1172,10 +1274,12 @@ index b2b5db6040b..ab018c849a3 100644
 +        content/browser/WinUIHistoryMenu.sys.mjs     (content/WinUIHistoryMenu.sys.mjs)
 +        content/browser/WinUIActionStamp.sys.mjs     (content/WinUIActionStamp.sys.mjs)
 +        content/browser/WinUIAddressToolbar.sys.mjs     (content/WinUIAddressToolbar.sys.mjs)
++        content/browser/WinUIChromeLayout.sys.mjs       (content/WinUIChromeLayout.sys.mjs)
++        content/browser/WinUIChromeLayout.css           (content/WinUIChromeLayout.css)
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +142,17 @@ browser.jar:
+@@ -106 +146,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -1193,6 +1297,26 @@ index b2b5db6040b..ab018c849a3 100644
 +    content/browser/urlbar/UrlbarBrowserState.mjs (../components/urlbar/content/UrlbarBrowserState.mjs)
 +    content/browser/urlbar/UrlbarInputIdentity.mjs (../components/urlbar/content/UrlbarInputIdentity.mjs)
 +    content/browser/urlbar/UrlbarEditSession.mjs (../components/urlbar/content/UrlbarEditSession.mjs)
+diff --git a/browser/components/BrowserGlue.sys.mjs b/browser/components/BrowserGlue.sys.mjs
+index 4a292baaec9..119f9149303 100644
+--- a/browser/components/BrowserGlue.sys.mjs
++++ b/browser/components/BrowserGlue.sys.mjs
+@@ -549,2 +549,15 @@ BrowserGlue.prototype = {
+   _earlyBlankFirstPaint(cmdLine) {
++    if (AppConstants.platform == "win") {
++      ChromeUtils.importESModule("chrome://browser/content/WinUIAutomaticStartup.sys.mjs").registerStartupChromeGate();
++    }
++    // Native startup owns the first HWND, including profile-resolved default
++    // launches. Do not ask Gecko to create a provisional blank window first.
++    const nativeStartup = Services.env.get("FENN_NATIVE_STARTUP_HOST");
++    if (AppConstants.platform == "win" &&
++        (["1", "2"].includes(nativeStartup) ||
++         (!nativeStartup &&
++          Services.prefs.getBoolPref("fenn.winui.window.independent", false) &&
++          Services.prefs.getBoolPref("fenn.winui.window.host", false)))) {
++      return;
++    }
+     let startTime = ChromeUtils.now();
 diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
 index 76cab7f8e46..8ae93f53085 100644
 --- a/browser/components/customizableui/CustomizableUI.sys.mjs
@@ -9349,10 +9473,10 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..85ef2f231d6 100644
+index 4f28e62c7b5..f5e8a814c80 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -520 +520,144 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,155 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -9497,6 +9621,17 @@ index 4f28e62c7b5..85ef2f231d6 100644
 +
 +winui-notification-close = Close notification
 +winui-notification-more = More actions
++
++# Native startup controls appear before browser services are connected.
++winui-startup-new-tab = New tab
++winui-startup-pending = Waiting for browser
++winui-startup-full = Cannot queue this action yet. Your text has been kept.
++winui-startup-composition = Finish composing before changing tabs.
++winui-startup-address = Search or enter address
++winui-startup-unavailable = This window layout cannot connect to the native startup interface. Your text is kept.
++
++winui-startup-recovery = Startup needs attention
++winui-startup-recovery-action = Use native layout
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -9544,8 +9679,60 @@ index 13464a72e83..7c92cbb1828 100644
  invalidHeaderValue=%S sent back a header with empty characters not allowed by web security standards.
 -networkProtocolError=Firefox has experienced a network protocol violation that cannot be repaired.
 +networkProtocolError=Fenn has experienced a network protocol violation that cannot be repaired.
+diff --git a/browser/modules/BrowserWindowTracker.sys.mjs b/browser/modules/BrowserWindowTracker.sys.mjs
+index d90f63e373a..0683fc1ec7e 100644
+--- a/browser/modules/BrowserWindowTracker.sys.mjs
++++ b/browser/modules/BrowserWindowTracker.sys.mjs
+@@ -40,2 +40,3 @@ const DEBUG = false;
+ let _lastCurrentBrowserId = 0;
++let nativeStartupAttempted = false;
+ let _trackedWindows = [];
+@@ -394,9 +395,36 @@ export const BrowserWindowTracker = {
+ 
+-    let win = Services.ww.openWindow(
+-      openerWindow,
+-      AppConstants.BROWSER_CHROME_URL,
+-      "_blank",
+-      windowFeatures,
+-      args
+-    );
++    // Routing/profile ownership and window options are resolved. Create the
++    // native controls before opening browser chrome, never during remoting or
++    // profile selection. Native code owns the one-use first-window lease.
++    const nativeStartup = AppConstants.platform === "win" &&
++      Services.env.get("FENN_NATIVE_INTERACTIVE_STARTUP") === "1" && !nativeStartupAttempted;
++    let nativeLease;
++    if (nativeStartup) {
++      nativeStartupAttempted = true;
++      nativeLease = Cc["@mozilla.org/supports-PRBool;1"].createInstance(Ci.nsISupportsPRBool);
++      let presentation = null;
++      try {
++        const { prepareStartupPresentation } = ChromeUtils.importESModule(
++          "chrome://browser/content/WinUIAutomaticStartup.sys.mjs"
++        );
++        presentation = prepareStartupPresentation();
++      } catch (error) {
++        console.error("Initial native startup localization unavailable", error);
++      }
++      Services.obs.notifyObservers(nativeLease, "fenn-native-startup-window", presentation);
++    }
++    let win;
++    try {
++      win = Services.ww.openWindow(
++        openerWindow,
++        AppConstants.BROWSER_CHROME_URL,
++        "_blank",
++        windowFeatures,
++        args
++      );
++      if (!win) throw new Error("Browser window creation returned no window");
++    } catch (error) {
++      if (nativeLease?.data) Services.obs.notifyObservers(null, "fenn-native-startup-cancel");
++      throw error;
++    }
+     this.registerOpeningWindow(win, isPrivate);
 diff --git a/browser/moz.configure b/browser/moz.configure
-index 8979a2e4e8d..e9835799cca 100644
+index 8979a2e4e8d..b28367c6c9d 100644
 --- a/browser/moz.configure
 +++ b/browser/moz.configure
 @@ -13,3 +13,9 @@ imply_option("MOZ_PROFILE_MIGRATOR", True)
@@ -9559,6 +9746,13 @@ index 8979a2e4e8d..e9835799cca 100644
 +imply_option("MOZ_APP_VENDOR", "Fenn")
 +imply_option("MOZ_APP_UA_NAME", "Firefox")
  imply_option("MOZ_APP_ID", "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}")
+@@ -270 +276,6 @@ set_config(
+ )
++
++# Explicit development promotion; never inferred from the upstream channel.
++option("--enable-fenn-development-native-host", default=False,
++       help="Enable the development independent native window default")
++set_define("FENN_DEVELOPMENT_NATIVE_HOST", depends("--enable-fenn-development-native-host")(lambda value: bool(value)))
 diff --git a/browser/themes/shared/urlbar.css b/browser/themes/shared/urlbar.css
 index bbd8b165659..09bbf1a0b9e 100644
 --- a/browser/themes/shared/urlbar.css
@@ -9594,11 +9788,36 @@ index b5ed380f179..84de0e70ef0 100644
 +	@touch $@
  endif
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
-index b39212b1c97..bc73f41c482 100644
+index b39212b1c97..e1d3533c63a 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
 +++ b/dom/base/nsDOMWindowUtils.cpp
-@@ -154,2 +154,159 @@ using namespace mozilla::gfx;
+@@ -154,2 +154,195 @@ using namespace mozilla::gfx;
  
++NS_IMETHODIMP
++nsDOMWindowUtils::GetWinUIChromeLayout(uint32_t aStripHeight, bool aNavigation,
++                                     uint32_t aInset, nsTArray<double>& aResult) {
++  aResult.Clear();
++  auto* doc = GetDocument();
++  if (!XRE_IsParentProcess() || !doc || !doc->NodePrincipal()->IsSystemPrincipal() ||
++      !doc->GetDocumentURI()->GetSpecOrDefault().EqualsLiteral(
++          "chrome://browser/content/browser.xhtml")) return NS_ERROR_NOT_AVAILABLE;
++  auto* pc = GetPresContext();
++  nsPoint offset;
++  auto* widget = GetWidget(&offset);
++  nsTArray<LayoutDeviceIntRect> rects;
++  if (!pc || !widget || !widget->GetWinUIChromeLayout(aStripHeight, aNavigation, aInset, rects))
++    return NS_ERROR_NOT_AVAILABLE;
++  const double scale = pc->CSSToDevPixelScale().scale;
++  const auto origin = CSSPoint::FromAppUnits(offset);
++  for (const auto& r : rects) {
++    aResult.AppendElement(r.x / scale - origin.x);
++    aResult.AppendElement(r.y / scale - origin.y);
++    aResult.AppendElement(r.width / scale);
++    aResult.AppendElement(r.height / scale);
++  }
++  return NS_OK;
++}
++
 +NS_IMETHODIMP
 +nsDOMWindowUtils::UpdateWinUIAddress(double aX, double aY, double aWidth,
 +                                   double aHeight, bool aVisible, bool aFocus,
@@ -9658,6 +9877,17 @@ index b39212b1c97..bc73f41c482 100644
 +  // caller reads as "no work".
 +  widget->DrainWinUIRequests(aBatch);
 +  return NS_OK;
++}
++
++NS_IMETHODIMP
++nsDOMWindowUtils::TransferWinUIStartup(const nsAString& aMessage, nsAString& aReply) {
++  aReply.Truncate();
++  auto* doc = GetDocument();
++  if (!XRE_IsParentProcess() || !doc || !doc->NodePrincipal()->IsSystemPrincipal() ||
++      !doc->GetDocumentURI()->GetSpecOrDefault().EqualsLiteral("chrome://browser/content/browser.xhtml")) return NS_ERROR_NOT_AVAILABLE;
++  if (aMessage.Length() > 131072 || aMessage.FindChar(char16_t(0)) != kNotFound) return NS_ERROR_INVALID_ARG;
++  auto* widget = GetWidget();
++  return widget && widget->TransferWinUIStartup(aMessage, aReply) ? NS_OK : NS_ERROR_NOT_AVAILABLE;
 +}
 +
 +NS_IMETHODIMP
@@ -9758,11 +9988,15 @@ index b39212b1c97..bc73f41c482 100644
 +
  static LazyLogModule sApzZoomToFocusedInputLog("apz.zoomtofocusedinput");
 diff --git a/dom/interfaces/base/nsIDOMWindowUtils.idl b/dom/interfaces/base/nsIDOMWindowUtils.idl
-index 400fb84ffc6..d232d774381 100644
+index 400fb84ffc6..3d964657266 100644
 --- a/dom/interfaces/base/nsIDOMWindowUtils.idl
 +++ b/dom/interfaces/base/nsIDOMWindowUtils.idl
-@@ -63,2 +63,37 @@ interface nsIDOMWindowUtils : nsISupports {
+@@ -63,2 +63,42 @@ interface nsIDOMWindowUtils : nsISupports {
  
++  // Native allocation as three x/y/width/height rectangles in CSS client pixels:
++  // strip, navigation, Gecko browser area. Parent browser.xhtml only.
++  Array<double> getWinUIChromeLayout(in unsigned long stripHeight,
++                                   in boolean navigation, in unsigned long inset);
 +  void syncWinUIAddress(in AString snapshot);
 +  boolean updateWinUIAddress(in double x, in double y, in double width,
 +                            in double height, in boolean visible,
@@ -9776,6 +10010,7 @@ index 400fb84ffc6..d232d774381 100644
 +   * other entry point here.
 +   */
 +  AString drainWinUIRequests();
++  AString transferWinUIStartup(in AString aMessage);
 +  void completeWinUIRequests(in AString outcomes);
 +  /**
 +   * Incremental presentation update. Returns the acknowledged Firefox publication revision after
@@ -9799,6 +10034,81 @@ index 400fb84ffc6..d232d774381 100644
 +                         in boolean focus, in boolean backwards, in Array<double> occlusions);
 +
    /**
+diff --git a/dom/ipc/BrowserChild.h b/dom/ipc/BrowserChild.h
+index 4d2ca4101a5..ca934f7c0f2 100644
+--- a/dom/ipc/BrowserChild.h
++++ b/dom/ipc/BrowserChild.h
+@@ -755,2 +755,5 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
+   mozilla::ipc::IPCResult RecvStopIMEStateManagement();
++  mozilla::ipc::IPCResult RecvFennQueryPageGeometry(
++      const uint32_t& aOffset, const uint32_t& aLength,
++      FennQueryPageGeometryResolver&& aResolve);
+ 
+diff --git a/dom/ipc/PBrowser.ipdl b/dom/ipc/PBrowser.ipdl
+index 80b0072b13b..fef67803849 100644
+--- a/dom/ipc/PBrowser.ipdl
++++ b/dom/ipc/PBrowser.ipdl
+@@ -167,2 +167,9 @@ struct WebProgressLocationChangeData
+  */
++// Bounded asynchronous text-store geometry for the independent native host.
++struct FennPageGeometryResult {
++    bool valid;
++    LayoutDeviceIntRect textRect;
++    LayoutDeviceIntRect editorRect;
++};
++
+ struct PrintPreviewResultInfo
+@@ -708,2 +715,5 @@ child:
+ 
++    async FennQueryPageGeometry(uint32_t offset, uint32_t length)
++        returns (FennPageGeometryResult result);
++
+     /**
+diff --git a/dom/ipc/moz.build b/dom/ipc/moz.build
+index 58c9e15a4b6..90fbe5375eb 100644
+--- a/dom/ipc/moz.build
++++ b/dom/ipc/moz.build
+@@ -133,2 +133,3 @@ UNIFIED_SOURCES += [
+     "DocShellMessageUtils.cpp",
++    "FennPageGeometry.cpp",
+     "FilePickerParent.cpp",
+diff --git a/mozglue/misc/PreXULSkeletonUI.cpp b/mozglue/misc/PreXULSkeletonUI.cpp
+index b359494c6fb..ce6d6123393 100644
+--- a/mozglue/misc/PreXULSkeletonUI.cpp
++++ b/mozglue/misc/PreXULSkeletonUI.cpp
+@@ -5,2 +5,3 @@
+ #include "PreXULSkeletonUI.h"
++#include "FennStartupWindow.h"
+ 
+@@ -1818,2 +1819,14 @@ static Result<Ok, PreXULSkeletonUIError> CreateAndStorePreXULSkeletonUIImpl(
+ 
++  if (FennStartupWindowRequested()) {
++    // Unsupported independent-host launch modes defer to Firefox's own
++    // profile/remoting decision and the resolved-profile native creation hook.
++    if (!PrepareFennStartupWindow(hInstance, argc, argv) &&
++        !FennIndependentHostRequested()) {
++      return Err(PreXULSkeletonUIError::CreateWindowFailed);
++    }
++    return Ok();
++  }
++
++  if (FennIndependentHostRequested()) return Ok(); // No provisional Firefox window.
++
+   const TimeStamp skeletonStart = TimeStamp::Now();
+@@ -2069,2 +2082,3 @@ void CreateAndStorePreXULSkeletonUI(HINSTANCE hInstance, int argc,
+ void CleanupProcessRuntime() {
++  CleanupFennStartupWindow();
+   delete sProcessRuntime;
+diff --git a/mozglue/misc/moz.build b/mozglue/misc/moz.build
+index ef72e9060ea..f838f1385fd 100644
+--- a/mozglue/misc/moz.build
++++ b/mozglue/misc/moz.build
+@@ -35,3 +35,5 @@ EXPORTS.mozilla.glue += [
+ if CONFIG["OS_ARCH"] == "WINNT":
++    SOURCES += ["FennStartupWindow.cpp"]
+     EXPORTS.mozilla += [
++        "FennStartupWindow.h",
+         "GetKnownFolderPath.h",
 diff --git a/python/mozbuild/mozbuild/repackaging/msix.py b/python/mozbuild/mozbuild/repackaging/msix.py
 index 47a067c4c15..b88749f7d58 100644
 --- a/python/mozbuild/mozbuild/repackaging/msix.py
@@ -10006,12 +10316,26 @@ index 6bef7f9779e..80ef6a45126 100644
 +        0x415f,
 +        {0x94, 0x5b, 0xdb, 0xfc, 0x48, 0x82, 0x9a, 0x95}};
  
+diff --git a/toolkit/xre/nsAppRunner.cpp b/toolkit/xre/nsAppRunner.cpp
+index 003fc8545a7..5c951b2ce09 100644
+--- a/toolkit/xre/nsAppRunner.cpp
++++ b/toolkit/xre/nsAppRunner.cpp
+@@ -2993,3 +2993,5 @@ static ReturnAbortOnError ProfileLockedDialog(nsIFile* aProfileDir,
+       // TODO: make a way to turn off all dialogs when headless.
+-      Output(true, "%s\n", NS_LossyConvertUTF16toASCII(killMessage).get());
++      // Output uses MessageBoxW in Windows GUI builds. A headless lock failure
++      // must report on stderr instead of waiting for an invisible user action.
++      fprintf(stderr, "%s\n", NS_LossyConvertUTF16toASCII(killMessage).get());
+       return NS_ERROR_FAILURE;
 diff --git a/widget/nsIWidget.h b/widget/nsIWidget.h
-index 2d06d7b7dda..067fc376849 100644
+index 2d06d7b7dda..c31997ee473 100644
 --- a/widget/nsIWidget.h
 +++ b/widget/nsIWidget.h
-@@ -1294,2 +1294,24 @@ class nsIWidget : public nsSupportsWeakReference {
+@@ -1294,2 +1294,28 @@ class nsIWidget : public nsSupportsWeakReference {
  
++  virtual bool GetWinUIChromeLayout(uint32_t aStripHeight, bool aNavigation,
++                                   uint32_t aInset,
++                                   nsTArray<LayoutDeviceIntRect>& aRects) { return false; }
 +  virtual bool SyncWinUIAddress(const nsAString& aSnapshot) { return false; }
 +  virtual bool UpdateWinUIAddress(const LayoutDeviceIntRect& aRect,
 +                                 bool aVisible, bool aFocus, bool aSelectAll) {
@@ -10020,6 +10344,7 @@ index 2d06d7b7dda..067fc376849 100644
 +  virtual bool SyncWinUITabMenu(const nsAString& aSnapshot) { return false; }
 +
 +  virtual bool DrainWinUIRequests(nsAString& aBatch) { return false; }
++  virtual bool TransferWinUIStartup(const nsAString& aMessage, nsAString& aReply) { return false; }
 +  virtual bool CompleteWinUIRequests(const nsAString& aOutcomes) { return false; }
 +  virtual uint32_t ApplyWinUITabDelta(const nsAString& aDelta) { return 0; }
 +
@@ -10035,15 +10360,111 @@ index 2d06d7b7dda..067fc376849 100644
 +  }
 +
   protected:
+diff --git a/widget/windows/WinIMEHandler.cpp b/widget/windows/WinIMEHandler.cpp
+index 624b829193a..a0f40eed44e 100644
+--- a/widget/windows/WinIMEHandler.cpp
++++ b/widget/windows/WinIMEHandler.cpp
+@@ -5,2 +5,3 @@
+ #include "WinIMEHandler.h"
++#include "WinUIPageInput.h"
+ 
+@@ -43,2 +44,11 @@ namespace widget {
+ 
++namespace {
++bool HasIndependentInputOwner(nsWindow* window) {
++  HWND hwnd = window->GetWindowHandle();
++  // This property exists before Gecko attaches its message endpoint.
++  return GetPropW(hwnd, L"Fenn.NativeWindowHost") &&
++         GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId();
++}
++}
++
+ /******************************************************************************
+@@ -95,2 +105,3 @@ void* IMEHandler::GetNativeData(nsWindow* aWindow, uint32_t aDataType) {
+   if (aDataType == NS_RAW_NATIVE_IME_CONTEXT) {
++    if (GetPropW(aWindow->GetWindowHandle(), WINUI_PANE_ENDPOINT_PROPERTY)) return aWindow;
+     if (TSFUtils::IsAvailable()) {
+@@ -220,2 +231,5 @@ bool IMEHandler::IsComposing() {
+ bool IMEHandler::IsComposingOn(nsWindow* aWindow) {
++  if (GetPropW(aWindow->GetWindowHandle(), WINUI_PANE_ENDPOINT_PROPERTY)) {
++    return IndependentPageComposing(aWindow);
++  }
+   if (IsTSFAvailable()) {
+@@ -231,2 +245,3 @@ nsresult IMEHandler::NotifyIME(nsWindow* aWindow,
+                                const IMENotification& aIMENotification) {
++  if (NotifyIndependentPageIME(aWindow, aIMENotification)) return NS_OK;
+   if (IsTSFAvailable()) {
+@@ -385,2 +400,6 @@ bool IMEHandler::GetOpenState(nsWindow* aWindow) {
+ void IMEHandler::OnDestroyWindow(nsWindow* aWindow) {
++  if (HasIndependentInputOwner(aWindow)) {
++    ForgetIndependentPageIME(aWindow->GetWindowHandle());
++    return;
++  }
+   // When focus is in remote process, but the window is being destroyed, we
+@@ -429,2 +448,7 @@ void IMEHandler::SetInputContext(nsWindow* aWindow, InputContext& aInputContext,
+ 
++  // The native STA owns this HWND's TSF document and IMM association.
++  // nsWindow schedules the native publication after saving the new context.
++  if (HasIndependentInputOwner(aWindow)) {
++    return;
++  }
+   bool enable = WinUtils::IsIMEEnabled(aInputContext);
+@@ -500,2 +524,5 @@ void IMEHandler::InitInputContext(nsWindow* aWindow,
+   aInputContext.mIMEState.mEnabled = IMEEnabled::Enabled;
++  if (HasIndependentInputOwner(aWindow)) {
++    return;
++  }
+ 
+diff --git a/widget/windows/WinUtils.cpp b/widget/windows/WinUtils.cpp
+index 27b422c0dda..187fa13835e 100644
+--- a/widget/windows/WinUtils.cpp
++++ b/widget/windows/WinUtils.cpp
+@@ -364,10 +364,19 @@ bool WinUtils::PeekMessage(LPMSG aMsg, HWND aWnd, UINT aFirstMessage,
+                            UINT aLastMessage, UINT aOption) {
++  // The independent native HWND is owned by another thread. Its keyboard
++  // characters live on the Gecko endpoint queue, but NativeKey must see the
++  // original widget identity for following-char consumption and cancellation.
++  HWND endpoint = aWnd ? static_cast<HWND>(GetPropW(aWnd, L"Fenn.GeckoEndpoint")) : nullptr;
++  if (endpoint && GetWindowThreadProcessId(endpoint, nullptr) != GetCurrentThreadId())
++    endpoint = nullptr;
++  HWND target = endpoint ? endpoint : aWnd;
++  BOOL ret = FALSE;
+   if (const RefPtr<ITfMessagePump> msgPump = TSFUtils::GetMessagePump()) {
+-    BOOL ret = FALSE;
+-    HRESULT hr = msgPump->PeekMessageW(aMsg, aWnd, aFirstMessage, aLastMessage,
++    HRESULT hr = msgPump->PeekMessageW(aMsg, target, aFirstMessage, aLastMessage,
+                                        aOption, &ret);
+     NS_ENSURE_TRUE(SUCCEEDED(hr), false);
+-    return ret;
++  } else {
++    ret = ::PeekMessageW(aMsg, target, aFirstMessage, aLastMessage, aOption);
+   }
+-  return ::PeekMessageW(aMsg, aWnd, aFirstMessage, aLastMessage, aOption);
++  if (ret && endpoint && aMsg->hwnd == endpoint) aMsg->hwnd = aWnd;
++  return ret;
+ }
+@@ -2425,2 +2434,4 @@ ScopedRtlShimWindow::ScopedRtlShimWindow(nsIWidget* aParent) : mWnd(nullptr) {
+ 
++  // The parent may use Fenn's native class, registered by the pane module.
++  // A class atom still needs its registering module when creating this shim.
+   ATOM const wclass = ::GetClassWord(hwnd, GCW_ATOM);
+@@ -2429,3 +2440,5 @@ ScopedRtlShimWindow::ScopedRtlShimWindow(nsIWidget* aParent) : mWnd(nullptr) {
+       WS_CHILD, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+-      hwnd, nullptr, nsToolkit::mDllInstance, nullptr);
++      hwnd, nullptr,
++      reinterpret_cast<HINSTANCE>(::GetWindowLongPtrW(hwnd, GWLP_HINSTANCE)),
++      nullptr);
+ 
 diff --git a/widget/windows/moz.build b/widget/windows/moz.build
-index 29d86baad47..f8af28881f4 100644
+index 29d86baad47..2450201cd71 100644
 --- a/widget/windows/moz.build
 +++ b/widget/windows/moz.build
-@@ -147,2 +147,3 @@ SOURCES += [
+@@ -147,2 +147,4 @@ SOURCES += [
      "WindowsUIUtils.cpp",
++    "WinUIPageInput.cpp",
 +    "WinUIPrototype.cpp",
  ]
-@@ -222,21 +223,2 @@ SPHINX_TREES["/widget/windows"] = "docs"
+@@ -222,21 +224,2 @@ SPHINX_TREES["/widget/windows"] = "docs"
  
 -if CONFIG["MOZ_WINDOWSAPPSDK_DIR"]:
 -    # These are the few DLLs that Firefox needs instead of the
@@ -10066,44 +10487,181 @@ index 29d86baad47..f8af28881f4 100644
 -
  LICENSED_UNDER += ["chromium"]
 diff --git a/widget/windows/nsAppShell.cpp b/widget/windows/nsAppShell.cpp
-index f5d293a068d..46a84340817 100644
+index f5d293a068d..1c4562bd45f 100644
 --- a/widget/windows/nsAppShell.cpp
 +++ b/widget/windows/nsAppShell.cpp
-@@ -13,2 +13,3 @@
+@@ -5,2 +5,3 @@
+ #include "nsAppShell.h"
++#include "nsISupportsPrimitives.h"
+ 
+@@ -13,2 +14,3 @@
  #include "WinTaskbar.h"
 +#include "WinUIPrototype.h"
  #include "WinUtils.h"
-@@ -299,2 +300,3 @@ static Atomic<size_t, ReleaseAcquire> sOutstandingNativeEventCallbacks;
+@@ -299,2 +301,3 @@ static Atomic<size_t, ReleaseAcquire> sOutstandingNativeEventCallbacks;
  nsAppShell::~nsAppShell() {
 +  mozilla::widget::TraceWinUIPrototype("app-shell-destroy");
    hal::Shutdown();
-@@ -315,2 +317,6 @@ nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
+@@ -315,2 +318,13 @@ nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
                      const char16_t* aData) {
 +  if (!strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) {
 +    mozilla::widget::TraceWinUIPrototype("app-shell-xpcom-shutdown");
++    if (XRE_IsParentProcess()) {
++      nsCOMPtr<nsIObserverService> observers=mozilla::services::GetObserverService();
++      if (observers) {
++        observers->RemoveObserver(this,"fenn-native-startup-window");
++        observers->RemoveObserver(this,"fenn-native-startup-cancel");
++      }
++    }
 +    mozilla::widget::ShutdownWinUIPane();
 +  }
    if (XRE_IsParentProcess()) {
-@@ -578,2 +584,3 @@ nsresult nsAppShell::Init() {
+@@ -319,2 +333,12 @@ nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
+ 
++    if (!strcmp(aTopic,"fenn-native-startup-window")) {
++      nsCOMPtr<nsISupportsPRBool> prepared=do_QueryInterface(aSubject);
++      if (!prepared) return NS_ERROR_INVALID_ARG;
++      prepared->SetData(mozilla::widget::PrepareRoutedNativeStartupHost(aData));
++      return NS_OK;
++    }
++    if (!strcmp(aTopic,"fenn-native-startup-cancel")) {
++      mozilla::widget::CancelRoutedNativeStartupHost();
++      return NS_OK;
++    }
+     if (!strcmp(aTopic, "sessionstore-restoring-on-startup")) {
+@@ -578,2 +602,3 @@ nsresult nsAppShell::Init() {
    if (XRE_IsParentProcess()) {
 +    mozilla::widget::InitializeWinUIRuntime();
      LSPAnnotate();
-@@ -710,2 +717,5 @@ bool nsAppShell::ProcessNextNativeEvent(bool mayWait) {
+@@ -612,2 +637,4 @@ nsresult nsAppShell::Init() {
+     obsServ->AddObserver(this, "sessionstore-windows-restored", false);
++    obsServ->AddObserver(this,"fenn-native-startup-window",false);
++    obsServ->AddObserver(this,"fenn-native-startup-cancel",false);
+   }
+@@ -618,3 +645,8 @@ nsresult nsAppShell::Init() {
+ 
+-  return nsBaseAppShell::Init();
++  nsresult rv = nsBaseAppShell::Init();
++  if (NS_SUCCEEDED(rv) && XRE_IsParentProcess() &&
++      !mozilla::widget::ShowNativeStartupSurface()) {
++    return NS_ERROR_FAILURE;
++  }
++  return rv;
+ }
+@@ -710,2 +742,5 @@ bool nsAppShell::ProcessNextNativeEvent(bool mayWait) {
  
 +        if (mozilla::widget::TranslateWinUIPane(msg)) {
 +          continue;
 +        }
          if (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST &&
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index e505d3ce012..e34eae83be2 100644
+index e505d3ce012..8555b2362df 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
-@@ -81,2 +81,3 @@
+@@ -81,2 +81,4 @@
  #include "WinTaskbar.h"
 +#include "WinUIPrototype.h"
++#include "WinUIPageInput.h"
  #include "WinWindowOcclusionTracker.h"
-@@ -1261,2 +1262,47 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+@@ -99,2 +101,3 @@
+ #include "mozilla/PreXULSkeletonUI.h"
++#include "mozilla/FennStartupWindow.h"
+ #include "mozilla/Preferences.h"
+@@ -333,2 +336,9 @@ static SystemTimeConverter<DWORD>& TimeConverter() {
  
++// An owner/owned HWND relationship joins input queues even while hidden.
++// Hidden Gecko popups/dialogs must not couple the native shell to Gecko's queue.
++static bool IsIndependentNativeOwner(HWND aOwner) {
++  return mozilla::widget::IsNativeWindowHost(aOwner) &&
++         ::GetWindowThreadProcessId(aOwner, nullptr) != ::GetCurrentThreadId();
++}
++
+ static const wchar_t* GetMainWindowClass();
+@@ -1022,3 +1032,16 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+ 
++  if ((mWindowType == WindowType::Popup || mWindowType == WindowType::Dialog) &&
++      !(desiredStyles.style & WS_VISIBLE) && IsIndependentNativeOwner(parent)) {
++    // The widget's logical parent remains authoritative. Restore the Win32
++    // owner when actually showing the window, then release it after hiding.
++    parent = nullptr;
++  }
++
+   const wchar_t* className = ChooseWindowClass(mWindowType);
++  const bool nativeHost =
++      aInitData.mWindowType == WindowType::TopLevel && !aParent &&
++      ((mozilla::FennStartupWindowMode() &&
++        !mozilla::FennStartupWindowClaimed()) ||
++       Preferences::GetBool("fenn.winui.window.host",
++                            mozilla::FennDevelopmentNativeHostDefault()));
+ 
+@@ -1029,3 +1052,37 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+     sFirstTopLevelWindowCreated = true;
++    if(nativeHost) mozilla::widget::PrepareDefaultNativeStartupHost(nsToolkit::mDllInstance);
++    if (mozilla::FennStartupWindowMode()) {
++      mWnd = mozilla::TakeFennStartupWindow();
++      if (!mWnd) return NS_ERROR_ABORT;
++      if (!mozilla::widget::AdoptNativeStartupWindowHost(mWnd)) {
++        mozilla::RejectFennStartupWindow();
++        ::DestroyWindow(mWnd); mWnd = nullptr;
++        return NS_ERROR_FAILURE; // Never replace a failed native startup host.
++      }
++      // This HWND already presents the native loading UI. aRect is the
++      // provisional hidden-widget rectangle, not the restored browser bounds.
++      // Preserve visibility and geometry until normal browser sizing arrives.
++      if (::IsWindowVisible(mWnd)) desiredStyles.style |= WS_VISIBLE;
++      const bool startupMaximized = ::IsZoomed(mWnd);
++      if (startupMaximized) desiredStyles.style |= WS_MAXIMIZE;
++      ::SetWindowLongPtrW(mWnd, GWL_STYLE, desiredStyles.style);
++      ::SetWindowLongPtrW(mWnd, GWL_EXSTYLE, desiredStyles.ex);
++      if (!::SetWindowPos(mWnd, nullptr, 0, 0, 0, 0,
++                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
++                             SWP_NOZORDER | SWP_FRAMECHANGED)) {
++        mozilla::RejectFennStartupWindow();
++        mozilla::widget::DestroyNativeWindowHost(mWnd); mWnd = nullptr;
++        return NS_ERROR_FAILURE;
++      }
++      mBounds = mLastPaintBounds = GetBounds();
++      mIsVisible = ::IsWindowVisible(mWnd);
++      mHasBeenShown = mIsVisible;
++      mFrameState->ConsumeStartupWindowState(startupMaximized);
++    } else {
+     mWnd = ConsumePreXULSkeletonUIHandle();
++    if (mWnd && nativeHost) {
++      // A skeleton HWND cannot become a native-owned host by adoption.
++      ::DestroyWindow(mWnd);
++      mWnd = nullptr;
++    }
+     if (mWnd) {
+@@ -1047,3 +1104,3 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+       mIsCloaked = WinUtils::QueryCloaked(mWnd);
+-      mFrameState->ConsumePreXULSkeletonState(WasPreXULSkeletonUIMaximized());
++      mFrameState->ConsumeStartupWindowState(WasPreXULSkeletonUIMaximized());
+ 
+@@ -1060,4 +1117,16 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+     }
++    }
+   }
+ 
++  if (nativeHost && mozilla::FennStartupWindowMode() && !mozilla::FennStartupWindowClaimed())
++    return NS_ERROR_ABORT;
++
++  if (!mWnd) {
++    if (nativeHost) {
++      RECT bounds{aRect.X(), aRect.Y(), aRect.XMost(), aRect.YMost()};
++      mWnd = mozilla::widget::CreateNativeWindowHost(desiredStyles.ex, className,
++          desiredStyles.style, bounds, parent, nsToolkit::mDllInstance);
++      // Startup fallback occurs before exposing or attaching a partial host.
++    }
++  }
+   if (!mWnd) {
+@@ -1261,2 +1330,58 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+ 
++bool nsWindow::GetWinUIChromeLayout(uint32_t aStripHeight, bool aNavigation,
++                                   uint32_t aInset, nsTArray<LayoutDeviceIntRect>& aRects) {
++  if (mWindowType != WindowType::TopLevel || mDestroyCalled) return false;
++  return mozilla::widget::GetWinUIChromeLayout(mWnd, aStripHeight, aNavigation, aInset, aRects);
++}
++
 +bool nsWindow::SyncWinUIAddress(const nsAString& aSnapshot) {
 +  return mozilla::widget::SyncWinUIAddress(mWnd, aSnapshot);
 +}
@@ -10117,6 +10675,11 @@ index e505d3ce012..e34eae83be2 100644
 +
 +bool nsWindow::SyncWinUITabMenu(const nsAString& aSnapshot) {
 +  return mozilla::widget::SyncWinUITabMenu(mWnd, aSnapshot);
++}
++
++bool nsWindow::TransferWinUIStartup(const nsAString& aMessage, nsAString& aReply) {
++  if (mWindowType != WindowType::TopLevel || mDestroyCalled) return false;
++  return mozilla::widget::TransferWinUIStartup(mWnd, aMessage, aReply);
 +}
 +
 +bool nsWindow::DrainWinUIRequests(nsAString& aBatch) {
@@ -10150,42 +10713,188 @@ index e505d3ce012..e34eae83be2 100644
 +}
 +
  void nsWindow::LocalesChanged() {
-@@ -1285,2 +1331,3 @@ void nsWindow::Destroy() {
+@@ -1285,2 +1410,3 @@ void nsWindow::Destroy() {
  
 +  mozilla::widget::DestroyWinUIPane(mWnd);
    DestroyDirectManipulation();
-@@ -5639,3 +5686,4 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -1308,3 +1434,4 @@ void nsWindow::Destroy() {
+   // owned windows, and then it destroys the parent or owner window.
+-  VERIFY(::DestroyWindow(mWnd));
++  VERIFY(mozilla::widget::IsNativeWindowHost(mWnd)
++      ? mozilla::widget::DestroyNativeWindowHost(mWnd) : !!::DestroyWindow(mWnd));
+ 
+@@ -1493,3 +1620,5 @@ DWORD nsWindow::WindowExStyle() {
+ bool nsWindow::ShouldAssociateWithWinAppSDK() const {
+-  return IsTopLevelWidget();
++  // AppWindow and its caption input source belong to the HWND's owner thread.
++  // The independent pane associates and controls its own native windows.
++  return IsTopLevelWidget() && !IsIndependentNativeOwner(mWnd);
+ }
+@@ -1516,2 +1645,13 @@ bool nsWindow::AssociateWithNativeWindow() {
+ 
++  if (mozilla::widget::IsNativeWindowHost(mWnd)) {
++    WNDPROC fallback = nullptr;
++    if (!mozilla::widget::AttachNativeWindowHost(mWnd, reinterpret_cast<uintptr_t>(this),
++          nsWindow::WindowProc, &fallback)) {
++      WinUtils::SetNSWindowPtr(mWnd, nullptr);
++      return false;
++    }
++    mPrevWndProc.emplace(fallback);
++    return true;
++  }
++
+   ::SetLastError(ERROR_SUCCESS);
+@@ -1534,2 +1674,9 @@ void nsWindow::DissociateFromNativeWindow() {
+ 
++  if (mozilla::widget::IsNativeWindowHost(mWnd)) {
++    MOZ_RELEASE_ASSERT(mozilla::widget::DetachNativeWindowHost(mWnd));
++    WinUtils::SetNSWindowPtr(mWnd, nullptr);
++    mPrevWndProc.reset();
++    return;
++  }
++
+   DebugOnly<WNDPROC> wndProcBeforeDissociate =
+@@ -1545,2 +1692,6 @@ void nsWindow::DissociateFromNativeWindow() {
+ void nsWindow::DidClearParent(nsIWidget*) {
++  if ((mWindowType == WindowType::Popup || mWindowType == WindowType::Dialog) &&
++      mWnd && IsIndependentNativeOwner(::GetWindow(mWnd, GW_OWNER))) {
++    ::SetWindowLongPtrW(mWnd, GWLP_HWNDPARENT, 0);
++  }
+   if (mWindowType == WindowType::Popup || !mWnd) {
+@@ -1629,2 +1780,13 @@ nsWindow* nsWindow::GetParentWindowBase(bool aIncludeOwner) {
+ void nsWindow::Show(bool aState) {
++  // Retire the loading island when the browser first requests presentation.
++  // The original native top-level HWND survives this transition.
++  const bool nativeLoading = ::GetPropW(mWnd, L"Fenn.NativeStartupSurface") ||
++      (::GetPropW(mWnd, L"Fenn.InteractiveStartup") && !::GetPropW(mWnd, L"Fenn.InteractiveStartupBound"));
++  // Hidden-widget setup must not hide the already-visible startup shell.
++  // Once its loading surface is retired, ordinary hide/show behavior resumes.
++  if (!aState && nativeLoading) return;
++  if (aState) {
++    if (nativeLoading) AsyncUpdateWorkspaceID();
++    mozilla::widget::DismissNativeStartupSurface(mWnd);
++  }
+   if (aState && mIsShowingPreXULSkeletonUI) {
+@@ -1661,2 +1823,19 @@ void nsWindow::Show(bool aState) {
+ 
++  HWND independentTransientOwner = nullptr;
++  if ((mWindowType == WindowType::Popup || mWindowType == WindowType::Dialog) &&
++      GetParent()) {
++    HWND owner = static_cast<HWND>(GetParent()->GetNativeData(NS_NATIVE_WINDOW));
++    if (IsIndependentNativeOwner(owner)) independentTransientOwner = owner;
++  }
++  if (aState && mWnd && independentTransientOwner &&
++      ::GetWindow(mWnd, GW_OWNER) != independentTransientOwner) {
++    ::SetLastError(ERROR_SUCCESS);
++    if (!::SetWindowLongPtrW(mWnd, GWLP_HWNDPARENT,
++                            reinterpret_cast<LONG_PTR>(independentTransientOwner)) &&
++        ::GetLastError() != ERROR_SUCCESS) {
++      NS_WARNING("Failed to restore native transient window owner");
++      return;
++    }
++  }
++
+   bool syncInvalidate = false;
+@@ -1823,2 +2002,13 @@ void nsWindow::Show(bool aState) {
+       }
++      if (independentTransientOwner) {
++        // Hide with the original owner, then detach before restoring native
++        // focus. A hidden dialog must not keep the queues attached while
++        // AppWindow::Destroy waits for native work. Firefox retains its
++        // logical parent and owns modality and parent focus restoration.
++        ::SetLastError(ERROR_SUCCESS);
++        if (!::SetWindowLongPtrW(mWnd, GWLP_HWNDPARENT, 0) &&
++            ::GetLastError() != ERROR_SUCCESS) {
++          NS_WARNING("Failed to release hidden native transient window owner");
++        }
++      }
+     }
+@@ -1989,3 +2179,3 @@ void nsWindow::Move(const DesktopPoint& aTopLeft) {
+   // screen space coordinates we normally use with SetWindowPos.
+-  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
++  if (IsShowingMaximizedStartupWindow()) {
+     WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
+@@ -2073,3 +2263,3 @@ void nsWindow::Resize(const DesktopSize& aSize, bool aRepaint) {
+   // Refer to the comment above a similar check in nsWindow::Move
+-  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
++  if (IsShowingMaximizedStartupWindow()) {
+     WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
+@@ -2136,3 +2326,3 @@ void nsWindow::Resize(const DesktopRect& aRect, bool aRepaint) {
+   // Refer to the comment above a similar check in nsWindow::Move
+-  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
++  if (IsShowingMaximizedStartupWindow()) {
+     WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
+@@ -2208,2 +2398,8 @@ static UINT GetCurrentShowCmd(HWND aWnd) {
+ 
++bool nsWindow::IsShowingMaximizedStartupWindow() const {
++  return (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) ||
++         (::GetPropW(mWnd, L"Fenn.NativeStartupSurface") &&
++          ::GetPropW(mWnd, L"Fenn.NativeStartupMaximized"));
++}
++
+ // Maximize, minimize or restore the window.
+@@ -2214,3 +2410,3 @@ void nsWindow::SetSizeMode(nsSizeMode aMode) {
+   // technically displayed), we will again accept sizemode changes.
+-  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
++  if (IsShowingMaximizedStartupWindow()) {
+     return;
+@@ -2448,3 +2644,5 @@ void nsWindow::SetFocus(Raise aRaise, mozilla::dom::CallerType aCallerType) {
+   }
+-  ::SetFocus(mWnd);
++  if (!mozilla::widget::FocusIndependentWindowHost(mWnd)) {
++    ::SetFocus(mWnd);
++  }
+ }
+@@ -4057,3 +4255,4 @@ BOOL CALLBACK nsWindow::DispatchStarvedPaints(HWND aWnd, LPARAM aMsg) {
+   LONG_PTR proc = ::GetWindowLongPtrW(aWnd, GWLP_WNDPROC);
+-  if (proc == (LONG_PTR)&nsWindow::WindowProc) {
++  if (proc == (LONG_PTR)&nsWindow::WindowProc ||
++      (mozilla::widget::IsNativeWindowHost(aWnd) && WinUtils::GetNSWindowPtr(aWnd))) {
+     // its one of our windows so check to see if it has a
+@@ -5639,3 +5838,4 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
  
 -      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient) {
 +      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient &&
 +          !mozilla::widget::HasWinUISystemCaption(mWnd)) {
          DispatchMouseEvent(eMouseDown, wParamFromGlobalMouseState(),
-@@ -5650,3 +5698,5 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5650,3 +5850,5 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
      case WM_NCLBUTTONUP: {
 -      if (mCustomNonClient) {
 +      // The native strip uses SDK-drawn caption controls. Forward their
 +      // original input to the previous (App SDK) window proc, not DOM chrome.
 +      if (mCustomNonClient && !mozilla::widget::HasWinUISystemCaption(mWnd)) {
          result = DispatchMouseEvent(eMouseUp, wParamFromGlobalMouseState(),
-@@ -6945,2 +6995,6 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+@@ -6945,2 +7147,6 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
  void nsWindow::OnDestroy() {
 +  mozilla::widget::DestroyWinUIPane(mWnd);
 +  if (mWindowType == WindowType::TopLevel) {
 +    mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
 +  }
    mOnDestroyCalled = true;
+@@ -7210,2 +7416,3 @@ void nsWindow::SetInputContext(const InputContext& aContext,
+   mInputContext = newInputContext;
++  mozilla::widget::RefreshIndependentPageIME(mWnd);
+ }
+@@ -8935,3 +9142,3 @@ void nsWindow::FrameState::CheckInvariant() const {
+ 
+-void nsWindow::FrameState::ConsumePreXULSkeletonState(bool aWasMaximized) {
++void nsWindow::FrameState::ConsumeStartupWindowState(bool aWasMaximized) {
+   mSizeMode = aWasMaximized ? nsSizeMode_Maximized : nsSizeMode_Normal;
 diff --git a/widget/windows/nsWindow.h b/widget/windows/nsWindow.h
-index 1e2660589bd..5ae3ab48433 100644
+index 1e2660589bd..8dfb1abc0ec 100644
 --- a/widget/windows/nsWindow.h
 +++ b/widget/windows/nsWindow.h
-@@ -141,2 +141,19 @@ class nsWindow final : public nsIWidget {
+@@ -141,2 +141,22 @@ class nsWindow final : public nsIWidget {
  
++  bool GetWinUIChromeLayout(uint32_t aStripHeight, bool aNavigation, uint32_t aInset,
++                           nsTArray<LayoutDeviceIntRect>& aRects) override;
 +  bool SyncWinUIAddress(const nsAString& aSnapshot) override;
 +  bool UpdateWinUIAddress(const LayoutDeviceIntRect& aRect,
 +                         bool aVisible, bool aFocus, bool aSelectAll) override;
 +  bool SyncWinUITabMenu(const nsAString& aSnapshot) override;
 +
 +  bool DrainWinUIRequests(nsAString& aBatch) override;
++  bool TransferWinUIStartup(const nsAString& aMessage, nsAString& aReply) override;
 +  bool CompleteWinUIRequests(const nsAString& aOutcomes) override;
 +  uint32_t ApplyWinUITabDelta(const nsAString& aDelta) override;
 +
@@ -10198,6 +10907,1100 @@ index 1e2660589bd..5ae3ab48433 100644
 +      const nsTArray<LayoutDeviceIntRect>& aOcclusions) override;
 +
    void SendAnAPZEvent(mozilla::InputData& aEvent);
+@@ -471,3 +491,3 @@ class nsWindow final : public nsIWidget {
+ 
+-    void ConsumePreXULSkeletonState(bool aWasMaximized);
++    void ConsumeStartupWindowState(bool aWasMaximized);
+ 
+@@ -779,2 +799,3 @@ class nsWindow final : public nsIWidget {
+   bool mIsEarlyBlankWindow = false;
++  bool IsShowingMaximizedStartupWindow() const;
+   bool mIsShowingPreXULSkeletonUI = false;
+diff --git a/browser/base/content/WinUIAutomaticStartup.sys.mjs b/browser/base/content/WinUIAutomaticStartup.sys.mjs
+new file mode 100644
+index 00000000000..9e20e3ca163
+--- /dev/null
++++ b/browser/base/content/WinUIAutomaticStartup.sys.mjs
+@@ -0,0 +1,209 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++const READY = "winui-startup-chrome-ready";
++export const STARTUP_CHROME_CSS = `@-moz-document url("chrome://browser/content/browser.xhtml") {
++  :root:not([${READY}]) #navigator-toolbox {
++    opacity: 0 !important;
++    pointer-events: none !important;
++  }
++}`;
++export function automaticStartupRequested() {
++  return Services.env.get("FENN_NATIVE_INTERACTIVE_STARTUP") === "1";
++}
++
++// Called by BrowserGlue before opening a browser document, including before its
++// first paint. Opacity preserves the retained controllers' layout/visibility
++// queries. It does not affect the independent native HWNDs above that document.
++export function registerStartupChromeGate() {
++  if (!automaticStartupRequested()) return;
++  const sheets = Cc["@mozilla.org/content/style-sheet-service;1"].getService(Ci.nsIStyleSheetService);
++  const uri = Services.io.newURI("data:text/css;charset=utf-8," + encodeURIComponent(STARTUP_CHROME_CSS));
++  if (!sheets.sheetRegistered(uri, sheets.USER_SHEET)) sheets.loadAndRegisterSheet(uri, sheets.USER_SHEET);
++}
++
++const STARTUP_PREFS = ["sidebar.verticalTabs", "fenn.winui.tabstrip.replaceFirefoxTabs",
++  "fenn.winui.navigation.toolbar.enabled", "fenn.winui.address.private"];
++
++export function unsupportedStartupLayout(window) {
++  const pref = (key, fallback) => Services.prefs.getBoolPref(key, fallback);
++  if (pref(STARTUP_PREFS[0], false)) return "vertical-tabs";
++  if (!pref(STARTUP_PREFS[1], true)) return "retained-tabs";
++  if (!pref(STARTUP_PREFS[2], true)) return "retained-navigation";
++  if (window.gWinUIPane.addressAvailable?.() === false) return "private-address";
++  if (window.fullScreen || window.document.fullscreenElement) return "fullscreen";
++  if (window.document.documentElement.hasAttribute("customizing")) return "customizing";
++  if (window.gWinUIPane.hasUnreplacedTabControls?.()) return "unrepresented-tab-controls";
++  return null;
++}
++
++const RECOVERY_PREFS = {
++  "vertical-tabs": ["sidebar.verticalTabs", false],
++  "retained-tabs": ["fenn.winui.tabstrip.replaceFirefoxTabs", true],
++  "retained-navigation": ["fenn.winui.navigation.toolbar.enabled", true],
++};
++function recoveryPreference(reason) {
++  const setting = RECOVERY_PREFS[reason];
++  return setting && !Services.prefs.prefIsLocked(setting[0]) ? setting : null;
++}
++
++export function recoverAutomaticStartup(window, action) {
++  const state = window.gWinUIPane.automaticStartup;
++  if (action?.kind !== "startup-recovery" || state?.phase !== "blocked" ||
++      action.session !== state.session || action.revision !== String(state.presentationRevision) ||
++      state.reason !== unsupportedStartupLayout(window)) return 2;
++  const setting = recoveryPreference(state.reason);
++  if (!setting) return 2;
++  Services.prefs.setBoolPref(...setting);
++  advanceAutomaticStartup(window);
++  return 1;
++}
++
++// One active write and one latest pending value, shared across browser windows.
++// Only Firefox-resolved presentation strings enter this profile-local cache.
++let cacheKey = "", pendingCache = null, cacheWriting = false;
++export async function cacheStartupLabels(labels, locale, io, paths, rtl = false) {
++  const data = {version:2, locale, rtl, labels};
++  const key = JSON.stringify(data);
++  if (cacheKey === key) return;
++  cacheKey = key; pendingCache = data;
++  if (cacheWriting) return;
++  cacheWriting = true;
++  try {
++    const path = paths.join(paths.profileDir, "fenn-startup-labels.json");
++    while (pendingCache) {
++      const next = pendingCache; pendingCache = null;
++      await io.writeJSON(path, next, {tmpPath:path + ".tmp"});
++    }
++  } catch (error) { cacheKey = ""; pendingCache = null; throw error; }
++  finally { cacheWriting = false; }
++}
++
++function labelsFromLocalization(l10n) {
++  return Object.fromEntries([
++    ["newTab", "new-tab"], ["pending", "pending"], ["full", "full"],
++    ["composition", "composition"], ["address", "address"], ["unavailable", "unavailable"],
++    ["recovery", "recovery"], ["recoveryAction", "recovery-action"],
++  ].map(([key, suffix]) => [key, l10n.formatValueSync(`winui-startup-${suffix}`)]));
++}
++function startupLabels(pane) {
++  return labelsFromLocalization(pane.localization());
++}
++
++// Routing has resolved the profile, but no browser document or native controls
++// exist yet. Use Firefox's negotiated Fluent resources and direction directly.
++export function prepareStartupPresentation() {
++  const l10n = new Localization(["branding/brand.ftl", "browser/tabbrowser.ftl"], true);
++  const labels = labelsFromLocalization(l10n);
++  for (const value of Object.values(labels)) {
++    if (typeof value !== "string" || !value.length || value.length > 1024 || value.includes("\0")) {
++      throw new Error("Invalid initial native startup label");
++    }
++  }
++  return JSON.stringify({version:2, locale:Services.locale.appLocaleAsBCP47,
++    rtl:Services.locale.isAppLocaleRTL, labels});
++}
++function persistStartupLabels(state, labels) {
++  if (typeof IOUtils !== "undefined") {
++    cacheStartupLabels(labels, Services.locale.appLocaleAsBCP47, IOUtils, PathUtils, Services.locale.isAppLocaleRTL)
++      .catch(error => { state.cacheError = String(error); });
++  }
++}
++function publishStartupPresentation(window) {
++  const pane = window.gWinUIPane, state = pane.automaticStartup;
++  const labels = startupLabels(pane);
++  persistStartupLabels(state, labels);
++  const body = { ...labels, rtl: Services.locale.isAppLocaleRTL,
++    blocked: !!state.reason, recoverable: !!recoveryPreference(state.reason) };
++  const key = JSON.stringify(body);
++  if (state.presentationKey === key) return;
++  const revision = (state.presentationRevision || 0) + 1;
++  window.windowUtils.transferWinUIStartup(JSON.stringify({version: 1, operation: 19,
++    session: state.session, revision: String(revision), ...body}));
++  delete state.presentationError;
++  state.presentationKey = key;
++  state.presentationRevision = revision;
++}
++
++export function beginAutomaticStartup(window) {
++  if (!automaticStartupRequested()) return;
++  const pane = window.gWinUIPane;
++  if (pane.automaticStartup) return;
++  const root = window.document.documentElement;
++  const state = pane.automaticStartup = { phase: "probing" };
++  let probe;
++  try {
++    probe = JSON.parse(window.windowUtils.transferWinUIStartup(JSON.stringify({ version: 1, operation: 15 })));
++  } catch { /* A window without an early native presenter uses normal fallback. */ }
++  if (!probe?.early) {
++    state.phase = "fallback";
++    root.setAttribute(READY, "fallback");
++    return;
++  }
++  state.session = probe.session;
++  state.initialOpacity = window.getComputedStyle(window.document.getElementById("navigator-toolbox")).opacity;
++  state.phase = "waiting";
++  try { publishStartupPresentation(window); }
++  catch (error) { state.presentationError = String(error); }
++  const changed = () => advanceAutomaticStartup(window);
++  const localeChanged = () => {
++    persistStartupLabels(state, startupLabels(pane));
++    changed();
++  };
++  Services.obs.addObserver(localeChanged, "intl:app-locales-changed");
++  for (const pref of STARTUP_PREFS) Services.prefs.addObserver(pref, changed);
++  window.addEventListener("fullscreen", changed);
++  window.addEventListener("unload", () => {
++    for (const pref of STARTUP_PREFS) Services.prefs.removeObserver(pref, changed);
++    window.removeEventListener("fullscreen", changed);
++    Services.obs.removeObserver(localeChanged, "intl:app-locales-changed");
++  }, { once: true });
++  if (!window.gBrowserInit.delayedStartupFinished) {
++    const ready = subject => {
++      if (subject !== window) return;
++      Services.obs.removeObserver(ready, "browser-delayed-startup-finished");
++      state.browserReady = true;
++      advanceAutomaticStartup(window);
++    };
++    Services.obs.addObserver(ready, "browser-delayed-startup-finished");
++    window.addEventListener("unload", () => {
++      if (!state.browserReady) Services.obs.removeObserver(ready, "browser-delayed-startup-finished");
++    }, { once: true });
++  } else state.browserReady = true;
++  advanceAutomaticStartup(window);
++}
++
++export function advanceAutomaticStartup(window) {
++  const pane = window.gWinUIPane, state = pane.automaticStartup;
++  if (!["waiting", "blocked"].includes(state?.phase) || !state.browserReady) return;
++  state.reason = unsupportedStartupLayout(window);
++  state.phase = state.reason ? "blocked" : "waiting";
++  try { publishStartupPresentation(window); }
++  catch (error) { state.presentationError = String(error); }
++  if (state.reason) return;
++  const root = window.document.documentElement;
++  if (!pane.attached || !pane.nativeRevision || !pane.addressSession ||
++      !pane.addressToolbar?.active || !pane.addressToolbar.navigation ||
++      !root.hasAttribute("winui-replaces-tabs") || !root.hasAttribute("winui-hides-nav-bar")) return;
++  // Mark before calling the adapter: publishing rows can reenter this path.
++  state.phase = "connecting";
++  try {
++    const { connectFirefoxStartup } = ChromeUtils.importESModule("chrome://browser/content/WinUIStartupTransfer.sys.mjs");
++    // The token names this native endpoint. The adapter separately captures and
++    // revalidates the resolved Firefox profile, privacy context and window.
++    const connection = connectFirefoxStartup(window, state.session, state.session);
++    connection.attachPresenter();
++    connection.enableNormalTabs();
++    if (connection.stopped) throw new Error("Automatic startup binding was lost");
++    connection.send(16);
++    state.phase = "connected";
++    state.connection = connection;
++    root.setAttribute(READY, "native");
++  } catch (error) {
++    // Never retry an uncertain browser side effect or discard the local editor.
++    state.phase = "failed";
++    state.error = String(error);
++    console.error("Native startup connection failed", error);
++  }
++}
+diff --git a/browser/base/content/WinUIStartupTransfer.sys.mjs b/browser/base/content/WinUIStartupTransfer.sys.mjs
+new file mode 100644
+index 00000000000..9cc2c6236ee
+--- /dev/null
++++ b/browser/base/content/WinUIStartupTransfer.sys.mjs
+@@ -0,0 +1,425 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++const id = value => typeof value === "string" && /^[1-9][0-9]{0,19}$/.test(value) &&
++  BigInt(value) <= 18446744073709551615n;
++
++// Commands, not publications: one pending execution and one retained receipt.
++// U64 identities stay decimal strings across JSON; never round through Number.
++export class WinUIStartupTransfer {
++  constructor(identity, backend) {
++    if (![identity?.context, identity?.session, identity?.generation].every(id)) {
++      throw new TypeError("Invalid startup identity");
++    }
++    this.identity = Object.freeze({ context: identity.context, session: identity.session, generation: identity.generation });
++    this.backend = backend;
++    this.mappings = new Map();
++    this.highWatermark = 0n;
++    this.latest = null;
++    this.closed = false;
++  }
++
++  disconnect() { this.closed = true; }
++
++  current() {
++    try { return !this.closed && this.backend.current(); }
++    catch { this.disconnect(); return false; }
++  }
++
++  execute(input) {
++    const reject = reason => Promise.resolve(Object.freeze({ terminal: false, accepted: false, reason }));
++    if (!this.current()) { this.disconnect(); return reject("disconnected"); }
++    if (!input || ![input.context, input.session, input.generation, input.request, input.draft].every(id) ||
++        ![1, 2, 3, 4, 5, 6].includes(input.kind) ||
++        Object.keys(this.identity).some(key => input[key] !== this.identity[key]) ||
++        (input.kind === 6 && (typeof input.text !== "string" || input.text.length > 32768 ||
++          ![0, 1].includes(input.modifiers) || !Number.isInteger(input.selectionStart) ||
++          !Number.isInteger(input.selectionLength) || input.selectionStart < 0 || input.selectionLength < 0 ||
++          input.selectionStart + input.selectionLength > input.text.length)) ||
++        (input.kind !== 1 && !id(input.browser)) ||
++        (input.kind === 2 && (typeof input.text !== "string" || !input.text.length || input.text.length > 32768 ||
++          !Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 7))) {
++      return reject("invalid-envelope");
++    }
++    // Copy only validated fields before yielding. Later caller mutation cannot
++    // rewrite a request already admitted for execution.
++    const command = Object.freeze({ ...this.identity, request: input.request, draft: input.draft,
++      kind: input.kind, browser: input.kind === 1 ? "0" : input.browser,
++      text: [2, 6].includes(input.kind) ? input.text : "", modifiers: [2, 6].includes(input.kind) ? input.modifiers : 0,
++      selectionStart: input.kind === 6 ? input.selectionStart : 0,
++      selectionLength: input.kind === 6 ? input.selectionLength : 0 });
++    const fingerprint = JSON.stringify(command);
++    if (this.latest?.command.request === command.request) {
++      return this.latest.fingerprint === fingerprint ? this.latest.promise : reject("conflicting-replay");
++    }
++    if (BigInt(command.request) <= this.highWatermark) return reject("stale-request");
++    if (this.latest && !this.latest.done) return reject("busy");
++    this.highWatermark = BigInt(command.request);
++    const entry = { command, fingerprint, done: false };
++    this.latest = entry;
++    entry.promise = Promise.resolve().then(async () => {
++      const current = () => this.current();
++      let browser = command.browser;
++      let accepted = false;
++      let uncertain = false;
++      try {
++        if (!current()) { this.disconnect(); return Object.freeze({ ...this.identity,
++          request: command.request, draft: command.draft, browser, terminal: false, accepted: false, reason: "disconnected" }); }
++        if (command.kind === 1) {
++          if (!this.mappings.has(command.draft) && this.mappings.size < 32) {
++            const created = await this.backend.create();
++            if (created !== null) {
++              browser = String(created);
++              if (!id(browser) || [...this.mappings.values()].includes(browser)) throw new Error("Invalid created tab identity");
++              this.mappings.set(command.draft, browser);
++              accepted = true;
++            }
++          }
++        } else if (command.kind === 4 || command.kind === 5) {
++          if (this.mappings.has(command.draft) &&
++              (command.kind === 4 ? ![...this.mappings.values()].includes(browser) : this.mappings.get(command.draft) === browser)) {
++            accepted = await this.backend.select(browser);
++            if (accepted && !this.backend.selected(browser)) throw new Error("Startup selection superseded");
++          }
++        } else if (this.mappings.get(command.draft) === browser) {
++          if (command.kind === 6) {
++            accepted = await this.backend.adopt(browser, command.text, command.selectionStart,
++              command.selectionLength, !!command.modifiers, current);
++          } else if (command.kind === 2) {
++            accepted = await this.backend.submit(browser, command.text, command.modifiers, current);
++          } else {
++            accepted = await this.backend.close(browser);
++            if (accepted) this.mappings.delete(command.draft);
++          }
++        }
++        if (!current()) { accepted = false; uncertain = true; }
++      } catch {
++        // A controller may have changed browser state before throwing. Freeze
++        // the connection rather than retry or claim a safe terminal rejection.
++        accepted = false; uncertain = true;
++      } finally {
++        entry.done = true;
++      }
++      if (uncertain) this.disconnect();
++      return Object.freeze({ ...this.identity, request: command.request, draft: command.draft,
++        browser, terminal: !uncertain, accepted: !!accepted, uncertain,
++        reason: accepted ? "completed" : uncertain ? "uncertain" : this.backend.reason?.() || "rejected" });
++    });
++    return entry.promise;
++  }
++}
++
++// Browser identity publication only. No session-file parsing or tab adoption.
++export class WinUIStartupRowsPublisher {
++  constructor(identity, send, capture) {
++    this.identity = identity;
++    this.send = send;
++    this.capture = capture;
++    this.revision = 0n;
++    this.fingerprint = null;
++    this.rows = [];
++  }
++
++  publish(force = false) {
++    const snapshot = this.capture();
++    if (!snapshot) return this.rows; // Transient selection during tab teardown.
++    const { ids, selected } = snapshot;
++    if (!Array.isArray(ids) || ids.length > 4096 || !ids.every(id) ||
++        new Set(ids).size !== ids.length ||
++        (ids.length ? !ids.includes(selected) : selected !== "0")) throw new Error("Invalid browser rows");
++    const fingerprint = JSON.stringify([ids, selected]);
++    if (!force && fingerprint === this.fingerprint) return this.rows;
++    const revision = fingerprint === this.fingerprint ? this.revision : this.revision + 1n;
++    if (revision > 18446744073709551615n) throw new Error("Startup row revision exhausted");
++    const result = this.send(11, { revision: String(revision), ids, selected });
++    if (Object.keys(this.identity).some(key => result[key] !== this.identity[key]) ||
++        !Array.isArray(result.rows) || result.rows.length > 4128) throw new Error("Invalid row projection");
++    const seen = new Set();
++    for (const row of result.rows) {
++      if (!Array.isArray(row) || row.length !== 4 || !Number.isInteger(row[0]) || row[0] <= 0 ||
++          row[0] > 4294967295 || seen.has(row[0]) ||
++          !(row[1] === "0" || id(row[1])) || !(row[2] === "0" || id(row[2])) ||
++          (row[1] === "0" && row[2] === "0") || typeof row[3] !== "boolean")
++        throw new Error("Invalid row identity");
++      seen.add(row[0]);
++    }
++    this.revision = revision;
++    this.fingerprint = fingerprint;
++    this.rows = result.rows;
++    return this.rows;
++  }
++}
++
++// One lease, one execution, one terminal acknowledgment. A wake is a hint, not
++// permission to replay an in-flight command. Failure freezes automatic draining.
++export class WinUIStartupConnection {
++  constructor(identity, consumer, transport, schedule = callback => setTimeout(callback, 0)) {
++    this.identity = Object.freeze({ ...identity });
++    this.consumer = consumer;
++    this.transport = transport;
++    this.schedule = schedule;
++    this.running = null;
++    this.again = false;
++    this.stopped = false;
++    this.lastOutcome = null;
++  }
++
++  send(operation, fields = {}) {
++    return this.transport({ version: 1, ...this.identity, operation, ...fields });
++  }
++
++  disconnect() {
++    if (this.stopped) return;
++    this.stopped = true;
++    this.onDisconnect?.();
++    this.consumer.disconnect();
++    try { this.send(7); } catch { /* Endpoint teardown is already terminal. */ }
++  }
++
++  wake() {
++    if (this.stopped) return Promise.resolve();
++    if (this.running) { this.again = true; return this.running; }
++    this.running = Promise.resolve().then(async () => {
++      try {
++        for (let count = 0; count < 16 && !this.stopped; count++) {
++          this.again = false;
++          const command = this.send(8);
++          if (command.lost || Object.keys(this.identity).some(key => command[key] !== this.identity[key]))
++            throw new Error("Startup lease identity changed");
++          if (!command.kind) { this.publishRows?.(true); return; }
++          const outcome = await this.consumer.execute(command);
++          this.lastOutcome = outcome;
++          if (this.stopped) return;
++          if (!outcome.terminal || outcome.uncertain ||
++              ["context", "session", "generation", "request", "draft"].some(key => outcome[key] !== command[key])) {
++            this.disconnect(); return;
++          }
++          const acknowledged = this.send(6, { request: outcome.request, browser: outcome.browser, accepted: outcome.accepted });
++          // Only an acknowledged background adoption retires this mapping.
++          // A locally closed draft still needs it for the explicit Close command.
++          if (command.kind === 6 && outcome.accepted && acknowledged.mappings < command.mappings)
++            this.consumer.mappings.delete(command.draft);
++          this.publishRows?.(true);
++          if (!outcome.accepted) {
++            this.again = false;
++            if (command.kind !== 4 && command.kind !== 5 && command.kind !== 6) this.disconnect();
++            return;
++          }
++        }
++        this.again = !this.stopped;
++      } catch (error) {
++        this.lastOutcome = { terminal: false, accepted: false, uncertain: true, reason: "transport-failed" };
++        this.disconnect();
++      }
++    }).finally(() => {
++      this.running = null;
++      if (this.again && !this.stopped) this.schedule(() => this.wake());
++    });
++    return this.running;
++  }
++}
++
++// Explicit integration entry; normal startup does not call this until restore
++// and same-control presentation reconciliation are installed. The trusted caller
++// supplies the context token only after resolving the profile/privacy binding.
++export function connectFirefoxStartup(window, context, generation) {
++  if (!id(context) || !id(generation)) throw new TypeError("Invalid startup binding");
++  const pane = window.gWinUIPane;
++  if (!pane || pane.startupConnection) throw new Error("Startup connection already active or unavailable");
++  const transport = message => JSON.parse(window.windowUtils.transferWinUIStartup(JSON.stringify(message)));
++  const prepared = transport({ version: 1, operation: 1, context });
++  const identity = { context, session: prepared.session, generation };
++  let connection;
++  try {
++    const consumer = createFirefoxStartupTransfer(window, identity);
++    connection = new WinUIStartupConnection(identity, consumer, transport,
++      callback => Services.tm.dispatchToMainThread(callback));
++    connection.onDisconnect = () => {
++      if (pane.startupConnection === connection) pane.startupConnection = null;
++    };
++    pane.startupConnection = connection;
++    transport({ version: 1, operation: 2, ...identity });
++    const publisher = new WinUIStartupRowsPublisher(identity,
++      (operation, fields) => connection.send(operation, fields), () => {
++        if (!consumer.current()) throw new Error("Startup browser context lost");
++        const tabs = pane.visibleTabs();
++        const ids = tabs.map(tab => {
++          if (!pane.tabIds.has(tab)) pane.tabIds.set(tab, pane.nextTabId++);
++          return String(pane.tabIds.get(tab));
++        });
++        const selected = String(pane.tabIds.get(window.gBrowser.selectedTab) || 0);
++        return ids.length && !ids.includes(selected) ? null : { ids, selected: ids.length ? selected : "0" };
++      });
++    connection.publishRows = force => {
++      if (connection.stopped) return;
++      try {
++        connection.rows = publisher.publish(force);
++        if (connection.presentationActive) {
++          let state = connection.send(0);
++          if ((state.editorBrowser || "0") === "0" && !state.kind && !state.lost) {
++            state = connection.send(14, { browser: String(pane.tabIds.get(window.gBrowser.selectedTab) || 0) });
++            connection.rows = publisher.publish(true);
++          }
++          const selected = connection.rows.find(row => row[3]);
++          if (!connection.rows.some(row => row[1] !== "0") && (state.editorBrowser || "0") === "0" &&
++              selected && !state.kind && !state.mappings && !state.lost) {
++            state = connection.send(13, { browser: selected[2] });
++          }
++          if (state.adoptionReady && !state.kind) {
++            pane.addressPublication = null;
++            pane.syncAddress();
++            state = connection.send(0);
++          }
++          const target = state.editorBrowser || "0";
++          connection.editorReady = target !== "0";
++          if (target !== connection.editorTarget) {
++            connection.editorTarget = target;
++            pane.addressPublication = null;
++            if (connection.editorReady) pane.syncAddress();
++          }
++          if (connection.adoptDrafts && connection.editorReady && !state.kind && !state.mappings &&
++              !connection.rows.some(row => row[1] !== "0") && connection.send(18).normal) {
++            connection.presentationActive = false;
++            connection.stopped = true;
++            consumer.disconnect();
++            pane.startupConnection = null;
++            pane.structuralDirty = true;
++            pane.syncTabs();
++            pane.publish(true);
++            pane.addressPublication = null;
++            pane.syncAddress();
++          }
++        }
++      }
++      catch (error) { connection.rowFailure = String(error); connection.disconnect(); }
++    };
++    connection.publishRows();
++    connection.enableNormalTabs = () => {
++      connection.send(17);
++      connection.adoptDrafts = true;
++      connection.wake();
++    };
++    connection.attachPresenter = () => {
++      if (connection.stopped || !consumer.current()) throw new Error("Startup connection unavailable");
++      pane.syncTabs();
++      connection.send(12);
++      connection.presentationActive = true;
++      connection.publishRows(true);
++    };
++    window.addEventListener("unload", () => connection.disconnect(), { once: true });
++    connection.wake();
++    return connection;
++  } catch (error) {
++    if (pane.startupConnection === connection) pane.startupConnection = null;
++    try { transport({ version: 1, operation: 7, ...identity }); } catch {}
++    throw error;
++  }
++}
++
++// Called only from a trusted, window-scoped adapter. The native transport must
++// validate its matching profile/privacy context before constructing the consumer.
++export function createFirefoxStartupTransfer(window, identity) {
++  const { PrivateBrowsingUtils } = ChromeUtils.importESModule("resource://gre/modules/PrivateBrowsingUtils.sys.mjs");
++  const pane = window.gWinUIPane;
++  const browser = window.gBrowser;
++  if (!pane || !browser) throw new Error("Browser startup adapter is unavailable");
++  const profile = Services.dirsvc.get("ProfD", Ci.nsIFile).path;
++  const privateWindow = PrivateBrowsingUtils.isWindowPrivate(window);
++  const current = () => !window.closed && window.gBrowser === browser &&
++    window.gWinUIPane === pane && Services.dirsvc.get("ProfD", Ci.nsIFile).path === profile &&
++    PrivateBrowsingUtils.isWindowPrivate(window) === privateWindow;
++  const resolve = token => [...browser.tabs].find(tab => String(pane.tabIds.get(tab)) === token &&
++    tab.isConnected && !tab.closing);
++  let reason = "rejected";
++  const refuse = value => { reason = value; return false; };
++  return new WinUIStartupTransfer(identity, {
++    current,
++    reason: () => reason,
++    selected(token) { return browser.selectedTab === resolve(token); },
++    select(token) {
++      const tab = resolve(token);
++      if (!tab || tab.hidden || !tab.visible) return refuse("target-unavailable");
++      if (window.gDialogBox.isOpen || pane.processingAction) return refuse("browser-busy");
++      browser.selectedTab = tab;
++      pane.syncAddress();
++      if (browser.selectedTab !== tab) throw new Error("Startup selection superseded");
++      return true;
++    },
++    create() {
++      if (window.gDialogBox.isOpen || pane.processingAction) return null;
++      const tab = browser.addTrustedTab("about:blank", { inBackground: true });
++      if (!pane.tabIds.has(tab)) pane.tabIds.set(tab, pane.nextTabId++);
++      return String(pane.tabIds.get(tab));
++    },
++    adopt(token, text, start, length, selected, live) {
++      const tab = resolve(token);
++      if (!live() || !tab || tab.hidden || !tab.visible) return refuse("target-unavailable");
++      if (pane.processingAction || window.gDialogBox.isOpen) return refuse("browser-busy");
++      if (selected) {
++        browser.selectedTab = tab;
++        pane.syncAddress();
++        const session = pane.addressSession;
++        if (!session || session.closed || browser.selectedTab !== tab) return refuse("address-unavailable");
++        session.cancel();
++        session.beginNativePresentation();
++        session.input.setNativeInputValue(text);
++        session.input.userTypedValue = text;
++        session.input.inputField.setSelectionRange(start, start + length);
++      } else {
++        tab.linkedBrowser.userTypedValue = text;
++      }
++      // Firefox owns restoration when this background tab is subsequently selected.
++      window.gURLBar.getBrowserState(tab.linkedBrowser).selection = {
++        start, end: start + length, shouldUntrim: true,
++      };
++      pane.addressPublication = null;
++      return true;
++    },
++    async submit(token, text, modifiers, live) {
++      const tab = resolve(token);
++      if (!tab || tab.hidden || !tab.visible) return refuse("target-unavailable");
++      if (pane.processingAction || window.gDialogBox.isOpen) return refuse("browser-busy");
++      browser.selectedTab = tab;
++      pane.syncAddress();
++      const session = pane.addressSession;
++      if (!session || session.closed) return refuse("address-unavailable");
++      pane.processingAction = true;
++      try {
++        session.beginNativePresentation();
++        session.nativeOpen = true;
++        const editId = session.editId + 1;
++        const result = await session.edit({ version: 1, session: session.sessionId,
++          revision: session.revision, editId, text, selectionStart: text.length,
++          selectionEnd: text.length, composing: false, inputType: "insertReplacementText" });
++        if (!live() || browser.selectedTab !== tab || resolve(token) !== tab || tab.hidden || !tab.visible)
++          return refuse("target-changed");
++        if (pane.addressSession !== session || session.editId !== editId) return refuse("edit-superseded");
++        if (result.status !== "queried") return refuse("query-" + result.status);
++        if (window.gDialogBox.isOpen) return refuse("browser-busy");
++        const activated = session.submitStartup(result.revision, editId, { shiftKey: !!(modifiers & 1),
++          ctrlKey: !!(modifiers & 2), altKey: !!(modifiers & 4), metaKey: false });
++        return activated === "activated" || refuse(activated);
++      } finally {
++        pane.processingAction = false;
++        pane.addressPublication = null;
++        pane.invalidateAddress();
++        pane.resumePublication();
++      }
++    },
++    close(token) {
++      const tab = resolve(token);
++      if (!tab) return true;
++      if (browser.isTabPendingPermitUnload(tab) || window.gDialogBox.isOpen || pane.processingAction) return false;
++      pane.processingAction = true;
++      try {
++        browser.removeTab(tab, { animate: false });
++        return !tab.isConnected || tab.closing;
++      } finally {
++        pane.processingAction = false;
++        pane.structuralDirty = true;
++        pane.resumePublication();
++      }
++    },
++  });
++}
+diff --git a/dom/ipc/FennPageGeometry.cpp b/dom/ipc/FennPageGeometry.cpp
+new file mode 100644
+index 00000000000..975fd14c587
+--- /dev/null
++++ b/dom/ipc/FennPageGeometry.cpp
+@@ -0,0 +1,34 @@
++/* Licensed under the Mozilla Public License, v. 2.0. */
++#include "mozilla/dom/BrowserChild.h"
++#include "mozilla/IMEStateManager.h"
++#include "mozilla/TextEvents.h"
++#include "PuppetWidget.h"
++#include "nsFocusManager.h"
++
++namespace mozilla::dom {
++mozilla::ipc::IPCResult BrowserChild::RecvFennQueryPageGeometry(
++    const uint32_t& aOffset, const uint32_t& aLength,
++    FennQueryPageGeometryResolver&& aResolve) {
++  FennPageGeometryResult result(false, LayoutDeviceIntRect(), LayoutDeviceIntRect());
++  RefPtr<Element> focused=nsFocusManager::GetFocusedElementStatic();
++  if(!mPuppetWidget || !focused || aLength>65536 ||
++      uint64_t(aOffset)+aLength>UINT32_MAX ||
++      IMEStateManager::GetWidgetForTextInputHandling()!=mPuppetWidget) {
++    aResolve(result);return IPC_OK();
++  }
++  // Query in the process which owns the editor, not the parent's limited IME
++  // composition cache. No text or document object crosses this reply boundary.
++  WidgetQueryContentEvent text(true,aLength ? eQueryTextRect : eQueryCaretRect,mPuppetWidget);
++  if(aLength)text.InitForQueryTextRect(aOffset,aLength);
++  else text.InitForQueryCaretRect(aOffset);
++  mPuppetWidget->DispatchEvent(&text);
++  WidgetQueryContentEvent editor(true,eQueryEditorRect,mPuppetWidget);
++  mPuppetWidget->DispatchEvent(&editor);
++  if(text.Succeeded() && editor.Succeeded() &&
++      nsFocusManager::GetFocusedElementStatic()==focused &&
++      IMEStateManager::GetWidgetForTextInputHandling()==mPuppetWidget) {
++    result=FennPageGeometryResult(true,text.mReply->mRect,editor.mReply->mRect);
++  }
++  aResolve(result);return IPC_OK();
++}
++}
+diff --git a/mozglue/misc/FennStartupWindow.cpp b/mozglue/misc/FennStartupWindow.cpp
+new file mode 100644
+index 00000000000..e9499f780f7
+--- /dev/null
++++ b/mozglue/misc/FennStartupWindow.cpp
+@@ -0,0 +1,178 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#include "FennStartupWindow.h"
++#include <cstring>
++#include "../../widget/windows/WinUIPaneApi.h"
++#include <appmodel.h>
++#include "mozilla/BaseProfilerMarkers.h"
++
++namespace mozilla {
++// A thread-confined, one-use HWND resource slot. Browser binding and close
++// decisions move to ShellCore when the native pane takes ownership.
++// mozglue also loads in sandbox children: never add static user32 imports.
++static decltype(&::DefWindowProcW) sDefWindowProc;
++static decltype(&::EnableNonClientDpiScaling) sEnableDpi;
++static decltype(&::RegisterClassW) sRegisterClass;
++static decltype(&::CreateWindowExW) sCreateWindow;
++static decltype(&::DestroyWindow) sDestroyWindow;
++static decltype(&::IsWindow) sIsWindow;
++static decltype(&::SetPropW) sSetProp;
++static decltype(&::LoadCursorW) sLoadCursor;
++static bool LoadWindowFunctions() {
++  HMODULE user = LoadLibraryExW(L"user32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
++  if (!user) return false;
++#define LOAD(field, name) field = reinterpret_cast<decltype(field)>(GetProcAddress(user, name)); if (!field) return false
++  LOAD(sDefWindowProc, "DefWindowProcW");
++  LOAD(sEnableDpi, "EnableNonClientDpiScaling");
++  LOAD(sRegisterClass, "RegisterClassW");
++  LOAD(sCreateWindow, "CreateWindowExW");
++  LOAD(sDestroyWindow, "DestroyWindow");
++  LOAD(sIsWindow, "IsWindow");
++  LOAD(sSetProp, "SetPropW");
++  LOAD(sLoadCursor, "LoadCursorW");
++#undef LOAD
++  return true;
++}
++static HWND sWindow;
++static DWORD sThread;
++static bool sMode;
++static bool sIndependent;
++static WinUIPaneGetApiFn sGetPane;
++static bool sTaken;
++static constexpr wchar_t kClass[] = L"Fenn.NativeStartupBootstrap.v1";
++static LRESULT CALLBACK StartupProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
++  if (msg == WM_NCCREATE) sEnableDpi(hwnd);
++  if (msg == WM_NCDESTROY && sWindow == hwnd) sWindow = nullptr;
++  return sDefWindowProc(hwnd, msg, w, l);
++}
++bool FennDevelopmentNativeHostDefault() {
++#ifdef FENN_DEVELOPMENT_NATIVE_HOST
++  return true;
++#else
++  return false;
++#endif
++}
++bool FennIndependentHostRequested() {
++  wchar_t value[2]{};
++  DWORD size=GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_HOST",value,2);
++  return size ? size==1 && value[0]==L'2' : FennDevelopmentNativeHostDefault();
++}
++bool FennStartupWindowRequested() {
++  wchar_t value[2]{};
++  return GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_HOST", value, 2) == 1 && (value[0] == L'1' || value[0] == L'2');
++}
++bool PrepareFennStartupWindowForProfile(HINSTANCE instance,const wchar_t* profilePath,const wchar_t* presentation) {
++  if(sThread || sTaken || !profilePath || !LoadWindowFunctions())return false;
++  sThread=GetCurrentThreadId();
++  auto prepare=[&]() -> bool {
++    wchar_t path[32768]{};
++    DWORD size = GetModuleFileNameW(nullptr,path,32768);
++    wchar_t* name = size && size < 32768 ? wcsrchr(path,L'\\') : nullptr;
++    if (!name || size_t(name-path)+128 >= 32768) return false;
++    ++name;
++    UINT32 packageLength=0;
++    if (GetCurrentPackageFullName(&packageLength,nullptr)==APPMODEL_ERROR_NO_PACKAGE) {
++      wcscpy(name,WINUI_PANE_RUNTIME_BOOTSTRAP_DLL);
++      HMODULE bootstrap=LoadLibraryExW(path,nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);
++      if (!bootstrap) return false;
++      using Init=HRESULT(WINAPI*)(UINT32,PCWSTR,PACKAGE_VERSION,UINT32);
++      auto init=reinterpret_cast<Init>(GetProcAddress(bootstrap,"MddBootstrapInitialize2"));
++      PACKAGE_VERSION minimum{}; minimum.Version=WINUI_PANE_RUNTIME_MIN_VERSION;
++      if (!init || FAILED(init(WINUI_PANE_RUNTIME_MAJOR_MINOR,L"",minimum,0x10))) return false;
++    }
++    wcscpy(name,L"FennPane.dll");
++    HMODULE pane=LoadLibraryExW(path,nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_APPLICATION_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);
++    if (!pane) return false;
++    sGetPane=reinterpret_cast<WinUIPaneGetApiFn>(GetProcAddress(pane,"WinUIPaneGetApi"));
++    WinUIPaneApi api{};
++    if (!sGetPane || FAILED(sGetPane(WINUI_PANE_ABI_VERSION,sizeof(api),&api)) ||
++        !api.startIndependentHost || FAILED(api.startIndependentHost(profilePath,presentation,&sWindow))) return false;
++    sMode=true;sIndependent=true;
++    BASE_PROFILER_MARKER_UNTYPED("FennIndependentStartupWindowCreated", OTHER);
++    return true;
++  };
++  if(prepare())return true;
++  sThread=0;sMode=false;sIndependent=false;return false;
++}
++bool PrepareFennStartupWindow(HINSTANCE instance, int argc, char** argv) {
++  if (sThread || sTaken) return false;
++  // Independent startup must wait for Firefox's profile lock and actual
++  // browser-open decision, including the older loading-only host switch.
++  // Only explicit interactive mode 2 retains the isolated early test fixture.
++  wchar_t interactive[2]{};
++  const DWORD interactiveSize = GetEnvironmentVariableW(
++      L"FENN_NATIVE_INTERACTIVE_STARTUP", interactive, 2);
++  if ((interactiveSize == 1 && interactive[0] == L'1') ||
++      (FennIndependentHostRequested() &&
++       !(interactiveSize == 1 && interactive[0] == L'2'))) return false;
++  // Only the explicit isolated-profile lane may create a pre-Gecko window.
++  // Named/default profiles, remoting, private and administrative modes defer
++  // to Firefox's routing. Unknown switches must never create a speculative UI.
++  bool isolated = false;
++  const char* profilePath = nullptr;
++  for (int i = 1; i < argc; ++i) {
++    const char* raw = argv[i];
++    if (*raw != '-') continue; // Firefox retains URL/search interpretation.
++    const char* arg = raw;
++    while (*arg == '-') ++arg;
++    if (!_stricmp(arg, "no-remote")) { isolated = true; continue; }
++    if (!_stricmp(arg, "profile")) {
++      if (profilePath || i + 1 >= argc || !*argv[i + 1] || *argv[i + 1] == '-') return false;
++      profilePath = argv[++i]; continue;
++    }
++    if (!_stricmp(arg, "marionette") || !_stricmp(arg, "foreground")) continue;
++    return false;
++  }
++  if (!isolated || !profilePath || !LoadWindowFunctions()) return false;
++  sMode=true;sThread=GetCurrentThreadId();
++  wchar_t mode[2]{};
++  GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_HOST", mode, 2);
++  sIndependent = mode[0] == L'2';
++  if (sIndependent) {
++    wchar_t profileWide[32768]{};
++    if (!MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,profilePath,-1,profileWide,32768)) return false;
++    sThread=0;sMode=false;sIndependent=false;
++    return PrepareFennStartupWindowForProfile(instance,profileWide);
++  }
++  WNDCLASSW wc{};
++  wc.lpfnWndProc = StartupProc;
++  wc.hInstance = instance;
++  wc.lpszClassName = kClass;
++  wc.style = CS_DBLCLKS;
++  wc.hCursor = sLoadCursor(nullptr, MAKEINTRESOURCEW(32512));
++  if (!sRegisterClass(&wc)) return false;
++  sWindow = sCreateWindow(0, kClass, L"", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
++                           CW_USEDEFAULT, CW_USEDEFAULT, 1280, 900,
++                           nullptr, nullptr, instance, nullptr);
++  if (!sWindow) return false;
++  if (!sSetProp(sWindow, L"Fenn.NativeStartupOrigin", reinterpret_cast<HANDLE>(1))) {
++    sDestroyWindow(sWindow);
++    return false;
++  }
++  BASE_PROFILER_MARKER_UNTYPED("FennNativeStartupWindowCreated", OTHER);
++  return true;
++}
++bool FennStartupWindowMode() { return sMode; }
++bool FennStartupWindowIndependent() { return sIndependent; }
++bool FennStartupWindowClaimed() { return sTaken; }
++void RejectFennStartupWindow() { if (GetCurrentThreadId() == sThread) sTaken = false; }
++bool FennStartupWindowReady() { return sMode && !sTaken && sWindow && sIsWindow(sWindow); }
++HWND PeekFennStartupWindow() {
++  return GetCurrentThreadId() == sThread && FennStartupWindowReady() ? sWindow : nullptr;
++}
++HWND TakeFennStartupWindow() {
++  if (GetCurrentThreadId() != sThread || !FennStartupWindowReady()) return nullptr;
++  sTaken = true;
++  HWND result = sWindow;
++  sWindow = nullptr;
++  return result;
++}
++void CleanupFennStartupWindow() {
++  if (sIndependent && sGetPane) {
++    WinUIPaneApi api{};
++    if (SUCCEEDED(sGetPane(WINUI_PANE_ABI_VERSION,sizeof(api),&api))) api.shutdown();
++    sWindow=nullptr;
++  } else if (sWindow && GetCurrentThreadId() == sThread) sDestroyWindow(sWindow);
++}
++}
+diff --git a/mozglue/misc/FennStartupWindow.h b/mozglue/misc/FennStartupWindow.h
+new file mode 100644
+index 00000000000..500d7b1fef5
+--- /dev/null
++++ b/mozglue/misc/FennStartupWindow.h
+@@ -0,0 +1,24 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#ifndef mozilla_FennStartupWindow_h
++#define mozilla_FennStartupWindow_h
++#include <windows.h>
++#include "mozilla/Types.h"
++namespace mozilla {
++MFBT_API bool FennStartupWindowRequested();
++MFBT_API bool FennDevelopmentNativeHostDefault();
++MFBT_API bool FennIndependentHostRequested();
++MFBT_API bool PrepareFennStartupWindowForProfile(HINSTANCE, const wchar_t*, const wchar_t* = nullptr);
++// Called only after parent-process COM/security and DPI initialization.
++MFBT_API bool PrepareFennStartupWindow(HINSTANCE, int argc, char** argv);
++MFBT_API bool FennStartupWindowMode();
++MFBT_API bool FennStartupWindowIndependent();
++MFBT_API bool FennStartupWindowReady();
++MFBT_API bool FennStartupWindowClaimed();
++MFBT_API void RejectFennStartupWindow();
++MFBT_API HWND PeekFennStartupWindow();
++MFBT_API HWND TakeFennStartupWindow();
++MFBT_API void CleanupFennStartupWindow();
++}
++#endif
+diff --git a/browser/base/content/WinUIChromeLayout.sys.mjs b/browser/base/content/WinUIChromeLayout.sys.mjs
+new file mode 100644
+index 00000000000..7eb6bb931fd
+--- /dev/null
++++ b/browser/base/content/WinUIChromeLayout.sys.mjs
+@@ -0,0 +1,138 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++const PREF = "fenn.winui.chrome.layout";
++const ATTRIBUTE = "winui-native-layout";
++const REGIONS = ["strip", "navigation", "content"];
++const FIELDS = ["x", "y", "width", "height"];
++
++// Native code allocates the rows and Gecko browser area. The DOM elements
++// consume those rectangles; they no longer reserve row heights in normal flow.
++// Firefox still owns page layout, browser controllers and fallback eligibility.
++export class WinUIChromeLayout {
++  constructor(window, owner) {
++    this.window = window;
++    this.owner = owner;
++    this.plan = null;
++    this.signature = "";
++    this.ready = false;
++    this.failed = false;
++    this.updating = false;
++    this.closed = false;
++    this.link = window.document.createElementNS("http://www.w3.org/1999/xhtml", "link");
++    this.link.rel = "stylesheet";
++    this.link.href = "chrome://browser/content/WinUIChromeLayout.css";
++    this.link.onload = () => { this.ready = true; owner.schedule(); };
++    window.document.documentElement.append(this.link);
++    this.preference = {observe: () => { this.failed = false; this.update(); owner.schedule(); }};
++    Services.prefs.addObserver(PREF, this.preference);
++    this.changed = () => { this.update(); owner.schedule(); };
++    this.bars = new window.MutationObserver(this.changed);
++    this.barResize = new window.ResizeObserver(this.changed);
++    for (const bar of window.document.querySelectorAll("#navigator-toolbox toolbar")) {
++      if (!["TabsToolbar", "nav-bar"].includes(bar.id)) this.barResize.observe(bar);
++    }
++    for (const id of ["toolbar-menubar", "PersonalToolbar"]) {
++      const bar = window.document.getElementById(id);
++      if (bar) this.bars.observe(bar, {attributes: true,
++        attributeFilter: ["hidden", "collapsed", "autohide", "inactive", "style", "class"]});
++    }
++    window.addEventListener("toolbarvisibilitychange", this.changed);
++  }
++
++  eligible() {
++    const {window, owner} = this;
++    const root = window.document.documentElement;
++    const toolbar = owner.addressToolbar;
++    if (!this.ready || this.closed || this.failed || owner.uninitializing ||
++        !Services.prefs.getBoolPref(PREF, false) || !owner.attached ||
++        !toolbar?.active || !toolbar.navigation || !toolbar.supported() ||
++        root.hasAttribute("mini-window") ||
++        !root.hasAttribute("winui-replaces-tabs") || !root.hasAttribute("winui-hides-nav-bar") ||
++        owner.stripVisibility().hidden || !owner.stripVisibility().replace) return false;
++    // Extra browser toolbars keep their existing layout. Their visibility is
++    // a fallback decision, never a second source of native row dimensions.
++    return !Array.from(window.document.querySelectorAll("#navigator-toolbox toolbar")).some(bar => {
++      if (["TabsToolbar", "nav-bar"].includes(bar.id)) return false;
++      const style = window.getComputedStyle(bar);
++      return !bar.hidden && !bar.collapsed && style.display !== "none" &&
++        style.visibility === "visible" && bar.getBoundingClientRect().height > 0;
++    });
++  }
++
++  update() {
++    if (this.updating || this.closed) return this.plan;
++    this.updating = true;
++    try {
++      if (!this.eligible()) { this.reset(); return null; }
++      const {window, owner} = this;
++      const root = window.document.documentElement;
++      const requested = Services.prefs.getIntPref(owner.stripHeightPref, 40);
++      const height = [32, 40, 48].includes(requested) ? requested : 40;
++      const frame = window.getComputedStyle(root).getPropertyValue("--winui-content-frame").trim();
++      const inset = frame ? Number(frame.replace(/px$/, "")) : 4;
++      if (!Number.isInteger(inset) || inset < 0 || inset > 32) { this.reset(); return null; }
++      let values;
++      try { values = window.windowUtils.getWinUIChromeLayout(height, true, inset); }
++      catch { this.reset(); return null; } // Includes minimized/insufficient space.
++      if (!Array.isArray(values) || values.length !== 12 ||
++          values.some(value => !Number.isFinite(value) || Math.abs(value) > 100000)) {
++        this.reset(); return null;
++      }
++      const plan = {};
++      for (const [index, region] of REGIONS.entries()) {
++        const [x, y, width, height] = values.slice(index * 4, index * 4 + 4);
++        if (width <= 0 || height <= 0) { this.reset(); return null; }
++        plan[region] = {x, y, width, height, left:x, top:y, right:x + width, bottom:y + height};
++      }
++      const signature = values.join(",");
++      if (signature === this.signature) return this.plan;
++      // Attach/place both native surfaces before taking the DOM reservations
++      // out of flow. Focus and publication identities remain with their owners.
++      const s = plan.strip, n = plan.navigation;
++      let accepted = false;
++      try {
++        accepted = window.windowUtils.updateWinUIPane(s.x, s.y, s.width, s.height, true, false, false, owner.occlusions(s)) &&
++          window.windowUtils.updateWinUIAddress(n.x, n.y, n.width, n.height, true, false, false);
++      } catch {}
++      if (!accepted) {
++        this.failed = true; // Retry only on explicit preference change/recreation.
++        this.reset(); owner.schedule(); return null;
++      }
++      if (this.closed || owner.uninitializing || !owner.attached) { this.reset(); return null; }
++      for (const region of REGIONS) {
++        for (const field of FIELDS) root.style.setProperty(`--winui-layout-${region}-${field}`, `${plan[region][field]}px`);
++      }
++      this.plan = plan;
++      this.signature = signature;
++      root.setAttribute(ATTRIBUTE, "");
++      return plan;
++    } finally { this.updating = false; }
++  }
++
++  reset() {
++    if (!this.plan) return;
++    const root = this.window.document.documentElement;
++    this.plan = null;
++    this.signature = "";
++    root.removeAttribute(ATTRIBUTE);
++    for (const region of REGIONS) {
++      for (const field of FIELDS) root.style.removeProperty(`--winui-layout-${region}-${field}`);
++    }
++    // Restore native bounds from the original DOM geometry on the existing
++    // event-driven path. uninit's guard suppresses scheduling during teardown.
++    this.owner.schedule();
++  }
++
++  close() {
++    this.closed = true;
++    this.reset();
++    this.link.onload = null;
++    this.link.remove();
++    this.bars.disconnect();
++    this.barResize.disconnect();
++    this.window.removeEventListener("toolbarvisibilitychange", this.changed);
++    Services.prefs.removeObserver(PREF, this.preference);
++  }
++}
+diff --git a/browser/base/content/WinUIChromeLayout.css b/browser/base/content/WinUIChromeLayout.css
+new file mode 100644
+index 00000000000..d408a83c7dd
+--- /dev/null
++++ b/browser/base/content/WinUIChromeLayout.css
+@@ -0,0 +1,35 @@
++/* Native allocations are the only dimensions for these three regions.
++   The two retained row elements are focus/popup anchors, not reservations. */
++:root[winui-native-layout] #winui-prototype-pane {
++  position: fixed !important;
++  inset: auto !important;
++  margin: 0 !important;
++  min-height: 0 !important;
++  left: var(--winui-layout-strip-x) !important;
++  top: var(--winui-layout-strip-y) !important;
++  width: var(--winui-layout-strip-width) !important;
++  height: var(--winui-layout-strip-height) !important;
++}
++:root[winui-native-layout] #winui-navigation-toolbar:not([hidden]) {
++  position: fixed !important;
++  inset: auto !important;
++  margin: 0 !important;
++  min-block-size: 0 !important;
++  left: var(--winui-layout-navigation-x) !important;
++  top: var(--winui-layout-navigation-y) !important;
++  width: var(--winui-layout-navigation-width) !important;
++  height: var(--winui-layout-navigation-height) !important;
++}
++:root[winui-native-layout] #browser {
++  position: fixed !important;
++  inset: auto !important;
++  box-sizing: border-box !important;
++  margin: 0 !important;
++  padding: 0 !important;
++  min-width: 0 !important;
++  min-height: 0 !important;
++  left: var(--winui-layout-content-x) !important;
++  top: var(--winui-layout-content-y) !important;
++  width: var(--winui-layout-content-width) !important;
++  height: var(--winui-layout-content-height) !important;
++}
 diff --git a/browser/base/content/WinUIBackForwardMenu.sys.mjs b/browser/base/content/WinUIBackForwardMenu.sys.mjs
 new file mode 100644
 index 00000000000..77b064a0da8
@@ -24471,10 +26274,10 @@ index 00000000000..7da40cf503f
 +}
 diff --git a/browser/base/content/WinUIAddressSession.sys.mjs b/browser/base/content/WinUIAddressSession.sys.mjs
 new file mode 100644
-index 00000000000..257f4e71518
+index 00000000000..39117cb2f96
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressSession.sys.mjs
-@@ -0,0 +1,2946 @@
+@@ -0,0 +1,2961 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -26926,6 +28729,21 @@ index 00000000000..257f4e71518
 +    return outcome;
 +  }
 +
++  // A queued startup Enter has no selected suggestion. Resolve only Firefox's
++  // heuristic for this exact completed edit; the existing Enter replay handles
++  // an unexposed heuristic without manufacturing native visibility/exposure.
++  submitStartup(revision, editId, intent = {}) {
++    const active = this.active;
++    if (!active || this.editId !== editId || active.revision !== revision ||
++        this.input.readOnly || this.window.gDialogBox?.isOpen) return "stale";
++    const heuristic = active.context?.heuristicResult;
++    const index = heuristic ? active.results?.indexOf(heuristic) : -1;
++    const rowIndex = index >= 0 ? active.resultIndexes?.indexOf(index) : -1;
++    if (heuristic && !(rowIndex >= 0)) return "stale";
++    if (!heuristic && this.nativeSelected) return "stale";
++    return this.activateWithReplay(revision, rowIndex >= 0 ? active.rows[rowIndex].id : "", intent);
++  }
++
 +  activateWithReplay(revision, id, intent = {}) {
 +    const active = this.active;
 +    if (!this.frozenResultsCurrent(active)) return "stale";
@@ -27423,10 +29241,10 @@ index 00000000000..257f4e71518
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..bd30b12d361
+index 00000000000..268623ae352
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,601 @@
+@@ -0,0 +1,610 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -27440,10 +29258,16 @@ index 00000000000..bd30b12d361
 +    this.link = document.createElementNS("http://www.w3.org/1999/xhtml", "link");
 +    this.link.rel = "stylesheet";
 +    this.link.href = "chrome://browser/content/WinUIAddressToolbar.css";
++    // A toolbar created after startup can measure before its stylesheet loads.
++    // A failed measurement hides the row again, so ResizeObserver need not fire.
++    this.link.onload = () => owner.invalidateAddress();
 +    document.documentElement.append(this.link);
 +    this.proxy = document.createElementNS("http://www.w3.org/1999/xhtml", "div");
 +    this.proxy.id = "winui-address-focus";
 +    this.proxy.tabIndex = 0;
++    // Keyboard routing only: the native TextBox owns accessible focus. Exposing
++    // this intermediate Gecko target makes Narrator follow a duplicate group.
++    this.proxy.setAttribute("aria-hidden", "true");
 +    this.proxy.setAttribute("role", "group");
 +    this.proxy.setAttribute("aria-label", this.input.getAttribute("placeholder") || "");
 +    this.slot.append(this.proxy);
@@ -27984,6 +29808,8 @@ index 00000000000..bd30b12d361
 +    this.owner.invalidateAddress();
 +  }
 +  bounds() {
++    this.owner.chromeLayout?.update();
++    if (this.navigation && this.owner.chromeLayout?.plan) return this.owner.chromeLayout.plan.navigation;
 +    if (this.navigation) return this.row.getBoundingClientRect();
 +    const rect = this.slot.getBoundingClientRect();
 +    const container = this.input.closest(".urlbar-input-container").getBoundingClientRect();
@@ -28025,6 +29851,7 @@ index 00000000000..bd30b12d361
 +    this.proxy.remove();
 +    this.menuAnchors?.clear();
 +    this.row.remove();
++    this.link.onload = null;
 +    this.link.remove();
 +  }
 +}
@@ -28166,10 +29993,10 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..aa1229360ce
+index 00000000000..c4d29442a62
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2365 @@
+@@ -0,0 +1,2401 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -28190,6 +30017,7 @@ index 00000000000..aa1229360ce
 +  groupGlowAnimationsPref: "fenn.winui.tabstrip.groupGlowAnimations",
 +  groupGlowFadeOutPref: "fenn.winui.tabstrip.groupGlowFadeOut",
 +  stripHeightPref: "fenn.winui.tabstrip.height",
++  chromeLayoutPref: "fenn.winui.chrome.layout",
 +  groupingPrefs: ["browser.tabs.groups.enabled", "browser.tabs.dragDrop.createGroup.enabled",
 +    "browser.tabs.dragDrop.createGroup.delayMS"],
 +  element: null,
@@ -28401,7 +30229,7 @@ index 00000000000..aa1229360ce
 +  // would anchor to a Firefox label use it while the Firefox tab row is hidden.
 +  groupMenuFallbackRect() {
 +    if (!this.element || this.element.style.display === "none") return null;
-+    const r = this.element.getBoundingClientRect();
++    const r = this.chromeLayout?.plan?.strip || this.element.getBoundingClientRect();
 +    if (!r.width || !r.height) return null;
 +    return {x: window.mozInnerScreenX + r.x, y: window.mozInnerScreenY + r.y,
 +            width: r.width, height: r.height};
@@ -28426,6 +30254,7 @@ index 00000000000..aa1229360ce
 +      !toolbar.hasVisibleUnhostedWidgets() &&
 +      !window.fullScreen && !document.fullscreenElement &&
 +      !document.documentElement.hasAttribute("customizing"));
++    this.chromeLayout?.update();
 +  },
 +
 +  hasUnreplacedTabControls() {
@@ -28434,6 +30263,12 @@ index 00000000000..aa1229360ce
 +      !["tabbrowser-tabs", "new-tab-button", "alltabs-button"].includes(child.id) &&
 +      !["toolbarspring", "spacer", "toolbarseparator", "toolbartabstop"].includes(child.localName) &&
 +      getComputedStyle(child).display !== "none");
++  },
++
++  ensureChromeLayout() {
++    if (this.chromeLayout || !Services.prefs.getBoolPref(this.chromeLayoutPref, Services.prefs.getDefaultBranch("").getBoolPref(this.chromeLayoutPref, false))) return;
++    const {WinUIChromeLayout} = ChromeUtils.importESModule("chrome://browser/content/WinUIChromeLayout.sys.mjs");
++    this.chromeLayout = new WinUIChromeLayout(window, this);
 +  },
 +
 +  init() {
@@ -28461,6 +30296,8 @@ index 00000000000..aa1229360ce
 +    );
 +    this.element.id = "winui-prototype-pane";
 +    this.element.tabIndex = 0;
++    // This is a layout/focus router, not the accessible native TabView.
++    this.element.setAttribute("aria-hidden", "true");
 +    this.element.setAttribute("aria-label", this.nativeLabels().tabs);
 +    // The native header follows this reservation: 32-DIP tabs with 0, 8,
 +    // or 16 DIPs of top padding. Unsupported preferences use the default.
@@ -28469,6 +30306,7 @@ index 00000000000..aa1229360ce
 +    this.element.style.cssText =
 +      `height:${height}px;min-height:${height}px;flex-shrink:0;-moz-window-dragging:no-drag;`;
 +    document.getElementById("TabsToolbar").before(this.element);
++    this.ensureChromeLayout();
 +    this.element.addEventListener("focus", () => this.update(true));
 +    this.observer = new ResizeObserver(() => this.schedule());
 +    this.observer.observe(document.getElementById("browser"));
@@ -28520,6 +30358,7 @@ index 00000000000..aa1229360ce
 +    Services.prefs.addObserver("browser.nova.enabled", this);
 +    Services.prefs.addObserver("sidebar.verticalTabs", this);
 +    Services.prefs.addObserver(this.stripHeightPref, this);
++    Services.prefs.addObserver(this.chromeLayoutPref, this);
 +    Services.prefs.addObserver(this.containerDotPref, this);
 +    Services.prefs.addObserver(this.tabGlowsPref, this);
 +    Services.prefs.addObserver(this.stripBackdropPref, this);
@@ -28689,6 +30528,7 @@ index 00000000000..aa1229360ce
 +  // revision has moved, so a gesture made against a superseded strip is
 +  // rejected rather than applied to the wrong tab.
 +  executeStripRequest(action) {
++    if(action?.kind==="startup-recovery")return this.automaticStartupModule?.recoverAutomaticStartup(window, action) || 2;
 +    if(action?.kind==="group-header")return this.groupHeader?.execute(action) || 2;
 +    if(action?.kind==="all-tabs")return this.allTabsController?.execute(action) || 2;
 +    // A gesture that moves or tears out a tab cannot be honoured while a modal
@@ -28868,7 +30708,9 @@ index 00000000000..aa1229360ce
 +  },
 +
 +  publishAddress(state, session = null) {
-+    const payload = JSON.stringify(session ? session.preparePublication(state) : state);
++    const publication = session ? session.preparePublication(state) : state;
++    const payload = JSON.stringify(this.startupConnection?.presentationActive ?
++      { ...publication, startupBrowser: String(this.tabIds.get(gBrowser.selectedTab) || 0) } : publication);
 +    // Compare the complete, freshly resolved container, including independent
 +    // dynamic controls and document/session identity. Cache only successful
 +    // sends, and only for this native host's lifetime.
@@ -29520,7 +31362,7 @@ index 00000000000..aa1229360ce
 +      const value = id => l10n.formatValueSync(id);
 +      const attributes = id => {
 +        const [message] = l10n.formatMessagesSync([{ id }]);
-+        return Object.fromEntries(message.attributes.map(a => [a.name, a.value]));
++        return Object.fromEntries((message?.attributes || []).map(a => [a.name, a.value]));
 +      };
 +      const allTabs = attributes("tabs-toolbar-list-all-tabs");
 +      const newTab = attributes("tabs-toolbar-new-tab");
@@ -29958,6 +31800,7 @@ index 00000000000..aa1229360ce
 +
 +  publishState(force = false, includeAddress = true) {
 +    if (!this.element || !this.attached || this.processingAction) return;
++    this.startupConnection?.publishRows();
 +    this.groupHeader?.publish();
 +    this.allTabsController?.publish();
 +    if (force || this.structuralDirty || !this.nativeRevision) {
@@ -30076,6 +31919,7 @@ index 00000000000..aa1229360ce
 +
 +  syncTabs() {
 +    if (!this.element || !this.attached || this.processingAction) return;
++    this.startupConnection?.publishRows();
 +    this.groupHeader?.publish();
 +    this.allTabsController?.publish();
 +    const tabs = this.visibleTabs();
@@ -30169,7 +32013,10 @@ index 00000000000..aa1229360ce
 +    }
 +    if (topic === "winui-pane-drain") {
 +      // One wakeup, one drain. Other windows' endpoints are ignored.
-+      if (this.element && data === this.endpoint) this.drain();
++      if (this.element && data === this.endpoint) {
++        this.startupConnection?.wake();
++        this.drain();
++      }
 +      return;
 +    }
 +    if (topic === "intl:app-locales-changed") {
@@ -30180,15 +32027,19 @@ index 00000000000..aa1229360ce
 +      // backwards and the pane would ignore the new state.
 +      this.tabMenuLabelCache = null;
 +      this.nativeLabelCache = null;
-+      if (this.tabMenuL10n) {
-+        this.tabMenuL10n = new Localization(
-+          ["browser/tabContextMenu.ftl", "browser/tabbrowser.ftl", "browser/toolbarContextMenu.ftl", "browser/browser.ftl"], true);
-+      }
++      // Recreate through localization() so refresh uses the complete same
++      // resource set, including branding and browserContext toolbar labels.
++      this.tabMenuL10n = null;
 +      if (this.tabMenuSession) this.tabMenuSession.forceUpdate = true;
 +      this.element?.setAttribute("aria-label", this.nativeLabels().tabs);
 +      this.stripDirty = true;
 +      this.structuralDirty = true;
 +      this.schedule();
++      return;
++    }
++    if (data === this.chromeLayoutPref) {
++      // Once created, the layout adapter observes live toggles itself.
++      if (!this.chromeLayout && this.element) { this.ensureChromeLayout(); this.schedule(); }
 +      return;
 +    }
 +    if (data === this.stripHeightPref) {
@@ -30368,6 +32219,7 @@ index 00000000000..aa1229360ce
 +    const {replace, hidden} = this.stripVisibility();
 +    this.setReplacementActive(replace && !hidden && !!this.nativeRevision);
 +    this.updateToolbarHidden();
++    this.automaticStartupModule?.advanceAutomaticStartup(window);
 +  },
 +
 +  occlusions(rect) {
@@ -30404,10 +32256,11 @@ index 00000000000..aa1229360ce
 +
 +  updateGeometry(focus = false) {
 +    if (!this.element || this.uninitializing) return;
++    this.chromeLayout?.update();
 +    const {replace, hidden} = this.stripVisibility();
 +    if (hidden) this.setReplacementActive(false);
 +    this.element.style.display = hidden ? "none" : "";
-+    const r = this.element.getBoundingClientRect();
++    const r = this.chromeLayout?.plan?.strip || this.element.getBoundingClientRect();
 +    try {
 +      const ok = window.windowUtils.updateWinUIPane(
 +        r.x,
@@ -30439,6 +32292,8 @@ index 00000000000..aa1229360ce
 +
 +  uninit() {
 +    this.uninitializing = true;
++    this.chromeLayout?.close();
++    this.chromeLayout = null;
 +    if (this.publicationTimer) window.clearTimeout(this.publicationTimer);
 +    this.publicationTimer = 0;
 +    this.publicationDeferred = false;
@@ -30467,6 +32322,9 @@ index 00000000000..aa1229360ce
 +    this.addressSession = null;
 +    this.addressToolbar?.close();
 +    this.addressToolbar = null;
++    // Publication failure belongs to the destroyed endpoint. A new pane must
++    // be allowed to publish and activate its replacement address surface.
++    this.addressFailed = false;
 +    this.groupHeader?.close();this.groupHeader=null;
 +    this.allTabsController?.close();this.allTabsController=null;
 +    this.tabMenuSession = null;
@@ -30505,6 +32363,7 @@ index 00000000000..aa1229360ce
 +    this.groupColorChanged = null;
 +    Services.prefs.removeObserver("sidebar.verticalTabs", this);
 +    Services.prefs.removeObserver(this.stripHeightPref, this);
++    Services.prefs.removeObserver(this.chromeLayoutPref, this);
 +    Services.prefs.removeObserver(this.containerDotPref, this);
 +    Services.prefs.removeObserver(this.tabGlowsPref, this);
 +    Services.prefs.removeObserver(this.stripBackdropPref, this);
@@ -30530,6 +32389,10 @@ index 00000000000..aa1229360ce
 +window.addEventListener("load", () => {
 +  gWinUIPane.initOptions();
 +  gWinUIPane.init();
++  if (Services.env.get("FENN_NATIVE_INTERACTIVE_STARTUP") === "1") {
++    gWinUIPane.automaticStartupModule = ChromeUtils.importESModule("chrome://browser/content/WinUIAutomaticStartup.sys.mjs");
++    gWinUIPane.automaticStartupModule.beginAutomaticStartup(window);
++  }
 +}, { once: true });
 +window.addEventListener("unload", () => {
 +  gWinUIPane.uninitOptions();
@@ -30537,32 +32400,62 @@ index 00000000000..aa1229360ce
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..3c26bffa40d
+index 00000000000..2221d9be47c
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -0,0 +1,328 @@
+@@ -0,0 +1,622 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +#include "WinUIPrototype.h"
++#include "WinUIPageInput.h"
 +
 +#include <appmodel.h>
 +#include <objbase.h>
 +
 +#include <iterator>
++#include <atomic>
 +
 +#include "WinUIPaneApi.h"
++#include "WinIMEHandler.h"
++#include "WinUIAccessibleRoot.h"
 +#include "mozilla/Logging.h"
++#include "mozilla/FennStartupWindow.h"
++#include "mozilla/ProfilerMarkers.h"
 +#include "mozilla/CycleCollectedJSContext.h"
 +#include "mozilla/Preferences.h"
 +#include "mozilla/Services.h"
 +#include "nsIObserverService.h"
 +#include "nsPrintfCString.h"
 +#include "nsThreadUtils.h"
++#include "nsAppDirectoryServiceDefs.h"
++#include "nsDirectoryServiceUtils.h"
++#include "nsIFile.h"
 +#include "mozilla/UniquePtr.h"
 +#include "nsXULAppAPI.h"
++#include "gfxPlatform.h"
 +
 +namespace mozilla::widget {
++bool FocusIndependentWindowHost(HWND window) {
++  HWND endpoint = static_cast<HWND>(GetPropW(window, WINUI_PANE_ENDPOINT_PROPERTY));
++  if (!endpoint) return false;
++  static const UINT message =
++      RegisterWindowMessageW(L"Fenn.NativeWindowHost.Focus.v1");
++  // Finish the current Gecko operation (notably AppWindow::Destroy) before
++  // requesting native focus. Posting straight to the other thread can run
++  // SetFocus while Gecko is still tearing down the previous active dialog,
++  // then deadlock against a synchronous native layout call from that teardown.
++  // The runnable owns only scalar identities; it never pumps borrowed ABI work.
++  NS_DispatchToCurrentThread(NS_NewRunnableFunction(
++      "FocusIndependentWindowHost", [window, endpoint]() {
++        if (GetPropW(window, WINUI_PANE_ENDPOINT_PROPERTY) != endpoint) return;
++        if (!message || !PostMessageW(window, message,
++                                      reinterpret_cast<WPARAM>(endpoint), 0)) {
++          NS_WARNING("Native focus request failed");
++        }
++      }));
++  return true;
++}
 +bool HasWinUISystemCaption(HWND aWindow) {
 +  return GetPropW(aWindow, WINUI_PANE_SYSTEM_CAPTION_PROPERTY) != nullptr;
 +}
@@ -30574,7 +32467,7 @@ index 00000000000..3c26bffa40d
 +static HMODULE sPaneModule = nullptr;
 +static WinUIPaneApi sPaneApi{};
 +static bool sPaneAttempted = false;
-+static bool sPaneStopped = false;
++static std::atomic<bool> sPaneStopped{false};
 +
 +static bool LoadPane() {
 +  if (sPaneAttempted) return sPaneApi.updateTabStrip != nullptr;
@@ -30606,13 +32499,248 @@ index 00000000000..3c26bffa40d
 +      api.version != WINUI_PANE_ABI_VERSION || !api.focus ||
 +      !api.destroy || !api.translate || !api.shutdown || !api.clip || !api.syncTabs || !api.syncAddress || !api.syncTabMenu || !api.updateTabStrip ||
 +      !api.setNotifySink || !api.drainRequests || !api.completeRequests || !api.applyTabDelta ||
-+      !api.updateAddress || !api.focusAddress) {
++      !api.updateAddress || !api.focusAddress || !api.measureChromeLayout || !api.startupTransfer ||
++      !api.createWindowHost || !api.attachWindowHost || !api.detachWindowHost || !api.destroyWindowHost || !api.adoptStartupWindowHost || !api.showStartupSurface || !api.dismissStartupSurface || !api.startIndependentHost || !api.bindIndependentEndpoint || !api.cancelIndependentClose || !api.setIndependentAccessibility || !api.publishIndependentInput || !api.drainIndependentInput || !api.commitIndependentInput || !api.publishIndependentGeometry) {
 +    MOZ_LOG(sWinUIPrototypeLog, LogLevel::Warning,
 +            ("pane=incompatible hr=0x%08lx", hr));
 +    return false;
 +  }
 +  sPaneApi = api;
 +  return true;
++}
++
++HRESULT PublishIndependentPageInput(HWND hwnd,const WinUIPageInput& input) {
++  return sPaneApi.publishIndependentInput ? sPaneApi.publishIndependentInput(hwnd,&input) : E_NOINTERFACE;
++}
++HRESULT PublishIndependentPageGeometry(HWND hwnd,const WinUIPageGeometry& input) {
++  return sPaneApi.publishIndependentGeometry ? sPaneApi.publishIndependentGeometry(hwnd,&input) : E_NOINTERFACE;
++}
++HRESULT DrainIndependentPageInput(HWND hwnd,WinUIPageInputEvent& event,wchar_t* text,uint32_t capacity) {
++  return sPaneApi.drainIndependentInput ? sPaneApi.drainIndependentInput(hwnd,&event,text,capacity) : E_NOINTERFACE;
++}
++HRESULT CommitIndependentPageInput(HWND hwnd,bool cancel) {
++  return sPaneApi.commitIndependentInput ? sPaneApi.commitIndependentInput(hwnd,cancel) : E_NOINTERFACE;
++}
++namespace {
++constexpr auto kEndpointProperty=WINUI_PANE_ENDPOINT_PROPERTY;
++struct IndependentEndpoint {
++  HWND outer; WNDPROC gecko; bool owned=false;
++#ifdef ACCESSIBILITY
++  RefPtr<WinUIAccessibleRoot> accessibility;
++  ~IndependentEndpoint() { if (accessibility) accessibility->Disconnect(); }
++#endif
++};
++LRESULT CALLBACK IndependentDefault(HWND,UINT,WPARAM,LPARAM) { return 0; }
++LRESULT CALLBACK IndependentEndpointProc(HWND hwnd,UINT message,WPARAM w,LPARAM l) {
++  auto* endpoint=reinterpret_cast<IndependentEndpoint*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
++  if (message==WM_NCCREATE) {
++    endpoint=static_cast<IndependentEndpoint*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams);
++    SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(endpoint));
++  }
++  if (message==WM_NCDESTROY) {
++    if (endpoint && endpoint->owned) delete endpoint;
++    SetWindowLongPtrW(hwnd,GWLP_USERDATA,0);
++    return DefWindowProcW(hwnd,message,w,l);
++  }
++  if (!endpoint || message==WM_NCCREATE || message==WM_CREATE) return DefWindowProcW(hwnd,message,w,l);
++  const HWND outer=endpoint->outer;
++  const auto callback=endpoint->gecko;
++  if (!IsWindow(outer) || GetPropW(outer,kEndpointProperty)!=hwnd) return 0;
++  static UINT inputMessage=RegisterWindowMessageW(L"Fenn.NativeWindowHost.PageInput.v1");
++  if(message==inputMessage) {DrainIndependentPageIME(outer);return 0;}
++  static UINT closeMessage=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointClose.v1");
++  if (message==closeMessage) {
++    callback(outer,WM_CLOSE,0,0);
++    // The Firefox callback may synchronously destroy both windows and endpoint.
++    if (IsWindow(outer) && GetPropW(outer,kEndpointProperty)==hwnd)
++      sPaneApi.cancelIndependentClose(outer,static_cast<uint64_t>(l),static_cast<uint64_t>(w));
++    return 0;
++  }
++  if (message==WM_KEYDOWN+WINUI_PANE_ENDPOINT_KEY_OFFSET ||
++      message==WM_KEYUP+WINUI_PANE_ENDPOINT_KEY_OFFSET ||
++      message==WM_SYSKEYDOWN+WINUI_PANE_ENDPOINT_KEY_OFFSET ||
++      message==WM_SYSKEYUP+WINUI_PANE_ENDPOINT_KEY_OFFSET) {
++    message-=WINUI_PANE_ENDPOINT_KEY_OFFSET;
++    const uint32_t modifiers=static_cast<uint32_t>(w>>32);
++    w&=0xffffffffu;
++    BYTE keys[256]{};
++    GetKeyboardState(keys);
++    for (size_t i=0;i<std::size(WinUIPaneModifierKeys);++i)
++      keys[WinUIPaneModifierKeys[i]]=((modifiers&(1u<<(i*2)))?0x80:0)|
++          ((modifiers&(2u<<(i*2)))?1:0);
++    if (w<256) {
++      if (message==WM_KEYDOWN || message==WM_SYSKEYDOWN) keys[w]|=0x80;
++      else keys[w]&=0x7f;
++    }
++    SetKeyboardState(keys);
++    // The private transport bypasses nsAppShell's ordinary key-message hook.
++    // Give Gecko's own TSF text store first refusal, on the Gecko thread and
++    // with the logical browser widget identity, before translating characters.
++    MSG imeKey{outer,message,w,l,static_cast<DWORD>(GetMessageTime()),{}};
++    const bool consumed=IMEHandler::ProcessRawKeyMessage(imeKey);
++    if (consumed) return 0;
++    MSG key{hwnd,message,w,l,static_cast<DWORD>(GetMessageTime()),{}};
++    TranslateMessage(&key);
++    return callback(outer,message,w,l);
++  }
++  static UINT dpiMessage=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointDpi.v1");
++  static UINT layoutMessage=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointLayout.v1");
++  if (message==layoutMessage) {
++    ActivateKeyboardLayout(reinterpret_cast<HKL>(l),0);
++    return callback(outer,WM_INPUTLANGCHANGE,w,l);
++  }
++  if (message==dpiMessage) {
++    RECT bounds{};
++    if (!GetWindowRect(outer,&bounds)) return 0;
++    return callback(outer,WM_DPICHANGED,w,reinterpret_cast<LPARAM>(&bounds));
++  }
++  if (message==WM_SIZE || message==WM_MOVE) {
++    // Reconstruct pointer-bearing geometry on Gecko's thread; never forward
++    // the native thread's transient WINDOWPOS pointer through PostMessage.
++    RECT bounds{};
++    if (!GetWindowRect(outer,&bounds)) return 0;
++    WINDOWPOS position{outer,nullptr,bounds.left,bounds.top,
++        bounds.right-bounds.left,bounds.bottom-bounds.top,SWP_NOZORDER|SWP_NOACTIVATE};
++    return callback(outer,WM_WINDOWPOSCHANGED,0,reinterpret_cast<LPARAM>(&position));
++  }
++  switch (message) {
++    case WM_ACTIVATE: case WM_SETFOCUS: case WM_KILLFOCUS:
++    case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:
++    case WM_CHAR: case WM_SYSCHAR: case WM_MOUSEMOVE: case WM_CONTEXTMENU:
++    case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_RBUTTONDOWN: case WM_RBUTTONUP:
++    case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
++      return callback(outer,message,w,l);
++  }
++  return DefWindowProcW(hwnd,message,w,l);
++}
++void EnsureIndependentAccessibility(HWND outer) {
++#ifdef ACCESSIBILITY
++  HWND endpoint=static_cast<HWND>(GetPropW(outer,kEndpointProperty));
++  if (!endpoint) return;
++  auto* bound=reinterpret_cast<IndependentEndpoint*>(GetWindowLongPtrW(endpoint,GWLP_USERDATA));
++  if (bound->accessibility) return;
++  bound->accessibility=new WinUIAccessibleRoot(outer);
++  HRESULT accessibilityResult=bound->accessibility->Initialize();
++  if (SUCCEEDED(accessibilityResult))
++    accessibilityResult=sPaneApi.setIndependentAccessibility(outer,static_cast<IRawElementProviderSimple*>(bound->accessibility.get()));
++  MOZ_LOG(sWinUIPrototypeLog,LogLevel::Debug,("Independent accessibility initialize=%lx",accessibilityResult));
++  if (FAILED(accessibilityResult)) {
++    bound->accessibility->Disconnect();
++    bound->accessibility=nullptr;
++  }
++#endif
++}
++bool AttachIndependentEndpoint(HWND outer,uintptr_t identity,WNDPROC gecko,WNDPROC* fallback) {
++  WNDCLASSW wc{}; wc.hInstance=GetModuleHandleW(nullptr);
++  wc.lpfnWndProc=IndependentEndpointProc; wc.lpszClassName=L"Fenn.GeckoEndpoint.v1";
++  if (!RegisterClassW(&wc) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS) return false;
++  auto context=MakeUnique<IndependentEndpoint>(IndependentEndpoint{outer,gecko});
++  HWND endpoint=CreateWindowExW(0,wc.lpszClassName,L"",0,0,0,0,0,HWND_MESSAGE,nullptr,wc.hInstance,context.get());
++  if (!endpoint) return false;
++  context->owned=true;
++  (void)context.release();
++  if (!SetPropW(outer,kEndpointProperty,endpoint) || FAILED(sPaneApi.bindIndependentEndpoint(outer,identity,endpoint))) {
++    RemovePropW(outer,kEndpointProperty); DestroyWindow(endpoint); return false;
++  }
++  EnsureIndependentAccessibility(outer);
++  *fallback=IndependentDefault;
++  PostMessageW(endpoint,WM_SIZE,0,0);
++  return true;
++}
++void RemoveIndependentEndpoint(HWND outer) {
++  ForgetIndependentPageIME(outer);
++  // Provider cookies are revoked on Gecko, then the native agile identity is
++  // dropped before removing the endpoint/window association.
++#ifdef ACCESSIBILITY
++  if (HWND current=static_cast<HWND>(GetPropW(outer,kEndpointProperty))) {
++    auto* bound=reinterpret_cast<IndependentEndpoint*>(GetWindowLongPtrW(current,GWLP_USERDATA));
++    if (bound && bound->accessibility) bound->accessibility->Disconnect();
++    sPaneApi.setIndependentAccessibility(outer,nullptr);
++  }
++#endif
++  HWND endpoint=static_cast<HWND>(RemovePropW(outer,kEndpointProperty));
++  if (endpoint) DestroyWindow(endpoint);
++}
++}
++bool PrepareDefaultNativeStartupHost(HINSTANCE instance, const wchar_t* presentation) {
++  // BrowserWindowTracker also opens headless browser documents. They have no
++  // Windows widget to claim a native host, so never create one for that mode.
++  if (gfxPlatform::IsHeadless()) return false;
++  static bool attempted=false;
++  if(attempted || !FennIndependentHostRequested() || FennStartupWindowMode())return false;
++  attempted=true;
++  if(!Preferences::GetBool("fenn.winui.window.independent",FennDevelopmentNativeHostDefault()) ||
++      !Preferences::GetBool("fenn.winui.window.host",FennDevelopmentNativeHostDefault()) ||
++      !XRE_IsParentProcess())return false;
++  nsCOMPtr<nsIFile> profile;
++  nsAutoString path;
++  if(NS_FAILED(NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR,getter_AddRefs(profile))) ||
++      NS_FAILED(profile->GetPath(path)))return false;
++  if (!PrepareFennStartupWindowForProfile(
++          instance, static_cast<const wchar_t*>(path.get()), presentation)) return false;
++  // Populate Gecko's routed ABI before binding its endpoint to the native HWND.
++  return ShowNativeStartupSurface();
++}
++bool PrepareRoutedNativeStartupHost(const char16_t* presentation) {
++  wchar_t interactive[2]{};
++  if(GetEnvironmentVariableW(L"FENN_NATIVE_INTERACTIVE_STARTUP",interactive,2)!=1 || interactive[0]!=L'1')return false;
++  if(PrepareDefaultNativeStartupHost(GetModuleHandleW(nullptr),
++      reinterpret_cast<const wchar_t*>(presentation))) {
++    if(HWND hwnd=PeekFennStartupWindow())SetPropW(hwnd,L"Fenn.RoutedStartupPrepared",reinterpret_cast<HANDLE>(1));
++    PROFILER_MARKER_UNTYPED("FennNativeStartupRoutingResolved", OTHER);
++    return true;
++  }
++  return false;
++}
++void CancelRoutedNativeStartupHost() {
++  // Never close a successfully claimed browser or another window's host.
++  HWND hwnd=PeekFennStartupWindow();
++  if(hwnd && GetPropW(hwnd,L"Fenn.RoutedStartupPrepared"))CleanupFennStartupWindow();
++}
++bool ShowNativeStartupSurface() {
++  if (!FennStartupWindowMode()) return true;
++  HWND hwnd = PeekFennStartupWindow();
++  // An early native Close cancels the one-use startup lease. Let normal
++  // startup unwind through nsWindow's abort path instead of failing XPCOM init.
++  if (!hwnd) return true;
++  if (!NS_IsMainThread() || sPaneStopped || !LoadPane()) return false;
++  if (FAILED(sPaneApi.showStartupSurface(hwnd))) {
++    // The native STA can process early Close after Peek but before this
++    // dispatched call. Cancellation is not an XPCOM initialization failure.
++    return !PeekFennStartupWindow();
++  }
++  PROFILER_MARKER_UNTYPED("FennNativeStartupSurfaceShown", OTHER);
++  return true;
++}
++void DismissNativeStartupSurface(HWND hwnd) {
++  if (sPaneApi.dismissStartupSurface && NS_IsMainThread() &&
++      sPaneApi.dismissStartupSurface(hwnd) == S_OK) {
++    PROFILER_MARKER_UNTYPED("FennNativeStartupSurfaceDismissed", OTHER);
++  }
++}
++bool IsNativeWindowHost(HWND hwnd) { return GetPropW(hwnd, L"Fenn.NativeWindowHost") != nullptr; }
++bool AdoptNativeStartupWindowHost(HWND hwnd) {
++  if (FennStartupWindowIndependent()) return LoadPane() && IsNativeWindowHost(hwnd);
++  return NS_IsMainThread() && XRE_IsParentProcess() && !sPaneStopped && LoadPane() &&
++      SUCCEEDED(sPaneApi.adoptStartupWindowHost(hwnd));
++}
++HWND CreateNativeWindowHost(DWORD ex, const wchar_t* name, DWORD style,
++                           const RECT& bounds, HWND parent, HINSTANCE instance) {
++  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped || !LoadPane()) return nullptr;
++  HWND hwnd = nullptr;
++  return SUCCEEDED(sPaneApi.createWindowHost(ex, name, style, &bounds, parent, instance, &hwnd)) ? hwnd : nullptr;
++}
++bool AttachNativeWindowHost(HWND hwnd, uintptr_t identity, WNDPROC gecko, WNDPROC* fallback) {
++  if (FennStartupWindowIndependent()) return NS_IsMainThread() && AttachIndependentEndpoint(hwnd,identity,gecko,fallback);
++  return NS_IsMainThread() && sPaneApi.attachWindowHost && SUCCEEDED(sPaneApi.attachWindowHost(hwnd, identity, gecko, fallback));
++}
++bool DetachNativeWindowHost(HWND hwnd) {
++  if (FennStartupWindowIndependent()) { RemoveIndependentEndpoint(hwnd); return true; }
++  return NS_IsMainThread() && sPaneApi.detachWindowHost && SUCCEEDED(sPaneApi.detachWindowHost(hwnd));
++}
++bool DestroyNativeWindowHost(HWND hwnd) {
++  if (FennStartupWindowIndependent()) RemoveIndependentEndpoint(hwnd);
++  return NS_IsMainThread() && sPaneApi.destroyWindowHost && SUCCEEDED(sPaneApi.destroyWindowHost(hwnd));
 +}
 +
 +// The endpoint's identity as chrome JavaScript sees it: the same formatting
@@ -30622,13 +32750,13 @@ index 00000000000..3c26bffa40d
 +  return nsPrintfCString("0x%p", aWindow);
 +}
 +
-+// The pane's wakeup. Called on the main thread, usually from inside a XAML
++// The pane's wakeup. Called on the WinUI owning thread, usually inside a XAML
 +// callback, so it may only *post*: entering browser JavaScript from this stack
 +// is exactly the reentrancy the request path exists to avoid. Returning false
 +// tells the pane the wakeup did not happen, so a later request schedules a
 +// fresh one instead of waiting for one that will never arrive.
 +static BOOL WINAPI NotifyWinUIPaneDrain(void* aContext) {
-+  if (!NS_IsMainThread() || sPaneStopped) return FALSE;
++  if (sPaneStopped) return FALSE;
 +  HWND window = static_cast<HWND>(aContext);
 +  nsresult rv = NS_DispatchToMainThread(NS_NewRunnableFunction(
 +      "mozilla::widget::WinUIPaneDrain", [window]() {
@@ -30643,6 +32771,18 @@ index 00000000000..3c26bffa40d
 +            NS_ConvertUTF8toUTF16(EndpointName(window)).get());
 +      }));
 +  return NS_SUCCEEDED(rv) ? TRUE : FALSE;
++}
++
++bool TransferWinUIStartup(HWND aWindow, const nsAString& aMessage, nsAString& aReply) {
++  aReply.Truncate();
++  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
++      !sPaneApi.startupTransfer || aMessage.Length() > 131072) return false;
++  nsAutoString message(aMessage);
++  auto output = mozilla::MakeUnique<wchar_t[]>(262144);
++  output[0] = 0;
++  if (FAILED(sPaneApi.startupTransfer(aWindow, message.get(), output.get(), 262144))) return false;
++  aReply.Assign(reinterpret_cast<const char16_t*>(output.get()));
++  return true;
 +}
 +
 +bool DrainWinUIRequests(HWND aWindow, nsAString& aBatch) {
@@ -30690,6 +32830,21 @@ index 00000000000..3c26bffa40d
 +             false);
 +}
 +
++bool GetWinUIChromeLayout(HWND aWindow, uint32_t aStripHeight, bool aNavigation,
++                         uint32_t aInset, nsTArray<LayoutDeviceIntRect>& aRects) {
++  aRects.Clear();
++  if (!XRE_IsParentProcess() || !NS_IsMainThread() || sPaneStopped ||
++      !Preferences::GetBool("fenn.winui.chrome.layout", false) || !PaneEnabled() || !LoadPane())
++    return false;
++  WinUIChromeLayout plan{};
++  if (FAILED(sPaneApi.measureChromeLayout(aWindow, aStripHeight, aNavigation, aInset, &plan)) || !plan.fits)
++    return false;
++  for (const RECT& r : {plan.strip, plan.navigation, plan.content}) {
++    aRects.AppendElement(LayoutDeviceIntRect(r.left, r.top, r.right - r.left, r.bottom - r.top));
++  }
++  return true;
++}
++
 +bool UpdateWinUIPane(HWND aWindow, const RECT& aRect, bool aVisible,
 +                     bool aFocus, bool aBackwards,
 +                     const nsTArray<LayoutDeviceIntRect>& aOcclusions) {
@@ -30701,6 +32856,7 @@ index 00000000000..3c26bffa40d
 +  }
 +  sTraceEnabled = true;
 +  if (!LoadPane()) return false;
++  EnsureIndependentAccessibility(aWindow);
 +  HRESULT hr = sPaneApi.updateTabStrip(aWindow, &aRect, aVisible);
 +  if (SUCCEEDED(hr) && sPaneApi.setNotifySink) {
 +    // Registered by the widget, not by chrome script, so the request path
@@ -30795,6 +32951,7 @@ index 00000000000..3c26bffa40d
 +  static bool sAttempted = false;
 +  if (sAttempted || !XRE_IsParentProcess()) return;
 +  sAttempted = true;
++  if (FennStartupWindowIndependent()) return; // Native bootstrap joined the runtime before XUL.
 +  UINT32 length = 0;
 +  if (GetCurrentPackageFullName(&length, nullptr) != APPMODEL_ERROR_NO_PACKAGE) {
 +    return;
@@ -30871,10 +33028,10 @@ index 00000000000..3c26bffa40d
 +}  // namespace mozilla::widget
 diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
 new file mode 100644
-index 00000000000..cf68f6fb6fe
+index 00000000000..e2bff07b054
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.h
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,55 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30886,6 +33043,14 @@ index 00000000000..cf68f6fb6fe
 +#include "nsTArray.h"
 +#include "nsString.h"
 +namespace mozilla::widget {
++bool IsNativeWindowHost(HWND);
++// Returns true when the independent native owner handles the request.
++bool FocusIndependentWindowHost(HWND);
++bool AdoptNativeStartupWindowHost(HWND);
++HWND CreateNativeWindowHost(DWORD, const wchar_t*, DWORD, const RECT&, HWND, HINSTANCE);
++bool AttachNativeWindowHost(HWND, uintptr_t, WNDPROC, WNDPROC*);
++bool DetachNativeWindowHost(HWND);
++bool DestroyNativeWindowHost(HWND);
 +void TraceWinUIPrototype(const char* aPhase, HWND aWindow = nullptr);
 +bool UpdateWinUIPane(HWND aWindow, const RECT& aRect, bool aVisible,
 +                     bool aFocus, bool aBackwards,
@@ -30893,6 +33058,8 @@ index 00000000000..cf68f6fb6fe
 +uint32_t SyncWinUITabs(HWND aWindow, const nsTArray<uint32_t>& aIds,
 +                       const nsTArray<nsString>& aTitles, const nsTArray<uint32_t>& aCommands, uint32_t aSelected, uint32_t aRevision);
 +bool SyncWinUIAddress(HWND aWindow, const nsAString& aSnapshot);
++bool GetWinUIChromeLayout(HWND aWindow, uint32_t aStripHeight, bool aNavigation,
++                         uint32_t aInset, nsTArray<LayoutDeviceIntRect>& aRects);
 +bool UpdateWinUIAddress(HWND aWindow, const RECT& aRect, bool aVisible,
 +                       bool aFocus, bool aSelectAll);
 +bool SyncWinUITabMenu(HWND aWindow, const nsAString& aSnapshot);
@@ -30903,6 +33070,7 @@ index 00000000000..cf68f6fb6fe
 +// nsIBaseWindow::nativeHandle formats it, so a chrome window can recognise its
 +// own endpoint.
 +bool DrainWinUIRequests(HWND aWindow, nsAString& aBatch);
++bool TransferWinUIStartup(HWND aWindow, const nsAString& aMessage, nsAString& aReply);
 +bool CompleteWinUIRequests(HWND aWindow, const nsAString& aOutcomes);
 +uint32_t ApplyWinUITabDelta(HWND aWindow, const nsAString& aDelta);
 +void DestroyWinUIPane(HWND aWindow);
@@ -30912,7 +33080,497 @@ index 00000000000..cf68f6fb6fe
 +// Parent process, before any window: joins an unpackaged Firefox to the shared
 +// Windows App SDK runtime the pane is built against. No-op when packaged.
 +void InitializeWinUIRuntime();
++bool ShowNativeStartupSurface();
++bool PrepareDefaultNativeStartupHost(HINSTANCE, const wchar_t* = nullptr);
++bool PrepareRoutedNativeStartupHost(const char16_t*);
++void CancelRoutedNativeStartupHost();
++void DismissNativeStartupSurface(HWND);
 +}  // namespace mozilla::widget
++#endif
+diff --git a/widget/windows/WinUIAccessibleRoot.h b/widget/windows/WinUIAccessibleRoot.h
+new file mode 100644
+index 00000000000..54421faf97c
+--- /dev/null
++++ b/widget/windows/WinUIAccessibleRoot.h
+@@ -0,0 +1,153 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#ifndef mozilla_widget_WinUIAccessibleRoot_h
++#define mozilla_widget_WinUIAccessibleRoot_h
++
++#ifdef ACCESSIBILITY
++#include <atomic>
++#include <uiautomation.h>
++#include "mozilla/a11y/LazyInstantiator.h"
++#include "mozilla/a11y/Compatibility.h"
++#include "mozilla/RefPtr.h"
++#include "mozilla/Logging.h"
++#include "nsThreadUtils.h"
++
++namespace mozilla::widget {
++inline LazyLogModule sWinUIAccessibilityLog("WinUIAccessibility");
++// The HWND thread answers WM_GETOBJECT using this agile identity. Semantic
++// requests run on UIA/COM client threads and use normal COM marshaling to the
++// Gecko STA. Never synchronously ask Gecko for information on the HWND thread:
++// Gecko can itself be waiting for a native pane publication to finish.
++class WinUIAccessibleRoot final : public IRawElementProviderSimple,
++                                  public IRawElementProviderFragment,
++                                  public IRawElementProviderFragmentRoot {
++ public:
++  explicit WinUIAccessibleRoot(HWND window)
++      : mWindow(window), mOwner(GetWindowThreadProcessId(window, nullptr)) {}
++  HRESULT Initialize() {
++    MOZ_ASSERT(NS_IsMainThread());
++    HRESULT hr=CoCreateFreeThreadedMarshaler(
++        static_cast<IRawElementProviderSimple*>(this),getter_AddRefs(mMarshaler));
++    if (FAILED(hr)) return hr;
++    hr=CoCreateInstance(CLSID_StdGlobalInterfaceTable,nullptr,CLSCTX_INPROC_SERVER,
++        IID_IGlobalInterfaceTable,getter_AddRefs(mGit));
++    if (FAILED(hr)) return hr;
++    RefPtr<IRawElementProviderSimple> uia=a11y::LazyInstantiator::GetRootUia(mWindow);
++    if (!uia) return a11y::Compatibility::IsUiaEnabled() ? E_PENDING : S_FALSE;
++    DWORD cookie=0;
++    hr=mGit->RegisterInterfaceInGlobal(uia,__uuidof(IRawElementProviderSimple),&cookie);
++    if (FAILED(hr)) return hr;
++    mUia=cookie;
++    mSupportsUia=true;
++    a11y::LazyInstantiator::EnableBlindAggregation(mWindow);
++    return S_OK;
++  }
++  void Disconnect() {
++    MOZ_ASSERT(NS_IsMainThread());
++    // Revoke on Gecko, before the native thread drops its last reference.
++    if (DWORD cookie=mUia.exchange(0)) mGit->RevokeInterfaceFromGlobal(cookie);
++  }
++  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void** out) override {
++    if (!out) return E_POINTER;
++    *out=nullptr;
++    if (iid==IID_IUnknown || (mSupportsUia && iid==__uuidof(IRawElementProviderSimple)))
++      *out=static_cast<IRawElementProviderSimple*>(this);
++    else if (mSupportsUia && iid==__uuidof(IRawElementProviderFragment)) *out=static_cast<IRawElementProviderFragment*>(this);
++    else if (mSupportsUia && iid==__uuidof(IRawElementProviderFragmentRoot)) *out=static_cast<IRawElementProviderFragmentRoot*>(this);
++    else if (iid==IID_IMarshal && mMarshaler) return mMarshaler->QueryInterface(iid,out);
++    else return E_NOINTERFACE;
++    AddRef(); return S_OK;
++  }
++  ULONG STDMETHODCALLTYPE AddRef() override { return ++mReferences; }
++  ULONG STDMETHODCALLTYPE Release() override {
++    const ULONG count=--mReferences;
++    if (!count) delete this;
++    return count;
++  }
++  HRESULT STDMETHODCALLTYPE get_ProviderOptions(ProviderOptions* out) override {
++    if (!out) return E_POINTER;
++    // UIA dispatches this thread-safe facade on its workers. UseComThreading
++    // would bind requests to the HWND STA, where waiting for Gecko is unsafe.
++    *out=ProviderOptions_ServerSideProvider;
++    return S_OK;
++  }
++  HRESULT STDMETHODCALLTYPE get_HostRawElementProvider(IRawElementProviderSimple** out) override {
++    if (!out) return E_POINTER;
++    *out=nullptr;
++    return mUia ? UiaHostProviderFromHwnd(mWindow,out) : UIA_E_ELEMENTNOTAVAILABLE;
++  }
++
++ private:
++  ~WinUIAccessibleRoot() { MOZ_ASSERT(!mUia); }
++  template<class T> HRESULT Proxy(RefPtr<T>& out) {
++    if (GetCurrentThreadId()==mOwner) {
++      MOZ_LOG(sWinUIAccessibilityLog,LogLevel::Debug,("Reject native-thread semantic query"));
++      return UIA_E_ELEMENTNOTAVAILABLE;
++    }
++    const DWORD cookie=mUia.load();
++    if (!cookie) return CO_E_OBJNOTCONNECTED;
++    RefPtr<IRawElementProviderSimple> base;
++    HRESULT hr=mGit->GetInterfaceFromGlobal(cookie,__uuidof(IRawElementProviderSimple),getter_AddRefs(base));
++    return FAILED(hr) ? hr : base->QueryInterface(__uuidof(T),getter_AddRefs(out));
++  }
++  std::atomic<ULONG> mReferences{0};
++  HWND const mWindow;
++  DWORD const mOwner;
++  RefPtr<IUnknown> mMarshaler;
++  RefPtr<IGlobalInterfaceTable> mGit;
++  std::atomic<DWORD> mUia{0};
++  bool mSupportsUia=false; // immutable after publication, including disconnect
++
++ public:
++#define FENN_A11Y_FORWARD(type, method, signature, arguments) \
++  HRESULT STDMETHODCALLTYPE method signature override { \
++    RefPtr<type> proxy; HRESULT hr=Proxy(proxy); \
++    return FAILED(hr) ? hr : proxy->method arguments; \
++  }
++  HRESULT STDMETHODCALLTYPE GetPatternProvider(PATTERNID id,IUnknown** out) override {
++    if (!out) return E_POINTER;
++    *out=nullptr;
++    if (GetCurrentThreadId()==mOwner) return S_OK;
++    RefPtr<IRawElementProviderSimple> proxy; HRESULT hr=Proxy(proxy);
++    return FAILED(hr) ? hr : proxy->GetPatternProvider(id,out);
++  }
++  HRESULT STDMETHODCALLTYPE GetPropertyValue(PROPERTYID id,VARIANT* out) override {
++    if (!out) return E_POINTER;
++    VariantInit(out);
++    if (id==UIA_NativeWindowHandlePropertyId) {
++      out->vt=VT_I4; out->lVal=static_cast<LONG>(reinterpret_cast<LONG_PTR>(mWindow)); return S_OK;
++    }
++    if (GetCurrentThreadId()==mOwner) return S_OK; // native HWND provider fallback
++    RefPtr<IRawElementProviderSimple> proxy; HRESULT hr=Proxy(proxy);
++    return FAILED(hr) ? hr : proxy->GetPropertyValue(id,out);
++  }
++  FENN_A11Y_FORWARD(IRawElementProviderFragment,Navigate,(NavigateDirection direction,IRawElementProviderFragment** out),(direction,out))
++  // HWND-root identity/geometry are native facts. UIA asks for them while
++  // constructing its node inside WM_GETOBJECT, before any worker-side calls.
++  HRESULT STDMETHODCALLTYPE GetRuntimeId(SAFEARRAY** out) override {
++    if (!out) return E_POINTER;
++    *out=nullptr; return S_OK; // UIA supplies the HWND-root runtime identity.
++  }
++  HRESULT STDMETHODCALLTYPE get_BoundingRectangle(UiaRect* out) override {
++    if (!out) return E_POINTER;
++    *out={}; RECT bounds{};
++    if (!mUia || !GetWindowRect(mWindow,&bounds)) return UIA_E_ELEMENTNOTAVAILABLE;
++    *out={double(bounds.left),double(bounds.top),double(bounds.right-bounds.left),double(bounds.bottom-bounds.top)};
++    return S_OK;
++  }
++  FENN_A11Y_FORWARD(IRawElementProviderFragment,GetEmbeddedFragmentRoots,(SAFEARRAY** out),(out))
++  FENN_A11Y_FORWARD(IRawElementProviderFragment,SetFocus,(),())
++  FENN_A11Y_FORWARD(IRawElementProviderFragmentRoot,ElementProviderFromPoint,(double x,double y,IRawElementProviderFragment** out),(x,y,out))
++  FENN_A11Y_FORWARD(IRawElementProviderFragmentRoot,GetFocus,(IRawElementProviderFragment** out),(out))
++  HRESULT STDMETHODCALLTYPE get_FragmentRoot(IRawElementProviderFragmentRoot** out) override {
++    if (!out) return E_POINTER;
++    *out=nullptr;
++    if (!mUia) return UIA_E_ELEMENTNOTAVAILABLE;
++    *out=this; AddRef(); return S_OK;
++  }
++#undef FENN_A11Y_FORWARD
++};
++}  // namespace mozilla::widget
++#endif
++#endif
+diff --git a/widget/windows/WinUIPageInput.cpp b/widget/windows/WinUIPageInput.cpp
+new file mode 100644
+index 00000000000..15334bcd387
+--- /dev/null
++++ b/widget/windows/WinUIPageInput.cpp
+@@ -0,0 +1,295 @@
++/* Licensed under the Mozilla Public License, v. 2.0. */
++#include "WinUIPageInput.h"
++#include "WinIMEHandler.h"
++#include "nsWindow.h"
++#include "nsThreadUtils.h"
++#include "mozilla/RefPtr.h"
++#include "mozilla/TextEvents.h"
++#include "mozilla/TextEventDispatcher.h"
++#include "mozilla/TextRange.h"
++#include "mozilla/IMEStateManager.h"
++#include "mozilla/dom/BrowserParent.h"
++#include <deque>
++#include <map>
++
++namespace mozilla::widget {
++namespace {
++constexpr uint32_t kMaxText=65536;
++struct Session final {
++  NS_INLINE_DECL_REFCOUNTING(Session)
++  RefPtr<nsWindow> window;
++  uint64_t id=0, revision=0, publishedRevision=0, dispatched=0, acknowledgment=0;
++  uint32_t textBase=0, textLength=0;
++  bool scheduled=false, draining=false, focused=true;
++  explicit Session(nsWindow* widget):window(widget) {}
++ private:
++  ~Session()=default;
++};
++std::map<HWND,RefPtr<Session>> sSessions;
++uint64_t sNextSession=0;
++RefPtr<Session> Find(HWND hwnd) {
++  auto it=sSessions.find(hwnd);return it==sSessions.end() ? nullptr : it->second;
++}
++bool Current(const RefPtr<Session>& session) {
++  return session && !session->window->Destroyed() && Find(session->window->GetWindowHandle())==session;
++}
++void Publish(const RefPtr<Session>& session) {
++  if(!Current(session) || !session->focused) return;
++  auto widget=session->window;
++  WinUIPageInput input{};input.session=session->id;input.revision=++session->revision;
++  input.acknowledgment=session->acknowledgment;
++  nsTArray<InputScope> scopes;
++  const auto& context=widget->GetInputContext();
++  IMEHandler::AppendInputScopeFromType(context.mHTMLInputType,scopes);
++  IMEHandler::AppendInputScopeFromInputMode(context.mHTMLInputMode,scopes);
++  if(context.mInPrivateBrowsing)scopes.AppendElement(IS_PRIVATE);
++  if(scopes.Length()>8)return;
++  input.scopeCount=scopes.Length();
++  for(uint32_t i=0;i<input.scopeCount;++i)input.scopes[i]=scopes[i];
++  // Never copy password text into a separate native presentation cache.
++  if(widget->GetInputContext().mIMEState.mEnabled!=IMEEnabled::Enabled) {
++    PublishIndependentPageInput(widget->GetWindowHandle(),input);return;
++  }
++  WidgetQueryContentEvent selection(true,eQuerySelectedText,widget);
++  selection.mNeedsToFlushLayout=false;widget->InitEvent(selection);widget->DispatchWindowEvent(selection);
++  if(!Current(session) || selection.Failed()) return;
++  const uint32_t start=selection.mReply->StartOffset(), end=selection.mReply->EndOffset();
++  // Keep a bounded surrounding-text window, leaving room for local composition
++  // growth. TSF ACPs are local to this view; Gecko offsets stay document-relative.
++  if(end<start || end-start>kMaxText-2) {PublishIndependentPageInput(widget->GetWindowHandle(),input);return;}
++  const uint32_t contextLength=std::max(kMaxText/2,end-start+2);
++  uint32_t base=session->textBase;
++  if(start<base || uint64_t(end)>uint64_t(base)+contextLength) {
++    const uint32_t before=(contextLength-(end-start))/2;
++    base=start>before ? start-before : 0;
++  }
++  const uint32_t queryBase=base ? base-1 : 0;
++  WidgetQueryContentEvent text(true,eQueryTextContent,widget);
++  text.InitForQueryTextContent(queryBase,contextLength+2);text.mNeedsToFlushLayout=false;
++  widget->InitEvent(text);widget->DispatchWindowEvent(text);
++  if(!Current(session) || text.Failed()) return;
++  const nsString& source=text.mReply->DataRef();
++  uint32_t skip=base-queryBase;
++  if(skip>source.Length())return;
++  // Do not split a surrogate pair at either edge of the context window.
++  if(skip && skip<source.Length() && source[skip]>=0xdc00 && source[skip]<=0xdfff && source[skip-1]>=0xd800 && source[skip-1]<=0xdbff) {--skip;--base;}
++  uint32_t length=std::min<size_t>(contextLength,source.Length()-skip);
++  if(length && skip+length<source.Length() && source[skip+length-1]>=0xd800 && source[skip+length-1]<=0xdbff && source[skip+length]>=0xdc00 && source[skip+length]<=0xdfff)--length;
++  if(start<base || uint64_t(end)>uint64_t(base)+length)return;
++  nsDependentSubstring value(source,skip,length);
++  input.start=start-base;input.end=end-base;input.textBase=base;
++  input.reversed=selection.mReply->mReversed;
++  WidgetQueryContentEvent caret(true,eQueryCaretRect,widget);
++  caret.InitForQueryCaretRect(input.reversed ? start : end);caret.mNeedsToFlushLayout=false;
++  widget->InitEvent(caret);widget->DispatchWindowEvent(caret);
++  if(!Current(session) || caret.Failed()) return;
++  auto rect=caret.mReply->mRect;
++  auto reference=static_cast<nsWindow*>(caret.mReply->mFocusedWidget ? caret.mReply->mFocusedWidget : widget.get());
++  reference=reference->GetTopLevelWindow(false);if(!reference)return;
++  rect.MoveBy(reference->WidgetToScreenOffset());
++  input.caret={rect.X(),rect.Y(),rect.X()+std::max(1,rect.Width()),rect.Y()+std::max(1,rect.Height())};
++  // TSF's view extent is the focused editor, not the outer native window.
++  // Match TSFTextStoreBase: clip Gecko's editor rect to the client bounds before
++  // converting to physical screen coordinates. The Japanese candidate UI can
++  // retain a pre-DPI anchor when the view extent is the whole browser instead.
++  WidgetQueryContentEvent editor(true,eQueryEditorRect,widget);
++  editor.mNeedsToFlushLayout=false;widget->InitEvent(editor);widget->DispatchWindowEvent(editor);
++  if(!Current(session) || editor.Failed()) return;
++  auto editorReference=static_cast<nsWindow*>(editor.mReply->mFocusedWidget ? editor.mReply->mFocusedWidget : widget.get());
++  editorReference=editorReference->GetTopLevelWindow(false);if(!editorReference)return;
++  auto editorRect=editorReference->GetClientBounds();editorRect.MoveTo(0,0);
++  editorRect.IntersectRect(editor.mReply->mRect,editorRect);
++  if(!editorRect.IsEmpty()) {
++    editorRect.MoveBy(editorReference->WidgetToScreenOffset());
++    input.editor={editorRect.X(),editorRect.Y(),editorRect.XMost(),editorRect.YMost()};
++  }
++  input.enabled=1;input.length=value.Length();input.text=reinterpret_cast<const wchar_t*>(value.BeginReading());
++  if(PublishIndependentPageInput(widget->GetWindowHandle(),input)==S_OK) {
++    session->textBase=base;session->textLength=length;session->publishedRevision=input.revision;
++  }
++}
++// One remote query in flight globally, with bounded FIFO work across windows.
++// Stale jobs are discarded before querying and again before publishing replies.
++using GeometryJob=std::pair<RefPtr<Session>,WinUIPageInputEvent>;
++std::deque<GeometryJob> sGeometryQueries;
++bool sGeometryBusy=false;
++bool GeometryCurrent(const RefPtr<Session>& session,const WinUIPageInputEvent& request) {
++  return Current(session) && session->focused && request.session==session->id &&
++      request.edit==session->dispatched && request.revision==session->publishedRevision;
++}
++void FinishGeometry(const RefPtr<Session>& session,const WinUIPageInputEvent& request,
++                    bool valid,LayoutDeviceIntRect rect={},LayoutDeviceIntRect editor={}) {
++  if(!GeometryCurrent(session,request))return;
++  auto widget=session->window;
++  WinUIPageGeometry reply{};reply.session=request.session;reply.edit=request.edit;
++  reply.revision=request.revision;reply.request=request.request;reply.start=request.start;reply.end=request.end;
++  if(valid) {
++    rect.SetWidth(std::max(1,rect.Width()));rect.SetHeight(std::max(1,rect.Height()));
++    auto visible=widget->GetClientBounds();visible.MoveTo(0,0);visible.IntersectRect(editor,visible);
++    auto clipped=rect.Intersect(visible);reply.clipped=clipped!=rect;
++    if(!clipped.IsEmpty()) {clipped.MoveBy(widget->WidgetToScreenOffset());reply.bounds={clipped.X(),clipped.Y(),clipped.XMost(),clipped.YMost()};}
++    reply.valid=1;
++  }
++  PublishIndependentPageGeometry(widget->GetWindowHandle(),reply);
++}
++void PumpGeometry();
++void QueryGeometry(const RefPtr<Session>& session,const WinUIPageInputEvent& request) {
++  if(!GeometryCurrent(session,request) || request.start>request.end || uint64_t(session->textBase)+request.end>UINT32_MAX)return;
++  auto widget=session->window;
++  const uint32_t offset=session->textBase+request.start,length=request.end-request.start;
++  RefPtr<dom::BrowserParent> browser=IMEStateManager::GetActiveBrowserParent();
++  if(browser) {
++    nsCOMPtr<nsIWidget> top=browser->GetTopLevelWidget();
++    if(!browser->CanSend() || !IMEStateManager::DoesBrowserParentHaveIMEFocus(browser) ||
++        !top || top->GetNativeData(NS_NATIVE_WINDOW)!=widget->GetWindowHandle()) {
++      FinishGeometry(session,request,false);return;
++    }
++    sGeometryBusy=true;
++    browser->SendFennQueryPageGeometry(offset,length)->Then(GetCurrentSerialEventTarget(),__func__,
++      [session,request,browser](const dom::FennPageGeometryResult& result) {
++        sGeometryBusy=false;
++        if(IMEStateManager::GetActiveBrowserParent()==browser && IMEStateManager::DoesBrowserParentHaveIMEFocus(browser))
++          FinishGeometry(session,request,result.valid(),browser->TransformChildToParent(result.textRect()),browser->TransformChildToParent(result.editorRect()));
++        PumpGeometry();
++      },
++      [session,request](const ipc::ResponseRejectReason&) {
++        sGeometryBusy=false;FinishGeometry(session,request,false);PumpGeometry();
++      });
++    return;
++  }
++  WidgetQueryContentEvent textRect(true,length ? eQueryTextRect : eQueryCaretRect,widget);
++  if(length)textRect.InitForQueryTextRect(offset,length);
++  else textRect.InitForQueryCaretRect(offset);
++  widget->InitEvent(textRect);widget->DispatchWindowEvent(textRect);
++  WidgetQueryContentEvent editorRect(true,eQueryEditorRect,widget);
++  widget->InitEvent(editorRect);widget->DispatchWindowEvent(editorRect);
++  if(textRect.Succeeded() && editorRect.Succeeded())FinishGeometry(session,request,true,textRect.mReply->mRect,editorRect.mReply->mRect);
++  else FinishGeometry(session,request,false);
++}
++void PumpGeometry() {
++  while(!sGeometryBusy && !sGeometryQueries.empty()) {
++    auto job=std::move(sGeometryQueries.front());sGeometryQueries.pop_front();
++    QueryGeometry(job.first,job.second);
++  }
++}
++void Geometry(const RefPtr<Session>& session,const WinUIPageInputEvent& request) {
++  std::erase_if(sGeometryQueries,[](const GeometryJob& job){return !GeometryCurrent(job.first,job.second);});
++  if(sGeometryQueries.size()>=16) {FinishGeometry(session,request,false);return;}
++  sGeometryQueries.emplace_back(session,request);PumpGeometry();
++}
++void Schedule(const RefPtr<Session>& session) {
++  if(!Current(session) || session->scheduled) return;
++  session->scheduled=true;
++  NS_DispatchToMainThread(NS_NewRunnableFunction("FennPageInputPublication",[session] {
++    session->scheduled=false;Publish(session);
++  }));
++}
++}
++void DrainIndependentPageIME(HWND hwnd) {
++  RefPtr<Session> session=Find(hwnd);if(!Current(session) || session->draining)return;
++  session->draining=true;
++  RefPtr<TextEventDispatcher> dispatcher=session->window->GetTextEventDispatcher();
++  nsString text;text.SetLength(kMaxText);
++  bool changed=false;unsigned consumed=0;
++  for(;consumed<128 && Current(session);++consumed) {
++    WinUIPageInputEvent event{};
++    if(DrainIndependentPageInput(hwnd,event,reinterpret_cast<wchar_t*>(text.BeginWriting()),kMaxText)!=S_OK)break;
++    if(event.session!=session->id || !session->focused)continue;
++    if(event.kind==6) {Geometry(session,event);continue;}
++    if(event.edit<=session->dispatched)continue;
++    changed=true;
++    if(NS_FAILED(dispatcher->BeginNativeInputTransaction()))break;
++    nsDependentSubstring data(text,0,event.length);nsEventStatus status=nsEventStatus_eIgnore;
++    session->dispatched=event.edit;
++    nsresult rv=NS_OK;
++    if(event.kind==1) {
++      if(!dispatcher->DispatchSetSelectionEvent(session->textBase+event.start,event.end-event.start,ExpandToClusterBoundary::No))break;
++      rv=dispatcher->StartComposition(status);
++    } else if(event.kind==2) {
++      RefPtr<TextRangeArray> ranges=new TextRangeArray;
++      const TextRangeType types[]={TextRangeType::eRawClause,TextRangeType::eRawClause,TextRangeType::eSelectedRawClause,TextRangeType::eConvertedClause,TextRangeType::eSelectedClause};
++      const TextRangeStyle::LineStyle lines[]={TextRangeStyle::LineStyle::None,TextRangeStyle::LineStyle::Solid,TextRangeStyle::LineStyle::Dotted,TextRangeStyle::LineStyle::Dashed,TextRangeStyle::LineStyle::Wavy};
++      bool valid=event.clauseCount<=64;uint32_t position=0;
++      auto color=[](uint32_t value){return NS_RGB(GetRValue(value),GetGValue(value),GetBValue(value));};
++      for(uint32_t i=0;valid && i<event.clauseCount;++i) {
++        const auto& clause=event.clauses[i];
++        if(clause.start!=position || clause.end<=clause.start || clause.end>event.length ||
++            clause.kind<1 || clause.kind>4 || clause.flags>15 || clause.line>4 || clause.bold>1) {valid=false;break;}
++        TextRange range;range.mStartOffset=clause.start;range.mEndOffset=clause.end;range.mRangeType=types[clause.kind];
++        auto& style=range.mRangeStyle;
++        if(clause.flags&1) {style.mDefinedStyles|=TextRangeStyle::DEFINED_FOREGROUND_COLOR;style.mForegroundColor=color(clause.foreground);}
++        if(clause.flags&2) {style.mDefinedStyles|=TextRangeStyle::DEFINED_BACKGROUND_COLOR;style.mBackgroundColor=color(clause.background);}
++        if(clause.flags&4) {style.mDefinedStyles|=TextRangeStyle::DEFINED_UNDERLINE_COLOR;style.mUnderlineColor=color(clause.underline);}
++        if(clause.flags&8) {style.mDefinedStyles|=TextRangeStyle::DEFINED_LINESTYLE;style.mLineStyle=lines[clause.line];style.mIsBoldLine=clause.bold!=0;}
++        ranges->AppendElement(range);position=clause.end;
++        if(getenv("FENN_PANE_DIAGNOSTICS"))fprintf(stderr,"FennPageIME clause=%u start=%u end=%u flags=%u\n",clause.kind,clause.start,clause.end,clause.flags);
++      }
++      if(!valid || (event.clauseCount && position!=event.length))break;
++      if(event.length && !event.clauseCount) {
++        TextRange raw;raw.mEndOffset=event.length;raw.mRangeType=TextRangeType::eRawClause;ranges->AppendElement(raw);
++      }
++      if(event.length) {
++        const auto* target=ranges->GetTargetClause();
++        if(!target || target->mRangeStyle.IsDefined() || event.caret<target->mStartOffset || event.caret>target->mEndOffset) {
++          TextRange caret;caret.mStartOffset=caret.mEndOffset=std::min(event.caret,event.length);caret.mRangeType=TextRangeType::eCaret;ranges->AppendElement(caret);
++        }
++      }
++      rv=dispatcher->SetPendingComposition(data,ranges);
++      if(NS_SUCCEEDED(rv))rv=dispatcher->FlushPendingComposition(status);
++    } else if(event.kind==3) {
++      rv=dispatcher->CommitComposition(status,&data);
++    } else if(event.kind==4) {
++      // Match TSFTextStore's non-composing replacement: Gecko owns selection,
++      // beforeinput/input, undo, and the temporary composition transaction.
++      if(!dispatcher->DispatchSetSelectionEvent(session->textBase+event.start,event.end-event.start,ExpandToClusterBoundary::No))break;
++      rv=dispatcher->StartComposition(status);
++      if(NS_SUCCEEDED(rv))rv=dispatcher->CommitComposition(status,&data);
++    } else if(event.kind==5) {
++      if(!dispatcher->DispatchSetSelectionEvent(session->textBase+event.start,event.end-event.start,ExpandToClusterBoundary::No,
++          event.caret ? RangeDirection::Reversed : RangeDirection::Normal))break;
++    }
++    if(NS_FAILED(rv))break;
++  }
++  session->draining=false;
++  if(Current(session) && !dispatcher->IsHandlingComposition())session->acknowledgment=session->dispatched;
++  if(changed)Schedule(session);
++  if(consumed==128 && Current(session))NS_DispatchToMainThread(NS_NewRunnableFunction("FennPageInputDrain",[session] {
++    if(Current(session))DrainIndependentPageIME(session->window->GetWindowHandle());
++  }));
++}
++bool NotifyIndependentPageIME(nsWindow* window,const IMENotification& notification) {
++  HWND hwnd=window->GetWindowHandle();
++  if(!GetPropW(hwnd,WINUI_PANE_ENDPOINT_PROPERTY))return false;
++  RefPtr<Session> session=Find(hwnd);
++  if(getenv("FENN_PANE_DIAGNOSTICS")) fprintf(stderr,"FennPageIME notify=%u session=%llu\n",unsigned(notification.mMessage),session ? session->id : 0);
++  switch(notification.mMessage) {
++    case NOTIFY_IME_OF_FOCUS:
++      if(session) {CommitIndependentPageInput(hwnd,false);DrainIndependentPageIME(hwnd);}
++      session=new Session(window);session->id=++sNextSession;sSessions[hwnd]=session;Schedule(session);break;
++    case NOTIFY_IME_OF_BLUR:
++      if(session) {
++        CommitIndependentPageInput(hwnd,false);DrainIndependentPageIME(hwnd);
++        session->focused=false;WinUIPageInput input{};input.session=session->id;input.revision=++session->revision;
++        PublishIndependentPageInput(hwnd,input);sSessions.erase(hwnd);
++      }break;
++    case REQUEST_TO_COMMIT_COMPOSITION:
++    case REQUEST_TO_CANCEL_COMPOSITION:
++      CommitIndependentPageInput(hwnd,notification.mMessage==REQUEST_TO_CANCEL_COMPOSITION);
++      DrainIndependentPageIME(hwnd);break;
++    case NOTIFY_IME_OF_COMPOSITION_EVENT_HANDLED:
++      if(session && !window->GetTextEventDispatcher()->IsHandlingComposition())session->acknowledgment=session->dispatched;
++      Schedule(session);break;
++    case NOTIFY_IME_OF_SELECTION_CHANGE:
++    case NOTIFY_IME_OF_TEXT_CHANGE:
++    case NOTIFY_IME_OF_POSITION_CHANGE:
++      Schedule(session);break;
++    default:break;
++  }
++  return true;
++}
++void RefreshIndependentPageIME(HWND hwnd) {Schedule(Find(hwnd));}
++void ForgetIndependentPageIME(HWND hwnd) {sSessions.erase(hwnd);}
++bool IndependentPageComposing(nsWindow* window) {
++  return window->GetTextEventDispatcher()->IsComposing();
++}
++}
+diff --git a/widget/windows/WinUIPageInput.h b/widget/windows/WinUIPageInput.h
+new file mode 100644
+index 00000000000..dd7d67fb203
+--- /dev/null
++++ b/widget/windows/WinUIPageInput.h
+@@ -0,0 +1,19 @@
++/* Licensed under the Mozilla Public License, v. 2.0. */
++#ifndef widget_windows_WinUIPageInput_h
++#define widget_windows_WinUIPageInput_h
++#include <windows.h>
++#include "mozilla/widget/IMEData.h"
++#include "WinUIPaneApi.h"
++class nsWindow;
++namespace mozilla::widget {
++bool NotifyIndependentPageIME(nsWindow*, const IMENotification&);
++void DrainIndependentPageIME(HWND);
++void ForgetIndependentPageIME(HWND);
++void RefreshIndependentPageIME(HWND);
++bool IndependentPageComposing(nsWindow*);
++HRESULT PublishIndependentPageInput(HWND, const WinUIPageInput&);
++HRESULT DrainIndependentPageInput(HWND, WinUIPageInputEvent&, wchar_t*, uint32_t);
++HRESULT CommitIndependentPageInput(HWND, bool);
++HRESULT PublishIndependentPageGeometry(HWND, const WinUIPageGeometry&);
++}
 +#endif
 diff --git a/browser/base/content/WinUIAddressHost.sys.mjs b/browser/base/content/WinUIAddressHost.sys.mjs
 new file mode 100644
@@ -31153,11 +33811,12 @@ index 00000000000..cd1051c5061
 +}
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 00000000000..4c2af64a22c
+index 00000000000..09836a64706
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,215 @@
 +#pragma once
++struct IUnknown;
 +#include <windows.h>
 +#include <stdint.h>
 +
@@ -31184,7 +33843,15 @@ index 00000000000..4c2af64a22c
 +// completeRequests) and incremental tab deltas (applyTabDelta), and retired
 +// syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 +// retaining the sidebar entry point.
-+#define WINUI_PANE_ABI_VERSION 17u
++// v18 adds stateless native client-area allocation for browser layout.
++#define WINUI_PANE_ABI_VERSION 37u
++
++// Scalar key transport, translated exactly once by the Gecko endpoint.
++#define WINUI_PANE_ENDPOINT_KEY_OFFSET WM_APP
++#define WINUI_PANE_ENDPOINT_PROPERTY L"Fenn.GeckoEndpoint"
++inline constexpr int WinUIPaneModifierKeys[] = {
++    VK_SHIFT, VK_CONTROL, VK_MENU, VK_LSHIFT, VK_RSHIFT, VK_LCONTROL,
++    VK_RCONTROL, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN, VK_CAPITAL, VK_NUMLOCK, VK_SCROLL};
 +
 +// The pane is built framework-dependent on the shared Windows App SDK runtime
 +// (Microsoft.WindowsAppRuntime.2, at least 2.5.1.0). A packaged host declares it
@@ -31196,7 +33863,9 @@ index 00000000000..4c2af64a22c
 +#define WINUI_PANE_RUNTIME_MIN_VERSION 0x0002000500010000ull
 +#define WINUI_PANE_RUNTIME_BOOTSTRAP_DLL L"Microsoft.WindowsAppRuntime.Bootstrap.dll"
 +
-+// All calls run on the browser's owning STA. Coordinates are client physical
++// Calls originate on the browser STA. The experimental independent host
++// dispatches UI work to its native STA; notify sinks must enqueue browser work.
++// Coordinates are client physical
 +// pixels. The module remains loaded until process exit, including after shutdown.
 +// Legacy availability bits for tab snapshots and invalidation. Menu action IDs
 +// are opaque strings in the published state; native code assigns no command
@@ -31227,6 +33896,37 @@ index 00000000000..4c2af64a22c
 +// arrive. Returning FALSE is not an error the host must otherwise handle.
 +using WinUIPaneNotifyFn = BOOL (WINAPI*)(void* context);
 +
++struct WinUIChromeLayout {
++    BOOL fits;
++    RECT strip, navigation, content;
++};
++
++// v27: bounded text-window base and asynchronous range geometry (event kind 6).
++// Borrowed input buffers are copied during publication; events are copied
++// into caller-owned storage. Only the native owner accesses the TSF objects.
++struct WinUIPageInput {
++    uint64_t session, revision, acknowledgment;
++    uint32_t enabled, start, end, length, reversed, textBase;
++    const wchar_t* text;
++    RECT caret, editor;
++    uint32_t scopeCount;
++    int32_t scopes[8];
++};
++// v28: bounded composition clauses and display attributes.
++struct WinUIPageClause {
++    uint32_t start,end,kind,flags,line,bold,foreground,background,underline;
++};
++struct WinUIPageInputEvent {
++    uint64_t session, edit, revision, request;
++    uint32_t kind, start, end, caret, length;
++    uint32_t clauseCount;
++    WinUIPageClause clauses[64];
++};
++struct WinUIPageGeometry {
++    uint64_t session, revision, edit, request;
++    uint32_t start, end, valid, clipped;
++    RECT bounds;
++};
 +struct WinUIPaneApi {
 +    uint32_t size;
 +    uint32_t version;
@@ -31291,5 +33991,42 @@ index 00000000000..4c2af64a22c
 +    // v15: independent toolbar address island; the request endpoint is shared.
 +    HRESULT (WINAPI* updateAddress)(HWND, const RECT*, BOOL);
 +    HRESULT (WINAPI* focusAddress)(HWND, BOOL);
++    // No control mutation. Invalid requests leave output untouched; fits=false
++    // requires the browser to keep/restore its existing layout.
++    HRESULT (WINAPI* measureChromeLayout)(HWND, uint32_t, BOOL, uint32_t, WinUIChromeLayout*);
++    // v19: opt-in native outer HWND; Gecko remains its logical widget adapter.
++    HRESULT (WINAPI* createWindowHost)(DWORD, const wchar_t*, DWORD, const RECT*, HWND, HINSTANCE, HWND*);
++    HRESULT (WINAPI* attachWindowHost)(HWND, uintptr_t, WNDPROC, WNDPROC*);
++    HRESULT (WINAPI* detachWindowHost)(HWND);
++    HRESULT (WINAPI* destroyWindowHost)(HWND);
++    // One-use handoff from Fenn's native bootstrap, never Firefox window adoption.
++    HRESULT (WINAPI* adoptStartupWindowHost)(HWND);
++    // v21: early loading island on the original native HWND, owning thread only.
++    HRESULT (WINAPI* showStartupSurface)(HWND);
++    HRESULT (WINAPI* dismissStartupSurface)(HWND);
++    // v23: selected profile path for saved placement; borrowed during Start.
++    // Development independent-thread host. Start before Gecko/other pane calls.
++    // Profile placement/cache and optional Firefox-resolved presentation JSON.
++    // Both strings are borrowed for the call; presentation is bounded to 32768
++    // UTF-16 units and copied before dispatch to the native owner thread.
++    HRESULT (WINAPI* startIndependentHost)(const wchar_t*, const wchar_t*, HWND*);
++    HRESULT (WINAPI* bindIndependentEndpoint)(HWND, uintptr_t, HWND);
++    HRESULT (WINAPI* cancelIndependentClose)(HWND, uint64_t, uint64_t);
++    // v24: agile COM identity only. The provider must never wait for Gecko on
++    // the HWND thread. Native retains a reference until cleared or destroyed.
++    HRESULT (WINAPI* setIndependentAccessibility)(HWND, IUnknown*);
++    HRESULT (WINAPI* publishIndependentInput)(HWND, const WinUIPageInput*);
++    HRESULT (WINAPI* drainIndependentInput)(HWND, WinUIPageInputEvent*, wchar_t*, uint32_t);
++    HRESULT (WINAPI* commitIndependentInput)(HWND, BOOL);
++    HRESULT (WINAPI* publishIndependentGeometry)(HWND, const WinUIPageGeometry*);
++    // v33 adds acknowledged restored/local editor selection leases (kinds 4/5).
++    // Operation 13 releases the editor after terminal draft cleanup.
++    // Operation 15 probes early ownership; 16 acknowledges connected presentation.
++    // Operation 14 retires an untouched initial placeholder to the selected browser.
++    // Operation 12 explicitly attaches the retained startup presenter.
++    // Operation 11 publishes bounded browser-row identity snapshots.
++    // Decimal u64 identities in JSON; borrowed buffers only for this call.
++    // Operations 17/18 enable exact-state draft adoption and finish the retained presenter.
++    HRESULT (WINAPI* startupTransfer)(HWND, const wchar_t*, wchar_t*, uint32_t);
 +};
 +using WinUIPaneGetApiFn = HRESULT (WINAPI*)(uint32_t, uint32_t, WinUIPaneApi*);

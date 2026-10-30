@@ -318,8 +318,10 @@ test("publication changes and reentrant force requests survive the current pass"
 
 test("teardown cancels both queues and old callbacks cannot mutate a new attachment", () => {
   const f=schedulingFixture();f.pane.schedule();
+  f.pane.addressFailed=true;
   const oldTask=[...f.tasks.values()][0],oldFrame=[...f.frames.values()][0];
   f.pane.uninit();assert.equal(f.tasks.size,0);assert.equal(f.frames.size,0);
+  assert.equal(f.pane.addressFailed,false,"publication failure cannot disable a replacement endpoint");
   f.pane.element={};f.pane.uninitializing=false;
   f.pane.schedule(false);const timer=f.pane.publicationTimer,frame=f.pane.frame;
   oldTask();oldFrame();
@@ -689,4 +691,23 @@ test("address request completion republishes state skipped while native input wa
       assert.equal(f.pane.structuralDirty, false);
     }
   }
+});
+
+
+test("locale refresh retains the full resource set and tolerates missing native attributes", () => {
+  const f=fixture([]),resources=[];
+  f.context.Localization=class {
+    constructor(files){resources.push(Array.from(files));}
+    formatValueSync(id){return id;}
+    formatMessagesSync(){return [null];}
+  };
+  f.pane.element={setAttribute(){}};f.pane.schedule=()=>{};
+  const before=f.pane.localization();
+  assert.doesNotThrow(()=>f.pane.nativeLabels());
+  f.pane.observe(null,"intl:app-locales-changed");
+  assert.notEqual(f.pane.localization(),before);
+  assert.deepEqual(resources[1],resources[0]);
+  assert.ok(resources[1].includes("browser/browserContext.ftl"));
+  assert.ok(resources[1].includes("branding/brand.ftl"));
+  assert.equal(f.pane.nativeLabels().navigation.back.label,undefined);
 });

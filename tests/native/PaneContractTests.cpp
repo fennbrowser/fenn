@@ -39,6 +39,7 @@
 #include "../../native/WinUIPane/SuggestionList.h"
 #include "../../native/WinUIPane/AddressValue.h"
 #include "../../native/WinUIPane/TabContentScale.h"
+#include "../../native/WinUIPane/StartupLabels.h"
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <wrl/client.h>
 #include "GlowFrameProbe.h"
@@ -6323,6 +6324,11 @@ static bool Above(HWND upper, HWND lower) {
         if (next == lower) return true;
     return false;
 }
+#include "ChromeLayoutTests.h"
+static void WINAPI InspectWindowHost(HWND host) {
+    WithTab(host, L"Native outer window", L"Native outer window");
+}
+
 int wmain(int argc, wchar_t** argv) {
     if (argc == 5 && wcscmp(argv[1], L"--record-frames") == 0) return RecordFrames(argv);
     Require(AddVectoredExceptionHandler(
@@ -6351,7 +6357,7 @@ int wmain(int argc, wchar_t** argv) {
                     return EXCEPTION_CONTINUE_SEARCH;
                 }) != nullptr,
             "install teardown exception guard");
-    Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--popup-lifecycle") == 0 || wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 || wcscmp(argv[2], L"--address-host") == 0 ||
+    Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--local-startup") == 0 || wcscmp(argv[2], L"--startup-thread") == 0 || wcscmp(argv[2], L"--startup-thread-cancel") == 0 || wcscmp(argv[2], L"--startup-surface") == 0 || wcscmp(argv[2], L"--startup-host") == 0 || wcscmp(argv[2], L"--window-host") == 0 || wcscmp(argv[2], L"--chrome-layout") == 0 || wcscmp(argv[2], L"--popup-lifecycle") == 0 || wcscmp(argv[2], L"--page-input") == 0 || wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 || wcscmp(argv[2], L"--address-host") == 0 ||
                                         wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--updates") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 || wcscmp(argv[2], L"--selection-decorations") == 0 || wcscmp(argv[2], L"--selection-reentrancy") == 0 ||
                                         wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
                                         wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))),
@@ -6379,7 +6385,109 @@ int wmain(int argc, wchar_t** argv) {
     Require(get(WINUI_PANE_ABI_VERSION, sizeof(api) - 1, &api) == E_NOINTERFACE, "reject size");
     Require(get(WINUI_PANE_ABI_VERSION, sizeof(api), nullptr) == E_POINTER, "reject null output");
     Require(SUCCEEDED(get(WINUI_PANE_ABI_VERSION, sizeof(api), &api)), "ABI handshake");
+    {
+        HWND output=reinterpret_cast<HWND>(1);
+        const std::wstring oversized(32769,L'x');
+        Require(api.startIndependentHost(nullptr,oversized.c_str(),&output)==E_INVALIDARG && !output,
+                "reject oversized initial presentation before creating a native thread");
+        using Json=winrt::Windows::Data::Json::JsonObject;
+        using Value=winrt::Windows::Data::Json::JsonValue;
+        auto data=Json::Parse(LR"({"version":2,"locale":"ar","rtl":true,"labels":{"newTab":"new","pending":"pending","full":"full","composition":"composition","address":"address","unavailable":"unavailable","recovery":"recovery","recoveryAction":"action"}})");
+        Require(NativeStartupLabels::Parse(data.Stringify()).GetNamedBoolean(L"rtl"),"initial RTL presentation accepted");
+        data.Insert(L"rtl",Value::CreateStringValue(L"true"));
+        bool rejected=false;try{NativeStartupLabels::Parse(data.Stringify());}catch(...){rejected=true;}
+        Require(rejected,"reject malformed direction before presentation");
+        data.Insert(L"version",Value::CreateNumberValue(1));data.Remove(L"rtl");
+        Require(bool(NativeStartupLabels::Parse(data.Stringify())),"legacy label cache remains readable");
+        data.GetNamedObject(L"labels").Insert(L"address",Value::CreateStringValue(L""));
+        rejected=false;try{NativeStartupLabels::Parse(data.Stringify());}catch(...){rejected=true;}
+        Require(rejected,"reject incomplete startup labels");
+    }
     translatePane = api.translate;
+    if(argc==3 && !wcscmp(argv[2],L"--local-startup")) {
+        auto test=reinterpret_cast<HRESULT(WINAPI*)(void(WINAPI*)(HWND))>(GetProcAddress(module,"WinUIPaneTestLocalStartup"));
+        Require(test && SUCCEEDED(test([](HWND hwnd) {
+            const auto until=GetTickCount64()+300;
+            while(GetTickCount64()<until){Pump();Sleep(5);}
+            Require(IsWindowVisible(hwnd),"local startup uses a visible native host");
+            TabScreenBounds(hwnd,L"FennAddress");
+            TabScreenBounds(hwnd,L"FennTab-1");
+            Require(SetForegroundWindow(hwnd) || GetForegroundWindow()==hwnd,"startup owns guest foreground");
+            auto pump=[] {const auto end=GetTickCount64()+150;while(GetTickCount64()<end){Pump();Sleep(5);}};
+            auto key=[&](WORD code,bool ctrl=false,bool shift=false) {
+                std::vector<INPUT> events;
+                auto add=[&](WORD value,DWORD flags){INPUT e{};e.type=INPUT_KEYBOARD;e.ki.wVk=value;e.ki.dwFlags=flags;events.push_back(e);};
+                if(ctrl)add(VK_CONTROL,0);if(shift)add(VK_SHIFT,0);
+                add(code,0);add(code,KEYEVENTF_KEYUP);
+                if(shift)add(VK_SHIFT,KEYEVENTF_KEYUP);if(ctrl)add(VK_CONTROL,KEYEVENTF_KEYUP);
+                Require(SendInput(UINT(events.size()),events.data(),sizeof(INPUT))==events.size(),"startup physical shortcut");pump();
+            };
+            key('L',true);key('T',true);
+            for(wchar_t unit:std::wstring(L"keyboard search")) {
+                INPUT input[2]{};
+                for(auto& e:input){e.type=INPUT_KEYBOARD;e.ki.wScan=unit;e.ki.dwFlags=KEYEVENTF_UNICODE;}
+                input[1].ki.dwFlags|=KEYEVENTF_KEYUP;
+                Require(SendInput(2,input,sizeof(INPUT))==2,"startup physical text");
+            }
+            pump();key(VK_RETURN);key(VK_TAB,true,true);key(VK_TAB,true);
+            TabScreenBounds(hwnd,L"FennTab-3");
+            key('T',true);TabScreenBounds(hwnd,L"FennTab-4");key('W',true);
+        })),"real unbound controls retain drafts, queued submissions and control identity");
+        puts("PASS: local startup controls and bounded drafts without Firefox");
+        CoUninitialize();return 0;
+    }
+    if(argc==3 && !wcscmp(argv[2],L"--page-input")) {
+        auto test=reinterpret_cast<HRESULT(WINAPI*)()>(GetProcAddress(module,"WinUIPaneTestPageInput"));
+        Require(test && SUCCEEDED(test()),"page TSF direct replacement, backward selection and invalid-range isolation");
+        puts("PASS: page TSF direct replacement and backward-selection contracts");
+        CoUninitialize();return 0;
+    }
+    auto threadedStartup = reinterpret_cast<HRESULT(WINAPI*)(void(WINAPI*)(HWND),BOOL)>(GetProcAddress(module,"WinUIPaneTestThreadedStartup"));
+    Require((threadedStartup != nullptr) == (argc == 3), "threaded startup fixture exists only in test DLL");
+    if (argc==3 && (!wcscmp(argv[2],L"--startup-thread") || !wcscmp(argv[2],L"--startup-thread-cancel"))) {
+        // The DLL's XAML objects belong to the independent native thread.
+        // The inspection thread must not run that thread's pane translator.
+        translatePane=nullptr;
+        Require(SUCCEEDED(threadedStartup([](HWND hwnd) {
+            TabScreenBounds(hwnd,L"FennStartupProgress");
+        },!wcscmp(argv[2],L"--startup-thread-cancel"))), "native window remains responsive with a blocked browser endpoint");
+        CoUninitialize();
+        return 0;
+    }
+    auto startupSurface = reinterpret_cast<HRESULT(WINAPI*)(void(WINAPI*)(HWND))>(GetProcAddress(module, "WinUIPaneTestStartupSurface"));
+    Require((startupSurface != nullptr) == (argc == 3), "startup surface fixture exists only in test DLL");
+    if (argc == 3 && wcscmp(argv[2], L"--startup-surface") == 0) {
+        Require(SUCCEEDED(startupSurface([](HWND hwnd) {
+            auto bounds = TabScreenBounds(hwnd, L"FennStartupProgress");
+            RECT client{}; GetClientRect(hwnd, &client);
+            POINT origin{}; ClientToScreen(hwnd, &origin);
+            Require(bounds.left >= origin.x && bounds.top >= origin.y &&
+                    bounds.right <= origin.x+client.right && bounds.bottom <= origin.y+client.bottom,
+                    "startup progress has accessible physical bounds inside host");
+        })), "early native loading surface lifecycle and UIA");
+        Require(SUCCEEDED(api.shutdown()), "startup surface clean shutdown");
+        CoUninitialize();
+        return 0;
+    }
+    auto startupHost = reinterpret_cast<HRESULT(WINAPI*)()>(GetProcAddress(module, "WinUIPaneTestStartupWindowHost"));
+    Require((startupHost != nullptr) == (argc == 3), "startup host fixture exists only in test DLL");
+    if (argc == 3 && wcscmp(argv[2], L"--startup-host") == 0) {
+        Require(SUCCEEDED(startupHost()), "native startup HWND survives attachment and cancels before Gecko");
+        Require(SUCCEEDED(api.shutdown()), "startup host fixture clean shutdown");
+        CoUninitialize();
+        return 0;
+    }
+    auto windowHost = reinterpret_cast<HRESULT(WINAPI*)(const WinUIPaneApi*, void(WINAPI*)(HWND))>(GetProcAddress(module, "WinUIPaneTestWindowHost"));
+    Require((windowHost != nullptr) == (argc == 3), "native window-host fixture exists only in test DLL");
+    if (argc == 3 && wcscmp(argv[2], L"--window-host") == 0) {
+        Require(SUCCEEDED(windowHost(&api, InspectWindowHost)), "distinct native shell/content binding, deferred close and teardown");
+        winrt::clear_factory_cache();
+        Require(SUCCEEDED(api.shutdown()), "window-host fixture clean shutdown");
+        CoUninitialize();
+        return 0;
+    }
+    Require((GetProcAddress(module, "WinUIPaneTestMeasureChromeLayout") != nullptr) == (argc == 3),
+            "native-layout experiment export exists only in the test DLL");
     Require((GetProcAddress(module, "WinUIPaneTestGetPackageUpdates") != nullptr) == (argc == 3),
             "update operation injection exists only in the test DLL");
     Require((GetProcAddress(module, "WinUIPaneTestGetContent") != nullptr) == (argc == 3),
@@ -6399,6 +6507,22 @@ int wmain(int argc, wchar_t** argv) {
     Require(compositor != nullptr, "compositor sibling");
     Require(api.updateTabStrip(first, nullptr, TRUE) == E_INVALIDARG, "reject null geometry");
     Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "first island");
+    WinUIChromeLayout chrome{};
+    chrome.fits = 77;
+    const auto untouchedChrome = chrome;
+    Require(api.measureChromeLayout(first, 41, TRUE, 4, &chrome) == E_INVALIDARG &&
+            memcmp(&chrome, &untouchedChrome, sizeof(chrome)) == 0, "invalid native layout is atomic");
+    Require(api.measureChromeLayout(first, 40, TRUE, 4, nullptr) == E_POINTER, "native layout rejects null output");
+    Require(SUCCEEDED(api.measureChromeLayout(first, 40, TRUE, 4, &chrome)), "production native layout measurement");
+    if (argc == 3 && wcscmp(argv[2], L"--chrome-layout") == 0) {
+        CheckNativeChromeLayout(module, api, first, compositor);
+        Require(SUCCEEDED(api.destroy(first)), "destroy native-layout fixture before host");
+        DestroyWindow(first);
+        winrt::clear_factory_cache();
+        Require(SUCCEEDED(api.shutdown()), "native-layout clean shutdown");
+        CoUninitialize();
+        return 0;
+    }
     if (argc == 3 && wcscmp(argv[2], L"--updates") == 0) {
         ShowWindow(first, SW_SHOW);
         Pump();

@@ -1,4 +1,5 @@
 #pragma once
+#include <msctf.h>
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <winrt/Windows.Storage.Streams.h>
@@ -43,6 +44,10 @@ struct NativeAddress {
     Microsoft::UI::Xaml::Controls::Grid toolbarRoot{nullptr}, toolbarSurface{nullptr};
     std::unique_ptr<NativeNavigationToolbar> navigation;
     std::function<void(winrt::hstring const&)> navigate;
+    // An explicitly unbound presenter owns local text without creating a
+    // Firefox address session. Clear both callbacks only at acknowledged bind.
+    std::function<void(winrt::hstring const&)> startupEdit;
+    std::function<void(uint32_t)> startupSubmit;
     std::function<void()> releaseMenuFocus;
     std::function<void()> releaseContentFocus;
     std::function<void()> preparePointerFocus;
@@ -118,6 +123,28 @@ struct NativeAddress {
     bool EditorOwned() const {
         return islandFocusOwned && field.XamlRoot() &&
             Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(field.XamlRoot()) == field;
+    }
+    // Read the current native STA's existing TSF context; never activate a second
+    // manager or ask Gecko. Korean can retain a live syllable between TextBox
+    // composition events, so the event flag alone is insufficient for adoption.
+    bool HasActiveComposition() const {
+        if (composing) return true;
+        if (!EditorOwned()) return false;
+        auto module=GetModuleHandleW(L"msctf.dll");
+        using GetManager=HRESULT(WINAPI*)(ITfThreadMgr**);
+        auto getManager=module?reinterpret_cast<GetManager>(GetProcAddress(module,"TF_GetThreadMgr")):nullptr;
+        winrt::com_ptr<ITfThreadMgr> manager;
+        winrt::com_ptr<ITfDocumentMgr> document;
+        winrt::com_ptr<ITfContext> context;
+        if(!getManager || FAILED(getManager(manager.put())) || !manager ||
+            FAILED(manager->GetFocus(document.put())) || !document ||
+            FAILED(document->GetTop(context.put())) || !context)return false;
+        auto composition=context.try_as<ITfContextComposition>();
+        winrt::com_ptr<IEnumITfCompositionView> entries;
+        if(!composition || FAILED(composition->EnumCompositions(entries.put())) || !entries)return false;
+        winrt::com_ptr<ITfCompositionView> entry;
+        ULONG fetched{};
+        return SUCCEEDED(entries->Next(1,entry.put(),&fetched)) && fetched==1;
     }
     void ApplyInteraction(ShellAddressInteractionState const& effect) {
         if (!interaction.Current(effect)) return;
@@ -251,6 +278,7 @@ struct NativeAddress {
         return value;
     }
     void Edit() {
+        if (startupEdit) { if (!syncing) startupEdit(field.Text()); return; }
         if (field.Text() == observedText && composing == observedComposing) return;
         // A text change replaces whatever was staged: what the user can see is
         // the newest thing they have said. Composition start and end are edits
@@ -281,6 +309,13 @@ struct NativeAddress {
         Stage(value, NativeShellCore::Edit);
     }
     void Action(wchar_t const* kind, int traversal = 0, wchar_t const* clipboard = nullptr) {
+        if (startupEdit) {
+            if (!wcscmp(kind,L"activate") && !composing && startupSubmit)
+                startupSubmit(((GetKeyState(VK_SHIFT)&0x8000)?1u:0u) |
+                              ((GetKeyState(VK_CONTROL)&0x8000)?2u:0u) |
+                              ((GetKeyState(VK_MENU)&0x8000)?4u:0u));
+            return;
+        }
         const auto incoming = IntentOf(kind);
         if (incoming == NativeShellCore::NoIntent) return;
         if (incoming == NativeShellCore::Dismiss || incoming == NativeShellCore::Activate ||
@@ -449,6 +484,7 @@ struct NativeAddress {
         });
         field.SelectionChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
+            if (startupEdit) { if (!syncing) startupEdit(field.Text()); return; }
             formattedValue.Refresh(field, EditorOwned() || composing);
             // A caret move is the least important intent there is: it folds
             // into a staged edit, which already carries a range, and otherwise
@@ -1228,14 +1264,14 @@ struct NativeAddress {
         // WinUI places the popup relative to the retained editor header.
         popup.VerticalOffset(0);
     }
-    winrt::hstring Sync(JObject const& snapshot) {
+    winrt::hstring Sync(JObject const& snapshot, bool retainEditor = false) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         if (snapshot.GetNamedNumber(L"version") != 1) winrt::throw_hresult(E_INVALIDARG);
         if (!snapshot.GetNamedBoolean(L"enabled", false)) {
             shell.ResetAddressPublication();
             shell.ResetToolbarPublication();
-            if (navigation) navigation->Apply({}, false);
+            if (navigation && !retainEditor) navigation->Apply({}, false);
             context.Reset();
             resultMenu.Reset();
             omnibarLeft.Apply({}, false); omnibarRight.Apply({}, false);
@@ -1244,7 +1280,7 @@ struct NativeAddress {
             mode.Disable();
             actions.Clear();
             syncing = true;
-            root.Visibility(Visibility::Collapsed);
+            if (!retainEditor) root.Visibility(Visibility::Collapsed);
             suggestions.Clear();
             ResetSessionState();
             session = L"";
@@ -1442,7 +1478,7 @@ struct NativeAddress {
         JObject addressSection;
         for (auto const& item : snapshot) {
             auto key = item.Key();
-            if (key != L"navigation" && key != L"navigationToolbar" && key != L"version" && key != L"enabled")
+            if (key != L"navigation" && key != L"navigationToolbar" && key != L"version" && key != L"enabled" && key != L"startupBrowser")
                 addressSection.SetNamedValue(key, item.Value());
         }
         auto addressFingerprint = addressSection.Stringify();
@@ -1525,8 +1561,12 @@ struct NativeAddress {
             if (toolbarRoot) toolbarRoot.FlowDirection(flow);
             if (popupContent) popupContent.FlowDirection(flow);
             // Mirror the interface without reversing URL/text character order.
-            field.TextReadingOrder(TextReadingOrder::DetectFromContent);
-            field.TextAlignment(TextAlignment::Left);
+            // Reassigning editor formatting during an active TSF composition
+            // can terminate it even when the requested value is unchanged.
+            if (field.TextReadingOrder()!=TextReadingOrder::DetectFromContent)
+                field.TextReadingOrder(TextReadingOrder::DetectFromContent);
+            if (field.TextAlignment()!=TextAlignment::Left)
+                field.TextAlignment(TextAlignment::Left);
             root.Visibility(Visibility::Visible);
         }
         if (toolbarRoot) {
@@ -1684,7 +1724,7 @@ struct NativeAddress {
         // leave Gecko focus on its address proxy and never take this path.
         // Gecko still reports content focus until a held entry gesture ends.
         // That older observation must not interrupt native text selection.
-        if (contentFocused && !checkedOpen && checkedEdit == shell.AddressState().edit_id)
+        if (!retainEditor && contentFocused && !checkedOpen && checkedEdit == shell.AddressState().edit_id)
             ApplyInteraction(shell.AddressInteraction(SHELL_ADDRESS_INTERACTION_KIND_CONTENT_FOCUS));
         mode.ShowPendingReveal();
         // The deferred commit's precondition is satisfied by a publication, so

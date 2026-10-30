@@ -1,8 +1,9 @@
-"""Keeps configs/mozconfig.release a superset of configs/mozconfig."""
+"""Keeps shared build options aligned and the host trial development-only."""
 from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+DEVELOPMENT_ONLY = {"ac_add_options --enable-fenn-development-native-host"}
 RELEASE_ONLY = {"ac_add_options --enable-release", "ac_add_options MOZ_PGO=1",
                 "ac_add_options --enable-lto=cross", "export RUSTUP_TOOLCHAIN=1.95.0"}
 
@@ -21,7 +22,7 @@ def objdir(lines):
 class ReleaseMozconfigTests(unittest.TestCase):
     def test_release_repeats_every_development_option(self):
         development, release = options("mozconfig"), options("mozconfig.release")
-        shared = [line for line in development if not line.startswith("mk_add_options MOZ_OBJDIR=")]
+        shared = [line for line in development if not line.startswith("mk_add_options MOZ_OBJDIR=") and line not in DEVELOPMENT_ONLY]
         self.assertEqual([line for line in shared if line not in release], [])
 
     def test_release_adds_only_the_optimizations(self):
@@ -29,6 +30,10 @@ class ReleaseMozconfigTests(unittest.TestCase):
         extra = {line for line in release if line not in development
                  and not line.startswith("mk_add_options MOZ_OBJDIR=")}
         self.assertEqual(extra, RELEASE_ONLY)
+
+    def test_native_host_trial_is_development_only(self):
+        self.assertTrue(DEVELOPMENT_ONLY.issubset(options("mozconfig")))
+        self.assertTrue(DEVELOPMENT_ONLY.isdisjoint(options("mozconfig.release")))
 
     def test_release_builds_into_its_own_objdir(self):
         self.assertEqual(objdir(options("mozconfig")), "@TOPSRCDIR@/../../build/firefox")

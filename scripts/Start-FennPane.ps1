@@ -1,4 +1,4 @@
-param([switch]$NativeAddressBar, [switch]$NativeNavigationToolbar, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$HideFirefoxToolbar, [switch]$ProductMenu, [switch]$CaptureCrash, [string]$DiagnosticsLog,
+param([switch]$InteractiveNativeStartup, [switch]$IndependentNativeStartupHost, [switch]$NativeStartupHost, [switch]$NativeAddressBar, [switch]$NativeNavigationToolbar, [switch]$NativeChromeLayout, [switch]$NativeWindowHost, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$HideFirefoxToolbar, [switch]$ProductMenu, [switch]$CaptureCrash, [string]$DiagnosticsLog,
       [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight,
       [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop,
       [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach,
@@ -6,6 +6,25 @@ param([switch]$NativeAddressBar, [switch]$NativeNavigationToolbar, [switch]$Nati
       # dist/bin/fenn-identity.exe (scripts/Register-FennDevIdentity.py).
       [switch]$PackageIdentity)
 $ErrorActionPreference = 'Stop'
+$previousStartupHost = $env:FENN_NATIVE_STARTUP_HOST
+$previousInteractiveStartup = $env:FENN_NATIVE_INTERACTIVE_STARTUP
+try {
+if ($InteractiveNativeStartup) {
+    if ($PSBoundParameters.ContainsKey('IndependentNativeStartupHost') -and -not $IndependentNativeStartupHost) {
+        throw 'InteractiveNativeStartup requires the independent native host.'
+    }
+    $IndependentNativeStartupHost = [switch]$true
+}
+$env:FENN_NATIVE_INTERACTIVE_STARTUP = if ($InteractiveNativeStartup) { '1' } elseif ($PSBoundParameters.ContainsKey('InteractiveNativeStartup')) { '0' } else { $previousInteractiveStartup }
+if ($IndependentNativeStartupHost) { $NativeStartupHost = [switch]$true }
+$env:FENN_NATIVE_STARTUP_HOST = if ($IndependentNativeStartupHost) { '2' } elseif ($PSBoundParameters.ContainsKey('IndependentNativeStartupHost')) { '0' } elseif ($NativeStartupHost) { '1' } elseif ($PSBoundParameters.ContainsKey('NativeStartupHost')) { '0' } else { $previousStartupHost }
+if ($NativeStartupHost) {
+    if ($PSBoundParameters.ContainsKey('NativeWindowHost') -and -not $NativeWindowHost) {
+        throw 'NativeStartupHost requires native window ownership.'
+    }
+    $PSBoundParameters['NativeWindowHost'] = [switch]$true
+}
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $browser = Join-Path $projectRoot 'build/firefox/dist/bin/fenn.exe'
 $pane = Join-Path (Split-Path $browser) 'FennPane.dll'
@@ -36,6 +55,8 @@ $switchPrefs = [ordered]@{
     GroupHover = 'tabstrip.groupHover'; GroupHalo = 'tabstrip.groupHalo'
     GroupGlowAnimations = 'tabstrip.groupGlowAnimations'; GroupGlowFadeOut = 'tabstrip.groupGlowFadeOut'
     NativeAddressBar = 'address.toolbar.enabled'
+    NativeChromeLayout = 'chrome.layout'
+    NativeWindowHost = 'window.host'
     NativeHistoryMenu = 'navigation.history.menu.enabled'; NativeNavigationToolbar = 'navigation.toolbar.enabled'
     HideFirefoxToolbar = 'navigation.hideFirefoxToolbar'; ProductMenu = 'productmenu.enabled'
 }
@@ -91,3 +112,8 @@ if ($DiagnosticsLog) {
     exit
 }
 & $browser --no-remote --profile $demoProfile (Join-Path $projectRoot 'tests/smoke/browser.html')
+
+} finally {
+    $env:FENN_NATIVE_STARTUP_HOST = $previousStartupHost
+    $env:FENN_NATIVE_INTERACTIVE_STARTUP = $previousInteractiveStartup
+}

@@ -35,6 +35,535 @@ use std::sync::atomic::AtomicU64;
 use std::thread::ThreadId;
 
 static NEXT_ENDPOINT: AtomicU64 = AtomicU64::new(1);
+pub use crate::startup_rows::ShellStartupRow;
+pub const SHELL_STARTUP_ROW_CAPACITY: u32 = 4128;
+
+/// Accept a complete startup presentation for this native endpoint. Labels stay
+/// in the native presenter; shared Snapshot semantics own replay/stale/conflict.
+/// # Safety
+/// Fingerprint contains length UTF-16 units; apply is writable and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_startup_presentation(core:*mut ShellCore, session:u64,
+    revision:u64, fingerprint:*const u16, length:usize, apply:*mut bool)->ShellStatus {
+    guard(core, |core| {
+        if apply.is_null() || fingerprint.is_null() || length==0 || length>8192 {
+            return ShellStatus::InvalidArgument;
+        }
+        if session!=core.endpoint || core.queue.is_closed() {return ShellStatus::Rejected;}
+        let bytes=std::slice::from_raw_parts(fingerprint,length);
+        let stream=&mut core.startup_presentation;
+        let class=stream.classify(0,revision,bytes);
+        stream.record(class);
+        match class.outcome(crate::publication::StreamKind::Snapshot) {
+            Ok(changed)=>{if changed {stream.commit(revision,bytes);} *apply=changed;ShellStatus::Ok},
+            Err(())=>ShellStatus::Rejected,
+        }
+    })
+}
+
+/// Publish visible browser identities (revision > 0), or reproject current local
+/// state (revision == 0, empty input). Snapshot replay rules are shared. Draft
+/// editor state and acknowledged browser mappings are never mutated here.
+/// # Safety
+/// IDs reference length elements; output holds SHELL_STARTUP_ROW_CAPACITY rows.
+/// Count and output must be writable, mutually disjoint and disjoint from core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_startup_rows(core:*mut ShellCore,session:u64,generation:u64,
+    revision:u64,ids:*const u64,length:usize,selected:u64,output:*mut ShellStartupRow,
+    capacity:usize,count:*mut u32)->ShellStatus {
+    guard(core,|core| {
+        if core.queue.is_closed() {return ShellStatus::Closed;}
+        if output.is_null() || count.is_null() || capacity!=crate::startup_rows::STARTUP_PRESENTATION_ROWS ||
+            length>crate::startup_rows::STARTUP_BROWSER_ROWS || (length!=0 && ids.is_null()) {
+            return ShellStatus::InvalidArgument;
+        }
+        let h=&core.startup_handoff;
+        if revision!=0 && (session!=core.endpoint || generation==0 || generation!=h.generation || h.lost) {
+            return ShellStatus::Rejected;
+        }
+        let ids=if length==0 {&[]} else {std::slice::from_raw_parts(ids,length)};
+        let Ok(rows)=core.startup_rows.update(&core.startup,h,revision,ids,selected) else {return ShellStatus::Rejected;};
+        std::ptr::copy_nonoverlapping(rows.as_ptr(),output,rows.len());
+        *count=rows.len() as u32;ShellStatus::Ok
+    })
+}
+
+/// Command transfer envelope. kind: 0 idle, 1 create-new-tab, 2 submit, 3 close,
+/// 4 select a restored editor, 5 return to a mapped local editor, 6 import a draft.
+/// Text is owned by the core until completion/destruction. Inspecting a pending
+/// request is not an execution acknowledgment. Lost bindings cannot issue work.
+#[repr(C)]
+#[derive(Default)]
+pub struct ShellStartupTransfer {
+    pub session: u64,
+    pub generation: u64,
+    pub request: u64,
+    pub draft: u64,
+    pub browser: u64,
+    pub submission: u64,
+    pub revision: u64,
+    pub kind: u32,
+    pub modifiers: u32,
+    pub mappings: usize,
+    pub lost: bool,
+    pub editor_browser: u64,
+    pub adoption_ready: bool,
+    pub selection_start: u32,
+    pub selection_length: u32,
+    pub text: *const u16,
+    pub length: usize,
+}
+
+/// Operations: 0 inspect, 1 prepare context, 2 bind context/generation,
+/// 3 create draft, 4 lease oldest submission, 5 close orphan draft,
+/// 6 terminal completion (request/browser/accepted), 7 disconnect generation,
+/// 8 lease next command (or inspect the outstanding lease), 9 claim wake,
+/// 10 failed notification (permit a later retry). Wake operations are native-only.
+/// 11 release editor to the selected published browser after terminal cleanup.
+/// 12 select a restored editor, 13 return to a mapped local draft (native-only).
+/// 14 adopt the selected published browser in place of an untouched placeholder.
+/// 15 enable normal adoption, 16 commit a matching selected editor publication.
+/// Bind and later operations require the session returned by Prepare; later
+/// operations also require the exact bound generation. Context is an opaque
+/// host-established profile/privacy token, not an identifier inferred by Rust.
+/// Failed calls do not alter output. One outstanding command, no automatic retry.
+/// # Safety
+/// Output must be writable and disjoint from core-owned storage.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_startup_transfer(core: *mut ShellCore,
+    operation: u32, context: u64, session: u64, generation: u64, request: u64, draft: u64,
+    browser: u64, accepted: bool, output: *mut ShellStartupTransfer) -> ShellStatus {
+    guard(core, |core| {
+        if output.is_null() || operation>16 { return ShellStatus::InvalidArgument; }
+        if operation!=0 && core.queue.is_closed() { return ShellStatus::Closed; }
+        if operation>=2 && session!=core.endpoint { return ShellStatus::Rejected; }
+        let h=&mut core.startup_handoff;
+        if operation>=3 && (generation==0 || generation!=h.generation) { return ShellStatus::Rejected; }
+        let result=match operation {
+            0=>true, 1=>h.prepare(context), 2=>h.bind(context,generation),
+            3=>h.create(&core.startup,draft), 4=>h.submit(&core.startup),
+            5=>h.close(&core.startup,draft),
+            6=>h.complete(&mut core.startup,generation,request,browser,accepted),
+            7=>h.disconnect(generation), 8=>h.next(&core.startup),
+            9=>h.notify(&core.startup), 10=>h.notification_failed(),
+            15=>h.enable_adoption(),
+            16=>browser==core.startup_rows.selected_browser() && h.commit_adoption(&mut core.startup,browser),
+            11=>browser==core.startup_rows.selected_browser() && h.finish_editor(&core.startup,browser),
+            14=>browser==core.startup_rows.selected_browser() && h.adopt_placeholder(&mut core.startup,browser),
+            12=>core.startup_rows.contains_browser(browser) && h.select_editor(&core.startup,draft,browser,false),
+            13=>core.startup_rows.contains_browser(browser) && core.queue.address.can_yield_editor() &&
+                h.select_editor(&core.startup,draft,browser,true),
+            _=>unreachable!(),
+        };
+        if !result { return ShellStatus::Rejected; }
+        let mut view=ShellStartupTransfer {session:core.endpoint,generation:h.generation,mappings:h.mappings.len(),lost:h.lost,editor_browser:h.editor_browser,..Default::default()};
+        if let Some((draft,browser))=h.ready.as_ref() {
+            view.adoption_ready=h.ready_current(&core.startup) && h.pending.is_none() && core.startup.submissions.is_empty();view.draft=draft.id;view.browser=*browser;
+            view.revision=draft.revision;view.text=draft.text.as_ptr();view.length=draft.text.len();
+            view.selection_start=draft.selection_start;view.selection_length=draft.selection_length;
+        }
+        if let Some(pending)=h.pending.as_ref() {
+            view.request=pending.id;
+            match &pending.action {
+                crate::startup_handoff::Action::Adopt {draft,browser,selected}=>{
+                    view.kind=6;view.draft=draft.id;view.browser=*browser;view.revision=draft.revision;
+                    view.text=draft.text.as_ptr();view.length=draft.text.len();view.modifiers=u32::from(*selected);
+                    view.selection_start=draft.selection_start;view.selection_length=draft.selection_length;
+                },
+                crate::startup_handoff::Action::Create {draft}=>{view.kind=1;view.draft=*draft;},
+                crate::startup_handoff::Action::Submit {browser,submission}=>{
+                    view.kind=2;view.browser=*browser;view.draft=submission.tab;
+                    view.submission=submission.id;view.revision=submission.revision;
+                    view.modifiers=submission.modifiers;view.text=submission.text.as_ptr();view.length=submission.text.len();
+                },
+                crate::startup_handoff::Action::Close {draft,browser}=>{view.kind=3;view.draft=*draft;view.browser=*browser;},
+                crate::startup_handoff::Action::Select {draft,browser,local}=>{
+                    view.kind=if *local {5} else {4};view.draft=*draft;view.browser=*browser;
+                },
+            }
+        }
+        *output=view;ShellStatus::Ok
+    })
+}
+
+/// Read an acknowledged mapping by bounded index. This does not change any
+/// native editor or strip identity; the presenter must reconcile them explicitly.
+/// # Safety
+/// Output must be writable. Returned text is always null.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_startup_mapping(core: *mut ShellCore,
+    session: u64, generation: u64, index: usize, output: *mut ShellStartupTransfer) -> ShellStatus {
+    guard(core, |core| {
+        let Some(output)=output.as_mut() else {return ShellStatus::InvalidArgument;};
+        let h=&core.startup_handoff;
+        if h.lost || session!=core.endpoint || generation==0 || generation!=h.generation {return ShellStatus::Rejected;}
+        let Some((draft,browser))=h.mappings.iter().nth(index) else {return ShellStatus::Rejected;};
+        *output=ShellStartupTransfer {session,generation,draft:*draft,browser:*browser,mappings:h.mappings.len(),..Default::default()};
+        ShellStatus::Ok
+    })
+}
+
+#[cfg(test)]
+mod startup_transfer_ffi_tests {
+    use super::*;
+    #[test]
+    fn placeholder_adoption_requires_current_selected_publication() {
+        unsafe {
+            let core=shell_core_create(std::ptr::null());
+            let mut view=ShellStartupView::default();
+            assert_eq!(shell_core_startup(core,1,0,0,std::ptr::null(),0,&mut view),ShellStatus::Ok);
+            let mut state=ShellStartupTransfer::default();
+            shell_core_startup_transfer(core,1,42,0,0,0,0,0,false,&mut state);
+            let session=state.session;
+            shell_core_startup_transfer(core,2,42,session,7,0,0,0,false,&mut state);
+            assert_eq!(shell_core_startup_transfer(core,14,42,session,7,0,0,90,false,&mut state),ShellStatus::Rejected);
+            let mut rows=vec![ShellStartupRow::default();SHELL_STARTUP_ROW_CAPACITY as usize];let mut count=0;
+            assert_eq!(shell_core_startup_rows(core,session,7,1,[90,91].as_ptr(),2,90,rows.as_mut_ptr(),rows.len(),&mut count),ShellStatus::Ok);
+            for (endpoint,generation,browser) in [(session+1,7,90),(session,8,90),(session,7,91)] {
+                assert_eq!(shell_core_startup_transfer(core,14,42,endpoint,generation,0,0,browser,false,&mut state),ShellStatus::Rejected);
+            }
+            assert_eq!(shell_core_startup_transfer(core,14,42,session,7,0,0,90,false,&mut state),ShellStatus::Ok);
+            assert_eq!(state.editor_browser,90);assert_eq!(state.kind,0);assert_eq!(state.mappings,0);
+            shell_core_destroy(core);
+        }
+    }
+    #[test]
+    fn mixed_switch_guards_mutations_and_unacknowledged_browser_edits() {
+        unsafe {
+            let core=shell_core_create(std::ptr::null());let mut state=ShellStartupTransfer::default();
+            let mut view=ShellStartupView::default();
+            shell_core_startup(core,1,0,0,std::ptr::null(),0,&mut view);
+            shell_core_startup_transfer(core,1,42,0,0,0,0,0,false,&mut state);let session=state.session;
+            shell_core_startup_transfer(core,2,42,session,7,0,0,0,false,&mut state);
+            shell_core_startup_transfer(core,3,42,session,7,0,1,0,false,&mut state);
+            shell_core_startup_transfer(core,6,42,session,7,state.request,0,90,true,&mut state);
+            let mut rows=vec![ShellStartupRow::default();SHELL_STARTUP_ROW_CAPACITY as usize];let mut count=0;
+            shell_core_startup_rows(core,session,7,1,[90,91].as_ptr(),2,90,rows.as_mut_ptr(),rows.len(),&mut count);
+            assert_eq!(shell_core_startup_transfer(core,12,42,session,7,0,1,92,false,&mut state),ShellStatus::Rejected);
+            assert_eq!(shell_core_startup_transfer(core,12,42,session,7,0,1,91,false,&mut state),ShellStatus::Ok);
+            assert_eq!(state.kind,4);
+            assert_eq!(shell_core_startup(core,4,1,0,std::ptr::null(),0,&mut view),ShellStatus::Rejected);
+            assert_eq!(shell_core_startup_editor(core,1,[65].as_ptr(),1,1,0,false),ShellStatus::Rejected);
+            assert_eq!(shell_core_startup_transfer(core,6,42,session,7,state.request,0,91,true,&mut state),ShellStatus::Ok);
+            assert_eq!(shell_core_startup(core,3,1,0,std::ptr::null(),0,&mut view),ShellStatus::Rejected);
+            assert_eq!(shell_core_startup_editor(core,1,[66].as_ptr(),1,1,0,false),ShellStatus::Rejected);
+            (*core).queue.address.edit();
+            assert_eq!(shell_core_startup_transfer(core,13,42,session,7,0,1,90,false,&mut state),ShellStatus::Rejected);
+            (*core).queue.address.publish(1,true);
+            assert_eq!(shell_core_startup_transfer(core,13,42,session,7,0,1,90,false,&mut state),ShellStatus::Rejected);
+            (*core).queue.address.stage(100,crate::intent::IntentKind::Edit);
+            (*core).queue.address.complete(100);
+            assert_eq!(shell_core_startup_transfer(core,13,42,session,7,0,1,90,false,&mut state),ShellStatus::Ok);
+            assert_eq!(state.kind,5);
+            assert_eq!(shell_core_startup_transfer(core,6,42,session,7,state.request,0,90,true,&mut state),ShellStatus::Ok);
+            assert_eq!((*core).startup.selected,1);shell_core_destroy(core);
+        }
+    }
+    #[test]
+    fn editor_release_validates_endpoint_and_published_selection() {
+        unsafe {
+            let core=shell_core_create(std::ptr::null());
+            let mut transfer=ShellStartupTransfer::default();
+            assert_eq!(shell_core_startup_transfer(core,1,42,0,0,0,0,0,false,&mut transfer),ShellStatus::Ok);
+            let session=transfer.session;
+            assert_eq!(shell_core_startup_transfer(core,2,42,session,7,0,0,0,false,&mut transfer),ShellStatus::Ok);
+            let mut rows=vec![ShellStartupRow::default();SHELL_STARTUP_ROW_CAPACITY as usize];let mut count=0;
+            assert_eq!(shell_core_startup_rows(core,session,7,1,[90,91].as_ptr(),2,90,rows.as_mut_ptr(),rows.len(),&mut count),ShellStatus::Ok);
+            assert_eq!(shell_core_startup_transfer(core,11,42,session,7,0,0,90,false,&mut transfer),ShellStatus::Rejected);
+            let mut view=ShellStartupView::default();
+            assert_eq!(shell_core_startup(core,1,0,0,std::ptr::null(),0,&mut view),ShellStatus::Ok);
+            assert_eq!(shell_core_startup(core,4,view.selected,0,std::ptr::null(),0,&mut view),ShellStatus::Ok);
+            for (endpoint,generation,browser) in [(session+1,7,90),(session,8,90),(session,7,91)] {
+                assert_eq!(shell_core_startup_transfer(core,11,42,endpoint,generation,0,0,browser,false,&mut transfer),ShellStatus::Rejected);
+                assert_eq!(transfer.editor_browser,0);
+            }
+            assert_eq!(shell_core_startup_transfer(core,11,42,session,7,0,0,90,false,&mut transfer),ShellStatus::Ok);
+            assert_eq!(transfer.editor_browser,90);
+            shell_core_destroy(core);
+        }
+    }
+    #[test]
+    fn mapping_requires_context_and_generation_and_rejection_preserves_output() {
+        unsafe {
+            let core=shell_core_create(std::ptr::null());assert!(!core.is_null());
+            let mut view=ShellStartupView::default();
+            assert_eq!(shell_core_startup(core,1,0,0,std::ptr::null(),0,&mut view),ShellStatus::Ok);
+            let mut transfer=ShellStartupTransfer::default();
+            assert_eq!(shell_core_startup_transfer(core,1,42,0,0,0,0,0,false,&mut transfer),ShellStatus::Ok);
+            let session=transfer.session;
+            assert_eq!(shell_core_startup_transfer(core,2,42,session+1,7,0,0,0,false,&mut transfer),ShellStatus::Rejected);
+            assert_eq!(shell_core_startup_transfer(core,2,43,session,7,0,0,0,false,&mut transfer),ShellStatus::Rejected);
+            assert_eq!(shell_core_startup_transfer(core,2,42,session,7,0,0,0,false,&mut transfer),ShellStatus::Ok);
+            assert_eq!(shell_core_startup_transfer(core,3,0,session,7,0,1,0,false,&mut transfer),ShellStatus::Ok);
+            let request=transfer.request;
+            assert_eq!(shell_core_startup_transfer(core,6,0,session+1,7,request,0,88,true,&mut transfer),ShellStatus::Rejected);
+            assert_eq!(shell_core_startup_transfer(core,6,0,session,7,request,0,88,true,&mut transfer),ShellStatus::Ok);
+            assert_eq!(shell_core_startup_mapping(core,session,7,0,&mut transfer),ShellStatus::Ok);
+            assert_eq!((transfer.draft,transfer.browser),(1,88));
+            assert_eq!(shell_core_startup_mapping(core,session,8,0,&mut transfer),ShellStatus::Rejected);
+            assert_eq!((transfer.draft,transfer.browser),(1,88));
+            assert_eq!(shell_core_startup_transfer(core,7,0,session,7,0,0,0,false,&mut transfer),ShellStatus::Ok);
+            assert!(transfer.lost);
+            assert_eq!(shell_core_startup_mapping(core,session,7,0,&mut transfer),ShellStatus::Rejected);
+            shell_core_destroy(core);
+        }
+    }
+}
+
+/// Startup draft view. Text is borrowed until the next mutation of this core.
+/// draft/request identities are local only and must never be used as browser IDs.
+#[repr(C)]
+#[derive(Default)]
+pub struct ShellStartupView {
+    pub selected: u64,
+    pub tab: u64,
+    pub revision: u64,
+    pub request: u64,
+    pub tabs: usize,
+    pub pending: usize,
+    pub modifiers: u32,
+    pub text: *const u16,
+    pub length: usize,
+    pub selection_start: u32,
+    pub selection_length: u32,
+    pub composing: bool,
+}
+
+/// Atomic native editor observation; selection uses UTF-16 units.
+/// # Safety
+/// Text must reference length units. No borrowed buffer is retained.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_startup_editor(core: *mut ShellCore, tab: u64,
+    text: *const u16, length: usize, start: u32, selected_length: u32, composing: bool) -> ShellStatus {
+    guard(core, |core| {
+        if matches!(core.startup_handoff.pending.as_ref().map(|p|&p.action),Some(crate::startup_handoff::Action::Select{..})) {return ShellStatus::Rejected;}
+        if core.startup_handoff.editor_browser!=0 {return ShellStatus::Rejected;}
+        if length != 0 && text.is_null() { return ShellStatus::InvalidArgument; }
+        if length > crate::startup::STARTUP_MAX_TEXT { return ShellStatus::TooLarge; }
+        if core.queue.is_closed() { return ShellStatus::Closed; }
+        let text = if length == 0 { &[] } else { std::slice::from_raw_parts(text,length) };
+        if core.startup.editor(tab,text,start,selected_length,composing) { ShellStatus::Ok }
+        else { ShellStatus::Rejected }
+    })
+}
+
+/// Local-only operations: 0 inspect, 1 add, 2 edit, 3 select, 4 close,
+/// 5 submit (argument=modifier bits shift/control/alt), 6 reorder (argument=index).
+/// No operation drains or acknowledges a browser command.
+/// # Safety
+/// Text must reference length UTF-16 units; output must be writable and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_startup(core: *mut ShellCore, operation: u32,
+    tab: u64, argument: u32, text: *const u16, length: usize,
+    output: *mut ShellStartupView) -> ShellStatus {
+    guard(core, |core| {
+        if operation!=0 && matches!(core.startup_handoff.pending.as_ref().map(|p|&p.action),Some(crate::startup_handoff::Action::Select{..})) {return ShellStatus::Rejected;}
+        if core.startup_handoff.editor_browser!=0 && matches!(operation,1|3|5) {return ShellStatus::Rejected;}
+        if output.is_null() || operation > 6 || (length != 0 && text.is_null()) {
+            return ShellStatus::InvalidArgument;
+        }
+        if core.queue.is_closed() { return ShellStatus::Closed; }
+        if length > crate::startup::STARTUP_MAX_TEXT { return ShellStatus::TooLarge; }
+        let text = if length == 0 { &[] } else { std::slice::from_raw_parts(text, length) };
+        let s = &mut core.startup;
+        let accepted = match operation {
+            0 => true, 1 => s.add(), 2 => s.edit(tab, text),
+            3 => s.select(tab), 4 => s.close(tab), 5 => s.submit(tab, argument),
+            6 => s.reorder(tab, argument as usize), _ => unreachable!(),
+        };
+        if !accepted { return ShellStatus::Rejected; }
+        let draft = s.tabs.iter().find(|t| t.id == s.selected);
+        *output = ShellStartupView { selected: s.selected, tabs: s.tabs.len(),
+            pending: s.submissions.len(), tab: s.selected,
+            revision: draft.map_or(0, |t| t.revision),
+            text: draft.map_or(std::ptr::null(), |t| t.text.as_ptr()),
+            length: draft.map_or(0, |t| t.text.len()), ..Default::default() };
+        if let Some(draft)=draft {
+            (*output).selection_start=draft.selection_start;
+            (*output).selection_length=draft.selection_length;
+            (*output).composing=draft.composing;
+        }
+        ShellStatus::Ok
+    })
+}
+
+/// Read a draft (submission=false) or immutable pending submit by index.
+/// # Safety
+/// Output must be writable; returned text is borrowed until next core mutation.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_startup_read(core: *mut ShellCore,
+    submission: bool, index: usize, output: *mut ShellStartupView) -> ShellStatus {
+    guard(core, |core| {
+        let Some(output) = output.as_mut() else { return ShellStatus::InvalidArgument; };
+        let s = &core.startup;
+        let mut view = ShellStartupView { selected:s.selected, tabs:s.tabs.len(),
+            pending:s.submissions.len(), ..Default::default() };
+        if submission {
+            let Some(item) = s.submissions.get(index) else { return ShellStatus::Rejected; };
+            view.tab=item.tab; view.request=item.id; view.revision=item.revision;
+            view.modifiers=item.modifiers; view.text=item.text.as_ptr(); view.length=item.text.len();
+        } else {
+            let Some(item) = s.tabs.get(index) else { return ShellStatus::Rejected; };
+            view.tab=item.id; view.revision=item.revision;
+            view.text=item.text.as_ptr(); view.length=item.text.len();
+            view.selection_start=item.selection_start; view.selection_length=item.selection_length;
+            view.composing=item.composing;
+        }
+        *output=view; ShellStatus::Ok
+    })
+}
+
+#[cfg(test)]
+mod startup_ffi_tests {
+    use super::*;
+    #[test]
+    fn row_publication_validates_capacity_and_endpoint_before_mutation() {
+        unsafe {
+            assert_eq!(SHELL_STARTUP_ROW_CAPACITY as usize,crate::startup_rows::STARTUP_PRESENTATION_ROWS);
+            let core=shell_core_create(std::ptr::null());
+            let mut transfer=ShellStartupTransfer::default();
+            assert_eq!(shell_core_startup_transfer(core,1,42,0,0,0,0,0,false,&mut transfer),ShellStatus::Ok);
+            assert_eq!(shell_core_startup_transfer(core,2,42,transfer.session,7,0,0,0,false,&mut transfer),ShellStatus::Ok);
+            let mut rows=vec![ShellStartupRow::default();SHELL_STARTUP_ROW_CAPACITY as usize];
+            let mut count=777;
+            assert_eq!(shell_core_startup_rows(core,transfer.session,7,1,[90].as_ptr(),1,90,
+                rows.as_mut_ptr(),1,&mut count),ShellStatus::InvalidArgument);
+            assert_eq!(count,777);
+            assert_eq!(shell_core_startup_rows(core,transfer.session,8,1,[90].as_ptr(),1,90,
+                rows.as_mut_ptr(),rows.len(),&mut count),ShellStatus::Rejected);
+            assert_eq!(count,777);
+            assert_eq!(shell_core_startup_rows(core,transfer.session,7,1,[90].as_ptr(),1,90,
+                rows.as_mut_ptr(),rows.len(),&mut count),ShellStatus::Ok);
+            assert_eq!(count,1);assert_eq!(rows[0].browser,90);assert!(rows[0].selected);
+            shell_core_destroy(core);
+        }
+    }
+    #[test]
+    fn validates_before_mutation_and_cancels_pending_submissions() {
+        unsafe {
+            let core=shell_core_create(std::ptr::null());
+            assert!(!core.is_null());
+            let mut view=ShellStartupView::default();
+            assert_eq!(shell_core_startup(core,1,0,0,std::ptr::null(),0,&mut view),ShellStatus::Ok);
+            assert_eq!(shell_core_startup(core,2,1,0,std::ptr::null(),1,&mut view),ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_startup(core,2,1,0,[65u16].as_ptr(),1,&mut view),ShellStatus::Ok);
+            assert_eq!(shell_core_startup(core,5,1,3,std::ptr::null(),0,&mut view),ShellStatus::Ok);
+            assert_eq!(shell_core_startup_read(core,true,0,&mut view),ShellStatus::Ok);
+            assert_eq!(view.request,1); assert_eq!(view.modifiers,3);
+            assert_eq!(std::slice::from_raw_parts(view.text,view.length),[65]);
+            assert_eq!(shell_core_startup(core,4,1,0,std::ptr::null(),0,&mut view),ShellStatus::Ok);
+            assert_eq!(view.pending,0);
+            assert_eq!(shell_core_startup_read(core,true,0,&mut view),ShellStatus::Rejected);
+            shell_core_destroy(core);
+        }
+    }
+}
+
+/// Window binding operations. No callbacks or HWND operations occur in Rust.
+#[repr(u32)]
+pub enum ShellWindowHostOperation { Inspect = 0, Bind = 1, RequestClose = 2, ApproveClose = 3, CancelClose = 4, ContentDestroyed = 5, ShellDestroyed = 6, PrepareStartup = 7, CancelStartup = 8 }
+
+/// PrepareStartup uses shell only; Bind uses shell/content only. A prepared
+/// startup can bind only its original shell, with the endpoint generation intact.
+/// CancelStartup and other completion operations require the exact
+/// generation and request/handle returned by the binding. Inspect/RequestClose
+/// take a zeroed argument. Failed calls leave the output untouched.
+/// # Safety
+/// See [`guard`]. Input/output must point to valid, non-overlapping values.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_window_host(core: *mut ShellCore, operation: u32,
+    input: *const crate::window_host::ShellWindowBinding,
+    output: *mut crate::window_host::ShellWindowBinding) -> ShellStatus {
+    guard(core, |core| {
+        let (Some(input), Some(output)) = (input.as_ref(), output.as_mut()) else { return ShellStatus::InvalidArgument; };
+        if operation > 8 { return ShellStatus::InvalidArgument; }
+        if core.queue.is_closed() && ((1..=4).contains(&operation) || operation == 7) { return ShellStatus::Closed; }
+        let accepted = match operation {
+            0 => true,
+            1 => core.window_host.bind(core.endpoint, input.shell, input.content),
+            2 => core.window_host.request_close(),
+            3 | 4 => core.window_host.resolve_close(input.generation, input.close_request, operation == 3),
+            5 => core.window_host.content_destroyed(input.generation, input.content),
+            6 => core.window_host.shell_destroyed(input.generation, input.shell),
+            7 => core.window_host.prepare(core.endpoint, input.shell),
+            8 => core.window_host.cancel_startup(input.generation, input.shell),
+            _ => unreachable!(),
+        };
+        if !accepted { return ShellStatus::Rejected; }
+        if operation == 5 || operation == 8 { core.queue.close(); }
+        *output = core.window_host.state();
+        ShellStatus::Ok
+    })
+}
+
+#[cfg(test)]
+mod window_host_ffi_tests {
+    use super::*;
+    use crate::window_host::ShellWindowBinding as Binding;
+    #[test]
+    fn startup_cancellation_closes_endpoint_and_stale_completion_is_rejected() {
+        unsafe {
+            let core=shell_core_create(std::ptr::null());
+            let input=Binding {shell:10,..Default::default()}; let mut state=Binding::default();
+            assert_eq!(shell_core_window_host(core,7,&input,&mut state),ShellStatus::Ok);
+            let ready=state;
+            let stale=Binding {generation:ready.generation+1,..ready};
+            assert_eq!(shell_core_window_host(core,8,&stale,&mut state),ShellStatus::Rejected);
+            assert_eq!(state,ready);
+            assert_eq!(shell_core_window_host(core,8,&ready,&mut state),ShellStatus::Ok);
+            let cancelled=state;
+            assert_eq!(shell_core_window_host(core,1,&Binding {content:11,..ready},&mut state),ShellStatus::Closed);
+            assert_eq!(state,cancelled);
+            assert_eq!(shell_core_window_host(core,6,&cancelled,&mut state),ShellStatus::Ok);
+            shell_core_destroy(core);
+        }
+    }
+    #[test]
+    fn session_cancellation_and_endpoint_close_revoke_window_decisions() {
+        unsafe {
+            let core=shell_core_create(std::ptr::null());
+            let input=Binding {shell:10,content:11,..Default::default()}; let mut state=Binding::default();
+            assert_eq!(shell_core_window_host(core,1,&input,&mut state),ShellStatus::Ok);
+            assert_eq!(shell_core_window_host(core,2,&input,&mut state),ShellStatus::Ok);
+            let old=state; assert_eq!(shell_core_cancel_all(core),ShellStatus::Ok);
+            assert_eq!(shell_core_window_host(core,3,&old,&mut state),ShellStatus::Rejected);
+            assert_eq!(shell_core_window_host(core,2,&input,&mut state),ShellStatus::Ok);
+            assert_ne!(state.close_request,old.close_request);
+            let current=state; assert_eq!(shell_core_window_host(core,3,&current,&mut state),ShellStatus::Ok);
+            assert_eq!(shell_core_close(core),ShellStatus::Ok);
+            assert_eq!(shell_core_window_host(core,0,&input,&mut state),ShellStatus::Ok);
+            assert_eq!((state.phase,state.close_request),(1,0));
+            assert_eq!(shell_core_window_host(core,6,&current,&mut state),ShellStatus::Rejected);
+            assert_eq!(shell_core_window_host(core,5,&current,&mut state),ShellStatus::Ok);
+            shell_core_destroy(core);
+        }
+    }
+    #[test]
+    fn binding_ffi_guards_lifetime_thread_and_atomic_outputs() {
+        unsafe {
+            let core=shell_core_create(std::ptr::null());
+            let input=Binding {shell:10,content:11,..Default::default()};
+            let mut state=Binding::default();
+            assert_eq!(shell_core_window_host(core,1,&input,std::ptr::null_mut()),ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_window_host(core,1,&input,&mut state),ShellStatus::Ok);
+            let bound=state;
+            assert_eq!(shell_core_window_host(core,9,&input,&mut state),ShellStatus::InvalidArgument);
+            assert_eq!(state,bound);
+            let handle=core as usize;
+            assert_eq!(std::thread::spawn(move || shell_core_window_host(handle as *mut ShellCore,0,&Binding::default(),&mut Binding::default())).join().unwrap(),ShellStatus::WrongThread);
+            assert_eq!(shell_core_window_host(core,2,&input,&mut state),ShellStatus::Ok);
+            assert_eq!(shell_core_window_host(core,5,&bound,&mut state),ShellStatus::Ok);
+            assert!((*core).queue.is_closed());
+            assert_eq!(shell_core_window_host(core,2,&input,&mut state),ShellStatus::Closed);
+            assert_eq!(shell_core_window_host(core,6,&bound,&mut state),ShellStatus::Ok);
+            let replacement=shell_core_create(std::ptr::null());
+            assert_eq!(shell_core_window_host(replacement,1,&input,&mut state),ShellStatus::Ok);
+            assert_ne!(state.generation,bound.generation);
+            assert_eq!(shell_core_window_host(replacement,5,&bound,&mut state),ShellStatus::Rejected);
+            shell_core_destroy(core); shell_core_destroy(replacement);
+        }
+    }
+}
 
 use crate::intent::{self, IntentKind};
 use crate::model::{ApplyError, Change, ModelLimits, TabEntry, TabModel};
@@ -196,6 +725,12 @@ pub struct ShellCore {
     model: TabModel,
     strip: StripState,
     layout_work: crate::layout_work::LayoutWork,
+    window_host: crate::window_host::WindowHost,
+    page_input: crate::page_input::PageInput,
+    startup: crate::startup::Startup,
+    startup_handoff: crate::startup_handoff::Handoff,
+    startup_rows: crate::startup_rows::Rows,
+    startup_presentation: crate::publication::Stream<u64>,
     group_hover: crate::group_hover::GroupHover,
     group_surface: crate::group_surface::GroupSurfaceMotion,
     group_glow: crate::group_glow::GroupGlow,
@@ -439,6 +974,12 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         model: TabModel::new(model_limits),
         strip: StripState::default(),
         layout_work: Default::default(),
+        window_host: Default::default(),
+        page_input: Default::default(),
+        startup: Default::default(),
+        startup_handoff: Default::default(),
+        startup_rows: Default::default(),
+        startup_presentation: crate::publication::Stream::new(crate::publication::StreamKind::Snapshot),
         group_hover: crate::group_hover::GroupHover::default(),
         group_surface: Default::default(),
         group_glow: Default::default(),
@@ -787,6 +1328,7 @@ pub unsafe extern "C" fn shell_core_release_outcomes(batch: *mut ShellOutcomeBat
 pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellStatus {
     guard(core, |core| {
         core.queue.cancel_all();
+        core.window_host.invalidate_close();
         core.group_hover = Default::default();
         core.group_surface = Default::default();
         core.menu.close();
@@ -827,6 +1369,7 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
 pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
     guard(core, |core| {
         core.queue.close();
+        core.window_host.invalidate_close();
         core.group_hover = Default::default();
         core.group_surface = Default::default();
         core.menu.close();
@@ -5183,6 +5726,45 @@ mod interaction_ffi_tests {
     }}
 }
 
+/// Allocate native chrome and content in physical client pixels, without
+/// retaining state. Invalid inputs leave output untouched; fits=false is a
+/// valid result requiring host fallback, not a partially applicable layout.
+/// # Safety
+/// Non-null pointers must be aligned, readable/writable and not overlap.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_chrome_layout(
+    input: *const crate::chrome_layout::ShellChromeLayoutInput,
+    output: *mut crate::chrome_layout::ShellChromeLayout,
+) -> ShellStatus {
+    if input.is_null() || output.is_null() { return ShellStatus::InvalidArgument; }
+    match catch_unwind(AssertUnwindSafe(|| crate::chrome_layout::layout(*input))) {
+        Ok(Some(plan)) => { *output = plan; ShellStatus::Ok }
+        Ok(None) => ShellStatus::InvalidArgument,
+        Err(_) => ShellStatus::Panic,
+    }
+}
+
+#[cfg(test)]
+mod chrome_layout_ffi_tests {
+    use super::*;
+    use crate::chrome_layout::{ShellChromeLayout, ShellChromeLayoutInput};
+    #[test]
+    fn invalid_ffi_calls_leave_output_untouched() {
+        unsafe {
+            let input = ShellChromeLayoutInput { width: 1000, height: 800, dpi: 96, strip_height: 40, navigation: true, content_inset: 4 };
+            let mut output = ShellChromeLayout::default();
+            assert_eq!(shell_core_chrome_layout(&input, &mut output), ShellStatus::Ok);
+            let previous = output;
+            assert_eq!(shell_core_chrome_layout(std::ptr::null(), &mut output), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_chrome_layout(&input, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_chrome_layout(&ShellChromeLayoutInput { dpi: 0, ..input }, &mut output), ShellStatus::InvalidArgument);
+            assert_eq!(output, previous);
+            assert_eq!(shell_core_chrome_layout(&ShellChromeLayoutInput { width: 0, ..input }, &mut output), ShellStatus::Ok);
+            assert!(!output.fits);
+        }
+    }
+}
+
 /// Test a bounded geometry observation for one ShellLayoutWork consumer.
 /// Explicit force is for active motion or a host-owned invalidation. The host
 /// invalidates again on failed work and on topology/realization changes.
@@ -5233,4 +5815,107 @@ mod layout_work_tests {
             shell_core_destroy(core);
         }
     }
+}
+
+/// Native TSF projection operation. 0 inspect, 1 publish, 2 select, 3 replace,
+/// 4 enqueue composition (kind 1 start, 2 update, 3 end), 5 consume front event.
+/// Buffers returned by Read/Event are borrowed until the next mutation of core.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ShellPageInputCommand {
+    pub operation:u32, pub kind:u32, pub session:u64, pub revision:u64, pub ack:u64,
+    pub start:u32, pub end:u32, pub caret:u32, pub text:*const u16, pub length:usize,
+    pub clauses:*const crate::page_input::ShellPageClause, pub clause_count:usize,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ShellPageInputEvent {
+    pub session:u64, pub edit:u64, pub revision:u64, pub request:u64, pub kind:u32, pub start:u32, pub end:u32,
+    pub caret:u32, pub text:*const u16, pub length:usize,
+    pub clauses:*const crate::page_input::ShellPageClause, pub clause_count:usize,
+}
+/// # Safety
+/// Valid non-overlapping pointers; text readable for length units during call.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_page_input_apply(core:*mut ShellCore,input:*const ShellPageInputCommand)->ShellStatus {
+ guard(core,|core| {
+  let Some(c)=input.as_ref() else {return ShellStatus::InvalidArgument;};
+  if c.length>crate::page_input::PAGE_INPUT_MAX_TEXT {return ShellStatus::TooLarge;}
+  let Some(text)=slice(c.text,c.length) else {return ShellStatus::InvalidArgument;};
+  let p=&mut core.page_input;
+  let ok=match c.operation {
+   0=>true,
+   1=>return match p.publish(c.session,c.revision,c.ack,c.start,c.end,text) {Ok(true)=>ShellStatus::Ok,Ok(false)=>ShellStatus::Busy,Err(())=>ShellStatus::Rejected},
+   2=>p.select(c.start,c.end),
+   3=>p.replace(c.start,c.end,text),
+   4=>p.enqueue(c.kind,c.start,c.end,c.caret,text),
+   5=>{p.pop();true},
+   6=>p.direct_replace(c.start,c.end,text),
+   7=>p.direct_select(c.start,c.end,c.caret),
+   8=>{
+    if c.clause_count>64 {return ShellStatus::TooLarge;}
+    let clauses=if c.clause_count==0 {&[]} else {if c.clauses.is_null() {return ShellStatus::InvalidArgument;} std::slice::from_raw_parts(c.clauses,c.clause_count)};
+    p.composition(c.start,c.end,c.caret,text,clauses)
+   },
+   _=>return ShellStatus::InvalidArgument,
+  };
+  if ok {ShellStatus::Ok} else {ShellStatus::Rejected}
+ })
+}
+/// # Safety
+/// Valid output pointers. Returned text is borrowed until next core mutation.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_page_input_read(core:*mut ShellCore,state:*mut crate::page_input::ShellPageInputState,text:*mut *const u16)->ShellStatus {
+ guard(core,|core| {
+  let (Some(state),Some(text))=(state.as_mut(),text.as_mut()) else {return ShellStatus::InvalidArgument;};
+  *state=core.page_input.state;*text=core.page_input.text.as_ptr();ShellStatus::Ok
+ })
+}
+/// # Safety
+/// Valid output pointer. Busy means empty; returned text is borrowed until mutation.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_page_input_event(core:*mut ShellCore,out:*mut ShellPageInputEvent)->ShellStatus {
+ guard(core,|core| {
+  let Some(out)=out.as_mut() else {return ShellStatus::InvalidArgument;};
+  let Some(e)=core.page_input.front() else {return ShellStatus::Busy;};
+  *out=ShellPageInputEvent{session:e.session,edit:e.edit,revision:e.revision,request:e.request,kind:e.kind,start:e.start,end:e.end,caret:e.caret,text:e.text.as_ptr(),length:e.text.len(),clauses:e.clauses.as_ptr(),clause_count:e.clauses.len()};ShellStatus::Ok
+ })
+}
+
+/// # Safety
+/// core is live and exclusively accessed by its native owner.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_page_geometry_context(core:*mut ShellCore,session:u64,revision:u64)->ShellStatus {
+ guard(core,|core|match core.page_input.geometry_context(session,revision){Ok(true)=>ShellStatus::Ok,Ok(false)=>ShellStatus::Busy,Err(())=>ShellStatus::Rejected})
+}
+/// # Safety
+/// out is writable; core is live and exclusively accessed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_page_geometry_read(core:*mut ShellCore,start:u32,end:u32,out:*mut crate::page_input::ShellPageGeometry)->ShellStatus {
+ guard(core,|core|{let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};
+ match core.page_input.geometry_read(start,end){Ok(Some(value))=>{*out=value;ShellStatus::Ok},Ok(None)=>ShellStatus::Busy,Err(())=>ShellStatus::Rejected}})
+}
+/// # Safety
+/// input is readable; core is live and exclusively accessed.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_page_geometry_reply(core:*mut ShellCore,input:*const crate::page_input::ShellPageGeometry)->ShellStatus {
+ guard(core,|core|{let Some(input)=input.as_ref() else{return ShellStatus::InvalidArgument;};
+ if core.page_input.geometry_reply(*input){ShellStatus::Ok}else{ShellStatus::Rejected}})
+}
+
+#[cfg(test)]
+mod startup_presentation_tests {
+    use super::*;
+    #[test]
+    fn startup_labels_are_endpoint_scoped_snapshots() { unsafe {
+        let core=shell_core_create(std::ptr::null());assert!(!core.is_null());
+        let session=(*core).endpoint;let one=[1u16,2];let two=[3u16,4];let mut apply=false;
+        assert_eq!(shell_core_startup_presentation(core,session,2,one.as_ptr(),2,&mut apply),ShellStatus::Ok);assert!(apply);
+        assert_eq!(shell_core_startup_presentation(core,session,2,one.as_ptr(),2,&mut apply),ShellStatus::Ok);assert!(!apply);
+        assert_eq!(shell_core_startup_presentation(core,session,1,two.as_ptr(),2,&mut apply),ShellStatus::Ok);assert!(!apply);
+        assert_eq!(shell_core_startup_presentation(core,session,2,two.as_ptr(),2,&mut apply),ShellStatus::Rejected);
+        assert_eq!(shell_core_startup_presentation(core,session+1,3,two.as_ptr(),2,&mut apply),ShellStatus::Rejected);
+        assert_eq!(shell_core_startup_presentation(core,session,3,two.as_ptr(),2,&mut apply),ShellStatus::Ok);assert!(apply);
+        shell_core_destroy(core);
+    }}
 }
