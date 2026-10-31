@@ -32422,10 +32422,10 @@ index 00000000000..c4d29442a62
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..d2988379c7e
+index 00000000000..a82c1003d0d
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -0,0 +1,665 @@
+@@ -0,0 +1,689 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32446,6 +32446,7 @@ index 00000000000..d2988379c7e
 +#include "mozilla/ProfilerMarkers.h"
 +#include "mozilla/CycleCollectedJSContext.h"
 +#include "mozilla/Preferences.h"
++#include "mozilla/intl/LocaleService.h"
 +#include "mozilla/Services.h"
 +#include "nsIObserverService.h"
 +#include "nsPrintfCString.h"
@@ -32745,8 +32746,31 @@ index 00000000000..d2988379c7e
 +  }
 +  nsAutoString path;
 +  if (NS_FAILED(aProfile->GetPath(path))) return false;
-+  if (!PrepareFennStartupWindowForProfile(GetModuleHandleW(nullptr),
-+                                          static_cast<const wchar_t*>(path.get()), nullptr)) {
++  // Direction-only presentation: Fluent labels are not available yet, but the negotiated app locale
++  // and its direction (including the bidi pseudo-locale) are. The native side applies the profile's
++  // label cache only if it was written for this locale.
++  nsAutoString presentation;
++  if (auto* locales = mozilla::intl::LocaleService::GetInstance()) {
++    nsAutoCString locale;
++    locales->GetAppLocaleAsBCP47(locale);
++    bool valid = !locale.IsEmpty() && locale.Length() <= 64;
++    for (uint32_t i = 0; valid && i < locale.Length(); ++i) {
++      const char c = locale[i];
++      valid = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
++    }
++    if (valid) {
++      presentation.AssignLiteral(u"{\"version\":2,\"locale\":\"");
++      AppendUTF8toUTF16(locale, presentation);
++      if (locales->IsAppLocaleRTL()) {
++        presentation.AppendLiteral(u"\",\"rtl\":true}");
++      } else {
++        presentation.AppendLiteral(u"\",\"rtl\":false}");
++      }
++    }
++  }
++  if (!PrepareFennStartupWindowForProfile(
++          GetModuleHandleW(nullptr), static_cast<const wchar_t*>(path.get()),
++          presentation.IsEmpty() ? nullptr : static_cast<const wchar_t*>(presentation.get()))) {
 +    return false;
 +  }
 +  // The native thread builds and shows the startup surface itself; waiting for it here would block

@@ -22,6 +22,12 @@ inline winrt::Windows::Data::Json::JsonObject Parse(winrt::hstring const& json) 
     }
     return data;
 }
+// The first presentation to apply, and its direction. A full presentation (version, locale, rtl,
+// labels) is applied as given. A direction-only hint (no "labels", early startup before Fluent is
+// available) supplies the direction and uses the profile cache only if the cache was written for
+// the same locale; a stale or missing cache leaves the native defaults. Without a presentation the
+// profile cache applies as before.
+inline winrt::Windows::Data::Json::JsonObject Resolve(const wchar_t* presentation, const wchar_t* profile, bool& rtl);
 inline winrt::Windows::Data::Json::JsonObject Read(const wchar_t* profile) noexcept {
     try {
         if(!profile || !*profile)return nullptr;
@@ -36,5 +42,28 @@ inline winrt::Windows::Data::Json::JsonObject Read(const wchar_t* profile) noexc
         if(!ReadFile(file,bytes.data(),static_cast<DWORD>(bytes.size()),&read,nullptr) || read!=bytes.size())return nullptr;
         return Parse(winrt::to_hstring(bytes));
     } catch(...) {return nullptr;}
+}
+inline winrt::Windows::Data::Json::JsonObject Resolve(const wchar_t* presentation, const wchar_t* profile, bool& rtl) {
+    rtl=false;
+    if(!presentation) {
+        auto cached=Read(profile);
+        if(cached)rtl=cached.GetNamedBoolean(L"rtl",false);
+        return cached;
+    }
+    const winrt::hstring json{presentation};
+    if(json.empty() || json.size()>32768)winrt::throw_hresult(E_INVALIDARG);
+    auto hint=winrt::Windows::Data::Json::JsonObject::Parse(json);
+    if(hint.HasKey(L"labels")) {
+        auto full=Parse(json);
+        rtl=full.GetNamedBoolean(L"rtl",false);
+        return full;
+    }
+    if(hint.GetNamedNumber(L"version")!=2)winrt::throw_hresult(E_INVALIDARG);
+    rtl=hint.GetNamedBoolean(L"rtl");
+    const auto locale=hint.GetNamedString(L"locale");
+    if(locale.empty() || locale.size()>128)winrt::throw_hresult(E_INVALIDARG);
+    auto cached=Read(profile);
+    if(cached && cached.GetNamedString(L"locale",L"")==locale)return cached;
+    return nullptr;
 }
 }

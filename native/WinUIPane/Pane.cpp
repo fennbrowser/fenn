@@ -2467,8 +2467,9 @@ HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t*
         if(GetPropW(hwnd,InteractiveStartupProperty))return S_FALSE;
         check_hresult(LayoutInteractiveStartup(hwnd));
         check_hresult(BeginStartupPresenter(hwnd));
-        auto initialPresentation=presentation?NativeStartupLabels::Parse(presentation):NativeStartupLabels::Read(profile);
-        ApplyStartupDirection(*state().panes.at(hwnd),initialPresentation?initialPresentation.GetNamedBoolean(L"rtl",false):false);
+        bool initialRtl{};
+        auto initialPresentation=NativeStartupLabels::Resolve(presentation,profile,initialRtl);
+        ApplyStartupDirection(*state().panes.at(hwnd),initialRtl);
         if(initialPresentation) {
             auto labels=initialPresentation.GetNamedObject(L"labels");
             auto& pane=*state().panes.at(hwnd);
@@ -2499,7 +2500,13 @@ HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t*
             pane.address->Action(L"activate");
         }
 #endif
+        // Measurement switch: skip DWM's window-open transition for the first show only, so its cost
+        // can be separated from construction. Later minimize/maximize transitions are untouched.
+        wchar_t noAnimation[2]{};
+        const bool skipOpenTransition=GetEnvironmentVariableW(L"FENN_NATIVE_NO_OPEN_ANIMATION",noAnimation,2)==1 && noAnimation[0]==L'1';
+        if(skipOpenTransition){BOOL disable=TRUE;DwmSetWindowAttribute(hwnd,DWMWA_TRANSITIONS_FORCEDISABLED,&disable,sizeof(disable));}
         ShowWindow(hwnd,GetPropW(hwnd,L"Fenn.NativeStartupMaximized")?SW_SHOWMAXIMIZED:SW_SHOWNOACTIVATE);
+        if(skipOpenTransition){BOOL disable=FALSE;DwmSetWindowAttribute(hwnd,DWMWA_TRANSITIONS_FORCEDISABLED,&disable,sizeof(disable));}
         return S_OK;
     } catch (...) {Destroy(hwnd);return to_hresult();}
 }
