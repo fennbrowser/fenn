@@ -98,6 +98,9 @@ struct NativeAddress {
     // depends on. Calling it is always safe: ObserveFocus acts only on a
     // change, so extra calls cost a focus query and nothing else.
     std::function<void()> observeFocus;
+    // Firefox asked for this focus, so the "focus" action it produces is an echo.
+    // Firefox may have moved focus on by the time the echo drains; see FocusAddress.
+    bool firefoxFocusRequest{};
 
     // Focus moved somewhere inside this surface, or out of it. XAML routes
     // GotFocus/LostFocus up from the element that changed, so subscribing on
@@ -318,6 +321,8 @@ struct NativeAddress {
         }
         const auto incoming = IntentOf(kind);
         if (incoming == NativeShellCore::NoIntent) return;
+        const bool firefoxRequested = incoming == NativeShellCore::Focus && firefoxFocusRequest;
+        if (incoming == NativeShellCore::Focus) firefoxFocusRequest = false;
         if (incoming == NativeShellCore::Dismiss || incoming == NativeShellCore::Activate ||
             incoming == NativeShellCore::Fallback || incoming == NativeShellCore::ContextMenu ||
             incoming == NativeShellCore::Clipboard) interaction.Interrupt(EditorOwned());
@@ -346,6 +351,7 @@ struct NativeAddress {
         const auto action = shell.NegotiateAddress(incoming, Observed(), modifiers);
         if (action.decision == NativeShellCore::Defer || action.decision == NativeShellCore::DropIntent) return;
         auto value = Message(kind);
+        if (firefoxRequested) value.SetNamedValue(L"firefoxRequested", JValue::CreateBooleanValue(true));
         if (incoming == NativeShellCore::Select && traversal)
             value.SetNamedValue(L"traverse", JValue::CreateNumberValue(traversal));
         if (incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::ContextMenu || incoming == NativeShellCore::Blur) {
@@ -398,6 +404,7 @@ struct NativeAddress {
         // FocusManager retains a logical target after Win32 focus leaves this
         // island. Only the owning pane's live island/popup focus can reveal it.
         islandFocusOwned = islandHasFocus;
+        if (!islandHasFocus) firefoxFocusRequest = false;
         UpdateEmbeddedControls();
         // Popup focus can temporarily sit on the presenter, outside this root.
         // Retain Firefox's address edit target for the whole overflow opening.
@@ -530,6 +537,7 @@ struct NativeAddress {
                     if (alive.expired()) return;
                     const auto point = e.GetCurrentPoint(field);
                     if (!point.Properties().IsLeftButtonPressed()) { interaction.Interrupt(EditorOwned()); return; }
+                    firefoxFocusRequest = false;
                     interaction.Begin(point, !interaction.FocusWithin() || !islandFocusOwned);
                     if (preparePointerFocus) preparePointerFocus();
                     ScheduleFocusObservation();

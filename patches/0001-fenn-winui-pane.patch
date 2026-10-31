@@ -30039,10 +30039,10 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..c4d29442a62
+index 00000000000..40cba2a3a79
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2401 @@
+@@ -0,0 +1,2410 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30973,6 +30973,15 @@ index 00000000000..c4d29442a62
 +          Ci.nsIFocusManager.FLAG_BYKEY);
 +      }
 +    } else if (action.kind === "focus") {
++      // With the UI on its own thread this echo of Firefox's own focus request
++      // can drain after a newer focus change, such as the click that activated
++      // the window. That change wins: publish it so the native side lets go.
++      if (action.firefoxRequested && this.addressToolbar?.active &&
++          document.activeElement !== this.addressToolbar.proxy) {
++        this.addressToolbar.focusOwned = false;
++        this.invalidateAddress();
++        return 1;
++      }
 +      if (this.addressToolbar?.active && !this.addressToolbar.adoptNativeFocus()) return 2;
 +      if (gURLBar.view.oneOffSearchButtons?.selectedButton) {
 +        this.addressFallback("focus-firefox-one-off-selected");
@@ -32446,10 +32455,10 @@ index 00000000000..c4d29442a62
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..36c90d9b77d
+index 00000000000..1a19871ff78
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -0,0 +1,725 @@
+@@ -0,0 +1,730 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32633,6 +32642,11 @@ index 00000000000..36c90d9b77d
 +      if (message==WM_KEYDOWN || message==WM_SYSKEYDOWN) keys[w]|=0x80;
 +      else keys[w]&=0x7f;
 +    }
++    // Input since this thread's last key-state read leaves a pending sync to the
++    // live keyboard, which replaces the first set on the next read. Gecko would
++    // then see released modifiers whenever it runs behind the physical keys.
++    SetKeyboardState(keys);
++    GetKeyState(VK_SHIFT);
 +    SetKeyboardState(keys);
 +    // The private transport bypasses nsAppShell's ordinary key-message hook.
 +    // Give Gecko's own TSF text store first refusal, on the Gecko thread and

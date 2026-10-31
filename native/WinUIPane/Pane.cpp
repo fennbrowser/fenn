@@ -1876,6 +1876,7 @@ HRESULT WINAPI FocusAddress(HWND hwnd, BOOL selectAll) noexcept {
         if (found == state().panes.end() || !found->second->addressSource) return E_NOT_VALID_STATE;
         auto& pane = *found->second;
         pane.address->interaction.Interrupt(false);
+        pane.address->firefoxFocusRequest = !pane.address->EditorOwned();
         pane.addressSource.NavigateFocus(XamlSourceFocusNavigationRequest(XamlSourceFocusNavigationReason::First));
         if (!pane.address->field.Focus(FocusState::Programmatic)) return E_FAIL;
         if (selectAll) pane.address->field.SelectAll();
