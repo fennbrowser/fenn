@@ -10375,6 +10375,32 @@ index 2d06d7b7dda..c31997ee473 100644
 +  }
 +
   protected:
+diff --git a/widget/windows/CompositorWidgetChild.cpp b/widget/windows/CompositorWidgetChild.cpp
+index b5b1249e777..697b0c3b809 100644
+--- a/widget/windows/CompositorWidgetChild.cpp
++++ b/widget/windows/CompositorWidgetChild.cpp
+@@ -5,2 +5,3 @@
+ #include "CompositorWidgetChild.h"
++#include "FennCompositorParent.h"
+ 
+@@ -114,3 +115,3 @@ mozilla::ipc::IPCResult CompositorWidgetChild::RecvUpdateCompositorWnd(
+     mCompositorWnd = reinterpret_cast<HWND>(aCompositorWnd);
+-    ::SetParent(mCompositorWnd, mWnd);
++    SetCompositorParent(mCompositorWnd, mWnd);
+     aResolve(true);
+diff --git a/widget/windows/InProcessWinCompositorWidget.cpp b/widget/windows/InProcessWinCompositorWidget.cpp
+index 044efe4f5d2..1f9d43520bf 100644
+--- a/widget/windows/InProcessWinCompositorWidget.cpp
++++ b/widget/windows/InProcessWinCompositorWidget.cpp
+@@ -5,2 +5,3 @@
+ #include "InProcessWinCompositorWidget.h"
++#include "FennCompositorParent.h"
+ 
+@@ -214,3 +215,3 @@ void InProcessWinCompositorWidget::UpdateCompositorWnd(
+   // directly.
+-  ::SetParent(aCompositorWnd, aParentWnd);
++  SetCompositorParent(aCompositorWnd, aParentWnd);
+   mSetParentCompleted = true;
 diff --git a/widget/windows/WinIMEHandler.cpp b/widget/windows/WinIMEHandler.cpp
 index 624b829193a..a0f40eed44e 100644
 --- a/widget/windows/WinIMEHandler.cpp
@@ -10570,7 +10596,7 @@ index f5d293a068d..1c4562bd45f 100644
 +        }
          if (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST &&
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index e505d3ce012..198e243f1ab 100644
+index e505d3ce012..1e205dfcde6 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -81,2 +81,4 @@
@@ -10817,14 +10843,30 @@ index e505d3ce012..198e243f1ab 100644
 +  }
 +
    bool syncInvalidate = false;
-@@ -1809,3 +1995,5 @@ void nsWindow::Show(bool aState) {
+@@ -1717,3 +1903,5 @@ void nsWindow::Show(bool aState) {
+ 
+-        if (!mHasBeenShown) {
++        // The native startup host is already on screen with its own background.
++        const bool clearOnFirstShow = !mHasBeenShown && !::IsWindowVisible(mWnd);
++        if (clearOnFirstShow) {
+           // On creation, the window's content is not specified; in practice,
+@@ -1765,4 +1953,6 @@ void nsWindow::Show(bool aState) {
+           // background color before uncloaking it to complete the Show().
+-          ClearWindow(mWnd);
+-          CloakWindow(mWnd, FALSE);
++          if (clearOnFirstShow) {
++            ClearWindow(mWnd);
++            CloakWindow(mWnd, FALSE);
++          }
+           // bug 1833841: Initialize mWorkspaceId asynchronously so that we
+@@ -1809,3 +1999,5 @@ void nsWindow::Show(bool aState) {
          } else {
 -          if (mWindowType == WindowType::Dialog && !CanTakeFocus())
 +          if (mWindowType == WindowType::Dialog &&
 +              (!CanTakeFocus() ||
 +               mozilla::widget::NativeStartupEditorOwnsForeground()))
              flags |= SWP_NOACTIVATE;
-@@ -1823,2 +2011,13 @@ void nsWindow::Show(bool aState) {
+@@ -1823,2 +2015,13 @@ void nsWindow::Show(bool aState) {
        }
 +      if (independentTransientOwner) {
 +        // Hide with the original owner, then detach before restoring native
@@ -10838,22 +10880,22 @@ index e505d3ce012..198e243f1ab 100644
 +        }
 +      }
      }
-@@ -1989,3 +2188,3 @@ void nsWindow::Move(const DesktopPoint& aTopLeft) {
+@@ -1989,3 +2192,3 @@ void nsWindow::Move(const DesktopPoint& aTopLeft) {
    // screen space coordinates we normally use with SetWindowPos.
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
-@@ -2073,3 +2272,3 @@ void nsWindow::Resize(const DesktopSize& aSize, bool aRepaint) {
+@@ -2073,3 +2276,3 @@ void nsWindow::Resize(const DesktopSize& aSize, bool aRepaint) {
    // Refer to the comment above a similar check in nsWindow::Move
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
-@@ -2136,3 +2335,3 @@ void nsWindow::Resize(const DesktopRect& aRect, bool aRepaint) {
+@@ -2136,3 +2339,3 @@ void nsWindow::Resize(const DesktopRect& aRect, bool aRepaint) {
    // Refer to the comment above a similar check in nsWindow::Move
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
-@@ -2208,2 +2407,9 @@ static UINT GetCurrentShowCmd(HWND aWnd) {
+@@ -2208,2 +2411,9 @@ static UINT GetCurrentShowCmd(HWND aWnd) {
  
 +bool nsWindow::IsShowingMaximizedStartupWindow() const {
 +  return (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) ||
@@ -10863,49 +10905,49 @@ index e505d3ce012..198e243f1ab 100644
 +}
 +
  // Maximize, minimize or restore the window.
-@@ -2214,3 +2420,3 @@ void nsWindow::SetSizeMode(nsSizeMode aMode) {
+@@ -2214,3 +2424,3 @@ void nsWindow::SetSizeMode(nsSizeMode aMode) {
    // technically displayed), we will again accept sizemode changes.
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      return;
-@@ -2448,3 +2654,5 @@ void nsWindow::SetFocus(Raise aRaise, mozilla::dom::CallerType aCallerType) {
+@@ -2448,3 +2658,5 @@ void nsWindow::SetFocus(Raise aRaise, mozilla::dom::CallerType aCallerType) {
    }
 -  ::SetFocus(mWnd);
 +  if (!mozilla::widget::FocusIndependentWindowHost(mWnd)) {
 +    ::SetFocus(mWnd);
 +  }
  }
-@@ -4057,3 +4265,4 @@ BOOL CALLBACK nsWindow::DispatchStarvedPaints(HWND aWnd, LPARAM aMsg) {
+@@ -4057,3 +4269,4 @@ BOOL CALLBACK nsWindow::DispatchStarvedPaints(HWND aWnd, LPARAM aMsg) {
    LONG_PTR proc = ::GetWindowLongPtrW(aWnd, GWLP_WNDPROC);
 -  if (proc == (LONG_PTR)&nsWindow::WindowProc) {
 +  if (proc == (LONG_PTR)&nsWindow::WindowProc ||
 +      (mozilla::widget::IsNativeWindowHost(aWnd) && WinUtils::GetNSWindowPtr(aWnd))) {
      // its one of our windows so check to see if it has a
-@@ -5639,3 +5848,4 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5639,3 +5852,4 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
  
 -      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient) {
 +      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient &&
 +          !mozilla::widget::HasWinUISystemCaption(mWnd)) {
          DispatchMouseEvent(eMouseDown, wParamFromGlobalMouseState(),
-@@ -5650,3 +5860,5 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5650,3 +5864,5 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
      case WM_NCLBUTTONUP: {
 -      if (mCustomNonClient) {
 +      // The native strip uses SDK-drawn caption controls. Forward their
 +      // original input to the previous (App SDK) window proc, not DOM chrome.
 +      if (mCustomNonClient && !mozilla::widget::HasWinUISystemCaption(mWnd)) {
          result = DispatchMouseEvent(eMouseUp, wParamFromGlobalMouseState(),
-@@ -6945,2 +7157,6 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+@@ -6945,2 +7161,6 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
  void nsWindow::OnDestroy() {
 +  mozilla::widget::DestroyWinUIPane(mWnd);
 +  if (mWindowType == WindowType::TopLevel) {
 +    mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
 +  }
    mOnDestroyCalled = true;
-@@ -7210,2 +7426,3 @@ void nsWindow::SetInputContext(const InputContext& aContext,
+@@ -7210,2 +7430,3 @@ void nsWindow::SetInputContext(const InputContext& aContext,
    mInputContext = newInputContext;
 +  mozilla::widget::RefreshIndependentPageIME(mWnd);
  }
-@@ -8935,3 +9152,3 @@ void nsWindow::FrameState::CheckInvariant() const {
+@@ -8935,3 +9156,3 @@ void nsWindow::FrameState::CheckInvariant() const {
  
 -void nsWindow::FrameState::ConsumePreXULSkeletonState(bool aWasMaximized) {
 +void nsWindow::FrameState::ConsumeStartupWindowState(bool aWasMaximized) {
@@ -11161,6 +11203,44 @@ index 00000000000..9e20e3ca163
 +    console.error("Native startup connection failed", error);
 +  }
 +}
+diff --git a/widget/windows/FennCompositorParent.h b/widget/windows/FennCompositorParent.h
+new file mode 100644
+index 00000000000..37e930c92d5
+--- /dev/null
++++ b/widget/windows/FennCompositorParent.h
+@@ -0,0 +1,32 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef widget_windows_FennCompositorParent_h
++#define widget_windows_FennCompositorParent_h
++
++#include <windows.h>
++
++namespace mozilla::widget {
++
++// While the native startup host holds the page area, the compositor window
++// joins it hidden. The host shows it after the selected tab has painted.
++inline void SetCompositorParent(HWND aCompositorWnd, HWND aParentWnd) {
++  static constexpr wchar_t kHold[] = L"Fenn.NativeStartupPageHold";
++  static constexpr UINT kFlags =
++      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
++  const bool held = ::GetPropW(aParentWnd, kHold);
++  if (held) {
++    ::SetWindowPos(aCompositorWnd, nullptr, 0, 0, 0, 0,
++                   kFlags | SWP_HIDEWINDOW);
++  }
++  ::SetParent(aCompositorWnd, aParentWnd);
++  if (held && !::GetPropW(aParentWnd, kHold)) {
++    ::SetWindowPos(aCompositorWnd, nullptr, 0, 0, 0, 0,
++                   kFlags | SWP_SHOWWINDOW | SWP_ASYNCWINDOWPOS);
++  }
++}
++
++}  // namespace mozilla::widget
++
++#endif
 diff --git a/browser/base/content/WinUIStartupTransfer.sys.mjs b/browser/base/content/WinUIStartupTransfer.sys.mjs
 new file mode 100644
 index 00000000000..9cc2c6236ee
@@ -30039,10 +30119,10 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..40cba2a3a79
+index 00000000000..f6ece80fdf8
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2410 @@
+@@ -0,0 +1,2415 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32448,6 +32528,11 @@ index 00000000000..40cba2a3a79
 +    gWinUIPane.automaticStartupModule = ChromeUtils.importESModule("chrome://browser/content/WinUIAutomaticStartup.sys.mjs");
 +    gWinUIPane.automaticStartupModule.beginAutomaticStartup(window);
 +  }
++  gBrowserInit.firstContentWindowPaintPromise.then(() => {
++    try {
++      window.windowUtils.syncWinUITabMenu(JSON.stringify({ version: 2, publishOnly: true, startupPagePainted: true }));
++    } catch (e) {}
++  });
 +}, { once: true });
 +window.addEventListener("unload", () => {
 +  gWinUIPane.uninitOptions();

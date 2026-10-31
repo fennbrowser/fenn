@@ -325,6 +325,17 @@ inline LRESULT CALLBACK StartupProc(HWND hwnd, UINT message, WPARAM w, LPARAM l)
     if (message==WM_NCCREATE) EnableNonClientDpiScaling(hwnd);
     return DefWindowProcW(hwnd,message,w,l);
 }
+// The system app mode, which XAML also follows: the window is this colour until
+// the islands and Gecko's first paint cover it, so a dark theme never flashes white.
+inline COLORREF StartupBackgroundColor() noexcept {
+    HIGHCONTRASTW contrast{sizeof(contrast)};
+    if (SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(contrast),&contrast,0) && (contrast.dwFlags&HCF_HIGHCONTRASTON))
+        return GetSysColor(COLOR_WINDOW);
+    DWORD light=1,size=sizeof(light);
+    RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        L"AppsUseLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);
+    return light?RGB(249,249,251):RGB(43,42,51);
+}
 inline HRESULT CreateStartup(DWORD ex, DWORD style, const RECT& bounds, HWND* output) noexcept {
     if (!output) return E_POINTER;
     *output=nullptr;
@@ -334,14 +345,22 @@ inline HRESULT CreateStartup(DWORD ex, DWORD style, const RECT& bounds, HWND* ou
             reinterpret_cast<LPCWSTR>(StartupProc),&module)) return HRESULT_FROM_WIN32(GetLastError());
     constexpr auto name=L"Fenn.NativeStartupHost.v1";
     WNDCLASSW wc{};
-    if (!GetClassInfoW(module,name,&wc)) {
+    const bool registered=GetClassInfoW(module,name,&wc);
+    if (!registered) {
         wc.lpfnWndProc=StartupProc; wc.hInstance=module; wc.lpszClassName=name;
         wc.style=CS_DBLCLKS; wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);
+        wc.hbrBackground=CreateSolidBrush(StartupBackgroundColor());
         if (!RegisterClassW(&wc)) return HRESULT_FROM_WIN32(GetLastError());
     } else if (wc.lpfnWndProc!=StartupProc) return E_UNEXPECTED;
     HWND hwnd{};
     HRESULT hr=Create(ex,name,style&~WS_VISIBLE,&bounds,nullptr,module,&hwnd);
     if (FAILED(hr)) return hr;
+    // Later windows follow a theme changed since the class was registered.
+    if (registered) {
+        if (auto brush=CreateSolidBrush(StartupBackgroundColor()))
+            if (auto previous=reinterpret_cast<HBRUSH>(SetClassLongPtrW(hwnd,GCLP_HBRBACKGROUND,reinterpret_cast<LONG_PTR>(brush))))
+                DeleteObject(previous);
+    }
     auto* host=Get(hwnd);
     ShellWindowBinding binding{}; binding.shell=reinterpret_cast<uintptr_t>(hwnd);
     if (host->Call(SHELL_WINDOW_HOST_OPERATION_PREPARE_STARTUP,binding)!=SHELL_STATUS_OK) {

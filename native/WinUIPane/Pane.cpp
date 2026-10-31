@@ -1886,6 +1886,7 @@ HRESULT WINAPI FocusAddress(HWND hwnd, BOOL selectAll) noexcept {
 // Publication only, since v12: nothing native travels back through this call.
 // Every native intent -- menu transitions, selection, and the strip's own
 // gestures -- is queued and drained through the request path instead.
+void EndPageHold(HWND hwnd);
 HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
     WorkScope scope{EntrySyncTabMenu};
     try {
@@ -1895,6 +1896,7 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
         if (found == state().panes.end()) return E_INVALIDARG;
         auto snapshot = NativeTabMenu::Object::Parse(input);
         auto& pane = *found->second;
+        if (snapshot.HasKey(L"startupPagePainted")) { EndPageHold(hwnd); return S_OK; }
         if (snapshot.HasKey(L"strip")) {
             if(pane.startupRender)return S_OK;
             // Strip publication is a separate transaction: validate the envelope
@@ -2437,6 +2439,24 @@ HRESULT PublishStartupPresentation(HWND hwnd, Windows::Data::Json::JsonObject co
 
 namespace {
 inline constexpr wchar_t InteractiveStartupProperty[]=L"Fenn.InteractiveStartup";
+inline constexpr wchar_t PageHoldProperty[]=L"Fenn.NativeStartupPageHold";
+inline constexpr UINT_PTR PageHoldTimer=0x46454E;
+inline constexpr UINT PageHoldLimitMs=10000;
+// The compositor window is white until Gecko first presents. While this property is set it
+// joins the host hidden (FennCompositorParent.h), leaving the themed host showing, until the
+// selected tab has painted.
+void EndPageHold(HWND hwnd) {
+    if(!RemovePropW(hwnd,PageHoldProperty))return;
+    KillTimer(hwnd,PageHoldTimer);
+    for(HWND child=FindWindowExW(hwnd,nullptr,L"MozillaCompositorWindowClass",nullptr);child;
+        child=FindWindowExW(hwnd,child,L"MozillaCompositorWindowClass",nullptr))
+        SetWindowPos(child,nullptr,0,0,0,0,SWP_SHOWWINDOW|SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_ASYNCWINDOWPOS);
+    NativeWindowHost::FocusTrace("start-page-revealed");
+}
+void BeginPageHold(HWND hwnd) {
+    SetPropW(hwnd,PageHoldProperty,reinterpret_cast<HANDLE>(1));
+    SetTimer(hwnd,PageHoldTimer,PageHoldLimitMs,nullptr);
+}
 HRESULT LayoutInteractiveStartup(HWND hwnd) noexcept {
     WinUIChromeLayout layout{};
     auto result=MeasureChromeLayout(hwnd,40,TRUE,0,&layout);
@@ -2449,7 +2469,11 @@ LRESULT CALLBACK InteractiveStartupProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l,UIN
     if(msg==WM_NCDESTROY) {
         RemoveWindowSubclass(hwnd,InteractiveStartupProc,id);
         RemovePropW(hwnd,InteractiveStartupProperty);
+        RemovePropW(hwnd,PageHoldProperty);
         Destroy(hwnd);
+    } else if(msg==WM_TIMER && w==PageHoldTimer) {
+        EndPageHold(hwnd);
+        return 0;
     } else if(msg==WM_SIZE || msg==WM_DPICHANGED) {
         // Gecko owns subsequent bounds publications. Before attachment, the
         // native thread lays out these same islands without a browser callback.
@@ -2472,6 +2496,13 @@ HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t*
         NativeWindowHost::FocusTrace("start-layout");
         check_hresult(BeginStartupPresenter(hwnd));
         NativeWindowHost::FocusTrace("start-presenter");
+        // An island without a backdrop is white in either theme. Firefox's first
+        // publication confirms this or takes it away if the toolbar is opted out.
+        {
+            auto& ready=*state().panes.at(hwnd);
+            Pane::SetBackdrop(ready.addressSource,ready.strip->backdrop);
+            ready.navigationBackdrop=true;
+        }
         bool initialRtl{};
         auto initialPresentation=NativeStartupLabels::Resolve(presentation,profile,initialRtl);
         ApplyStartupDirection(*state().panes.at(hwnd),initialRtl);
@@ -2510,36 +2541,36 @@ HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t*
         // can be separated from construction. Later minimize/maximize transitions are untouched.
         wchar_t noAnimation[2]{};
         const bool skipOpenTransition=GetEnvironmentVariableW(L"FENN_NATIVE_NO_OPEN_ANIMATION",noAnimation,2)==1 && noAnimation[0]==L'1';
-        if(skipOpenTransition){BOOL disable=TRUE;DwmSetWindowAttribute(hwnd,DWMWA_TRANSITIONS_FORCEDISABLED,&disable,sizeof(disable));}
         // Activate the first visible window like Firefox's own first window does (nsWindow::CanTakeFocus allows
         // it when no other window of this process is visible); Windows' foreground lock still protects other
         // applications. Without activation the editor has no keyboard focus and typed keys are lost until Gecko
         // asks for focus about 1.6 s later. FENN_NATIVE_STARTUP_NOACTIVATE=1 restores the old behaviour.
         wchar_t noActivate[2]{};
         const bool keepInactive=GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_NOACTIVATE",noActivate,2)==1 && noActivate[0]==L'1';
-        // Experiment (FENN_NATIVE_SHOW_CLOAKED=1, default off): show the window cloaked and uncloak it once XAML has
-        // rendered a few frames, so the controls are already on screen when it first becomes visible instead of popping
-        // in after a blank frame. The window then appears at once, without the OS open animation. Hiding and re-showing
-        // to get the animation back, and a layered-window alpha ramp, were tried and do not work (the native interactive startup plan).
-        wchar_t cloakValue[2]{};
-        const bool showCloaked=GetEnvironmentVariableW(L"FENN_NATIVE_SHOW_CLOAKED",cloakValue,2)==1 && cloakValue[0]==L'1';
-        if(showCloaked){BOOL cloak=TRUE;DwmSetWindowAttribute(hwnd,DWMWA_CLOAK,&cloak,sizeof(cloak));}
-        ShowWindow(hwnd,GetPropW(hwnd,L"Fenn.NativeStartupMaximized")?SW_SHOWMAXIMIZED:(keepInactive?SW_SHOWNOACTIVATE:SW_SHOWNORMAL));
-        if(showCloaked) {
+        BeginPageHold(hwnd);
+        // An island's window is white until XAML first composes, in either theme. Clip it away until then
+        // rather than hide it: XAML keeps rendering and the OS animation still plays. Never leave it clipped.
+        {
+            auto& pane=*state().panes.at(hwnd);
+            const HWND strip=pane.childWindow,address=pane.addressWindow;
+            SetWindowRgn(strip,CreateRectRgn(0,0,0,0),FALSE);
+            SetWindowRgn(address,CreateRectRgn(0,0,0,0),FALSE);
             auto token=std::make_shared<winrt::event_token>();auto frames=std::make_shared<int>(0);auto done=std::make_shared<bool>(false);
-            auto uncloak=[hwnd,token,done]{
+            auto reveal=[strip,address,token,done]{
                 if(*done)return;*done=true;
                 Microsoft::UI::Xaml::Media::CompositionTarget::Rendering(*token);
-                BOOL cloak=FALSE;DwmSetWindowAttribute(hwnd,DWMWA_CLOAK,&cloak,sizeof(cloak));
-                NativeWindowHost::FocusTrace("start-uncloaked");
+                if(IsWindow(strip))SetWindowRgn(strip,nullptr,TRUE);
+                if(IsWindow(address))SetWindowRgn(address,nullptr,TRUE);
+                NativeWindowHost::FocusTrace("start-chrome-revealed");
             };
-            *token=Microsoft::UI::Xaml::Media::CompositionTarget::Rendering([frames,uncloak](auto const&,auto const&){if(++*frames>=3)uncloak();});
-            // Never leave the window hidden if rendering stalls.
+            *token=Microsoft::UI::Xaml::Media::CompositionTarget::Rendering([frames,reveal](auto const&,auto const&){if(++*frames>=3)reveal();});
             auto timer=Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().CreateTimer();
-            timer.Interval(std::chrono::milliseconds(500));timer.IsRepeating(false);
-            timer.Tick([timer,uncloak](auto const&,auto const&){uncloak();});
+            timer.Interval(std::chrono::milliseconds(1000));timer.IsRepeating(false);
+            timer.Tick([timer,reveal](auto const&,auto const&){timer.Stop();reveal();});
             timer.Start();
         }
+        if(skipOpenTransition){BOOL disable=TRUE;DwmSetWindowAttribute(hwnd,DWMWA_TRANSITIONS_FORCEDISABLED,&disable,sizeof(disable));}
+        ShowWindow(hwnd,GetPropW(hwnd,L"Fenn.NativeStartupMaximized")?SW_SHOWMAXIMIZED:(keepInactive?SW_SHOWNOACTIVATE:SW_SHOWNORMAL));
         if(skipOpenTransition){BOOL disable=FALSE;DwmSetWindowAttribute(hwnd,DWMWA_TRANSITIONS_FORCEDISABLED,&disable,sizeof(disable));}
         NativeWindowHost::FocusTrace("start-shown");
         return S_OK;
