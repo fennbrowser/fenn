@@ -75,6 +75,12 @@ inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPr
                 NativeStartupPlacement::Apply(shell,placement);
                 check_bool(SetPropW(shell,L"Fenn.NativeStartupOrigin",reinterpret_cast<HANDLE>(2)));
                 if (early) { host.result=S_OK; SetEvent(host.ready); }
+#ifdef WINUI_PANE_TESTING
+                if (early) {
+                    wchar_t fault[32]{};
+                    if (GetEnvironmentVariableW(L"FENN_TEST_NATIVE_FAULT",fault,32)>0 && !wcscmp(fault,L"after-ready"))check_hresult(E_FAIL);
+                }
+#endif
                 check_hresult(ShowStartupSurfaceForProfile(shell,profile.c_str(),presentation.empty()?nullptr:presentation.c_str()));
                 if (!early) { host.result=S_OK; SetEvent(host.ready); }
                 MSG message{};
@@ -92,7 +98,13 @@ inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPr
                         DispatchMessageW(&message);
                     }
                 }
-            } catch (...) { host.result=to_hresult(); SetEvent(host.ready); }
+            } catch (...) {
+                host.result=to_hresult();
+                // Tell Gecko this was a failure, so it starts a normal window instead of treating the
+                // missing host as the user closing it.
+                SetEnvironmentVariableW(L"FENN_NATIVE_HOST_FAILED",L"1");
+                SetEvent(host.ready);
+            }
             if (IsWindow(host.shell)) NativeWindowHost::Destroy(host.shell);
             Shutdown();
             if (host.dispatcher) DestroyWindow(host.dispatcher);

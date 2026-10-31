@@ -10317,7 +10317,7 @@ index 6bef7f9779e..80ef6a45126 100644
 +        {0x94, 0x5b, 0xdb, 0xfc, 0x48, 0x82, 0x9a, 0x95}};
  
 diff --git a/toolkit/xre/nsAppRunner.cpp b/toolkit/xre/nsAppRunner.cpp
-index 003fc8545a7..4dcfdc33437 100644
+index 003fc8545a7..3b3bcc23e85 100644
 --- a/toolkit/xre/nsAppRunner.cpp
 +++ b/toolkit/xre/nsAppRunner.cpp
 @@ -119,2 +119,3 @@
@@ -10336,8 +10336,8 @@ index 003fc8545a7..4dcfdc33437 100644
 +#ifdef XP_WIN
 +    // Launch routing is final (not forwarded, profile locked) and preferences are loaded, so
 +    // the native opt-outs apply. No browser window exists yet.
-+    if (!gfxPlatform::IsHeadless()) {
-+      mozilla::widget::PrepareEarlyNativeStartupHost(mProfD);
++    if (!gfxPlatform::IsHeadless() && !BackgroundTasks::IsBackgroundTaskMode()) {
++      mozilla::widget::PrepareEarlyNativeStartupHost(mProfD, gArgc, gArgv);
 +    }
 +#endif
 +
@@ -10570,7 +10570,7 @@ index f5d293a068d..1c4562bd45f 100644
 +        }
          if (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST &&
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index e505d3ce012..28baa14c17c 100644
+index e505d3ce012..b6877dfa381 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -81,2 +81,4 @@
@@ -10592,7 +10592,7 @@ index e505d3ce012..28baa14c17c 100644
 +}
 +
  static const wchar_t* GetMainWindowClass();
-@@ -1022,3 +1032,16 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+@@ -1022,3 +1032,23 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
  
 +  if ((mWindowType == WindowType::Popup || mWindowType == WindowType::Dialog) &&
 +      !(desiredStyles.style & WS_VISIBLE) && IsIndependentNativeOwner(parent)) {
@@ -10602,14 +10602,21 @@ index e505d3ce012..28baa14c17c 100644
 +  }
 +
    const wchar_t* className = ChooseWindowClass(mWindowType);
++  // A native host that failed (rather than being closed by the user) must not stop the browser from
++  // starting: drop its lease and use a normal Firefox-owned window for the rest of the session.
++  if (mozilla::FennNativeHostFailed() && mozilla::FennStartupWindowMode() &&
++      !mozilla::FennStartupWindowClaimed() && !mozilla::FennStartupWindowReady()) {
++    mozilla::AbandonFennStartupWindow();
++  }
 +  const bool nativeHost =
++      !mozilla::FennNativeHostFailed() &&
 +      aInitData.mWindowType == WindowType::TopLevel && !aParent &&
 +      ((mozilla::FennStartupWindowMode() &&
 +        !mozilla::FennStartupWindowClaimed()) ||
 +       Preferences::GetBool("fenn.winui.window.host",
 +                            mozilla::FennDevelopmentNativeHostDefault()));
  
-@@ -1029,3 +1052,37 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+@@ -1029,3 +1059,37 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
      sFirstTopLevelWindowCreated = true;
 +    if(nativeHost) mozilla::widget::PrepareDefaultNativeStartupHost(nsToolkit::mDllInstance);
 +    if (mozilla::FennStartupWindowMode()) {
@@ -10647,12 +10654,12 @@ index e505d3ce012..28baa14c17c 100644
 +      mWnd = nullptr;
 +    }
      if (mWnd) {
-@@ -1047,3 +1104,3 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+@@ -1047,3 +1111,3 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
        mIsCloaked = WinUtils::QueryCloaked(mWnd);
 -      mFrameState->ConsumePreXULSkeletonState(WasPreXULSkeletonUIMaximized());
 +      mFrameState->ConsumeStartupWindowState(WasPreXULSkeletonUIMaximized());
  
-@@ -1060,4 +1117,16 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+@@ -1060,4 +1124,16 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
      }
 +    }
    }
@@ -10669,7 +10676,7 @@ index e505d3ce012..28baa14c17c 100644
 +    }
 +  }
    if (!mWnd) {
-@@ -1261,2 +1330,58 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+@@ -1261,2 +1337,58 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
  
 +bool nsWindow::GetWinUIChromeLayout(uint32_t aStripHeight, bool aNavigation,
 +                                   uint32_t aInset, nsTArray<LayoutDeviceIntRect>& aRects) {
@@ -10728,24 +10735,24 @@ index e505d3ce012..28baa14c17c 100644
 +}
 +
  void nsWindow::LocalesChanged() {
-@@ -1285,2 +1410,3 @@ void nsWindow::Destroy() {
+@@ -1285,2 +1417,3 @@ void nsWindow::Destroy() {
  
 +  mozilla::widget::DestroyWinUIPane(mWnd);
    DestroyDirectManipulation();
-@@ -1308,3 +1434,4 @@ void nsWindow::Destroy() {
+@@ -1308,3 +1441,4 @@ void nsWindow::Destroy() {
    // owned windows, and then it destroys the parent or owner window.
 -  VERIFY(::DestroyWindow(mWnd));
 +  VERIFY(mozilla::widget::IsNativeWindowHost(mWnd)
 +      ? mozilla::widget::DestroyNativeWindowHost(mWnd) : !!::DestroyWindow(mWnd));
  
-@@ -1493,3 +1620,5 @@ DWORD nsWindow::WindowExStyle() {
+@@ -1493,3 +1627,5 @@ DWORD nsWindow::WindowExStyle() {
  bool nsWindow::ShouldAssociateWithWinAppSDK() const {
 -  return IsTopLevelWidget();
 +  // AppWindow and its caption input source belong to the HWND's owner thread.
 +  // The independent pane associates and controls its own native windows.
 +  return IsTopLevelWidget() && !IsIndependentNativeOwner(mWnd);
  }
-@@ -1516,2 +1645,13 @@ bool nsWindow::AssociateWithNativeWindow() {
+@@ -1516,2 +1652,13 @@ bool nsWindow::AssociateWithNativeWindow() {
  
 +  if (mozilla::widget::IsNativeWindowHost(mWnd)) {
 +    WNDPROC fallback = nullptr;
@@ -10759,7 +10766,7 @@ index e505d3ce012..28baa14c17c 100644
 +  }
 +
    ::SetLastError(ERROR_SUCCESS);
-@@ -1534,2 +1674,9 @@ void nsWindow::DissociateFromNativeWindow() {
+@@ -1534,2 +1681,9 @@ void nsWindow::DissociateFromNativeWindow() {
  
 +  if (mozilla::widget::IsNativeWindowHost(mWnd)) {
 +    MOZ_RELEASE_ASSERT(mozilla::widget::DetachNativeWindowHost(mWnd));
@@ -10769,14 +10776,14 @@ index e505d3ce012..28baa14c17c 100644
 +  }
 +
    DebugOnly<WNDPROC> wndProcBeforeDissociate =
-@@ -1545,2 +1692,6 @@ void nsWindow::DissociateFromNativeWindow() {
+@@ -1545,2 +1699,6 @@ void nsWindow::DissociateFromNativeWindow() {
  void nsWindow::DidClearParent(nsIWidget*) {
 +  if ((mWindowType == WindowType::Popup || mWindowType == WindowType::Dialog) &&
 +      mWnd && IsIndependentNativeOwner(::GetWindow(mWnd, GW_OWNER))) {
 +    ::SetWindowLongPtrW(mWnd, GWLP_HWNDPARENT, 0);
 +  }
    if (mWindowType == WindowType::Popup || !mWnd) {
-@@ -1629,2 +1780,13 @@ nsWindow* nsWindow::GetParentWindowBase(bool aIncludeOwner) {
+@@ -1629,2 +1787,13 @@ nsWindow* nsWindow::GetParentWindowBase(bool aIncludeOwner) {
  void nsWindow::Show(bool aState) {
 +  // Retire the loading island when the browser first requests presentation.
 +  // The original native top-level HWND survives this transition.
@@ -10790,7 +10797,7 @@ index e505d3ce012..28baa14c17c 100644
 +    mozilla::widget::DismissNativeStartupSurface(mWnd);
 +  }
    if (aState && mIsShowingPreXULSkeletonUI) {
-@@ -1661,2 +1823,19 @@ void nsWindow::Show(bool aState) {
+@@ -1661,2 +1830,19 @@ void nsWindow::Show(bool aState) {
  
 +  HWND independentTransientOwner = nullptr;
 +  if ((mWindowType == WindowType::Popup || mWindowType == WindowType::Dialog) &&
@@ -10810,14 +10817,14 @@ index e505d3ce012..28baa14c17c 100644
 +  }
 +
    bool syncInvalidate = false;
-@@ -1809,3 +1988,5 @@ void nsWindow::Show(bool aState) {
+@@ -1809,3 +1995,5 @@ void nsWindow::Show(bool aState) {
          } else {
 -          if (mWindowType == WindowType::Dialog && !CanTakeFocus())
 +          if (mWindowType == WindowType::Dialog &&
 +              (!CanTakeFocus() ||
 +               mozilla::widget::NativeStartupEditorOwnsForeground()))
              flags |= SWP_NOACTIVATE;
-@@ -1823,2 +2004,13 @@ void nsWindow::Show(bool aState) {
+@@ -1823,2 +2011,13 @@ void nsWindow::Show(bool aState) {
        }
 +      if (independentTransientOwner) {
 +        // Hide with the original owner, then detach before restoring native
@@ -10831,22 +10838,22 @@ index e505d3ce012..28baa14c17c 100644
 +        }
 +      }
      }
-@@ -1989,3 +2181,3 @@ void nsWindow::Move(const DesktopPoint& aTopLeft) {
+@@ -1989,3 +2188,3 @@ void nsWindow::Move(const DesktopPoint& aTopLeft) {
    // screen space coordinates we normally use with SetWindowPos.
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
-@@ -2073,3 +2265,3 @@ void nsWindow::Resize(const DesktopSize& aSize, bool aRepaint) {
+@@ -2073,3 +2272,3 @@ void nsWindow::Resize(const DesktopSize& aSize, bool aRepaint) {
    // Refer to the comment above a similar check in nsWindow::Move
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
-@@ -2136,3 +2328,3 @@ void nsWindow::Resize(const DesktopRect& aRect, bool aRepaint) {
+@@ -2136,3 +2335,3 @@ void nsWindow::Resize(const DesktopRect& aRect, bool aRepaint) {
    // Refer to the comment above a similar check in nsWindow::Move
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
-@@ -2208,2 +2400,8 @@ static UINT GetCurrentShowCmd(HWND aWnd) {
+@@ -2208,2 +2407,8 @@ static UINT GetCurrentShowCmd(HWND aWnd) {
  
 +bool nsWindow::IsShowingMaximizedStartupWindow() const {
 +  return (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) ||
@@ -10855,49 +10862,49 @@ index e505d3ce012..28baa14c17c 100644
 +}
 +
  // Maximize, minimize or restore the window.
-@@ -2214,3 +2412,3 @@ void nsWindow::SetSizeMode(nsSizeMode aMode) {
+@@ -2214,3 +2419,3 @@ void nsWindow::SetSizeMode(nsSizeMode aMode) {
    // technically displayed), we will again accept sizemode changes.
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      return;
-@@ -2448,3 +2646,5 @@ void nsWindow::SetFocus(Raise aRaise, mozilla::dom::CallerType aCallerType) {
+@@ -2448,3 +2653,5 @@ void nsWindow::SetFocus(Raise aRaise, mozilla::dom::CallerType aCallerType) {
    }
 -  ::SetFocus(mWnd);
 +  if (!mozilla::widget::FocusIndependentWindowHost(mWnd)) {
 +    ::SetFocus(mWnd);
 +  }
  }
-@@ -4057,3 +4257,4 @@ BOOL CALLBACK nsWindow::DispatchStarvedPaints(HWND aWnd, LPARAM aMsg) {
+@@ -4057,3 +4264,4 @@ BOOL CALLBACK nsWindow::DispatchStarvedPaints(HWND aWnd, LPARAM aMsg) {
    LONG_PTR proc = ::GetWindowLongPtrW(aWnd, GWLP_WNDPROC);
 -  if (proc == (LONG_PTR)&nsWindow::WindowProc) {
 +  if (proc == (LONG_PTR)&nsWindow::WindowProc ||
 +      (mozilla::widget::IsNativeWindowHost(aWnd) && WinUtils::GetNSWindowPtr(aWnd))) {
      // its one of our windows so check to see if it has a
-@@ -5639,3 +5840,4 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5639,3 +5847,4 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
  
 -      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient) {
 +      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient &&
 +          !mozilla::widget::HasWinUISystemCaption(mWnd)) {
          DispatchMouseEvent(eMouseDown, wParamFromGlobalMouseState(),
-@@ -5650,3 +5852,5 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5650,3 +5859,5 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
      case WM_NCLBUTTONUP: {
 -      if (mCustomNonClient) {
 +      // The native strip uses SDK-drawn caption controls. Forward their
 +      // original input to the previous (App SDK) window proc, not DOM chrome.
 +      if (mCustomNonClient && !mozilla::widget::HasWinUISystemCaption(mWnd)) {
          result = DispatchMouseEvent(eMouseUp, wParamFromGlobalMouseState(),
-@@ -6945,2 +7149,6 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+@@ -6945,2 +7156,6 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
  void nsWindow::OnDestroy() {
 +  mozilla::widget::DestroyWinUIPane(mWnd);
 +  if (mWindowType == WindowType::TopLevel) {
 +    mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
 +  }
    mOnDestroyCalled = true;
-@@ -7210,2 +7418,3 @@ void nsWindow::SetInputContext(const InputContext& aContext,
+@@ -7210,2 +7425,3 @@ void nsWindow::SetInputContext(const InputContext& aContext,
    mInputContext = newInputContext;
 +  mozilla::widget::RefreshIndependentPageIME(mWnd);
  }
-@@ -8935,3 +9144,3 @@ void nsWindow::FrameState::CheckInvariant() const {
+@@ -8935,3 +9151,3 @@ void nsWindow::FrameState::CheckInvariant() const {
  
 -void nsWindow::FrameState::ConsumePreXULSkeletonState(bool aWasMaximized) {
 +void nsWindow::FrameState::ConsumeStartupWindowState(bool aWasMaximized) {
@@ -11626,10 +11633,10 @@ index 00000000000..975fd14c587
 +}
 diff --git a/mozglue/misc/FennStartupWindow.cpp b/mozglue/misc/FennStartupWindow.cpp
 new file mode 100644
-index 00000000000..e9499f780f7
+index 00000000000..ed31159e36f
 --- /dev/null
 +++ b/mozglue/misc/FennStartupWindow.cpp
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,190 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11800,6 +11807,18 @@ index 00000000000..e9499f780f7
 +  sWindow = nullptr;
 +  return result;
 +}
++bool FennNativeHostFailed() {
++  wchar_t value[2]{};
++  return GetEnvironmentVariableW(L"FENN_NATIVE_HOST_FAILED", value, 2) == 1 && value[0] == L'1';
++}
++void AbandonFennStartupWindow() {
++  CleanupFennStartupWindow();
++  sMode = false;
++  sIndependent = false;
++  sThread = 0;
++  sTaken = false;
++  sWindow = nullptr;
++}
 +void CleanupFennStartupWindow() {
 +  if (sIndependent && sGetPane) {
 +    WinUIPaneApi api{};
@@ -11810,10 +11829,10 @@ index 00000000000..e9499f780f7
 +}
 diff --git a/mozglue/misc/FennStartupWindow.h b/mozglue/misc/FennStartupWindow.h
 new file mode 100644
-index 00000000000..500d7b1fef5
+index 00000000000..9afbe8abb61
 --- /dev/null
 +++ b/mozglue/misc/FennStartupWindow.h
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,28 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11836,6 +11855,10 @@ index 00000000000..500d7b1fef5
 +MFBT_API HWND PeekFennStartupWindow();
 +MFBT_API HWND TakeFennStartupWindow();
 +MFBT_API void CleanupFennStartupWindow();
++// The native host failed (as opposed to the user closing it): true for the rest of the session.
++MFBT_API bool FennNativeHostFailed();
++// Drop the startup-window lease and continue with a normal Firefox-owned window.
++MFBT_API void AbandonFennStartupWindow();
 +}
 +#endif
 diff --git a/browser/base/content/WinUIChromeLayout.sys.mjs b/browser/base/content/WinUIChromeLayout.sys.mjs
@@ -32422,10 +32445,10 @@ index 00000000000..c4d29442a62
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..a82c1003d0d
+index 00000000000..906b8bd9c61
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -0,0 +1,689 @@
+@@ -0,0 +1,715 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32702,7 +32725,7 @@ index 00000000000..a82c1003d0d
 +bool PrepareDefaultNativeStartupHost(HINSTANCE instance, const wchar_t* presentation) {
 +  // BrowserWindowTracker also opens headless browser documents. They have no
 +  // Windows widget to claim a native host, so never create one for that mode.
-+  if (gfxPlatform::IsHeadless()) return false;
++  if (gfxPlatform::IsHeadless() || FennNativeHostFailed()) return false;
 +  static bool attempted=false;
 +  if(attempted || !FennIndependentHostRequested() || FennStartupWindowMode())return false;
 +  attempted=true;
@@ -32729,7 +32752,30 @@ index 00000000000..a82c1003d0d
 +  }
 +  return false;
 +}
-+bool PrepareEarlyNativeStartupHost(nsIFile* aProfile) {
++// Only a plain browser launch may start the native host before Firefox has decided what to open.
++// Any other switch (-chrome, -jsconsole, -preferences, ...) opens something that is not the
++// browser window the host is for, so it is refused rather than guessed at.
++static bool EarlyStartupArgumentsAllowed(int aArgc, char** aArgv) {
++  static const char* const kAllowed[] = {
++      "no-remote",       "new-instance",   "new-window",        "new-tab",
++      "private-window",  "url",            "marionette",        "remote-debugging-port",
++      "remote-allow-system-access", "foreground", "wait-for-browser", "profile", "p"};
++  for (int i = 1; i < aArgc; ++i) {
++    const char* arg = aArgv[i];
++    if (!arg || arg[0] != '-') continue;
++    while (*arg == '-') ++arg;
++    bool allowed = false;
++    for (const char* name : kAllowed) {
++      if (!_stricmp(arg, name)) {
++        allowed = true;
++        break;
++      }
++    }
++    if (!allowed) return false;
++  }
++  return true;
++}
++bool PrepareEarlyNativeStartupHost(nsIFile* aProfile, int aArgc, char** aArgv) {
 +  // Prototype, behind FENN_NATIVE_EARLY_STARTUP=1. Called once user preferences are loaded, so the
 +  // same opt-outs as the routed path apply. Firefox's Fluent labels are not available yet, so the
 +  // native side uses its cache or defaults until Firefox publishes live labels.
@@ -32737,7 +32783,8 @@ index 00000000000..a82c1003d0d
 +  if (GetEnvironmentVariableW(L"FENN_NATIVE_EARLY_STARTUP", early, 2) != 1 || early[0] != L'1' ||
 +      GetEnvironmentVariableW(L"FENN_NATIVE_INTERACTIVE_STARTUP", interactive, 2) != 1 ||
 +      interactive[0] != L'1' || !aProfile || !FennIndependentHostRequested() ||
-+      FennStartupWindowMode() || !XRE_IsParentProcess()) {
++      FennStartupWindowMode() || FennNativeHostFailed() || !XRE_IsParentProcess() ||
++      !EarlyStartupArgumentsAllowed(aArgc, aArgv)) {
 +    return false;
 +  }
 +  if (!Preferences::GetBool("fenn.winui.window.independent", FennDevelopmentNativeHostDefault()) ||
@@ -32777,6 +32824,8 @@ index 00000000000..a82c1003d0d
 +  // Gecko for the whole construction (ShowNativeStartupSurface is a job on that thread).
 +  if (HWND hwnd = PeekFennStartupWindow()) {
 +    SetPropW(hwnd, L"Fenn.RoutedStartupPrepared", reinterpret_cast<HANDLE>(1));
++    // Distinguishes this hook from the JavaScript-hook path, which sets only the property above.
++    SetPropW(hwnd, L"Fenn.NativeEarlyStartupHook", reinterpret_cast<HANDLE>(1));
 +  }
 +  PROFILER_MARKER_UNTYPED("FennNativeStartupEarlyHost", OTHER);
 +  return true;
@@ -33117,7 +33166,7 @@ index 00000000000..a82c1003d0d
 +}  // namespace mozilla::widget
 diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
 new file mode 100644
-index 00000000000..24eb48c43a2
+index 00000000000..2794270e58a
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.h
 @@ -0,0 +1,59 @@
@@ -33175,7 +33224,7 @@ index 00000000000..24eb48c43a2
 +bool PrepareDefaultNativeStartupHost(HINSTANCE, const wchar_t* = nullptr);
 +bool PrepareRoutedNativeStartupHost(const char16_t*);
 +// Parent process, profile locked and launch routing final, before any browser window.
-+bool PrepareEarlyNativeStartupHost(nsIFile* aProfile);
++bool PrepareEarlyNativeStartupHost(nsIFile* aProfile, int aArgc, char** aArgv);
 +void CancelRoutedNativeStartupHost();
 +void DismissNativeStartupSurface(HWND);
 +}  // namespace mozilla::widget
