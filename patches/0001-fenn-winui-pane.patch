@@ -32445,10 +32445,10 @@ index 00000000000..c4d29442a62
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..906b8bd9c61
+index 00000000000..36c90d9b77d
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -0,0 +1,715 @@
+@@ -0,0 +1,725 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32775,6 +32775,14 @@ index 00000000000..906b8bd9c61
 +  }
 +  return true;
 +}
++static void EarlyTrace(const char* aEvent) {
++  static const bool enabled = GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0) != 0;
++  if (!enabled) return;
++  FILETIME now;
++  GetSystemTimeAsFileTime(&now);
++  const unsigned long long ticks = (static_cast<unsigned long long>(now.dwHighDateTime) << 32) | now.dwLowDateTime;
++  fprintf(stderr, "FennFocus ms=%llu event=%s detail=0\n", ticks / 10000ULL - 11644473600000ULL, aEvent);
++}
 +bool PrepareEarlyNativeStartupHost(nsIFile* aProfile, int aArgc, char** aArgv) {
 +  // Prototype, behind FENN_NATIVE_EARLY_STARTUP=1. Called once user preferences are loaded, so the
 +  // same opt-outs as the routed path apply. Firefox's Fluent labels are not available yet, so the
@@ -32793,6 +32801,7 @@ index 00000000000..906b8bd9c61
 +  }
 +  nsAutoString path;
 +  if (NS_FAILED(aProfile->GetPath(path))) return false;
++  EarlyTrace("early-hook-begin");
 +  // Direction-only presentation: Fluent labels are not available yet, but the negotiated app locale
 +  // and its direction (including the bidi pseudo-locale) are. The native side applies the profile's
 +  // label cache only if it was written for this locale.
@@ -32820,6 +32829,7 @@ index 00000000000..906b8bd9c61
 +          presentation.IsEmpty() ? nullptr : static_cast<const wchar_t*>(presentation.get()))) {
 +    return false;
 +  }
++  EarlyTrace("early-hook-end");
 +  // The native thread builds and shows the startup surface itself; waiting for it here would block
 +  // Gecko for the whole construction (ShowNativeStartupSurface is a job on that thread).
 +  if (HWND hwnd = PeekFennStartupWindow()) {

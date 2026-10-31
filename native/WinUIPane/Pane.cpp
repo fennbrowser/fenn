@@ -1614,7 +1614,9 @@ HRESULT ShowStartupSurfaceForProfile(HWND hwnd, const wchar_t* profile, const wc
     try {
         check_hresult(Check(hwnd));
         if (!NativeStartupSurface::Eligible(hwnd)) return E_INVALIDARG;
+        NativeWindowHost::FocusTrace("start-xaml-init-begin");
         Initialize();
+        NativeWindowHost::FocusTrace("start-xaml-initialized");
         wchar_t interactive[2]{};
         if(GetEnvironmentVariableW(L"FENN_NATIVE_INTERACTIVE_STARTUP",interactive,2)==1 && (interactive[0]==L'1' || interactive[0]==L'2') &&
             GetPropW(hwnd,L"Fenn.NativeStartupOrigin")==reinterpret_cast<HANDLE>(2))
@@ -2466,7 +2468,9 @@ HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t*
     try {
         if(GetPropW(hwnd,InteractiveStartupProperty))return S_FALSE;
         check_hresult(LayoutInteractiveStartup(hwnd));
+        NativeWindowHost::FocusTrace("start-layout");
         check_hresult(BeginStartupPresenter(hwnd));
+        NativeWindowHost::FocusTrace("start-presenter");
         bool initialRtl{};
         auto initialPresentation=NativeStartupLabels::Resolve(presentation,profile,initialRtl);
         ApplyStartupDirection(*state().panes.at(hwnd),initialRtl);
@@ -2482,6 +2486,7 @@ HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t*
             auto stripLabels=pane.strip->labels;stripLabels.newTab=presenter->labels.newTab;stripLabels.newTabTip=presenter->labels.newTab;
             pane.strip->ApplyLabels(stripLabels);presenter->Refresh(false);
         }
+        NativeWindowHost::FocusTrace("start-presentation");
         check_bool(SetWindowSubclass(hwnd,InteractiveStartupProc,1,0));
         check_bool(SetPropW(hwnd,InteractiveStartupProperty,reinterpret_cast<HANDLE>(1)));
 #ifdef WINUI_PANE_TESTING
@@ -2505,8 +2510,15 @@ HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t*
         wchar_t noAnimation[2]{};
         const bool skipOpenTransition=GetEnvironmentVariableW(L"FENN_NATIVE_NO_OPEN_ANIMATION",noAnimation,2)==1 && noAnimation[0]==L'1';
         if(skipOpenTransition){BOOL disable=TRUE;DwmSetWindowAttribute(hwnd,DWMWA_TRANSITIONS_FORCEDISABLED,&disable,sizeof(disable));}
-        ShowWindow(hwnd,GetPropW(hwnd,L"Fenn.NativeStartupMaximized")?SW_SHOWMAXIMIZED:SW_SHOWNOACTIVATE);
+        // Activate the first visible window like Firefox's own first window does (nsWindow::CanTakeFocus allows
+        // it when no other window of this process is visible); Windows' foreground lock still protects other
+        // applications. Without activation the editor has no keyboard focus and typed keys are lost until Gecko
+        // asks for focus about 1.6 s later. FENN_NATIVE_STARTUP_NOACTIVATE=1 restores the old behaviour.
+        wchar_t noActivate[2]{};
+        const bool keepInactive=GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_NOACTIVATE",noActivate,2)==1 && noActivate[0]==L'1';
+        ShowWindow(hwnd,GetPropW(hwnd,L"Fenn.NativeStartupMaximized")?SW_SHOWMAXIMIZED:(keepInactive?SW_SHOWNOACTIVATE:SW_SHOWNORMAL));
         if(skipOpenTransition){BOOL disable=FALSE;DwmSetWindowAttribute(hwnd,DWMWA_TRANSITIONS_FORCEDISABLED,&disable,sizeof(disable));}
+        NativeWindowHost::FocusTrace("start-shown");
         return S_OK;
     } catch (...) {Destroy(hwnd);return to_hresult();}
 }

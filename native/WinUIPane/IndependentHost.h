@@ -60,6 +60,7 @@ inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPr
         wchar_t earlyValue[2]{};
         const bool early=GetEnvironmentVariableW(L"FENN_NATIVE_EARLY_STARTUP",earlyValue,2)==1 && earlyValue[0]==L'1';
         host.thread=std::thread([&host,profile,presentation,early] {
+            NativeWindowHost::FocusTrace("host-thread-start");
             HRESULT apartment=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
             try {
                 check_hresult(apartment); host.owner=GetCurrentThreadId();
@@ -74,6 +75,7 @@ inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPr
                 host.shell=shell;
                 NativeStartupPlacement::Apply(shell,placement);
                 check_bool(SetPropW(shell,L"Fenn.NativeStartupOrigin",reinterpret_cast<HANDLE>(2)));
+                NativeWindowHost::FocusTrace("host-shell-created");
                 if (early) { host.result=S_OK; SetEvent(host.ready); }
 #ifdef WINUI_PANE_TESTING
                 if (early) {
@@ -83,6 +85,7 @@ inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPr
 #endif
                 check_hresult(ShowStartupSurfaceForProfile(shell,profile.c_str(),presentation.empty()?nullptr:presentation.c_str()));
                 if (!early) { host.result=S_OK; SetEvent(host.ready); }
+                NativeWindowHost::FocusTrace("host-pump-start");
                 MSG message{};
                 while (GetMessageW(&message,nullptr,0,0)>0) {
                     if (!NativePageInput::Key(&message) && !Translate(&message)) {

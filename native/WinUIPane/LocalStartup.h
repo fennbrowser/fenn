@@ -11,6 +11,10 @@ struct Presenter {
     bool applying{};
     bool browserEditor{};
     std::function<void()> browserAdd;
+    // Retries the editor focus until Win32 keyboard focus is inside the island. Right after activation
+    // XAML's logical focus is set but the host HWND still owns Win32 focus, so typed keys are lost.
+    Microsoft::UI::Dispatching::DispatcherQueueTimer focusRetry{nullptr};
+    uint32_t focusRetries{};
     ShellStartupView view{};
     // Presentation IDs never double as Firefox IDs. Rust projects the explicit
     // draft/browser identity mappings used by these callbacks.
@@ -190,10 +194,13 @@ struct Presenter {
             RemovePropW(pane.parent,NativeWindowHost::EditorGraceProperty);
             SetPropW(pane.parent,NativeWindowHost::EditorOwnedProperty,reinterpret_cast<HANDLE>(1));
             host->restoreEditorFocus=[this] {
+                NativeWindowHost::FocusTrace("restore-run",reinterpret_cast<uintptr_t>(GetFocus()));
                 if(pane.address->HasActiveComposition())return;
                 const auto start=pane.address->field.SelectionStart(),length=pane.address->field.SelectionLength();
                 FocusEditor();
                 pane.address->field.Select(start,length);
+                NativeWindowHost::FocusTrace("restore-done",reinterpret_cast<uintptr_t>(GetFocus()));
+                RetryEditorFocus(start,length);
             };
         } else {
             RemovePropW(pane.parent,NativeWindowHost::EditorOwnedProperty);
@@ -201,8 +208,34 @@ struct Presenter {
                 reinterpret_cast<HANDLE>(GetTickCount64()+NativeWindowHost::EditorGraceMilliseconds));
         }
     }
+    bool IslandHasWin32Focus() const {
+        const HWND focused=GetFocus();
+        return focused && focused!=pane.parent && IsChild(pane.parent,focused);
+    }
+    void RetryEditorFocus(uint32_t start,uint32_t length) {
+        if(IslandHasWin32Focus())return;
+        auto queue=Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread();
+        if(!queue)return;
+        focusRetries=0;
+        if(!focusRetry)focusRetry=queue.CreateTimer();
+        focusRetry.Interval(std::chrono::milliseconds(20));
+        focusRetry.IsRepeating(true);
+        focusRetry.Tick([this,start,length](auto const&,auto const&) {
+            // Stop once focus is in the island, the editor was adopted, composition started, or after about 3 s.
+            if(IslandHasWin32Focus() || browserEditor || pane.address->HasActiveComposition() || ++focusRetries>150) {
+                focusRetry.Stop();
+                NativeWindowHost::FocusTrace(IslandHasWin32Focus()?"restore-retry-focused":"restore-retry-gave-up",focusRetries);
+                return;
+            }
+            FocusEditor();
+            if(pane.address->field.SelectionStart()!=int32_t(start) || pane.address->field.SelectionLength()!=int32_t(length))
+                pane.address->field.Select(int32_t(start),int32_t(length));
+        });
+        focusRetry.Start();
+    }
     void SetBrowserEditor(bool value) {browserEditor=value;NativeWindowHost::FocusTrace(value?"editor-adopted":"editor-local");UpdateEditorOwnership();}
     ~Presenter() {
+        if(focusRetry)focusRetry.Stop();
         if(auto* host=NativeWindowHost::Get(pane.parent)) {
             // The grace deadline outlives the presenter on purpose; it expires by itself.
             RemovePropW(pane.parent,NativeWindowHost::EditorOwnedProperty);

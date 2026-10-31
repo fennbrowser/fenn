@@ -77,7 +77,9 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     }
     // Focus can land on the host HWND itself, not the XAML island: for example when a Gecko
     // dialog that held activation closes. Return it to the editor on the next turn.
-    if (message==WM_SETFOCUS) FocusTrace(EditorOwned(hwnd)?"host-setfocus-owned":"host-setfocus");
+    if (message==WM_SETFOCUS) FocusTrace(EditorOwned(hwnd)?"host-setfocus-owned":"host-setfocus",reinterpret_cast<uintptr_t>(hwnd));
+    if (message==WM_ACTIVATE) FocusTrace(LOWORD(w)==WA_INACTIVE?"host-deactivate":"host-activate",reinterpret_cast<uintptr_t>(GetFocus()));
+    if (message==WM_KILLFOCUS) FocusTrace("host-killfocus",static_cast<uintptr_t>(w));
     if (message==WM_SETFOCUS && EditorOwned(hwnd) && host->restoreEditorFocus)
         PostMessageW(hwnd,RestoreEditorFocusMessage(),0,0);
     if(message==NativePageInput::LockMessage()) {NativePageInput::Pump(hwnd,w);return 0;}
