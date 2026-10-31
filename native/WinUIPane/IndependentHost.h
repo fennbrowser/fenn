@@ -54,7 +54,12 @@ inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPr
     try {
         const std::wstring profile=profilePath ? profilePath : L"";
         const std::wstring presentation=initialPresentation ? initialPresentation : L"";
-        host.thread=std::thread([&host,profile,presentation] {
+        // Early startup (FENN_NATIVE_EARLY_STARTUP=1): hand Gecko the HWND once the shell window exists and
+        // build the controls on this thread while Gecko keeps starting. Gecko's later claim is a job on this
+        // thread, so it waits only if construction has not finished by then.
+        wchar_t earlyValue[2]{};
+        const bool early=GetEnvironmentVariableW(L"FENN_NATIVE_EARLY_STARTUP",earlyValue,2)==1 && earlyValue[0]==L'1';
+        host.thread=std::thread([&host,profile,presentation,early] {
             HRESULT apartment=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
             try {
                 check_hresult(apartment); host.owner=GetCurrentThreadId();
@@ -69,8 +74,9 @@ inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPr
                 host.shell=shell;
                 NativeStartupPlacement::Apply(shell,placement);
                 check_bool(SetPropW(shell,L"Fenn.NativeStartupOrigin",reinterpret_cast<HANDLE>(2)));
+                if (early) { host.result=S_OK; SetEvent(host.ready); }
                 check_hresult(ShowStartupSurfaceForProfile(shell,profile.c_str(),presentation.empty()?nullptr:presentation.c_str()));
-                host.result=S_OK; SetEvent(host.ready);
+                if (!early) { host.result=S_OK; SetEvent(host.ready); }
                 MSG message{};
                 while (GetMessageW(&message,nullptr,0,0)>0) {
                     if (!NativePageInput::Key(&message) && !Translate(&message)) {
