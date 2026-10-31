@@ -2516,7 +2516,29 @@ HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t*
         // asks for focus about 1.6 s later. FENN_NATIVE_STARTUP_NOACTIVATE=1 restores the old behaviour.
         wchar_t noActivate[2]{};
         const bool keepInactive=GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_NOACTIVATE",noActivate,2)==1 && noActivate[0]==L'1';
+        // Experiment (FENN_NATIVE_SHOW_CLOAKED=1, default off): show the window cloaked and uncloak it once XAML has
+        // rendered a few frames, so the controls are already on screen when it first becomes visible instead of popping
+        // in after a blank frame. The window then appears at once, without the OS open animation. Hiding and re-showing
+        // to get the animation back, and a layered-window alpha ramp, were tried and do not work (the native interactive startup plan).
+        wchar_t cloakValue[2]{};
+        const bool showCloaked=GetEnvironmentVariableW(L"FENN_NATIVE_SHOW_CLOAKED",cloakValue,2)==1 && cloakValue[0]==L'1';
+        if(showCloaked){BOOL cloak=TRUE;DwmSetWindowAttribute(hwnd,DWMWA_CLOAK,&cloak,sizeof(cloak));}
         ShowWindow(hwnd,GetPropW(hwnd,L"Fenn.NativeStartupMaximized")?SW_SHOWMAXIMIZED:(keepInactive?SW_SHOWNOACTIVATE:SW_SHOWNORMAL));
+        if(showCloaked) {
+            auto token=std::make_shared<winrt::event_token>();auto frames=std::make_shared<int>(0);auto done=std::make_shared<bool>(false);
+            auto uncloak=[hwnd,token,done]{
+                if(*done)return;*done=true;
+                Microsoft::UI::Xaml::Media::CompositionTarget::Rendering(*token);
+                BOOL cloak=FALSE;DwmSetWindowAttribute(hwnd,DWMWA_CLOAK,&cloak,sizeof(cloak));
+                NativeWindowHost::FocusTrace("start-uncloaked");
+            };
+            *token=Microsoft::UI::Xaml::Media::CompositionTarget::Rendering([frames,uncloak](auto const&,auto const&){if(++*frames>=3)uncloak();});
+            // Never leave the window hidden if rendering stalls.
+            auto timer=Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().CreateTimer();
+            timer.Interval(std::chrono::milliseconds(500));timer.IsRepeating(false);
+            timer.Tick([timer,uncloak](auto const&,auto const&){uncloak();});
+            timer.Start();
+        }
         if(skipOpenTransition){BOOL disable=FALSE;DwmSetWindowAttribute(hwnd,DWMWA_TRANSITIONS_FORCEDISABLED,&disable,sizeof(disable));}
         NativeWindowHost::FocusTrace("start-shown");
         return S_OK;
@@ -2883,6 +2905,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestStartupWindowHost()
     catch (...) { return winrt::to_hresult(); }
 }
 #include "../../tests/native/WindowHostTests.h"
+#include "../../tests/native/CompositionProbe.h"
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestWindowHost(const WinUIPaneApi* api, void (WINAPI* inspect)(HWND)) noexcept {
     if (!api || !inspect) return E_POINTER;
     try { WindowHostContract::Run(*api, inspect); return S_OK; }

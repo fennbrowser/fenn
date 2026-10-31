@@ -6331,6 +6331,32 @@ static void WINAPI InspectWindowHost(HWND host) {
 
 int wmain(int argc, wchar_t** argv) {
     if (argc == 5 && wcscmp(argv[1], L"--record-frames") == 0) return RecordFrames(argv);
+    if (argc == 5 && wcscmp(argv[1], L"--composition-engine") == 0) {
+        // The engine process of the composition probe's "+xproc" mode: <FennPaneTest.dll> <host pid> <mapping name>
+        Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)), "MTA initialization");
+        JoinWindowsAppRuntime(argv[2]);
+        HMODULE module = LoadLibraryExW(argv[2], nullptr,
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+        Require(module != nullptr, "load pane DLL");
+        using EngineFn = HRESULT(WINAPI*)(uint32_t, const wchar_t*);
+        auto engine = reinterpret_cast<EngineFn>(GetProcAddress(module, "WinUIPaneTestCompositionEngine"));
+        Require(engine != nullptr, "composition engine export (needs the test DLL)");
+        return SUCCEEDED(engine(static_cast<uint32_t>(_wtoi(argv[3])), argv[4])) ? 0 : 1;
+    }
+    if (argc >= 4 && wcscmp(argv[1], L"--composition-probe") == 0) {
+        // Stage A of the composition-hosting direction: --composition-probe <FennPaneTest.dll> <mode> [duration-ms]
+        Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "STA initialization");
+        JoinWindowsAppRuntime(argv[2]);
+        HMODULE module = LoadLibraryExW(argv[2], nullptr,
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+        Require(module != nullptr, "load pane DLL");
+        using ProbeFn = HRESULT(WINAPI*)(const wchar_t*, uint32_t);
+        auto probe = reinterpret_cast<ProbeFn>(GetProcAddress(module, "WinUIPaneTestCompositionProbe"));
+        Require(probe != nullptr, "composition probe export (needs the test DLL)");
+        const HRESULT result = probe(argv[3], argc >= 5 ? static_cast<uint32_t>(_wtoi(argv[4])) : 4000u);
+        fprintf(stderr, "composition probe hr=0x%08X\n", static_cast<unsigned>(result));
+        return SUCCEEDED(result) ? 0 : 1;
+    }
     Require(AddVectoredExceptionHandler(
                 1,
                 [](EXCEPTION_POINTERS* error) -> LONG {

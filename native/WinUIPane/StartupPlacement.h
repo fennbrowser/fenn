@@ -39,8 +39,30 @@ inline Placement Read(const std::wstring& profile) noexcept {
     } catch (...) { return {}; } // Missing/corrupt state keeps the bootstrap fallback.
     return result;
 }
+// What Firefox itself picks for a profile with no saved window state (browser-init.js
+// onBeforeInitialXULLayout): at (4, 4) CSS px, an inner size of min(0.9 * available, 1280 x 1040) CSS px, and
+// maximized when both dimensions fall below those targets. The outer size adds the frame (the top edge belongs to
+// the custom caption). Starting from this rectangle means the window does not jump when the browser window loads.
+inline void ApplyDefault(HWND hwnd) {
+    const UINT dpi=GetDpiForWindow(hwnd);
+    MONITORINFO monitor{sizeof(monitor)};
+    check_bool(GetMonitorInfoW(MonitorFromWindow(hwnd,MONITOR_DEFAULTTOPRIMARY),&monitor));
+    const auto& work=monitor.rcWork;
+    const double availableWidth=double(work.right-work.left)*96.0/dpi, availableHeight=double(work.bottom-work.top)*96.0/dpi;
+    const double targetWidth=1280.0, targetHeight=1040.0;
+    const double width=std::min(availableWidth*0.9,targetWidth), height=std::min(availableHeight*0.9,targetHeight);
+    const int frame=GetSystemMetricsForDpi(SM_CXSIZEFRAME,dpi)+GetSystemMetricsForDpi(SM_CXPADDEDBORDER,dpi);
+    // Firefox sets the (possibly fractional) size attributes and Gecko truncates them to device pixels.
+    const int outerWidth=int(width*dpi/96.0)+2*frame, outerHeight=int(height*dpi/96.0)+frame;
+    const int w=std::min<int>(outerWidth,work.right-work.left), h=std::min<int>(outerHeight,work.bottom-work.top);
+    const int x=std::clamp<int>(work.left+MulDiv(4,dpi,96),work.left,work.right-w);
+    const int y=std::clamp<int>(work.top+MulDiv(4,dpi,96),work.top,work.bottom-h);
+    check_bool(SetWindowPos(hwnd,nullptr,x,y,w,h,SWP_NOZORDER|SWP_NOACTIVATE));
+    if (width<targetWidth && height<targetHeight)
+        check_bool(SetPropW(hwnd,L"Fenn.NativeStartupMaximized",reinterpret_cast<HANDLE>(1)));
+}
 inline void Apply(HWND hwnd, const Placement& placement) {
-    if (!placement.saved) return;
+    if (!placement.saved) { ApplyDefault(hwnd); return; }
     // Firefox persists sizes in CSS pixels and Windows positions in desktop
     // pixels. Resolve the target monitor's current DPI on this hidden HWND.
     const UINT dpi=GetDpiForWindow(hwnd);
