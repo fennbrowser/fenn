@@ -40,6 +40,15 @@ inline LRESULT CALLBACK Dispatch(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     }
     return DefWindowProcW(hwnd,message,w,l);
 }
+// The OS and WinUI can send a message to a Gecko window from the native thread
+// (WM_ACTIVATE forwarding). That sender cannot return until the Gecko thread takes the
+// message, so a Gecko wait on the native thread has to deliver sent messages.
+inline void WaitDeliveringSent(HANDLE handle) noexcept {
+    while (MsgWaitForMultipleObjectsEx(1,&handle,INFINITE,QS_SENDMESSAGE,0)==WAIT_OBJECT_0+1) {
+        MSG message;
+        PeekMessageW(&message,nullptr,0,0,PM_NOREMOVE|PM_QS_SENDMESSAGE);
+    }
+}
 template<auto Function, class... Args>
 auto Call(Args... args) noexcept -> decltype(Function(args...)) {
     using Result=decltype(Function(args...));
@@ -55,8 +64,8 @@ auto Call(Args... args) noexcept -> decltype(Function(args...)) {
         CloseHandle(job.complete); return static_cast<Result>(RO_E_CLOSED);
     }
     // Borrowed ABI buffers remain valid until the native call completes. Only
-    // the Gecko caller waits; no Gecko callbacks occur on the native thread.
-    WaitForSingleObject(job.complete,INFINITE);
+    // the Gecko caller waits.
+    WaitDeliveringSent(job.complete);
     CloseHandle(job.complete); return job.result;
 }
 // For a call whose result no caller acts on: owns copies of its arguments, keeps the
@@ -357,7 +366,7 @@ inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPr
             host.dispatcher=nullptr;
             if (SUCCEEDED(apartment)) CoUninitialize();
         });
-        WaitForSingleObject(host.ready,INFINITE);
+        WaitDeliveringSent(host.ready);
         if (FAILED(host.result)) { host.thread.join(); return host.result; }
         *output=host.shell; return S_OK;
     } catch (...) { return to_hresult(); }
@@ -369,6 +378,7 @@ inline HRESULT WINAPI Stop() noexcept {
     // The Gecko shutdown path has already destroyed its widgets and stopped
     // publications. The owner releases all WinRT objects before COM teardown.
     PostThreadMessageW(host.owner,WM_QUIT,0,0);
+    WaitDeliveringSent(host.thread.native_handle());
     host.thread.join(); return S_OK;
 }
 inline HRESULT Create(DWORD ex, const wchar_t*, DWORD style, const RECT* bounds,
