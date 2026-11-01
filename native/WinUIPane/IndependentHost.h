@@ -1,5 +1,8 @@
 #pragma once
 #include <atomic>
+#include <map>
+#include <mutex>
+#include <vector>
 #include <thread>
 #include <tuple>
 #include "StartupPlacement.h"
@@ -11,6 +14,9 @@ inline constexpr UINT InvokeMessage=WM_APP+901;
 inline constexpr uint32_t MaxPosted=1024;
 inline constexpr size_t MaxPostedChars=16*1024*1024;
 struct Work { void (*run)(Work*); HANDLE complete; };
+// The newest geometry for one window and call. Only the first call for a surface
+// waits, because that one creates it and its caller acts on the result.
+struct GeometrySlot { bool pending{}; RECT rect{}; std::vector<RECT> clip; };
 struct Host {
     std::thread thread;
     HANDLE ready=CreateEventW(nullptr,TRUE,FALSE,nullptr);
@@ -18,6 +24,9 @@ struct Host {
     std::atomic<DWORD> owner{};
     std::atomic<uint32_t> posted{};
     std::atomic<size_t> postedChars{};
+    std::mutex geometryLock;
+    std::map<std::pair<HWND,int>,struct GeometrySlot> geometry;
+    std::map<HWND,std::pair<WinUIPaneNotifyFn,void*>> sinks;
     HRESULT result=E_PENDING;
     bool started{};
 };
@@ -77,6 +86,108 @@ HRESULT WINAPI Post(HWND hwnd, const wchar_t* text) noexcept {
         delete job; host.posted.fetch_sub(1); host.postedChars.fetch_sub(chars); return RO_E_CLOSED;
     }
     return S_OK;
+}
+// Geometry is latest-wins, so a stalled native thread queues at most one job per
+// surface and going over a bound can never turn into a permanent fallback.
+template<auto Function, int Kind, class Prepare, class Apply>
+HRESULT PostGeometry(HWND hwnd, Prepare prepare, Apply apply) noexcept {
+    auto& host=State();
+    if (!host.dispatcher) return RO_E_CLOSED;
+    try {
+        std::unique_lock lock(host.geometryLock);
+        auto& slot=host.geometry[{hwnd,Kind}];
+        prepare(slot);
+        if (slot.pending) return S_OK;
+        slot.pending=true;
+        lock.unlock();
+        struct Job : Work { HWND hwnd; Apply apply; };
+        auto* job=new Job;
+        job->complete=nullptr; job->hwnd=hwnd; job->apply=std::move(apply);
+        job->run=[](Work* work) {
+            std::unique_ptr<Job> job(static_cast<Job*>(work));
+            GeometrySlot slot;
+            {
+                std::lock_guard guard(State().geometryLock);
+                auto found=State().geometry.find({job->hwnd,Kind});
+                if (found==State().geometry.end() || !found->second.pending) return;
+                found->second.pending=false; slot=found->second;
+            }
+            job->apply(job->hwnd,slot);
+        };
+        if (!PostMessageW(host.dispatcher,InvokeMessage,0,reinterpret_cast<LPARAM>(job))) {
+            delete job;
+            std::lock_guard guard(host.geometryLock);
+            host.geometry[{hwnd,Kind}].pending=false;
+            return RO_E_CLOSED;
+        }
+        return S_OK;
+    } catch (...) { return E_OUTOFMEMORY; }
+}
+inline bool GeometryKnown(HWND hwnd, int kind) {
+    auto& host=State();
+    std::lock_guard guard(host.geometryLock);
+    return host.geometry.count({hwnd,kind})!=0;
+}
+inline void GeometryForget(HWND hwnd, int kind) {
+    auto& host=State();
+    std::lock_guard guard(host.geometryLock);
+    host.geometry.erase({hwnd,kind});
+}
+inline void GeometryRecord(HWND hwnd, int kind) {
+    auto& host=State();
+    std::lock_guard guard(host.geometryLock);
+    host.geometry[{hwnd,kind}];
+}
+inline void GeometryForgetWindow(HWND hwnd) {
+    auto& host=State();
+    std::lock_guard guard(host.geometryLock);
+    std::erase_if(host.geometry,[hwnd](auto const& entry){return entry.first.first==hwnd;});
+    host.sinks.erase(hwnd);
+}
+template<auto Function, auto Reported, int Kind>
+HRESULT WINAPI PostRect(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
+    auto& host=State();
+    if (host.owner==GetCurrentThreadId()) return Function(hwnd,rect,visible);
+    if (!rect || rect->right<rect->left || rect->bottom<rect->top) return E_INVALIDARG;
+    if (!visible) { GeometryForget(hwnd,Kind); return Call<Function>(hwnd,rect,visible); }
+    if (!GeometryKnown(hwnd,Kind)) {
+        const auto result=Call<Function>(hwnd,rect,visible);
+        if (SUCCEEDED(result)) GeometryRecord(hwnd,Kind);
+        return result;
+    }
+    const RECT copy=*rect;
+    return PostGeometry<Function,Kind>(hwnd,[copy](GeometrySlot& slot){slot.rect=copy;},
+        [](HWND target, GeometrySlot const& slot){Reported(target,&slot.rect,TRUE);});
+}
+template<auto Function, auto Reported, int Kind>
+HRESULT WINAPI PostClip(HWND hwnd, const RECT* rects, uint32_t count) noexcept {
+    auto& host=State();
+    if (host.owner==GetCurrentThreadId()) return Function(hwnd,rects,count);
+    if (!GeometryKnown(hwnd,Kind)) {
+        const auto result=Call<Function>(hwnd,rects,count);
+        if (SUCCEEDED(result)) GeometryRecord(hwnd,Kind);
+        return result;
+    }
+    try {
+        std::vector<RECT> copy(rects,rects+count);
+        return PostGeometry<Function,Kind>(hwnd,[copy=std::move(copy)](GeometrySlot& slot){slot.clip=copy;},
+            [](HWND target, GeometrySlot const& slot){Reported(target,slot.clip.data(),uint32_t(slot.clip.size()));});
+    } catch (...) { return E_OUTOFMEMORY; }
+}
+// Registered again on every geometry update; only a change reaches the native thread.
+inline HRESULT WINAPI PostSink(HWND hwnd, WinUIPaneNotifyFn notify, void* context) noexcept {
+    auto& host=State();
+    if (host.owner==GetCurrentThreadId()) return SetNotifySink(hwnd,notify,context);
+    {
+        std::lock_guard guard(host.geometryLock);
+        auto found=host.sinks.find(hwnd);
+        if (notify && found!=host.sinks.end() && found->second==std::make_pair(notify,context)) return S_OK;
+    }
+    const auto result=Call<SetNotifySink>(hwnd,notify,context);
+    std::lock_guard guard(host.geometryLock);
+    if (SUCCEEDED(result) && notify) host.sinks[hwnd]={notify,context};
+    else host.sinks.erase(hwnd);
+    return result;
 }
 inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPresentation, HWND* output) noexcept {
     if (!output) return E_POINTER;
@@ -186,15 +297,15 @@ inline BOOL WINAPI IgnoreTranslate(MSG*) noexcept { return FALSE; }
 inline void Route(WinUIPaneApi& api) {
     if (!State().started) return;
 #define ROUTE(field, function) api.field=[](auto... args) noexcept { return Call<function>(args...); }
-    ROUTE(focus,Focus); ROUTE(destroy,Destroy); api.translate=IgnoreTranslate; api.shutdown=Stop;
-    ROUTE(syncTabs,SyncTabs); api.syncAddress=Post<PostedSyncAddress>; ROUTE(clip,Clip);
-    api.syncTabMenu=Post<PostedSyncTabMenu>; ROUTE(updateTabStrip,UpdateTabStrip);
-    ROUTE(setNotifySink,SetNotifySink); ROUTE(drainRequests,DrainRequests);
+    ROUTE(focus,Focus); api.destroy=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); return Call<Destroy>(hwnd); }; api.translate=IgnoreTranslate; api.shutdown=Stop;
+    ROUTE(syncTabs,SyncTabs); api.syncAddress=Post<PostedSyncAddress>; api.clip=PostClip<Clip,ReportedClip,1>;
+    api.syncTabMenu=Post<PostedSyncTabMenu>; api.updateTabStrip=PostRect<UpdateTabStrip,ReportedUpdateTabStrip,0>;
+    api.setNotifySink=PostSink; ROUTE(drainRequests,DrainRequests);
     api.completeRequests=Post<CompleteRequests>; ROUTE(applyTabDelta,ApplyTabDelta);
-    ROUTE(updateAddress,UpdateAddress); ROUTE(focusAddress,FocusAddress);
+    api.updateAddress=PostRect<UpdateAddress,ReportedUpdateAddress,2>; ROUTE(focusAddress,FocusAddress);
     ROUTE(measureChromeLayout,MeasureChromeLayout);
     ROUTE(createWindowHost,Create); ROUTE(detachWindowHost,NativeWindowHost::Detach);
-    ROUTE(destroyWindowHost,NativeWindowHost::Destroy);
+    api.destroyWindowHost=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); return Call<NativeWindowHost::Destroy>(hwnd); };
     ROUTE(showStartupSurface,ShowStartupSurface); ROUTE(dismissStartupSurface,DismissStartupSurface);
     ROUTE(bindIndependentEndpoint,Bind); ROUTE(cancelIndependentClose,Resolve);
     ROUTE(setIndependentAccessibility,NativeWindowHost::SetAccessibility);

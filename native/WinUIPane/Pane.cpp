@@ -2108,6 +2108,21 @@ HRESULT WINAPI PostedSyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
     }catch(...){}
     return result;
 }
+HRESULT WINAPI ReportedUpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
+    const auto result=UpdateTabStrip(hwnd,rect,visible);
+    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"stripHost",false);}catch(...){}
+    return result;
+}
+HRESULT WINAPI ReportedClip(HWND hwnd, const RECT* rects, uint32_t count) noexcept {
+    const auto result=Clip(hwnd,rects,count);
+    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"stripHost",false);}catch(...){}
+    return result;
+}
+HRESULT WINAPI ReportedUpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
+    const auto result=UpdateAddress(hwnd,rect,visible);
+    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"addressHost",false);}catch(...){}
+    return result;
+}
 HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
     WorkScope scope{EntryCompleteRequests};
     try {

@@ -29369,10 +29369,10 @@ index 00000000000..39117cb2f96
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..268623ae352
+index 00000000000..aec75ef8a99
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,610 @@
+@@ -0,0 +1,613 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -29827,13 +29827,16 @@ index 00000000000..268623ae352
 +    }
 +    if (!this.window.windowUtils.updateWinUIAddress(rect.x, rect.y, rect.width, rect.height,
 +                                                   true, false, false)) {
-+      this.failed = true;
-+      this.noteFallback("toolbar-host-refused");
-+      this.restore();
++      this.hostRefused();
 +      return false;
 +    }
 +    this.fallbackReason = null;
 +    return true;
++  }
++  hostRefused() {
++    this.failed = true;
++    this.noteFallback("toolbar-host-refused");
++    this.restore();
 +  }
 +  noteFallback(reason) {
 +    // Layout retries are still the same handoff until native hosting succeeds.
@@ -30121,10 +30124,10 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..d596addac6f
+index 00000000000..493d59a3811
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2469 @@
+@@ -0,0 +1,2474 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30661,6 +30664,11 @@ index 00000000000..d596addac6f
 +    const failed = new Error(`Native ${channel} publication refused`);
 +    if (channel === "address") {
 +      this.addressPublicationFailed(failed);
++    } else if (channel === "addressHost") {
++      this.addressToolbar?.hostRefused();
++    } else if (channel === "stripHost") {
++      console.error("WinUI pane geometry failed", failed);
++      Promise.resolve().then(() => this.uninit());
 +    } else if (channel === "groupCreation") {
 +      this.groupHeader?.creationUnavailable(Number(request), failed);
 +    } else if ((channel === "strip" || channel === "context") && !delta) {
