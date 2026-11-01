@@ -58,34 +58,77 @@ auto Call(Args... args) noexcept -> decltype(Function(args...)) {
     WaitForSingleObject(job.complete,INFINITE);
     CloseHandle(job.complete); return job.result;
 }
-// For a call whose result no caller acts on: copies its text, keeps the order of
-// other routed calls, and does not wait. The bound keeps a stalled native thread
-// from growing the queue; going over it is the caller's failure, not a wait.
-template<auto Function>
-HRESULT WINAPI Post(HWND hwnd, const wchar_t* text) noexcept {
+// For a call whose result no caller acts on: owns copies of its arguments, keeps the
+// order of other routed calls, and does not wait. The bound keeps a stalled native
+// thread from growing the queue; going over it is the caller's failure, not a wait.
+template<class Apply>
+HRESULT PostJob(size_t chars, Apply apply) noexcept {
     auto& host=State();
-    if (host.owner==GetCurrentThreadId()) return Function(hwnd,text);
-    if (!text) return E_POINTER;
     if (!host.dispatcher) return RO_E_CLOSED;
-    const auto chars=wcslen(text);
     if (host.posted.fetch_add(1)>=MaxPosted || host.postedChars.fetch_add(chars)+chars>MaxPostedChars) {
         host.posted.fetch_sub(1); host.postedChars.fetch_sub(chars); return E_OUTOFMEMORY;
     }
-    struct Job : Work { HWND hwnd; std::wstring text; };
-    auto* job=new (std::nothrow) Job;
-    if (job) try { job->text=text; } catch (...) { delete job; job=nullptr; }
+    struct Job : Work { size_t chars; Apply apply; explicit Job(Apply&& value) : apply(std::move(value)) {} };
+    auto* job=new (std::nothrow) Job(std::move(apply));
     if (!job) { host.posted.fetch_sub(1); host.postedChars.fetch_sub(chars); return E_OUTOFMEMORY; }
-    job->complete=nullptr; job->hwnd=hwnd;
+    job->complete=nullptr; job->chars=chars;
     job->run=[](Work* work) {
         std::unique_ptr<Job> job(static_cast<Job*>(work));
-        const auto result=Function(job->hwnd,job->text.c_str());
-        State().posted.fetch_sub(1); State().postedChars.fetch_sub(job->text.size());
+        const HRESULT result=job->apply();
+        State().posted.fetch_sub(1); State().postedChars.fetch_sub(job->chars);
         if (FAILED(result) && DiagnosticsEnabled()) fprintf(stderr,"WinUIPane posted call failed hr=%08x\n",unsigned(result));
     };
     if (!PostMessageW(host.dispatcher,InvokeMessage,0,reinterpret_cast<LPARAM>(job))) {
         delete job; host.posted.fetch_sub(1); host.postedChars.fetch_sub(chars); return RO_E_CLOSED;
     }
     return S_OK;
+}
+template<auto Function>
+HRESULT WINAPI Post(HWND hwnd, const wchar_t* text) noexcept {
+    if (State().owner==GetCurrentThreadId()) return Function(hwnd,text);
+    if (!text) return E_POINTER;
+    try {
+        std::wstring copy=text;
+        const auto chars=copy.size();
+        return PostJob(chars,[hwnd,copy=std::move(copy)]{return Function(hwnd,copy.c_str());});
+    } catch (...) { return E_OUTOFMEMORY; }
+}
+// Focus is fire and forget: a failure comes back as a refused publication.
+template<auto Function, auto Reported>
+HRESULT WINAPI PostFocus(HWND hwnd, BOOL flag) noexcept {
+    if (State().owner==GetCurrentThreadId()) return Function(hwnd,flag);
+    return PostJob(0,[hwnd,flag]{return Reported(hwnd,flag);});
+}
+// Validated here as well, so a malformed publication still fails at its caller.
+inline HRESULT WINAPI PostSyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected,
+                                   uint32_t revision, uint32_t* requested) noexcept {
+    if (State().owner==GetCurrentThreadId()) return SyncTabs(hwnd,tabs,count,selected,revision,requested);
+    if (!requested) return E_POINTER;
+    *requested=0;
+    try {
+        if (!hwnd || !ValidTabPublication(tabs,count,selected,revision)) return E_INVALIDARG;
+        std::vector<std::wstring> titles;
+        std::vector<WinUITab> rows(tabs,tabs+count);
+        titles.reserve(count);
+        size_t chars=0;
+        for (uint32_t i=0;i<count;++i) { titles.emplace_back(tabs[i].title); chars+=titles.back().size(); }
+        const auto result=PostJob(chars,[hwnd,titles=std::move(titles),rows=std::move(rows),selected,revision]() mutable {
+            for (size_t i=0;i<rows.size();++i) rows[i].title=titles[i].c_str();
+            return ReportedSyncTabs(hwnd,rows.data(),uint32_t(rows.size()),selected,revision);
+        });
+        if (SUCCEEDED(result)) *requested=revision;
+        return result;
+    } catch (...) { return E_OUTOFMEMORY; }
+}
+// Any nonzero revision tells the widget the delta was taken; the producer already
+// holds its own stamp, and a refusal returns as a publication-rejected request.
+inline HRESULT WINAPI PostTabDelta(HWND hwnd, const wchar_t* input, uint32_t* revision) noexcept {
+    if (State().owner==GetCurrentThreadId()) return ApplyTabDelta(hwnd,input,revision);
+    if (!revision) return E_POINTER;
+    *revision=0;
+    const auto result=Post<PostedApplyTabDelta>(hwnd,input);
+    if (SUCCEEDED(result)) *revision=1;
+    return result;
 }
 // Geometry is latest-wins, so a stalled native thread queues at most one job per
 // surface and going over a bound can never turn into a permanent fallback.
@@ -297,13 +340,14 @@ inline BOOL WINAPI IgnoreTranslate(MSG*) noexcept { return FALSE; }
 inline void Route(WinUIPaneApi& api) {
     if (!State().started) return;
 #define ROUTE(field, function) api.field=[](auto... args) noexcept { return Call<function>(args...); }
-    ROUTE(focus,Focus); api.destroy=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); return Call<Destroy>(hwnd); }; api.translate=IgnoreTranslate; api.shutdown=Stop;
-    ROUTE(syncTabs,SyncTabs); api.syncAddress=Post<PostedSyncAddress>; api.clip=PostClip<Clip,ReportedClip,1>;
+    api.focus=PostFocus<Focus,ReportedFocus>; api.destroy=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); return Call<Destroy>(hwnd); }; api.translate=IgnoreTranslate; api.shutdown=Stop;
+    api.syncTabs=PostSyncTabs; api.syncAddress=Post<PostedSyncAddress>; api.clip=PostClip<Clip,ReportedClip,1>;
     api.syncTabMenu=Post<PostedSyncTabMenu>; api.updateTabStrip=PostRect<UpdateTabStrip,ReportedUpdateTabStrip,0>;
     api.setNotifySink=PostSink; ROUTE(drainRequests,DrainRequests);
-    api.completeRequests=Post<CompleteRequests>; ROUTE(applyTabDelta,ApplyTabDelta);
-    api.updateAddress=PostRect<UpdateAddress,ReportedUpdateAddress,2>; ROUTE(focusAddress,FocusAddress);
-    ROUTE(measureChromeLayout,MeasureChromeLayout);
+    api.completeRequests=Post<CompleteRequests>; api.applyTabDelta=PostTabDelta;
+    api.updateAddress=PostRect<UpdateAddress,ReportedUpdateAddress,2>; api.focusAddress=PostFocus<FocusAddress,ReportedFocusAddress>;
+    // Reads only window state the OS answers from any thread, then computes.
+    api.measureChromeLayout=MeasureChromeLayout;
     ROUTE(createWindowHost,Create); ROUTE(detachWindowHost,NativeWindowHost::Detach);
     api.destroyWindowHost=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); return Call<NativeWindowHost::Destroy>(hwnd); };
     ROUTE(showStartupSurface,ShowStartupSurface); ROUTE(dismissStartupSurface,DismissStartupSurface);

@@ -30,7 +30,7 @@ test("Firefox owns one stamp for a multi-row delta and no-op snapshot", () => {
   f.pane.attached = false; f.pane.syncTabs(); assert.equal(f.pane.tabPublicationRevision, 3);
 });
 
-for (const acknowledgement of [0, 9000, "throws"]) {
+for (const acknowledgement of [0, "throws"]) {
   test(`refused delta (${acknowledgement}) gets one independently stamped snapshot`, () => {
     const f = fixture(); f.pane.syncTabs();
     f.utils.applyWinUITabDelta = () => {
@@ -43,6 +43,15 @@ for (const acknowledgement of [0, 9000, "throws"]) {
     assert.equal(f.pane.nativeRevision, 3); assert.equal(f.pane.publicationRecoveries, 1);
   });
 }
+
+test("deltas refused after queueing get one snapshot between them", () => {
+  const f = fixture(); f.pane.syncTabs();
+  f.pane.dirtyTitles.add(f.tabs[0]); f.pane.publishTabDelta();
+  f.pane.dirtyTitles.add(f.tabs[1]); f.pane.publishTabDelta();
+  const reject = revision => f.pane.publicationRejected({channel: "tabs", delta: true, request: String(revision)});
+  reject(f.deltas[0].revision); reject(f.deltas[1].revision);
+  assert.equal(f.snapshots.length, 2); assert.equal(f.pane.publicationRecoveries, 1);
+});
 
 test("refused complete publication propagates without retry or accepting a foreign stamp", () => {
   const f = fixture(); f.pane.syncTabs();

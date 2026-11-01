@@ -1947,6 +1947,16 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
 }
 // Publication only, since v14: close and new-tab joined the request path, and
 // the reserved context/command pair went with them, so nothing is drained here.
+bool ValidTabPublication(const WinUITab* tabs, uint32_t count, uint32_t selected, uint32_t revision) {
+    if (!revision || (count && !tabs) || count > 10000) return false;
+    std::set<uint32_t> ids;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (!tabs[i].id || !tabs[i].title || !ids.insert(tabs[i].id).second ||
+            wcsnlen(tabs[i].title, 32769) > 32768 || (tabs[i].commands & ~31u) || (tabs[i].commands & 12u) == 12u)
+            return false;
+    }
+    return !selected || ids.count(selected);
+}
 HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected,
                         uint32_t revision, uint32_t* requested) noexcept {
     WorkScope scope{EntrySyncTabs};
@@ -1954,14 +1964,7 @@ HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_
         check_hresult(Check(hwnd));
         if (!requested) return E_POINTER;
         *requested = 0;
-        if (!revision || !hwnd || (count && !tabs) || count > 10000) return E_INVALIDARG;
-        std::set<uint32_t> ids;
-        for (uint32_t i = 0; i < count; ++i) {
-            if (!tabs[i].id || !tabs[i].title || !ids.insert(tabs[i].id).second ||
-                wcsnlen(tabs[i].title, 32769) > 32768 || (tabs[i].commands & ~31u) || (tabs[i].commands & 12u) == 12u)
-                return E_INVALIDARG;
-        }
-        if (selected && !ids.count(selected)) return E_INVALIDARG;
+        if (!hwnd || !ValidTabPublication(tabs, count, selected, revision)) return E_INVALIDARG;
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end()) return E_INVALIDARG;
         auto& pane = *found->second;
@@ -2225,6 +2228,34 @@ HRESULT WINAPI Focus(HWND hwnd, BOOL backwards) noexcept {
     } catch (...) {
         return to_hresult();
     }
+}
+HRESULT WINAPI ReportedFocus(HWND hwnd, BOOL backwards) noexcept {
+    const auto result=Focus(hwnd,backwards);
+    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"stripHost",false);}catch(...){}
+    return result;
+}
+HRESULT WINAPI ReportedFocusAddress(HWND hwnd, BOOL selectAll) noexcept {
+    const auto result=FocusAddress(hwnd,selectAll);
+    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"addressFocus",false);}catch(...){}
+    return result;
+}
+HRESULT WINAPI ReportedSyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected, uint32_t revision) noexcept {
+    uint32_t acknowledged=0;
+    const auto result=SyncTabs(hwnd,tabs,count,selected,revision,&acknowledged);
+    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"tabs",false);}catch(...){}
+    return result;
+}
+// S_FALSE applied the delta but asks for a snapshot, so it is reported like a refusal.
+HRESULT WINAPI PostedApplyTabDelta(HWND hwnd, const wchar_t* input) noexcept {
+    uint32_t acknowledged=0;
+    const auto result=ApplyTabDelta(hwnd,input,&acknowledged);
+    if(result!=S_OK)try{
+        NativeTabMenu::Object delta{nullptr};
+        hstring request;
+        if(NativeTabMenu::Object::TryParse(input,delta))request=winrt::to_hstring(uint32_t(delta.GetNamedNumber(L"revision",0)));
+        ReportRejectedPublication(hwnd,L"tabs",true,request);
+    }catch(...){}
+    return result;
 }
 HRESULT WINAPI Destroy(HWND hwnd) noexcept {
     WorkScope scope{EntryDestroy};

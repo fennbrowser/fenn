@@ -10,7 +10,6 @@ inline HRESULT MeasureNativeChromeLayout(HWND host, uint32_t stripHeight,
                                          ShellChromeLayout* output) noexcept {
     if (!output) return E_POINTER;
     if (!host || !IsWindow(host)) return E_INVALIDARG;
-    if (GetWindowThreadProcessId(host, nullptr) != GetCurrentThreadId()) return RPC_E_WRONG_THREAD;
     RECT client{};
     if (!GetClientRect(host, &client)) return HRESULT_FROM_WIN32(GetLastError());
     ShellChromeLayoutInput input{client.right - client.left, client.bottom - client.top,

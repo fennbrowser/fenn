@@ -9988,7 +9988,7 @@ index b39212b1c97..e1d3533c63a 100644
 +
  static LazyLogModule sApzZoomToFocusedInputLog("apz.zoomtofocusedinput");
 diff --git a/dom/interfaces/base/nsIDOMWindowUtils.idl b/dom/interfaces/base/nsIDOMWindowUtils.idl
-index 400fb84ffc6..3d964657266 100644
+index 400fb84ffc6..16ce4d1effc 100644
 --- a/dom/interfaces/base/nsIDOMWindowUtils.idl
 +++ b/dom/interfaces/base/nsIDOMWindowUtils.idl
 @@ -63,2 +63,42 @@ interface nsIDOMWindowUtils : nsISupports {
@@ -10013,17 +10013,17 @@ index 400fb84ffc6..3d964657266 100644
 +  AString transferWinUIStartup(in AString aMessage);
 +  void completeWinUIRequests(in AString outcomes);
 +  /**
-+   * Incremental presentation update. Returns the acknowledged Firefox publication revision after
-+   * applying, for the next delta's base, or 0 if the delta was refused -- in
-+   * which case send one full syncWinUITabs snapshot rather than retrying.
++   * Incremental presentation update. Returns nonzero if the delta was taken, or
++   * 0 if it was refused -- in which case send one full syncWinUITabs snapshot
++   * rather than retrying. A delta refused later returns as a request.
 +   */
 +  unsigned long applyWinUITabDelta(in AString delta);
 +
 +  /**
 +   * Publishes a snapshot. Since ABI v14 nothing is drained here: selection,
 +   * close, new tab and every other native intent travel on the request path
-+   * above. The return value is the acknowledged Firefox publication revision after the snapshot,
-+   * which the next applyWinUITabDelta names as its base.
++   * above. The return value is the revision taken, which the next
++   * applyWinUITabDelta names as its base, or 0 if the snapshot was refused.
 +   */
 +  unsigned long syncWinUITabs(in Array<unsigned long> ids,
 +                             in Array<AString> titles, in Array<unsigned long> commands,
@@ -29369,10 +29369,10 @@ index 00000000000..39117cb2f96
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..aec75ef8a99
+index 00000000000..a4c7c4f2ecb
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,613 @@
+@@ -0,0 +1,617 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -29887,9 +29887,13 @@ index 00000000000..aec75ef8a99
 +      }
 +    } catch (error) { console.error(error); }
 +    finally { this.focusing = false; }
++    this.focusRefused();
++    return false;
++  }
++  focusRefused() {
++    this.focusOwned = false;
 +    this.failed = true;
 +    this.owner.addressFallback("toolbar-focus-failed");
-+    return false;
 +  }
 +  restore() {
 +    if(this.historyMenu?.session)this.historyMenu.dismiss();
@@ -30124,10 +30128,10 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..493d59a3811
+index 00000000000..ecf72b887a8
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2474 @@
+@@ -0,0 +1,2487 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30666,6 +30670,18 @@ index 00000000000..493d59a3811
 +      this.addressPublicationFailed(failed);
 +    } else if (channel === "addressHost") {
 +      this.addressToolbar?.hostRefused();
++    } else if (channel === "addressFocus") {
++      this.addressToolbar?.focusRefused();
++    } else if (channel === "tabs" && delta) {
++      // Deltas sent before the last snapshot are covered by it: one snapshot answers them all.
++      if (Number(request) > (this.tabSnapshotRevision || 0)) {
++        this.publicationRecoveries++;
++        this.structuralDirty = true;
++        this.syncTabs();
++      }
++    } else if (channel === "tabs") {
++      console.error("WinUI tab publication failed", failed);
++      Promise.resolve().then(() => this.uninit());
 +    } else if (channel === "stripHost") {
 +      console.error("WinUI pane geometry failed", failed);
 +      Promise.resolve().then(() => this.uninit());
@@ -32093,7 +32109,7 @@ index 00000000000..493d59a3811
 +    delta.revision = this.nextTabPublicationRevision();
 +    this.publishWithRecovery(
 +      () => {
-+        if (window.windowUtils.applyWinUITabDelta(JSON.stringify(delta)) !== delta.revision) return false;
++        if (!window.windowUtils.applyWinUITabDelta(JSON.stringify(delta))) return false;
 +        this.nativeRevision = delta.revision;
 +        return true;
 +      },
@@ -32136,6 +32152,7 @@ index 00000000000..493d59a3811
 +    // Since ABI v14 this publishes and nothing more: close, new tab and every
 +    // other native intent arrive as drained requests.
 +    const revision = this.nextTabPublicationRevision();
++    this.tabSnapshotRevision = revision;
 +    const acknowledged = window.windowUtils.syncWinUITabs(
 +      ids,
 +      titles,
