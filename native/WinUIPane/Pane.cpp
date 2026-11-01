@@ -2078,6 +2078,12 @@ HRESULT WINAPI DrainRequests(HWND hwnd, wchar_t* output, uint32_t capacity) noex
         return to_hresult();
     }
 }
+// Opens a drain ahead of Firefox's read, unless the last batch is still unanswered.
+HRESULT PrepareDrain(HWND hwnd, wchar_t* output, uint32_t capacity) noexcept {
+    auto found = state().panes.find(hwnd);
+    if (found == state().panes.end() || found->second->drainOpen) return S_FALSE;
+    return DrainRequests(hwnd, output, capacity);
+}
 // A posted publication has no caller left to fail to, so a refusal returns as a request.
 // Firefox answers it with its usual recovery: one complete publication after a refused
 // delta, or the surface's fallback after a refused complete publication.
@@ -2170,7 +2176,8 @@ HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
         }
         const bool blocked = message.GetNamedBoolean(L"blocked", false);
         bool notify = false;
-        if (pane.drainOpen) {
+        // A block signal is not an answer: a drain open here can be a batch Firefox has yet to read.
+        if (pane.drainOpen && !message.GetNamedBoolean(L"signal", false)) {
             notify = pane.shell.EndDrain();
             pane.drainOpen = false;
             if (blocked) {

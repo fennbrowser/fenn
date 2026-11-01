@@ -27,6 +27,7 @@ struct Host {
     std::mutex geometryLock;
     std::map<std::pair<HWND,int>,struct GeometrySlot> geometry;
     std::map<HWND,std::pair<WinUIPaneNotifyFn,void*>> sinks;
+    std::map<HWND,std::wstring> preparedDrains;
     HRESULT result=E_PENDING;
     bool started{};
 };
@@ -186,6 +187,7 @@ inline void GeometryForgetWindow(HWND hwnd) {
     std::lock_guard guard(host.geometryLock);
     std::erase_if(host.geometry,[hwnd](auto const& entry){return entry.first.first==hwnd;});
     host.sinks.erase(hwnd);
+    host.preparedDrains.erase(hwnd);
 }
 template<auto Function, auto Reported, int Kind>
 HRESULT WINAPI PostRect(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
@@ -217,19 +219,72 @@ HRESULT WINAPI PostClip(HWND hwnd, const RECT* rects, uint32_t count) noexcept {
             [](HWND target, GeometrySlot const& slot){Reported(target,slot.clip.data(),uint32_t(slot.clip.size()));});
     } catch (...) { return E_OUTOFMEMORY; }
 }
+// The pane's wakeup can fire inside its own drain bookkeeping, so the batch is
+// prepared on a later turn. Gecko then reads it without waiting for this thread.
+inline void PrepareAndNotify(HWND hwnd) noexcept {
+    auto& host=State();
+    std::pair<WinUIPaneNotifyFn,void*> sink{};
+    bool prepare{};
+    {
+        std::lock_guard guard(host.geometryLock);
+        auto found=host.sinks.find(hwnd);
+        if (found==host.sinks.end()) return;
+        sink=found->second;
+        prepare=!host.preparedDrains.count(hwnd);
+    }
+    if (prepare) try {
+        static thread_local std::vector<wchar_t> buffer(262144);
+        buffer[0]=0;
+        const auto result=PrepareDrain(hwnd,buffer.data(),uint32_t(buffer.size()));
+        if (FAILED(result) && DiagnosticsEnabled()) fprintf(stderr,"WinUIPane drain failed hr=%08x\n",unsigned(result));
+        if (result==S_OK) {
+            std::lock_guard guard(host.geometryLock);
+            if (host.sinks.count(hwnd)) host.preparedDrains[hwnd]=buffer.data();
+        }
+    } catch (...) {}
+    sink.first(sink.second);
+}
+inline BOOL WINAPI NotifyPrepared(void* context) noexcept {
+    struct Job : Work { HWND hwnd; };
+    auto* job=new (std::nothrow) Job;
+    if (!job) return FALSE;
+    job->complete=nullptr; job->hwnd=static_cast<HWND>(context);
+    job->run=[](Work* work) {
+        std::unique_ptr<Job> job(static_cast<Job*>(work));
+        PrepareAndNotify(job->hwnd);
+    };
+    if (!PostMessageW(State().dispatcher,InvokeMessage,0,reinterpret_cast<LPARAM>(job))) { delete job; return FALSE; }
+    return TRUE;
+}
+inline HRESULT WINAPI PostDrain(HWND hwnd, wchar_t* output, uint32_t capacity) noexcept {
+    auto& host=State();
+    if (host.owner==GetCurrentThreadId()) return DrainRequests(hwnd,output,capacity);
+    if (!output || capacity<1) return E_INVALIDARG;
+    output[0]=0;
+    std::lock_guard guard(host.geometryLock);
+    auto found=host.preparedDrains.find(hwnd);
+    if (found==host.preparedDrains.end()) return S_FALSE;
+    if (found->second.size()>=capacity) return E_NOT_SUFFICIENT_BUFFER;
+    wcscpy_s(output,capacity,found->second.c_str());
+    host.preparedDrains.erase(found);
+    return S_OK;
+}
 // Registered again on every geometry update; only a change reaches the native thread.
 inline HRESULT WINAPI PostSink(HWND hwnd, WinUIPaneNotifyFn notify, void* context) noexcept {
     auto& host=State();
     if (host.owner==GetCurrentThreadId()) return SetNotifySink(hwnd,notify,context);
-    {
+    try {
         std::lock_guard guard(host.geometryLock);
         auto found=host.sinks.find(hwnd);
         if (notify && found!=host.sinks.end() && found->second==std::make_pair(notify,context)) return S_OK;
+        if (notify) host.sinks[hwnd]={notify,context};
+        else host.sinks.erase(hwnd);
+    } catch (...) { return E_OUTOFMEMORY; }
+    const auto result=Call<SetNotifySink>(hwnd,notify ? NotifyPrepared : nullptr,notify ? static_cast<void*>(hwnd) : nullptr);
+    if (FAILED(result)) {
+        std::lock_guard guard(host.geometryLock);
+        host.sinks.erase(hwnd);
     }
-    const auto result=Call<SetNotifySink>(hwnd,notify,context);
-    std::lock_guard guard(host.geometryLock);
-    if (SUCCEEDED(result) && notify) host.sinks[hwnd]={notify,context};
-    else host.sinks.erase(hwnd);
     return result;
 }
 inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPresentation, HWND* output) noexcept {
@@ -343,7 +398,7 @@ inline void Route(WinUIPaneApi& api) {
     api.focus=PostFocus<Focus,ReportedFocus>; api.destroy=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); return Call<Destroy>(hwnd); }; api.translate=IgnoreTranslate; api.shutdown=Stop;
     api.syncTabs=PostSyncTabs; api.syncAddress=Post<PostedSyncAddress>; api.clip=PostClip<Clip,ReportedClip,1>;
     api.syncTabMenu=Post<PostedSyncTabMenu>; api.updateTabStrip=PostRect<UpdateTabStrip,ReportedUpdateTabStrip,0>;
-    api.setNotifySink=PostSink; ROUTE(drainRequests,DrainRequests);
+    api.setNotifySink=PostSink; api.drainRequests=PostDrain;
     api.completeRequests=Post<CompleteRequests>; api.applyTabDelta=PostTabDelta;
     api.updateAddress=PostRect<UpdateAddress,ReportedUpdateAddress,2>; api.focusAddress=PostFocus<FocusAddress,ReportedFocusAddress>;
     // Reads only window state the OS answers from any thread, then computes.

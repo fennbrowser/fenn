@@ -30128,10 +30128,10 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..ecf72b887a8
+index 00000000000..4fbeda2397a
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2487 @@
+@@ -0,0 +1,2489 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30873,7 +30873,9 @@ index 00000000000..ecf72b887a8
 +    this.blocked = blocked;
 +    try {
 +      window.windowUtils.completeWinUIRequests(JSON.stringify({
-+        version: 1, generation: 0, outcomes: [], blocked }));
++        version: 1, generation: 0, outcomes: [], blocked, signal: true }));
++      // A batch prepared while blocked has no further wakeup coming.
++      if (!blocked) Services.tm.dispatchToMainThread(() => this.drain());
 +    } catch (error) {
 +      console.error("WinUI block signal failed", error);
 +    }
