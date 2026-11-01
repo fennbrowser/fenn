@@ -8,12 +8,16 @@
 // calls; this thread never waits for Gecko or runs its window procedure.
 namespace IndependentHost {
 inline constexpr UINT InvokeMessage=WM_APP+901;
+inline constexpr uint32_t MaxPosted=1024;
+inline constexpr size_t MaxPostedChars=16*1024*1024;
 struct Work { void (*run)(Work*); HANDLE complete; };
 struct Host {
     std::thread thread;
     HANDLE ready=CreateEventW(nullptr,TRUE,FALSE,nullptr);
     std::atomic<HWND> dispatcher{}, shell{};
     std::atomic<DWORD> owner{};
+    std::atomic<uint32_t> posted{};
+    std::atomic<size_t> postedChars{};
     HRESULT result=E_PENDING;
     bool started{};
 };
@@ -21,7 +25,8 @@ inline Host& State() { static auto host=new Host; return *host; }
 inline LRESULT CALLBACK Dispatch(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     if (message==InvokeMessage) {
         auto* work=reinterpret_cast<Work*>(l);
-        work->run(work); SetEvent(work->complete); return 0;
+        const auto complete=work->complete;
+        work->run(work); if (complete) SetEvent(complete); return 0;
     }
     return DefWindowProcW(hwnd,message,w,l);
 }
@@ -43,6 +48,35 @@ auto Call(Args... args) noexcept -> decltype(Function(args...)) {
     // the Gecko caller waits; no Gecko callbacks occur on the native thread.
     WaitForSingleObject(job.complete,INFINITE);
     CloseHandle(job.complete); return job.result;
+}
+// For a call whose result no caller acts on: copies its text, keeps the order of
+// other routed calls, and does not wait. The bound keeps a stalled native thread
+// from growing the queue; going over it is the caller's failure, not a wait.
+template<auto Function>
+HRESULT WINAPI Post(HWND hwnd, const wchar_t* text) noexcept {
+    auto& host=State();
+    if (host.owner==GetCurrentThreadId()) return Function(hwnd,text);
+    if (!text) return E_POINTER;
+    if (!host.dispatcher) return RO_E_CLOSED;
+    const auto chars=wcslen(text);
+    if (host.posted.fetch_add(1)>=MaxPosted || host.postedChars.fetch_add(chars)+chars>MaxPostedChars) {
+        host.posted.fetch_sub(1); host.postedChars.fetch_sub(chars); return E_OUTOFMEMORY;
+    }
+    struct Job : Work { HWND hwnd; std::wstring text; };
+    auto* job=new (std::nothrow) Job;
+    if (job) try { job->text=text; } catch (...) { delete job; job=nullptr; }
+    if (!job) { host.posted.fetch_sub(1); host.postedChars.fetch_sub(chars); return E_OUTOFMEMORY; }
+    job->complete=nullptr; job->hwnd=hwnd;
+    job->run=[](Work* work) {
+        std::unique_ptr<Job> job(static_cast<Job*>(work));
+        const auto result=Function(job->hwnd,job->text.c_str());
+        State().posted.fetch_sub(1); State().postedChars.fetch_sub(job->text.size());
+        if (FAILED(result) && DiagnosticsEnabled()) fprintf(stderr,"WinUIPane posted call failed hr=%08x\n",unsigned(result));
+    };
+    if (!PostMessageW(host.dispatcher,InvokeMessage,0,reinterpret_cast<LPARAM>(job))) {
+        delete job; host.posted.fetch_sub(1); host.postedChars.fetch_sub(chars); return RO_E_CLOSED;
+    }
+    return S_OK;
 }
 inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPresentation, HWND* output) noexcept {
     if (!output) return E_POINTER;
@@ -153,10 +187,10 @@ inline void Route(WinUIPaneApi& api) {
     if (!State().started) return;
 #define ROUTE(field, function) api.field=[](auto... args) noexcept { return Call<function>(args...); }
     ROUTE(focus,Focus); ROUTE(destroy,Destroy); api.translate=IgnoreTranslate; api.shutdown=Stop;
-    ROUTE(syncTabs,SyncTabs); ROUTE(syncAddress,SyncAddress); ROUTE(clip,Clip);
-    ROUTE(syncTabMenu,SyncTabMenu); ROUTE(updateTabStrip,UpdateTabStrip);
+    ROUTE(syncTabs,SyncTabs); api.syncAddress=Post<PostedSyncAddress>; ROUTE(clip,Clip);
+    api.syncTabMenu=Post<PostedSyncTabMenu>; ROUTE(updateTabStrip,UpdateTabStrip);
     ROUTE(setNotifySink,SetNotifySink); ROUTE(drainRequests,DrainRequests);
-    ROUTE(completeRequests,CompleteRequests); ROUTE(applyTabDelta,ApplyTabDelta);
+    api.completeRequests=Post<CompleteRequests>; ROUTE(applyTabDelta,ApplyTabDelta);
     ROUTE(updateAddress,UpdateAddress); ROUTE(focusAddress,FocusAddress);
     ROUTE(measureChromeLayout,MeasureChromeLayout);
     ROUTE(createWindowHost,Create); ROUTE(detachWindowHost,NativeWindowHost::Detach);

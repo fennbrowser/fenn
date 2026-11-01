@@ -23689,10 +23689,10 @@ index 00000000000..be4830a0b21
 +}
 diff --git a/browser/base/content/WinUIGroupHeader.sys.mjs b/browser/base/content/WinUIGroupHeader.sys.mjs
 new file mode 100644
-index 00000000000..559fde0e918
+index 00000000000..2d62524cb79
 --- /dev/null
 +++ b/browser/base/content/WinUIGroupHeader.sys.mjs
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,153 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -23730,12 +23730,14 @@ index 00000000000..559fde0e918
 +    pending.tab=w.gBrowser.selectedTab;
 +    pending.sent=true;
 +    try {w.windowUtils.syncWinUITabMenu(JSON.stringify({version:2,publishOnly:true,groupCreation:{request:pending.request,group,window:this.owner.stripSession.windowDragSession}}));}
-+    catch(error){
-+      if(this.pendingCreation!==pending)return;
-+      this.pendingCreation=null;
-+      w.gBrowser.tabGroupMenu.openCreateModal(pending.group,{nativeFallback:true});
-+      console.error("Native group creation unavailable",error);
-+    }
++    catch(error){this.creationUnavailable(pending.request,error);}
++  }
++  creationUnavailable(request,error){
++    const pending=this.pendingCreation;
++    if(!pending || pending.request!==request)return;
++    this.pendingCreation=null;
++    this.window.gBrowser.tabGroupMenu.openCreateModal(pending.group,{nativeFallback:true});
++    console.error("Native group creation unavailable",error);
 +  }
 +  rejectCreation(action){
 +    const pending=this.pendingCreation,w=this.window;
@@ -30119,10 +30121,10 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..f6ece80fdf8
+index 00000000000..d596addac6f
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2415 @@
+@@ -0,0 +1,2469 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30541,7 +30543,8 @@ index 00000000000..f6ece80fdf8
 +        for (const request of batch.requests || []) {
 +          let outcome = 2;
 +          try {
-+            const describing = request.kind === 2 && request.action?.kind === "open";
++            const describing = request.kind === 2 && request.action?.kind === "open" ||
++              request.action?.kind === "publication-rejected";
 +            // An earlier command may have opened a dialog, including before
 +            // throwing. Recheck before each command rather than once per batch.
 +            if (!gDialogBox.isOpen || describing) outcome = this.executeRequest(request);
@@ -30653,7 +30656,55 @@ index 00000000000..f6ece80fdf8
 +  // revision it was formed against and WinUITabStripSession refuses it if that
 +  // revision has moved, so a gesture made against a superseded strip is
 +  // rejected rather than applied to the wrong tab.
++  // A posted publication that native code refused after the call had returned.
++  publicationRejected({ channel, delta, request }) {
++    const failed = new Error(`Native ${channel} publication refused`);
++    if (channel === "address") {
++      this.addressPublicationFailed(failed);
++    } else if (channel === "groupCreation") {
++      this.groupHeader?.creationUnavailable(Number(request), failed);
++    } else if ((channel === "strip" || channel === "context") && !delta) {
++      console.error("WinUI tab publication failed", failed);
++      Promise.resolve().then(() => this.uninit());
++    } else if (channel === "strip") {
++      this.publicationRecoveries++;
++      window.windowUtils.syncWinUITabMenu(JSON.stringify(this.stripSession.update(true)));
++    } else if (channel === "context") {
++      this.publicationRecoveries++;
++      this.tabMenuSession.forceUpdate = true;
++      const tabs = this.visibleTabs();
++      this.publishTabContext(tabs, tabs.map(tab => this.tabIds.get(tab)));
++    } else {
++      console.error("WinUI publication failed", failed);
++    }
++    return 1;
++  },
++
++  // For refusal tests: sends a deliberately bad publication and resolves with
++  // whether native code refused it, without taking that surface's fallback.
++  publicationRefused(send) {
++    const run = () => new Promise(resolve => {
++      const original = this.publicationRejected;
++      let timer;
++      const finish = refused => {
++        clearTimeout(timer);
++        this.publicationRejected = original;
++        resolve(refused);
++      };
++      this.publicationRejected = () => (finish(true), 1);
++      timer = setTimeout(() => finish(false), 2000);
++      try {
++        send();
++      } catch {
++        finish(true);
++      }
++    });
++    this.refusalProbes = (this.refusalProbes || Promise.resolve()).then(run);
++    return this.refusalProbes;
++  },
++
 +  executeStripRequest(action) {
++    if(action?.kind==="publication-rejected")return this.publicationRejected(action);
 +    if(action?.kind==="startup-recovery")return this.automaticStartupModule?.recoverAutomaticStartup(window, action) || 2;
 +    if(action?.kind==="group-header")return this.groupHeader?.execute(action) || 2;
 +    if(action?.kind==="all-tabs")return this.allTabsController?.execute(action) || 2;
@@ -31968,23 +32019,28 @@ index 00000000000..f6ece80fdf8
 +      try {
 +        this.syncAddress();
 +      } catch (error) {
-+        // Unchanged from the interval this replaced: a failed address
-+        // publication disables that surface and leaves the rest of the pane
-+        // running, rather than taking the window down with it.
-+        console.error("Native address synchronization failed", error);
-+        this.recordAddressFallback("address-publication-error");
-+        this.addressSession?.close();
-+        this.addressSession = null;
-+        this.addressFailed = true;
-+        this.addressPublication = null;
-+        this.addressToolbar?.restore();
-+        try {
-+          window.windowUtils.syncWinUIAddress(
-+            JSON.stringify({ version: 1, enabled: false })
-+          );
-+        } catch {}
++        this.addressPublicationFailed(error);
 +      }
 +    }
++  },
++
++  // Unchanged from the interval this replaced: a failed address
++  // publication disables that surface and leaves the rest of the pane
++  // running, rather than taking the window down with it.
++  addressPublicationFailed(error) {
++    if (this.addressFailed) return;
++    console.error("Native address synchronization failed", error);
++    this.recordAddressFallback("address-publication-error");
++    this.addressSession?.close();
++    this.addressSession = null;
++    this.addressFailed = true;
++    this.addressPublication = null;
++    this.addressToolbar?.restore();
++    try {
++      window.windowUtils.syncWinUIAddress(
++        JSON.stringify({ version: 1, enabled: false })
++      );
++    } catch {}
 +  },
 +
 +  // Anything that could change what the address publication would say. Cheap

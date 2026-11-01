@@ -921,7 +921,8 @@ test('publication failure records a reason before preserving the existing cleanu
   const start=source.indexOf('  publishState('),end=source.indexOf('\n  // Anything that could change',start);
   assert.ok(start>=0 && end>start,'publication method extraction');
   const context=vm.createContext({window:f.window,console:{error(){}}});
-  vm.runInContext('this.publish = ({'+source.slice(start,end)+'}).publishState;',context);
+  vm.runInContext('this.methods = ({'+source.slice(start,end)+'});this.publish = this.methods.publishState;',context);
+  pane.addressPublicationFailed=context.methods.addressPublicationFailed;
   let closed=0,restored=0;
   Object.assign(pane,{element:{},attached:true,nativeRevision:1,dirtyTitles:new Set(),addressDirty:true,
     syncAddress(){throw new Error('refused');},addressToolbar:{restore(){restored++;}}});

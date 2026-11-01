@@ -2075,6 +2075,39 @@ HRESULT WINAPI DrainRequests(HWND hwnd, wchar_t* output, uint32_t capacity) noex
         return to_hresult();
     }
 }
+// A posted publication has no caller left to fail to, so a refusal returns as a request.
+// Firefox answers it with its usual recovery: one complete publication after a refused
+// delta, or the surface's fallback after a refused complete publication.
+void ReportRejectedPublication(HWND hwnd, const wchar_t* channel, bool delta, hstring const& request={}) {
+    auto found=state().panes.find(hwnd);
+    if(found==state().panes.end())return;
+    NativeTabMenu::Object action;
+    action.Insert(L"kind",winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"publication-rejected"));
+    action.Insert(L"channel",winrt::Windows::Data::Json::JsonValue::CreateStringValue(channel));
+    action.Insert(L"delta",winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(delta));
+    if(!request.empty())action.Insert(L"request",winrt::Windows::Data::Json::JsonValue::CreateStringValue(request));
+    auto& pane=*found->second;
+    pane.Enqueue(NativeShellCore::StripAction,0,pane.strip?pane.strip->presentationRevision:0,action.Stringify());
+}
+HRESULT WINAPI PostedSyncAddress(HWND hwnd, const wchar_t* input) noexcept {
+    const auto result=SyncAddress(hwnd,input);
+    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"address",false);}catch(...){}
+    return result;
+}
+HRESULT WINAPI PostedSyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
+    const auto result=SyncTabMenu(hwnd,input);
+    if(FAILED(result))try{
+        const wchar_t* channel=L"other";bool delta=false;hstring request;
+        NativeTabMenu::Object snapshot{nullptr};
+        if(NativeTabMenu::Object::TryParse(input,snapshot)) {
+            if(snapshot.HasKey(L"strip")){channel=L"strip";delta=snapshot.GetNamedObject(L"strip").GetNamedNumber(L"base",0)!=0;}
+            else if(snapshot.HasKey(L"groupCreation")){channel=L"groupCreation";request=winrt::to_hstring(snapshot.GetNamedObject(L"groupCreation").GetNamedNumber(L"request",0));}
+            else if(snapshot.HasKey(L"state")){channel=L"context";delta=snapshot.GetNamedObject(L"state").GetNamedNumber(L"base",0)!=0;}
+        }
+        ReportRejectedPublication(hwnd,channel,delta,request);
+    }catch(...){}
+    return result;
+}
 HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
     WorkScope scope{EntryCompleteRequests};
     try {
