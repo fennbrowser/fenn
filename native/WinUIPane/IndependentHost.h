@@ -43,8 +43,13 @@ inline LRESULT CALLBACK Dispatch(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
 // The OS and WinUI can send a message to a Gecko window from the native thread
 // (WM_ACTIVATE forwarding). That sender cannot return until the Gecko thread takes the
 // message, so a Gecko wait on the native thread has to deliver sent messages.
-inline void WaitDeliveringSent(HANDLE handle) noexcept {
-    while (MsgWaitForMultipleObjectsEx(1,&handle,INFINITE,QS_SENDMESSAGE,0)==WAIT_OBJECT_0+1) {
+// Answers whether handle was the one signaled, so a caller can also stop on the other.
+inline bool WaitDeliveringSent(HANDLE handle, HANDLE other=nullptr) noexcept {
+    const HANDLE handles[2]{handle,other};
+    const DWORD count=other?2:1;
+    for (;;) {
+        const auto result=MsgWaitForMultipleObjectsEx(count,handles,INFINITE,QS_SENDMESSAGE,0);
+        if (result!=WAIT_OBJECT_0+count) return result==WAIT_OBJECT_0;
         MSG message;
         PeekMessageW(&message,nullptr,0,0,PM_NOREMOVE|PM_QS_SENDMESSAGE);
     }
@@ -65,8 +70,9 @@ auto Call(Args... args) noexcept -> decltype(Function(args...)) {
     }
     // Borrowed ABI buffers remain valid until the native call completes. Only
     // the Gecko caller waits.
-    WaitDeliveringSent(job.complete);
-    CloseHandle(job.complete); return job.result;
+    // A thread that exits with this job queued never runs it.
+    const bool ran=WaitDeliveringSent(job.complete,host.thread.native_handle());
+    CloseHandle(job.complete); return ran ? job.result : static_cast<Result>(RO_E_CLOSED);
 }
 // For a call whose result no caller acts on: owns copies of its arguments, keeps the
 // order of other routed calls, and does not wait. The bound keeps a stalled native
@@ -75,7 +81,8 @@ template<class Apply>
 HRESULT PostJob(size_t chars, Apply apply) noexcept {
     auto& host=State();
     if (!host.dispatcher) return RO_E_CLOSED;
-    if (host.posted.fetch_add(1)>=MaxPosted || host.postedChars.fetch_add(chars)+chars>MaxPostedChars) {
+    const auto count=host.posted.fetch_add(1);
+    if (host.postedChars.fetch_add(chars)+chars>MaxPostedChars || count>=MaxPosted) {
         host.posted.fetch_sub(1); host.postedChars.fetch_sub(chars); return E_OUTOFMEMORY;
     }
     struct Job : Work { size_t chars; Apply apply; explicit Job(Apply&& value) : apply(std::move(value)) {} };
@@ -421,7 +428,9 @@ inline HRESULT WINAPI PostAccessibility(HWND hwnd, IUnknown* provider) noexcept 
 inline HRESULT WINAPI PostDismissSurface(HWND hwnd) noexcept {
     if (State().owner==GetCurrentThreadId()) return DismissStartupSurface(hwnd);
     const bool retired=hwnd && RemovePropW(hwnd,NativeStartupSurface::Property);
-    const auto result=PostJob(0,[hwnd]{return DismissStartupSurface(hwnd);});
+    auto result=PostJob(0,[hwnd]{return DismissStartupSurface(hwnd);});
+    // The property is gone, so the close has to happen: nothing else would take the surface down.
+    if (FAILED(result)) result=Call<DismissStartupSurface>(hwnd);
     return FAILED(result) ? result : retired ? S_OK : S_FALSE;
 }
 inline BOOL WINAPI IgnoreTranslate(MSG*) noexcept { return FALSE; }

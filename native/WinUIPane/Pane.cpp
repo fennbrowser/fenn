@@ -2848,6 +2848,15 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestPostedLifetime() no
         IndependentHost::PostDismissSurface(nullptr)})if(FAILED(result))return result;
     return S_OK;
 }
+// Overfills the posted queue. Answers how many posts were refused; PostedChars shows the accounting afterward.
+extern "C" __declspec(dllexport) uint32_t WINAPI WinUIPaneTestOverfillPosted() noexcept {
+    uint32_t refused=0;
+    for(uint32_t i=0;i<IndependentHost::MaxPosted+64;++i)if(FAILED(IndependentHost::PostJob(16,[]{return S_OK;})))++refused;
+    return refused;
+}
+extern "C" __declspec(dllexport) uint32_t WINAPI WinUIPaneTestPostedChars() noexcept {
+    return uint32_t(IndependentHost::State().postedChars.load());
+}
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLocalStartup(void(WINAPI* inspect)(HWND)) noexcept {
     HWND hwnd{};
     auto require=[](bool value){if(!value)throw_hresult(E_FAIL);};

@@ -46,6 +46,8 @@ struct Context {
     // Native owner thread only. Returns keyboard focus to the local startup editor.
     std::function<void()> restoreEditorFocus;
     winrt::com_ptr<IRawElementProviderSimple> accessibility;
+    // This thread holds capture for a page drag: Gecko cannot capture a window it does not own.
+    bool pageCapture{};
     ShellWindowBinding state{};
     ShellStatus Call(uint32_t operation, ShellWindowBinding input={}) {
         return shell_core_window_host(core.get(),operation,&input,&state);
@@ -120,6 +122,10 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
             PostMessageW(host->endpoint,EndpointDpiMessage(),w,0);
             return 0;
         }
+        if (message==WM_LBUTTONDOWN || message==WM_RBUTTONDOWN || message==WM_MBUTTONDOWN) {
+            if (!GetCapture()) { SetCapture(hwnd); host->pageCapture=GetCapture()==hwnd; }
+        }
+        if (message==WM_CAPTURECHANGED) host->pageCapture=false;
         // Only pointer-free notifications cross this boundary. Synchronous
         // non-client, accessibility, IME and drag messages are not forwarded.
         if (message==WM_CONTEXTMENU) {
@@ -136,6 +142,8 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
             case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
                 PostMessageW(host->endpoint,message,w,l); break;
         }
+        if ((message==WM_LBUTTONUP || message==WM_RBUTTONUP || message==WM_MBUTTONUP) && host->pageCapture &&
+            !(w&(MK_LBUTTON|MK_RBUTTON|MK_MBUTTON)) && GetCapture()==hwnd) ReleaseCapture();
         if (message==WM_KEYDOWN || message==WM_KEYUP || message==WM_SYSKEYDOWN || message==WM_SYSKEYUP) {
             uint32_t modifiers=0;
             for (size_t i=0;i<std::size(WinUIPaneModifierKeys);++i) {
